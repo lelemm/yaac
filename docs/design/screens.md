@@ -315,6 +315,29 @@ A time in the past cannot be chosen.
 - Attachment chips and the queued-message strip sit above the text and are not counted in the
   five lines.
 
+### Resizing and collapsing the sidebar
+
+- **Resizable.** Dragging the hairline between the sidebar and the thread changes the
+  sidebar's width, between about 220 and 480 px. The width is remembered.
+- **Collapsible into a vertical strip**, about 48 px wide: by a small button at the top of the
+  sidebar, by **Ctrl+B**, or by dragging the edge below the minimum width. The same controls
+  expand it again; the strip remembers the width it came from.
+- **The strip shows, from top to bottom:**
+  - the `YAAC` mark;
+  - a **+** button (new thread);
+  - the **‹ ›** history buttons, stacked;
+  - then the list itself: each **project's name written vertically** (rotated a quarter turn,
+    reading bottom to top) as a quiet header, followed by **one state icon per thread** in that
+    project — running, needs you, waiting, done, failed, idle — in the same order as the full
+    list. *Needs you* threads come first, under a small amber count, as in the full sidebar.
+  - Settings at the bottom.
+- **Hovering a thread icon** shows a floating card with everything its full row shows — title,
+  time, branch and git counts, workers — and clicking the icon opens the thread. The open
+  thread's icon has the selected-row tint behind it.
+- **The mouse wheel scrolls the strip vertically.**
+- When the window is too narrow for the full sidebar, it collapses to this same strip by
+  itself (this replaces the separate narrow rail described for screen 21).
+
 ### Going back and forward
 
 Following a link from one chat to another must be undoable. Beside the `YAAC` title at the top
