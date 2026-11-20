@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::macros::{open_enum, open_union};
-use crate::types::{Empty, TargetId, TargetName};
+use crate::types::{ClientId, Empty, TargetId, TargetName};
 
 /// Every attach method name.
 pub mod names {
@@ -59,6 +59,10 @@ pub struct HelloResult {
     pub build: String,
     /// The targets and their connection states.
     pub targets: Vec<TargetEntry>,
+    /// This window's client id: the id the hub presents to every target, so the window can
+    /// recognise its own answers ("answered by you") and its own turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<ClientId>,
 }
 
 /// `hub/shutdown` params.
@@ -238,6 +242,13 @@ pub struct TargetStateParams {
     pub id: TargetId,
     /// Its new state.
     pub state: ConnectionState,
+    /// Whether the hub keeps it connected (the user's switch), as now.
+    #[serde(default = "yes")]
+    pub enabled: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// `hub/request` params: a YAAC request for a target. The result is the target's result in

@@ -156,8 +156,20 @@ harness-specific job and gets its own spike (S7):
 | Codex (daemon) | The thread's status and loaded state on the daemon, and whether a turn is running that `yaacd` did not start; a writer conflict when trying to resume. |
 | Claude Code | `claude agents --json` lists live interactive and background sessions with their session ids and state. |
 
-The rule when unsure: treat the thread as in use. Wrongly disabling a composer costs a click;
-wrongly enabling one can corrupt a conversation.
+**Decided: when unsure, take over.** A thread is read-only only on **positive evidence** that
+someone else is using it — a turn running that `yaacd` did not start, or a harness that
+reports another live holder. When `yaacd` simply cannot tell, the thread is treated as free
+and YAAC takes it.
+
+Two consequences, both accepted by the owner:
+
+- After `yaacd` restarts, the Codex threads it was holding are still loaded on the Codex
+  daemon and `yaacd` cannot prove they are its own. They are usable at once, rather than
+  read-only until Codex happens to unload them.
+- On Codex, a terminal that has merely *opened* a thread and is sitting idle cannot be told
+  apart from that case, and is not detected until it acts. So "open elsewhere but idle is in
+  use" holds where the harness can report it (Claude Code lists its live sessions) and not
+  where it cannot (Codex).
 
 ### Watching it
 

@@ -117,7 +117,7 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                     ui.label(text);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if widgets::primary(ui, &p, "Fork to continue here", None).clicked() {
-                            app.ui.menu = Some(Menu::Fork);
+                            actions.push(Action::OpenFork(key.clone()));
                         }
                     });
                 }
@@ -130,9 +130,6 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                 }
             });
         });
-    }
-    if app.ui.menu == Some(Menu::Fork) && h.display.read_only {
-        crate::composer::fork_menu_window(ui, app, key, actions);
     }
 }
 

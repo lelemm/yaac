@@ -26,6 +26,14 @@ export interface AgentMessageItem {
 }
 
 /**
+ * Whether a chat's agent may start and message other threads without asking
+ * (docs/10-agent-mesh.md#permission-a-toggle-in-the-chat). A new chat starts on `ask`.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type AgentsPolicy = "ask" | "allow";
+
+/**
  * The daemon's range and the version agreed: the lower of the two maxima, if it is not below either minimum. Frozen core.
  */
 export interface AgreedProtocol {
@@ -444,6 +452,15 @@ export type FileChangeKind = "add" | "modify" | "delete" | "rename";
  */
 export interface FilePart {
   /**
+   * The media type `yaacd` recorded for the upload. Filled in like `name`.
+   */
+  mediaType?: string | null;
+  /**
+   * The file's name, as uploaded (sanitised). Filled in by `yaacd` when it journals the
+   * message; a client need not send it.
+   */
+  name?: string | null;
+  /**
    * The upload, on this target.
    */
   uploadId: UploadId;
@@ -547,6 +564,52 @@ export interface FsListResult {
 }
 
 /**
+ * How a thread's checkout differs from origin (docs/07-ui.md#sidebar). Computed once per
+ * checkout on the target, not per thread.
+ */
+export interface GitStatus {
+  /**
+   * Files added relative to the base, uncommitted changes included.
+   */
+  added?: number;
+  /**
+   * Commits not pushed.
+   */
+  ahead?: number;
+  /**
+   * When this was computed.
+   */
+  at?: Timestamp | null;
+  /**
+   * What it is compared with: the branch's upstream, or the remote's default branch when it
+   * has no upstream. Absent when there is nothing to compare with (then only uncommitted
+   * changes are counted).
+   */
+  base?: string | null;
+  /**
+   * Commits not pulled.
+   */
+  behind?: number;
+  /**
+   * The checked-out branch; absent on a detached head.
+   */
+  branch?: string | null;
+  /**
+   * Files deleted relative to the base, uncommitted changes included.
+   */
+  deleted?: number;
+  /**
+   * Files modified relative to the base, uncommitted changes included.
+   */
+  modified?: number;
+  /**
+   * The checkout no longer exists on disk (a deleted worktree); the other fields are the
+   * last ones known.
+   */
+  removed?: boolean;
+}
+
+/**
  * `handoff`: marks history a forked thread inherited from its parent.
  */
 export interface HandoffItem {
@@ -592,6 +655,15 @@ export type HandoverWhen = "idle" | "now";
  * `imageInput` is not `unsupported`; `yaacd` rejects it with `capability_missing` otherwise.
  */
 export interface ImagePart {
+  /**
+   * The media type `yaacd` recorded for the upload. Filled in like `name`.
+   */
+  mediaType?: string | null;
+  /**
+   * The file's name, as uploaded (sanitised). Filled in by `yaacd` when it journals the
+   * message; a client need not send it.
+   */
+  name?: string | null;
   /**
    * The upload, on this target.
    */
@@ -659,11 +731,19 @@ export type InstanceId = string;
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Item = {
+export type Item = ({
+  /**
+   * When it reached a final state.
+   */
+  completedAt?: Timestamp | null;
   /**
    * The item.
    */
   id: ItemId;
+  /**
+   * When it appeared, as `yaacd` (or the harness) recorded it.
+   */
+  startedAt?: Timestamp | null;
   /**
    * Its status.
    */
@@ -672,7 +752,7 @@ export type Item = {
    * The turn it belongs to.
    */
   turnId: TurnId;
-} & (({
+}) & (({
   kind: "userMessage";
 } & UserMessageItem) | ({
   kind: "agentMessage";
@@ -730,6 +810,59 @@ export interface ItemEvent {
  * An item within a thread.
  */
 export type ItemId = string;
+
+/**
+ * `item/read`: a byte range of one item's full output. A tool call's inline output is a
+ * bounded head (`outputTruncated`); the target keeps the rest.
+ */
+export interface ItemReadParams {
+  /**
+   * The item.
+   */
+  itemId: ItemId;
+  /**
+   * Upper bound on bytes returned. The daemon may return fewer.
+   */
+  maxBytes: number;
+  /**
+   * Byte offset into the full output.
+   */
+  offset?: number;
+  /**
+   * The thread.
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * `item/read` result. Sent in the bulk class.
+ */
+export interface ItemReadResult {
+  /**
+   * The text, UTF-8. A range never splits a character: it may end a little early.
+   */
+  data?: string;
+  /**
+   * Whether bytes remain after this range.
+   */
+  more?: boolean;
+  /**
+   * The offset to ask for next.
+   */
+  nextOffset?: number;
+  /**
+   * The offset `data` starts at.
+   */
+  offset?: number;
+  /**
+   * Whether the full output is still on the target. When false, the other fields are empty.
+   */
+  present: boolean;
+  /**
+   * Total size of the full output in bytes.
+   */
+  totalBytes?: number;
+}
 
 /**
  * Item status.
@@ -804,6 +937,13 @@ export interface ListThreadsReply {
    */
   threads: MeshThreadInfo[];
 }
+
+/**
+ * What an agent wants to do with other agents.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type MeshActionKind = "startThreads" | "message";
 
 /**
  * Allowance per orchestration root, counted across all targets.
@@ -1057,6 +1197,73 @@ export interface MeshPeer {
    * Its title.
    */
   title?: string | null;
+}
+
+/**
+ * One action in a permission request.
+ */
+export interface MeshPermissionAction {
+  /**
+   * What kind of action.
+   */
+  action: MeshActionKind;
+  /**
+   * For `message`: the recipients.
+   */
+  recipients?: MeshPeer[];
+  /**
+   * One plain line to show as-is ("Start 3 threads: Claude on local, devbox, gpu-box").
+   */
+  summary: string;
+  /**
+   * For `startThreads`: what would be started.
+   */
+  threads?: MeshThreadPlan[];
+}
+
+/**
+ * Answer to a permission request.
+ */
+export interface MeshPermissionAnswer {
+  /**
+   * Also switch this chat to `allow` (no further prompts in it). Only with `allow`.
+   */
+  alwaysAllow?: boolean;
+  /**
+   * The budget as the user edited it; the proposed one when absent. Ignored with `deny`.
+   */
+  budget?: MeshBudget | null;
+  /**
+   * Allow or deny.
+   */
+  decision: MeshPermissionDecision;
+}
+
+/**
+ * The answer to a permission request.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type MeshPermissionDecision = "allow" | "deny";
+
+/**
+ * "This agent wants to work with other agents" (docs/10-agent-mesh.md#permission-a-toggle-in-the-chat):
+ * raised the first time an agent in an `ask` chat starts or messages another thread. The
+ * answer covers the rest of that orchestration, up to the budget.
+ */
+export interface MeshPermissionRequest {
+  /**
+   * What the agent wants to do.
+   */
+  actions: MeshPermissionAction[];
+  /**
+   * The budget it would work within; each field editable before answering.
+   */
+  budget: MeshBudget;
+  /**
+   * The orchestration root the answer applies to.
+   */
+  root?: Address | null;
 }
 
 /**
@@ -1351,6 +1558,36 @@ export interface MeshThreadInfo {
 }
 
 /**
+ * One thread an agent wants to start, as far as it said.
+ */
+export interface MeshThreadPlan {
+  /**
+   * How many such threads.
+   */
+  count?: number;
+  /**
+   * Provider instance on the destination.
+   */
+  instance?: InstanceId | null;
+  /**
+   * Model, as the destination reported it.
+   */
+  model?: ModelId | null;
+  /**
+   * Provider display name ("Codex · work").
+   */
+  provider?: string | null;
+  /**
+   * Destination target.
+   */
+  target?: TargetId | null;
+  /**
+   * Destination target's name, as the user named it.
+   */
+  targetName?: string | null;
+}
+
+/**
  * One thread's state in a `threadStates` reply.
  */
 export interface MeshThreadState {
@@ -1362,6 +1599,45 @@ export interface MeshThreadState {
    * The thread.
    */
   thread: Address;
+}
+
+/**
+ * `mesh/usage` (target → hub → the root's target): what this target has spent against an
+ * orchestration root that lives on another target. Counts are **cumulative** for this target
+ * and root, so a repeated or reordered report is harmless: the root's target keeps the
+ * highest count it has seen from each target.
+ */
+export interface MeshUsageParams {
+  /**
+   * Agent-started turns on the reporting target against this root, in total.
+   */
+  agentTurns?: number;
+  /**
+   * The orchestration root; its target owns the budget.
+   */
+  root: Address;
+  /**
+   * The reporting target. Checked by the hub against the connection it arrived on.
+   */
+  source: TargetId;
+  /**
+   * Threads spawned on the reporting target against this root, in total.
+   */
+  threadsSpawned?: number;
+}
+
+/**
+ * `mesh/usage` result, from the root's target.
+ */
+export interface MeshUsageResult {
+  /**
+   * The root's budget has run out: dispatch nothing more for it until it is continued.
+   */
+  exhausted?: boolean;
+  /**
+   * The root's usage across all targets, when the root's target reports it.
+   */
+  used?: MeshBudgetUsage | null;
 }
 
 /**
@@ -1505,7 +1781,7 @@ export interface NoticeItem {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention";
+export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered";
 
 /**
  * A client-generated operation id. Every state-changing request carries one; re-sending
@@ -1561,7 +1837,105 @@ export interface PlanStep {
 export type PlanStepState = "pending" | "inProgress" | "completed";
 
 /**
- * The repository a thread's working directory belongs to.
+ * A project.
+ */
+export interface Project {
+  /**
+   * Creation time.
+   */
+  createdAt: Timestamp;
+  /**
+   * Normalised `origin` remote URL of that repository, when it has one.
+   */
+  crossTargetKey?: string | null;
+  /**
+   * Its folder, absolute on the target.
+   */
+  folder: TargetPath;
+  /**
+   * Stable id.
+   */
+  id: ProjectId;
+  /**
+   * The name the user gave it.
+   */
+  name: string;
+  /**
+   * Where the folder sits in a git repository, when it is in one (noted when the project
+   * is created, refreshed when the target starts).
+   */
+  repo?: RepoLocation | null;
+}
+
+/**
+ * `project/create`. Every thread whose folder falls inside the new project moves under it at
+ * once (each is pushed as `thread/updated`).
+ */
+export interface ProjectCreateParams {
+  /**
+   * The folder; must exist and be a directory.
+   */
+  folder: TargetPath;
+  /**
+   * The name. Free text; need not match the folder.
+   */
+  name: string;
+  /**
+   * Operation id.
+   */
+  opId: OpId;
+}
+
+/**
+ * `project/delete`. The folder and the threads are untouched; the threads fall back to an
+ * outer project or a temporary one.
+ */
+export interface ProjectDeleteParams {
+  /**
+   * Operation id.
+   */
+  opId: OpId;
+  /**
+   * The project.
+   */
+  projectId: ProjectId;
+}
+
+/**
+ * A project the user created on a target. Opaque, generated by `yaacd`.
+ */
+export type ProjectId = string;
+
+/**
+ * What a [`ProjectRef`] names.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type ProjectKind = "user" | "temporary";
+
+/**
+ * `project/list`.
+ */
+export type ProjectListParams = { [key: string]: unknown };
+
+/**
+ * `project/list` result, and `project/updated` params: every project on the target.
+ */
+export interface ProjectListResult {
+  /**
+   * The projects, by name.
+   */
+  projects?: Project[];
+}
+
+/**
+ * The project a thread belongs to.
+ *
+ * With `kind` present (every `ThreadSummary` from a current `yaacd`), this is a project the
+ * user created (`user`, with its `id`) or a temporary one (`temporary`); `path` is then the
+ * project's folder and `displayName` its name — the user's, or the folder path for a
+ * temporary project. Without `kind` (`project/resolve`) it is a git identity: `path` is the
+ * git common directory, or the directory itself when there is no git.
  */
 export interface ProjectRef {
   /**
@@ -1570,14 +1944,43 @@ export interface ProjectRef {
    */
   crossTargetKey?: string | null;
   /**
-   * The repository directory name, for display.
+   * The name to show.
    */
   displayName: string;
   /**
-   * Identifies the project on its target: the git common directory, or the working
-   * directory itself when there is no git.
+   * The user project, for `kind: user`.
+   */
+  id?: ProjectId | null;
+  /**
+   * A user project or a temporary one. Absent: a git identity (`project/resolve`).
+   */
+  kind?: ProjectKind | null;
+  /**
+   * The project's folder (or the git identity; see above).
    */
   path: TargetPath;
+  /**
+   * Where the project's folder sits in a git repository, when it is in one.
+   */
+  repo?: RepoLocation | null;
+}
+
+/**
+ * `project/rename`.
+ */
+export interface ProjectRenameParams {
+  /**
+   * The new name.
+   */
+  name: string;
+  /**
+   * Operation id.
+   */
+  opId: OpId;
+  /**
+   * The project.
+   */
+  projectId: ProjectId;
 }
 
 /**
@@ -1618,6 +2021,16 @@ export interface ProjectResolveResult {
    * The worktree; absent when there is no git.
    */
   worktree?: WorktreeRef | null;
+}
+
+/**
+ * Result of `project/create` and `project/rename`.
+ */
+export interface ProjectResult {
+  /**
+   * The project after the change.
+   */
+  project: Project;
 }
 
 /**
@@ -2066,6 +2479,28 @@ export type ReceiptReason = "targetOffline" | "hubUnavailable" | "recipientBusy"
 export type ReceiptStatus = "delivered" | "queued" | "failed";
 
 /**
+ * Where a folder sits inside a git repository (docs/05-threads.md#worktrees-that-live-somewhere-else).
+ */
+export interface RepoLocation {
+  /**
+   * The folder relative to its checkout's root, `/`-separated: `.` for the root itself.
+   */
+  relative: string;
+  /**
+   * The repository: its shared (common) git directory. Equal for every checkout of it.
+   */
+  repo: TargetPath;
+  /**
+   * The checkout's root (the worktree's top-level directory).
+   */
+  root: TargetPath;
+  /**
+   * The checkout's name when it is not the repository's main checkout (`feature-x`).
+   */
+  worktreeName?: string | null;
+}
+
+/**
  * `requestChanged`: a request moved between states.
  */
 export interface RequestChangedEvent {
@@ -2120,7 +2555,9 @@ export type RequestItem = ({
   requestKind: "question";
 } & QuestionRequest) | ({
   requestKind: "form";
-} & FormRequest));
+} & FormRequest) | ({
+  requestKind: "meshPermission";
+} & MeshPermissionRequest));
 
 /**
  * How a request was resolved.
@@ -2181,7 +2618,9 @@ export type RequestResponse = ({
   requestKind: "question";
 } & QuestionAnswers) | ({
   requestKind: "form";
-} & FormAnswer);
+} & FormAnswer) | ({
+  requestKind: "meshPermission";
+} & MeshPermissionAnswer);
 
 /**
  * The state of a request item. Always exactly one.
@@ -2628,6 +3067,55 @@ export interface ThreadEventParams {
 }
 
 /**
+ * `thread/forkOnly`: create a new thread from an existing one **without** a first message.
+ * The new thread is idle; its first message goes with `turn/start`.
+ */
+export interface ThreadForkOnlyParams {
+  /**
+   * Fork after this turn, as in `thread/fork`.
+   */
+  atTurn?: TurnId | null;
+  /**
+   * Effort.
+   */
+  effort?: EffortId | null;
+  /**
+   * Destination instance, on the same target.
+   */
+  instance: InstanceId;
+  /**
+   * Mode.
+   */
+  mode?: ModeId | null;
+  /**
+   * Model.
+   */
+  model?: ModelId | null;
+  /**
+   * Operation id.
+   */
+  opId: OpId;
+  /**
+   * The thread to fork from. Not modified; may be in use elsewhere.
+   */
+  source: ThreadId;
+}
+
+/**
+ * `thread/forkOnly` result.
+ */
+export interface ThreadForkOnlyResult {
+  /**
+   * The mechanism used.
+   */
+  forkKind: ForkKind;
+  /**
+   * The new thread.
+   */
+  threadId: ThreadId;
+}
+
+/**
  * `thread/fork`: create a new thread from an existing one, with its first message.
  */
 export interface ThreadForkParams {
@@ -2770,6 +3258,10 @@ export interface ThreadReadParams {
  */
 export interface ThreadReadResult {
   /**
+   * Context window usage at the snapshot's position, when known. On the first page.
+   */
+  context?: ContextUsage | null;
+  /**
    * Cursor for the next (older) page; absent on the last page.
    */
   cursor?: PageCursor | null;
@@ -2824,7 +3316,12 @@ export interface ThreadRenameParams {
  */
 export interface ThreadStartParams {
   /**
-   * Working directory.
+   * The chat's agents policy from its first message; `ask` when absent.
+   */
+  agents?: AgentsPolicy | null;
+  /**
+   * Working directory. With `project`, it must be empty or that project's folder: the
+   * thread starts in the root of the project's folder.
    */
   cwd: TargetPath;
   /**
@@ -2851,6 +3348,10 @@ export interface ThreadStartParams {
    * Operation id.
    */
   opId: OpId;
+  /**
+   * The project the thread is started in (docs/05-threads.md#projects).
+   */
+  project?: ProjectId | null;
 }
 
 /**
@@ -2872,7 +3373,7 @@ export interface ThreadStartResult {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type ThreadState = "idle" | "running" | "needsAttention" | "failed";
+export type ThreadState = "idle" | "running" | "needsAttention" | "failed" | "waiting" | "done";
 
 /**
  * `threadStates`: the current state of some threads there (used by `wait`).
@@ -2923,6 +3424,10 @@ export type ThreadSubscribeResult = ({
    */
   activeTurn?: TurnId | null;
   /**
+   * How full the context window is now, when known (under `contextUsage`).
+   */
+  context?: ContextUsage | null;
+  /**
    * Who may act on the thread, relative to this client.
    */
   control: Control;
@@ -2934,6 +3439,10 @@ export type ThreadSubscribeResult = ({
    * The thread's effective capabilities and applied settings.
    */
   effective?: ThreadEffective | null;
+  /**
+   * Cumulative token usage of the thread, when known.
+   */
+  tokens?: TokenUsage | null;
 }) & (({
   mode: "replay";
 } & SubscribeReplay) | ({
@@ -2944,6 +3453,11 @@ export type ThreadSubscribeResult = ({
  * What the sidebar needs, and what the host cache stores, per thread.
  */
 export interface ThreadSummary {
+  /**
+   * This chat's agents policy. Meaningful on a root thread; workers act under their
+   * root's answer.
+   */
+  agents?: AgentsPolicy;
   /**
    * Archived.
    */
@@ -2979,6 +3493,10 @@ export interface ThreadSummary {
    */
   forkedFrom?: ThreadId | null;
   /**
+   * How the thread's checkout differs from origin; absent outside git or not yet known.
+   */
+  git?: GitStatus | null;
+  /**
    * The thread.
    */
   id: ThreadId;
@@ -2991,6 +3509,10 @@ export interface ThreadSummary {
    */
   model?: ModelId | null;
   /**
+   * Muted: out of the main list, still working. Stored on the target.
+   */
+  muted?: boolean;
+  /**
    * How it came to exist.
    */
   originKind: OriginKind;
@@ -3000,6 +3522,10 @@ export interface ThreadSummary {
    */
   peers?: number;
   /**
+   * Pinned: listed in the Pinned section. Stored on the target.
+   */
+  pinned?: boolean;
+  /**
    * Short excerpt.
    */
   preview?: string;
@@ -3007,6 +3533,10 @@ export interface ThreadSummary {
    * Resolved repository.
    */
   project?: ProjectRef | null;
+  /**
+   * Where the working directory sits in a git repository; absent outside git.
+   */
+  repo?: RepoLocation | null;
   /**
    * The orchestration root this thread belongs to, when it was spawned or messaged by an
    * agent.
@@ -3087,6 +3617,43 @@ export interface ThreadUnsubscribeParams {
    * The thread.
    */
   threadId: ThreadId;
+}
+
+/**
+ * `thread/update`: YAAC's own flags and settings of a thread — not the harness's. A patch:
+ * absent fields are unchanged. Stored on the target; the change is pushed as `thread/updated`.
+ */
+export interface ThreadUpdateParams {
+  /**
+   * The chat's agents policy.
+   */
+  agents?: AgentsPolicy | null;
+  /**
+   * Mute or unmute.
+   */
+  muted?: boolean | null;
+  /**
+   * Operation id.
+   */
+  opId: OpId;
+  /**
+   * Pin or unpin.
+   */
+  pinned?: boolean | null;
+  /**
+   * The thread.
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * `thread/update` result.
+ */
+export interface ThreadUpdateResult {
+  /**
+   * The summary after the change.
+   */
+  thread: ThreadSummary;
 }
 
 /**

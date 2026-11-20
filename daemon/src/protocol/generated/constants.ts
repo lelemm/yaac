@@ -13,6 +13,8 @@ import type {
   FsListResult,
   InitializeParams,
   InitializeResult,
+  ItemReadParams,
+  ItemReadResult,
   MeshBudgetParams,
   MeshBudgetResult,
   MeshDeliverParams,
@@ -24,8 +26,16 @@ import type {
   MeshReceiptResult,
   MeshRelayParams,
   MeshRosterParams,
+  MeshUsageParams,
+  MeshUsageResult,
+  ProjectCreateParams,
+  ProjectDeleteParams,
+  ProjectListParams,
+  ProjectListResult,
+  ProjectRenameParams,
   ProjectResolveParams,
   ProjectResolveResult,
+  ProjectResult,
   ProviderInstanceAddParams,
   ProviderInstanceListResult,
   ProviderInstanceRemoveParams,
@@ -40,6 +50,8 @@ import type {
   ThreadArchiveParams,
   ThreadDeleteParams,
   ThreadEventParams,
+  ThreadForkOnlyParams,
+  ThreadForkOnlyResult,
   ThreadForkParams,
   ThreadForkPreviewParams,
   ThreadForkPreviewResult,
@@ -55,6 +67,8 @@ import type {
   ThreadSyncParams,
   ThreadSyncResult,
   ThreadUnsubscribeParams,
+  ThreadUpdateParams,
+  ThreadUpdateResult,
   ThreadUpdatedParams,
   TurnInterruptParams,
   TurnStartParams,
@@ -113,6 +127,9 @@ export const METHODS = {
   THREAD_RENAME: "thread/rename",
   THREAD_ARCHIVE: "thread/archive",
   THREAD_DELETE: "thread/delete",
+  THREAD_UPDATE: "thread/update",
+  THREAD_FORK_ONLY: "thread/forkOnly",
+  ITEM_READ: "item/read",
   TURN_START: "turn/start",
   TURN_INTERRUPT: "turn/interrupt",
   TURN_STEER: "turn/steer",
@@ -123,6 +140,10 @@ export const METHODS = {
   UPLOAD_READ: "upload/read",
   FS_LIST: "fs/list",
   PROJECT_RESOLVE: "project/resolve",
+  PROJECT_LIST: "project/list",
+  PROJECT_CREATE: "project/create",
+  PROJECT_RENAME: "project/rename",
+  PROJECT_DELETE: "project/delete",
   MESH_RELAY: "mesh/relay",
   MESH_DELIVER: "mesh/deliver",
   MESH_RECEIPT: "mesh/receipt",
@@ -130,6 +151,7 @@ export const METHODS = {
   MESH_ROSTER: "mesh/roster",
   MESH_POLICY: "mesh/policy",
   MESH_BUDGET: "mesh/budget",
+  MESH_USAGE: "mesh/usage",
 } as const;
 
 /** Every notification method name. */
@@ -138,6 +160,7 @@ export const NOTIFICATIONS = {
   THREAD_UPDATED: "thread/updated",
   THREAD_REMOVED: "thread/removed",
   THREAD_EVENT: "thread/event",
+  PROJECT_UPDATED: "project/updated",
   STREAM_CREDIT: "stream/credit",
 } as const;
 
@@ -231,6 +254,12 @@ export interface RequestMap {
   "thread/archive": { params: ThreadArchiveParams; result: Empty };
   /** Delete a thread (under `threadDelete`). */
   "thread/delete": { params: ThreadDeleteParams; result: Empty };
+  /** Set YAAC's own flags and settings of a thread (mute, pin, agents policy). A patch. */
+  "thread/update": { params: ThreadUpdateParams; result: ThreadUpdateResult };
+  /** Create a new thread from an existing one without a first message. */
+  "thread/forkOnly": { params: ThreadForkOnlyParams; result: ThreadForkOnlyResult };
+  /** A byte range of one item's full output (a tool call's output beyond its inline head). */
+  "item/read": { params: ItemReadParams; result: ItemReadResult };
   /** Send a user message to an existing thread. */
   "turn/start": { params: TurnStartParams; result: TurnStartResult };
   /** Stop a turn, by turn id. */
@@ -251,6 +280,14 @@ export interface RequestMap {
   "fs/list": { params: FsListParams; result: FsListResult };
   /** The git identity of a directory. */
   "project/resolve": { params: ProjectResolveParams; result: ProjectResolveResult };
+  /** The projects the user created on this target. */
+  "project/list": { params: ProjectListParams; result: ProjectListResult };
+  /** Create a project: a folder and a name. Moves every thread inside it under it. */
+  "project/create": { params: ProjectCreateParams; result: ProjectResult };
+  /** Rename a project. */
+  "project/rename": { params: ProjectRenameParams; result: ProjectResult };
+  /** Delete a project; its folder and threads are untouched. */
+  "project/delete": { params: ProjectDeleteParams; result: Empty };
   /** Target → hub: carry a message to another target; answered once durably queued. */
   "mesh/relay": { params: MeshRelayParams; result: MeshReceiptResult };
   /** Hub → target: put a message into a recipient's mailbox; answered once on disk. */
@@ -265,6 +302,8 @@ export interface RequestMap {
   "mesh/policy": { params: MeshPolicyParams; result: MeshPolicyResult };
   /** Read or continue an orchestration's budget. */
   "mesh/budget": { params: MeshBudgetParams; result: MeshBudgetResult };
+  /** Target → hub → the root's target: spending counted against a root on another target. */
+  "mesh/usage": { params: MeshUsageParams; result: MeshUsageResult };
 }
 
 /** Params type of every notification. */
@@ -277,6 +316,8 @@ export interface NotificationMap {
   "thread/removed": ThreadRemovedParams;
   /** One journaled thread event. */
   "thread/event": ThreadEventParams;
+  /** The project list changed (created, renamed, deleted); carries every project. */
+  "project/updated": ProjectListResult;
   /** The receiver of a data stream grants more credit. */
   "stream/credit": StreamCreditParams;
 }
@@ -321,6 +362,9 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "thread/rename": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/archive": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/delete": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "thread/update": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "thread/forkOnly": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "item/read": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "turn/start": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "turn/interrupt": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "turn/steer": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
@@ -331,6 +375,10 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "upload/read": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "fs/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "project/resolve": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "project/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "project/create": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "project/rename": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "project/delete": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "mesh/relay": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "mesh/deliver": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "mesh/receipt": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
@@ -338,6 +386,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "mesh/roster": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "mesh/policy": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "mesh/budget": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "mesh/usage": { direction: "both", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
 };
 
 /** Static facts about a notification. */
@@ -352,5 +401,6 @@ export const NOTIFICATION_INFO: { readonly [N in keyof NotificationMap]: Notific
   "thread/updated": { direction: "daemonToHost", class: "control" },
   "thread/removed": { direction: "daemonToHost", class: "control" },
   "thread/event": { direction: "daemonToHost", class: "control" },
+  "project/updated": { direction: "daemonToHost", class: "control" },
   "stream/credit": { direction: "both", class: "control" },
 };

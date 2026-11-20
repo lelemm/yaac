@@ -72,7 +72,7 @@ use serde_json::{Value, json};
 use crate::flows::{OpenThread, StartThread, Started};
 use crate::rpc::{ErrorCode, ErrorObject};
 use crate::types::{
-    Capability, Item, MeshQueryParams, MeshRelayParams, PageCursor, ProviderUpdatedParams, StreamCreditParams,
+    Capability, Item, MeshQueryParams, MeshRelayParams, MeshUsageParams, ProjectListResult, PageCursor, ProviderUpdatedParams, StreamCreditParams,
     ThreadEventParams, ThreadReadResult, ThreadRemovedParams, ThreadSubscribeResult, ThreadSummary, SyncToken,
 };
 
@@ -357,6 +357,8 @@ pub enum Inbound {
     ProviderUpdated(ProviderUpdatedParams),
     /// `stream/credit`.
     StreamCredit(StreamCreditParams),
+    /// `project/updated`: every project on the target.
+    ProjectUpdated(ProjectListResult),
     /// A notification this build does not know. Ignore it (forward compatibility).
     Other {
         /// Method.
@@ -373,6 +375,8 @@ pub enum PeerRequest {
     MeshRelay(MeshRelayParams),
     /// `mesh/query`.
     MeshQuery(MeshQueryParams),
+    /// `mesh/usage`.
+    MeshUsage(MeshUsageParams),
     /// A request this build does not know: answer `method_not_found`.
     Other {
         /// Method.

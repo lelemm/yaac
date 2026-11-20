@@ -10,6 +10,8 @@ use yaac_core::controls::{Choice, ControlRow, ControlRowView, StartedInputs, dra
 use yaac_core::header::{ChipView, ComposerView, composer, short_provider};
 use yaac_core::images::ImageRoute;
 use yaac_core::markstyle::{self, Style};
+use yaac_core::mode_confirm::ModeTarget;
+use yaac_core::prefs::SendKey;
 
 use crate::app::{Action, Menu, YaacApp};
 use crate::icons;
@@ -58,10 +60,14 @@ fn track_ime(ui: &egui::Ui, composing: &mut bool) {
 /// The text box. Returns true when Enter (not Shift+Enter, never during an input-method
 /// composition) asked to send.
 #[allow(clippy::too_many_arguments, reason = "one call site per composer; a struct would only rename the arguments")]
-fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &str, p: &Palette, composing: &mut bool, enabled: bool, focus: &mut bool) -> bool {
+fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &str, p: &Palette, composing: &mut bool, enabled: bool, focus: &mut bool, send_key: SendKey) -> bool {
     track_ime(ui, composing);
     let focused = ui.memory(|m| m.has_focus(id));
-    let send = enabled && focused && !*composing && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter));
+    let (send_mods, newline) = match send_key {
+        SendKey::Enter => (Modifiers::NONE, KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter)),
+        SendKey::CtrlEnter => (Modifiers::COMMAND, KeyboardShortcut::new(Modifiers::NONE, Key::Enter)),
+    };
+    let send = enabled && focused && !*composing && ui.input_mut(|i| i.consume_key(send_mods, Key::Enter));
     let pp = *p;
     let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| layout(ui, buf.as_str(), wrap, &pp);
     let te = egui::TextEdit::multiline(text)
@@ -70,7 +76,7 @@ fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &st
         .hint_text(placeholder)
         .desired_rows(1)
         .desired_width(ui.available_width())
-        .return_key(KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter))
+        .return_key(newline)
         .interactive(enabled)
         .layouter(&mut layouter);
     let r = ui.add(te);
@@ -164,7 +170,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                     ui.vertical(|ui| {
                         ui.set_width(ui.available_width() - btn_w);
                         let draft = app.client.state.drafts.entry(key.clone()).or_default();
-                        send = text_box(ui, &mut draft.text, id, &placeholder, &p, &mut app.ui.ime_composing, !dimmed, &mut app.ui.focus_composer);
+                        send = text_box(ui, &mut draft.text, id, &placeholder, &p, &mut app.ui.ime_composing, !dimmed, &mut app.ui.focus_composer, app.ui.send_key);
                         if let Some(h) = &dimmed_hint {
                             ui.label(widgets::secondary(h, &p));
                         }
@@ -239,7 +245,7 @@ fn choice_menu<T: Clone + PartialEq>(
     actions: &mut Vec<Action>,
 ) {
     let p = app.p;
-    let r = widgets::selector(ui, &p, &choice.label, true);
+    let r = if choice.warn { widgets::selector_warn(ui, &p, &choice.label) } else { widgets::selector(ui, &p, &choice.label, true) };
     if r.clicked() {
         app.ui.toggle_menu(menu.clone());
     }
@@ -266,6 +272,18 @@ fn choice_menu<T: Clone + PartialEq>(
 
 fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &Target, actions: &mut Vec<Action>) {
     let p = app.p;
+    // Where the picker's list came from: the target now, or the cache.
+    let footer = {
+        let st = &app.client.state;
+        let tid = match target {
+            Target::Thread(k) => Some(k.target.clone()),
+            Target::Draft(id) => st.new_threads.iter().find(|d| d.id == *id).map(|d| d.target.clone()),
+        };
+        tid.and_then(|t| st.target(&t)).map(|t| {
+            let when = if t.providers_fresh { "updated just now" } else { "from the cache" };
+            format!("Read from {} · {when}", t.entry.name)
+        })
+    };
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         if let Some(m) = &row.model {
@@ -282,10 +300,14 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
                 .show(|ui| {
                     ui.set_min_width(300.0);
                     for g in &m.groups {
-                        ui.label(egui::RichText::new(&g.name).font(theme::bold(size::UI)));
                         if let Some(reason) = &g.reason {
+                            // The whole group is unavailable: its name in the unavailable
+                            // style, and the reason beside it.
                             widgets::unavailable(ui, &p, &g.name, reason);
+                            ui.add_space(4.0);
+                            continue;
                         }
+                        ui.label(egui::RichText::new(&g.name).font(theme::bold(size::UI)));
                         for model in &g.models {
                             ui.horizontal(|ui| {
                                 let mut text = model.name.clone();
@@ -309,6 +331,10 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
                         }
                         ui.add_space(4.0);
                     }
+                    if let Some(f) = &footer {
+                        ui.add_space(2.0);
+                        ui.label(widgets::secondary(f, &p));
+                    }
                 });
             if !open && app.ui.menu == Some(Menu::Model) {
                 app.ui.menu = None;
@@ -324,8 +350,8 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
         if let Some(m) = &row.mode {
             let t = target.clone();
             choice_menu(ui, app, &Menu::Mode, m, move |id| match &t {
-                Target::Thread(k) => Action::SetMode(k.clone(), id),
-                Target::Draft(d) => Action::DraftMode(*d, id),
+                Target::Thread(k) => Action::ChooseMode(ModeTarget::Thread(k.clone()), id),
+                Target::Draft(d) => Action::ChooseMode(ModeTarget::Draft(*d), id),
             }, actions);
         }
         if let (Some(a), Target::Thread(k)) = (&row.agents, target) {
@@ -344,55 +370,11 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
             && let Target::Thread(k) = target
         {
             ui.add_space(8.0);
-            let r = widgets::plain(ui, &p, "Fork", None);
-            if r.clicked() {
-                app.ui.toggle_menu(Menu::Fork);
-            }
-            if app.ui.menu == Some(Menu::Fork) {
-                fork_menu_window(ui, app, k, actions);
+            if widgets::plain(ui, &p, "Fork", None).clicked() {
+                actions.push(Action::OpenFork(k.clone()));
             }
         }
     });
-}
-
-/// The seam for the fork dialog (a later package): pick the destination instance on the same
-/// target; the result — native or handoff — follows from it.
-pub(crate) fn fork_menu_window(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, actions: &mut Vec<Action>) {
-    let p = app.p;
-    let providers = app.client.state.target(&key.target).map(|t| t.providers.clone()).unwrap_or_default();
-    let source = app.client.state.provider_of(key).cloned();
-    let mut close = false;
-    egui::Window::new("Fork this thread")
-        .title_bar(false)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .frame(egui::Frame::popup(ui.style()).fill(p.raised).inner_margin(Margin::same(16)))
-        .show(ui.ctx(), |ui| {
-            ui.set_width(380.0);
-            ui.label(egui::RichText::new("Fork this thread").font(theme::bold(size::SECTION + 1.0)));
-            ui.add_space(6.0);
-            ui.label(widgets::secondary("Continue with", &p));
-            for d in &providers {
-                let native = source.as_ref().is_some_and(|s| s.store.same_store(&d.store)) && d.capabilities.contains(&yaac_protocol::Capability::ThreadFork);
-                let model = d.models.iter().find(|m| m.is_default).map_or(String::new(), |m| m.display_name.clone());
-                let label = format!("{} · {model}   {}", d.display_name, if native { "native" } else { "handoff" });
-                if d.status != yaac_protocol::ProviderStatus::Ready {
-                    widgets::unavailable(ui, &p, &d.display_name, &yaac_core::controls::unavailable_reason(d, key.target.as_str()).unwrap_or_default());
-                } else if ui.selectable_label(false, label).clicked() {
-                    actions.push(Action::Fork(key.clone(), d.instance.clone()));
-                    close = true;
-                }
-            }
-            ui.add_space(6.0);
-            ui.label(widgets::secondary("Native fork is only available within the same provider and store. The full dialog with a preview comes in a later package.", &p));
-            if widgets::plain(ui, &p, "Cancel", Some("Esc")).clicked() {
-                close = true;
-            }
-        });
-    if close {
-        app.ui.menu = None;
-    }
 }
 
 /// A new thread before its first message.
@@ -402,8 +384,12 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
     let target_name = app.client.state.target_name(&d.target);
     egui::Panel::top("draft-header").show_separator_line(false).frame(egui::Frame::NONE.inner_margin(Margin { left: 28, right: 28, top: 14, bottom: 6 })).show(ui, |ui| {
         ui.label(egui::RichText::new("New thread").font(theme::bold(size::TITLE)));
-        let folder = d.cwd.as_ref().map_or(String::new(), ToString::to_string);
-        ui.label(widgets::secondary(format!("{target_name} · {folder}"), &p));
+        let project = d.project.as_ref().and_then(|pid| app.client.state.projects.iter().find(|x| &x.id == pid)).map(|x| x.name.clone());
+        let crumb = match project {
+            Some(name) => format!("{target_name} · {name}"),
+            None => format!("{target_name} · {}", d.cwd.as_ref().map_or_else(|| "no project yet".to_owned(), ToString::to_string)),
+        };
+        ui.label(widgets::secondary(crumb, &p));
     });
     egui::Panel::bottom("draft-composer").show_separator_line(false).frame(egui::Frame::NONE.inner_margin(Margin { left: 28, right: 28, top: 6, bottom: 10 })).show(ui, |ui| {
         // One selector: the project (a new thread starts in the root of its folder).
@@ -417,28 +403,26 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
             app.ui.toggle_menu(Menu::Project);
         }
         let mut open = app.ui.menu == Some(Menu::Project);
-        let mut machines: Vec<(yaac_protocol::TargetId, String)> = Vec::new();
-        for t in app.client.state.targets.iter().filter(|t| t.connected()) {
-            machines.push((t.entry.id.clone(), t.entry.name.to_string()));
-        }
-        let projects = app.client.state.projects.clone();
+        let groups = yaac_core::first_run::project_picker(&app.client.state, d.project.as_deref());
         let mut new_project = false;
         egui::Popup::from_response(&r).kind(egui::PopupKind::Menu).align(egui::RectAlign::TOP_START).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
-            ui.set_min_width(220.0);
-            for (tid, name) in &machines {
-                let mine: Vec<_> = projects.iter().filter(|x| &x.target == tid).collect();
-                if mine.is_empty() {
-                    continue;
-                }
-                ui.label(widgets::secondary(name, &p));
-                for x in mine {
-                    if ui.selectable_label(d.project.as_ref() == Some(&x.id), format!("{}   {}", x.name, x.folder)).clicked() {
+            ui.set_min_width(280.0);
+            for g in &groups {
+                ui.horizontal(|ui| {
+                    ui.label(widgets::secondary(&g.name, &p));
+                    if let Some(n) = &g.note {
+                        ui.label(widgets::secondary(format!("· {n}"), &p));
+                    }
+                });
+                for x in &g.projects {
+                    let r = ui.selectable_label(x.selected, &x.name).on_hover_text(&x.folder);
+                    if r.clicked() {
                         actions.push(Action::DraftProject(id, x.id.clone()));
                     }
                 }
+                ui.add_space(4.0);
             }
-            ui.add_space(4.0);
-            if ui.button("New project…").clicked() {
+            if ui.selectable_label(false, "New project…").clicked() {
                 new_project = true;
             }
         });
@@ -467,7 +451,7 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
                 ui.vertical(|ui| {
                     ui.set_width(ui.available_width() - 96.0);
                     if let Some(dd) = app.client.state.new_threads.iter_mut().find(|x| x.id == id) {
-                        send = text_box(ui, &mut dd.draft.text, eid, &format!("Message {name}…"), &p, &mut app.ui.ime_composing, true, &mut app.ui.focus_composer);
+                        send = text_box(ui, &mut dd.draft.text, eid, &format!("Message {name}…"), &p, &mut app.ui.ime_composing, true, &mut app.ui.focus_composer, app.ui.send_key);
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

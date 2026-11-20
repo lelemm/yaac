@@ -303,6 +303,15 @@ catalogue! {
         /// Delete a thread (under `threadDelete`).
         ThreadDelete = "thread/delete" as THREAD_DELETE:
             t::ThreadDeleteParams => t::Empty, HostToDaemon, request Control, response Control, op;
+        /// Set YAAC's own flags and settings of a thread (mute, pin, agents policy). A patch.
+        ThreadUpdate = "thread/update" as THREAD_UPDATE:
+            t::ThreadUpdateParams => t::ThreadUpdateResult, HostToDaemon, request Control, response Control, op;
+        /// Create a new thread from an existing one without a first message.
+        ThreadForkOnly = "thread/forkOnly" as THREAD_FORK_ONLY:
+            t::ThreadForkOnlyParams => t::ThreadForkOnlyResult, HostToDaemon, request Control, response Control, op;
+        /// A byte range of one item's full output (a tool call's output beyond its inline head).
+        ItemRead = "item/read" as ITEM_READ:
+            t::ItemReadParams => t::ItemReadResult, HostToDaemon, request Control, response Bulk;
 
         // ── Turns ──────────────────────────────────────────────────────────────────────
         /// Send a user message to an existing thread.
@@ -340,6 +349,20 @@ catalogue! {
         ProjectResolve = "project/resolve" as PROJECT_RESOLVE:
             t::ProjectResolveParams => t::ProjectResolveResult, HostToDaemon, request Control, response Control;
 
+        // ── Projects ───────────────────────────────────────────────────────────────────
+        /// The projects the user created on this target.
+        ProjectList = "project/list" as PROJECT_LIST:
+            t::ProjectListParams => t::ProjectListResult, HostToDaemon, request Control, response Control;
+        /// Create a project: a folder and a name. Moves every thread inside it under it.
+        ProjectCreate = "project/create" as PROJECT_CREATE:
+            t::ProjectCreateParams => t::ProjectResult, HostToDaemon, request Control, response Control, op;
+        /// Rename a project.
+        ProjectRename = "project/rename" as PROJECT_RENAME:
+            t::ProjectRenameParams => t::ProjectResult, HostToDaemon, request Control, response Control, op;
+        /// Delete a project; its folder and threads are untouched.
+        ProjectDelete = "project/delete" as PROJECT_DELETE:
+            t::ProjectDeleteParams => t::Empty, HostToDaemon, request Control, response Control, op;
+
         // ── Agent mesh ─────────────────────────────────────────────────────────────────
         /// Target → hub: carry a message to another target; answered once durably queued.
         MeshRelay = "mesh/relay" as MESH_RELAY:
@@ -362,6 +385,9 @@ catalogue! {
         /// Read or continue an orchestration's budget.
         MeshBudgetMethod = "mesh/budget" as MESH_BUDGET:
             t::MeshBudgetParams => t::MeshBudgetResult, HostToDaemon, request Control, response Control, op;
+        /// Target → hub → the root's target: spending counted against a root on another target.
+        MeshUsage = "mesh/usage" as MESH_USAGE:
+            t::MeshUsageParams => t::MeshUsageResult, Both, request Control, response Control;
     }
     notifications {
         /// An instance's descriptor changed.
@@ -376,6 +402,9 @@ catalogue! {
         /// One journaled thread event.
         ThreadEvent = "thread/event" as THREAD_EVENT:
             t::ThreadEventParams, DaemonToHost, Control;
+        /// The project list changed (created, renamed, deleted); carries every project.
+        ProjectUpdated = "project/updated" as PROJECT_UPDATED:
+            t::ProjectListResult, DaemonToHost, Control;
         /// The receiver of a data stream grants more credit.
         StreamCredit = "stream/credit" as STREAM_CREDIT:
             t::StreamCreditParams, Both, Control;

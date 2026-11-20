@@ -4096,7 +4096,9 @@ dependencies = [
  "png 0.17.16",
  "pulldown-cmark",
  "serde_json",
+ "tempfile",
  "yaac-core",
+ "yaac-hub",
  "yaac-protocol",
 ]
 

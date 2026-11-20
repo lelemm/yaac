@@ -644,3 +644,34 @@ pub struct MeshBudgetResult {
     /// Whether it has run out (messages are stored but not dispatched).
     pub exhausted: bool,
 }
+
+/// `mesh/usage` (target → hub → the root's target): what this target has spent against an
+/// orchestration root that lives on another target. Counts are **cumulative** for this target
+/// and root, so a repeated or reordered report is harmless: the root's target keeps the
+/// highest count it has seen from each target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshUsageParams {
+    /// The orchestration root; its target owns the budget.
+    pub root: Address,
+    /// The reporting target. Checked by the hub against the connection it arrived on.
+    pub source: TargetId,
+    /// Agent-started turns on the reporting target against this root, in total.
+    #[serde(default)]
+    pub agent_turns: u32,
+    /// Threads spawned on the reporting target against this root, in total.
+    #[serde(default)]
+    pub threads_spawned: u32,
+}
+
+/// `mesh/usage` result, from the root's target.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshUsageResult {
+    /// The root's budget has run out: dispatch nothing more for it until it is continued.
+    #[serde(default)]
+    pub exhausted: bool,
+    /// The root's usage across all targets, when the root's target reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<MeshBudgetUsage>,
+}

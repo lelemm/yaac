@@ -194,3 +194,133 @@ pub(crate) fn selector_pair(ui: &mut Ui, p: &Palette, left: &str, right: &str, e
     }
     resp
 }
+
+/// A switch: a filled track (the accent when on) and a knob. No outline.
+pub(crate) fn switch(ui: &mut Ui, p: &Palette, on: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(32.0, 18.0), Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let off_fill = if p.dark { Color32::from_rgb(0x3A, 0x40, 0x4C) } else { Color32::from_rgb(0xC9, 0xCE, 0xD6) };
+    let track = if on { p.accent } else { off_fill };
+    ui.painter().rect_filled(rect, 9.0, track);
+    let x = if on { rect.right() - 9.0 } else { rect.left() + 9.0 };
+    let knob = if on { p.on_accent } else { p.bg };
+    ui.painter().circle_filled(pos2(x, rect.center().y), 6.5, knob);
+    if resp.has_focus() {
+        focus_ring(ui, rect, p);
+    }
+    resp
+}
+
+/// A single-line input: a faint fill, no outline; the focused one gets the focus ring.
+pub(crate) fn field(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, width: f32, mono: bool) -> Response {
+    let mut te = egui::TextEdit::singleline(text)
+        .hint_text(hint)
+        .frame(egui::Frame::NONE.fill(p.faint).corner_radius(5).inner_margin(egui::Margin::symmetric(8, 5)))
+        .desired_width(width);
+    if mono {
+        te = te.font(theme::mono(size::MONO));
+    }
+    let r = ui.add(te);
+    if r.has_focus() {
+        focus_ring(ui, r.rect, p);
+    }
+    r
+}
+
+/// A password field that never hands the text to egui: typed characters go straight into the
+/// dialog's zeroised [`yaac_core::ssh_setup::Secret`]. (egui's own text box keeps copies of
+/// its text in its undo history, so it is not used for secrets.) Shown masked unless `show`;
+/// shown text is drawn one glyph at a time so no layout cache holds the whole secret.
+pub(crate) fn secret_field(ui: &mut Ui, p: &Palette, secret: &mut yaac_core::ssh_setup::Secret, show: bool, width: f32, id: egui::Id) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
+    let resp = resp.on_hover_cursor(egui::CursorIcon::Text);
+    if resp.clicked() {
+        ui.memory_mut(|m| m.request_focus(id));
+    }
+    ui.memory_mut(|m| m.interested_in_focus(id, rect));
+    let focused = ui.memory(|m| m.has_focus(id));
+    if focused {
+        ui.input(|i| {
+            for e in &i.events {
+                match e {
+                    egui::Event::Text(t) | egui::Event::Paste(t) => {
+                        for c in t.chars().filter(|c| !c.is_control()) {
+                            secret.push(c);
+                        }
+                    }
+                    egui::Event::Key { key: egui::Key::Backspace, pressed: true, .. } => secret.pop(),
+                    _ => {}
+                }
+            }
+        });
+    }
+    ui.painter().rect_filled(rect, 5.0, p.faint);
+    let font = theme::ui(size::UI);
+    let mut x = rect.left() + 8.0;
+    let cy = rect.center().y;
+    if secret.is_empty() && !focused {
+        let g = ui.fonts_mut(|f| f.layout_no_wrap("Password".to_owned(), font.clone(), p.text2));
+        ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, p.text2);
+    } else if show {
+        for c in secret.expose().chars() {
+            let g = ui.fonts_mut(|f| f.layout_no_wrap(c.to_string(), font.clone(), p.text));
+            let w = g.size().x;
+            ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
+            x += w;
+        }
+    } else {
+        for _ in 0..secret.chars() {
+            ui.painter().circle_filled(pos2(x + 4.0, cy), 3.0, p.text);
+            x += 10.0;
+        }
+    }
+    if focused {
+        ui.painter().line_segment([pos2(x + 2.0, cy - 8.0), pos2(x + 2.0, cy + 8.0)], Stroke::new(1.5, p.accent));
+        focus_ring(ui, rect, p);
+    }
+    resp
+}
+
+/// A quiet section heading inside a page: space above, small bold text, no rule.
+pub(crate) fn heading(ui: &mut Ui, text: &str) {
+    ui.add_space(18.0);
+    ui.label(egui::RichText::new(text).font(theme::bold(size::SECTION)));
+    ui.add_space(6.0);
+}
+
+/// Text with `inline code` in backticks drawn in monospace (a status message from a target).
+pub(crate) fn rich_inline(ui: &mut Ui, p: &Palette, text: &str, color: Color32, font_size: f32) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (i, part) in text.split('`').enumerate() {
+            if part.is_empty() {
+                continue;
+            }
+            let rt = if i % 2 == 1 {
+                egui::RichText::new(part).font(theme::mono(font_size - 0.5)).color(color).background_color(p.faint)
+            } else {
+                egui::RichText::new(part).font(theme::ui(font_size)).color(color)
+            };
+            ui.label(rt);
+        }
+    });
+}
+
+/// A selector whose value removes a safety net (a mode that bypasses approvals): drawn in the
+/// failed colour with a warning icon.
+pub(crate) fn selector_warn(ui: &mut Ui, p: &Palette, label: &str) -> Response {
+    let font = theme::ui(size::UI);
+    let tw = text_size(ui, label, &font);
+    let (rect, resp) = ui.allocate_exact_size(vec2(tw.x + 18.0 + 14.0 + 10.0, 26.0), Sense::click());
+    if resp.hovered() || resp.has_focus() {
+        ui.painter().rect_filled(rect, 5.0, p.faint);
+    }
+    icons::warning(ui.painter(), pos2(rect.left() + 12.0, rect.center().y), 14.0, p.failed, p.bg);
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font, p.failed));
+    ui.painter().galley(pos2(rect.left() + 23.0, rect.center().y - g.size().y / 2.0), g, p.failed);
+    icons::chevron(ui.painter(), pos2(rect.right() - 11.0, rect.center().y + 1.0), 12.0, true, p.failed);
+    if resp.has_focus() {
+        focus_ring(ui, rect, p);
+    }
+    resp
+}

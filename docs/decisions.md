@@ -78,6 +78,8 @@ All dated entries are from 2026-11-20.
 | D65 | A thread created from YAAC starts in the **root of its project's folder**. | Owner |
 | D66 | **Sidebar rows are more informative: more than one line**, with room for the **git branch** and, very compactly, **how many files differ from origin** for that branch. | Owner |
 | D68 | The git changes in a sidebar row use **real icons, not Unicode characters**, and the **usual git colours** (green, red, …). | Owner |
+| D73 | **If the hub is unavailable for any reason, threads on the same target can still communicate** — their daemon is local. | Owner |
+| D72 | **When it cannot be told whether a thread is in use elsewhere, YAAC takes it over.** Only positive evidence makes a thread read-only. A terminal that has merely opened a thread YAAC holds going undetected until it acts is acceptable. *(Supersedes the "when unsure, treat as in use" half of P14, and limits D36 to harnesses that can report an idle holder.)* | Owner |
 | D71 | A mode that **bypasses all permission checks is offered, behind a confirmation dialog**. | Owner |
 | D70 | **Every icon in the app comes from one embedded icon set**, never from Unicode symbols. The **git colours are softer than the state colours**, because green, yellow, and red already mean done, needs-you, and failed for an agent's state. | Owner (agreed) |
 | D69 | **Links are the accent colour with no underline.** Blue underlined links are ugly. | Owner |

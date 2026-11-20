@@ -21,6 +21,13 @@ pub struct TextPart {
 pub struct ImagePart {
     /// The upload, on this target.
     pub upload_id: UploadId,
+    /// The file's name, as uploaded (sanitised). Filled in by `yaacd` when it journals the
+    /// message; a client need not send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The media type `yaacd` recorded for the upload. Filled in like `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
 }
 
 /// An upload referenced by its path on the target; the agent reads it with its own tools.
@@ -29,6 +36,13 @@ pub struct ImagePart {
 pub struct FilePart {
     /// The upload, on this target.
     pub upload_id: UploadId,
+    /// The file's name, as uploaded (sanitised). Filled in by `yaacd` when it journals the
+    /// message; a client need not send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The media type `yaacd` recorded for the upload. Filled in like `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
 }
 
 open_union! {

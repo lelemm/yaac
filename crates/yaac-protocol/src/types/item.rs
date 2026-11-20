@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::{
     Address, ForkKind, InputPart, ItemId, MeshMessage, ModelId, Receipt, RequestBody, RequestId,
-    RequestResolution, RequestState, TargetPath, ThreadId, ThreadState, TurnId,
+    RequestResolution, RequestState, TargetPath, ThreadId, ThreadState, Timestamp, TurnId,
 };
 use crate::macros::{open_enum, open_union};
 
@@ -174,6 +174,8 @@ open_enum! {
         MeshLimit = "meshLimit",
         /// A worker spawned beneath this thread needs attention.
         WorkerNeedsAttention = "workerNeedsAttention",
+        /// A message this thread sent has waited undelivered past the limit. Passive.
+        Undelivered = "undelivered",
     }
 }
 
@@ -345,6 +347,12 @@ pub struct Item {
     pub turn_id: TurnId,
     /// Its status.
     pub status: ItemStatus,
+    /// When it appeared, as `yaacd` (or the harness) recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<Timestamp>,
+    /// When it reached a final state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<Timestamp>,
     /// `kind` and the kind-specific fields.
     #[serde(flatten)]
     pub body: ItemBody,

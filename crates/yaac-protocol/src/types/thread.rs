@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Address, Capability, EffortId, EffortInfo, InputPart, InstanceId, ModeId, ModeInfo, ModelId, OpId,
-    Support, SyncToken, TargetPath, ThreadId, Timestamp, TurnId,
+    ProjectId, Support, SyncToken, TargetPath, ThreadId, Timestamp, TurnId,
 };
 use crate::macros::open_enum;
 
@@ -21,7 +21,98 @@ open_enum! {
         NeedsAttention = "needsAttention",
         /// The last turn failed.
         Failed = "failed",
+        /// Blocked on another agent: a `wait` on other threads is in progress.
+        Waiting = "waiting",
+        /// A thread started by an agent whose last turn completed normally: its work is done.
+        Done = "done",
     }
+}
+
+open_enum! {
+    /// Whether a chat's agent may start and message other threads without asking
+    /// (docs/10-agent-mesh.md#permission-a-toggle-in-the-chat). A new chat starts on `ask`.
+    pub enum AgentsPolicy fallback Unknown {
+        /// The first such action in an orchestration raises a `meshPermission` request.
+        Ask = "ask",
+        /// No prompt; the orchestration runs within the default budget.
+        Allow = "allow",
+    }
+}
+
+impl Default for AgentsPolicy {
+    fn default() -> Self {
+        AgentsPolicy::Ask
+    }
+}
+
+impl AgentsPolicy {
+    /// Whether agents may act without asking. A value this build does not know counts as
+    /// `ask`: when unsure, ask.
+    pub fn allows(&self) -> bool {
+        matches!(self, AgentsPolicy::Allow)
+    }
+}
+
+open_enum! {
+    /// What a [`ProjectRef`] names.
+    pub enum ProjectKind fallback Unknown {
+        /// A project the user created: `id` names it.
+        User = "user",
+        /// A folder with discovered threads but no project yet; named after the folder.
+        Temporary = "temporary",
+    }
+}
+
+/// Where a folder sits inside a git repository (docs/05-threads.md#worktrees-that-live-somewhere-else).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoLocation {
+    /// The repository: its shared (common) git directory. Equal for every checkout of it.
+    pub repo: TargetPath,
+    /// The folder relative to its checkout's root, `/`-separated: `.` for the root itself.
+    pub relative: String,
+    /// The checkout's root (the worktree's top-level directory).
+    pub root: TargetPath,
+    /// The checkout's name when it is not the repository's main checkout (`feature-x`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_name: Option<String>,
+}
+
+/// How a thread's checkout differs from origin (docs/07-ui.md#sidebar). Computed once per
+/// checkout on the target, not per thread.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatus {
+    /// The checked-out branch; absent on a detached head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// What it is compared with: the branch's upstream, or the remote's default branch when it
+    /// has no upstream. Absent when there is nothing to compare with (then only uncommitted
+    /// changes are counted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// Files added relative to the base, uncommitted changes included.
+    #[serde(default)]
+    pub added: u32,
+    /// Files modified relative to the base, uncommitted changes included.
+    #[serde(default)]
+    pub modified: u32,
+    /// Files deleted relative to the base, uncommitted changes included.
+    #[serde(default)]
+    pub deleted: u32,
+    /// Commits not pushed.
+    #[serde(default)]
+    pub ahead: u32,
+    /// Commits not pulled.
+    #[serde(default)]
+    pub behind: u32,
+    /// The checkout no longer exists on disk (a deleted worktree); the other fields are the
+    /// last ones known.
+    #[serde(default)]
+    pub removed: bool,
+    /// When this was computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Timestamp>,
 }
 
 open_enum! {
@@ -58,19 +149,33 @@ open_enum! {
     }
 }
 
-/// The repository a thread's working directory belongs to.
+/// The project a thread belongs to.
+///
+/// With `kind` present (every `ThreadSummary` from a current `yaacd`), this is a project the
+/// user created (`user`, with its `id`) or a temporary one (`temporary`); `path` is then the
+/// project's folder and `displayName` its name — the user's, or the folder path for a
+/// temporary project. Without `kind` (`project/resolve`) it is a git identity: `path` is the
+/// git common directory, or the directory itself when there is no git.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectRef {
-    /// Identifies the project on its target: the git common directory, or the working
-    /// directory itself when there is no git.
+    /// The project's folder (or the git identity; see above).
     pub path: TargetPath,
-    /// The repository directory name, for display.
+    /// The name to show.
     pub display_name: String,
     /// Normalised `origin` remote URL. Two projects with the same key on different targets are
     /// the same project. Absent: never merged across targets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cross_target_key: Option<String>,
+    /// A user project or a temporary one. Absent: a git identity (`project/resolve`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ProjectKind>,
+    /// The user project, for `kind: user`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<ProjectId>,
+    /// Where the project's folder sits in a git repository, when it is in one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<RepoLocation>,
 }
 
 /// The git worktree containing a working directory.
@@ -105,6 +210,12 @@ pub struct ThreadSummary {
     /// Resolved worktree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<WorktreeRef>,
+    /// Where the working directory sits in a git repository; absent outside git.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<RepoLocation>,
+    /// How the thread's checkout differs from origin; absent outside git or not yet known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitStatus>,
     /// Branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
@@ -146,6 +257,16 @@ pub struct ThreadSummary {
     /// Archived.
     #[serde(default)]
     pub archived: bool,
+    /// Muted: out of the main list, still working. Stored on the target.
+    #[serde(default)]
+    pub muted: bool,
+    /// Pinned: listed in the Pinned section. Stored on the target.
+    #[serde(default)]
+    pub pinned: bool,
+    /// This chat's agents policy. Meaningful on a root thread; workers act under their
+    /// root's answer.
+    #[serde(default)]
+    pub agents: AgentsPolicy,
 }
 
 /// The model / effort / mode the harness reports it is **actually** using.
@@ -255,8 +376,15 @@ pub struct ThreadStartParams {
     pub op_id: OpId,
     /// The provider instance. Fixed for the life of the thread.
     pub instance: InstanceId,
-    /// Working directory.
+    /// Working directory. With `project`, it must be empty or that project's folder: the
+    /// thread starts in the root of the project's folder.
     pub cwd: TargetPath,
+    /// The project the thread is started in (docs/05-threads.md#projects).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectId>,
+    /// The chat's agents policy from its first message; `ask` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<AgentsPolicy>,
     /// Model; the harness default when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelId>,
@@ -331,6 +459,41 @@ pub struct ThreadForkResult {
     pub fork_kind: ForkKind,
 }
 
+/// `thread/forkOnly`: create a new thread from an existing one **without** a first message.
+/// The new thread is idle; its first message goes with `turn/start`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadForkOnlyParams {
+    /// Operation id.
+    pub op_id: OpId,
+    /// The thread to fork from. Not modified; may be in use elsewhere.
+    pub source: ThreadId,
+    /// Destination instance, on the same target.
+    pub instance: InstanceId,
+    /// Model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelId>,
+    /// Effort.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<EffortId>,
+    /// Mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ModeId>,
+    /// Fork after this turn, as in `thread/fork`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_turn: Option<TurnId>,
+}
+
+/// `thread/forkOnly` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadForkOnlyResult {
+    /// The new thread.
+    pub thread_id: ThreadId,
+    /// The mechanism used.
+    pub fork_kind: ForkKind,
+}
+
 /// `thread/forkPreview`: what a fork would send and where, for the confirmation dialog.
 /// Changes nothing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -396,6 +559,34 @@ pub struct ThreadArchiveParams {
     pub op_id: OpId,
     /// The thread.
     pub thread_id: ThreadId,
+}
+
+/// `thread/update`: YAAC's own flags and settings of a thread — not the harness's. A patch:
+/// absent fields are unchanged. Stored on the target; the change is pushed as `thread/updated`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadUpdateParams {
+    /// Operation id.
+    pub op_id: OpId,
+    /// The thread.
+    pub thread_id: ThreadId,
+    /// Mute or unmute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted: Option<bool>,
+    /// Pin or unpin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
+    /// The chat's agents policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents: Option<AgentsPolicy>,
+}
+
+/// `thread/update` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadUpdateResult {
+    /// The summary after the change.
+    pub thread: ThreadSummary,
 }
 
 /// `thread/delete` (under `threadDelete`).

@@ -314,3 +314,37 @@ pub(crate) fn arrow_left(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke(col, w));
     p.line(vec![pos2(c.x - s * 0.2, c.y - s * 0.7), pos2(c.x - s, c.y), pos2(c.x - s * 0.2, c.y + s * 0.7)], stroke(col, w));
 }
+
+/// A pencil: a draft that has not been sent.
+pub(crate) fn pencil(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let s = d * 0.38;
+    let tip = pos2(c.x - s, c.y + s);
+    let end = pos2(c.x + s, c.y - s);
+    let neck = pos2(c.x - s * 0.55, c.y + s * 0.55);
+    let w = (d * 0.11).max(1.3);
+    p.line_segment([neck, end], stroke(col, w * 2.2));
+    p.add(Shape::convex_polygon(vec![tip, pos2(neck.x - w, neck.y - w), pos2(neck.x + w, neck.y + w)], col, Stroke::NONE));
+}
+
+/// Three lines: the thread list.
+pub(crate) fn list(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = d * 0.36;
+    for i in -1..=1 {
+        let y = c.y + i as f32 * d * 0.24;
+        p.line_segment([pos2(c.x - w, y), pos2(c.x + w, y)], stroke(col, (d * 0.1).max(1.3)));
+    }
+}
+
+/// A fork: one stem splitting in two.
+pub(crate) fn fork(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let s = d * 0.36;
+    let w = (d * 0.09).max(1.2);
+    let base = pos2(c.x, c.y + s);
+    let mid = pos2(c.x, c.y);
+    p.line_segment([base, mid], stroke(col, w));
+    p.line_segment([mid, pos2(c.x - s * 0.8, c.y - s)], stroke(col, w));
+    p.line_segment([mid, pos2(c.x + s * 0.8, c.y - s)], stroke(col, w));
+    for q in [base, pos2(c.x - s * 0.8, c.y - s), pos2(c.x + s * 0.8, c.y - s)] {
+        p.circle_filled(q, w * 1.3, col);
+    }
+}

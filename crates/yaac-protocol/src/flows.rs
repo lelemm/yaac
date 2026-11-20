@@ -11,7 +11,7 @@ use crate::methods::names;
 use crate::rpc::{ErrorObject, RpcId};
 use crate::session::{ClientSession, SessionError};
 use crate::types::{
-    EffortId, InputPart, InstanceId, Item, JournalPosition, ModeId, ModelId, OpId, PageCursor, TargetPath,
+    AgentsPolicy, EffortId, InputPart, InstanceId, Item, JournalPosition, ModeId, ModelId, OpId, PageCursor, ProjectId, TargetPath,
     ThreadId, ThreadSubscribeResult, TurnId, UploadPresence,
 };
 
@@ -24,8 +24,12 @@ pub struct StartThread {
     pub op_id: OpId,
     /// Provider instance.
     pub instance: InstanceId,
-    /// Working directory.
+    /// Working directory (empty, or the project's folder, when `project` is given).
     pub cwd: TargetPath,
+    /// The project to start in; the thread starts in the root of its folder.
+    pub project: Option<ProjectId>,
+    /// The chat's agents policy; `ask` when absent.
+    pub agents: Option<AgentsPolicy>,
     /// Model.
     pub model: Option<ModelId>,
     /// Effort.

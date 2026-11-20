@@ -309,6 +309,8 @@ fn start_thread_flow() {
         op_id: OpId::new("op-start"),
         instance: InstanceId::new("pi_1"),
         cwd: TargetPath::new("/repo"),
+        project: None,
+        agents: None,
         model: Some(ModelId::new("fake-model")),
         effort: None,
         mode: None,

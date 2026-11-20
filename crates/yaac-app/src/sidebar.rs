@@ -385,8 +385,7 @@ fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, 
                     app.ui.rename = Some((row.key.clone(), row.title.clone()));
                 }
                 if ui.button("Fork").clicked() {
-                    actions.push(Action::Open(row.key.clone()));
-                    app.ui.menu = Some(Menu::Fork);
+                    actions.push(Action::OpenFork(row.key.clone()));
                 }
             });
         if !open && app.ui.menu == Some(Menu::Context(row.key.clone())) {

@@ -28,7 +28,7 @@ fn input_parts_from_the_docs() {
         { "type": "file", "uploadId": "u_01K" }
     ]));
     assert_eq!(parts[0], InputPart::text("Why does this test fail?"));
-    assert!(matches!(&parts[1], InputPart::Image(ImagePart { upload_id }) if upload_id.as_str() == "u_01J"));
+    assert!(matches!(&parts[1], InputPart::Image(ImagePart { upload_id, .. }) if upload_id.as_str() == "u_01J"));
 }
 
 #[test]

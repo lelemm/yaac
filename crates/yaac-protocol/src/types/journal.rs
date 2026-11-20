@@ -4,7 +4,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Control, Epoch, Item, JournalPosition, PageCursor, Seq, ThreadEffective, ThreadId, TurnId, UploadId};
+use super::{
+    ContextUsage, Control, Epoch, Item, ItemId, JournalPosition, PageCursor, Seq, ThreadEffective, ThreadId, TokenUsage, TurnId,
+    UploadId,
+};
 use crate::macros::open_union;
 
 /// `thread/subscribe`: start live events for a thread, replaying from a position.
@@ -72,6 +75,12 @@ pub struct ThreadSubscribeResult {
     /// The thread's effective capabilities and applied settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective: Option<ThreadEffective>,
+    /// How full the context window is now, when known (under `contextUsage`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextUsage>,
+    /// Cumulative token usage of the thread, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<TokenUsage>,
 }
 
 /// `thread/unsubscribe`.
@@ -132,4 +141,46 @@ pub struct ThreadReadResult {
     /// Presence of the attachments referenced by the items on this page.
     #[serde(default)]
     pub uploads: Vec<UploadPresence>,
+    /// Context window usage at the snapshot's position, when known. On the first page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ContextUsage>,
+}
+
+/// `item/read`: a byte range of one item's full output. A tool call's inline output is a
+/// bounded head (`outputTruncated`); the target keeps the rest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemReadParams {
+    /// The thread.
+    pub thread_id: ThreadId,
+    /// The item.
+    pub item_id: ItemId,
+    /// Byte offset into the full output.
+    #[serde(default)]
+    pub offset: u64,
+    /// Upper bound on bytes returned. The daemon may return fewer.
+    pub max_bytes: u64,
+}
+
+/// `item/read` result. Sent in the bulk class.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemReadResult {
+    /// Whether the full output is still on the target. When false, the other fields are empty.
+    pub present: bool,
+    /// The text, UTF-8. A range never splits a character: it may end a little early.
+    #[serde(default)]
+    pub data: String,
+    /// The offset `data` starts at.
+    #[serde(default)]
+    pub offset: u64,
+    /// The offset to ask for next.
+    #[serde(default)]
+    pub next_offset: u64,
+    /// Total size of the full output in bytes.
+    #[serde(default)]
+    pub total_bytes: u64,
+    /// Whether bytes remain after this range.
+    #[serde(default)]
+    pub more: bool,
 }

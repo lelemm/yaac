@@ -7,7 +7,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ClientId, OpId, QuestionId, RequestId, TargetPath, ThreadId, Timestamp};
+use super::{
+    Address, ClientId, InstanceId, MeshBudget, MeshPeer, ModelId, OpId, QuestionId, RequestId, TargetId, TargetPath, ThreadId,
+    Timestamp,
+};
 use crate::macros::{open_enum, open_union};
 
 open_enum! {
@@ -197,6 +200,71 @@ pub struct FormRequest {
     pub schema: Option<Value>,
 }
 
+open_enum! {
+    /// What an agent wants to do with other agents.
+    pub enum MeshActionKind fallback Unknown {
+        /// Start threads (on this or other targets).
+        StartThreads = "startThreads",
+        /// Message existing threads.
+        Message = "message",
+    }
+}
+
+/// One thread an agent wants to start, as far as it said.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshThreadPlan {
+    /// How many such threads.
+    #[serde(default)]
+    pub count: u32,
+    /// Provider instance on the destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<InstanceId>,
+    /// Provider display name ("Codex · work").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model, as the destination reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelId>,
+    /// Destination target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TargetId>,
+    /// Destination target's name, as the user named it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_name: Option<String>,
+}
+
+/// One action in a permission request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshPermissionAction {
+    /// What kind of action.
+    pub action: MeshActionKind,
+    /// One plain line to show as-is ("Start 3 threads: Claude on local, devbox, gpu-box").
+    pub summary: String,
+    /// For `startThreads`: what would be started.
+    #[serde(default)]
+    pub threads: Vec<MeshThreadPlan>,
+    /// For `message`: the recipients.
+    #[serde(default)]
+    pub recipients: Vec<MeshPeer>,
+}
+
+/// "This agent wants to work with other agents" (docs/10-agent-mesh.md#permission-a-toggle-in-the-chat):
+/// raised the first time an agent in an `ask` chat starts or messages another thread. The
+/// answer covers the rest of that orchestration, up to the budget.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshPermissionRequest {
+    /// What the agent wants to do.
+    pub actions: Vec<MeshPermissionAction>,
+    /// The budget it would work within; each field editable before answering.
+    pub budget: MeshBudget,
+    /// The orchestration root the answer applies to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<Address>,
+}
+
 open_union! {
     /// What a request asks for.
     pub enum RequestBody tag "requestKind" {
@@ -206,6 +274,8 @@ open_union! {
         Question(QuestionRequest) = "question",
         /// A schema-driven form.
         Form(FormRequest) = "form",
+        /// Permission to work with other agents, with the budget.
+        MeshPermission(MeshPermissionRequest) = "meshPermission",
     }
 }
 
@@ -252,6 +322,30 @@ pub struct FormAnswer {
     pub values: serde_json::Map<String, Value>,
 }
 
+open_enum! {
+    /// The answer to a permission request.
+    pub enum MeshPermissionDecision fallback Unknown {
+        /// Allowed, within the budget given with it.
+        Allow = "allow",
+        /// Denied: the agent gets an error it can read and carries on alone.
+        Deny = "deny",
+    }
+}
+
+/// Answer to a permission request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshPermissionAnswer {
+    /// Allow or deny.
+    pub decision: MeshPermissionDecision,
+    /// The budget as the user edited it; the proposed one when absent. Ignored with `deny`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<MeshBudget>,
+    /// Also switch this chat to `allow` (no further prompts in it). Only with `allow`.
+    #[serde(default)]
+    pub always_allow: bool,
+}
+
 open_union! {
     /// An answer to a request. Its `requestKind` matches the request's.
     pub enum RequestResponse tag "requestKind" {
@@ -261,6 +355,8 @@ open_union! {
         Question(QuestionAnswers) = "question",
         /// Answers a form.
         Form(FormAnswer) = "form",
+        /// Answers a permission request.
+        MeshPermission(MeshPermissionAnswer) = "meshPermission",
     }
 }
 

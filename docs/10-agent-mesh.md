@@ -57,6 +57,25 @@ Three properties make this trustworthy rather than merely possible:
 - **Visible.** Nothing agents say to each other is hidden. Every message is an item in both
   transcripts.
 
+## Without the hub
+
+**Decided: threads on the same target can always reach each other, whether or not the hub is
+available.** Their daemon is local to them; nothing about a same-target exchange leaves the
+machine. With the hub down, unreachable, or never started:
+
+| Still works, entirely inside `yaacd` | Waits for the hub |
+| --- | --- |
+| `send_message` to a thread on the same target, with delivery, waking, and receipts | `send_message` to another target — accepted, stored in the outbox, receipt "queued — the hub is not reachable" |
+| `spawn_thread` on the same target, on any provider instance and model there | `spawn_thread` on another target — fails at once with a readable reason; a spawn cannot be queued |
+| `wait`, `read_thread`, `stop_thread`, `notify_when_done` for same-target threads | the same tools for threads on other targets |
+| `whoami`, `list_threads` and `list_models` for this target | `list_targets`, and listings of other targets — answered from the last roster the hub sent, marked as possibly stale |
+| The permission prompt, limits, and budget for work on this target | Budget spent on other targets, reconciled when the hub returns |
+
+`yaacd` never asks the hub for permission to do something local, never routes a local message
+through it, and does not need the hub to have ever attached: before the first roster arrives it
+simply knows itself as "this target". The agent's tools say plainly which machine is out of
+reach, so an orchestrator can carry on with the workers it can still talk to.
+
 ## Addresses
 
 An agent is a thread. Its address has three parts, all immutable:
@@ -191,12 +210,14 @@ wrong moment would be spliced into whatever the agent was doing. YAAC therefore 
 the harness to queue. It dispatches only when both of these hold:
 
 1. the thread is **idle**, as far as the harness reports; and
-2. `yaacd` **holds the thread** — it is the writer, and nothing else has it open
+2. the thread is **not known to be in use elsewhere**
    ([in use elsewhere](05-threads.md#in-use-elsewhere)).
 
-If either cannot be shown, the message stays in the mailbox. A lock inside YAAC cannot keep out
-a terminal that YAAC does not control; only proven ownership can, and when ownership is unclear
-the answer is "queued", never "send and hope".
+If the thread is busy, or is known to be in use elsewhere, the message stays in the mailbox.
+A lock inside YAAC cannot keep out a terminal that YAAC does not control. Where there is
+positive evidence of another user the answer is "queued"; where `yaacd` merely cannot tell,
+it takes the thread ([decided](05-threads.md#detecting-it)) — a thread nobody is visibly
+using should not sit with mail it never receives.
 
 ### What happens to a message
 
