@@ -30,7 +30,22 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key
     Panel::bottom("thread-composer")
         .show_separator_line(false)
         .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 28, right: 28, top: 6, bottom: 10 }))
-        .show(ui, |ui| crate::composer::bottom(ui, app, map, key, actions));
+        .show(ui, |ui| match app.client.state.stopped_distro(&key.target) {
+            // A stopped WSL distro: the composer and control row give way to one line (D96).
+            Some(distro) => {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    widgets::icon(ui, 16.0, |pa, c, d| icons::warning(pa, c, d, p.needs, p.bg));
+                    ui.label(format!("{distro} is not running ·"));
+                    if widgets::link(ui, &p, "Start it", theme::ui(size::UI)).clicked() {
+                        actions.push(Action::Retry(key.target.clone()));
+                    }
+                });
+                ui.add_space(8.0);
+            }
+            None => crate::composer::bottom(ui, app, map, key, actions),
+        });
     egui::CentralPanel::no_frame().show(ui, |ui| transcript(ui, app, map, key, now, actions));
 }
 

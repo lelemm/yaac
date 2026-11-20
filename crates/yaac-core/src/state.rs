@@ -404,7 +404,20 @@ impl AppState {
 
     /// Whether this window may send, steer, and answer on a thread.
     pub fn may_act(&self, key: &ThreadKey) -> bool {
-        self.control(key).may_act()
+        self.control(key).may_act() && self.stopped_distro(&key.target).is_none()
+    }
+
+    /// A WSL distro that is down (D96): its name, while the target is a WSL connection that is
+    /// turned on but not connected. Its threads stay listed and readable from the cache, but
+    /// every state-changing action on them is unavailable until it is started again — which
+    /// asks the hub to connect (booting the distro); when the connection comes up the threads
+    /// are responsive again by themselves.
+    pub fn stopped_distro(&self, target: &TargetId) -> Option<String> {
+        let t = self.target(target)?;
+        match &t.entry.transport {
+            TargetTransport::Wsl(w) if t.entry.enabled && t.entry.state.status != ConnectionStatus::Connected => Some(w.distro.clone()),
+            _ => None,
+        }
     }
 
     /// The selected thread, when a thread is selected.

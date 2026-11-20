@@ -27,7 +27,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     ui.painter().rect_filled(full, 0.0, p.bg);
     let narrow = full.width() < NARROW;
     let selected = app.client.state.selected_thread().cloned();
-    let panel = selected.as_ref().and_then(|k| agents_panel(&app.client.state, map, k));
+    // No related agent known in the index: no panel (not an empty pill).
+    let panel = selected.as_ref().and_then(|k| agents_panel(&app.client.state, map, k)).filter(|p| p.all().next().is_some());
     let docked = panel.is_some() && app.ui.panel == PanelMode::Docked && !narrow;
     let side_w = if narrow { RAIL } else { 280.0 };
     let side = egui::Rect::from_min_max(full.min, egui::pos2(full.left() + side_w, full.bottom()));
@@ -406,12 +407,11 @@ fn wsl_notification(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Ac
                     ui.label(format!("WSL distro {distro} is not running."));
                 });
                 ui.add_space(8.0);
+                // One action (D96): starting it asks the hub to connect, which boots the distro.
+                // Turning the connection off lives only in Settings → Targets.
                 ui.horizontal(|ui| {
                     if widgets::plain(ui, &p, "Start it", None).clicked() {
                         actions.push(Action::Retry(id.clone()));
-                        app.ui.dismissed.insert(id.clone());
-                    }
-                    if widgets::plain(ui, &p, "Disable its threads", None).clicked() {
                         app.ui.dismissed.insert(id.clone());
                     }
                 });

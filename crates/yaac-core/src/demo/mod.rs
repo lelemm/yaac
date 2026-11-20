@@ -254,8 +254,16 @@ impl Inner {
                 let targets = self.fleet.targets.clone();
                 self.ready.push_back(result(id, json!({ "build": build, "targets": targets })));
             }
-            attach::names::SHUTDOWN | crate::client::hub_names::UI_STATE_SET | crate::client::hub_names::TARGETS_RECONNECT => {
+            attach::names::SHUTDOWN | crate::client::hub_names::UI_STATE_SET => {
                 self.ready.push_back(result(id, json!({})));
+            }
+            crate::client::hub_names::TARGETS_RECONNECT => {
+                self.ready.push_back(result(id, json!({})));
+                // Connecting to a stopped WSL distro boots it: the connection comes up.
+                let tid = params.get("id").and_then(Value::as_str).unwrap_or("").to_owned();
+                if self.fleet.targets.iter().any(|t| t.id.as_str() == tid && matches!(t.transport, attach::TargetTransport::Wsl(_))) {
+                    self.target_state(&tid, ConnectionStatus::Connected, None, Some(true), None);
+                }
             }
             crate::client::hub_names::CACHE_CLEAR => self.ready.push_back(result(id, json!({}))),
             // SEAM (D92): the hub's view preferences; see `client::hub_names::VIEW_GET`.
@@ -339,6 +347,13 @@ impl Inner {
                 {
                     t.enabled = e;
                     t.state.status = if e { ConnectionStatus::Connected } else { ConnectionStatus::Disabled };
+                }
+                // "Start it": connecting to a stopped WSL distro boots it.
+                let boot = target.as_ref().and_then(|tid| self.fleet.targets.iter().find(|t| &t.id == tid)).is_some_and(|t| {
+                    enabled == Some(true) && matches!(t.transport, attach::TargetTransport::Wsl(_)) && t.state.status != ConnectionStatus::Connected
+                });
+                if boot && let Some(t) = &target {
+                    self.target_state(t.as_str(), ConnectionStatus::Connected, None, Some(true), None);
                 }
                 let entry = self.fleet.targets.iter().find(|t| Some(&t.id) == target.as_ref()).cloned();
                 match entry {

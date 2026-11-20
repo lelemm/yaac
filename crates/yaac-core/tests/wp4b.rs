@@ -495,3 +495,24 @@ fn thought_has_a_duration_from_the_item_times() {
         .collect();
     assert!(lines.iter().any(|l| l.contains("Thought for 4s")), "{lines:?}");
 }
+
+#[test]
+fn a_stopped_wsl_distro_disables_its_threads_until_started() {
+    let (mut c, hub) = boot();
+    hub.play(yaac_core::demo::Scene::Notices);
+    settle(&mut c, &hub);
+    let wsl = yaac_protocol::TargetId::new("wsl-ubuntu");
+    assert_eq!(c.state.stopped_distro(&wsl).as_deref(), Some("Ubuntu"));
+    // A cached thread on the distro: listed and readable, but nothing that changes state.
+    let key = yaac_core::ThreadKey::new(wsl.clone(), yaac_protocol::ThreadId::new("t-wsl"));
+    let mut rec = c.state.threads[&threads::fix()].clone();
+    rec.summary.id = key.thread.clone();
+    c.state.threads.insert(key.clone(), rec);
+    assert!(!c.state.may_act(&key));
+    assert!(c.state.may_act(&threads::fix()), "other machines are not affected");
+    // Start it: the hub connects (booting the distro); the threads come back by themselves.
+    c.retry_target(&wsl);
+    settle(&mut c, &hub);
+    assert_eq!(c.state.stopped_distro(&wsl), None);
+    assert!(c.state.may_act(&key));
+}

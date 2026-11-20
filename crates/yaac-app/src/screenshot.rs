@@ -51,6 +51,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("31", "history-list"),
     ("32", "ssh-form"),
     ("33", "mute-dialog"),
+    ("34", "wsl-stopped"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -386,6 +387,24 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.ui.focus_card = None;
             app.ui.menu = Some(Menu::Mode);
             app.client.choose_mode(ModeTarget::Thread(fix), "bypass".into());
+        }
+        "34" => {
+            // A thread on a stopped WSL distro (D96): readable from the cache; the composer and
+            // control row give way to one line with Start it.
+            play(app, Scene::Notices);
+            let wsl = yaac_protocol::TargetId::new("wsl-ubuntu");
+            let key = yaac_core::ThreadKey::new(wsl, yaac_protocol::ThreadId::new("t-wsl-build"));
+            let hs = threads::notes();
+            app.open(&hs, None);
+            if let Some(mut rec) = app.client.state.threads.get(&hs).cloned() {
+                rec.summary.id = key.thread.clone();
+                rec.summary.title = "Port the build script".into();
+                app.client.state.threads.insert(key.clone(), rec);
+            }
+            if let Some(t) = app.client.state.transcripts.get(&hs).cloned() {
+                app.client.state.transcripts.insert(key.clone(), t);
+            }
+            app.client.state.selection = yaac_core::state::Selection::Thread(key);
         }
         "33" => {
             // Mute, with "For 2 hours" chosen: the moment it ends shows beneath, in local time.
