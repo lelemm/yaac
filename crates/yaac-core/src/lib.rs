@@ -46,6 +46,7 @@ pub mod sidebar;
 pub mod permission;
 pub mod projects;
 pub mod state;
+pub mod strip;
 pub mod time;
 pub mod transcript;
 

@@ -313,14 +313,6 @@ pub(crate) fn pencil(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.add(Shape::convex_polygon(vec![tip, pos2(neck.x - w, neck.y - w), pos2(neck.x + w, neck.y + w)], col, Stroke::NONE));
 }
 
-/// Three lines: the thread list.
-pub(crate) fn list(p: &Painter, c: Pos2, d: f32, col: Color32) {
-    let w = d * 0.36;
-    for i in -1..=1 {
-        let y = c.y + i as f32 * d * 0.24;
-        p.line_segment([pos2(c.x - w, y), pos2(c.x + w, y)], stroke(col, (d * 0.1).max(1.3)));
-    }
-}
 
 /// A fork: one stem splitting in two.
 pub(crate) fn fork(p: &Painter, c: Pos2, d: f32, col: Color32) {
@@ -359,4 +351,21 @@ pub(crate) fn nav(p: &Painter, c: Pos2, d: f32, forward: bool, col: Color32) {
     let s = d * 0.22;
     let dir = if forward { 1.0 } else { -1.0 };
     p.line(vec![pos2(c.x - s * dir * 0.6, c.y - s * 1.4), pos2(c.x + s * dir * 0.8, c.y), pos2(c.x - s * dir * 0.6, c.y + s * 1.4)], stroke(col, w));
+}
+
+/// Plus: a new thread.
+pub(crate) fn plus(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.1).max(1.4);
+    let s = d * 0.34;
+    p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke(col, w));
+    p.line_segment([pos2(c.x, c.y - s), pos2(c.x, c.y + s)], stroke(col, w));
+}
+
+/// The sidebar toggle: a frame with a narrow left column.
+pub(crate) fn sidebar(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.08).max(1.2);
+    let r = Rect::from_center_size(c, vec2(d * 0.8, d * 0.66));
+    p.rect_stroke(r, 2.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
+    let x = r.left() + r.width() * 0.34;
+    p.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], stroke(col, w));
 }

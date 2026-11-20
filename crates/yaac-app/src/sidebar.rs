@@ -31,6 +31,15 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             ui.add_space(6.0);
             crate::nav::buttons(ui, app, actions, false);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Collapse to the strip (Ctrl+B).
+                let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
+                if resp.hovered() || resp.has_focus() {
+                    ui.painter().rect_filled(r, 5.0, p.faint);
+                }
+                icons::sidebar(ui.painter(), r.center(), 16.0, p.text2);
+                if resp.on_hover_text("Collapse the sidebar (Ctrl+B)").clicked() {
+                    app.ui.sidebar.toggle();
+                }
                 if widgets::plain(ui, &p, "New", None).on_hover_text("New thread (Ctrl+N)").clicked() {
                     actions.push(Action::NewThread);
                 }
@@ -407,7 +416,7 @@ pub(crate) fn create_project_for(app: &YaacApp, target: &yaac_protocol::TargetId
     }
 }
 
-fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, selected: Option<&yaac_core::ThreadKey>, actions: &mut Vec<Action>) {
+pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, selected: Option<&yaac_core::ThreadKey>, actions: &mut Vec<Action>) {
     let p = app.p;
     let row = &s.rows[r];
     let id = egui::Id::unique(("row", s.id.as_str(), row.key.to_string()));

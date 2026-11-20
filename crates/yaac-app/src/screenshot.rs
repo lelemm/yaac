@@ -52,6 +52,8 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("32", "ssh-form"),
     ("33", "mute-dialog"),
     ("34", "wsl-stopped"),
+    ("35", "sidebar-strip"),
+    ("36", "sidebar-wide"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -387,6 +389,17 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.ui.focus_card = None;
             app.ui.menu = Some(Menu::Mode);
             app.client.choose_mode(ModeTarget::Thread(fix), "bypass".into());
+        }
+        "35" => {
+            // The sidebar collapsed to the strip, the card of one thread open as on hover.
+            app.open(&threads::orchestrator(), None);
+            app.ui.sidebar.collapsed = true;
+            app.ui.strip_hover_key = Some((threads::billing(), egui::Rect::NOTHING));
+        }
+        "36" => {
+            // The sidebar dragged wider.
+            app.open(&threads::orchestrator(), None);
+            app.ui.sidebar.width = 440.0;
         }
         "34" => {
             // A thread on a stopped WSL distro (D96): readable from the cache; the composer and

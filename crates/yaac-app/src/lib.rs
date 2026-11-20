@@ -29,6 +29,7 @@ mod nav;
 mod screenshot;
 mod seltext;
 mod settings;
+mod strip;
 mod shell;
 mod sidebar;
 mod theme;

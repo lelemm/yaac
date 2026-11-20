@@ -80,6 +80,13 @@ pub(crate) struct UiState {
     pub mute: Option<yaac_core::mute::MuteDialog>,
     /// Scroll the thread list to its end on the next frame (screenshots).
     pub sidebar_to_end: bool,
+    /// The sidebar's width, or the strip (D94).
+    pub sidebar: yaac_core::strip::SidebarSize,
+    /// The edge's width when a drag of it began.
+    pub sidebar_drag: Option<f32>,
+    /// The strip's hover card: its open/close rule and the thread it shows.
+    pub strip_hover: yaac_core::hover::HoverCard,
+    pub strip_hover_key: Option<(ThreadKey, egui::Rect)>,
     pub expansion: Expansion,
     pub panel: PanelMode,
     /// The agents card's open/close rule.
@@ -141,6 +148,10 @@ impl UiState {
             archived_open: false,
             mute: None,
             sidebar_to_end: false,
+            sidebar: yaac_core::strip::SidebarSize::default(),
+            sidebar_drag: None,
+            strip_hover: yaac_core::hover::HoverCard::default(),
+            strip_hover_key: None,
             expansion: Expansion::default(),
             panel: PanelMode::Pill,
             hover: yaac_core::hover::HoverCard::default(),
@@ -199,6 +210,7 @@ impl UiState {
             muted_open: self.muted_open,
             font_size: self.font_size,
             send_key: self.send_key,
+            sidebar: self.sidebar,
         }
     }
 
@@ -214,6 +226,7 @@ impl UiState {
         self.muted_open = p.muted_open;
         self.font_size = p.font_size;
         self.send_key = p.send_key;
+        self.sidebar = p.sidebar;
     }
 }
 
@@ -926,6 +939,9 @@ impl YaacApp {
         }
         if ctrl(Key::N) {
             actions.push(Action::NewThread);
+        }
+        if ctrl(Key::B) {
+            self.ui.sidebar.toggle();
         }
         if ctrl(Key::K) {
             self.ui.focus_search = true;
