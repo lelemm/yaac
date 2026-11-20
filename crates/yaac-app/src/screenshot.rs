@@ -49,6 +49,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("29", "create-project"),
     ("30", "bypass-confirm"),
     ("31", "history-list"),
+    ("32", "ssh-form"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -381,6 +382,17 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.ui.focus_card = None;
             app.ui.menu = Some(Menu::Mode);
             app.client.choose_mode(ModeTarget::Thread(fix), "bypass".into());
+        }
+        "32" => {
+            // The Add SSH server form with realistic long values: every field usable.
+            app.ui.settings = true;
+            app.ui.settings_page = Page::Targets;
+            let mut panel = SshPanel::new(STORY_NOW, None);
+            panel.name = "build-cluster-west".into();
+            panel.host = "build-runner-07.eu-west.example.org".into();
+            panel.user = "deploy".into();
+            panel.port = "2222".into();
+            app.ui.set.ssh = Some(panel);
         }
         "31" => {
             // Several places visited; the back button's list is open.

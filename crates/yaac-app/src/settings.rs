@@ -472,18 +472,23 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         ui.label(RichText::new(title).font(theme::bold(size::SECTION + 1.0)));
         ui.add_space(8.0);
         let editable = matches!(panel.setup.phase, Phase::Form | Phase::Unreached(_));
-        egui::Grid::new("ssh-form").num_columns(4).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
-            ui.label(widgets::secondary("Name", &p));
-            if editable { widgets::field(ui, &p, &mut panel.name, "devbox", 200.0, false); } else { ui.label(&panel.name); }
-            ui.label(widgets::secondary("User", &p));
-            if editable { widgets::field(ui, &p, &mut panel.user, "user", 140.0, false); } else { ui.label(&panel.user); }
-            ui.end_row();
-            ui.label(widgets::secondary("Host", &p));
-            if editable { widgets::field(ui, &p, &mut panel.host, "host.example.com", 200.0, false); } else { ui.label(&panel.host); }
-            ui.label(widgets::secondary("Port", &p));
-            if editable { widgets::field(ui, &p, &mut panel.port, "22", 60.0, false); } else { ui.label(&panel.port); }
-            ui.end_row();
-        });
+        // Name and Host are the widest (a host name is often long), User medium, Port narrow.
+        let SshPanel { name, user, host, port, .. } = &mut panel;
+        widgets::form(
+            ui,
+            &p,
+            vec![
+                vec![
+                    widgets::Field { label: "Name", text: name, hint: "devbox", width: widgets::FieldWidth::Fill, mono: false },
+                    widgets::Field { label: "User", text: user, hint: "user", width: widgets::FieldWidth::Fill, mono: false },
+                ],
+                vec![
+                    widgets::Field { label: "Host", text: host, hint: "host.example.com", width: widgets::FieldWidth::Fill, mono: false },
+                    widgets::Field { label: "Port", text: port, hint: "22", width: widgets::FieldWidth::Chars(6), mono: false },
+                ],
+            ],
+            editable,
+        );
         ui.add_space(10.0);
         steps(ui, &p, &panel.setup.steps, panel.setup.current().as_ref());
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));

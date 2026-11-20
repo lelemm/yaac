@@ -326,3 +326,82 @@ pub(crate) fn selector_warn(ui: &mut Ui, p: &Palette, label: &str) -> Response {
     }
     resp
 }
+
+/// How wide a form field is.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FieldWidth {
+    /// The rest of its column.
+    Fill,
+    /// About this many characters (a port, a short code).
+    Chars(usize),
+}
+
+/// One labelled field of a form.
+#[derive(Debug)]
+pub(crate) struct Field<'a> {
+    pub label: &'a str,
+    pub text: &'a mut String,
+    pub hint: &'a str,
+    pub width: FieldWidth,
+    pub mono: bool,
+}
+
+/// Below this width a two-column form puts one field per row instead of shrinking fields.
+pub(crate) const FORM_TWO_COLUMNS: f32 = 560.0;
+/// The second column's width (label and field) in a two-column form.
+const FORM_RIGHT: f32 = 230.0;
+
+/// A form of labelled fields, each row one or two fields. Field widths come from the space
+/// actually available (never from the previous frame's column widths, which is what squeezed
+/// fields in `egui::Grid` to a few pixels): the first column fills what the second leaves; a
+/// `Chars` field takes about that many characters. Too narrow for two columns, every field
+/// gets its own row. Not `editable`: the values as text.
+pub(crate) fn form(ui: &mut Ui, p: &Palette, rows: Vec<Vec<Field<'_>>>, editable: bool) {
+    let font = theme::ui(size::UI);
+    let small = theme::ui(size::SMALL);
+    let char_w = text_size(ui, "0", &font).x;
+    let avail = ui.available_width();
+    let two = avail >= FORM_TWO_COLUMNS && rows.iter().any(|r| r.len() > 1);
+    let gap = 10.0;
+    let col_label = |c: usize| rows.iter().filter_map(|r| r.get(c)).map(|f| text_size(ui, f.label, &small).x).fold(0.0_f32, f32::max);
+    let (l0, l1) = if two { (col_label(0), col_label(1)) } else { (col_label(0).max(col_label(1)), 0.0) };
+    let lay = |ui: &mut Ui, fields: Vec<Field<'_>>| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for (c, f) in fields.into_iter().enumerate() {
+                let lw = if c == 0 { l0 } else { l1 };
+                let (r, _) = ui.allocate_exact_size(vec2(lw, 24.0), Sense::hover());
+                let g = ui.fonts_mut(|fo| fo.layout_no_wrap(f.label.to_owned(), small.clone(), p.text2));
+                ui.painter().galley(pos2(r.left(), r.center().y - g.size().y / 2.0), g, p.text2);
+                let column = match (two, c) {
+                    (true, 0) => avail - l0 - FORM_RIGHT - gap * 3.0,
+                    (true, _) => FORM_RIGHT - l1 - gap,
+                    (false, _) => avail - lw - gap,
+                };
+                let w = match f.width {
+                    FieldWidth::Fill => column,
+                    FieldWidth::Chars(n) => (n as f32 * char_w + 20.0).min(column),
+                }
+                .max(60.0);
+                if editable {
+                    // The field's own margins are inside its width.
+                    field(ui, p, f.text, f.hint, (w - 16.0).max(40.0), f.mono);
+                } else {
+                    ui.add_sized(vec2(w, 24.0), egui::Label::new(f.text.as_str()).truncate());
+                }
+            }
+        });
+    };
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 8.0;
+        for row in rows {
+            if two {
+                lay(ui, row);
+            } else {
+                for f in row {
+                    lay(ui, vec![f]);
+                }
+            }
+        }
+    });
+}
