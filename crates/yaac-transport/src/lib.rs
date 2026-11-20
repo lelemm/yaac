@@ -10,9 +10,11 @@
 //! | [`Connector`] | Opens the one stream to a target. Local now; SSH and WSL are later packages. |
 //! | [`Stream`] | Reader, writer, and the [`ChildGuard`] that kills the child when dropped. |
 //! | [`local::LocalConnector`] | `<private runtime> yaacd.mjs connect`, no shell in between. |
+//! | [`wsl::WslConnector`] | `wsl.exe -d <distro> [-u <user>] --exec sh -c <stage 0>`: one child, no console window. |
+//! | [`bootstrap`] | Stage 0, the host side: report, in-band daemon install, hand-over. |
 //!
 //! The stream carries the YAAC protocol from its first byte on the local target (there is no
-//! stage 0 locally). A remote connector will complete stage 0 inside `connect` and hand back a
+//! stage 0 locally). A remote connector completes stage 0 inside `connect` and hands back a
 //! stream positioned at the first protocol byte, so callers never see the bootstrap.
 
 use std::fmt;
@@ -21,9 +23,13 @@ use std::pin::Pin;
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
+pub mod bootstrap;
 pub mod local;
+pub mod wsl;
 
+pub use bootstrap::DaemonBundle;
 pub use local::{LocalConfig, LocalConnector};
+pub use wsl::{WslConfig, WslConnector};
 
 /// A boxed, sendable future (the trait stays object-safe without an extra dependency).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -35,6 +41,9 @@ pub struct ConnectCtx {
     pub target_id: String,
     /// The target's display name (for diagnostics only).
     pub target_name: String,
+    /// The user asked to connect now, even if that boots the target's machine (a stopped WSL
+    /// distro is otherwise never started behind the user's back — D35).
+    pub allow_start: bool,
 }
 
 /// Opens the one connection to a target.
@@ -137,6 +146,13 @@ pub enum ConnectError {
     /// The transport is not available in this build or on this host.
     #[error("{0}")]
     Unsupported(String),
+    /// The target's machine is not running, and connecting would start it. Not retried as a
+    /// failure: the target is shown as down until it runs or the user asks to start it.
+    #[error("{0}")]
+    TargetDown(String),
+    /// The target has no runtime that can run `yaacd`.
+    #[error("{0}")]
+    NoRuntime(String),
     /// Anything else, with a message to show as-is.
     #[error("{0}")]
     Other(String),

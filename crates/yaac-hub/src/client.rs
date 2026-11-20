@@ -8,8 +8,9 @@
 //! while let Some(message) = link.try_recv() { … }
 //! ```
 //!
-//! Two small threads per client do the socket I/O: `send` only queues, and `try_recv` only
-//! looks at what has arrived. An optional waker runs whenever a message arrives, so a GUI can
+//! Two small threads per client do the socket I/O (on Windows, one thread running the pipe on
+//! a small async runtime, since a synchronous pipe handle serialises reads and writes):
+//! `send` only queues, and `try_recv` only looks at what has arrived. An optional waker runs whenever a message arrives, so a GUI can
 //! request a repaint instead of polling. Starting the hub is the caller's concern; see
 //! [`connect_or_start`].
 //!
@@ -18,6 +19,7 @@
 //! fn poll(&mut self) -> Option<Message> { self.try_recv() } }`.
 
 use std::collections::VecDeque;
+#[cfg(unix)]
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -36,7 +38,7 @@ pub struct Disconnected;
 
 /// A connection to a hub.
 pub struct HubClient {
-    outgoing: mpsc::Sender<Message>,
+    outgoing: tokio::sync::mpsc::UnboundedSender<Message>,
     incoming: mpsc::Receiver<Message>,
     held: Mutex<VecDeque<Message>>,
     connected: Arc<AtomicBool>,
@@ -80,24 +82,103 @@ impl HubClient {
         Ok(client)
     }
 
-    /// Windows named pipes are not implemented yet.
-    #[cfg(not(unix))]
+    /// Connects to the hub's named pipe, refusing one that belongs to another user, and calls
+    /// `waker` whenever a message arrives or the connection closes.
+    #[cfg(windows)]
+    pub fn connect_with_waker(socket: &Path, waker: impl Fn() + Send + 'static) -> std::io::Result<Self> {
+        use tokio::net::windows::named_pipe::ClientOptions;
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_io().build()?;
+        let pipe = {
+            let _context = runtime.enter();
+            // Every instance busy: the hub is between accepting one window and offering the
+            // next instance. Retry briefly.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                match ClientOptions::new().open(socket.as_os_str()) {
+                    Ok(pipe) => break pipe,
+                    Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        };
+        if !yaac_winsys::owned_by_current_user(&pipe)? {
+            return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the hub pipe belongs to another user"));
+        }
+        let connected = Arc::new(AtomicBool::new(true));
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+        let (in_tx, in_rx) = mpsc::channel::<Message>();
+        let close = Arc::new(tokio::sync::Notify::new());
+        let (alive, closed) = (connected.clone(), close.clone());
+        std::thread::Builder::new().name("yaac-hub-client-pipe".into()).spawn(move || {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            runtime.block_on(async move {
+                let (mut reader, mut writer) = tokio::io::split(pipe);
+                let read = async {
+                    let mut decoder = FrameDecoder::new();
+                    let mut buf = vec![0u8; 64 * 1024];
+                    loop {
+                        let n = match reader.read(&mut buf).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => n,
+                        };
+                        decoder.push(&buf[..n]);
+                        if !deliver(&mut decoder, &in_tx, &waker) {
+                            break;
+                        }
+                    }
+                };
+                let write = async {
+                    let mut frame = Vec::new();
+                    while let Some(message) = out_rx.recv().await {
+                        frame.clear();
+                        if encode_message_frame(&message.to_json(), &mut frame).is_err() {
+                            continue;
+                        }
+                        if writer.write_all(&frame).await.is_err() || writer.flush().await.is_err() {
+                            break;
+                        }
+                    }
+                };
+                tokio::select! {
+                    () = read => {}
+                    () = write => {}
+                    () = closed.notified() => {}
+                }
+                alive.store(false, Ordering::SeqCst);
+                waker();
+            });
+        })?;
+        Ok(Self {
+            outgoing: out_tx,
+            incoming: in_rx,
+            held: Mutex::new(VecDeque::new()),
+            connected,
+            next_id: AtomicI64::new(1),
+            closer: Some(Box::new(move || close.notify_one())),
+        })
+    }
+
+    #[cfg(not(any(unix, windows)))]
     pub fn connect_with_waker(_socket: &Path, _waker: impl Fn() + Send + 'static) -> std::io::Result<Self> {
         Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "the hub client is not available on this platform yet"))
     }
 
+    #[cfg(unix)]
     fn start(
         mut reader: impl Read + Send + 'static,
         mut writer: impl Write + Send + 'static,
         waker: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self> {
         let connected = Arc::new(AtomicBool::new(true));
-        let (out_tx, out_rx) = mpsc::channel::<Message>();
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
         let (in_tx, in_rx) = mpsc::channel::<Message>();
         let alive = connected.clone();
         std::thread::Builder::new().name("yaac-hub-client-write".into()).spawn(move || {
             let mut frame = Vec::new();
-            while let Ok(message) = out_rx.recv() {
+            while let Some(message) = out_rx.blocking_recv() {
                 frame.clear();
                 if encode_message_frame(&message.to_json(), &mut frame).is_err() {
                     continue;
@@ -112,25 +193,14 @@ impl HubClient {
         std::thread::Builder::new().name("yaac-hub-client-read".into()).spawn(move || {
             let mut decoder = FrameDecoder::new();
             let mut buf = vec![0u8; 64 * 1024];
-            'outer: loop {
+            loop {
                 let n = match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => n,
                 };
                 decoder.push(&buf[..n]);
-                loop {
-                    match decoder.next_frame() {
-                        Ok(Some(Frame::Message(payload))) => {
-                            let Ok(message) = Message::from_json(&payload) else { break 'outer };
-                            if in_tx.send(message).is_err() {
-                                break 'outer;
-                            }
-                            waker();
-                        }
-                        Ok(Some(Frame::Data { .. })) => {}
-                        Ok(None) => break,
-                        Err(_) => break 'outer,
-                    }
+                if !deliver(&mut decoder, &in_tx, &waker) {
+                    break;
                 }
             }
             alive.store(false, Ordering::SeqCst);
@@ -205,6 +275,25 @@ impl HubClient {
                     return Err(ErrorObject::new(ErrorCode::InternalError, "the hub connection closed"));
                 }
             }
+        }
+    }
+}
+
+/// Hands every complete message in `decoder` to the reader side. False when the connection
+/// should end (garbage from the hub, or nobody listening any more).
+fn deliver(decoder: &mut FrameDecoder, in_tx: &mpsc::Sender<Message>, waker: &impl Fn()) -> bool {
+    loop {
+        match decoder.next_frame() {
+            Ok(Some(Frame::Message(payload))) => {
+                let Ok(message) = Message::from_json(&payload) else { return false };
+                if in_tx.send(message).is_err() {
+                    return false;
+                }
+                waker();
+            }
+            Ok(Some(Frame::Data { .. })) => {}
+            Ok(None) => return true,
+            Err(_) => return false,
         }
     }
 }
