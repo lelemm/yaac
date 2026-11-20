@@ -76,11 +76,9 @@ pub struct ThreadSummary {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub archived: bool,              // off the list entirely; kept, and found by search
-    pub muted: bool,                 // out of the main list, still working
     pub native_id: Option<String>,   // the harness's own id, as shown in a terminal
     pub repo: Option<RepoLocation>,  // repository, path within the checkout, worktree name
     pub agents: AgentsPolicy,        // Ask | Allow — may this chat's agent work with others unasked
-    pub pinned: bool,                // kept in the Pinned section
 }
 ```
 
@@ -110,7 +108,10 @@ relationships as a tree, from the point of view of the open thread.
 ## Keeping the list small: pin, mute, and archive
 
 **Decided.** A fleet produces more threads than anyone can watch. Three actions, all in a
-thread's right-click menu, all stored on the target so every host agrees. **Pin** keeps a
+thread's right-click menu. **Pin and mute — like dismiss below — are preferences of the host,
+not facts about the thread** (D92): the hub keeps them on the user's computer, the daemon
+never hears of them, and another computer does not share them. Archive is different: it
+archives the conversation in the harness, so it does go to the target. **Pin** keeps a
 thread in a *Pinned* section near the top of the sidebar, whatever its project. The other two
 take threads out of the way:
 
@@ -236,8 +237,8 @@ from its right-click menu. It disappears from the interface and nothing else hap
 harness is not told, the conversation is not archived or changed, and it can still be opened
 in a terminal as before.
 
-- The choice is remembered on the target, so the thread does not come back on the next scan
-  and is hidden on every host.
+- The choice is remembered by the hub on this computer (D92), so the thread stays hidden
+  after the next scan; the daemon still knows the thread and is not told.
 - It is for discovered threads. A thread started from YAAC has **Archive** instead — the
   difference is that Archive also archives the conversation in the harness.
 - A dismissed thread still turns up when looked for by id, and a "Show dismissed" switch in

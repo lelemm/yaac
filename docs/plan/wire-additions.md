@@ -81,6 +81,7 @@ is right.
 ## Not on the wire yet
 
 - Unarchive (`thread/update` does not take `archived`).
-- `mutedUntil` on summaries and `thread/update` (D90): the moment a timed mute ends.
-- A `dismissed` flag on summaries (D79), and a way to ask a target for older threads than the
+- (Mute, pin, and dismiss are host preferences kept by the hub — D92 — and are being taken off
+  `ThreadSummary` and `thread/update`.)
+- A way and a way to ask a target for older threads than the
   discovery caps list (D78).
