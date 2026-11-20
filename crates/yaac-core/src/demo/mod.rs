@@ -258,6 +258,40 @@ impl Inner {
                 self.ready.push_back(result(id, json!({})));
             }
             crate::client::hub_names::CACHE_CLEAR => self.ready.push_back(result(id, json!({}))),
+            // SEAM (D92): the hub's view preferences; see `client::hub_names::VIEW_GET`.
+            crate::client::hub_names::VIEW_GET => {
+                let threads: Vec<Value> = self
+                    .fleet
+                    .view
+                    .iter()
+                    .map(|(k, v)| {
+                        json!({
+                            "target": k.target, "threadId": k.thread, "pinned": v.pinned, "muted": v.muted,
+                            "mutedUntil": v.muted_until.map(crate::time::format_rfc3339), "dismissed": v.dismissed,
+                        })
+                    })
+                    .collect();
+                self.ready.push_back(result(id, json!({ "threads": threads })));
+            }
+            crate::client::hub_names::VIEW_SET => {
+                if let (Some(t), Some(th)) = (params.get("target").and_then(Value::as_str), params.get("threadId").and_then(Value::as_str)) {
+                    let key = ThreadKey::new(TargetId::new(t), yaac_protocol::ThreadId::new(th));
+                    let v = self.fleet.view.entry(key).or_default();
+                    if let Some(x) = params.get("pinned").and_then(Value::as_bool) {
+                        v.pinned = x;
+                    }
+                    if let Some(x) = params.get("muted").and_then(Value::as_bool) {
+                        v.muted = x;
+                    }
+                    if let Some(x) = params.get("dismissed").and_then(Value::as_bool) {
+                        v.dismissed = x;
+                    }
+                    if let Some(u) = params.get("mutedUntil") {
+                        v.muted_until = u.as_str().and_then(crate::time::parse_rfc3339);
+                    }
+                }
+                self.ready.push_back(result(id, json!({})));
+            }
             crate::client::hub_names::THREADS_FIND => self.find(id, &params),
             crate::client::hub_names::SETTINGS_GET | crate::client::hub_names::SETTINGS_UPDATE => {
                 if let Some(a) = params.get("always").and_then(Value::as_bool) {
@@ -509,6 +543,17 @@ impl Inner {
                 self.ready.push_back(result(id, json!({ "instance": { "id": iid, "kind": "", "enabled": true, "backend": "auto" } })));
             }
             m::THREAD_FORK | m::THREAD_FORK_ONLY => self.fork(id, target, p),
+            m::THREAD_ARCHIVE | crate::client::hub_names::THREAD_UNARCHIVE => {
+                let Some(key) = thread(p, "threadId") else { return };
+                let Some(t) = self.fleet.threads.get_mut(&key) else {
+                    self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
+                    return;
+                };
+                t.summary.archived = method == m::THREAD_ARCHIVE;
+                let summary = t.summary.clone();
+                self.ready.push_back(result(id, json!({})));
+                self.ready.push_back(routed(target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
+            }
             m::THREAD_UPDATE => {
                 let Some(key) = thread(p, "threadId") else { return };
                 let Some(t) = self.fleet.threads.get_mut(&key) else {

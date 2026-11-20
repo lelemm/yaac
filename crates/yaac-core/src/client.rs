@@ -33,6 +33,20 @@ pub mod hub_names {
     pub const CACHE_CLEAR: &str = "hub/cache/clear";
     /// Store a `ui_state` value.
     pub const UI_STATE_SET: &str = "hub/uiState/set";
+    // SEAM (D92): the hub's view preferences — pin, mute (with `mutedUntil`), dismiss — kept
+    // on the user's computer, not on the thread. The attach methods are being added to
+    // `yaac-protocol` by the daemon/hub package; until they land, their names live here and
+    // the demo hub answers them. Connect at merge: move these to `attach::names` and decode
+    // with the protocol's own types.
+    /// Every thread's view preferences.
+    pub const VIEW_GET: &str = "hub/view/get";
+    /// Change one thread's view preferences.
+    pub const VIEW_SET: &str = "hub/view/set";
+    /// View preferences changed (another window, or a timed mute the hub cleared).
+    pub const VIEW_CHANGED: &str = "hub/view/changed";
+    /// SEAM: bringing an archived thread back. `yaac-protocol` has `thread/archive` but no
+    /// way back yet; the name is the one the daemon package is expected to add.
+    pub const THREAD_UNARCHIVE: &str = "thread/unarchive";
     /// Reconnect a target now.
     pub const TARGETS_RECONNECT: &str = "hub/targets/reconnect";
     /// The target list changed.
@@ -55,6 +69,7 @@ pub mod hub_names {
 #[derive(Clone, Debug, PartialEq)]
 enum Call {
     Hello,
+    View,
     Targets,
     Providers(TargetId),
     Sync(TargetId),
@@ -211,6 +226,7 @@ impl Client {
                 }
                 self.state.hub.build = Some(hello.build);
                 self.request(hub_names::SETTINGS_GET, json!({}), Call::HubSettings);
+                self.request(hub_names::VIEW_GET, json!({}), Call::View);
                 let ids: Vec<(TargetId, bool)> =
                     hello.targets.iter().map(|t| (t.id.clone(), t.state.status == attach::ConnectionStatus::Connected)).collect();
                 self.state.set_targets(hello.targets);
@@ -257,6 +273,7 @@ impl Client {
                 };
                 self.state.fs_listings.insert((target, path), state);
             }
+            Call::View => self.state.apply_view(&result),
             Call::HubSettings => {
                 self.state.hub.always = result.get("settings").and_then(|s| s.get("always")).and_then(Value::as_bool);
             }
@@ -505,6 +522,7 @@ impl Client {
                     self.routed(&t, m::PROJECT_LIST, json!({}), Call::Projects(t.clone()));
                 }
             }
+            hub_names::VIEW_CHANGED => self.state.apply_view(&params),
             hub_names::INDEX_CHANGED => {
                 if let Some(t) = params.get("target").and_then(Value::as_str).map(TargetId::new) {
                     self.sync(&t);
@@ -812,17 +830,67 @@ impl Client {
         self.routed(&key.target, m::THREAD_UPDATE, params, Call::Ignore);
     }
 
-    /// Mute or unmute a thread (`thread/update`).
-    pub fn set_muted(&mut self, key: &ThreadKey, muted: bool) {
-        self.update_thread(key, json!({ "muted": muted }), |s| s.muted = muted);
+    /// Change a thread's view preferences: applied at once, and stored by the hub
+    /// (`hub/view/set`, see the SEAM on [`hub_names::VIEW_SET`]).
+    pub fn set_view(&mut self, key: &ThreadKey, patch: crate::state::ViewPatch) {
+        let v = self.state.view.entry(key.clone()).or_default();
+        let mut params = json!({ "target": key.target, "threadId": key.thread });
+        if let Some(p) = patch.pinned {
+            v.pinned = p;
+            params["pinned"] = json!(p);
+        }
+        if let Some(m) = patch.muted {
+            v.muted = m;
+            params["muted"] = json!(m);
+        }
+        if let Some(u) = patch.muted_until {
+            v.muted_until = u;
+            params["mutedUntil"] = match u {
+                Some(t) => json!(crate::time::format_rfc3339(t)),
+                None => Value::Null,
+            };
+        }
+        if let Some(d) = patch.dismissed {
+            v.dismissed = d;
+            params["dismissed"] = json!(d);
+        }
+        self.request(hub_names::VIEW_SET, params, Call::Ignore);
     }
 
-    /// Archive a thread (`thread/archive`, under `threadArchive`). Archived threads leave the
-    /// list; "Show archived" brings them back.
+    /// Mute (with no end, or until a moment) or unmute a thread.
+    pub fn set_muted(&mut self, key: &ThreadKey, muted: bool) {
+        self.set_view(key, crate::state::ViewPatch { muted: Some(muted), muted_until: Some(None), ..Default::default() });
+    }
+
+    /// Mute until a moment (seconds since the epoch); `None` for no end.
+    pub fn mute_until(&mut self, key: &ThreadKey, until: Option<i64>) {
+        self.set_view(key, crate::state::ViewPatch { muted: Some(true), muted_until: Some(until), ..Default::default() });
+    }
+
+    /// Archive a thread (`thread/archive`, under `threadArchive`). An archived thread is
+    /// listed only under Archived, so archiving also clears its pin and its mute (D93);
+    /// unarchiving does not restore them.
     pub fn archive(&mut self, key: &ThreadKey) {
         let op = self.op_id();
         let params = json!({ "opId": op, "threadId": key.thread });
         self.routed(&key.target, m::THREAD_ARCHIVE, params, Call::Ignore);
+        if let Some(r) = self.state.threads.get_mut(key) {
+            r.summary.archived = true;
+        }
+        let v = self.state.view.get(key).cloned().unwrap_or_default();
+        if v.pinned || v.muted {
+            self.set_view(key, crate::state::ViewPatch { pinned: Some(false), muted: Some(false), muted_until: Some(None), ..Default::default() });
+        }
+    }
+
+    /// Unarchive a thread (`thread/unarchive`).
+    pub fn unarchive(&mut self, key: &ThreadKey) {
+        let op = self.op_id();
+        let params = json!({ "opId": op, "threadId": key.thread });
+        self.routed(&key.target, hub_names::THREAD_UNARCHIVE, params, Call::Ignore);
+        if let Some(r) = self.state.threads.get_mut(key) {
+            r.summary.archived = false;
+        }
     }
 
     /// Rename a thread (`thread/rename`, under `threadRename`).
@@ -832,9 +900,14 @@ impl Client {
         self.routed(&key.target, m::THREAD_RENAME, params, Call::Ignore);
     }
 
-    /// Pin or unpin a thread (`thread/update`).
+    /// Pin or unpin a thread (a view preference kept by the hub).
     pub fn set_pinned(&mut self, key: &ThreadKey, pinned: bool) {
-        self.update_thread(key, json!({ "pinned": pinned }), |s| s.pinned = pinned);
+        self.set_view(key, crate::state::ViewPatch { pinned: Some(pinned), ..Default::default() });
+    }
+
+    /// Hide (or show again) a discovered thread in the window only.
+    pub fn set_dismissed(&mut self, key: &ThreadKey, dismissed: bool) {
+        self.set_view(key, crate::state::ViewPatch { dismissed: Some(dismissed), ..Default::default() });
     }
 
     /// Create a project from a folder on a target (`project/create`). Once created, the draft

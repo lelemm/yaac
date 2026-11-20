@@ -346,6 +346,13 @@ impl SshSetup {
         Self { conn, phase: Phase::Form, steps: Vec::new(), method: SignInMethod::Password, host_key: None, installed: None, today }
     }
 
+    /// Date the record in the host's local time zone (D91): `now` is the same instant given
+    /// to [`SshSetup::new`].
+    pub fn in_zone(mut self, now: i64, zone: crate::time::Zone) -> Self {
+        self.today = crate::time::date_in(now, zone);
+        self
+    }
+
     fn line(&mut self, mark: StepMark, text: impl Into<String>, detail: Option<String>) {
         self.steps.push(StepLine { mark, text: text.into(), detail });
     }
@@ -541,6 +548,12 @@ impl Revoke {
     pub fn start(conn: SshConn, key: InstalledKey, now: i64, backend: &mut dyn SshSetupBackend) -> Self {
         backend.revoke(&conn, &key);
         Self { conn, key, phase: RevokePhase::Working, today: crate::time::format_rfc3339(now).chars().take(10).collect() }
+    }
+
+    /// Date the record in the host's local time zone (D91).
+    pub fn in_zone(mut self, now: i64, zone: crate::time::Zone) -> Self {
+        self.today = crate::time::date_in(now, zone);
+        self
     }
 
     /// "Try again".

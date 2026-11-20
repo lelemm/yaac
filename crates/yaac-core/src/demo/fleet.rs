@@ -49,6 +49,8 @@ pub(crate) struct Fleet {
     pub budgets: BTreeMap<Address, MeshBudgetResult>,
     /// Each target's projects.
     pub projects: BTreeMap<TargetId, Vec<Project>>,
+    /// The hub's view preferences (pin, mute, dismiss), by thread (D92).
+    pub view: BTreeMap<ThreadKey, crate::state::ViewPref>,
 }
 
 pub(crate) const ORCH: (&str, &str) = ("local", "t-orch");
@@ -393,6 +395,7 @@ impl Fleet {
             threads: BTreeMap::new(),
             budgets: BTreeMap::new(),
             projects: BTreeMap::new(),
+            view: BTreeMap::new(),
         };
         f.providers.insert(TargetId::new("local"), vec![codex("codex", None, ProviderStatus::Ready), claude(ProviderStatus::Ready)]);
         f.providers.insert(
@@ -645,10 +648,21 @@ impl Fleet {
         // What the targets report beyond the brief's table: muted and pinned threads, git
         // status, and the projects the user created (the targets resolve which one each
         // thread belongs to).
+        // Pin and mute are the hub's view preferences, not thread fields (D92). Lint pass is
+        // muted until later today (a timed mute).
         for key in [k(OLD_SPIKE), k(LINT), k(BENCH), k(V2PLAN)] {
-            f.set(&key, |s| s.muted = true);
+            f.view.entry(key).or_default().muted = true;
         }
-        f.set(&k(ORCH), |s| s.pinned = true);
+        f.view.entry(k(LINT)).or_default().muted_until = Some(f.base + 2 * 3600 + 30 * 60);
+        f.view.entry(k(ORCH)).or_default().pinned = true;
+        // Archived threads: listed only in the Archived section (D93).
+        for (n, (id, title)) in [("t-arch-1", "Spike: protobuf codec"), ("t-arch-2", "Old CI flake hunt"), ("t-arch-3", "Rename the crates")].into_iter().enumerate() {
+            let key = ThreadKey::new(TargetId::new("local"), yaac_protocol::ThreadId::new(id));
+            let ago = -(i64::try_from(n).unwrap_or(0) + 8) * 86_400;
+            f.add(&key, title, "codex", "gpt-6.2-sol", ("api", "main"), ThreadState::Idle, ago);
+            f.push(&key, done(&format!("{id}-1"), "a-t1", user(title, &[], &[])));
+            f.set(&key, |s| s.archived = true);
+        }
         // The targets report a finished worker as done and a thread blocked on another agent as
         // waiting.
         for key in [k(USERS), k(BILLING), k(NOTES), k(LINT)] {
@@ -757,6 +771,7 @@ impl Fleet {
             threads: BTreeMap::new(),
             budgets: BTreeMap::new(),
             projects: BTreeMap::new(),
+            view: BTreeMap::new(),
         };
         let mut c = claude(ProviderStatus::NeedsAuth);
         c.status_message = Some(SIGN_IN_HINT.into());

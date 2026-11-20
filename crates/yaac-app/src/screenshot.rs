@@ -50,6 +50,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("30", "bypass-confirm"),
     ("31", "history-list"),
     ("32", "ssh-form"),
+    ("33", "mute-dialog"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -369,6 +370,9 @@ fn setup(app: &mut YaacApp, id: &str) {
                 app.client.set_muted(&k, false);
             }
             app.ui.muted_open = true;
+            // The end of the list: Muted open (a timed mute shows when it ends), Archived
+            // collapsed to its header beneath it.
+            app.ui.sidebar_to_end = true;
             app.ui.menu = Some(Menu::Context(threads::billing()));
         }
         "29" => {
@@ -382,6 +386,15 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.ui.focus_card = None;
             app.ui.menu = Some(Menu::Mode);
             app.client.choose_mode(ModeTarget::Thread(fix), "bypass".into());
+        }
+        "33" => {
+            // Mute, with "For 2 hours" chosen: the moment it ends shows beneath, in local time.
+            app.open(&threads::fix(), None);
+            app.ui.focus_card = None;
+            app.apply(vec![crate::app::Action::OpenMute(threads::billing(), false)]);
+            if let Some(d) = &mut app.ui.mute {
+                d.choice = yaac_core::mute::MuteChoice::For;
+            }
         }
         "32" => {
             // The Add SSH server form with realistic long values: every field usable.

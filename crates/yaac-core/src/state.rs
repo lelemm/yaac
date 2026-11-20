@@ -313,7 +313,37 @@ pub struct AppState {
     pub focus_item: Option<(ThreadKey, ItemId)>,
     /// Bounded transcript cache size (open thread excluded).
     pub transcript_capacity: usize,
+    /// View preferences per thread — pin, mute, dismiss — kept by the hub on this computer
+    /// (D92; filled from `hub/view/get`, see the SEAM in `client::hub_names`). Never read from
+    /// the thread summary.
+    pub view: BTreeMap<ThreadKey, ViewPref>,
     stamp: u64,
+}
+
+/// One thread's view preferences.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ViewPref {
+    /// Pinned to the top of the list.
+    pub pinned: bool,
+    /// Muted.
+    pub muted: bool,
+    /// Muted until this moment (seconds since the epoch); `None` with `muted`: no end.
+    pub muted_until: Option<i64>,
+    /// A discovered thread hidden in the window.
+    pub dismissed: bool,
+}
+
+/// A change to view preferences: only the fields given change.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ViewPatch {
+    /// Pin or unpin.
+    pub pinned: Option<bool>,
+    /// Mute or unmute.
+    pub muted: Option<bool>,
+    /// Set (or clear, with `Some(None)`) the end of a mute.
+    pub muted_until: Option<Option<i64>>,
+    /// Dismiss or bring back.
+    pub dismissed: Option<bool>,
 }
 
 impl AppState {
@@ -530,14 +560,57 @@ impl AppState {
         }
     }
 
-    /// Whether a thread is muted.
-    pub fn is_muted(&self, key: &ThreadKey) -> bool {
-        self.summary(key).is_some_and(|s| s.muted)
+    /// Whether a thread is muted at `now`: muted with no end, or until a moment still ahead.
+    /// (A timed mute needs no timer: it simply stops applying.)
+    pub fn is_muted(&self, key: &ThreadKey, now: i64) -> bool {
+        self.view.get(key).is_some_and(|v| v.muted && v.muted_until.is_none_or(|u| now < u))
     }
 
-    /// Whether a thread is pinned.
+    /// When a thread's timed mute ends, if it is muted until a moment.
+    pub fn muted_until(&self, key: &ThreadKey, now: i64) -> Option<i64> {
+        self.view.get(key).filter(|_| self.is_muted(key, now)).and_then(|v| v.muted_until)
+    }
+
+    /// The nearest moment after `now` at which a timed mute ends: the window schedules one
+    /// repaint for it, so the row comes back on time without repainting meanwhile.
+    pub fn next_unmute(&self, now: i64) -> Option<i64> {
+        self.view.values().filter(|v| v.muted).filter_map(|v| v.muted_until).filter(|u| *u > now).min()
+    }
+
+    /// Whether a thread is pinned (a view preference kept by the hub).
     pub fn is_pinned(&self, key: &ThreadKey) -> bool {
-        self.summary(key).is_some_and(|s| s.pinned)
+        self.view.get(key).is_some_and(|v| v.pinned)
+    }
+
+    /// Whether a discovered thread is hidden in the window.
+    pub fn is_dismissed(&self, key: &ThreadKey) -> bool {
+        self.view.get(key).is_some_and(|v| v.dismissed)
+    }
+
+    /// Merge `hub/view/get`'s result or a `hub/view/changed` notification:
+    /// `{ "threads": [ { target, threadId, pinned?, muted?, mutedUntil?, dismissed? } ] }`.
+    pub fn apply_view(&mut self, v: &serde_json::Value) {
+        let Some(list) = v.get("threads").and_then(serde_json::Value::as_array) else { return };
+        for t in list {
+            let (Some(target), Some(thread)) = (t.get("target").and_then(serde_json::Value::as_str), t.get("threadId").and_then(serde_json::Value::as_str)) else {
+                continue;
+            };
+            let key = ThreadKey::new(yaac_protocol::TargetId::new(target), yaac_protocol::ThreadId::new(thread));
+            let e = self.view.entry(key).or_default();
+            let b = |k: &str| t.get(k).and_then(serde_json::Value::as_bool);
+            if let Some(x) = b("pinned") {
+                e.pinned = x;
+            }
+            if let Some(x) = b("muted") {
+                e.muted = x;
+            }
+            if let Some(x) = b("dismissed") {
+                e.dismissed = x;
+            }
+            if let Some(u) = t.get("mutedUntil") {
+                e.muted_until = u.as_str().and_then(crate::time::parse_rfc3339);
+            }
+        }
     }
 
     /// The project a thread belongs to, if any: the user project its target resolved

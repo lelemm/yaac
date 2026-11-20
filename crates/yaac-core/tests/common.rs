@@ -39,7 +39,7 @@ pub fn render(c: &Client, g: Grouping) -> Vec<String> {
 pub fn render_open(c: &Client, g: Grouping, muted_open: bool) -> Vec<String> {
     let map = AttentionMap::compute(&c.state);
     let mut out = Vec::new();
-    for s in sections(&c.state, &map, g, "", muted_open, NOW) {
+    for s in sections(&c.state, &map, g, "", yaac_core::sidebar::Open { muted: muted_open, archived: muted_open }, NOW, yaac_core::time::Zone::UTC) {
         if let Some(h) = &s.header {
             let mut line = if h.temporary { format!("# _{}_", h.left) } else { format!("# {}", h.left) };
             if let Some(m) = &h.machine {
@@ -54,6 +54,7 @@ pub fn render_open(c: &Client, g: Grouping, muted_open: bool) -> Vec<String> {
             let right = match &r.right {
                 RowRight::Age(a) => a.clone(),
                 RowRight::Machine { name, muted } => if *muted { format!("{name} muted") } else { name.clone() },
+                RowRight::Until(u) => u.clone(),
             };
             let mut line = format!("{} ({}) {}", r.title, r.display.mark.word(), right);
             if let Some(l2) = &r.line2 {

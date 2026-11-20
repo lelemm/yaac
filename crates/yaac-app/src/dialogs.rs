@@ -237,3 +237,161 @@ pub(crate) fn fork(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
         app.ui.fork = Some(d);
     }
 }
+
+/// The Mute dialog (D90): until I unmute it (default), for a duration, or until a date and
+/// time — all in the host's local time. One filled button, Mute (Enter); Cancel (Esc). A
+/// moment in the past cannot be chosen: Mute is unavailable with the reason beside it.
+pub(crate) fn mute(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    use yaac_core::mute::{DurationUnit, MuteChoice, MuteOutcome};
+    let p = app.p;
+    let now = app.now();
+    let zone = app.zone;
+    let Some(mut d) = app.ui.mute.take() else { return };
+    scrim(ctx, &p, "mute");
+    let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    if esc {
+        return;
+    }
+    let outcome = d.outcome_in(now, zone);
+    let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    let mut done = false;
+    window("mute", &p, ctx).show(ctx, |ui| {
+        ui.set_width(420.0);
+        ui.label(RichText::new(&d.title).font(theme::bold(size::SECTION + 1.5)));
+        ui.add_space(12.0);
+        ui.spacing_mut().item_spacing.y = 8.0;
+        let radio = |ui: &mut egui::Ui, d: &mut yaac_core::mute::MuteDialog, c: MuteChoice, label: &str| {
+            let r = ui.radio(d.choice == c, label);
+            if r.clicked() {
+                d.choice = c;
+            }
+        };
+        radio(ui, &mut d, MuteChoice::Forever, "Until I unmute it");
+        ui.horizontal(|ui| {
+            radio(ui, &mut d, MuteChoice::For, "For");
+            let r = widgets::field(ui, &p, &mut d.amount, "2", 44.0, false);
+            if r.gained_focus() || r.changed() {
+                d.choice = MuteChoice::For;
+            }
+            // A selector (a word and a chevron), not a boxed combo.
+            let sel = widgets::selector(ui, &p, d.unit.label(), true);
+            egui::Popup::menu(&sel).show(|ui| {
+                for u in DurationUnit::ALL {
+                    if ui.selectable_label(u == d.unit, u.label()).clicked() {
+                        d.unit = u;
+                        d.choice = MuteChoice::For;
+                    }
+                }
+            });
+        });
+        if let Some(prev) = d.for_preview(now, zone) {
+            ui.horizontal(|ui| {
+                ui.add_space(26.0);
+                ui.label(widgets::secondary(prev, &p));
+            });
+        }
+        ui.horizontal(|ui| {
+            radio(ui, &mut d, MuteChoice::Until, "Until");
+            let (y, m, day) = d.date;
+            let date = yaac_core::time::from_local(y, m, day, 12, 0, zone);
+            let label = yaac_core::time::moment_in(date, zone);
+            let label = label.split(',').next().unwrap_or("").to_owned();
+            ui.label(RichText::new(label).font(theme::ui(size::UI)));
+            let r = widgets::field(ui, &p, &mut d.time, "14:30", 64.0, true);
+            if r.gained_focus() || r.changed() {
+                d.choice = MuteChoice::Until;
+            }
+        });
+        if d.choice == MuteChoice::Until {
+            ui.horizontal(|ui| {
+                ui.add_space(26.0);
+                month_grid(ui, &p, &mut d, now, zone);
+            });
+        }
+        ui.add_space(4.0);
+        ui.label(widgets::secondary("The agent keeps working. It will still appear under Needs you if it gets blocked.", &p));
+        ui.add_space(10.0);
+        ui.horizontal(|ui| match &outcome {
+            MuteOutcome::Mute(until) => {
+                if widgets::primary(ui, &p, "Mute", Some("Enter")).clicked() || enter {
+                    actions.push(Action::MuteUntil(d.key.clone(), *until));
+                    done = true;
+                }
+                if widgets::plain(ui, &p, "Cancel", Some("Esc")).clicked() {
+                    done = true;
+                }
+            }
+            MuteOutcome::Unavailable(why) => {
+                widgets::unavailable(ui, &p, "Mute", why);
+                if widgets::plain(ui, &p, "Cancel", Some("Esc")).clicked() {
+                    done = true;
+                }
+            }
+        });
+    });
+    if !done {
+        app.ui.mute = Some(d);
+    }
+}
+
+/// A small month grid in the calm style: the month and two arrows, weekday initials, the
+/// days; past days unavailable, the chosen day on the selected-row tint.
+fn month_grid(ui: &mut egui::Ui, p: &Palette, d: &mut yaac_core::mute::MuteDialog, now: i64, zone: yaac_core::time::Zone) {
+    use yaac_core::time;
+    let cell = vec2(30.0, 24.0);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
+        ui.horizontal(|ui| {
+            let arrow = |ui: &mut egui::Ui, forward: bool| {
+                let (r, resp) = ui.allocate_exact_size(cell, egui::Sense::click());
+                if resp.hovered() || resp.has_focus() {
+                    ui.painter().rect_filled(r.shrink(1.0), 5.0, p.faint);
+                }
+                icons::nav(ui.painter(), r.center(), 14.0, forward, p.text);
+                resp
+            };
+            let back = arrow(ui, false);
+            ui.add_sized(vec2(cell.x * 5.0, cell.y), egui::Label::new(RichText::new(time::month_title(d.month.0, d.month.1)).font(theme::bold(size::UI))));
+            let fwd = arrow(ui, true);
+            if back.clicked() {
+                d.shift_month(-1);
+            }
+            if fwd.clicked() {
+                d.shift_month(1);
+            }
+        });
+        ui.horizontal(|ui| {
+            for w in ["M", "T", "W", "T", "F", "S", "S"] {
+                ui.add_sized(cell, egui::Label::new(widgets::secondary(w, p)));
+            }
+        });
+        let first = time::first_weekday(d.month.0, d.month.1);
+        let days = time::days_in_month(d.month.0, d.month.1);
+        let mut day = 1;
+        while day <= days {
+            ui.horizontal(|ui| {
+                for col in 0..7 {
+                    let (r, resp) = ui.allocate_exact_size(cell, egui::Sense::click());
+                    let blank = (day == 1 && col < first) || day > days;
+                    if blank {
+                        continue;
+                    }
+                    let past = d.day_is_past(day, now, zone);
+                    let chosen = d.date == (d.month.0, d.month.1, day);
+                    if chosen {
+                        ui.painter().rect_filled(r.shrink(1.0), 5.0, p.selected);
+                    } else if resp.hovered() && !past {
+                        ui.painter().rect_filled(r.shrink(1.0), 5.0, p.faint);
+                    }
+                    let c = if past { p.unavailable } else { p.text };
+                    ui.painter().text(r.center(), Align2::CENTER_CENTER, day.to_string(), theme::ui(size::SMALL + 0.5), c);
+                    if resp.clicked() && !past {
+                        d.date = (d.month.0, d.month.1, day);
+                        d.choice = yaac_core::mute::MuteChoice::Until;
+                    }
+                    day += 1;
+                }
+            });
+        }
+    });
+}

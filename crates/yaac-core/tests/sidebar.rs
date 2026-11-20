@@ -5,10 +5,11 @@ use common::{NOW, boot, render, render_open};
 use yaac_core::attention::{Attention, AttentionMap};
 use yaac_core::demo::{DemoHub, threads};
 use yaac_core::hints::RequestKindWord;
-use yaac_core::sidebar::{Grouping, SectionKind, hub_status, needs_you, sections};
+use yaac_core::sidebar::{Grouping, Open, SectionKind, hub_status, needs_you, sections};
+use yaac_core::time::Zone;
 
 fn g(machine: bool, project: bool, worktree: bool) -> Grouping {
-    Grouping { machine, project, worktree, show_archived: false }
+    Grouping { machine, project, worktree, show_dismissed: false }
 }
 
 #[test]
@@ -36,6 +37,7 @@ fn the_default_matches_the_brief() {
         "# _~/scratch/spike-7_ — devbox",
         "Try the new parser () 1d",
         "# Muted · 4",
+        "# Archived · 3",
     ];
     assert_eq!(render(&c, Grouping::default()), want);
 }
@@ -48,13 +50,15 @@ fn every_combination_yields_flat_sections_holding_each_thread_once() {
         for project in [true, false] {
             for worktree in [true, false] {
                 let grouping = g(machine, project, worktree);
-                let secs = sections(&c.state, &map, grouping, "", true, NOW);
+                let secs = sections(&c.state, &map, grouping, "", Open { muted: true, archived: true }, NOW, Zone::UTC);
                 let groups: Vec<_> = secs.iter().filter(|s| s.kind == SectionKind::Group).collect();
                 let rows: usize = groups.iter().map(|s| s.rows.len()).sum();
                 let muted: usize = secs.iter().filter(|s| s.kind == SectionKind::Muted).map(|s| s.rows.len()).sum();
                 let pinned: usize = secs.iter().filter(|s| s.kind == SectionKind::Pinned).map(|s| s.rows.len()).sum();
+                let archived: usize = secs.iter().filter(|s| s.kind == SectionKind::Archived).map(|s| s.rows.len()).sum();
                 assert_eq!(pinned, 1);
-                assert_eq!(rows + muted + pinned, c.state.threads.len(), "{grouping:?}");
+                assert_eq!(archived, 3);
+                assert_eq!(rows + muted + pinned + archived, c.state.threads.len(), "{grouping:?}");
                 assert_eq!(muted, 4);
                 let any = machine || project || worktree;
                 assert!(groups.iter().all(|s| s.header.is_some() == any), "{grouping:?}");
@@ -73,7 +77,8 @@ fn every_combination_yields_flat_sections_holding_each_thread_once() {
                     assert!(t.windows(2).all(|w| w[0] >= w[1]), "{grouping:?}");
                 }
                 assert_eq!(secs[0].kind, SectionKind::NeedsYou);
-                assert_eq!(secs.last().unwrap().kind, SectionKind::Muted);
+                assert_eq!(secs[secs.len() - 2].kind, SectionKind::Muted);
+                assert_eq!(secs.last().unwrap().kind, SectionKind::Archived, "Archived is the last section");
             }
         }
     }
@@ -94,7 +99,7 @@ fn header_text_follows_the_ticks() {
     assert!(r.contains(&"# main".to_owned()) && r.contains(&"# feature/protocol".to_owned()));
     let flat = render(&c, g(false, false, false));
     assert!(flat[5].starts_with("search-service (running) now"), "{flat:#?}");
-    assert!(!flat[5..].iter().any(|l| l.starts_with('#') && !l.starts_with("# Muted")));
+    assert!(!flat[5..].iter().any(|l| l.starts_with('#') && !l.starts_with("# Muted") && !l.starts_with("# Archived")));
 }
 
 #[test]
@@ -112,23 +117,59 @@ fn muted_and_archived() {
     assert!(r.contains(&"index-rebuild (needs you) gpu-box muted".to_owned()), "{r:#?}");
     assert_eq!(r.iter().filter(|l| l.starts_with("index-rebuild")).count(), 1);
     let muted_at = r.iter().position(|l| l == "# Muted · 4").unwrap();
-    let names: Vec<_> = r[muted_at + 1..].iter().map(|l| l.split(" (").next().unwrap()).collect();
+    let archived_at = r.iter().position(|l| l == "# Archived · 3").unwrap();
+    let names: Vec<_> = r[muted_at + 1..archived_at].iter().map(|l| l.split(" (").next().unwrap()).collect();
     assert_eq!(names, ["search-service", "users-service", "Lint pass", "Old spike"]);
-    assert!(r[muted_at + 1..].iter().all(|l| !l.contains(" / ")), "muted rows are one line");
-    // Archived threads leave the list; "Show archived" brings them back.
-    let mut s = c.state.clone();
-    s.threads.get_mut(&threads::billing()).unwrap().summary.archived = true;
-    let map = AttentionMap::compute(&s);
-    let has = |g: Grouping| sections(&s, &map, g, "", false, NOW).iter().flat_map(|x| x.rows.iter()).any(|r| r.key == threads::billing());
+    assert!(r[muted_at + 1..archived_at].iter().all(|l| !l.contains(" / ")), "muted rows are one line");
+    // A timed mute shows when it ends, in the host's time.
+    assert!(r.contains(&"Lint pass (done) until 20:30".to_owned()), "{r:#?}");
+    // Archived is the last section, under Muted.
+    assert_eq!(r[archived_at + 1..].iter().map(|l| l.split(" (").next().unwrap()).collect::<Vec<_>>(), ["Spike: protobuf codec", "Old CI flake hunt", "Rename the crates"]);
+    // Archiving lists a thread only under Archived, and clears its pin and mute; unarchiving
+    // does not restore them.
+    let users = threads::users();
+    c.set_pinned(&users, true);
+    c.archive(&users);
+    assert!(!c.state.is_pinned(&users) && !c.state.is_muted(&users, NOW));
+    let map = AttentionMap::compute(&c.state);
+    let secs = sections(&c.state, &map, Grouping::default(), "", Open { muted: true, archived: true }, NOW, Zone::UTC);
+    let holding: Vec<_> = secs.iter().filter(|s| s.rows.iter().any(|r| r.key == users)).map(|s| s.kind.clone()).collect();
+    assert_eq!(holding, [SectionKind::Archived]);
+    c.unarchive(&users);
+    assert!(!c.state.is_pinned(&users) && !c.state.is_muted(&users, NOW));
+    // Collapsed: the header and its count only.
+    let secs = sections(&c.state, &map, Grouping::default(), "", Open::default(), NOW, Zone::UTC);
+    let a = secs.last().unwrap();
+    assert_eq!((a.kind.clone(), a.collapsed, a.rows.len(), a.count), (SectionKind::Archived, true, 0, 3), "users-service is back in its project");
+}
+
+#[test]
+fn a_timed_mute_ends_by_itself_and_dismissed_threads_hide() {
+    let (mut c, _) = boot();
+    let fix = threads::fix();
+    let ci = threads::ci();
+    c.mute_until(&ci, Some(NOW + 600));
+    assert!(c.state.is_muted(&ci, NOW));
+    assert!(!c.state.is_muted(&ci, NOW + 600), "no timer: it simply stops applying");
+    assert_eq!(c.state.next_unmute(NOW), Some(NOW + 600).min(c.state.next_unmute(NOW)));
+    c.set_muted(&ci, false);
+    // Dismiss hides a thread in the window only; "Show dismissed" lists it.
+    c.set_dismissed(&ci, true);
+    let map = AttentionMap::compute(&c.state);
+    let has = |g: Grouping| sections(&c.state, &map, g, "", Open::default(), NOW, Zone::UTC).iter().flat_map(|x| x.rows.iter()).any(|r| r.key == ci);
     assert!(!has(Grouping::default()));
-    assert!(has(Grouping { show_archived: true, ..Grouping::default() }));
+    assert!(has(Grouping { show_dismissed: true, ..Grouping::default() }));
+    // A blocked thread is never hidden from Needs you, dismissed or muted.
+    c.set_dismissed(&fix, true);
+    c.set_muted(&fix, true);
+    assert!(yaac_core::sidebar::needs_you(&c.state, &map, NOW).iter().any(|e| e.key == fix));
 }
 
 #[test]
 fn search_filters_title_and_preview() {
     let (c, _) = boot();
     let map = AttentionMap::compute(&c.state);
-    let found: Vec<_> = sections(&c.state, &map, Grouping::default(), "REBUILD", false, NOW)
+    let found: Vec<_> = sections(&c.state, &map, Grouping::default(), "REBUILD", Open::default(), NOW, Zone::UTC)
         .into_iter()
         .filter(|s| s.kind == SectionKind::Group)
         .flat_map(|s| s.rows)
@@ -141,7 +182,7 @@ fn search_filters_title_and_preview() {
 fn needs_you_lists_every_machine_most_recent_first() {
     let (c, _) = boot();
     let map = AttentionMap::compute(&c.state);
-    let got: Vec<_> = needs_you(&c.state, &map).into_iter().map(|e| (e.title, e.attention, e.target_name)).collect();
+    let got: Vec<_> = needs_you(&c.state, &map, NOW).into_iter().map(|e| (e.title, e.attention, e.target_name)).collect();
     let a = Attention::Request(RequestKindWord::Approval);
     assert_eq!(
         got,

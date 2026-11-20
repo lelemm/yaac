@@ -53,7 +53,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             return;
         }
     }
-    let secs = sections(&app.client.state, map, app.ui.grouping, &app.ui.search, app.ui.muted_open, now);
+    let open = yaac_core::sidebar::Open { muted: app.ui.muted_open, archived: app.ui.archived_open };
+    let secs = sections(&app.client.state, map, app.ui.grouping, &app.ui.search, open, now, app.zone);
     let mut lines: Vec<(f32, f32, Line<'_>)> = Vec::new();
     let mut y = 0.0;
     for (i, s) in secs.iter().enumerate() {
@@ -74,7 +75,13 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     let footer_h = if app.demo.is_some() { 74.0 } else { 40.0 };
     let list_h = ui.available_height() - footer_h;
     let selected = app.client.state.selected_thread().cloned();
-    egui::ScrollArea::vertical().id_salt("sidebar-list").max_height(list_h).auto_shrink([false, false]).show_viewport(ui, |ui, view| {
+    let mut sa = egui::ScrollArea::vertical().id_salt("sidebar-list").max_height(list_h).auto_shrink([false, false]);
+    if app.ui.sidebar_to_end {
+        // Held for the screenshot's settle frames (the area learns its size on the first).
+        app.ui.sidebar_to_end = app.shots.is_some();
+        sa = sa.vertical_scroll_offset((total - list_h).max(0.0));
+    }
+    sa.show_viewport(ui, |ui, view| {
         ui.set_height(total);
         let origin = ui.max_rect().top();
         let left = ui.max_rect().left();
@@ -267,7 +274,7 @@ fn search_field(ui: &mut egui::Ui, app: &mut YaacApp, enabled: bool) {
             ui.checkbox(&mut g.project, "Project");
             ui.checkbox(&mut g.worktree, "Worktree");
             ui.add_space(8.0);
-            ui.checkbox(&mut g.show_archived, "Show archived");
+            ui.checkbox(&mut g.show_dismissed, "Show dismissed");
         });
     if !open && app.ui.menu == Some(Menu::Grouping) {
         app.ui.menu = None;
@@ -287,7 +294,7 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
     if h.temporary {
         icons::dashed_circle(ui.painter(), pos2(x + 6.0, y - 6.0), 5.0, egui::Stroke::new(1.2, p.text2));
         x += 16.0;
-        let resp = ui.interact(rect, egui::Id::unique(("temp-header", s.id.as_str())), Sense::click());
+        let resp = ui.interact(rect, egui::Id::unique(("temp-header", s.id.as_str(), rect.top().to_bits())), Sense::click());
         if resp.secondary_clicked() {
             app.ui.menu = Some(Menu::TempProject(s.id.clone()));
         }
@@ -303,18 +310,29 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
                     {
                         app.ui.create_project = Some(create_project_for(app, target, folder));
                     }
+                    // Hide every thread of this folder in the window ("Show dismissed" lists
+                    // them again).
+                    if ui.button("Dismiss all").clicked() {
+                        for r in &s.rows {
+                            actions.push(Action::Dismiss(r.key.clone(), true));
+                        }
+                    }
                 });
             if !open && app.ui.menu == Some(Menu::TempProject(s.id.clone())) {
                 app.ui.menu = None;
             }
         }
     }
-    if s.kind == SectionKind::Muted {
+    if matches!(s.kind, SectionKind::Muted | SectionKind::Archived) {
         icons::chevron(ui.painter(), pos2(x + 5.0, y - 6.0), 12.0, !s.collapsed, p.text2);
         x += 16.0;
-        let resp = ui.interact(rect, egui::Id::unique("muted-header"), Sense::click());
+        let resp = ui.interact(rect, egui::Id::unique(("collapsible-header", s.id.as_str(), rect.top().to_bits())), Sense::click());
         if resp.clicked() {
-            app.ui.muted_open = !app.ui.muted_open;
+            if s.kind == SectionKind::Muted {
+                app.ui.muted_open = !app.ui.muted_open;
+            } else {
+                app.ui.archived_open = !app.ui.archived_open;
+            }
         }
     }
     let mut rx = rect.right() - 4.0;
@@ -322,7 +340,7 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
         let g = ui.fonts_mut(|f| f.layout_no_wrap("Retry".to_owned(), font.clone(), p.text));
         let r = Rect::from_min_size(pos2(rx - g.size().x, y - g.size().y), g.size());
         ui.painter().galley(r.min, g, p.text);
-        let retry = ui.interact(r, egui::Id::unique(("retry", s.id.as_str())), Sense::click());
+        let retry = ui.interact(r, egui::Id::unique(("retry", s.id.as_str(), rect.top().to_bits())), Sense::click());
         if retry.hovered() || retry.has_focus() {
             ui.painter().hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, p.text));
         }
@@ -413,6 +431,7 @@ fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, 
     let right_text = match &row.right {
         RowRight::Age(a) => a.clone(),
         RowRight::Machine { name, muted } => if *muted { format!("{name} · muted") } else { name.clone() },
+        RowRight::Until(u) => u.clone(),
     };
     let g = ui.fonts_mut(|f| f.layout_no_wrap(right_text, font.clone(), p.text2));
     let rx = rect.right() - 8.0 - g.size().x;
@@ -486,16 +505,36 @@ fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, 
             .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
             .show(|ui| {
                 ui.set_min_width(140.0);
-                let pinned = app.client.state.is_pinned(&row.key);
-                if ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
-                    actions.push(Action::SetPinned(row.key.clone(), !pinned));
-                }
-                let muted = row.muted;
-                if ui.button(if muted { "Unmute" } else { "Mute" }).clicked() {
-                    actions.push(Action::SetMuted(row.key.clone(), !muted));
-                }
-                if ui.button("Archive").clicked() {
-                    actions.push(Action::Archive(row.key.clone()));
+                if s.kind == SectionKind::Archived {
+                    // An archived thread has no pin or mute; it can only come back.
+                    if ui.button("Unarchive").clicked() {
+                        actions.push(Action::Unarchive(row.key.clone()));
+                    }
+                } else {
+                    let pinned = app.client.state.is_pinned(&row.key);
+                    if ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
+                        actions.push(Action::SetPinned(row.key.clone(), !pinned));
+                    }
+                    if row.muted {
+                        if ui.button("Unmute").clicked() {
+                            actions.push(Action::SetMuted(row.key.clone(), false));
+                        }
+                        if ui.button("Change…").clicked() {
+                            actions.push(Action::OpenMute(row.key.clone(), true));
+                        }
+                    } else if ui.button("Mute…").clicked() {
+                        actions.push(Action::OpenMute(row.key.clone(), false));
+                    }
+                    if row.dismissed {
+                        if ui.button("Show again").clicked() {
+                            actions.push(Action::Dismiss(row.key.clone(), false));
+                        }
+                    } else if app.client.state.project_of(&row.key).is_none() && ui.button("Dismiss").clicked() {
+                        actions.push(Action::Dismiss(row.key.clone(), true));
+                    }
+                    if ui.button("Archive").clicked() {
+                        actions.push(Action::Archive(row.key.clone()));
+                    }
                 }
                 if ui.button("Rename").clicked() {
                     app.ui.rename = Some((row.key.clone(), row.title.clone()));

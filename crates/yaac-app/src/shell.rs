@@ -94,7 +94,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
 /// (opens the full list as an overlay), and Settings at the bottom. Returns the badge's rect.
 fn rail(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, side: egui::Rect, actions: &mut Vec<Action>) -> egui::Rect {
     let p = app.p;
-    let count = yaac_core::sidebar::needs_you(&app.client.state, map).len();
+    let count = yaac_core::sidebar::needs_you(&app.client.state, map, app.now()).len();
     let cx = side.center().x;
     let button = |ui: &mut egui::Ui, y: f32, id: &str, tip: &str| {
         let r = egui::Rect::from_center_size(egui::pos2(cx, y), vec2(40.0, 40.0));
@@ -330,7 +330,7 @@ fn rename_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Actio
 /// Ctrl+J: the Needs-you list from anywhere. ↑ ↓ to move, ⏎ to open (and focus the card).
 fn needs_popup(ctx: &egui::Context, app: &mut YaacApp, map: &AttentionMap, badge: Option<egui::Rect>, actions: &mut Vec<Action>) {
     let p = app.p;
-    let list = yaac_core::sidebar::needs_you(&app.client.state, map);
+    let list = yaac_core::sidebar::needs_you(&app.client.state, map, app.now());
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
         app.ui.needs_sel = (app.ui.needs_sel + 1).min(list.len().saturating_sub(1));
     }

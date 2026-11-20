@@ -32,7 +32,7 @@ pub enum SendKey {
 /// The persisted choices.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UiPrefs {
-    /// The sidebar grouping checkboxes and "Show archived".
+    /// The sidebar grouping checkboxes and "Show dismissed".
     pub grouping: Grouping,
     /// The agents panel is docked.
     pub docked: bool,
@@ -78,7 +78,7 @@ impl UiPrefs {
                 "machine": self.grouping.machine,
                 "project": self.grouping.project,
                 "worktree": self.grouping.worktree,
-                "showArchived": self.grouping.show_archived,
+                "showDismissed": self.grouping.show_dismissed,
             }),
             keys::AGENTS_DOCKED => json!(self.docked),
             keys::THEME => json!(match self.theme {
@@ -105,7 +105,7 @@ impl UiPrefs {
                 g.machine = b("machine", g.machine);
                 g.project = b("project", g.project);
                 g.worktree = b("worktree", g.worktree);
-                g.show_archived = b("showArchived", g.show_archived);
+                g.show_dismissed = b("showDismissed", g.show_dismissed);
             }
             keys::AGENTS_DOCKED => self.docked = v.as_bool().unwrap_or(self.docked),
             keys::THEME => {

@@ -74,6 +74,12 @@ pub(crate) struct UiState {
     pub grouping: Grouping,
     pub search: String,
     pub muted_open: bool,
+    /// The Archived section is open.
+    pub archived_open: bool,
+    /// The Mute dialog.
+    pub mute: Option<yaac_core::mute::MuteDialog>,
+    /// Scroll the thread list to its end on the next frame (screenshots).
+    pub sidebar_to_end: bool,
     pub expansion: Expansion,
     pub panel: PanelMode,
     /// The agents card's open/close rule.
@@ -132,6 +138,9 @@ impl UiState {
             grouping: Grouping::default(),
             search: String::new(),
             muted_open: false,
+            archived_open: false,
+            mute: None,
+            sidebar_to_end: false,
             expansion: Expansion::default(),
             panel: PanelMode::Pill,
             hover: yaac_core::hover::HoverCard::default(),
@@ -238,6 +247,12 @@ pub(crate) enum Action {
     OpenFork(ThreadKey),
     Fork(ThreadKey, ForkChoice),
     SetMuted(ThreadKey, bool),
+    /// Mute until a moment (`None`: no end), from the Mute dialog.
+    MuteUntil(ThreadKey, Option<i64>),
+    /// Open the Mute dialog (`true`: "Change…", prefilled with the current mute).
+    OpenMute(ThreadKey, bool),
+    Unarchive(ThreadKey),
+    Dismiss(ThreadKey, bool),
     SetPinned(ThreadKey, bool),
     CreateProject(CreateProject),
     DraftProject(u64, String),
@@ -361,6 +376,9 @@ pub(crate) struct YaacApp {
     /// The host is Windows (or pretends to be, `--host windows`): WSL settings are shown.
     pub host_windows: bool,
     pub ssh: Box<dyn SshSetupBackend>,
+    /// The host's time zone (D91): every time shown or asked for is local to this computer.
+    pub zone: yaac_core::time::Zone,
+    zone_checked: f64,
     saved_prefs: UiPrefs,
     last_tick: f64,
     pub applied: Option<bool>,
@@ -372,6 +390,11 @@ impl std::fmt::Debug for YaacApp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("YaacApp")
     }
+}
+
+/// The host's UTC offset now. Read in the window, never in core (D91).
+pub(crate) fn host_zone() -> yaac_core::time::Zone {
+    yaac_core::time::Zone::new(chrono::Local::now().offset().local_minus_utc())
 }
 
 /// The story's present for the demo: 2026-11-20 14:00 UTC.
@@ -456,6 +479,8 @@ impl YaacApp {
             hub,
             host_windows: launch.host_windows,
             ssh,
+            zone: host_zone(),
+            zone_checked: 0.0,
             saved_prefs,
             last_tick: 0.0,
             applied: None,
@@ -669,6 +694,23 @@ impl YaacApp {
                     self.ui.fork = None;
                 }
                 Action::SetMuted(k, m) => self.client.set_muted(&k, m),
+                Action::MuteUntil(k, u) => {
+                    self.client.mute_until(&k, u);
+                    self.ui.mute = None;
+                }
+                Action::OpenMute(k, change) => {
+                    let now = self.now();
+                    let title = self.client.state.summary(&k).map(|s| s.title.clone()).unwrap_or_default();
+                    let until = self.client.state.muted_until(&k, now);
+                    self.ui.mute = Some(if change {
+                        yaac_core::mute::MuteDialog::prefill(k, &title, until, now, self.zone)
+                    } else {
+                        yaac_core::mute::MuteDialog::new(k, &title, now, self.zone)
+                    });
+                    self.ui.menu = None;
+                }
+                Action::Unarchive(k) => self.client.unarchive(&k),
+                Action::Dismiss(k, d) => self.client.set_dismissed(&k, d),
                 Action::SetPinned(k, v) => self.client.set_pinned(&k, v),
                 Action::CreateProject(cp) => {
                     // The draft (if any) is put in the project once the target created it.
@@ -924,6 +966,18 @@ impl eframe::App for YaacApp {
         self.hub_upkeep();
         let ssh_changed = self.ui.set.pump_ssh(self.ssh.as_mut());
         let t = ctx.input(|i| i.time);
+        // The offset changes with daylight saving: look again once a minute (only when a
+        // frame happens anyway).
+        if t - self.zone_checked > 60.0 || self.zone_checked == 0.0 {
+            self.zone = host_zone();
+            self.zone_checked = t.max(f64::MIN_POSITIVE);
+        }
+        // A timed mute ends by itself: one repaint when the nearest one is due, so the row
+        // comes back on time without repainting meanwhile.
+        let now = self.now();
+        if let Some(at) = self.client.state.next_unmute(now) {
+            ctx.request_repaint_after(std::time::Duration::from_secs(u64::try_from(at - now).unwrap_or(0)));
+        }
         if let Some(h) = &self.demo
             && h.busy()
             && self.shots.is_none()
@@ -973,6 +1027,7 @@ impl eframe::App for YaacApp {
             crate::shell::show(ui, self, &map, now, &mut actions, frame);
         }
         crate::dialogs::mode_confirm(ui.ctx(), self, &mut actions);
+        crate::dialogs::mute(ui.ctx(), self, &mut actions);
         self.apply(actions);
         self.persist_prefs();
     }

@@ -33,6 +33,9 @@ serde_json.workspace = true
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "accesskit", "wayland", "x11"] }
 pulldown-cmark = { version = "0.13.0", default-features = false }
 png = "0.17"
+# The host's local UTC offset (D91: every time shown is in the local zone). Only the `clock`
+# feature: chrono plus iana-time-zone; no serde, no formatting tables.
+chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 tempfile = "3.10"

@@ -433,16 +433,22 @@ fn ui_state_is_sent_only_when_attached() {
 // ── wire data instead of window-local seams ────────────────────────────────────────────
 
 #[test]
-fn mute_pin_and_agents_go_through_thread_update() {
+fn mute_and_pin_are_hub_view_preferences_and_agents_go_through_thread_update() {
     let (mut c, hub) = boot();
     let fix = threads::fix();
-    assert!(!c.state.is_muted(&fix));
+    assert!(!c.state.is_muted(&fix, common::NOW));
     c.set_muted(&fix, true);
     c.set_pinned(&fix, true);
     c.set_agents_policy(&fix, yaac_core::state::AgentsPolicy::Allow);
     settle(&mut c, &hub);
+    // Pin and mute are kept by the hub (`hub/view/set`), never read from the summary.
+    assert!(c.state.is_muted(&fix, common::NOW) && c.state.is_pinned(&fix));
     let s = c.state.summary(&fix).unwrap();
-    assert!(s.muted && s.pinned);
+    assert!(!s.muted && !s.pinned);
+    // A fresh window gets them back from the hub (`hub/view/get`).
+    let mut c2 = yaac_core::client::Client::new(Box::new(hub.clone()), "test", yaac_protocol::ClientId::new(yaac_core::demo::DEMO_CLIENT));
+    settle(&mut c2, &hub);
+    assert!(c2.state.is_muted(&fix, common::NOW) && c2.state.is_pinned(&fix));
     assert_eq!(s.agents, yaac_protocol::AgentsPolicy::Allow);
     assert_eq!(c.state.agents_policy(&fix), yaac_core::state::AgentsPolicy::Allow);
 }
