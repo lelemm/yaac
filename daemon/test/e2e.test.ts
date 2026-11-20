@@ -28,7 +28,7 @@ class StdioClient {
   }
   static spawn(home: string): StdioClient {
     const child = spawn(process.execPath, ["--no-turbofan", BUNDLE, "connect"], {
-      env: { ...process.env, YAAC_HOME: home, YAAC_FAKE_PROVIDER: "1", TMPDIR: path.join(home, "tmp"), YAAC_IDLE_TIMEOUT_MS: "0" },
+      env: { ...process.env, YAAC_HOME: home, YAAC_FAKE_PROVIDER: "1", YAAC_CODEX_PROVIDER: "0", YAAC_CLAUDE_PROVIDER: "0", TMPDIR: path.join(home, "tmp"), YAAC_IDLE_TIMEOUT_MS: "0" },
       stdio: ["pipe", "pipe", "inherit"],
     });
     return new StdioClient(child);

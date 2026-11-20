@@ -16,6 +16,7 @@ import * as path from "node:path";
 import type {
   Capability,
   Item,
+  ModeInfo,
   ModelInfo,
   RequestResponse,
   ThreadEffective,
@@ -94,6 +95,61 @@ export interface CodexOptions {
   clientVersion?: string;
 }
 
+/**
+ * Approval and sandbox modes, as Codex's own approval-policy and sandbox enumerations define
+ * them (the presets Codex offers in its interfaces). These are harness settings, not model
+ * data. A thread never starts in one unless it is chosen: with no mode, nothing is sent and the
+ * thread follows the user's Codex configuration.
+ */
+interface CodexMode extends ModeInfo {
+  approvalPolicy: string;
+  sandbox: string;
+  sandboxPolicy: Record<string, unknown>;
+}
+
+export const CODEX_MODES: readonly CodexMode[] = [
+  {
+    id: "codex:read-only",
+    displayName: "Read only",
+    description: "Codex can read files; it asks before editing, running commands that need more, or using the network.",
+    approvalPolicy: "on-request",
+    sandbox: "read-only",
+    sandboxPolicy: { type: "readOnly", networkAccess: false },
+  },
+  {
+    id: "codex:auto",
+    displayName: "Auto",
+    description: "Codex can read and edit files in the working directory and run commands there; it asks before going beyond it.",
+    approvalPolicy: "on-request",
+    sandbox: "workspace-write",
+    sandboxPolicy: { type: "workspaceWrite", writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
+  },
+  {
+    id: "codex:full-access",
+    displayName: "Full access",
+    description: "Codex edits files, runs commands, and uses the network anywhere, and never asks.",
+    skipsApprovals: true,
+    approvalPolicy: "never",
+    sandbox: "danger-full-access",
+    sandboxPolicy: { type: "dangerFullAccess" },
+  },
+];
+
+function modeInfo(m: CodexMode): ModeInfo {
+  const { approvalPolicy: _a, sandbox: _s, sandboxPolicy: _p, ...info } = m;
+  void _a;
+  void _s;
+  void _p;
+  return info;
+}
+
+function findMode(id: string | null | undefined): CodexMode | null {
+  if (!id) return null;
+  const m = CODEX_MODES.find((x) => x.id === id);
+  if (!m) throw new Error(`"${id}" is not a Codex mode`);
+  return m;
+}
+
 const CLIENT_NAME = "yaacd";
 const DEFAULT_CLIENT_VERSION = "0.1.0";
 
@@ -120,6 +176,8 @@ interface ThreadState {
   ownInputsPending: number;
   model: string | null;
   effort: string | null;
+  /** The mode yaacd last applied (null: the user's Codex configuration). */
+  mode: string | null;
   /** Effort chosen at fork time, applied on the next turn (fork takes no effort). */
   pendingEffort: string | null;
   usageAtStart: ThreadTokenUsage | undefined;
@@ -325,6 +383,7 @@ export class CodexProvider implements HarnessProvider {
         ownInputsPending: 0,
         model: null,
         effort: null,
+        mode: null,
         pendingEffort: null,
         usageAtStart: undefined,
         lastUsage: undefined,
@@ -460,6 +519,7 @@ export class CodexProvider implements HarnessProvider {
       "modelList",
       "plan",
       "webSearch",
+      "modes",
     ];
     if (models.some((m) => m.capabilities?.some((c) => c.capability === "imageInput" && c.support !== "unsupported"))) caps.push("imageInput");
     return {
@@ -472,7 +532,7 @@ export class CodexProvider implements HarnessProvider {
       capabilities: caps,
       models,
       modelsComplete: complete,
-      modes: [],
+      modes: CODEX_MODES.map(modeInfo),
     };
   }
 
@@ -564,8 +624,14 @@ export class CodexProvider implements HarnessProvider {
 
   async startThread(params: StartThreadParams, input: ProviderInput): Promise<{ thread: NativeId; turn: TurnId }> {
     const conn = await this.ensure();
+    const mode = findMode(params.mode);
     const extras = await this.setup({ phase: "start", thread: null, cwd: params.cwd });
-    const r = (await conn.request("thread/start", { cwd: params.cwd, ...(params.model ? { model: params.model } : {}), ...extras })) as {
+    const r = (await conn.request("thread/start", {
+      cwd: params.cwd,
+      ...(params.model ? { model: params.model } : {}),
+      ...(mode ? { approvalPolicy: mode.approvalPolicy, sandbox: mode.sandbox } : {}),
+      ...extras,
+    })) as {
       thread: Thread;
       model?: string;
       reasoningEffort?: string | null;
@@ -576,9 +642,10 @@ export class CodexProvider implements HarnessProvider {
     st.status = r.thread.status ?? { type: "idle" };
     st.model = r.model ?? r.thread.model ?? null;
     st.effort = r.reasoningEffort ?? null;
+    st.mode = mode?.id ?? null;
     st.lastControl = JSON.stringify({ external: false });
     try {
-      const turn = await this.beginTurn(st, input, { model: null, effort: params.effort ?? null });
+      const turn = await this.beginTurn(st, input, { model: null, effort: params.effort ?? null, mode: null });
       return { thread: native, turn };
     } catch (e) {
       // Nothing was sent: do not leave an empty conversation behind.
@@ -599,7 +666,7 @@ export class CodexProvider implements HarnessProvider {
       }
     }
     if (this.isActive(st.status)) throw new ThreadInUseError("the Codex thread is busy");
-    return this.beginTurn(st, input, { model: overrides.model ?? null, effort: overrides.effort ?? null });
+    return this.beginTurn(st, input, { model: overrides.model ?? null, effort: overrides.effort ?? null, mode: findMode(overrides.mode) });
   }
 
   private userInput(input: ProviderInput): UserInput[] {
@@ -609,7 +676,7 @@ export class CodexProvider implements HarnessProvider {
     return out;
   }
 
-  private async beginTurn(st: ThreadState, input: ProviderInput, o: { model: string | null; effort: string | null }): Promise<TurnId> {
+  private async beginTurn(st: ThreadState, input: ProviderInput, o: { model: string | null; effort: string | null; mode: CodexMode | null }): Promise<TurnId> {
     const conn = await this.ensure();
     const clientId = randomId("yaac-", 12);
     const effort = o.effort ?? st.pendingEffort;
@@ -625,6 +692,7 @@ export class CodexProvider implements HarnessProvider {
         clientUserMessageId: clientId,
         ...(o.model ? { model: o.model } : {}),
         ...(effort ? { effort } : {}),
+        ...(o.mode ? { approvalPolicy: o.mode.approvalPolicy, sandboxPolicy: o.mode.sandboxPolicy } : {}),
       })) as { turn: Turn };
       turnId = r.turn.id;
     } catch (e) {
@@ -646,6 +714,7 @@ export class CodexProvider implements HarnessProvider {
     st.pendingEffort = null;
     if (o.model) st.model = o.model;
     if (effort) st.effort = effort;
+    if (o.mode) st.mode = o.mode.id;
     st.ownTurn = turnId;
     st.ownOrigin = input.origin;
     st.ownInputsPending = 1;
@@ -655,7 +724,7 @@ export class CodexProvider implements HarnessProvider {
     this.persisted.ownTurns[st.native] = turnId;
     this.save();
     this.emit({ type: "turnStarted", thread: st.native, turnId, origin: input.origin, at: new Date().toISOString() });
-    if (o.model || effort) this.emit({ type: "settingsChanged", thread: st.native, applied: { model: st.model, effort: st.effort } });
+    if (o.model || effort || o.mode) this.emit({ type: "settingsChanged", thread: st.native, applied: { model: st.model, effort: st.effort, mode: st.mode } });
     this.flushHeld(st);
     return turnId;
   }
@@ -791,6 +860,7 @@ export class CodexProvider implements HarnessProvider {
       "plan",
       "webSearch",
       "reasoningSummary",
+      "modes",
     ];
     if (efforts.length > 0) base.push("effortSwitch", "reasoning");
     if (image === "supported") base.push("imageInput");
@@ -799,8 +869,8 @@ export class CodexProvider implements HarnessProvider {
       imageInput: image,
       imageFormats: [],
       efforts,
-      modes: [],
-      applied: { model: st.model ?? model?.id ?? null, effort: st.effort ?? model?.defaultEffort ?? null },
+      modes: CODEX_MODES.map(modeInfo),
+      applied: { model: st.model ?? model?.id ?? null, effort: st.effort ?? model?.defaultEffort ?? null, mode: st.mode },
     };
   }
 
@@ -835,6 +905,7 @@ export class CodexProvider implements HarnessProvider {
         lastTurnId = done.id;
       }
     }
+    const mode = findMode(opts.mode);
     const extras = await this.setup({ phase: "fork", thread, cwd: opts.cwd });
     const r = (await conn.request("thread/fork", {
       threadId: thread,
@@ -842,6 +913,7 @@ export class CodexProvider implements HarnessProvider {
       ...(lastTurnId ? { lastTurnId } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
+      ...(mode ? { approvalPolicy: mode.approvalPolicy, sandbox: mode.sandbox } : {}),
       ...extras,
     })) as { thread: Thread; model?: string; reasoningEffort?: string | null };
     const st = this.state(r.thread.id);
@@ -850,6 +922,7 @@ export class CodexProvider implements HarnessProvider {
     st.model = r.model ?? r.thread.model ?? null;
     st.effort = opts.effort ?? r.reasoningEffort ?? null;
     st.pendingEffort = opts.effort ?? null;
+    st.mode = mode?.id ?? null;
     st.lastControl = JSON.stringify({ external: false });
     return r.thread.id;
   }

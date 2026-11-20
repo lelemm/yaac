@@ -276,7 +276,7 @@ test("probe reports models and their efforts exactly as listed, and closes its q
   for (const m of p.models) assert.deepEqual(m.capabilities, [{ capability: "imageInput", support: "supported" }]);
   assert.ok(p.capabilities.includes("approvals") && p.capabilities.includes("userQuestions") && p.capabilities.includes("reasoning"));
   assert.ok(p.modes.some((m) => m.id === "default" && m.isDefault));
-  assert.ok(!p.modes.some((m) => m.id === "bypassPermissions"));
+  assert.ok(p.modes.some((m) => m.id === "bypassPermissions" && m.skipsApprovals && !m.isDefault));
   assert.equal(p.store.account, "someone@example.invalid");
   assert.ok(p.store.key?.startsWith("claude:"));
   const probeQuery = r.sdk.queries[0]!;
@@ -505,6 +505,110 @@ test("a model switch uses setModel, effort uses applyFlagSettings, and the appli
   assert.equal(reopened.options.effort, "stub-lo");
   assert.equal(reopened.options.model, "stub-alias");
   assert.equal((await reopened.nextUser()).message.content, "third");
+  await r.provider.dispose();
+});
+
+test("bypass mode is offered, marked skipsApprovals, and is the only mode so marked", async () => {
+  const r = rig();
+  const p = await r.provider.probe();
+  const marked = p.modes.filter((m) => m.skipsApprovals);
+  assert.deepEqual(marked.map((m) => m.id), ["bypassPermissions"]);
+  assert.deepEqual(p.modes.filter((m) => m.isDefault).map((m) => m.id), ["default"]);
+  // A new thread does not start in it, and its query is opened without the dangerous option.
+  const { thread, q } = await startedThread(r);
+  assert.equal(q.options.permissionMode, "default");
+  assert.equal(q.options.allowDangerouslySkipPermissions, undefined);
+  assert.equal(q.options.hooks, undefined);
+  assert.equal((await r.provider.effective(thread)).applied?.mode, "default");
+  await r.provider.dispose();
+});
+
+test("switching into bypass re-opens the query with allowDangerouslySkipPermissions; leaving drops it", async () => {
+  const r = rig();
+  await r.provider.probe();
+  const { thread, q } = await startedThread(r);
+  q.push(result());
+  await until(() => of(r.events, "turnCompleted")[0], "first turn");
+
+  await r.provider.startTurn(thread, input("go"), { mode: "bypassPermissions" });
+  assert.equal(q.closed, true);
+  assert.ok(!q.calls.some(([c]) => c === "setPermissionMode"), "bypass is not entered with setPermissionMode");
+  const qb = r.sdk.queries.at(-1)!;
+  assert.notEqual(qb, q);
+  assert.equal(qb.options.resume, thread);
+  assert.equal(qb.options.permissionMode, "bypassPermissions");
+  assert.equal(qb.options.allowDangerouslySkipPermissions, true);
+  assert.equal((await qb.nextUser()).message.content, "go");
+  assert.equal(of(r.events, "settingsChanged").at(-1)!.applied.mode, "bypassPermissions");
+  assert.equal((await r.provider.effective(thread)).applied?.mode, "bypassPermissions");
+  qb.push(result());
+  await until(() => of(r.events, "turnCompleted")[1], "bypass turn");
+
+  // A turn with no mode override stays in bypass on the same query.
+  await r.provider.startTurn(thread, input("more"), {});
+  assert.equal(r.sdk.queries.at(-1), qb);
+  qb.push(result());
+  await until(() => of(r.events, "turnCompleted")[2], "third turn");
+
+  await r.provider.startTurn(thread, input("careful now"), { mode: "acceptEdits" });
+  assert.equal(qb.closed, true);
+  const qa = r.sdk.queries.at(-1)!;
+  assert.notEqual(qa, qb);
+  assert.equal(qa.options.resume, thread);
+  assert.equal(qa.options.permissionMode, "acceptEdits");
+  assert.equal(qa.options.allowDangerouslySkipPermissions, undefined);
+  assert.equal(qa.options.hooks, undefined);
+  assert.equal((await qa.nextUser()).message.content, "careful now");
+
+  // A resume after idle eviction keeps the thread's mode, and the option goes with it.
+  const r2 = rig({ idleMs: 30 });
+  const t2 = await r2.provider.startThread({ cwd: r2.dir, mode: "bypassPermissions" }, input("start in bypass, as asked"));
+  const q2 = r2.sdk.queries.at(-1)!;
+  assert.equal(q2.options.allowDangerouslySkipPermissions, true);
+  q2.push(result());
+  await until(() => q2.closed, "idle close");
+  await r2.provider.startTurn(t2.thread, input("again"), {});
+  const q3 = r2.sdk.queries.at(-1)!;
+  assert.equal(q3.options.resume, t2.thread);
+  assert.equal(q3.options.permissionMode, "bypassPermissions");
+  assert.equal(q3.options.allowDangerouslySkipPermissions, true);
+  await r.provider.dispose();
+  await r2.provider.dispose();
+});
+
+test("in bypass mode AskUserQuestion still reaches the user, once, through the hook or canUseTool", async () => {
+  const r = rig();
+  const started = await r.provider.startThread({ cwd: r.dir, mode: "bypassPermissions" }, input("ask me"));
+  const q = r.sdk.queries.at(-1)!;
+  await q.nextUser();
+  const matchers = q.options.hooks?.PreToolUse ?? [];
+  assert.equal(matchers.length, 1);
+  assert.equal(matchers[0]!.matcher, "AskUserQuestion");
+  const hook = matchers[0]!.hooks[0]!;
+  const askInput = { questions: [{ question: "Continue?", header: "Go", multiSelect: false, options: [{ label: "Yes", description: "" }, { label: "No", description: "" }] }] };
+  const hookInput = { hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", tool_input: askInput, tool_use_id: "toolu_ask", session_id: started.thread, transcript_path: "", cwd: r.dir } as never;
+
+  // The hook asks; canUseTool, if Claude Code also calls it, waits for the same answer.
+  const fromHook = hook(hookInput, "toolu_ask", { signal: signal() });
+  const fromPerm = q.canUseTool("AskUserQuestion", askInput, { signal: signal(), toolUseID: "toolu_ask", requestId: "c" });
+  const raised = await until(() => of(r.events, "requestRaised")[0], "requestRaised");
+  assert.equal(raised.requestId, "toolu_ask");
+  assert.equal(raised.request.requestKind, "question");
+  await tick();
+  assert.equal(of(r.events, "requestRaised").length, 1, "raised once");
+  await r.provider.respond(started.thread, "toolu_ask", { requestKind: "question", answers: { q1: { selected: ["No"] } } });
+  const answered = { ...askInput, answers: { "Continue?": "No" } };
+  assert.deepEqual(await fromHook, { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: answered } });
+  assert.deepEqual(await fromPerm, { behavior: "allow", updatedInput: answered });
+
+  // canUseTool alone (no hook call) also raises the question.
+  const alone = q.canUseTool("AskUserQuestion", askInput, { signal: signal(), toolUseID: "toolu_ask2", requestId: "c2" });
+  await until(() => of(r.events, "requestRaised")[1], "second question");
+  await r.provider.respond(started.thread, "toolu_ask2", { requestKind: "question", answers: { q1: { other: "later" } } });
+  assert.deepEqual(await alone, { behavior: "allow", updatedInput: { ...askInput, answers: { "Continue?": "later" } } });
+
+  // Other tools pass the hook untouched.
+  assert.deepEqual(await hook({ ...(hookInput as object), tool_name: "Bash" } as never, "toolu_b", { signal: signal() }), {});
   await r.provider.dispose();
 });
 

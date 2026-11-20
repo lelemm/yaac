@@ -18,6 +18,15 @@ await build({
   sourcemap: false,
   legalComments: "none",
   logLevel: "warning",
-  banner: { js: "#!/usr/bin/env node" },
+  // Some dependencies (ws) are CommonJS and call require() for Node built-ins. An ES module
+  // has no require, so the bundle defines one; without it the daemon dies at start-up with
+  // "Dynamic require of \"events\" is not supported".
+  banner: {
+    js: [
+      "#!/usr/bin/env node",
+      'import { createRequire as __yaacCreateRequire } from "node:module";',
+      "const require = __yaacCreateRequire(import.meta.url);",
+    ].join("\n"),
+  },
   define: { __YAAC_BUILD__: JSON.stringify(build_id) },
 });

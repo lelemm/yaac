@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 yaac-protocol = { path = "../yaac-protocol" }
 serde_json.workspace = true
+zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
 
 [lints]
 workspace = true

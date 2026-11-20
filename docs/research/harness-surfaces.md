@@ -234,6 +234,35 @@ npm pack @openai/codex-sdk @anthropic-ai/claude-agent-sdk
 claude --help && claude agents --help && claude agents --json
 ```
 
+## Verified against the real Codex daemon (0.171.0, 2026-11-20)
+
+Run by the worker that built the Codex provider. These replace "read from source" for the
+matching rows in the mesh table further down.
+
+- **WebSocket handshake** on the control socket: confirmed. The reply carries
+  `x-codex-websocket-max-unfragmented-message-bytes: 16777216`.
+- **The `initialize` reply** holds only `userAgent`, `codexHome`, `platformFamily`,
+  `platformOs`. There is **no version field** — the server version is inside `userAgent` — and
+  **no account**; the account comes from `account/read`.
+- **`model/list` is paged**: confirmed. `includeHidden` adds hidden models.
+- **`thread/list` defaults to interactive sources**: confirmed. An **unknown source kind fails
+  the whole request**. Threads started by app-server clients — the Codex TUI, and YAAC itself —
+  are recorded with source `vscode`; the client's name is in `originator`.
+- **Per-thread `config` on `thread/start` works**: an `mcp_servers.<name>` entry passed there
+  made Codex start that MCP server for that thread, on start and on fork.
+  `developerInstructions` was accepted.
+- **`turn/start` on a busy thread joins the running turn**: confirmed — same turn id back, no
+  new `turn/started`, the input added to that turn.
+- The decisions an approval offers (`availableDecisions`) arrive only when the client opts in
+  to the experimental API.
+- Lifecycle notifications reach every connection; turn and item events reach subscribers only.
+  A pending request is re-sent to a connection that subscribes later.
+- `turn/completed` carries no usage; usage arrives through `thread/tokenUsage/updated`.
+- `thread/delete` fails while a fork still references the thread.
+- **Still unchecked:** the calling thread's id in MCP tool-call metadata, the tool timeout
+  setting, connection sharing, tool-output input, `thread/inject_items`, whether developer
+  instructions survive a cold resume, and a live `requestUserInput`.
+
 ## Verified against the real Claude SDK and CLI (2026-11-20)
 
 Run by the worker that built the Claude provider, not read from documentation:

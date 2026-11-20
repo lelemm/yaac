@@ -13,6 +13,8 @@ import type { DaemonBusy, HandoverState, HandoverWhen, TargetFacts } from "../pr
 import { ServerConnection, type FrozenCoreHost } from "../protocol/connection.js";
 import type { ProviderFactory } from "../providers/types.js";
 import { fakeProviderFactory } from "../providers/fake/index.js";
+import { codexProviderFactory } from "../providers/codex/index.js";
+import { claudeProviderFactory } from "../providers/claude/index.js";
 import { ensureDir, readJson, writeJsonAtomic } from "../util/fsx.js";
 import { Core } from "./core.js";
 import { ClientSession, DEFAULT_CLIENT_OPTIONS, type ClientOptions, type MethodHandler } from "./client.js";
@@ -96,7 +98,7 @@ export class Daemon implements FrozenCoreHost {
     this.core = new Core({
       home: config.home,
       env: config.env,
-      factories: [fakeProviderFactory, ...(config.factories ?? [])],
+      factories: [fakeProviderFactory, codexProviderFactory, claudeProviderFactory, ...(config.factories ?? [])],
       log: (l) => this.log(l),
       coalesceMs: config.coalesceMs ?? 25,
       coalesceBytes: config.coalesceBytes ?? 8 * 1024,

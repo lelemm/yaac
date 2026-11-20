@@ -23,7 +23,7 @@ export async function startDaemon(home: string, extra: Partial<DaemonConfig> = {
   return Daemon.start({
     home,
     build: "0.1.0+test",
-    env: { YAAC_FAKE_PROVIDER: "1", ...(extra.env ?? {}) },
+    env: { YAAC_FAKE_PROVIDER: "1", YAAC_CODEX_PROVIDER: "0", YAAC_CLAUDE_PROVIDER: "0", ...(extra.env ?? {}) },
     idleTimeoutMs: 0,
     tempDir: path.join(home, "tmp"),
     coalesceMs: 5,

@@ -19,7 +19,33 @@ use crate::agents::root_of;
 use crate::images::{ImageRoute, route};
 use crate::key::ThreadKey;
 use crate::link::HubLink;
-use crate::state::{AppState, Draft, NewThreadDraft, Selection};
+use crate::mode_confirm::{ModePick, ModeTarget};
+use crate::state::{AppState, Draft, ForkPreviewState, FsListingState, HelloOutcome, NewThreadDraft, Selection};
+
+/// Hub-side attach methods this client uses beyond `yaac_protocol::attach` (the hub's own
+/// additions; the names are the hub's, repeated here because this crate cannot depend on it).
+pub mod hub_names {
+    /// Read hub settings.
+    pub const SETTINGS_GET: &str = "hub/settings/get";
+    /// Change hub settings.
+    pub const SETTINGS_UPDATE: &str = "hub/settings/update";
+    /// Clear the cache (never drafts).
+    pub const CACHE_CLEAR: &str = "hub/cache/clear";
+    /// Store a `ui_state` value.
+    pub const UI_STATE_SET: &str = "hub/uiState/set";
+    /// Reconnect a target now.
+    pub const TARGETS_RECONNECT: &str = "hub/targets/reconnect";
+    /// The target list changed.
+    pub const TARGETS_CHANGED: &str = "hub/targets/changed";
+    /// A target's cached index changed.
+    pub const INDEX_CHANGED: &str = "hub/index/changed";
+    /// A target's cached providers changed.
+    pub const PROVIDERS_CHANGED: &str = "hub/providers/changed";
+    /// The window is newer than the hub.
+    pub const HUB_OUTDATED: &str = "hub_outdated";
+    /// The window is older than the hub.
+    pub const WINDOW_OUTDATED: &str = "window_outdated";
+}
 
 /// What an outstanding request was for.
 #[derive(Clone, Debug, PartialEq)]
@@ -35,6 +61,13 @@ enum Call {
     TurnStart { key: ThreadKey, draft: Draft },
     ThreadStart { draft: NewThreadDraft },
     Fork { target: TargetId },
+    ForkPreview { key: ThreadKey, instance: InstanceId },
+    InstanceList(TargetId),
+    InstanceChanged(TargetId),
+    FsList { target: TargetId, path: String },
+    HubSettings,
+    Shutdown,
+    TargetChanged,
     Ignore,
 }
 
@@ -156,8 +189,17 @@ impl Client {
         match call {
             Call::Hello => {
                 let Ok(hello) = serde_json::from_value::<HelloResult>(result) else { return };
+                if hello.build != self.build {
+                    // The hub accepted the hello but is another build: only `hub/shutdown` is
+                    // allowed now. (An older window is refused with an error instead.)
+                    self.state.hub.outcome = HelloOutcome::HubOutdated { hub_build: hello.build.clone() };
+                    self.state.hub.build = Some(hello.build);
+                    return;
+                }
                 self.state.hub.attached = true;
+                self.state.hub.outcome = HelloOutcome::Attached;
                 self.state.hub.build = Some(hello.build);
+                self.request(hub_names::SETTINGS_GET, json!({}), Call::HubSettings);
                 let ids: Vec<(TargetId, bool)> =
                     hello.targets.iter().map(|t| (t.id.clone(), t.state.status == attach::ConnectionStatus::Connected)).collect();
                 self.state.set_targets(hello.targets);
@@ -174,7 +216,42 @@ impl Client {
             Call::Providers(t) => {
                 if let Ok(r) = serde_json::from_value::<ProviderListResult>(result) {
                     self.state.apply_providers(&t, r.providers, true);
+                    if let Some(rec) = self.state.targets.iter_mut().find(|x| x.entry.id == t) {
+                        rec.providers_fresh = rec.connected();
+                    }
                 }
+            }
+            Call::InstanceList(t) => {
+                if let Ok(r) = serde_json::from_value::<yaac_protocol::ProviderInstanceListResult>(result)
+                    && let Some(rec) = self.state.targets.iter_mut().find(|x| x.entry.id == t)
+                {
+                    rec.instance_configs = Some(r.instances);
+                }
+            }
+            Call::InstanceChanged(t) => {
+                self.list_instances(&t);
+                self.routed(&t, m::PROVIDER_LIST, json!({}), Call::Providers(t.clone()));
+            }
+            Call::ForkPreview { key, instance } => {
+                let state = match serde_json::from_value::<yaac_protocol::ThreadForkPreviewResult>(result) {
+                    Ok(r) => ForkPreviewState::Ready(r),
+                    Err(e) => ForkPreviewState::Failed(format!("The preview could not be read: {e}")),
+                };
+                self.state.fork_previews.insert((key, instance), state);
+            }
+            Call::FsList { target, path } => {
+                let state = match serde_json::from_value::<yaac_protocol::FsListResult>(result) {
+                    Ok(r) => FsListingState::Ready(r),
+                    Err(e) => FsListingState::Failed(e.to_string()),
+                };
+                self.state.fs_listings.insert((target, path), state);
+            }
+            Call::HubSettings => {
+                self.state.hub.always = result.get("settings").and_then(|s| s.get("always")).and_then(Value::as_bool);
+            }
+            Call::Shutdown => self.state.hub.shutdown_answered = true,
+            Call::TargetChanged => {
+                self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
             }
             Call::Sync(t) => {
                 let Ok(r) = serde_json::from_value::<ThreadSyncResult>(result) else { return };
@@ -338,7 +415,22 @@ impl Client {
                 }
                 self.error(Some(key), format!("Could not load the thread: {}", error.message));
             }
-            Call::Hello => self.state.hub.last_error = Some(error.message.clone()),
+            Call::Hello => {
+                self.state.hub.outcome = match error.code.as_str() {
+                    hub_names::WINDOW_OUTDATED => HelloOutcome::WindowOutdated { message: error.message.clone() },
+                    hub_names::HUB_OUTDATED => HelloOutcome::HubOutdated { hub_build: String::new() },
+                    _ => HelloOutcome::Pending,
+                };
+                self.state.hub.last_error = Some(error.message.clone());
+            }
+            Call::Shutdown => self.state.hub.shutdown_answered = true,
+            Call::ForkPreview { key, instance } => {
+                self.state.fork_previews.insert((key, instance), ForkPreviewState::Failed(error.message.clone()));
+            }
+            Call::FsList { target, path } => {
+                self.state.fs_listings.insert((target, path), FsListingState::Failed(error.message.clone()));
+            }
+            Call::HubSettings => {}
             _ => self.error(None, error.message.clone()),
         }
     }
@@ -356,6 +448,21 @@ impl Client {
                 }
                 // The entry (enabled, transport) may have changed with the state: refresh it.
                 self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
+            }
+            hub_names::TARGETS_CHANGED => {
+                if let Ok(r) = serde_json::from_value::<attach::TargetsListResult>(params) {
+                    self.state.set_targets(r.targets);
+                }
+            }
+            hub_names::INDEX_CHANGED => {
+                if let Some(t) = params.get("target").and_then(Value::as_str).map(TargetId::new) {
+                    self.sync(&t);
+                }
+            }
+            hub_names::PROVIDERS_CHANGED => {
+                if let Some(t) = params.get("target").and_then(Value::as_str).map(TargetId::new) {
+                    self.routed(&t, m::PROVIDER_LIST, json!({}), Call::Providers(t.clone()));
+                }
             }
             attach::names::NOTIFICATION => {
                 let Ok(n) = serde_json::from_value::<RoutedNotification>(params) else { return };
@@ -699,12 +806,197 @@ impl Client {
         self.state.agents_policy.insert(key.clone(), policy);
     }
 
-    /// Fork a thread into a destination instance on the same target, from its last completed
-    /// turn, with no first message yet. (The fork dialog with its preview is a later package;
-    /// this is the seam it calls.)
-    pub fn fork(&mut self, key: &ThreadKey, instance: &InstanceId) {
+    /// Fork a thread into a destination on the same target, from its last completed turn,
+    /// with no first message yet. **SEAM:** `thread/fork` requires `input`; an empty list is
+    /// sent until the protocol allows a fork without a first message.
+    pub fn fork(&mut self, key: &ThreadKey, choice: &crate::fork::ForkChoice) {
         let op = self.op_id();
-        let params = json!({ "opId": op, "source": key.thread, "instance": instance, "input": [] });
+        let mut params = json!({ "opId": op, "source": key.thread, "instance": choice.instance, "input": [] });
+        if let Some(mdl) = &choice.model {
+            params["model"] = json!(mdl);
+        }
         self.routed(&key.target, m::THREAD_FORK, params, Call::Fork { target: key.target.clone() });
+    }
+
+    /// Ask what a fork into `instance` would send and where (`thread/forkPreview`). Asked once
+    /// per destination; the answer is kept in [`AppState::fork_previews`].
+    pub fn fork_preview(&mut self, key: &ThreadKey, instance: &InstanceId) {
+        let slot = (key.clone(), instance.clone());
+        if matches!(self.state.fork_previews.get(&slot), Some(ForkPreviewState::Loading | ForkPreviewState::Ready(_))) {
+            return;
+        }
+        self.state.fork_previews.insert(slot, ForkPreviewState::Loading);
+        let params = json!({ "source": key.thread, "instance": instance, "maxPreviewBytes": 4096 });
+        self.routed(&key.target, m::THREAD_FORK_PREVIEW, params, Call::ForkPreview { key: key.clone(), instance: instance.clone() });
+    }
+
+    /// List a directory on a target (`fs/list`) for the folder browser; `path` empty is the
+    /// home directory. The answer is kept in [`AppState::fs_listings`].
+    pub fn fs_list(&mut self, target: &TargetId, path: &str) {
+        let slot = (target.clone(), path.to_owned());
+        if matches!(self.state.fs_listings.get(&slot), Some(FsListingState::Loading | FsListingState::Ready(_))) {
+            return;
+        }
+        self.state.fs_listings.insert(slot, FsListingState::Loading);
+        let params = if path.is_empty() { json!({}) } else { json!({ "path": path }) };
+        self.routed(target, m::FS_LIST, params, Call::FsList { target: target.clone(), path: path.to_owned() });
+    }
+
+    // ── hub, targets, providers (settings) ─────────────────────────────────────────────
+
+    /// Ask an older hub to checkpoint and exit (the window is newer). Allowed right after a
+    /// `hub/hello` that found another build.
+    pub fn shutdown_hub(&mut self) {
+        self.request(attach::names::SHUTDOWN, json!({}), Call::Shutdown);
+    }
+
+    /// Whether the hub keeps running and starts at login.
+    pub fn set_always(&mut self, always: bool) {
+        self.state.hub.always = Some(always);
+        self.request(hub_names::SETTINGS_UPDATE, json!({ "always": always }), Call::HubSettings);
+    }
+
+    /// "Clear cache": the hub drops its cache (drafts are never touched), and the window
+    /// reloads every target.
+    pub fn clear_cache(&mut self) {
+        self.request(hub_names::CACHE_CLEAR, json!({}), Call::Ignore);
+        let ids: Vec<TargetId> = self.state.targets.iter().map(|t| t.entry.id.clone()).collect();
+        for t in &ids {
+            if let Some(rec) = self.state.targets.iter_mut().find(|x| &x.entry.id == t) {
+                rec.sync_token = yaac_protocol::SyncToken::default();
+            }
+            self.load_target(t);
+        }
+    }
+
+    /// Store a window-side choice in the hub's `ui_state` (only when attached to a real hub).
+    pub fn set_ui_state(&mut self, key: &str, value: Value) {
+        if self.state.hub.attached {
+            self.request(hub_names::UI_STATE_SET, json!({ "key": key, "value": value }), Call::Ignore);
+        }
+    }
+
+    /// Enable or disable a target (Disable keeps it but stops using it).
+    pub fn set_target_enabled(&mut self, target: &TargetId, enabled: bool) {
+        if let Some(t) = self.state.targets.iter_mut().find(|t| &t.entry.id == target) {
+            t.entry.enabled = enabled;
+        }
+        let params = json!({ "id": target, "enabled": enabled });
+        self.request(attach::names::TARGETS_ENABLE, params, Call::TargetChanged);
+    }
+
+    /// Remove (forget) a target. Its cache rows go with it.
+    pub fn remove_target(&mut self, target: &TargetId) {
+        self.state.targets.retain(|t| &t.entry.id != target);
+        self.state.ssh_records.remove(target);
+        let keys: Vec<ThreadKey> = self.state.threads.keys().filter(|k| &k.target == target).cloned().collect();
+        for k in keys {
+            self.state.remove_thread(&k);
+        }
+        self.request(attach::names::TARGETS_REMOVE, json!({ "id": target }), Call::TargetChanged);
+    }
+
+    /// Add a target (an SSH connection once set up, or a WSL distro and user).
+    pub fn add_target(&mut self, name: &str, transport: &attach::TargetTransport) {
+        let params = json!({ "name": name, "transport": transport, "enabled": true });
+        self.request(attach::names::TARGETS_ADD, params, Call::TargetChanged);
+    }
+
+    /// Re-probe a target's instances (one, or all) and their model lists.
+    pub fn refresh_providers(&mut self, target: &TargetId, instance: Option<&InstanceId>) {
+        let params = match instance {
+            Some(i) => json!({ "instance": i }),
+            None => json!({}),
+        };
+        self.routed(target, m::PROVIDER_REFRESH, params, Call::InstanceChanged(target.clone()));
+    }
+
+    /// Read a target's stored instance configurations.
+    pub fn list_instances(&mut self, target: &TargetId) {
+        self.routed(target, m::PROVIDER_INSTANCE_LIST, json!({}), Call::InstanceList(target.clone()));
+    }
+
+    /// Add an instance: a kind the target reports, an optional name, an optional socket.
+    pub fn add_instance(&mut self, target: &TargetId, kind: &yaac_protocol::ProviderKind, name: Option<&str>, socket: Option<&str>) {
+        let op = self.op_id();
+        let mut params = json!({ "opId": op, "kind": kind, "enabled": true, "backend": "auto" });
+        if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
+            params["name"] = json!(n.trim());
+        }
+        if let Some(s) = socket.filter(|s| !s.trim().is_empty()) {
+            params["endpoint"] = json!({ "socket": s.trim() });
+        }
+        self.routed(target, m::PROVIDER_INSTANCE_ADD, params, Call::InstanceChanged(target.clone()));
+    }
+
+    /// Change an instance's name, socket, or enabled switch.
+    pub fn update_instance(&mut self, target: &TargetId, id: &InstanceId, name: Option<Option<&str>>, socket: Option<Option<&str>>, enabled: Option<bool>) {
+        let op = self.op_id();
+        let mut params = json!({ "opId": op, "id": id });
+        if let Some(n) = name {
+            params["name"] = json!(n);
+        }
+        if let Some(s) = socket {
+            params["endpoint"] = s.map_or(Value::Null, |s| json!({ "socket": s }));
+        }
+        if let Some(e) = enabled {
+            params["enabled"] = json!(e);
+        }
+        self.routed(target, m::PROVIDER_INSTANCE_UPDATE, params, Call::InstanceChanged(target.clone()));
+    }
+
+    /// Remove an instance.
+    pub fn remove_instance(&mut self, target: &TargetId, id: &InstanceId) {
+        let op = self.op_id();
+        self.routed(target, m::PROVIDER_INSTANCE_REMOVE, json!({ "opId": op, "id": id }), Call::InstanceChanged(target.clone()));
+    }
+
+    /// The per-instance switch "Offer YAAC tools to sessions started outside YAAC". **SEAM:**
+    /// no wire method edits a harness's own configuration yet; window-local.
+    pub fn set_outside_tools(&mut self, target: &TargetId, instance: &InstanceId, on: bool) {
+        let k = (target.clone(), instance.clone());
+        if on {
+            self.state.outside_tools.insert(k);
+        } else {
+            self.state.outside_tools.remove(&k);
+        }
+    }
+
+    // ── modes that bypass approvals (screen 30) ────────────────────────────────────────
+
+    /// The user chose a mode. One the provider marks `skipsApprovals` is not applied: it
+    /// waits in [`AppState::mode_confirm`] for the user's confirmation.
+    pub fn choose_mode(&mut self, target: ModeTarget, mode: yaac_protocol::ModeId) {
+        let modes = crate::mode_confirm::modes_for(&self.state, &target);
+        match crate::mode_confirm::pick(&modes, target, mode) {
+            ModePick::Apply(t, m) => {
+                self.state.mode_confirm = None;
+                self.apply_mode(t, m);
+            }
+            ModePick::Confirm(p) => self.state.mode_confirm = Some(p),
+        }
+    }
+
+    /// "Bypass permissions": apply the pending mode. The confirmation is not remembered.
+    pub fn confirm_mode(&mut self) {
+        if let Some(p) = self.state.mode_confirm.take() {
+            self.apply_mode(p.target, p.mode);
+        }
+    }
+
+    /// Cancel (the default): nothing changes.
+    pub fn cancel_mode(&mut self) {
+        self.state.mode_confirm = None;
+    }
+
+    fn apply_mode(&mut self, target: ModeTarget, mode: yaac_protocol::ModeId) {
+        match target {
+            ModeTarget::Thread(k) => self.state.next_settings.entry(k).or_default().mode = Some(mode),
+            ModeTarget::Draft(id) => {
+                if let Some(d) = self.state.new_threads.iter_mut().find(|d| d.id == id) {
+                    d.mode = Some(mode);
+                }
+            }
+        }
     }
 }

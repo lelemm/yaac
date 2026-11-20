@@ -10,6 +10,7 @@
 
 mod build;
 mod fleet;
+pub mod ssh;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -58,12 +59,23 @@ pub enum Scene {
     BudgetReached,
     /// 23/24: staging reconnects; the queued message is delivered and answered.
     StagingReconnects,
+    /// 13: WSL connections on this PC (the Targets page).
+    WslConnections,
+    /// 17: Claude on this computer is signed out.
+    LocalSignedOut,
 }
 
 impl Scene {
     /// Every scene, for the demo menu.
-    pub const ALL: [Scene; 5] =
-        [Scene::RequestStates, Scene::Permission, Scene::Notices, Scene::BudgetReached, Scene::StagingReconnects];
+    pub const ALL: [Scene; 7] = [
+        Scene::RequestStates,
+        Scene::Permission,
+        Scene::Notices,
+        Scene::BudgetReached,
+        Scene::StagingReconnects,
+        Scene::WslConnections,
+        Scene::LocalSignedOut,
+    ];
 
     /// Menu label.
     pub fn label(self) -> &'static str {
@@ -73,6 +85,8 @@ impl Scene {
             Scene::Notices => "Notices: old daemon, retrying, stopped distro",
             Scene::BudgetReached => "The orchestration runs out of budget",
             Scene::StagingReconnects => "staging reconnects; the queued message arrives",
+            Scene::WslConnections => "WSL connections on this PC",
+            Scene::LocalSignedOut => "Claude on this computer is signed out",
         }
     }
 }
@@ -109,6 +123,7 @@ enum Pending {
 }
 
 struct Inner {
+    always: bool,
     fleet: Fleet,
     ready: VecDeque<Message>,
     scheduled: VecDeque<(u32, Pending)>,
@@ -145,7 +160,7 @@ impl DemoHub {
             Scenario::Fleet => Fleet::standard(now),
             Scenario::Fresh => Fleet::fresh(now),
         };
-        Self { inner: Rc::new(RefCell::new(Inner { fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0 })) }
+        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0 })) }
     }
 
     /// Every thread of the scenario — the window's "recently used" set, so their hints are
@@ -223,6 +238,11 @@ impl DemoHub {
             folder: folder.to_owned(),
             repo: None,
         };
+        use crate::ssh_setup::SetupRecord;
+        state.ssh_records.insert("devbox".into(), SetupRecord::InstalledByYaac { key: ssh::demo_line("devbox"), date: "2026-11-20".into() });
+        state.ssh_records.insert("gpu-box".into(), SetupRecord::AlreadyInPlace { date: "2026-10-02".into() });
+        state.ssh_records.insert("staging".into(), SetupRecord::InstalledByYaac { key: ssh::demo_line("staging"), date: "2026-11-02".into() });
+        state.ssh_records.insert("legacy".into(), SetupRecord::NotSetUp);
         state.projects = vec![
             project("local", "api", "/home/dev/api"),
             project("local", "spike", "/home/dev/spike"),
@@ -277,8 +297,48 @@ impl Inner {
         let Message::Request { id, method, params } = msg else { return };
         match method.as_str() {
             attach::names::HELLO => {
+                // The demo is always the window's own build.
+                let build = params.get("build").cloned().unwrap_or_else(|| json!("demo"));
                 let targets = self.fleet.targets.clone();
-                self.ready.push_back(result(id, json!({ "build": "demo", "targets": targets })));
+                self.ready.push_back(result(id, json!({ "build": build, "targets": targets })));
+            }
+            attach::names::SHUTDOWN | crate::client::hub_names::UI_STATE_SET | crate::client::hub_names::TARGETS_RECONNECT => {
+                self.ready.push_back(result(id, json!({})));
+            }
+            crate::client::hub_names::CACHE_CLEAR => self.ready.push_back(result(id, json!({}))),
+            crate::client::hub_names::SETTINGS_GET | crate::client::hub_names::SETTINGS_UPDATE => {
+                if let Some(a) = params.get("always").and_then(Value::as_bool) {
+                    self.always = a;
+                }
+                self.ready.push_back(result(id, json!({ "settings": { "always": self.always, "idleExitSecs": 300 } })));
+            }
+            attach::names::TARGETS_ADD => {
+                let name = params.get("name").and_then(Value::as_str).unwrap_or("new").to_owned();
+                let Ok(transport) = serde_json::from_value::<attach::TargetTransport>(params.get("transport").cloned().unwrap_or(Value::Null)) else {
+                    self.ready.push_back(error(id, ErrorCode::InvalidParams, "bad transport"));
+                    return;
+                };
+                if self.fleet.targets.iter().any(|t| t.name.as_str() == name) {
+                    self.ready.push_back(error(id, ErrorCode::from_wire("name_taken"), "That name is already used."));
+                    return;
+                }
+                let entry = attach::TargetEntry {
+                    id: TargetId::new(name.clone()),
+                    name: yaac_protocol::TargetName::new(name.clone()),
+                    transport,
+                    enabled: true,
+                    state: ConnectionState { status: ConnectionStatus::Connected, detail: None, daemon: None },
+                };
+                self.fleet.targets.push(entry.clone());
+                self.fleet.providers.entry(entry.id.clone()).or_insert_with(|| vec![fleet::codex("codex", None, yaac_protocol::ProviderStatus::Ready)]);
+                self.ready.push_back(result(id, json!({ "target": entry })));
+                self.targets_changed();
+            }
+            attach::names::TARGETS_REMOVE => {
+                let target = params.get("id").and_then(Value::as_str).map(TargetId::new);
+                self.fleet.targets.retain(|t| Some(&t.id) != target.as_ref());
+                self.ready.push_back(result(id, json!({})));
+                self.targets_changed();
             }
             attach::names::TARGETS_LIST => {
                 let targets = self.fleet.targets.clone();
@@ -286,6 +346,13 @@ impl Inner {
             }
             attach::names::TARGETS_ENABLE => {
                 let target = params.get("id").and_then(Value::as_str).map(TargetId::new);
+                let enabled = params.get("enabled").and_then(Value::as_bool);
+                if let (Some(e), Some(t)) = (enabled, self.fleet.targets.iter_mut().find(|t| Some(&t.id) == target.as_ref()))
+                    && t.enabled != e
+                {
+                    t.enabled = e;
+                    t.state.status = if e { ConnectionStatus::Connected } else { ConnectionStatus::Disabled };
+                }
                 let entry = self.fleet.targets.iter().find(|t| Some(&t.id) == target.as_ref()).cloned();
                 match entry {
                     Some(t) => self.ready.push_back(result(id, json!({ "target": t }))),
@@ -435,6 +502,59 @@ impl Inner {
                 self.set_state_now(&key, ThreadState::Idle);
             }
             m::THREAD_START => self.start_thread(id, target, p),
+            m::THREAD_FORK_PREVIEW => self.fork_preview(id, target, p),
+            m::FS_LIST => self.fs_list(id, p),
+            m::PROVIDER_REFRESH => self.ready.push_back(result(id, json!({}))),
+            m::PROVIDER_INSTANCE_LIST => {
+                let instances: Vec<Value> = self
+                    .fleet
+                    .providers
+                    .get(target)
+                    .map(|ps| {
+                        ps.iter()
+                            .map(|x| {
+                                let mut v = json!({ "id": x.instance, "kind": x.kind, "enabled": x.status != yaac_protocol::ProviderStatus::Disabled, "backend": "auto", "implicit": x.name.is_none() });
+                                if let Some(n) = &x.name {
+                                    v["name"] = json!(n);
+                                    v["endpoint"] = json!({ "socket": format!("/run/user/1000/codex-{n}/control.sock") });
+                                }
+                                v
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.ready.push_back(result(id, json!({ "instances": instances })));
+            }
+            m::PROVIDER_INSTANCE_ADD => {
+                let kind = p.get("kind").and_then(Value::as_str).unwrap_or("").to_owned();
+                let name = p.get("name").and_then(Value::as_str).map(str::to_owned);
+                let ps = self.fleet.providers.entry(target.clone()).or_default();
+                let Some(mut d) = ps.iter().find(|x| x.kind.as_str() == kind).cloned() else {
+                    self.ready.push_back(error(id, ErrorCode::InvalidParams, "this target reports no such kind"));
+                    return;
+                };
+                let n = name.unwrap_or_else(|| format!("{}", ps.len() + 1));
+                d.instance = yaac_protocol::InstanceId::new(format!("{kind}-{n}"));
+                d.display_name = format!("{} · {n}", d.display_name.split(" · ").next().unwrap_or(&kind));
+                d.name = Some(n);
+                d.store.key = Some(format!("store-{}", d.instance));
+                ps.push(d.clone());
+                self.ready.push_back(result(id, json!({ "instance": { "id": d.instance, "kind": d.kind, "name": d.name, "enabled": true, "backend": "auto" } })));
+            }
+            m::PROVIDER_INSTANCE_REMOVE => {
+                let iid = p.get("id").and_then(Value::as_str).unwrap_or("").to_owned();
+                if let Some(ps) = self.fleet.providers.get_mut(target) {
+                    ps.retain(|x| x.instance.as_str() != iid);
+                }
+                self.ready.push_back(result(id, json!({})));
+            }
+            m::PROVIDER_INSTANCE_UPDATE => {
+                let iid = p.get("id").and_then(Value::as_str).unwrap_or("").to_owned();
+                if let (Some(e), Some(x)) = (p.get("enabled").and_then(Value::as_bool), self.fleet.providers.get_mut(target).and_then(|ps| ps.iter_mut().find(|x| x.instance.as_str() == iid))) {
+                    x.status = if e { yaac_protocol::ProviderStatus::Ready } else { yaac_protocol::ProviderStatus::Disabled };
+                }
+                self.ready.push_back(result(id, json!({ "instance": { "id": iid, "kind": "", "enabled": true, "backend": "auto" } })));
+            }
             m::THREAD_FORK => self.fork(id, target, p),
             _ => self.ready.push_back(error(id, ErrorCode::MethodNotFound, method)),
         }
@@ -687,6 +807,72 @@ impl Inner {
         self.ready.push_back(result(id, json!({ "threadId": thread_id, "turnId": "fork-0", "forkKind": kind })));
     }
 
+    fn targets_changed(&mut self) {
+        let targets = self.fleet.targets.clone();
+        self.ready.push_back(Message::notification(crate::client::hub_names::TARGETS_CHANGED, json!({ "targets": targets })));
+    }
+
+    fn fork_preview(&mut self, id: RpcId, target: &TargetId, p: &Value) {
+        let Some(source) = p.get("source").and_then(Value::as_str).map(|s| ThreadKey::new(target.clone(), s)) else { return };
+        let Some(src) = self.fleet.threads.get(&source) else {
+            self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
+            return;
+        };
+        let providers = self.fleet.providers.get(target).cloned().unwrap_or_default();
+        let instance = p.get("instance").and_then(Value::as_str).unwrap_or("");
+        let dest = providers.iter().find(|x| x.instance.as_str() == instance);
+        let src_p = providers.iter().find(|x| x.instance == src.summary.instance);
+        let native = matches!((dest, src_p), (Some(d), Some(s)) if crate::fork::is_native(s, d));
+        let mut preview = String::new();
+        for it in &src.items {
+            match &it.body {
+                ItemBody::UserMessage(u) => {
+                    for part in &u.parts {
+                        if let InputPart::Text(t) = part {
+                            preview.push_str(&format!("**User:** {}\n\n", t.text));
+                        }
+                    }
+                }
+                ItemBody::AgentMessage(a) => preview.push_str(&format!("**Agent:** {}\n\n", a.text)),
+                ItemBody::ToolCall(t) => preview.push_str(&format!("- {}\n", t.title)),
+                _ => {}
+            }
+        }
+        let mut res = json!({ "forkKind": if native { "native" } else { "handoff" }, "cutoffTurn": "12", "omittedAttachments": [] });
+        if let Some(a) = dest.and_then(|d| d.store.account.clone()) {
+            res["destinationAccount"] = json!(a);
+        }
+        if !native {
+            res["transcriptBytes"] = json!(preview.len());
+            res["transcriptPreview"] = json!(preview);
+            res["omittedAttachments"] = json!(["screenshot.png", "diagram.png"]);
+        }
+        self.ready.push_back(result(id, res));
+    }
+
+    fn fs_list(&mut self, id: RpcId, p: &Value) {
+        let path = p.get("path").and_then(Value::as_str).unwrap_or("/home/dev").trim_end_matches('/').to_owned();
+        let path = if path.is_empty() { "/".to_owned() } else { path };
+        let children: &[&str] = match path.as_str() {
+            "/" => &["home", "srv", "tmp"],
+            "/home" => &["dev"],
+            "/home/dev" => &["api", "docs", "scratch", "search", "spike", "yaac"],
+            "/home/dev/scratch" => &["spike-7", "notes"],
+            "/home/dev/yaac" => &["crates", "daemon", "docs"],
+            _ => &[],
+        };
+        let parent = (path != "/").then(|| path.rsplit_once('/').map_or("/".to_owned(), |(a, _)| if a.is_empty() { "/".to_owned() } else { a.to_owned() }));
+        let entries: Vec<Value> = children
+            .iter()
+            .map(|c| json!({ "name": c, "path": if path == "/" { format!("/{c}") } else { format!("{path}/{c}") }, "kind": "directory" }))
+            .collect();
+        let mut res = json!({ "path": path, "entries": entries });
+        if let Some(pp) = parent {
+            res["parent"] = json!(pp);
+        }
+        self.ready.push_back(result(id, res));
+    }
+
     // ── scenes ─────────────────────────────────────────────────────────────────────────
 
     fn target_state(&mut self, id: &str, status: ConnectionStatus, detail: Option<&str>, enabled: Option<bool>, older: Option<&str>) {
@@ -816,6 +1002,25 @@ impl Inner {
                     )),
                 }));
                 self.summary_now(&orch, |s| s.updated_at = crate::time::timestamp(base));
+            }
+            Scene::WslConnections => {
+                if let Some(t) = self.fleet.targets.iter_mut().find(|t| t.id.as_str() == "wsl-ubuntu") {
+                    t.enabled = true;
+                    t.state.status = ConnectionStatus::Connected;
+                }
+                self.fleet.targets.push(fleet::wsl_target("wsl-ubuntu-deploy", "Ubuntu", Some("deploy"), true));
+                self.fleet.targets.push(fleet::wsl_target("wsl-debian", "Debian", None, false));
+                self.targets_changed();
+            }
+            Scene::LocalSignedOut => {
+                let local = TargetId::new("local");
+                if let Some(c) = self.fleet.providers.get_mut(&local).and_then(|ps| ps.iter_mut().find(|x| x.instance.as_str() == "claude")) {
+                    c.status = yaac_protocol::ProviderStatus::NeedsAuth;
+                    c.status_message = Some(fleet::SIGN_IN_HINT.into());
+                    c.revision += 1;
+                    let d = c.clone();
+                    self.ready.push_back(routed(&local, m::PROVIDER_UPDATED, json!({ "provider": d })));
+                }
             }
             Scene::StagingReconnects => {
                 self.target_state("staging", ConnectionStatus::Connected, None, None, None);

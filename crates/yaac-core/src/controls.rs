@@ -66,6 +66,9 @@ pub struct Choice<T> {
     pub label: String,
     /// Options: id, label, is the default.
     pub options: Vec<(T, String, bool)>,
+    /// The current value removes a safety net (a mode that bypasses approvals): drawn in the
+    /// failed colour with a warning icon.
+    pub warn: bool,
 }
 
 /// The row.
@@ -158,6 +161,7 @@ fn effort_choice(efforts: &[EffortInfo], current: Option<&EffortId>, default: Op
             .map(|e| (e.id.clone(), e.display_name.clone().unwrap_or_else(|| e.id.to_string()), Some(&e.id) == default))
             .collect(),
         current: cur,
+        warn: false,
     }
 }
 
@@ -170,6 +174,7 @@ fn mode_choice(modes: &[ModeInfo], current: Option<&ModeId>) -> Choice<ModeId> {
     Choice {
         label: format!("mode: {label}"),
         options: modes.iter().map(|m| (m.id.clone(), m.display_name.clone(), m.is_default)).collect(),
+        warn: cur.as_ref().is_some_and(|id| modes.iter().any(|m| &m.id == id && m.skips_approvals)),
         current: cur,
     }
 }
@@ -346,6 +351,7 @@ pub fn agents_choice(current: AgentsPolicy) -> Choice<AgentsPolicy> {
             (AgentsPolicy::Allow, "Allow without asking".to_owned(), false),
         ],
         current: Some(current),
+        warn: false,
     }
 }
 

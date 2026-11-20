@@ -60,6 +60,9 @@ fn a_turn_on_the_real_daemon_survives_a_dropped_connection() {
     std::fs::create_dir_all(&daemon_home).unwrap();
     let local = LocalConfig { runtime, bundle, env: vec![], inherit_stderr: false }
         .with_env("YAAC_FAKE_PROVIDER", "1")
+        // Never let this test probe or start the user's real harnesses.
+        .with_env("YAAC_CODEX_PROVIDER", "0")
+        .with_env("YAAC_CLAUDE_PROVIDER", "0")
         .with_env("YAAC_HOME", daemon_home.join(".yaac"))
         .with_env("YAAC_SOCKET", home.dir.path().join("d.sock"))
         .with_env("YAAC_IDLE_TIMEOUT_MS", "3000")

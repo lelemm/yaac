@@ -768,3 +768,62 @@ test("codex: the server version comes from its user agent; the key is Thread.id"
   assert.equal(serverVersion("yaacd/0.171.0 (Ubuntu 24.4.0; x86_64) WindowsTerminal (yaacd; 0.1.0)"), "0.171.0");
   assert.equal(serverVersion(undefined), null);
 });
+
+test("codex modes: offered, only never-ask-with-full-access skips approvals, never applied unless chosen", async () => {
+  const { CODEX_MODES } = await import("../src/providers/codex/index.js");
+  const r = await rig();
+  try {
+    const probe = await r.provider.probe();
+    assert.ok(probe.capabilities.includes("modes"));
+    assert.deepEqual(probe.modes.map((m) => m.id), CODEX_MODES.map((m) => m.id));
+    for (const m of CODEX_MODES) {
+      const offered = probe.modes.find((x) => x.id === m.id)!;
+      // Skips approvals exactly when Codex never asks and nothing confines it.
+      const never = m.approvalPolicy === "never" && m.sandbox === "danger-full-access";
+      assert.equal(offered.skipsApprovals === true, never, m.id);
+      assert.ok(!offered.isDefault, "no mode is preselected");
+      assert.equal((offered as any).approvalPolicy, undefined, "harness settings stay internal");
+    }
+    assert.equal(probe.modes.filter((m) => m.skipsApprovals).length, 1, "the bypass mode is offered, not hidden");
+    const bypass = probe.modes.find((m) => m.skipsApprovals)!;
+    const safe = probe.modes.find((m) => !m.skipsApprovals)!;
+
+    // No mode chosen: nothing sent, the thread follows the user's own Codex configuration.
+    idleThread(r.fake, THREAD_ID);
+    r.fake.handlers.set("turn/start", () => ({ turn: { id: TURN_ID, status: "inProgress" } }));
+    await r.provider.startThread({ cwd: "/w" }, input("go"));
+    const st0 = r.fake.requests("thread/start")[0]!.params;
+    assert.equal(st0.approvalPolicy, undefined);
+    assert.equal(st0.sandbox, undefined);
+    assert.equal(r.fake.requests("turn/start")[0]!.params.approvalPolicy, undefined);
+    assert.equal((await r.provider.effective(THREAD_ID)).applied!.mode, null);
+    r.fake.push({ method: "turn/completed", params: { threadId: THREAD_ID, turn: { id: TURN_ID, status: "completed", items: [] } } });
+    await until(() => r.events.some((e) => e.type === "turnCompleted"));
+
+    // Chosen per turn: approval policy and sandbox policy go with that turn.
+    r.fake.handlers.set("turn/start", () => ({ turn: { id: "t2", status: "inProgress" } }));
+    await r.provider.startTurn(THREAD_ID, input("next"), { mode: bypass.id });
+    const tu = r.fake.requests("turn/start")[1]!.params;
+    assert.equal(tu.approvalPolicy, "never");
+    assert.deepEqual(tu.sandboxPolicy, { type: "dangerFullAccess" });
+    assert.equal((await r.provider.effective(THREAD_ID)).applied!.mode, bypass.id);
+    assert.ok(r.events.some((e) => e.type === "settingsChanged" && e.applied.mode === bypass.id));
+
+    // Chosen at start, and on a fork.
+    r.fake.handlers.set("thread/start", () => ({ thread: { id: "t-safe", status: { type: "idle" } } }));
+    r.fake.handlers.set("turn/start", () => ({ turn: { id: "t3", status: "inProgress" } }));
+    await r.provider.startThread({ cwd: "/w", mode: safe.id }, input("go"));
+    const st1 = r.fake.requests("thread/start")[1]!.params;
+    const safeDef = CODEX_MODES.find((m) => m.id === safe.id)!;
+    assert.equal(st1.approvalPolicy, safeDef.approvalPolicy);
+    assert.equal(st1.sandbox, safeDef.sandbox);
+    r.fake.handlers.set("thread/turns/list", () => ({ data: [], nextCursor: null }));
+    r.fake.handlers.set("thread/fork", () => ({ thread: { id: "t-fork", status: { type: "idle" } } }));
+    await r.provider.forkThread(THREAD_ID, { cwd: "/w", mode: bypass.id });
+    assert.equal(r.fake.requests("thread/fork")[0]!.params.approvalPolicy, "never");
+    // An unknown mode is refused, never guessed.
+    await assert.rejects(r.provider.startThread({ cwd: "/w", mode: "codex:nope" }, input("x")));
+  } finally {
+    await r.done();
+  }
+});

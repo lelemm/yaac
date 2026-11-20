@@ -345,8 +345,9 @@ Facts that shape the adapter:
   over the Unix socket directly. (`codex app-server proxy` only relays bytes; it does not
   translate.) A private `stdio://` server, by contrast, uses JSON lines.
 - **The handshake** is `initialize` (with client info), then an `initialized` notification. The
-  reply reports the server's home directory, platform, and version — the source of the
-  instance's [store identity](#an-instance-has-a-store-identity). The daemon can be a newer
+  reply reports the server's home directory and platform — the source of the instance's
+  [store identity](#an-instance-has-a-store-identity) — and its version only inside the
+  `userAgent` string. The account comes from `account/read`. The daemon can be a newer
   version than the `codex` on `PATH`; `harness_version` is the server's.
 - **The conversation key is `Thread.id`.** `Thread.sessionId` is shared by every thread in a
   session tree and must not be used as an identity.

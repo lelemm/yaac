@@ -3,7 +3,7 @@
 import type { ProviderContext, ProviderFactory } from "../types.js";
 import { CodexProvider } from "./provider.js";
 
-export { CodexProvider, type CodexThreadSetup, type CodexThreadSetupHook, type CodexThreadSetupRequest, type CodexOptions } from "./provider.js";
+export { CodexProvider, CODEX_MODES, type CodexThreadSetup, type CodexThreadSetupHook, type CodexThreadSetupRequest, type CodexOptions } from "./provider.js";
 
 export const CODEX_KIND = "codex";
 

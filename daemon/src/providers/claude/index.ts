@@ -12,6 +12,8 @@ import * as path from "node:path";
 import type {
   ElicitationRequest,
   ElicitationResult,
+  HookInput,
+  HookJSONOutput,
   McpServerConfig,
   ModelInfo as SdkModelInfo,
   Options,
@@ -69,15 +71,23 @@ const IMAGE_FORMATS = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /**
  * Permission modes yaacd offers. These are the SDK's `PermissionMode` values (an API enum, not
- * anything about models); `bypassPermissions` is deliberately not offered. `default` is first
- * because yaacd always passes a mode, so that approvals reach the user through `canUseTool`.
+ * anything about models). `default` is the default because yaacd always passes a mode, so that
+ * approvals reach the user through `canUseTool`; a thread never enters another mode on its own.
+ *
+ * `bypassPermissions` is offered, marked `skipsApprovals` (the only mode that never asks: the UI
+ * confirms before switching to it). The SDK requires `allowDangerouslySkipPermissions` when the
+ * query is created for that mode (sdk.d.ts, `Options.permissionMode`), so a query is opened with
+ * that option only while its thread is in the mode, and is re-opened with `resume` to enter or
+ * leave it. In it, `AskUserQuestion` still reaches the user as a question (see `askQuestion`).
  */
+export const BYPASS_MODE: PermissionMode = "bypassPermissions";
 const MODES: Array<ModeInfo & { id: PermissionMode; needsAutoMode?: boolean }> = [
   { id: "default", displayName: "Ask before acting", isDefault: true },
   { id: "acceptEdits", displayName: "Accept edits", description: "File edits are accepted; other actions still ask." },
   { id: "plan", displayName: "Plan only", description: "Claude plans and does not change anything." },
   { id: "dontAsk", displayName: "Don't ask", description: "Anything not already allowed by a rule is denied without asking." },
   { id: "auto", displayName: "Auto", description: "A classifier approves or denies each action and asks when unsure.", needsAutoMode: true },
+  { id: BYPASS_MODE, displayName: "Bypass permissions", description: "Claude acts without asking for any approval.", skipsApprovals: true },
 ];
 
 // ── The mesh hook ────────────────────────────────────────────────────────────────────────
@@ -163,6 +173,10 @@ class Live {
   turn: TurnState | null = null;
   readonly requests = new Map<string, Pending>();
   readonly ours = new Set<string>();
+  /** Questions in flight, by tool_use id: `canUseTool` and the PreToolUse hook share one. */
+  readonly asking = new Map<string, Promise<Record<string, unknown> | null>>();
+  /** Whether the query was created with `allowDangerouslySkipPermissions`. */
+  bypassAllowed = false;
   lastUsed = Date.now();
   idleTimer: NodeJS.Timeout | null = null;
   closing = false;
@@ -593,6 +607,8 @@ export class ClaudeProvider implements HarnessProvider {
     const live = new Live(native, s.cwd, dirs, s, (ev) => this.emit({ ...ev, thread: native } as ProviderEvent));
     const resumed = s.stored === true;
     const extras = (await this.extrasHook?.({ native, cwd: s.cwd, resumed })) ?? {};
+    const bypass = live.mode === BYPASS_MODE;
+    live.bypassAllowed = bypass;
     const options: Options = {
       cwd: s.cwd,
       pathToClaudeCodeExecutable: exe,
@@ -602,6 +618,7 @@ export class ClaudeProvider implements HarnessProvider {
       ...(live.model ? { model: live.model } : {}),
       ...(live.effort ? { effort: live.effort as NonNullable<Options["effort"]> } : {}),
       permissionMode: live.mode as PermissionMode,
+      ...(bypass ? { allowDangerouslySkipPermissions: true, hooks: { PreToolUse: [{ matcher: ASK_TOOL, hooks: [(h, id, o) => this.askHook(live, h, id, o.signal)] }] } } : {}),
       additionalDirectories: [...dirs],
       systemPrompt: { type: "preset", preset: "claude_code", ...(extras.appendSystemPrompt ? { append: extras.appendSystemPrompt } : {}) },
       ...(extras.mcpServers && Object.keys(extras.mcpServers).length > 0 ? { mcpServers: extras.mcpServers } : {}),
@@ -672,6 +689,7 @@ export class ClaudeProvider implements HarnessProvider {
     if (!turn) return;
     for (const p of [...live.requests.values()]) if (p.turnId === turn.turnId) p.expire();
     live.translator.finish(status === "completed");
+    live.asking.clear();
     live.turn = null;
     this.emit({ type: "turnCompleted", thread: live.native, turnId: turn.turnId, status, error, usage, at: new Date().toISOString() });
     turn.end();
@@ -790,17 +808,47 @@ export class ClaudeProvider implements HarnessProvider {
       ...(opts.mcpServer ? { mcpServer: opts.mcpServer } : {}),
       ...(opts.agentID ? { agentID: opts.agentID } : {}),
     };
-    const ask = toolName === ASK_TOOL;
-    const request: RaisedRequest = ask ? { requestKind: "question", questions: normaliseQuestions(input) } : approvalRequest(ctx);
     // The tool_use id, so that the request item has the same id in history.
     const requestId = opts.toolUseID || opts.requestId || randomUUID();
+    if (toolName === ASK_TOOL) {
+      return this.askQuestion(live, requestId, input, opts.signal).then((answered) =>
+        answered ? { behavior: "allow", updatedInput: answered } : { behavior: "deny", message: "The request was withdrawn before the user answered." },
+      );
+    }
+    const request = approvalRequest(ctx);
     return new Promise<PermissionResult>((resolve) => {
       this.raise(live, requestId, request, opts.signal, (response) => {
         if (!response) resolve({ behavior: "deny", message: "The request was withdrawn before the user answered." });
-        else if (ask) resolve({ behavior: "allow", updatedInput: answeredInput(input, response) });
         else resolve(approvalResult(ctx, response));
       });
     });
+  }
+
+  /**
+   * Raises an `AskUserQuestion` call as a question request, once per tool_use id, and resolves
+   * with the tool input with the answers filled in (null when withdrawn). In bypass mode
+   * Claude Code may not consult `canUseTool`, so a PreToolUse hook asks too; whichever comes
+   * first raises the question and the other waits for the same answer.
+   */
+  private askQuestion(live: Live, requestId: string, input: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, unknown> | null> {
+    const inFlight = live.asking.get(requestId);
+    if (inFlight) return inFlight;
+    const answer = new Promise<Record<string, unknown> | null>((resolve) => {
+      this.raise(live, requestId, { requestKind: "question", questions: normaliseQuestions(input) }, signal, (response) => {
+        resolve(response ? answeredInput(input, response) : null);
+      });
+    });
+    live.asking.set(requestId, answer);
+    return answer;
+  }
+
+  /** The PreToolUse hook for `AskUserQuestion`, registered only on a query in bypass mode. */
+  private async askHook(live: Live, hook: HookInput, toolUseId: string | undefined, signal: AbortSignal): Promise<HookJSONOutput> {
+    if (hook.hook_event_name !== "PreToolUse" || hook.tool_name !== ASK_TOOL) return {};
+    const input = (hook.tool_input && typeof hook.tool_input === "object" ? hook.tool_input : {}) as Record<string, unknown>;
+    const answered = await this.askQuestion(live, toolUseId || hook.tool_use_id || randomUUID(), input, signal);
+    if (!answered) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "The request was withdrawn before the user answered." } };
+    return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: answered } };
   }
 
   private onElicitation(live: Live, request: ElicitationRequest, signal: AbortSignal): Promise<ElicitationResult> {
@@ -912,6 +960,15 @@ export class ClaudeProvider implements HarnessProvider {
       }
     }
     const mode = s.mode ?? "default";
+    if ((mode === BYPASS_MODE) !== live.bypassAllowed) {
+      // Entering or leaving bypass: the query's creation option changes, so re-open it with
+      // `resume`, invisibly (it opens with the thread's settings, mode included).
+      const dirs = new Set(live.dirs);
+      this.closeLive(live, mode === BYPASS_MODE ? "entering bypass mode" : "leaving bypass mode");
+      const reopened = await this.openLive(live.native, dirs);
+      this.emit({ type: "settingsChanged", thread: reopened.native, applied: await this.applied(reopened) });
+      return reopened;
+    }
     if (mode !== live.mode) {
       await live.query.setPermissionMode(mode as PermissionMode);
       live.mode = mode;

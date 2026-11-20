@@ -310,6 +310,12 @@ pub struct AppState {
     /// SEAM (wire field missing): the per-instance switch "Offer YAAC tools to sessions
     /// started outside YAAC". No wire field or method exists; window-local.
     pub outside_tools: BTreeSet<(TargetId, InstanceId)>,
+    /// A mode that bypasses approvals, chosen and waiting for confirmation (screen 30). Never
+    /// remembered beyond the one choice.
+    pub mode_confirm: Option<crate::mode_confirm::PendingModeConfirm>,
+    /// SEAM (wire field missing): the WSL master switch (off by default). The hub settings
+    /// carry no such field; window-local.
+    pub wsl_on: bool,
     /// `thread/forkPreview` answers, by source thread and destination instance.
     pub fork_previews: BTreeMap<(ThreadKey, InstanceId), ForkPreviewState>,
     /// `fs/list` answers, by target and directory asked for ("" for the home directory).

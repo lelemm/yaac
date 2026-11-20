@@ -64,6 +64,23 @@ pub(crate) const BENCH: (&str, &str) = ("gpu-box", "t-bench");
 pub(crate) const V2PLAN: (&str, &str) = ("local", "t-v2plan");
 pub(crate) const PARSER: (&str, &str) = ("devbox", "t-parser");
 
+/// What the demo's signed-out instance reports as its status message.
+pub(crate) const SIGN_IN_HINT: &str = "Run `claude` in a terminal to sign in";
+
+pub(crate) fn wsl_target(id: &str, distro: &str, user: Option<&str>, enabled: bool) -> TargetEntry {
+    target(
+        id,
+        &match user {
+            Some(u) => format!("wsl: {distro} ({u})"),
+            None => format!("wsl: {distro}"),
+        },
+        TargetTransport::Wsl(WslTransport { distro: distro.into(), user: user.map(str::to_owned) }),
+        if enabled { ConnectionStatus::Connected } else { ConnectionStatus::Disabled },
+        None,
+        enabled,
+    )
+}
+
 pub(crate) fn k(pair: (&str, &str)) -> ThreadKey {
     ThreadKey::new(pair.0, pair.1)
 }
@@ -88,9 +105,9 @@ fn model(id: &str, default: bool, images: Support) -> ModelInfo {
 
 fn modes() -> Vec<ModeInfo> {
     vec![
-        ModeInfo { id: ModeId::new("ask"), display_name: "ask".into(), description: None, is_default: true },
-        ModeInfo { id: ModeId::new("auto"), display_name: "auto".into(), description: None, is_default: false },
-        ModeInfo { id: ModeId::new("full-access"), display_name: "full access".into(), description: None, is_default: false },
+        ModeInfo { id: ModeId::new("ask"), display_name: "ask".into(), description: None, is_default: true, skips_approvals: false },
+        ModeInfo { id: ModeId::new("auto"), display_name: "auto".into(), description: None, is_default: false, skips_approvals: false },
+        ModeInfo { id: ModeId::new("bypass"), display_name: "bypass permissions".into(), description: None, is_default: false, skips_approvals: true },
     ]
 }
 
@@ -351,6 +368,7 @@ impl Fleet {
                 target("devbox", "devbox", ssh("devbox.example.com"), ConnectionStatus::Connected, None, true),
                 target("gpu-box", "gpu-box", ssh("gpu-box.example.com"), ConnectionStatus::Connected, None, true),
                 target("staging", "staging", ssh("staging.example.com"), ConnectionStatus::Offline, Some("last seen 3h ago"), true),
+                target("legacy", "legacy", TargetTransport::Ssh(SshTransport { host: "legacy.example.com".into(), port: None, user: Some("deploy".into()) }), ConnectionStatus::Disabled, None, false),
                 target(
                     "wsl-ubuntu",
                     "wsl: Ubuntu",
@@ -622,7 +640,7 @@ impl Fleet {
             budgets: BTreeMap::new(),
         };
         let mut c = claude(ProviderStatus::NeedsAuth);
-        c.status_message = None;
+        c.status_message = Some(SIGN_IN_HINT.into());
         f.providers.insert(TargetId::new("local"), vec![codex("codex", None, ProviderStatus::Ready), c]);
         f
     }
