@@ -204,7 +204,9 @@ closer to a mail client's message list than to a file explorer.
   has its header in *italics*, with a small dashed-circle mark, showing the folder path
   (`~/projects/abc/123`). Right-clicking that header opens a one-item menu,
   **Create project…**.
-- **Muted** is the last section, collapsed to its header — "Muted · 4" — and expands on click.
+- **Muted** follows the projects, collapsed to its header — "Muted · 4" — and expands on click.
+- **Archived** is the last section, under *Muted*, also collapsed — "Archived · 12". Archiving
+  a thread takes it out of *Pinned* and *Muted*: it is only ever listed here.
 - **Right-clicking a row** opens a small menu: Pin (or Unpin), Mute (or Unmute), Archive,
   Rename, Fork.
 

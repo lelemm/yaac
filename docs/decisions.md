@@ -78,6 +78,7 @@ All dated entries are from 2026-11-20.
 | D65 | A thread created from YAAC starts in the **root of its project's folder**. | Owner |
 | D66 | **Sidebar rows are more informative: more than one line**, with room for the **git branch** and, very compactly, **how many files differ from origin** for that branch. | Owner |
 | D68 | The git changes in a sidebar row use **real icons, not Unicode characters**, and the **usual git colours** (green, red, …). | Owner |
+| D93 | **Archiving a thread removes its pin** (and its mute), and the sidebar has a collapsed **Archived** section under *Muted*. | Owner |
 | D92 | **Mute, pin, and dismiss are view preferences of the host, not facts about the thread.** The hub stores them on the user's computer, alongside drafts and window state; the daemon never hears of them, and a timed mute needs no timer — it is "hidden until this moment", checked when drawn. A second computer does not share them. *(Supersedes the "stored on the target" part of N32, N35, N40, and the daemon side of D90.)* | Owner |
 | D91 | **Times are always shown and entered in the local time zone of the UI host**, never the target's. | Owner |
 | D90 | **Mute opens a dialog** where it can be made timed: unlimited, a duration in minutes / hours / days (shown as the date it converts to), or a date picker with an editable time of day. | Owner |
