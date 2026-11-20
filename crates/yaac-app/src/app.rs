@@ -75,6 +75,8 @@ pub(crate) struct UiState {
     pub muted_open: bool,
     pub expansion: Expansion,
     pub panel: PanelMode,
+    /// The agents card's open/close rule.
+    pub hover: yaac_core::hover::HoverCard,
     pub menu: Option<Menu>,
     pub needs_popup: bool,
     pub needs_sel: usize,
@@ -117,6 +119,7 @@ impl UiState {
             muted_open: false,
             expansion: Expansion::default(),
             panel: PanelMode::Pill,
+            hover: yaac_core::hover::HoverCard::default(),
             menu: None,
             needs_popup: false,
             needs_sel: 0,
@@ -628,7 +631,12 @@ impl YaacApp {
                     }
                 }
                 Action::Retry(t) => self.client.retry_target(&t),
-                Action::Panel(i) => self.ui.panel = self.ui.panel.next(i),
+                Action::Panel(i) => {
+                    self.ui.panel = self.ui.panel.next(i);
+                    if self.ui.panel != PanelMode::Card {
+                        self.ui.hover.close();
+                    }
+                }
                 Action::Settings(open) => {
                     self.ui.settings = open;
                     self.ui.threads_overlay = false;

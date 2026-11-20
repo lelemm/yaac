@@ -27,6 +27,7 @@ pub mod first_run;
 pub mod fork;
 pub mod header;
 pub mod hints;
+pub mod hover;
 pub mod images;
 pub mod key;
 pub mod link;

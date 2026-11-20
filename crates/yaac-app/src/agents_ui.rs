@@ -5,6 +5,7 @@
 use eframe::egui::{self, Align2, Margin, Rect, Sense, Stroke, pos2, vec2};
 use yaac_core::agents::{AgentRow, AgentsPanel, Flow, PanelInput, PanelMode, SpawnedBy, pill_icons};
 use yaac_core::attention::Mark;
+use yaac_core::hover::Region;
 
 use crate::app::{Action, YaacApp};
 use crate::icons;
@@ -70,27 +71,31 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
     let card = app.ui.panel == PanelMode::Card;
     let (icons_shown, more) = pill_icons(panel);
     let rows: Vec<&AgentRow> = panel.all().collect();
-    let width = if card { 300.0 } else { 44.0 };
-    let count = if card { rows.len() } else { icons_shown.len() + usize::from(more > 0) };
-    let row_h = if card { 44.0 } else { 32.0 };
-    let height = count as f32 * row_h + if card { 44.0 } else { 16.0 };
-    let pos = pos2(thread.right() - width - 12.0, thread.center().y - height / 2.0);
+    let (strip, card_rect) = floating_regions(thread, rows.len(), icons_shown.len() + usize::from(more > 0));
+    let width = if card { CARD_W } else { PILL_W };
+    let row_h = if card { CARD_ROW } else { PILL_ROW };
+    let pos = if card { card_rect.min } else { strip.min };
+    let mut any_focus = false;
     let resp = egui::Area::new(egui::Id::unique("agents-floating")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
         let radius = if card { 12 } else { 22 };
         egui::Frame::popup(ui.style()).fill(p.raised).corner_radius(radius).inner_margin(Margin::same(if card { 10 } else { 6 })).show(ui, |ui| {
             ui.set_width(width - if card { 20.0 } else { 12.0 });
             if card {
+                ui.set_min_height(card_rect.height() - 20.0);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Agents").font(theme::bold(size::UI)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if widgets::plain(ui, &p, "Dock", None).on_hover_text("Pin to the side").clicked() {
+                        let d = widgets::plain(ui, &p, "Dock", None).on_hover_text("Pin to the side");
+                        any_focus |= d.has_focus();
+                        if d.clicked() {
                             actions.push(Action::Panel(PanelInput::Dock));
                         }
                     });
                 });
                 for row in &rows {
                     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
-                    if resp.hovered() {
+                    any_focus |= resp.has_focus();
+                    if resp.hovered() || resp.has_focus() {
                         ui.painter().rect_filled(r, 6.0, p.faint);
                     }
                     harness_icon(ui.painter(), pos2(r.left() + 16.0, r.center().y), 20.0, row, &p);
@@ -113,6 +118,7 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                 ui.vertical_centered(|ui| {
                     for row in &icons_shown {
                         let (r, resp) = ui.allocate_exact_size(vec2(32.0, row_h), Sense::click());
+                        any_focus |= resp.has_focus();
                         harness_icon(ui.painter(), r.center(), 22.0, row, &p);
                         if let Some(f) = row.flow {
                             arrow(ui.painter(), pos2(r.right() - 1.0, r.top() + 8.0), f, &p);
@@ -130,12 +136,48 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
             }
         });
     });
-    let hovered = resp.response.contains_pointer() || ctx.memory(|m| m.focused().is_some_and(|f| resp.response.layer_id.id == f));
-    match (app.ui.panel, hovered) {
-        (PanelMode::Pill, true) => actions.push(Action::Panel(PanelInput::Enter)),
-        (PanelMode::Card, false) if app.shots.is_none() => actions.push(Action::Panel(PanelInput::Leave)),
+    let _ = resp;
+    if app.shots.is_some() {
+        return;
+    }
+    // Open and close from fixed regions and a short delay (yaac_core::hover), never from the
+    // area's own outline, which grows and shrinks with the state.
+    let pointer = ctx.pointer_hover_pos().map(|p| (p.x, p.y));
+    let region = |r: Rect| Region::new((r.left(), r.top()), (r.right(), r.bottom()));
+    let now = ctx.input(|i| i.time);
+    let step = app.ui.hover.step(pointer, region(strip), region(card_rect), any_focus, now);
+    if let Some(s) = step.wake_in {
+        // The pending close: one scheduled repaint, not a running loop.
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(s));
+    }
+    match (app.ui.panel, step.open) {
+        (PanelMode::Pill, true) => {
+            actions.push(Action::Panel(PanelInput::Enter));
+            ctx.request_repaint();
+        }
+        (PanelMode::Card, false) => {
+            actions.push(Action::Panel(PanelInput::Leave));
+            ctx.request_repaint();
+        }
         _ => {}
     }
+}
+
+const PILL_W: f32 = 44.0;
+const PILL_ROW: f32 = 32.0;
+const CARD_W: f32 = 300.0;
+const CARD_ROW: f32 = 44.0;
+
+/// The pill's strip and the card's region, from the layout alone: both share the thread's
+/// right edge (less a 12 pt margin) and are centred on the same line.
+pub(crate) fn floating_regions(thread: Rect, rows: usize, pill_slots: usize) -> (Rect, Rect) {
+    let right = thread.right() - 12.0;
+    let cy = thread.center().y;
+    let pill_h = pill_slots as f32 * PILL_ROW + 16.0;
+    let card_h = rows as f32 * CARD_ROW + 44.0 + 20.0;
+    let strip = Rect::from_min_max(pos2(right - PILL_W, cy - pill_h / 2.0), pos2(right, cy + pill_h / 2.0));
+    let card = Rect::from_min_max(pos2(right - CARD_W, cy - card_h / 2.0), pos2(right, cy + card_h / 2.0));
+    (strip, card)
 }
 
 fn docked_row(ui: &mut egui::Ui, p: &Palette, row: &AgentRow, actions: &mut Vec<Action>) {
