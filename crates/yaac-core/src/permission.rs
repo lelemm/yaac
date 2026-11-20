@@ -26,7 +26,7 @@ pub struct BudgetFields {
 /// What the agent asks to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PermissionRequest {
-    /// "Start 3 threads — Claude · opus-5.5 on local, devbox, and gpu-box".
+    /// One plain line per action ("Start 3 threads — <provider> · <model> on local and devbox").
     pub actions: Vec<String>,
     /// Proposed budget.
     pub budget: BudgetFields,

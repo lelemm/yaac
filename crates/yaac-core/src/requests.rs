@@ -144,7 +144,8 @@ pub fn card_state(
     }
 }
 
-/// The key shown on each decision: Enter on the first plain "allow", Esc on the first deny.
+/// The key shown on each decision (a key name; the window draws Enter as an icon): Enter on
+/// the first plain "allow", Esc on the first deny.
 /// Keys act only while the card has focus.
 pub fn decision_keys(decisions: &[ApprovalDecision]) -> Vec<Option<&'static str>> {
     let enter = decisions
@@ -153,7 +154,7 @@ pub fn decision_keys(decisions: &[ApprovalDecision]) -> Vec<Option<&'static str>
         .or_else(|| decisions.iter().position(|d| !matches!(d.kind, DecisionKind::Deny | DecisionKind::Abort)));
     let esc = decisions.iter().position(|d| d.kind == DecisionKind::Deny).or_else(|| decisions.iter().position(|d| d.kind == DecisionKind::Abort));
     (0..decisions.len())
-        .map(|i| if Some(i) == enter { Some("⏎") } else if Some(i) == esc { Some("Esc") } else { None })
+        .map(|i| if Some(i) == enter { Some("Enter") } else if Some(i) == esc { Some("Esc") } else { None })
         .collect()
 }
 
@@ -296,7 +297,7 @@ mod tests {
     fn keys_follow_the_offered_decisions() {
         let r = approval();
         let RequestBody::Approval(a) = &r.body else { unreachable!() };
-        assert_eq!(decision_keys(&a.decisions), vec![Some("⏎"), None, Some("Esc")]);
-        assert_eq!(decision_keys(&a.decisions[1..]), vec![Some("⏎"), Some("Esc")]);
+        assert_eq!(decision_keys(&a.decisions), vec![Some("Enter"), None, Some("Esc")]);
+        assert_eq!(decision_keys(&a.decisions[1..]), vec![Some("Enter"), Some("Esc")]);
     }
 }

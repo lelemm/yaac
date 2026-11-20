@@ -37,6 +37,9 @@ a per-chat agents toggle with a permission prompt are added.
   - **The only lines in the window** are one hairline between the sidebar and the thread, and
     one between the thread and the agents panel. Sections inside a panel are separated by
     space and a small heading, not by rules or boxes.
+- **Icons are real icons.** Every icon comes from one small icon set embedded in the app, drawn
+  as vector shapes at the text's size. Unicode symbols and emoji are never used as icons —
+  they render differently on every machine.
 - **Fewer marks.** If an icon repeats on every row, it is decoration: remove it. No avatar
   beside each message, no icon before every tool line, no chevron on things that do not
   collapse, no folder icons.
@@ -59,11 +62,14 @@ a per-chat agents toggle with a permission prompt are added.
 | Accent (button fills, focus ring) | `#6C8CFF` | `#3B5BDB` |
 | **Selected row fill** | `#263052` | `#E4EAFD` |
 | Text on an accent fill | `#0E1116` | `#FFFFFF` |
-| Link text | `#8FA8FF` | `#2F4AC0` |
+| Link text (accent, never underlined at rest) | `#8FA8FF` | `#2F4AC0` |
 | Running | `#4C9AFF` | `#1A66C7` |
 | Needs you | `#F2B24C` | `#8F5600` |
 | Failed | `#FF7C87` | `#C92A3A` |
 | Done | `#4CC38A` | `#17754D` |
+| Git: added | `#73C991` | `#166F31` |
+| Git: modified | `#E2C08D` | `#855D00` |
+| Git: deleted | `#F47C7C` | `#C4302B` |
 | Modal scrim | black at 55 % | black at 35 % |
 
 ### Contrast is a requirement, not a hope
@@ -151,14 +157,28 @@ closer to a mail client's message list than to a file explorer.
 - **A thread row has two lines.**
   - **Line 1:** a state mark, the title, and — right-aligned, in secondary text — a relative
     time.
-  - **Line 2**, smaller and in secondary text, aligned under the title: what the thread is
-    working on in git, **as compactly as it can be said** — the branch name, then
-    `Δ7` (seven files differ from origin) and `↑2` (two commits not pushed). A number appears
-    only when it is not zero, so a clean, pushed branch shows just its name. A thread that
-    started workers ends the line with a small people mark and their count.
+  - **Line 2**, smaller, aligned under the title: what the thread is working on in git, **as
+    compactly as it can be said**, with **real icons and the colours every git tool uses** —
+    never Unicode stand-ins such as Δ or ↑:
+    - a small **branch icon** and the branch name, in secondary text;
+    - then the files that differ from origin, each kind as a tiny icon and a number in its
+      colour: **added** (a plus in a small square, green), **modified** (a dot in a small
+      square, soft yellow), **deleted** (a minus in a small square, red);
+    - then, in secondary text with no colour, an **up-arrow icon** and the number of commits
+      not pushed, and a **down-arrow icon** and the number not yet pulled.
+    - Every count is shown only when it is not zero, so a clean, pushed branch shows just its
+      icon and name.
+    - **The number of workers sits at the right edge of line 2**, directly under the time: a
+      small people icon and the count of the thread's direct workers, in secondary text. Shown
+      only when there are workers. The right-hand column of a row is therefore: time on line
+      1, workers on line 2.
+    - Example, reading left to right: branch icon `feature/protocol` · green plus-square `2` ·
+      yellow dot-square `5` · red minus-square `1` · up-arrow `2`.
   - A thread whose folder is **not in git** has no second line; its row is one line tall.
-  - Still nothing else: no state word, no "spawned" arrow, no icons on line 2 beyond the
-    people mark. The state mark is a distinct shape, so it reads without the word; the word
+  - Still nothing else on the row: no state word, no "spawned" arrow.
+  - The git colours are softer than the state colours and sit on small icons on line 2; a
+    thread's **state** is the larger shaped mark on line 1. Green, yellow, and red on line 2
+    always mean files, never the agent. The state mark is a distinct shape, so it reads without the word; the word
     appears in the thread's header when it is open, and in *Needs you*.
   - Rows in *Needs you* and *Muted* stay one line: they are for finding a thread, not for
     reading its status.
@@ -189,21 +209,21 @@ Unless a screen says otherwise, the sidebar shows exactly this:
   - needs-you mark · index-rebuild · `gpu-box`
   - needs-you mark · Fix frame decoder · `devbox`
 - **Pinned · 1**
-  - running mark · Migrate auth module — orchestrator · "now" / line 2: `main  Δ4` and a
-    people mark with "3"
+  - running mark · Migrate auth module — orchestrator · "now" / line 2: branch `main` · 1 added · 3 modified, and a
+    people icon with "3"
 - **api** — `local`
-  - done mark · users-service · "12m" / line 2: `auth/users  Δ12  ↑3`
+  - done mark · users-service · "12m" / line 2: branch `auth/users` · 4 added · 7 modified · 1 deleted · 3 not pushed
 - **yaac** — `devbox`
-  - needs-you mark · Fix frame decoder · "2m" / line 2: `feature/protocol  Δ7  ↑2`
-  - idle mark · Explain the handshake · "2h" / line 2: `feature/protocol`
+  - needs-you mark · Fix frame decoder · "2m" / line 2: branch `feature/protocol` · 2 added · 5 modified · 2 not pushed
+  - idle mark · Explain the handshake · "2h" / line 2: branch `feature/protocol` (clean)
 - **api** — `devbox`
-  - done mark · billing-service · "9m" / line 2: `auth/billing  Δ9  ↑1`
-  - waiting mark · CI integration · "1m" / line 2: `main`
+  - done mark · billing-service · "9m" / line 2: branch `auth/billing` · 3 added · 6 modified · 1 not pushed
+  - waiting mark · CI integration · "1m" / line 2: branch `main` (clean)
 - **search** — `gpu-box`
-  - running mark · search-service · "now" / line 2: `auth/search  Δ3`
-  - needs-you mark · index-rebuild · "41m" / line 2: `auth/search  Δ3`
+  - running mark · search-service · "now" / line 2: branch `auth/search` · 3 modified
+  - needs-you mark · index-rebuild · "41m" / line 2: branch `auth/search` · 3 modified
 - **docs** — `staging`, with an offline mark and the word "offline" beside the machine
-  - idle mark · Release notes · "3h" / line 2: `main`
+  - idle mark · Release notes · "3h" / line 2: branch `main` (clean)
 - *~/scratch/spike-7* — `devbox` — a **temporary project**: italic, dashed mark
   - idle mark · Try the new parser · "1d" (not in git: one line only)
 - **Muted · 4** — collapsed
@@ -295,8 +315,10 @@ A worker thread has no such control — it acts under its root's answer.
 ### Links between agents
 
 A thread name in a **To** or **From** line, a workers card, the agents panel, an ancestry
-line, or the Needs-you list is a link: link-coloured and underlined. (Rows of the thread tree
-are selectable rows, not underlined links.)
+line, or the Needs-you list is a link. **A link is shown in the accent link colour with no
+underline** — blue underlined text is ugly and loud. The underline appears only while the
+pointer is over the link or it has keyboard focus. (Rows of the thread list are selectable
+rows in primary text, not links.)
 
 - **Delivered:** following a *To* opens the other thread at the matching *From*, and back.
 - **Queued:** the name still opens the other thread; there is no matching item yet, and the

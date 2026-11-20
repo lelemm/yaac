@@ -82,6 +82,7 @@ fn create_project_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut V
         ui.allocate_rect(r, egui::Sense::click());
     });
     egui::Window::new("Create project")
+        .title_bar(false)
         .collapsible(false)
         .resizable(false)
         .order(egui::Order::Foreground)
@@ -89,6 +90,7 @@ fn create_project_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut V
         .frame(egui::Frame::popup(&ctx.global_style()).fill(p.raised).inner_margin(Margin::same(18)))
         .show(ctx, |ui| {
             ui.set_width(420.0);
+            ui.label(egui::RichText::new("Create project").font(theme::bold(size::SECTION + 1.0)));
             let field = |ui: &mut egui::Ui, label: &str| {
                 ui.add_space(6.0);
                 ui.label(widgets::secondary(label, &p));
@@ -125,7 +127,7 @@ fn create_project_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut V
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 let ok = !cp.name.trim().is_empty() && !cp.folder.trim().is_empty();
-                let create = widgets::primary(ui, &p, "Create project", Some("⏎"));
+                let create = widgets::primary(ui, &p, "Create project", Some("Enter"));
                 if ok && (create.clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                     actions.push(Action::CreateProject(cp.clone()));
                     keep = false;
@@ -146,11 +148,14 @@ fn rename_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Actio
     let Some((key, mut title)) = app.ui.rename.take() else { return };
     let mut keep = true;
     egui::Window::new("Rename thread")
+        .title_bar(false)
         .collapsible(false)
         .resizable(false)
         .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
         .frame(egui::Frame::popup(&ctx.global_style()).fill(p.raised).inner_margin(Margin::same(16)))
         .show(ctx, |ui| {
+            ui.label(egui::RichText::new("Rename thread").font(theme::bold(size::SECTION + 1.0)));
+            ui.add_space(6.0);
             let te = egui::TextEdit::singleline(&mut title)
                 .frame(egui::Frame::NONE.fill(p.faint).corner_radius(5).inner_margin(Margin::symmetric(8, 5)))
                 .desired_width(320.0);
@@ -159,7 +164,7 @@ fn rename_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Actio
             let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if widgets::primary(ui, &p, "Rename", Some("⏎")).clicked() || enter {
+                if widgets::primary(ui, &p, "Rename", Some("Enter")).clicked() || enter {
                     actions.push(Action::Rename(key.clone(), title.clone()));
                     keep = false;
                 }
@@ -210,7 +215,7 @@ fn needs_popup(ctx: &egui::Context, app: &mut YaacApp, map: &AttentionMap, actio
                 }
             }
             ui.add_space(6.0);
-            ui.label(widgets::secondary("↑ ↓ to move · ⏎ to open · Ctrl+J", &p));
+            ui.label(widgets::secondary("Up and Down to move · Enter to open · Ctrl+J", &p));
         });
     });
 }

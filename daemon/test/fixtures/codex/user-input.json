@@ -1,0 +1,45 @@
+{
+ "provenance": "Synthetic: written by hand from the bindings `codex app-server generate-ts --experimental` emits for daemon 0.171.0 (ToolRequestUserInputParams / ToolRequestUserInputResponse, ServerRequestResolvedNotification). Not recorded: triggering request_user_input needs a real turn in a collaboration mode, which was not spent.",
+ "description": "A running turn asks two questions through item/tool/requestUserInput (one with options and isOther, one isSecret free text); the client answers; Codex confirms with serverRequest/resolved.",
+ "thread": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+ "turn": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+ "request": {
+  "method": "item/tool/requestUserInput",
+  "id": 3,
+  "params": {
+   "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+   "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+   "itemId": "call_fixture_input_1",
+   "isBlocking": true,
+   "autoResolutionMs": null,
+   "questions": [
+    {
+     "id": "approach",
+     "header": "Approach",
+     "question": "Which fix do you want?",
+     "isOther": true,
+     "isSecret": false,
+     "options": [
+      { "label": "Patch the decoder", "description": "Smallest change." },
+      { "label": "Rewrite the framing", "description": "Cleaner, larger." }
+     ]
+    },
+    {
+     "id": "token",
+     "header": "Token",
+     "question": "Paste the deploy token.",
+     "isOther": false,
+     "isSecret": true,
+     "options": null
+    }
+   ]
+  }
+ },
+ "expectedResponse": {
+  "answers": {
+   "approach": { "answers": ["Patch the decoder"] },
+   "token": { "answers": ["s3cret-value"] }
+  }
+ },
+ "resolved": { "method": "serverRequest/resolved", "params": { "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b", "requestId": 3 } }
+}

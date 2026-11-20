@@ -1,0 +1,217 @@
+{
+ "provenance": "Recorded from Codex app-server daemon 0.171.0 on 2026-11-20 (one throwaway thread in a temporary directory, since deleted). Redacted: paths, account, model ids/names/efforts replaced with invented placeholders. Steps marked synthetic were added by hand from the generated protocol types.",
+ "description": "thread/fork of a thread with one completed turn; the thread/started broadcast for the fork; and the source's turns (itemsView full).",
+ "initialize": {
+  "userAgent": "yaacd/0.171.0 (redacted)",
+  "codexHome": "/home/user/.codex",
+  "platformFamily": "unix",
+  "platformOs": "linux"
+ },
+ "fork": {
+  "thread": {
+   "id": "01a1fa3e-1e0d-7842-9cb8-8dda74f65c6b",
+   "environments": [
+    {
+     "environmentId": "local",
+     "cwd": "/work/fixture",
+     "runtimeWorkspaceRoots": [
+      "/work/fixture"
+     ]
+    }
+   ],
+   "extra": null,
+   "sessionId": "01a1fa3e-1e0d-7842-9cb8-8dda74f65c6b",
+   "forkedFromId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+   "attachedToThreadId": null,
+   "parentThreadId": null,
+   "preview": "Run the shell command `echo yaac-fixture` and then reply with just the word done.",
+   "ephemeral": false,
+   "section": null,
+   "sectionEnteredAt": null,
+   "projectId": null,
+   "historyMode": "paginated",
+   "modelProvider": "openai",
+   "model": "model-1",
+   "reasoningEffort": "effort-2",
+   "createdAt": 1795199737,
+   "updatedAt": 1795199737,
+   "recencyAt": 1795199737,
+   "status": {
+    "type": "idle"
+   },
+   "path": "/home/user/.codex/sessions/2026/11/20/rollout-2026-11-20T15-35-37-01a1fa3e-1e0d-7842-9cb8-8dda74f65c6b.jsonl",
+   "cwd": "/work/fixture",
+   "cliVersion": "0.171.0",
+   "originator": "yaac_capture",
+   "source": "vscode",
+   "canAcceptDirectInput": true,
+   "threadSource": null,
+   "agentNickname": null,
+   "agentRole": null,
+   "gitInfo": null,
+   "name": null,
+   "daybreakEnabled": null,
+   "turns": []
+  },
+  "model": "model-1",
+  "modelProvider": "openai",
+  "serviceTier": "default",
+  "disabledPluginIds": [],
+  "cwd": "/work/fixture",
+  "runtimeWorkspaceRoots": [
+   "/work/fixture"
+  ],
+  "instructionSources": [],
+  "approvalPolicy": "untrusted",
+  "approvalsReviewer": "user",
+  "sandbox": {
+   "type": "readOnly",
+   "networkAccess": false
+  },
+  "activePermissionProfile": null,
+  "reasoningEffort": "effort-2",
+  "multiAgentMode": "explicitRequestOnly"
+ },
+ "forkStarted": {
+  "method": "thread/started",
+  "params": {
+   "thread": {
+    "id": "01a1fa3e-1e0d-7842-9cb8-8dda74f65c6b",
+    "environments": [
+     {
+      "environmentId": "local",
+      "cwd": "/work/fixture",
+      "runtimeWorkspaceRoots": [
+       "/work/fixture"
+      ]
+     }
+    ],
+    "extra": null,
+    "sessionId": "01a1fa3e-1e0d-7842-9cb8-8dda74f65c6b",
+    "forkedFromId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+    "attachedToThreadId": null,
+    "parentThreadId": null,
+    "preview": "Run the shell command `echo yaac-fixture` and then reply with just the word done.",
+    "ephemeral": false,
+    "section": null,
+    "sectionEnteredAt": null,
+    "projectId": null,
+    "historyMode": "paginated",
+    "modelProvider": "openai",
+    "model": "model-1",
+    "reasoningEffort": "effort-2",
+    "createdAt": 1795199737,
+    "updatedAt": 1795199737,
+    "recencyAt": 1795199737,
+    "status": {
+     "type": "idle"
+    },
+    "path": "/home/user/.codex/sessions/2026/11/20/rollout-2026-11-20T15-35-37-01a1fa3e-1e0d-7842-9cb8-8dda74f65c6b.jsonl",
+    "cwd": "/work/fixture",
+    "cliVersion": "0.171.0",
+    "originator": "yaac_capture",
+    "source": "vscode",
+    "canAcceptDirectInput": true,
+    "threadSource": null,
+    "agentNickname": null,
+    "agentRole": null,
+    "gitInfo": null,
+    "name": null,
+    "daybreakEnabled": null,
+    "turns": []
+   }
+  }
+ },
+ "sourceTurns": {
+  "data": [
+   {
+    "id": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+    "rootTurnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+    "items": [
+     {
+      "type": "userMessage",
+      "id": "01a1fa3e-0520-7370-b616-444153eb8cf5",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "Run the shell command `echo yaac-fixture` and then reply with just the word done.",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795199730978,
+      "completedAtMs": 1795199730978
+     },
+     {
+      "type": "agentMessage",
+      "moderation": null,
+      "id": "msg_044aace75ea31f75016b0092f4518c87d2a83de9056133627a",
+      "text": "Running the command.",
+      "phase": "commentary",
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null,
+      "startedAtMs": 1795199732068,
+      "completedAtMs": 1795199732343
+     },
+     {
+      "type": "userMessage",
+      "id": "01a1fa3e-0c80-7270-abbd-b48d55a956a0",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "(second input: no extra work needed)",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795199732866,
+      "completedAtMs": 1795199732866
+     },
+     {
+      "type": "commandExecution",
+      "id": "exec-00db85f8-863f-471e-843f-e7d5e5acba6e",
+      "pluginId": null,
+      "scriptPath": null,
+      "command": "/bin/bash -lc 'echo yaac-fixture'",
+      "cwd": "/work/fixture",
+      "processId": "37278",
+      "source": "unifiedExecStartup",
+      "status": "completed",
+      "commandActions": [
+       {
+        "type": "unknown",
+        "command": "echo yaac-fixture"
+       }
+      ],
+      "aggregatedOutput": "yaac-fixture\n",
+      "exitCode": 0,
+      "durationMs": 0,
+      "startedAtMs": 1795199732797,
+      "completedAtMs": 1795199732866
+     },
+     {
+      "type": "agentMessage",
+      "moderation": null,
+      "id": "msg_044aace75ea31f75016b0092f857b887d2970b6e5dc9a7bb11",
+      "text": "done",
+      "phase": "final_answer",
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null,
+      "startedAtMs": 1795199735743,
+      "completedAtMs": 1795199735819
+     }
+    ],
+    "itemsView": "full",
+    "status": "completed",
+    "error": null,
+    "startedAt": 1795199729,
+    "completedAt": 1795199735,
+    "durationMs": 6030
+   }
+  ],
+  "nextCursor": null,
+  "backwardsCursor": "{\"requestedThreadId\":\"01a1fa3e-0061-7e63-844f-8fa25836991b\",\"rolloutOrdinal\":1,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}"
+ }
+}

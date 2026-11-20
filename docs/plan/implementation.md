@@ -83,10 +83,25 @@ itself, not that the worker said so.
 | WP1 | **done** | **yes** — build, 73 tests, clippy `-D warnings`, generated-file staleness check, all re-run by the orchestrator | 9,400 lines. API and rules in `crates/yaac-protocol/README.md`. |
 | WP2 | **done** | **yes** — typecheck, 42 tests, bundle build, and the version-ban test re-run by the orchestrator | 192 KB single-file bundle, no runtime dependencies. Fake provider directives in `daemon/src/providers/fake/README.md`. Runs Node with `--no-turbofan` because Node 22.22.3 crashed intermittently in its optimising compiler on this machine — to investigate before release. |
 | WP3 | **done** | **yes** — build, 26 tests including one against the real daemon bundle, clippy `-D warnings`, re-run by the orchestrator | Mesh relay built (store-and-forward, dedupe, receipts, roster, query routing). Not built: `mesh/usage`, budget forwarding, the 15-minute undelivered notice. |
-| WP4a | in progress | — | Core state, shell, thread view, composer, agents panel, theme, demo and screenshot modes. |
+| WP4a | **done** | **yes** — 52 tests and clippy `-D warnings` re-run by the orchestrator; no provider-kind branches and no model names outside the demo module; screenshots inspected | Stripped release binary 8.4 MiB (budget 20). Idle CPU 0. Idle memory measured only under software rendering (123 MB) — to re-measure on a GPU driver. Runs on scripted demo data; not yet attached to the real hub. Real screenshots in `docs/design/screenshots/`. Twelve protocol gaps reported, listed in the worker's notes below. |
 | WP4b | not started | — | Settings pages, first run, *Since you left*, fork dialog, narrow layout. |
-| WP5 | not started | — | |
-| WP6 | not started | — | |
+| WP5 | in progress | — | |
+| WP6 | in progress | — | |
 | WP7 | not started | — | |
 | WP8 | not started | — | |
 | WP9 | not started | — | |
+
+## Follow-up: protocol and daemon additions the design now needs
+
+Owner decisions made after the protocol crate and daemon were finished, plus gaps the window
+worker found. To be done as one pass once the provider workers land:
+
+- `ThreadSummary`: `muted`, `pinned`, git status (`branch`, `added`, `modified`, `deleted`,
+  `ahead`, `behind`), and thread states for *waiting* and *done*.
+- User-created projects: registry on the target, create/rename/delete methods, the matching
+  rule (deepest folder; repository rule first), temporary projects.
+- A per-chat agents policy (ask / allow) and a permission request variant carrying the budget.
+- Item timestamps (for "Thought for 4s"); a file name on input parts; context usage in the
+  subscribe result; the window's own client id in the hub's hello; `thread/fork` without a
+  first message; `enabled` in target-state notifications.
+- `item/read` on the wire; `mesh/usage` and budget forwarding in the hub.

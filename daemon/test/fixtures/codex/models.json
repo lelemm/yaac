@@ -1,0 +1,601 @@
+{
+ "provenance": "Recorded from Codex app-server daemon 0.171.0 on 2026-11-20 (one throwaway thread in a temporary directory, since deleted). Redacted: paths, account, model ids/names/efforts replaced with invented placeholders. Steps marked synthetic were added by hand from the generated protocol types.",
+ "description": "model/list with includeHidden, every page (limit 4 per page when recorded).",
+ "initialize": {
+  "userAgent": "yaacd/0.171.0 (redacted)",
+  "codexHome": "/home/user/.codex",
+  "platformFamily": "unix",
+  "platformOs": "linux"
+ },
+ "pages": [
+  {
+   "data": [
+    {
+     "id": "model-1",
+     "model": "model-1",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": null,
+     "displayName": "Model 1",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": false,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-6",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-1",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v2",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": true
+    },
+    {
+     "id": "model-2",
+     "model": "model-2",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": null,
+     "displayName": "Model 2",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": false,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-6",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-1",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v2",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": false
+    },
+    {
+     "id": "model-3",
+     "model": "model-3",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": null,
+     "displayName": "Model 3",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": false,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-6",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-1",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v2",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": false
+    },
+    {
+     "id": "model-4",
+     "model": "model-4",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": null,
+     "displayName": "Model 4",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": true,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-2",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v1",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": false
+    }
+   ],
+   "nextCursor": "4"
+  },
+  {
+   "data": [
+    {
+     "id": "model-5",
+     "model": "model-5",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": {
+      "message": "Maximize usage with GPT-6.1 Sol. Try it on complex work for near-Astra performance at a lower cost."
+     },
+     "displayName": "Model 5",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": false,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-6",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-1",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v2",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": false
+    },
+    {
+     "id": "model-6",
+     "model": "model-6",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": null,
+     "displayName": "Model 6",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": false,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-6",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-2",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v2",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": false
+    },
+    {
+     "id": "model-7",
+     "model": "model-7",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": null,
+     "displayName": "Model 7",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": false,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-6",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-2",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v2",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": false
+    },
+    {
+     "id": "model-8",
+     "model": "model-8",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": null,
+     "displayName": "Model 8",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": false,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-2",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v2",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": false
+    }
+   ],
+   "nextCursor": "8"
+  },
+  {
+   "data": [
+    {
+     "id": "model-9",
+     "model": "model-9",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": null,
+     "displayName": "Model 9",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": false,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-6",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-1",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v2",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": false
+    },
+    {
+     "id": "model-10",
+     "model": "model-10",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": null,
+     "displayName": "Model 10",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": false,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-6",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-2",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v2",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": false
+    },
+    {
+     "id": "model-11",
+     "model": "model-11",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": null,
+     "displayName": "Model 11",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": false,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-2",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v1",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": false
+    },
+    {
+     "id": "model-12",
+     "model": "model-12",
+     "upgrade": null,
+     "upgradeInfo": null,
+     "availabilityNux": null,
+     "displayName": "Model 12",
+     "description": "Redacted description.",
+     "modelSpecialty": null,
+     "hidden": true,
+     "supportedReasoningEfforts": [
+      {
+       "reasoningEffort": "effort-1",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-2",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-3",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-4",
+       "description": "Redacted."
+      },
+      {
+       "reasoningEffort": "effort-5",
+       "description": "Redacted."
+      }
+     ],
+     "defaultReasoningEffort": "effort-2",
+     "inputModalities": [
+      "text",
+      "image"
+     ],
+     "supportsPersonality": false,
+     "multiAgentVersion": "v1",
+     "additionalSpeedTiers": [],
+     "serviceTiers": [],
+     "defaultServiceTier": null,
+     "availableAccessPrograms": null,
+     "isDefault": false
+    }
+   ],
+   "nextCursor": null
+  }
+ ]
+}

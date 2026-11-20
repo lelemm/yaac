@@ -40,6 +40,7 @@ pub(crate) struct Shots {
     jobs: Vec<(&'static str, &'static str, bool)>,
     cur: usize,
     frame: u32,
+    started: f64,
     waiting: bool,
     image: Arc<Mutex<Option<Arc<ColorImage>>>>,
     /// Files written.
@@ -62,7 +63,7 @@ impl Shots {
             jobs.push((*id, *name, true));
             jobs.push((*id, *name, false));
         }
-        Self { dir, jobs, cur: 0, frame: 0, waiting: false, image: Arc::default(), written: Vec::new() }
+        Self { dir, jobs, cur: 0, frame: 0, started: 0.0, waiting: false, image: Arc::default(), written: Vec::new() }
     }
 
     /// Advance; returns true when every screen is written.
@@ -102,9 +103,11 @@ impl Shots {
             setup(app, id);
             app.ui.theme = if dark { ThemeChoice::Dark } else { ThemeChoice::Light };
             app.applied = None;
+            self.started = ctx.input(|i| i.time);
         }
         self.frame += 1;
-        if self.frame >= SETTLE_FRAMES {
+        // Wait for layout to settle and for popups and dialogs to finish fading in.
+        if self.frame >= SETTLE_FRAMES && ctx.input(|i| i.time) - self.started > 0.6 {
             let slot = self.image.clone();
             ctx.request_screenshot(move |img| {
                 if let Ok(mut g) = slot.lock() {
@@ -172,7 +175,12 @@ fn setup(app: &mut YaacApp, id: &str) {
         "12" => {
             let fix = threads::fix();
             app.open(&fix, None);
-            app.client.fork(&fix, &"claude".into());
+            // Fork to another instance on the same machine (a handoff).
+            let own = app.client.state.summary(&fix).map(|s| s.instance.clone());
+            let dest = app.client.state.target(&fix.target).and_then(|t| t.providers.iter().find(|p| Some(&p.instance) != own.as_ref() && p.store.key != app.client.state.provider_of(&fix).and_then(|o| o.store.key.clone())).map(|p| p.instance.clone()));
+            if let Some(d) = dest {
+                app.client.fork(&fix, &d);
+            }
             app.pump_demo();
             if let Some(k) = app.client.state.selected_thread().cloned() {
                 app.open(&k, None);

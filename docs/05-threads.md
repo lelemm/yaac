@@ -63,7 +63,7 @@ pub struct ThreadSummary {
     pub cwd: TargetPath,             // opaque; interpreted only on the target
     pub project: ProjectRef,         // a project the user created, or a temporary one; see below
     pub worktree: Option<WorktreeRef>,
-    pub git: Option<GitStatus>,      // branch, files differing from origin, commits ahead; None outside git
+    pub git: Option<GitStatus>,      // branch; files added / modified / deleted vs origin; commits ahead / behind; None outside git
     pub model: Option<String>,
     pub state: ThreadState,          // Idle | Running | NeedsAttention | Failed
     pub control: Control,            // Free | Mine | OtherClient | External

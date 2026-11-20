@@ -168,10 +168,16 @@ pub struct Arrival {
 pub struct GitStatus {
     /// The branch.
     pub branch: String,
-    /// Files that differ from origin ("Δ7").
-    pub changed_files: u32,
-    /// Commits not pushed ("↑2").
+    /// Files added relative to origin.
+    pub added: u32,
+    /// Files modified relative to origin.
+    pub modified: u32,
+    /// Files deleted relative to origin.
+    pub deleted: u32,
+    /// Commits not pushed.
     pub ahead: u32,
+    /// Commits not yet pulled.
+    pub behind: u32,
 }
 
 /// Whether a chat's agent may start and message other threads without asking.

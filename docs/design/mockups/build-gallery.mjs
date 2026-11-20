@@ -18,6 +18,10 @@ ${b ? `<details><summary>Before (the version you found polluted)</summary><div c
 const secOld = old.filter(f => !v5.some(g => g.slice(0, 2) === f.slice(0, 2)) && !['06', '18'].includes(f.slice(0, 2))).map(f => { const n = f.slice(0, 2);
   return `<section id="o${n}"><h2><span>${n}</span> ${esc(titles[n] || f)}</h2><p>${esc(purpose[n] || '')}</p>
 <div class="pair">${fig('final/' + f, 'Earlier style — dark')}${fig('final/' + f.replace('-dark', '-light'), 'Earlier style — light')}</div></section>`; }).join('\n');
+const shots = fs.existsSync('../screenshots') ? fs.readdirSync('../screenshots').filter(f => f.endsWith('-dark.png')).sort() : [];
+const secShots = shots.map(f => { const n = f.slice(0, 2);
+  return `<section id="a${n}"><h2><span>${n}</span> ${esc(titles[n] || f)}</h2>
+<div class="pair">${fig('../screenshots/' + f, 'Real app — dark')}${fig('../screenshots/' + f.replace('-dark', '-light'), 'Real app — light')}</div></section>`; }).join('\n');
 const nav = v5.map(f => `<a href="#r${f.slice(0, 2)}">${f.slice(0, 2)} ${esc(titles[f.slice(0, 2)] || '')}</a>`).join('');
 fs.writeFileSync('index.html', `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>YAAC mockups</title><style>
@@ -37,6 +41,9 @@ details{margin-top:12px}summary{cursor:pointer;color:var(--ac);font-size:13px;ma
 </style></head><body><header><h1>YAAC — screen mockups, revision 5</h1>
 <p>Your revision: a flat sidebar list under sticky headers, no outlines, the conversation first, and the agents panel as a pill. ${v5.length} screens rendered so far, each in dark and light. Click an image for full size; open "Before" under a screen to compare.</p></header>
 <nav>${nav}</nav>
+<div class="band" style="margin-top:0;border-top:0"><h1>The real app</h1><p>Screenshots taken from the actual window, running on scripted demo data. ${shots.length} screens.</p></div>
+${secShots}
+<div class="band"><h1>Mockups, revision 5</h1><p>Generated images the app was built from.</p></div>
 ${sec5}
 <div class="band"><h1>Not yet re-rendered in the new style</h1><p>These ${secOld ? 'screens' : ''} still show the earlier, busier style. Their content stands; their look will follow revision 5.</p></div>
 ${secOld}

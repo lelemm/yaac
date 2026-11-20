@@ -1,0 +1,1363 @@
+{
+ "recorded": "Claude Code 2.1.329 / agent SDK 0.3.329, one trivial turn run by hand in a temporary directory; system and telemetry messages removed; paths redacted",
+ "sessionId": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+ "turnUuid": "87063dcc-fceb-4267-a445-080170268016",
+ "stream": [
+  {
+   "type": "system",
+   "subtype": "init",
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "uuid": "1007007f-cb0d-48ae-aa3d-93ae4d5632eb",
+   "model": "recorded-model",
+   "permissionMode": "default",
+   "cwd": "/tmp/yaac-fixture",
+   "claude_code_version": "2.1.329",
+   "tools": [],
+   "mcp_servers": []
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "message_start",
+    "message": {
+     "model": "recorded-model",
+     "id": "msg_011ChEfzRznLaEi7EHd4LHjL",
+     "type": "message",
+     "role": "assistant",
+     "content": [],
+     "container": null,
+     "stop_reason": null,
+     "stop_sequence": null,
+     "stop_details": null,
+     "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 20950,
+      "cache_read_input_tokens": 0,
+      "cache_creation": {
+       "ephemeral_5m_input_tokens": 0,
+       "ephemeral_1h_input_tokens": 20950
+      },
+      "output_tokens": 16,
+      "service_tier": "standard",
+      "inference_geo": "global",
+      "speed": "standard"
+     },
+     "input_transformations": [],
+     "diagnostics": null,
+     "context_management": null
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "d4fd01ae-1018-4a00-bbff-4a522edfefb9",
+   "ttft_ms": 581,
+   "thinking_display": "updates",
+   "api_message_id": "msg_011ChEfzRznLaEi7EHd4LHjL",
+   "user_message_uuid": "87063dcc-fceb-4267-a445-080170268016",
+   "user_message_uuids": [
+    "87063dcc-fceb-4267-a445-080170268016"
+   ],
+   "owed_rows": []
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "tool_use",
+     "id": "toolu_018TQ3jVDkhrXCCHwGhJdwHr",
+     "name": "Bash",
+     "input": {},
+     "caller": {
+      "type": "direct"
+     }
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "1e1f32f7-b75a-4921-b10c-58670f979c3a",
+   "api_message_id": "msg_011ChEfzRznLaEi7EHd4LHjL"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": ""
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "8eb52e9f-bfa4-4cce-b50c-59b5253024cf",
+   "api_message_id": "msg_011ChEfzRznLaEi7EHd4LHjL"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "{\"command\": \"echo hi"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "23c13845-b515-4d2e-9dc0-9c3d3d6c43fa",
+   "api_message_id": "msg_011ChEfzRznLaEi7EHd4LHjL"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "\", \"description\": \"Print"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "32eb82bc-4c6c-4985-b443-f2c7c2a7679d",
+   "api_message_id": "msg_011ChEfzRznLaEi7EHd4LHjL"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": " hi"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "02c7c6b1-bb1b-416a-ba91-080cdc66f241",
+   "api_message_id": "msg_011ChEfzRznLaEi7EHd4LHjL"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "\"}"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "67558f24-c047-49e3-9569-bf3cafe11f06",
+   "api_message_id": "msg_011ChEfzRznLaEi7EHd4LHjL"
+  },
+  {
+   "type": "assistant",
+   "message": {
+    "model": "recorded-model",
+    "id": "msg_011ChEfzRznLaEi7EHd4LHjL",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_018TQ3jVDkhrXCCHwGhJdwHr",
+      "name": "Bash",
+      "input": {
+       "command": "echo hi",
+       "description": "Print hi"
+      },
+      "caller": {
+       "type": "direct"
+      }
+     }
+    ],
+    "container": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 20950,
+     "cache_read_input_tokens": 0,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 20950
+     },
+     "output_tokens": 16,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    },
+    "input_transformations": [],
+    "diagnostics": null,
+    "context_management": null
+   },
+   "parent_tool_use_id": null,
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "uuid": "1d0857c1-27b1-467f-bee3-5da88484007b",
+   "timestamp": "2026-11-20T18:43:21.973Z",
+   "request_id": "req_011ChEfzRtqojZ759jPDuJcr",
+   "wire_tool_inputs": {
+    "toolu_018TQ3jVDkhrXCCHwGhJdwHr": {
+     "command": "echo hi",
+     "description": "Print hi"
+    }
+   },
+   "user_message_uuid": "87063dcc-fceb-4267-a445-080170268016",
+   "user_message_uuids": [
+    "87063dcc-fceb-4267-a445-080170268016"
+   ]
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "e676ab99-372d-478a-a2ae-8884182beb3c",
+   "api_message_id": "msg_011ChEfzRznLaEi7EHd4LHjL"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "tool_use",
+     "stop_sequence": null,
+     "stop_details": null,
+     "container": null
+    },
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 20950,
+     "cache_read_input_tokens": 0,
+     "output_tokens": 74,
+     "output_tokens_details": {
+      "thinking_tokens": 0
+     },
+     "iterations": [
+      {
+       "input_tokens": 2,
+       "output_tokens": 74,
+       "cache_read_input_tokens": 0,
+       "cache_creation_input_tokens": 20950,
+       "cache_creation": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 20950
+       },
+       "type": "message"
+      }
+     ]
+    },
+    "context_management": {
+     "applied_edits": []
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "70cf75b8-19e0-4643-9438-dcb2ffdbf474",
+   "api_message_id": "msg_011ChEfzRznLaEi7EHd4LHjL"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "message_stop"
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "e0c3865f-77e1-4f7e-abe3-209dbeed485c",
+   "api_message_id": "msg_011ChEfzRznLaEi7EHd4LHjL"
+  },
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "tool_use_id": "toolu_018TQ3jVDkhrXCCHwGhJdwHr",
+      "type": "tool_result",
+      "content": "hi",
+      "is_error": false
+     }
+    ]
+   },
+   "parent_tool_use_id": null,
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "uuid": "1ea37d40-539e-4b97-bce2-c8ed283f4377",
+   "timestamp": "2026-11-20T18:43:22.045Z",
+   "tool_use_result": {
+    "stdout": "hi",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+   },
+   "tool_result_meta": [
+    {
+     "id": "toolu_018TQ3jVDkhrXCCHwGhJdwHr",
+     "permission_decision": {
+      "decision": "accept",
+      "source": "config",
+      "reason_type": "subcommandResults"
+     }
+    }
+   ]
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "message_start",
+    "message": {
+     "model": "recorded-model",
+     "id": "msg_011ChEfzX7MvNxuDE17Hijt3",
+     "type": "message",
+     "role": "assistant",
+     "content": [],
+     "container": null,
+     "stop_reason": null,
+     "stop_sequence": null,
+     "stop_details": null,
+     "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 1901,
+      "cache_read_input_tokens": 20950,
+      "cache_creation": {
+       "ephemeral_5m_input_tokens": 0,
+       "ephemeral_1h_input_tokens": 1901
+      },
+      "output_tokens": 24,
+      "service_tier": "standard",
+      "inference_geo": "global",
+      "speed": "standard"
+     },
+     "input_transformations": [],
+     "diagnostics": null,
+     "context_management": null
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "cfd46670-a085-4a76-a727-20c54f9634f7",
+   "ttft_ms": 487,
+   "thinking_display": "updates",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "tool_use",
+     "id": "toolu_01LPK7iSjatEKnmygnWNMAeq",
+     "name": "AskUserQuestion",
+     "input": {},
+     "caller": {
+      "type": "direct"
+     }
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "d1aa7cb2-c676-4ead-b99b-af4c66061d1c",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": ""
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "f9077a9e-911d-4415-932f-f61c1c01a638",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "{\"questions\": [{\"question"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "3ceaf6e6-f570-43f5-bf0e-17f78fe779ae",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "\": \"Should I say bye"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "ae2149d9-e5d0-4c1d-9a07-7630b199f76e",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "?\", \"header\": \"Say"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "98f2509f-f976-4374-a286-1e5d972de6bd",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": " bye?"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "07da96c0-a5ad-4fa6-b04d-a3a2ab7406e7",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "\", \"options"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "db3cc0d3-5509-479f-aca8-bbbb2db0cc3a",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "\": [{\"label\": \""
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "0e249932-49aa-46ce-81d3-d7cd42928ae4",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "Yes\", \"description\": \""
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "d693f775-0507-46cc-9433-bde8afd45510",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "Say bye\"}, {\""
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "2ae8c6a8-a525-4bf0-a64d-f209ac4b92e5",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "label\": \"No\", \"description\":"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "30fd2174-1d9c-4599-b250-2255916922df",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": " \"Don't say bye\""
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "7ddf3981-1ed4-46b5-9403-e1a554b4aef5",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "}], \"multiSelect"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "2a478f7d-fed5-4165-b9ea-c99854b01104",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "\": false}]"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "0fc8a600-8abc-45da-b043-a9a8e86d11dc",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "input_json_delta",
+     "partial_json": "}"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "ff5cfcfa-541f-4899-8f96-9d8c5ca4a692",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "assistant",
+   "message": {
+    "model": "recorded-model",
+    "id": "msg_011ChEfzX7MvNxuDE17Hijt3",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_01LPK7iSjatEKnmygnWNMAeq",
+      "name": "AskUserQuestion",
+      "input": {
+       "questions": [
+        {
+         "question": "Should I say bye?",
+         "header": "Say bye?",
+         "options": [
+          {
+           "label": "Yes",
+           "description": "Say bye"
+          },
+          {
+           "label": "No",
+           "description": "Don't say bye"
+          }
+         ],
+         "multiSelect": false
+        }
+       ]
+      },
+      "caller": {
+       "type": "direct"
+      }
+     }
+    ],
+    "container": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 1901,
+     "cache_read_input_tokens": 20950,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 1901
+     },
+     "output_tokens": 24,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    },
+    "input_transformations": [],
+    "diagnostics": null,
+    "context_management": null
+   },
+   "parent_tool_use_id": null,
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "uuid": "1e4574fe-b10d-42fd-a463-968ceb2143b7",
+   "timestamp": "2026-11-20T18:43:23.269Z",
+   "request_id": "req_011ChEfzWxhD8cdMePpqo5vW",
+   "wire_tool_inputs": {
+    "toolu_01LPK7iSjatEKnmygnWNMAeq": {
+     "questions": [
+      {
+       "question": "Should I say bye?",
+       "header": "Say bye?",
+       "options": [
+        {
+         "label": "Yes",
+         "description": "Say bye"
+        },
+        {
+         "label": "No",
+         "description": "Don't say bye"
+        }
+       ],
+       "multiSelect": false
+      }
+     ]
+    }
+   }
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "ddedb07c-00a4-4de8-acff-b9aeb5df04c7",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "tool_use",
+     "stop_sequence": null,
+     "stop_details": null,
+     "container": null
+    },
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 1901,
+     "cache_read_input_tokens": 20950,
+     "output_tokens": 130,
+     "output_tokens_details": {
+      "thinking_tokens": 0
+     },
+     "iterations": [
+      {
+       "input_tokens": 2,
+       "output_tokens": 130,
+       "cache_read_input_tokens": 20950,
+       "cache_creation_input_tokens": 1901,
+       "cache_creation": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 1901
+       },
+       "type": "message"
+      }
+     ]
+    },
+    "context_management": {
+     "applied_edits": []
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "5bc00e7b-3543-4127-9baf-1b1556b5c881",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "message_stop"
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "f10690f9-68d6-4f1a-b60f-011337e488a4",
+   "api_message_id": "msg_011ChEfzX7MvNxuDE17Hijt3"
+  },
+  {
+   "type": "user",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "content": "Your questions have been answered: \"Should I say bye?\"=\"Yes\". You can now continue with these answers in mind.",
+      "tool_use_id": "toolu_01LPK7iSjatEKnmygnWNMAeq"
+     }
+    ]
+   },
+   "parent_tool_use_id": null,
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "uuid": "a306fc88-712a-4e19-850d-f1f274ce634a",
+   "timestamp": "2026-11-20T18:43:23.283Z",
+   "tool_use_result": {
+    "questions": [
+     {
+      "question": "Should I say bye?",
+      "header": "Say bye?",
+      "options": [
+       {
+        "label": "Yes",
+        "description": "Say bye"
+       },
+       {
+        "label": "No",
+        "description": "Don't say bye"
+       }
+      ],
+      "multiSelect": false
+     }
+    ],
+    "answers": {
+     "Should I say bye?": "Yes"
+    }
+   },
+   "tool_result_meta": [
+    {
+     "id": "toolu_01LPK7iSjatEKnmygnWNMAeq",
+     "permission_decision": {
+      "decision": "accept",
+      "source": "user_temporary"
+     }
+    }
+   ]
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "message_start",
+    "message": {
+     "model": "recorded-model",
+     "id": "msg_011ChEfzcr9ZeN2mNp5be6Bh",
+     "type": "message",
+     "role": "assistant",
+     "content": [],
+     "container": null,
+     "stop_reason": null,
+     "stop_sequence": null,
+     "stop_details": null,
+     "usage": {
+      "input_tokens": 2,
+      "cache_creation_input_tokens": 171,
+      "cache_read_input_tokens": 22851,
+      "cache_creation": {
+       "ephemeral_5m_input_tokens": 0,
+       "ephemeral_1h_input_tokens": 171
+      },
+      "output_tokens": 5,
+      "service_tier": "standard",
+      "inference_geo": "global",
+      "speed": "standard"
+     },
+     "input_transformations": [],
+     "diagnostics": null,
+     "context_management": null
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "940b2a25-f541-41ca-9142-0c6f48705f4f",
+   "ttft_ms": 440,
+   "thinking_display": "updates",
+   "api_message_id": "msg_011ChEfzcr9ZeN2mNp5be6Bh"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {
+     "type": "text",
+     "text": ""
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "21c6de7a-a786-483a-b209-5909d89df705",
+   "api_message_id": "msg_011ChEfzcr9ZeN2mNp5be6Bh"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {
+     "type": "text_delta",
+     "text": "Bye"
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "ee04f9b5-0f2d-4e4b-b068-d50c0ee4c67f",
+   "api_message_id": "msg_011ChEfzcr9ZeN2mNp5be6Bh"
+  },
+  {
+   "type": "assistant",
+   "message": {
+    "model": "recorded-model",
+    "id": "msg_011ChEfzcr9ZeN2mNp5be6Bh",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Bye"
+     }
+    ],
+    "container": null,
+    "stop_reason": null,
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 171,
+     "cache_read_input_tokens": 22851,
+     "cache_creation": {
+      "ephemeral_5m_input_tokens": 0,
+      "ephemeral_1h_input_tokens": 171
+     },
+     "output_tokens": 5,
+     "service_tier": "standard",
+     "inference_geo": "global",
+     "speed": "standard"
+    },
+    "input_transformations": [],
+    "diagnostics": null,
+    "context_management": null
+   },
+   "parent_tool_use_id": null,
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "uuid": "14b1332b-bb59-4292-8eb6-473c23121391",
+   "timestamp": "2026-11-20T18:43:23.731Z",
+   "request_id": "req_011ChEfzcixWd3YcNLdo7LgE"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "content_block_stop",
+    "index": 0
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "5364c380-219e-42d6-895f-69cebb9ac955",
+   "api_message_id": "msg_011ChEfzcr9ZeN2mNp5be6Bh"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "message_delta",
+    "delta": {
+     "stop_reason": "end_turn",
+     "stop_sequence": null,
+     "stop_details": null,
+     "container": null
+    },
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 171,
+     "cache_read_input_tokens": 22851,
+     "output_tokens": 5,
+     "output_tokens_details": {
+      "thinking_tokens": 0
+     },
+     "iterations": [
+      {
+       "input_tokens": 2,
+       "output_tokens": 5,
+       "cache_read_input_tokens": 22851,
+       "cache_creation_input_tokens": 171,
+       "cache_creation": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 171
+       },
+       "type": "message"
+      }
+     ]
+    },
+    "context_management": {
+     "applied_edits": []
+    }
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "90e03847-4dc8-43a4-9828-8bc6b9d33fde",
+   "api_message_id": "msg_011ChEfzcr9ZeN2mNp5be6Bh"
+  },
+  {
+   "type": "stream_event",
+   "event": {
+    "type": "message_stop"
+   },
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "parent_tool_use_id": null,
+   "uuid": "0ffa8967-f241-4c35-be0d-422ee3832402",
+   "api_message_id": "msg_011ChEfzcr9ZeN2mNp5be6Bh"
+  },
+  {
+   "duration_api_ms": 3565,
+   "stop_reason": "end_turn",
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "total_cost_usd": 0.3856521,
+   "usage": {
+    "input_tokens": 6,
+    "cache_creation_input_tokens": 23022,
+    "cache_read_input_tokens": 43801,
+    "output_tokens": 209,
+    "output_tokens_details": {
+     "thinking_tokens": 0
+    },
+    "server_tool_use": {
+     "web_search_requests": 0,
+     "web_fetch_requests": 0
+    },
+    "service_tier": "standard",
+    "cache_creation": {
+     "ephemeral_1h_input_tokens": 23022,
+     "ephemeral_5m_input_tokens": 0
+    },
+    "inference_geo": "global",
+    "iterations": [
+     {
+      "input_tokens": 2,
+      "output_tokens": 5,
+      "cache_read_input_tokens": 22851,
+      "cache_creation_input_tokens": 171,
+      "cache_creation": {
+       "ephemeral_5m_input_tokens": 0,
+       "ephemeral_1h_input_tokens": 171
+      },
+      "type": "message"
+     }
+    ],
+    "speed": "standard",
+    "fallback_credit": null
+   },
+   "modelUsage": {},
+   "permission_denials": [],
+   "terminal_reason": "completed",
+   "fast_mode_disabled_reason": "sdk_opt_in_required",
+   "subagent_stats": {
+    "spawned": 0,
+    "requested": {
+     "background": 0,
+     "foreground": 0,
+     "unset": 0
+    },
+    "started_in_background": 0,
+    "max_depth": 0,
+    "spawned_by_subagents": 0,
+    "completed": 0,
+    "failed": 0,
+    "killed": {
+     "parent": 0,
+     "user": 0,
+     "system": 0
+    },
+    "refused": {
+     "depth_limit": 0,
+     "concurrency_limit": 0,
+     "budget": 0
+    },
+    "by_type": {}
+   },
+   "safety_stops": 0,
+   "is_error": false,
+   "num_turns": 3,
+   "subtype": "success",
+   "api_error_status": null,
+   "result": "Bye",
+   "ttft_ms": 1266,
+   "type": "result",
+   "duration_ms": 3037,
+   "uuid": "e91437b4-e1d2-4b06-89eb-4317c14b54f1",
+   "ttft_stream_ms": 793,
+   "time_to_request_ms": 214,
+   "first_content_frame_ms": 793,
+   "user_message_uuid": "87063dcc-fceb-4267-a445-080170268016",
+   "user_message_uuids": [
+    "87063dcc-fceb-4267-a445-080170268016"
+   ],
+   "request_sent_wall_ms": 1795200200921,
+   "first_request_input_tokens": 20952,
+   "first_request_cache_read_input_tokens": 0,
+   "queued_turn_count": 0,
+   "result_index": 0,
+   "model_usage_since_last_result": {
+    "recorded-model": {
+     "inputTokens": 1219,
+     "outputTokens": 20,
+     "cacheReadInputTokens": 0,
+     "cacheCreationInputTokens": 0,
+     "webSearchRequests": 0,
+     "costUSD": 0.0001319,
+     "contextWindow": 1000000,
+     "maxOutputTokens": 128000,
+     "thinkingTokens": 0,
+     "cacheCreationEphemeral5mInputTokens": 0,
+     "cacheCreationEphemeral1hInputTokens": 0,
+     "canonicalModel": "recorded-model",
+     "provider": "firstParty",
+     "costBasis": "list"
+    },
+    "recorded-model": {
+     "inputTokens": 6,
+     "outputTokens": 209,
+     "cacheReadInputTokens": 43801,
+     "cacheCreationInputTokens": 23022,
+     "webSearchRequests": 0,
+     "costUSD": 0.3855201999999999,
+     "contextWindow": 1000000,
+     "maxOutputTokens": 128000,
+     "thinkingTokens": 0,
+     "cacheCreationEphemeral5mInputTokens": 0,
+     "cacheCreationEphemeral1hInputTokens": 23022,
+     "canonicalModel": "recorded-model",
+     "provider": "firstParty",
+     "costBasis": "list"
+    }
+   },
+   "credential_expires_at": "2026-12-17T17:53:14.097Z"
+  }
+ ],
+ "permissions": [
+  {
+   "name": "AskUserQuestion",
+   "input": {
+    "questions": [
+     {
+      "question": "Should I say bye?",
+      "header": "Say bye?",
+      "options": [
+       {
+        "label": "Yes",
+        "description": "Say bye"
+       },
+       {
+        "label": "No",
+        "description": "Don't say bye"
+       }
+      ],
+      "multiSelect": false
+     }
+    ]
+   },
+   "toolUseID": "toolu_01LPK7iSjatEKnmygnWNMAeq",
+   "displayName": "AskUserQuestion"
+  }
+ ],
+ "history": [
+  {
+   "type": "user",
+   "uuid": "87063dcc-fceb-4267-a445-080170268016",
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "message": {
+    "role": "user",
+    "content": "Use the Bash tool to run exactly `echo hi`, then use AskUserQuestion to ask me whether to say bye (options Yes/No), then reply with one word."
+   },
+   "parent_tool_use_id": null,
+   "parent_agent_id": null,
+   "timestamp": "2026-11-20T18:43:20.736Z"
+  },
+  {
+   "type": "assistant",
+   "uuid": "1d0857c1-27b1-467f-bee3-5da88484007b",
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "message": {
+    "model": "recorded-model",
+    "id": "msg_011ChEfzRznLaEi7EHd4LHjL",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_018TQ3jVDkhrXCCHwGhJdwHr",
+      "name": "Bash",
+      "input": {
+       "command": "echo hi",
+       "description": "Print hi"
+      },
+      "caller": {
+       "type": "direct"
+      }
+     }
+    ],
+    "container": null,
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 20950,
+     "cache_read_input_tokens": 0,
+     "output_tokens": 74,
+     "output_tokens_details": {
+      "thinking_tokens": 0
+     },
+     "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+     },
+     "service_tier": "standard",
+     "cache_creation": {
+      "ephemeral_1h_input_tokens": 20950,
+      "ephemeral_5m_input_tokens": 0
+     },
+     "inference_geo": "global",
+     "iterations": [
+      {
+       "input_tokens": 2,
+       "output_tokens": 74,
+       "cache_read_input_tokens": 0,
+       "cache_creation_input_tokens": 20950,
+       "cache_creation": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 20950
+       },
+       "type": "message"
+      }
+     ],
+     "speed": "standard",
+     "fallback_credit": null
+    },
+    "input_transformations": [],
+    "diagnostics": null,
+    "context_management": null
+   },
+   "parent_tool_use_id": null,
+   "parent_agent_id": null,
+   "timestamp": "2026-11-20T18:43:21.973Z"
+  },
+  {
+   "type": "user",
+   "uuid": "1ea37d40-539e-4b97-bce2-c8ed283f4377",
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "tool_use_id": "toolu_018TQ3jVDkhrXCCHwGhJdwHr",
+      "type": "tool_result",
+      "content": "hi",
+      "is_error": false
+     }
+    ]
+   },
+   "parent_tool_use_id": null,
+   "parent_agent_id": null,
+   "timestamp": "2026-11-20T18:43:22.045Z"
+  },
+  {
+   "type": "assistant",
+   "uuid": "1e4574fe-b10d-42fd-a463-968ceb2143b7",
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "message": {
+    "model": "recorded-model",
+    "id": "msg_011ChEfzX7MvNxuDE17Hijt3",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "tool_use",
+      "id": "toolu_01LPK7iSjatEKnmygnWNMAeq",
+      "name": "AskUserQuestion",
+      "input": {
+       "questions": [
+        {
+         "question": "Should I say bye?",
+         "header": "Say bye?",
+         "options": [
+          {
+           "label": "Yes",
+           "description": "Say bye"
+          },
+          {
+           "label": "No",
+           "description": "Don't say bye"
+          }
+         ],
+         "multiSelect": false
+        }
+       ]
+      },
+      "caller": {
+       "type": "direct"
+      }
+     }
+    ],
+    "container": null,
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 1901,
+     "cache_read_input_tokens": 20950,
+     "output_tokens": 130,
+     "output_tokens_details": {
+      "thinking_tokens": 0
+     },
+     "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+     },
+     "service_tier": "standard",
+     "cache_creation": {
+      "ephemeral_1h_input_tokens": 1901,
+      "ephemeral_5m_input_tokens": 0
+     },
+     "inference_geo": "global",
+     "iterations": [
+      {
+       "input_tokens": 2,
+       "output_tokens": 130,
+       "cache_read_input_tokens": 20950,
+       "cache_creation_input_tokens": 1901,
+       "cache_creation": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 1901
+       },
+       "type": "message"
+      }
+     ],
+     "speed": "standard",
+     "fallback_credit": null
+    },
+    "input_transformations": [],
+    "diagnostics": null,
+    "context_management": null
+   },
+   "parent_tool_use_id": null,
+   "parent_agent_id": null,
+   "timestamp": "2026-11-20T18:43:23.269Z"
+  },
+  {
+   "type": "user",
+   "uuid": "a306fc88-712a-4e19-850d-f1f274ce634a",
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "message": {
+    "role": "user",
+    "content": [
+     {
+      "type": "tool_result",
+      "content": "Your questions have been answered: \"Should I say bye?\"=\"Yes\". You can now continue with these answers in mind.",
+      "tool_use_id": "toolu_01LPK7iSjatEKnmygnWNMAeq"
+     }
+    ]
+   },
+   "parent_tool_use_id": null,
+   "parent_agent_id": null,
+   "timestamp": "2026-11-20T18:43:23.283Z"
+  },
+  {
+   "type": "assistant",
+   "uuid": "14b1332b-bb59-4292-8eb6-473c23121391",
+   "session_id": "2ca5ebcb-7c97-46ea-a86e-93b836899990",
+   "message": {
+    "model": "recorded-model",
+    "id": "msg_011ChEfzcr9ZeN2mNp5be6Bh",
+    "type": "message",
+    "role": "assistant",
+    "content": [
+     {
+      "type": "text",
+      "text": "Bye"
+     }
+    ],
+    "container": null,
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "stop_details": null,
+    "usage": {
+     "input_tokens": 2,
+     "cache_creation_input_tokens": 171,
+     "cache_read_input_tokens": 22851,
+     "output_tokens": 5,
+     "output_tokens_details": {
+      "thinking_tokens": 0
+     },
+     "server_tool_use": {
+      "web_search_requests": 0,
+      "web_fetch_requests": 0
+     },
+     "service_tier": "standard",
+     "cache_creation": {
+      "ephemeral_1h_input_tokens": 171,
+      "ephemeral_5m_input_tokens": 0
+     },
+     "inference_geo": "global",
+     "iterations": [
+      {
+       "input_tokens": 2,
+       "output_tokens": 5,
+       "cache_read_input_tokens": 22851,
+       "cache_creation_input_tokens": 171,
+       "cache_creation": {
+        "ephemeral_5m_input_tokens": 0,
+        "ephemeral_1h_input_tokens": 171
+       },
+       "type": "message"
+      }
+     ],
+     "speed": "standard",
+     "fallback_credit": null
+    },
+    "input_transformations": [],
+    "diagnostics": null,
+    "context_management": null
+   },
+   "parent_tool_use_id": null,
+   "parent_agent_id": null,
+   "timestamp": "2026-11-20T18:43:23.731Z"
+  }
+ ]
+}

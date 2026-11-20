@@ -50,7 +50,7 @@ fn budget(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, text: &str, item
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let c = widgets::primary(ui, &p, "Continue (+100 turns)", Some("⏎"));
+                    let c = widgets::primary(ui, &p, "Continue (+100 turns)", Some("Enter"));
                     if focus {
                         c.request_focus();
                         v.ui.focus_card = None;
@@ -241,7 +241,7 @@ fn approval_buttons(
     ui.horizontal(|ui| {
         for (i, d) in decisions.iter().enumerate() {
             let label = d.label.as_str();
-            let resp = if keys[i] == Some("⏎") {
+            let resp = if keys[i] == Some("Enter") {
                 widgets::primary(ui, &p, label, keys[i])
             } else {
                 widgets::plain(ui, &p, label, keys[i])
@@ -329,7 +329,7 @@ fn question_body(
         ui.add_space(6.0);
     }
     ui.horizontal(|ui| {
-        let send = widgets::primary(ui, &p, "Send answers", Some("⏎"));
+        let send = widgets::primary(ui, &p, "Send answers", Some("Enter"));
         if v.ui.focus_card.as_ref() == Some(&item.id) {
             send.request_focus();
             v.ui.focus_card = None;
@@ -392,7 +392,7 @@ fn permission_body(
     let mut decision = None;
     let mut focused = false;
     ui.horizontal(|ui| {
-        let allow = widgets::primary(ui, &p, "Allow", Some("⏎"));
+        let allow = widgets::primary(ui, &p, "Allow", Some("Enter"));
         if v.ui.focus_card.as_ref() == Some(&item.id) {
             allow.request_focus();
             v.ui.focus_card = None;
@@ -406,7 +406,7 @@ fn permission_body(
         if deny.clicked() {
             decision = Some(PermissionDecision::Deny);
         }
-        let always = widgets::plain(ui, &p, "Always allow in this chat", None);
+        let always = widgets::link(ui, &p, "Always allow in this chat", theme::ui(size::UI));
         focused |= always.has_focus();
         if always.clicked() {
             decision = Some(PermissionDecision::AlwaysAllow);

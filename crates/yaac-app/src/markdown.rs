@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use eframe::egui::{self, Color32, FontId, Stroke, text::LayoutJob};
+use eframe::egui::{self, Color32, FontId, text::LayoutJob};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use yaac_protocol::ItemId;
 
@@ -240,9 +240,6 @@ fn job_for(spans: &[Span], font: &FontId, color: Color32, p: &Palette, wrap: f32
         if s.code {
             fmt.background = p.code_bg;
             fmt.expand_bg = 1.0;
-        }
-        if s.link {
-            fmt.underline = Stroke::new(1.0, p.link);
         }
         job.append(&s.text, 0.0, fmt);
     }

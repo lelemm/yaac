@@ -191,21 +191,28 @@ impl DemoHub {
         use crate::state::GitStatus;
         state.muted.extend(Self::initially_muted());
         state.pinned.insert(k(ORCH));
-        let git = |b: &str, c: u32, a: u32| GitStatus { branch: b.to_owned(), changed_files: c, ahead: a };
+        let git = |b: &str, [added, modified, deleted, ahead, behind]: [u32; 5]| GitStatus {
+            branch: b.to_owned(),
+            added,
+            modified,
+            deleted,
+            ahead,
+            behind,
+        };
         for (key, g) in [
-            (k(ORCH), git("main", 4, 0)),
-            (k(USERS), git("auth/users", 12, 3)),
-            (k(FIX), git("feature/protocol", 7, 2)),
-            (k(HANDSHAKE), git("feature/protocol", 0, 0)),
-            (k(BILLING), git("auth/billing", 9, 1)),
-            (k(CI), git("main", 0, 0)),
-            (k(SEARCH), git("auth/search", 3, 0)),
-            (k(INDEX), git("auth/search", 3, 0)),
-            (k(NOTES), git("main", 0, 0)),
-            (k(LINT), git("main", 0, 0)),
-            (k(BENCH), git("main", 1, 0)),
-            (k(V2PLAN), git("main", 0, 0)),
-            (k(OLD_SPIKE), git("main", 0, 0)),
+            (k(ORCH), git("main", [0, 4, 0, 0, 0])),
+            (k(USERS), git("auth/users", [3, 8, 1, 3, 0])),
+            (k(FIX), git("feature/protocol", [1, 6, 0, 2, 0])),
+            (k(HANDSHAKE), git("feature/protocol", [0, 0, 0, 0, 0])),
+            (k(BILLING), git("auth/billing", [2, 6, 1, 1, 0])),
+            (k(CI), git("main", [0, 0, 0, 0, 2])),
+            (k(SEARCH), git("auth/search", [0, 3, 0, 0, 0])),
+            (k(INDEX), git("auth/search", [0, 3, 0, 0, 0])),
+            (k(NOTES), git("main", [0, 0, 0, 0, 0])),
+            (k(LINT), git("main", [0, 0, 0, 0, 0])),
+            (k(BENCH), git("main", [0, 1, 0, 0, 0])),
+            (k(V2PLAN), git("main", [0, 0, 0, 0, 0])),
+            (k(OLD_SPIKE), git("main", [0, 0, 0, 0, 0])),
         ] {
             state.git.insert(key, g);
         }

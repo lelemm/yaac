@@ -48,31 +48,24 @@ pub enum RowRight {
     },
 }
 
-/// The second line of a row: what the thread is doing in git, as compactly as possible.
+/// The second line of a row: what the thread is doing in git. The window draws each part
+/// with an icon; every count is shown only when it is not zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line2 {
     /// The branch.
     pub branch: String,
-    /// "Δ7": files that differ from origin; 0 is not shown.
-    pub changed: u32,
-    /// "↑2": commits not pushed; 0 is not shown.
+    /// Files added relative to origin.
+    pub added: u32,
+    /// Files modified relative to origin.
+    pub modified: u32,
+    /// Files deleted relative to origin.
+    pub deleted: u32,
+    /// Commits not pushed.
     pub ahead: u32,
-    /// Direct workers (a people mark and the count); 0 is not shown.
+    /// Commits not yet pulled.
+    pub behind: u32,
+    /// Direct workers.
     pub workers: u32,
-}
-
-impl Line2 {
-    /// "feature/protocol  Δ7  ↑2" (the people mark is drawn by the widget).
-    pub fn text(&self) -> String {
-        let mut s = self.branch.clone();
-        if self.changed > 0 {
-            s.push_str(&format!("  Δ{}", self.changed));
-        }
-        if self.ahead > 0 {
-            s.push_str(&format!("  ↑{}", self.ahead));
-        }
-        s
-    }
 }
 
 /// One row: line 1 is a state mark, the title, and one thing on the right; line 2 (when the
@@ -291,8 +284,11 @@ pub fn sections(
         let line2 = if two_lines {
             state.git.get(key).map(|g| Line2 {
                 branch: g.branch.clone(),
-                changed: g.changed_files,
+                added: g.added,
+                modified: g.modified,
+                deleted: g.deleted,
                 ahead: g.ahead,
+                behind: g.behind,
                 workers: s.map_or(0, |s| s.children),
             })
         } else {

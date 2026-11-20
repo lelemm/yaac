@@ -75,7 +75,8 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(widgets::secondary("Spawned by", &p));
                 link_part(ui, &p, &parent.title, parent.key.as_ref(), actions);
-                ui.label(widgets::secondary(format!("↗ on {target}"), &p));
+                widgets::icon(ui, 12.0, |pa, c, d| icons::arrow_out(pa, c, d, p.link));
+                ui.label(widgets::secondary(format!("on {target}"), &p));
             });
         }
         LinkLine::Ancestry(parts) => {
@@ -84,7 +85,7 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                 ui.spacing_mut().item_spacing.x = 4.0;
                 for (i, part) in parts.iter().enumerate() {
                     if i > 0 {
-                        ui.label(widgets::secondary("›", &p));
+                        widgets::icon(ui, 10.0, |pa, c, d| icons::chevron(pa, c, d, false, p.text2));
                     }
                     match &part.key {
                         Some(_) => link_part(ui, &p, &part.title, part.key.as_ref(), actions),
@@ -101,7 +102,8 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(widgets::secondary("Forked from", &p));
                 link_part(ui, &p, &source.title, source.key.as_ref(), actions);
-                ui.label(widgets::secondary(format!("↗ {detail}"), &p));
+                widgets::icon(ui, 12.0, |pa, c, d| icons::arrow_out(pa, c, d, p.link));
+                ui.label(widgets::secondary(detail.clone(), &p));
             });
         }
     }
@@ -564,7 +566,11 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
             }
             ItemBody::Plan(pl) => {
                 for s in &pl.steps {
-                    ui.label(muted(&format!("{} {}", if s.state == yaac_protocol::PlanStepState::Completed { "✓" } else { "·" }, s.text)));
+                    ui.horizontal(|ui| {
+                        let m = if s.state == yaac_protocol::PlanStepState::Completed { Mark::Done } else { Mark::Idle };
+                        widgets::mark(ui, &p, m, 11.0);
+                        ui.label(muted(&s.text));
+                    });
                 }
             }
             _ => {}

@@ -1,0 +1,842 @@
+{
+ "provenance": "Recorded from Codex app-server daemon 0.171.0 on 2026-11-20 (one throwaway thread in a temporary directory, since deleted). Redacted: paths, account, model ids/names/efforts replaced with invented placeholders. Steps marked synthetic were added by hand from the generated protocol types.",
+ "description": "thread/start + turn/start; reasoning (synthetic), an agent message, a command that needs approval (answered: accept), input joined from another client, token usage, turn/completed.",
+ "steps": [
+  {
+   "expect": "initialize",
+   "reply": {
+    "userAgent": "yaacd/0.171.0 (redacted)",
+    "codexHome": "/home/user/.codex",
+    "platformFamily": "unix",
+    "platformOs": "linux"
+   }
+  },
+  {
+   "expectNotify": "initialized"
+  },
+  {
+   "expect": "thread/start",
+   "reply": {
+    "thread": {
+     "id": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "environments": [
+      {
+       "environmentId": "local",
+       "cwd": "/work/fixture",
+       "runtimeWorkspaceRoots": [
+        "/work/fixture"
+       ]
+      }
+     ],
+     "extra": null,
+     "sessionId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "forkedFromId": null,
+     "attachedToThreadId": null,
+     "parentThreadId": null,
+     "preview": "",
+     "ephemeral": false,
+     "section": null,
+     "sectionEnteredAt": null,
+     "projectId": null,
+     "historyMode": "paginated",
+     "modelProvider": "openai",
+     "model": "model-1",
+     "reasoningEffort": "effort-2",
+     "createdAt": 1795199729,
+     "updatedAt": 1795199729,
+     "recencyAt": 1795199729,
+     "status": {
+      "type": "idle"
+     },
+     "path": "/home/user/.codex/sessions/2026/11/20/rollout-2026-11-20T15-35-29-01a1fa3e-0061-7e63-844f-8fa25836991b.jsonl",
+     "cwd": "/work/fixture",
+     "cliVersion": "0.171.0",
+     "originator": "yaac_capture",
+     "source": "vscode",
+     "canAcceptDirectInput": true,
+     "threadSource": null,
+     "agentNickname": null,
+     "agentRole": null,
+     "gitInfo": null,
+     "name": null,
+     "daybreakEnabled": null,
+     "turns": []
+    },
+    "model": "model-1",
+    "modelProvider": "openai",
+    "serviceTier": "default",
+    "disabledPluginIds": [],
+    "cwd": "/work/fixture",
+    "runtimeWorkspaceRoots": [
+     "/work/fixture"
+    ],
+    "instructionSources": [],
+    "approvalPolicy": "untrusted",
+    "approvalsReviewer": "user",
+    "sandbox": {
+     "type": "readOnly",
+     "networkAccess": false
+    },
+    "activePermissionProfile": null,
+    "reasoningEffort": "effort-2",
+    "multiAgentMode": "explicitRequestOnly"
+   }
+  },
+  {
+   "push": {
+    "method": "account/updated",
+    "params": {
+     "authMode": "chatgpt",
+     "planType": "redacted",
+     "reason": "workspaceRoutingReady"
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "thread/started",
+    "params": {
+     "thread": {
+      "id": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+      "environments": [
+       {
+        "environmentId": "local",
+        "cwd": "/work/fixture",
+        "runtimeWorkspaceRoots": [
+         "/work/fixture"
+        ]
+       }
+      ],
+      "extra": null,
+      "sessionId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+      "forkedFromId": null,
+      "attachedToThreadId": null,
+      "parentThreadId": null,
+      "preview": "",
+      "ephemeral": false,
+      "section": null,
+      "sectionEnteredAt": null,
+      "projectId": null,
+      "historyMode": "paginated",
+      "modelProvider": "openai",
+      "model": "model-1",
+      "reasoningEffort": "effort-2",
+      "createdAt": 1795199729,
+      "updatedAt": 1795199729,
+      "recencyAt": 1795199729,
+      "status": {
+       "type": "idle"
+      },
+      "path": "/home/user/.codex/sessions/2026/11/20/rollout-2026-11-20T15-35-29-01a1fa3e-0061-7e63-844f-8fa25836991b.jsonl",
+      "cwd": "/work/fixture",
+      "cliVersion": "0.171.0",
+      "originator": "yaac_capture",
+      "source": "vscode",
+      "canAcceptDirectInput": true,
+      "threadSource": null,
+      "agentNickname": null,
+      "agentRole": null,
+      "gitInfo": null,
+      "name": null,
+      "daybreakEnabled": null,
+      "turns": []
+     }
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "name": "yaac_probe",
+     "environmentId": null,
+     "status": "starting",
+     "error": null,
+     "failureReason": null
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "name": "codex_apps",
+     "environmentId": null,
+     "status": "starting",
+     "error": null,
+     "failureReason": null
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "name": "yaac_probe",
+     "environmentId": null,
+     "status": "failed",
+     "error": "MCP client for `yaac_probe` failed to start: MCP startup failed: handshaking with MCP server failed: Send message error Transport [codex_rmcp_client::tool_list_changes::ToolListChanges<codex_rmcp_client::ordered_byte_transport::OrderedByteTransport<codex_rmcp_client::stdio_server_launcher::StdioServerTransport>>] error: Broken pipe (os error 32), when send initialize request: Send message error Transport [codex_rmcp_client::tool_list_changes::ToolListChanges<codex_rmcp_client::ordered_byte_transport::OrderedByteTransport<codex_rmcp_client::stdio_server_launcher::StdioServerTransport>>] error: Broken pipe (os error 32), when send initialize request",
+     "failureReason": null
+    }
+   }
+  },
+  {
+   "expect": "turn/start",
+   "reply": {
+    "turn": {
+     "id": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "rootTurnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "items": [],
+     "itemsView": "notLoaded",
+     "status": "inProgress",
+     "error": null,
+     "startedAt": null,
+     "completedAt": null,
+     "durationMs": null
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "status": {
+      "type": "active",
+      "activeFlags": []
+     }
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "turn/started",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turn": {
+      "id": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+      "rootTurnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "inProgress",
+      "error": null,
+      "startedAt": 1795199729,
+      "completedAt": null,
+      "durationMs": null
+     }
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "name": "codex_apps",
+     "environmentId": null,
+     "status": "ready",
+     "error": null,
+     "failureReason": null
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a1fa3e-0520-7370-b616-444153eb8cf5",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "Run the shell command `echo yaac-fixture` and then reply with just the word done.",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795199730978,
+      "completedAtMs": null
+     },
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "startedAtMs": 1795199730978
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a1fa3e-0520-7370-b616-444153eb8cf5",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "Run the shell command `echo yaac-fixture` and then reply with just the word done.",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795199730978,
+      "completedAtMs": 1795199730978
+     },
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "contentTokenCount": null,
+     "completedAtMs": 1795199730978
+    }
+   }
+  },
+  {
+   "synthetic": true,
+   "push": {
+    "method": "item/started",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "item": {
+      "type": "reasoning",
+      "id": "rs_fixture_1",
+      "summary": [],
+      "content": []
+     }
+    }
+   }
+  },
+  {
+   "synthetic": true,
+   "push": {
+    "method": "item/reasoning/summaryTextDelta",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "itemId": "rs_fixture_1",
+     "delta": "Checking how to run ",
+     "summaryIndex": 0
+    }
+   }
+  },
+  {
+   "synthetic": true,
+   "push": {
+    "method": "item/reasoning/summaryTextDelta",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "itemId": "rs_fixture_1",
+     "delta": "the command.",
+     "summaryIndex": 0
+    }
+   }
+  },
+  {
+   "synthetic": true,
+   "push": {
+    "method": "item/completed",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "item": {
+      "type": "reasoning",
+      "id": "rs_fixture_1",
+      "summary": [
+       "Checking how to run the command."
+      ],
+      "content": []
+     },
+     "completedAtMs": 0
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "agentMessage",
+      "moderation": null,
+      "id": "msg_044aace75ea31f75016b0092f4518c87d2a83de9056133627a",
+      "text": "",
+      "phase": "commentary",
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null,
+      "startedAtMs": 1795199732068,
+      "completedAtMs": null
+     },
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "startedAtMs": 1795199732068
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/agentMessage/delta",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "itemId": "msg_044aace75ea31f75016b0092f4518c87d2a83de9056133627a",
+     "delta": "Running"
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/agentMessage/delta",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "itemId": "msg_044aace75ea31f75016b0092f4518c87d2a83de9056133627a",
+     "delta": " the"
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/agentMessage/delta",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "itemId": "msg_044aace75ea31f75016b0092f4518c87d2a83de9056133627a",
+     "delta": " command"
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/agentMessage/delta",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "itemId": "msg_044aace75ea31f75016b0092f4518c87d2a83de9056133627a",
+     "delta": "."
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "agentMessage",
+      "moderation": null,
+      "id": "msg_044aace75ea31f75016b0092f4518c87d2a83de9056133627a",
+      "text": "Running the command.",
+      "phase": "commentary",
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null,
+      "startedAtMs": 1795199732068,
+      "completedAtMs": 1795199732343
+     },
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "contentTokenCount": 5,
+     "completedAtMs": 1795199732343
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "status": {
+      "type": "active",
+      "activeFlags": [
+       "waitingOnApproval"
+      ]
+     }
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "commandExecution",
+      "id": "exec-00db85f8-863f-471e-843f-e7d5e5acba6e",
+      "pluginId": null,
+      "scriptPath": null,
+      "command": "/bin/bash -lc 'echo yaac-fixture'",
+      "cwd": "/work/fixture",
+      "processId": null,
+      "source": "agent",
+      "status": "inProgress",
+      "commandActions": [
+       {
+        "type": "unknown",
+        "command": "echo yaac-fixture"
+       }
+      ],
+      "aggregatedOutput": null,
+      "exitCode": null,
+      "durationMs": null,
+      "startedAtMs": 1795199732797,
+      "completedAtMs": null
+     },
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "startedAtMs": 1795199732797
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/commandExecution/requestApproval",
+    "id": 0,
+    "params": {
+     "kind": "command",
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "itemId": "exec-00db85f8-863f-471e-843f-e7d5e5acba6e",
+     "startedAtMs": 1795199732797,
+     "environmentId": "local",
+     "command": "/bin/bash -lc 'echo yaac-fixture'",
+     "cwd": "/work/fixture",
+     "commandActions": [
+      {
+       "type": "unknown",
+       "command": "echo yaac-fixture"
+      }
+     ],
+     "proposedExecpolicyAmendment": [
+      "echo",
+      "yaac-fixture"
+     ],
+     "availableDecisions": [
+      "accept",
+      {
+       "acceptWithExecpolicyAmendment": {
+        "execpolicy_amendment": [
+         "echo",
+         "yaac-fixture"
+        ]
+       }
+      },
+      "cancel"
+     ]
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "thread/goal/cleared",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b"
+    }
+   }
+  },
+  {
+   "expectReply": 0,
+   "recordedReply": {
+    "decision": "accept"
+   }
+  },
+  {
+   "push": {
+    "method": "serverRequest/resolved",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "requestId": 0
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "status": {
+      "type": "active",
+      "activeFlags": []
+     }
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "thread/tokenUsage/updated",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "tokenUsage": {
+      "total": {
+       "totalTokens": 18363,
+       "inputTokens": 18327,
+       "cachedInputTokens": 13952,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 36,
+       "reasoningOutputTokens": 0
+      },
+      "last": {
+       "totalTokens": 18363,
+       "inputTokens": 18327,
+       "cachedInputTokens": 13952,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 36,
+       "reasoningOutputTokens": 0
+      },
+      "modelContextWindow": 475000
+     }
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a1fa3e-0c80-7270-abbd-b48d55a956a0",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "(second input: no extra work needed)",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795199732866,
+      "completedAtMs": null
+     },
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "startedAtMs": 1795199732866
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a1fa3e-0c80-7270-abbd-b48d55a956a0",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "(second input: no extra work needed)",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795199732866,
+      "completedAtMs": 1795199732866
+     },
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "contentTokenCount": null,
+     "completedAtMs": 1795199732866
+    }
+   }
+  },
+  {
+   "synthetic": true,
+   "push": {
+    "method": "item/commandExecution/outputDelta",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "itemId": "exec-00db85f8-863f-471e-843f-e7d5e5acba6e",
+     "delta": "yaac-fixture\n"
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "commandExecution",
+      "id": "exec-00db85f8-863f-471e-843f-e7d5e5acba6e",
+      "pluginId": null,
+      "scriptPath": null,
+      "command": "/bin/bash -lc 'echo yaac-fixture'",
+      "cwd": "/work/fixture",
+      "processId": "37278",
+      "source": "unifiedExecStartup",
+      "status": "completed",
+      "commandActions": [
+       {
+        "type": "unknown",
+        "command": "echo yaac-fixture"
+       }
+      ],
+      "aggregatedOutput": "yaac-fixture\n",
+      "exitCode": 0,
+      "durationMs": 0,
+      "startedAtMs": 1795199732797,
+      "completedAtMs": 1795199732866
+     },
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "contentTokenCount": null,
+     "completedAtMs": 1795199732866
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "thread/tokenUsage/updated",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "tokenUsage": {
+      "total": {
+       "totalTokens": 36784,
+       "inputTokens": 36730,
+       "cachedInputTokens": 27904,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 54,
+       "reasoningOutputTokens": 0
+      },
+      "last": {
+       "totalTokens": 18421,
+       "inputTokens": 18403,
+       "cachedInputTokens": 13952,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 18,
+       "reasoningOutputTokens": 0
+      },
+      "modelContextWindow": 475000
+     }
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "agentMessage",
+      "moderation": null,
+      "id": "msg_044aace75ea31f75016b0092f857b887d2970b6e5dc9a7bb11",
+      "text": "",
+      "phase": "final_answer",
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null,
+      "startedAtMs": 1795199735743,
+      "completedAtMs": null
+     },
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "startedAtMs": 1795199735743
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/agentMessage/delta",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "itemId": "msg_044aace75ea31f75016b0092f857b887d2970b6e5dc9a7bb11",
+     "delta": "done"
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "agentMessage",
+      "moderation": null,
+      "id": "msg_044aace75ea31f75016b0092f857b887d2970b6e5dc9a7bb11",
+      "text": "done",
+      "phase": "final_answer",
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null,
+      "startedAtMs": 1795199735743,
+      "completedAtMs": 1795199735819
+     },
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "contentTokenCount": 2,
+     "completedAtMs": 1795199735819
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "thread/tokenUsage/updated",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+     "tokenUsage": {
+      "total": {
+       "totalTokens": 55271,
+       "inputTokens": 55212,
+       "cachedInputTokens": 46208,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 59,
+       "reasoningOutputTokens": 0
+      },
+      "last": {
+       "totalTokens": 18487,
+       "inputTokens": 18482,
+       "cachedInputTokens": 18304,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 5,
+       "reasoningOutputTokens": 0
+      },
+      "modelContextWindow": 475000
+     }
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "status": {
+      "type": "idle"
+     }
+    }
+   }
+  },
+  {
+   "push": {
+    "method": "turn/completed",
+    "params": {
+     "threadId": "01a1fa3e-0061-7e63-844f-8fa25836991b",
+     "turn": {
+      "id": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+      "rootTurnId": "01a1fa3e-0086-76e0-b64c-b654bc53bcb8",
+      "items": [
+       {
+        "type": "agentMessage",
+        "moderation": null,
+        "id": "msg_044aace75ea31f75016b0092f857b887d2970b6e5dc9a7bb11",
+        "text": "done",
+        "phase": "final_answer",
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null,
+        "startedAtMs": 1795199735743,
+        "completedAtMs": 1795199735819
+       }
+      ],
+      "itemsView": "summary",
+      "status": "completed",
+      "error": null,
+      "startedAt": 1795199729,
+      "completedAt": 1795199735,
+      "durationMs": 6030
+     }
+    }
+   }
+  }
+ ]
+}

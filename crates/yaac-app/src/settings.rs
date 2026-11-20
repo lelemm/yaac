@@ -16,7 +16,9 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
             .resizable(false)
             .frame(egui::Frame::NONE.fill(p.panel).inner_margin(Margin::symmetric(12, 12)))
             .show(ui, |ui| {
-                if widgets::plain(ui, &p, "← Back to threads", Some("Esc")).clicked() {
+                let back = widgets::plain(ui, &p, "     Back to threads", Some("Esc"));
+                crate::icons::arrow_left(ui.painter(), eframe::egui::pos2(back.rect.left() + 18.0, back.rect.center().y), 14.0, p.text);
+                if back.clicked() {
                     actions.push(Action::Settings(false));
                 }
                 ui.add_space(12.0);

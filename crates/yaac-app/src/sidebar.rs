@@ -88,7 +88,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     // Footer: Settings, and the quiet hub status.
     ui.add_space(4.0);
     if app.demo.is_some() {
-        let d = widgets::plain(ui, &p, "Demo: play the story ▾", None);
+        let d = widgets::plain(ui, &p, "Demo: play the story", None);
         if d.clicked() {
             app.ui.toggle_menu(Menu::Demo);
         }
@@ -212,8 +212,11 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
         let g = ui.fonts_mut(|f| f.layout_no_wrap("Retry".to_owned(), font.clone(), p.link));
         let r = Rect::from_min_size(pos2(rx - g.size().x, y - g.size().y), g.size());
         ui.painter().galley(r.min, g, p.link);
-        ui.painter().hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, p.link));
-        if ui.interact(r, egui::Id::unique(("retry", s.id.as_str())), Sense::click()).clicked()
+        let retry = ui.interact(r, egui::Id::unique(("retry", s.id.as_str())), Sense::click());
+        if retry.hovered() || retry.has_focus() {
+            ui.painter().hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, p.link));
+        }
+        if retry.clicked()
             && let Some(m) = &h.machine
             && let Some(t) = app.client.state.targets.iter().find(|t| t.entry.name.as_str() == m)
         {
@@ -304,6 +307,8 @@ fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, 
     let rx = rect.right() - 8.0 - g.size().x;
     ui.painter().galley(pos2(rx, cy - g.size().y / 2.0), g, p.text2);
     if let Some(l2) = &row.line2 {
+        // Line 2: branch, then file counts in git colours, then commits ahead and behind; the
+        // workers sit at the right edge, under the time. Every count only when non-zero.
         let y2 = rect.top() + 32.0;
         let mut right = rect.right() - 8.0;
         if l2.workers > 0 {
@@ -312,10 +317,40 @@ fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, 
             ui.painter().galley(pos2(right, y2 - g.size().y / 2.0), g, p.text2);
             right -= 16.0;
             icons::people(ui.painter(), pos2(right + 7.0, y2), 13.0, p.text2);
-            right -= 4.0;
+            right -= 6.0;
         }
-        let g2 = widgets::elided(ui, &l2.text(), &theme::ui(size::SMALL), p.text2, right - title_x - 4.0);
-        ui.painter().galley(pos2(title_x, y2 - g2.size().y / 2.0), g2, p.text2);
+        let small = theme::ui(size::SMALL - 0.5);
+        let count = |n: u32| ui.fonts_mut(|f| f.layout_no_wrap(n.to_string(), small.clone(), p.text2)).size().x;
+        let mut tail = 0.0;
+        for (n, w) in [(l2.added, 14.0), (l2.modified, 14.0), (l2.deleted, 14.0), (l2.ahead, 13.0), (l2.behind, 13.0)] {
+            if n > 0 {
+                tail += w + count(n) + 6.0;
+            }
+        }
+        let mut x = title_x;
+        icons::branch(ui.painter(), pos2(x + 5.0, y2), 12.0, p.text2);
+        x += 13.0;
+        let g = widgets::elided(ui, &l2.branch, &small, p.text2, (right - x - tail - 6.0).max(30.0));
+        let gw = g.size().x;
+        ui.painter().galley(pos2(x, y2 - g.size().y / 2.0), g, p.text2);
+        x += gw + 8.0;
+        let parts: [(u32, egui::Color32, u8); 5] =
+            [(l2.added, p.git_added, b'+'), (l2.modified, p.git_modified, b'.'), (l2.deleted, p.git_deleted, b'-'), (l2.ahead, p.text2, b'u'), (l2.behind, p.text2, b'd')];
+        for (n, col, kind) in parts {
+            if n == 0 || x > right - 10.0 {
+                continue;
+            }
+            match kind {
+                b'u' => icons::arrow_vertical(ui.painter(), pos2(x + 5.0, y2), 11.0, col, true),
+                b'd' => icons::arrow_vertical(ui.painter(), pos2(x + 5.0, y2), 11.0, col, false),
+                k => icons::git_square(ui.painter(), pos2(x + 5.0, y2), 12.0, col, k as char),
+            }
+            x += 12.0;
+            let g = ui.fonts_mut(|f| f.layout_no_wrap(n.to_string(), small.clone(), col));
+            let gw = g.size().x;
+            ui.painter().galley(pos2(x, y2 - g.size().y / 2.0), g, col);
+            x += gw + 7.0;
+        }
     }
     let color = if s.kind == SectionKind::Muted { p.text2 } else { p.text };
     let tg = widgets::elided(ui, &row.title, &theme::ui(size::UI), color, rx - title_x - 8.0);

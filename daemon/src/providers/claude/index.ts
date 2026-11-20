@@ -1,0 +1,1120 @@
+// The Claude provider (kind `claude`): drives Claude Code through the Claude Agent SDK, using the
+// `claude` executable installed on the target (docs/04-providers.md#claude).
+//
+// One `query()` in streaming-input mode per live thread; the SDK runs Claude Code as a child of
+// yaacd. A thread's id is the Claude session id, chosen up front for a new thread. Idle queries
+// are closed and resumed on the next message, and only so many are kept open at once.
+
+import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import type {
+  ElicitationRequest,
+  ElicitationResult,
+  McpServerConfig,
+  ModelInfo as SdkModelInfo,
+  Options,
+  PermissionMode,
+  PermissionResult,
+  SDKMessage,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
+import type {
+  AppliedSettings,
+  Capability,
+  ModeInfo,
+  ModelInfo,
+  RequestResponse,
+  ThreadEffective,
+  TokenUsage,
+  TurnId,
+  TurnOrigin,
+  TurnStatus,
+} from "../../protocol/generated/types.js";
+import { Emitter } from "../../util/emitter.js";
+import { readJson, sha256Hex, writeJsonAtomic } from "../../util/fsx.js";
+import type {
+  ExternalControl,
+  ForkOptions,
+  HarnessProvider,
+  ItemPage,
+  NativeId,
+  NativeThreadInfo,
+  PageRequest,
+  ProbeResult,
+  ProviderContext,
+  ProviderEvent,
+  ProviderFactory,
+  ProviderInput,
+  RaisedRequest,
+  StartThreadParams,
+  ThreadPage,
+  TurnOverrides,
+} from "../types.js";
+import { ASK_TOOL, answeredInput, approvalRequest, approvalResult, normaliseQuestions, type ToolPermissionContext } from "./questions.js";
+import { EXECUTABLE_VAR, findExecutable, loadRealSdk, realCli, type AgentEntry, type ClaudeCli, type ClaudeSdk, type SdkQuery } from "./sdk.js";
+import { historyItems, isToolResultMessage, LiveTranslator, type ItemEvent } from "./translate.js";
+
+export const CLAUDE_KIND = "claude";
+
+/** Instance-configuration variables read by yaacd (never passed on to Claude Code). */
+export const IDLE_MS_VAR = "YAAC_CLAUDE_IDLE_MS";
+export const MAX_LIVE_VAR = "YAAC_CLAUDE_MAX_LIVE";
+export const DEFAULT_IDLE_MS = 5 * 60 * 1000;
+export const DEFAULT_MAX_LIVE = 4;
+
+/** Media types sent to Claude Code as image content blocks (docs/06-attachments.md). */
+const IMAGE_FORMATS = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/**
+ * Permission modes yaacd offers. These are the SDK's `PermissionMode` values (an API enum, not
+ * anything about models); `bypassPermissions` is deliberately not offered. `default` is first
+ * because yaacd always passes a mode, so that approvals reach the user through `canUseTool`.
+ */
+const MODES: Array<ModeInfo & { id: PermissionMode; needsAutoMode?: boolean }> = [
+  { id: "default", displayName: "Ask before acting", isDefault: true },
+  { id: "acceptEdits", displayName: "Accept edits", description: "File edits are accepted; other actions still ask." },
+  { id: "plan", displayName: "Plan only", description: "Claude plans and does not change anything." },
+  { id: "dontAsk", displayName: "Don't ask", description: "Anything not already allowed by a rule is denied without asking." },
+  { id: "auto", displayName: "Auto", description: "A classifier approves or denies each action and asks when unsure.", needsAutoMode: true },
+];
+
+// ── The mesh hook ────────────────────────────────────────────────────────────────────────
+
+/** What a caller (the agent mesh) may add to one thread's query. */
+export interface ClaudeThreadExtras {
+  /** Extra MCP servers, by name. An in-process server (`type: "sdk"`, from `createSdkMcpServer`) is allowed. */
+  mcpServers?: Record<string, McpServerConfig>;
+  /** Text appended to Claude Code's own system prompt (the identity block). */
+  appendSystemPrompt?: string;
+}
+
+/**
+ * Called every time a query is opened for a thread — when it is created, and on every resume
+ * (including after idle eviction), so the extras are supplied again on a cold resume.
+ */
+export type ClaudeExtrasHook = (thread: { native: NativeId; cwd: string; resumed: boolean }) => ClaudeThreadExtras | undefined | Promise<ClaudeThreadExtras | undefined>;
+
+// ── Internal state ───────────────────────────────────────────────────────────────────────
+
+interface ThreadSettings {
+  cwd: string;
+  model?: string | null;
+  effort?: string | null;
+  mode?: string | null;
+  /** Whether Claude Code has stored the session (resume, rather than create, on the next open). */
+  stored?: boolean;
+}
+
+interface Pending {
+  requestId: string;
+  turnId: TurnId;
+  request: RaisedRequest;
+  answer(response: RequestResponse): void;
+  expire(): void;
+}
+
+interface TurnState {
+  turnId: TurnId;
+  origin: TurnOrigin;
+  interrupting: boolean;
+  ended: Promise<void>;
+  end: () => void;
+}
+
+class InputQueue implements AsyncIterable<SDKUserMessage> {
+  private items: SDKUserMessage[] = [];
+  private waiters: Array<(r: IteratorResult<SDKUserMessage>) => void> = [];
+  private ended = false;
+
+  push(m: SDKUserMessage): void {
+    const w = this.waiters.shift();
+    if (w) w({ value: m, done: false });
+    else this.items.push(m);
+  }
+
+  end(): void {
+    this.ended = true;
+    for (const w of this.waiters.splice(0)) w({ value: undefined, done: true });
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return {
+      next: () => {
+        const m = this.items.shift();
+        if (m) return Promise.resolve({ value: m, done: false });
+        if (this.ended) return Promise.resolve({ value: undefined, done: true });
+        return new Promise((resolve) => this.waiters.push(resolve));
+      },
+      return: () => {
+        this.end();
+        return Promise.resolve({ value: undefined, done: true });
+      },
+    };
+  }
+}
+
+class Live {
+  query!: SdkQuery;
+  readonly input = new InputQueue();
+  pid: number | null = null;
+  pidKnown!: Promise<void>;
+  turn: TurnState | null = null;
+  readonly requests = new Map<string, Pending>();
+  readonly ours = new Set<string>();
+  lastUsed = Date.now();
+  idleTimer: NodeJS.Timeout | null = null;
+  closing = false;
+  stderrTail = "";
+  translator: LiveTranslator;
+  /** The settings the query is running with. */
+  model: string | null;
+  effort: string | null;
+  mode: string;
+
+  constructor(
+    readonly native: NativeId,
+    readonly cwd: string,
+    readonly dirs: Set<string>,
+    settings: ThreadSettings,
+    emit: (ev: ItemEvent) => void,
+  ) {
+    this.model = settings.model ?? null;
+    this.effort = settings.effort ?? null;
+    this.mode = settings.mode ?? "default";
+    this.translator = new LiveTranslator(emit, cwd);
+  }
+
+  busy(): boolean {
+    return this.turn !== null || this.requests.size > 0;
+  }
+}
+
+export interface ClaudeProviderOptions {
+  /** The SDK, or how to load it. Tests pass a stub. */
+  sdk?: ClaudeSdk | (() => Promise<ClaudeSdk>);
+  /** The `claude` command line. Tests pass a stub. */
+  cli?: ClaudeCli;
+  /** The installed `claude` (resolved), or null when none was found. */
+  executable: string | null;
+  /** Environment for Claude Code processes. */
+  env: NodeJS.ProcessEnv;
+  /** Where the per-thread settings are kept. */
+  stateDir: string;
+  /** Close a live query after this long without a turn or an open request. 0: never. */
+  idleMs?: number;
+  /** At most this many live queries; the least recently used idle one is closed first. */
+  maxLive?: number;
+  /** How long one `claude agents --json` answer is reused. */
+  controlCacheMs?: number;
+  log?: (line: string) => void;
+}
+
+const iso = (ms: number | undefined | null): string => new Date(typeof ms === "number" && Number.isFinite(ms) ? ms : Date.now()).toISOString();
+
+function sniffImage(head: Buffer): string | null {
+  if (head.length >= 8 && head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return "image/jpeg";
+  if (head.length >= 6 && (head.subarray(0, 6).toString("latin1") === "GIF87a" || head.subarray(0, 6).toString("latin1") === "GIF89a")) return "image/gif";
+  if (head.length >= 12 && head.subarray(0, 4).toString("latin1") === "RIFF" && head.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
+  return null;
+}
+
+function usageOf(u: unknown): TokenUsage | null {
+  if (!u || typeof u !== "object") return null;
+  const r = u as Record<string, unknown>;
+  const n = (k: string) => (typeof r[k] === "number" ? (r[k] as number) : null);
+  const input = n("input_tokens");
+  const output = n("output_tokens");
+  const cached = n("cache_read_input_tokens");
+  const created = n("cache_creation_input_tokens");
+  const totalIn = (input ?? 0) + (cached ?? 0) + (created ?? 0);
+  return { input: totalIn, cachedInput: cached, output, total: totalIn + (output ?? 0) };
+}
+
+export class ClaudeProvider implements HarnessProvider {
+  readonly events = new Emitter<ProviderEvent>();
+  private sdkPromise: Promise<ClaudeSdk> | null = null;
+  private readonly cli: ClaudeCli | null;
+  private readonly live = new Map<NativeId, Live>();
+  private settings: Record<NativeId, ThreadSettings>;
+  private readonly stateFile: string;
+  private readonly idleMs: number;
+  private readonly maxLive: number;
+  private readonly controlCacheMs: number;
+  private readonly log: (line: string) => void;
+  private sdkModels: SdkModelInfo[] = [];
+  private models: ModelInfo[] = [];
+  private lastProbe: ProbeResult | null = null;
+  private extrasHook: ClaudeExtrasHook | null = null;
+  /** Pids of Claude Code processes yaacd ran, kept a while after they end (their registry entry can linger). */
+  private ownPids = new Map<number, number>();
+  private agentsCache: { at: number; entries: Promise<AgentEntry[]> } | null = null;
+  private scanSnapshot: { id: string; threads: NativeThreadInfo[] } | null = null;
+  private disposed = false;
+
+  constructor(readonly options: ClaudeProviderOptions) {
+    this.cli = options.cli ?? (options.executable ? realCli(options.executable, options.env) : null);
+    this.idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
+    this.maxLive = Math.max(1, options.maxLive ?? DEFAULT_MAX_LIVE);
+    this.controlCacheMs = options.controlCacheMs ?? 1000;
+    this.log = options.log ?? (() => {});
+    fs.mkdirSync(options.stateDir, { recursive: true, mode: 0o700 });
+    this.stateFile = path.join(options.stateDir, "threads.json");
+    this.settings = readJson<Record<NativeId, ThreadSettings>>(this.stateFile) ?? {};
+  }
+
+  // ── Hooks and test controls ────────────────────────────────────────────────────────────
+
+  /** The mesh hook: extra MCP servers and system-prompt text, per thread, on every open. */
+  setThreadExtras(hook: ClaudeExtrasHook | null): void {
+    this.extrasHook = hook;
+  }
+
+  /** Native ids of the threads that have a live query now, least recently used first. */
+  liveThreads(): NativeId[] {
+    return [...this.live.values()].sort((a, b) => a.lastUsed - b.lastUsed).map((l) => l.native);
+  }
+
+  // ── Plumbing ───────────────────────────────────────────────────────────────────────────
+
+  private sdk(): Promise<ClaudeSdk> {
+    if (!this.sdkPromise) {
+      const s = this.options.sdk;
+      this.sdkPromise = typeof s === "function" ? s() : s ? Promise.resolve(s) : loadRealSdk();
+      this.sdkPromise.catch(() => {
+        this.sdkPromise = null;
+      });
+    }
+    return this.sdkPromise;
+  }
+
+  private emit(event: ProviderEvent): void {
+    if (!this.disposed) this.events.emit(event);
+  }
+
+  private save(): void {
+    writeJsonAtomic(this.stateFile, this.settings);
+  }
+
+  private requireExecutable(): string {
+    if (!this.options.executable) throw new Error("Claude Code (`claude`) is not installed on this target");
+    return this.options.executable;
+  }
+
+  private async threadSettings(native: NativeId): Promise<ThreadSettings> {
+    let s = this.settings[native];
+    if (!s) {
+      const info = await (await this.sdk()).getSessionInfo(native).catch(() => undefined);
+      if (!info) throw new Error(`no Claude Code session ${native} on this target`);
+      s = { cwd: info.cwd ?? os.homedir(), stored: true };
+      this.settings[native] = s;
+      this.save();
+    }
+    return s;
+  }
+
+  // ── Probe ──────────────────────────────────────────────────────────────────────────────
+
+  private baseCapabilities(): Capability[] {
+    return [
+      "threadList",
+      "threadRead",
+      "threadResume",
+      "threadFork",
+      "threadForkAtTurn",
+      "threadRename",
+      "threadArchive",
+      "threadDelete",
+      "streamText",
+      "streamReasoning",
+      "interrupt",
+      "approvals",
+      "userQuestions",
+      "modes",
+      "modelSwitch",
+      "effortSwitch",
+      "imageInput",
+      "reasoningSummary",
+      "tokenUsage",
+      "modelList",
+      "plan",
+      "subagents",
+      "webSearch",
+    ];
+  }
+
+  private result(status: ProbeResult["status"], message: string | null, extra: Partial<ProbeResult> = {}): ProbeResult {
+    return {
+      displayName: "Claude",
+      backend: "sdk",
+      harnessVersion: null,
+      store: { key: null },
+      status,
+      statusMessage: message,
+      capabilities: [],
+      models: [],
+      modelsComplete: false,
+      modes: [],
+      ...extra,
+    };
+  }
+
+  async probe(): Promise<ProbeResult> {
+    const exe = this.options.executable;
+    if (!exe || !this.cli) return this.result("notInstalled", "Claude Code (`claude`) was not found on this target");
+    const version = await this.cli.version();
+    if (!version) return this.result("unreachable", `Claude Code at ${exe} could not be run`);
+    const auth = await this.cli.authStatus();
+    const configDir = auth?.configDirectory ?? this.options.env.CLAUDE_CONFIG_DIR ?? path.join(this.options.env.HOME ?? os.homedir(), ".claude");
+    const store = { key: `claude:${sha256Hex(path.resolve(configDir)).slice(0, 16)}`, home: configDir };
+    if (auth && !auth.loggedIn) {
+      return this.result("needsAuth", "Claude Code is not signed in on this target; run `claude auth login` there", { harnessVersion: version, store });
+    }
+    const sdk = await this.sdk();
+    const input = new InputQueue();
+    const q = sdk.query({
+      prompt: input,
+      options: {
+        cwd: this.options.stateDir,
+        pathToClaudeCodeExecutable: exe,
+        env: this.options.env,
+        persistSession: false,
+        permissionMode: "default",
+        canUseTool: async () => ({ behavior: "deny", message: "yaacd is only reading the model list" }),
+      },
+    });
+    const drain = (async () => {
+      try {
+        for await (const _ of q) void _;
+      } catch {
+        /* the probe query is closed below */
+      }
+    })();
+    let models: SdkModelInfo[];
+    let account: Awaited<ReturnType<SdkQuery["accountInfo"]>> | null = null;
+    let applied: { model?: string | null; effort?: string | null } | null = null;
+    let harnessVersion = version;
+    try {
+      const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Claude Code did not answer within 60 s")), 60000).unref());
+      models = await Promise.race([q.supportedModels(), timeout]);
+      account = await Promise.race([q.accountInfo(), timeout]).catch(() => null);
+      const init = await Promise.race([q.initializationResult(), timeout]).catch(() => null);
+      if (typeof init?.claude_code_version === "string") harnessVersion = init.claude_code_version;
+      if (typeof q.getSettings === "function") applied = (await Promise.race([q.getSettings(), timeout]).catch(() => null))?.applied ?? null;
+    } catch (e) {
+      return this.result("unreachable", `Claude Code did not report its models: ${(e as Error).message}`, { harnessVersion: version, store });
+    } finally {
+      input.end();
+      q.close();
+      await Promise.race([drain, new Promise((r) => setTimeout(r, 2000).unref())]);
+    }
+    this.sdkModels = models;
+    // The model a thread gets when none is chosen: the one Claude Code says it applies by
+    // default (matched by its value first, then by what an alias resolves to).
+    const defaultModel = applied?.model
+      ? (models.find((m) => m.value === applied!.model) ?? models.find((m) => m.resolvedModel === applied!.model) ?? null)
+      : null;
+    this.models = models.map((m) => {
+      const efforts = (m.supportedEffortLevels ?? []).map((id) => ({ id: String(id) }));
+      const isDefault = m === defaultModel;
+      return {
+        id: m.value,
+        displayName: m.displayName,
+        description: m.description ?? null,
+        isDefault,
+        // The SDK's model info has no image-input field. Claude Code takes images as content
+        // blocks, so image input is reported as supported for every model: a statement about
+        // the harness, and the only such default in this provider (docs/04-providers.md#claude).
+        capabilities: [{ capability: "imageInput", support: "supported" }],
+        efforts,
+        defaultEffort: isDefault && applied?.effort && efforts.some((e) => e.id === applied!.effort) ? applied.effort : null,
+      } satisfies ModelInfo;
+    });
+    const capabilities = this.baseCapabilities();
+    if (this.models.some((m) => (m.efforts ?? []).length > 0)) capabilities.push("reasoning");
+    const autoMode = models.some((m) => m.supportsAutoMode === true);
+    const modes = MODES.filter((m) => !m.needsAutoMode || autoMode).map(({ needsAutoMode: _n, ...m }) => m as ModeInfo);
+    this.lastProbe = this.result("ready", null, {
+      harnessVersion,
+      store: { ...store, account: account?.email ?? account?.organization ?? null },
+      capabilities,
+      models: this.models,
+      modelsComplete: true,
+      modes,
+    });
+    return this.lastProbe;
+  }
+
+  // ── Thread index and history ───────────────────────────────────────────────────────────
+
+  async scanThreads(page: PageRequest): Promise<ThreadPage> {
+    const sdk = await this.sdk();
+    const size = Math.max(1, page.limit ?? 100);
+    let snap = this.scanSnapshot;
+    let offset = 0;
+    if (page.cursor) {
+      const [id, off] = page.cursor.split(":");
+      if (!snap || snap.id !== id) throw new Error("the listing changed while it was being read; start again");
+      offset = Number.parseInt(off ?? "0", 10) || 0;
+    } else {
+      // The SDK labels no session as programmatic; asking without them tells them apart.
+      const [all, interactive] = await Promise.all([sdk.listSessions({ includeWorktrees: true }), sdk.listSessions({ includeWorktrees: true, includeProgrammatic: false })]);
+      const human = new Set(interactive.map((s) => s.sessionId));
+      snap = {
+        id: randomUUID().slice(0, 8),
+        threads: all.map((s) => ({
+          native: s.sessionId,
+          title: s.customTitle ?? s.summary ?? null,
+          preview: s.firstPrompt ?? null,
+          cwd: s.cwd ?? this.settings[s.sessionId]?.cwd ?? "",
+          model: this.settings[s.sessionId]?.model ?? null,
+          createdAt: iso(s.createdAt ?? s.lastModified),
+          updatedAt: iso(s.lastModified),
+          originKind: human.has(s.sessionId) ? "interactive" : "programmatic",
+          archived: s.archived === true,
+        })),
+      };
+      this.scanSnapshot = snap;
+    }
+    const threads = snap.threads.slice(offset, offset + size);
+    const next = offset + size < snap.threads.length ? `${snap.id}:${offset + size}` : null;
+    return { threads, cursor: next, complete: true };
+  }
+
+  async readThread(thread: NativeId, page: PageRequest): Promise<ItemPage> {
+    const sdk = await this.sdk();
+    const messages = await sdk.getSessionMessages(thread);
+    const items = historyItems(messages, this.settings[thread]?.cwd ?? null);
+    const start = Number.parseInt(page.cursor ?? "0", 10) || 0;
+    const size = Math.max(1, page.limit ?? 200);
+    return { items: items.slice(start, start + size), cursor: start + size < items.length ? String(start + size) : null };
+  }
+
+  private async refreshInfo(native: NativeId): Promise<void> {
+    try {
+      const info = await (await this.sdk()).getSessionInfo(native);
+      if (!info) return;
+      const s = this.settings[native];
+      this.emit({
+        type: "threadChanged",
+        info: {
+          native,
+          title: info.customTitle ?? info.summary ?? null,
+          preview: info.firstPrompt ?? null,
+          cwd: info.cwd ?? s?.cwd ?? "",
+          model: s?.model ?? null,
+          createdAt: iso(info.createdAt ?? info.lastModified),
+          updatedAt: iso(info.lastModified),
+          originKind: "programmatic",
+          archived: info.archived === true,
+        },
+      });
+    } catch {
+      /* a listing will catch up */
+    }
+  }
+
+  // ── Live queries ───────────────────────────────────────────────────────────────────────
+
+  private attachmentDirs(input: ProviderInput): string[] {
+    const dirs = new Set<string>();
+    for (const p of [...input.images.map((i) => i.path), ...input.files.map((f) => f.path)]) {
+      const dir = path.dirname(p);
+      try {
+        dirs.add(fs.realpathSync(dir));
+      } catch {
+        dirs.add(path.resolve(dir));
+      }
+    }
+    return [...dirs];
+  }
+
+  /** Makes room under the cap: closes least recently used idle queries. */
+  private makeRoom(): void {
+    while (this.live.size >= this.maxLive) {
+      const victim = [...this.live.values()].filter((l) => !l.busy()).sort((a, b) => a.lastUsed - b.lastUsed)[0];
+      if (!victim) {
+        this.log(`${this.live.size} Claude Code processes are busy; opening one more than the limit of ${this.maxLive}`);
+        return;
+      }
+      this.closeLive(victim, "the limit of live Claude Code processes");
+    }
+  }
+
+  private closeLive(live: Live, why: string): void {
+    if (live.closing) return;
+    this.log(`closing the query of ${live.native} (${why})`);
+    live.closing = true;
+    if (live.idleTimer) clearTimeout(live.idleTimer);
+    live.idleTimer = null;
+    this.live.delete(live.native);
+    if (live.pid !== null) this.ownPids.set(live.pid, Date.now());
+    live.input.end();
+    try {
+      live.query.close();
+    } catch {
+      /* already gone */
+    }
+  }
+
+  private touch(live: Live): void {
+    live.lastUsed = Date.now();
+    if (live.idleTimer) clearTimeout(live.idleTimer);
+    live.idleTimer = null;
+    if (this.idleMs > 0 && !live.busy()) {
+      live.idleTimer = setTimeout(() => {
+        live.idleTimer = null;
+        if (!live.busy() && this.live.get(live.native) === live) this.closeLive(live, "idle");
+      }, this.idleMs);
+      live.idleTimer.unref();
+    }
+  }
+
+  /** The live query of a thread, opened (or re-opened with more readable folders) as needed. */
+  private async ensureLive(native: NativeId, dirs: string[]): Promise<Live> {
+    const existing = this.live.get(native);
+    if (existing && dirs.every((d) => existing.dirs.has(d))) return existing;
+    const all = new Set(dirs);
+    if (existing) {
+      // Folders readable to Claude Code are fixed when a query opens: re-open it, invisibly.
+      for (const d of existing.dirs) all.add(d);
+      this.closeLive(existing, "a new attachment folder");
+    }
+    return this.openLive(native, all);
+  }
+
+  private async openLive(native: NativeId, dirs: Set<string>): Promise<Live> {
+    const exe = this.requireExecutable();
+    const sdk = await this.sdk();
+    const s = await this.threadSettings(native);
+    this.makeRoom();
+    const live = new Live(native, s.cwd, dirs, s, (ev) => this.emit({ ...ev, thread: native } as ProviderEvent));
+    const resumed = s.stored === true;
+    const extras = (await this.extrasHook?.({ native, cwd: s.cwd, resumed })) ?? {};
+    const options: Options = {
+      cwd: s.cwd,
+      pathToClaudeCodeExecutable: exe,
+      env: this.options.env,
+      includePartialMessages: true,
+      ...(resumed ? { resume: native } : { sessionId: native }),
+      ...(live.model ? { model: live.model } : {}),
+      ...(live.effort ? { effort: live.effort as NonNullable<Options["effort"]> } : {}),
+      permissionMode: live.mode as PermissionMode,
+      additionalDirectories: [...dirs],
+      systemPrompt: { type: "preset", preset: "claude_code", ...(extras.appendSystemPrompt ? { append: extras.appendSystemPrompt } : {}) },
+      ...(extras.mcpServers && Object.keys(extras.mcpServers).length > 0 ? { mcpServers: extras.mcpServers } : {}),
+      canUseTool: (toolName, input, opts) => this.canUseTool(live, toolName, input, opts),
+      onElicitation: (request, opts) => this.onElicitation(live, request, opts.signal),
+      stderr: (data) => {
+        live.stderrTail = (live.stderrTail + data).slice(-2000);
+      },
+    };
+    live.query = sdk.query({ prompt: live.input, options });
+    this.live.set(native, live);
+    if (!resumed) {
+      s.stored = true;
+      this.save();
+    }
+    live.pidKnown = live.query
+      .initializationResult()
+      .then((r) => {
+        if (typeof r?.pid === "number") {
+          live.pid = r.pid;
+          this.ownPids.set(r.pid, Number.POSITIVE_INFINITY);
+        }
+      })
+      .catch(() => {});
+    void this.consume(live);
+    return live;
+  }
+
+  private async consume(live: Live): Promise<void> {
+    let failure: string | null = null;
+    try {
+      for await (const m of live.query) this.onMessage(live, m);
+    } catch (e) {
+      failure = (e as Error).message;
+    }
+    if (live.pid !== null) this.ownPids.set(live.pid, Date.now());
+    const wasLive = this.live.get(live.native) === live;
+    if (wasLive) this.live.delete(live.native);
+    if (live.idleTimer) clearTimeout(live.idleTimer);
+    // The process is gone: nothing it asked can be answered any more.
+    for (const p of [...live.requests.values()]) p.expire();
+    if (live.turn) {
+      const detail = failure ?? (live.stderrTail.trim().split("\n").pop() || null);
+      const why = live.closing ? "the Claude Code process was closed" : "the Claude Code process ended";
+      this.finishTurn(live, live.turn.interrupting ? "interrupted" : "failed", detail ? `${why}: ${detail}` : why, null);
+    }
+  }
+
+  private beginTurn(live: Live, turnId: TurnId, origin: TurnOrigin): TurnState {
+    let end!: () => void;
+    const ended = new Promise<void>((r) => (end = r));
+    const turn: TurnState = { turnId, origin, interrupting: false, ended, end };
+    live.turn = turn;
+    live.translator.begin(turnId);
+    if (live.idleTimer) clearTimeout(live.idleTimer);
+    live.idleTimer = null;
+    this.emit({ type: "turnStarted", thread: live.native, turnId, origin, at: new Date().toISOString() });
+    return turn;
+  }
+
+  /** Work Claude Code started on its own (a background task finishing, say) gets a turn of its own. */
+  private ensureTurn(live: Live, turnId?: string): TurnState {
+    return live.turn ?? this.beginTurn(live, turnId ?? `auto-${randomUUID()}`, "external");
+  }
+
+  private finishTurn(live: Live, status: TurnStatus, error: string | null, usage: TokenUsage | null): void {
+    const turn = live.turn;
+    if (!turn) return;
+    for (const p of [...live.requests.values()]) if (p.turnId === turn.turnId) p.expire();
+    live.translator.finish(status === "completed");
+    live.turn = null;
+    this.emit({ type: "turnCompleted", thread: live.native, turnId: turn.turnId, status, error, usage, at: new Date().toISOString() });
+    turn.end();
+    this.touch(live);
+    void this.refreshInfo(live.native);
+  }
+
+  private onMessage(live: Live, m: SDKMessage): void {
+    const msg = m as SDKMessage & { parent_tool_use_id?: string | null; uuid?: string };
+    if (msg.parent_tool_use_id) return; // inside a subagent: the subagent's tool call stands for it
+    switch (m.type) {
+      case "stream_event":
+        this.ensureTurn(live);
+        live.translator.stream(m.event as unknown as Record<string, unknown>);
+        return;
+      case "assistant":
+        this.ensureTurn(live);
+        live.translator.assistant(m.message as unknown as Record<string, unknown>, m.uuid, m.error ?? null);
+        return;
+      case "user": {
+        const content = (m.message as { content?: unknown }).content;
+        const uuid = typeof msg.uuid === "string" ? msg.uuid : null;
+        if (uuid && live.ours.has(uuid)) return;
+        if ((m as { isReplay?: boolean }).isReplay) return;
+        this.ensureTurn(live, uuid ?? undefined);
+        live.translator.user(content, uuid, (m as { origin?: unknown }).origin);
+        return;
+      }
+      case "result": {
+        const turn = live.turn;
+        if (!turn) return;
+        const usage = usageOf(m.usage);
+        if (m.subtype === "success" && !m.is_error) this.finishTurn(live, "completed", null, usage);
+        else if (turn.interrupting) this.finishTurn(live, "interrupted", null, usage);
+        else {
+          const errors = "errors" in m && Array.isArray(m.errors) ? m.errors.join("; ") : "";
+          this.finishTurn(live, "failed", errors || ("result" in m ? String(m.result) : m.subtype), usage);
+        }
+        return;
+      }
+      case "system": {
+        const sys = m as { subtype?: string; model?: string; permissionMode?: string; uuid?: string };
+        if (sys.subtype === "init") {
+          const applied: AppliedSettings = {};
+          if (live.model) applied.model = live.model;
+          else if (sys.model) applied.model = sys.model;
+          if (sys.permissionMode) applied.mode = sys.permissionMode;
+          if (live.effort) applied.effort = live.effort;
+          this.emit({ type: "settingsChanged", thread: live.native, applied });
+        } else if (sys.subtype === "compact_boundary" && live.turn) {
+          const item = { id: `compact:${sys.uuid ?? randomUUID()}`, turnId: live.turn.turnId, status: "completed", kind: "notice", noticeKind: "compaction", text: "The conversation was compacted." } as const;
+          this.emit({ type: "itemStarted", thread: live.native, item });
+          this.emit({ type: "itemCompleted", thread: live.native, item });
+        }
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  // ── Requests ───────────────────────────────────────────────────────────────────────────
+
+  private raise(live: Live, requestId: string, request: RaisedRequest, signal: AbortSignal, settle: (response: RequestResponse | null) => void): void {
+    const turn = this.ensureTurn(live);
+    let open = true;
+    const close = () => {
+      open = false;
+      live.requests.delete(requestId);
+      signal.removeEventListener("abort", onAbort);
+      if (!live.busy()) this.touch(live);
+    };
+    const pending: Pending = {
+      requestId,
+      turnId: turn.turnId,
+      request,
+      answer: (response) => {
+        if (!open) return;
+        close();
+        settle(response);
+      },
+      expire: () => {
+        if (!open) return;
+        close();
+        this.emit({ type: "requestExpired", thread: live.native, requestId });
+        settle(null);
+      },
+    };
+    const onAbort = () => pending.expire();
+    live.requests.set(requestId, pending);
+    if (live.idleTimer) clearTimeout(live.idleTimer);
+    live.idleTimer = null;
+    signal.addEventListener("abort", onAbort, { once: true });
+    // Raised at once; it stays pending for as long as the user takes. yaacd never answers it.
+    this.emit({ type: "requestRaised", thread: live.native, turnId: turn.turnId, requestId, request, blocking: true });
+    if (signal.aborted) pending.expire();
+  }
+
+  private canUseTool(
+    live: Live,
+    toolName: string,
+    input: Record<string, unknown>,
+    opts: Parameters<NonNullable<Options["canUseTool"]>>[2],
+  ): Promise<PermissionResult> {
+    const ctx: ToolPermissionContext = {
+      toolName,
+      input,
+      cwd: live.cwd,
+      ...(opts.suggestions ? { suggestions: opts.suggestions } : {}),
+      ...(opts.blockedPath ? { blockedPath: opts.blockedPath } : {}),
+      ...(opts.decisionReason ? { decisionReason: opts.decisionReason } : {}),
+      ...(opts.title ? { title: opts.title } : {}),
+      ...(opts.displayName ? { displayName: opts.displayName } : {}),
+      ...(opts.description ? { description: opts.description } : {}),
+      ...(opts.suppressAlwaysAllowRule ? { suppressAlwaysAllowRule: true } : {}),
+      ...(opts.mcpServer ? { mcpServer: opts.mcpServer } : {}),
+      ...(opts.agentID ? { agentID: opts.agentID } : {}),
+    };
+    const ask = toolName === ASK_TOOL;
+    const request: RaisedRequest = ask ? { requestKind: "question", questions: normaliseQuestions(input) } : approvalRequest(ctx);
+    // The tool_use id, so that the request item has the same id in history.
+    const requestId = opts.toolUseID || opts.requestId || randomUUID();
+    return new Promise<PermissionResult>((resolve) => {
+      this.raise(live, requestId, request, opts.signal, (response) => {
+        if (!response) resolve({ behavior: "deny", message: "The request was withdrawn before the user answered." });
+        else if (ask) resolve({ behavior: "allow", updatedInput: answeredInput(input, response) });
+        else resolve(approvalResult(ctx, response));
+      });
+    });
+  }
+
+  private onElicitation(live: Live, request: ElicitationRequest, signal: AbortSignal): Promise<ElicitationResult> {
+    const raised: RaisedRequest = {
+      requestKind: "form",
+      message: request.message,
+      source: request.serverName,
+      schema: request.mode === "url" ? { url: request.url ?? null } : (request.requestedSchema ?? null),
+    };
+    return new Promise((resolve) => {
+      this.raise(live, `elicit-${randomUUID()}`, raised, signal, (response) => {
+        if (!response) resolve({ action: "cancel" });
+        else if (response.requestKind === "form") resolve({ action: "accept", content: response.values as NonNullable<ElicitationResult["content"]> });
+        else resolve({ action: "decline" });
+      });
+    });
+  }
+
+  async respond(thread: NativeId, requestId: string, response: RequestResponse): Promise<void> {
+    const live = this.live.get(thread);
+    const pending = live?.requests.get(requestId);
+    if (!live || !pending) throw new Error(`request ${requestId} is not pending in Claude Code`);
+    if (response.requestKind !== pending.request.requestKind) {
+      throw new Error(`request ${requestId} is a ${pending.request.requestKind}, not a ${response.requestKind}`);
+    }
+    pending.answer(response);
+    this.emit({ type: "requestResolved", thread, requestId, by: "client", answer: response });
+  }
+
+  // ── Turns ──────────────────────────────────────────────────────────────────────────────
+
+  private async userContent(input: ProviderInput): Promise<SDKUserMessage["message"]["content"]> {
+    if (input.images.length === 0) return input.text;
+    const blocks: Array<Record<string, unknown>> = [];
+    if (input.text) blocks.push({ type: "text", text: input.text });
+    for (const img of input.images) {
+      const data = await fs.promises.readFile(img.path);
+      const mediaType = img.mediaType && IMAGE_FORMATS.includes(img.mediaType) ? img.mediaType : sniffImage(data.subarray(0, 16));
+      if (!mediaType) throw new Error(`${path.basename(img.path)} is not an image Claude Code accepts (${IMAGE_FORMATS.join(", ")})`);
+      blocks.push({ type: "image", source: { type: "base64", media_type: mediaType, data: data.toString("base64") } });
+    }
+    return blocks as unknown as SDKUserMessage["message"]["content"];
+  }
+
+  private async send(live: Live, input: ProviderInput): Promise<TurnId> {
+    const content = await this.userContent(input);
+    const turnId = randomUUID();
+    live.ours.add(turnId);
+    // The message's uuid is the turn id: Claude Code keeps it in the transcript, so history
+    // read back later has the same turn ids.
+    live.input.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: turnId as SDKUserMessage["uuid"] });
+    this.beginTurn(live, turnId, input.origin);
+    return turnId;
+  }
+
+  async startThread(params: StartThreadParams, input: ProviderInput): Promise<{ thread: NativeId; turn: TurnId }> {
+    this.requireExecutable();
+    const native = randomUUID();
+    this.settings[native] = { cwd: params.cwd, model: params.model ?? null, effort: params.effort ?? null, mode: params.mode ?? null };
+    this.save();
+    const live = await this.ensureLive(native, this.attachmentDirs(input));
+    const turn = await this.send(live, input);
+    return { thread: native, turn };
+  }
+
+  async startTurn(thread: NativeId, input: ProviderInput, overrides: TurnOverrides): Promise<TurnId> {
+    const s = await this.threadSettings(thread);
+    const current = this.live.get(thread);
+    if (current?.turn) throw new Error("a turn is already running in this Claude Code session");
+    if (overrides.model) s.model = overrides.model;
+    if (overrides.effort) s.effort = overrides.effort;
+    if (overrides.mode) s.mode = overrides.mode;
+    this.save();
+    let live = await this.ensureLive(thread, this.attachmentDirs(input));
+    live = await this.applySettings(live, s);
+    return this.send(live, input);
+  }
+
+  /** Brings a live query to the thread's settings: `setModel`, effort, `setPermissionMode`. */
+  private async applySettings(live: Live, s: ThreadSettings): Promise<Live> {
+    let changed = false;
+    let effortDirty = false;
+    if (s.model && s.model !== live.model) {
+      await live.query.setModel(s.model);
+      live.model = s.model;
+      changed = true;
+      // A model switch puts effort back to the new model's default.
+      effortDirty = live.effort !== null;
+      live.effort = null;
+    }
+    if (s.effort) {
+      const offered = this.sdkModels.find((m) => m.value === live.model)?.supportedEffortLevels;
+      const fits = !offered || !live.model || offered.map(String).includes(s.effort);
+      if (fits && (s.effort !== live.effort || effortDirty)) {
+        try {
+          await live.query.applyFlagSettings({ effortLevel: s.effort });
+          live.effort = s.effort;
+          changed = true;
+        } catch (e) {
+          // Effort could not be set on the live query: re-open it with `resume`, invisibly.
+          this.log(`effort change on a live query failed (${(e as Error).message}); re-opening it`);
+          const dirs = new Set(live.dirs);
+          this.closeLive(live, "an effort change");
+          return this.openLive(live.native, dirs);
+        }
+      } else if (!fits) {
+        s.effort = null;
+        this.save();
+      }
+    }
+    const mode = s.mode ?? "default";
+    if (mode !== live.mode) {
+      await live.query.setPermissionMode(mode as PermissionMode);
+      live.mode = mode;
+      changed = true;
+    }
+    if (changed) this.emit({ type: "settingsChanged", thread: live.native, applied: await this.applied(live) });
+    return live;
+  }
+
+  /** What the harness reports it is using; what was asked for, where it reports nothing. */
+  private async applied(live: Live): Promise<AppliedSettings> {
+    const out: AppliedSettings = { model: live.model, effort: live.effort, mode: live.mode };
+    if (typeof live.query.getSettings !== "function") return out;
+    try {
+      const a = (await live.query.getSettings()).applied;
+      if (a?.effort !== undefined) out.effort = a.effort ?? null;
+      if (a?.model) {
+        const row = this.sdkModels.find((m) => m.value === live.model);
+        // Keep the id the user chose when it is what the harness resolved it to.
+        if (!live.model || (a.model !== live.model && a.model !== row?.resolvedModel)) out.model = a.model;
+      }
+    } catch {
+      /* report what was asked for */
+    }
+    return out;
+  }
+
+  async interrupt(thread: NativeId, turn: TurnId): Promise<void> {
+    const live = this.live.get(thread);
+    if (!live?.turn || live.turn.turnId !== turn) return;
+    const t = live.turn;
+    t.interrupting = true;
+    for (const p of [...live.requests.values()]) if (p.turnId === turn) p.expire();
+    try {
+      await live.query.interrupt();
+    } catch (e) {
+      this.log(`interrupt failed: ${(e as Error).message}`);
+    }
+    await Promise.race([t.ended, new Promise((r) => setTimeout(r, 30000).unref())]);
+  }
+
+  async effective(thread: NativeId): Promise<ThreadEffective> {
+    const s = this.settings[thread];
+    const live = this.live.get(thread);
+    const model = live?.model ?? s?.model ?? null;
+    const info = (model ? this.models.find((m) => m.id === model) : null) ?? this.models.find((m) => m.isDefault) ?? null;
+    const caps = this.lastProbe?.capabilities ?? this.baseCapabilities();
+    const efforts = info?.efforts ?? [];
+    return {
+      capabilities: caps.filter((c) => (c !== "effortSwitch" && c !== "reasoning") || efforts.length > 0),
+      imageInput: "supported",
+      imageFormats: IMAGE_FORMATS,
+      efforts,
+      modes: this.lastProbe?.modes ?? [],
+      applied: {
+        model: model ?? info?.id ?? null,
+        effort: live?.effort ?? s?.effort ?? info?.defaultEffort ?? null,
+        mode: live?.mode ?? s?.mode ?? "default",
+      },
+    };
+  }
+
+  // ── In use elsewhere ───────────────────────────────────────────────────────────────────
+
+  private agents(): Promise<AgentEntry[]> {
+    const now = Date.now();
+    if (this.agentsCache && now - this.agentsCache.at < this.controlCacheMs) return this.agentsCache.entries;
+    if (!this.cli) return Promise.reject(new Error("claude is not installed"));
+    const entries = this.cli.agents();
+    this.agentsCache = { at: now, entries };
+    entries.catch(() => {
+      if (this.agentsCache?.entries === entries) this.agentsCache = null;
+    });
+    return entries;
+  }
+
+  async control(thread: NativeId): Promise<ExternalControl> {
+    const live = this.live.get(thread);
+    if (live && live.pid === null) await Promise.race([live.pidKnown, new Promise((r) => setTimeout(r, 10000).unref())]);
+    let entries: AgentEntry[];
+    try {
+      entries = await this.agents();
+    } catch {
+      return { external: false, uncertain: true };
+    }
+    const now = Date.now();
+    for (const [pid, until] of this.ownPids) if (until !== Number.POSITIVE_INFINITY && now - until > 60000) this.ownPids.delete(pid);
+    let uncertain = false;
+    const holders: AgentEntry[] = [];
+    for (const e of entries) {
+      if (typeof e.sessionId !== "string") {
+        uncertain = true; // an entry we cannot place could be this thread
+        continue;
+      }
+      if (e.sessionId !== thread) continue;
+      if (typeof e.pid === "number" && this.ownPids.has(e.pid)) continue; // a process yaacd runs
+      if (live && live.pid === null && typeof e.pid === "number") {
+        uncertain = true; // ours, probably, but not shown to be
+        continue;
+      }
+      holders.push(e);
+    }
+    if (holders.length > 0) {
+      const bg = holders.some((h) => h.kind === "background");
+      return { external: true, holder: bg ? "a Claude Code background session" : "another Claude Code session" };
+    }
+    return uncertain ? { external: false, uncertain: true } : { external: false };
+  }
+
+  // ── Fork, rename, archive, delete ──────────────────────────────────────────────────────
+
+  async forkThread(thread: NativeId, opts: ForkOptions): Promise<NativeId> {
+    const sdk = await this.sdk();
+    const src = await this.threadSettings(thread);
+    let upToMessageId: string | undefined;
+    const live = this.live.get(thread);
+    const cut = opts.atTurn ?? null;
+    if (cut || live?.turn) {
+      // Up to the last message of the chosen turn (or of the last finished one, when a turn runs).
+      const messages = (await sdk.getSessionMessages(thread)).filter((m) => !m.parent_tool_use_id);
+      const starts = messages
+        .map((m, i) => ({ m, i }))
+        .filter(({ m }) => m.type === "user" && !isToolResultMessage((m.message as { content?: unknown } | null)?.content));
+      const target = cut ?? live?.turn?.turnId;
+      const at = starts.findIndex(({ m }) => m.uuid === target);
+      if (cut) {
+        if (at < 0) throw new Error(`turn ${cut} is not in the stored conversation`);
+        const end = at + 1 < starts.length ? starts[at + 1]!.i - 1 : messages.length - 1;
+        upToMessageId = messages[end]?.uuid;
+      } else if (at > 0) {
+        upToMessageId = messages[starts[at]!.i - 1]?.uuid;
+      }
+    }
+    const res = await sdk.forkSession(thread, { ...(upToMessageId ? { upToMessageId } : {}) });
+    // A native fork stays in the conversation's own project folder.
+    this.settings[res.sessionId] = {
+      cwd: src.cwd,
+      model: opts.model ?? src.model ?? null,
+      effort: opts.effort ?? src.effort ?? null,
+      mode: opts.mode ?? src.mode ?? null,
+      stored: true,
+    };
+    this.save();
+    void this.refreshInfo(res.sessionId);
+    return res.sessionId;
+  }
+
+  async rename(thread: NativeId, title: string): Promise<void> {
+    await (await this.sdk()).renameSession(thread, title);
+    await this.refreshInfo(thread);
+  }
+
+  async archive(thread: NativeId): Promise<void> {
+    await (await this.sdk()).archiveSession(thread);
+    await this.refreshInfo(thread);
+  }
+
+  async remove(thread: NativeId): Promise<void> {
+    const live = this.live.get(thread);
+    if (live) this.closeLive(live, "the thread was deleted");
+    await (await this.sdk()).deleteSession(thread);
+    delete this.settings[thread];
+    this.save();
+  }
+
+  async dispose(): Promise<void> {
+    for (const live of [...this.live.values()]) this.closeLive(live, "yaacd is stopping");
+    this.disposed = true;
+  }
+}
+
+// ── The factory ──────────────────────────────────────────────────────────────────────────
+
+/** The environment for Claude Code: yaacd's, plus the instance's, without yaacd's own variables. */
+function childEnv(base: NodeJS.ProcessEnv, extra: Record<string, string> | undefined): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, ...(extra ?? {}) };
+  for (const k of Object.keys(env)) if (k.startsWith("YAAC_")) delete env[k];
+  return env;
+}
+
+function intVar(v: string | undefined, fallback: number): number {
+  const n = v === undefined ? Number.NaN : Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/**
+ * The Claude kind. An implicit default instance exists when `claude` can be found from the
+ * daemon's environment (and `YAAC_CLAUDE_PROVIDER` is not `0`).
+ */
+export const claudeProviderFactory: ProviderFactory = {
+  kind: CLAUDE_KIND,
+  implicit: (env) => env.YAAC_CLAUDE_PROVIDER !== "0" && findExecutable(env) !== null,
+  create(ctx: ProviderContext): ClaudeProvider {
+    const cfg = ctx.config.env ?? {};
+    // ProviderContext carries no environment, so the process's is used.
+    const base = process.env;
+    return new ClaudeProvider({
+      executable: findExecutable({ ...base, ...cfg }, cfg[EXECUTABLE_VAR] ?? null),
+      env: childEnv(base, cfg),
+      stateDir: ctx.stateDir,
+      idleMs: intVar(cfg[IDLE_MS_VAR] ?? base[IDLE_MS_VAR], DEFAULT_IDLE_MS),
+      maxLive: intVar(cfg[MAX_LIVE_VAR] ?? base[MAX_LIVE_VAR], DEFAULT_MAX_LIVE) || DEFAULT_MAX_LIVE,
+      log: ctx.log,
+    });
+  },
+};

@@ -77,6 +77,9 @@ All dated entries are from 2026-11-20.
 | D64 | A thread in a folder **inside** a project belongs to that project. Where projects are nested, the **deepest** project containing the thread's folder wins: with projects at `~` and `~/projects/abc`, a thread in `abc/123` belongs to *abc*, and one in `~/projects` belongs to *~*. | Owner |
 | D65 | A thread created from YAAC starts in the **root of its project's folder**. | Owner |
 | D66 | **Sidebar rows are more informative: more than one line**, with room for the **git branch** and, very compactly, **how many files differ from origin** for that branch. | Owner |
+| D68 | The git changes in a sidebar row use **real icons, not Unicode characters**, and the **usual git colours** (green, red, …). | Owner |
+| D70 | **Every icon in the app comes from one embedded icon set**, never from Unicode symbols. The **git colours are softer than the state colours**, because green, yellow, and red already mean done, needs-you, and failed for an agent's state. | Owner (agreed) |
+| D69 | **Links are the accent colour with no underline.** Blue underlined links are ugly. | Owner |
 | D67 | The hub stores its cache, drafts, and relay queue in **SQLite, compiled into the binary** (confirmed after the reasons were explained; was P17). | Owner |
 | D59 | **In a chat, what the user and the agent say to each other stands out most.** Tool calls, conversation between workers, and the like are muted and collapsed by default into a short description. | Owner |
 

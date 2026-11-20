@@ -35,7 +35,7 @@ fn button(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>, filled: bool
     let font = if filled { theme::bold(size::UI) } else { theme::ui(size::UI) };
     let key_font = theme::ui(size::SMALL);
     let tw = text_size(ui, label, &font);
-    let kw = key.map_or(0.0, |k| text_size(ui, k, &key_font).x + 10.0);
+    let kw = key.map_or(0.0, |k| if k == "Enter" { 14.0 + 10.0 } else { text_size(ui, k, &key_font).x + 10.0 });
     let pad = vec2(12.0, 5.0);
     let size = vec2(tw.x + kw + pad.x * 2.0, (tw.y + pad.y * 2.0).max(28.0));
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
@@ -52,8 +52,12 @@ fn button(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>, filled: bool
     ui.painter().galley(pos2(rect.left() + pad.x, y), galley, fg);
     if let Some(k) = key {
         let kc = if filled { p.on_accent } else { p.text2 };
-        let g = ui.fonts_mut(|f| f.layout_no_wrap(k.to_owned(), key_font, kc));
-        ui.painter().galley(pos2(rect.right() - pad.x - g.size().x, rect.center().y - g.size().y / 2.0), g, kc);
+        if k == "Enter" {
+            icons::return_key(ui.painter(), pos2(rect.right() - pad.x - 7.0, rect.center().y), 14.0, kc);
+        } else {
+            let g = ui.fonts_mut(|f| f.layout_no_wrap(k.to_owned(), key_font, kc));
+            ui.painter().galley(pos2(rect.right() - pad.x - g.size().x, rect.center().y - g.size().y / 2.0), g, kc);
+        }
     }
     if resp.has_focus() {
         focus_ring(ui, rect, p);
@@ -61,11 +65,13 @@ fn button(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>, filled: bool
     resp
 }
 
-/// A link: link colour, underlined.
+/// A link: the link colour, no underline at rest; underlined on hover or keyboard focus.
 pub(crate) fn link(ui: &mut Ui, p: &Palette, text: &str, font: egui::FontId) -> Response {
-    let resp = ui.add(
-        egui::Label::new(egui::RichText::new(text).font(font).color(p.link).underline()).sense(Sense::click()),
-    );
+    let resp = ui.add(egui::Label::new(egui::RichText::new(text).font(font).color(p.link)).sense(Sense::click()));
+    if resp.hovered() || resp.has_focus() {
+        let r = resp.rect;
+        ui.painter().hline(r.x_range(), r.bottom() - 1.0, Stroke::new(1.0, p.link));
+    }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -163,4 +169,28 @@ pub(crate) fn elided(ui: &Ui, text: &str, font: &egui::FontId, color: Color32, w
     let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font.clone(), color);
     job.wrap = egui::text::TextWrapping { max_width: width.max(10.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
     ui.fonts_mut(|f| f.layout_job(job))
+}
+
+/// A selector for "instance  >  model": two words with a small chevron between them.
+pub(crate) fn selector_pair(ui: &mut Ui, p: &Palette, left: &str, right: &str, enabled: bool) -> Response {
+    let font = theme::ui(size::UI);
+    let lw = text_size(ui, left, &font).x;
+    let rw = text_size(ui, right, &font).x;
+    let chevron = if enabled { 14.0 } else { 0.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(lw + rw + 16.0 + chevron + 10.0, 26.0), if enabled { Sense::click() } else { Sense::hover() });
+    if enabled && (resp.hovered() || resp.has_focus()) {
+        ui.painter().rect_filled(rect, 5.0, p.faint);
+    }
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(left.to_owned(), font.clone(), p.text));
+    ui.painter().galley(pos2(rect.left() + 5.0, rect.center().y - g.size().y / 2.0), g, p.text);
+    icons::chevron(ui.painter(), pos2(rect.left() + 5.0 + lw + 8.0, rect.center().y), 10.0, false, p.text2);
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(right.to_owned(), font, p.text));
+    ui.painter().galley(pos2(rect.left() + 5.0 + lw + 16.0, rect.center().y - g.size().y / 2.0), g, p.text);
+    if enabled {
+        icons::chevron(ui.painter(), pos2(rect.right() - 11.0, rect.center().y + 1.0), 12.0, true, p.text2);
+    }
+    if resp.has_focus() {
+        focus_ring(ui, rect, p);
+    }
+    resp
 }

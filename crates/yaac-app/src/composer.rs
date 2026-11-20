@@ -178,7 +178,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                             }
                         } else if !dimmed {
                             let has_text = app.client.state.drafts.get(key).is_some_and(|d| !d.text.trim().is_empty());
-                            let r = if has_text && ready { widgets::primary(ui, &p, "Send", Some("⏎")) } else { widgets::plain(ui, &p, "Send", Some("⏎")) };
+                            let r = if has_text && ready { widgets::primary(ui, &p, "Send", Some("Enter")) } else { widgets::plain(ui, &p, "Send", Some("Enter")) };
                             if r.clicked() {
                                 send = true;
                             }
@@ -269,8 +269,7 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         if let Some(m) = &row.model {
-            let label = format!("{} ▸ {}", m.instance_label, m.model_label);
-            let r = widgets::selector(ui, &p, &label, m.changeable || !m.groups.is_empty());
+            let r = widgets::selector_pair(ui, &p, &m.instance_label, &m.model_label, m.changeable || !m.groups.is_empty());
             if r.clicked() {
                 app.ui.toggle_menu(Menu::Model);
             }
@@ -364,17 +363,20 @@ pub(crate) fn fork_menu_window(ui: &mut egui::Ui, app: &mut YaacApp, key: &Threa
     let source = app.client.state.provider_of(key).cloned();
     let mut close = false;
     egui::Window::new("Fork this thread")
+        .title_bar(false)
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .frame(egui::Frame::popup(ui.style()).fill(p.raised).inner_margin(Margin::same(16)))
         .show(ui.ctx(), |ui| {
             ui.set_width(380.0);
+            ui.label(egui::RichText::new("Fork this thread").font(theme::bold(size::SECTION + 1.0)));
+            ui.add_space(6.0);
             ui.label(widgets::secondary("Continue with", &p));
             for d in &providers {
                 let native = source.as_ref().is_some_and(|s| s.store.same_store(&d.store)) && d.capabilities.contains(&yaac_protocol::Capability::ThreadFork);
                 let model = d.models.iter().find(|m| m.is_default).map_or(String::new(), |m| m.display_name.clone());
-                let label = format!("{} ▸ {model}   {}", d.display_name, if native { "native" } else { "handoff" });
+                let label = format!("{} · {model}   {}", d.display_name, if native { "native" } else { "handoff" });
                 if d.status != yaac_protocol::ProviderStatus::Ready {
                     widgets::unavailable(ui, &p, &d.display_name, &yaac_core::controls::unavailable_reason(d, key.target.as_str()).unwrap_or_default());
                 } else if ui.selectable_label(false, label).clicked() {
@@ -469,7 +471,7 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::primary(ui, &p, "Send", Some("⏎")).clicked() {
+                    if widgets::primary(ui, &p, "Send", Some("Enter")).clicked() {
                         send = true;
                     }
                 });

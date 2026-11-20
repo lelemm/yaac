@@ -256,3 +256,61 @@ pub(crate) fn stop_square(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 
 
+
+/// The Return key.
+pub(crate) fn return_key(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.09).max(1.2);
+    let s = d * 0.32;
+    p.line(vec![pos2(c.x + s, c.y - s), pos2(c.x + s, c.y + s * 0.3), pos2(c.x - s, c.y + s * 0.3)], stroke(col, w));
+    p.line(vec![pos2(c.x - s * 0.45, c.y - s * 0.2), pos2(c.x - s, c.y + s * 0.3), pos2(c.x - s * 0.45, c.y + s * 0.8)], stroke(col, w));
+}
+
+/// A git branch.
+pub(crate) fn branch(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.09).max(1.1);
+    let a = pos2(c.x - d * 0.18, c.y - d * 0.3);
+    let b = pos2(c.x - d * 0.18, c.y + d * 0.3);
+    let e = pos2(c.x + d * 0.22, c.y - d * 0.22);
+    for q in [a, b, e] {
+        p.circle_stroke(q, d * 0.09, stroke(col, w));
+    }
+    p.line_segment([a + vec2(0.0, d * 0.1), b - vec2(0.0, d * 0.1)], stroke(col, w));
+    p.line(vec![e + vec2(0.0, d * 0.1), pos2(e.x, c.y), pos2(a.x, c.y + d * 0.16)], stroke(col, w));
+}
+
+/// Git change kinds: a small square with a plus, a dot, or a minus.
+pub(crate) fn git_square(p: &Painter, c: Pos2, d: f32, col: Color32, kind: char) {
+    let w = (d * 0.09).max(1.1);
+    let r = Rect::from_center_size(c, Vec2::splat(d * 0.72));
+    p.rect_stroke(r, 2.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
+    let s = d * 0.2;
+    match kind {
+        '+' => {
+            p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke(col, w));
+            p.line_segment([pos2(c.x, c.y - s), pos2(c.x, c.y + s)], stroke(col, w));
+        }
+        '-' => {
+            p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke(col, w));
+        }
+        _ => {
+            p.circle_filled(c, d * 0.1, col);
+        }
+    }
+}
+
+/// An arrow pointing up (or down).
+pub(crate) fn arrow_vertical(p: &Painter, c: Pos2, d: f32, col: Color32, up: bool) {
+    let w = (d * 0.09).max(1.2);
+    let s = d * 0.32;
+    let dir = if up { -1.0 } else { 1.0 };
+    p.line_segment([pos2(c.x, c.y - s * dir), pos2(c.x, c.y + s * dir)], stroke(col, w));
+    p.line(vec![pos2(c.x - s * 0.7, c.y + s * dir * 0.2), pos2(c.x, c.y + s * dir), pos2(c.x + s * 0.7, c.y + s * dir * 0.2)], stroke(col, w));
+}
+
+/// An arrow pointing left.
+pub(crate) fn arrow_left(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.09).max(1.2);
+    let s = d * 0.32;
+    p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke(col, w));
+    p.line(vec![pos2(c.x - s * 0.2, c.y - s * 0.7), pos2(c.x - s, c.y), pos2(c.x - s * 0.2, c.y + s * 0.7)], stroke(col, w));
+}
