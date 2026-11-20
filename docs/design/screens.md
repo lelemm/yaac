@@ -271,6 +271,28 @@ and activity is quiet.**
 Who is working with whom, and how each worker is doing, is the job of the agents panel, not of
 the transcript.
 
+### Muting for a while
+
+Choosing **Mute** on a thread opens a small dialog, because a mute is often temporary — "not
+now, but tell me again tomorrow".
+
+- Title: "Mute *Fix frame decoder*".
+- Three choices, one selected:
+  - **Until I unmute it** — no end. The default.
+  - **For** a number and a unit — a number field and a dropdown of *minutes*, *hours*,
+    *days*. Beneath it, in secondary text, the moment that works out to: "until Sat 21 Nov,
+    14:30".
+  - **Until** a date and a time — a date picker and an editable time of day.
+- One line in secondary text: "The agent keeps working. It will still appear under Needs you
+  if it gets blocked."
+- Actions: one filled button **Mute  ⏎**, and plain-text **Cancel  Esc**.
+
+A duration is turned into a fixed moment when the dialog is confirmed; the thread stores that
+moment, not the duration. When it passes, the thread unmutes by itself and returns to its
+place in the list. In the *Muted* section a timed mute shows when it ends — "until 14:30",
+"until Sat" — in secondary text, and its right-click menu offers **Unmute** and **Change…**.
+A time in the past cannot be chosen. Times are shown in the host's own time zone.
+
 ### The composer's height
 
 - **Two lines tall when empty.**

@@ -78,6 +78,7 @@ All dated entries are from 2026-11-20.
 | D65 | A thread created from YAAC starts in the **root of its project's folder**. | Owner |
 | D66 | **Sidebar rows are more informative: more than one line**, with room for the **git branch** and, very compactly, **how many files differ from origin** for that branch. | Owner |
 | D68 | The git changes in a sidebar row use **real icons, not Unicode characters**, and the **usual git colours** (green, red, …). | Owner |
+| D90 | **Mute opens a dialog** where it can be made timed: unlimited, a duration in minutes / hours / days (shown as the date it converts to), or a date picker with an editable time of day. | Owner |
 | D89 | **The composer is two lines tall by default**, Shift+Enter breaks a line, it grows with its text **up to five lines**, and beyond that it scrolls with a scrollbar. | Owner |
 | D88 | The back and forward buttons each have a **dropdown of history entries**, to move several steps at once. | Owner |
 | D87 | **Navigation history**: back and forward buttons beside the YAAC title in the sidebar, working like a browser's — following a link to another chat and pressing back returns to the previous one, and forward is then enabled. The mouse's back and forward buttons work too. | Owner |

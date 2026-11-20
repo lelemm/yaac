@@ -81,5 +81,6 @@ is right.
 ## Not on the wire yet
 
 - Unarchive (`thread/update` does not take `archived`).
+- `mutedUntil` on summaries and `thread/update` (D90): the moment a timed mute ends.
 - A `dismissed` flag on summaries (D79), and a way to ask a target for older threads than the
   discovery caps list (D78).

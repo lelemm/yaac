@@ -120,7 +120,7 @@ take threads out of the way:
 | The thread | **Keeps working**, receives messages, and can be woken, exactly as before. | Is left as it is. |
 | In the sidebar | Moves to a collapsed **Muted (n)** section at the foot of the list. | Disappears; shown by a "Show archived" switch, and found by search. |
 | If it becomes blocked on you | **Appears under *Needs you*** until answered, then goes back to muted. An agent is never silently stuck because it was muted. | Not applicable — an archived thread is not running. |
-| Undo | Unmute. | Unarchive. |
+| Undo | Unmute — or it ends by itself: a mute can be given an end, a duration or a date and time, and the thread returns to the list when it passes. | Unarchive. |
 
 Muting is about the user's attention, not the agent's behaviour: nothing about the thread
 changes for the agents that work with it. Archive uses the harness's own archive where it has
