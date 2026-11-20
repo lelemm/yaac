@@ -267,6 +267,12 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// WCAG contrast ratio (tests).
+#[cfg(test)]
+pub(crate) fn contrast(a: Color32, b: Color32) -> f64 {
+    tests::contrast(a, b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,7 +285,7 @@ mod tests {
         0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
     }
 
-    fn contrast(a: Color32, b: Color32) -> f64 {
+    pub(crate) fn contrast(a: Color32, b: Color32) -> f64 {
         let (x, y) = (lum(a), lum(b));
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }

@@ -23,6 +23,7 @@ mod composer;
 mod dialogs;
 mod first_run;
 mod icons;
+mod logos;
 mod markdown;
 mod nav;
 mod screenshot;

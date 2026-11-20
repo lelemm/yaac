@@ -458,12 +458,17 @@ fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, 
             }
         }
         let mut x = title_x;
-        icons::branch(ui.painter(), pos2(x + 5.0, y2), 12.0, p.text2);
-        x += 13.0;
-        let g = widgets::elided(ui, &l2.branch, &small, p.text2, (right - x - tail - 6.0).max(30.0));
-        let gw = g.size().x;
-        ui.painter().galley(pos2(x, y2 - g.size().y / 2.0), g, p.text2);
-        x += gw + 8.0;
+        // The harness logo starts the line (alone when the folder is not in git).
+        crate::agents_ui::harness_mark(ui.painter(), pos2(x + 6.0, y2), 13.0, l2.kind.as_deref(), None, false, &p);
+        x += 17.0;
+        if !l2.branch.is_empty() {
+            icons::branch(ui.painter(), pos2(x + 5.0, y2), 12.0, p.text2);
+            x += 13.0;
+            let g = widgets::elided(ui, &l2.branch, &small, p.text2, (right - x - tail - 6.0).max(30.0));
+            let gw = g.size().x;
+            ui.painter().galley(pos2(x, y2 - g.size().y / 2.0), g, p.text2);
+            x += gw + 8.0;
+        }
         let parts: [(u32, egui::Color32, u8); 5] =
             [(l2.added, p.git_added, b'+'), (l2.modified, p.git_modified, b'.'), (l2.deleted, p.git_deleted, b'-'), (l2.ahead, p.text2, b'u'), (l2.behind, p.text2, b'd')];
         for (n, col, kind) in parts {

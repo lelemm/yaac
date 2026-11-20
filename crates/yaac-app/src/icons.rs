@@ -183,19 +183,6 @@ pub(crate) fn people(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.circle_stroke(pos2(c.x + d * 0.22, c.y - d * 0.18), d * 0.12, stroke(col, w));
 }
 
-/// The agent's mark: a four-pointed spark.
-pub(crate) fn spark(p: &Painter, c: Pos2, d: f32, col: Color32) {
-    let r = d * 0.42;
-    let k = r * 0.22;
-    let pts = vec![
-        pos2(c.x, c.y - r), pos2(c.x + k, c.y - k), pos2(c.x + r, c.y), pos2(c.x + k, c.y + k),
-        pos2(c.x, c.y + r), pos2(c.x - k, c.y + k), pos2(c.x - r, c.y), pos2(c.x - k, c.y - k),
-    ];
-    p.add(Shape::Path(eframe::epaint::PathShape::closed_line(pts.clone(), Stroke::new(1.0, col))));
-    // Fill as two convex quads.
-    p.add(Shape::convex_polygon(vec![pts[0], pts[1], pts[3], pts[4], pts[5], pts[7]], col, Stroke::NONE));
-    p.add(Shape::convex_polygon(vec![pts[1], pts[2], pts[3], pts[5], pts[6], pts[7]], col, Stroke::NONE));
-}
 
 pub(crate) fn terminal(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let w = (d * 0.08).max(1.1);

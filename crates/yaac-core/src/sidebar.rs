@@ -65,7 +65,10 @@ pub enum RowRight {
 /// with an icon; every count is shown only when it is not zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line2 {
-    /// The branch.
+    /// The provider kind, for the harness logo that starts the line (display only — never
+    /// branched on).
+    pub kind: Option<String>,
+    /// The branch; empty for a folder outside git (the line is then the logo alone).
     pub branch: String,
     /// Files added relative to origin.
     pub added: u32,
@@ -293,15 +296,24 @@ pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, filter
     };
     let row = |key: &ThreadKey, right: RowRight, two_lines: bool| -> ThreadRow {
         let s = state.summary(key);
+        // Every row outside Needs you, Muted and Archived has a second line: the harness logo,
+        // then (in git) the branch and the counts.
         let line2 = if two_lines {
-            s.and_then(|s| s.git.as_ref().map(|g| (s, g))).map(|(s, g)| Line2 {
-                branch: g.branch.clone().or_else(|| s.branch.clone()).unwrap_or_default(),
-                added: g.added,
-                modified: g.modified,
-                deleted: g.deleted,
-                ahead: g.ahead,
-                behind: g.behind,
-                workers: s.children,
+            s.map(|s| {
+                let kind = state.provider_of(key).map(|p| p.kind.to_string());
+                match &s.git {
+                    Some(g) => Line2 {
+                        kind,
+                        branch: g.branch.clone().or_else(|| s.branch.clone()).unwrap_or_default(),
+                        added: g.added,
+                        modified: g.modified,
+                        deleted: g.deleted,
+                        ahead: g.ahead,
+                        behind: g.behind,
+                        workers: s.children,
+                    },
+                    None => Line2 { kind, branch: String::new(), added: 0, modified: 0, deleted: 0, ahead: 0, behind: 0, workers: s.children },
+                }
             })
         } else {
             None

@@ -57,7 +57,7 @@ pub fn render_open(c: &Client, g: Grouping, muted_open: bool) -> Vec<String> {
                 RowRight::Until(u) => u.clone(),
             };
             let mut line = format!("{} ({}) {}", r.title, r.display.mark.word(), right);
-            if let Some(l2) = &r.line2 {
+            if let Some(l2) = r.line2.as_ref().filter(|l| !l.branch.is_empty()) {
                 line.push_str(&format!(" / {}", l2.branch));
                 for (sym, n) in [("+", l2.added), ("~", l2.modified), ("-", l2.deleted), ("^", l2.ahead), ("v", l2.behind)] {
                     if n > 0 {

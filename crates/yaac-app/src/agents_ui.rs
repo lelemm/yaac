@@ -12,43 +12,32 @@ use crate::icons;
 use crate::theme::{self, Palette, size};
 use crate::widgets;
 
-/// A harness glyph.
-#[derive(Clone, Copy, Debug)]
-enum Glyph {
-    Hexagon,
-    Spark,
-}
-
-/// Glyphs by provider kind: data, looked up — not a branch in UI logic. A kind not listed gets
-/// its initial in a circle.
-const GLYPHS: &[(&str, Glyph)] = &[("codex", Glyph::Hexagon), ("claude", Glyph::Spark)];
-
+/// A harness's logo (the table in `logos`), or its initial in a circle.
 fn harness_icon(painter: &egui::Painter, c: egui::Pos2, d: f32, row: &AgentRow, p: &Palette) {
-    let color = if row.finished { p.text2.gamma_multiply(0.6) } else { p.text };
-    let glyph = row.kind.as_deref().and_then(|k| GLYPHS.iter().find(|(name, _)| *name == k).map(|(_, g)| *g));
-    match glyph {
-        Some(Glyph::Spark) => icons::spark(painter, c, d * 0.9, color),
-        Some(Glyph::Hexagon) => {
-            let r = d * 0.42;
-            let pts: Vec<egui::Pos2> = (0..=6)
-                .map(|i| {
-                    let a = std::f32::consts::FRAC_PI_6 + i as f32 * std::f32::consts::FRAC_PI_3;
-                    c + vec2(a.cos(), a.sin()) * r
-                })
-                .collect();
-            painter.line(pts, Stroke::new(1.6, color));
-            painter.circle_filled(c, d * 0.1, color);
-        }
-        None => {
-            painter.circle_stroke(c, d * 0.42, Stroke::new(1.4, color));
-            let initial = row.provider.as_deref().or(row.kind.as_deref()).and_then(|s| s.chars().next()).unwrap_or('?');
-            painter.text(c, Align2::CENTER_CENTER, initial.to_uppercase().to_string(), theme::bold(d * 0.5), color);
-        }
-    }
+    harness_mark(painter, c, d, row.kind.as_deref(), row.provider.as_deref(), row.finished, p);
     if row.display.attention.is_some() {
         icons::warning(painter, c + vec2(d * 0.38, d * 0.32), d * 0.5, p.needs, p.raised);
     }
 }
+
+/// The mark of a provider kind: its logo (in its own colour, or the text colour), dimmed when
+/// `dim`; an unknown kind's initial in a circle.
+pub(crate) fn harness_mark(painter: &egui::Painter, c: egui::Pos2, d: f32, kind: Option<&str>, provider: Option<&str>, dim: bool, p: &Palette) {
+    match kind.and_then(crate::logos::for_kind) {
+        Some((logo, own)) => {
+            let color = own.unwrap_or(p.text);
+            let color = if dim { color.gamma_multiply(0.45) } else { color };
+            crate::logos::draw(painter, c, d * 0.9, logo, color);
+        }
+        None => {
+            let color = if dim { p.text2.gamma_multiply(0.6) } else { p.text };
+            painter.circle_stroke(c, d * 0.42, Stroke::new(1.4, color));
+            let initial = provider.or(kind).and_then(|s| s.chars().next()).unwrap_or('?');
+            painter.text(c, Align2::CENTER_CENTER, initial.to_uppercase().to_string(), theme::bold(d * 0.5), color);
+        }
+    }
+}
+
 
 fn arrow(painter: &egui::Painter, c: egui::Pos2, flow: Flow, p: &Palette) {
     let s = 4.0;
@@ -186,6 +175,8 @@ fn docked_row(ui: &mut egui::Ui, p: &Palette, row: &AgentRow, actions: &mut Vec<
         ui.spacing_mut().item_spacing.x = 6.0;
         let (r, _) = ui.allocate_exact_size(vec2(16.0, 18.0), Sense::hover());
         icons::mark(ui.painter(), r.center(), 14.0, row.display.mark, p);
+        let (r, _) = ui.allocate_exact_size(vec2(16.0, 18.0), Sense::hover());
+        harness_mark(ui.painter(), r.center(), 15.0, row.kind.as_deref(), row.provider.as_deref(), row.finished, p);
         match &row.key {
             Some(k) => {
                 if widgets::link(ui, p, &row.title, theme::ui(size::UI)).clicked() {

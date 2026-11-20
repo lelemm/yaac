@@ -36,6 +36,8 @@ png = "0.17"
 # The host's local UTC offset (D91: every time shown is in the local zone). Only the `clock`
 # feature: chrono plus iana-time-zone; no serde, no formatting tables.
 chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
+# Rasterises the two harness logos (SVG path data) into alpha masks; no dependencies.
+zeno = { version = "0.3.3", default-features = false, features = ["eval", "std"] }
 
 [dev-dependencies]
 tempfile = "3.10"
