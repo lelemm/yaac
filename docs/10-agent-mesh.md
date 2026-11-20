@@ -297,6 +297,9 @@ Rules:
 - The receipt for *now* says what was done: *steered into the running turn*, *interrupted and
   delivered*, *delivered* (it was idle), or *queued* with the reason.
 
+The user has the same two choices in the chat composer while a turn runs — queue, or send now
+— with the same mechanics ([07 UI](07-ui.md#composer)).
+
 ### Messages
 
 ```jsonc

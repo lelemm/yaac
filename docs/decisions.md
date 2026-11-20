@@ -78,7 +78,7 @@ All dated entries are from 2026-11-20.
 | D65 | A thread created from YAAC starts in the **root of its project's folder**. | Owner |
 | D66 | **Sidebar rows are more informative: more than one line**, with room for the **git branch** and, very compactly, **how many files differ from origin** for that branch. | Owner |
 | D68 | The git changes in a sidebar row use **real icons, not Unicode characters**, and the **usual git colours** (green, red, …). | Owner |
-| D81 | A message to a worker can be **queued**, or **force-sent**: on Claude by interrupting the worker, on Codex by steering it. | Owner |
+| D81 | A message to a worker can be **queued**, or **force-sent**: on Claude by interrupting the worker, on Codex by steering it. This is available **from the mesh tools and from the chat composer**. | Owner |
 | D80 | An orchestrator can **stop a worker** through the mesh tools. The improvements proposed for it are approved: the whole subtree, stop-and-hold, a real outcome, and `stop_all`. | Owner |
 | D79 | A discovered thread can be **dismissed**: it is simply hidden in the interface. | Owner |
 | D78 | **Thread discovery has a hard cap on quantity and on age**, so a long-used harness does not flood the UI. | Owner |
