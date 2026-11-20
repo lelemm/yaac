@@ -28,6 +28,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         ui.set_min_height(28.0);
         ui.label(egui::RichText::new("YAAC").font(theme::bold(17.0)));
         if !fresh {
+            ui.add_space(6.0);
+            crate::nav::buttons(ui, app, actions, false);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if widgets::plain(ui, &p, "New", None).on_hover_text("New thread (Ctrl+N)").clicked() {
                     actions.push(Action::NewThread);
@@ -208,8 +210,7 @@ fn drafts(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         let g = ui.fonts_mut(|f| f.layout_job(job));
         ui.painter().galley(pos2(rect.left() + 28.0, rect.center().y - g.size().y / 2.0), g, p.text);
         if resp.clicked() {
-            app.client.state.selection = Selection::NewThread(id);
-            app.ui.settings = false;
+            actions.push(Action::OpenDraft(id));
         }
         ui.add_space(HEAD_GAP);
     }

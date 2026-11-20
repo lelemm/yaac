@@ -17,6 +17,7 @@ use yaac_core::client::Client;
 use yaac_core::demo::ssh::{ScriptedSsh, SshScript};
 use yaac_core::demo::{DEMO_CLIENT, DemoHub, Scenario, Scene};
 use yaac_core::fork::ForkChoice;
+use yaac_core::history::{Anchor, Place};
 use yaac_core::mode_confirm::ModeTarget;
 use yaac_core::permission::BudgetFields;
 use yaac_core::prefs::{SendKey, ThemePref, UiPrefs};
@@ -113,6 +114,16 @@ pub(crate) struct UiState {
     pub textsel: crate::seltext::TextSel,
     /// Parsed diffs of file changes.
     pub diffs: crate::thread::DiffCache,
+    /// Back and forward.
+    pub history: yaac_core::history::History,
+    /// Restore this reading position in the transcript on the next frame.
+    pub restore: Option<yaac_core::history::Anchor>,
+    /// A history button's list is open (true: forward).
+    pub nav_menu: Option<bool>,
+    /// The highlighted row of that list (keyboard).
+    pub nav_sel: usize,
+    /// A press on a history button opened its list by holding: its release is not a click.
+    pub nav_held: bool,
 }
 
 impl UiState {
@@ -150,6 +161,11 @@ impl UiState {
             heights: HashMap::new(),
             textsel: crate::seltext::TextSel::default(),
             diffs: crate::thread::DiffCache::default(),
+            history: yaac_core::history::History::default(),
+            restore: None,
+            nav_menu: None,
+            nav_sel: 0,
+            nav_held: false,
         }
     }
 
@@ -239,6 +255,10 @@ pub(crate) enum Action {
     Panel(PanelInput),
     Settings(bool),
     SettingsPage(Page),
+    /// Back (negative) or forward through the history, that many places.
+    Nav(isize),
+    /// Show a new-thread draft.
+    OpenDraft(u64),
     Theme(ThemeChoice),
     TargetEnabled(TargetId, bool),
     RemoveTarget(TargetId),
@@ -478,8 +498,52 @@ impl YaacApp {
         }
     }
 
-    /// Open a thread, optionally at an item; focus its pending card when it has one.
+    /// Open a thread, optionally at an item; focus its pending card when it has one. A new
+    /// place in the history.
     pub(crate) fn open(&mut self, key: &ThreadKey, item: Option<ItemId>) {
+        let anchor = item.clone().map(|item| Anchor { item, offset: 0.0 });
+        self.open_here(key, item);
+        self.ui.history.visit(Place::Thread(key.clone()), anchor);
+    }
+
+    /// Whether a place in the history still exists (a deleted thread is skipped).
+    pub(crate) fn place_exists(&self, p: &Place) -> bool {
+        match p {
+            Place::Thread(k) => self.client.state.summary(k).is_some(),
+            Place::Draft(id) => self.client.state.new_threads.iter().any(|d| d.id == *id),
+            Place::Settings(_) => true,
+        }
+    }
+
+    /// Move `n` places in the history (negative: back) and show the place arrived at, where
+    /// the user was reading.
+    pub(crate) fn nav(&mut self, n: isize) {
+        let mut h = std::mem::take(&mut self.ui.history);
+        let exists = |p: &Place| self.place_exists(p);
+        let entry = h.jump(n, &exists).cloned();
+        self.ui.history = h;
+        let Some(e) = entry else { return };
+        self.ui.nav_menu = None;
+        match e.place {
+            Place::Thread(k) => {
+                self.open_here(&k, None);
+                self.ui.focus_card = None;
+                self.ui.scroll_end = e.anchor.is_none();
+                self.ui.restore = e.anchor;
+            }
+            Place::Settings(page) => {
+                self.ui.settings = true;
+                self.ui.settings_page = page;
+            }
+            Place::Draft(id) => {
+                self.client.state.selection = yaac_core::state::Selection::NewThread(id);
+                self.ui.settings = false;
+            }
+        }
+    }
+
+    /// Open a thread without touching the history (Back and Forward use this).
+    fn open_here(&mut self, key: &ThreadKey, item: Option<ItemId>) {
         self.client.open(key);
         self.pump_demo();
         self.ui.settings = false;
@@ -560,6 +624,7 @@ impl YaacApp {
         self.ui.settings = false;
         self.ui.threads_overlay = false;
         self.ui.focus_composer = true;
+        self.ui.history.visit(Place::Draft(id), None);
     }
 
     pub(crate) fn apply(&mut self, actions: Vec<Action>) {
@@ -657,11 +722,28 @@ impl YaacApp {
                 Action::Settings(open) => {
                     self.ui.settings = open;
                     self.ui.threads_overlay = false;
+                    if open {
+                        self.ui.history.visit(Place::Settings(self.ui.settings_page), None);
+                    } else {
+                        // Leaving Settings goes back to where the user was.
+                        let exists = |p: &Place| self.place_exists(p) && !matches!(p, Place::Settings(_));
+                        if self.ui.history.can_back(&exists) && matches!(self.ui.history.current().map(|e| &e.place), Some(Place::Settings(_))) {
+                            self.nav(-1);
+                        }
+                        self.ui.settings = false;
+                    }
                 }
                 Action::SettingsPage(p) => {
                     self.ui.settings = true;
                     self.ui.settings_page = p;
                     self.ui.menu = None;
+                    self.ui.history.visit(Place::Settings(p), None);
+                }
+                Action::Nav(n) => self.nav(n),
+                Action::OpenDraft(id) => {
+                    self.client.state.selection = yaac_core::state::Selection::NewThread(id);
+                    self.ui.settings = false;
+                    self.ui.history.visit(Place::Draft(id), None);
                 }
                 Action::Theme(t) => {
                     self.ui.theme = t;
@@ -794,7 +876,7 @@ impl YaacApp {
         if dark { Palette::DARK } else { Palette::LIGHT }
     }
 
-    fn keyboard(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    pub(crate) fn keyboard(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let ctrl = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, k));
         if ctrl(Key::J) {
             self.ui.needs_popup = !self.ui.needs_popup;
@@ -808,6 +890,21 @@ impl YaacApp {
         }
         if ctrl(Key::Comma) {
             actions.push(Action::Settings(true));
+        }
+        // Back and forward: Alt+Left / Alt+Right, and the mouse's side buttons.
+        let (alt_left, alt_right, extra1, extra2) = ctx.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::ALT, Key::ArrowLeft),
+                i.consume_key(Modifiers::ALT, Key::ArrowRight),
+                i.pointer.button_pressed(egui::PointerButton::Extra1),
+                i.pointer.button_pressed(egui::PointerButton::Extra2),
+            )
+        });
+        if alt_left || extra1 {
+            actions.push(Action::Nav(-1));
+        }
+        if alt_right || extra2 {
+            actions.push(Action::Nav(1));
         }
         if self.ui.needs_popup && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.ui.needs_popup = false;
@@ -878,5 +975,81 @@ impl eframe::App for YaacApp {
         crate::dialogs::mode_confirm(ui.ctx(), self, &mut actions);
         self.apply(actions);
         self.persist_prefs();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use yaac_core::demo::threads;
+    use yaac_core::history::{Anchor, Place};
+
+    use super::*;
+
+    pub(crate) fn demo_app(ctx: &egui::Context) -> YaacApp {
+        let launch = crate::Launch {
+            demo: Some(Scenario::Fleet),
+            theme: ThemeChoice::Dark,
+            shots: None,
+            host_windows: false,
+            #[cfg(feature = "hub")]
+            attach: None,
+        };
+        YaacApp::from_ctx(ctx, launch)
+    }
+
+    #[test]
+    fn back_and_forward_through_threads_settings_and_drafts() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let (orch, fix, billing) = (threads::orchestrator(), threads::fix(), threads::billing());
+        app.apply(vec![Action::Open(fix.clone())]);
+        // Reading somewhere in the frame decoder.
+        app.ui.history.set_anchor(Some(Anchor { item: "f3".into(), offset: 7.0 }));
+        app.apply(vec![Action::Open(billing.clone())]);
+        app.apply(vec![Action::Settings(true)]);
+        assert!(app.ui.settings);
+        // Back from Settings returns to the thread that was open.
+        app.apply(vec![Action::Settings(false)]);
+        assert!(!app.ui.settings);
+        assert_eq!(app.client.state.selected_thread(), Some(&billing));
+        app.apply(vec![Action::Nav(-1)]);
+        assert_eq!(app.client.state.selected_thread(), Some(&fix));
+        assert_eq!(app.ui.restore, Some(Anchor { item: "f3".into(), offset: 7.0 }), "lands where the user was reading");
+        // Forward is available after going back; a new place drops it.
+        let exists = |p: &Place| app.place_exists(p);
+        assert!(app.ui.history.can_forward(&exists));
+        app.apply(vec![Action::Open(orch.clone())]);
+        let exists = |p: &Place| app.place_exists(p);
+        assert!(!app.ui.history.can_forward(&exists));
+        // The list jumps several steps at once: back two from the orchestrator.
+        app.apply(vec![Action::Nav(-2)]);
+        assert_eq!(app.client.state.selected_thread(), Some(&orch));
+        let exists = |p: &Place| app.place_exists(p);
+        let fwd: Vec<Place> = app.ui.history.menu(true, &exists).into_iter().map(|(_, e)| e.place.clone()).collect();
+        assert_eq!(fwd, [Place::Thread(fix), Place::Thread(orch)], "the skipped entries stay forward");
+    }
+
+    #[test]
+    fn the_mouse_side_buttons_and_alt_arrows_go_back_and_forward() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let (orch, fix) = (threads::orchestrator(), threads::fix());
+        app.apply(vec![Action::Open(fix.clone())]);
+        assert_eq!(app.client.state.selected_thread(), Some(&fix));
+        let press = |b: egui::PointerButton| egui::Event::PointerButton { pos: egui::pos2(10.0, 10.0), button: b, pressed: true, modifiers: Default::default() };
+        let key = |k: Key| egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::ALT };
+        for (events, want) in [
+            (vec![press(egui::PointerButton::Extra1)], &orch),
+            (vec![press(egui::PointerButton::Extra2)], &fix),
+            (vec![key(Key::ArrowLeft)], &orch),
+            (vec![key(Key::ArrowRight)], &fix),
+        ] {
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut actions = Vec::new();
+            let mut out = ctx.run_ui(input, |ui| app.keyboard(ui.ctx(), &mut actions));
+            out.textures_delta.clear();
+            app.apply(actions);
+            assert_eq!(app.client.state.selected_thread(), Some(want));
+        }
     }
 }

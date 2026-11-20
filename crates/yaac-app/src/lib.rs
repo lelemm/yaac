@@ -24,6 +24,7 @@ mod dialogs;
 mod first_run;
 mod icons;
 mod markdown;
+mod nav;
 mod screenshot;
 mod seltext;
 mod settings;

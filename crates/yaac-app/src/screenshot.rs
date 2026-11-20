@@ -48,6 +48,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("28", "agents-card"),
     ("29", "create-project"),
     ("30", "bypass-confirm"),
+    ("31", "history-list"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -179,6 +180,8 @@ fn setup(app: &mut YaacApp, id: &str) {
         }
         "02" | "27" | "28" => {
             let k = threads::orchestrator();
+            // Came here from the frame decoder: Back is available, Forward is not.
+            app.open(&threads::fix(), None);
             app.open(&k, None);
             if id == "02" {
                 app.ui.expansion.toggle_line(&k, &"o4".into());
@@ -375,6 +378,18 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.ui.focus_card = None;
             app.ui.menu = Some(Menu::Mode);
             app.client.choose_mode(ModeTarget::Thread(fix), "bypass".into());
+        }
+        "31" => {
+            // Several places visited; the back button's list is open.
+            for k in [threads::billing(), threads::index(), threads::ci(), threads::fix()] {
+                app.open(&k, None);
+            }
+            app.ui.settings_page = Page::Providers;
+            app.ui.history.visit(yaac_core::history::Place::Settings(Page::Providers), None);
+            app.ui.history.visit(yaac_core::history::Place::Thread(threads::orchestrator()), None);
+            app.open(&threads::orchestrator(), None);
+            app.ui.nav_menu = Some(false);
+            app.ui.nav_sel = 0;
         }
         _ => {}
     }

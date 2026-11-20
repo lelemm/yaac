@@ -301,7 +301,16 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
     }
     let total = y + 20.0;
     let mut sa = egui::ScrollArea::vertical().id_salt(("transcript", key.to_string())).auto_shrink([false, false]).stick_to_bottom(true);
-    if let Some(item) = app.ui.scroll_to.take() {
+    if let Some(a) = app.ui.restore.take() {
+        // Back or forward: the same lines the user was reading, even if items arrived since.
+        app.ui.scroll_end = false;
+        app.ui.scroll_to = None;
+        if let Some(i) = t.index_of(&a.item)
+            && let Some(bi) = bl.iter().position(|b| block_unit(b, t).item >= i)
+        {
+            sa = sa.vertical_scroll_offset((tops[bi] + a.offset).max(0.0));
+        }
+    } else if let Some(item) = app.ui.scroll_to.take() {
         if let Some(i) = t.index_of(&item)
             && let Some(bi) = bl.iter().position(|b| block_items(b).contains(&i))
         {
@@ -315,6 +324,7 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
     let mut actions_local = Vec::new();
     app.ui.textsel.begin(key);
     let mut area = ui.max_rect();
+    let mut reading = None;
     let out = sa.show_viewport(ui, |ui, view| {
         ui.set_height(total);
         area = ui.clip_rect();
@@ -365,7 +375,15 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
             }
         }
         app.ui.textsel.autoscroll(ui, ui.clip_rect());
+        // Where the user is reading: the first block reaching into the view.
+        reading = bl.iter().enumerate().find(|(i, _)| tops[*i] + app.ui.heights.get(&hashes[*i]).copied().unwrap_or(22.0) > view.top()).and_then(|(i, b)| {
+            let item = t.items().get(block_unit(b, t).item)?.id.clone();
+            Some(yaac_core::history::Anchor { item, offset: view.top() - tops[i] })
+        });
     });
+    if matches!(app.ui.history.current().map(|e| &e.place), Some(yaac_core::history::Place::Thread(k)) if k == key) && reading.is_some() {
+        app.ui.history.set_anchor(reading);
+    }
     let _ = out;
     if app.ui.textsel.end(ui, area, |n| item_units(&bl, t, n)) {
         ui.ctx().request_repaint();
