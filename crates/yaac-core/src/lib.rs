@@ -23,6 +23,7 @@ pub mod attention;
 pub mod client;
 pub mod controls;
 pub mod demo;
+pub mod diff;
 pub mod first_run;
 pub mod fork;
 pub mod header;
