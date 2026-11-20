@@ -133,7 +133,7 @@ export class ProviderRegistry {
     } else {
       const stateDir = path.join(this.home, "providers", config.id);
       ensureDir(stateDir);
-      provider = factory.create({ config, stateDir, home: this.home, log: (l) => this.log(`[${config.id}] ${l}`) });
+      provider = factory.create({ config, stateDir, home: this.home, env: this.env, log: (l) => this.log(`[${config.id}] ${l}`) });
       descriptor = this.placeholder(config, "probing");
     }
     const instance: Instance = { config, provider, descriptor };

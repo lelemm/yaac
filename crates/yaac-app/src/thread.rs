@@ -10,7 +10,7 @@ use yaac_core::transcript::Transcript;
 use yaac_core::ThreadKey;
 use yaac_protocol::{InputPart, ItemBody, ReceiptReason, ReceiptStatus};
 
-use crate::app::{Action, Menu, YaacApp};
+use crate::app::{Action, YaacApp};
 use crate::icons;
 use crate::markdown;
 use crate::theme::{self, Palette, size};

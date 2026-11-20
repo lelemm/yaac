@@ -29,6 +29,7 @@ impl RequestKindWord {
     pub fn of(body: &RequestBody) -> Self {
         match body {
             RequestBody::Approval(_) => Self::Approval,
+            RequestBody::MeshPermission(_) => Self::Permission,
             RequestBody::Question(_) => Self::Question,
             RequestBody::Form(_) => Self::Form,
             RequestBody::Unknown(_) if crate::permission::parse(body).is_some() => Self::Permission,

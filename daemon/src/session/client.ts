@@ -140,6 +140,21 @@ export class ClientSession implements SessionHandler, ClientLink {
       }
       case METHODS.THREAD_FORK:
         return core.threadFork(this, p as never);
+      case METHODS.THREAD_FORK_ONLY:
+        return core.threadForkOnly(p as never);
+      case METHODS.THREAD_UPDATE:
+        return core.threadUpdate(this, p as never);
+      case METHODS.ITEM_READ:
+        return core.itemRead({ threadId: str(p, "threadId"), itemId: str(p, "itemId"), offset: typeof p.offset === "number" ? p.offset : 0, maxBytes: p.maxBytes as number });
+      case METHODS.PROJECT_LIST:
+        return core.listProjects();
+      case METHODS.PROJECT_CREATE:
+        return core.projectCreate(p as never);
+      case METHODS.PROJECT_RENAME:
+        return core.projectRename(p as never);
+      case METHODS.PROJECT_DELETE:
+        await core.projectDelete(p as never);
+        return {};
       case METHODS.THREAD_FORK_PREVIEW:
         return core.forkPreview(p as never);
       case METHODS.THREAD_RENAME:

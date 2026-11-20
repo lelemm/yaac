@@ -22,17 +22,23 @@ enum Line<'a> {
 
 pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, actions: &mut Vec<Action>) {
     let p = app.p;
+    // A fresh install: just the name, a disabled search field, and the footer (screen 07).
+    let fresh = yaac_core::first_run::is_first_run(&app.client.state);
     ui.horizontal(|ui| {
+        ui.set_min_height(28.0);
         ui.label(egui::RichText::new("YAAC").font(theme::bold(17.0)));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if widgets::plain(ui, &p, "New", None).on_hover_text("New thread (Ctrl+N)").clicked() {
-                actions.push(Action::NewThread);
-            }
-        });
+        if !fresh {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::plain(ui, &p, "New", None).on_hover_text("New thread (Ctrl+N)").clicked() {
+                    actions.push(Action::NewThread);
+                }
+            });
+        }
     });
     ui.add_space(8.0);
-    search_field(ui, app);
+    search_field(ui, app, !fresh);
     ui.add_space(6.0);
+    drafts(ui, app, actions);
 
     let secs = sections(&app.client.state, map, app.ui.grouping, &app.ui.search, app.ui.muted_open, now);
     let mut lines: Vec<(f32, f32, Line<'_>)> = Vec::new();
@@ -111,11 +117,55 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     ui.painter().galley(pos2(rect.right() - g.size().x, rect.center().y - g.size().y / 2.0), g, p.text2);
 }
 
-fn search_field(ui: &mut egui::Ui, app: &mut YaacApp) {
+/// New-thread drafts: their own selected row, "New thread" in italics with a pencil mark, under
+/// the draft's project and machine.
+fn drafts(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let st = &app.client.state;
+    let rows: Vec<(u64, String, String)> = st
+        .new_threads
+        .iter()
+        .map(|d| {
+            let project = d.project.as_ref().and_then(|pid| st.projects.iter().find(|x| &x.id == pid)).map_or_else(|| "No project".to_owned(), |x| x.name.clone());
+            (d.id, project, st.target_name(&d.target))
+        })
+        .collect();
+    for (id, project, machine) in rows {
+        let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEAD), Sense::hover());
+        let font = theme::ui(size::SMALL);
+        let g = ui.fonts_mut(|f| f.layout_no_wrap(project, font.clone(), p.text2));
+        ui.painter().galley(pos2(head.left() + 4.0, head.bottom() - 7.0 - g.size().y), g, p.text2);
+        let g = ui.fonts_mut(|f| f.layout_no_wrap(machine, font, p.text2));
+        ui.painter().galley(pos2(head.right() - 4.0 - g.size().x, head.bottom() - 7.0 - g.size().y), g, p.text2);
+        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+        let sel = app.client.state.selection == Selection::NewThread(id);
+        if sel {
+            ui.painter().rect_filled(rect.shrink2(vec2(0.0, 1.0)), 5.0, p.selected);
+        } else if resp.hovered() {
+            ui.painter().rect_filled(rect.shrink2(vec2(0.0, 1.0)), 5.0, p.faint);
+        }
+        icons::pencil(ui.painter(), pos2(rect.left() + 13.0, rect.center().y), 14.0, p.text2);
+        let mut job = egui::text::LayoutJob::simple_singleline("New thread".to_owned(), theme::ui(size::UI), p.text);
+        if let Some(sec) = job.sections.first_mut() {
+            sec.format.italics = true;
+        }
+        let g = ui.fonts_mut(|f| f.layout_job(job));
+        ui.painter().galley(pos2(rect.left() + 28.0, rect.center().y - g.size().y / 2.0), g, p.text);
+        if resp.clicked() {
+            app.client.state.selection = Selection::NewThread(id);
+            app.ui.settings = false;
+        }
+        ui.add_space(HEAD_GAP);
+    }
+    let _ = actions;
+}
+
+fn search_field(ui: &mut egui::Ui, app: &mut YaacApp, enabled: bool) {
     let p = app.p;
     let frame = widgets::faint_frame(&p).inner_margin(Margin { left: 30, right: 32, top: 5, bottom: 5 });
     let inner = frame.show(ui, |ui| {
         let te = egui::TextEdit::singleline(&mut app.ui.search)
+            .interactive(enabled)
             .frame(egui::Frame::NONE)
             .hint_text("Search…")
             .desired_width(ui.available_width());
@@ -130,6 +180,9 @@ fn search_field(ui: &mut egui::Ui, app: &mut YaacApp) {
     icons::search(ui.painter(), pos2(rect.left() + 15.0, rect.center().y), 14.0, p.text2);
     if inner.inner.has_focus() {
         widgets::focus_ring(ui, rect, &p);
+    }
+    if !enabled {
+        return;
     }
     // The grouping button at the right end of the field.
     let b = Rect::from_center_size(pos2(rect.right() - 16.0, rect.center().y), vec2(24.0, 22.0));
@@ -275,6 +328,7 @@ pub(crate) fn create_project_for(app: &YaacApp, target: &yaac_protocol::TargetId
         name: yaac_core::projects::suggested_name(folder),
         repo_root,
         for_draft: None,
+        browse: None,
     }
 }
 
@@ -353,8 +407,13 @@ fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, 
         }
     }
     let color = if s.kind == SectionKind::Muted { p.text2 } else { p.text };
-    let tg = widgets::elided(ui, &row.title, &theme::ui(size::UI), color, rx - title_x - 8.0);
+    let forked = app.client.state.summary(&row.key).is_some_and(|s| s.forked_from.is_some());
+    let tg = widgets::elided(ui, &row.title, &theme::ui(size::UI), color, rx - title_x - 8.0 - if forked { 18.0 } else { 0.0 });
+    let tw = tg.size().x;
     ui.painter().galley(pos2(title_x, cy - tg.size().y / 2.0), tg, color);
+    if forked {
+        icons::fork(ui.painter(), pos2(title_x + tw + 10.0, cy), 12.0, p.text2);
+    }
     if resp.clicked() {
         actions.push(if s.kind == SectionKind::NeedsYou { Action::OpenRequest(row.key.clone()) } else { Action::Open(row.key.clone()) });
     }

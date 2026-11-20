@@ -885,7 +885,7 @@ impl Inner {
         if let Some(e) = enabled {
             t.enabled = e;
         }
-        let params = TargetStateParams { id: t.id.clone(), state: t.state.clone() };
+        let params = TargetStateParams { id: t.id.clone(), state: t.state.clone(), enabled: t.enabled };
         self.ready.push_back(Message::notification(attach::names::TARGET_STATE, json!(params)));
     }
 
@@ -972,7 +972,7 @@ impl Inner {
                 let fix = k(FIX);
                 let mut first = self.fleet.threads[&fix].items[0].clone();
                 if let ItemBody::UserMessage(u) = &mut first.body {
-                    u.parts.push(InputPart::Image(yaac_protocol::ImagePart { upload_id: "u2/screenshot.png".into() }));
+                    u.parts.push(InputPart::Image(yaac_protocol::ImagePart { upload_id: "u2/screenshot.png".into(), name: None, media_type: None }));
                 }
                 if let Some(t) = self.fleet.threads.get_mut(&fix) {
                     t.missing.push("u2/screenshot.png".into());

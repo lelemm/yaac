@@ -14,7 +14,7 @@ fn ev(seq: u64, event: ThreadEvent) -> ThreadEventParams {
 }
 
 fn agent(id: &str, text: &str, status: ItemStatus) -> Item {
-    Item { id: ItemId::new(id), turn_id: TurnId::new("turn"), status, body: ItemBody::AgentMessage(AgentMessageItem { text: text.into() }) }
+    Item { id: ItemId::new(id), turn_id: TurnId::new("turn"), status, body: ItemBody::AgentMessage(AgentMessageItem { text: text.into() }), started_at: None, completed_at: None }
 }
 
 fn text(t: &Transcript, id: &str) -> String {

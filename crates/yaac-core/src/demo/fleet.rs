@@ -263,6 +263,9 @@ impl Fleet {
                 path: TargetPath::new(format!("{cwd}/.git")),
                 display_name: proj.to_owned(),
                 cross_target_key: Some(format!("example.com/{proj}")),
+                kind: None,
+                id: None,
+                repo: None,
             }),
             worktree: Some(WorktreeRef { path: TargetPath::new(cwd), branch: Some(branch.to_owned()) }),
             branch: Some(branch.to_owned()),
@@ -279,6 +282,11 @@ impl Fleet {
             created_at: self.ts(updated - 600),
             updated_at: self.ts(updated),
             archived: false,
+            repo: None,
+            git: None,
+            muted: false,
+            pinned: false,
+            agents: yaac_protocol::AgentsPolicy::default(),
         };
         let effective = self.effective_for(key, instance, model_id);
         self.threads.insert(

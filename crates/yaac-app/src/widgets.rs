@@ -237,7 +237,7 @@ pub(crate) fn secret_field(ui: &mut Ui, p: &Palette, secret: &mut yaac_core::ssh
     if resp.clicked() {
         ui.memory_mut(|m| m.request_focus(id));
     }
-    ui.memory_mut(|m| m.interested_in_focus(id, rect));
+    ui.memory_mut(|m| m.interested_in_focus(id, ui.layer_id()));
     let focused = ui.memory(|m| m.has_focus(id));
     if focused {
         ui.input(|i| {

@@ -20,6 +20,7 @@ export const codexProviderFactory: ProviderFactory = {
     return new CodexProvider(ctx, {
       socket: ctx.config.endpoint?.socket ?? null,
       env,
+      baseEnv: ctx.env,
     });
   },
 };

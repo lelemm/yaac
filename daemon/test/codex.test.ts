@@ -694,7 +694,7 @@ function scriptedExec(answers: Record<string, Awaited<ReturnType<Exec>>>, log: A
 
 function homeProvider(dir: string, exec: Exec, socket?: string): CodexProvider {
   return new CodexProvider(
-    { config: { id: "pi_x", kind: "codex", enabled: true, backend: "auto" }, stateDir: path.join(dir, "state"), home: dir, log: () => {} },
+    { config: { id: "pi_x", kind: "codex", enabled: true, backend: "auto" }, stateDir: path.join(dir, "state"), home: dir, env: process.env, log: () => {} },
     { exec, env: { CODEX_HOME: path.join(dir, "ch") }, baseEnv: { PATH: "/nonexistent", HOME: dir }, ...(socket ? { socket } : {}), reconnectMinMs: 10_000 },
   );
 }

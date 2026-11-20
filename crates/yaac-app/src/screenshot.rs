@@ -8,7 +8,14 @@ use eframe::egui::{self, ColorImage};
 use yaac_core::agents::PanelMode;
 use yaac_core::demo::{DemoHub, Scenario, Scene, threads};
 
-use crate::app::{Menu, YaacApp};
+use yaac_core::demo::ssh::{ScriptedSsh, SshScript};
+use yaac_core::fork::ForkChoice;
+use yaac_core::mode_confirm::ModeTarget;
+use yaac_core::settings::Page;
+use yaac_core::ssh_setup::{Revoke, SetupRecord, SshConn, SshSetup};
+
+use crate::app::{ForkDialog, Menu, STORY_NOW, YaacApp};
+use crate::settings::{RevokePanel, SshPanel};
 use crate::theme::ThemeChoice;
 
 /// The screens, by brief number and file name.
@@ -18,11 +25,21 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("03", "worker-side"),
     ("04", "blocked-worker"),
     ("05", "request-states"),
+    ("07", "first-run"),
+    ("08", "new-thread"),
     ("09", "first-message"),
     ("10", "in-use"),
+    ("11", "fork"),
     ("12", "forked-thread"),
+    ("13", "settings-targets"),
+    ("14", "ssh-confirm"),
+    ("15", "ssh-ready"),
+    ("16", "ssh-fail-revoke"),
+    ("17", "settings-providers"),
     ("19", "notices"),
     ("20", "budget"),
+    ("21", "narrow"),
+    ("22", "ssh-sign-in"),
     ("23", "queued-arrives"),
     ("24", "destination"),
     ("25", "permission"),
@@ -30,7 +47,12 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("27", "agents-pill"),
     ("28", "agents-card"),
     ("29", "create-project"),
+    ("30", "bypass-confirm"),
 ];
+
+/// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
+const NARROW_SIZE: [f32; 2] = [960.0, 720.0];
+const FULL_SIZE: [f32; 2] = [1600.0, 1000.0];
 
 const SETTLE_FRAMES: u32 = 14;
 
@@ -100,6 +122,11 @@ impl Shots {
                 );
             }
             ctx.set_zoom_factor(1.25);
+            let narrow_now = ctx.content_rect().width() < crate::shell::NARROW;
+            if (id == "21") != narrow_now {
+                let size = if id == "21" { [NARROW_SIZE[0] * 1.25, NARROW_SIZE[1] * 1.25] } else { FULL_SIZE };
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(size[0], size[1])));
+            }
             setup(app, id);
             app.ui.theme = if dark { ThemeChoice::Dark } else { ThemeChoice::Light };
             app.applied = None;
@@ -107,7 +134,9 @@ impl Shots {
         }
         self.frame += 1;
         // Wait for layout to settle and for popups and dialogs to finish fading in.
-        if self.frame >= SETTLE_FRAMES && ctx.input(|i| i.time) - self.started > 0.6 {
+        let want_narrow = id == "21";
+        let is_narrow = ctx.content_rect().width() < crate::shell::NARROW;
+        if self.frame >= SETTLE_FRAMES && ctx.input(|i| i.time) - self.started > 0.6 && want_narrow == is_narrow {
             let slot = self.image.clone();
             ctx.request_screenshot(move |img| {
                 if let Ok(mut g) = slot.lock() {
@@ -122,8 +151,9 @@ impl Shots {
 }
 
 fn setup(app: &mut YaacApp, id: &str) {
-    let scenario = if id == "09" { Scenario::Fresh } else { Scenario::Fleet };
+    let scenario = if matches!(id, "07" | "08" | "09") { Scenario::Fresh } else { Scenario::Fleet };
     app.reset_demo(scenario);
+    app.host_windows = false;
     let hub = app.demo.clone();
     let play = |app: &mut YaacApp, s: Scene| {
         if let Some(h) = &hub {
@@ -132,7 +162,7 @@ fn setup(app: &mut YaacApp, id: &str) {
         }
         app.pump_demo();
     };
-    let docked = matches!(id, "02" | "03" | "04" | "20" | "23" | "24");
+    let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24");
     app.ui.panel = if docked { PanelMode::Docked } else { PanelMode::Pill };
     match id {
         "01" | "10" => {
@@ -155,36 +185,125 @@ fn setup(app: &mut YaacApp, id: &str) {
             play(app, Scene::RequestStates);
             app.open(&threads::fix(), None);
         }
-        "09" => {
+        "07" => {}
+        "08" | "09" => {
+            // The user made a project for their first thread ("New project…" in the picker).
+            app.client.create_project(&"local".into(), "/home/dev/api", "api");
+            app.new_thread();
             if let Some(d) = app.client.state.new_threads.first_mut() {
                 d.draft.text = "# Investigate frame parsing\nReproduce the **last-frame** drop in `decode()`.".into();
-                let id = d.id;
-                app.client.start_thread(id);
             }
-            app.pump_demo();
-            if let Some(h) = &hub {
-                for _ in 0..62 {
-                    h.tick();
-                    app.pump_demo();
+            app.ui.focus_composer = false;
+            if id == "08" {
+                app.ui.menu = Some(Menu::Model);
+            } else {
+                if let Some(id) = app.client.state.new_threads.first().map(|d| d.id) {
+                    app.client.start_thread(id);
+                }
+                app.pump_demo();
+                if let Some(h) = &hub {
+                    for _ in 0..62 {
+                        h.tick();
+                        app.pump_demo();
+                    }
+                }
+                if let Some(k) = app.client.state.selected_thread().cloned() {
+                    app.open(&k, None);
                 }
             }
-            if let Some(k) = app.client.state.selected_thread().cloned() {
-                app.open(&k, None);
-            }
+        }
+        "11" => {
+            let fix = threads::fix();
+            app.open(&fix, None);
+            let dest = ForkChoice { instance: "claude".into(), model: None };
+            app.client.fork_preview(&fix, &dest.instance);
+            app.pump_demo();
+            app.ui.fork = Some(ForkDialog { key: fix, choice: dest, preview_open: true });
         }
         "12" => {
             let fix = threads::fix();
             app.open(&fix, None);
-            // Fork to another instance on the same machine (a handoff).
-            let own = app.client.state.summary(&fix).map(|s| s.instance.clone());
-            let dest = app.client.state.target(&fix.target).and_then(|t| t.providers.iter().find(|p| Some(&p.instance) != own.as_ref() && p.store.key != app.client.state.provider_of(&fix).and_then(|o| o.store.key.clone())).map(|p| p.instance.clone()));
-            if let Some(d) = dest {
-                app.client.fork(&fix, &d);
-            }
+            app.client.fork(&fix, &ForkChoice { instance: "claude".into(), model: None });
             app.pump_demo();
             if let Some(k) = app.client.state.selected_thread().cloned() {
                 app.open(&k, None);
             }
+        }
+        "13" => {
+            play(app, Scene::WslConnections);
+            app.host_windows = true;
+            app.client.state.wsl_on = true;
+            app.ui.settings = true;
+            app.ui.settings_page = Page::Targets;
+        }
+        "14" | "22" | "15" => {
+            app.ui.settings = true;
+            app.ui.settings_page = Page::Targets;
+            let mut panel = SshPanel::new(STORY_NOW, None);
+            panel.name = "legacy".into();
+            panel.host = "legacy.example.com".into();
+            panel.user = "deploy".into();
+            panel.setup = SshSetup::new(SshConn { name: "legacy".into(), host: "legacy.example.com".into(), port: 22, user: "deploy".into() }, STORY_NOW);
+            let b = app.ssh.as_mut();
+            panel.setup.start(b);
+            panel.setup.pump(b);
+            if id != "14" {
+                panel.setup.confirm_host(b);
+                panel.setup.pump(b);
+            }
+            if id == "22" {
+                for c in "correct horse".chars() {
+                    panel.password.push(c);
+                }
+            }
+            if id == "15" {
+                let mut secret = yaac_core::ssh_setup::Secret::new();
+                for c in "correct horse".chars() {
+                    secret.push(c);
+                }
+                panel.setup.sign_in(b, yaac_core::ssh_setup::Credential::Password(secret));
+                panel.setup.pump(b);
+            }
+            app.ui.set.ssh = Some(panel);
+            // Keep the legacy row (it is the server being set up) off the list's "Not set up".
+        }
+        "16" => {
+            app.ui.settings = true;
+            app.ui.settings_page = Page::Targets;
+            // "Could not finish": the server accepts passwords, not keys.
+            app.ssh = Box::new(ScriptedSsh::new(SshScript::KeysRefused));
+            let mut panel = SshPanel::new(STORY_NOW, None);
+            panel.name = "legacy".into();
+            panel.host = "legacy.example.com".into();
+            panel.user = "deploy".into();
+            panel.setup = SshSetup::new(SshConn { name: "legacy".into(), host: "legacy.example.com".into(), port: 22, user: "deploy".into() }, STORY_NOW);
+            let b = app.ssh.as_mut();
+            panel.setup.start(b);
+            panel.setup.pump(b);
+            panel.setup.confirm_host(b);
+            panel.setup.pump(b);
+            let mut secret = yaac_core::ssh_setup::Secret::new();
+            secret.push('x');
+            panel.setup.sign_in(b, yaac_core::ssh_setup::Credential::Password(secret));
+            panel.setup.pump(b);
+            app.ui.set.ssh = Some(panel);
+            // "Revoked": devbox's key was removed today.
+            app.client.state.ssh_records.insert("devbox".into(), SetupRecord::Revoked { date: "2026-11-20".into() });
+            // "Could not revoke": staging cannot be reached.
+            app.ssh = Box::new(ScriptedSsh::new(SshScript::Unreachable));
+            let key = yaac_core::demo::ssh::demo_line("staging");
+            let conn = SshConn { name: "staging".into(), host: "staging.example.com".into(), port: 22, user: "dev".into() };
+            let mut revoke = Revoke::start(conn, key, STORY_NOW, app.ssh.as_mut());
+            revoke.pump(app.ssh.as_mut());
+            app.ui.set.revoke = Some(RevokePanel { target: "staging".into(), revoke });
+        }
+        "17" => {
+            play(app, Scene::LocalSignedOut);
+            app.client.list_instances(&"devbox".into());
+            app.pump_demo();
+            app.ui.set.providers_target = Some("devbox".into());
+            app.ui.settings = true;
+            app.ui.settings_page = Page::Providers;
         }
         "19" => {
             play(app, Scene::Notices);
@@ -195,6 +314,11 @@ fn setup(app: &mut YaacApp, id: &str) {
         "20" => {
             play(app, Scene::BudgetReached);
             app.open(&threads::orchestrator(), None);
+        }
+        "21" => {
+            app.open(&threads::orchestrator(), None);
+            app.ui.needs_popup = true;
+            app.ui.needs_sel = 0;
         }
         "23" => {
             play(app, Scene::StagingReconnects);
@@ -226,6 +350,13 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.open(&threads::fix(), None);
             let cp = crate::sidebar::create_project_for(app, &"devbox".into(), "~/scratch/spike-7");
             app.ui.create_project = Some(cp);
+        }
+        "30" => {
+            let fix = threads::fix();
+            app.open(&fix, None);
+            app.ui.focus_card = None;
+            app.ui.menu = Some(Menu::Mode);
+            app.client.choose_mode(ModeTarget::Thread(fix), "bypass".into());
         }
         _ => {}
     }

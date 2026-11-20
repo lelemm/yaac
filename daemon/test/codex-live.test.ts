@@ -23,7 +23,7 @@ function socketPresent(): boolean {
 test("codex live: connect, initialize, list models and threads (read-only)", { skip: socketPresent() ? false : `no Codex daemon socket at ${SOCKET}` }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "yaac-cxlive-"));
   const provider = new CodexProvider(
-    { config: { id: "pi_codex_live", kind: "codex", enabled: true, backend: "auto" }, stateDir: path.join(dir, "state"), home: dir, log: () => {} },
+    { config: { id: "pi_codex_live", kind: "codex", enabled: true, backend: "auto" }, stateDir: path.join(dir, "state"), home: dir, env: process.env, log: () => {} },
     {
       socket: SOCKET,
       exec: async () => {

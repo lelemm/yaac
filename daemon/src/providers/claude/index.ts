@@ -1163,8 +1163,7 @@ export const claudeProviderFactory: ProviderFactory = {
   implicit: (env) => env.YAAC_CLAUDE_PROVIDER !== "0" && findExecutable(env) !== null,
   create(ctx: ProviderContext): ClaudeProvider {
     const cfg = ctx.config.env ?? {};
-    // ProviderContext carries no environment, so the process's is used.
-    const base = process.env;
+    const base = ctx.env;
     return new ClaudeProvider({
       executable: findExecutable({ ...base, ...cfg }, cfg[EXECUTABLE_VAR] ?? null),
       env: childEnv(base, cfg),

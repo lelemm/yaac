@@ -93,7 +93,7 @@ fn rail(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, side: egui::Re
     let cx = side.center().x;
     let button = |ui: &mut egui::Ui, y: f32, id: &str, tip: &str| {
         let r = egui::Rect::from_center_size(egui::pos2(cx, y), vec2(40.0, 40.0));
-        let resp = ui.interact(r, egui::Id::new(("rail", id)), egui::Sense::click()).on_hover_text(tip);
+        let resp = ui.interact(r, egui::Id::unique(("rail", id)), egui::Sense::click()).on_hover_text(tip);
         if resp.hovered() || resp.has_focus() {
             ui.painter().rect_filled(r, 6.0, p.faint);
         }
@@ -129,14 +129,14 @@ fn threads_overlay(ctx: &egui::Context, app: &mut YaacApp, map: &AttentionMap, n
     let p = app.p;
     let panel = egui::Rect::from_min_size(egui::pos2(full.left() + RAIL, full.top()), vec2(300.0, full.height()));
     let mut close = false;
-    egui::Area::new(egui::Id::new("threads-scrim")).order(egui::Order::Middle).fixed_pos(egui::pos2(panel.right(), full.top())).interactable(true).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique("threads-scrim")).order(egui::Order::Middle).fixed_pos(egui::pos2(panel.right(), full.top())).interactable(true).show(ctx, |ui| {
         let r = egui::Rect::from_min_max(egui::pos2(panel.right(), full.top()), full.max);
         ui.painter().rect_filled(r, 0.0, p.scrim);
         if ui.allocate_rect(r, egui::Sense::click()).clicked() {
             close = true;
         }
     });
-    egui::Area::new(egui::Id::new("threads-overlay")).order(egui::Order::Foreground).fixed_pos(panel.min).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique("threads-overlay")).order(egui::Order::Foreground).fixed_pos(panel.min).show(ctx, |ui| {
         ui.set_min_size(panel.size());
         ui.painter().rect_filled(panel, 0.0, p.panel);
         ui.scope_builder(egui::UiBuilder::new().max_rect(panel.shrink2(vec2(12.0, 10.0))).id_salt("sidebar-overlay"), |ui| {

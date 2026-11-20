@@ -1,6 +1,6 @@
 //! First run (screen 07), and the page shown when this window is older than the hub.
 
-use eframe::egui::{self, Margin, RichText, vec2};
+use eframe::egui::{self, Margin, RichText};
 use yaac_core::attention::Mark;
 use yaac_core::settings::Page;
 
@@ -14,9 +14,12 @@ fn card<R>(ui: &mut egui::Ui, p: &Palette, width: f32, add: impl FnOnce(&mut egu
         .corner_radius(6)
         .inner_margin(Margin::same(18))
         .show(ui, |ui| {
-            ui.set_width(width);
-            ui.set_min_height(170.0);
-            add(ui)
+            ui.vertical(|ui| {
+                ui.set_width(width);
+                ui.set_min_height(190.0);
+                add(ui)
+            })
+            .inner
         })
         .inner
 }
@@ -30,7 +33,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
         actions.push(Action::NewThread);
     }
     let avail = ui.available_size();
-    let card_w = ((avail.x - 140.0) / 3.0).clamp(220.0, 300.0);
+    let card_w = ((avail.x - 200.0) / 3.0).clamp(200.0, 280.0);
     let total_w = card_w * 3.0 + 2.0 * 16.0 + 3.0 * 36.0;
     ui.add_space((avail.y * 0.16).max(24.0));
     ui.vertical_centered(|ui| {
@@ -42,6 +45,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
     ui.horizontal(|ui| {
         ui.add_space(((avail.x - total_w) / 2.0).max(0.0));
         ui.spacing_mut().item_spacing.x = 16.0;
+        ui.style_mut().spacing.item_spacing.y = 6.0;
         card(ui, &p, card_w, |ui| {
             ui.label(RichText::new("This computer").font(theme::bold(size::SECTION)));
             ui.add_space(8.0);
@@ -123,6 +127,5 @@ pub(crate) fn update_needed(ui: &mut egui::Ui, p: &Palette, message: &str) {
         ui.add_space(4.0);
         ui.label(widgets::secondary("A newer YAAC is already running on this computer. This window will not attach to it; nothing was changed.", p));
         ui.add_space(4.0);
-        let _ = vec2(0.0, 0.0);
     });
 }

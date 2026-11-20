@@ -11,7 +11,7 @@ use crate::widgets;
 
 /// The scrim behind a dialog: dims the shell and swallows clicks.
 pub(crate) fn scrim(ctx: &egui::Context, p: &Palette, id: &str) {
-    egui::Area::new(egui::Id::new(("scrim", id))).order(egui::Order::Middle).fixed_pos(egui::pos2(0.0, 0.0)).interactable(true).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique(("scrim", id))).order(egui::Order::Middle).fixed_pos(egui::pos2(0.0, 0.0)).interactable(true).show(ctx, |ui| {
         let r = ctx.content_rect();
         ui.painter().rect_filled(r, 0.0, p.scrim);
         ui.allocate_rect(r, egui::Sense::click());
@@ -69,15 +69,17 @@ pub(crate) fn mode_confirm(ctx: &egui::Context, app: &mut YaacApp, actions: &mut
         ui.add_space(14.0);
         ui.horizontal(|ui| {
             let cancel = widgets::plain(ui, &p, "Cancel", Some("Esc"));
-            if !ui.memory(|m| m.focused().is_some()) {
-                cancel.request_focus();
-            }
             if cancel.clicked() {
                 actions.push(Action::CancelMode);
             }
             ui.add_space(8.0);
-            if danger(ui, &p, &v.confirm_label).clicked() {
+            let confirm = danger(ui, &p, &v.confirm_label);
+            if confirm.clicked() {
                 actions.push(Action::ConfirmMode);
+            }
+            // Cancel is the default: it holds the focus unless the user tabbed to the other.
+            if !confirm.has_focus() && !cancel.has_focus() {
+                cancel.request_focus();
             }
         });
     });

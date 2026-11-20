@@ -245,6 +245,11 @@ export interface ProviderContext {
   stateDir: string;
   /** The yaacd home directory (`~/.yaac`, or `YAAC_HOME`). */
   home: string;
+  /**
+   * The daemon's configured environment — the base a provider builds a harness's environment
+   * from (the instance's own `config.env` goes on top). Providers never read `process.env`.
+   */
+  env: NodeJS.ProcessEnv;
   /** Diagnostic log. Never message content. */
   log(line: string): void;
 }

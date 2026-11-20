@@ -354,6 +354,11 @@ impl Client {
                         created_at: now.clone(),
                         updated_at: now,
                         archived: false,
+                        repo: None,
+                        git: None,
+                        muted: false,
+                        pinned: false,
+                        agents: yaac_protocol::AgentsPolicy::default(),
                     };
                     self.state.upsert_summary(&draft.target, summary);
                 }
@@ -633,9 +638,9 @@ impl Client {
                 return None;
             }
             match route(a.is_image, support, a.choice) {
-                ImageRoute::AsImage => parts.push(InputPart::Image(yaac_protocol::ImagePart { upload_id: upload })),
+                ImageRoute::AsImage => parts.push(InputPart::Image(yaac_protocol::ImagePart { upload_id: upload, name: Some(a.name.clone()), media_type: None })),
                 ImageRoute::AsFile | ImageRoute::AsFileCannotSee => {
-                    parts.push(InputPart::File(yaac_protocol::FilePart { upload_id: upload }));
+                    parts.push(InputPart::File(yaac_protocol::FilePart { upload_id: upload, name: Some(a.name.clone()), media_type: None }));
                 }
                 ImageRoute::Ask => return None,
             }

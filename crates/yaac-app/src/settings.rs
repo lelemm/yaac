@@ -74,7 +74,6 @@ impl SshPanel {
 pub(crate) struct RevokePanel {
     pub target: TargetId,
     pub revoke: Revoke,
-    pub recorded: bool,
 }
 
 /// The settings pages' own state.
@@ -176,6 +175,14 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
     }
 }
 
+/// A fixed-width cell, left-aligned (names line up in a column).
+fn cell(ui: &mut egui::Ui, width: f32, text: RichText) {
+    ui.allocate_ui_with_layout(vec2(width, 22.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_width(width);
+        ui.add(egui::Label::new(text).truncate());
+    });
+}
+
 fn title_row(ui: &mut egui::Ui, title: &str, right: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(title).font(theme::bold(size::TITLE + 3.0)));
@@ -247,12 +254,16 @@ fn targets(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         ui.label(widgets::secondary("No SSH servers yet.", &p));
     }
     for row in &v.ssh {
+        let mut unavailable_reason = None;
         ui.horizontal(|ui| {
             ui.set_min_height(34.0);
-            ui.add_sized(vec2(110.0, 20.0), egui::Label::new(RichText::new(&row.name).font(theme::bold(size::UI))).truncate());
+            cell(ui, 110.0, RichText::new(&row.name).font(theme::bold(size::UI)));
             widgets::mark(ui, &p, row.mark, 16.0);
             ui.label(&row.line);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Actions sit in a fixed column, so the switches line up.
+                ui.allocate_ui_with_layout(vec2(250.0, 30.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.set_width(250.0);
                 for a in row.actions.iter().rev() {
                     match a {
                         SshAction::Remove => {
@@ -271,8 +282,8 @@ fn targets(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                             }
                         }
                         SshAction::RevokeUnavailable(reason) => {
-                            ui.label(widgets::secondary(reason, &p));
                             widgets::unavailable(ui, &p, "Revoke", "");
+                            unavailable_reason = Some(reason.clone());
                         }
                         SshAction::Retry => {
                             if widgets::plain(ui, &p, "Retry", None).clicked() {
@@ -289,6 +300,7 @@ fn targets(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                         }
                     }
                 }
+                });
                 if let Some(on) = row.switch {
                     ui.add_space(12.0);
                     if widgets::switch(ui, &p, on).on_hover_text(if on { "Disable" } else { "Enable" }).clicked() {
@@ -297,6 +309,11 @@ fn targets(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                 }
             });
         });
+        if let Some(r) = unavailable_reason {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                ui.label(widgets::secondary(r, &p));
+            });
+        }
         if app.ui.set.remove_confirm.as_ref() == Some(&row.id) {
             ui.horizontal(|ui| {
                 ui.add_space(116.0);
@@ -336,8 +353,8 @@ fn targets(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
             for r in &v.wsl {
                 ui.horizontal(|ui| {
                     ui.set_min_height(32.0);
-                    ui.add_sized(vec2(110.0, 20.0), egui::Label::new(RichText::new(&r.distro).font(theme::bold(size::UI))));
-                    ui.add_sized(vec2(110.0, 20.0), egui::Label::new(widgets::secondary(&r.user, &p)));
+                    cell(ui, 110.0, RichText::new(&r.distro).font(theme::bold(size::UI)));
+                    cell(ui, 110.0, widgets::secondary(&r.user, &p));
                     if !r.enabled {
                         widgets::mark(ui, &p, Mark::Off, 15.0);
                         ui.label(widgets::secondary("off", &p));
@@ -391,7 +408,7 @@ fn start_revoke(app: &mut YaacApp, id: &TargetId) {
     let conn = SshConn { name: t.entry.name.to_string(), host: s.host.clone(), port: s.port.unwrap_or(22), user: s.user.clone().unwrap_or_default() };
     let now = app.now();
     let revoke = Revoke::start(conn, key, now, app.ssh.as_mut());
-    app.ui.set.revoke = Some(RevokePanel { target: id.clone(), revoke, recorded: false });
+    app.ui.set.revoke = Some(RevokePanel { target: id.clone(), revoke });
     app.ui.set.ssh = None;
 }
 
@@ -526,7 +543,7 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                     }
                 });
                 ui.add_space(4.0);
-                let pid = egui::Id::new("ssh-password");
+                let pid = egui::Id::unique("ssh-password");
                 if panel.method == SignInMethod::Password {
                     ui.horizontal(|ui| {
                         widgets::secret_field(ui, &p, &mut panel.password, panel.show, 280.0, pid);
@@ -546,7 +563,7 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                         ui.label(widgets::secondary("Key file", &p));
                     });
                     ui.horizontal(|ui| {
-                        widgets::secret_field(ui, &p, &mut panel.passphrase, false, 280.0, egui::Id::new("ssh-passphrase"));
+                        widgets::secret_field(ui, &p, &mut panel.passphrase, false, 280.0, egui::Id::unique("ssh-passphrase"));
                         ui.label(widgets::secondary("Passphrase, if the key has one", &p));
                     });
                     ui.label(widgets::secondary("Used once to set up YAAC's own key. YAAC does not keep the file or the passphrase.", &p));
@@ -609,7 +626,7 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                         let id = panel.existing.clone().unwrap_or_else(|| TargetId::new(name.clone()));
                         if let SetupRecord::InstalledByYaac { key, .. } = &rec {
                             let revoke = Revoke::start(panel.setup.conn.clone(), key.clone(), now, app.ssh.as_mut());
-                            app.ui.set.revoke = Some(RevokePanel { target: id, revoke, recorded: false });
+                            app.ui.set.revoke = Some(RevokePanel { target: id, revoke });
                         }
                         keep = false;
                     }

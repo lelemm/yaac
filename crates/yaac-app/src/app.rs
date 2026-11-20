@@ -6,6 +6,7 @@
 //! arrived (the link's waker), the demo is streaming, or an arrow is fading.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+#[cfg(feature = "hub")]
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Key, Modifiers};
@@ -27,6 +28,7 @@ use yaac_core::ThreadKey;
 use yaac_protocol::attach::TargetTransport;
 use yaac_protocol::{Address, ClientId, InstanceId, ItemId, ModeId, ProviderKind, QuestionId, RequestId, RequestResponse, TargetId};
 
+#[cfg(feature = "hub")]
 use crate::attach::{AttachConfig, HubAttach, LinkStatus, SharedAttach};
 use crate::markdown;
 use crate::screenshot::Shots;
@@ -46,7 +48,6 @@ pub(crate) enum Menu {
     ForkDest,
     SettingsTarget,
     InstanceKind,
-    WslDistro,
     Demo,
 }
 
@@ -164,6 +165,7 @@ impl UiState {
         }
     }
 
+    #[cfg_attr(not(feature = "hub"), allow(dead_code))]
     fn load_prefs(&mut self, p: &UiPrefs) {
         self.grouping = p.grouping;
         self.panel = if p.docked { PanelMode::Docked } else { PanelMode::Pill };
@@ -232,7 +234,6 @@ pub(crate) enum Action {
     SetRecord(TargetId, SetupRecord),
     WslOn(bool),
     RefreshProviders(TargetId, Option<InstanceId>),
-    ListInstances(TargetId),
     AddInstance(TargetId, ProviderKind, String, String),
     UpdateInstance(TargetId, InstanceId, String, String),
     InstanceEnabled(TargetId, InstanceId, bool),
@@ -256,6 +257,7 @@ pub(crate) enum Clock {
 }
 
 /// The attachment to a real hub.
+#[cfg(feature = "hub")]
 pub(crate) struct HubConn {
     pub attach: Arc<Mutex<HubAttach>>,
     pub config: AttachConfig,
@@ -317,6 +319,7 @@ pub(crate) struct YaacApp {
     pub clock: Clock,
     pub started: std::time::Instant,
     pub shots: Option<Shots>,
+    #[cfg(feature = "hub")]
     pub hub: Option<HubConn>,
     /// The host is Windows (or pretends to be, `--host windows`): WSL settings are shown.
     pub host_windows: bool,
@@ -324,6 +327,7 @@ pub(crate) struct YaacApp {
     saved_prefs: UiPrefs,
     last_tick: f64,
     pub applied: Option<bool>,
+    #[cfg_attr(not(feature = "hub"), allow(dead_code))]
     ctx: egui::Context,
 }
 
@@ -351,11 +355,13 @@ pub(crate) fn demo_client(scenario: Scenario) -> (Client, DemoHub) {
     (client, hub)
 }
 
+#[cfg(feature = "hub")]
 fn waker(ctx: &egui::Context) -> crate::attach::Waker {
     let ctx = ctx.clone();
     Arc::new(move || ctx.request_repaint())
 }
 
+#[cfg(feature = "hub")]
 fn hub_client(attach: &Arc<Mutex<HubAttach>>) -> Client {
     // SEAM: the hub's hello does not hand the window its own client id yet; the window uses a
     // fixed one until it does ("answered by you" needs it).
@@ -367,23 +373,31 @@ impl YaacApp {
         theme::install_fonts(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx, &Palette::DARK);
         theme::apply(&cc.egui_ctx, &Palette::LIGHT);
-        let (client, demo, scenario, clock, hub, ssh): (Client, Option<DemoHub>, Scenario, Clock, Option<HubConn>, Box<dyn SshSetupBackend>) =
-            match (launch.demo, launch.attach) {
-                (Some(s), _) => {
-                    let (c, h) = demo_client(s);
-                    (c, Some(h), s, Clock::Story { base: STORY_NOW, frozen: launch.shots.is_some() }, None, Box::new(ScriptedSsh::new(SshScript::Happy)))
-                }
-                (None, Some(config)) => {
+        #[cfg(feature = "hub")]
+        let mut hub = None;
+        let (client, demo, scenario, clock, ssh): (Client, Option<DemoHub>, Scenario, Clock, Box<dyn SshSetupBackend>) = match launch.demo {
+            Some(s) => {
+                let (c, h) = demo_client(s);
+                (c, Some(h), s, Clock::Story { base: STORY_NOW, frozen: launch.shots.is_some() }, Box::new(ScriptedSsh::new(SshScript::Happy)))
+            }
+            None => {
+                #[cfg(feature = "hub")]
+                if let Some(config) = launch.attach {
                     let attach = Arc::new(Mutex::new(HubAttach::start(config.clone(), waker(&cc.egui_ctx))));
                     let c = hub_client(&attach);
-                    let conn = HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false };
-                    (c, None, Scenario::Fleet, Clock::System, Some(conn), Box::new(HubSshPending::default()))
-                }
-                (None, None) => {
+                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false });
+                    (c, None, Scenario::Fleet, Clock::System, Box::new(HubSshPending::default()) as Box<dyn SshSetupBackend>)
+                } else {
                     let c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
-                    (c, None, Scenario::Fleet, Clock::System, None, Box::new(HubSshPending::default()))
+                    (c, None, Scenario::Fleet, Clock::System, Box::new(HubSshPending::default()))
                 }
-            };
+                #[cfg(not(feature = "hub"))]
+                {
+                    let c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
+                    (c, None, Scenario::Fleet, Clock::System, Box::new(HubSshPending::default()))
+                }
+            }
+        };
         let ui = UiState::new(launch.theme);
         let saved_prefs = ui.prefs();
         let mut app = Self {
@@ -396,6 +410,7 @@ impl YaacApp {
             clock,
             started: std::time::Instant::now(),
             shots: launch.shots,
+            #[cfg(feature = "hub")]
             hub,
             host_windows: launch.host_windows,
             ssh,
@@ -616,7 +631,6 @@ impl YaacApp {
                 }
                 Action::WslOn(on) => self.client.state.wsl_on = on,
                 Action::RefreshProviders(t, i) => self.client.refresh_providers(&t, i.as_ref()),
-                Action::ListInstances(t) => self.client.list_instances(&t),
                 Action::AddInstance(t, kind, name, socket) => self.client.add_instance(&t, &kind, Some(&name), Some(&socket)),
                 Action::UpdateInstance(t, i, name, socket) => {
                     let name = name.trim().to_owned();
@@ -628,6 +642,7 @@ impl YaacApp {
                 Action::OutsideTools(t, i, on) => self.client.set_outside_tools(&t, &i, on),
                 Action::SetAlways(on) => {
                     self.client.set_always(on);
+                    #[cfg(feature = "hub")]
                     if let Some(h) = &self.hub
                         && let Some(a) = &h.config.autostart
                     {
@@ -662,6 +677,7 @@ impl YaacApp {
     }
 
     /// The hello outcomes, the old hub's replacement, and the persisted choices.
+    #[cfg(feature = "hub")]
     fn hub_upkeep(&mut self) {
         let Some(h) = &mut self.hub else { return };
         let status = h.attach.lock().map_or(LinkStatus::Closed, |a| a.status());
@@ -717,6 +733,7 @@ impl YaacApp {
         if now == self.saved_prefs {
             return;
         }
+        #[cfg(feature = "hub")]
         if self.hub.as_ref().is_some_and(|h| h.prefs_loaded) {
             for k in now.changed(&self.saved_prefs) {
                 self.client.set_ui_state(k, now.value(k));
@@ -763,6 +780,7 @@ impl eframe::App for YaacApp {
         // Apply everything that arrived since the last frame: a burst of events becomes one
         // repaint. Arrivals from a real hub wake the window through the link's waker.
         let arrived = self.pump_demo();
+        #[cfg(feature = "hub")]
         self.hub_upkeep();
         let ssh_changed = self.ui.set.pump_ssh(self.ssh.as_mut());
         let t = ctx.input(|i| i.time);

@@ -395,9 +395,15 @@ test("a very large tool output is bounded: a head, its true size, the rest on di
   assert.ok(Buffer.byteLength(tool.output) <= 16 * 1024);
   const bytes = c.events(t.threadId).reduce((a, e) => a + Buffer.byteLength(JSON.stringify(e)), 0);
   assert.ok(bytes < 200 * 1024, `the live stream stayed small (${bytes} bytes)`);
-  const rest = daemon.core.readItemOutput(t.threadId, tool.id, 2999990, 100)!;
+  const rest: any = await c.request("item/read", { threadId: t.threadId, itemId: tool.id, offset: 2999990, maxBytes: 100 });
+  assert.equal(rest.present, true);
   assert.equal(rest.totalBytes, 3000000);
   assert.equal(rest.data.length, 10);
+  assert.equal(rest.nextOffset, 3000000);
+  assert.equal(rest.more, false);
+  const head: any = await c.request("item/read", { threadId: t.threadId, itemId: tool.id, offset: 0, maxBytes: 1000 });
+  assert.equal(head.data.length, 1000);
+  assert.equal(head.more, true);
   for (const p of pages) assert.ok(Buffer.byteLength(JSON.stringify(p)) < 70 * 1024, "pages stay within 64 KiB");
   await c.close();
   await daemon.stop("test");

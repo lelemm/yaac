@@ -11,7 +11,9 @@
 //! `--host windows` pretends the host is Windows (the WSL settings are shown only there), so
 //! those screens can be checked on Linux.
 
+#[cfg(feature = "hub")]
 pub mod attach;
+#[cfg(feature = "hub")]
 pub mod hubmode;
 
 mod agents_ui;
@@ -44,13 +46,20 @@ pub(crate) struct Launch {
     pub theme: theme::ThemeChoice,
     pub shots: Option<screenshot::Shots>,
     pub host_windows: bool,
+    #[cfg(feature = "hub")]
     pub attach: Option<attach::AttachConfig>,
 }
 
 /// The entry point: `args` without the program name.
 pub fn run(args: Vec<String>) -> ExitCode {
     if args.first().map(String::as_str) == Some("hub") {
+        #[cfg(feature = "hub")]
         return hubmode::run(BUILD);
+        #[cfg(not(feature = "hub"))]
+        {
+            eprintln!("yaac: this build has no hub (built without the `hub` feature)");
+            return ExitCode::FAILURE;
+        }
     }
     let mut demo = None;
     let mut theme = theme::ThemeChoice::System;
@@ -106,6 +115,12 @@ pub fn run(args: Vec<String>) -> ExitCode {
     if shots.is_some() && demo.is_none() {
         demo = Some(Scenario::Fleet);
     }
+    #[cfg(not(feature = "hub"))]
+    if demo.is_none() {
+        eprintln!("yaac: this build has no hub; run it with --demo");
+        return ExitCode::FAILURE;
+    }
+    #[cfg(feature = "hub")]
     let attach = if demo.is_none() {
         match attach::AttachConfig::from_env() {
             Ok(c) => Some(c),
@@ -126,7 +141,14 @@ pub fn run(args: Vec<String>) -> ExitCode {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
-    let launch = Launch { demo, theme, shots, host_windows, attach };
+    let launch = Launch {
+        demo,
+        theme,
+        shots,
+        host_windows,
+        #[cfg(feature = "hub")]
+        attach,
+    };
     match eframe::run_native("YAAC", options, Box::new(move |cc| Ok(Box::new(app::YaacApp::new(cc, launch))))) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

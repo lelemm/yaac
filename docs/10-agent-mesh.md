@@ -123,9 +123,10 @@ One MCP server, named `yaac`. Few tools, each doing one thing.
 | Tool | What it does |
 | --- | --- |
 | `whoami` | The caller's own address, title, provider, model, working directory, who spawned it, and its children. |
-| `list_targets` | The machines in this mesh, and whether each is reachable. |
+| `list_targets` | The machines in this mesh: name, whether each is reachable, and how many threads are active there. Names and counts only — never the threads themselves. |
 | `list_models` | For a target: the provider instances there and the models each offers — the same live data as the model picker. Nothing is hardcoded, so "spawn it on Opus" is resolved against what actually exists. |
-| `list_threads` | Threads on a target, filterable: mine, my children, running, by project, by text. Returns address, title, state, provider, model. |
+| `list_threads` | A **small, scoped** list of threads — by default only the caller's own orchestration. See [listing is scoped and bounded](#listing-is-scoped-and-bounded). |
+| `find_thread` | Find a specific thread by words from its title, on one target or across all of them. Needs a query; returns at most ten matches. |
 | `read_thread` | The recent messages, or just the last answer, of another thread — to check on a worker without interrupting it. |
 | `spawn_thread` | Start a **new thread** on any target, provider instance, and model, with a first message. Returns its address. The new thread is a child of the caller. |
 | `send_message` | Send a message to a thread. Returns a delivery receipt. |
@@ -141,6 +142,43 @@ How the owner's four examples map onto them:
 | "Spawn three Opus workers for these modules." | `list_models` → `spawn_thread` ×3 → `wait` |
 | "On devbox, thread *aaaa* is waiting for you. Tell it when you're done." | `notify_when_done { to: "devbox/…aaaa" }` — or `send_message` at the end |
 | "Run this migration across all my servers." | `list_targets` → `spawn_thread` on each → `wait` → `read_thread` |
+
+### Listing is scoped and bounded
+
+**Decided.** With ten targets and hundreds of threads, a tool that lists "every running agent"
+would flood the agent's context and bury the two or three threads it actually needs. No tool
+can do that, and there is no "all targets" listing.
+
+**`list_threads` answers one of three scopes:**
+
+| Scope | Returns | When to use |
+| --- | --- | --- |
+| `related` — **the default** | The caller's own orchestration: its parent, its workers and theirs, and the threads it has exchanged messages with. | Almost always. This is "who am I working with?". |
+| `project` | Threads in the caller's project on the caller's target. | "Is someone already working on this repository?" |
+| `target` (a target must be named) | Threads on that one target. | Looking around one machine, deliberately. |
+
+**Whatever the scope:**
+
+- **Active by default.** Running, waiting, or needing the user, plus those that finished in the
+  last hour. Idle, archived, and automated threads are left out unless asked for.
+- **At most 20 results** unless the agent asks for more, and never more than 50. Most recent
+  activity first.
+- **One short line per thread:** address, title, state, provider and model, machine. No
+  previews, no transcripts — `read_thread` exists for that, on one thread.
+- **The answer says what it left out**: "20 of 143 on devbox — narrow with a query, a state, or
+  a project." An agent is told to refine, not handed the rest.
+
+**To find one particular thread**, an agent uses `find_thread` with words from its title —
+"the Codex thread about CI on devbox". It needs a query, so it cannot be used to dump a
+machine, and returns at most ten matches.
+
+**Cost.** A listing never fans out to every machine. `related` is answered from what `yaacd`
+already knows about the caller's orchestration. A search across targets is answered by the hub
+from its own thread index — one question, no round of calls to ten daemons — and with the hub
+unavailable it covers this target only and says so.
+
+The identity block each thread is given follows the same rule: it names the thread itself and
+says the tools exist. It never lists the fleet.
 
 ### Spawning
 

@@ -11,7 +11,7 @@ use yaac_protocol::{
 };
 
 pub(crate) fn item(id: &str, turn: &str, status: ItemStatus, body: ItemBody) -> Item {
-    Item { id: ItemId::new(id), turn_id: TurnId::new(turn), status, body }
+    Item { id: ItemId::new(id), turn_id: TurnId::new(turn), status, body, started_at: None, completed_at: None }
 }
 
 pub(crate) fn done(id: &str, turn: &str, body: ItemBody) -> Item {
@@ -20,8 +20,8 @@ pub(crate) fn done(id: &str, turn: &str, body: ItemBody) -> Item {
 
 pub(crate) fn user(text: &str, files: &[&str], images: &[&str]) -> ItemBody {
     let mut parts = vec![InputPart::text(text)];
-    parts.extend(files.iter().map(|f| InputPart::File(FilePart { upload_id: UploadId::new(*f) })));
-    parts.extend(images.iter().map(|f| InputPart::Image(ImagePart { upload_id: UploadId::new(*f) })));
+    parts.extend(files.iter().map(|f| InputPart::File(FilePart { upload_id: UploadId::new(*f), name: None, media_type: None })));
+    parts.extend(images.iter().map(|f| InputPart::Image(ImagePart { upload_id: UploadId::new(*f), name: None, media_type: None })));
     ItemBody::UserMessage(UserMessageItem { parts })
 }
 

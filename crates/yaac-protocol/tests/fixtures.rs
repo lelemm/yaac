@@ -260,3 +260,97 @@ fn method_names_are_unique_and_catalogued_once() {
     assert_eq!(yaac_protocol::methods::request_info("mesh/relay").unwrap().direction, methods::Direction::DaemonToHost);
     assert_eq!(yaac_protocol::methods::request_info("mesh/query").unwrap().direction, methods::Direction::Both);
 }
+
+#[test]
+fn summary_flags_git_status_and_projects() {
+    let summary: ThreadSummary = exact(json!({
+        "id": "t1", "instance": "pi_1", "title": "Fix", "preview": "", "cwd": "/home/u/code/yaac-wt/feature-x", "state": "waiting",
+        "control": "free", "originKind": "yaac", "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+        "children": 0, "peers": 0, "archived": false, "muted": true, "pinned": true, "agents": "allow",
+        "project": {
+            "path": "/home/u/code/yaac", "displayName": "YAAC", "kind": "user", "id": "pj_1",
+            "repo": { "repo": "/home/u/code/yaac/.git", "relative": ".", "root": "/home/u/code/yaac" }
+        },
+        "repo": { "repo": "/home/u/code/yaac/.git", "relative": ".", "root": "/home/u/code/yaac-wt/feature-x", "worktreeName": "feature-x" },
+        "git": { "branch": "feature-x", "base": "origin/main", "added": 1, "modified": 2, "deleted": 3, "ahead": 4, "behind": 5, "removed": false }
+    }));
+    assert!(summary.muted && summary.pinned && summary.agents.allows());
+    assert_eq!(summary.state, ThreadState::Waiting);
+    assert_eq!(summary.project.as_ref().unwrap().kind, Some(ProjectKind::User));
+    assert_eq!(summary.git.as_ref().unwrap().ahead, 4);
+    // A summary from an older daemon has none of them: unmuted, unpinned, agents ask.
+    let old: ThreadSummary = serde_json::from_value(json!({
+        "id": "t", "instance": "pi_1", "title": "x", "cwd": "/r", "state": "done", "control": "free",
+        "originKind": "yaac", "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"
+    }))
+    .unwrap();
+    assert!(!old.muted && !old.pinned && old.git.is_none());
+    assert_eq!(old.agents, AgentsPolicy::Ask);
+    assert_eq!(old.state, ThreadState::Done);
+    // An agents policy this build does not know is kept, and does not allow.
+    let future: AgentsPolicy = serde_json::from_value(json!("zzSometimes")).unwrap();
+    assert!(!future.allows());
+}
+
+#[test]
+fn mesh_permission_request_and_answer() {
+    let item: Item = exact(json!({
+        "id": "request:r1", "turnId": "u1", "status": "inProgress", "startedAt": "2026-01-01T00:00:00Z",
+        "kind": "request", "requestId": "r1", "state": "pending", "blocking": true, "requestKind": "meshPermission",
+        "actions": [
+            { "action": "startThreads", "summary": "Start 3 threads", "recipients": [],
+              "threads": [{ "count": 3, "instance": "pi_2", "target": "tg_1", "targetName": "devbox" }] },
+            { "action": "message", "summary": "Message CI integration on devbox", "threads": [],
+              "recipients": [{ "address": "tg_1/t9", "title": "CI integration" }] }
+        ],
+        "budget": { "agentTurns": 100, "threadsSpawned": 20, "wallClockSecs": 43200 },
+        "root": "tg_0/t1"
+    }));
+    let ItemBody::Request(r) = &item.body else { panic!("not a request") };
+    let RequestBody::MeshPermission(p) = &r.body else { panic!("not a permission") };
+    assert_eq!(p.actions.len(), 2);
+    assert_eq!(p.actions[0].action, MeshActionKind::StartThreads);
+    let answer: RequestRespondParams = exact(json!({
+        "opId": "op", "threadId": "t1", "requestId": "r1",
+        "response": { "requestKind": "meshPermission", "decision": "allow", "alwaysAllow": true,
+                      "budget": { "agentTurns": 50, "threadsSpawned": 5, "wallClockSecs": 3600 } }
+    }));
+    let RequestResponse::MeshPermission(a) = &answer.response else { panic!() };
+    assert!(a.always_allow);
+    assert_eq!(a.decision, MeshPermissionDecision::Allow);
+}
+
+#[test]
+fn projects_item_read_fork_only_usage_and_context() {
+    let _: ProjectListResult = exact(json!({ "projects": [
+        { "id": "pj_1", "name": "Billing API", "folder": "/srv/mono/services/billing", "createdAt": "2026-01-01T00:00:00Z",
+          "repo": { "repo": "/srv/mono/.git", "relative": "services/billing", "root": "/srv/mono" }, "crossTargetKey": "host/mono" }
+    ]}));
+    let _: ProjectCreateParams = exact(json!({ "opId": "op", "folder": "/srv/x", "name": "X" }));
+    let _: ThreadUpdateParams = exact(json!({ "opId": "op", "threadId": "t", "muted": false, "agents": "ask" }));
+    let _: ItemReadResult = exact(json!({ "present": true, "data": "abc", "offset": 10, "nextOffset": 13, "totalBytes": 20, "more": true }));
+    let _: ThreadForkOnlyParams = exact(json!({ "opId": "op", "source": "t", "instance": "pi_1" }));
+    let _: MeshUsageParams = exact(json!({ "root": "tg_0/t1", "source": "tg_1", "agentTurns": 3, "threadsSpawned": 1 }));
+    let read: ThreadReadResult = exact(json!({
+        "items": [], "position": { "epoch": 1, "seq": 2 }, "uploads": [], "context": { "used": 10, "window": 100 }
+    }));
+    assert_eq!(read.context.unwrap().window, Some(100));
+    let parts: Vec<InputPart> = exact(json!([{ "type": "file", "uploadId": "u_1", "name": "notes.txt", "mediaType": "text/plain" }]));
+    assert!(matches!(&parts[0], InputPart::File(FilePart { name: Some(n), .. }) if n == "notes.txt"));
+    for (name, op) in [("thread/update", true), ("thread/forkOnly", true), ("item/read", false), ("project/list", false),
+        ("project/create", true), ("project/rename", true), ("project/delete", true), ("mesh/usage", false)] {
+        assert_eq!(yaac_protocol::methods::request_info(name).unwrap().state_changing, op, "{name}");
+    }
+    assert!(yaac_protocol::methods::notification_info("project/updated").is_some());
+}
+
+#[test]
+fn attach_hello_carries_the_client_id_and_target_state_enabled() {
+    use yaac_protocol::attach::{HelloResult, TargetStateParams};
+    let hello: HelloResult = serde_json::from_value(json!({ "build": "b", "targets": [], "clientId": "c_1" })).unwrap();
+    assert_eq!(hello.client_id.as_ref().map(ClientId::as_str), Some("c_1"));
+    let state: TargetStateParams = serde_json::from_value(json!({ "id": "tg", "state": { "status": "disabled" }, "enabled": false })).unwrap();
+    assert!(!state.enabled);
+    let older: TargetStateParams = serde_json::from_value(json!({ "id": "tg", "state": { "status": "connected" } })).unwrap();
+    assert!(older.enabled);
+}

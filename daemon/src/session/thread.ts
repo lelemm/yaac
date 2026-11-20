@@ -2,7 +2,11 @@
 
 import * as path from "node:path";
 import type {
+  AgentsPolicy,
+  ContextUsage,
   InputPart,
+  RepoLocation,
+  TokenUsage,
   OriginKind,
   ProjectRef,
   RequestResolution,
@@ -40,6 +44,23 @@ export interface ThreadRecord {
   branch?: string | null;
   /** Other instances that see the same conversation (same kind and store). */
   alsoVisibleTo?: string[];
+  /** YAAC's own flags (docs/05-threads.md#keeping-the-list-small-pin-mute-and-archive). */
+  muted?: boolean;
+  pinned?: boolean;
+  /** The chat's agents policy (`ask` when absent). */
+  agents?: AgentsPolicy;
+  /** Where the working directory sits in a repository (null: not in one). */
+  repo?: RepoLocation | null;
+  /** Whether `repo` has been looked up. */
+  repoResolved?: boolean;
+  /** The agent that started this thread (set by the mesh). */
+  spawnedBy?: string | null;
+  /**
+   * The key of the thread's attachment folder, fixed for its whole life. A thread started
+   * with `thread/start` links its first message's attachments before its id exists, so its
+   * folder is keyed by that operation; every other thread's by its id.
+   */
+  uploadsKey?: string | null;
 }
 
 /** What must survive a restart to reconcile a turn that was running (`runtime.json`). */
@@ -48,6 +69,9 @@ export interface RuntimeFile {
   driver: Driver | null;
   turnOrigin: TurnOrigin | null;
   lastStatus: string | null;
+  /** Last known context-window and token usage. */
+  context?: ContextUsage | null;
+  tokens?: TokenUsage | null;
 }
 
 export interface Driver {
@@ -112,6 +136,12 @@ export class ThreadRuntime {
   interruptReason: "update" | null = null;
   effective: ThreadEffective | null = null;
   deleted = false;
+  /** `meshWait` items in progress: the thread is blocked on other agents. */
+  waiting = new Set<string>();
+  /** When in-progress items appeared, so their completion carries `startedAt`. */
+  itemStarts = new Map<string, string>();
+  context: ContextUsage | null = null;
+  tokens: TokenUsage | null = null;
 
   constructor(
     public record: ThreadRecord,
@@ -133,7 +163,7 @@ export class ThreadRuntime {
 
   saveRuntime(): void {
     if (this.deleted) return;
-    const r: RuntimeFile = { activeTurn: this.activeTurn, driver: this.driver, turnOrigin: this.turnOrigin, lastStatus: this.lastStatus };
+    const r: RuntimeFile = { activeTurn: this.activeTurn, driver: this.driver, turnOrigin: this.turnOrigin, lastStatus: this.lastStatus, context: this.context, tokens: this.tokens };
     writeJsonAtomic(path.join(this.dir, "runtime.json"), r);
   }
 
@@ -165,8 +195,14 @@ export class ThreadRuntime {
     return n;
   }
 
+  /** The key of the thread's attachment folder. */
+  get uploadsKey(): string {
+    return this.record.uploadsKey ?? this.record.id;
+  }
+
   /** Held by yaacd and idle: the two conditions for dispatching (docs/10-agent-mesh.md). */
   canDispatch(): boolean {
-    return !this.deleted && !this.activeTurn && !this.dispatching && !this.external.external && !this.external.uncertain;
+    // Only positive evidence of another holder blocks dispatch; "uncertain" is free.
+    return !this.deleted && !this.activeTurn && !this.dispatching && !this.external.external;
   }
 }

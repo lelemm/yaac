@@ -35,6 +35,13 @@ import type {
   TurnInterruptParams,
   UploadPresence,
   Capability,
+  ItemReadResult,
+  Project,
+  RepoLocation,
+  ThreadForkOnlyParams,
+  ThreadForkOnlyResult,
+  ThreadUpdateParams,
+  ThreadUpdateResult,
 } from "../protocol/generated/types.js";
 import { canonical } from "../protocol/json.js";
 import { RpcError } from "../protocol/rpc.js";
@@ -48,9 +55,13 @@ import { NotActed, OpLog } from "./ops.js";
 import { ThreadIndex, type Holder } from "./thread-index.js";
 import { ThreadRuntime, threadDirName, type Driver, type RequestRecord, type ThreadRecord, type Work } from "./thread.js";
 import { UploadStore } from "./uploads.js";
-import { projectResolve } from "./fsinfo.js";
+import { normaliseRemote } from "./fsinfo.js";
+import { GitStatusStore, gitRunner, resolveRepo, type GitRunner } from "./git.js";
+import { ProjectStore, projectRefFor } from "./projects.js";
+import { Limiter } from "../util/exec.js";
 
 export const PAGE_MAX_BYTES = 64 * 1024;
+export const ITEM_READ_MAX = 512 * 1024;
 const SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 const SNAPSHOT_MAX = 64;
 
@@ -67,7 +78,13 @@ export interface CoreOptions {
   /** The previous daemon stopped cleanly. */
   cleanStart: boolean;
   tempDir?: string;
+  /** The slow git-status refresh for watched checkouts; 0 turns it off. */
+  gitRefreshMs?: number;
+  /** At most this many git computations at once. */
+  gitConcurrency?: number;
 }
+
+export const DEFAULT_GIT_REFRESH_MS = 120_000;
 
 /** What the core needs from a connected client. */
 export interface ClientLink {
@@ -78,6 +95,8 @@ export interface ClientLink {
   wake(threadId: string): void;
   /** A snapshot of `threadId` valid at `position` was handed to this client. */
   onSnapshot(threadId: string, position: JournalPosition): void;
+  /** Whether this client is subscribed to a thread (git status is refreshed only for those). */
+  isSubscribed?(threadId: string): boolean;
 }
 
 interface Snapshot {
@@ -136,6 +155,8 @@ export class Core {
   readonly index: ThreadIndex;
   readonly ops: OpLog;
   readonly uploads: UploadStore;
+  readonly projects: ProjectStore;
+  readonly gitStatus: GitStatusStore;
   readonly clients = new Set<ClientLink>();
   /** Fires when running turns or pending requests change (idle tracking, hand-over). */
   readonly activity = new Emitter<void>();
@@ -147,6 +168,10 @@ export class Core {
   private pendingStarts = new Map<string, number>();
   private buffered = new Map<string, ProviderEvent[]>();
   private readonly threadsDir: string;
+  private readonly git: GitRunner;
+  private readonly gitLimiter: Limiter;
+  private readonly repoLookups = new Map<string, Promise<RepoLocation | null>>();
+  private gitTimer: NodeJS.Timeout | null = null;
 
   constructor(readonly opts: CoreOptions) {
     this.threadsDir = path.join(opts.home, "threads");
@@ -156,6 +181,10 @@ export class Core {
     this.index = new ThreadIndex(opts.home, opts.cleanStart);
     this.ops = new OpLog(path.join(opts.home, "ops.jsonl"));
     this.uploads = new UploadStore(opts.tempDir);
+    this.projects = new ProjectStore(path.join(opts.home, "projects.json"));
+    this.git = gitRunner(opts.env);
+    this.gitLimiter = new Limiter(Math.max(1, opts.gitConcurrency ?? 2));
+    this.gitStatus = new GitStatusStore(path.join(opts.home, "git-status.json"), this.git, this.gitLimiter, (root) => this.onGitChanged(root));
     this.registry.onEvent((instance, event) => this.onProviderEvent(instance, event));
     this.registry.onDescriptor((d) => this.broadcast("provider/updated", { provider: d }));
   }
@@ -168,6 +197,12 @@ export class Core {
     await this.registry.probe();
     await this.reconcileAfterRestart();
     await this.scanAll();
+    void this.refreshProjectRepos();
+    const every = this.opts.gitRefreshMs ?? DEFAULT_GIT_REFRESH_MS;
+    if (every > 0) {
+      this.gitTimer = setInterval(() => this.refreshWatchedGit(), every);
+      this.gitTimer.unref();
+    }
   }
 
   private loadThreads(): void {
@@ -188,6 +223,8 @@ export class Core {
         rt.driver = runtime.driver;
         rt.turnOrigin = runtime.turnOrigin;
         rt.lastStatus = runtime.lastStatus;
+        rt.context = runtime.context ?? null;
+        rt.tokens = runtime.tokens ?? null;
       }
       this.threads.set(record.id, rt);
       this.byNative.set(`${record.instance}\u0000${record.native}`, record.id);
@@ -306,17 +343,126 @@ export class Core {
     return rt;
   }
 
-  private async resolveProject(rt: ThreadRuntime): Promise<void> {
-    try {
-      const p = await projectResolve(rt.record.cwd);
-      rt.record.project = p.project;
-      rt.record.worktree = p.worktree ?? null;
-      rt.record.branch = p.branch ?? null;
+  // ── Repositories, git status, projects ───────────────────────────────────────────────
+
+  /** Where a folder sits in a repository: one git query per distinct folder, cached. */
+  private repoOf(folder: string, urgent = false): Promise<RepoLocation | null> {
+    let p = this.repoLookups.get(folder);
+    if (!p) {
+      p = this.gitLimiter.run(() => resolveRepo(this.git, folder).catch(() => null), urgent);
+      this.repoLookups.set(folder, p);
+    }
+    return p;
+  }
+
+  /** Resolves a thread's repository location once; a vanished folder keeps what was known. */
+  private async resolveProject(rt: ThreadRuntime, urgent = false): Promise<void> {
+    if (rt.record.repoResolved) return;
+    if (!fs.existsSync(rt.record.cwd)) return;
+    const repo = await this.repoOf(rt.record.cwd, urgent);
+    if (rt.deleted) return;
+    rt.record.repo = repo;
+    rt.record.repoResolved = true;
+    rt.saveRecord();
+    this.updateIndex(rt);
+    // The first status of a checkout is computed once, in the background.
+    if (repo && !this.gitStatus.has(repo.root)) void this.gitStatus.refresh(repo.root, urgent);
+  }
+
+  private onGitChanged(root: string): void {
+    for (const rt of this.threads.values()) if (!rt.deleted && rt.record.repo?.root === root) this.updateIndex(rt);
+  }
+
+  /** The slow timer: only checkouts of threads some client is subscribed to, never the whole index. */
+  refreshWatchedGit(): void {
+    const roots = new Set<string>();
+    for (const rt of this.threads.values()) {
+      const root = rt.record.repo?.root;
+      if (!root || rt.deleted) continue;
+      for (const c of this.clients) if (c.isSubscribed?.(rt.id)) roots.add(root);
+    }
+    for (const root of roots) void this.gitStatus.refresh(root);
+  }
+
+  private async refreshProjectRepos(): Promise<void> {
+    let changed = false;
+    for (const p of this.projects.list()) {
+      if (!fs.existsSync(p.folder)) continue;
+      const repo = await this.repoOf(p.folder);
+      if (this.projects.setRepo(p.id, repo)) changed = true;
+    }
+    if (changed) this.projectsChanged();
+  }
+
+  /** Every project changed: tell the clients, and move threads between projects. */
+  private projectsChanged(): void {
+    this.broadcast("project/updated", { projects: this.projects.list() });
+    for (const rt of this.threads.values()) this.updateIndex(rt);
+  }
+
+  listProjects(): { projects: Project[] } {
+    return { projects: this.projects.list() };
+  }
+
+  async projectCreate(p: { opId: string; folder: string; name: string }): Promise<{ project: Project }> {
+    return this.ops.run("project/create", p.opId, async () => {
+      if (typeof p.folder !== "string" || !path.isAbsolute(p.folder)) throw notActed("invalid_params", "folder must be an absolute path on this target");
+      if (typeof p.name !== "string" || !p.name.trim()) throw notActed("invalid_params", "name is required");
+      const folder = path.resolve(p.folder);
+      let isDir = false;
+      try {
+        isDir = fs.statSync(folder).isDirectory();
+      } catch {
+        isDir = false;
+      }
+      if (!isDir) throw notActed("invalid_params", `${folder} is not a folder on this target`);
+      const repo = await this.repoOf(folder, true);
+      let key: string | null = null;
+      if (repo) {
+        const origin = await this.git(folder, ["config", "--get", "remote.origin.url"]);
+        if (origin.ok && origin.out.trim()) key = normaliseRemote(origin.out.trim());
+      }
+      const project = this.projects.create(folder, p.name.trim(), repo, key);
+      this.projectsChanged();
+      return { project };
+    });
+  }
+
+  async projectRename(p: { opId: string; projectId: string; name: string }): Promise<{ project: Project }> {
+    return this.ops.run("project/rename", p.opId, async () => {
+      if (typeof p.name !== "string" || !p.name.trim()) throw notActed("invalid_params", "name is required");
+      if (!this.projects.get(p.projectId)) throw notActed("invalid_params", `no project ${String(p.projectId)} on this target`);
+      const project = this.projects.rename(p.projectId, p.name.trim());
+      this.projectsChanged();
+      return { project };
+    });
+  }
+
+  async projectDelete(p: { opId: string; projectId: string }): Promise<void> {
+    await this.ops.run("project/delete", p.opId, async () => {
+      if (!this.projects.get(p.projectId)) throw notActed("invalid_params", `no project ${String(p.projectId)} on this target`);
+      this.projects.delete(p.projectId);
+      this.projectsChanged();
+      return {};
+    });
+  }
+
+  /** `thread/update`: YAAC's own flags of a thread. Stored on the target; pushed as `thread/updated`. */
+  async threadUpdate(client: ClientLink, p: ThreadUpdateParams): Promise<ThreadUpdateResult> {
+    return this.ops.run("thread/update", p.opId, async () => {
+      const rt = this.threads.get(p.threadId);
+      if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
+      for (const k of ["muted", "pinned"] as const) {
+        if (p[k] !== undefined && p[k] !== null && typeof p[k] !== "boolean") throw notActed("invalid_params", `${k} must be true or false`);
+      }
+      if (p.agents !== undefined && p.agents !== null && typeof p.agents !== "string") throw notActed("invalid_params", "agents must be a string");
+      if (typeof p.muted === "boolean") rt.record.muted = p.muted;
+      if (typeof p.pinned === "boolean") rt.record.pinned = p.pinned;
+      if (typeof p.agents === "string") rt.record.agents = p.agents;
       rt.saveRecord();
       this.updateIndex(rt);
-    } catch {
-      /* the directory may be gone; the thread is still listed */
-    }
+      return { thread: this.renderSummary(this.summaryOf(rt), this.holderOf(rt), client.key) };
+    });
   }
 
   private discovered(instance: Instance, info: NativeThreadInfo): ThreadRuntime {
@@ -355,7 +501,18 @@ export class Core {
   /** The sidebar summary of a thread, with `control: "free"` (applied per client). */
   summaryOf(rt: ThreadRuntime): ThreadSummary {
     const r = rt.record;
-    const state = rt.pendingRequestCount() > 0 ? "needsAttention" : rt.activeTurn ? "running" : rt.lastStatus === "failed" ? "failed" : "idle";
+    const state: ThreadSummary["state"] =
+      rt.pendingRequestCount() > 0
+        ? "needsAttention"
+        : rt.waiting.size > 0
+          ? "waiting"
+          : rt.activeTurn
+            ? "running"
+            : rt.lastStatus === "failed"
+              ? "failed"
+              : rt.lastStatus === "completed" && r.spawnedBy
+                ? "done"
+                : "idle";
     const s: ThreadSummary = {
       id: r.id,
       instance: r.instance,
@@ -368,17 +525,27 @@ export class Core {
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
       archived: r.archived ?? false,
+      muted: r.muted ?? false,
+      pinned: r.pinned ?? false,
+      agents: r.agents ?? "ask",
     };
     if (r.model) s.model = r.model;
     if (r.forkedFrom) s.forkedFrom = r.forkedFrom;
-    if (r.project) s.project = r.project;
-    if (r.worktree) s.worktree = r.worktree;
-    if (r.branch) s.branch = r.branch;
+    if (r.spawnedBy) s.spawnedBy = r.spawnedBy;
+    s.project = projectRefFor(this.projects.list(), { folder: r.cwd, repo: r.repo ?? null });
+    if (r.repo) {
+      s.repo = r.repo;
+      const git = this.gitStatus.get(r.repo.root);
+      if (git) s.git = git;
+      s.worktree = { path: r.repo.root, ...(git?.branch ? { branch: git.branch } : {}) };
+      if (git?.branch) s.branch = git.branch;
+    }
     return s;
   }
 
   holderOf(rt: ThreadRuntime): Holder {
-    const ext = rt.external.external || rt.external.uncertain ? rt.external.holder ?? "another program" : null;
+    // Read-only only on positive evidence: `uncertain` without `external` is free.
+    const ext = rt.external.external ? rt.external.holder ?? "another program" : null;
     return { driver: rt.driver?.key ?? null, driverHost: rt.driver?.host ?? null, external: ext };
   }
 
@@ -431,9 +598,9 @@ export class Core {
   private appendControl(rt: ThreadRuntime): void {
     const ev: ControlChangedEvent & { type: "controlChanged" } = { type: "controlChanged", control: "free" };
     if (rt.activeTurn) ev.activeTurn = rt.activeTurn;
-    const holder = rt.external.external || rt.external.uncertain ? rt.external.holder ?? "another program" : rt.driver?.host ?? null;
+    const holder = rt.external.external ? rt.external.holder ?? "another program" : rt.driver?.host ?? null;
     if (holder) ev.holder = holder;
-    this.append(rt, ev, { driver: rt.driver?.key ?? null, external: rt.external.external || !!rt.external.uncertain });
+    this.append(rt, ev, { driver: rt.driver?.key ?? null, external: rt.external.external });
   }
 
   /** Renders a journal entry's event for one client (control is relative to the receiver). */
@@ -568,6 +735,7 @@ export class Core {
     }
     const nextOffset = offset + items.length;
     const result: ThreadReadResult = { items, position: snap.position };
+    if (!p.cursor && rt.context) result.context = rt.context;
     if (nextOffset < snap.items.length) result.cursor = `${snap.id}.${nextOffset}`;
     const uploads = this.uploadPresence(items);
     if (uploads.length > 0) result.uploads = uploads;
@@ -592,22 +760,57 @@ export class Core {
     return [...ids].map((uploadId) => ({ uploadId, present: this.uploads.present(uploadId) }));
   }
 
-  /** The rest of a large tool output (the protocol's `item/read`, once it exists on the wire). */
-  readItemOutput(threadId: string, itemId: string, offset: number, maxBytes: number): { data: string; totalBytes: number; more: boolean } | null {
-    const rt = this.requireThread(threadId);
-    const file = path.join(rt.dir, "outputs", `${sha256Hex(itemId).slice(0, 32)}.out`);
-    if (!fs.existsSync(file)) return null;
-    const total = fs.statSync(file).size;
-    const start = Math.max(0, Math.min(offset, total));
-    const n = Math.max(0, Math.min(maxBytes, 512 * 1024, total - start));
-    const buf = Buffer.alloc(n);
-    const fd = fs.openSync(file, "r");
-    try {
-      fs.readSync(fd, buf, 0, n, start);
-    } finally {
-      fs.closeSync(fd);
+  /**
+   * `item/read`: a byte range of one item's full output — from the file kept for a truncated
+   * output, else from the item itself. A range never splits a UTF-8 character: its start moves
+   * forward and its end back to a character boundary.
+   */
+  async itemRead(p: { threadId: string; itemId: string; offset?: number | null; maxBytes: number }): Promise<ItemReadResult> {
+    const rt = this.requireThread(p.threadId);
+    if (typeof p.itemId !== "string" || !p.itemId) throw rpc("invalid_params", "itemId is required");
+    if (typeof p.maxBytes !== "number" || p.maxBytes < 0) throw rpc("invalid_params", "maxBytes is required");
+    let whole: Buffer | null = null;
+    const file = this.outputFile(rt, p.itemId);
+    let total = 0;
+    if (fs.existsSync(file)) {
+      total = fs.statSync(file).size;
+    } else {
+      const projection = await this.ensureProjection(rt);
+      const item = projection.get(p.itemId) as Item | undefined;
+      if (!item || item.kind !== "toolCall") return { present: false };
+      whole = Buffer.from(item.output ?? "", "utf8");
+      total = whole.length;
     }
-    return { data: buf.toString("utf8"), totalBytes: total, more: start + n < total };
+    const readAt = (start: number, n: number): Buffer => {
+      if (whole) return whole.subarray(start, start + n);
+      const buf = Buffer.alloc(n);
+      const fd = fs.openSync(file, "r");
+      try {
+        const got = fs.readSync(fd, buf, 0, n, start);
+        return buf.subarray(0, got);
+      } finally {
+        fs.closeSync(fd);
+      }
+    };
+    let start = Math.max(0, Math.min(Math.floor(p.offset ?? 0), total));
+    // Move a start inside a character forward to the next character (at most 3 bytes).
+    const lead = readAt(start, Math.min(4, total - start));
+    let skip = 0;
+    while (skip < lead.length && (lead[skip]! & 0xc0) === 0x80) skip++;
+    start += skip;
+    const n = Math.max(0, Math.min(Math.floor(p.maxBytes), ITEM_READ_MAX, total - start));
+    let buf = readAt(start, n);
+    if (start + buf.length < total) {
+      // Cut back to the start of the last character if it is incomplete.
+      let i = buf.length - 1;
+      while (i > 0 && (buf[i]! & 0xc0) === 0x80 && buf.length - i < 4) i--;
+      const leadByte = buf[i] ?? 0;
+      const need = leadByte >= 0xf0 ? 4 : leadByte >= 0xe0 ? 3 : leadByte >= 0xc0 ? 2 : 1;
+      const end = i >= 0 && i + need > buf.length ? i : buf.length;
+      buf = buf.subarray(0, Math.max(0, end));
+    }
+    const next = start + buf.length;
+    return { present: true, data: buf.toString("utf8"), offset: start, nextOffset: next, totalBytes: total, more: next < total };
   }
 
   // ── Subscriptions ──────────────────────────────────────────────────────────────────────
@@ -626,7 +829,12 @@ export class Core {
       ...(c.controlHolder ? { controlHolder: c.controlHolder } : {}),
       ...(rt.activeTurn ? { activeTurn: rt.activeTurn } : {}),
       effective,
+      ...(rt.context ? { context: rt.context } : {}),
+      ...(rt.tokens ? { tokens: rt.tokens } : {}),
     };
+    // Someone is watching this thread: make sure its checkout's git status is known.
+    if (!rt.record.repoResolved) void this.resolveProject(rt, true);
+    else if (rt.record.repo && !this.gitStatus.has(rt.record.repo.root)) void this.gitStatus.refresh(rt.record.repo.root, true);
     if (typeof p.epoch === "number" && typeof p.afterSeq === "number" && journal.canReplay(p.epoch, p.afterSeq)) {
       register(p.afterSeq, "replay");
       return { ...common, mode: "replay", epoch: journal.epoch, fromSeq: p.afterSeq + 1, headSeq: journal.headSeq };
@@ -680,7 +888,7 @@ export class Core {
     return eff;
   }
 
-  /** Asks the provider who holds the thread; "unsure" counts as in use. */
+  /** Asks the provider who holds the thread. Only a positive `external` makes it read-only. */
   async refreshExternal(rt: ThreadRuntime): Promise<ExternalControl> {
     const provider = this.registry.get(rt.record.instance)?.provider;
     if (!provider) return rt.external;
@@ -708,7 +916,7 @@ export class Core {
       const err = rpc("thread_in_use", message, holder ? { holder } : undefined);
       throw wrap ? new NotActed(err) : err;
     };
-    if (rt.external.external || rt.external.uncertain) {
+    if (rt.external.external) {
       fail(`this thread is in use in ${rt.external.holder ?? "another program"}; it can only be watched`, rt.external.holder ?? null);
     }
     if (rt.driver && (!client || rt.driver.key !== client.key)) {
@@ -752,7 +960,15 @@ export class Core {
         throw notActed("invalid_params", `unsupported input part type ${String((p as { type?: unknown })?.type)}`);
       }
     }
-    return parts as InputPart[];
+    // The journaled parts carry the file's name and media type, so a transcript can show them.
+    return (parts as InputPart[]).map((p) => {
+      if (p.type !== "image" && p.type !== "file") return p;
+      const meta = this.uploads.meta(p.uploadId);
+      if (!meta) return p;
+      const out = { ...p, name: p.name ?? meta.name };
+      if (meta.mediaType && !p.mediaType) out.mediaType = meta.mediaType;
+      return out;
+    });
   }
 
   private buildInput(threadKey: string, parts: InputPart[], origin: TurnOrigin): ProviderInput {
@@ -788,17 +1004,31 @@ export class Core {
         throw new NotActed(e as RpcError);
       }
       const { instance, provider } = usable;
-      if (typeof p.cwd !== "string" || !path.isAbsolute(p.cwd) || !fs.existsSync(p.cwd)) {
-        throw notActed("invalid_params", `the working directory ${String(p.cwd)} does not exist on this target`);
+      // A thread started from YAAC starts in the root of its project's folder (D65).
+      let cwd = p.cwd;
+      if (p.project !== undefined && p.project !== null) {
+        const project = this.projects.get(p.project);
+        if (!project) throw notActed("invalid_params", `no project ${String(p.project)} on this target`);
+        if (typeof cwd === "string" && cwd !== "" && path.resolve(cwd) !== project.folder) {
+          throw notActed("invalid_params", `cwd must be empty or the project's folder (${project.folder})`);
+        }
+        cwd = project.folder;
       }
+      if (typeof cwd !== "string" || !path.isAbsolute(cwd) || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+        throw notActed("invalid_params", `the working directory ${String(cwd)} does not exist on this target`);
+      }
+      if (p.agents !== undefined && p.agents !== null && typeof p.agents !== "string") throw notActed("invalid_params", "agents must be a string");
       this.checkModel(instance.descriptor, p.model);
       const parts = this.validateParts(p.input, this.modelImageSupport(instance.descriptor, p.model));
-      const input = this.buildInput(`start:${p.opId}`, parts, "user");
+      // The thread's id is not known until the harness has started it: its attachment
+      // folder is keyed by this operation, for the thread's whole life.
+      const uploadsKey = `start:${p.opId}`;
+      const input = this.buildInput(uploadsKey, parts, "user");
       const key = instance.config.id;
       this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
       let started: { thread: NativeId; turn: TurnId };
       try {
-        started = await provider.startThread({ cwd: p.cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null }, input);
+        started = await provider.startThread({ cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null }, input);
       } catch (e) {
         this.finishPendingStart(key);
         throw rpc("provider_unavailable", `${instance.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
@@ -808,11 +1038,13 @@ export class Core {
         instance,
         started.thread,
         {
-          cwd: p.cwd,
+          cwd,
           originKind: "yaac",
           title: (firstText?.text ?? "").split("\n")[0]!.slice(0, 80) || "New thread",
           preview: (firstText?.text ?? "").slice(0, 120),
           model: p.model ?? null,
+          uploadsKey,
+          ...(typeof p.agents === "string" ? { agents: p.agents } : {}),
         },
         true,
       );
@@ -842,7 +1074,8 @@ export class Core {
     rt.lastStatus = null;
     rt.saveRuntime();
     this.append(rt, { type: "turnStarted", turnId, origin, at: nowIso() });
-    const user: Item = { id: `user:${turnId}`, turnId, status: "completed", kind: "userMessage", parts };
+    const at = nowIso();
+    const user: Item = { id: `user:${turnId}`, turnId, status: "completed", kind: "userMessage", parts, startedAt: at, completedAt: at };
     this.append(rt, { type: "itemStarted", item: user });
     this.append(rt, { type: "itemCompleted", item: user });
     if (driver) this.appendControl(rt);
@@ -914,8 +1147,9 @@ export class Core {
     try {
       const provider = this.provider(rt);
       // Ownership must be shown, not assumed: ask the harness right before handing input over.
+      // Only positive evidence of another holder stops it; "unsure" is free.
       const ext = await provider.control(rt.record.native).catch((): ExternalControl => ({ external: false, uncertain: true }));
-      if (ext.external || ext.uncertain) {
+      if (ext.external) {
         rt.dispatching = false;
         this.setExternal(rt, ext);
         if (work.origin === "user") work.reject(notActed("thread_in_use", `this thread is in use in ${ext.holder ?? "another program"}; it can only be watched`));
@@ -923,7 +1157,7 @@ export class Core {
         return;
       }
       await work.beforeStart?.();
-      const input = this.buildInput(rt.id, work.parts, work.origin);
+      const input = this.buildInput(rt.uploadsKey, work.parts, work.origin);
       rt.expectTurn = { origin: work.origin, parts: work.parts, driver: work.driver };
       let turnId: TurnId;
       try {
@@ -1027,7 +1261,7 @@ export class Core {
         throw notActed("turn_mismatch", `turn ${String(p.turnId)} is not the running turn`, rt.activeTurn ? { activeTurn: rt.activeTurn } : undefined);
       }
       const parts = this.validateParts(p.input, eff.imageInput);
-      await provider.steer(rt.record.native, p.turnId, this.buildInput(rt.id, parts, "user"));
+      await provider.steer(rt.record.native, p.turnId, this.buildInput(rt.uploadsKey, parts, "user"));
       return {};
     });
   }
@@ -1120,6 +1354,27 @@ export class Core {
 
   async threadFork(client: ClientLink, p: ThreadForkParams): Promise<ThreadForkResult> {
     return this.ops.run("thread/fork", p.opId, async () => {
+      const { rt, parts } = await this.forkInto(p, true);
+      const turnId = await this.submit(rt, {
+        origin: "user",
+        parts: parts!,
+        overrides: { model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null },
+        driver: { key: client.key, host: client.host },
+      }, "now");
+      return { threadId: rt.id, turnId, forkKind: "native" as const };
+    });
+  }
+
+  /** `thread/forkOnly`: the fork, idle, with no first message. */
+  async threadForkOnly(p: ThreadForkOnlyParams): Promise<ThreadForkOnlyResult> {
+    return this.ops.run("thread/forkOnly", p.opId, async () => {
+      const { rt } = await this.forkInto({ ...p, input: [] }, false);
+      return { threadId: rt.id, forkKind: "native" as const };
+    });
+  }
+
+  private async forkInto(p: ThreadForkParams, withInput: boolean): Promise<{ rt: ThreadRuntime; parts: InputPart[] | null }> {
+    {
       const src = this.threads.get(p.source);
       if (!src || src.deleted) throw notActed("thread_not_found", `no thread ${String(p.source)} on this target`);
       let plan;
@@ -1134,7 +1389,7 @@ export class Core {
         throw notActed("capability_missing", "this provider forks only from the last completed turn");
       }
       this.checkModel(plan.dest.descriptor, p.model);
-      const parts = this.validateParts(p.input, this.modelImageSupport(plan.dest.descriptor, p.model));
+      const parts = withInput ? this.validateParts(p.input, this.modelImageSupport(plan.dest.descriptor, p.model)) : null;
       let native: NativeId;
       try {
         native = await srcInst.provider!.forkThread!(src.record.native, {
@@ -1160,17 +1415,11 @@ export class Core {
         false,
       );
       const cutoff = p.atTurn ?? this.lastCompletedTurn(src);
-      const handoff: Item = { id: `fork:${src.id}`, turnId: cutoff ?? "", status: "completed", kind: "handoff", forkKind: "native", forkedFrom: src.id, cutoffTurn: cutoff };
+      const handoff: Item = { id: `fork:${src.id}`, turnId: cutoff ?? "", status: "completed", kind: "handoff", forkKind: "native", forkedFrom: src.id, cutoffTurn: cutoff, startedAt: nowIso(), completedAt: nowIso() };
       this.append(rt, { type: "itemStarted", item: handoff });
       this.append(rt, { type: "itemCompleted", item: handoff });
-      const turnId = await this.submit(rt, {
-        origin: "user",
-        parts,
-        overrides: { model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null },
-        driver: { key: client.key, host: client.host },
-      }, "now");
-      return { threadId: rt.id, turnId, forkKind: "native" as const };
-    });
+      return { rt, parts };
+    }
   }
 
   // ── Rename, archive, delete ────────────────────────────────────────────────────────────
@@ -1232,7 +1481,7 @@ export class Core {
     if (rt.flushTimer) clearTimeout(rt.flushTimer);
     rt.journal?.destroy();
     fs.rmSync(rt.dir, { recursive: true, force: true });
-    this.uploads.removeThread(rt.id);
+    this.uploads.removeThread(rt.uploadsKey);
     this.threads.delete(rt.id);
     this.byNative.delete(this.nativeKey(rt.record.instance, rt.record.native));
     if (this.index.remove(rt.id)) this.broadcast("thread/removed", { threadId: rt.id, token: this.index.token });
@@ -1320,7 +1569,8 @@ export class Core {
           rt.driver = null;
         }
         rt.interruptReason = null;
-        rt.lastStatus = status === "failed" ? "failed" : null;
+        rt.lastStatus = status;
+        rt.waiting.clear();
         rt.saveRuntime();
         if (hadDriver) this.appendControl(rt);
         this.journalOf(rt).compact();
@@ -1329,6 +1579,8 @@ export class Core {
         this.updateIndex(rt);
         this.activity.emit();
         if (rt.canDispatch()) this.afterIdle(rt);
+        // A turn ended in this checkout: its git status may have changed.
+        if (rt.record.repo) void this.gitStatus.refresh(rt.record.repo.root, true);
         return;
       }
       case "itemStarted":
@@ -1338,7 +1590,12 @@ export class Core {
         if (item.kind === "agentMessage" && ev.type === "itemCompleted" && item.text) {
           rt.record.preview = item.text.slice(0, 120);
         }
+        this.stampItem(rt, item, ev.type === "itemCompleted");
+        const wasWaiting = rt.waiting.size > 0;
+        if (item.kind === "meshWait" && item.status === "inProgress" && ev.type !== "itemCompleted") rt.waiting.add(item.id);
+        else rt.waiting.delete(item.id);
         this.append(rt, { type: ev.type, item });
+        if (wasWaiting !== rt.waiting.size > 0) this.updateIndex(rt);
         return;
       }
       case "itemDelta": {
@@ -1358,7 +1615,7 @@ export class Core {
         rt.requests.set(ev.requestId, rec);
         // Journaled — durably — before anything else happens to it.
         rt.saveRequests();
-        const item = { id: itemId, turnId: ev.turnId, status: "inProgress", kind: "request", requestId: ev.requestId, state: "pending", blocking: ev.blocking ?? true, ...req } as Item;
+        const item = { id: itemId, turnId: ev.turnId, status: "inProgress", startedAt: nowIso(), kind: "request", requestId: ev.requestId, state: "pending", blocking: ev.blocking ?? true, ...req } as Item;
         this.append(rt, { type: "itemStarted", item }, undefined, true);
         this.updateIndex(rt);
         this.activity.emit();
@@ -1395,11 +1652,28 @@ export class Core {
       }
       case "usageUpdated": {
         const u: ThreadEvent = { type: "usageUpdated" };
-        if (ev.tokens) u.tokens = ev.tokens;
-        if (ev.context) u.context = ev.context;
+        if (ev.tokens) u.tokens = rt.tokens = ev.tokens;
+        if (ev.context) u.context = rt.context = ev.context;
         this.append(rt, u);
         return;
       }
+    }
+  }
+
+  /** Item timestamps: when it appeared, and when it reached a final state ("Thought for 4s"). */
+  private stampItem(rt: ThreadRuntime, item: Item, final: boolean): void {
+    const now = nowIso();
+    const known = rt.itemStarts.get(item.id) ?? (rt.projection?.get(item.id) as Item | undefined)?.startedAt ?? null;
+    if (!item.startedAt) {
+      if (known) item.startedAt = known;
+      else if (!final) item.startedAt = now;
+    }
+    const finished = final || item.status === "completed" || item.status === "failed" || item.status === "declined";
+    if (finished) {
+      if (!item.completedAt) item.completedAt = now;
+      rt.itemStarts.delete(item.id);
+    } else if (item.startedAt) {
+      rt.itemStarts.set(item.id, item.startedAt);
     }
   }
 
@@ -1507,6 +1781,10 @@ export class Core {
   }
 
   async close(): Promise<void> {
+    if (this.gitTimer) clearInterval(this.gitTimer);
+    this.gitTimer = null;
+    await this.gitStatus.idle().catch(() => {});
+    this.gitStatus.close();
     for (const rt of this.threads.values()) {
       this.flushDeltas(rt);
       rt.journal?.close();
