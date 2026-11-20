@@ -271,6 +271,18 @@ and activity is quiet.**
 Who is working with whom, and how each worker is doing, is the job of the agents panel, not of
 the transcript.
 
+### The composer's height
+
+- **Two lines tall when empty.**
+- **Shift+Enter** inserts a line break; **Enter** sends.
+- It grows with its text, one line at a time, **up to five lines**. A long line that wraps
+  counts as the lines it takes up.
+- **Past five lines the height stops growing** and the text scrolls inside the composer, with
+  a thin scrollbar; the caret is always kept in view.
+- It shrinks again as text is removed and returns to two lines after sending.
+- Attachment chips and the queued-message strip sit above the text and are not counted in the
+  five lines.
+
 ### Going back and forward
 
 Following a link from one chat to another must be undoable. Beside the `YAAC` title at the top
