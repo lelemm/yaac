@@ -525,7 +525,7 @@ impl Fleet {
             p_orch.clone(),
         )));
         f.push(&users, done("u2", "u-t1", reasoning("Plan the users-service migration.")));
-        f.push(&users, done("u3", "u-t1", tool(ToolKind::FileChange, "Edited 4 files", None, "")));
+        f.push(&users, done("u3", "u-t1", tool(ToolKind::FileChange, "Edited 3 files", None, super::diffs::USERS)));
         f.push(&users, done("u4", "u-t1", tool(ToolKind::Command, "Ran `cargo test -p users` — 14 passed", Some(0), "test result: ok. 14 passed")));
         f.push(&users, done("u5", "u-t1", agent("Merged to main. All 14 tests pass.")));
         f.push(&users, done("u6", "u-t1", sent(
@@ -540,7 +540,7 @@ impl Fleet {
             p_orch.clone(),
         )));
         f.push(&billing, done("b2", "b-t1", reasoning("Find every call into the old auth module in the billing service, then swap them for the new client.")));
-        f.push(&billing, done("b3", "b-t1", tool(ToolKind::FileChange, "Edited 6 files", None, "")));
+        f.push(&billing, done("b3", "b-t1", tool(ToolKind::FileChange, "Edited 4 files", None, super::diffs::BILLING)));
         f.push(&billing, done("b4", "b-t1", tool(ToolKind::Command, "Ran `cargo test -p billing` — 14 passed", Some(0), "test result: ok. 14 passed; 1 ignored")));
         f.push(&billing, done("b5", "b-t1", agent("Merged to main. One flaky test was skipped.")));
         f.push(&billing, done("b6", "b-t1", sent(
@@ -555,7 +555,7 @@ impl Fleet {
             message("m-search-task", &orch.address(), &search.address(), MeshMessageKind::Message, &task("search"), f.ts(-3000)),
             p_orch.clone(),
         )));
-        f.push(&search, done("s2", "s-t1", tool(ToolKind::FileChange, "Edited 3 files", None, "")));
+        f.push(&search, done("s2", "s-t1", tool(ToolKind::FileChange, "Edited 2 files", None, super::diffs::SEARCH)));
         f.push(&search, done("s3", "s-t1", agent("The index must be rebuilt against the new auth tables. Starting a worker for it.")));
         f.push(&search, item("s4", "s-t1", ItemStatus::InProgress, spawn(vec![(p_index.clone(), ThreadState::NeedsAttention)])));
         f.push(&search, item("s5", "s-t1", ItemStatus::InProgress, wait(vec![(p_index, ThreadState::NeedsAttention)], false)));

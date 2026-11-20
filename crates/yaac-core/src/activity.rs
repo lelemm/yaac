@@ -9,8 +9,10 @@
 use std::collections::BTreeSet;
 
 use yaac_protocol::{
-    Item, ItemBody, ItemId, ItemStatus, MeshPeer, NoticeKind, ReceiptReason, ReceiptStatus, ThreadState,
+    Item, ItemBody, ItemId, ItemStatus, MeshPeer, NoticeKind, ReceiptReason, ReceiptStatus, ThreadState, ToolKind, TurnId,
 };
+
+use crate::diff::{FileStat, TurnTotals};
 
 use crate::attention::{AttentionMap, Mark, display};
 use crate::key::ThreadKey;
@@ -26,6 +28,12 @@ pub struct Expansion {
     pub lines: BTreeSet<(ThreadKey, ItemId)>,
     /// Folded runs opened (keyed by their first item).
     pub runs: BTreeSet<(ThreadKey, ItemId)>,
+    /// One file of a file-change item, shown as its diff (item, file index).
+    pub files: BTreeSet<(ThreadKey, ItemId, usize)>,
+    /// A long diff with "show the rest" opened (item, file index).
+    pub rest: BTreeSet<(ThreadKey, ItemId, usize)>,
+    /// A turn's "show all": every diff of that turn expanded.
+    pub turns: BTreeSet<(ThreadKey, TurnId)>,
 }
 
 impl Expansion {
@@ -34,6 +42,30 @@ impl Expansion {
         let k = (key.clone(), id.clone());
         if !self.lines.remove(&k) {
             self.lines.insert(k);
+        }
+    }
+
+    /// Toggle one file's diff.
+    pub fn toggle_file(&mut self, key: &ThreadKey, id: &ItemId, file: usize) {
+        let k = (key.clone(), id.clone(), file);
+        if !self.files.remove(&k) {
+            self.files.insert(k);
+        }
+    }
+
+    /// Open the rest of a long diff.
+    pub fn open_rest(&mut self, key: &ThreadKey, id: &ItemId, file: usize) {
+        self.rest.insert((key.clone(), id.clone(), file));
+    }
+
+    /// Toggle a turn's "show all". Closing it also closes the diffs opened one by one in that
+    /// turn, so the turn returns to its collapsed form.
+    pub fn toggle_turn(&mut self, key: &ThreadKey, turn: &TurnId, items: &[ItemId]) {
+        let k = (key.clone(), turn.clone());
+        if !self.turns.remove(&k) {
+            self.turns.insert(k);
+        } else {
+            self.files.retain(|(tk, id, _)| tk != key || !items.contains(id));
         }
     }
 
@@ -88,6 +120,20 @@ pub struct ActivityLine {
     pub expanded: bool,
     /// The item just navigated to (highlighted).
     pub highlighted: bool,
+    /// A file of a file change: its index in the item's diff and its counts. The line reads
+    /// "Edited src/frame.rs" followed by `+12 −3`.
+    pub diff: Option<DiffPart>,
+}
+
+/// One file of a file-change item.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiffPart {
+    /// The file's index in the item's diff.
+    pub file: usize,
+    /// Lines added.
+    pub added: u32,
+    /// Lines removed.
+    pub removed: u32,
 }
 
 /// A block of the transcript.
@@ -123,6 +169,17 @@ pub enum Block {
     Run {
         /// The lines.
         lines: Vec<ActivityLine>,
+    },
+    /// The end of a turn that changed several files: "Changed 3 files  +40 −12 · show all".
+    TurnChanges {
+        /// The turn.
+        turn: TurnId,
+        /// Files and lines.
+        totals: TurnTotals,
+        /// "show all" is open.
+        expanded: bool,
+        /// The file-change items of the turn.
+        items: Vec<ItemId>,
     },
     /// A long run, folded: "12 steps · 9 commands, 3 messages".
     Folded {
@@ -261,8 +318,20 @@ fn line_of(state: &AppState, map: &AttentionMap, index: usize, item: &Item) -> O
         ItemBody::Unknown(u) => (LineMark::Other, format!("{} (not shown by this version)", u.tag("kind")), false),
         _ => return None,
     };
-    Some(ActivityLine { index, id: item.id.clone(), mark, text, failed, in_progress, expanded: false, highlighted: false })
+    Some(ActivityLine { index, id: item.id.clone(), mark, text, failed, in_progress, expanded: false, highlighted: false, diff: None })
 }
+
+/// The files of a file-change item whose output is a diff.
+pub fn file_stats(item: &Item) -> Option<Vec<FileStat>> {
+    match &item.body {
+        ItemBody::ToolCall(t) if t.tool == ToolKind::FileChange && item.status != ItemStatus::Failed => crate::diff::stats(&t.output),
+        _ => None,
+    }
+}
+
+/// A turn that changed at least this many files ends with a summary line. (One file's own
+/// line already says everything the summary would.)
+pub const TURN_SUMMARY_FILES: usize = 2;
 
 fn fold_summary(lines: &[ActivityLine]) -> String {
     let commands = lines.iter().filter(|l| l.mark == LineMark::Tool).count();
@@ -308,7 +377,22 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
         }
     };
     let mut seen_prompt = false;
+    // The turn being read, with the files it changed so far.
+    let mut turn: Option<(TurnId, TurnTotals, Vec<ItemId>)> = None;
+    let end_turn = |turn: &mut Option<(TurnId, TurnTotals, Vec<ItemId>)>, run: &mut Vec<ActivityLine>, out: &mut Vec<Block>| {
+        if let Some((id, totals, items)) = turn.take()
+            && totals.files >= TURN_SUMMARY_FILES
+        {
+            flush(run, out);
+            let expanded = expansion.turns.contains(&(key.clone(), id.clone()));
+            out.push(Block::TurnChanges { turn: id, totals, expanded, items });
+        }
+    };
     for (index, item) in t.items().iter().enumerate() {
+        if turn.as_ref().is_none_or(|(id, _, _)| *id != item.turn_id) {
+            end_turn(&mut turn, &mut run, &mut out);
+            turn = Some((item.turn_id.clone(), TurnTotals::default(), Vec::new()));
+        }
         let block = match &item.body {
             ItemBody::UserMessage(_) => {
                 seen_prompt = true;
@@ -330,7 +414,31 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
                 out.push(b);
             }
             None => {
-                if let Some(mut line) = line_of(state, map, index, item) {
+                if let Some(files) = file_stats(item) {
+                    // A file change: one line per file, each its own diff.
+                    let highlighted = focus == Some(&item.id);
+                    let all = expansion.turns.contains(&(key.clone(), item.turn_id.clone()));
+                    for (n, f) in files.iter().enumerate() {
+                        if let Some((_, totals, items)) = &mut turn {
+                            totals.add(f);
+                            if !items.contains(&item.id) {
+                                items.push(item.id.clone());
+                            }
+                        }
+                        let expanded = all || (highlighted && n == 0) || expansion.files.contains(&(key.clone(), item.id.clone(), n));
+                        run.push(ActivityLine {
+                            index,
+                            id: item.id.clone(),
+                            mark: LineMark::Tool,
+                            text: f.title.clone(),
+                            failed: false,
+                            in_progress: item.status == ItemStatus::InProgress,
+                            expanded,
+                            highlighted,
+                            diff: Some(DiffPart { file: n, added: f.added, removed: f.removed }),
+                        });
+                    }
+                } else if let Some(mut line) = line_of(state, map, index, item) {
                     line.highlighted = focus == Some(&item.id);
                     line.expanded = line.highlighted || expansion.lines.contains(&(key.clone(), item.id.clone()));
                     run.push(line);
@@ -338,6 +446,7 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
             }
         }
     }
+    end_turn(&mut turn, &mut run, &mut out);
     flush(&mut run, &mut out);
     out
 }

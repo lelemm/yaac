@@ -38,6 +38,7 @@ pub mod prefs;
 pub mod settings;
 pub mod ssh_setup;
 pub mod requests;
+pub mod selection;
 pub mod sidebar;
 pub mod permission;
 pub mod projects;

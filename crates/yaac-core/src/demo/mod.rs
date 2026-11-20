@@ -9,6 +9,7 @@
 //! 06, 19, 20, 23) — and stream replies tick by tick.
 
 mod build;
+mod diffs;
 mod fleet;
 pub mod ssh;
 
