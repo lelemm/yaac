@@ -271,6 +271,14 @@ and activity is quiet.**
 Who is working with whom, and how each worker is doing, is the job of the agents panel, not of
 the transcript.
 
+### Times are always in the UI host's time zone
+
+Every time the interface shows or asks for — "2m", "until Sat 14:30", the mute date picker, a
+message's timestamp, "last seen 3h ago" — uses the **local time zone of the computer the
+window is running on**. Never the target's: a server in another time zone, or one set to UTC,
+does not change what the user reads or types. On the wire and on disk a time is an absolute
+instant; it is converted only when drawn or entered.
+
 ### Muting for a while
 
 Choosing **Mute** on a thread opens a small dialog, because a mute is often temporary — "not
@@ -291,7 +299,7 @@ A duration is turned into a fixed moment when the dialog is confirmed; the threa
 moment, not the duration. When it passes, the thread unmutes by itself and returns to its
 place in the list. In the *Muted* section a timed mute shows when it ends — "until 14:30",
 "until Sat" — in secondary text, and its right-click menu offers **Unmute** and **Change…**.
-A time in the past cannot be chosen. Times are shown in the host's own time zone.
+A time in the past cannot be chosen.
 
 ### The composer's height
 
