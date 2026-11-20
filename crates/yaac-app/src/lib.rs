@@ -25,6 +25,7 @@ mod first_run;
 mod icons;
 mod markdown;
 mod screenshot;
+mod seltext;
 mod settings;
 mod shell;
 mod sidebar;

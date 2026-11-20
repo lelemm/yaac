@@ -127,7 +127,7 @@ impl Palette {
     /// A faint ground for an added (green) or removed (red) diff line.
     pub(crate) fn diff_ground(&self, added: bool) -> Color32 {
         let c = if added { self.git_added } else { self.git_deleted };
-        let a = if self.dark { 34 } else { 28 };
+        let a = if self.dark { 26 } else { 24 };
         Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
     }
 

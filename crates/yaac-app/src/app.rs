@@ -109,6 +109,10 @@ pub(crate) struct UiState {
     pub set: crate::settings::SettingsUi,
     /// Item heights, keyed by content hash and width.
     pub heights: HashMap<u64, f32>,
+    /// The transcript's text selection.
+    pub textsel: crate::seltext::TextSel,
+    /// Parsed diffs of file changes.
+    pub diffs: crate::thread::DiffCache,
 }
 
 impl UiState {
@@ -144,6 +148,8 @@ impl UiState {
             layout_size: None,
             set: crate::settings::SettingsUi::default(),
             heights: HashMap::new(),
+            textsel: crate::seltext::TextSel::default(),
+            diffs: crate::thread::DiffCache::default(),
         }
     }
 

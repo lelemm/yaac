@@ -132,6 +132,8 @@ impl Shots {
                 );
             }
             ctx.set_zoom_factor(1.25);
+            // Code blocks show their copy button as on hover.
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique(crate::markdown::FORCE_COPY_BUTTONS), true));
             setup(app, id);
             // This display cannot resize the window reliably, so screen 21 lays the shell out in
             // 960 × 720 points and the picture is cropped to it.
@@ -185,7 +187,15 @@ fn setup(app: &mut YaacApp, id: &str) {
                 app.ui.panel = PanelMode::Card;
             }
         }
-        "03" => app.open(&threads::billing(), None),
+        "03" => {
+            // A file change: one diff expanded in place, the others collapsed, and the turn's
+            // summary line at the end.
+            let k = threads::billing();
+            app.open(&k, None);
+            app.ui.expansion.toggle_file(&k, &"b3".into(), 0);
+            app.ui.scroll_to = Some("b3".into());
+            app.ui.scroll_end = false;
+        }
         "04" => app.open(&threads::index(), None),
         "05" => {
             play(app, Scene::RequestStates);

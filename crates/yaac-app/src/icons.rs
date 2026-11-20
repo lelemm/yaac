@@ -348,3 +348,28 @@ pub(crate) fn fork(p: &Painter, c: Pos2, d: f32, col: Color32) {
         p.circle_filled(q, w * 1.3, col);
     }
 }
+
+/// Copy: two overlapping sheets.
+pub(crate) fn copy(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.09).max(1.1);
+    let s = d * 0.5;
+    let back = Rect::from_min_size(pos2(c.x - s * 0.75, c.y - s * 0.75), vec2(s, s));
+    let front = Rect::from_min_size(pos2(c.x - s * 0.25, c.y - s * 0.25), vec2(s, s));
+    p.line(vec![pos2(back.left(), back.bottom()), back.left_top(), pos2(back.right(), back.top())], stroke(col, w));
+    p.rect_stroke(front, 1.5, stroke(col, w), eframe::egui::StrokeKind::Middle);
+}
+
+/// A check mark (done; "Copied").
+pub(crate) fn check(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.1).max(1.3);
+    let s = d * 0.36;
+    p.line(vec![pos2(c.x - s, c.y), pos2(c.x - s * 0.3, c.y + s * 0.7), pos2(c.x + s, c.y - s * 0.6)], stroke(col, w));
+}
+
+/// Back (‹) and forward (›): a single chevron pointing left or right.
+pub(crate) fn nav(p: &Painter, c: Pos2, d: f32, forward: bool, col: Color32) {
+    let w = (d * 0.1).max(1.4);
+    let s = d * 0.22;
+    let dir = if forward { 1.0 } else { -1.0 };
+    p.line(vec![pos2(c.x - s * dir * 0.6, c.y - s * 1.4), pos2(c.x + s * dir * 0.8, c.y), pos2(c.x - s * dir * 0.6, c.y + s * 1.4)], stroke(col, w));
+}

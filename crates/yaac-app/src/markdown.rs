@@ -10,6 +10,7 @@ use eframe::egui::{self, Color32, FontId, text::LayoutJob};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use yaac_protocol::ItemId;
 
+use crate::seltext::SelCx;
 use crate::theme::{self, Palette, size};
 
 /// A run of inline text with its style.
@@ -316,8 +317,27 @@ fn highlight(line: &str, p: &Palette, font: &FontId) -> LayoutJob {
     job
 }
 
+fn spans_text(spans: &[Span]) -> String {
+    spans.iter().map(|s| s.text.as_str()).collect()
+}
+
+/// The text of each block as it is drawn (one entry per selectable part): what a selection
+/// copies when the block was never on screen.
+pub(crate) fn plain_parts(blocks: &[&Block]) -> Vec<String> {
+    blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Para(s) | Block::Heading(_, s) | Block::Quote(s) => Some(spans_text(s)),
+            Block::Item { marker, spans, .. } => Some(format!("{marker} {}", spans_text(spans))),
+            Block::Code { text, .. } => Some(text.clone()),
+            Block::Rule => None,
+        })
+        .collect()
+}
+
 /// Draw blocks. `color` is the prose colour (primary, or secondary for inherited history).
-pub(crate) fn show(ui: &mut egui::Ui, blocks: &[&Block], p: &Palette, color: Color32, font_size: f32) {
+/// Text is drawn through `sc`, so it can be selected across items.
+pub(crate) fn show(ui: &mut egui::Ui, sc: &mut SelCx<'_>, blocks: &[&Block], p: &Palette, color: Color32, font_size: f32) {
     let width = ui.available_width();
     let font = theme::ui(font_size);
     for (n, b) in blocks.iter().enumerate() {
@@ -326,7 +346,7 @@ pub(crate) fn show(ui: &mut egui::Ui, blocks: &[&Block], p: &Palette, color: Col
         }
         match b {
             Block::Para(s) => {
-                ui.label(job_for(s, &font, color, p, width));
+                sc.job(ui, job_for(s, &font, color, p, width), color);
             }
             Block::Heading(level, s) => {
                 let size = match level {
@@ -340,44 +360,121 @@ pub(crate) fn show(ui: &mut egui::Ui, blocks: &[&Block], p: &Palette, color: Col
                         sec.format.font_id = theme::bold(size);
                     }
                 }
-                ui.label(job);
+                sc.job(ui, job, color);
             }
             Block::Item { depth, marker, spans } => {
                 ui.horizontal_top(|ui| {
                     ui.add_space(6.0 + f32::from(*depth) * 18.0);
-                    ui.label(egui::RichText::new(marker).font(font.clone()).color(p.text2));
-                    let w = ui.available_width();
-                    ui.label(job_for(spans, &font, color, p, w));
+                    // The marker is part of the item's text, so a copied list keeps its bullets
+                    // and numbers.
+                    let mut job = LayoutJob::default();
+                    job.append(
+                        &format!("{marker} "),
+                        0.0,
+                        egui::TextFormat { font_id: font.clone(), color: p.text2, line_height: Some(font.size * 1.45), ..Default::default() },
+                    );
+                    let rest = job_for(spans, &font, color, p, f32::INFINITY);
+                    for sec in rest.sections {
+                        job.append(&rest.text[sec.byte_range.start.0..sec.byte_range.end.0], 0.0, sec.format);
+                    }
+                    job.wrap.max_width = ui.available_width();
+                    sc.job(ui, job, color);
                 });
             }
             Block::Quote(s) => {
                 egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 0, top: 0, bottom: 0 }).show(ui, |ui| {
-                    ui.label(job_for(s, &font, p.text2, p, width - 12.0));
+                    sc.job(ui, job_for(s, &font, p.text2, p, width - 12.0), p.text2);
                 });
             }
             Block::Rule => {
                 ui.add_space(4.0);
             }
-            Block::Code { text, .. } => code_block(ui, text, p),
+            Block::Code { text, .. } => code_block(ui, sc, text, p),
         }
     }
 }
 
-/// A code block: faint fill, no outline, line numbers.
-pub(crate) fn code_block(ui: &mut egui::Ui, text: &str, p: &Palette) {
+/// A code block: faint fill, no outline, line numbers beside (not part of the selectable or
+/// copied text), and a copy button at the top right.
+pub(crate) fn code_block(ui: &mut egui::Ui, sc: &mut SelCx<'_>, text: &str, p: &Palette) {
     let font = theme::mono(size::MONO);
-    egui::Frame::NONE.fill(p.code_bg).corner_radius(5).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+    let line_h = size::MONO * 1.55;
+    let fmt = |c: Color32| egui::TextFormat { font_id: font.clone(), color: c, line_height: Some(line_h), ..Default::default() };
+    let frame = egui::Frame::NONE.fill(p.code_bg).corner_radius(5).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        let lines: Vec<&str> = text.lines().collect();
+        let lines: Vec<&str> = text.split('\n').collect();
         let digits = lines.len().to_string().len();
+        let mut numbers = LayoutJob::default();
+        let mut code = LayoutJob::default();
         for (i, line) in lines.iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 14.0;
-                ui.label(egui::RichText::new(format!("{:>digits$}", i + 1)).font(font.clone()).color(p.text2));
-                ui.label(highlight(line, p, &font));
-            });
+            let last = i + 1 == lines.len();
+            numbers.append(&format!("{:>digits$}{}", i + 1, if last { "" } else { "\n" }), 0.0, fmt(p.text2));
+            let hl = highlight(line, p, &font);
+            for mut sec in hl.sections {
+                sec.format.line_height = Some(line_h);
+                code.append(&hl.text[sec.byte_range.start.0..sec.byte_range.end.0], 0.0, sec.format);
+            }
+            if !last {
+                code.append("\n", 0.0, fmt(p.text));
+            }
         }
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            let ng = ui.fonts_mut(|f| f.layout_job(numbers));
+            let (r, _) = ui.allocate_exact_size(ng.size(), egui::Sense::hover());
+            ui.painter().galley(r.min, ng, p.text2);
+            sc.job(ui, code, p.text);
+        });
     });
+    let id = ui.scope_id().with(("code-copy", sc.unit, text.len()));
+    copy_button(ui, p, frame.response.rect, text, id);
+}
+
+/// Screenshots: draw every copy button as if the pointer were over its block.
+pub(crate) const FORCE_COPY_BUTTONS: &str = "force-copy-buttons";
+
+/// The copy button at the top right of `block`: shown while the pointer is over the block, or
+/// while it has keyboard focus (it is always in the focus order); reads "Copied" for a moment
+/// after use. Drawn without an outline: a faint fill under it.
+pub(crate) fn copy_button(ui: &mut egui::Ui, p: &Palette, block: egui::Rect, text: &str, id: egui::Id) {
+    const SHOWN_FOR: f64 = 1.5;
+    let now = ui.input(|i| i.time);
+    let copied_at: Option<f64> = ui.data(|d| d.get_temp(id));
+    let copied = copied_at.is_some_and(|t| now - t < SHOWN_FOR);
+    let label = if copied { "Copied" } else { "Copy" };
+    let font = theme::ui(size::SMALL);
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font, p.text2));
+    let size = egui::vec2(g.size().x + 30.0, 22.0);
+    let rect = egui::Rect::from_min_size(egui::pos2(block.right() - size.x - 6.0, block.top() + 6.0), size);
+    let resp = ui.interact(rect, id, egui::Sense::click());
+    let force = ui.data(|d| d.get_temp::<bool>(egui::Id::unique(FORCE_COPY_BUTTONS))).unwrap_or(false);
+    let show = force || copied || resp.has_focus() || ui.rect_contains_pointer(block);
+    let enter = resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Space));
+    if resp.clicked() || enter {
+        ui.ctx().copy_text(text.to_owned());
+        ui.data_mut(|d| d.insert_temp(id, now));
+        // One repaint when "Copied" should read "Copy" again.
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(SHOWN_FOR));
+    }
+    if !show {
+        return;
+    }
+    let pa = ui.painter();
+    pa.rect_filled(rect, 5.0, if resp.hovered() || resp.has_focus() { p.faint } else { p.code_bg });
+    let c = p.text2;
+    let ic = egui::pos2(rect.left() + 13.0, rect.center().y);
+    if copied {
+        crate::icons::check(pa, ic, 12.0, c);
+    } else {
+        crate::icons::copy(pa, ic, 12.0, c);
+    }
+    pa.galley(egui::pos2(rect.left() + 23.0, rect.center().y - g.size().y / 2.0), g, c);
+    if resp.has_focus() {
+        crate::widgets::focus_ring(ui, rect, p);
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
 }
 
 #[cfg(test)]
