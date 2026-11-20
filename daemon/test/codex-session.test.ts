@@ -24,7 +24,8 @@ test("codex + session layer: a recorded turn with an approval, journaled and ans
     // The probe's own initialize is answered by the default handler; the script's first
     // `initialize` step is dropped — the connection is already up when the turn starts.
     const script = fake.run(steps.filter((s) => !("expect" in s && s.expect === "initialize") && !("expectNotify" in s)));
-    const added: any = await c.request("providerInstance/add", { kind: "codex", endpoint: { socket: fake.socket } });
+    const addedRes: any = await c.request("providerInstance/add", { opId: opId(), kind: "codex", endpoint: { socket: fake.socket } });
+    const added = addedRes.instance;
     const list: any = await c.request("provider/list", {});
     const desc = list.providers.find((p: any) => p.instance === added.id);
     assert.equal(desc.status, "ready");
@@ -46,7 +47,8 @@ test("codex + session layer: a recorded turn with an approval, journaled and ans
     assert.ok(states.includes("submitted") || states.includes("resolved"));
     assert.deepEqual(fake.replies.get(0), { decision: "accept" });
 
-    const items = (await readAll(c, started.threadId)).flatMap((p) => p.items);
+    // thread/read pages are newest first (docs/03-protocol.md); put them in conversation order.
+    const items = (await readAll(c, started.threadId)).flatMap((p) => p.items).reverse();
     const kinds = items.map((i) => i.kind);
     // yaacd's own record of the user's message, once; the joined input from another client; the rest from Codex.
     assert.equal(items.filter((i) => i.kind === "userMessage").length, 2);

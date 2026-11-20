@@ -895,3 +895,20 @@ often, one of its parents — into a named project in a few seconds.*
     of the folder name."
   - A line in secondary text: "3 threads in this folder will move into the project."
   - Actions: one filled button **Create project  ⏎**, and plain-text **Cancel  Esc**.
+
+### 30 — Confirming a mode that bypasses approvals
+
+*The one choice that removes the safety net. Must be deliberate, and impossible to make by
+reflex.*
+
+- Main shell, a thread open; a small dialog centred over a dimmed background.
+- Title, with a warning icon: "Let this agent act without asking?"
+- Body, primary text: "In **bypass permissions** mode the agent runs commands and changes files
+  without asking you first." Then three plain lines in secondary text: "Thread: Fix frame
+  decoder", "Machine: devbox", "Folder: /home/dev/yaac".
+- A last line in secondary text: "This applies to this thread only. You can switch back at any
+  time."
+- Actions: **Cancel  Esc** has the focus ring and is the default; the confirming action is the
+  screen's one filled button, in the failed colour: **Bypass permissions**. Enter does not
+  confirm.
+- Behind the dialog, the control row's mode selector is open on the mode being chosen.

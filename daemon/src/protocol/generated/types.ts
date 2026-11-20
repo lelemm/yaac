@@ -1408,6 +1408,12 @@ export interface ModeInfo {
    * Whether this is the harness's default mode.
    */
   isDefault?: boolean;
+  /**
+   * True when this mode lets the agent act without asking — it bypasses approval prompts
+   * altogether. The UI must ask the user to confirm before switching a thread to it, and
+   * must keep it visibly marked while it is active.
+   */
+  skipsApprovals?: boolean;
 }
 
 /**

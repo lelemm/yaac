@@ -107,6 +107,11 @@ pub struct ModeInfo {
     /// Whether this is the harness's default mode.
     #[serde(default)]
     pub is_default: bool,
+    /// True when this mode lets the agent act without asking — it bypasses approval prompts
+    /// altogether. The UI must ask the user to confirm before switching a thread to it, and
+    /// must keep it visibly marked while it is active.
+    #[serde(default)]
+    pub skips_approvals: bool,
 }
 
 /// A model, exactly as the harness listed it. Never hardcoded.

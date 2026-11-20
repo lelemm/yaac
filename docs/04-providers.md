@@ -435,8 +435,9 @@ Notes:
   resumes it on demand, and keeps at most four alive at once (least recently used closed
   first, never one with a running turn or an open request). Both limits are configurable.
   This eviction is central to the target-side memory budget.
-- The modes offered are the SDK's permission modes **except the one that bypasses all
-  permission checks**, which YAAC deliberately does not offer.
+- The modes offered are the SDK's permission modes, **including the one that bypasses all
+  permission checks**. That one is reported with `skipsApprovals` set, so the UI asks for
+  confirmation before switching to it ([07 UI](07-ui.md#the-control-row-under-the-composer)).
 - The Claude process is a child of `yaacd`. If `yaacd` dies, so does a turn in progress, and
   any request it was waiting on becomes `expired` — still visible, with its full text.
 - `supportedModels()` reports effort levels per model but has no image-input flag. The Claude

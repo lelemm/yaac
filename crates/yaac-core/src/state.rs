@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use yaac_protocol::attach::{ConnectionStatus, TargetEntry, TargetStateParams, TargetTransport};
 use yaac_protocol::{
     Address, ClientId, Control, EffortId, InstanceId, ItemId, MeshBudgetResult, ModeId, ModelId,
-    ProviderDescriptor, SyncToken, TargetId, TargetPath, ThreadEventParams, ThreadSummary,
+    FsListResult, ProviderDescriptor, ProviderInstanceConfig, SyncToken,
+    ThreadForkPreviewResult, TargetId, TargetPath, ThreadEventParams, ThreadSummary,
     ThreadSyncResult, UploadId,
 };
 
@@ -26,6 +27,11 @@ pub struct TargetRecord {
     pub synced: bool,
     /// Instances whose last scan was incomplete.
     pub stale_instances: Vec<InstanceId>,
+    /// The providers were read from the connected target in this session (not only from the
+    /// cache): the model picker says "updated just now".
+    pub providers_fresh: bool,
+    /// The stored instance configurations (`providerInstance/list`), once asked for.
+    pub instance_configs: Option<Vec<ProviderInstanceConfig>>,
     pending_full: Option<Vec<ThreadSummary>>,
 }
 
@@ -38,6 +44,8 @@ impl TargetRecord {
             sync_token: SyncToken::default(),
             synced: false,
             stale_instances: Vec::new(),
+            providers_fresh: false,
+            instance_configs: None,
             pending_full: None,
         }
     }
@@ -150,7 +158,7 @@ pub enum Selection {
     Thread(ThreadKey),
     /// A new-thread draft.
     NewThread(u64),
-    /// Settings (a later package fills the pages).
+    /// Settings (a full-window page; the app keeps which page is open).
     Settings,
 }
 
@@ -190,15 +198,65 @@ pub enum AgentsPolicy {
     Allow,
 }
 
+/// How `hub/hello` ended.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum HelloOutcome {
+    /// Not answered yet.
+    #[default]
+    Pending,
+    /// The same build: attached.
+    Attached,
+    /// The window is newer than the running hub: ask it to shut down (`hub/shutdown`) and
+    /// start this build's hub.
+    HubOutdated {
+        /// The running hub's build.
+        hub_build: String,
+    },
+    /// The window is older than the running hub: tell the user to update YAAC, and attach
+    /// to nothing.
+    WindowOutdated {
+        /// The hub's message, shown as-is.
+        message: String,
+    },
+}
+
 /// The hub attachment.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HubState {
-    /// `hub/hello` completed.
+    /// `hub/hello` completed with the same build.
     pub attached: bool,
+    /// How `hub/hello` ended.
+    pub outcome: HelloOutcome,
     /// The hub's build.
     pub build: Option<String>,
     /// The last error the hub reported, for the footer.
     pub last_error: Option<String>,
+    /// The old hub answered `hub/shutdown` (it is exiting).
+    pub shutdown_answered: bool,
+    /// Whether the hub keeps running and starts at login (`hub/settings/get`), once known.
+    pub always: Option<bool>,
+}
+
+/// A `thread/forkPreview` in flight or answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ForkPreviewState {
+    /// Asked; no answer yet.
+    Loading,
+    /// The target's answer.
+    Ready(ThreadForkPreviewResult),
+    /// The request failed; the message is shown as-is.
+    Failed(String),
+}
+
+/// An `fs/list` in flight or answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FsListingState {
+    /// Asked; no answer yet.
+    Loading,
+    /// The listing.
+    Ready(FsListResult),
+    /// The request failed; the message is shown as-is.
+    Failed(String),
 }
 
 /// Everything the window shows, as data.
@@ -246,6 +304,16 @@ pub struct AppState {
     /// SEAM (wire field missing): the per-chat "agents: ask / allow" choice of threads a
     /// person started. No per-thread mesh policy exists on the wire yet.
     pub agents_policy: BTreeMap<ThreadKey, AgentsPolicy>,
+    /// SEAM (wire field missing): what YAAC did on each SSH target during setup (who set it
+    /// up and when, the line it installed). The hub's `TargetEntry` has no such record yet.
+    pub ssh_records: BTreeMap<TargetId, crate::ssh_setup::SetupRecord>,
+    /// SEAM (wire field missing): the per-instance switch "Offer YAAC tools to sessions
+    /// started outside YAAC". No wire field or method exists; window-local.
+    pub outside_tools: BTreeSet<(TargetId, InstanceId)>,
+    /// `thread/forkPreview` answers, by source thread and destination instance.
+    pub fork_previews: BTreeMap<(ThreadKey, InstanceId), ForkPreviewState>,
+    /// `fs/list` answers, by target and directory asked for ("" for the home directory).
+    pub fs_listings: BTreeMap<(TargetId, String), FsListingState>,
     /// An item to scroll to and highlight (navigation from a To/From link or Needs you).
     pub focus_item: Option<(ThreadKey, ItemId)>,
     /// Bounded transcript cache size (open thread excluded).

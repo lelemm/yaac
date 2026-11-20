@@ -6,7 +6,6 @@
 // runs `daemon stop`, `restart`, `update`, or `bootstrap`.
 
 import { execFile } from "node:child_process";
-import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ProviderStatus } from "../../protocol/generated/types.js";
@@ -126,13 +125,4 @@ export async function connectBackend(plan: EndpointPlan, opts: ConnectOptions): 
 function lastLine(s: string): string {
   const lines = s.split("\n").map((l) => l.trim()).filter(Boolean);
   return lines[lines.length - 1] ?? "";
-}
-
-/** True when the socket file exists (for diagnostics only; connecting is the real test). */
-export function socketExists(p: string): boolean {
-  try {
-    return fs.statSync(p).isSocket();
-  } catch {
-    return false;
-  }
 }
