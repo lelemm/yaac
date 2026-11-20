@@ -518,6 +518,7 @@ export class Core {
     const s: ThreadSummary = {
       id: r.id,
       instance: r.instance,
+      nativeId: r.native,
       title: r.titleOverride ?? r.title ?? "Untitled",
       preview: r.preview ?? "",
       cwd: r.cwd,

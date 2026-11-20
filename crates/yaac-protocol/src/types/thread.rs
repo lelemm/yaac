@@ -197,6 +197,10 @@ pub struct ThreadSummary {
     pub id: ThreadId,
     /// Its provider instance. Never changes.
     pub instance: InstanceId,
+    /// The harness's own conversation id (Codex `Thread.id`, the Claude session id): what a
+    /// user copies from a terminal. Opaque; for finding a thread, never for routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_id: Option<String>,
     /// Harness title, or first prompt, or user override.
     pub title: String,
     /// Short excerpt.

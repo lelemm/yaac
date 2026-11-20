@@ -3513,6 +3513,11 @@ export interface ThreadSummary {
    */
   muted?: boolean;
   /**
+   * The harness's own conversation id (Codex `Thread.id`, the Claude session id): what a
+   * user copies from a terminal. Opaque; for finding a thread, never for routing.
+   */
+  nativeId?: string | null;
+  /**
    * How it came to exist.
    */
   originKind: OriginKind;

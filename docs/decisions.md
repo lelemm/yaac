@@ -78,6 +78,7 @@ All dated entries are from 2026-11-20.
 | D65 | A thread created from YAAC starts in the **root of its project's folder**. | Owner |
 | D66 | **Sidebar rows are more informative: more than one line**, with room for the **git branch** and, very compactly, **how many files differ from origin** for that branch. | Owner |
 | D68 | The git changes in a sidebar row use **real icons, not Unicode characters**, and the **usual git colours** (green, red, …). | Owner |
+| D76 | Mesh listings and searches are **paged**: a small page per call, with a cursor for the next. | Owner |
 | D75 | The mesh has a **search by thread id**, and a **fuzzy finder by title**, both **across all targets**. | Owner |
 | D74 | **The mesh tools never list every running agent.** With a fleet of ten targets that would be far too much; listings are scoped and bounded. | Owner |
 | D73 | **If the hub is unavailable for any reason, threads on the same target can still communicate** — their daemon is local. | Owner |
