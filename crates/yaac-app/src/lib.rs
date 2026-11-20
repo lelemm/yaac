@@ -17,6 +17,7 @@ pub mod attach;
 pub mod hubmode;
 
 mod agents_ui;
+mod app_icon;
 mod app;
 mod cards;
 mod composer;
@@ -134,7 +135,11 @@ pub fn run(args: &[String]) -> ExitCode {
     };
     let size = if shots.is_some() { [1600.0, 1000.0] } else { [1440.0, 900.0] };
     let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default().with_title("YAAC").with_inner_size(size).with_min_inner_size([960.0, 600.0]),
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_title("YAAC")
+            .with_inner_size(size)
+            .with_min_inner_size([960.0, 600.0])
+            .with_icon(eframe::egui::IconData { rgba: app_icon::rgba(64), width: 64, height: 64 }),
         #[cfg(feature = "glow")]
         renderer: eframe::Renderer::Glow,
         #[cfg(all(feature = "wgpu", not(feature = "glow")))]

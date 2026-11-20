@@ -4101,6 +4101,7 @@ dependencies = [
  "yaac-hub",
  "yaac-protocol",
  "yaac-transport",
+ "yaac-winsys",
 ]
 
 [[package]]
@@ -4145,6 +4146,14 @@ version = "0.1.0"
 dependencies = [
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "yaac-winsys"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
