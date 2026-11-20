@@ -118,7 +118,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     if resp.clicked() {
         actions.push(Action::Settings(true));
     }
-    hover_card(ui, app, &secs, hovered, actions);
+    hover_card(ui, app, &secs, hovered.as_ref(), actions);
     badge
 }
 
@@ -128,9 +128,9 @@ fn card_rect(icon: Rect) -> Rect {
 
 /// The card beside a hovered icon: the thread's full row. Opens on the icon; stays while the
 /// pointer is over the card or the icon; closes a quarter of a second after leaving both.
-fn hover_card(ui: &mut egui::Ui, app: &mut YaacApp, secs: &[yaac_core::sidebar::Section], hovered: Option<(yaac_core::ThreadKey, Rect)>, actions: &mut Vec<Action>) {
+fn hover_card(ui: &mut egui::Ui, app: &mut YaacApp, secs: &[yaac_core::sidebar::Section], hovered: Option<&(yaac_core::ThreadKey, Rect)>, actions: &mut Vec<Action>) {
     let ctx = ui.ctx().clone();
-    if let Some((k, r)) = &hovered
+    if let Some((k, r)) = hovered
         && app.ui.strip_hover_key.as_ref().is_none_or(|(hk, _)| hk != k)
     {
         // A new icon: the card moves to it at once.

@@ -615,6 +615,7 @@ fn peer_link(
 }
 
 /// One activity line's look.
+#[derive(Clone, Copy)]
 struct Row<'a> {
     state_mark: Option<Mark>,
     mark: LineMark,

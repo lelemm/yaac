@@ -91,6 +91,7 @@ fn texture(ctx: &egui::Context, logo: Logo, px: u32) -> TextureHandle {
 /// Draw `logo` centred at `c`, `d` points across, in `color`.
 pub(crate) fn draw(painter: &Painter, c: Pos2, d: f32, logo: Logo, color: Color32) {
     let ppp = painter.ctx().pixels_per_point();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "an icon's size in pixels")]
     let px = ((d * ppp).round() as u32).clamp(8, 256);
     let tex = texture(painter.ctx(), logo, px);
     let rect = Rect::from_center_size(c, vec2(d, d));
@@ -118,8 +119,9 @@ mod tests {
             let (mut sx, mut sy, mut n) = (0.0, 0.0, 0.0);
             for (i, a) in m.iter().enumerate() {
                 let w = f64::from(*a);
-                sx += (i as u32 % px) as f64 * w;
-                sy += (i as u32 / px) as f64 * w;
+                let (x, y) = (i % px as usize, i / px as usize);
+                sx += x as f64 * w;
+                sy += y as f64 * w;
                 n += w;
             }
             let (cx, cy) = (sx / n, sy / n);

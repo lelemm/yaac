@@ -67,6 +67,7 @@ fn button(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>, filled: bool
 
 /// A link: not coloured — the surrounding text's colour, set bolder; no underline at rest,
 /// underlined on hover or keyboard focus.
+#[allow(clippy::needless_pass_by_value, reason = "callers pass a fresh FontId; only its size is used")]
 pub(crate) fn link(ui: &mut Ui, p: &Palette, text: &str, font: egui::FontId) -> Response {
     let font = theme::bold(font.size);
     let resp = ui.add(egui::Label::new(egui::RichText::new(text).font(font).color(p.text)).selectable(false).sense(Sense::click()));

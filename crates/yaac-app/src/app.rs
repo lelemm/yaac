@@ -497,7 +497,7 @@ impl YaacApp {
             saved_prefs,
             last_tick: 0.0,
             applied: None,
-            ctx: cc.egui_ctx.clone(),
+            ctx: cc.egui_ctx,
         };
         if app.demo.is_some() {
             app.land();

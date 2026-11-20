@@ -108,7 +108,8 @@ mod tests {
 
     #[test]
     fn table() {
-        let cases: &[(&str, &[(Option<(f32, f32)>, f64)], &[bool])] = &[
+        type Path<'a> = &'a [(Option<(f32, f32)>, f64)];
+        let cases: &[(&str, Path<'_>, &[bool])] = &[
             ("far away: stays closed", &[(Some((100.0, 100.0)), 0.0), (Some((200.0, 500.0)), 0.1)], &[false, false]),
             (
                 "over the card's area before it opened: does not open it",

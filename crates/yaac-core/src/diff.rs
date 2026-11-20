@@ -407,7 +407,8 @@ rename to README.md
     #[test]
     fn table() {
         // (name, text, expected per file: (title, added, removed, hunks))
-        let cases: &[(&str, &str, &[(&str, u32, u32, usize)])] = &[
+        type Case<'a> = (&'a str, &'a str, &'a [(&'a str, u32, u32, usize)]);
+        let cases: &[Case<'_>] = &[
             ("modified", MODIFIED, &[("Edited src/frame.rs", 2, 1, 1)]),
             ("added file", ADDED, &[("Created tests/last_frame.rs", 3, 0, 1)]),
             ("deleted file", DELETED, &[("Deleted src/old_auth.rs", 0, 2, 1)]),

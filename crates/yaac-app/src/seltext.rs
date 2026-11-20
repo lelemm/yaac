@@ -84,7 +84,7 @@ impl TextSel {
         // Between rows or past the ends: the end of the last text above, or the start of the
         // first.
         let mut sorted: Vec<&Placed> = self.frame.iter().collect();
-        sorted.sort_by(|a, b| (a.unit, a.part).cmp(&(b.unit, b.part)));
+        sorted.sort_by_key(|g| (g.unit, g.part));
         match sorted.iter().rev().find(|g| g.rect().top() <= p.y) {
             Some(g) => Some(g.end()),
             None => sorted.first().map(|g| TextPos::new(g.unit, g.part, 0)),

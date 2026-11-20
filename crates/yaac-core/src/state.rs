@@ -334,7 +334,7 @@ pub struct ViewPref {
 }
 
 /// A change to view preferences: only the fields given change.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ViewPatch {
     /// Pin or unpin.
     pub pinned: Option<bool>,
