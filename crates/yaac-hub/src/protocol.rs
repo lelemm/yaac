@@ -24,7 +24,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use yaac_protocol::{ClientId, JournalPosition, OpId, TargetId, ThreadId};
+use yaac_protocol::{ClientId, JournalPosition, OpId, TargetId, ThreadId, ThreadSummary};
 
 use crate::settings::HubSettings;
 
@@ -42,6 +42,26 @@ pub mod names {
     /// Window → hub: find threads across every target in the cached index, by id or by a
     /// fuzzy title match, one page at a time ([`crate::find`]).
     pub const THREADS_FIND: &str = "hub/threads/find";
+    /// Window → hub `{ id, target? }`: find a thread by id on every connected target (or one),
+    /// asking each `yaacd` — which asks its harnesses — when no index has it
+    /// (`thread/lookup`). Result: [`LookupResult`].
+    pub const THREADS_LOOKUP: &str = "hub/threads/lookup";
+    /// Window → hub `{ id }`: the target's recent connection steps, for diagnostics
+    /// ([`TargetLogResult`]). Never message content.
+    pub const TARGETS_LOG: &str = "hub/targets/log";
+    /// Window → hub: every thread's view preferences (pin, mute, dismiss: D92), from the hub's
+    /// durable store ([`ViewGetResult`]).
+    pub const VIEW_GET: &str = "hub/view/get";
+    /// Window → hub: change one thread's view preferences ([`ViewSetParams`] → [`ViewSetResult`]).
+    pub const VIEW_SET: &str = "hub/view/set";
+    /// Window → hub: change several at once, e.g. "Dismiss all" of a temporary project
+    /// ([`ViewSetManyParams`] → [`ViewGetResult`] with the entries changed).
+    pub const VIEW_SET_MANY: &str = "hub/view/setMany";
+    /// Hub → window notification: view preferences changed ([`ViewChangedParams`]), so every
+    /// window agrees.
+    pub const VIEW_CHANGED: &str = "hub/view/changed";
+    /// Hub → window notification `{ target }`: a target's discovery caps in the cache changed.
+    pub const DISCOVERY_CHANGED: &str = "hub/discovery/changed";
     /// Window → hub `{ id }`: a target's projects, from the cache (`{ projects }`).
     pub const PROJECTS_LIST: &str = "hub/projects/list";
     /// Hub → window notification `{ target }`: a target's projects in the cache were replaced
@@ -254,4 +274,165 @@ pub struct OperationsListResult {
 pub struct OperationRef {
     /// The operation.
     pub op_id: OpId,
+}
+
+/// `hub/threads/lookup` params.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LookupParams {
+    /// The YAAC thread id or the harness's own conversation id.
+    pub id: String,
+    /// Only this target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TargetId>,
+}
+
+/// One thread found by `hub/threads/lookup`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LookupHit {
+    /// Its target.
+    pub target: TargetId,
+    /// Its summary (it is now in that target's index, and so in the cache).
+    pub thread: ThreadSummary,
+}
+
+/// `hub/threads/lookup` result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LookupResult {
+    /// What was found.
+    pub threads: Vec<LookupHit>,
+    /// Targets that could not be asked (offline, or the lookup failed).
+    #[serde(default)]
+    pub unreachable: Vec<TargetId>,
+}
+
+/// One step of a target's connection, for the diagnostics view.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionStep {
+    /// When, milliseconds since the Unix epoch.
+    pub at_ms: i64,
+    /// What: `connecting`, `opened`, `negotiated`, `ready`, `failed`, `closed`, `incompatible`,
+    /// `disabled`, `offline`.
+    pub step: String,
+    /// Detail, shown as-is (a reason, the daemon's build). Never message content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// `hub/targets/log` result: oldest first, at most the last 50 steps.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetLogResult {
+    /// The steps.
+    pub steps: Vec<ConnectionStep>,
+}
+
+/// One thread's view preferences, kept by the hub on this computer (D92): user data, in the
+/// durable store beside drafts, never in the disposable cache and never on the target. A
+/// thread with none has no entry.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadView {
+    /// The target.
+    pub target: TargetId,
+    /// The thread.
+    pub thread_id: ThreadId,
+    /// Pinned.
+    #[serde(default)]
+    pub pinned: bool,
+    /// Muted.
+    #[serde(default)]
+    pub muted: bool,
+    /// A timed mute ends then (RFC 3339). The hub keeps no timer: the window compares it with
+    /// the time when it draws.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted_until: Option<String>,
+    /// Dismissed: hidden by the window. The target keeps indexing it; search still finds it.
+    #[serde(default)]
+    pub dismissed: bool,
+}
+
+impl ThreadView {
+    /// Whether the entry says anything (an empty one is removed).
+    pub fn is_empty(&self) -> bool {
+        !self.pinned && !self.muted && !self.dismissed && self.muted_until.is_none()
+    }
+
+    /// Kept by the user: the target's discovery caps must not cut it (`thread/keep`).
+    pub fn keeps(&self) -> bool {
+        self.pinned || self.muted
+    }
+}
+
+/// `hub/view/get` result (also the `hub/view/setMany` result: the entries changed).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewGetResult {
+    /// Every thread that has a preference.
+    pub views: Vec<ThreadView>,
+}
+
+/// `hub/view/set` params: a patch of one thread's view preferences.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewSetParams {
+    /// The target.
+    pub target: TargetId,
+    /// The thread.
+    pub thread_id: ThreadId,
+    /// Pin or unpin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
+    /// Mute or unmute (`false` also clears `mutedUntil`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub muted: Option<bool>,
+    /// With `muted: true`: when the mute ends; `null`: until unmuted.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "double_option")]
+    pub muted_until: Option<Option<String>>,
+    /// Dismiss or restore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismissed: Option<bool>,
+}
+
+/// `hub/view/set` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewSetResult {
+    /// The entry after the change.
+    pub view: ThreadView,
+}
+
+/// `hub/view/setMany` params.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewSetManyParams {
+    /// The changes.
+    pub entries: Vec<ViewSetParams>,
+}
+
+/// `hub/view/changed` params: the entries as they are now (an empty one was cleared).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewChangedParams {
+    /// The changed entries.
+    pub views: Vec<ThreadView>,
+}
+
+/// Absent = `None`, `null` = `Some(None)`, a value = `Some(Some(value))`.
+mod double_option {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<T: Serialize, S: Serializer>(value: &Option<Option<T>>, serializer: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(inner) => inner.serialize(serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub(super) fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Option<T>>, D::Error> {
+        Option::<T>::deserialize(deserializer).map(Some)
+    }
 }

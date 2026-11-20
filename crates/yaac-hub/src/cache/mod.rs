@@ -10,6 +10,7 @@
 //! | `thread_positions` | For each cached transcript: the journal position it is valid at, and the thread's live state |
 //! | `items` | Cached transcripts, in order |
 //! | `projects` | Each target's user-created projects (one JSON list per target) |
+//! | `discovery` | Each target's discovery caps (`discovery/caps`) |
 //! | `ui_state` | The window's grouping toggles, collapsed groups, last selection |
 //!
 //! Rules kept here:
@@ -29,7 +30,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use yaac_protocol::attach::ConnectionState;
 use yaac_protocol::{
-    Epoch, Item, ItemBody, JournalPosition, Project, ProviderDescriptor, Seq, SyncToken, TargetFacts, TargetId, ThreadEvent,
+    DiscoveryCaps, Epoch, Item, ItemBody, JournalPosition, Project, ProviderDescriptor, Seq, SyncToken, TargetFacts, TargetId, ThreadEvent,
     ThreadEventParams, ThreadId, ThreadState, ThreadSummary,
 };
 
@@ -37,7 +38,7 @@ pub use apply::LiveState;
 
 /// The cache schema. Any change to the tables bumps it; a file with another number is
 /// dropped and rebuilt from the targets.
-pub const CACHE_SCHEMA: i64 = 2;
+pub const CACHE_SCHEMA: i64 = 3;
 
 const SCHEMA: &str = r"
 CREATE TABLE targets (
@@ -89,6 +90,10 @@ CREATE INDEX items_by_ord ON items (target_id, thread_id, ord);
 CREATE TABLE projects (
     target_id TEXT PRIMARY KEY,
     projects TEXT NOT NULL
+);
+CREATE TABLE discovery (
+    target_id TEXT PRIMARY KEY,
+    caps TEXT NOT NULL
 );
 CREATE TABLE ui_state (
     key TEXT PRIMARY KEY,
@@ -396,10 +401,28 @@ impl Cache {
         Ok(())
     }
 
+    /// Stores a target's discovery caps (`discovery/caps` on connect, `discovery/updated`).
+    pub fn put_discovery(&mut self, target: &TargetId, caps: &DiscoveryCaps) -> Result<(), CacheError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO discovery (target_id, caps) VALUES (?1, ?2)",
+            params![target.as_str(), serde_json::to_string(caps)?],
+        )?;
+        Ok(())
+    }
+
+    /// A target's discovery caps, as last read from it.
+    pub fn discovery(&self, target: &TargetId) -> Result<Option<DiscoveryCaps>, CacheError> {
+        let row = self
+            .conn
+            .query_row("SELECT caps FROM discovery WHERE target_id = ?1", params![target.as_str()], |r| r.get::<_, String>(0))
+            .optional()?;
+        Ok(row.map(|s| serde_json::from_str(&s)).transpose()?)
+    }
+
     /// Deletes every row of a target.
     pub fn remove_target(&mut self, target: &TargetId) -> Result<(), CacheError> {
         let tx = self.conn.transaction()?;
-        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items", "projects"] {
+        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items", "projects", "discovery"] {
             tx.execute(&format!("DELETE FROM {table} WHERE target_id = ?1"), params![target.as_str()])?;
         }
         tx.commit()?;
@@ -409,7 +432,7 @@ impl Cache {
     /// "Clear cache": every row of every table (drafts live elsewhere and are not touched).
     pub fn clear(&mut self) -> Result<(), CacheError> {
         let tx = self.conn.transaction()?;
-        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items", "projects", "ui_state"] {
+        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items", "projects", "discovery", "ui_state"] {
             tx.execute(&format!("DELETE FROM {table}"), [])?;
         }
         tx.commit()?;
@@ -595,7 +618,7 @@ impl Cache {
     /// Number of rows a target has across the cache (tests, diagnostics).
     pub fn target_row_count(&self, target: &TargetId) -> Result<u64, CacheError> {
         let mut total = 0;
-        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items", "projects"] {
+        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items", "projects", "discovery"] {
             let n: i64 =
                 self.conn.query_row(&format!("SELECT count(*) FROM {table} WHERE target_id = ?1"), params![target.as_str()], |r| {
                     r.get(0)
@@ -747,6 +770,8 @@ fn apply_one(
                 live.context = e.context.clone();
             }
         }
+        ThreadEvent::QueueChanged(e) => apply::apply_queue(&mut live.queued, e),
+        ThreadEvent::HoldChanged(e) => live.hold = e.hold.clone(),
         ThreadEvent::Unknown(_) => {}
     }
     Ok(())

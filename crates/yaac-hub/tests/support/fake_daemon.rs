@@ -80,6 +80,11 @@ struct State {
     projects: Vec<yaac_protocol::Project>,
     usage_reports: Vec<yaac_protocol::MeshUsageParams>,
     usage_exhausted: bool,
+    /// Conversations beyond the discovery caps: not in the index, found by `thread/lookup`.
+    hidden: Vec<ThreadSummary>,
+    lookups: Vec<String>,
+    caps: Option<yaac_protocol::DiscoveryCaps>,
+    keeps: Vec<Vec<ThreadId>>,
 }
 
 /// A fake daemon. Cheap to clone; clones share state.
@@ -121,9 +126,8 @@ pub fn summary(id: &str) -> ThreadSummary {
         created_at: Timestamp::new("2026-01-01T00:00:00Z"),
         updated_at: Timestamp::new("2026-01-01T00:00:00Z"),
         archived: false,
-        muted: false,
-        pinned: false,
         agents: yaac_protocol::AgentsPolicy::Ask,
+        hold: None,
     }
 }
 
@@ -313,6 +317,47 @@ impl FakeDaemon {
         self.lock().queries
     }
 
+    /// A conversation beyond the discovery caps: not listed, found only by `thread/lookup`.
+    pub fn hide(&self, summary: ThreadSummary) {
+        self.lock().hidden.push(summary);
+    }
+
+    /// The ids `thread/lookup` was asked for.
+    pub fn lookups(&self) -> Vec<String> {
+        self.lock().lookups.clone()
+    }
+
+    /// Every `thread/keep` received, in order.
+    pub fn keeps(&self) -> Vec<Vec<ThreadId>> {
+        self.lock().keeps.clone()
+    }
+
+    /// Removes a thread and pushes `thread/removed` to live connections.
+    pub fn remove_thread(&self, id: &str) {
+        let mut s = self.lock();
+        s.threads.remove(&ThreadId::new(id));
+        s.index_changes += 1;
+        let token = yaac_protocol::SyncToken::new(format!("fake:{}", s.index_changes));
+        let bytes = frame(&Message::notification(names::THREAD_REMOVED, json!({ "threadId": id, "token": token })));
+        for conn in s.conns.values() {
+            let _ = conn.tx.send(bytes.clone());
+        }
+    }
+
+    /// The caps `discovery/caps` answers with.
+    pub fn set_caps(&self, caps: yaac_protocol::DiscoveryCaps) {
+        self.lock().caps = Some(caps);
+    }
+
+    /// Pushes a notification to live connections.
+    pub fn originate_notification(&self, method: &str, params: Value) {
+        let s = self.lock();
+        let bytes = frame(&Message::notification(method, params));
+        for conn in s.conns.values() {
+            let _ = conn.tx.send(bytes.clone());
+        }
+    }
+
     /// Changes a thread's summary and pushes `thread/updated` to live connections.
     pub fn originate_notification_thread_updated(&self, summary: &ThreadSummary) {
         let mut s = self.lock();
@@ -491,6 +536,8 @@ impl FakeDaemon {
                     effective: None,
                     context: None,
                     tokens: None,
+                    queued: None,
+                    hold: None,
                 };
                 s.subscribes.push((p.thread_id.clone(), logged));
                 if let Some(conn) = s.conns.get_mut(&conn_id) {
@@ -550,10 +597,23 @@ impl FakeDaemon {
                 if !s.mailbox.iter().any(|m| m.id == p.message.id) {
                     s.mailbox.push(p.message);
                 }
-                let receipt = Receipt { status: ReceiptStatus::Delivered, reason: None, detail: None };
+                let receipt = Receipt { status: ReceiptStatus::Delivered, reason: None, detail: None, handling: None };
                 Ok(json!({ "receipt": receipt }))
             }
             names::PROJECT_LIST => Ok(json!({ "projects": s.projects })),
+            names::THREAD_KEEP => {
+                let p: yaac_protocol::ThreadKeepParams = serde_json::from_value(params).map_err(bad)?;
+                s.keeps.push(p.thread_ids);
+                Ok(json!({}))
+            }
+            names::DISCOVERY_CAPS => Ok(json!({ "caps": s.caps.clone().unwrap_or_default() })),
+            names::THREAD_LOOKUP => {
+                let p: yaac_protocol::ThreadLookupParams = serde_json::from_value(params).map_err(bad)?;
+                s.lookups.push(p.id.clone());
+                let found: Vec<ThreadSummary> =
+                    s.hidden.iter().filter(|t| t.id.as_str() == p.id || t.native_id.as_deref() == Some(p.id.as_str())).cloned().collect();
+                Ok(json!({ "threads": found }))
+            }
             names::MESH_USAGE => {
                 let p: yaac_protocol::MeshUsageParams = serde_json::from_value(params).map_err(bad)?;
                 s.usage_reports.push(p);

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Capability, EffortId, InstanceId, ModeId, ModelCapability, ModelId, OpId, ProviderKind, TargetPath};
+use super::{Capability, EffortId, InstanceId, ModeId, ModelCapability, ModelId, OpId, ProviderKind, TargetPath, Timestamp};
 use crate::macros::open_enum;
 
 open_enum! {
@@ -15,6 +15,17 @@ open_enum! {
         Daemon = "daemon",
         /// An SDK running the harness as a child of `yaacd` (Claude Agent SDK).
         Sdk = "sdk",
+    }
+}
+
+open_enum! {
+    /// Whether `yaacd` found the harness's backend process (a daemon) already running or
+    /// started it itself. Display and diagnostics only.
+    pub enum BackendOrigin fallback Unknown {
+        /// It was running when `yaacd` connected to it.
+        FoundRunning = "foundRunning",
+        /// `yaacd` started it.
+        StartedByYaac = "startedByYaac",
     }
 }
 
@@ -186,6 +197,13 @@ pub struct ProviderDescriptor {
     pub modes: Vec<ModeInfo>,
     /// Bumps whenever anything above changes. Monotonic per instance.
     pub revision: u64,
+    /// For a backend that is a separate process (a daemon): whether `yaacd` found it running
+    /// or started it. Absent when there is no such process or it is not known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_origin: Option<BackendOrigin>,
+    /// When `models` was last read from the harness on the target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models_read_at: Option<Timestamp>,
 }
 
 /// Endpoint settings of an instance.

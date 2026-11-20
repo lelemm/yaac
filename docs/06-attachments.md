@@ -1,6 +1,13 @@
 # 06 — Attachments
 
-Files and images reach a thread by being pasted (Ctrl+V) or dropped into the composer.
+Files and images reach a thread in three ways (decided):
+
+- **The attachment button** in the composer opens the system's file picker; several files can
+  be chosen at once.
+- **Drag and drop**: files dropped anywhere on the thread view — transcript or composer — are
+  attached. While dragging, the view shows a quiet drop target, "Drop to attach".
+- **Paste (Ctrl+V)**: files copied in a file manager, or an image on the clipboard such as a
+  screenshot.
 
 ## The flow
 

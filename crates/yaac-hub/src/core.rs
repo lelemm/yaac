@@ -20,7 +20,7 @@ use yaac_protocol::attach::{
 use yaac_protocol::dialect::{Inbound, PeerRequest};
 use yaac_protocol::flows::{FlowError, FlowStep, OpenThread, OpenThreadFlow, Opened, finish_page, read_older_page};
 use yaac_protocol::methods::{
-    self, MeshDeliver, MeshQuery, MeshReceipt, MeshRoster, MeshUsage, Ping, ProjectList, ProviderList, ThreadAck, ThreadSync, names,
+    self, DiscoveryCapsMethod, MeshDeliver, MeshQuery, MeshReceipt, MeshRoster, MeshUsage, Ping, ProjectList, ProviderList, ThreadAck, ThreadKeep, ThreadLookup, ThreadSync, names,
 };
 use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
 use yaac_protocol::session::{ClientSession, ReadyInfo, SessionEvent};
@@ -36,8 +36,8 @@ use crate::cache::LiveState;
 use crate::config::HubConfig;
 use crate::conn::{ConnEvent, supervise};
 use crate::protocol::{
-    self as ext, BusyReasons, Draft, DraftKey, DraftsListResult, OperationRef, OperationsListResult, SettingsResult,
-    SettingsUpdateParams, StatusResult, TargetRef, ThreadResetParams, UiStateSetParams,
+    self as ext, BusyReasons, ConnectionStep, Draft, DraftKey, DraftsListResult, LookupHit, LookupParams, LookupResult, OperationRef,
+    OperationsListResult, SettingsResult, SettingsUpdateParams, StatusResult, TargetLogResult, TargetRef, ThreadResetParams, UiStateSetParams,
 };
 use crate::find::{FindParams, Pager};
 use crate::relay::{Accepted, receipt};
@@ -84,6 +84,10 @@ pub(crate) enum CoreEvent {
     MeshIndexReady { source: TargetId, generation: u64, peer_id: RpcId, query: yaac_protocol::MeshQuery, threads: Vec<(TargetId, yaac_protocol::ThreadSummary)>, labels: Vec<(TargetId, crate::mesh::TargetLabels)> },
     /// The relay changed; how much is still in flight.
     InFlight(u64),
+    /// View preferences changed in the durable store (D92): tell the windows, answer the
+    /// window that asked (`one`: `hub/view/set`, else `hub/view/setMany`), and tell the
+    /// targets which threads are kept.
+    ViewsChanged { reply: Option<(ClientKey, RpcId, bool)>, views: Vec<crate::protocol::ThreadView> },
     /// Checkpoint done; answer `hub/shutdown` and stop.
     ShutdownReady { client: ClientKey, id: RpcId },
     /// A store job failed (logged; the cache is disposable).
@@ -143,6 +147,9 @@ enum Pending {
     /// A peer request forwarded to another target; its answer goes back to the source.
     PeerForward { source: TargetId, generation: u64, peer_id: RpcId, method: &'static str },
     ProjectList,
+    Discovery,
+    /// One target's answer to a `thread/lookup` the hub fans out.
+    Lookup { lookup: u64 },
     Deliver { message_id: MessageId },
     Receipt { message_id: MessageId },
     Ignore,
@@ -284,7 +291,40 @@ pub(crate) struct Core {
     last_evict: Instant,
     last_notice_sweep: Instant,
     finder: Pager,
+    /// `thread/lookup`s fanned out to targets, waiting for their answers.
+    lookups: HashMap<u64, Lookup>,
+    next_lookup: u64,
+    /// Each target's recent connection steps (diagnostics), newest last.
+    steps: HashMap<TargetId, std::collections::VecDeque<ConnectionStep>>,
+    /// Threads the user keeps (pinned or muted), per target: sent as `thread/keep`.
+    kept: HashMap<TargetId, BTreeSet<ThreadId>>,
     pub(crate) exit: Option<ExitReason>,
+}
+
+/// What a fanned-out lookup answers once every target has.
+#[derive(Debug)]
+enum LookupFor {
+    /// `hub/threads/lookup`.
+    Window { client: ClientKey, id: RpcId },
+    /// `hub/threads/find`, whose index search found nothing for an id.
+    Find { client: ClientKey, id: RpcId, params: FindParams },
+    /// An agent's `findThreads`, likewise.
+    Mesh { source: TargetId, generation: u64, peer_id: RpcId, query: yaac_protocol::MeshQuery, labels: Vec<(TargetId, crate::mesh::TargetLabels)> },
+}
+
+#[derive(Debug)]
+struct Lookup {
+    waiting: usize,
+    found: Vec<(TargetId, yaac_protocol::ThreadSummary)>,
+    unreachable: Vec<TargetId>,
+    answer: LookupFor,
+}
+
+/// At most this many connection steps are kept per target.
+const STEPS_KEPT: usize = 50;
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 impl std::fmt::Debug for Core {
@@ -300,6 +340,8 @@ pub(crate) struct Loaded {
     pub(crate) tokens: Vec<(TargetId, SyncToken)>,
     pub(crate) states: Vec<(TargetId, ThreadId, ThreadState)>,
     pub(crate) in_flight: u64,
+    /// Threads the user keeps (pinned or muted in the view store), per target.
+    pub(crate) kept: Vec<(TargetId, ThreadId)>,
 }
 
 impl Core {
@@ -325,8 +367,15 @@ impl Core {
             last_evict: Instant::now(),
             last_notice_sweep: Instant::now(),
             finder: Pager::default(),
+            lookups: HashMap::new(),
+            next_lookup: 0,
+            steps: HashMap::new(),
+            kept: HashMap::new(),
             exit: None,
         };
+        for (target, thread) in loaded.kept {
+            core.kept.entry(target).or_default().insert(thread);
+        }
         for (target, thread, position) in loaded.positions {
             core.applied.insert((target.clone(), thread.clone()), position);
             core.committed.insert((target, thread), position);
@@ -392,6 +441,7 @@ impl Core {
                 self.on_mesh_index(&source, generation, peer_id, &query, &threads, &labels);
             }
             CoreEvent::InFlight(n) => self.in_flight = n,
+            CoreEvent::ViewsChanged { reply, views } => self.on_views_changed(reply, views),
             CoreEvent::ShutdownReady { client, id } => {
                 self.reply(client, id, Ok(json!({})));
                 self.exit = Some(ExitReason::Shutdown);
@@ -520,6 +570,39 @@ impl Core {
                 }
                 Err(e) => Some(Err(e)),
             },
+            ext::names::THREADS_LOOKUP => match parse::<LookupParams>(params) {
+                Ok(p) => {
+                    let targets = self.lookup_targets(p.target.as_ref());
+                    self.start_lookup(&p.id, &targets, LookupFor::Window { client, id: id.clone() });
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::VIEW_GET => {
+                self.store_reply(client, id, |s| s.drafts.views().map(|views| to_value(&ext::ViewGetResult { views })).map_err(|e| e.to_string()));
+                None
+            }
+            ext::names::VIEW_SET => match parse::<ext::ViewSetParams>(params) {
+                Ok(p) => {
+                    self.set_views(vec![p], Some((client, id.clone(), true)));
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::VIEW_SET_MANY => match parse::<ext::ViewSetManyParams>(params) {
+                Ok(p) => {
+                    self.set_views(p.entries, Some((client, id.clone(), false)));
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::TARGETS_LOG => Some(parse::<TargetRef>(params).and_then(|p| {
+                if !self.targets.contains_key(&p.id) {
+                    return Err(err(ErrorCode::TargetUnknown, "no such target"));
+                }
+                let steps = self.steps.get(&p.id).map(|s| s.iter().cloned().collect()).unwrap_or_default();
+                Ok(to_value(&TargetLogResult { steps }))
+            })),
             ext::names::PROJECTS_LIST => match parse::<TargetRef>(params) {
                 Ok(p) => {
                     self.store_reply(client, id, move |s| {
@@ -683,10 +766,92 @@ impl Core {
             return;
         }
         t.state = new.clone();
+        let step = match new.status {
+            ConnectionStatus::Connecting => "connecting",
+            ConnectionStatus::Connected => "ready",
+            ConnectionStatus::Offline => "offline",
+            ConnectionStatus::Disabled => "disabled",
+            ConnectionStatus::Incompatible => "incompatible",
+            _ => "state",
+        };
+        let detail = new.detail.clone().or_else(|| new.daemon.as_ref().map(|d| format!("yaacd {}", d.build)));
+        self.step(id, step, detail);
+        let Some(t) = self.targets.get(id) else { return };
         let params = to_value(&TargetStateParams { id: id.clone(), state: new.clone(), enabled: t.def.enabled });
         self.notify_all(attach::names::TARGET_STATE, params);
         let target = id.clone();
         self.worker.submit(move |stores| stores.cache.put_target(&target, None, &new).err().map(|e| CoreEvent::StoreError(e.to_string())));
+    }
+
+    // ── View preferences (D92) ───────────────────────────────────────────────────────────
+
+    fn set_views(&mut self, patches: Vec<ext::ViewSetParams>, reply: Option<(ClientKey, RpcId, bool)>) {
+        if let Some(bad) = patches.iter().find(|p| !self.targets.contains_key(&p.target)) {
+            if let Some((client, id, _)) = reply {
+                self.reply(client, id, Err(err(ErrorCode::TargetUnknown, format!("no target {}", bad.target))));
+            }
+            return;
+        }
+        self.worker.submit(move |s| match s.drafts.set_views(&patches) {
+            Ok(views) => Some(CoreEvent::ViewsChanged { reply, views }),
+            Err(e) => match reply {
+                Some((client, id, _)) => Some(CoreEvent::Reply { client, id, outcome: Err(err(ErrorCode::InternalError, e.to_string())) }),
+                None => Some(CoreEvent::StoreError(e.to_string())),
+            },
+        });
+    }
+
+    fn on_views_changed(&mut self, reply: Option<(ClientKey, RpcId, bool)>, views: Vec<ext::ThreadView>) {
+        if let Some((client, id, one)) = reply {
+            let result = if one {
+                views.first().map(|v| to_value(&ext::ViewSetResult { view: v.clone() })).unwrap_or(Value::Null)
+            } else {
+                to_value(&ext::ViewGetResult { views: views.clone() })
+            };
+            self.reply(client, id, Ok(result));
+        }
+        let mut touched: BTreeSet<TargetId> = BTreeSet::new();
+        for v in &views {
+            let set = self.kept.entry(v.target.clone()).or_default();
+            let changed = if v.keeps() { set.insert(v.thread_id.clone()) } else { set.remove(&v.thread_id) };
+            if changed {
+                touched.insert(v.target.clone());
+            }
+        }
+        for t in touched {
+            self.send_kept(&t);
+        }
+        if !views.is_empty() {
+            self.notify_all(ext::names::VIEW_CHANGED, to_value(&ext::ViewChangedParams { views }));
+        }
+    }
+
+    /// Tells a target which of its threads the user keeps (`thread/keep`).
+    fn send_kept(&mut self, target: &TargetId) {
+        let thread_ids: Vec<ThreadId> = self.kept.get(target).map(|s| s.iter().cloned().collect()).unwrap_or_default();
+        self.send::<ThreadKeep>(target, &yaac_protocol::ThreadKeepParams { thread_ids }, Pending::Ignore);
+        self.flush(target);
+    }
+
+    /// A thread is gone from its target: its pin and mute go with it.
+    fn view_thread_removed(&mut self, target: &TargetId, thread: &ThreadId) {
+        if !self.kept.get(target).is_some_and(|s| s.contains(thread)) {
+            return;
+        }
+        let (target, thread) = (target.clone(), thread.clone());
+        self.worker.submit(move |s| match s.drafts.view_thread_removed(&target, &thread) {
+            Ok(v) => Some(CoreEvent::ViewsChanged { reply: None, views: v.into_iter().collect() }),
+            Err(e) => Some(CoreEvent::StoreError(e.to_string())),
+        });
+    }
+
+    /// Records one connection step (diagnostics). Never message content.
+    fn step(&mut self, id: &TargetId, step: &str, detail: Option<String>) {
+        let log = self.steps.entry(id.clone()).or_default();
+        log.push_back(ConnectionStep { at_ms: now_ms(), step: step.to_owned(), detail });
+        while log.len() > STEPS_KEPT {
+            log.pop_front();
+        }
     }
 
     fn start_target(&mut self, id: &TargetId) {
@@ -822,8 +987,13 @@ impl Core {
         self.committed.retain(|(t, _), _| *t != id);
         self.thread_states.retain(|(t, _), _| *t != id);
         self.tokens.remove(&id);
+        self.steps.remove(&id);
+        self.kept.remove(&id);
         self.worker.submit(move |stores| {
             if let Err(e) = stores.cache.remove_target(&id) {
+                return Some(CoreEvent::StoreError(e.to_string()));
+            }
+            if let Err(e) = stores.drafts.view_remove_target(&id) {
                 return Some(CoreEvent::StoreError(e.to_string()));
             }
             // Messages that were waiting for it fail; their senders are told.
@@ -844,12 +1014,18 @@ impl Core {
         }
         match event {
             ConnEvent::Connecting => {
+                let quiet = t.conn.is_some();
+                if !quiet {
+                    self.step(id, "connecting", None);
+                }
+                let Some(t) = self.targets.get_mut(id) else { return };
                 if t.conn.is_none() && t.state.status != ConnectionStatus::Offline {
                     self.set_state(id, state(ConnectionStatus::Connecting, None));
                 }
             }
             ConnEvent::Failed(reason) => {
                 log(format!("{id}: connect failed: {reason}"));
+                self.step(id, "failed", Some(reason.clone()));
                 self.set_state(id, state(ConnectionStatus::Offline, Some(reason)));
             }
             ConnEvent::Opened { writer, kill } => {
@@ -873,6 +1049,7 @@ impl Core {
                     last_ping: now,
                     sync_full: false,
                 });
+                self.step(id, "opened", None);
                 self.flush(id);
             }
             ConnEvent::Bytes(bytes) => {
@@ -896,6 +1073,7 @@ impl Core {
             ConnEvent::Closed(reason) => {
                 if t.conn.as_ref().is_some_and(|c| c.generation == generation) {
                     log(format!("{id}: connection closed: {reason}"));
+                    self.step(id, "closed", Some(reason.clone()));
                     self.on_closed(id, reason.clone());
                     if self.targets.get(id).is_some_and(|t| t.def.enabled && t.supervisor.is_some()) {
                         self.set_state(id, state(ConnectionStatus::Offline, Some(reason)));
@@ -926,6 +1104,7 @@ impl Core {
                 Pending::MeshQuery { source, generation, peer_id } => {
                     self.respond_peer(&source, generation, peer_id, names::MESH_QUERY, Err(err(ErrorCode::TargetOffline, "the target went offline")));
                 }
+                Pending::Lookup { lookup } => self.lookup_answered(lookup, id, None),
                 _ => {}
             }
         }
@@ -950,7 +1129,10 @@ impl Core {
 
     fn on_session(&mut self, id: &TargetId, event: SessionEvent) {
         match event {
-            SessionEvent::Ready(info) => self.on_ready(id, &info),
+            SessionEvent::Ready(info) => {
+                self.step(id, "negotiated", Some(format!("yaacd {}{}", info.daemon.build, if info.daemon_is_older { " (older)" } else { "" })));
+                self.on_ready(id, &info);
+            }
             SessionEvent::NegotiationFailed { error, .. } => {
                 self.set_state(id, state(ConnectionStatus::Incompatible, Some(error.message)));
             }
@@ -999,6 +1181,7 @@ impl Core {
         let stored = new.clone();
         self.worker.submit(move |s| s.cache.put_target(&target, Some(&facts), &stored).err().map(|e| CoreEvent::StoreError(e.to_string())));
         self.set_state(id, new);
+        self.send_kept(id);
         self.refresh_target(id);
         self.send_rosters();
         // The relay: deliver what waited for this target, and hand back receipts owed to it.
@@ -1025,6 +1208,7 @@ impl Core {
     fn refresh_target_with(&mut self, id: &TargetId, fresh: bool) {
         self.send::<ProviderList>(id, &yaac_protocol::Empty {}, Pending::ProviderList);
         self.send::<ProjectList>(id, &yaac_protocol::ProjectListParams {}, Pending::ProjectList);
+        self.send::<DiscoveryCapsMethod>(id, &yaac_protocol::DiscoveryCapsParams::default(), Pending::Discovery);
         let token = self.tokens.get(id).cloned().unwrap_or_default();
         self.send::<ThreadSync>(id, &ThreadSyncParams { token, max_bytes: Some(256 * 1024) }, Pending::Sync);
         let open: Vec<ThreadId> = self.open.keys().filter(|(t, _)| t == id).map(|(_, th)| th.clone()).collect();
@@ -1102,6 +1286,14 @@ impl Core {
                     Err(e) => Some(CoreEvent::StoreError(e.to_string())),
                 });
             }
+            Pending::Discovery => {
+                let Ok(result) = outcome.and_then(|w| self.decode_typed::<DiscoveryCapsMethod>(id, w)) else { return };
+                self.store_discovery(id, result.caps);
+            }
+            Pending::Lookup { lookup } => {
+                let found = outcome.and_then(|w| self.decode_typed::<ThreadLookup>(id, w)).ok().map(|r| r.threads);
+                self.lookup_answered(lookup, id, found);
+            }
             Pending::Deliver { message_id } => self.on_delivered(id, message_id, outcome),
             Pending::Receipt { message_id } => {
                 if outcome.is_ok() {
@@ -1137,10 +1329,11 @@ impl Core {
             self.thread_states.retain(|(t, _), _| t != id);
         }
         for summary in &result.changed {
-            self.thread_states.insert((id.clone(), summary.id.clone()), summary.state.clone());
+            self.note_state(id, summary);
         }
         for removed in &result.removed {
             self.thread_states.remove(&(id.clone(), removed.clone()));
+            self.view_thread_removed(id, removed);
         }
         self.tokens.insert(id.clone(), result.token.clone());
         if result.more {
@@ -1158,7 +1351,7 @@ impl Core {
         match inbound {
             Inbound::ThreadEvent(event) => self.on_thread_event(id, event),
             Inbound::ThreadUpdated { thread, token } => {
-                self.thread_states.insert((id.clone(), thread.id.clone()), thread.state.clone());
+                self.note_state(id, &thread);
                 self.tokens.insert(id.clone(), token.clone());
                 let target = id.clone();
                 self.worker.submit(move |s| match s.cache.apply_index(&target, std::slice::from_ref(&thread), &[], &token, false) {
@@ -1172,6 +1365,7 @@ impl Core {
             }
             Inbound::ThreadRemoved(p) => {
                 self.thread_states.remove(&(id.clone(), p.thread_id.clone()));
+                self.view_thread_removed(id, &p.thread_id);
                 self.tokens.insert(id.clone(), p.token.clone());
                 let target = id.clone();
                 self.worker.submit(move |s| match s.cache.apply_index(&target, &[], std::slice::from_ref(&p.thread_id), &p.token, false) {
@@ -1197,6 +1391,12 @@ impl Core {
                 });
             }
             Inbound::StreamCredit(_) => {}
+            Inbound::Other { method, params } if method == names::DISCOVERY_UPDATED => {
+                if let Ok(p) = serde_json::from_value::<yaac_protocol::DiscoveryCapsResult>(params.clone()) {
+                    self.store_discovery(id, p.caps);
+                }
+                self.broadcast(&Self::routed_notification(id, &method, params));
+            }
             Inbound::Other { method, params } => self.broadcast(&Self::routed_notification(id, &method, params)),
         }
     }
@@ -1421,6 +1621,12 @@ impl Core {
                     subscribed.active_turn = c.active_turn.clone();
                 }
                 ThreadEvent::SettingsChanged(s) => subscribed.effective = Some(s.effective.clone()),
+                ThreadEvent::QueueChanged(q) => {
+                    let mut queue = subscribed.queued.take().unwrap_or_default();
+                    crate::cache::apply::apply_queue(&mut queue, q);
+                    subscribed.queued = (!queue.is_empty()).then_some(queue);
+                }
+                ThreadEvent::HoldChanged(h) => subscribed.hold = h.hold.clone(),
                 _ => {}
             }
         }
@@ -1535,6 +1741,8 @@ impl Core {
                     effective: live.effective,
                     context: live.context,
                     tokens: live.tokens,
+                    queued: (!live.queued.is_empty()).then_some(live.queued),
+                    hold: live.hold,
                 };
                 Some(CoreEvent::Reply { client, id: rid, outcome: Ok(to_value(&result)) })
             });
@@ -1899,6 +2107,20 @@ impl Core {
         threads: &[(TargetId, yaac_protocol::ThreadSummary)],
         labels: &[(TargetId, crate::mesh::TargetLabels)],
     ) {
+        if let yaac_protocol::MeshQuery::FindThreads(q) = query {
+            let params = crate::mesh::find_params(q);
+            if params.cursor.is_none()
+                && crate::find::looks_like_exact_id(&params.query)
+                && self.finder.page(threads, &params, Instant::now()).is_ok_and(|p| p.results.is_empty())
+            {
+                let targets = self.lookup_targets(params.target.as_ref());
+                if !targets.is_empty() {
+                    let answer = LookupFor::Mesh { source: source.clone(), generation, peer_id, query: query.clone(), labels: labels.to_vec() };
+                    self.start_lookup(params.query.trim(), &targets, answer);
+                    return;
+                }
+            }
+        }
         let outcome = match query {
             yaac_protocol::MeshQuery::FindThreads(q) => self
                 .finder
@@ -1935,12 +2157,121 @@ impl Core {
     }
 
     fn on_find_ready(&mut self, client: ClientKey, id: RpcId, params: &FindParams, threads: &[(TargetId, yaac_protocol::ThreadSummary)]) {
-        let outcome = self
-            .finder
-            .page(threads, params, Instant::now())
-            .map(|r| to_value(&r))
-            .map_err(|e| err(ErrorCode::InvalidParams, e.to_string()));
-        self.reply(client, id, outcome);
+        let outcome = self.finder.page(threads, params, Instant::now());
+        // An exact-looking id no index has: ask the targets (and their harnesses) directly.
+        if let Ok(page) = &outcome
+            && page.results.is_empty()
+            && params.cursor.is_none()
+            && crate::find::looks_like_exact_id(&params.query)
+        {
+            let targets = self.lookup_targets(params.target.as_ref());
+            if !targets.is_empty() {
+                let query = params.query.trim().to_owned();
+                self.start_lookup(&query, &targets, LookupFor::Find { client, id, params: params.clone() });
+                return;
+            }
+        }
+        self.reply(client, id, outcome.map(|r| to_value(&r)).map_err(|e| err(ErrorCode::InvalidParams, e.to_string())));
+    }
+
+    /// The connected targets a lookup goes to (one, or all).
+    fn lookup_targets(&self, only: Option<&TargetId>) -> Vec<TargetId> {
+        self.targets
+            .iter()
+            .filter(|(id, t)| only.is_none_or(|o| o == *id) && t.conn.as_ref().is_some_and(|c| c.ready))
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Sends `thread/lookup` to each target; `answer` is given what they found.
+    fn start_lookup(&mut self, id: &str, targets: &[TargetId], answer: LookupFor) {
+        self.next_lookup += 1;
+        let lookup = self.next_lookup;
+        let params = yaac_protocol::ThreadLookupParams { id: id.to_owned(), instance: None };
+        let mut state = Lookup { waiting: 0, found: Vec::new(), unreachable: Vec::new(), answer };
+        for t in targets {
+            if self.send::<ThreadLookup>(t, &params, Pending::Lookup { lookup }) {
+                state.waiting += 1;
+                self.flush(t);
+            } else {
+                state.unreachable.push(t.clone());
+            }
+        }
+        self.lookups.insert(lookup, state);
+        if self.lookups.get(&lookup).is_some_and(|l| l.waiting == 0) {
+            self.finish_lookup(lookup);
+        }
+    }
+
+    /// One target answered a lookup (`None`: it could not).
+    fn lookup_answered(&mut self, lookup: u64, target: &TargetId, found: Option<Vec<yaac_protocol::ThreadSummary>>) {
+        let Some(state) = self.lookups.get_mut(&lookup) else { return };
+        state.waiting = state.waiting.saturating_sub(1);
+        match found {
+            Some(threads) => state.found.extend(threads.into_iter().map(|t| (target.clone(), t))),
+            None => state.unreachable.push(target.clone()),
+        }
+        if state.waiting == 0 {
+            self.finish_lookup(lookup);
+        }
+    }
+
+    fn finish_lookup(&mut self, lookup: u64) {
+        let Some(state) = self.lookups.remove(&lookup) else { return };
+        // What was brought into a target's index reaches the cache through its `thread/updated`.
+        match state.answer {
+            LookupFor::Window { client, id } => {
+                let threads = state.found.into_iter().map(|(target, thread)| LookupHit { target, thread }).collect();
+                self.reply(client, id, Ok(to_value(&LookupResult { threads, unreachable: state.unreachable })));
+            }
+            LookupFor::Find { client, id, params } => {
+                let outcome = self
+                    .finder
+                    .page(&state.found, &params, Instant::now())
+                    .map(|r| to_value(&r))
+                    .map_err(|e| err(ErrorCode::InvalidParams, e.to_string()));
+                self.reply(client, id, outcome);
+            }
+            LookupFor::Mesh { source, generation, peer_id, query, labels } => {
+                let yaac_protocol::MeshQuery::FindThreads(q) = &query else { return };
+                let outcome = self
+                    .finder
+                    .page(&state.found, &crate::mesh::find_params(q), Instant::now())
+                    .map(|page| {
+                        let label = |t: &TargetId| labels.iter().find(|(id, _)| id == t).map(|(_, l)| l.clone());
+                        to_value(&yaac_protocol::MeshQueryResult::FindThreads(crate::mesh::find_reply(&page, &label)))
+                    })
+                    .map_err(|e| err(ErrorCode::InvalidParams, e.to_string()));
+                self.respond_peer(&source, generation, peer_id, names::MESH_QUERY, outcome);
+            }
+        }
+    }
+
+    /// Keeps a target's discovery caps in the cache.
+    fn store_discovery(&mut self, id: &TargetId, caps: yaac_protocol::DiscoveryCaps) {
+        let target = id.clone();
+        self.worker.submit(move |s| match s.cache.put_discovery(&target, &caps) {
+            Ok(()) => Some(CoreEvent::Broadcast(Message::notification(ext::names::DISCOVERY_CHANGED, json!({ "target": target })))),
+            Err(e) => Some(CoreEvent::StoreError(e.to_string())),
+        });
+    }
+
+    /// Records a thread's state; one that has just come to need the user while no window is
+    /// attached raises a desktop notification (docs/10-agent-mesh.md#a-worker-that-is-blocked-must-be-seen).
+    fn note_state(&mut self, target: &TargetId, summary: &yaac_protocol::ThreadSummary) {
+        let key = (target.clone(), summary.id.clone());
+        let before = self.thread_states.insert(key, summary.state.clone());
+        if summary.state != ThreadState::NeedsAttention || before == Some(ThreadState::NeedsAttention) {
+            return;
+        }
+        let windows = self.clients.values().any(|c| c.hello == Hello::Attached);
+        if windows {
+            return;
+        }
+        if let Some(n) = &self.cfg.notifier {
+            let place = self.targets.get(target).map_or_else(|| target.as_str().to_owned(), |t| t.def.name.as_str().to_owned());
+            n.notify("YAAC: a thread needs you", &format!("\"{}\" on {place} is waiting for your answer.", summary.title));
+        }
     }
 
     // ── Timers and lifecycle ─────────────────────────────────────────────────────────────
@@ -2061,6 +2392,8 @@ fn window_answer(
         effective: subscribed.and_then(|s| s.effective.clone()),
         context: subscribed.and_then(|s| s.context.clone()),
         tokens: subscribed.and_then(|s| s.tokens.clone()),
+        queued: subscribed.and_then(|s| s.queued.clone()),
+        hold: subscribed.and_then(|s| s.hold.clone()),
     }
 }
 

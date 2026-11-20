@@ -31,6 +31,7 @@ import type {
   NativeId,
   NativeThreadInfo,
   PageRequest,
+  ScanRequest,
   ProbeResult,
   ProviderContext,
   ProviderEvent,
@@ -105,6 +106,8 @@ interface PendingRequest {
 
 interface LiveTurn {
   turnId: TurnId;
+  /** `/fake deaf`: an interrupt is ignored (only `forceStop` ends the turn). */
+  deaf?: boolean;
   abort: AbortController;
   steered: string[];
   done: Promise<void>;
@@ -133,6 +136,10 @@ export interface FakeOptions {
   paceMs: number;
   status: ProbeResult["status"];
   storeDir: string;
+  /** Offer `steer` (FAKE_STEER=0: a harness that cannot steer). */
+  steer: boolean;
+  /** Offer `forceStop` (FAKE_FORCE_STOP=0: a shared harness process yaacd cannot end). */
+  forceStop: boolean;
 }
 
 export class FakeProvider implements HarnessProvider {
@@ -152,6 +159,12 @@ export class FakeProvider implements HarnessProvider {
   readonly answers: Array<{ thread: NativeId; requestId: string; response: RequestResponse }> = [];
   /** The next scan fails (the instance becomes stale; no thread is removed). */
   failNextScan = false;
+  /** Conversations returned by every `scanThreads` call so far (tests: early stop). */
+  scannedCount = 0;
+  /** Conversations looked up by id (`lookupThread`). */
+  readonly lookedUp: NativeId[] = [];
+  /** Threads whose harness process was ended (`forceStop`). */
+  readonly forceStopped: NativeId[] = [];
   /** Called inside startTurn/startThread after the harness accepted the turn, before returning. */
   afterAccept: ((thread: NativeId, turn: TurnId) => Promise<void> | void) | null = null;
   /** The agent mesh (WP7): the hooks, each thread's attachment, and the `$` variables of `/fake mesh-*`. */
@@ -165,6 +178,7 @@ export class FakeProvider implements HarnessProvider {
   ) {
     fs.mkdirSync(options.storeDir, { recursive: true, mode: 0o700 });
     this.storeFile = path.join(options.storeDir, "store.json");
+    if (options.forceStop) this.forceStop = (thread) => this.forceStopImpl(thread);
     const existing = readJson<StoreFile>(this.storeFile);
     this.store = existing ?? { threads: {}, seq: 0 };
     if (!existing && options.seed) this.seed();
@@ -230,7 +244,6 @@ export class FakeProvider implements HarnessProvider {
       "streamText",
       "streamReasoning",
       "interrupt",
-      "steer",
       "approvals",
       "userQuestions",
       "modes",
@@ -244,6 +257,7 @@ export class FakeProvider implements HarnessProvider {
       "plan",
     ];
     if (this.options.nativeFork) caps.push("threadFork");
+    if (this.options.steer) caps.push("steer");
     if (this.meshHooks) caps.push("meshTools");
     return {
       displayName: "Fake",
@@ -259,16 +273,40 @@ export class FakeProvider implements HarnessProvider {
     };
   }
 
-  async scanThreads(page: PageRequest): Promise<ThreadPage> {
+  async scanThreads(page: ScanRequest): Promise<ThreadPage> {
     if (this.failNextScan) {
       this.failNextScan = false;
       throw new Error("fake: the listing failed");
     }
-    const all = Object.values(this.store.threads).map((t) => t.info);
+    // Newest first by last activity, as both real harnesses can list.
+    let all = Object.values(this.store.threads)
+      .map((t) => t.info)
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : a.native < b.native ? -1 : 1));
+    if (page.search) all = all.filter((t) => (t.title ?? "").toLowerCase().includes(page.search!.toLowerCase()));
     const start = Number.parseInt(page.cursor ?? "0", 10) || 0;
     const size = page.limit ?? 50;
-    const slice = all.slice(start, start + size);
-    return { threads: slice, cursor: start + size < all.length ? String(start + size) : null, complete: true };
+    let slice = all.slice(start, start + size);
+    let more = start + size < all.length;
+    // The discovery caps: stop at the first conversation too old, or once `max` were listed.
+    if (page.activeSince) {
+      const i = slice.findIndex((t) => t.updatedAt < page.activeSince!);
+      if (i >= 0) {
+        slice = slice.slice(0, i);
+        more = false;
+      }
+    }
+    if (page.max && start + slice.length >= page.max) {
+      slice = slice.slice(0, Math.max(0, page.max - start));
+      more = false;
+    }
+    this.scannedCount += slice.length;
+    return { threads: structuredClone(slice), cursor: more ? String(start + size) : null, complete: true };
+  }
+
+  async lookupThread(native: NativeId): Promise<NativeThreadInfo | null> {
+    this.lookedUp.push(native);
+    const t = this.store.threads[native];
+    return t ? structuredClone(t.info) : null;
   }
 
   async readThread(thread: NativeId, page: PageRequest): Promise<ItemPage> {
@@ -444,6 +482,33 @@ export class FakeProvider implements HarnessProvider {
               else reply = `You chose: ${[...(a?.selected ?? []), ...(a?.other ? [a.other] : [])].join(", ") || "nothing"}.`;
             }
             await this.stream(native, turnId, id("msg"), "agentMessage", reply, pace, signal);
+            break;
+          }
+          case "deaf":
+            live.deaf = true;
+            break;
+          case "edit": {
+            // A file change, as every provider reports one: unified-diff text in `output` (D86).
+            const p = step.path;
+            const diff = [
+              `--- a/${p}`,
+              `+++ b/${p}`,
+              "@@ -1,4 +1,5 @@",
+              " fn main() {",
+              '-    println!("hello");',
+              '+    let name = "fake";',
+              '+    println!("hello, {name}");',
+              "     run();",
+              " }",
+              "",
+            ].join("\n");
+            const itemId = id("edit");
+            const started: Item = { id: itemId, turnId, status: "inProgress", kind: "toolCall", tool: "fileChange", title: `Editing ${p}`, input: { path: p } } as Item;
+            this.emit({ type: "itemStarted", thread: native, item: started });
+            await sleep(pace, signal);
+            const done: Item = { ...started, status: "completed", title: `Edited ${p}`, output: diff } as Item;
+            this.record(native, done);
+            this.emit({ type: "itemCompleted", thread: native, item: done });
             break;
           }
           case "stall":
@@ -631,6 +696,18 @@ export class FakeProvider implements HarnessProvider {
   async interrupt(thread: NativeId, turn: TurnId): Promise<void> {
     const live = this.live.get(thread);
     if (!live || live.turnId !== turn) return;
+    if (live.deaf) return; // a harness that does not comply
+    live.abort.abort();
+    await live.done;
+  }
+
+  /** Present only with `forceStop` (see the constructor). */
+  forceStop?: (thread: NativeId) => Promise<void>;
+
+  private async forceStopImpl(thread: NativeId): Promise<void> {
+    this.forceStopped.push(thread);
+    const live = this.live.get(thread);
+    if (!live) return;
     live.abort.abort();
     await live.done;
   }
@@ -707,6 +784,8 @@ export class FakeProvider implements HarnessProvider {
   }
 
   async steer(thread: NativeId, turn: TurnId, input: ProviderInput): Promise<void> {
+    if (!this.options.steer) throw new Error("fake: this instance cannot steer");
+    this.received.push({ thread, input });
     const live = this.live.get(thread);
     if (!live || live.turnId !== turn) throw new Error("fake: that turn is not running");
     live.steered.push(input.text);
@@ -723,6 +802,13 @@ export class FakeProvider implements HarnessProvider {
   async archive(thread: NativeId): Promise<void> {
     const t = this.thread(thread);
     t.info.archived = true;
+    this.save();
+    this.emit({ type: "threadChanged", info: { ...t.info } });
+  }
+
+  async unarchive(thread: NativeId): Promise<void> {
+    const t = this.thread(thread);
+    t.info.archived = false;
     this.save();
     this.emit({ type: "threadChanged", info: { ...t.info } });
   }
@@ -901,6 +987,23 @@ export class FakeProvider implements HarnessProvider {
     return native;
   }
 
+  /**
+   * `n` conversations "created outside YAAC" last active `daysOld` days ago and earlier (one
+   * minute apart, newest first), with no event: as a long-used harness has them on disk.
+   */
+  addOldThreads(n: number, daysOld: number, prefix = "old-"): NativeId[] {
+    const out: NativeId[] = [];
+    const base = Date.now() - daysOld * 86_400_000;
+    for (let i = 0; i < n; i++) {
+      const native = `${prefix}${i}`;
+      const at = new Date(base - i * 60_000).toISOString();
+      this.store.threads[native] = { info: { native, title: `Old conversation ${i}`, preview: "", cwd: this.ctx.home, createdAt: at, updatedAt: at, originKind: "interactive" }, items: [], turns: 0, settings: { model: "fake-large" }, turnLog: [] };
+      out.push(native);
+    }
+    this.save();
+    return out;
+  }
+
   /** Pending request ids of a conversation. */
   pendingRequests(): string[] {
     return [...this.requests.keys()];
@@ -929,6 +1032,8 @@ export const fakeProviderFactory: ProviderFactory = {
       paceMs: Number.parseInt(env.FAKE_PACE_MS ?? "5", 10) || 0,
       status,
       storeDir: env.FAKE_STORE ? path.resolve(env.FAKE_STORE) : path.join(ctx.stateDir, "store"),
+      steer: env.FAKE_STEER !== "0",
+      forceStop: env.FAKE_FORCE_STOP !== "0",
     });
   },
 };

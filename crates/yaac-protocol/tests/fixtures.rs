@@ -266,7 +266,7 @@ fn summary_flags_git_status_and_projects() {
     let summary: ThreadSummary = exact(json!({
         "id": "t1", "instance": "pi_1", "title": "Fix", "preview": "", "cwd": "/home/u/code/yaac-wt/feature-x", "state": "waiting",
         "control": "free", "originKind": "yaac", "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
-        "children": 0, "peers": 0, "archived": false, "muted": true, "pinned": true, "agents": "allow",
+        "children": 0, "peers": 0, "archived": false, "agents": "allow",
         "project": {
             "path": "/home/u/code/yaac", "displayName": "YAAC", "kind": "user", "id": "pj_1",
             "repo": { "repo": "/home/u/code/yaac/.git", "relative": ".", "root": "/home/u/code/yaac" }
@@ -274,7 +274,14 @@ fn summary_flags_git_status_and_projects() {
         "repo": { "repo": "/home/u/code/yaac/.git", "relative": ".", "root": "/home/u/code/yaac-wt/feature-x", "worktreeName": "feature-x" },
         "git": { "branch": "feature-x", "base": "origin/main", "added": 1, "modified": 2, "deleted": 3, "ahead": 4, "behind": 5, "removed": false }
     }));
-    assert!(summary.muted && summary.pinned && summary.agents.allows());
+    assert!(summary.agents.allows());
+    // Pin, mute, and dismiss are the host's view preferences (D92): not in a summary, and a
+    // summary from a daemon that still sends them decodes without them.
+    let with_flags = json!({ "id": "t", "instance": "pi_1", "title": "x", "cwd": "/r", "state": "idle", "control": "free",
+        "originKind": "yaac", "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z", "muted": true, "pinned": true });
+    let decoded: ThreadSummary = serde_json::from_value(with_flags).unwrap();
+    let back = serde_json::to_value(&decoded).unwrap();
+    assert!(back.get("muted").is_none() && back.get("pinned").is_none() && back.get("dismissed").is_none());
     assert_eq!(summary.state, ThreadState::Waiting);
     assert_eq!(summary.project.as_ref().unwrap().kind, Some(ProjectKind::User));
     assert_eq!(summary.git.as_ref().unwrap().ahead, 4);
@@ -284,7 +291,7 @@ fn summary_flags_git_status_and_projects() {
         "originKind": "yaac", "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"
     }))
     .unwrap();
-    assert!(!old.muted && !old.pinned && old.git.is_none());
+    assert!(old.git.is_none());
     assert_eq!(old.agents, AgentsPolicy::Ask);
     assert_eq!(old.state, ThreadState::Done);
     // An agents policy this build does not know is kept, and does not allow.
@@ -327,7 +334,7 @@ fn projects_item_read_fork_only_usage_and_context() {
           "repo": { "repo": "/srv/mono/.git", "relative": "services/billing", "root": "/srv/mono" }, "crossTargetKey": "host/mono" }
     ]}));
     let _: ProjectCreateParams = exact(json!({ "opId": "op", "folder": "/srv/x", "name": "X" }));
-    let _: ThreadUpdateParams = exact(json!({ "opId": "op", "threadId": "t", "muted": false, "agents": "ask" }));
+    let _: ThreadUpdateParams = exact(json!({ "opId": "op", "threadId": "t", "agents": "ask" }));
     let _: ItemReadResult = exact(json!({ "present": true, "data": "abc", "offset": 10, "nextOffset": 13, "totalBytes": 20, "more": true }));
     let _: ThreadForkOnlyParams = exact(json!({ "opId": "op", "source": "t", "instance": "pi_1" }));
     let _: MeshUsageParams = exact(json!({ "root": "tg_0/t1", "source": "tg_1", "agentTurns": 3, "threadsSpawned": 1 }));

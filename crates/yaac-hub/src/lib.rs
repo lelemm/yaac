@@ -19,6 +19,7 @@
 //! | [`cache`] | The disposable SQLite cache; items and position commit together. |
 //! | [`drafts`] | The durable draft store (own file, own migrations). |
 //! | [`relay`] | The durable mesh relay queue (own file, own migrations). |
+//! | [`notify`] | Desktop notifications when a thread needs the user and no window is attached. |
 //!
 //! Threads: one tokio current-thread runtime on the calling thread does all I/O and owns all
 //! protocol state; one store thread does all SQLite work, in submission order. Nothing else.
@@ -34,6 +35,7 @@ pub mod find;
 mod lock;
 pub mod mesh;
 mod migrate;
+pub mod notify;
 pub mod paths;
 pub mod protocol;
 pub mod relay;
@@ -135,6 +137,7 @@ pub fn run_hub(config: HubConfig) -> Result<HubExit, HubError> {
         tokens: cache.sync_tokens()?.into_iter().filter(|(t, _)| known.contains(t)).collect(),
         states: cache.thread_states()?.into_iter().filter(|(t, _, _)| known.contains(t)).collect(),
         in_flight: relay.in_flight()?,
+        kept: drafts.views()?.into_iter().filter(|v| known.contains(&v.target) && v.keeps()).map(|v| (v.target, v.thread_id)).collect(),
     };
     let _ = cache.checkpoint();
 

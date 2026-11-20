@@ -173,6 +173,8 @@ pub fn short_receipt(sent: &yaac_protocol::MeshSentItem) -> String {
         Some(ReceiptReason::LimitExceeded) => "a limit was exceeded".to_owned(),
         Some(ReceiptReason::PolicyDenied) => "the policy refused it".to_owned(),
         Some(ReceiptReason::RemoteDisallowed) => format!("{target} accepts no messages from other machines"),
+        Some(ReceiptReason::Stopped) => "the thread was stopped".to_owned(),
+        Some(ReceiptReason::NotBeneathSender) => "it was queued: the thread is not beneath the sender".to_owned(),
         Some(ReceiptReason::Unknown(s)) => s.clone(),
         None => String::new(),
     };

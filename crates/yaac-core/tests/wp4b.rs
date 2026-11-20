@@ -433,7 +433,7 @@ fn ui_state_is_sent_only_when_attached() {
 // ── wire data instead of window-local seams ────────────────────────────────────────────
 
 #[test]
-fn mute_pin_and_agents_go_through_thread_update() {
+fn mute_and_pin_are_view_preferences_and_agents_goes_through_thread_update() {
     let (mut c, hub) = boot();
     let fix = threads::fix();
     assert!(!c.state.is_muted(&fix));
@@ -441,8 +441,9 @@ fn mute_pin_and_agents_go_through_thread_update() {
     c.set_pinned(&fix, true);
     c.set_agents_policy(&fix, yaac_core::state::AgentsPolicy::Allow);
     settle(&mut c, &hub);
+    // Pin and mute are the host's view preferences (D92), not on the summary.
+    assert!(c.state.is_muted(&fix) && c.state.is_pinned(&fix));
     let s = c.state.summary(&fix).unwrap();
-    assert!(s.muted && s.pinned);
     assert_eq!(s.agents, yaac_protocol::AgentsPolicy::Allow);
     assert_eq!(c.state.agents_policy(&fix), yaac_core::state::AgentsPolicy::Allow);
 }

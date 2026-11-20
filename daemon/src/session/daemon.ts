@@ -78,6 +78,8 @@ export class Daemon implements FrozenCoreHost {
   /** Extra request handlers by method name (for later packages, e.g. the mesh). */
   readonly extraMethods = new Map<string, MethodHandler>();
   private server: net.Server | null = null;
+  /** The socket file this daemon bound (device and inode), to remove only that one on stop. */
+  private socketId: { dev: number; ino: number } | null = null;
   private connections = new Set<ServerConnection>();
   private connectionCount = 0;
   private idleTimer: NodeJS.Timeout | null = null;
@@ -145,6 +147,7 @@ export class Daemon implements FrozenCoreHost {
           s.resume();
         });
       });
+      daemon.socketId = fileId(daemon.socketPath);
     }
     writeJsonAtomic(stateFile, { stateFormat: STATE_FORMAT, clean: false } satisfies StateFile);
     await daemon.core.start();
@@ -276,7 +279,9 @@ export class Daemon implements FrozenCoreHost {
       );
       this.mesh.close();
       await this.core.close();
-      if (this.server) {
+      // Only a socket this process still owns: a newer daemon may already have bound the path
+      // (once this one stopped answering), and its socket and pid file must stay.
+      if (this.server && this.ownsSocket()) {
         fs.rmSync(this.socketPath, { force: true });
         fs.rmSync(path.join(this.config.home, "run", "yaacd.pid"), { force: true });
       }
@@ -286,7 +291,22 @@ export class Daemon implements FrozenCoreHost {
     return this.stopping;
   }
 
+  /** Whether the socket path is still the file this daemon bound. */
+  ownsSocket(): boolean {
+    const now = fileId(this.socketPath);
+    return !!now && !!this.socketId && now.dev === this.socketId.dev && now.ino === this.socketId.ino;
+  }
+
   get isStopping(): boolean {
     return this.stopping !== null;
+  }
+}
+
+function fileId(file: string): { dev: number; ino: number } | null {
+  try {
+    const st = fs.statSync(file);
+    return { dev: st.dev, ino: st.ino };
+  } catch {
+    return null;
   }
 }

@@ -26,6 +26,8 @@ import type {
   ReceiptReason,
   RequestResponse,
   SpawnedThread,
+  StopResult,
+  ThreadHold,
   ThreadState,
   ThreadSummary,
   TranscriptEntry,
@@ -69,6 +71,10 @@ export interface MeshOptions {
   remotePollMs?: number;
   /** The housekeeping timer (undelivered notices, outbox retries). 0: off. */
   tickMs?: number;
+  /** How often a parent asks for the state of its workers on other targets (live workers item). 0: off. */
+  workerPollMs?: number;
+  /** How long a stop waits for an interrupted turn to end before it reports "did not respond". */
+  stopWaitMs?: number;
 }
 
 /** A tool failure the agent can read. */
@@ -93,7 +99,7 @@ interface Snapshot {
 
 type Resolved = { kind: "local"; rt: ThreadRuntime; address: Address } | { kind: "remote"; address: Address; target: string };
 
-const FINISHED: ThreadState[] = ["idle", "done", "failed", "needsAttention"];
+const FINISHED: ThreadState[] = ["idle", "done", "failed", "needsAttention", "stopped"];
 
 function isActive(s: ThreadSummary, now: number): boolean {
   if (s.archived) return false;
@@ -182,6 +188,13 @@ export class Mesh implements CoreMeshHooks {
   private readonly snapshots = new Map<string, Snapshot>();
   private readonly git;
   private timer: NodeJS.Timeout | null = null;
+  private workerTimer: NodeJS.Timeout | null = null;
+  private workerPolling = false;
+  /** Threads a `now` delivery is being made to. */
+  private readonly nowInFlight = new Set<string>();
+  /** `alwaysAsk`: the open prompt of each thread. */
+  private readonly eachPrompt = new Map<string, string>();
+  private readonly stopWaitMs: number;
   private closed = false;
   private readonly waitMaxMs: number;
   private readonly permissionWaitMs: number;
@@ -196,6 +209,7 @@ export class Mesh implements CoreMeshHooks {
     this.waitMaxMs = Math.min(opts.waitMaxMs ?? WAIT_MAX_SECS * 1000, WAIT_MAX_SECS * 1000);
     this.permissionWaitMs = opts.permissionWaitMs ?? 40_000;
     this.remotePollMs = opts.remotePollMs ?? 5000;
+    this.stopWaitMs = opts.stopWaitMs ?? 5000;
     core.mesh = this;
     core.registry.setMeshHooks((instanceId) => this.hooksFor(instanceId));
     core.heldAndIdle.on((threadId) => this.kick(threadId));
@@ -226,11 +240,17 @@ export class Mesh implements CoreMeshHooks {
       this.timer = setInterval(() => this.tick(), tick);
       this.timer.unref();
     }
+    const poll = this.opts.workerPollMs ?? 10_000;
+    if (poll > 0) {
+      this.workerTimer = setInterval(() => void this.pollRemoteWorkers(), poll);
+      this.workerTimer.unref();
+    }
   }
 
   close(): void {
     this.closed = true;
     if (this.timer) clearInterval(this.timer);
+    if (this.workerTimer) clearInterval(this.workerTimer);
     for (const w of this.waiters.values()) w.finish("yaacd is stopping; call wait again.");
     this.store.save();
     this.store.close();
@@ -379,9 +399,17 @@ export class Mesh implements CoreMeshHooks {
     return { open: (req) => this.open(instanceId, req) };
   }
 
+  /** The running daemon's own entry script (what `serve` is started with). */
+  private daemonEntry(): string {
+    return process.argv[1] ? path.resolve(process.argv[1]) : "";
+  }
+
   private bridgeCommand(): { command: string; args: string[] } {
     if (this.opts.bridgeCommand) return this.opts.bridgeCommand;
-    const script = process.argv[1] ? path.resolve(process.argv[1]) : "";
+    const script = this.daemonEntry();
+    // The small bridge bundle beside the daemon's, when there is one (a built yaacd).
+    const small = script ? path.join(path.dirname(script), "yaacd-mcp.mjs") : "";
+    if (small && fs.existsSync(small)) return { command: process.execPath, args: [...process.execArgv, small] };
     return { command: process.execPath, args: [...process.execArgv, script, "mcp"] };
   }
 
@@ -429,6 +457,7 @@ export class Mesh implements CoreMeshHooks {
             YAAC_MCP_TICKET: t,
             YAAC_SOCKET: this.opts.socketPath,
             YAAC_HOME: this.opts.home,
+            YAAC_DAEMON_ENTRY: this.daemonEntry(),
           },
         };
       },
@@ -505,6 +534,9 @@ export class Mesh implements CoreMeshHooks {
           break;
         case "stop_thread":
           text = await this.stopTool(rt, a);
+          break;
+        case "stop_all":
+          text = await this.stopAllTool(rt);
           break;
         default:
           throw new ToolError(`There is no yaac tool named ${call.tool}.`);
@@ -1036,9 +1068,19 @@ export class Mesh implements CoreMeshHooks {
    * an `ask` chat raises one prompt. Work under another thread's root is covered by that
    * root's answer.
    */
+  /**
+   * The per-chat toggle (D51) is the main control; the target's policy mode can only make it
+   * stricter: `askFirst` asks once per orchestration even in a chat set to allow; `alwaysAsk`
+   * asks for every action, in the thread that wants to act.
+   */
   private async ensurePermission(rt: ThreadRuntime, action: MeshPermissionAction): Promise<void> {
     const root = this.rootOf(rt);
     const self = this.addressOf(rt.id);
+    const mode = this.store.state.policy.mode;
+    if (mode === "alwaysAsk") {
+      const rs = this.isLocalAddress(root) ? this.rootState(root) : null;
+      return this.promptFor(rt, action, root, rs, true);
+    }
     if (root !== self) {
       if (this.isLocalAddress(root) && this.store.state.roots[root]?.denied) {
         throw new ToolError("The user did not allow the agents of this orchestration to work with other agents. Carry on alone.");
@@ -1047,7 +1089,7 @@ export class Mesh implements CoreMeshHooks {
     }
     const rs = this.rootState(root);
     if (rs.granted) return;
-    if ((rt.record.agents ?? "ask") === "allow") {
+    if ((rt.record.agents ?? "ask") === "allow" && mode !== "askFirst") {
       rs.granted = true;
       this.store.save();
       return;
@@ -1055,10 +1097,17 @@ export class Mesh implements CoreMeshHooks {
     if (rs.denied) {
       throw new ToolError("The user did not allow this chat's agent to start or message other agents. Carry on alone, or ask the user to switch the chat's Agents setting to allow.");
     }
-    let requestId = rs.pendingRequest ?? null;
+    return this.promptFor(rt, action, root, rs, false);
+  }
+
+  /** Raises (or reuses) a permission prompt in `rt` and waits for the user's answer. */
+  private async promptFor(rt: ThreadRuntime, action: MeshPermissionAction, root: Address, rs: RootState | null, each: boolean): Promise<void> {
+    let requestId = (each ? this.eachPrompt.get(rt.id) : rs?.pendingRequest) ?? null;
     if (!requestId || rt.requests.get(requestId)?.state !== "pending") {
-      requestId = this.core.raiseMeshRequest(rt.id, { requestKind: "meshPermission", actions: [action], budget: { ...rs.allowance }, root });
-      rs.pendingRequest = requestId;
+      const budget = rs ? { ...rs.allowance } : { ...this.store.state.policy.budget };
+      requestId = this.core.raiseMeshRequest(rt.id, { requestKind: "meshPermission", actions: [action], budget, root });
+      if (each) this.eachPrompt.set(rt.id, requestId);
+      else if (rs) rs.pendingRequest = requestId;
       this.permissionRoots.set(requestId, root);
       this.store.save();
     }
@@ -1082,6 +1131,7 @@ export class Mesh implements CoreMeshHooks {
 
   /** `request/respond` for a `meshPermission` (from `Core.requestRespond`). */
   async respond(rt: ThreadRuntime, rec: RequestRecord, response: RequestResponse, client: ClientLink): Promise<void> {
+    if (this.eachPrompt.get(rt.id) === rec.requestId) this.eachPrompt.delete(rt.id);
     const r = response as RequestResponse & { decision?: string; budget?: MeshBudget | null; alwaysAllow?: boolean };
     const root = this.permissionRoots.get(rec.requestId) ?? this.addressOf(rt.id);
     const rs = this.rootState(root);
@@ -1190,7 +1240,7 @@ export class Mesh implements CoreMeshHooks {
   }
 
   /** A child's state changed: update its parent's live spawn item. */
-  private updateSpawnItems(childAddress: Address, state: ThreadState, peer?: MeshPeer): void {
+  private updateSpawnItems(childAddress: Address, state: ThreadState, peer?: MeshPeer, keepStopped = false): void {
     const tmOfChild = this.localOf(childAddress) ? this.store.peekThread(this.localOf(childAddress)!.id) : undefined;
     const parentAddress = tmOfChild?.spawnedBy;
     const parents = parentAddress ? [this.localOf(parentAddress)].filter((x): x is ThreadRuntime => !!x) : this.core.allThreads().filter((t) => (this.store.peekThread(t.id)?.children ?? []).includes(childAddress));
@@ -1199,6 +1249,8 @@ export class Mesh implements CoreMeshHooks {
       for (const [turn, entry] of Object.entries(items)) {
         const t = entry.threads.find((x) => this.normalise(x.peer.address) === this.normalise(childAddress));
         if (!t || (t.state === state && !peer)) continue;
+        // A stopped worker's interrupted turn still returns a result: it stays shown as stopped.
+        if (keepStopped && t.state === "stopped") continue;
         this.spawnItem(parent, turn || null, { ...t, state, ...(peer ? { peer } : {}) });
       }
     }
@@ -1259,6 +1311,7 @@ export class Mesh implements CoreMeshHooks {
         detached: a.detached === true,
         root,
         depth: tm.depth + 1,
+        ancestors: [caller, ...this.ancestorsOf(rt)],
       });
       return `Started ${this.labelOf(reply.thread.address)}.\nAddress: ${reply.thread.address}\n${a.detached === true ? "It is detached: its answer will not come back to you." : "Its final answer to this task will come back to you once, as a result: call wait to receive it."}`;
     }
@@ -1275,6 +1328,7 @@ export class Mesh implements CoreMeshHooks {
       detached: a.detached === true,
       root,
       depth: tm.depth + 1,
+      ancestors: [caller, ...this.ancestorsOf(rt)],
     })) as { thread: MeshPeer; turnId: TurnId };
     this.remember(r.thread, "running");
     tm.children.push(r.thread.address);
@@ -1298,6 +1352,8 @@ export class Mesh implements CoreMeshHooks {
     detached: boolean;
     root: Address;
     depth: number;
+    /** Every thread above the new one, nearest first. */
+    ancestors?: Address[];
   }): Promise<{ thread: MeshPeer; turnId: TurnId }> {
     const limits = this.store.state.policy.limits;
     if (p.depth > limits.spawnDepth) throw new RpcError("limit_exceeded", `Limit reached: workers can be nested at most ${limits.spawnDepth} deep.`);
@@ -1353,6 +1409,7 @@ export class Mesh implements CoreMeshHooks {
     ctm.spawnRoot = message.root ?? message.from;
     ctm.currentRoot = ctm.spawnRoot;
     ctm.depth = p.depth;
+    ctm.ancestors = (p.ancestors && p.ancestors.length > 0 ? p.ancestors : [message.from]).map((a) => this.normalise(a));
     ctm.spawnTurn = started.turnId;
     ctm.detached = p.detached;
     ctm.introduced = true;
@@ -1405,11 +1462,21 @@ export class Mesh implements CoreMeshHooks {
     if (!text.trim()) throw new ToolError("send_message needs text: the message to send (the parameter is called `text`).");
     const r = this.resolve(a.to, "recipient");
     if (r.address === this.addressOf(rt.id)) throw new ToolError("That is your own address; a message to yourself is not delivered.");
+    if (a.delivery !== undefined && a.delivery !== null && a.delivery !== "queue" && a.delivery !== "now") throw new ToolError("delivery must be \"queue\" (the default) or \"now\".");
+    const now = a.delivery === "now";
     if (!this.isReply(rt, r.address)) {
       await this.ensurePermission(rt, { action: "message", summary: `Message ${this.labelOf(r.address)}`, recipients: [this.peerFor(r.address)] });
     }
     this.checkPairRate(rt, r.address);
-    const sent = this.send({ from: this.addressOf(rt.id), fromRt: rt, to: r.address, kind: "message", text, inReplyTo: typeof a.inReplyTo === "string" ? a.inReplyTo : null, root: this.rootOf(rt), sentItem: true });
+    const sent = this.send({ from: this.addressOf(rt.id), fromRt: rt, to: r.address, kind: "message", text, inReplyTo: typeof a.inReplyTo === "string" ? a.inReplyTo : null, root: this.rootOf(rt), sentItem: true, now });
+    // A `now` message is acted on at once: report what was done with it.
+    if (now) {
+      const recipient = this.localOf(r.address);
+      if (recipient) await this.tryNow(recipient);
+      else await this.untilRelayed(sent.id);
+      const rec = this.store.get(sent.id);
+      if (rec?.receipt) sent.receipt = rec.receipt;
+    }
     return `${this.receiptText(sent.receipt, this.labelOf(r.address))}\nMessage id: ${sent.id}\nThis is not a reply: call wait to receive one.`;
   }
 
@@ -1423,19 +1490,23 @@ export class Mesh implements CoreMeshHooks {
   private receiptFor(rt: ThreadRuntime, m: MeshMessage): Receipt {
     const q = (reason: ReceiptReason, detail: string): Receipt => ({ status: "queued", reason, detail });
     if (rt.external.external) return q("inUseElsewhere", `the thread is open in ${rt.external.holder ?? "another program"}; YAAC delivers it when that program lets go`);
+    const hold = rt.record.hold;
+    if (hold && !(m.kind === "message" && hold.by && this.normalise(hold.by) === this.normalise(m.from))) {
+      return q("stopped", `the thread was stopped by ${hold.label}; it waits until ${hold.by ? "that agent" : "the user"} or the user sends it a message`);
+    }
     const why = m.kind === "notice" ? null : this.exhaustedReason(m.root ?? null);
     if (why) return q("budgetExhausted", `the orchestration's budget is used up (${why}); it is delivered after the user chooses Continue`);
     if (rt.pendingRequestCount() > 0) return q("awaitingUser", "the thread is waiting for its user to answer a question or approval");
     if (this.waiters.has(rt.id)) return { status: "delivered", detail: "it was waiting, and gets it now" };
     if (rt.activeTurn || rt.dispatching) return q("recipientBusy", "the thread is running a turn; it gets the message when that turn ends");
-    return { status: "delivered", detail: m.kind === "notice" ? "it sees it at its next turn" : "it starts a turn with it now" };
+    return { status: "delivered", detail: m.kind === "notice" ? "it sees it at its next turn" : "it starts a turn with it now", ...(m.delivery === "now" ? { handling: "delivered" as const } : {}) };
   }
 
   /** Stores and routes one message from a thread on this target (or about it, for notices). */
-  private send(p: { from: Address; fromRt: ThreadRuntime | null; to: Address; kind: MeshMessage["kind"]; text: string; inReplyTo?: string | null; root?: Address | null; sentItem: boolean }): { id: string; receipt: Receipt } {
+  private send(p: { from: Address; fromRt: ThreadRuntime | null; to: Address; kind: MeshMessage["kind"]; text: string; inReplyTo?: string | null; root?: Address | null; sentItem: boolean; now?: boolean }): { id: string; receipt: Receipt } {
     const from = this.normalise(p.from);
     const to = this.normalise(p.to);
-    const message: MeshMessage = { id: randomId("m_", 12), from, to, kind: p.kind, text: p.text, sentAt: nowIso(), seq: this.store.nextSeq(from, to), ...(p.inReplyTo ? { inReplyTo: p.inReplyTo } : {}), ...(p.root ? { root: this.normalise(p.root) } : {}) };
+    const message: MeshMessage = { id: randomId("m_", 12), from, to, kind: p.kind, text: p.text, sentAt: nowIso(), seq: this.store.nextSeq(from, to), ...(p.inReplyTo ? { inReplyTo: p.inReplyTo } : {}), ...(p.root ? { root: this.normalise(p.root) } : {}), ...(p.now ? { delivery: "now" as const } : {}) };
     const recipient = this.localOf(to);
     const now = Date.now();
     let rec: MessageRecord;
@@ -1454,8 +1525,9 @@ export class Mesh implements CoreMeshHooks {
     this.store.put(rec);
     if (p.kind === "message") this.relate(from, to);
     if (p.fromRt && p.sentItem) this.sentItem(p.fromRt, rec, "itemStarted");
-    if (recipient) this.kick(recipient.id);
-    else if (rec.outState === "relayPending") void this.relay(rec);
+    if (recipient) {
+      if (!p.now) this.kick(recipient.id);
+    } else if (rec.outState === "relayPending") void this.relay(rec);
     return { id: message.id, receipt: rec.receipt! };
   }
 
@@ -1561,6 +1633,14 @@ export class Mesh implements CoreMeshHooks {
     if (!rt || rt.deleted) return;
     const pending = this.store.inbox(threadId, ["pending"]);
     if (pending.length === 0) return;
+    // A message from the agent that stopped a thread is what starts it again.
+    const hold = rt.record.hold;
+    if (hold?.by && pending.some((r) => r.message.kind === "message" && this.normalise(r.message.from) === this.normalise(hold.by!))) this.core.releaseHold(rt, false);
+    if (this.nowInFlight.has(threadId)) return;
+    if (pending.some((r) => r.message.delivery === "now" && !r.nowHandled) && (rt.activeTurn || rt.dispatching)) {
+      void this.tryNow(rt);
+      return;
+    }
     const waiter = this.waiters.get(threadId);
     if (waiter && !waiter.done && waiter.forMessages) {
       waiter.finish(this.offer(rt, pending, waiter.turnId));
@@ -1619,7 +1699,8 @@ export class Mesh implements CoreMeshHooks {
         for (const id of ids) this.store.update(id, { inState: "consumed", turnId });
         for (const id of ids) {
           const r = this.store.get(id);
-          if (r && r.message.kind !== "notice") this.updateReceipt(r, { status: "delivered", detail: "it started a turn with it" });
+          if (r && r.message.kind !== "notice") this.updateReceipt(r, { status: "delivered", detail: "it started a turn with it", ...(r.message.delivery === "now" ? { handling: "delivered" as const } : {}) });
+          if (r?.message.delivery === "now") this.store.update(id, { nowHandled: true });
         }
         if (intro) tm.introduced = true;
         this.countTurn(root);
@@ -1648,6 +1729,111 @@ export class Mesh implements CoreMeshHooks {
         this.store.save();
         this.kick(rt.id);
       });
+  }
+
+  /** Whether a local thread has itself dealt with `from` (messaged it, spawned it, or was spawned under it). */
+  private hasContacted(rt: ThreadRuntime, from: Address): boolean {
+    const f = this.normalise(from);
+    const tm = this.store.peekThread(rt.id);
+    if (tm?.children.some((c) => this.normalise(c) === f)) return true;
+    if (this.ancestorsOf(rt).includes(f)) return true;
+    return this.store.all().some((r) => r.sender === rt.id && this.normalise(r.message.to) === f);
+  }
+
+  /**
+   * `now` delivery (docs/10-agent-mesh.md#queued-or-now) to a thread that is mid-turn: steered
+   * into its running turn where its harness can steer, otherwise its turn is interrupted and a
+   * new one starts with the mail. Only from a thread above it; never while it waits on its
+   * user; never to a held thread (unless from its stopper, which releases it). Otherwise the
+   * message is delivered as `queue`, and its receipt says why.
+   */
+  async tryNow(rt: ThreadRuntime): Promise<void> {
+    if (this.nowInFlight.has(rt.id) || rt.deleted) return;
+    const pending = this.store.inbox(rt.id, ["pending"]);
+    const asked = pending.filter((r) => r.message.delivery === "now" && !r.nowHandled);
+    if (asked.length === 0) return this.kick(rt.id);
+    const hold = rt.record.hold;
+    if (hold?.by && pending.some((r) => r.message.kind === "message" && this.normalise(r.message.from) === this.normalise(hold.by!))) this.core.releaseHold(rt, false);
+    const degrade = (r: MessageRecord, reason: ReceiptReason, detail: string) => {
+      this.store.update(r.message.id, { nowHandled: true });
+      this.updateReceipt(r, { status: "queued", reason, detail, handling: "queued" });
+    };
+    const eligible: MessageRecord[] = [];
+    for (const r of asked) {
+      if (!this.isBeneath(rt, r.message.from)) degrade(r, "notBeneathSender", "`now` is only for threads beneath the sender: it was delivered as `queue`, and waits for the running turn to end");
+      else eligible.push(r);
+    }
+    if (eligible.length === 0) return this.kick(rt.id);
+    if (rt.pendingRequestCount() > 0) {
+      for (const r of eligible) degrade(r, "awaitingUser", "the thread is waiting on the user (a question or an approval); `now` never interrupts that: it is queued");
+      return;
+    }
+    if (rt.record.hold) {
+      for (const r of eligible) degrade(r, "stopped", `the thread was stopped by ${rt.record.hold.label}; it is queued`);
+      return;
+    }
+    if (!rt.activeTurn && !rt.dispatching) return this.kick(rt.id); // idle: an ordinary delivery
+    if (rt.external.external) {
+      for (const r of eligible) degrade(r, "inUseElsewhere", `the thread is open in ${rt.external.holder ?? "another program"}`);
+      return;
+    }
+    // Everything waiting for it goes in, in order.
+    const recs = pending;
+    const ids = recs.map((r) => r.message.id);
+    const inputs = recs.map((r) => this.inputOf(r));
+    const items = recs.map((r) => this.receivedItem(r, ""));
+    const root = this.normalise(eligible[0]!.message.root ?? eligible[0]!.message.from);
+    const tm = this.store.thread(rt.id);
+    const spawnTurn = tm.spawnTurn;
+    const replacing = !!spawnTurn && spawnTurn === rt.activeTurn && !tm.resultSent;
+    this.nowInFlight.add(rt.id);
+    const existing = this.dispatches.get(rt.id);
+    if (existing) existing.cancel();
+    try {
+      const steer = await this.core.canSteer(rt);
+      // An interrupted spawn turn's answer is not the worker's result: the new turn's is.
+      if (replacing && !steer) tm.spawnTurn = null;
+      const result = await this.core.deliverNow(rt, [{ type: "text", text: frameMessages(inputs) }], {}, null, "mesh", {
+        journalItems: items,
+        mesh: inputs,
+        beforeStart: () => {
+          for (const id of ids) this.store.update(id, { inState: "dispatching" });
+          this.pendingRoots.set(rt.id, root);
+        },
+        onStarted: (turnId) => {
+          for (const id of ids) this.store.update(id, { inState: "consumed", turnId, nowHandled: true });
+          if (replacing && !steer) tm.spawnTurn = turnId;
+        },
+      });
+      if (result.outcome !== "steered") this.countTurn(root);
+      const handling = result.outcome === "steered" ? "steered" : result.outcome === "interruptedAndStarted" ? "interruptedAndDelivered" : "delivered";
+      const detail = handling === "steered" ? "steered into its running turn" : handling === "interruptedAndDelivered" ? "its running turn was interrupted and a new one started with it" : "it started a turn with it";
+      for (const id of ids) {
+        const r = this.store.get(id);
+        if (r && r.message.kind !== "notice") this.updateReceipt(r, { status: "delivered", detail, handling });
+      }
+    } catch (e) {
+      if (replacing && tm.spawnTurn === null) tm.spawnTurn = spawnTurn;
+      for (const id of ids) {
+        const r = this.store.get(id);
+        if (r && r.inState === "dispatching") this.store.update(id, { inState: "pending" });
+      }
+      for (const r of eligible) degrade(r, "recipientBusy", `it could not be delivered at once (${(e as Error).message}); it is queued`);
+    } finally {
+      this.nowInFlight.delete(rt.id);
+      this.store.save();
+      this.kick(rt.id);
+    }
+  }
+
+  /** Waits (briefly) until a relayed message's receipt says what the other target did with it. */
+  private async untilRelayed(id: string, timeoutMs = 10_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const r = this.store.get(id);
+      if (!r || r.receipt?.handling || r.receipt?.status === "failed" || r.outState === "done") return;
+      await new Promise((res) => setTimeout(res, 50));
+    }
   }
 
   /** Hands mail to a `wait`: journaled in the waiting turn, consumed once confirmed. */
@@ -1679,6 +1865,7 @@ export class Mesh implements CoreMeshHooks {
 
   private stateOfLocal(rt: ThreadRuntime): ThreadState {
     const s = this.core.summaryOf(rt).state;
+    if (s === "stopped") return s;
     // A thread about to be handed mail is about to run.
     if (FINISHED.includes(s) && (this.dispatches.has(rt.id) || this.store.inbox(rt.id, ["pending", "dispatching"]).some((r) => r.message.kind !== "notice"))) return "running";
     return s;
@@ -1806,18 +1993,128 @@ export class Mesh implements CoreMeshHooks {
     return `Registered: when this turn ends — however it ends — YAAC sends your final answer to ${this.labelOf(r.address)}.`;
   }
 
+  /** Every thread above a local one, nearest first (its parent, the parent's parent, …). */
+  ancestorsOf(rt: ThreadRuntime, depth = 0): Address[] {
+    const tm = this.store.peekThread(rt.id);
+    if (!tm?.spawnedBy) return [];
+    if (tm.ancestors && tm.ancestors.length > 0) return tm.ancestors.map((a) => this.normalise(a));
+    const parent = this.normalise(tm.spawnedBy);
+    const prt = depth < 16 ? this.localOf(parent) : undefined;
+    return [parent, ...(prt ? this.ancestorsOf(prt, depth + 1) : [])];
+  }
+
+  /** Whether a local thread is beneath `caller` (a worker of it, or of its workers, …). */
+  isBeneath(rt: ThreadRuntime, caller: Address): boolean {
+    return this.ancestorsOf(rt).includes(this.normalise(caller));
+  }
+
+  private outcomeText(o: string): string {
+    return o === "stopped" ? "stopped" : o === "wasNotRunning" ? "was not running" : o === "didNotRespond" ? "did not respond" : o === "unreachable" ? "could not be reached" : o;
+  }
+
+  /** The parent's workers item shows what a stop did. */
+  private noteStops(results: StopResult[]): void {
+    for (const r of results) if (r.outcome !== "unreachable") this.updateSpawnItems(r.thread, "stopped");
+  }
+
+  private renderStops(results: StopResult[]): string {
+    this.noteStops(results);
+    const lines = results.map((r) => `- ${r.title ? `"${r.title}" ` : ""}(${r.thread}): ${this.outcomeText(r.outcome)}${r.detail ? ` — ${r.detail}` : ""}.`);
+    const held = results.some((r) => r.outcome !== "unreachable");
+    return [...lines, held ? "Each stopped thread is held: it does not start again by itself, and messages to it wait, until you or the user send it a message." : ""].filter(Boolean).join("\n");
+  }
+
+  /**
+   * Stops a local thread and holds it, then (with `subtree`) everything beneath it, on any
+   * target. `by` is the agent that asked: the hold names it, and its message releases it.
+   */
+  private async stopLocal(rt: ThreadRuntime, by: Address, subtree: boolean): Promise<StopResult[]> {
+    const address = this.addressOf(rt.id);
+    const hold: ThreadHold = { by: this.normalise(by), label: this.labelOf(by), at: nowIso() };
+    const title = this.core.summaryOf(rt).title;
+    const [own, below] = await Promise.all([
+      this.core.stopAndHold(rt, hold, this.stopWaitMs),
+      subtree ? this.stopChildren(rt, by) : Promise.resolve([] as StopResult[]),
+    ]);
+    // Mail already waiting: its senders are told the thread is stopped.
+    for (const r of this.store.inbox(rt.id, ["pending"])) if (r.message.kind !== "notice") this.updateReceipt(r, this.receiptFor(rt, r.message));
+    this.store.save();
+    return [{ thread: address, outcome: own.outcome, title, ...(own.detail ? { detail: own.detail } : {}) }, ...below];
+  }
+
+  private async stopChildren(rt: ThreadRuntime, by: Address): Promise<StopResult[]> {
+    const kids = (this.store.peekThread(rt.id)?.children ?? []).map((c) => this.normalise(c));
+    const parts = await Promise.all(
+      kids.map(async (child): Promise<StopResult[]> => {
+        const local = this.localOf(child);
+        if (local) return this.stopLocal(local, by, true);
+        const target = this.split(child)?.target;
+        if (!target) return [];
+        try {
+          // Asked as the child's own parent (this thread), which is what the hub can check.
+          const reply = (await this.hubQuery(this.addressOf(rt.id), target, { tool: "stopThread", thread: child, subtree: true, by: this.normalise(by) })) as { results?: StopResult[] };
+          return reply.results ?? [];
+        } catch (e) {
+          return [{ thread: child, outcome: "unreachable", title: this.labelOf(child), detail: (e as Error).message }];
+        }
+      }),
+    );
+    return parts.flat();
+  }
+
   private async stopTool(rt: ThreadRuntime, a: Record<string, unknown>): Promise<string> {
     const r = this.resolve(a.thread);
-    const tm = this.store.peekThread(rt.id);
-    if (!(tm?.children ?? []).map((c) => this.normalise(c)).includes(r.address)) {
-      throw new ToolError(`stop_thread works only on your own workers; ${this.labelOf(r.address)} is not one of them.`);
-    }
+    const self = this.addressOf(rt.id);
+    const subtree = a.subtree !== false;
     if (r.kind === "local") {
-      const stopped = await this.core.interruptForAgent(r.rt.id);
-      return stopped ? `Interrupted ${this.labelOf(r.address)}.` : `${this.labelOf(r.address)} was not running.`;
+      if (!this.isBeneath(r.rt, self)) throw new ToolError(`stop_thread works only on threads beneath you (your workers and theirs); ${this.labelOf(r.address)} is not one of them.`);
+      return this.renderStops(await this.stopLocal(r.rt, self, subtree));
     }
-    await this.hubQuery(this.addressOf(rt.id), r.target, { tool: "stopThread", thread: r.address });
-    return `Asked ${this.targetNameOf(r.target)} to interrupt ${this.labelOf(r.address)}.`;
+    let reply: { results?: StopResult[] };
+    try {
+      reply = (await this.hubQuery(self, r.target, { tool: "stopThread", thread: r.address, subtree })) as { results?: StopResult[] };
+    } catch (e) {
+      if (e instanceof RpcError && e.code === "policy_denied") throw new ToolError(`stop_thread works only on threads beneath you (your workers and theirs); ${this.labelOf(r.address)} is not one of them.`);
+      throw e;
+    }
+    return this.renderStops(reply.results ?? []);
+  }
+
+  private async stopAllTool(rt: ThreadRuntime): Promise<string> {
+    const results = await this.stopChildren(rt, this.addressOf(rt.id));
+    if (results.length === 0) return "You have no workers to stop.";
+    return this.renderStops(results);
+  }
+
+  /** Asks other targets for the state of this target's threads' remote workers (the live workers item). */
+  async pollRemoteWorkers(): Promise<void> {
+    if (this.closed || this.workerPolling || !this.hub || this.hub.isClosed) return;
+    this.workerPolling = true;
+    try {
+      for (const parent of this.core.allThreads()) {
+        const items = this.store.peekThread(parent.id)?.spawnItems ?? {};
+        const byTarget = new Map<string, Address[]>();
+        for (const entry of Object.values(items)) {
+          for (const t of entry.threads) {
+            const a = this.normalise(t.peer.address);
+            if (this.isLocalAddress(a) || t.state === "done" || t.state === "failed") continue;
+            const target = this.split(a)?.target;
+            if (target) byTarget.set(target, [...(byTarget.get(target) ?? []), a]);
+          }
+        }
+        for (const [target, threads] of byTarget) {
+          try {
+            const reply = (await this.hubQuery(this.addressOf(parent.id), target, { tool: "threadStates", threads })) as { states?: Array<{ thread: Address; state?: ThreadState | null }> };
+            for (const st of reply.states ?? []) if (st.state) this.updateSpawnItems(st.thread, st.state);
+          } catch (e) {
+            // That target is away: the next poll tries again.
+            this.opts.log(`mesh: asking ${target} for its workers' states failed: ${(e as Error).message}`);
+          }
+        }
+      }
+    } finally {
+      this.workerPolling = false;
+    }
   }
 
   private limitNotice(rt: ThreadRuntime, what: string): void {
@@ -1912,6 +2209,25 @@ export class Mesh implements CoreMeshHooks {
     if (root) s.root = this.normalise(root);
   }
 
+  /** Part of a live orchestration: never cut by the discovery caps. */
+  keeps(rt: ThreadRuntime): boolean {
+    if (this.waiters.has(rt.id) || this.dispatches.has(rt.id) || this.nowInFlight.has(rt.id)) return true;
+    if (this.store.inbox(rt.id, ["pending", "dispatching", "offered"]).length > 0) return true;
+    const tm = this.store.peekThread(rt.id);
+    if (!tm || (tm.children.length === 0 && tm.peers.length === 0 && !tm.spawnedBy)) return false;
+    const root = tm.currentRoot ?? tm.spawnRoot;
+    if (!root) return false;
+    const rs = this.store.state.roots[this.normalise(root)];
+    const windowMs = (rs?.allowance.wallClockSecs ?? this.store.state.policy.budget.wallClockSecs) * 1000;
+    if (rs) return Date.now() - rs.lastHumanAt < windowMs;
+    // A root on another target: live while messages of it moved recently.
+    return this.store.all().some((r) => (r.recipient === rt.id || r.sender === rt.id) && Date.now() - r.storedAt < windowMs);
+  }
+
+  holdReleased(rt: ThreadRuntime): void {
+    this.kick(rt.id);
+  }
+
   stateChanged(rt: ThreadRuntime): void {
     const address = this.addressOf(rt.id);
     const state = this.core.summaryOf(rt).state;
@@ -1991,7 +2307,7 @@ export class Mesh implements CoreMeshHooks {
     return {};
   }
 
-  private onDeliver(client: ClientSession, p: Record<string, unknown>): unknown {
+  private async onDeliver(client: ClientSession, p: Record<string, unknown>): Promise<unknown> {
     if (this.hub !== client && this.hub === null) this.hub = client;
     const message = p.message as MeshMessage | undefined;
     if (!message || typeof message.id !== "string" || typeof message.to !== "string" || typeof message.from !== "string") throw new RpcError("invalid_params", "a message is required");
@@ -2004,12 +2320,22 @@ export class Mesh implements CoreMeshHooks {
       return { receipt };
     }
     if (this.isLocalAddress(message.from)) throw new RpcError("invalid_params", "a message relayed to this target cannot claim to come from it");
+    // The target's own switch: agents elsewhere may not start conversations here. Results,
+    // notices, and replies within what this thread itself started still arrive.
+    if (!this.store.state.policy.acceptFromOtherTargets && message.kind === "message" && !this.hasContacted(rt, message.from)) {
+      throw new RpcError("policy_denied", `${this.selfName()} does not accept messages from agents on other machines`);
+    }
     const receipt = this.receiptFor(rt, message);
     // Stored (deduplicated in the same step) before the hub is answered.
     this.store.put({ message: { ...message, to: this.addressOf(rt.id) }, inbox: true, outbox: false, inState: "pending", recipient: rt.id, receipt, storedAt: Date.now() });
     if (message.kind === "message") this.relate(message.from, message.to);
     // A worker on another target finished: its parent's live spawn item says so.
-    if (message.kind === "result") this.updateSpawnItems(message.from, /\(Its turn failed/.test(message.text) ? "failed" : "done");
+    if (message.kind === "result") this.updateSpawnItems(message.from, /\(Its turn failed/.test(message.text) ? "failed" : "done", undefined, true);
+    if (message.delivery === "now") {
+      // Acted on before the hub is answered, so the sender learns what was done.
+      await this.tryNow(rt);
+      return { receipt: this.store.get(message.id)?.receipt ?? receipt };
+    }
     this.kick(rt.id);
     return { receipt };
   }
@@ -2057,11 +2383,15 @@ export class Mesh implements CoreMeshHooks {
       case "stopThread": {
         const rt = this.localOf(String(q.thread ?? ""));
         if (!rt) throw new RpcError("thread_not_found", `no thread ${String(q.thread)} on ${this.selfName()}`);
-        if (this.normalise(this.store.peekThread(rt.id)?.spawnedBy ?? "") !== this.normalise(caller)) throw new RpcError("policy_denied", "only the thread that spawned a worker may stop it");
-        await this.core.interruptForAgent(rt.id);
-        return { tool: "stopThread" };
+        // Checked here, by the thread's own daemon: only for a thread beneath the caller.
+        if (!this.isBeneath(rt, caller)) throw new RpcError("policy_denied", "only a thread beneath the caller (its workers, and theirs) may be stopped by it");
+        const by = typeof q.by === "string" && q.by ? q.by : caller;
+        const results = await this.stopLocal(rt, by, q.subtree !== false);
+        this.noteStops(results);
+        return { tool: "stopThread", results };
       }
       case "spawnThread": {
+        if (!this.store.state.policy.acceptFromOtherTargets) throw new RpcError("policy_denied", `${this.selfName()} does not accept work from agents on other machines`);
         const reply = await this.spawnLocal({
           caller,
           callerRt: null,
@@ -2075,6 +2405,7 @@ export class Mesh implements CoreMeshHooks {
           detached: q.detached === true,
           root: typeof q.root === "string" ? q.root : caller,
           depth: typeof q.depth === "number" ? q.depth : 1,
+          ancestors: Array.isArray(q.ancestors) && q.ancestors.length > 0 ? (q.ancestors as Address[]) : [caller],
         }).catch((e) => {
           if (e instanceof ToolError) throw new RpcError("invalid_params", e.message);
           throw e;
@@ -2101,9 +2432,13 @@ export class Mesh implements CoreMeshHooks {
   }
 
   private onPolicy(p: Record<string, unknown>): unknown {
-    const update = p.update as { budget?: Partial<MeshBudget> | null; limits?: Record<string, number | null> | null } | null | undefined;
+    const update = p.update as { mode?: string | null; acceptFromOtherTargets?: boolean | null; budget?: Partial<MeshBudget> | null; limits?: Record<string, number | null> | null } | null | undefined;
+    if (update?.mode !== undefined && update.mode !== null && !["allow", "askFirst", "alwaysAsk"].includes(update.mode)) throw new RpcError("invalid_params", "mode must be allow, askFirst, or alwaysAsk");
+    if (update?.acceptFromOtherTargets !== undefined && update.acceptFromOtherTargets !== null && typeof update.acceptFromOtherTargets !== "boolean") throw new RpcError("invalid_params", "acceptFromOtherTargets must be true or false");
     const apply = () => {
       const pol = this.store.state.policy;
+      if (typeof update?.mode === "string") pol.mode = update.mode;
+      if (typeof update?.acceptFromOtherTargets === "boolean") pol.acceptFromOtherTargets = update.acceptFromOtherTargets;
       for (const [k, v] of Object.entries(update?.budget ?? {})) if (typeof v === "number" && v >= 0) (pol.budget as unknown as Record<string, number>)[k] = v;
       for (const [k, v] of Object.entries(update?.limits ?? {})) if (typeof v === "number" && v >= 0) (pol.limits as unknown as Record<string, number>)[k] = v;
       this.store.save();
@@ -2116,7 +2451,7 @@ export class Mesh implements CoreMeshHooks {
 
   private policyResult(): unknown {
     const pol = this.store.state.policy;
-    return { policy: { mode: "askFirst", acceptFromOtherTargets: true, budget: pol.budget, limits: pol.limits } };
+    return { policy: { mode: pol.mode, acceptFromOtherTargets: pol.acceptFromOtherTargets, budget: pol.budget, limits: pol.limits } };
   }
 
   private onBudget(p: Record<string, unknown>): unknown {

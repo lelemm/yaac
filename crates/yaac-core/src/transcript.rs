@@ -180,7 +180,8 @@ impl Transcript {
                     self.context = e.context.clone();
                 }
             }
-            ThreadEvent::Unknown(_) => {}
+            // SEAM (window package): the queue strip and the stopped state.
+            ThreadEvent::QueueChanged(_) | ThreadEvent::HoldChanged(_) | ThreadEvent::Unknown(_) => {}
         }
     }
 

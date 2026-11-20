@@ -164,13 +164,32 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.THREAD_ARCHIVE:
         await core.threadArchive(p as never);
         return {};
+      case METHODS.THREAD_UNARCHIVE:
+        await core.threadUnarchive(p as never);
+        return {};
+      case METHODS.THREAD_KEEP:
+        return core.keep(p);
+      case METHODS.THREAD_LOOKUP:
+        return core.lookup(this, p as never);
+      case METHODS.THREAD_OLDER:
+        return core.older(this, p as never);
+      case METHODS.DISCOVERY_CAPS:
+        return core.discoveryCaps(p as never);
+      case METHODS.TURN_QUEUE_EDIT:
+        await core.queueEdit(this, p as never);
+        return {};
+      case METHODS.TURN_QUEUE_CANCEL:
+        await core.queueCancel(this, p as never);
+        return {};
+      case METHODS.TURN_QUEUE_PROMOTE:
+        return core.queuePromote(this, p as never);
       case METHODS.THREAD_DELETE:
         await core.threadDelete(this, p as never);
         return {};
       case METHODS.TURN_START:
         return core.turnStart(this, p as never);
       case METHODS.TURN_INTERRUPT:
-        await core.turnInterrupt(this, { threadId: str(p, "threadId"), turnId: str(p, "turnId") });
+        await core.turnInterrupt(this, { threadId: str(p, "threadId"), turnId: str(p, "turnId"), ...(p.hold === true ? { hold: true } : {}) });
         return {};
       case METHODS.TURN_STEER:
         await core.turnSteer(this, p as never);

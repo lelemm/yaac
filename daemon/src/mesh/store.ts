@@ -43,6 +43,8 @@ export interface MessageRecord {
   noticed?: boolean;
   /** Failed dispatch attempts (a refusal by the harness, not an uncertain outcome). */
   dispatchErrors?: number;
+  /** A `now` message whose immediate delivery was decided (done, or degraded to queue). */
+  nowHandled?: boolean;
 }
 
 /** What the mesh knows about one local thread. */
@@ -64,6 +66,8 @@ export interface ThreadMesh {
   introduced?: boolean;
   /** `meshSpawn` items, by the turn that spawned. */
   spawnItems?: Record<string, { itemId: string; threads: SpawnedThread[] }>;
+  /** Every thread above this one, nearest first (its parent, the parent's parent, …). */
+  ancestors?: Address[];
 }
 
 /** An orchestration root owned by this target. */
@@ -97,6 +101,10 @@ export interface Ticket {
 }
 
 export interface MeshPolicyState {
+  /** `allow` (the per-chat toggle decides), `askFirst`, or `alwaysAsk`: only ever stricter than the chat's toggle. */
+  mode: "allow" | "askFirst" | "alwaysAsk" | string;
+  /** Whether agents on other targets may start or message threads here. */
+  acceptFromOtherTargets: boolean;
   budget: MeshBudget;
   limits: MeshLimits;
 }
@@ -117,6 +125,8 @@ export interface StateFile {
 }
 
 export const DEFAULT_POLICY: MeshPolicyState = {
+  mode: "allow",
+  acceptFromOtherTargets: true,
   budget: { agentTurns: 100, threadsSpawned: 20, wallClockSecs: 12 * 3600 },
   limits: { workersPerThread: 8, spawnDepth: 3, runningThreads: 6, pairMessages: 30, pairWindowSecs: 600, undeliveredNoticeSecs: 900 },
 };
@@ -148,6 +158,8 @@ export class MeshStore {
       roster: loaded.roster ?? [],
       rosterAt: loaded.rosterAt ?? null,
       policy: {
+        mode: typeof loaded.policy?.mode === "string" ? loaded.policy.mode : DEFAULT_POLICY.mode,
+        acceptFromOtherTargets: typeof loaded.policy?.acceptFromOtherTargets === "boolean" ? loaded.policy.acceptFromOtherTargets : DEFAULT_POLICY.acceptFromOtherTargets,
         budget: { ...DEFAULT_POLICY.budget, ...(loaded.policy?.budget ?? {}) },
         limits: { ...DEFAULT_POLICY.limits, ...(loaded.policy?.limits ?? {}) },
       },

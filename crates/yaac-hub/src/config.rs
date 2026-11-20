@@ -7,6 +7,7 @@ use std::time::Duration;
 use yaac_protocol::attach::TargetTransport;
 use yaac_transport::{Connector, LocalConfig, LocalConnector};
 
+use crate::notify::{Notifier, SystemNotifier};
 use crate::paths::{HubPaths, PathsError};
 use crate::settings::TargetDef;
 
@@ -89,6 +90,9 @@ pub struct HubConfig {
     pub undelivered_notice: Duration,
     /// How often the relay is swept for such messages.
     pub notice_sweep: Duration,
+    /// Desktop notifications when a thread needs the user and no window is attached. `None`:
+    /// off (the default of [`HubConfig::new`], and so of tests).
+    pub notifier: Option<Arc<dyn Notifier>>,
 }
 
 impl std::fmt::Debug for HubConfig {
@@ -120,7 +124,9 @@ impl HubConfig {
     pub fn from_env(build: impl Into<String>) -> Result<Self, PathsError> {
         let paths = HubPaths::from_env()?;
         let local = LocalConfig::from_env(&default_root());
-        Ok(Self::new(build, paths, Arc::new(DefaultConnectors { local })))
+        let mut config = Self::new(build, paths, Arc::new(DefaultConnectors { local }));
+        config.notifier = Some(Arc::new(SystemNotifier));
+        Ok(config)
     }
 
     /// A configuration with default timings.
@@ -143,6 +149,7 @@ impl HubConfig {
             handle_signals: true,
             undelivered_notice: Duration::from_secs(15 * 60),
             notice_sweep: Duration::from_secs(60),
+            notifier: None,
         }
     }
 }

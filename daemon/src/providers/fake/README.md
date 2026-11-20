@@ -13,7 +13,9 @@ tokens spent. Its models (`fake-large`, `fake-small`, `fake-mystery`), efforts (
 Instance `env` options: `FAKE_STORE=<dir>` (conversation store; two instances with the same
 store share conversations and allow native fork), `FAKE_SEED=0` (no pre-existing "outside"
 threads), `FAKE_NATIVE_FORK=0` (no `threadFork`), `FAKE_PACE_MS=<n>` (delay between deltas,
-default 5), `FAKE_STATUS=<providerStatus>` (e.g. `needsAuth`, to test status handling).
+default 5), `FAKE_STATUS=<providerStatus>` (e.g. `needsAuth`, to test status handling),
+`FAKE_STEER=0` (no `steer`: a harness that cannot steer), `FAKE_FORCE_STOP=0` (no `forceStop`:
+a shared harness process yaacd cannot end).
 
 A new store is seeded with two conversations "created outside YAAC": one `interactive`
 ("Refactor the parser (started in a terminal)") and one `programmatic` ("Nightly lint
@@ -32,6 +34,8 @@ Steps run in order.
 | `/fake tool <command> => <output>` | A command tool call with streamed output, exit 0. |
 | `/fake big-output <bytes>` | A tool call whose output is `<bytes>` long (default 2 MiB), in 64 KiB deltas. |
 | `/fake plan a \| b \| c` | A plan item. |
+| `/fake edit <path>` | A file change (`toolCall`, tool `fileChange`, title "Edited <path>") whose `output` is a small unified diff of that file, as every provider reports file changes (D86). |
+| `/fake deaf` | The rest of the turn ignores `interrupt` (a harness that does not comply); only `forceStop` ends it. |
 | `/fake approve <command>` | Asks for approval (decisions `allow`, `allowSession`, `deny` with reason). Allowed: the tool runs; denied: the tool call is `declined`. |
 | `/fake ask <question> \| <opt1> \| <opt2>` | A structured question (single choice, free text allowed). The reply echoes the choice. |
 | `/fake ask-multi <question> \| <opt1> \| …` | The same, multi-select. |
@@ -83,6 +87,8 @@ turn's input or a `wait` result).
 control)`, `runExternalTurn(native, text, holdMs, extraSteps)`, `resolveElsewhere(native,
 requestId)`, `expireRequest(native, requestId)`, `addOutsideThread(title)`, `failNextScan`,
 `afterAccept` (a hook between the harness accepting a turn and yaacd recording it),
+`addOldThreads(n, daysOld, prefix)` (many old outside conversations, no events), `scannedCount`,
+`lookedUp`, `forceStopped`,
 `meshAttachment(native)` (the thread's mesh attachment, to call tools as that thread),
 `received` (every input handed over), `answers` (every answer, secrets included), `turnLog`,
 and `nativeIds`.

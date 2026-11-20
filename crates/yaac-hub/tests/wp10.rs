@@ -88,13 +88,11 @@ fn projects_and_the_new_summary_fields_land_in_the_cache() {
     });
 
     let mut s = support::fake_daemon::summary("t1");
-    s.muted = true;
-    s.pinned = true;
     s.agents = yaac_protocol::AgentsPolicy::Allow;
     s.git = Some(GitStatus { branch: Some("main".into()), added: 1, modified: 2, deleted: 3, ahead: 4, behind: 5, ..GitStatus::default() });
     alpha.originate_notification_thread_updated(&s);
     wait_until("summary cached with its new fields", || {
-        home.cache().threads(&a).unwrap().iter().any(|t| t.muted && t.pinned && t.agents.allows() && t.git.as_ref().is_some_and(|g| g.behind == 5))
+        home.cache().threads(&a).unwrap().iter().any(|t| t.agents.allows() && t.git.as_ref().is_some_and(|g| g.behind == 5))
     });
     let cached = home.cache().threads(&a).unwrap();
     assert_eq!(cached[0].native_id.as_deref(), Some("native-t1"));
@@ -106,9 +104,9 @@ fn a_cache_of_the_previous_schema_is_dropped_and_rebuilt() {
     let path = dir.path().join("cache.sqlite");
     {
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch("CREATE TABLE threads (x TEXT); PRAGMA user_version = 1;").unwrap();
+        conn.execute_batch("CREATE TABLE threads (x TEXT); PRAGMA user_version = 2;").unwrap();
     }
-    assert_eq!(CACHE_SCHEMA, 2);
+    assert_eq!(CACHE_SCHEMA, 3);
     let mut cache = Cache::open(&path).unwrap();
     let t = TargetId::new("x");
     cache.replace_projects(&t, &[project("pj_1", "P")]).unwrap();
@@ -182,6 +180,7 @@ fn a_message_undelivered_past_the_limit_earns_its_sender_one_passive_notice() {
         sent_at: Timestamp::new("2026-01-01T00:00:00Z"),
         seq: 1,
         root: None,
+        delivery: None,
     };
     answer(&alpha, alpha.relay(&m).unwrap()).unwrap();
     wait_until("the notice reaches the sender's target", || alpha.mailbox().iter().any(|n| n.kind == MeshMessageKind::Notice));

@@ -8,7 +8,8 @@
 //
 // Environment: YAAC_HOME (state directory, default ~/.yaac), YAAC_SOCKET (socket path),
 // YAAC_IDLE_TIMEOUT_MS (idle exit, default 10 minutes; 0 = never), YAAC_FAKE_PROVIDER=1 (an
-// implicit fake provider instance).
+// implicit fake provider instance), YAAC_MESH_WORKER_POLL_MS (how often remote workers' states
+// are asked for).
 
 import * as net from "node:net";
 import { spawn } from "node:child_process";
@@ -36,6 +37,8 @@ async function serve(args: string[]): Promise<void> {
       build: BUILD,
       env,
       idleTimeoutMs,
+      // How often a parent asks other targets for its workers' states (default 10 s).
+      ...(env.YAAC_MESH_WORKER_POLL_MS && /^\d+$/.test(env.YAAC_MESH_WORKER_POLL_MS) ? { mesh: { workerPollMs: Number(env.YAAC_MESH_WORKER_POLL_MS) } } : {}),
       onExit: () => process.exit(0),
     });
   } catch (e) {

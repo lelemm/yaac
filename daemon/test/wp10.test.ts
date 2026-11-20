@@ -228,7 +228,7 @@ test("git status in summaries: once per checkout, refreshed when a turn ends the
 
 // ── Thread flags and projects through the daemon ─────────────────────────────────────────────
 
-test("mute, pin, and the agents policy are stored on the target and survive a restart", async () => {
+test("the agents policy is stored on the target and survives a restart; pin and mute are not the daemon's (D92)", async () => {
   const home = tmpHome();
   let daemon = await startDaemon(home);
   let c = await client(daemon);
@@ -236,20 +236,18 @@ test("mute, pin, and the agents policy are stored on the target and survive a re
   await c.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
   await waitTurnDone(c, t.threadId, t.turnId);
   let s: any = ((await c.request("thread/sync", {})) as any).changed.find((x: any) => x.id === t.threadId);
-  assert.deepEqual([s.muted, s.pinned, s.agents], [false, false, "allow"], "agents from thread/start");
+  assert.deepEqual([s.muted, s.pinned, s.dismissed, s.agents], [undefined, undefined, undefined, "allow"], "agents from thread/start; no view flags");
   const before = c.notifications.length;
-  const r: any = await c.request("thread/update", { opId: opId(), threadId: t.threadId, muted: true, pinned: true, agents: "ask" });
-  assert.deepEqual([r.thread.muted, r.thread.pinned, r.thread.agents], [true, true, "ask"]);
-  await until(() => c.notifications.slice(before).some((n) => n.method === "thread/updated" && n.params.thread.muted === true), "thread/updated");
-  // A patch: only what is named changes.
-  await c.request("thread/update", { opId: opId(), threadId: t.threadId, pinned: false });
-  await assert.rejects(c.request("thread/update", { opId: opId(), threadId: t.threadId, muted: "yes" }), (e: unknown) => e instanceof RpcFailure && e.code === "invalid_params");
+  const r: any = await c.request("thread/update", { opId: opId(), threadId: t.threadId, agents: "ask" });
+  assert.equal(r.thread.agents, "ask");
+  await until(() => c.notifications.slice(before).some((n) => n.method === "thread/updated" && n.params.thread.agents === "ask"), "thread/updated");
+  await assert.rejects(c.request("thread/update", { opId: opId(), threadId: t.threadId, agents: 7 }), (e: unknown) => e instanceof RpcFailure && e.code === "invalid_params");
   await c.close();
   await daemon.stop("test");
   daemon = await startDaemon(home);
   c = await client(daemon);
   s = ((await c.request("thread/sync", {})) as any).changed.find((x: any) => x.id === t.threadId);
-  assert.deepEqual([s.muted, s.pinned, s.agents], [true, false, "ask"]);
+  assert.equal(s.agents, "ask");
   assert.ok(typeof s.nativeId === "string" && s.nativeId.length > 0, "the harness's own id is on the summary");
   await c.close();
   await daemon.stop("test");

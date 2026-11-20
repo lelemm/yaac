@@ -115,7 +115,18 @@ worker found. To be done as one pass once the provider workers land:
   first message; `enabled` in target-state notifications.
 - `item/read` on the wire; `mesh/usage` and budget forwarding in the hub.
 
-## Follow-up: after the mesh lands
+## Follow-up: after the mesh lands — done (WP11)
+
+**Done and verified** (148 daemon tests; 205 Rust tests across all five crates; bindings check
+against the unchanged v1 baseline — all re-run by the orchestrator): discovery caps with lookup
+by id and "older" paging; unarchive; mute, pin, and dismiss moved to the hub (D92) with
+`thread/keep`; stop-and-hold and `stop_all`; queue-or-now for agents and for the user's
+queued messages with edit, cancel, and promote; per-target mesh policy enforced; the
+desktop notification; the socket-ownership bug; Claude unified diffs; a 14.8 KB MCP bridge
+bundle (idle 46 MB RSS, down from about 69). Not done: remote worker state is polled every
+10 s, not pushed; Codex sort and search parameters were not run live.
+
+### The list as it was
 
 - **Discovery caps (D78, N39):** apply the age and number caps in `yaacd`'s thread index while
   scanning (both providers list newest first — stop early), with the never-cut rules; on-demand

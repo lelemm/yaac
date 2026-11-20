@@ -8,7 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use yaac_protocol::{OpId, TargetId, ThreadId};
 
 use crate::migrate::{self, MigrateError};
-use crate::protocol::{Draft, Operation, OperationState};
+use crate::protocol::{Draft, Operation, OperationState, ThreadView, ViewSetParams};
 
 /// Migrations, in order. Append only; never edit one that has shipped.
 const MIGRATIONS: &[&str] = &[
@@ -29,6 +29,19 @@ const MIGRATIONS: &[&str] = &[
         thread_id TEXT,
         state TEXT NOT NULL,
         created_at INTEGER NOT NULL
+    );
+    ",
+    // 2: the threads' view preferences (D92): pin, mute (timed or not), dismiss.
+    r"
+    CREATE TABLE thread_view (
+        target_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        muted INTEGER NOT NULL DEFAULT 0,
+        muted_until TEXT,
+        dismissed INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (target_id, thread_id)
     );
     ",
 ];
@@ -162,6 +175,87 @@ impl DraftStore {
         Ok(())
     }
 
+    // ── View preferences (D92) ─────────────────────────────────────────────────────────
+
+    /// Every thread's view preferences.
+    pub fn views(&self) -> Result<Vec<ThreadView>, DraftsError> {
+        let mut stmt = self.conn.prepare("SELECT target_id, thread_id, pinned, muted, muted_until, dismissed FROM thread_view ORDER BY target_id, thread_id")?;
+        let rows = stmt.query_map([], view_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    fn view(&self, target: &TargetId, thread: &ThreadId) -> Result<ThreadView, DraftsError> {
+        let found = self
+            .conn
+            .query_row(
+                "SELECT target_id, thread_id, pinned, muted, muted_until, dismissed FROM thread_view WHERE target_id = ?1 AND thread_id = ?2",
+                params![target.as_str(), thread.as_str()],
+                view_row,
+            )
+            .optional()?;
+        Ok(found.unwrap_or_else(|| ThreadView { target: target.clone(), thread_id: thread.clone(), ..ThreadView::default() }))
+    }
+
+    fn write_view(&self, v: &ThreadView) -> Result<(), DraftsError> {
+        if v.is_empty() {
+            self.conn.execute("DELETE FROM thread_view WHERE target_id = ?1 AND thread_id = ?2", params![v.target.as_str(), v.thread_id.as_str()])?;
+        } else {
+            self.conn.execute(
+                "INSERT OR REPLACE INTO thread_view (target_id, thread_id, pinned, muted, muted_until, dismissed, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![v.target.as_str(), v.thread_id.as_str(), i64::from(v.pinned), i64::from(v.muted), v.muted_until, i64::from(v.dismissed), now_ms()],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Applies patches in one transaction; returns each entry as it is now.
+    pub fn set_views(&mut self, patches: &[ViewSetParams]) -> Result<Vec<ThreadView>, DraftsError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut out = Vec::new();
+        for p in patches {
+            let mut v = self.view(&p.target, &p.thread_id)?;
+            if let Some(x) = p.pinned {
+                v.pinned = x;
+            }
+            if let Some(x) = p.dismissed {
+                v.dismissed = x;
+            }
+            if let Some(x) = p.muted {
+                v.muted = x;
+                if !x {
+                    v.muted_until = None;
+                }
+            }
+            if let Some(until) = &p.muted_until {
+                v.muted_until = if v.muted { until.clone() } else { None };
+            }
+            self.write_view(&v)?;
+            out.push(v);
+        }
+        tx.commit()?;
+        Ok(out)
+    }
+
+    /// A thread is gone from its target: its pin and mute go. A dismissal stays — a thread
+    /// trimmed by the target's discovery caps may come back and must stay hidden.
+    pub fn view_thread_removed(&mut self, target: &TargetId, thread: &ThreadId) -> Result<Option<ThreadView>, DraftsError> {
+        let mut v = self.view(target, thread)?;
+        if v.is_empty() || !(v.pinned || v.muted) {
+            return Ok(None);
+        }
+        v.pinned = false;
+        v.muted = false;
+        v.muted_until = None;
+        self.write_view(&v)?;
+        Ok(Some(v))
+    }
+
+    /// A target was removed: every entry of it goes.
+    pub fn view_remove_target(&mut self, target: &TargetId) -> Result<(), DraftsError> {
+        self.conn.execute("DELETE FROM thread_view WHERE target_id = ?1", params![target.as_str()])?;
+        Ok(())
+    }
+
     /// Flushes the write-ahead log.
     pub fn checkpoint(&mut self) -> Result<(), DraftsError> {
         self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
@@ -183,5 +277,16 @@ fn finish_draft((key, target, thread, text, attachments, updated): DraftRow) -> 
         text,
         attachments: serde_json::from_str(&attachments)?,
         updated_at_ms: updated,
+    })
+}
+
+fn view_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadView> {
+    Ok(ThreadView {
+        target: TargetId::new(r.get::<_, String>(0)?),
+        thread_id: ThreadId::new(r.get::<_, String>(1)?),
+        pinned: r.get::<_, i64>(2)? != 0,
+        muted: r.get::<_, i64>(3)? != 0,
+        muted_until: r.get(4)?,
+        dismissed: r.get::<_, i64>(5)? != 0,
     })
 }

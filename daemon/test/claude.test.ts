@@ -161,6 +161,9 @@ class StubSdk implements ClaudeSdk {
   async archiveSession(id: string) {
     this.calls.push(["archiveSession", [id]]);
   }
+  async unarchiveSession(id: string) {
+    this.calls.push(["unarchiveSession", [id]]);
+  }
   async deleteSession(id: string) {
     this.calls.push(["deleteSession", [id]]);
   }
@@ -821,4 +824,65 @@ test("history: unknown blocks are kept as generic tool calls, TodoWrite is a pla
   assert.deepEqual((items[1] as { steps: unknown }).steps, [{ text: "one", state: "completed" }, { text: "two", state: "inProgress" }]);
   assert.deepEqual([(items[2] as { tool: string }).tool, (items[2] as { title: string }).title, (items[2] as { output: string }).output], ["mcp", "srv: do_it", "done"]);
   assert.equal((items[3] as { tool: string }).tool, "other");
+});
+
+// ── File changes as unified diffs (D86) ──────────────────────────────────────────────────
+
+test("file changes carry unified diffs: an edit (structured patch, live), a multi-edit and a new file (history)", async () => {
+  const { LiveTranslator } = await import("../src/providers/claude/translate.js");
+  const events: Array<{ type: string; item: any }> = [];
+  const tr = new LiveTranslator((e) => events.push(e as never), "/w");
+  tr.begin("turn-1");
+  tr.assistant({ id: "m1", content: [{ type: "tool_use", id: "toolu_e", name: "Edit", input: { file_path: "src/frame.rs", old_string: "let n = 1;", new_string: "let n = 2;" } }] }, "a1", null);
+  tr.user(
+    [{ type: "tool_result", tool_use_id: "toolu_e", content: "The file src/frame.rs has been updated.", is_error: false }],
+    "u1",
+    null,
+    {
+      filePath: "src/frame.rs",
+      oldString: "let n = 1;",
+      newString: "let n = 2;",
+      originalFile: "fn f() {\n    let n = 1;\n    n\n}\n",
+      structuredPatch: [{ oldStart: 1, oldLines: 4, newStart: 1, newLines: 4, lines: [" fn f() {", "-    let n = 1;", "+    let n = 2;", "     n", " }"] }],
+      userModified: false,
+      replaceAll: false,
+    },
+  );
+  const edit = events.find((e) => e.type === "itemCompleted" && e.item.id === "toolu_e")!.item;
+  assert.equal(edit.tool, "fileChange");
+  assert.equal(edit.title, "Edited src/frame.rs");
+  assert.equal(edit.output, "--- a/src/frame.rs\n+++ b/src/frame.rs\n@@ -1,4 +1,4 @@\n fn f() {\n-    let n = 1;\n+    let n = 2;\n     n\n }\n");
+
+  const msg = (type: "user" | "assistant", uuid: string, content: unknown): SessionMessage =>
+    ({ type, uuid, session_id: "s", message: { id: `m-${uuid}`, role: type, content }, parent_tool_use_id: null, parent_agent_id: null }) as SessionMessage;
+  const items = historyItems(
+    [
+      msg("user", "t1", "change things"),
+      msg("assistant", "a1", [
+        { type: "tool_use", id: "me", name: "MultiEdit", input: { file_path: "a.txt", edits: [{ old_string: "one\ntwo", new_string: "one\n2" }, { old_string: "x", new_string: "y\nz" }] } },
+        { type: "tool_use", id: "w", name: "Write", input: { file_path: "new.md", content: "# Title\n\nbody\n" } },
+      ]),
+      msg("user", "r1", [
+        { type: "tool_result", tool_use_id: "me", content: "ok", is_error: false },
+        { type: "tool_result", tool_use_id: "w", content: "File created", is_error: false },
+      ]),
+    ],
+    null,
+  ) as any[];
+  const multi = items.find((i) => i.id === "me");
+  assert.equal(multi.title, "Edited a.txt");
+  assert.equal(multi.output, "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+2\n@@ -1 +1,2 @@\n-x\n+y\n+z\n");
+  const created = items.find((i) => i.id === "w");
+  assert.equal(created.title, "Created new.md");
+  assert.equal(created.output, "--- /dev/null\n+++ b/new.md\n@@ -0,0 +1,3 @@\n+# Title\n+\n+body\n");
+});
+
+test("a line diff keeps three lines of context and splits distant changes into hunks", async () => {
+  const { lineHunks } = await import("../src/providers/claude/diff.js");
+  const before = Array.from({ length: 20 }, (_, i) => `l${i + 1}`).join("\n");
+  const after = before.replace("l2", "L2").replace("l18", "L18");
+  const hunks = lineHunks(before, after);
+  assert.equal(hunks.length, 2);
+  assert.deepEqual([hunks[0]!.oldStart, hunks[0]!.oldLines, hunks[1]!.oldStart, hunks[1]!.oldLines], [1, 5, 15, 6]);
+  assert.deepEqual(hunks[0]!.lines, [" l1", "-l2", "+L2", " l3", " l4", " l5"]);
 });

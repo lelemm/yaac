@@ -119,6 +119,16 @@ pub fn looks_like_id(query: &str) -> bool {
         && q.chars().any(|c| c.is_ascii_digit() || matches!(c, '_' | '-' | '/' | ':' | '.'))
 }
 
+/// Whether a query looks like a whole id (worth asking the targets for when no index has it):
+/// one token of at least 8 characters of letters, digits, `_`, `-`, `:` or `.`, with a digit.
+/// A YAAC thread id, a harness's conversation id (a UUID), or an address.
+pub fn looks_like_exact_id(query: &str) -> bool {
+    let q = query.trim();
+    q.len() >= 8
+        && q.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ':' | '.' | '/'))
+        && q.chars().any(|c| c.is_ascii_digit())
+}
+
 fn words(s: &str) -> Vec<String> {
     s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect()
 }

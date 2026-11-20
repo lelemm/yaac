@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ContextUsage, Control, Epoch, Item, ItemId, JournalPosition, PageCursor, Seq, ThreadEffective, ThreadId, TokenUsage, TurnId,
+    ContextUsage, Control, Epoch, Item, ItemId, JournalPosition, PageCursor, QueuedMessage, Seq, ThreadEffective, ThreadHold, ThreadId, TokenUsage, TurnId,
     UploadId,
 };
 use crate::macros::open_union;
@@ -81,6 +81,12 @@ pub struct ThreadSubscribeResult {
     /// Cumulative token usage of the thread, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<TokenUsage>,
+    /// User messages queued behind the running turn, in delivery order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued: Option<Vec<QueuedMessage>>,
+    /// Set while the thread is stopped and held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<ThreadHold>,
 }
 
 /// `thread/unsubscribe`.

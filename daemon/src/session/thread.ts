@@ -12,7 +12,9 @@ import type {
   ProjectRef,
   RequestResolution,
   RequestState,
+  QueuedMessage,
   ThreadEffective,
+  ThreadHold,
   TurnId,
   TurnOrigin,
   WorktreeRef,
@@ -45,9 +47,6 @@ export interface ThreadRecord {
   branch?: string | null;
   /** Other instances that see the same conversation (same kind and store). */
   alsoVisibleTo?: string[];
-  /** YAAC's own flags (docs/05-threads.md#keeping-the-list-small-pin-mute-and-archive). */
-  muted?: boolean;
-  pinned?: boolean;
   /** The chat's agents policy (`ask` when absent). */
   agents?: AgentsPolicy;
   /** Where the working directory sits in a repository (null: not in one). */
@@ -62,6 +61,21 @@ export interface ThreadRecord {
    * folder is keyed by that operation; every other thread's by its id.
    */
   uploadsKey?: string | null;
+  /** Archived from YAAC (the user touched it: never cut by the discovery caps). */
+  userArchived?: boolean;
+  /** Outside the discovery caps at the last scan: not listed unless something keeps it. */
+  capped?: boolean;
+  /** Brought in by a lookup by id or an older-threads page; dropped again at a scan once nothing keeps it. */
+  broughtIn?: boolean;
+  /** Stopped and held (docs/10-agent-mesh.md#stopping-workers). */
+  hold?: ThreadHold | null;
+}
+
+/** A user message waiting for the running turn to end (`queue.json`). */
+export interface QueuedEntry extends QueuedMessage {
+  driver: Driver | null;
+  /** Set (durably) just before it is handed to the harness. */
+  dispatching?: boolean;
 }
 
 /** What must survive a restart to reconcile a turn that was running (`runtime.json`). */
@@ -147,6 +161,12 @@ export class ThreadRuntime {
   itemStarts = new Map<string, string>();
   context: ContextUsage | null = null;
   tokens: TokenUsage | null = null;
+  /** Queued user messages, in order (durable: `queue.json`). */
+  userQueue: QueuedEntry[] = [];
+  /** A dispatch of a queued user message failed: the queue waits for the user. */
+  queuePaused = false;
+  /** Reserved for a `now` delivery waiting for the running turn to end: nothing else dispatches. */
+  claimed = false;
 
   constructor(
     public record: ThreadRecord,
@@ -194,6 +214,18 @@ export class ThreadRuntime {
     for (const r of list ?? []) this.requests.set(r.requestId, r);
   }
 
+  saveQueue(): void {
+    if (!this.deleted) writeJsonAtomic(path.join(this.dir, "queue.json"), this.userQueue);
+  }
+
+  loadQueue(): void {
+    try {
+      this.userQueue = readJson<QueuedEntry[]>(path.join(this.dir, "queue.json")) ?? [];
+    } catch {
+      this.userQueue = [];
+    }
+  }
+
   pendingRequestCount(): number {
     let n = 0;
     for (const r of this.requests.values()) if (r.state === "pending") n++;
@@ -208,6 +240,7 @@ export class ThreadRuntime {
   /** Held by yaacd and idle: the two conditions for dispatching (docs/10-agent-mesh.md). */
   canDispatch(): boolean {
     // Only positive evidence of another holder blocks dispatch; "uncertain" is free.
-    return !this.deleted && !this.activeTurn && !this.dispatching && !this.external.external;
+    // A held (stopped) thread starts nothing by itself; a claimed one waits for its `now` input.
+    return !this.deleted && !this.activeTurn && !this.dispatching && !this.external.external && !this.record.hold && !this.claimed;
   }
 }

@@ -42,18 +42,29 @@ import type {
   ThreadForkOnlyResult,
   ThreadUpdateParams,
   ThreadUpdateResult,
+  DiscoveryCaps,
+  DiscoveryCapsParams,
+  DiscoveryCapsResult,
+  ThreadHold,
+  ThreadLookupParams,
+  ThreadLookupResult,
+  ThreadOlderParams,
+  ThreadOlderResult,
+  QueuedMessage,
+  QueueChange,
+  TurnStartOutcome,
 } from "../protocol/generated/types.js";
 import { canonical } from "../protocol/json.js";
 import { RpcError } from "../protocol/rpc.js";
 import type { ExternalControl, HarnessProvider, MeshInputMessage, RaisedRequest, NativeId, NativeThreadInfo, ProviderEvent, ProviderFactory, ProviderInput, TurnOverrides } from "../providers/types.js";
 import { ProviderRegistry, type Instance } from "../providers/registry.js";
 import { Emitter } from "../util/emitter.js";
-import { ensureDir, nowIso, randomId, readJson, sha256Hex } from "../util/fsx.js";
+import { ensureDir, nowIso, randomId, readJson, sha256Hex, writeJsonAtomic } from "../util/fsx.js";
 import { OUTPUT_HEAD_BYTES, Projection, applyDelta, clone, utf8Head } from "./items.js";
 import { lastSeqOf, type JournalEntry, type JournalOptions } from "./journal.js";
 import { NotActed, OpLog } from "./ops.js";
 import { ThreadIndex, type Holder } from "./thread-index.js";
-import { ThreadRuntime, threadDirName, type Driver, type RequestRecord, type ThreadRecord, type Work } from "./thread.js";
+import { ThreadRuntime, threadDirName, type Driver, type QueuedEntry, type RequestRecord, type ThreadRecord, type Work } from "./thread.js";
 import { UploadStore } from "./uploads.js";
 import { normaliseRemote } from "./fsinfo.js";
 import { GitStatusStore, gitRunner, resolveRepo, type GitRunner } from "./git.js";
@@ -64,6 +75,11 @@ export const PAGE_MAX_BYTES = 64 * 1024;
 export const ITEM_READ_MAX = 512 * 1024;
 const SNAPSHOT_TTL_MS = 10 * 60 * 1000;
 const SNAPSHOT_MAX = 64;
+/** How long a `now` delivery waits for an interrupted turn to end before giving up. */
+const NOW_INTERRUPT_WAIT_MS = 5000;
+/** Summaries of older conversations handed out by `thread/older`, so their ids work. */
+const OLDER_MEMO_MAX = 5000;
+const DEFAULT_CAPS: DiscoveryCaps = { enabled: true, maxAgeDays: 30, maxThreads: 50 };
 
 export interface CoreOptions {
   home: string;
@@ -129,6 +145,10 @@ export interface CoreMeshHooks {
   stateChanged(rt: ThreadRuntime): void;
   /** The thread is about to be forgotten (deleted). */
   threadRemoved(rt: ThreadRuntime): void;
+  /** Whether the thread is part of a live orchestration (never cut by the discovery caps). */
+  keeps?(rt: ThreadRuntime): boolean;
+  /** The thread's hold was released (a message from its stopper, or the user). */
+  holdReleased?(rt: ThreadRuntime): void;
 }
 
 /** Agent-originated input for the dispatcher (the mesh's entry point). */
@@ -163,6 +183,12 @@ function controlFor(holder: Holder, clientKey: string): { control: ThreadSummary
       : { control: "otherClient", controlHolder: holder.driverHost ?? "another YAAC client" };
   }
   return { control: "free", controlHolder: null };
+}
+
+const NOW_WHILE_ASKING = "the agent is waiting for an answer to its question or approval; a message can only be queued now (answering the card is what moves it on)";
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 export function threadIdFor(kind: string, storeKey: string | null, instance: string, native: string): string {
@@ -202,6 +228,13 @@ export class Core {
   private readonly gitLimiter: Limiter;
   private readonly repoLookups = new Map<string, Promise<RepoLocation | null>>();
   private gitTimer: NodeJS.Timeout | null = null;
+  /** `thread/older` results, by thread id: what is needed to bring one in when it is opened. */
+  private olderMemo = new Map<string, { instance: string; info: NativeThreadInfo }>();
+  private caps: DiscoveryCaps;
+  private readonly capsFile: string;
+  /** Threads the host keeps (`thread/keep`): never cut by the discovery caps. */
+  private kept = new Set<string>();
+  private readonly keepFile: string;
 
   constructor(readonly opts: CoreOptions) {
     this.threadsDir = path.join(opts.home, "threads");
@@ -217,6 +250,20 @@ export class Core {
     this.gitStatus = new GitStatusStore(path.join(opts.home, "git-status.json"), this.git, this.gitLimiter, (root) => this.onGitChanged(root));
     this.registry.onEvent((instance, event) => this.onProviderEvent(instance, event));
     this.registry.onDescriptor((d) => this.broadcast("provider/updated", { provider: d }));
+    this.capsFile = path.join(opts.home, "discovery.json");
+    let stored: Partial<DiscoveryCaps> | undefined;
+    try {
+      stored = readJson<{ caps?: Partial<DiscoveryCaps> }>(this.capsFile)?.caps;
+    } catch {
+      stored = undefined;
+    }
+    this.caps = { ...DEFAULT_CAPS, ...(stored ?? {}) };
+    this.keepFile = path.join(opts.home, "keep.json");
+    try {
+      this.kept = new Set(readJson<{ threadIds?: string[] }>(this.keepFile)?.threadIds ?? []);
+    } catch {
+      this.kept = new Set();
+    }
   }
 
   // ── Start-up ───────────────────────────────────────────────────────────────────────────
@@ -227,6 +274,8 @@ export class Core {
     await this.registry.probe();
     await this.reconcileAfterRestart();
     await this.scanAll();
+    // Queued user messages are delivered with no window attached.
+    for (const rt of this.allThreads()) if (rt.userQueue.length > 0) this.pump(rt);
     void this.refreshProjectRepos();
     // Threads whose repository was never looked up (older records): in the background.
     for (const rt of this.allThreads()) if (!rt.record.repoResolved) void this.resolveProject(rt);
@@ -249,6 +298,7 @@ export class Core {
       if (!record) continue;
       const rt = new ThreadRuntime(record, dir);
       rt.loadRequests();
+      rt.loadQueue();
       const runtime = rt.loadRuntime();
       if (runtime) {
         rt.activeTurn = runtime.activeTurn;
@@ -278,6 +328,17 @@ export class Core {
         if (r.state === "submitted") this.setRequestState(rt, r, "unknown", null);
         else if (r.state === "pending" && !survived && r.requestKind !== "meshPermission") this.setRequestState(rt, r, "expired", null);
       }
+      // A queued message handed over when the previous daemon stopped: yaacd cannot tell
+      // whether the harness took it. It is shown, never re-sent.
+      const unsure = rt.userQueue.filter((q) => q.dispatching);
+      if (unsure.length > 0) {
+        rt.userQueue = rt.userQueue.filter((q) => !q.dispatching);
+        rt.saveQueue();
+        for (const q of unsure) {
+          this.queueEvent(rt, "removed", q);
+          this.noticeItem(rt, "warning", "yaacd stopped while handing a queued message to the agent. It may or may not have arrived; it will not be sent again automatically.");
+        }
+      }
       if (rt.activeTurn && !survived) {
         journal.append({ type: "turnCompleted", turnId: rt.activeTurn, status: "interrupted", error: "yaacd stopped while the turn was running", at: nowIso() });
         rt.activeTurn = null;
@@ -296,26 +357,301 @@ export class Core {
     await Promise.all(this.registry.all().map((i) => this.scanInstance(i)));
   }
 
-  /** Builds the index from one instance's listing. A failed or partial scan removes nothing. */
+  /**
+   * Builds the index from one instance's listing, under the discovery caps
+   * (docs/05-threads.md#discovery-is-capped-by-age-and-by-number): the harness is asked newest
+   * first and stops early; a conversation YAAC did not create is indexed only within both caps,
+   * unless something keeps it. An index that holds more than the caps is trimmed by the same
+   * rules. A failed or partial scan removes and trims nothing.
+   */
   async scanInstance(instance: Instance): Promise<void> {
     const provider = instance.provider;
     if (!provider || instance.descriptor.status !== "ready") return;
     if (!(instance.descriptor.capabilities ?? []).includes("threadList")) return;
+    const id = instance.config.id;
+    const caps = this.caps;
+    const ageCap = caps.enabled && caps.maxAgeDays > 0 ? new Date(Date.now() - caps.maxAgeDays * 86_400_000).toISOString() : null;
+    const numCap = caps.enabled && caps.maxThreads > 0 ? caps.maxThreads : null;
+    // Threads the caps never cut do not use up the number cap, so the harness is asked for
+    // that many more: the top `numCap` capped ones are then always within what it lists.
+    const kept = this.allThreads().filter((t) => t.record.instance === id && this.neverCut(t)).length;
     let cursor: string | null | undefined = null;
     let complete = true;
+    const seen: NativeThreadInfo[] = [];
     try {
       for (let pages = 0; pages < 10000; pages++) {
-        const page = await provider.scanThreads({ cursor, limit: 100 });
-        for (const info of page.threads) this.discovered(instance, info);
+        const page = await provider.scanThreads({ cursor, limit: 100, ...(ageCap ? { activeSince: ageCap } : {}), ...(numCap ? { max: numCap + kept } : {}) });
+        seen.push(...page.threads);
         if (page.complete === false) complete = false;
         cursor = page.cursor;
         if (!cursor) break;
       }
     } catch (e) {
-      this.opts.log(`scan of ${instance.config.id} failed: ${(e as Error).message}`);
+      this.opts.log(`scan of ${id} failed: ${(e as Error).message}`);
       complete = false;
     }
-    this.index.setStale(instance.config.id, !complete);
+    // Which of the listed conversations are within the caps (yaacd applies them itself too).
+    const keptNow = (info: NativeThreadInfo) => {
+      const rt = this.threadByNative(id, info.native);
+      return !!rt && this.neverCut(rt);
+    };
+    const candidates = seen
+      .filter((info) => !keptNow(info))
+      .filter((info) => !ageCap || info.updatedAt >= ageCap)
+      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+    const within = new Set((numCap ? candidates.slice(0, numCap) : candidates).map((i) => i.native));
+    for (const info of seen) {
+      if (keptNow(info) || within.has(info.native)) {
+        const rt = this.discovered(instance, info, false);
+        if (rt.record.capped) this.setCapped(rt, false);
+      } else {
+        // Beyond the caps: not brought in. One already known is trimmed below.
+      }
+    }
+    if (complete) {
+      const listedNatives = new Set(seen.map((i) => i.native));
+      for (const rt of this.allThreads()) {
+        if (rt.record.instance !== id) continue;
+        const inCaps = within.has(rt.record.native) || (listedNatives.has(rt.record.native) && keptNow({ native: rt.record.native } as NativeThreadInfo));
+        if (!inCaps && !this.neverCut(rt)) {
+          if (!rt.record.capped) this.setCapped(rt, true);
+          // Brought in by id or an older page: kept only while open.
+          if (rt.record.broughtIn && !this.isOpen(rt)) {
+            rt.record.broughtIn = false;
+            rt.saveRecord();
+          }
+          this.updateIndex(rt);
+        }
+      }
+    }
+    this.index.setStale(id, !complete);
+  }
+
+  private setCapped(rt: ThreadRuntime, capped: boolean): void {
+    rt.record.capped = capped;
+    rt.saveRecord();
+    this.updateIndex(rt);
+  }
+
+  /**
+   * Never cut by the discovery caps: started by YAAC or an agent; kept by the host
+   * (`thread/keep`: pinned or muted there) or archived from YAAC; active now; part of a live
+   * orchestration.
+   */
+  neverCut(rt: ThreadRuntime): boolean {
+    const r = rt.record;
+    return (
+      r.originKind === "yaac" ||
+      !!r.spawnedBy ||
+      this.kept.has(rt.id) ||
+      !!r.userArchived ||
+      !!r.hold ||
+      !!rt.activeTurn ||
+      rt.dispatching ||
+      rt.pendingRequestCount() > 0 ||
+      rt.waiting.size > 0 ||
+      rt.queue.length > 0 ||
+      rt.userQueue.length > 0 ||
+      !!this.mesh?.keeps?.(rt)
+    );
+  }
+
+  private isOpen(rt: ThreadRuntime): boolean {
+    for (const c of this.clients) if (c.isSubscribed?.(rt.id)) return true;
+    return false;
+  }
+
+  /** Whether a thread is in the index (listed to clients). */
+  private listed(rt: ThreadRuntime): boolean {
+    return !rt.record.capped || !!rt.record.broughtIn || this.neverCut(rt) || this.isOpen(rt);
+  }
+
+  // ── Discovery caps, lookup by id, older threads ────────────────────────────────────────
+
+  discoveryCaps(p: DiscoveryCapsParams): Promise<DiscoveryCapsResult> | DiscoveryCapsResult {
+    if (!p.update) return { caps: { ...this.caps } };
+    if (typeof p.opId !== "string") throw rpc("invalid_params", "opId is required with update");
+    return this.ops.run("discovery/caps", p.opId, async () => {
+      const u = p.update!;
+      for (const k of ["maxAgeDays", "maxThreads"] as const) {
+        const v = u[k];
+        if (v !== undefined && v !== null && (typeof v !== "number" || !Number.isInteger(v) || v < 0)) throw notActed("invalid_params", `${k} must be a whole number, 0 for no cap`);
+      }
+      if (u.enabled !== undefined && u.enabled !== null && typeof u.enabled !== "boolean") throw notActed("invalid_params", "enabled must be true or false");
+      this.caps = {
+        enabled: typeof u.enabled === "boolean" ? u.enabled : this.caps.enabled,
+        maxAgeDays: typeof u.maxAgeDays === "number" ? u.maxAgeDays : this.caps.maxAgeDays,
+        maxThreads: typeof u.maxThreads === "number" ? u.maxThreads : this.caps.maxThreads,
+      };
+      writeJsonAtomic(this.capsFile, { caps: this.caps });
+      this.broadcast("discovery/updated", { caps: { ...this.caps } });
+      // Raised or switched off: more comes in; lowered: the index is trimmed.
+      void this.scanAll();
+      return { caps: { ...this.caps } };
+    });
+  }
+
+  /** A thread by id, bringing in one handed out by `thread/older` when it is used. */
+  findThread(id: unknown): ThreadRuntime | undefined {
+    if (typeof id !== "string") return undefined;
+    const rt = this.threads.get(id);
+    if (rt && !rt.deleted) {
+      if (!this.index.get(rt.id) && rt.record.capped) this.bringIn(rt);
+      return rt;
+    }
+    const memo = this.olderMemo.get(id);
+    const inst = memo ? this.registry.get(memo.instance) : undefined;
+    if (!memo || !inst) return undefined;
+    const brought = this.discovered(inst, memo.info, true);
+    this.bringIn(brought);
+    return brought;
+  }
+
+  private bringIn(rt: ThreadRuntime): void {
+    if (!rt.record.broughtIn) {
+      rt.record.broughtIn = true;
+      rt.saveRecord();
+    }
+    this.updateIndex(rt);
+  }
+
+  /**
+   * `thread/lookup`: by YAAC thread id or the harness's own id. Misses in the index ask each
+   * harness directly, and what is found is brought into the index.
+   */
+  async lookup(client: ClientLink, p: ThreadLookupParams): Promise<ThreadLookupResult> {
+    const id = typeof p.id === "string" ? p.id.trim() : "";
+    if (!id) throw rpc("invalid_params", "id is required");
+    const out: ThreadRuntime[] = [];
+    const byId = this.findThread(id);
+    if (byId && (!p.instance || byId.record.instance === p.instance)) out.push(byId);
+    const instances = this.registry.all().filter((i) => (!p.instance || i.config.id === p.instance) && i.provider && i.descriptor.status === "ready");
+    for (const inst of instances) {
+      const known = this.threadByNative(inst.config.id, id);
+      if (known) {
+        if (!out.includes(known)) out.push(known);
+        if (known.record.capped) this.bringIn(known);
+        continue;
+      }
+      if (out.length > 0 || typeof inst.provider!.lookupThread !== "function") continue;
+      let info: NativeThreadInfo | null = null;
+      try {
+        info = await inst.provider!.lookupThread(id);
+      } catch (e) {
+        this.opts.log(`lookup in ${inst.config.id} failed: ${(e as Error).message}`);
+      }
+      if (!info) continue;
+      const rt = this.discovered(inst, info, true);
+      this.bringIn(rt);
+      out.push(rt);
+    }
+    return { threads: out.map((rt) => this.renderSummary(this.summaryOf(rt), this.holderOf(rt), client.key)) };
+  }
+
+  /**
+   * `thread/older`: conversations not in the index (beyond the caps), newest first. They are
+   * not indexed; using one's id (reading, subscribing, …) brings it in.
+   */
+  async older(client: ClientLink, p: ThreadOlderParams): Promise<ThreadOlderResult> {
+    const limit = Math.max(1, Math.min(typeof p.limit === "number" ? p.limit : 20, 100));
+    const instances = this.registry
+      .all()
+      .filter((i) => (!p.instance || i.config.id === p.instance) && i.provider && i.descriptor.status === "ready" && (i.descriptor.capabilities ?? []).includes("threadList"));
+    let pos = { i: 0, c: null as string | null, s: 0 };
+    if (p.cursor) {
+      try {
+        pos = { ...pos, ...(JSON.parse(Buffer.from(String(p.cursor), "base64url").toString("utf8")) as typeof pos) };
+      } catch {
+        throw rpc("invalid_params", "this cursor is not valid; ask for the first page again");
+      }
+    }
+    const query = typeof p.query === "string" ? p.query.trim().toLowerCase() : "";
+    const folder = typeof p.folder === "string" && p.folder ? p.folder : null;
+    const out: ThreadSummary[] = [];
+    let next: typeof pos | null = null;
+    outer: for (let i = pos.i; i < instances.length; i++) {
+      const inst = instances[i]!;
+      let cursor: string | null = i === pos.i ? pos.c : null;
+      let skip = i === pos.i ? pos.s : 0;
+      for (let pages = 0; pages < 10000; pages++) {
+        const page = await inst.provider!.scanThreads({ cursor, limit: 100 });
+        const list = page.threads;
+        for (let k = skip; k < list.length; k++) {
+          const info = list[k]!;
+          const known = this.threadByNative(inst.config.id, info.native);
+          if (known && this.index.get(known.id)) continue;
+          if (query && !(info.title ?? "").toLowerCase().includes(query) && !info.native.toLowerCase().startsWith(query)) continue;
+          const rt = known ?? this.transientThread(inst, info);
+          if (!known && !rt.record.repoResolved && fs.existsSync(info.cwd)) {
+            rt.record.repo = await this.repoOf(info.cwd);
+            rt.record.repoResolved = true;
+          }
+          const summary = this.summaryOf(rt);
+          if (folder && summary.project?.path !== folder) continue;
+          if (out.length >= limit) {
+            next = { i, c: cursor, s: k };
+            break outer;
+          }
+          out.push(this.renderSummary(summary, this.holderOf(rt), client.key));
+          if (!known) this.rememberOlder(rt.id, inst.config.id, info);
+        }
+        skip = 0;
+        if (!page.cursor) break;
+        cursor = page.cursor;
+      }
+    }
+    const result: ThreadOlderResult = { threads: out };
+    if (next) result.cursor = Buffer.from(JSON.stringify(next), "utf8").toString("base64url");
+    return result;
+  }
+
+  private rememberOlder(id: string, instance: string, info: NativeThreadInfo): void {
+    this.olderMemo.delete(id);
+    this.olderMemo.set(id, { instance, info });
+    while (this.olderMemo.size > OLDER_MEMO_MAX) this.olderMemo.delete(this.olderMemo.keys().next().value!);
+  }
+
+  /** A summary-only runtime for a conversation that is not in the index (never saved). */
+  private transientThread(instance: Instance, info: NativeThreadInfo): ThreadRuntime {
+    const storeKey = instance.descriptor.store.key ?? null;
+    const id = threadIdFor(instance.config.kind, storeKey, instance.config.id, info.native);
+    const record: ThreadRecord = {
+      id,
+      instance: instance.config.id,
+      storeKey,
+      kind: instance.config.kind,
+      native: info.native,
+      cwd: info.cwd,
+      originKind: info.originKind === "yaac" ? "programmatic" : info.originKind,
+      title: info.title ?? null,
+      preview: info.preview ?? null,
+      model: info.model ?? null,
+      archived: info.archived ?? false,
+      createdAt: info.createdAt,
+      updatedAt: info.updatedAt,
+      capped: true,
+    };
+    const rt = new ThreadRuntime(record, path.join(this.threadsDir, threadDirName(id)));
+    rt.deleted = true; // never saved, never journaled
+    return rt;
+  }
+
+  /**
+   * `thread/keep`: the threads the host keeps (pinned or muted there), never cut by the caps.
+   * Replaces the previous set. A thread now kept that the caps had cut is listed again; one no
+   * longer kept is trimmed at the next scan.
+   */
+  keep(p: { threadIds?: unknown }): Record<string, never> {
+    const ids = Array.isArray(p.threadIds) ? p.threadIds.filter((x): x is string => typeof x === "string") : null;
+    if (!ids) throw rpc("invalid_params", "threadIds must be a list of thread ids");
+    const before = this.kept;
+    this.kept = new Set(ids);
+    writeJsonAtomic(this.keepFile, { threadIds: [...this.kept] });
+    for (const id of new Set([...before, ...this.kept])) {
+      const rt = this.threads.get(id);
+      if (rt && !rt.deleted && before.has(id) !== this.kept.has(id)) this.updateIndex(rt);
+    }
+    return {};
   }
 
   // ── Threads ────────────────────────────────────────────────────────────────────────────
@@ -325,7 +661,7 @@ export class Core {
   }
 
   requireThread(id: unknown): ThreadRuntime {
-    const rt = typeof id === "string" ? this.threads.get(id) : undefined;
+    const rt = this.findThread(id);
     if (!rt || rt.deleted) throw rpc("thread_not_found", `no thread ${String(id)} on this target`);
     return rt;
   }
@@ -482,14 +818,12 @@ export class Core {
   /** `thread/update`: YAAC's own flags of a thread. Stored on the target; pushed as `thread/updated`. */
   async threadUpdate(client: ClientLink, p: ThreadUpdateParams): Promise<ThreadUpdateResult> {
     return this.ops.run("thread/update", p.opId, async () => {
-      const rt = this.threads.get(p.threadId);
+      const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
-      for (const k of ["muted", "pinned"] as const) {
-        if (p[k] !== undefined && p[k] !== null && typeof p[k] !== "boolean") throw notActed("invalid_params", `${k} must be true or false`);
-      }
       if (p.agents !== undefined && p.agents !== null && typeof p.agents !== "string") throw notActed("invalid_params", "agents must be a string");
-      if (typeof p.muted === "boolean") rt.record.muted = p.muted;
-      if (typeof p.pinned === "boolean") rt.record.pinned = p.pinned;
+      if (p.held !== undefined && p.held !== null && typeof p.held !== "boolean") throw notActed("invalid_params", "held must be true or false");
+      if (p.held === false && rt.record.hold) this.releaseHold(rt);
+      if (p.held === true && !rt.record.hold) this.setHold(rt, { label: "the user", at: nowIso() });
       if (typeof p.agents === "string") rt.record.agents = p.agents;
       rt.saveRecord();
       this.updateIndex(rt);
@@ -497,10 +831,13 @@ export class Core {
     });
   }
 
-  private discovered(instance: Instance, info: NativeThreadInfo): ThreadRuntime {
+  private discovered(instance: Instance, info: NativeThreadInfo, capped?: boolean): ThreadRuntime {
     const known = this.byNative.get(this.nativeKey(instance.config.id, info.native));
     let rt = known ? this.threads.get(known) : undefined;
     if (!rt || rt.deleted) {
+      // Seen outside a scan (a harness event): only the age cap can be checked here.
+      const ageCap = this.caps.enabled && this.caps.maxAgeDays > 0 ? new Date(Date.now() - this.caps.maxAgeDays * 86_400_000).toISOString() : null;
+      const isCapped = capped ?? (!!ageCap && info.updatedAt < ageCap);
       rt = this.createThread(
         instance,
         info.native,
@@ -513,6 +850,7 @@ export class Core {
           archived: info.archived ?? false,
           createdAt: info.createdAt,
           updatedAt: info.updatedAt,
+          ...(isCapped ? { capped: true } : {}),
         },
         false,
       );
@@ -536,6 +874,8 @@ export class Core {
     const state: ThreadSummary["state"] =
       rt.pendingRequestCount() > 0
         ? "needsAttention"
+        : r.hold
+          ? "stopped"
         : rt.waiting.size > 0
           ? "waiting"
           : rt.activeTurn
@@ -558,10 +898,9 @@ export class Core {
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
       archived: r.archived ?? false,
-      muted: r.muted ?? false,
-      pinned: r.pinned ?? false,
       agents: r.agents ?? "ask",
     };
+    if (r.hold) s.hold = r.hold;
     if (r.model) s.model = r.model;
     if (r.forkedFrom) s.forkedFrom = r.forkedFrom;
     if (r.spawnedBy) s.spawnedBy = r.spawnedBy;
@@ -593,6 +932,15 @@ export class Core {
 
   updateIndex(rt: ThreadRuntime): void {
     if (rt.deleted) return;
+    // Active again: it is among the most recent now.
+    if (rt.record.capped && rt.activeTurn) {
+      rt.record.capped = false;
+      rt.saveRecord();
+    }
+    if (!this.listed(rt)) {
+      if (this.index.remove(rt.id)) this.broadcast("thread/removed", { threadId: rt.id, token: this.index.token });
+      return;
+    }
     const summary = this.summaryOf(rt);
     const holder = this.holderOf(rt);
     if (!this.index.upsert(summary, holder)) return;
@@ -871,6 +1219,8 @@ export class Core {
       effective,
       ...(rt.context ? { context: rt.context } : {}),
       ...(rt.tokens ? { tokens: rt.tokens } : {}),
+      ...(rt.userQueue.length > 0 ? { queued: this.queuedOf(rt) } : {}),
+      ...(rt.record.hold ? { hold: rt.record.hold } : {}),
     };
     // Someone is watching this thread: make sure its checkout's git status is known.
     if (!rt.record.repoResolved) void this.resolveProject(rt, true);
@@ -1135,10 +1485,13 @@ export class Core {
     this.mesh?.turnStarted(rt, turnId, origin);
   }
 
-  /** `turn/start`: a client's message goes through the thread's queue, and only if it can go now. */
+  /**
+   * `turn/start`: a client's message. With no turn running it starts one. With one running:
+   * refused (no `delivery`, as before), queued (`queue`), or delivered now (`now`).
+   */
   async turnStart(client: ClientLink, p: TurnStartParams): Promise<TurnStartResult> {
     return this.ops.run("turn/start", p.opId, async () => {
-      const rt = this.threads.get(p.threadId);
+      const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
       let inst;
       try {
@@ -1146,23 +1499,283 @@ export class Core {
       } catch (e) {
         throw new NotActed(e as RpcError);
       }
+      const delivery = p.delivery ?? null;
+      if (delivery !== null && delivery !== "queue" && delivery !== "now") throw notActed("invalid_params", "delivery must be queue or now");
       await this.refreshExternal(rt);
       this.checkWriter(rt, client, true);
-      if (rt.activeTurn || rt.dispatching) {
-        throw notActed("turn_in_progress", "a turn is already running in this thread", rt.activeTurn ? { activeTurn: rt.activeTurn } : undefined);
-      }
       this.checkModel(inst.descriptor, p.model);
       const eff = rt.effective ?? (await this.computeEffective(rt));
       const imageSupport = p.model ? this.modelImageSupport(inst.descriptor, p.model) : eff.imageInput;
       const parts = this.validateParts(p.input, imageSupport);
-      const turnId = await this.submit(rt, {
-        origin: "user",
-        parts,
-        overrides: { model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null },
-        driver: { key: client.key, host: client.host },
-      }, "now");
-      return { turnId };
+      const overrides = { model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null };
+      const driver: Driver = { key: client.key, host: client.host };
+      const busy = !!rt.activeTurn || rt.dispatching || rt.claimed;
+      if (!busy) {
+        // The user sending a message is what starts a stopped thread again.
+        if (rt.record.hold) this.releaseHold(rt, false);
+        rt.queuePaused = false;
+        const turnId = await this.submit(rt, { origin: "user", parts, overrides, driver }, "now");
+        return { turnId, outcome: "started" as TurnStartOutcome };
+      }
+      if (delivery === null) {
+        throw notActed("turn_in_progress", "a turn is already running in this thread", rt.activeTurn ? { activeTurn: rt.activeTurn } : undefined);
+      }
+      if (delivery === "queue") {
+        const entry = this.enqueueUser(rt, parts, overrides, driver);
+        return { turnId: "", outcome: "queued" as TurnStartOutcome, queueId: entry.queueId };
+      }
+      if (rt.pendingRequestCount() > 0) throw notActed("awaiting_user", NOW_WHILE_ASKING);
+      return this.deliverNow(rt, parts, overrides, driver, "user");
     });
+  }
+
+  // ── Queued user messages, and `now` ────────────────────────────────────────────────────
+
+  private publicEntry(e: QueuedEntry): QueuedMessage {
+    const { driver: _d, dispatching: _x, ...pub } = e;
+    return clone(pub) as QueuedMessage;
+  }
+
+  private queueEvent(rt: ThreadRuntime, change: QueueChange, entry: QueuedEntry, turnId?: TurnId): void {
+    const ev = { type: "queueChanged", change, entry: this.publicEntry(entry), ...(turnId ? { turnId } : {}) } as ThreadEvent;
+    this.append(rt, ev, undefined, true);
+  }
+
+  /** Queues a user message durably, ahead of queued agent input. */
+  private enqueueUser(rt: ThreadRuntime, parts: InputPart[], overrides: TurnOverrides, driver: Driver | null): QueuedEntry {
+    const entry: QueuedEntry = {
+      queueId: randomId("q_", 10),
+      input: parts,
+      queuedAt: nowIso(),
+      ...(overrides.model ? { model: overrides.model } : {}),
+      ...(overrides.effort ? { effort: overrides.effort } : {}),
+      ...(overrides.mode ? { mode: overrides.mode } : {}),
+      driver,
+    };
+    rt.userQueue.push(entry);
+    rt.saveQueue();
+    this.queueEvent(rt, "added", entry);
+    this.pump(rt);
+    return entry;
+  }
+
+  /** The thread's queued user messages, in order. */
+  queuedOf(rt: ThreadRuntime): QueuedMessage[] {
+    return rt.userQueue.map((e) => this.publicEntry(e));
+  }
+
+  private queuedEntry(rt: ThreadRuntime, queueId: unknown): QueuedEntry {
+    const e = rt.userQueue.find((q) => q.queueId === queueId);
+    if (!e) throw notActed("queue_entry_not_found", `no queued message ${String(queueId)} in this thread (it may have been delivered)`);
+    if (e.dispatching) throw notActed("queue_entry_not_found", "that message is being delivered now");
+    return e;
+  }
+
+  async queueEdit(client: ClientLink, p: { opId: string; threadId: string; queueId: string; input: InputPart[] }): Promise<void> {
+    await this.ops.run("turn/queueEdit", p.opId, async () => {
+      const rt = this.findThread(p.threadId);
+      if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
+      this.checkWriter(rt, client, true);
+      const e = this.queuedEntry(rt, p.queueId);
+      const eff = rt.effective ?? (await this.computeEffective(rt));
+      e.input = this.validateParts(p.input, eff.imageInput);
+      rt.saveQueue();
+      this.queueEvent(rt, "updated", e);
+      rt.queuePaused = false;
+      this.pump(rt);
+      return {};
+    });
+  }
+
+  async queueCancel(client: ClientLink, p: { opId: string; threadId: string; queueId: string }): Promise<void> {
+    await this.ops.run("turn/queueCancel", p.opId, async () => {
+      const rt = this.findThread(p.threadId);
+      if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
+      this.checkWriter(rt, client, true);
+      const e = this.queuedEntry(rt, p.queueId);
+      rt.userQueue = rt.userQueue.filter((q) => q !== e);
+      rt.saveQueue();
+      this.queueEvent(rt, "removed", e);
+      rt.queuePaused = false;
+      this.pump(rt);
+      return {};
+    });
+  }
+
+  /** "Send now" on a queued message: out of the queue, with the `now` mechanics. */
+  async queuePromote(client: ClientLink, p: { opId: string; threadId: string; queueId: string }): Promise<TurnStartResult> {
+    return this.ops.run("turn/queuePromote", p.opId, async () => {
+      const rt = this.findThread(p.threadId);
+      if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
+      await this.refreshExternal(rt);
+      this.checkWriter(rt, client, true);
+      const e = this.queuedEntry(rt, p.queueId);
+      if (rt.pendingRequestCount() > 0) throw notActed("awaiting_user", NOW_WHILE_ASKING);
+      rt.userQueue = rt.userQueue.filter((q) => q !== e);
+      rt.saveQueue();
+      this.queueEvent(rt, "removed", e);
+      rt.queuePaused = false;
+      if (rt.record.hold) this.releaseHold(rt, false);
+      const overrides = { model: e.model ?? null, effort: e.effort ?? null, mode: e.mode ?? null };
+      const driver: Driver = { key: client.key, host: client.host };
+      if (!rt.activeTurn && !rt.dispatching && !rt.claimed) {
+        const turnId = await this.submit(rt, { origin: "user", parts: e.input, overrides, driver }, "now");
+        return { turnId, outcome: "started" as TurnStartOutcome };
+      }
+      return this.deliverNow(rt, e.input, overrides, driver, "user");
+    });
+  }
+
+  /** Whether `now` input for this thread is steered (else it interrupts the running turn). */
+  async canSteer(rt: ThreadRuntime): Promise<boolean> {
+    const provider = this.registry.get(rt.record.instance)?.provider;
+    const eff = rt.effective ?? (await this.computeEffective(rt));
+    return !!provider && typeof provider.steer === "function" && (eff.capabilities ?? []).includes("steer");
+  }
+
+  /**
+   * Delivers input to a thread that is running a turn, at once: steered into the running turn
+   * where the harness can steer (with the turn id as the precondition), otherwise the running
+   * turn is interrupted and a new one starts with it. Chosen by capability, never by harness.
+   */
+  async deliverNow(
+    rt: ThreadRuntime,
+    parts: InputPart[],
+    overrides: TurnOverrides,
+    driver: Driver | null,
+    origin: TurnOrigin,
+    extra: { journalItems?: Item[]; mesh?: MeshInputMessage[]; onStarted?: (turnId: TurnId) => void | Promise<void>; beforeStart?: () => void | Promise<void> } = {},
+  ): Promise<TurnStartResult> {
+    const provider = this.provider(rt);
+    const turn = rt.activeTurn;
+    if (turn && !rt.claimed && (await this.canSteer(rt))) {
+      const input = this.buildInput(rt.uploadsKey, parts, origin);
+      if (extra.mesh) input.mesh = extra.mesh;
+      await extra.beforeStart?.();
+      try {
+        await provider.steer!(rt.record.native, turn, input);
+      } catch (e) {
+        throw rpc("provider_unavailable", `the harness did not take the message into the running turn: ${(e as Error).message}`);
+      }
+      // What was added is in the transcript, as what it is.
+      const at = nowIso();
+      const items: Item[] = extra.journalItems ?? [{ id: `user:steer:${randomId("", 8)}`, turnId: turn, status: "completed", kind: "userMessage", parts } as Item];
+      for (const raw of items) {
+        const item = { ...raw, turnId: turn, startedAt: raw.startedAt ?? at, completedAt: raw.completedAt ?? at } as Item;
+        this.append(rt, { type: "itemStarted", item });
+        this.append(rt, { type: "itemCompleted", item });
+      }
+      await extra.onStarted?.(turn);
+      return { turnId: turn, outcome: "steered" as TurnStartOutcome };
+    }
+    let interrupted = false;
+    if (rt.activeTurn || rt.dispatching) {
+      rt.claimed = true;
+      try {
+        if (rt.activeTurn) {
+          interrupted = true;
+          const t = rt.activeTurn;
+          await Promise.race([provider.interrupt(rt.record.native, t).catch(() => {}), sleepMs(NOW_INTERRUPT_WAIT_MS)]);
+        }
+        const deadline = Date.now() + NOW_INTERRUPT_WAIT_MS;
+        while ((rt.activeTurn || rt.dispatching) && Date.now() < deadline) await sleepMs(20);
+      } finally {
+        rt.claimed = false;
+      }
+      if (rt.activeTurn || rt.dispatching) {
+        if (rt.canDispatch()) this.afterIdle(rt);
+        throw rpc("turn_in_progress", "the running turn was asked to stop and has not stopped yet; the message was not sent");
+      }
+    }
+    const turnId = await this.submit(rt, { origin, parts, overrides, driver, ...(extra.journalItems ? { journalItems: extra.journalItems } : {}), ...(extra.mesh ? { mesh: extra.mesh } : {}), ...(extra.onStarted ? { onStarted: extra.onStarted } : {}), ...(extra.beforeStart ? { beforeStart: extra.beforeStart } : {}) }, "now");
+    return { turnId, outcome: (interrupted ? "interruptedAndStarted" : "started") as TurnStartOutcome };
+  }
+
+  /** Dispatches the first queued user message (the queue goes ahead of agent input). */
+  private dispatchQueued(rt: ThreadRuntime): void {
+    const entry = rt.userQueue[0]!;
+    entry.dispatching = true;
+    rt.saveQueue();
+    const settle = () => {
+      entry.dispatching = false;
+      rt.saveQueue();
+    };
+    const work: Work = {
+      origin: "user",
+      parts: entry.input,
+      overrides: { model: entry.model ?? null, effort: entry.effort ?? null, mode: entry.mode ?? null },
+      driver: entry.driver ?? null,
+      onStarted: (turnId) => {
+        rt.userQueue = rt.userQueue.filter((q) => q !== entry);
+        rt.saveQueue();
+        this.queueEvent(rt, "delivered", entry, turnId);
+      },
+      onFailed: (e) => {
+        // The harness refused it: never re-sent blindly; the queue waits for the user.
+        settle();
+        rt.queuePaused = true;
+        this.noticeItem(rt, "warning", `A queued message could not be delivered: ${e.message}. It is still queued; edit, send, or cancel it.`);
+      },
+      resolve: () => {},
+      reject: () => {
+        if (rt.userQueue.includes(entry) && entry.dispatching) settle();
+      },
+    };
+    void this.execute(rt, work);
+  }
+
+  /** A notice item in a thread's transcript (out of band). */
+  noticeItem(rt: ThreadRuntime, kind: string, text: string): void {
+    if (rt.deleted) return;
+    const item = { id: `notice:${kind}:${randomId("", 8)}`, turnId: rt.activeTurn ?? "", status: "completed", kind: "notice", noticeKind: kind, text } as unknown as Item;
+    this.append(rt, { type: "itemStarted", item });
+    this.append(rt, { type: "itemCompleted", item });
+  }
+
+  // ── Stop and hold (docs/10-agent-mesh.md#stopping-workers) ─────────────────────────────
+
+  setHold(rt: ThreadRuntime, hold: ThreadHold): void {
+    rt.record.hold = hold;
+    rt.saveRecord();
+    this.append(rt, { type: "holdChanged", hold } as ThreadEvent, undefined, true);
+    this.updateIndex(rt);
+    this.activity.emit();
+  }
+
+  /** Releases a hold; `dispatch`: and lets queued input go now. */
+  releaseHold(rt: ThreadRuntime, dispatch = true): void {
+    if (!rt.record.hold) return;
+    rt.record.hold = null;
+    rt.saveRecord();
+    this.append(rt, { type: "holdChanged" } as ThreadEvent, undefined, true);
+    this.updateIndex(rt);
+    this.mesh?.holdReleased?.(rt);
+    if (dispatch && rt.canDispatch()) this.afterIdle(rt);
+  }
+
+  /**
+   * Stops a thread and holds it. The outcome is real: `stopped` (its turn ended),
+   * `wasNotRunning`, or `didNotRespond` (the turn had not ended after `waitMs`; then, where
+   * yaacd owns the harness process, that process is ended).
+   */
+  async stopAndHold(rt: ThreadRuntime, hold: ThreadHold, waitMs: number): Promise<{ outcome: "stopped" | "wasNotRunning" | "didNotRespond"; detail?: string }> {
+    this.setHold(rt, hold);
+    this.noticeItem(rt, "stopped", `Stopped by ${hold.label}.`);
+    const turn = rt.activeTurn;
+    if (!turn) return { outcome: "wasNotRunning" };
+    const provider = this.registry.get(rt.record.instance)?.provider;
+    if (!provider) return { outcome: "didNotRespond", detail: "its provider is not available" };
+    const deadline = Date.now() + waitMs;
+    await Promise.race([provider.interrupt(rt.record.native, turn).catch(() => {}), sleepMs(waitMs)]);
+    while (rt.activeTurn === turn && Date.now() < deadline) await sleepMs(20);
+    if (rt.activeTurn !== turn) return { outcome: "stopped" };
+    if (typeof provider.forceStop === "function") {
+      await Promise.race([provider.forceStop(rt.record.native).catch(() => {}), sleepMs(waitMs)]);
+      const until = Date.now() + waitMs;
+      while (rt.activeTurn === turn && Date.now() < until) await sleepMs(20);
+      return { outcome: "didNotRespond", detail: rt.activeTurn !== turn ? "its harness process was ended" : "ending its harness process did not end the turn either" };
+    }
+    return { outcome: "didNotRespond", detail: "YAAC does not own this harness's process (it is shared), so it could not end it; the thread is held and nothing more is sent to it" };
   }
 
   /**
@@ -1175,10 +1788,12 @@ export class Core {
       const full: Work = { ...work, resolve, reject };
       if (mode === "now") {
         if (!rt.canDispatch()) {
-          reject(rt.activeTurn || rt.dispatching ? notActed("turn_in_progress", "a turn is already running in this thread") : notActed("thread_in_use", "this thread is in use elsewhere"));
+          reject(rt.activeTurn || rt.dispatching || rt.claimed ? notActed("turn_in_progress", "a turn is already running in this thread") : rt.record.hold ? notActed("thread_held", "this thread is stopped and held") : notActed("thread_in_use", "this thread is in use elsewhere"));
           return;
         }
-        rt.queue.unshift(full);
+        // Straight to the harness: queued input (the user's or agents') waits behind it.
+        void this.execute(rt, full);
+        return;
       } else {
         rt.queue.push(full);
       }
@@ -1187,7 +1802,12 @@ export class Core {
   }
 
   private pump(rt: ThreadRuntime): void {
-    if (rt.queue.length === 0 || !rt.canDispatch()) return;
+    if (!rt.canDispatch()) return;
+    if (rt.userQueue.length > 0 && !rt.queuePaused) {
+      this.dispatchQueued(rt);
+      return;
+    }
+    if (rt.queue.length === 0) return;
     const work = rt.queue.shift()!;
     void this.execute(rt, work);
   }
@@ -1391,7 +2011,7 @@ export class Core {
 
   /** Whether the thread is idle and not known to be held elsewhere (no harness round trip). */
   dispatchableNow(rt: ThreadRuntime): boolean {
-    return rt.canDispatch() && rt.queue.length === 0 && rt.pendingRequestCount() === 0;
+    return rt.canDispatch() && rt.queue.length === 0 && rt.userQueue.length === 0 && rt.pendingRequestCount() === 0;
   }
 
   /** Asks the provider who holds the thread (public for the mesh). */
@@ -1407,12 +2027,13 @@ export class Core {
       throw rpc("turn_mismatch", `turn ${String(p.turnId)} is not the running turn`, rt.activeTurn ? { activeTurn: rt.activeTurn } : undefined);
     }
     this.checkWriter(rt, client, false);
+    if (p.hold === true && !rt.record.hold) this.setHold(rt, { label: "the user", at: nowIso() });
     await this.provider(rt).interrupt(rt.record.native, p.turnId);
   }
 
   async turnSteer(client: ClientLink, p: TurnSteerParams): Promise<void> {
     await this.ops.run("turn/steer", p.opId, async () => {
-      const rt = this.threads.get(p.threadId);
+      const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
       await this.refreshExternal(rt);
       this.checkWriter(rt, client, true);
@@ -1451,7 +2072,7 @@ export class Core {
 
   async requestRespond(client: ClientLink, p: RequestRespondParams): Promise<void> {
     await this.ops.run("request/respond", p.opId, async () => {
-      const rt = this.threads.get(p.threadId);
+      const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
       const rec = rt.requests.get(p.requestId);
       if (!rec) throw notActed("request_not_found", `no request ${String(p.requestId)} in this thread`);
@@ -1543,7 +2164,7 @@ export class Core {
 
   private async forkInto(p: ThreadForkParams, withInput: boolean): Promise<{ rt: ThreadRuntime; parts: InputPart[] | null }> {
     {
-      const src = this.threads.get(p.source);
+      const src = this.findThread(p.source);
       if (!src || src.deleted) throw notActed("thread_not_found", `no thread ${String(p.source)} on this target`);
       let plan;
       try {
@@ -1603,7 +2224,7 @@ export class Core {
 
   async threadRename(p: { opId: string; threadId: string; title: string }): Promise<void> {
     await this.ops.run("thread/rename", p.opId, async () => {
-      const rt = this.threads.get(p.threadId);
+      const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)}`);
       if (typeof p.title !== "string" || !p.title.trim()) throw notActed("invalid_params", "title is required");
       const provider = await this.gated(rt, "threadRename", "rename");
@@ -1618,11 +2239,31 @@ export class Core {
 
   async threadArchive(p: { opId: string; threadId: string }): Promise<void> {
     await this.ops.run("thread/archive", p.opId, async () => {
-      const rt = this.threads.get(p.threadId);
+      const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)}`);
       const provider = await this.gated(rt, "threadArchive", "archive");
       await provider.archive!(rt.record.native);
       rt.record.archived = true;
+      rt.record.userArchived = true;
+      rt.saveRecord();
+      this.updateIndex(rt);
+      return {};
+    });
+  }
+
+  /** `thread/unarchive`, with the harness's own unarchive (under `threadArchive`). */
+  async threadUnarchive(p: { opId: string; threadId: string }): Promise<void> {
+    await this.ops.run("thread/unarchive", p.opId, async () => {
+      const rt = this.findThread(p.threadId);
+      if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)}`);
+      const inst = this.registry.get(rt.record.instance);
+      const provider = inst?.provider;
+      if (!provider || typeof provider.unarchive !== "function" || !(inst!.descriptor.capabilities ?? []).includes("threadArchive")) {
+        throw notActed("capability_missing", "this thread's provider cannot unarchive threads");
+      }
+      await provider.unarchive(rt.record.native);
+      rt.record.archived = false;
+      rt.record.userArchived = false;
       rt.saveRecord();
       this.updateIndex(rt);
       return {};
@@ -1631,7 +2272,7 @@ export class Core {
 
   async threadDelete(client: ClientLink, p: { opId: string; threadId: string }): Promise<void> {
     await this.ops.run("thread/delete", p.opId, async () => {
-      const rt = this.threads.get(p.threadId);
+      const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)}`);
       await this.refreshExternal(rt);
       this.checkWriter(rt, client, true);

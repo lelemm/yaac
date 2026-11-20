@@ -57,6 +57,7 @@ pub(crate) fn message(id: &str, from: &Address, to: &Address, kind: MeshMessageK
         sent_at: at,
         seq: 1,
         root: None,
+        delivery: None,
     }
 }
 
@@ -69,15 +70,15 @@ pub(crate) fn sent(msg: MeshMessage, to: MeshPeer, receipt: Receipt) -> ItemBody
 }
 
 pub(crate) fn delivered(detail: Option<&str>) -> Receipt {
-    Receipt { status: ReceiptStatus::Delivered, reason: None, detail: detail.map(str::to_owned) }
+    Receipt { status: ReceiptStatus::Delivered, reason: None, detail: detail.map(str::to_owned), handling: None }
 }
 
 pub(crate) fn queued(reason: ReceiptReason) -> Receipt {
-    Receipt { status: ReceiptStatus::Queued, reason: Some(reason), detail: None }
+    Receipt { status: ReceiptStatus::Queued, reason: Some(reason), detail: None, handling: None }
 }
 
 pub(crate) fn failed(reason: ReceiptReason) -> Receipt {
-    Receipt { status: ReceiptStatus::Failed, reason: Some(reason), detail: None }
+    Receipt { status: ReceiptStatus::Failed, reason: Some(reason), detail: None, handling: None }
 }
 
 pub(crate) fn spawn(threads: Vec<(MeshPeer, ThreadState)>) -> ItemBody {

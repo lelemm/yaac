@@ -49,6 +49,8 @@ pub(crate) struct Fleet {
     pub budgets: BTreeMap<Address, MeshBudgetResult>,
     /// Each target's projects.
     pub projects: BTreeMap<TargetId, Vec<Project>>,
+    /// The hub's view preferences (D92): (pinned, muted) per thread.
+    pub view: BTreeMap<ThreadKey, (bool, bool)>,
 }
 
 pub(crate) const ORCH: (&str, &str) = ("local", "t-orch");
@@ -156,6 +158,8 @@ pub(crate) fn codex(instance: &str, name: Option<&str>, status: ProviderStatus) 
         models_complete: true,
         modes: modes(),
         revision: 1,
+        backend_origin: None,
+        models_read_at: None,
     }
 }
 
@@ -175,6 +179,8 @@ pub(crate) fn claude(status: ProviderStatus) -> ProviderDescriptor {
         models_complete: true,
         modes: modes(),
         revision: 1,
+        backend_origin: None,
+        models_read_at: None,
     }
 }
 
@@ -286,10 +292,9 @@ impl Fleet {
             archived: false,
             repo: None,
             git: None,
-            muted: false,
-            pinned: false,
             agents: yaac_protocol::AgentsPolicy::default(),
             native_id: None,
+            hold: None,
         };
         let effective = self.effective_for(key, instance, model_id);
         self.threads.insert(
@@ -347,7 +352,7 @@ impl Fleet {
                     t.context = e.context.clone();
                 }
             }
-            ThreadEvent::Unknown(_) => {}
+            ThreadEvent::QueueChanged(_) | ThreadEvent::HoldChanged(_) | ThreadEvent::Unknown(_) => {}
         }
         let params = ThreadEventParams { thread_id: key.thread.clone(), epoch: t.epoch, seq: Seq(t.journal.len() as u64 + 1), event };
         t.journal.push(params.clone());
@@ -393,6 +398,7 @@ impl Fleet {
             threads: BTreeMap::new(),
             budgets: BTreeMap::new(),
             projects: BTreeMap::new(),
+            view: BTreeMap::new(),
         };
         f.providers.insert(TargetId::new("local"), vec![codex("codex", None, ProviderStatus::Ready), claude(ProviderStatus::Ready)]);
         f.providers.insert(
@@ -645,10 +651,11 @@ impl Fleet {
         // What the targets report beyond the brief's table: muted and pinned threads, git
         // status, and the projects the user created (the targets resolve which one each
         // thread belongs to).
+        // Muted and pinned threads: the hub's view preferences (D92), served as `hub/view/get`.
         for key in [k(OLD_SPIKE), k(LINT), k(BENCH), k(V2PLAN)] {
-            f.set(&key, |s| s.muted = true);
+            f.view.insert(key, (false, true));
         }
-        f.set(&k(ORCH), |s| s.pinned = true);
+        f.view.insert(k(ORCH), (true, false));
         // The targets report a finished worker as done and a thread blocked on another agent as
         // waiting.
         for key in [k(USERS), k(BILLING), k(NOTES), k(LINT)] {
@@ -757,6 +764,7 @@ impl Fleet {
             threads: BTreeMap::new(),
             budgets: BTreeMap::new(),
             projects: BTreeMap::new(),
+            view: BTreeMap::new(),
         };
         let mut c = claude(ProviderStatus::NeedsAuth);
         c.status_message = Some(SIGN_IN_HINT.into());

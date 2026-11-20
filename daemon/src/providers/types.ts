@@ -7,6 +7,7 @@
 import type {
   AppliedSettings,
   BackendKind,
+  BackendOrigin,
   Capability,
   ContextUsage,
   DeltaField,
@@ -44,6 +45,21 @@ export interface PageRequest {
   cursor?: string | null;
   /** A hint; providers may return fewer or more. */
   limit?: number;
+}
+
+/**
+ * A scan for the thread index under the discovery caps (docs/05-threads.md#discovery-is-capped-by-age-and-by-number).
+ * With either cap set, a provider lists **newest first by last activity** and may stop early
+ * (return no cursor) at the first conversation last active before `activeSince`, or once it
+ * has returned `max` conversations of one listing (a provider with several listings, such as
+ * active and archived, applies it to each). yaacd applies both caps itself, so a provider may
+ * ignore them; it must never return a partial page as complete for another reason.
+ */
+export interface ScanRequest extends PageRequest {
+  activeSince?: Timestamp | null;
+  max?: number | null;
+  /** A hint for "Search older threads": only conversations whose title contains this. */
+  search?: string | null;
 }
 
 /** One conversation as the harness lists it. */
@@ -94,6 +110,10 @@ export interface ProbeResult {
   models: ModelInfo[];
   modelsComplete: boolean;
   modes: ModeInfo[];
+  /** When `models` was read from the harness (default: now). */
+  modelsReadAt?: Timestamp | null;
+  /** For a backend that is a separate process: whether it was found running or started by yaacd. */
+  backendOrigin?: BackendOrigin | null;
 }
 
 export interface StartThreadParams {
@@ -197,7 +217,7 @@ export interface ExternalControl {
   external: boolean;
   /** "a terminal", a program name, … for "In use in …". */
   holder?: string | null;
-  /** The provider cannot tell. yaacd treats this as in use (docs/05-threads.md#detecting-it). */
+  /** The provider cannot tell. yaacd treats this as free: only positive evidence makes a thread read-only (D72). */
   uncertain?: boolean;
 }
 
@@ -268,8 +288,13 @@ export type ProviderEvent =
 export interface HarnessProvider {
   /** Install, sign-in, backend, models. Called at start, on `provider/refresh`, on `descriptorChanged`. */
   probe(): Promise<ProbeResult>;
-  /** One page of the conversation listing, for the thread index. */
-  scanThreads(page: PageRequest): Promise<ThreadPage>;
+  /** One page of the conversation listing, for the thread index (see `ScanRequest`). */
+  scanThreads(page: ScanRequest): Promise<ThreadPage>;
+  /**
+   * One conversation by the harness's id, whether or not it is within the discovery caps
+   * (a lookup by id that missed the index). Null: the harness has no such conversation.
+   */
+  lookupThread?(native: NativeId): Promise<NativeThreadInfo | null>;
   /** One page of a conversation's stored history, oldest first. */
   readThread(thread: NativeId, page: PageRequest): Promise<ItemPage>;
 
@@ -297,6 +322,13 @@ export interface HarnessProvider {
   steer?(thread: NativeId, turn: TurnId, input: ProviderInput): Promise<void>;
   rename?(thread: NativeId, title: string): Promise<void>;
   archive?(thread: NativeId): Promise<void>;
+  /** The harness's own unarchive. */
+  unarchive?(thread: NativeId): Promise<void>;
+  /**
+   * Ends the harness process serving this conversation, for a turn that did not stop when
+   * interrupted. Only where yaacd owns that process (not a shared harness daemon).
+   */
+  forceStop?(thread: NativeId): Promise<void>;
   remove?(thread: NativeId): Promise<void>;
   /**
    * The agent mesh: offer the `yaac` tools to this instance's threads. A provider that

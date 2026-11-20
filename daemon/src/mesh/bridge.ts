@@ -10,9 +10,10 @@
 
 import * as net from "node:net";
 import { spawn } from "node:child_process";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { MeshToolCall, MeshToolResult } from "../providers/types.js";
-import { BRIDGE_MAGIC, createMeshServer } from "./mcp.js";
+import { BRIDGE_MAGIC } from "./link.js";
+import { serveStdioMcp } from "./stdio-mcp.js";
+import { SERVER_INSTRUCTIONS, SERVER_NAME, TOOLS } from "./tools.js";
 
 interface Pending {
   resolve: (r: MeshToolResult) => void;
@@ -113,14 +114,21 @@ export async function runBridge(env: NodeJS.ProcessEnv, selfArgs: string[]): Pro
     process.stderr.write("yaacd mcp: YAAC_MCP_TICKET and YAAC_SOCKET must be set (yaacd sets them when it attaches this server)\n");
     process.exit(2);
   }
+  // The daemon's own entry: this process may be the small bridge bundle, which cannot serve.
+  const daemonArgs = env.YAAC_DAEMON_ENTRY ? [env.YAAC_DAEMON_ENTRY] : selfArgs;
   const startDaemon = () => {
-    const child = spawn(process.execPath, [...process.execArgv, ...selfArgs, "serve"], { detached: true, stdio: "ignore", env });
+    const child = spawn(process.execPath, [...process.execArgv, ...daemonArgs, "serve"], { detached: true, stdio: "ignore", env });
     child.unref();
   };
   const link = new DaemonLink(socketPath, ticket, startDaemon);
-  const server = createMeshServer((call) => link.call(call));
-  const transport = new StdioServerTransport();
-  transport.onclose = () => process.exit(0);
-  process.stdin.on("end", () => process.exit(0));
-  await server.connect(transport);
+  serveStdioMcp({
+    input: process.stdin,
+    output: process.stdout,
+    name: SERVER_NAME,
+    version: "1",
+    instructions: SERVER_INSTRUCTIONS,
+    tools: TOOLS,
+    call: (call) => link.call(call),
+    onClose: () => process.exit(0),
+  });
 }

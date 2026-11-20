@@ -164,6 +164,14 @@ export interface ApprovalRequest {
 export type BackendKind = "daemon" | "sdk";
 
 /**
+ * Whether `yaacd` found the harness's backend process (a daemon) already running or
+ * started it itself. Display and diagnostics only.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type BackendOrigin = "foundRunning" | "startedByYaac";
+
+/**
  * The backend an instance is configured to use.
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
@@ -327,6 +335,21 @@ export interface DaemonStatusResult {
 export type DecisionKind = "allow" | "allowSession" | "allowAlways" | "deny" | "abort";
 
 /**
+ * How a message reaches a thread that is running a turn
+ * (docs/10-agent-mesh.md#queued-or-now).
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type Delivery = "queue" | "now";
+
+/**
+ * What was done with a message on arrival (the receipt of a `now` message says it).
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type DeliveryHandling = "steered" | "interruptedAndDelivered" | "delivered" | "queued";
+
+/**
  * The item field an `itemDelta` appends to.
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
@@ -355,6 +378,69 @@ export interface DiagnosticsGetResult {
    * Sections, in display order.
    */
   sections: DiagnosticSection[];
+}
+
+/**
+ * The discovery caps of a target (docs/05-threads.md#discovery-is-capped-by-age-and-by-number).
+ * A conversation YAAC did not create is indexed only if it was active within `maxAgeDays` and
+ * is among the `maxThreads` most recent of its provider instance. 0 turns that cap off.
+ */
+export interface DiscoveryCaps {
+  /**
+   * Whether the caps apply at all.
+   */
+  enabled: boolean;
+  /**
+   * Age cap, in days of inactivity (0: none).
+   */
+  maxAgeDays: number;
+  /**
+   * Number cap, per provider instance (0: none).
+   */
+  maxThreads: number;
+}
+
+/**
+ * `discovery/caps`: read the caps, and change them when `update` is present (then `opId` is
+ * required). A change rescans every instance by the new caps.
+ */
+export interface DiscoveryCapsParams {
+  /**
+   * Operation id, required with `update`.
+   */
+  opId?: OpId | null;
+  /**
+   * The change.
+   */
+  update?: DiscoveryCapsUpdate | null;
+}
+
+/**
+ * `discovery/caps` result, and the `discovery/updated` notification.
+ */
+export interface DiscoveryCapsResult {
+  /**
+   * The caps in force.
+   */
+  caps: DiscoveryCaps;
+}
+
+/**
+ * A change to the caps. Absent fields are unchanged.
+ */
+export interface DiscoveryCapsUpdate {
+  /**
+   * See [`DiscoveryCaps`].
+   */
+  enabled?: boolean | null;
+  /**
+   * See [`DiscoveryCaps`].
+   */
+  maxAgeDays?: number | null;
+  /**
+   * See [`DiscoveryCaps`].
+   */
+  maxThreads?: number | null;
 }
 
 /**
@@ -712,6 +798,16 @@ export type HandoverState = "scheduled" | "exiting";
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
 export type HandoverWhen = "idle" | "now";
+
+/**
+ * `holdChanged`: the thread was stopped and held, or released.
+ */
+export interface HoldChangedEvent {
+  /**
+   * The hold; absent when released.
+   */
+  hold?: ThreadHold | null;
+}
 
 /**
  * An upload given to the model as real image input. Only valid when the thread's effective
@@ -1209,6 +1305,10 @@ export interface MeshLimitsPatch {
  * harness.
  */
 export interface MeshMessage {
+  /**
+   * `queue` (absent) or `now` (docs/10-agent-mesh.md#queued-or-now).
+   */
+  delivery?: Delivery | null;
   /**
    * Stamped by `yaacd` from the sender's attachment ticket, never by the agent. For a
    * `notice`, the thread the notice is about.
@@ -1888,7 +1988,7 @@ export interface NoticeItem {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered";
+export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered" | "stopped";
 
 /**
  * A client-generated operation id. Every state-changing request carries one; re-sending
@@ -2162,6 +2262,11 @@ export interface ProviderDescriptor {
    */
   backend: BackendKind;
   /**
+   * For a backend that is a separate process (a daemon): whether `yaacd` found it running
+   * or started it. Absent when there is no such process or it is not known.
+   */
+  backendOrigin?: BackendOrigin | null;
+  /**
    * What this instance can do, on this backend.
    */
   capabilities?: Capability[];
@@ -2190,6 +2295,10 @@ export interface ProviderDescriptor {
    * complete listing.
    */
   modelsComplete?: boolean;
+  /**
+   * When `models` was last read from the harness on the target.
+   */
+  modelsReadAt?: Timestamp | null;
   /**
    * Modes on offer.
    */
@@ -2508,6 +2617,61 @@ export interface QuestionRequest {
 }
 
 /**
+ * What happened to a queued user message.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type QueueChange = "added" | "updated" | "removed" | "delivered";
+
+/**
+ * `queueChanged`: the thread's queue of user messages changed.
+ */
+export interface QueueChangedEvent {
+  /**
+   * What happened.
+   */
+  change: QueueChange;
+  /**
+   * The message as it is now.
+   */
+  entry: QueuedMessage;
+  /**
+   * For `delivered`: the turn it started.
+   */
+  turnId?: TurnId | null;
+}
+
+/**
+ * A user message waiting in a thread's queue for the running turn to end.
+ */
+export interface QueuedMessage {
+  /**
+   * Effort override.
+   */
+  effort?: EffortId | null;
+  /**
+   * The message.
+   */
+  input: InputPart[];
+  /**
+   * Mode override.
+   */
+  mode?: ModeId | null;
+  /**
+   * Model override for the turn it starts.
+   */
+  model?: ModelId | null;
+  /**
+   * Its id in the queue.
+   */
+  queueId: string;
+  /**
+   * When it was queued.
+   */
+  queuedAt: Timestamp;
+}
+
+/**
  * `readThread`: recent messages, or the last answer, of a thread there.
  */
 export interface ReadThreadQuery {
@@ -2562,6 +2726,10 @@ export interface Receipt {
    */
   detail?: string | null;
   /**
+   * For a `now` message: what was done with it.
+   */
+  handling?: DeliveryHandling | null;
+  /**
    * Why it is queued or failed.
    */
   reason?: ReceiptReason | null;
@@ -2576,7 +2744,7 @@ export interface Receipt {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type ReceiptReason = "targetOffline" | "hubUnavailable" | "recipientBusy" | "awaitingUser" | "inUseElsewhere" | "budgetExhausted" | "unknownAddress" | "threadDeleted" | "limitExceeded" | "policyDenied" | "remoteDisallowed";
+export type ReceiptReason = "targetOffline" | "hubUnavailable" | "recipientBusy" | "awaitingUser" | "inUseElsewhere" | "budgetExhausted" | "unknownAddress" | "threadDeleted" | "limitExceeded" | "policyDenied" | "remoteDisallowed" | "stopped" | "notBeneathSender";
 
 /**
  * How far a message got.
@@ -2824,6 +2992,11 @@ export type Sha256Hex = string;
  */
 export interface SpawnThreadQuery {
   /**
+   * Every thread above the new one, nearest first (the caller, its parent, …), so the
+   * destination can tell later who is beneath whom.
+   */
+  ancestors?: Address[];
+  /**
    * Working directory on the destination. When absent, the destination resolves "the same
    * project" from `projectKey`; it confirms the directory exists before starting anything.
    */
@@ -2899,9 +3072,47 @@ export interface SpawnedThread {
 }
 
 /**
+ * What a stop did to one thread.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type StopOutcome = "stopped" | "wasNotRunning" | "didNotRespond" | "unreachable";
+
+/**
+ * One thread's stop outcome.
+ */
+export interface StopResult {
+  /**
+   * More, shown as-is (e.g. whether its harness process was ended).
+   */
+  detail?: string | null;
+  /**
+   * What happened.
+   */
+  outcome: StopOutcome;
+  /**
+   * The thread.
+   */
+  thread: Address;
+  /**
+   * Its title, when known.
+   */
+  title?: string | null;
+}
+
+/**
  * `stopThread`: interrupt a thread there. Only for the caller's own workers.
  */
 export interface StopThreadQuery {
+  /**
+   * The agent that asked for the stop, when it is not the caller (a stop passed down a
+   * subtree across targets). Its hold names this agent.
+   */
+  by?: Address | null;
+  /**
+   * Also every thread beneath it (absent: `true`).
+   */
+  subtree?: boolean | null;
   /**
    * The thread.
    */
@@ -2911,7 +3122,12 @@ export interface StopThreadQuery {
 /**
  * `stopThread` reply.
  */
-export type StopThreadReply = { [key: string]: unknown };
+export interface StopThreadReply {
+  /**
+   * One per thread, the asked one first.
+   */
+  results?: StopResult[];
+}
 
 /**
  * Which conversations an instance owns. Two instances with equal `key`s see the same
@@ -3175,7 +3391,11 @@ export type ThreadEvent = ({
   type: "settingsChanged";
 } & SettingsChangedEvent) | ({
   type: "usageUpdated";
-} & UsageUpdatedEvent);
+} & UsageUpdatedEvent) | ({
+  type: "queueChanged";
+} & QueueChangedEvent) | ({
+  type: "holdChanged";
+} & HoldChangedEvent);
 
 /**
  * `thread/event` notification: one journaled event, with its position.
@@ -3363,10 +3583,107 @@ export interface ThreadForkResult {
 }
 
 /**
+ * A thread that was stopped and is held: it starts again only when the one who stopped it,
+ * or the user, sends it a message, or the user resumes it.
+ */
+export interface ThreadHold {
+  /**
+   * When.
+   */
+  at: Timestamp;
+  /**
+   * The agent that stopped it; absent when the user did.
+   */
+  by?: Address | null;
+  /**
+   * Who stopped it, for "Stopped by …".
+   */
+  label: string;
+}
+
+/**
  * A thread on one target. Opaque: `yaacd` builds it from the provider instance (and so its
  * store binding) and the harness's native conversation id. The host never parses it.
  */
 export type ThreadId = string;
+
+/**
+ * `thread/keep`: the threads the user keeps on the host (pinned or muted there). The discovery
+ * caps never cut them. Replaces the previous set; the daemon learns nothing about why.
+ */
+export interface ThreadKeepParams {
+  /**
+   * Every thread to keep.
+   */
+  threadIds?: ThreadId[];
+}
+
+/**
+ * `thread/lookup`: find a thread by id — the YAAC thread id or the harness's own
+ * conversation id — asking the harness directly when the index does not have it, and bringing
+ * it into the index.
+ */
+export interface ThreadLookupParams {
+  /**
+   * The id.
+   */
+  id: string;
+  /**
+   * Only this provider instance.
+   */
+  instance?: InstanceId | null;
+}
+
+/**
+ * `thread/lookup` result.
+ */
+export interface ThreadLookupResult {
+  /**
+   * The threads with that id (normally one).
+   */
+  threads?: ThreadSummary[];
+}
+
+/**
+ * `thread/older`: conversations beyond the discovery caps, newest first, a page at a time
+ * ("Show older", "Search older threads on …"). Not indexed unless opened, pinned, or active.
+ */
+export interface ThreadOlderParams {
+  /**
+   * From a previous page.
+   */
+  cursor?: PageCursor | null;
+  /**
+   * Only threads of the project with this folder (`ProjectRef.path`).
+   */
+  folder?: TargetPath | null;
+  /**
+   * Only this provider instance.
+   */
+  instance?: InstanceId | null;
+  /**
+   * Page size (default 20, at most 100).
+   */
+  limit?: number | null;
+  /**
+   * Only threads whose title contains these words, or whose id starts with it.
+   */
+  query?: string | null;
+}
+
+/**
+ * `thread/older` result.
+ */
+export interface ThreadOlderResult {
+  /**
+   * The next page, when there is one.
+   */
+  cursor?: PageCursor | null;
+  /**
+   * Summaries, newest first. Their ids work with every thread method.
+   */
+  threads?: ThreadSummary[];
+}
 
 /**
  * `thread/read`: one page of items, newest first, from a snapshot bound to a position.
@@ -3506,7 +3823,7 @@ export interface ThreadStartResult {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type ThreadState = "idle" | "running" | "needsAttention" | "failed" | "waiting" | "done";
+export type ThreadState = "idle" | "running" | "needsAttention" | "failed" | "waiting" | "done" | "stopped";
 
 /**
  * `threadStates`: the current state of some threads there (used by `wait`).
@@ -3573,6 +3890,14 @@ export type ThreadSubscribeResult = ({
    */
   effective?: ThreadEffective | null;
   /**
+   * Set while the thread is stopped and held.
+   */
+  hold?: ThreadHold | null;
+  /**
+   * User messages queued behind the running turn, in delivery order.
+   */
+  queued?: QueuedMessage[] | null;
+  /**
    * Cumulative token usage of the thread, when known.
    */
   tokens?: TokenUsage | null;
@@ -3630,6 +3955,10 @@ export interface ThreadSummary {
    */
   git?: GitStatus | null;
   /**
+   * Set while the thread is stopped and held (state `stopped`).
+   */
+  hold?: ThreadHold | null;
+  /**
    * The thread.
    */
   id: ThreadId;
@@ -3641,10 +3970,6 @@ export interface ThreadSummary {
    * The model last applied, when known.
    */
   model?: ModelId | null;
-  /**
-   * Muted: out of the main list, still working. Stored on the target.
-   */
-  muted?: boolean;
   /**
    * The harness's own conversation id (Codex `Thread.id`, the Claude session id): what a
    * user copies from a terminal. Opaque; for finding a thread, never for routing.
@@ -3659,10 +3984,6 @@ export interface ThreadSummary {
    * other.
    */
   peers?: number;
-  /**
-   * Pinned: listed in the Pinned section. Stored on the target.
-   */
-  pinned?: boolean;
   /**
    * Short excerpt.
    */
@@ -3758,7 +4079,8 @@ export interface ThreadUnsubscribeParams {
 }
 
 /**
- * `thread/update`: YAAC's own flags and settings of a thread — not the harness's. A patch:
+ * `thread/update`: YAAC's own settings of a thread — not the harness's, and not the host's view
+ * preferences (pin, mute, dismiss live in the hub: D92). A patch:
  * absent fields are unchanged. Stored on the target; the change is pushed as `thread/updated`.
  */
 export interface ThreadUpdateParams {
@@ -3767,17 +4089,14 @@ export interface ThreadUpdateParams {
    */
   agents?: AgentsPolicy | null;
   /**
-   * Mute or unmute.
+   * `false`: resume a stopped thread (release its hold) without sending it anything.
+   * `true`: hold it (it starts nothing by itself until released).
    */
-  muted?: boolean | null;
+  held?: boolean | null;
   /**
    * Operation id.
    */
   opId: OpId;
-  /**
-   * Pin or unpin.
-   */
-  pinned?: boolean | null;
   /**
    * The thread.
    */
@@ -3946,6 +4265,11 @@ export type TurnId = string;
  */
 export interface TurnInterruptParams {
   /**
+   * Also hold the thread (state `stopped`): queued messages and agent messages wait until
+   * the user sends it a message or resumes it.
+   */
+  hold?: boolean | null;
+  /**
    * The thread.
    */
   threadId: ThreadId;
@@ -3963,9 +4287,64 @@ export interface TurnInterruptParams {
 export type TurnOrigin = "user" | "mesh" | "external";
 
 /**
+ * `turn/queueCancel`: remove a queued message before it is delivered.
+ */
+export interface TurnQueueCancelParams {
+  /**
+   * Operation id.
+   */
+  opId: OpId;
+  /**
+   * The queued message.
+   */
+  queueId: string;
+  /**
+   * The thread.
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * `turn/queueEdit`: replace a queued message's text and attachments before it is delivered.
+ */
+export interface TurnQueueEditParams {
+  /**
+   * The new message.
+   */
+  input: InputPart[];
+  /**
+   * Operation id.
+   */
+  opId: OpId;
+  /**
+   * The queued message.
+   */
+  queueId: string;
+  /**
+   * The thread.
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * What `turn/start` did.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type TurnStartOutcome = "started" | "queued" | "steered" | "interruptedAndStarted";
+
+/**
  * `turn/start`: send a user message to an existing thread.
  */
 export interface TurnStartParams {
+  /**
+   * What to do while a turn is running (docs/07-ui.md#composer). Absent: refuse with
+   * `turn_in_progress`, as before. `queue`: kept by `yaacd` (durably, in order, ahead of
+   * queued agent messages) and delivered when the turn ends. `now`: steered into the
+   * running turn under `steer`, otherwise the turn is interrupted and a new one starts with
+   * it. While the thread waits on a request for the user, only `queue` is accepted.
+   */
+  delivery?: Delivery | null;
   /**
    * Effort override (under `effortSwitch`).
    */
@@ -3997,7 +4376,15 @@ export interface TurnStartParams {
  */
 export interface TurnStartResult {
   /**
-   * The new turn.
+   * What happened; absent from a `yaacd` that predates `delivery` (then: started).
+   */
+  outcome?: TurnStartOutcome | null;
+  /**
+   * The queued message, when queued.
+   */
+  queueId?: string | null;
+  /**
+   * The new turn (the running turn when steered; empty when queued).
    */
   turnId: TurnId;
 }

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Address, EffortId, InstanceId, MeshPeer, MessageId, ModelId, OpId, ProjectRef, ProviderDescriptor,
-    TargetId, TargetName, TargetPath, ThreadState, Timestamp, TurnId,
+    Delivery, TargetId, TargetName, TargetPath, ThreadState, Timestamp, TurnId,
 };
 use crate::macros::{open_enum, open_union};
 
@@ -53,6 +53,23 @@ pub struct MeshMessage {
     /// The orchestration root this message belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<Address>,
+    /// `queue` (absent) or `now` (docs/10-agent-mesh.md#queued-or-now).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Delivery>,
+}
+
+open_enum! {
+    /// What was done with a message on arrival (the receipt of a `now` message says it).
+    pub enum DeliveryHandling fallback Unknown {
+        /// Added to the recipient's running turn.
+        Steered = "steered",
+        /// The recipient's running turn was interrupted and a new one started with it.
+        InterruptedAndDelivered = "interruptedAndDelivered",
+        /// The recipient was idle; a turn started with it.
+        Delivered = "delivered",
+        /// It waits in the mailbox (`reason` says why).
+        Queued = "queued",
+    }
 }
 
 open_enum! {
@@ -92,6 +109,10 @@ open_enum! {
         PolicyDenied = "policyDenied",
         /// The recipient's target does not accept messages from other targets.
         RemoteDisallowed = "remoteDisallowed",
+        /// The recipient was stopped and is held until its stopper or the user messages it.
+        Stopped = "stopped",
+        /// `now` was asked toward a thread that is not beneath the sender: delivered as `queue`.
+        NotBeneathSender = "notBeneathSender",
     }
 }
 
@@ -107,6 +128,9 @@ pub struct Receipt {
     /// Text for the agent and the user, shown as-is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// For a `now` message: what was done with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handling: Option<DeliveryHandling>,
 }
 
 /// `mesh/relay` (target → hub): carry a message to another target. The hub answers once the
@@ -242,6 +266,10 @@ pub struct SpawnThreadQuery {
     /// The new thread's depth of spawning (the caller's depth plus one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub depth: Option<u32>,
+    /// Every thread above the new one, nearest first (the caller, its parent, …), so the
+    /// destination can tell later who is beneath whom.
+    #[serde(default)]
+    pub ancestors: Vec<Address>,
 }
 
 /// `findThreads`: find threads across every target by id or fuzzy title. Answered by the hub
@@ -274,6 +302,13 @@ pub struct ListTargetsQuery {}
 pub struct StopThreadQuery {
     /// The thread.
     pub thread: Address,
+    /// Also every thread beneath it (absent: `true`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtree: Option<bool>,
+    /// The agent that asked for the stop, when it is not the caller (a stop passed down a
+    /// subtree across targets). Its hold names this agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Address>,
 }
 
 /// `threadStates`: the current state of some threads there (used by `wait`).
@@ -472,7 +507,41 @@ pub struct SpawnThreadReply {
 /// `stopThread` reply.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct StopThreadReply {}
+pub struct StopThreadReply {
+    /// One per thread, the asked one first.
+    #[serde(default)]
+    pub results: Vec<StopResult>,
+}
+
+open_enum! {
+    /// What a stop did to one thread.
+    pub enum StopOutcome fallback Unknown {
+        /// Its running turn ended; it is held.
+        Stopped = "stopped",
+        /// It was not running; it is held.
+        WasNotRunning = "wasNotRunning",
+        /// Its turn had not ended a few seconds after the interrupt; it is held anyway.
+        DidNotRespond = "didNotRespond",
+        /// It could not be reached (its machine is offline).
+        Unreachable = "unreachable",
+    }
+}
+
+/// One thread's stop outcome.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StopResult {
+    /// The thread.
+    pub thread: Address,
+    /// What happened.
+    pub outcome: StopOutcome,
+    /// Its title, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// More, shown as-is (e.g. whether its harness process was ended).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
 
 /// `threadStates` reply.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -14,6 +14,7 @@
 import type { Item, PlanStep, ToolKind, TurnId } from "../../protocol/generated/types.js";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ASK_TOOL, normaliseQuestions } from "./questions.js";
+import { editDiff, editedPath } from "./diff.js";
 
 type Json = Record<string, unknown>;
 type Block = Json & { type?: unknown };
@@ -86,10 +87,24 @@ export function otherBlockItem(id: string, turnId: TurnId, block: Block): Item {
   return { id, turnId, status: "completed", kind: "toolCall", tool: "other", title: String(block.type ?? "content"), input: block };
 }
 
-/** Completes a tool call with its result. */
-export function withResult(item: Item, result: Block): Item {
+/**
+ * Completes a tool call with its result. A file change carries its change as a unified diff
+ * (D86), from the tool's structured result when the SDK gives one (`tool_use_result`).
+ */
+export function withResult(item: Item, result: Block, structured?: unknown): Item {
   const failed = result.is_error === true;
-  return { ...item, status: failed ? "failed" : "completed", output: resultText(result.content) } as Item;
+  const done = { ...item, status: failed ? "failed" : "completed", output: resultText(result.content) } as Item & { tool?: string; input?: Json; title?: string; output?: string };
+  if (!failed && done.tool === "fileChange" && done.input) {
+    const name = str(done.input.name) ?? "";
+    const diff = editDiff(name, done.input, structured);
+    if (diff) done.output = diff;
+    const p = editedPath(done.input);
+    if (p) {
+      const created = name === "Write" && ((structured as Json | undefined)?.type === "create" || (diff?.startsWith("--- /dev/null") ?? false));
+      done.title = `${created ? "Created" : "Edited"} ${p}`;
+    }
+  }
+  return done as Item;
 }
 
 /** A user prompt (not a tool result): from a person, it is a user message; from anything else, a notice. */
@@ -404,19 +419,23 @@ export class LiveTranslator {
     }
   }
 
-  private result(b: Block): void {
+  private result(b: Block, structured?: unknown): void {
     const id = str(b.tool_use_id) ?? "";
     if (this.skipTools.has(id)) return;
     const item = this.tools.get(id);
     if (!item) return;
     this.tools.delete(id);
-    this.complete(withResult(item, b));
+    this.complete(withResult(item, b, structured));
   }
 
-  /** A user message of the main conversation: tool results, or a prompt yaacd did not send. */
-  user(content: unknown, uuid: string | null, origin: unknown): void {
+  /**
+   * A user message of the main conversation: tool results, or a prompt yaacd did not send.
+   * `toolUseResult` is the SDK's structured result of the (single) tool it answers.
+   */
+  user(content: unknown, uuid: string | null, origin: unknown, toolUseResult?: unknown): void {
     if (isToolResultMessage(content)) {
-      for (const b of content as Block[]) if (b.type === "tool_result") this.result(b);
+      const results = (content as Block[]).filter((b) => b.type === "tool_result");
+      for (const b of results) this.result(b, results.length === 1 ? toolUseResult : undefined);
       return;
     }
     if (!uuid) return;

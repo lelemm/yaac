@@ -176,6 +176,8 @@ open_enum! {
         WorkerNeedsAttention = "workerNeedsAttention",
         /// A message this thread sent has waited undelivered past the limit. Passive.
         Undelivered = "undelivered",
+        /// The thread was stopped and is held ("Stopped by …").
+        Stopped = "stopped",
     }
 }
 

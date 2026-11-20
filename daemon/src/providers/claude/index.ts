@@ -45,6 +45,7 @@ import type {
   NativeId,
   NativeThreadInfo,
   PageRequest,
+  ScanRequest,
   ProbeResult,
   ProviderContext,
   ProviderEvent,
@@ -492,7 +493,7 @@ export class ClaudeProvider implements HarnessProvider {
 
   // ── Thread index and history ───────────────────────────────────────────────────────────
 
-  async scanThreads(page: PageRequest): Promise<ThreadPage> {
+  async scanThreads(page: ScanRequest): Promise<ThreadPage> {
     const sdk = await this.sdk();
     const size = Math.max(1, page.limit ?? 100);
     let snap = this.scanSnapshot;
@@ -503,7 +504,11 @@ export class ClaudeProvider implements HarnessProvider {
       offset = Number.parseInt(off ?? "0", 10) || 0;
     } else {
       // The SDK labels no session as programmatic; asking without them tells them apart.
-      const [all, interactive] = await Promise.all([sdk.listSessions({ includeWorktrees: true }), sdk.listSessions({ includeWorktrees: true, includeProgrammatic: false })]);
+      // Sessions come newest first (by last modification). Under the discovery caps only the
+      // first `max` are asked for: the interactive ones among them are within the first `max`
+      // of the interactive listing too, so the two listings still tell them apart.
+      const limit = page.max && page.max > 0 ? { limit: page.max } : {};
+      const [all, interactive] = await Promise.all([sdk.listSessions({ includeWorktrees: true, ...limit }), sdk.listSessions({ includeWorktrees: true, includeProgrammatic: false, ...limit })]);
       const human = new Set(interactive.map((s) => s.sessionId));
       snap = {
         id: randomUUID().slice(0, 8),
@@ -517,8 +522,10 @@ export class ClaudeProvider implements HarnessProvider {
           updatedAt: iso(s.lastModified),
           originKind: human.has(s.sessionId) ? "interactive" : "programmatic",
           archived: s.archived === true,
-        })),
+        })) as NativeThreadInfo[],
       };
+      if (page.activeSince) snap.threads = snap.threads.filter((t) => t.updatedAt >= page.activeSince!);
+      if (page.search) snap.threads = snap.threads.filter((t) => (t.title ?? "").toLowerCase().includes(page.search!.toLowerCase()));
       this.scanSnapshot = snap;
     }
     const threads = snap.threads.slice(offset, offset + size);
@@ -745,7 +752,7 @@ export class ClaudeProvider implements HarnessProvider {
         if (uuid && live.ours.has(uuid)) return;
         if ((m as { isReplay?: boolean }).isReplay) return;
         this.ensureTurn(live, uuid ?? undefined);
-        live.translator.user(content, uuid, (m as { origin?: unknown }).origin);
+        live.translator.user(content, uuid, (m as { origin?: unknown }).origin, (m as { tool_use_result?: unknown }).tool_use_result);
         return;
       }
       case "result": {
@@ -1154,6 +1161,44 @@ export class ClaudeProvider implements HarnessProvider {
   async archive(thread: NativeId): Promise<void> {
     await (await this.sdk()).archiveSession(thread);
     await this.refreshInfo(thread);
+  }
+
+  async unarchive(thread: NativeId): Promise<void> {
+    await (await this.sdk()).unarchiveSession(thread);
+    await this.refreshInfo(thread);
+  }
+
+  async lookupThread(native: NativeId): Promise<NativeThreadInfo | null> {
+    const info = await (await this.sdk()).getSessionInfo(native);
+    if (!info) return null;
+    const s = this.settings[native];
+    return {
+      native,
+      title: info.customTitle ?? info.summary ?? null,
+      preview: info.firstPrompt ?? null,
+      cwd: info.cwd ?? s?.cwd ?? "",
+      model: s?.model ?? null,
+      createdAt: iso(info.createdAt ?? info.lastModified),
+      updatedAt: iso(info.lastModified),
+      // One session alone cannot be told apart; the listing says interactive or not.
+      originKind: "interactive",
+      archived: info.archived === true,
+    };
+  }
+
+  /** yaacd owns the Claude Code process of a live thread: a turn that ignores the interrupt ends with it. */
+  async forceStop(thread: NativeId): Promise<void> {
+    const live = this.live.get(thread);
+    if (!live) return;
+    const pid = live.pid;
+    this.closeLive(live, "its turn did not stop when interrupted");
+    if (pid !== null) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
   }
 
   async remove(thread: NativeId): Promise<void> {

@@ -140,7 +140,7 @@ fn ready_session() -> (ClientSession, Daemon) {
 #[test]
 fn nothing_but_the_frozen_calls_is_sent_before_the_handshake() {
     let mut session = ClientSession::new(client());
-    let params = TurnInterruptParams { thread_id: ThreadId::new("t"), turn_id: TurnId::new("u") };
+    let params = TurnInterruptParams { thread_id: ThreadId::new("t"), turn_id: TurnId::new("u"), hold: None };
     assert!(matches!(session.request::<methods::TurnInterrupt>(&params), Err(SessionError::NotReady(_))));
     assert!(session.request::<methods::DaemonStatus>(&Empty {}).is_ok(), "daemon/status is always allowed");
     assert!(session.request::<methods::Initialize>(&InitializeParams { protocol: SUPPORTED, client: client() }).is_err());
@@ -222,6 +222,7 @@ fn requests_notifications_peer_requests_and_data_after_the_handshake() {
         input: vec![InputPart::text("hello")],
         model: None,
         effort: None,
+        delivery: None,
         mode: None,
     };
     let id = session.request::<methods::TurnStart>(&params).unwrap();
@@ -277,7 +278,7 @@ fn requests_notifications_peer_requests_and_data_after_the_handshake() {
     };
     assert_eq!(params.message.text, "done");
     session
-        .respond(id.clone(), method, Ok(serde_json::to_value(MeshReceiptResult { receipt: Receipt { status: ReceiptStatus::Queued, reason: Some(ReceiptReason::TargetOffline), detail: None } }).unwrap()))
+        .respond(id.clone(), method, Ok(serde_json::to_value(MeshReceiptResult { receipt: Receipt { status: ReceiptStatus::Queued, reason: Some(ReceiptReason::TargetOffline), detail: None, handling: None } }).unwrap()))
         .unwrap();
     let events = send(&mut session, &Message::request(RpcId::Number(2), "zz/whatever", json!({})));
     assert!(events.is_empty());

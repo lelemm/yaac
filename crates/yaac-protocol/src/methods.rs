@@ -303,7 +303,7 @@ catalogue! {
         /// Delete a thread (under `threadDelete`).
         ThreadDelete = "thread/delete" as THREAD_DELETE:
             t::ThreadDeleteParams => t::Empty, HostToDaemon, request Control, response Control, op;
-        /// Set YAAC's own flags and settings of a thread (mute, pin, agents policy). A patch.
+        /// Set YAAC's own settings of a thread (the agents policy, a hold). A patch.
         ThreadUpdate = "thread/update" as THREAD_UPDATE:
             t::ThreadUpdateParams => t::ThreadUpdateResult, HostToDaemon, request Control, response Control, op;
         /// Create a new thread from an existing one without a first message.
@@ -312,6 +312,21 @@ catalogue! {
         /// A byte range of one item's full output (a tool call's output beyond its inline head).
         ItemRead = "item/read" as ITEM_READ:
             t::ItemReadParams => t::ItemReadResult, HostToDaemon, request Control, response Bulk;
+        /// Unarchive a thread (under `threadArchive`), with the harness's own unarchive.
+        ThreadUnarchive = "thread/unarchive" as THREAD_UNARCHIVE:
+            t::ThreadArchiveParams => t::Empty, HostToDaemon, request Control, response Control, op;
+        /// The threads the host keeps (pinned or muted there): never cut by the discovery caps.
+        ThreadKeep = "thread/keep" as THREAD_KEEP:
+            t::ThreadKeepParams => t::Empty, HostToDaemon, request Control, response Control;
+        /// Find a thread by id, asking the harness when the index does not have it.
+        ThreadLookup = "thread/lookup" as THREAD_LOOKUP:
+            t::ThreadLookupParams => t::ThreadLookupResult, HostToDaemon, request Control, response Control;
+        /// A page of conversations beyond the discovery caps, newest first.
+        ThreadOlder = "thread/older" as THREAD_OLDER:
+            t::ThreadOlderParams => t::ThreadOlderResult, HostToDaemon, request Control, response Bulk;
+        /// Read, and optionally change, the target's discovery caps.
+        DiscoveryCapsMethod = "discovery/caps" as DISCOVERY_CAPS:
+            t::DiscoveryCapsParams => t::DiscoveryCapsResult, HostToDaemon, request Control, response Control;
 
         // ── Turns ──────────────────────────────────────────────────────────────────────
         /// Send a user message to an existing thread.
@@ -323,6 +338,15 @@ catalogue! {
         /// Add input to the running turn (under `steer`).
         TurnSteer = "turn/steer" as TURN_STEER:
             t::TurnSteerParams => t::Empty, HostToDaemon, request Control, response Control, op;
+        /// Replace a queued user message before it is delivered.
+        TurnQueueEdit = "turn/queueEdit" as TURN_QUEUE_EDIT:
+            t::TurnQueueEditParams => t::Empty, HostToDaemon, request Control, response Control, op;
+        /// Cancel a queued user message before it is delivered.
+        TurnQueueCancel = "turn/queueCancel" as TURN_QUEUE_CANCEL:
+            t::TurnQueueCancelParams => t::Empty, HostToDaemon, request Control, response Control, op;
+        /// Send a queued user message now ("Send now"): out of the queue, with `now` mechanics.
+        TurnQueuePromote = "turn/queuePromote" as TURN_QUEUE_PROMOTE:
+            t::TurnQueueCancelParams => t::TurnStartResult, HostToDaemon, request Control, response Control, op;
         /// Answer a pending approval, question, or form.
         RequestRespond = "request/respond" as REQUEST_RESPOND:
             t::RequestRespondParams => t::Empty, HostToDaemon, request Control, response Control, op;
@@ -405,6 +429,9 @@ catalogue! {
         /// The project list changed (created, renamed, deleted); carries every project.
         ProjectUpdated = "project/updated" as PROJECT_UPDATED:
             t::ProjectListResult, DaemonToHost, Control;
+        /// The discovery caps changed.
+        DiscoveryUpdated = "discovery/updated" as DISCOVERY_UPDATED:
+            t::DiscoveryCapsResult, DaemonToHost, Control;
         /// The receiver of a data stream grants more credit.
         StreamCredit = "stream/credit" as STREAM_CREDIT:
             t::StreamCreditParams, Both, Control;

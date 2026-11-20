@@ -78,6 +78,7 @@ All dated entries are from 2026-11-20.
 | D65 | A thread created from YAAC starts in the **root of its project's folder**. | Owner |
 | D66 | **Sidebar rows are more informative: more than one line**, with room for the **git branch** and, very compactly, **how many files differ from origin** for that branch. | Owner |
 | D68 | The git changes in a sidebar row use **real icons, not Unicode characters**, and the **usual git colours** (green, red, …). | Owner |
+| D95 | Attachments can be added by an **attachment button that opens the file picker**, by **dragging and dropping files onto the chat**, and by **pasting files or clipboard images**. | Owner |
 | D94 | **The sidebar is resizable and collapses into a vertical strip** showing the YAAC title, a + button, the history buttons, each project's name written vertically, and each thread's state icon; hovering an icon shows the full row; the mouse wheel scrolls it. | Owner |
 | D93 | **Archiving a thread removes its pin** (and its mute), and the sidebar has a collapsed **Archived** section under *Muted*. | Owner |
 | D92 | **Mute, pin, and dismiss are view preferences of the host, not facts about the thread.** The hub stores them on the user's computer, alongside drafts and window state; the daemon never hears of them, and a timed mute needs no timer — it is "hidden until this moment", checked when drawn. A second computer does not share them. *(Supersedes the "stored on the target" part of N32, N35, N40, and the daemon side of D90.)* | Owner |

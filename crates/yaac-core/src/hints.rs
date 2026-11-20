@@ -171,6 +171,8 @@ impl Hints {
             | ThreadEvent::ControlChanged(_)
             | ThreadEvent::SettingsChanged(_)
             | ThreadEvent::UsageUpdated(_)
+            | ThreadEvent::QueueChanged(_)
+            | ThreadEvent::HoldChanged(_)
             | ThreadEvent::Unknown(_) => return HintChange { applied: true, arrived: None },
         }
         self.stamp = stamp;

@@ -10,6 +10,8 @@ export type Step =
   | { k: "ask"; text: string; options: string[]; multi: boolean; secret: boolean }
   | { k: "plan"; steps: string[] }
   | { k: "stall" }
+  | { k: "deaf" }
+  | { k: "edit"; path: string }
   | { k: "sleep"; ms: number }
   | { k: "pace"; ms: number }
   | { k: "fail"; message: string }
@@ -78,6 +80,12 @@ export function parseScript(text: string): Script {
       }
       case "plan":
         steps.push({ k: "plan", steps: rest.split("|").map((s) => s.trim()).filter(Boolean) });
+        break;
+      case "deaf":
+        steps.push({ k: "deaf" });
+        break;
+      case "edit":
+        steps.push({ k: "edit", path: words[0] ?? "src/main.rs" });
         break;
       case "stall":
         steps.push({ k: "stall" });

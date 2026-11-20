@@ -4,8 +4,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Control, Epoch, Item, ItemId, RequestId, RequestResolution, RequestState, Seq, ThreadEffective,
-    ThreadId, Timestamp, TurnId,
+    Control, Epoch, Item, ItemId, QueuedMessage, RequestId, RequestResolution, RequestState, Seq,
+    ThreadEffective, ThreadHold, ThreadId, Timestamp, TurnId,
 };
 use crate::macros::{open_enum, open_union};
 
@@ -197,6 +197,42 @@ pub struct UsageUpdatedEvent {
     pub context: Option<ContextUsage>,
 }
 
+open_enum! {
+    /// What happened to a queued user message.
+    pub enum QueueChange fallback Unknown {
+        /// Queued.
+        Added = "added",
+        /// Edited.
+        Updated = "updated",
+        /// Cancelled (or dropped with its thread).
+        Removed = "removed",
+        /// Delivered: its turn started (`turnId`); it now appears as a user message.
+        Delivered = "delivered",
+    }
+}
+
+/// `queueChanged`: the thread's queue of user messages changed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueChangedEvent {
+    /// What happened.
+    pub change: QueueChange,
+    /// The message as it is now.
+    pub entry: QueuedMessage,
+    /// For `delivered`: the turn it started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<TurnId>,
+}
+
+/// `holdChanged`: the thread was stopped and held, or released.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HoldChangedEvent {
+    /// The hold; absent when released.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<ThreadHold>,
+}
+
 open_union! {
     /// A thread event.
     pub enum ThreadEvent tag "type" {
@@ -220,6 +256,10 @@ open_union! {
         SettingsChanged(SettingsChangedEvent) = "settingsChanged",
         /// Usage changed.
         UsageUpdated(UsageUpdatedEvent) = "usageUpdated",
+        /// The queue of user messages changed.
+        QueueChanged(QueueChangedEvent) = "queueChanged",
+        /// The thread was held or released.
+        HoldChanged(HoldChangedEvent) = "holdChanged",
     }
 }
 

@@ -52,6 +52,7 @@ export interface ClaudeSdk {
   forkSession(sessionId: string, options?: ForkSessionOptions): Promise<ForkSessionResult>;
   renameSession(sessionId: string, title: string, options?: SessionMutationOptions): Promise<void>;
   archiveSession(sessionId: string, options?: SessionMutationOptions): Promise<void>;
+  unarchiveSession(sessionId: string, options?: SessionMutationOptions): Promise<void>;
   deleteSession(sessionId: string, options?: SessionMutationOptions): Promise<void>;
 }
 
@@ -66,6 +67,7 @@ export async function loadRealSdk(): Promise<ClaudeSdk> {
     forkSession: (id, o) => sdk.forkSession(id, o),
     renameSession: (id, t, o) => sdk.renameSession(id, t, o),
     archiveSession: (id, o) => sdk.archiveSession(id, o),
+    unarchiveSession: (id, o) => sdk.unarchiveSession(id, o),
     deleteSession: (id, o) => sdk.deleteSession(id, o),
   };
 }

@@ -506,7 +506,8 @@ test("without any hub: same-target send, spawn, wait, read and stop work; cross-
     const read = await call(d, a, "read_thread", { thread: addressOf(d, child) });
     assert.match(read.text, /working on it/);
     const stop = await call(d, a, "stop_thread", { thread: addressOf(d, child) });
-    assert.match(stop.text, /^Interrupted/);
+    assert.match(stop.text, /Staller.*: stopped\./);
+    assert.match(stop.text, /held/);
     const w = await call(d, a, "wait", { threads: [addressOf(d, child)] });
     assert.match(w.text, /result from .*Staller/);
     assert.match(w.text, /interrupted/);
@@ -525,7 +526,7 @@ test("read_thread and stop_thread are limited to one's own orchestration", async
     assert.match(r.text, /only threads in your own orchestration/);
     const s = await call(d, a, "stop_thread", { thread: addressOf(d, stranger) });
     assert.equal(s.isError, true);
-    assert.match(s.text, /only on your own workers/);
+    assert.match(s.text, /only on threads beneath you/);
   } finally {
     await done();
   }

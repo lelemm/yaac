@@ -69,6 +69,7 @@ impl Daemons {
             .with_env("YAAC_HOME", home.join(".yaac"))
             .with_env("YAAC_SOCKET", self.root.join(format!("{name}.sock")))
             .with_env("YAAC_IDLE_TIMEOUT_MS", "3000")
+            .with_env("YAAC_MESH_WORKER_POLL_MS", "300")
             .with_env("HOME", &home)
     }
 }
@@ -478,4 +479,55 @@ fn a_window_cannot_inject_mesh_traffic_and_one_send_is_delivered_once() {
     wait_long("delivered", || m.kinds("beta", &recipient, "meshReceived").len() == 1);
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(m.kinds("beta", &recipient, "meshReceived").len(), 1);
+}
+
+/// Stopping a worker stops its whole subtree across machines and holds it: alpha's agent stops
+/// its worker on beta, which had spawned a worker back on alpha; each daemon checks the stop is
+/// from above, and the tool reports a real outcome per thread. Meanwhile the parent's workers
+/// item follows a remote worker's state live (needing the user, stopped), not only when its
+/// result arrives.
+#[test]
+fn a_stop_holds_the_whole_subtree_across_targets_and_the_workers_item_follows_remote_state() {
+    let Some(m) = Mesh::new(&["alpha", "beta"]) else { return };
+    let script = [
+        "Orchestrator".to_owned(),
+        format!(
+            "/fake mesh-spawn target=beta cwd={} title=Middle | /fake mesh-spawn target=alpha cwd={} title=Leaf | /fake stall\\n/fake stall",
+            m.work("beta"),
+            m.work("alpha")
+        ),
+        format!("/fake mesh-spawn target=beta cwd={} title=Asker | /fake approve make deploy", m.work("beta")),
+        "/fake sleep 2500".to_owned(),
+        "/fake mesh-stop $spawned1".to_owned(),
+        "/fake sleep 1500".to_owned(),
+    ]
+    .join("\n");
+    let a = m.start("alpha", &script);
+    let stops = m.until_tool("alpha", &a, "stop_thread", 1);
+    let (out, failed) = &stops[0];
+    assert!(!failed, "{out}");
+    assert!(out.contains("\"Middle\"") && out.contains("\"Leaf\""), "the whole subtree: {out}");
+    assert_eq!(out.matches(": stopped.").count(), 2, "a real outcome for each: {out}");
+    m.idle("alpha", &a);
+    // Each daemon holds its own part of the subtree.
+    let beta_threads = m.routed("beta", "thread/sync", json!({}));
+    let middle = beta_threads["changed"].as_array().unwrap().iter().find(|t| t["title"] == "Middle").cloned().expect("Middle on beta");
+    assert_eq!(middle["state"], "stopped", "{middle}");
+    assert!(middle["hold"]["by"].as_str().unwrap().ends_with(&a), "held by the orchestrator: {middle}");
+    let alpha_threads = m.routed("alpha", "thread/sync", json!({}));
+    let leaf = alpha_threads["changed"].as_array().unwrap().iter().find(|t| t["title"] == "Leaf").cloned().expect("Leaf on alpha");
+    assert_eq!(leaf["state"], "stopped", "{leaf}");
+    // The workers item on alpha follows the remote workers: one stopped, one needing the user.
+    wait_long("the workers item to follow beta", || {
+        let spawn = m.kinds("alpha", &a, "meshSpawn");
+        let states: Vec<String> =
+            spawn.iter().flat_map(|i| i["threads"].as_array().cloned().unwrap_or_default()).map(|t| t["state"].as_str().unwrap_or("").to_owned()).collect();
+        states.contains(&"stopped".to_owned()) && states.contains(&"needsAttention".to_owned())
+    });
+    // Nothing more runs in the held subtree: a stranger's message waits.
+    let stranger = m.start("alpha", &format!("/fake mesh-send {}/{} | /fake say hello", m.id("beta"), middle["id"].as_str().unwrap()));
+    m.until_tool("alpha", &stranger, "send_message", 1);
+    wait_long("the sender to be told it is stopped", || {
+        m.kinds("alpha", &stranger, "meshSent").iter().any(|i| i["receipt"]["reason"] == "stopped" && i["receipt"]["status"] == "queued")
+    });
 }

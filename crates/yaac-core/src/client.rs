@@ -45,6 +45,12 @@ pub mod hub_names {
     pub const THREADS_FIND: &str = "hub/threads/find";
     /// A target's cached projects were replaced.
     pub const PROJECTS_CHANGED: &str = "hub/projects/changed";
+    /// The hub's view preferences (pin, mute, dismiss: D92).
+    pub const VIEW_GET: &str = "hub/view/get";
+    /// Change one thread's view preferences.
+    pub const VIEW_SET: &str = "hub/view/set";
+    /// View preferences changed (from any window).
+    pub const VIEW_CHANGED: &str = "hub/view/changed";
     /// The window is newer than the hub.
     pub const HUB_OUTDATED: &str = "hub_outdated";
     /// The window is older than the hub.
@@ -73,6 +79,7 @@ enum Call {
     Projects(TargetId),
     ProjectCreate { target: TargetId, for_draft: Option<u64> },
     Find { query: String },
+    Views,
     Shutdown,
     TargetChanged,
     Ignore,
@@ -211,6 +218,7 @@ impl Client {
                 }
                 self.state.hub.build = Some(hello.build);
                 self.request(hub_names::SETTINGS_GET, json!({}), Call::HubSettings);
+                self.request(hub_names::VIEW_GET, json!({}), Call::Views);
                 let ids: Vec<(TargetId, bool)> =
                     hello.targets.iter().map(|t| (t.id.clone(), t.state.status == attach::ConnectionStatus::Connected)).collect();
                 self.state.set_targets(hello.targets);
@@ -257,6 +265,7 @@ impl Client {
                 };
                 self.state.fs_listings.insert((target, path), state);
             }
+            Call::Views => self.apply_views(&result),
             Call::HubSettings => {
                 self.state.hub.always = result.get("settings").and_then(|s| s.get("always")).and_then(Value::as_bool);
             }
@@ -390,10 +399,9 @@ impl Client {
                         archived: false,
                         repo: None,
                         git: None,
-                        muted: false,
-                        pinned: false,
                         agents: yaac_protocol::AgentsPolicy::default(),
                         native_id: None,
+                        hold: None,
                     };
                     self.state.upsert_summary(&draft.target, summary);
                 }
@@ -505,6 +513,7 @@ impl Client {
                     self.routed(&t, m::PROJECT_LIST, json!({}), Call::Projects(t.clone()));
                 }
             }
+            hub_names::VIEW_CHANGED => self.apply_views(&params),
             hub_names::INDEX_CHANGED => {
                 if let Some(t) = params.get("target").and_then(Value::as_str).map(TargetId::new) {
                     self.sync(&t);
@@ -812,9 +821,27 @@ impl Client {
         self.routed(&key.target, m::THREAD_UPDATE, params, Call::Ignore);
     }
 
-    /// Mute or unmute a thread (`thread/update`).
+    /// Applies `{ views: [...] }` (a `hub/view/get` result or a `hub/view/changed`).
+    fn apply_views(&mut self, value: &Value) {
+        for v in value.get("views").and_then(Value::as_array).into_iter().flatten() {
+            let (Some(t), Some(th)) = (v.get("target").and_then(Value::as_str), v.get("threadId").and_then(Value::as_str)) else { continue };
+            let flags = crate::state::ViewFlags {
+                pinned: v.get("pinned").and_then(Value::as_bool).unwrap_or(false),
+                muted: v.get("muted").and_then(Value::as_bool).unwrap_or(false),
+            };
+            let key = ThreadKey::new(t, th);
+            if flags == crate::state::ViewFlags::default() {
+                self.state.view.remove(&key);
+            } else {
+                self.state.view.insert(key, flags);
+            }
+        }
+    }
+
+    /// Mute or unmute a thread: a view preference kept by the hub (`hub/view/set`, D92).
     pub fn set_muted(&mut self, key: &ThreadKey, muted: bool) {
-        self.update_thread(key, json!({ "muted": muted }), |s| s.muted = muted);
+        self.state.view.entry(key.clone()).or_default().muted = muted;
+        self.request(hub_names::VIEW_SET, json!({ "target": key.target, "threadId": key.thread, "muted": muted }), Call::Ignore);
     }
 
     /// Archive a thread (`thread/archive`, under `threadArchive`). Archived threads leave the
@@ -832,9 +859,10 @@ impl Client {
         self.routed(&key.target, m::THREAD_RENAME, params, Call::Ignore);
     }
 
-    /// Pin or unpin a thread (`thread/update`).
+    /// Pin or unpin a thread: a view preference kept by the hub (`hub/view/set`, D92).
     pub fn set_pinned(&mut self, key: &ThreadKey, pinned: bool) {
-        self.update_thread(key, json!({ "pinned": pinned }), |s| s.pinned = pinned);
+        self.state.view.entry(key.clone()).or_default().pinned = pinned;
+        self.request(hub_names::VIEW_SET, json!({ "target": key.target, "threadId": key.thread, "pinned": pinned }), Call::Ignore);
     }
 
     /// Create a project from a folder on a target (`project/create`). Once created, the draft

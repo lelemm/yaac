@@ -259,6 +259,15 @@ pub enum FsListingState {
     Failed(String),
 }
 
+/// A thread's view preferences (D92).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ViewFlags {
+    /// Pinned.
+    pub pinned: bool,
+    /// Muted.
+    pub muted: bool,
+}
+
 /// Everything the window shows, as data.
 #[derive(Clone, Debug, Default)]
 pub struct AppState {
@@ -270,6 +279,10 @@ pub struct AppState {
     pub threads: BTreeMap<ThreadKey, ThreadRecord>,
     /// Hints per thread.
     pub hints: BTreeMap<ThreadKey, Hints>,
+    /// Pin and mute per thread: the host's view preferences (D92), kept by the hub
+    /// (`hub/view/*`), no longer on the summary. SEAM: loaded from `hub/view/get` and
+    /// `hub/view/changed` by the window package; set locally here meanwhile.
+    pub view: BTreeMap<ThreadKey, ViewFlags>,
     /// Transcripts held in memory: the open thread plus a small least-recently-used set.
     pub transcripts: BTreeMap<ThreadKey, Transcript>,
     /// Most recent first; bounds `transcripts`.
@@ -532,12 +545,12 @@ impl AppState {
 
     /// Whether a thread is muted.
     pub fn is_muted(&self, key: &ThreadKey) -> bool {
-        self.summary(key).is_some_and(|s| s.muted)
+        self.view.get(key).is_some_and(|v| v.muted)
     }
 
     /// Whether a thread is pinned.
     pub fn is_pinned(&self, key: &ThreadKey) -> bool {
-        self.summary(key).is_some_and(|s| s.pinned)
+        self.view.get(key).is_some_and(|v| v.pinned)
     }
 
     /// The project a thread belongs to, if any: the user project its target resolved

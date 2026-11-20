@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Address, Capability, EffortId, EffortInfo, InputPart, InstanceId, ModeId, ModeInfo, ModelId, OpId,
-    ProjectId, Support, SyncToken, TargetPath, ThreadId, Timestamp, TurnId,
+    PageCursor, ProjectId, Support, SyncToken, TargetPath, ThreadId, Timestamp, TurnId,
 };
 use crate::macros::open_enum;
 
@@ -25,7 +25,36 @@ open_enum! {
         Waiting = "waiting",
         /// A thread started by an agent whose last turn completed normally: its work is done.
         Done = "done",
+        /// Stopped and held (docs/10-agent-mesh.md#stopping-workers): it does not start again
+        /// by itself. `ThreadSummary.hold` says who stopped it.
+        Stopped = "stopped",
     }
+}
+
+open_enum! {
+    /// How a message reaches a thread that is running a turn
+    /// (docs/10-agent-mesh.md#queued-or-now).
+    pub enum Delivery fallback Unknown {
+        /// Wait for the running turn to end.
+        Queue = "queue",
+        /// Reach it now: steered into the running turn where the harness can steer, otherwise
+        /// the running turn is interrupted and a new one starts with the message.
+        Now = "now",
+    }
+}
+
+/// A thread that was stopped and is held: it starts again only when the one who stopped it,
+/// or the user, sends it a message, or the user resumes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadHold {
+    /// The agent that stopped it; absent when the user did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Address>,
+    /// Who stopped it, for "Stopped by …".
+    pub label: String,
+    /// When.
+    pub at: Timestamp,
 }
 
 open_enum! {
@@ -263,16 +292,13 @@ pub struct ThreadSummary {
     /// Archived.
     #[serde(default)]
     pub archived: bool,
-    /// Muted: out of the main list, still working. Stored on the target.
-    #[serde(default)]
-    pub muted: bool,
-    /// Pinned: listed in the Pinned section. Stored on the target.
-    #[serde(default)]
-    pub pinned: bool,
     /// This chat's agents policy. Meaningful on a root thread; workers act under their
     /// root's answer.
     #[serde(default)]
     pub agents: AgentsPolicy,
+    /// Set while the thread is stopped and held (state `stopped`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<ThreadHold>,
 }
 
 /// The model / effort / mode the harness reports it is **actually** using.
@@ -567,7 +593,8 @@ pub struct ThreadArchiveParams {
     pub thread_id: ThreadId,
 }
 
-/// `thread/update`: YAAC's own flags and settings of a thread — not the harness's. A patch:
+/// `thread/update`: YAAC's own settings of a thread — not the harness's, and not the host's view
+/// preferences (pin, mute, dismiss live in the hub: D92). A patch:
 /// absent fields are unchanged. Stored on the target; the change is pushed as `thread/updated`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -576,15 +603,13 @@ pub struct ThreadUpdateParams {
     pub op_id: OpId,
     /// The thread.
     pub thread_id: ThreadId,
-    /// Mute or unmute.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub muted: Option<bool>,
-    /// Pin or unpin.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pinned: Option<bool>,
     /// The chat's agents policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents: Option<AgentsPolicy>,
+    /// `false`: resume a stopped thread (release its hold) without sending it anything.
+    /// `true`: hold it (it starts nothing by itself until released).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<bool>,
 }
 
 /// `thread/update` result.
@@ -626,14 +651,88 @@ pub struct TurnStartParams {
     /// Mode override (under `modes`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<ModeId>,
+    /// What to do while a turn is running (docs/07-ui.md#composer). Absent: refuse with
+    /// `turn_in_progress`, as before. `queue`: kept by `yaacd` (durably, in order, ahead of
+    /// queued agent messages) and delivered when the turn ends. `now`: steered into the
+    /// running turn under `steer`, otherwise the turn is interrupted and a new one starts with
+    /// it. While the thread waits on a request for the user, only `queue` is accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Delivery>,
+}
+
+open_enum! {
+    /// What `turn/start` did.
+    pub enum TurnStartOutcome fallback Unknown {
+        /// A new turn started (`turnId`).
+        Started = "started",
+        /// Queued behind the running turn (`queueId`); `turnId` is empty.
+        Queued = "queued",
+        /// Added to the running turn (`turnId` is that turn).
+        Steered = "steered",
+        /// The running turn was interrupted and a new one started with the message (`turnId`).
+        InterruptedAndStarted = "interruptedAndStarted",
+    }
 }
 
 /// `turn/start` result.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnStartResult {
-    /// The new turn.
+    /// The new turn (the running turn when steered; empty when queued).
     pub turn_id: TurnId,
+    /// What happened; absent from a `yaacd` that predates `delivery` (then: started).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<TurnStartOutcome>,
+    /// The queued message, when queued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_id: Option<String>,
+}
+
+/// A user message waiting in a thread's queue for the running turn to end.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedMessage {
+    /// Its id in the queue.
+    pub queue_id: String,
+    /// The message.
+    pub input: Vec<InputPart>,
+    /// When it was queued.
+    pub queued_at: Timestamp,
+    /// Model override for the turn it starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelId>,
+    /// Effort override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<EffortId>,
+    /// Mode override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ModeId>,
+}
+
+/// `turn/queueEdit`: replace a queued message's text and attachments before it is delivered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnQueueEditParams {
+    /// Operation id.
+    pub op_id: OpId,
+    /// The thread.
+    pub thread_id: ThreadId,
+    /// The queued message.
+    pub queue_id: String,
+    /// The new message.
+    pub input: Vec<InputPart>,
+}
+
+/// `turn/queueCancel`: remove a queued message before it is delivered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnQueueCancelParams {
+    /// Operation id.
+    pub op_id: OpId,
+    /// The thread.
+    pub thread_id: ThreadId,
+    /// The queued message.
+    pub queue_id: String,
 }
 
 /// `turn/interrupt`. Takes the turn id, so a late Stop can never hit the next turn.
@@ -644,6 +743,10 @@ pub struct TurnInterruptParams {
     pub thread_id: ThreadId,
     /// The turn to stop.
     pub turn_id: TurnId,
+    /// Also hold the thread (state `stopped`): queued messages and agent messages wait until
+    /// the user sends it a message or resumes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<bool>,
 }
 
 /// `turn/steer` (under `steer`): add input to the running turn.
@@ -658,4 +761,129 @@ pub struct TurnSteerParams {
     pub turn_id: TurnId,
     /// The input to add.
     pub input: Vec<InputPart>,
+}
+
+// ── Discovery: caps, older threads, lookup by id, dismiss all ─────────────────────────────
+
+/// The discovery caps of a target (docs/05-threads.md#discovery-is-capped-by-age-and-by-number).
+/// A conversation YAAC did not create is indexed only if it was active within `maxAgeDays` and
+/// is among the `maxThreads` most recent of its provider instance. 0 turns that cap off.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryCaps {
+    /// Whether the caps apply at all.
+    pub enabled: bool,
+    /// Age cap, in days of inactivity (0: none).
+    pub max_age_days: u32,
+    /// Number cap, per provider instance (0: none).
+    pub max_threads: u32,
+}
+
+impl Default for DiscoveryCaps {
+    /// The documented defaults: 30 days, 50 per instance.
+    fn default() -> Self {
+        Self { enabled: true, max_age_days: 30, max_threads: 50 }
+    }
+}
+
+/// A change to the caps. Absent fields are unchanged.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryCapsUpdate {
+    /// See [`DiscoveryCaps`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// See [`DiscoveryCaps`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age_days: Option<u32>,
+    /// See [`DiscoveryCaps`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_threads: Option<u32>,
+}
+
+/// `discovery/caps`: read the caps, and change them when `update` is present (then `opId` is
+/// required). A change rescans every instance by the new caps.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryCapsParams {
+    /// Operation id, required with `update`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op_id: Option<OpId>,
+    /// The change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<DiscoveryCapsUpdate>,
+}
+
+/// `discovery/caps` result, and the `discovery/updated` notification.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryCapsResult {
+    /// The caps in force.
+    pub caps: DiscoveryCaps,
+}
+
+/// `thread/older`: conversations beyond the discovery caps, newest first, a page at a time
+/// ("Show older", "Search older threads on …"). Not indexed unless opened, pinned, or active.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadOlderParams {
+    /// Only this provider instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<InstanceId>,
+    /// Only threads of the project with this folder (`ProjectRef.path`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<TargetPath>,
+    /// Only threads whose title contains these words, or whose id starts with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// From a previous page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<PageCursor>,
+    /// Page size (default 20, at most 100).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+/// `thread/older` result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadOlderResult {
+    /// Summaries, newest first. Their ids work with every thread method.
+    #[serde(default)]
+    pub threads: Vec<ThreadSummary>,
+    /// The next page, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<PageCursor>,
+}
+
+/// `thread/lookup`: find a thread by id — the YAAC thread id or the harness's own
+/// conversation id — asking the harness directly when the index does not have it, and bringing
+/// it into the index.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadLookupParams {
+    /// The id.
+    pub id: String,
+    /// Only this provider instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<InstanceId>,
+}
+
+/// `thread/lookup` result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadLookupResult {
+    /// The threads with that id (normally one).
+    #[serde(default)]
+    pub threads: Vec<ThreadSummary>,
+}
+
+/// `thread/keep`: the threads the user keeps on the host (pinned or muted there). The discovery
+/// caps never cut them. Replaces the previous set; the daemon learns nothing about why.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadKeepParams {
+    /// Every thread to keep.
+    #[serde(default)]
+    pub thread_ids: Vec<ThreadId>,
 }

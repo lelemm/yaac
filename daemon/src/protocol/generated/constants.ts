@@ -8,6 +8,8 @@ import type {
   DaemonHandoverResult,
   DaemonStatusResult,
   DiagnosticsGetResult,
+  DiscoveryCapsParams,
+  DiscoveryCapsResult,
   Empty,
   FsListParams,
   FsListResult,
@@ -56,6 +58,11 @@ import type {
   ThreadForkPreviewParams,
   ThreadForkPreviewResult,
   ThreadForkResult,
+  ThreadKeepParams,
+  ThreadLookupParams,
+  ThreadLookupResult,
+  ThreadOlderParams,
+  ThreadOlderResult,
   ThreadReadParams,
   ThreadReadResult,
   ThreadRemovedParams,
@@ -71,6 +78,8 @@ import type {
   ThreadUpdateResult,
   ThreadUpdatedParams,
   TurnInterruptParams,
+  TurnQueueCancelParams,
+  TurnQueueEditParams,
   TurnStartParams,
   TurnStartResult,
   TurnSteerParams,
@@ -130,9 +139,17 @@ export const METHODS = {
   THREAD_UPDATE: "thread/update",
   THREAD_FORK_ONLY: "thread/forkOnly",
   ITEM_READ: "item/read",
+  THREAD_UNARCHIVE: "thread/unarchive",
+  THREAD_KEEP: "thread/keep",
+  THREAD_LOOKUP: "thread/lookup",
+  THREAD_OLDER: "thread/older",
+  DISCOVERY_CAPS: "discovery/caps",
   TURN_START: "turn/start",
   TURN_INTERRUPT: "turn/interrupt",
   TURN_STEER: "turn/steer",
+  TURN_QUEUE_EDIT: "turn/queueEdit",
+  TURN_QUEUE_CANCEL: "turn/queueCancel",
+  TURN_QUEUE_PROMOTE: "turn/queuePromote",
   REQUEST_RESPOND: "request/respond",
   UPLOAD_BEGIN: "upload/begin",
   UPLOAD_END: "upload/end",
@@ -161,6 +178,7 @@ export const NOTIFICATIONS = {
   THREAD_REMOVED: "thread/removed",
   THREAD_EVENT: "thread/event",
   PROJECT_UPDATED: "project/updated",
+  DISCOVERY_UPDATED: "discovery/updated",
   STREAM_CREDIT: "stream/credit",
 } as const;
 
@@ -254,18 +272,34 @@ export interface RequestMap {
   "thread/archive": { params: ThreadArchiveParams; result: Empty };
   /** Delete a thread (under `threadDelete`). */
   "thread/delete": { params: ThreadDeleteParams; result: Empty };
-  /** Set YAAC's own flags and settings of a thread (mute, pin, agents policy). A patch. */
+  /** Set YAAC's own settings of a thread (the agents policy, a hold). A patch. */
   "thread/update": { params: ThreadUpdateParams; result: ThreadUpdateResult };
   /** Create a new thread from an existing one without a first message. */
   "thread/forkOnly": { params: ThreadForkOnlyParams; result: ThreadForkOnlyResult };
   /** A byte range of one item's full output (a tool call's output beyond its inline head). */
   "item/read": { params: ItemReadParams; result: ItemReadResult };
+  /** Unarchive a thread (under `threadArchive`), with the harness's own unarchive. */
+  "thread/unarchive": { params: ThreadArchiveParams; result: Empty };
+  /** The threads the host keeps (pinned or muted there): never cut by the discovery caps. */
+  "thread/keep": { params: ThreadKeepParams; result: Empty };
+  /** Find a thread by id, asking the harness when the index does not have it. */
+  "thread/lookup": { params: ThreadLookupParams; result: ThreadLookupResult };
+  /** A page of conversations beyond the discovery caps, newest first. */
+  "thread/older": { params: ThreadOlderParams; result: ThreadOlderResult };
+  /** Read, and optionally change, the target's discovery caps. */
+  "discovery/caps": { params: DiscoveryCapsParams; result: DiscoveryCapsResult };
   /** Send a user message to an existing thread. */
   "turn/start": { params: TurnStartParams; result: TurnStartResult };
   /** Stop a turn, by turn id. */
   "turn/interrupt": { params: TurnInterruptParams; result: Empty };
   /** Add input to the running turn (under `steer`). */
   "turn/steer": { params: TurnSteerParams; result: Empty };
+  /** Replace a queued user message before it is delivered. */
+  "turn/queueEdit": { params: TurnQueueEditParams; result: Empty };
+  /** Cancel a queued user message before it is delivered. */
+  "turn/queueCancel": { params: TurnQueueCancelParams; result: Empty };
+  /** Send a queued user message now ("Send now"): out of the queue, with `now` mechanics. */
+  "turn/queuePromote": { params: TurnQueueCancelParams; result: TurnStartResult };
   /** Answer a pending approval, question, or form. */
   "request/respond": { params: RequestRespondParams; result: Empty };
   /** Declare an upload; returns its id and data stream, or that the content exists. */
@@ -318,6 +352,8 @@ export interface NotificationMap {
   "thread/event": ThreadEventParams;
   /** The project list changed (created, renamed, deleted); carries every project. */
   "project/updated": ProjectListResult;
+  /** The discovery caps changed. */
+  "discovery/updated": DiscoveryCapsResult;
   /** The receiver of a data stream grants more credit. */
   "stream/credit": StreamCreditParams;
 }
@@ -365,9 +401,17 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "thread/update": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/forkOnly": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "item/read": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
+  "thread/unarchive": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "thread/keep": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "thread/lookup": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "thread/older": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
+  "discovery/caps": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "turn/start": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "turn/interrupt": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "turn/steer": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "turn/queueEdit": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "turn/queueCancel": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "turn/queuePromote": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "request/respond": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "upload/begin": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "upload/end": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
@@ -402,5 +446,6 @@ export const NOTIFICATION_INFO: { readonly [N in keyof NotificationMap]: Notific
   "thread/removed": { direction: "daemonToHost", class: "control" },
   "thread/event": { direction: "daemonToHost", class: "control" },
   "project/updated": { direction: "daemonToHost", class: "control" },
+  "discovery/updated": { direction: "daemonToHost", class: "control" },
   "stream/credit": { direction: "both", class: "control" },
 };

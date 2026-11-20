@@ -21,6 +21,7 @@ fn message(id: &str, from: &TargetId, to: &TargetId) -> MeshMessage {
         sent_at: Timestamp::new("2026-01-01T00:00:00Z"),
         seq: 1,
         root: None,
+        delivery: None,
     }
 }
 

@@ -69,6 +69,7 @@ pub fn undelivered_notice(message: &MeshMessage, waited: std::time::Duration) ->
         sent_at: yaac_protocol::Timestamp::new(now_rfc3339()),
         seq: 0,
         root: message.root.clone(),
+        delivery: None,
     }
 }
 
@@ -129,7 +130,7 @@ fn now_ms() -> i64 {
 
 /// A receipt.
 pub fn receipt(status: ReceiptStatus, reason: Option<ReceiptReason>, detail: Option<String>) -> Receipt {
-    Receipt { status, reason, detail }
+    Receipt { status, reason, detail, handling: None }
 }
 
 impl RelayQueue {

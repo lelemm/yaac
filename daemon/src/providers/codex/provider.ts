@@ -33,6 +33,8 @@ import type {
   MeshHooks,
   NativeId,
   PageRequest,
+  ScanRequest,
+  NativeThreadInfo,
   ProbeResult,
   ProviderContext,
   ProviderEvent,
@@ -216,6 +218,8 @@ export class CodexProvider implements HarnessProvider {
   private readonly plan: EndpointPlan;
   private readonly exec: Exec;
   private conn: CodexConnection | null = null;
+  /** Whether the daemon of the current connection was found running or started by yaacd. */
+  private backendOrigin: "foundRunning" | "startedByYaac" | null = null;
   private connecting: Promise<CodexConnection> | null = null;
   private gen = 0;
   private init: InitializeResponse | null = null;
@@ -314,6 +318,7 @@ export class CodexProvider implements HarnessProvider {
       throw new Error(result.message);
     }
     const conn = result.connection;
+    this.backendOrigin = result.started ? "startedByYaac" : "foundRunning";
     let init: InitializeResponse;
     try {
       init = await conn.initialize(
@@ -577,6 +582,7 @@ export class CodexProvider implements HarnessProvider {
       models,
       modelsComplete: complete,
       modes: CODEX_MODES.map(modeInfo),
+      ...(this.backendOrigin ? { backendOrigin: this.backendOrigin } : {}),
     };
   }
 
@@ -611,14 +617,19 @@ export class CodexProvider implements HarnessProvider {
 
   // ── Thread index ─────────────────────────────────────────────────────────────────────────
 
-  async scanThreads(page: PageRequest): Promise<ThreadPage> {
+  async scanThreads(page: ScanRequest): Promise<ThreadPage> {
     const conn = await this.ensure();
-    // Cursor: which listing (active, then archived) and Codex's own cursor within it.
+    // Cursor: which listing (active, then archived), Codex's own cursor within it, and how
+    // many of that listing were returned (for the discovery caps' `max`).
     const state = decodeCursor(page.cursor);
     const params: Record<string, unknown> = {
       limit: page.limit ?? 100,
       sourceKinds: this.sourceKinds,
       archived: state.archived,
+      // Newest first by last activity, so the discovery caps can stop early.
+      sortKey: "updated_at",
+      sortDirection: "desc",
+      ...(page.search ? { searchTerm: page.search } : {}),
       ...(state.cursor ? { cursor: state.cursor } : {}),
     };
     let res: Paged<Thread>;
@@ -631,15 +642,42 @@ export class CodexProvider implements HarnessProvider {
       this.sourceKinds = this.sourceKinds.filter((k) => allowed.includes(k));
       res = (await conn.request("thread/list", { ...params, sourceKinds: this.sourceKinds })) as Paged<Thread>;
     }
-    const threads = (res.data ?? []).map((t) => {
+    let threads = (res.data ?? []).map((t) => {
       const st = this.state(t.id);
       if (t.status && !st.subscribed) st.status = t.status;
       return threadInfo(t, state.archived);
     });
+    // The discovery caps: this listing ends at the first conversation too old, or at `max`.
+    let ended = false;
+    if (page.activeSince) {
+      const i = threads.findIndex((t) => t.updatedAt < page.activeSince!);
+      if (i >= 0) {
+        threads = threads.slice(0, i);
+        ended = true;
+      }
+    }
+    const count = (state.count ?? 0) + threads.length;
+    if (page.max && count >= page.max) {
+      threads = threads.slice(0, Math.max(0, page.max - (state.count ?? 0)));
+      ended = true;
+    }
     let next: string | null = null;
-    if (res.nextCursor) next = encodeCursor({ archived: state.archived, cursor: res.nextCursor });
-    else if (!state.archived) next = encodeCursor({ archived: true, cursor: null });
+    if (res.nextCursor && !ended) next = encodeCursor({ archived: state.archived, cursor: res.nextCursor, count });
+    else if (!state.archived) next = encodeCursor({ archived: true, cursor: null, count: 0 });
     return { threads, cursor: next, complete: true };
+  }
+
+  async lookupThread(native: NativeId): Promise<NativeThreadInfo | null> {
+    let t: Thread;
+    try {
+      t = await this.readThreadMeta(native);
+    } catch {
+      return null;
+    }
+    // `thread/read` does not say whether the thread is archived.
+    const info = threadInfo(t, false);
+    delete info.archived;
+    return info;
   }
 
   // ── History ──────────────────────────────────────────────────────────────────────────────
@@ -984,6 +1022,11 @@ export class CodexProvider implements HarnessProvider {
     await conn.request("thread/archive", { threadId: thread });
   }
 
+  async unarchive(thread: NativeId): Promise<void> {
+    const conn = await this.ensure();
+    await conn.request("thread/unarchive", { threadId: thread });
+  }
+
   async remove(thread: NativeId): Promise<void> {
     const conn = await this.ensure();
     await conn.request("thread/delete", { threadId: thread });
@@ -1272,6 +1315,7 @@ export function storeKey(codexHome: string): string {
 interface ScanCursor {
   archived: boolean;
   cursor: string | null;
+  count?: number;
 }
 
 function encodeCursor(c: ScanCursor): string {
@@ -1282,7 +1326,7 @@ function decodeCursor(s: string | null | undefined): ScanCursor {
   if (!s) return { archived: false, cursor: null };
   try {
     const c = JSON.parse(s) as ScanCursor;
-    return { archived: !!c.archived, cursor: typeof c.cursor === "string" ? c.cursor : null };
+    return { archived: !!c.archived, cursor: typeof c.cursor === "string" ? c.cursor : null, count: typeof c.count === "number" ? c.count : 0 };
   } catch {
     return { archived: false, cursor: null };
   }

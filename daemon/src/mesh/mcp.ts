@@ -20,7 +20,9 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import type { MeshToolCall, MeshToolResult } from "../providers/types.js";
 import { SERVER_INSTRUCTIONS, SERVER_NAME, TOOLS, TOOL_NAMES } from "./tools.js";
 
-export const BRIDGE_MAGIC = Buffer.from("YMCP", "ascii");
+import { BRIDGE_MAGIC, readable } from "./link.js";
+
+export { BRIDGE_MAGIC, readable };
 
 export type ToolCaller = (call: MeshToolCall) => Promise<MeshToolResult>;
 
@@ -44,12 +46,6 @@ export function createMeshServer(call: ToolCaller, version = "1"): McpServer {
     return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) };
   });
   return mcp;
-}
-
-/** An error as one readable line for an agent: never a stack trace. */
-export function readable(e: unknown): string {
-  const m = (e as { message?: unknown })?.message;
-  return typeof m === "string" && m ? m : "the yaac tool failed";
 }
 
 // ── Daemon side of the bridge link ─────────────────────────────────────────────────────────

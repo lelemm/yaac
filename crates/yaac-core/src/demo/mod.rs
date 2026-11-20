@@ -257,6 +257,30 @@ impl Inner {
                 self.ready.push_back(result(id, json!({})));
             }
             crate::client::hub_names::CACHE_CLEAR => self.ready.push_back(result(id, json!({}))),
+            crate::client::hub_names::VIEW_GET => {
+                let views: Vec<Value> = self
+                    .fleet
+                    .view
+                    .iter()
+                    .map(|(k, (pinned, muted))| json!({ "target": k.target, "threadId": k.thread, "pinned": pinned, "muted": muted }))
+                    .collect();
+                self.ready.push_back(result(id, json!({ "views": views })));
+            }
+            crate::client::hub_names::VIEW_SET => {
+                let (Some(t), Some(th)) = (params.get("target").and_then(Value::as_str), params.get("threadId").and_then(Value::as_str)) else {
+                    self.ready.push_back(error(id, ErrorCode::InvalidParams, "target and threadId"));
+                    return;
+                };
+                let entry = self.fleet.view.entry(ThreadKey::new(t, th)).or_default();
+                if let Some(p) = params.get("pinned").and_then(Value::as_bool) {
+                    entry.0 = p;
+                }
+                if let Some(m) = params.get("muted").and_then(Value::as_bool) {
+                    entry.1 = m;
+                }
+                let (pinned, muted) = *entry;
+                self.ready.push_back(result(id, json!({ "view": { "target": t, "threadId": th, "pinned": pinned, "muted": muted } })));
+            }
             crate::client::hub_names::THREADS_FIND => self.find(id, &params),
             crate::client::hub_names::SETTINGS_GET | crate::client::hub_names::SETTINGS_UPDATE => {
                 if let Some(a) = params.get("always").and_then(Value::as_bool) {
@@ -514,12 +538,6 @@ impl Inner {
                     self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
                     return;
                 };
-                if let Some(v) = p.get("muted").and_then(Value::as_bool) {
-                    t.summary.muted = v;
-                }
-                if let Some(v) = p.get("pinned").and_then(Value::as_bool) {
-                    t.summary.pinned = v;
-                }
                 if let Some(v) = p.get("agents").and_then(|v| serde_json::from_value::<yaac_protocol::AgentsPolicy>(v.clone()).ok()) {
                     t.summary.agents = v;
                 }

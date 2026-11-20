@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use yaac_protocol::{
-    ContextUsage, Control, DeltaField, Item, ItemBody, QuestionAnswer, RequestBody, RequestResponse,
-    ThreadEffective, ThreadSubscribeResult, TokenUsage, TurnId, TurnStatus,
+    ContextUsage, Control, DeltaField, Item, ItemBody, QueueChange, QueueChangedEvent, QueuedMessage, QuestionAnswer, RequestBody,
+    RequestResponse, ThreadEffective, ThreadHold, ThreadSubscribeResult, TokenUsage, TurnId, TurnStatus,
 };
 
 /// Thread-level state the events carry besides items: control, the running turn, effective
@@ -34,6 +34,25 @@ pub struct LiveState {
     /// The last turn that ended, and how.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_turn: Option<(TurnId, TurnStatus)>,
+    /// User messages queued behind the running turn, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub queued: Vec<QueuedMessage>,
+    /// Set while the thread is stopped and held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hold: Option<ThreadHold>,
+}
+
+/// Applies a `queueChanged` event to a queue.
+pub fn apply_queue(queue: &mut Vec<QueuedMessage>, e: &QueueChangedEvent) {
+    let i = queue.iter().position(|q| q.queue_id == e.entry.queue_id);
+    match (&e.change, i) {
+        (QueueChange::Added, None) => queue.push(e.entry.clone()),
+        (QueueChange::Added | QueueChange::Updated, Some(i)) => queue[i] = e.entry.clone(),
+        (QueueChange::Removed | QueueChange::Delivered, Some(i)) => {
+            queue.remove(i);
+        }
+        _ => {}
+    }
 }
 
 impl LiveState {
@@ -44,6 +63,8 @@ impl LiveState {
             control_holder: subscribed.control_holder.clone(),
             active_turn: subscribed.active_turn.clone(),
             effective: subscribed.effective.clone(),
+            queued: subscribed.queued.clone().unwrap_or_default(),
+            hold: subscribed.hold.clone(),
             ..Self::default()
         }
     }

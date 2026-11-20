@@ -285,6 +285,8 @@ pub fn receipt_text(
             Some(ReceiptReason::LimitExceeded) => "a mesh limit was exceeded.".to_owned(),
             Some(ReceiptReason::PolicyDenied) => "the mesh policy refused it.".to_owned(),
             Some(ReceiptReason::RemoteDisallowed) => format!("{target_name} does not accept messages from other machines."),
+            Some(ReceiptReason::Stopped) => "The thread was stopped; it waits until its stopper or the user messages it.".to_owned(),
+            Some(ReceiptReason::NotBeneathSender) => "Sent as queued: `now` is only for threads beneath the sender.".to_owned(),
             Some(ReceiptReason::Unknown(s)) => s.clone(),
             None => String::new(),
         }

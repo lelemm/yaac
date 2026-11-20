@@ -30,3 +30,19 @@ await build({
   },
   define: { __YAAC_BUILD__: JSON.stringify(build_id) },
 });
+
+// `yaacd mcp` as its own small bundle: one runs per live Codex thread, so it holds only the
+// hand-written MCP loop, the tool definitions, and the socket link (no SDK, no providers).
+await build({
+  entryPoints: [join(root, "src/mcp-main.ts")],
+  outfile: join(root, "dist/yaacd-mcp.mjs"),
+  bundle: true,
+  platform: "node",
+  target: "node22",
+  format: "esm",
+  sourcemap: false,
+  legalComments: "none",
+  logLevel: "warning",
+  minify: true,
+  banner: { js: "#!/usr/bin/env node" },
+});
