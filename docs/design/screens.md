@@ -38,7 +38,11 @@ a per-chat agents toggle with a permission prompt are added.
     one between the thread and the agents panel. Sections inside a panel are separated by
     space and a small heading, not by rules or boxes.
 - **Icons are real icons.** Every icon comes from one small icon set embedded in the app, drawn
-  as vector shapes at the text's size. Unicode symbols and emoji are never used as icons —
+  as vector shapes at the text's size. The one exception is the **harness marks**: each
+  provider is shown with its **real logo** (the Codex mark, the Claude mark), embedded as a
+  vector asset from the vendor's official brand material and drawn monochrome at icon size; a
+  provider with no logo gets its initial in a circle. Which logo belongs to which provider is a
+  lookup table, not a branch in UI code. Unicode symbols and emoji are never used as icons —
   they render differently on every machine.
 - **Fewer marks.** If an icon repeats on every row, it is decoration: remove it. No avatar
   beside each message, no icon before every tool line, no chevron on things that do not
@@ -166,7 +170,8 @@ closer to a mail client's message list than to a file explorer.
   - **Line 2**, smaller, aligned under the title: what the thread is working on in git, **as
     compactly as it can be said**, with **real icons and the colours every git tool uses** —
     never Unicode stand-ins such as Δ or ↑:
-    - a small **branch icon** and the branch name, in secondary text;
+    - the thread's **harness logo**, small, then a **branch icon** and the branch name, in
+      secondary text; a thread outside git still shows the logo, alone on line 2;
     - then the files that differ from origin, each kind as a tiny icon and a number in its
       colour: **added** (a plus in a small square, green), **modified** (a dot in a small
       square, soft yellow), **deleted** (a minus in a small square, red);
