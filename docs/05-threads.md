@@ -1,0 +1,428 @@
+# 05 — Threads
+
+## Identity
+
+**Decided.** A thread is exactly one conversation in exactly one provider instance.
+
+```
+thread  ≡  ( target , provider instance , native conversation id )
+```
+
+The **native conversation id** is whatever the harness itself uses to resume that exact
+conversation. It is not always the field called "session id":
+
+| Harness | Native conversation id | Not this |
+| --- | --- | --- |
+| Codex | `Thread.id` | `Thread.sessionId` — shared by every thread in a session tree |
+| Claude Code | the session id | — |
+
+YAAC does not mint its own conversation ids. The thread id on the wire is an opaque string that
+`yaacd` builds from the instance, that instance's store binding, and the native id — so the
+same native id under a different Codex home is a different thread id. Because the identity *is* the harness
+conversation, the one-to-one rule cannot be broken by a bookkeeping bug.
+
+What follows from that:
+
+- **The provider of a thread never changes.** There is no operation that could do it.
+- **The model can change**, as long as it belongs to the same provider instance and the thread's
+  effective capabilities include `ModelSwitch`. The session is untouched.
+- **Effort can change** the same way, under `EffortSwitch`.
+- **To change provider, fork.**
+
+A thread that has not sent its first message is a **draft**. Drafts exist only on the host.
+The thread is created together with its first message (`thread/start`), so an abandoned draft
+leaves nothing behind in the harness. Until then, its project and provider instance are still
+editable; after it, they are fixed. A new thread is started in the root of its project's
+folder — the user picks a project, not a path.
+
+### Binding a thread to an instance
+
+With several instances of one kind on a target, "which instance does this thread belong to?"
+needs a real answer, because two instances may share one conversation store.
+
+- `yaacd` records an **immutable binding** for every thread it creates: the instance, and that
+  instance's [store identity](04-providers.md#an-instance-has-a-store-identity) at the time.
+- A thread discovered through listing is bound to the instance that reported it. If two
+  instances report the same conversation (same kind, same store), it appears **once**; the
+  other instance is recorded as also able to see it.
+- *Seeing* a thread and *driving* it are tracked separately. Only one process can be a
+  conversation's writer at a time.
+- If an instance's endpoint is edited and now leads to a different store, its threads are not
+  re-pointed. They show as unavailable until the user confirms the change.
+
+## Thread summary
+
+What the sidebar needs, and what the cache stores per thread:
+
+```rust
+pub struct ThreadSummary {
+    pub id: ThreadId,
+    pub instance: InstanceId,
+    pub title: String,               // harness title, or first prompt, or user override
+    pub preview: String,             // short excerpt
+    pub cwd: TargetPath,             // opaque; interpreted only on the target
+    pub project: ProjectRef,         // a project the user created, or a temporary one; see below
+    pub worktree: Option<WorktreeRef>,
+    pub git: Option<GitStatus>,      // branch, files differing from origin, commits ahead; None outside git
+    pub model: Option<String>,
+    pub state: ThreadState,          // Idle | Running | NeedsAttention | Failed
+    pub control: Control,            // Free | Mine | OtherClient | External
+    pub forked_from: Option<ThreadId>,
+    pub spawned_by: Option<Address>, // the agent that started this thread, possibly on another target
+    pub children: u32,               // threads this one spawned; listed on demand
+    pub peers: u32,                  // threads it has exchanged messages with but did not spawn
+    pub root: Option<Address>,       // the orchestration this thread belongs to, if any
+    pub origin_kind: OriginKind,     // Interactive | Yaac | Programmatic — drives the sidebar filter
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    pub archived: bool,              // off the list entirely; kept, and found by search
+    pub muted: bool,                 // out of the main list, still working
+    pub pinned: bool,                // kept in the Pinned section
+}
+```
+
+`NeedsAttention` means a `request` item is pending: an approval or a question. It is the most
+important state to surface in the sidebar, because an agent is blocked on the user.
+
+## Threads that belong together
+
+A thread can be started by another agent ([10 Agent mesh](10-agent-mesh.md#spawning)). That
+gives threads a second kind of relationship besides fork lineage:
+
+| Relationship | Meaning | Recorded on |
+| --- | --- | --- |
+| `forked_from` | Began with another thread's history. | The fork. |
+| `spawned_by` / children | Was started by another agent to do part of its work. | Both: the child knows its parent, the parent lists its children — even across targets. |
+| peers | Have exchanged messages, with neither having spawned the other. | Both, derived from the messages. |
+
+A spawned thread is a full thread: it has its own row in the sidebar, under its own origin and
+project, and the user can open, steer, or continue it. In the sidebar it carries a small
+"spawned by" mark, and a parent's row shows how many direct workers it has. A worker that is
+blocked on the user is found through the **Needs you** list; parents carry no warning mark of
+their own.
+
+The [agents panel](07-ui.md#agents-in-the-thread-view) in the thread view shows the same
+relationships as a tree, from the point of view of the open thread.
+
+## Keeping the list small: pin, mute, and archive
+
+**Decided.** A fleet produces more threads than anyone can watch. Three actions, all in a
+thread's right-click menu, all stored on the target so every host agrees. **Pin** keeps a
+thread in a *Pinned* section near the top of the sidebar, whatever its project. The other two
+take threads out of the way:
+
+| | Mute | Archive |
+| --- | --- | --- |
+| For | A thread that is still working but that you do not need to watch. | A thread you are done with but may want again. |
+| The thread | **Keeps working**, receives messages, and can be woken, exactly as before. | Is left as it is. |
+| In the sidebar | Moves to a collapsed **Muted (n)** section at the foot of the list. | Disappears; shown by a "Show archived" switch, and found by search. |
+| If it becomes blocked on you | **Appears under *Needs you*** until answered, then goes back to muted. An agent is never silently stuck because it was muted. | Not applicable — an archived thread is not running. |
+| Undo | Unmute. | Unarchive. |
+
+Muting is about the user's attention, not the agent's behaviour: nothing about the thread
+changes for the agents that work with it. Archive uses the harness's own archive where it has
+one.
+
+## In use elsewhere
+
+**Decided:** when a thread is being used somewhere else, YAAC lets the user **watch** it but
+not interact with it. The composer is disabled, with a line saying where the thread is in use;
+approvals and questions are shown but cannot be answered from YAAC.
+
+**Decided:** this includes a conversation that is merely *open* somewhere else but idle — a
+`codex` or `claude` session sitting at its prompt in a terminal. As long as the harness reports
+another holder, the thread is read-only in YAAC: that holder can start a turn at any moment.
+
+"Elsewhere" covers two cases ([control states](03-protocol.md#thread-control-who-may-act)):
+
+- **Another program on the target** — a `codex` or `claude` session open in a terminal, or
+  another app attached to the same harness daemon.
+- **Another YAAC client** attached to the same `yaacd` — a second computer. Here the rule is
+  per turn: whoever started the running turn controls the thread until that turn ends; then it
+  is free again.
+
+Why read-only rather than "first answer wins": a harness has one writer per conversation, and a
+Codex daemon really does hand the same approval to every attached client. Letting two places
+answer produces cards that go stale, messages that collide, and a user who cannot tell what the
+agent was actually told.
+
+### Detecting it
+
+Each provider reports whether a thread is being driven by someone else. This is a
+harness-specific job and gets its own spike (S7):
+
+| Harness | Signal |
+| --- | --- |
+| Codex (daemon) | The thread's status and loaded state on the daemon, and whether a turn is running that `yaacd` did not start; a writer conflict when trying to resume. |
+| Claude Code | `claude agents --json` lists live interactive and background sessions with their session ids and state. |
+
+The rule when unsure: treat the thread as in use. Wrongly disabling a composer costs a click;
+wrongly enabling one can corrupt a conversation.
+
+### Watching it
+
+How live the view is depends on what the harness offers (`FollowExternal`):
+
+- Where the harness streams a thread's events to any attached client (a thread running on the
+  Codex daemon `yaacd` is connected to), the view is fully live.
+- Otherwise `yaacd` re-reads the stored transcript periodically while the thread is open. The
+  view then updates message by message rather than token by token.
+
+A thread in use elsewhere can still be **forked** — that is the way to act on it without
+disturbing whoever has it.
+
+## Discovery
+
+`yaacd` builds the thread index by scanning each instance's conversations (`ThreadList`).
+
+**Decided:** show every conversation the harness knows about, not only those created in YAAC. A
+conversation started in a terminal on the server appears in the sidebar and can be continued.
+Conversations that were not started by a person — SDK, sub-agent, and background-worker
+sessions — are hidden by default behind a sidebar filter.
+
+Each summary carries an `origin_kind`, so the filter is a view over the cached index:
+
+- `Interactive` — started by a person in the harness's own interface.
+- `Yaac` — started from YAAC. **Always shown.** These are technically SDK or app-server
+  sessions, and must never be swept up by the "hide automated" filter. `yaacd` knows them from
+  its own registry, not from what the harness labels them.
+- `Programmatic` — everything else. Hidden by default.
+
+The index is synchronised incrementally ([protocol](03-protocol.md#the-thread-index)): a
+reconnect after a week costs one small exchange, not a full listing.
+
+## Sidebar grouping
+
+Three levels — machine (origin), project, worktree — each independently switchable at any
+time. They are drawn as **flat sections under sticky headers, not as a tree** (decided): the
+levels that are switched on make up each section's header.
+
+```
+yaac · feature/protocol                      devbox     ← one header per group, sticky
+  ▶ Fix frame decoder                            2m
+  ○ Explain the handshake                        2h
+api · main                                    local
+  ▶ Migrate auth module — orchestrator          3 👥
+```
+
+Turning a level off removes that level and merges its children upward:
+
+| Origin | Project | Worktree | Result |
+| --- | --- | --- | --- |
+| on | on | on | One section per worktree on each machine: `project · worktree` — `machine` |
+| off | on | on | One section per worktree, the same project on different machines merged |
+| on | off | off | One section per machine |
+| off | off | off | No headers: one list, newest first |
+
+Within any group, threads sort by last activity. Threads needing attention float to the top of
+their group. Grouping is a view over the same rows, so toggling is instant and needs no
+round-trip.
+
+### Projects
+
+**Decided: a project is something the user creates.** It is a folder on a machine, chosen by
+the user, with a name the user gives it. The name is free — "Billing API" rather than
+`billing-api-v2-final` — and is what the sidebar shows.
+
+Projects are stored on the target, like the rest of the thread registry, so every host sees
+the same ones.
+
+#### Which project a thread belongs to
+
+1. **The deepest project whose folder contains the thread's folder.** A thread anywhere inside
+   a project's folder belongs to that project.
+2. Projects can be nested, and then the most specific one wins:
+
+   | Projects defined | Thread's folder | Belongs to |
+   | --- | --- | --- |
+   | `~` and `~/projects/abc` | `~/projects/abc/123` | *abc* — the deeper project contains it |
+   | `~` and `~/projects/abc` | `~/projects` | *~* — only the outer project contains it |
+   | `~/projects/abc` | `~/projects/abc/123/src` | *abc* |
+   | `~/projects/abc` | `~/other` | none — a temporary project (below) |
+
+3. **Otherwise the thread has no project yet.**
+
+#### Worktrees that live somewhere else
+
+*Proposed — the owner asked for a suggestion; not yet confirmed.*
+
+A git worktree is a second checkout of the same repository, and it is usually **not** inside
+the project's folder: a sibling directory, or a harness-managed location such as
+`~/.codex/worktrees/…`. By the folder rule alone, a thread running there would look like it
+belongs to no project. The suggestion: **apply the folder rule inside the repository instead
+of on the disk.**
+
+- When a project is created, `yaacd` notes whether its folder is in a git repository, and if
+  so which repository (its shared git directory) and where the folder sits **relative to the
+  checkout's root** — `.` for the root itself, `services/billing` for a subfolder.
+- A discovered thread's folder is resolved the same way: which repository, and where relative
+  to *its* checkout's root.
+- **Same repository, and the thread's relative path is inside the project's relative path →
+  the thread belongs to that project**, whichever checkout it is physically in. The deepest
+  such project wins, exactly as with folders.
+- This is tried **before** the plain folder rule, because it is the more specific fact.
+
+| Projects | Thread's folder | Belongs to |
+| --- | --- | --- |
+| *yaac* at `~/code/yaac` (a repository) | `~/code/yaac-wt/feature-x` (a worktree of it) | *yaac*, worktree `feature-x` |
+| *yaac* at `~/code/yaac` | `~/.codex/worktrees/a1b2/yaac/crates` | *yaac*, that worktree |
+| *Billing* at `~/code/mono/services/billing` | `~/wt/hotfix/services/billing/src` | *Billing*, worktree `hotfix` |
+| *Billing* at `~/code/mono/services/billing` | `~/wt/hotfix/services/search` | none — same repository, but outside Billing's part of it |
+| *Home* at `~` and *yaac* at `~/code/yaac` | `~/code/yaac-wt/feature-x` | *yaac* — the repository match beats the outer folder |
+
+The section header then shows which checkout: `yaac · feature-x`. The main checkout shows its
+own branch the same way.
+
+What follows from it:
+
+- **Nothing to configure.** The user never lists worktrees; they are recognised.
+- **Starting a thread in a worktree.** A new thread starts in the project's root (D65). When
+  the project's repository has other checkouts, the project picker offers them as a second,
+  optional choice — "worktree: main ▾" — and the thread then starts at the same relative place
+  in that checkout. Creating a worktree from YAAC stays out of the MVP.
+- **A worktree that was deleted.** Its threads keep the project and the worktree name they had,
+  marked as removed.
+- **A folder that is not in a repository** has no worktree; only the folder rule applies.
+- The lookup is one `git` query per distinct folder, cached.
+
+This matching matters for **discovered** threads — ones started in a terminal, in whatever
+folder the user happened to be in. A thread created from YAAC has no such question: it is
+started in **the root of its project's folder**.
+
+#### Temporary projects
+
+A discovered thread that matches no project is not hidden and not dumped in an "Other" pile.
+It is listed under a **temporary project** named after its folder, drawn so it is plainly not
+a real project yet — italic, with a dashed mark, and the folder path as its name.
+
+Right-clicking a temporary project offers **Create project…**. That opens the ordinary
+create-project flow with the folder already filled in — and editable, because the thread's
+folder is often *inside* what the user thinks of as the project:
+
+```
+Folder   /home/user1/projects/abc/123/        ← prefilled from the thread
+         /home/user1/projects/abc/            ← the user deletes "123": that is the project
+Name     abc                                  ← prefilled from the last folder name; editable
+```
+
+Once created, every thread whose folder falls inside it moves under the new project at once —
+including the ones that were sitting in other temporary projects beneath that folder.
+
+#### Worktrees
+
+The worktree level of the grouping is the git worktree a thread's folder is in — its branch
+name is what the header shows. A thread whose folder is not in a git repository has no
+worktree, and its section header is just the project.
+
+## Fork
+
+Fork creates a new thread that begins with the history of an existing one. The new thread may
+use any provider instance and any model on the **same target**. The original thread is not
+modified, and may even be in use elsewhere.
+
+`yaacd` picks the mechanism from the **source and destination pair**:
+
+### Native fork — within one conversation store
+
+When the destination instance is the same kind as the source **and shares its store**, and the
+source declares `ThreadFork`, the harness does it (Codex `thread/fork`, Claude `forkSession`).
+The new conversation carries the full native context. This is lossless.
+
+A different model can be chosen in the same step. Two Codex instances with separate homes do
+**not** qualify: the destination could not even find the source conversation. They get a
+handoff fork.
+
+### Handoff fork — everything else
+
+**Decided:** a fork that cannot be native carries the conversation as a transcript file.
+
+1. `yaacd` reads the source thread's history **from the harness's own store** and renders it to
+   a markdown transcript: user messages, agent messages, and a compact line per tool call (what
+   ran, whether it succeeded). Reasoning and bulky tool output are left out.
+2. It writes the transcript into `yaacd`'s own state directory on the target (`~/.yaac/`),
+   pinned to the new thread. It is deliberately **not** in the upload folder: that lives in the
+   system temp directory and can be wiped by a reboot, and the forked thread's inherited
+   history must not disappear with it.
+3. It creates the new thread in the same working directory.
+4. It prefixes the user's first message with a short, fixed preamble pointing the agent at the
+   transcript file and saying it is the prior conversation.
+
+The new thread records `forked_from`. The UI shows the inherited history above a divider
+(`handoff` item), read-only, rendered from that same frozen transcript.
+
+#### Threads created outside YAAC fork the same way
+
+Nothing in a handoff depends on YAAC having seen the conversation happen. The transcript is
+built at fork time from what the harness stored, so a conversation that was started and run
+entirely in a terminal has exactly the same material available as one started in YAAC.
+
+What decides whether a thread can be forked is only this:
+
+| Condition | Result |
+| --- | --- |
+| The source provider can read history (`ThreadRead`) — both MVP providers can | Fork available. |
+| A future provider that cannot read history | Fork is **disabled, with the reason shown**. YAAC will not fork from a partial memory of the conversation. |
+| The source thread is mid-turn (here or elsewhere) | Forks from the **last completed turn**. The dialog says which one. |
+| The source contains images or attachments | Files still present on the target are referenced; ones that are gone (the temp folder was cleaned) are marked as omitted in the transcript. |
+
+#### What a handoff does not carry, and what it may expose
+
+- Not carried: hidden reasoning, cached context, the running state of tools, pending approvals.
+- **A handoff moves conversation content to a different provider.** Tool arguments and outputs
+  in the transcript may include things the user would not paste into another vendor's product.
+  The fork dialog therefore shows what will be sent and where — destination instance and
+  account, the turn it cuts off at, the transcript size, and a preview — and the fork happens
+  on explicit confirmation.
+
+A summary written by the source model, as an alternative to the full transcript, may be offered
+later. It costs a turn and can distort; the transcript is the default.
+
+### Fork point
+
+The MVP forks from the last completed turn. Forking from an earlier message is a later feature,
+gated on `ThreadForkAtTurn` for native forks and always possible for handoff forks.
+
+### In the UI
+
+The fork button sits with the other controls under the composer. It opens the same model picker
+as a new thread — all instances on the target, grouped by provider instance — and labels each
+choice as *native* or *handoff*.
+
+## Local storage on the host
+
+### Cache — disposable
+
+**Purpose:** the app is useful before any connection exists. Nothing in the cache is
+authoritative, and deleting it loses nothing but speed.
+
+Stored in one SQLite file in the host's user data directory:
+
+| Table | Contents | Refreshed |
+| --- | --- | --- |
+| `targets` | Last known target facts and connection state | On connect |
+| `providers` | One descriptor per instance, including models and capabilities, with its `revision` | On every connect, and on `provider/updated` |
+| `threads` | One `ThreadSummary` per thread, plus the per-target sync token | Incrementally via `thread/sync` |
+| `items` | Transcripts of threads the user has opened, with the journal position they are valid at | When the thread is opened or receives events |
+| `ui_state` | Grouping toggles, collapsed groups, last-selected thread | On change |
+
+Rules:
+
+- **Stale-while-revalidate.** Show cached data immediately and unmistakably mark a target that
+  is not yet connected. Replace it as fresh data arrives. Never block the first frame on I/O.
+- **Transcripts are cached lazily and bounded.** Only opened threads are stored, with a size cap
+  and least-recently-used eviction. The sidebar index is always complete.
+- **Items and position commit together**, in one transaction
+  ([protocol](03-protocol.md#journal-and-replay)).
+- **Schema changes drop the cache.** There is no migration path to maintain; the cache carries
+  a version and is rebuilt from the targets when it changes.
+- **The cache is not a model authority.** See
+  [models are never hardcoded](04-providers.md#models-are-never-hardcoded).
+- **Secret answers are never cached.** An answer to a question marked `secret` is not written
+  to the host.
+- Removing a target deletes its rows.
+
+### Drafts — durable
+
+Unsent composer text, its attachments, and the receipts of operations still in flight are
+**user data, not cache**. They live in a separate store with its own schema migrations. "Clear
+cache" does not touch them, and a cache schema change does not drop them.

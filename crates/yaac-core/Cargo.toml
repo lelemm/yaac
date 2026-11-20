@@ -1,0 +1,15 @@
+[package]
+name = "yaac-core"
+description = "YAAC window state: the state model, reducers, and view models. Pure: no I/O, no UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yaac-protocol = { path = "../yaac-protocol" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

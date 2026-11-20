@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+# Shared third-party dependencies. Pin the major version here once; crates opt in.
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+schemars = { version = "1.0.4", default-features = false, features = ["derive", "std"] }
+thiserror = "2.0.12"
+proptest = "1.12.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+exit = "warn"
+mem_forget = "warn"
+rc_mutex = "warn"
+large_stack_arrays = "warn"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+semicolon_if_nothing_returned = "warn"
+explicit_iter_loop = "warn"
+manual_let_else = "warn"
+unnested_or_patterns = "warn"
+cast_possible_truncation = "warn"
+
+[profile.release]
+# Small binaries: the footprint budget in docs/02-architecture.md is a requirement.
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+incremental = false
+
+[profile.dev]
+# Dependencies are rarely debugged; optimise them a little so tests run fast.
+[profile.dev.package."*"]
+opt-level = 1

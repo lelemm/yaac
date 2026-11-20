@@ -1,0 +1,7049 @@
+{
+  "$defs": {
+    "Address": {
+      "description": "The address of an agent: a thread on a target.\n\nOn the wire this is an **opaque string**. Agents never construct one; they get it from a\ntool result, a received message, or the user. Its three immutable parts are the target id\n(not the renamable target name), the provider instance with its store binding, and the\nnative thread id; the last two are what [`ThreadId`] encodes. The format is\n`<target id>/<thread id>`; a target id never contains `/`. Decoding never fails: a string\nthat does not have that shape is kept and simply has no parts.",
+      "type": "string"
+    },
+    "AgentMessageItem": {
+      "description": "`agentMessage`: markdown text.",
+      "properties": {
+        "text": {
+          "description": "Markdown. `itemDelta` with field `text` appends here.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "AgreedProtocol": {
+      "description": "The daemon's range and the version agreed: the lower of the two maxima, if it is not below either minimum. Frozen core.",
+      "properties": {
+        "agreed": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "max": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "min": {
+          "$ref": "#/$defs/ProtocolVersion"
+        }
+      },
+      "required": [
+        "min",
+        "max",
+        "agreed"
+      ],
+      "type": "object"
+    },
+    "AnsweredBy": {
+      "anyOf": [
+        {
+          "enum": [
+            "client",
+            "elsewhere"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "Who answered a request."
+    },
+    "AppliedSettings": {
+      "description": "The model / effort / mode the harness reports it is **actually** using.",
+      "properties": {
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffortId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Effort in use."
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModeId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mode in use."
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Model in use."
+        }
+      },
+      "type": "object"
+    },
+    "ApprovalAnswer": {
+      "description": "Answer to an approval.",
+      "properties": {
+        "decision": {
+          "description": "The chosen `ApprovalDecision.id`.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "A reason, when the decision accepts one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "type": "object"
+    },
+    "ApprovalDecision": {
+      "description": "One decision the harness offers.",
+      "properties": {
+        "acceptsReason": {
+          "default": false,
+          "description": "Whether the user may attach a reason (\"deny with a reason\").",
+          "type": "boolean"
+        },
+        "description": {
+          "description": "Longer description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Sent back in the answer.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DecisionKind",
+          "description": "Its nature, for styling."
+        },
+        "label": {
+          "description": "Label to show.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "ApprovalKind": {
+      "anyOf": [
+        {
+          "enum": [
+            "command",
+            "fileChange",
+            "permission",
+            "other"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "What an approval is for."
+    },
+    "ApprovalRequest": {
+      "description": "\"May I run this / change these / have this permission?\"",
+      "properties": {
+        "approvalKind": {
+          "$ref": "#/$defs/ApprovalKind",
+          "description": "What it is for."
+        },
+        "changes": {
+          "default": [],
+          "description": "The file changes, for a file-change approval.",
+          "items": {
+            "$ref": "#/$defs/FileChange"
+          },
+          "type": "array"
+        },
+        "command": {
+          "description": "The command, for a command approval.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The directory it would run in."
+        },
+        "decisions": {
+          "description": "The decisions the harness actually offers.",
+          "items": {
+            "$ref": "#/$defs/ApprovalDecision"
+          },
+          "type": "array"
+        },
+        "details": {
+          "description": "Anything else the harness sent, for a generic rendering."
+        },
+        "reason": {
+          "description": "The harness's stated reason.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "description": "The scope of the grant, for a permission approval.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "One-line description.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approvalKind",
+        "title",
+        "decisions"
+      ],
+      "type": "object"
+    },
+    "BackendKind": {
+      "anyOf": [
+        {
+          "enum": [
+            "daemon",
+            "sdk"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "The backend an instance actually runs on."
+    },
+    "BackendPreference": {
+      "anyOf": [
+        {
+          "enum": [
+            "auto",
+            "daemon",
+            "sdk"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "The backend an instance is configured to use."
+    },
+    "Capability": {
+      "anyOf": [
+        {
+          "enum": [
+            "threadList",
+            "threadRead",
+            "threadResume",
+            "threadFork",
+            "threadForkAtTurn",
+            "threadRename",
+            "threadArchive",
+            "threadDelete",
+            "followExternal",
+            "streamText",
+            "streamReasoning",
+            "interrupt",
+            "steer",
+            "compact",
+            "rewindConversation",
+            "rewindFiles",
+            "approvals",
+            "userQuestions",
+            "userForms",
+            "modes",
+            "modelSwitch",
+            "effortSwitch",
+            "imageInput",
+            "documentInput",
+            "audioInput",
+            "reasoning",
+            "reasoningSummary",
+            "tokenUsage",
+            "contextUsage",
+            "rateLimits",
+            "modelList",
+            "meshTools",
+            "plan",
+            "slashCommands",
+            "subagents",
+            "webSearch",
+            "fileDiffs"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "A flag the UI checks before offering a feature. Branch on these, never on provider kind."
+    },
+    "ClientId": {
+      "description": "A stable id for one host's YAAC client (the hub), sent in `initialize`, so `yaacd` can\nsay which client answered a request or drives a thread.",
+      "type": "string"
+    },
+    "ClientInfo": {
+      "description": "The client's identity, sent in `initialize`.",
+      "properties": {
+        "host": {
+          "description": "Host name, shown to other clients as \"In use on …\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClientId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Stable id of this host's client, so `yaacd` can tell clients apart across reconnects."
+        },
+        "name": {
+          "description": "Program name (`yaac`).",
+          "type": "string"
+        },
+        "version": {
+          "description": "Program build.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "ContextUsage": {
+      "description": "How full the context window is.",
+      "properties": {
+        "used": {
+          "description": "Tokens in use.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "window": {
+          "description": "Window size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Control": {
+      "anyOf": [
+        {
+          "enum": [
+            "free",
+            "mine",
+            "otherClient",
+            "external"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "Who may act on a thread, **from the point of view of the client receiving it**."
+    },
+    "ControlChangedEvent": {
+      "description": "`controlChanged`: who may act on the thread changed (relative to the receiving client).",
+      "properties": {
+        "activeTurn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The running turn, when there is one (needed for Stop)."
+        },
+        "control": {
+          "$ref": "#/$defs/Control",
+          "description": "The new control state."
+        },
+        "holder": {
+          "description": "Where it is in use, for the read-only states.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "control"
+      ],
+      "type": "object"
+    },
+    "DaemonBusy": {
+      "description": "What the daemon is busy with.",
+      "properties": {
+        "attachedClients": {
+          "description": "Clients attached.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pendingRequests": {
+          "description": "Requests waiting for an answer.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runningTurns": {
+          "description": "Turns running.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runningTurns",
+        "pendingRequests",
+        "attachedClients"
+      ],
+      "type": "object"
+    },
+    "DaemonHandoverParams": {
+      "description": "`daemon/handover` params. Frozen core; valid even after a failed negotiation; idempotent.",
+      "properties": {
+        "when": {
+          "$ref": "#/$defs/HandoverWhen",
+          "description": "When."
+        }
+      },
+      "required": [
+        "when"
+      ],
+      "type": "object"
+    },
+    "DaemonHandoverResult": {
+      "description": "`daemon/handover` result: sent before the daemon closes the connection. Frozen core.",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/HandoverState",
+          "description": "What happens next."
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "DaemonInfo": {
+      "description": "The daemon's build and on-disk state format.",
+      "properties": {
+        "build": {
+          "description": "Which code is running (`0.7.2+a1b2c3`).",
+          "type": "string"
+        },
+        "stateFormat": {
+          "description": "What is on disk. Separate from the protocol version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "build",
+        "stateFormat"
+      ],
+      "type": "object"
+    },
+    "DaemonStatusResult": {
+      "description": "`daemon/status` result. Frozen core.",
+      "properties": {
+        "build": {
+          "description": "Which code is running.",
+          "type": "string"
+        },
+        "busy": {
+          "$ref": "#/$defs/DaemonBusy",
+          "description": "What it is busy with."
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolRange",
+          "description": "The protocol versions it speaks."
+        },
+        "stateFormat": {
+          "description": "What is on disk.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "build",
+        "protocol",
+        "stateFormat",
+        "busy"
+      ],
+      "type": "object"
+    },
+    "DecisionKind": {
+      "anyOf": [
+        {
+          "enum": [
+            "allow",
+            "allowSession",
+            "allowAlways",
+            "deny",
+            "abort"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "The nature of a decision the harness offers. The UI renders the offered decisions; it\nnever assumes a fixed Allow/Deny pair."
+    },
+    "DeltaField": {
+      "anyOf": [
+        {
+          "enum": [
+            "text",
+            "reasoning",
+            "output"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "The item field an `itemDelta` appends to."
+    },
+    "DiagnosticSection": {
+      "description": "One section of a diagnostics report.",
+      "properties": {
+        "lines": {
+          "description": "Redacted lines. Never message content.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "description": "Section title (`daemon`, an instance's display name, …).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "lines"
+      ],
+      "type": "object"
+    },
+    "DiagnosticsGetResult": {
+      "description": "`diagnostics/get` result.",
+      "properties": {
+        "sections": {
+          "description": "Sections, in display order.",
+          "items": {
+            "$ref": "#/$defs/DiagnosticSection"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "sections"
+      ],
+      "type": "object"
+    },
+    "EffortId": {
+      "description": "An effort level, opaque and ordered as the harness reports it.",
+      "type": "string"
+    },
+    "EffortInfo": {
+      "description": "An effort level a model offers.",
+      "properties": {
+        "description": {
+          "description": "Longer description, when the harness gives one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "description": "Label to show; when absent, show the id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/EffortId",
+          "description": "What the harness expects back."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "Empty": {
+      "description": "An empty JSON object, for methods that take or return nothing (`{}` on the wire).\n\nKept as an object rather than `null` so fields can be added later without a version bump.",
+      "type": "object"
+    },
+    "Epoch": {
+      "description": "A journal epoch: one continuous journal. Changes only when a journal is started afresh.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "ErrorCode": {
+      "anyOf": [
+        {
+          "enum": [
+            "protocol_unsupported",
+            "provider_unavailable",
+            "needs_auth",
+            "capability_missing",
+            "thread_not_found",
+            "thread_in_use",
+            "turn_in_progress",
+            "turn_mismatch",
+            "outcome_unknown",
+            "upload_mismatch",
+            "upload_not_found",
+            "instance_not_found",
+            "model_unavailable",
+            "request_not_found",
+            "request_not_pending",
+            "limit_exceeded",
+            "policy_denied",
+            "target_unknown",
+            "target_offline",
+            "not_initialized",
+            "parse_error",
+            "invalid_request",
+            "method_not_found",
+            "invalid_params",
+            "internal_error"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "A stable error code for the UI to branch on. Open: codes this build does not know are\nkept, and the `message` is always shown as-is."
+    },
+    "ErrorObject": {
+      "description": "The error object: `code`, `message`, `data`. Frozen core.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode",
+          "description": "Stable code to branch on."
+        },
+        "data": {
+          "description": "Structured detail."
+        },
+        "message": {
+          "description": "Human-readable; shown as-is.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "FileChange": {
+      "description": "One file in a file-change approval.",
+      "properties": {
+        "change": {
+          "$ref": "#/$defs/FileChangeKind",
+          "description": "How it changes."
+        },
+        "diff": {
+          "description": "Unified diff, possibly truncated.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "newPath": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New path, for a rename."
+        },
+        "path": {
+          "$ref": "#/$defs/TargetPath",
+          "description": "The file."
+        }
+      },
+      "required": [
+        "path",
+        "change"
+      ],
+      "type": "object"
+    },
+    "FileChangeKind": {
+      "anyOf": [
+        {
+          "enum": [
+            "add",
+            "modify",
+            "delete",
+            "rename"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "How a file is changed."
+    },
+    "FilePart": {
+      "description": "An upload referenced by its path on the target; the agent reads it with its own tools.",
+      "properties": {
+        "uploadId": {
+          "$ref": "#/$defs/UploadId",
+          "description": "The upload, on this target."
+        }
+      },
+      "required": [
+        "uploadId"
+      ],
+      "type": "object"
+    },
+    "ForkKind": {
+      "anyOf": [
+        {
+          "enum": [
+            "native",
+            "handoff"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "How a fork carries history."
+    },
+    "FormAnswer": {
+      "description": "Answer to a form.",
+      "properties": {
+        "values": {
+          "additionalProperties": true,
+          "description": "Field values, shaped by the form's schema.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "values"
+      ],
+      "type": "object"
+    },
+    "FormRequest": {
+      "description": "A schema-driven form (MCP elicitation and the like). Until the UI renders forms it shows\n`message` and says the form must be answered in the harness.",
+      "properties": {
+        "message": {
+          "description": "The text to show.",
+          "type": "string"
+        },
+        "schema": {
+          "description": "JSON Schema of the requested fields, as the harness sent it."
+        },
+        "source": {
+          "description": "Who asks (e.g. an MCP server name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "FsEntry": {
+      "description": "One entry.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/FsEntryKind",
+          "description": "What it is."
+        },
+        "name": {
+          "description": "File name.",
+          "type": "string"
+        },
+        "path": {
+          "$ref": "#/$defs/TargetPath",
+          "description": "Full path, to pass back."
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "FsEntryKind": {
+      "anyOf": [
+        {
+          "enum": [
+            "directory",
+            "file",
+            "symlink",
+            "other"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "What a directory entry is."
+    },
+    "FsListParams": {
+      "description": "`fs/list`: list a directory on the target.",
+      "properties": {
+        "includeHidden": {
+          "default": false,
+          "description": "Include hidden entries.",
+          "type": "boolean"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The directory; the user's home when absent."
+        }
+      },
+      "type": "object"
+    },
+    "FsListResult": {
+      "description": "`fs/list` result.",
+      "properties": {
+        "entries": {
+          "description": "Entries.",
+          "items": {
+            "$ref": "#/$defs/FsEntry"
+          },
+          "type": "array"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its parent, when it has one."
+        },
+        "path": {
+          "$ref": "#/$defs/TargetPath",
+          "description": "The directory listed."
+        },
+        "truncated": {
+          "default": false,
+          "description": "The listing was cut short.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path",
+        "entries"
+      ],
+      "type": "object"
+    },
+    "HandoffItem": {
+      "description": "`handoff`: marks history a forked thread inherited from its parent.",
+      "properties": {
+        "cutoffTurn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last turn of the source that was carried."
+        },
+        "forkKind": {
+          "$ref": "#/$defs/ForkKind",
+          "description": "How the history was carried."
+        },
+        "forkedFrom": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread forked from."
+        },
+        "transcript": {
+          "description": "The frozen transcript (markdown), for a handoff fork; rendered read-only above the\ndivider. Bounded like any item field.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transcriptPath": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The transcript file on the target, in `yaacd`'s state directory."
+        }
+      },
+      "required": [
+        "forkedFrom",
+        "forkKind"
+      ],
+      "type": "object"
+    },
+    "HandoverState": {
+      "anyOf": [
+        {
+          "enum": [
+            "scheduled",
+            "exiting"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "What the daemon will do about a hand-over."
+    },
+    "HandoverWhen": {
+      "anyOf": [
+        {
+          "enum": [
+            "idle",
+            "now"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "When the daemon should step aside."
+    },
+    "ImagePart": {
+      "description": "An upload given to the model as real image input. Only valid when the thread's effective\n`imageInput` is not `unsupported`; `yaacd` rejects it with `capability_missing` otherwise.",
+      "properties": {
+        "uploadId": {
+          "$ref": "#/$defs/UploadId",
+          "description": "The upload, on this target."
+        }
+      },
+      "required": [
+        "uploadId"
+      ],
+      "type": "object"
+    },
+    "InitializeParams": {
+      "description": "`initialize` params. Frozen core.",
+      "properties": {
+        "client": {
+          "$ref": "#/$defs/ClientInfo",
+          "description": "Who the client is."
+        },
+        "protocol": {
+          "$ref": "#/$defs/ProtocolRange",
+          "description": "The protocol versions the client speaks."
+        }
+      },
+      "required": [
+        "protocol",
+        "client"
+      ],
+      "type": "object"
+    },
+    "InitializeResult": {
+      "description": "`initialize` result. Frozen core.",
+      "properties": {
+        "daemon": {
+          "$ref": "#/$defs/DaemonInfo",
+          "description": "Build and state format."
+        },
+        "protocol": {
+          "$ref": "#/$defs/AgreedProtocol",
+          "description": "The daemon's range and the agreed version."
+        },
+        "schemaHash": {
+          "description": "Hash of the frozen baseline schema of the agreed version. A diagnostic: a mismatch\nmeans one side has a wrong idea of what that version is.",
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/TargetFacts",
+          "description": "Target facts."
+        }
+      },
+      "required": [
+        "protocol",
+        "schemaHash",
+        "daemon",
+        "target"
+      ],
+      "type": "object"
+    },
+    "InputPart": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "text",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/TextPart"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "image",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ImagePart"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "file",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/FilePart"
+            }
+          ]
+        },
+        {
+          "properties": {
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "One part of a user message."
+    },
+    "InstanceId": {
+      "description": "A provider instance on a target (`pi_01J…`). Stable, generated by `yaacd`.",
+      "type": "string"
+    },
+    "Item": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "userMessage",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/UserMessageItem"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "agentMessage",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/AgentMessageItem"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "reasoning",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ReasoningItem"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "toolCall",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ToolCallItem"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "plan",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/PlanItem"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "request",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/RequestItem"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "notice",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/NoticeItem"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "handoff",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/HandoffItem"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "meshSent",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/MeshSentItem"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "meshReceived",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/MeshReceivedItem"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "meshSpawn",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/MeshSpawnItem"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "kind": {
+                  "const": "meshWait",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/MeshWaitItem"
+            }
+          ]
+        },
+        {
+          "properties": {
+            "kind": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "One item of a turn: common fields plus the kind-specific body (flattened, so `kind` sits\nnext to `id` on the wire).",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ItemId",
+          "description": "The item."
+        },
+        "status": {
+          "$ref": "#/$defs/ItemStatus",
+          "description": "Its status."
+        },
+        "turnId": {
+          "$ref": "#/$defs/TurnId",
+          "description": "The turn it belongs to."
+        }
+      },
+      "required": [
+        "id",
+        "turnId",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ItemDeltaEvent": {
+      "description": "`itemDelta`: text to append to one field of an item.",
+      "properties": {
+        "delta": {
+          "description": "Text to append.",
+          "type": "string"
+        },
+        "field": {
+          "$ref": "#/$defs/DeltaField",
+          "description": "The field."
+        },
+        "itemId": {
+          "$ref": "#/$defs/ItemId",
+          "description": "The item."
+        }
+      },
+      "required": [
+        "itemId",
+        "field",
+        "delta"
+      ],
+      "type": "object"
+    },
+    "ItemEvent": {
+      "description": "`itemStarted` / `itemCompleted`: an item appeared, or reached a final state.",
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/Item",
+          "description": "The item, in full."
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "ItemId": {
+      "description": "An item within a thread.",
+      "type": "string"
+    },
+    "ItemStatus": {
+      "anyOf": [
+        {
+          "enum": [
+            "inProgress",
+            "completed",
+            "failed",
+            "declined"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "Item status."
+    },
+    "ItemUpdatedEvent": {
+      "description": "`itemUpdated`: a full replacement snapshot of an item.\n\nWith `throughSeq`, this one event replaces every event from the envelope's `seq` through\n`throughSeq` (journal compaction, or backpressure collapse); the client advances its\nposition to `throughSeq`.",
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/Item",
+          "description": "The item, in full."
+        },
+        "throughSeq": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Seq"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last sequence number this snapshot replaces."
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "type": "object"
+    },
+    "JournalPosition": {
+      "description": "A position in a thread's journal.",
+      "properties": {
+        "epoch": {
+          "$ref": "#/$defs/Epoch",
+          "description": "The journal."
+        },
+        "seq": {
+          "$ref": "#/$defs/Seq",
+          "description": "The last event included."
+        }
+      },
+      "required": [
+        "epoch",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "ListModelsQuery": {
+      "description": "`listModels`: the instances on the destination and their models.",
+      "type": "object"
+    },
+    "ListModelsReply": {
+      "description": "`listModels` reply.",
+      "properties": {
+        "providers": {
+          "description": "The same live descriptors as the model picker.",
+          "items": {
+            "$ref": "#/$defs/ProviderDescriptor"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "providers"
+      ],
+      "type": "object"
+    },
+    "ListThreadsQuery": {
+      "description": "`listThreads`.",
+      "properties": {
+        "filter": {
+          "$ref": "#/$defs/MeshThreadFilter",
+          "default": {
+            "mine": false,
+            "running": false
+          },
+          "description": "The filter."
+        }
+      },
+      "type": "object"
+    },
+    "ListThreadsReply": {
+      "description": "`listThreads` reply.",
+      "properties": {
+        "threads": {
+          "description": "Matching threads.",
+          "items": {
+            "$ref": "#/$defs/MeshThreadInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "threads"
+      ],
+      "type": "object"
+    },
+    "MeshBudget": {
+      "description": "Allowance per orchestration root, counted across all targets.",
+      "properties": {
+        "agentTurns": {
+          "description": "Turns started by agents (not by a person).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "threadsSpawned": {
+          "description": "Threads spawned in total.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wallClockSecs": {
+          "description": "Wall-clock seconds since a person last acted on the root.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agentTurns",
+        "threadsSpawned",
+        "wallClockSecs"
+      ],
+      "type": "object"
+    },
+    "MeshBudgetAction": {
+      "anyOf": [
+        {
+          "enum": [
+            "status",
+            "continue"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "What `mesh/budget` does."
+    },
+    "MeshBudgetParams": {
+      "description": "`mesh/budget`: read or continue an orchestration's budget. Sent to the target of the root.",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/MeshBudgetAction",
+          "description": "What to do."
+        },
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id (`continue` changes state)."
+        },
+        "root": {
+          "$ref": "#/$defs/Address",
+          "description": "The orchestration root."
+        }
+      },
+      "required": [
+        "opId",
+        "root",
+        "action"
+      ],
+      "type": "object"
+    },
+    "MeshBudgetPatch": {
+      "description": "A change to the budget. Absent fields are unchanged.",
+      "properties": {
+        "agentTurns": {
+          "description": "See [`MeshBudget`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threadsSpawned": {
+          "description": "See [`MeshBudget`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "wallClockSecs": {
+          "description": "See [`MeshBudget`].",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "MeshBudgetResult": {
+      "description": "`mesh/budget` result.",
+      "properties": {
+        "allowance": {
+          "$ref": "#/$defs/MeshBudget",
+          "description": "The current allowance."
+        },
+        "exhausted": {
+          "description": "Whether it has run out (messages are stored but not dispatched).",
+          "type": "boolean"
+        },
+        "root": {
+          "$ref": "#/$defs/Address",
+          "description": "The root."
+        },
+        "used": {
+          "$ref": "#/$defs/MeshBudgetUsage",
+          "description": "What is used of it."
+        }
+      },
+      "required": [
+        "root",
+        "allowance",
+        "used",
+        "exhausted"
+      ],
+      "type": "object"
+    },
+    "MeshBudgetUsage": {
+      "description": "How much of a budget is used.",
+      "properties": {
+        "agentTurns": {
+          "description": "Agent-started turns so far.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "threadsSpawned": {
+          "description": "Threads spawned so far.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wallClockSecs": {
+          "description": "Seconds since a person last acted on the root.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agentTurns",
+        "threadsSpawned",
+        "wallClockSecs"
+      ],
+      "type": "object"
+    },
+    "MeshDeliverParams": {
+      "description": "`mesh/deliver` (hub → target): put a message into a recipient's mailbox. The target\nanswers once it is on disk. Retried by the hub until answered.",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/MeshMessage",
+          "description": "The message."
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "MeshLimits": {
+      "description": "Local runaway limits, per target.",
+      "properties": {
+        "pairMessages": {
+          "description": "Messages between the same two threads per window.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "pairWindowSecs": {
+          "description": "That window, in seconds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "runningThreads": {
+          "description": "Threads running at once on this target (a thread blocked in `wait` does not count).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "spawnDepth": {
+          "description": "Depth of spawning.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "undeliveredNoticeSecs": {
+          "description": "After this many seconds undelivered, the sender gets a notice.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "workersPerThread": {
+          "description": "Workers per thread.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "workersPerThread",
+        "spawnDepth",
+        "runningThreads",
+        "pairMessages",
+        "pairWindowSecs",
+        "undeliveredNoticeSecs"
+      ],
+      "type": "object"
+    },
+    "MeshLimitsPatch": {
+      "description": "A change to some limits. Absent fields are unchanged.",
+      "properties": {
+        "pairMessages": {
+          "description": "See [`MeshLimits`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pairWindowSecs": {
+          "description": "See [`MeshLimits`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "runningThreads": {
+          "description": "See [`MeshLimits`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "spawnDepth": {
+          "description": "See [`MeshLimits`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "undeliveredNoticeSecs": {
+          "description": "See [`MeshLimits`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "workersPerThread": {
+          "description": "See [`MeshLimits`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "MeshMessage": {
+      "description": "A message between two agents. Sender and body are separate fields all the way to the\nharness.",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Address",
+          "description": "Stamped by `yaacd` from the sender's attachment ticket, never by the agent. For a\n`notice`, the thread the notice is about."
+        },
+        "id": {
+          "$ref": "#/$defs/MessageId",
+          "description": "Unique; every hop deduplicates by it."
+        },
+        "inReplyTo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MessageId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The message this replies to."
+        },
+        "kind": {
+          "$ref": "#/$defs/MeshMessageKind",
+          "description": "What it is."
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Address"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The orchestration root this message belongs to."
+        },
+        "sentAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the sender's `yaacd` stored it."
+        },
+        "seq": {
+          "description": "Position in the sender-to-recipient sequence (starts at 1). The recipient's dispatcher\nhands messages over in this order.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "description": "The body. Text only.",
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/Address",
+          "description": "The recipient."
+        }
+      },
+      "required": [
+        "id",
+        "from",
+        "to",
+        "kind",
+        "text",
+        "sentAt",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "MeshMessageKind": {
+      "anyOf": [
+        {
+          "enum": [
+            "message",
+            "result",
+            "notice"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "What a mesh message is."
+    },
+    "MeshPeer": {
+      "description": "A readable label for another agent: \"title · provider · target\".",
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/Address",
+          "description": "Its address. Opaque."
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Model."
+        },
+        "provider": {
+          "description": "Provider display name (\"Codex · work\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reachable": {
+          "description": "Whether its target is currently reachable. Absent: not known.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "targetName": {
+          "description": "Target name, as the user named it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "Its title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "address"
+      ],
+      "type": "object"
+    },
+    "MeshPolicy": {
+      "description": "The mesh policy of one target.",
+      "properties": {
+        "acceptFromOtherTargets": {
+          "description": "Whether agents on other targets may start or message threads here at all.",
+          "type": "boolean"
+        },
+        "budget": {
+          "$ref": "#/$defs/MeshBudget",
+          "description": "Budget per orchestration root."
+        },
+        "limits": {
+          "$ref": "#/$defs/MeshLimits",
+          "description": "Local limits."
+        },
+        "mode": {
+          "$ref": "#/$defs/MeshPolicyMode",
+          "description": "Allow, ask first, or always ask."
+        }
+      },
+      "required": [
+        "mode",
+        "acceptFromOtherTargets",
+        "limits",
+        "budget"
+      ],
+      "type": "object"
+    },
+    "MeshPolicyMode": {
+      "anyOf": [
+        {
+          "enum": [
+            "allow",
+            "askFirst",
+            "alwaysAsk"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "Whether spawning, cross-target sending, and reading outside one's orchestration happen\nfreely or ask the user first (with an ordinary request card)."
+    },
+    "MeshPolicyParams": {
+      "description": "`mesh/policy`: read the policy, and change it when `update` is present (then `opId` is\nrequired).",
+      "properties": {
+        "opId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Operation id, required with `update`."
+        },
+        "update": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MeshPolicyUpdate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The change."
+        }
+      },
+      "type": "object"
+    },
+    "MeshPolicyResult": {
+      "description": "`mesh/policy` result.",
+      "properties": {
+        "policy": {
+          "$ref": "#/$defs/MeshPolicy",
+          "description": "The policy now in force."
+        }
+      },
+      "required": [
+        "policy"
+      ],
+      "type": "object"
+    },
+    "MeshPolicyUpdate": {
+      "description": "A change to the policy. Absent fields are unchanged, so an older client never erases\nsettings it does not know.",
+      "properties": {
+        "acceptFromOtherTargets": {
+          "description": "New remote switch.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "budget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MeshBudgetPatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Budget changes."
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MeshLimitsPatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Limit changes."
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MeshPolicyMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New mode."
+        }
+      },
+      "type": "object"
+    },
+    "MeshQuery": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "listModels",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ListModelsQuery"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "listThreads",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ListThreadsQuery"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "readThread",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ReadThreadQuery"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "spawnThread",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/SpawnThreadQuery"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "stopThread",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/StopThreadQuery"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "threadStates",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ThreadStatesQuery"
+            }
+          ]
+        },
+        {
+          "properties": {
+            "tool": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tool"
+          ],
+          "type": "object",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "A tool call that needs another target."
+    },
+    "MeshQueryParams": {
+      "description": "`mesh/query`. Sent by the source `yaacd` to the hub with `target` = destination; the hub\nforwards the same params to the destination `yaacd` and relays the answer back.",
+      "properties": {
+        "caller": {
+          "$ref": "#/$defs/Address",
+          "description": "The calling thread, stamped by its `yaacd`."
+        },
+        "query": {
+          "$ref": "#/$defs/MeshQuery",
+          "description": "The query."
+        },
+        "target": {
+          "$ref": "#/$defs/TargetId",
+          "description": "The destination target."
+        }
+      },
+      "required": [
+        "caller",
+        "target",
+        "query"
+      ],
+      "type": "object"
+    },
+    "MeshQueryResult": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "listModels",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ListModelsReply"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "listThreads",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ListThreadsReply"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "readThread",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ReadThreadReply"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "spawnThread",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/SpawnThreadReply"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "stopThread",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/StopThreadReply"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "tool": {
+                  "const": "threadStates",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ThreadStatesReply"
+            }
+          ]
+        },
+        {
+          "properties": {
+            "tool": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tool"
+          ],
+          "type": "object",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "`mesh/query` result; its `tool` matches the query's. Failures are ordinary errors\n(`target_offline`, `limit_exceeded`, `policy_denied`, …) with a readable message."
+    },
+    "MeshReceiptParams": {
+      "description": "`mesh/receipt` (hub → source target): a relayed message moved on (for example it reached\nthe recipient's mailbox after its target came back), so the sender's `meshSent` item can\nbe updated.",
+      "properties": {
+        "messageId": {
+          "$ref": "#/$defs/MessageId",
+          "description": "The message."
+        },
+        "receipt": {
+          "$ref": "#/$defs/Receipt",
+          "description": "Its new receipt."
+        }
+      },
+      "required": [
+        "messageId",
+        "receipt"
+      ],
+      "type": "object"
+    },
+    "MeshReceiptResult": {
+      "description": "Result of `mesh/relay` and `mesh/deliver`.",
+      "properties": {
+        "receipt": {
+          "$ref": "#/$defs/Receipt",
+          "description": "How far the message got, as far as the answering side knows."
+        }
+      },
+      "required": [
+        "receipt"
+      ],
+      "type": "object"
+    },
+    "MeshReceivedItem": {
+      "description": "`meshReceived`: a message this agent received. Never styled as a user message.",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/MeshPeer",
+          "description": "The sender, labelled."
+        },
+        "message": {
+          "$ref": "#/$defs/MeshMessage",
+          "description": "The message."
+        }
+      },
+      "required": [
+        "message",
+        "from"
+      ],
+      "type": "object"
+    },
+    "MeshRelayParams": {
+      "description": "`mesh/relay` (target → hub): carry a message to another target. The hub answers once the\nmessage is in its durable relay queue. Retried by the target until answered; the message id\nmakes a repeat harmless.",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/MeshMessage",
+          "description": "The message."
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "MeshRosterParams": {
+      "description": "`mesh/roster` (hub → target): the target's own identity and the list of targets. Sent\nafter `initialize` and whenever it changes.",
+      "properties": {
+        "selfId": {
+          "$ref": "#/$defs/TargetId",
+          "description": "This target's id."
+        },
+        "selfName": {
+          "$ref": "#/$defs/TargetName",
+          "description": "This target's name."
+        },
+        "targets": {
+          "description": "Every target in the mesh, this one included.",
+          "items": {
+            "$ref": "#/$defs/RosterEntry"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "selfId",
+        "selfName",
+        "targets"
+      ],
+      "type": "object"
+    },
+    "MeshSentItem": {
+      "description": "`meshSent`: a message this agent sent.",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/MeshMessage",
+          "description": "The message."
+        },
+        "receipt": {
+          "$ref": "#/$defs/Receipt",
+          "description": "How far it got. Updated (`itemUpdated`) as it moves."
+        },
+        "to": {
+          "$ref": "#/$defs/MeshPeer",
+          "description": "The recipient, labelled."
+        }
+      },
+      "required": [
+        "message",
+        "to",
+        "receipt"
+      ],
+      "type": "object"
+    },
+    "MeshSpawnItem": {
+      "description": "`meshSpawn`: threads this agent started.",
+      "properties": {
+        "threads": {
+          "description": "The threads, with live states.",
+          "items": {
+            "$ref": "#/$defs/SpawnedThread"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "threads"
+      ],
+      "type": "object"
+    },
+    "MeshThreadFilter": {
+      "description": "A filter for `listThreads`.",
+      "properties": {
+        "childrenOf": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Address"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only threads spawned by this thread."
+        },
+        "limit": {
+          "description": "Upper bound on results.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mine": {
+          "default": false,
+          "description": "Only threads in the caller's orchestration.",
+          "type": "boolean"
+        },
+        "project": {
+          "description": "Only threads of this project (its cross-target key or path).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "running": {
+          "default": false,
+          "description": "Only running threads.",
+          "type": "boolean"
+        },
+        "text": {
+          "description": "Free text matched against title and preview.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "MeshThreadInfo": {
+      "description": "A thread as `listThreads` reports it.",
+      "properties": {
+        "cwd": {
+          "$ref": "#/$defs/TargetPath",
+          "description": "Working directory."
+        },
+        "peer": {
+          "$ref": "#/$defs/MeshPeer",
+          "description": "Address and label."
+        },
+        "project": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Project."
+        },
+        "spawnedBy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Address"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who spawned it."
+        },
+        "state": {
+          "$ref": "#/$defs/ThreadState",
+          "description": "State."
+        }
+      },
+      "required": [
+        "peer",
+        "state",
+        "cwd"
+      ],
+      "type": "object"
+    },
+    "MeshThreadState": {
+      "description": "One thread's state in a `threadStates` reply.",
+      "properties": {
+        "state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Its state; absent when it does not exist."
+        },
+        "thread": {
+          "$ref": "#/$defs/Address",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "thread"
+      ],
+      "type": "object"
+    },
+    "MeshWaitItem": {
+      "description": "`meshWait`: a wait on other agents.",
+      "properties": {
+        "forMessages": {
+          "default": false,
+          "description": "Whether any incoming message also ends the wait.",
+          "type": "boolean"
+        },
+        "targets": {
+          "default": [],
+          "description": "The threads waited on.",
+          "items": {
+            "$ref": "#/$defs/WaitTarget"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "MessageId": {
+      "description": "A mesh message id. Unique; makes delivery idempotent at every hop.",
+      "type": "string"
+    },
+    "ModeId": {
+      "description": "A permission / approval / sandbox mode, as the harness names it.",
+      "type": "string"
+    },
+    "ModeInfo": {
+      "description": "A permission / approval / sandbox mode on offer.",
+      "properties": {
+        "description": {
+          "description": "Longer description, when the harness gives one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "description": "Label to show.",
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/ModeId",
+          "description": "What the harness expects back."
+        },
+        "isDefault": {
+          "default": false,
+          "description": "Whether this is the harness's default mode.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "displayName"
+      ],
+      "type": "object"
+    },
+    "ModelCapability": {
+      "description": "A model-level capability with its three-valued support.",
+      "properties": {
+        "capability": {
+          "$ref": "#/$defs/Capability",
+          "description": "The capability."
+        },
+        "support": {
+          "$ref": "#/$defs/Support",
+          "description": "Whether this model has it."
+        }
+      },
+      "required": [
+        "capability",
+        "support"
+      ],
+      "type": "object"
+    },
+    "ModelId": {
+      "description": "A model id, exactly as the harness expects it back. Never hardcoded anywhere.",
+      "type": "string"
+    },
+    "ModelInfo": {
+      "description": "A model, exactly as the harness listed it. Never hardcoded.",
+      "properties": {
+        "capabilities": {
+          "default": [],
+          "description": "Model-level capabilities, each supported, unsupported, or unknown. A capability not\nlisted is unknown.",
+          "items": {
+            "$ref": "#/$defs/ModelCapability"
+          },
+          "type": "array"
+        },
+        "contextWindow": {
+          "description": "Context window in tokens, when known.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "defaultEffort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffortId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The default effort, when the harness reports one."
+        },
+        "description": {
+          "description": "Longer description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "description": "Label to show.",
+          "type": "string"
+        },
+        "efforts": {
+          "default": [],
+          "description": "Effort levels, in the order the harness reported them.",
+          "items": {
+            "$ref": "#/$defs/EffortInfo"
+          },
+          "type": "array"
+        },
+        "hidden": {
+          "default": false,
+          "description": "Whether the harness lists it as hidden.",
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/$defs/ModelId",
+          "description": "What the harness expects back."
+        },
+        "isDefault": {
+          "default": false,
+          "description": "Whether this is the harness's default model.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "displayName"
+      ],
+      "type": "object"
+    },
+    "NoticeItem": {
+      "description": "`notice`: out-of-band information.",
+      "properties": {
+        "about": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Address"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The thread it concerns, when it is about another agent."
+        },
+        "details": {
+          "description": "Structured detail."
+        },
+        "noticeKind": {
+          "$ref": "#/$defs/NoticeKind",
+          "description": "What it is about."
+        },
+        "text": {
+          "description": "Text to show as-is.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "noticeKind",
+        "text"
+      ],
+      "type": "object"
+    },
+    "NoticeKind": {
+      "anyOf": [
+        {
+          "enum": [
+            "error",
+            "warning",
+            "info",
+            "compaction",
+            "modelRerouted",
+            "rateLimit",
+            "interruptedByUpdate",
+            "budgetExhausted",
+            "meshLimit",
+            "workerNeedsAttention"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "What a notice is about."
+    },
+    "OpId": {
+      "description": "A client-generated operation id. Every state-changing request carries one; re-sending\nit returns the recorded outcome instead of acting again.",
+      "type": "string"
+    },
+    "OriginKind": {
+      "anyOf": [
+        {
+          "enum": [
+            "interactive",
+            "yaac",
+            "programmatic"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "How a thread came to exist; drives the sidebar's \"hide automated\" filter."
+    },
+    "PageCursor": {
+      "description": "An opaque page cursor. Bound to the snapshot that produced it.",
+      "type": "string"
+    },
+    "PlanItem": {
+      "description": "`plan`: the agent's task list.",
+      "properties": {
+        "explanation": {
+          "description": "The agent's explanation, when given.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "steps": {
+          "description": "Steps, in order.",
+          "items": {
+            "$ref": "#/$defs/PlanStep"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "steps"
+      ],
+      "type": "object"
+    },
+    "PlanStep": {
+      "description": "One step of a plan.",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/PlanStepState",
+          "description": "Its state."
+        },
+        "text": {
+          "description": "What the step is.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "state"
+      ],
+      "type": "object"
+    },
+    "PlanStepState": {
+      "anyOf": [
+        {
+          "enum": [
+            "pending",
+            "inProgress",
+            "completed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "State of a plan step."
+    },
+    "ProjectRef": {
+      "description": "The repository a thread's working directory belongs to.",
+      "properties": {
+        "crossTargetKey": {
+          "description": "Normalised `origin` remote URL. Two projects with the same key on different targets are\nthe same project. Absent: never merged across targets.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "description": "The repository directory name, for display.",
+          "type": "string"
+        },
+        "path": {
+          "$ref": "#/$defs/TargetPath",
+          "description": "Identifies the project on its target: the git common directory, or the working\ndirectory itself when there is no git."
+        }
+      },
+      "required": [
+        "path",
+        "displayName"
+      ],
+      "type": "object"
+    },
+    "ProjectResolveParams": {
+      "description": "`project/resolve`: the git identity of a directory.",
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/TargetPath",
+          "description": "The directory."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "ProjectResolveResult": {
+      "description": "`project/resolve` result.",
+      "properties": {
+        "branch": {
+          "description": "Checked-out branch.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commonDir": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Git common directory (shared by all worktrees)."
+        },
+        "gitRoot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Git top-level directory."
+        },
+        "originUrl": {
+          "description": "`origin` remote URL, as configured.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project": {
+          "$ref": "#/$defs/ProjectRef",
+          "description": "The project (the directory itself when there is no git)."
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorktreeRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The worktree; absent when there is no git."
+        }
+      },
+      "required": [
+        "project"
+      ],
+      "type": "object"
+    },
+    "ProtocolRange": {
+      "description": "The protocol versions one side speaks. Frozen core.",
+      "properties": {
+        "max": {
+          "$ref": "#/$defs/ProtocolVersion"
+        },
+        "min": {
+          "$ref": "#/$defs/ProtocolVersion"
+        }
+      },
+      "required": [
+        "min",
+        "max"
+      ],
+      "type": "object"
+    },
+    "ProtocolVersion": {
+      "description": "A protocol version number. Read only by the dialect layer.",
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "ProviderDescriptor": {
+      "description": "Everything the host knows about one provider instance.",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/BackendKind",
+          "description": "The backend in use."
+        },
+        "capabilities": {
+          "default": [],
+          "description": "What this instance can do, on this backend.",
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "type": "array"
+        },
+        "displayName": {
+          "description": "\"Codex\", or \"Codex · work\".",
+          "type": "string"
+        },
+        "harnessVersion": {
+          "description": "Version of the process actually serving, not just the CLI on `PATH`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instance": {
+          "$ref": "#/$defs/InstanceId",
+          "description": "The instance."
+        },
+        "kind": {
+          "$ref": "#/$defs/ProviderKind",
+          "description": "Its kind. Display and diagnostics only — never branch on it."
+        },
+        "models": {
+          "default": [],
+          "description": "Models, fetched from the harness.",
+          "items": {
+            "$ref": "#/$defs/ModelInfo"
+          },
+          "type": "array"
+        },
+        "modelsComplete": {
+          "default": false,
+          "description": "Whether `models` is a complete listing. A model is only ever declared gone after a\ncomplete listing.",
+          "type": "boolean"
+        },
+        "modes": {
+          "default": [],
+          "description": "Modes on offer.",
+          "items": {
+            "$ref": "#/$defs/ModeInfo"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "User-given instance name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "description": "Bumps whenever anything above changes. Monotonic per instance.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/ProviderStatus",
+          "description": "Whether it can be used."
+        },
+        "statusMessage": {
+          "description": "Human-readable detail for a status other than `ready`, shown as-is.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "store": {
+          "$ref": "#/$defs/StoreIdentity",
+          "description": "Which conversations this instance owns."
+        }
+      },
+      "required": [
+        "instance",
+        "kind",
+        "displayName",
+        "backend",
+        "store",
+        "status",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "ProviderEndpoint": {
+      "description": "Endpoint settings of an instance.",
+      "properties": {
+        "socket": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An explicit control socket. An instance defined by one is connect-only."
+        }
+      },
+      "type": "object"
+    },
+    "ProviderInstanceAddParams": {
+      "description": "`providerInstance/add`.",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/BackendPreference",
+          "description": "Backend preference."
+        },
+        "enabled": {
+          "description": "Whether it starts enabled.",
+          "type": "boolean"
+        },
+        "endpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderEndpoint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Endpoint settings."
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Extra environment.",
+          "type": "object"
+        },
+        "kind": {
+          "$ref": "#/$defs/ProviderKind",
+          "description": "The provider kind."
+        },
+        "name": {
+          "description": "Optional user-given name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id."
+        }
+      },
+      "required": [
+        "opId",
+        "kind",
+        "enabled",
+        "backend"
+      ],
+      "type": "object"
+    },
+    "ProviderInstanceConfig": {
+      "description": "The stored configuration of one instance, kept on the target by `yaacd`.",
+      "properties": {
+        "backend": {
+          "$ref": "#/$defs/BackendPreference",
+          "description": "Backend preference."
+        },
+        "enabled": {
+          "description": "Whether it is enabled.",
+          "type": "boolean"
+        },
+        "endpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderEndpoint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Endpoint settings."
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "description": "Extra environment for the harness (e.g. `CODEX_HOME`).",
+          "type": "object"
+        },
+        "id": {
+          "$ref": "#/$defs/InstanceId",
+          "description": "Stable, generated by `yaacd`."
+        },
+        "implicit": {
+          "default": false,
+          "description": "Whether this is an implicit default instance (exists without configuration).",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/ProviderKind",
+          "description": "The provider kind."
+        },
+        "name": {
+          "description": "Optional user-given name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "enabled",
+        "backend"
+      ],
+      "type": "object"
+    },
+    "ProviderInstanceListResult": {
+      "description": "`providerInstance/list` result: the stored configurations, including implicit defaults.",
+      "properties": {
+        "instances": {
+          "description": "Every configured or implicit instance.",
+          "items": {
+            "$ref": "#/$defs/ProviderInstanceConfig"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "instances"
+      ],
+      "type": "object"
+    },
+    "ProviderInstanceRemoveParams": {
+      "description": "`providerInstance/remove`.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/InstanceId",
+          "description": "The instance."
+        },
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id."
+        }
+      },
+      "required": [
+        "opId",
+        "id"
+      ],
+      "type": "object"
+    },
+    "ProviderInstanceResult": {
+      "description": "Result of `providerInstance/add` and `providerInstance/update`.",
+      "properties": {
+        "instance": {
+          "$ref": "#/$defs/ProviderInstanceConfig",
+          "description": "The stored configuration after the change."
+        }
+      },
+      "required": [
+        "instance"
+      ],
+      "type": "object"
+    },
+    "ProviderInstanceUpdateParams": {
+      "description": "`providerInstance/update`: a patch. Absent fields are unchanged, so an older client never\nerases settings it does not know about.",
+      "properties": {
+        "backend": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BackendPreference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New backend preference."
+        },
+        "enabled": {
+          "description": "New enabled flag.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "endpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderEndpoint"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "New endpoint: absent = unchanged, `null` = remove it."
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "New environment, replacing the old one entirely.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/InstanceId",
+          "description": "The instance."
+        },
+        "name": {
+          "description": "New name: absent = unchanged, `null` = remove the name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id."
+        }
+      },
+      "required": [
+        "opId",
+        "id"
+      ],
+      "type": "object"
+    },
+    "ProviderKind": {
+      "description": "A provider kind: an open string such as `codex` or `claude`. UI code must never branch on\nit; branch on capabilities.",
+      "type": "string"
+    },
+    "ProviderListResult": {
+      "description": "`provider/list` result.",
+      "properties": {
+        "providers": {
+          "description": "Every instance on the target.",
+          "items": {
+            "$ref": "#/$defs/ProviderDescriptor"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "providers"
+      ],
+      "type": "object"
+    },
+    "ProviderRefreshParams": {
+      "description": "`provider/refresh`: re-probe one instance, or all when `instance` is absent.",
+      "properties": {
+        "instance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstanceId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The instance; all when absent."
+        }
+      },
+      "type": "object"
+    },
+    "ProviderStatus": {
+      "anyOf": [
+        {
+          "enum": [
+            "ready",
+            "notInstalled",
+            "tooOld",
+            "needsAuth",
+            "unreachable",
+            "startFailed",
+            "accessDenied",
+            "disabled",
+            "probing"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "Whether an instance can be used, and if not, why. The reasons are distinct because they\nneed different fixes."
+    },
+    "ProviderUpdatedParams": {
+      "description": "`provider/updated` notification: an instance's descriptor changed.",
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/ProviderDescriptor",
+          "description": "The new descriptor; its `revision` is higher than any sent before for this instance."
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "type": "object"
+    },
+    "Question": {
+      "description": "One normalised question.",
+      "properties": {
+        "allowOther": {
+          "default": false,
+          "description": "May type a free-form answer instead.",
+          "type": "boolean"
+        },
+        "header": {
+          "description": "Short header.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/QuestionId",
+          "description": "Key in the answer."
+        },
+        "multiSelect": {
+          "default": false,
+          "description": "May choose several options.",
+          "type": "boolean"
+        },
+        "options": {
+          "default": [],
+          "description": "Options; empty for a free-text question.",
+          "items": {
+            "$ref": "#/$defs/QuestionOption"
+          },
+          "type": "array"
+        },
+        "secret": {
+          "default": false,
+          "description": "The answer must be masked and never cached on the host.",
+          "type": "boolean"
+        },
+        "text": {
+          "description": "The question.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "type": "object"
+    },
+    "QuestionAnswer": {
+      "description": "The answer to one question: chosen labels and/or free text.",
+      "properties": {
+        "other": {
+          "description": "Free-form answer.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redacted": {
+          "default": false,
+          "description": "Set by `yaacd` when it reports the answer to a `secret` question: the content is\nwithheld, so it can never reach the host cache.",
+          "type": "boolean"
+        },
+        "selected": {
+          "default": [],
+          "description": "Chosen option labels.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "QuestionAnswers": {
+      "description": "Answers to a question request.",
+      "properties": {
+        "answers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/QuestionAnswer"
+          },
+          "description": "Question id → answer.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "answers"
+      ],
+      "type": "object"
+    },
+    "QuestionId": {
+      "description": "One question inside a question request.",
+      "type": "string"
+    },
+    "QuestionOption": {
+      "description": "One option of a question.",
+      "properties": {
+        "description": {
+          "description": "Longer description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "Label; also what is sent back.",
+          "type": "string"
+        },
+        "preview": {
+          "description": "A preview to show (markdown), when the harness offers one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
+    "QuestionRequest": {
+      "description": "\"Which of these approaches do you want?\"",
+      "properties": {
+        "questions": {
+          "description": "The questions, in order.",
+          "items": {
+            "$ref": "#/$defs/Question"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "questions"
+      ],
+      "type": "object"
+    },
+    "ReadThreadQuery": {
+      "description": "`readThread`: recent messages, or the last answer, of a thread there.",
+      "properties": {
+        "lastAnswerOnly": {
+          "default": false,
+          "description": "Only the last agent answer.",
+          "type": "boolean"
+        },
+        "maxBytes": {
+          "description": "Upper bound on the reply in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "thread": {
+          "$ref": "#/$defs/Address",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "thread"
+      ],
+      "type": "object"
+    },
+    "ReadThreadReply": {
+      "description": "`readThread` reply.",
+      "properties": {
+        "entries": {
+          "description": "Entries, oldest first.",
+          "items": {
+            "$ref": "#/$defs/TranscriptEntry"
+          },
+          "type": "array"
+        },
+        "truncated": {
+          "default": false,
+          "description": "Earlier entries were left out.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "type": "object"
+    },
+    "ReasoningItem": {
+      "description": "`reasoning`: reasoning text or summary, when the provider exposes it.",
+      "properties": {
+        "reasoning": {
+          "description": "The text. `itemDelta` with field `reasoning` appends here.",
+          "type": "string"
+        },
+        "summary": {
+          "default": false,
+          "description": "Whether this is a summary rather than the raw reasoning.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reasoning"
+      ],
+      "type": "object"
+    },
+    "Receipt": {
+      "description": "A delivery receipt.",
+      "properties": {
+        "detail": {
+          "description": "Text for the agent and the user, shown as-is.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReceiptReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why it is queued or failed."
+        },
+        "status": {
+          "$ref": "#/$defs/ReceiptStatus",
+          "description": "How far it got."
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "ReceiptReason": {
+      "anyOf": [
+        {
+          "enum": [
+            "targetOffline",
+            "hubUnavailable",
+            "recipientBusy",
+            "awaitingUser",
+            "inUseElsewhere",
+            "budgetExhausted",
+            "unknownAddress",
+            "threadDeleted",
+            "limitExceeded",
+            "policyDenied",
+            "remoteDisallowed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "Why a message is queued or failed."
+    },
+    "ReceiptStatus": {
+      "anyOf": [
+        {
+          "enum": [
+            "delivered",
+            "queued",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "How far a message got."
+    },
+    "RequestChangedEvent": {
+      "description": "`requestChanged`: a request moved between states.",
+      "properties": {
+        "itemId": {
+          "$ref": "#/$defs/ItemId",
+          "description": "The request item."
+        },
+        "requestId": {
+          "$ref": "#/$defs/RequestId",
+          "description": "The request."
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestResolution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How it was resolved, once `resolved`."
+        },
+        "state": {
+          "$ref": "#/$defs/RequestState",
+          "description": "The new state."
+        }
+      },
+      "required": [
+        "itemId",
+        "requestId",
+        "state"
+      ],
+      "type": "object"
+    },
+    "RequestId": {
+      "description": "A pending approval, question, or form inside a thread.",
+      "type": "string"
+    },
+    "RequestItem": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "properties": {
+                "requestKind": {
+                  "const": "approval",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "requestKind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ApprovalRequest"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "requestKind": {
+                  "const": "question",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "requestKind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/QuestionRequest"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "requestKind": {
+                  "const": "form",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "requestKind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/FormRequest"
+            }
+          ]
+        },
+        {
+          "properties": {
+            "requestKind": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "requestKind"
+          ],
+          "type": "object",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "`request`: something awaiting the user. Journaled before anything else happens to it.",
+      "properties": {
+        "blocking": {
+          "default": false,
+          "description": "Whether the agent is blocked until it is answered.",
+          "type": "boolean"
+        },
+        "requestId": {
+          "$ref": "#/$defs/RequestId",
+          "description": "The request, for `request/respond`."
+        },
+        "resolution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestResolution"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How it was resolved, once `resolved`."
+        },
+        "state": {
+          "$ref": "#/$defs/RequestState",
+          "description": "Its state."
+        }
+      },
+      "required": [
+        "requestId",
+        "state"
+      ],
+      "type": "object"
+    },
+    "RequestResolution": {
+      "description": "How a request was resolved.",
+      "properties": {
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RequestResponse"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The answer, when known. Secret answers are redacted."
+        },
+        "at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When."
+        },
+        "by": {
+          "$ref": "#/$defs/AnsweredBy",
+          "description": "Who answered."
+        },
+        "clientHost": {
+          "description": "The answering client's host name, for \"answered on …\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "clientId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClientId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The answering client, when `by` is `client`."
+        }
+      },
+      "required": [
+        "by"
+      ],
+      "type": "object"
+    },
+    "RequestRespondParams": {
+      "description": "`request/respond`: answer a pending request.",
+      "properties": {
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id."
+        },
+        "requestId": {
+          "$ref": "#/$defs/RequestId",
+          "description": "The request."
+        },
+        "response": {
+          "$ref": "#/$defs/RequestResponse",
+          "description": "The answer."
+        },
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "opId",
+        "threadId",
+        "requestId",
+        "response"
+      ],
+      "type": "object"
+    },
+    "RequestResponse": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "properties": {
+                "requestKind": {
+                  "const": "approval",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "requestKind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ApprovalAnswer"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "requestKind": {
+                  "const": "question",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "requestKind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/QuestionAnswers"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "requestKind": {
+                  "const": "form",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "requestKind"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/FormAnswer"
+            }
+          ]
+        },
+        {
+          "properties": {
+            "requestKind": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "requestKind"
+          ],
+          "type": "object",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "An answer to a request. Its `requestKind` matches the request's."
+    },
+    "RequestState": {
+      "anyOf": [
+        {
+          "enum": [
+            "pending",
+            "submitted",
+            "resolved",
+            "expired",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "The state of a request item. Always exactly one."
+    },
+    "RosterEntry": {
+      "description": "One target in the roster.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/TargetId",
+          "description": "Immutable id."
+        },
+        "name": {
+          "$ref": "#/$defs/TargetName",
+          "description": "The user's label."
+        },
+        "reachable": {
+          "description": "Whether the hub is connected to it now.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "reachable"
+      ],
+      "type": "object"
+    },
+    "RpcError": {
+      "description": "An error response. `id` is null when the request id could not be read.",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ErrorObject"
+        },
+        "id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RpcId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "error"
+      ],
+      "type": "object"
+    },
+    "RpcId": {
+      "anyOf": [
+        {
+          "description": "A numeric id.",
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "description": "A string id.",
+          "type": "string"
+        }
+      ],
+      "description": "A request id. JSON-RPC allows a number or a string; YAAC sends numbers. Each side has its\nown id space for the requests it originates."
+    },
+    "RpcMessage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RpcRequest"
+        },
+        {
+          "$ref": "#/$defs/RpcResponse"
+        },
+        {
+          "$ref": "#/$defs/RpcError"
+        },
+        {
+          "$ref": "#/$defs/RpcNotification"
+        }
+      ],
+      "description": "Any message. No `jsonrpc` member is sent; it is ignored if present."
+    },
+    "RpcNotification": {
+      "description": "A notification: no id, no response.",
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "RpcRequest": {
+      "description": "A request. `id` is unique among the sender's outstanding requests.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RpcId"
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": true
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "type": "object"
+    },
+    "RpcResponse": {
+      "description": "A successful response.",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/RpcId"
+        },
+        "result": true
+      },
+      "required": [
+        "id",
+        "result"
+      ],
+      "type": "object"
+    },
+    "Seq": {
+      "description": "A sequence number within an epoch. Increases by one per event and is never reused.",
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "SettingsChangedEvent": {
+      "description": "`settingsChanged`: what the harness actually applied changed; carries the recomputed\neffective capabilities (which include the applied settings).",
+      "properties": {
+        "effective": {
+          "$ref": "#/$defs/ThreadEffective",
+          "description": "The thread's effective capabilities and applied settings, now."
+        }
+      },
+      "required": [
+        "effective"
+      ],
+      "type": "object"
+    },
+    "Sha256Hex": {
+      "description": "A lowercase hex SHA-256 digest.",
+      "type": "string"
+    },
+    "SpawnThreadQuery": {
+      "description": "`spawnThread`: start a new thread there, as a child of the caller.",
+      "properties": {
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Working directory on the destination. When absent, the destination resolves \"the same\nproject\" from `projectKey`; it confirms the directory exists before starting anything."
+        },
+        "detached": {
+          "default": false,
+          "description": "Do not send the child's final answer back to the parent.",
+          "type": "boolean"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffortId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Effort."
+        },
+        "instance": {
+          "$ref": "#/$defs/InstanceId",
+          "description": "Provider instance, as returned by `listModels`."
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Model, as returned by `listModels`."
+        },
+        "projectKey": {
+          "description": "The caller's project cross-target key (normalised remote URL).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Address"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The orchestration root."
+        },
+        "text": {
+          "description": "The first message.",
+          "type": "string"
+        },
+        "title": {
+          "description": "Title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "instance",
+        "text"
+      ],
+      "type": "object"
+    },
+    "SpawnThreadReply": {
+      "description": "`spawnThread` reply.",
+      "properties": {
+        "thread": {
+          "$ref": "#/$defs/MeshPeer",
+          "description": "The new thread."
+        },
+        "turnId": {
+          "$ref": "#/$defs/TurnId",
+          "description": "Its first turn."
+        }
+      },
+      "required": [
+        "thread",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "SpawnedThread": {
+      "description": "One thread started by a spawn.",
+      "properties": {
+        "error": {
+          "description": "Why it could not be started, when it could not.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "peer": {
+          "$ref": "#/$defs/MeshPeer",
+          "description": "The new thread."
+        },
+        "state": {
+          "$ref": "#/$defs/ThreadState",
+          "description": "Its live state."
+        }
+      },
+      "required": [
+        "peer",
+        "state"
+      ],
+      "type": "object"
+    },
+    "StopThreadQuery": {
+      "description": "`stopThread`: interrupt a thread there. Only for the caller's own workers.",
+      "properties": {
+        "thread": {
+          "$ref": "#/$defs/Address",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "thread"
+      ],
+      "type": "object"
+    },
+    "StopThreadReply": {
+      "description": "`stopThread` reply.",
+      "type": "object"
+    },
+    "StoreIdentity": {
+      "description": "Which conversations an instance owns. Two instances with equal `key`s see the same\nconversations; native fork is possible only within one store.",
+      "properties": {
+        "account": {
+          "description": "The signed-in account, as the harness reports it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "home": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The store's home directory on the target, when it has one (Codex: `CODEX_HOME`)."
+        },
+        "key": {
+          "description": "Opaque comparison key computed by `yaacd`. `None` while the store is not yet known\n(for example before the first successful probe); two unknown stores are never equal.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "StreamCreditParams": {
+      "description": "`stream/credit` notification: the receiver of a data stream grants the sender more bytes.\nEither side may send it, for a stream it receives.",
+      "properties": {
+        "bytes": {
+          "description": "Additional bytes the sender may send.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stream": {
+          "$ref": "#/$defs/StreamId",
+          "description": "The stream."
+        }
+      },
+      "required": [
+        "stream",
+        "bytes"
+      ],
+      "type": "object"
+    },
+    "StreamId": {
+      "description": "A data stream number, used by `0x02` data frames. Allocated by the side that will receive\nthe stream (for uploads: `yaacd`, in `upload/begin`).",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "SubscribeReplay": {
+      "description": "Replay: events `fromSeq ..= headSeq` follow, then live events.",
+      "properties": {
+        "epoch": {
+          "$ref": "#/$defs/Epoch",
+          "description": "The current epoch (the client's)."
+        },
+        "fromSeq": {
+          "$ref": "#/$defs/Seq",
+          "description": "First event that will be replayed."
+        },
+        "headSeq": {
+          "$ref": "#/$defs/Seq",
+          "description": "Last event in the journal now."
+        }
+      },
+      "required": [
+        "epoch",
+        "fromSeq",
+        "headSeq"
+      ],
+      "type": "object"
+    },
+    "SubscribeReset": {
+      "description": "Reset: rebuild from `thread/read`, then live events strictly after its snapshot position.",
+      "properties": {
+        "epoch": {
+          "$ref": "#/$defs/Epoch",
+          "description": "The current epoch."
+        },
+        "headSeq": {
+          "$ref": "#/$defs/Seq",
+          "description": "Last event in the journal now."
+        }
+      },
+      "required": [
+        "epoch",
+        "headSeq"
+      ],
+      "type": "object"
+    },
+    "Support": {
+      "anyOf": [
+        {
+          "enum": [
+            "supported",
+            "unsupported",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "Three-valued support. `unknown` is a real answer — the harness gave no information —\nand is never treated as \"yes\"."
+    },
+    "SyncToken": {
+      "description": "A position in `yaacd`'s thread-index change counter. Empty means \"full listing\".",
+      "type": "string"
+    },
+    "TargetFacts": {
+      "description": "Facts about the target.",
+      "properties": {
+        "arch": {
+          "description": "Architecture (`x86_64`, `aarch64`).",
+          "type": "string"
+        },
+        "home": {
+          "$ref": "#/$defs/TargetPath",
+          "description": "That user's home directory."
+        },
+        "hostname": {
+          "description": "Host name.",
+          "type": "string"
+        },
+        "os": {
+          "description": "Operating system (`linux`, `macos`, `windows`).",
+          "type": "string"
+        },
+        "user": {
+          "description": "User `yaacd` runs as.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "os",
+        "arch",
+        "hostname",
+        "user",
+        "home"
+      ],
+      "type": "object"
+    },
+    "TargetId": {
+      "description": "A target, as the hub identifies it: assigned when the target is added, never changed.",
+      "type": "string"
+    },
+    "TargetName": {
+      "description": "The label the user gave a target (`devbox`). Unique, but may be renamed.",
+      "type": "string"
+    },
+    "TargetPath": {
+      "description": "A path on a target. Only `yaacd` on that target interprets it: the host never parses,\njoins, or normalises it, and never stores it in a host `PathBuf`.",
+      "type": "string"
+    },
+    "TextPart": {
+      "description": "Plain text.",
+      "properties": {
+        "text": {
+          "description": "The text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "ThreadAckParams": {
+      "description": "`thread/ack`: how far this client has durably got. Sent periodically while attached.",
+      "properties": {
+        "epoch": {
+          "$ref": "#/$defs/Epoch",
+          "description": "The epoch."
+        },
+        "seq": {
+          "$ref": "#/$defs/Seq",
+          "description": "The last sequence number durably stored by the client."
+        },
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "threadId",
+        "epoch",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "ThreadArchiveParams": {
+      "description": "`thread/archive` (under `threadArchive`).",
+      "properties": {
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id."
+        },
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "opId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadDeleteParams": {
+      "description": "`thread/delete` (under `threadDelete`).",
+      "properties": {
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id."
+        },
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "opId",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadEffective": {
+      "description": "What a thread can do right now, computed on the target from the instance, the model, the\naccount, and the thread's state. The UI does not combine flags itself.",
+      "properties": {
+        "applied": {
+          "$ref": "#/$defs/AppliedSettings",
+          "default": {},
+          "description": "What the harness is really using."
+        },
+        "capabilities": {
+          "default": [],
+          "description": "What can be done in this thread, now.",
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "type": "array"
+        },
+        "efforts": {
+          "default": [],
+          "description": "Selectable now; empty when effort cannot be changed.",
+          "items": {
+            "$ref": "#/$defs/EffortInfo"
+          },
+          "type": "array"
+        },
+        "imageFormats": {
+          "default": [],
+          "description": "Accepted image media types, when known.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "imageInput": {
+          "$ref": "#/$defs/Support",
+          "description": "Whether the selected model can see images. Decides `image` versus `file` parts."
+        },
+        "modes": {
+          "default": [],
+          "description": "Selectable modes.",
+          "items": {
+            "$ref": "#/$defs/ModeInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "imageInput"
+      ],
+      "type": "object"
+    },
+    "ThreadEvent": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "turnStarted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/TurnStartedEvent"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "turnCompleted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/TurnCompletedEvent"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "itemStarted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ItemEvent"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "itemCompleted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ItemEvent"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "itemDelta",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ItemDeltaEvent"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "itemUpdated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ItemUpdatedEvent"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "requestChanged",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/RequestChangedEvent"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "controlChanged",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/ControlChangedEvent"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "settingsChanged",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/SettingsChangedEvent"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "usageUpdated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/UsageUpdatedEvent"
+            }
+          ]
+        },
+        {
+          "properties": {
+            "type": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "A thread event."
+    },
+    "ThreadEventParams": {
+      "description": "`thread/event` notification: one journaled event, with its position.",
+      "properties": {
+        "epoch": {
+          "$ref": "#/$defs/Epoch",
+          "description": "The journal."
+        },
+        "event": {
+          "$ref": "#/$defs/ThreadEvent",
+          "description": "The event."
+        },
+        "seq": {
+          "$ref": "#/$defs/Seq",
+          "description": "The event's sequence number (the first one it covers, for a compacted `itemUpdated`)."
+        },
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "threadId",
+        "epoch",
+        "seq",
+        "event"
+      ],
+      "type": "object"
+    },
+    "ThreadForkParams": {
+      "description": "`thread/fork`: create a new thread from an existing one, with its first message.",
+      "properties": {
+        "atTurn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fork after this turn; the last completed turn when absent. A native fork honours it\nonly under `threadForkAtTurn`."
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffortId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Effort."
+        },
+        "input": {
+          "description": "The first message of the new thread.",
+          "items": {
+            "$ref": "#/$defs/InputPart"
+          },
+          "type": "array"
+        },
+        "instance": {
+          "$ref": "#/$defs/InstanceId",
+          "description": "Destination instance, on the same target."
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModeId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mode."
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Model."
+        },
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id."
+        },
+        "source": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread to fork from. Not modified; may be in use elsewhere."
+        }
+      },
+      "required": [
+        "opId",
+        "source",
+        "instance",
+        "input"
+      ],
+      "type": "object"
+    },
+    "ThreadForkPreviewParams": {
+      "description": "`thread/forkPreview`: what a fork would send and where, for the confirmation dialog.\nChanges nothing.",
+      "properties": {
+        "atTurn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Fork point, as in `thread/fork`."
+        },
+        "instance": {
+          "$ref": "#/$defs/InstanceId",
+          "description": "Destination instance."
+        },
+        "maxPreviewBytes": {
+          "description": "Upper bound on the transcript preview, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread to fork from."
+        }
+      },
+      "required": [
+        "source",
+        "instance"
+      ],
+      "type": "object"
+    },
+    "ThreadForkPreviewResult": {
+      "description": "`thread/forkPreview` result.",
+      "properties": {
+        "cutoffTurn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The turn it would cut off after."
+        },
+        "destinationAccount": {
+          "description": "Destination account, when known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forkKind": {
+          "$ref": "#/$defs/ForkKind",
+          "description": "The mechanism that would be used."
+        },
+        "omittedAttachments": {
+          "default": [],
+          "description": "Attachments that are gone from the target and would be marked as omitted.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "transcriptBytes": {
+          "description": "Size of the full transcript, for a handoff.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "transcriptPreview": {
+          "description": "The beginning of the transcript, for a handoff.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unavailableReason": {
+          "description": "Why a fork is not possible, when it is not.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "forkKind"
+      ],
+      "type": "object"
+    },
+    "ThreadForkResult": {
+      "description": "`thread/fork` result.",
+      "properties": {
+        "forkKind": {
+          "$ref": "#/$defs/ForkKind",
+          "description": "The mechanism used."
+        },
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The new thread."
+        },
+        "turnId": {
+          "$ref": "#/$defs/TurnId",
+          "description": "Its first turn."
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId",
+        "forkKind"
+      ],
+      "type": "object"
+    },
+    "ThreadId": {
+      "description": "A thread on one target. Opaque: `yaacd` builds it from the provider instance (and so its\nstore binding) and the harness's native conversation id. The host never parses it.",
+      "type": "string"
+    },
+    "ThreadReadParams": {
+      "description": "`thread/read`: one page of items, newest first, from a snapshot bound to a position.",
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Continue from a previous page; absent for the first page (which takes a new snapshot)."
+        },
+        "maxBytes": {
+          "description": "Upper bound on the page size in bytes. Pages are bounded by bytes, never by count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadReadResult": {
+      "description": "`thread/read` result.",
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PageCursor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Cursor for the next (older) page; absent on the last page."
+        },
+        "items": {
+          "description": "Items, newest first.",
+          "items": {
+            "$ref": "#/$defs/Item"
+          },
+          "type": "array"
+        },
+        "position": {
+          "$ref": "#/$defs/JournalPosition",
+          "description": "The journal position the snapshot is valid at. Same on every page of one snapshot."
+        },
+        "uploads": {
+          "default": [],
+          "description": "Presence of the attachments referenced by the items on this page.",
+          "items": {
+            "$ref": "#/$defs/UploadPresence"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items",
+        "position"
+      ],
+      "type": "object"
+    },
+    "ThreadRemovedParams": {
+      "description": "`thread/removed` notification.",
+      "properties": {
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        },
+        "token": {
+          "$ref": "#/$defs/SyncToken",
+          "description": "The index token that includes this change."
+        }
+      },
+      "required": [
+        "threadId",
+        "token"
+      ],
+      "type": "object"
+    },
+    "ThreadRenameParams": {
+      "description": "`thread/rename` (under `threadRename`).",
+      "properties": {
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id."
+        },
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        },
+        "title": {
+          "description": "New title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "opId",
+        "threadId",
+        "title"
+      ],
+      "type": "object"
+    },
+    "ThreadStartParams": {
+      "description": "`thread/start`: create a thread **and** send its first message, as one operation.",
+      "properties": {
+        "cwd": {
+          "$ref": "#/$defs/TargetPath",
+          "description": "Working directory."
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffortId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Effort."
+        },
+        "input": {
+          "description": "The first message.",
+          "items": {
+            "$ref": "#/$defs/InputPart"
+          },
+          "type": "array"
+        },
+        "instance": {
+          "$ref": "#/$defs/InstanceId",
+          "description": "The provider instance. Fixed for the life of the thread."
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModeId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mode."
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Model; the harness default when absent."
+        },
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id."
+        }
+      },
+      "required": [
+        "opId",
+        "instance",
+        "cwd",
+        "input"
+      ],
+      "type": "object"
+    },
+    "ThreadStartResult": {
+      "description": "`thread/start` result.",
+      "properties": {
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The new thread."
+        },
+        "turnId": {
+          "$ref": "#/$defs/TurnId",
+          "description": "Its first turn."
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "ThreadState": {
+      "anyOf": [
+        {
+          "enum": [
+            "idle",
+            "running",
+            "needsAttention",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "What a thread is doing, for the sidebar."
+    },
+    "ThreadStatesQuery": {
+      "description": "`threadStates`: the current state of some threads there (used by `wait`).",
+      "properties": {
+        "threads": {
+          "description": "The threads.",
+          "items": {
+            "$ref": "#/$defs/Address"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "threads"
+      ],
+      "type": "object"
+    },
+    "ThreadStatesReply": {
+      "description": "`threadStates` reply.",
+      "properties": {
+        "states": {
+          "description": "One entry per thread asked about.",
+          "items": {
+            "$ref": "#/$defs/MeshThreadState"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "states"
+      ],
+      "type": "object"
+    },
+    "ThreadSubscribeParams": {
+      "description": "`thread/subscribe`: start live events for a thread, replaying from a position.",
+      "properties": {
+        "afterSeq": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Seq"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The last sequence number the client has durably applied."
+        },
+        "epoch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Epoch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The client's journal epoch; absent when it has no position."
+        },
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadSubscribeResult": {
+      "anyOf": [
+        {
+          "allOf": [
+            {
+              "properties": {
+                "mode": {
+                  "const": "replay",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "mode"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/SubscribeReplay"
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "properties": {
+                "mode": {
+                  "const": "reset",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "mode"
+              ],
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/SubscribeReset"
+            }
+          ]
+        },
+        {
+          "properties": {
+            "mode": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "mode"
+          ],
+          "type": "object",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "`thread/subscribe` result.",
+      "properties": {
+        "activeTurn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The running turn, when there is one (needed for Stop and steer)."
+        },
+        "control": {
+          "$ref": "#/$defs/Control",
+          "description": "Who may act on the thread, relative to this client."
+        },
+        "controlHolder": {
+          "description": "Where it is in use, for the read-only states.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "effective": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadEffective"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The thread's effective capabilities and applied settings."
+        }
+      },
+      "required": [
+        "control"
+      ],
+      "type": "object"
+    },
+    "ThreadSummary": {
+      "description": "What the sidebar needs, and what the host cache stores, per thread.",
+      "properties": {
+        "archived": {
+          "default": false,
+          "description": "Archived.",
+          "type": "boolean"
+        },
+        "branch": {
+          "description": "Branch.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "children": {
+          "default": 0,
+          "description": "How many threads this one spawned. The threads themselves are found through the\nindexes (each child's `spawnedBy` names its parent, on any target).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "control": {
+          "$ref": "#/$defs/Control",
+          "description": "Who may act on it, relative to the receiving client."
+        },
+        "controlHolder": {
+          "description": "Where it is in use when `control` is read-only (a host name, or a program), for\n\"In use on …\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "createdAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Creation time."
+        },
+        "cwd": {
+          "$ref": "#/$defs/TargetPath",
+          "description": "Working directory."
+        },
+        "forkedFrom": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ThreadId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The thread whose history this one began with."
+        },
+        "id": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        },
+        "instance": {
+          "$ref": "#/$defs/InstanceId",
+          "description": "Its provider instance. Never changes."
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The model last applied, when known."
+        },
+        "originKind": {
+          "$ref": "#/$defs/OriginKind",
+          "description": "How it came to exist."
+        },
+        "peers": {
+          "default": 0,
+          "description": "How many threads this one has exchanged messages with, without either spawning the\nother.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "preview": {
+          "default": "",
+          "description": "Short excerpt.",
+          "type": "string"
+        },
+        "project": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Resolved repository."
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Address"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The orchestration root this thread belongs to, when it was spawned or messaged by an\nagent."
+        },
+        "spawnedBy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Address"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The agent that started this thread, possibly on another target."
+        },
+        "state": {
+          "$ref": "#/$defs/ThreadState",
+          "description": "What it is doing."
+        },
+        "title": {
+          "description": "Harness title, or first prompt, or user override.",
+          "type": "string"
+        },
+        "updatedAt": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "Last activity."
+        },
+        "worktree": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorktreeRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Resolved worktree."
+        }
+      },
+      "required": [
+        "id",
+        "instance",
+        "title",
+        "cwd",
+        "state",
+        "control",
+        "originKind",
+        "createdAt",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "ThreadSyncParams": {
+      "description": "`thread/sync`: incremental thread index.",
+      "properties": {
+        "maxBytes": {
+          "description": "Upper bound on the size of the page in bytes, chosen by the client.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "token": {
+          "$ref": "#/$defs/SyncToken",
+          "default": "",
+          "description": "The last token received; empty for a full listing."
+        }
+      },
+      "type": "object"
+    },
+    "ThreadSyncResult": {
+      "description": "`thread/sync` result.",
+      "properties": {
+        "changed": {
+          "default": [],
+          "description": "Summaries added or changed since the token.",
+          "items": {
+            "$ref": "#/$defs/ThreadSummary"
+          },
+          "type": "array"
+        },
+        "full": {
+          "default": false,
+          "description": "This is (the first page of) a full listing: the client replaces its cached index for\nthis target once the last page arrives, instead of merging.",
+          "type": "boolean"
+        },
+        "more": {
+          "default": false,
+          "description": "More pages follow; call again with `token`.",
+          "type": "boolean"
+        },
+        "removed": {
+          "default": [],
+          "description": "Threads the harness positively reported gone.",
+          "items": {
+            "$ref": "#/$defs/ThreadId"
+          },
+          "type": "array"
+        },
+        "staleInstances": {
+          "default": [],
+          "description": "Instances whose last scan failed or was incomplete. Their threads stay listed.",
+          "items": {
+            "$ref": "#/$defs/InstanceId"
+          },
+          "type": "array"
+        },
+        "token": {
+          "$ref": "#/$defs/SyncToken",
+          "description": "Token to send next time."
+        }
+      },
+      "required": [
+        "token"
+      ],
+      "type": "object"
+    },
+    "ThreadUnsubscribeParams": {
+      "description": "`thread/unsubscribe`.",
+      "properties": {
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadUpdatedParams": {
+      "description": "`thread/updated` notification: one summary changed, pushed while connected.",
+      "properties": {
+        "thread": {
+          "$ref": "#/$defs/ThreadSummary",
+          "description": "The new summary."
+        },
+        "token": {
+          "$ref": "#/$defs/SyncToken",
+          "description": "The index token that includes this change."
+        }
+      },
+      "required": [
+        "thread",
+        "token"
+      ],
+      "type": "object"
+    },
+    "Timestamp": {
+      "description": "An RFC 3339 timestamp in UTC, e.g. `2026-11-20T18:04:11Z`.",
+      "type": "string"
+    },
+    "TokenUsage": {
+      "description": "Token counts. Absent counts are not reported by the harness.",
+      "properties": {
+        "cachedInput": {
+          "description": "Of which served from cache.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input": {
+          "description": "Input tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output": {
+          "description": "Output tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reasoning": {
+          "description": "Of which reasoning.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "total": {
+          "description": "Total.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ToolCallItem": {
+      "description": "`toolCall`: a tool invocation.",
+      "properties": {
+        "cwd": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TargetPath"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Working directory, for a command."
+        },
+        "exitCode": {
+          "description": "Exit status, for a command.",
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "input": {
+          "description": "The tool's input, as structured data."
+        },
+        "output": {
+          "default": "",
+          "description": "Output text. `itemDelta` with field `output` appends here. Bounded: a large output is\na head, with `outputTruncated` set.",
+          "type": "string"
+        },
+        "outputBytes": {
+          "description": "Full output size in bytes, when known.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outputTruncated": {
+          "default": false,
+          "description": "The output above is a bounded head of a longer one.",
+          "type": "boolean"
+        },
+        "title": {
+          "description": "One-line title.",
+          "type": "string"
+        },
+        "tool": {
+          "$ref": "#/$defs/ToolKind",
+          "description": "What kind of tool."
+        }
+      },
+      "required": [
+        "tool",
+        "title"
+      ],
+      "type": "object"
+    },
+    "ToolKind": {
+      "anyOf": [
+        {
+          "enum": [
+            "command",
+            "fileChange",
+            "mcp",
+            "webSearch",
+            "subagent",
+            "other"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "What kind of tool a tool call is."
+    },
+    "TranscriptEntry": {
+      "description": "One entry of a `readThread` reply.",
+      "properties": {
+        "from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Address"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The sending agent, for `peer`."
+        },
+        "role": {
+          "$ref": "#/$defs/TranscriptRole",
+          "description": "Who."
+        },
+        "text": {
+          "description": "The text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "text"
+      ],
+      "type": "object"
+    },
+    "TranscriptRole": {
+      "anyOf": [
+        {
+          "enum": [
+            "user",
+            "agent",
+            "peer",
+            "notice"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "Who said a transcript entry."
+    },
+    "TurnCompletedEvent": {
+      "description": "`turnCompleted`: carries status and token usage.",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When."
+        },
+        "error": {
+          "description": "Error text, for a failed turn.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/TurnStatus",
+          "description": "How it ended."
+        },
+        "turnId": {
+          "$ref": "#/$defs/TurnId",
+          "description": "The turn."
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Token usage of the turn."
+        }
+      },
+      "required": [
+        "turnId",
+        "status"
+      ],
+      "type": "object"
+    },
+    "TurnId": {
+      "description": "A turn within a thread, as the harness identifies it.",
+      "type": "string"
+    },
+    "TurnInterruptParams": {
+      "description": "`turn/interrupt`. Takes the turn id, so a late Stop can never hit the next turn.",
+      "properties": {
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        },
+        "turnId": {
+          "$ref": "#/$defs/TurnId",
+          "description": "The turn to stop."
+        }
+      },
+      "required": [
+        "threadId",
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "TurnOrigin": {
+      "anyOf": [
+        {
+          "enum": [
+            "user",
+            "mesh",
+            "external"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "Who started a turn."
+    },
+    "TurnStartParams": {
+      "description": "`turn/start`: send a user message to an existing thread.",
+      "properties": {
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EffortId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Effort override (under `effortSwitch`)."
+        },
+        "input": {
+          "description": "The message.",
+          "items": {
+            "$ref": "#/$defs/InputPart"
+          },
+          "type": "array"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModeId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Mode override (under `modes`)."
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Model override (under `modelSwitch`). Sticks for later turns."
+        },
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id."
+        },
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        }
+      },
+      "required": [
+        "opId",
+        "threadId",
+        "input"
+      ],
+      "type": "object"
+    },
+    "TurnStartResult": {
+      "description": "`turn/start` result.",
+      "properties": {
+        "turnId": {
+          "$ref": "#/$defs/TurnId",
+          "description": "The new turn."
+        }
+      },
+      "required": [
+        "turnId"
+      ],
+      "type": "object"
+    },
+    "TurnStartedEvent": {
+      "description": "`turnStarted`.",
+      "properties": {
+        "at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When."
+        },
+        "origin": {
+          "$ref": "#/$defs/TurnOrigin",
+          "description": "Who started it."
+        },
+        "turnId": {
+          "$ref": "#/$defs/TurnId",
+          "description": "The turn."
+        }
+      },
+      "required": [
+        "turnId",
+        "origin"
+      ],
+      "type": "object"
+    },
+    "TurnStatus": {
+      "anyOf": [
+        {
+          "enum": [
+            "completed",
+            "interrupted",
+            "interruptedByUpdate",
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "string",
+          "x-yaac-unknown": true
+        }
+      ],
+      "description": "How a turn ended."
+    },
+    "TurnSteerParams": {
+      "description": "`turn/steer` (under `steer`): add input to the running turn.",
+      "properties": {
+        "input": {
+          "description": "The input to add.",
+          "items": {
+            "$ref": "#/$defs/InputPart"
+          },
+          "type": "array"
+        },
+        "opId": {
+          "$ref": "#/$defs/OpId",
+          "description": "Operation id."
+        },
+        "threadId": {
+          "$ref": "#/$defs/ThreadId",
+          "description": "The thread."
+        },
+        "turnId": {
+          "$ref": "#/$defs/TurnId",
+          "description": "The turn the client expects to be running; `turn_mismatch` otherwise."
+        }
+      },
+      "required": [
+        "opId",
+        "threadId",
+        "turnId",
+        "input"
+      ],
+      "type": "object"
+    },
+    "UploadBeginParams": {
+      "description": "`upload/begin`: declare a file.",
+      "properties": {
+        "mediaType": {
+          "description": "Media type, when known (sniffed from content, not the extension).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Original file name; `yaacd` sanitises it.",
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256Hex",
+          "description": "Full SHA-256 of the content."
+        },
+        "size": {
+          "description": "Size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "size",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "UploadBeginResult": {
+      "description": "`upload/begin` result.",
+      "properties": {
+        "credit": {
+          "default": 0,
+          "description": "Initial credit in bytes on that stream. More arrives in `stream/credit`.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "exists": {
+          "default": false,
+          "description": "The content is already stored: send no bytes and no `upload/end`.",
+          "type": "boolean"
+        },
+        "stream": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StreamId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The data stream to send the bytes on, when `exists` is false."
+        },
+        "uploadId": {
+          "$ref": "#/$defs/UploadId",
+          "description": "The upload."
+        }
+      },
+      "required": [
+        "uploadId"
+      ],
+      "type": "object"
+    },
+    "UploadCancelParams": {
+      "description": "`upload/cancel`: abort; the daemon removes the partial file.",
+      "properties": {
+        "uploadId": {
+          "$ref": "#/$defs/UploadId",
+          "description": "The upload."
+        }
+      },
+      "required": [
+        "uploadId"
+      ],
+      "type": "object"
+    },
+    "UploadEndParams": {
+      "description": "`upload/end`: all bytes sent; verify.",
+      "properties": {
+        "uploadId": {
+          "$ref": "#/$defs/UploadId",
+          "description": "The upload."
+        }
+      },
+      "required": [
+        "uploadId"
+      ],
+      "type": "object"
+    },
+    "UploadEndResult": {
+      "description": "`upload/end` result (or the error `upload_mismatch`).",
+      "properties": {
+        "size": {
+          "description": "Bytes stored.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "uploadId": {
+          "$ref": "#/$defs/UploadId",
+          "description": "The upload, now usable in input parts on this target."
+        }
+      },
+      "required": [
+        "uploadId",
+        "size"
+      ],
+      "type": "object"
+    },
+    "UploadId": {
+      "description": "A stored upload on one target. Meaningless on any other target.",
+      "type": "string"
+    },
+    "UploadPresence": {
+      "description": "Whether an attachment referenced by the thread is still on the target.",
+      "properties": {
+        "present": {
+          "description": "Whether its file still exists (temp folders can be emptied).",
+          "type": "boolean"
+        },
+        "uploadId": {
+          "$ref": "#/$defs/UploadId",
+          "description": "The upload."
+        }
+      },
+      "required": [
+        "uploadId",
+        "present"
+      ],
+      "type": "object"
+    },
+    "UploadReadParams": {
+      "description": "`upload/read`: a bounded read of a stored attachment (thumbnails on another host).",
+      "properties": {
+        "maxBytes": {
+          "description": "Upper bound on bytes returned. The daemon may return fewer.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "offset": {
+          "default": 0,
+          "description": "Byte offset.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "uploadId": {
+          "$ref": "#/$defs/UploadId",
+          "description": "The upload."
+        }
+      },
+      "required": [
+        "uploadId",
+        "maxBytes"
+      ],
+      "type": "object"
+    },
+    "UploadReadResult": {
+      "description": "`upload/read` result. Sent in the bulk class.",
+      "properties": {
+        "dataBase64": {
+          "default": "",
+          "description": "The bytes, standard base64 with padding.",
+          "type": "string"
+        },
+        "mediaType": {
+          "description": "Media type, when known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "more": {
+          "default": false,
+          "description": "Whether bytes remain after this read.",
+          "type": "boolean"
+        },
+        "present": {
+          "description": "Whether the file is still on the target. When false, the other fields are empty.",
+          "type": "boolean"
+        },
+        "size": {
+          "default": 0,
+          "description": "Total size of the stored file.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "present"
+      ],
+      "type": "object"
+    },
+    "UsageUpdatedEvent": {
+      "description": "`usageUpdated`: token and context usage.",
+      "properties": {
+        "context": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Context window usage."
+        },
+        "tokens": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Cumulative token usage of the thread."
+        }
+      },
+      "type": "object"
+    },
+    "UserMessageItem": {
+      "description": "`userMessage`: the input parts as sent.",
+      "properties": {
+        "parts": {
+          "description": "The parts. For a message sent from outside YAAC, the text as the harness stored it.",
+          "items": {
+            "$ref": "#/$defs/InputPart"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "parts"
+      ],
+      "type": "object"
+    },
+    "WaitTarget": {
+      "description": "One thread a `wait` is watching.",
+      "properties": {
+        "finished": {
+          "default": false,
+          "description": "Whether it has finished its turn (or failed, or needs attention) — what the wait is for.",
+          "type": "boolean"
+        },
+        "peer": {
+          "$ref": "#/$defs/MeshPeer",
+          "description": "The thread."
+        },
+        "state": {
+          "$ref": "#/$defs/ThreadState",
+          "description": "Its live state."
+        }
+      },
+      "required": [
+        "peer",
+        "state"
+      ],
+      "type": "object"
+    },
+    "WorktreeRef": {
+      "description": "The git worktree containing a working directory.",
+      "properties": {
+        "branch": {
+          "description": "Checked-out branch, when on one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "$ref": "#/$defs/TargetPath",
+          "description": "Top-level path of the worktree."
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The YAAC wire protocol (host ⇄ yaacd). Generated from the Rust types in crates/yaac-protocol; never edit by hand. Members marked x-yaac-unknown stand for values a newer peer may send: they must be preserved, never rejected.",
+  "title": "YAAC protocol v1",
+  "x-yaac-frame": {
+    "dataChunkMax": 65536,
+    "dataChunkMin": 16384,
+    "kinds": {
+      "data": 2,
+      "message": 1
+    },
+    "lengthPrefix": "u32 little-endian; counts the kind byte and the payload",
+    "maxFrameLen": 1048576
+  },
+  "x-yaac-methods": [
+    {
+      "direction": "hostToDaemon",
+      "doc": "Must be the first message: negotiate the protocol version; returns daemon and target facts.",
+      "frozen": true,
+      "name": "initialize",
+      "params": {
+        "$ref": "#/$defs/InitializeParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/InitializeResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Build, protocol range, state format, and what the daemon is busy with.",
+      "frozen": true,
+      "name": "daemon/status",
+      "params": {
+        "$ref": "#/$defs/Empty"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/DaemonStatusResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Ask the daemon to step aside for a newer build, when idle or now. Idempotent.",
+      "frozen": true,
+      "name": "daemon/handover",
+      "params": {
+        "$ref": "#/$defs/DaemonHandoverParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/DaemonHandoverResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Liveness and latency.",
+      "frozen": false,
+      "name": "ping",
+      "params": {
+        "$ref": "#/$defs/Empty"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Redacted daemon and provider diagnostics. Never message content.",
+      "frozen": false,
+      "name": "diagnostics/get",
+      "params": {
+        "$ref": "#/$defs/Empty"
+      },
+      "requestClass": "control",
+      "responseClass": "bulk",
+      "result": {
+        "$ref": "#/$defs/DiagnosticsGetResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "All provider instances on the target, each with a full descriptor.",
+      "frozen": false,
+      "name": "provider/list",
+      "params": {
+        "$ref": "#/$defs/Empty"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/ProviderListResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Force a re-probe of one instance or all.",
+      "frozen": false,
+      "name": "provider/refresh",
+      "params": {
+        "$ref": "#/$defs/ProviderRefreshParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "The stored instance configurations, including implicit defaults.",
+      "frozen": false,
+      "name": "providerInstance/list",
+      "params": {
+        "$ref": "#/$defs/Empty"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/ProviderInstanceListResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Add a provider instance.",
+      "frozen": false,
+      "name": "providerInstance/add",
+      "params": {
+        "$ref": "#/$defs/ProviderInstanceAddParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/ProviderInstanceResult"
+      },
+      "stateChanging": true
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Change a provider instance (a patch).",
+      "frozen": false,
+      "name": "providerInstance/update",
+      "params": {
+        "$ref": "#/$defs/ProviderInstanceUpdateParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/ProviderInstanceResult"
+      },
+      "stateChanging": true
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Remove a provider instance.",
+      "frozen": false,
+      "name": "providerInstance/remove",
+      "params": {
+        "$ref": "#/$defs/ProviderInstanceRemoveParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": true
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Incremental thread index.",
+      "frozen": false,
+      "name": "thread/sync",
+      "params": {
+        "$ref": "#/$defs/ThreadSyncParams"
+      },
+      "requestClass": "control",
+      "responseClass": "bulk",
+      "result": {
+        "$ref": "#/$defs/ThreadSyncResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Create a thread and send its first message, as one operation.",
+      "frozen": false,
+      "name": "thread/start",
+      "params": {
+        "$ref": "#/$defs/ThreadStartParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/ThreadStartResult"
+      },
+      "stateChanging": true
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "A page of items, newest first, with the journal position the snapshot is valid at.",
+      "frozen": false,
+      "name": "thread/read",
+      "params": {
+        "$ref": "#/$defs/ThreadReadParams"
+      },
+      "requestClass": "control",
+      "responseClass": "bulk",
+      "result": {
+        "$ref": "#/$defs/ThreadReadResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Start live events for a thread, replaying from a journal position.",
+      "frozen": false,
+      "name": "thread/subscribe",
+      "params": {
+        "$ref": "#/$defs/ThreadSubscribeParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/ThreadSubscribeResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Stop live events for a thread.",
+      "frozen": false,
+      "name": "thread/unsubscribe",
+      "params": {
+        "$ref": "#/$defs/ThreadUnsubscribeParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Report how far this client has durably got in a thread's journal.",
+      "frozen": false,
+      "name": "thread/ack",
+      "params": {
+        "$ref": "#/$defs/ThreadAckParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Create a new thread from an existing one, with its first message.",
+      "frozen": false,
+      "name": "thread/fork",
+      "params": {
+        "$ref": "#/$defs/ThreadForkParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/ThreadForkResult"
+      },
+      "stateChanging": true
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "What a fork would send and where. Changes nothing.",
+      "frozen": false,
+      "name": "thread/forkPreview",
+      "params": {
+        "$ref": "#/$defs/ThreadForkPreviewParams"
+      },
+      "requestClass": "control",
+      "responseClass": "bulk",
+      "result": {
+        "$ref": "#/$defs/ThreadForkPreviewResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Rename a thread (under `threadRename`).",
+      "frozen": false,
+      "name": "thread/rename",
+      "params": {
+        "$ref": "#/$defs/ThreadRenameParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": true
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Archive a thread (under `threadArchive`).",
+      "frozen": false,
+      "name": "thread/archive",
+      "params": {
+        "$ref": "#/$defs/ThreadArchiveParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": true
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Delete a thread (under `threadDelete`).",
+      "frozen": false,
+      "name": "thread/delete",
+      "params": {
+        "$ref": "#/$defs/ThreadDeleteParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": true
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Send a user message to an existing thread.",
+      "frozen": false,
+      "name": "turn/start",
+      "params": {
+        "$ref": "#/$defs/TurnStartParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/TurnStartResult"
+      },
+      "stateChanging": true
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Stop a turn, by turn id.",
+      "frozen": false,
+      "name": "turn/interrupt",
+      "params": {
+        "$ref": "#/$defs/TurnInterruptParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Add input to the running turn (under `steer`).",
+      "frozen": false,
+      "name": "turn/steer",
+      "params": {
+        "$ref": "#/$defs/TurnSteerParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": true
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Answer a pending approval, question, or form.",
+      "frozen": false,
+      "name": "request/respond",
+      "params": {
+        "$ref": "#/$defs/RequestRespondParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": true
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Declare an upload; returns its id and data stream, or that the content exists.",
+      "frozen": false,
+      "name": "upload/begin",
+      "params": {
+        "$ref": "#/$defs/UploadBeginParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/UploadBeginResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "All bytes sent: verify the hash.",
+      "frozen": false,
+      "name": "upload/end",
+      "params": {
+        "$ref": "#/$defs/UploadEndParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/UploadEndResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Abort an upload; the partial file is removed.",
+      "frozen": false,
+      "name": "upload/cancel",
+      "params": {
+        "$ref": "#/$defs/UploadCancelParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "A bounded read of a stored attachment.",
+      "frozen": false,
+      "name": "upload/read",
+      "params": {
+        "$ref": "#/$defs/UploadReadParams"
+      },
+      "requestClass": "control",
+      "responseClass": "bulk",
+      "result": {
+        "$ref": "#/$defs/UploadReadResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "List a directory on the target.",
+      "frozen": false,
+      "name": "fs/list",
+      "params": {
+        "$ref": "#/$defs/FsListParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/FsListResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "The git identity of a directory.",
+      "frozen": false,
+      "name": "project/resolve",
+      "params": {
+        "$ref": "#/$defs/ProjectResolveParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/ProjectResolveResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "daemonToHost",
+      "doc": "Target → hub: carry a message to another target; answered once durably queued.",
+      "frozen": false,
+      "name": "mesh/relay",
+      "params": {
+        "$ref": "#/$defs/MeshRelayParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/MeshReceiptResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Hub → target: put a message into a recipient's mailbox; answered once on disk.",
+      "frozen": false,
+      "name": "mesh/deliver",
+      "params": {
+        "$ref": "#/$defs/MeshDeliverParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/MeshReceiptResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Hub → source target: a relayed message's receipt changed.",
+      "frozen": false,
+      "name": "mesh/receipt",
+      "params": {
+        "$ref": "#/$defs/MeshReceiptParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "both",
+      "doc": "A tool call that needs another target, routed through the hub (both directions).",
+      "frozen": false,
+      "name": "mesh/query",
+      "params": {
+        "$ref": "#/$defs/MeshQueryParams"
+      },
+      "requestClass": "control",
+      "responseClass": "bulk",
+      "result": {
+        "$ref": "#/$defs/MeshQueryResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Hub → target: the target's own identity and the roster of targets.",
+      "frozen": false,
+      "name": "mesh/roster",
+      "params": {
+        "$ref": "#/$defs/MeshRosterParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/Empty"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Read, and optionally change, the mesh policy, limits, and budgets.",
+      "frozen": false,
+      "name": "mesh/policy",
+      "params": {
+        "$ref": "#/$defs/MeshPolicyParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/MeshPolicyResult"
+      },
+      "stateChanging": false
+    },
+    {
+      "direction": "hostToDaemon",
+      "doc": "Read or continue an orchestration's budget.",
+      "frozen": false,
+      "name": "mesh/budget",
+      "params": {
+        "$ref": "#/$defs/MeshBudgetParams"
+      },
+      "requestClass": "control",
+      "responseClass": "control",
+      "result": {
+        "$ref": "#/$defs/MeshBudgetResult"
+      },
+      "stateChanging": true
+    }
+  ],
+  "x-yaac-notifications": [
+    {
+      "class": "control",
+      "direction": "daemonToHost",
+      "doc": "An instance's descriptor changed.",
+      "name": "provider/updated",
+      "params": {
+        "$ref": "#/$defs/ProviderUpdatedParams"
+      }
+    },
+    {
+      "class": "control",
+      "direction": "daemonToHost",
+      "doc": "A thread summary changed (including threads created outside YAAC).",
+      "name": "thread/updated",
+      "params": {
+        "$ref": "#/$defs/ThreadUpdatedParams"
+      }
+    },
+    {
+      "class": "control",
+      "direction": "daemonToHost",
+      "doc": "A thread was positively reported gone.",
+      "name": "thread/removed",
+      "params": {
+        "$ref": "#/$defs/ThreadRemovedParams"
+      }
+    },
+    {
+      "class": "control",
+      "direction": "daemonToHost",
+      "doc": "One journaled thread event.",
+      "name": "thread/event",
+      "params": {
+        "$ref": "#/$defs/ThreadEventParams"
+      }
+    },
+    {
+      "class": "control",
+      "direction": "both",
+      "doc": "The receiver of a data stream grants more credit.",
+      "name": "stream/credit",
+      "params": {
+        "$ref": "#/$defs/StreamCreditParams"
+      }
+    }
+  ],
+  "x-yaac-protocol-version": 1
+}

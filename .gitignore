@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Node / yaacd
+node_modules/
+daemon/dist/
+*.tsbuildinfo
+
+# Generated protocol bindings are committed; build caches are not
+.cache/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local agent settings and secrets
+.claude/settings.local.json
+.env
+.env.*

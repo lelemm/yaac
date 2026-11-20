@@ -1,0 +1,266 @@
+//! The attach protocol: window ⇄ hub (docs/10-agent-mesh.md#the-hub).
+//!
+//! The window and the hub are always the same build — they exchange builds in `hub/hello`,
+//! and a newer window replaces an older hub (`hub/shutdown`) while an older window is told to
+//! update — so this protocol has **no dialects and no versions**. It uses the same frames and
+//! JSON-RPC shapes as the YAAC protocol ([`crate::frame`], [`crate::rpc::Message`]).
+//!
+//! YAAC protocol traffic to and from a target travels in a routing envelope: the window sends
+//! `hub/request` naming a target; the hub sends the inner request on that target's
+//! connection (through that connection's dialect) and answers with the target's result in
+//! current shape. Notifications from a target reach the window as `hub/notification`.
+//!
+//! This is deliberately minimal; the hub and window packages refine it.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::macros::{open_enum, open_union};
+use crate::types::{Empty, TargetId, TargetName};
+
+/// Every attach method name.
+pub mod names {
+    /// Window → hub, first message: exchange builds.
+    pub const HELLO: &str = "hub/hello";
+    /// Window → hub: ask an older hub to checkpoint its relay queue and exit.
+    pub const SHUTDOWN: &str = "hub/shutdown";
+    /// Window → hub: list targets.
+    pub const TARGETS_LIST: &str = "hub/targets/list";
+    /// Window → hub: add a target.
+    pub const TARGETS_ADD: &str = "hub/targets/add";
+    /// Window → hub: change a target.
+    pub const TARGETS_UPDATE: &str = "hub/targets/update";
+    /// Window → hub: remove a target.
+    pub const TARGETS_REMOVE: &str = "hub/targets/remove";
+    /// Window → hub: enable or disable a target.
+    pub const TARGETS_ENABLE: &str = "hub/targets/enable";
+    /// Hub → window notification: a target's connection state changed.
+    pub const TARGET_STATE: &str = "hub/target/state";
+    /// Window → hub: carry a YAAC request to a target; answered with the target's result.
+    pub const REQUEST: &str = "hub/request";
+    /// Either way: carry a YAAC notification to or from a target.
+    pub const NOTIFICATION: &str = "hub/notification";
+}
+
+/// `hub/hello` params.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelloParams {
+    /// The window's build. If it differs from the hub's, the two are not the same build: a
+    /// newer window replaces the hub, an older one tells the user to update.
+    pub build: String,
+}
+
+/// `hub/hello` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HelloResult {
+    /// The hub's build.
+    pub build: String,
+    /// The targets and their connection states.
+    pub targets: Vec<TargetEntry>,
+}
+
+/// `hub/shutdown` params.
+pub type ShutdownParams = Empty;
+/// `hub/shutdown` result: sent once the relay queue is checkpointed, just before the hub exits.
+pub type ShutdownResult = Empty;
+
+open_union! {
+    /// How the hub reaches a target.
+    pub enum TargetTransport tag "kind" {
+        /// This machine.
+        Local(LocalTransport) = "local",
+        /// Over SSH.
+        Ssh(SshTransport) = "ssh",
+        /// A WSL distribution.
+        Wsl(WslTransport) = "wsl",
+    }
+}
+
+/// The local machine.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTransport {}
+
+/// An SSH target: *user@host:port*.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SshTransport {
+    /// Host name or alias.
+    pub host: String,
+    /// Port, when not the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// User, when not the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+}
+
+/// A WSL target: *user in a distro*.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WslTransport {
+    /// Distribution name.
+    pub distro: String,
+    /// User, when not the distro's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+}
+
+open_enum! {
+    /// A target connection's state.
+    pub enum ConnectionStatus fallback Unknown {
+        /// Being established (or re-established).
+        Connecting = "connecting",
+        /// Connected and the handshake succeeded.
+        Connected = "connected",
+        /// Not connected; retrying.
+        Offline = "offline",
+        /// Disabled by the user (or a stopped WSL distro that is not restarted automatically).
+        Disabled = "disabled",
+        /// Connected, but no common protocol version.
+        Incompatible = "incompatible",
+    }
+}
+
+/// What the hub knows about the daemon on a connected target. No version numbers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonSummary {
+    /// The daemon's build.
+    pub build: String,
+    /// The daemon is older than this build: show "will be updated when idle" and offer
+    /// **Update now**.
+    pub older: bool,
+    /// The daemon's schema hash matched (a mismatch is a build error, for diagnostics).
+    pub schema_hash_matches: bool,
+}
+
+/// A target's connection state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionState {
+    /// The state.
+    pub status: ConnectionStatus,
+    /// Text to show as-is (why it is offline, which side is too old, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The daemon, once connected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daemon: Option<DaemonSummary>,
+}
+
+/// A target as the hub stores it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetEntry {
+    /// Immutable id, assigned by the hub.
+    pub id: TargetId,
+    /// The user's label; unique.
+    pub name: TargetName,
+    /// How it is reached.
+    pub transport: TargetTransport,
+    /// Whether the hub keeps it connected.
+    pub enabled: bool,
+    /// Its connection state now.
+    pub state: ConnectionState,
+}
+
+/// `hub/targets/list` params.
+pub type TargetsListParams = Empty;
+
+/// `hub/targets/list` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetsListResult {
+    /// Every target.
+    pub targets: Vec<TargetEntry>,
+}
+
+/// `hub/targets/add` params.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetsAddParams {
+    /// The label; must be unique.
+    pub name: TargetName,
+    /// How to reach it.
+    pub transport: TargetTransport,
+    /// Whether to connect.
+    pub enabled: bool,
+}
+
+/// Result of `hub/targets/add`, `hub/targets/update`, `hub/targets/enable`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetResult {
+    /// The target after the change.
+    pub target: TargetEntry,
+}
+
+/// `hub/targets/update` params: a patch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetsUpdateParams {
+    /// The target.
+    pub id: TargetId,
+    /// New label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<TargetName>,
+    /// New transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<TargetTransport>,
+}
+
+/// `hub/targets/remove` params. Removing a target deletes its cache rows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetsRemoveParams {
+    /// The target.
+    pub id: TargetId,
+}
+
+/// `hub/targets/enable` params.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetsEnableParams {
+    /// The target.
+    pub id: TargetId,
+    /// Enabled or not.
+    pub enabled: bool,
+}
+
+/// `hub/target/state` notification.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetStateParams {
+    /// The target.
+    pub id: TargetId,
+    /// Its new state.
+    pub state: ConnectionState,
+}
+
+/// `hub/request` params: a YAAC request for a target. The result is the target's result in
+/// current shape (or its error, passed through).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutedRequest {
+    /// The target.
+    pub target: TargetId,
+    /// The YAAC method.
+    pub method: String,
+    /// Its params, in current shape.
+    pub params: Value,
+}
+
+/// `hub/notification` params: a YAAC notification to or from a target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RoutedNotification {
+    /// The target.
+    pub target: TargetId,
+    /// The YAAC method.
+    pub method: String,
+    /// Its params, in current shape.
+    pub params: Value,
+}

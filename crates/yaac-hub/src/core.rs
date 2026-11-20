@@ -1,0 +1,1874 @@
+//! The hub core: one task on the I/O thread that owns every target session, every attached
+//! window, and the routing between them. Everything that can block runs on the store worker;
+//! the core never waits for it — finished jobs come back as [`CoreEvent`]s.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde_json::{Value, json};
+use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::task::JoinHandle;
+use yaac_protocol::attach::{
+    self, ConnectionState, ConnectionStatus, DaemonSummary, HelloParams, HelloResult, RoutedNotification, RoutedRequest,
+    TargetEntry, TargetResult, TargetStateParams, TargetsAddParams, TargetsEnableParams, TargetsListResult,
+    TargetsRemoveParams, TargetsUpdateParams,
+};
+use yaac_protocol::dialect::{Inbound, PeerRequest};
+use yaac_protocol::flows::{FlowError, FlowStep, OpenThread, OpenThreadFlow, Opened, finish_page, read_older_page};
+use yaac_protocol::methods::{self, MeshDeliver, MeshQuery, MeshReceipt, MeshRoster, Ping, ProviderList, ThreadAck, ThreadSync, names};
+use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
+use yaac_protocol::session::{ClientSession, ReadyInfo, SessionEvent};
+use yaac_protocol::{
+    ClientInfo, Control, Epoch, Item, JournalPosition, MeshDeliverParams, MeshMessage, MeshQueryParams, MeshReceiptParams,
+    MeshRosterParams, MessageId, OpId, PageCursor, Receipt, ReceiptReason, ReceiptStatus, RosterEntry, Seq,
+    StreamCreditParams, SubscribeMode, SubscribeReplay, SubscribeReset, SyncToken, TargetId, TargetName, ThreadAckParams,
+    ThreadEvent, ThreadEventParams, ThreadId, ThreadReadParams, ThreadReadResult, ThreadState, ThreadSubscribeParams,
+    ThreadSubscribeResult, ThreadSyncParams, ThreadSyncResult, ThreadUnsubscribeParams, ThreadUpdatedParams,
+};
+
+use crate::cache::LiveState;
+use crate::config::HubConfig;
+use crate::conn::{ConnEvent, supervise};
+use crate::protocol::{
+    self as ext, BusyReasons, Draft, DraftKey, DraftsListResult, OperationRef, OperationsListResult, SettingsResult,
+    SettingsUpdateParams, StatusResult, TargetRef, ThreadResetParams, UiStateSetParams,
+};
+use crate::relay::{Accepted, receipt};
+use crate::settings::{Settings, TargetDef, new_id};
+use crate::worker::Worker;
+
+/// One attached window.
+pub(crate) type ClientKey = u64;
+
+type Key = (TargetId, ThreadId);
+
+/// Everything the core reacts to. Moved once through a channel; boxing the large variants
+/// would only make every match clumsier.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub(crate) enum CoreEvent {
+    /// A window connected.
+    Attached { client: ClientKey, tx: mpsc::UnboundedSender<Message> },
+    /// A message from a window.
+    FromClient { client: ClientKey, message: Message },
+    /// A window went away.
+    Detached { client: ClientKey },
+    /// Something happened on a target connection (supervisor id, generation).
+    Conn { target: TargetId, supervisor: u64, generation: u64, event: ConnEvent },
+    /// A batch of a thread's events is committed.
+    Committed { target: TargetId, thread: ThreadId, events: Vec<ThreadEventParams>, position: JournalPosition },
+    /// A thread's transcript was rebuilt from a snapshot.
+    Rebuilt { target: TargetId, thread: ThreadId, position: JournalPosition },
+    /// Answer a window's request.
+    Reply { client: ClientKey, id: RpcId, outcome: Result<Value, ErrorObject> },
+    /// Send to every attached window.
+    Broadcast(Message),
+    /// A `mesh/relay` is stored (or recognised as a duplicate).
+    RelayAccepted { source: TargetId, generation: u64, peer_id: RpcId, message: MeshMessage, accepted: Result<Accepted, String>, in_flight: u64 },
+    /// Messages waiting for a destination that is now connected.
+    Deliver { dest: TargetId, messages: Vec<MeshMessage>, in_flight: u64 },
+    /// Receipts owed to sources (one that just connected, or that just became due).
+    Receipts { receipts: Vec<(TargetId, MessageId, Receipt)>, in_flight: u64 },
+    /// The relay changed; how much is still in flight.
+    InFlight(u64),
+    /// Checkpoint done; answer `hub/shutdown` and stop.
+    ShutdownReady { client: ClientKey, id: RpcId },
+    /// A store job failed (logged; the cache is disposable).
+    StoreError(String),
+    /// SIGINT / SIGTERM.
+    Signal,
+}
+
+/// Why the hub stopped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExitReason {
+    /// Idle with no window for the idle period.
+    Idle,
+    /// A window asked (`hub/shutdown`).
+    Shutdown,
+    /// A signal.
+    Signal,
+}
+
+pub(crate) fn log(message: impl AsRef<str>) {
+    if std::env::var_os("YAAC_HUB_LOG").is_some() {
+        eprintln!("yaac-hub: {}", message.as_ref());
+    }
+}
+
+// ── Per-window state ──────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Hello {
+    /// No `hub/hello` yet.
+    None,
+    /// Same build: fully attached.
+    Attached,
+    /// The window is newer: only `hub/shutdown` is allowed.
+    HubOutdated,
+    /// The window is older: nothing is allowed.
+    WindowOutdated,
+}
+
+#[derive(Debug)]
+struct Client {
+    tx: mpsc::UnboundedSender<Message>,
+    hello: Hello,
+    subs: HashSet<Key>,
+}
+
+// ── Per-target state ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+enum Pending {
+    Routed { client: ClientKey, id: RpcId, method: &'static str, op: Option<OpId> },
+    Open { thread: ThreadId, serial: u64, flow: Box<OpenThreadFlow> },
+    Page { thread: ThreadId, serial: u64 },
+    ProviderList,
+    Sync,
+    MeshQuery { source: TargetId, generation: u64, peer_id: RpcId },
+    Deliver { message_id: MessageId },
+    Receipt { message_id: MessageId },
+    Ignore,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Phase {
+    /// `thread/subscribe` sent. Events now are from an earlier subscription: dropped.
+    Subscribing,
+    /// Reset: reading the snapshot. Events now are buffered and applied after it.
+    Reading,
+    /// Events are applied as they arrive.
+    Live,
+}
+
+#[derive(Debug)]
+struct Sub {
+    /// Tells this subscription's responses from those of one it replaced.
+    serial: u64,
+    phase: Phase,
+    command: OpenThread,
+    epoch: Option<Epoch>,
+    snapshot: Vec<Item>,
+    snapshot_bytes: u64,
+    snapshot_position: Option<JournalPosition>,
+    buffered: Vec<ThreadEventParams>,
+    subscribed: Option<ThreadSubscribeResult>,
+    /// Windows' `thread/subscribe` requests waiting for the thread to be in the cache.
+    waiters: Vec<(ClientKey, RpcId, ThreadSubscribeParams)>,
+    /// The cache holds the thread at a position consistent with this subscription.
+    ready: bool,
+    acked: Option<JournalPosition>,
+}
+
+#[derive(Debug)]
+struct Conn {
+    generation: u64,
+    session: ClientSession,
+    writer: mpsc::UnboundedSender<Vec<u8>>,
+    kill: Option<oneshot::Sender<()>>,
+    ready: bool,
+    pending: HashMap<RpcId, Pending>,
+    subs: HashMap<ThreadId, Sub>,
+    delivering: HashSet<MessageId>,
+    last_rx: Instant,
+    last_ping: Instant,
+    sync_full: bool,
+}
+
+#[derive(Debug)]
+struct Target {
+    def: TargetDef,
+    state: ConnectionState,
+    supervisor: Option<(u64, JoinHandle<()>, Arc<Notify>)>,
+    conn: Option<Conn>,
+}
+
+impl Target {
+    fn entry(&self) -> TargetEntry {
+        TargetEntry {
+            id: self.def.id.clone(),
+            name: self.def.name.clone(),
+            transport: self.def.transport.clone(),
+            enabled: self.def.enabled,
+            state: self.state.clone(),
+        }
+    }
+
+    fn ready_conn(&mut self) -> Option<&mut Conn> {
+        self.conn.as_mut().filter(|c| c.ready)
+    }
+}
+
+fn state(status: ConnectionStatus, detail: Option<String>) -> ConnectionState {
+    ConnectionState { status, detail, daemon: None }
+}
+
+fn err(code: ErrorCode, message: impl Into<String>) -> ErrorObject {
+    ErrorObject::new(code, message)
+}
+
+fn hub_err(code: &str, message: impl Into<String>) -> ErrorObject {
+    ErrorObject::new(ErrorCode::from_wire(code), message)
+}
+
+fn to_value<T: Serialize>(value: &T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+fn parse<T: DeserializeOwned>(params: Value) -> Result<T, ErrorObject> {
+    serde_json::from_value(params).map_err(|e| err(ErrorCode::InvalidParams, e.to_string()))
+}
+
+/// Compares builds: `Some(Ordering)` of window against hub by their leading
+/// `major.minor.patch`; equal numbers with a different suffix count as the window being newer
+/// (the window that was just built replaces the hub).
+fn compare_builds(window: &str, hub: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering as O;
+    if window == hub {
+        return O::Equal;
+    }
+    let numbers = |b: &str| -> Vec<u64> {
+        b.split(['+', '-', ' '])
+            .next()
+            .unwrap_or_default()
+            .split('.')
+            .map(|p| p.parse().unwrap_or(0))
+            .collect()
+    };
+    match numbers(window).cmp(&numbers(hub)) {
+        O::Equal => O::Greater,
+        other => other,
+    }
+}
+
+// ── The core ──────────────────────────────────────────────────────────────────────────────
+
+pub(crate) struct Core {
+    cfg: HubConfig,
+    settings: Settings,
+    worker: Worker,
+    tx: mpsc::UnboundedSender<CoreEvent>,
+    clients: HashMap<ClientKey, Client>,
+    targets: BTreeMap<TargetId, Target>,
+    /// Threads some window has open, and which windows.
+    open: HashMap<Key, BTreeSet<ClientKey>>,
+    /// The position the cache will hold once queued jobs finish.
+    applied: HashMap<Key, JournalPosition>,
+    /// The position the cache holds now.
+    committed: HashMap<Key, JournalPosition>,
+    tokens: HashMap<TargetId, SyncToken>,
+    thread_states: HashMap<Key, ThreadState>,
+    batch: BTreeMap<Key, Vec<ThreadEventParams>>,
+    in_flight: u64,
+    supervisors: Arc<AtomicU64>,
+    serials: u64,
+    idle_since: Option<Instant>,
+    last_ack: Instant,
+    last_evict: Instant,
+    pub(crate) exit: Option<ExitReason>,
+}
+
+impl std::fmt::Debug for Core {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Core").field("targets", &self.targets.len()).field("clients", &self.clients.len()).finish_non_exhaustive()
+    }
+}
+
+/// What the core is started with (loaded from the stores before the runtime starts).
+#[derive(Debug, Default)]
+pub(crate) struct Loaded {
+    pub(crate) positions: Vec<(TargetId, ThreadId, JournalPosition)>,
+    pub(crate) tokens: Vec<(TargetId, SyncToken)>,
+    pub(crate) states: Vec<(TargetId, ThreadId, ThreadState)>,
+    pub(crate) in_flight: u64,
+}
+
+impl Core {
+    pub(crate) fn new(cfg: HubConfig, settings: Settings, worker: Worker, tx: mpsc::UnboundedSender<CoreEvent>, loaded: Loaded) -> Self {
+        let mut core = Self {
+            cfg,
+            settings,
+            worker,
+            tx,
+            clients: HashMap::new(),
+            targets: BTreeMap::new(),
+            open: HashMap::new(),
+            applied: HashMap::new(),
+            committed: HashMap::new(),
+            tokens: loaded.tokens.into_iter().collect(),
+            thread_states: loaded.states.into_iter().map(|(t, th, s)| ((t, th), s)).collect(),
+            batch: BTreeMap::new(),
+            in_flight: loaded.in_flight,
+            supervisors: Arc::new(AtomicU64::new(0)),
+            serials: 0,
+            idle_since: None,
+            last_ack: Instant::now(),
+            last_evict: Instant::now(),
+            exit: None,
+        };
+        for (target, thread, position) in loaded.positions {
+            core.applied.insert((target.clone(), thread.clone()), position);
+            core.committed.insert((target, thread), position);
+        }
+        let defs = core.settings.targets.clone();
+        for def in defs {
+            let id = def.id.clone();
+            let initial = if def.enabled { state(ConnectionStatus::Connecting, None) } else { state(ConnectionStatus::Disabled, None) };
+            core.targets.insert(id.clone(), Target { def, state: initial, supervisor: None, conn: None });
+            core.start_target(&id);
+        }
+        core
+    }
+
+    /// Stops every connection and hands back the worker so its queue can drain.
+    pub(crate) fn finish(mut self) -> (Worker, Vec<mpsc::UnboundedSender<Message>>) {
+        for target in self.targets.values_mut() {
+            if let Some((_, handle, _)) = target.supervisor.take() {
+                handle.abort();
+            }
+            target.conn = None;
+        }
+        let clients = self.clients.drain().map(|(_, c)| c.tx).collect();
+        (self.worker, clients)
+    }
+
+    pub(crate) fn handle(&mut self, event: CoreEvent) {
+        match event {
+            CoreEvent::Attached { client, tx } => {
+                self.clients.insert(client, Client { tx, hello: Hello::None, subs: HashSet::new() });
+            }
+            CoreEvent::FromClient { client, message } => self.on_client(client, message),
+            CoreEvent::Detached { client } => self.on_detached(client),
+            CoreEvent::Conn { target, supervisor, generation, event } => self.on_conn(&target, supervisor, generation, event),
+            CoreEvent::Committed { target, thread, events, position } => self.on_committed(&target, thread, events, position),
+            CoreEvent::Rebuilt { target, thread, position } => self.on_rebuilt(&target, &thread, position),
+            CoreEvent::Reply { client, id, outcome } => self.reply(client, id, outcome),
+            CoreEvent::Broadcast(message) => self.broadcast(&message),
+            CoreEvent::RelayAccepted { source, generation, peer_id, message, accepted, in_flight } => {
+                self.in_flight = in_flight;
+                self.on_relay_accepted(&source, generation, peer_id, message, accepted);
+            }
+            CoreEvent::Deliver { dest, messages, in_flight } => {
+                self.in_flight = in_flight;
+                for message in messages {
+                    self.deliver(&dest, message);
+                }
+            }
+            CoreEvent::Receipts { receipts, in_flight } => {
+                self.in_flight = in_flight;
+                for (source, message_id, receipt) in receipts {
+                    self.send_receipt(&source, message_id, receipt);
+                }
+            }
+            CoreEvent::InFlight(n) => self.in_flight = n,
+            CoreEvent::ShutdownReady { client, id } => {
+                self.reply(client, id, Ok(json!({})));
+                self.exit = Some(ExitReason::Shutdown);
+            }
+            CoreEvent::StoreError(e) => log(format!("store: {e}")),
+            CoreEvent::Signal => self.exit = Some(ExitReason::Signal),
+        }
+        self.flush_batches();
+    }
+
+    // ── Windows ───────────────────────────────────────────────────────────────────────
+
+    fn send_to(&self, client: ClientKey, message: Message) {
+        if let Some(c) = self.clients.get(&client) {
+            let _ = c.tx.send(message);
+        }
+    }
+
+    fn reply(&self, client: ClientKey, id: RpcId, outcome: Result<Value, ErrorObject>) {
+        let message = match outcome {
+            Ok(result) => Message::Response { id, result },
+            Err(error) => Message::Error { id: Some(id), error },
+        };
+        self.send_to(client, message);
+    }
+
+    fn broadcast(&self, message: &Message) {
+        for c in self.clients.values().filter(|c| c.hello == Hello::Attached) {
+            let _ = c.tx.send(message.clone());
+        }
+    }
+
+    fn notify_all(&self, method: &str, params: Value) {
+        self.broadcast(&Message::notification(method, params));
+    }
+
+    fn routed_notification(target: &TargetId, method: &str, params: Value) -> Message {
+        let n = RoutedNotification { target: target.clone(), method: method.to_owned(), params };
+        Message::notification(attach::names::NOTIFICATION, to_value(&n))
+    }
+
+    fn on_detached(&mut self, client: ClientKey) {
+        let Some(c) = self.clients.remove(&client) else { return };
+        for key in c.subs {
+            self.release(client, &key);
+        }
+    }
+
+    fn on_client(&mut self, client: ClientKey, message: Message) {
+        match message {
+            Message::Request { id, method, params } => {
+                let outcome = self.on_client_request(client, &id, &method, params);
+                if let Some(outcome) = outcome {
+                    self.reply(client, id, outcome);
+                }
+            }
+            Message::Notification { method, params }
+                if method == attach::names::NOTIFICATION && self.clients.get(&client).is_some_and(|c| c.hello == Hello::Attached) =>
+            {
+                self.on_client_notification(params);
+            }
+            _ => {}
+        }
+    }
+
+    fn on_client_notification(&mut self, params: Value) {
+        let Ok(n) = serde_json::from_value::<RoutedNotification>(params) else { return };
+        if n.method != names::STREAM_CREDIT {
+            return; // the only window → target notification there is so far
+        }
+        let Ok(credit) = serde_json::from_value::<StreamCreditParams>(n.params) else { return };
+        if let Some(conn) = self.targets.get_mut(&n.target).and_then(Target::ready_conn) {
+            let _ = conn.session.notify::<methods::StreamCredit>(&credit);
+        }
+        self.flush(&n.target);
+    }
+
+    /// Handles a window request. `None`: the answer comes later.
+    fn on_client_request(&mut self, client: ClientKey, id: &RpcId, method: &str, params: Value) -> Option<Result<Value, ErrorObject>> {
+        let hello = self.clients.get(&client).map_or(Hello::None, |c| c.hello);
+        if method == attach::names::HELLO {
+            return Some(self.on_hello(client, params));
+        }
+        match (hello, method) {
+            (Hello::Attached | Hello::HubOutdated, attach::names::SHUTDOWN) => {
+                let id = id.clone();
+                self.worker.submit(move |stores| {
+                    let _ = stores.relay.checkpoint();
+                    let _ = stores.drafts.checkpoint();
+                    let _ = stores.cache.checkpoint();
+                    Some(CoreEvent::ShutdownReady { client, id })
+                });
+                return None;
+            }
+            (Hello::Attached, _) => {}
+            (Hello::None, _) => return Some(Err(hub_err(ext::codes::HELLO_REQUIRED, "send hub/hello first"))),
+            (Hello::HubOutdated, _) => {
+                return Some(Err(hub_err(ext::codes::HUB_OUTDATED, "the running hub is older than this window; send hub/shutdown")));
+            }
+            (Hello::WindowOutdated, _) => {
+                return Some(Err(hub_err(ext::codes::WINDOW_OUTDATED, "this window is older than the running hub; update YAAC")));
+            }
+        }
+        match method {
+            attach::names::TARGETS_LIST => Some(Ok(to_value(&TargetsListResult { targets: self.entries() }))),
+            attach::names::TARGETS_ADD => Some(parse(params).and_then(|p| self.targets_add(p))),
+            attach::names::TARGETS_UPDATE => Some(parse(params).and_then(|p| self.targets_update(p))),
+            attach::names::TARGETS_REMOVE => Some(parse(params).and_then(|p| self.targets_remove(&p))),
+            attach::names::TARGETS_ENABLE => Some(parse(params).and_then(|p| self.targets_enable(&p))),
+            attach::names::REQUEST => match parse::<RoutedRequest>(params) {
+                Ok(request) => self.on_routed(client, id, request),
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::TARGETS_RECONNECT => Some(parse::<TargetRef>(params).and_then(|p| {
+                let t = self.targets.get(&p.id).ok_or_else(|| err(ErrorCode::TargetUnknown, "no such target"))?;
+                if let Some((_, _, notify)) = &t.supervisor {
+                    notify.notify_one();
+                }
+                Ok(json!({}))
+            })),
+            ext::names::STATUS => Some(Ok(to_value(&self.status()))),
+            ext::names::SETTINGS_GET => Some(Ok(to_value(&SettingsResult { settings: self.settings.hub.clone() }))),
+            ext::names::SETTINGS_UPDATE => Some(parse::<SettingsUpdateParams>(params).and_then(|p| {
+                if let Some(always) = p.always {
+                    self.settings.hub.always = always;
+                }
+                if let Some(secs) = p.idle_exit_secs {
+                    self.settings.hub.idle_exit_secs = secs;
+                }
+                self.save_settings()?;
+                Ok(to_value(&SettingsResult { settings: self.settings.hub.clone() }))
+            })),
+            ext::names::CACHE_CLEAR => {
+                self.clear_cache(client, id.clone());
+                None
+            }
+            ext::names::UI_STATE_SET => match parse::<UiStateSetParams>(params) {
+                Ok(p) => {
+                    self.store_reply(client, id, move |s| s.cache.set_ui_state(&p.key, &p.value).map(|()| json!({})).map_err(|e| e.to_string()));
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::DRAFTS_LIST => {
+                self.store_reply(client, id, |s| {
+                    s.drafts.list().map(|drafts| to_value(&DraftsListResult { drafts })).map_err(|e| e.to_string())
+                });
+                None
+            }
+            ext::names::DRAFTS_PUT => match parse::<Draft>(params) {
+                Ok(d) => {
+                    self.store_reply(client, id, move |s| s.drafts.put(&d).map(|d| to_value(&d)).map_err(|e| e.to_string()));
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::DRAFTS_DELETE => match parse::<DraftKey>(params) {
+                Ok(k) => {
+                    self.store_reply(client, id, move |s| s.drafts.delete(&k.key).map(|()| json!({})).map_err(|e| e.to_string()));
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::OPERATIONS_LIST => {
+                self.store_reply(client, id, |s| {
+                    s.drafts.operations().map(|operations| to_value(&OperationsListResult { operations })).map_err(|e| e.to_string())
+                });
+                None
+            }
+            ext::names::OPERATIONS_DISMISS => match parse::<OperationRef>(params) {
+                Ok(o) => {
+                    self.store_reply(client, id, move |s| s.drafts.op_done(&o.op_id).map(|()| json!({})).map_err(|e| e.to_string()));
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::DEBUG_DROP_CONNECTION if self.cfg.test_methods => Some(parse::<TargetRef>(params).map(|p| {
+                if let Some(kill) = self.targets.get_mut(&p.id).and_then(|t| t.conn.as_mut()).and_then(|c| c.kill.take()) {
+                    let _ = kill.send(());
+                }
+                json!({})
+            })),
+            _ => Some(Err(err(ErrorCode::MethodNotFound, format!("unknown hub method {method}")))),
+        }
+    }
+
+    fn store_reply(
+        &self,
+        client: ClientKey,
+        id: &RpcId,
+        job: impl FnOnce(&mut crate::worker::Stores) -> Result<Value, String> + Send + 'static,
+    ) {
+        let id = id.clone();
+        self.worker.submit(move |stores| {
+            let outcome = job(stores).map_err(|e| err(ErrorCode::InternalError, e));
+            Some(CoreEvent::Reply { client, id, outcome })
+        });
+    }
+
+    fn on_hello(&mut self, client: ClientKey, params: Value) -> Result<Value, ErrorObject> {
+        let hello: HelloParams = parse(params)?;
+        let order = compare_builds(&hello.build, &self.cfg.build);
+        let state = match order {
+            std::cmp::Ordering::Equal => Hello::Attached,
+            std::cmp::Ordering::Greater => Hello::HubOutdated,
+            std::cmp::Ordering::Less => Hello::WindowOutdated,
+        };
+        if let Some(c) = self.clients.get_mut(&client) {
+            c.hello = state;
+        }
+        if state == Hello::WindowOutdated {
+            return Err(hub_err(
+                ext::codes::WINDOW_OUTDATED,
+                format!("This window ({}) is older than the running hub ({}). Update YAAC.", hello.build, self.cfg.build),
+            ));
+        }
+        self.idle_since = None;
+        Ok(to_value(&HelloResult { build: self.cfg.build.clone(), targets: self.entries() }))
+    }
+
+    fn entries(&self) -> Vec<TargetEntry> {
+        self.settings.targets.iter().filter_map(|d| self.targets.get(&d.id)).map(Target::entry).collect()
+    }
+
+    fn status(&self) -> StatusResult {
+        StatusResult {
+            build: self.cfg.build.clone(),
+            pid: std::process::id(),
+            busy: self.busy(),
+            settings: self.settings.hub.clone(),
+            cache_file: self.cfg.paths.cache_file().display().to_string(),
+            client_id: self.settings.client_id.clone(),
+        }
+    }
+
+    fn save_settings(&self) -> Result<(), ErrorObject> {
+        self.settings.save(&self.cfg.paths.settings_file()).map_err(|e| err(ErrorCode::InternalError, e.to_string()))
+    }
+
+    fn clear_cache(&mut self, client: ClientKey, id: RpcId) {
+        self.applied.clear();
+        self.committed.clear();
+        self.tokens.clear();
+        // Every open subscription is now ahead of an empty cache: each is re-opened with no
+        // position (a reset), once the cache is empty (the worker runs jobs in order).
+        self.worker.submit(move |stores| {
+            let outcome = stores.cache.clear().map(|()| json!({})).map_err(|e| err(ErrorCode::InternalError, e.to_string()));
+            Some(CoreEvent::Reply { client, id, outcome })
+        });
+        let ready: Vec<TargetId> = self.targets.iter().filter(|(_, t)| t.conn.as_ref().is_some_and(|c| c.ready)).map(|(id, _)| id.clone()).collect();
+        for target in ready {
+            let subscribed: Vec<ThreadId> = self.targets[&target].conn.as_ref().map(|c| c.subs.keys().cloned().collect()).unwrap_or_default();
+            for thread in &subscribed {
+                let params = ThreadUnsubscribeParams { thread_id: thread.clone() };
+                self.send::<methods::ThreadUnsubscribe>(&target, &params, Pending::Ignore);
+            }
+            self.refresh_target_with(&target, true);
+            self.flush(&target);
+        }
+    }
+
+    // ── Target management ────────────────────────────────────────────────────────────────
+
+    fn targets_changed(&mut self) {
+        let list = to_value(&TargetsListResult { targets: self.entries() });
+        self.notify_all(ext::names::TARGETS_CHANGED, list);
+        self.send_rosters();
+    }
+
+    fn set_state(&mut self, id: &TargetId, new: ConnectionState) {
+        let Some(t) = self.targets.get_mut(id) else { return };
+        if t.state == new {
+            return;
+        }
+        t.state = new.clone();
+        let params = to_value(&TargetStateParams { id: id.clone(), state: new.clone() });
+        self.notify_all(attach::names::TARGET_STATE, params);
+        let target = id.clone();
+        self.worker.submit(move |stores| stores.cache.put_target(&target, None, &new).err().map(|e| CoreEvent::StoreError(e.to_string())));
+    }
+
+    fn start_target(&mut self, id: &TargetId) {
+        let Some(t) = self.targets.get_mut(id) else { return };
+        if !t.def.enabled || t.supervisor.is_some() {
+            return;
+        }
+        match self.cfg.connectors.connector(&t.def) {
+            Err(message) => {
+                let new = state(ConnectionStatus::Offline, Some(message));
+                self.set_state(id, new);
+            }
+            Ok(connector) => {
+                let sup = self.supervisors.fetch_add(1, Ordering::Relaxed) + 1;
+                let notify = Arc::new(Notify::new());
+                let core = self.tx.clone();
+                let (target, name) = (id.clone(), t.def.name.as_str().to_owned());
+                let backoff = self.cfg.backoff;
+                let retry = notify.clone();
+                // Events carry the supervisor's id, so a stopped supervisor's last events can
+                // never be mistaken for the current connection's.
+                let handle = tokio::spawn(supervise(sup, target, name, connector, backoff, retry, core));
+                t.supervisor = Some((sup, handle, notify));
+            }
+        }
+    }
+
+    fn stop_target(&mut self, id: &TargetId, new: ConnectionState) {
+        let Some(t) = self.targets.get_mut(id) else { return };
+        if let Some((_, handle, _)) = t.supervisor.take() {
+            handle.abort();
+        }
+        if t.conn.is_some() {
+            self.on_closed(id, "the target was disabled".into());
+        }
+        self.set_state(id, new);
+    }
+
+    fn targets_add(&mut self, p: TargetsAddParams) -> Result<Value, ErrorObject> {
+        let name = p.name.as_str().trim();
+        if name.is_empty() || !self.settings.name_is_free(name, None) {
+            return Err(hub_err(ext::codes::NAME_TAKEN, format!("a target named {name:?} already exists, or the name is empty")));
+        }
+        let def = TargetDef {
+            id: TargetId::new(new_id("t")),
+            name: TargetName::new(name),
+            transport: p.transport,
+            enabled: p.enabled,
+            extra: serde_json::Map::new(),
+        };
+        self.settings.targets.push(def.clone());
+        if let Err(e) = self.save_settings() {
+            self.settings.targets.pop();
+            return Err(e);
+        }
+        let id = def.id.clone();
+        let initial = if def.enabled { state(ConnectionStatus::Connecting, None) } else { state(ConnectionStatus::Disabled, None) };
+        self.targets.insert(id.clone(), Target { def, state: initial, supervisor: None, conn: None });
+        self.start_target(&id);
+        self.targets_changed();
+        Ok(to_value(&TargetResult { target: self.targets[&id].entry() }))
+    }
+
+    fn targets_update(&mut self, p: TargetsUpdateParams) -> Result<Value, ErrorObject> {
+        let index = self.settings.targets.iter().position(|t| t.id == p.id).ok_or_else(|| err(ErrorCode::TargetUnknown, "no such target"))?;
+        if let Some(name) = &p.name {
+            let name = name.as_str().trim();
+            if name.is_empty() || !self.settings.name_is_free(name, Some(&p.id)) {
+                return Err(hub_err(ext::codes::NAME_TAKEN, format!("a target named {name:?} already exists, or the name is empty")));
+            }
+        }
+        let before = self.settings.targets[index].clone();
+        if let Some(name) = &p.name {
+            self.settings.targets[index].name = TargetName::new(name.as_str().trim());
+        }
+        let transport_changed = p.transport.as_ref().is_some_and(|t| *t != before.transport);
+        if let Some(transport) = p.transport {
+            self.settings.targets[index].transport = transport;
+        }
+        if let Err(e) = self.save_settings() {
+            self.settings.targets[index] = before;
+            return Err(e);
+        }
+        let def = self.settings.targets[index].clone();
+        if let Some(t) = self.targets.get_mut(&p.id) {
+            t.def = def.clone();
+        }
+        if transport_changed && def.enabled {
+            self.stop_target(&p.id, state(ConnectionStatus::Connecting, None));
+            self.start_target(&p.id);
+        }
+        self.targets_changed();
+        Ok(to_value(&TargetResult { target: self.targets[&p.id].entry() }))
+    }
+
+    fn targets_enable(&mut self, p: &TargetsEnableParams) -> Result<Value, ErrorObject> {
+        let index = self.settings.targets.iter().position(|t| t.id == p.id).ok_or_else(|| err(ErrorCode::TargetUnknown, "no such target"))?;
+        if self.settings.targets[index].enabled != p.enabled {
+            self.settings.targets[index].enabled = p.enabled;
+            if let Err(e) = self.save_settings() {
+                self.settings.targets[index].enabled = !p.enabled;
+                return Err(e);
+            }
+            if let Some(t) = self.targets.get_mut(&p.id) {
+                t.def.enabled = p.enabled;
+            }
+            if p.enabled {
+                self.set_state(&p.id, state(ConnectionStatus::Connecting, None));
+                self.start_target(&p.id);
+            } else {
+                self.stop_target(&p.id, state(ConnectionStatus::Disabled, None));
+            }
+            self.targets_changed();
+        }
+        Ok(to_value(&TargetResult { target: self.targets[&p.id].entry() }))
+    }
+
+    fn targets_remove(&mut self, p: &TargetsRemoveParams) -> Result<Value, ErrorObject> {
+        let index = self.settings.targets.iter().position(|t| t.id == p.id).ok_or_else(|| err(ErrorCode::TargetUnknown, "no such target"))?;
+        let removed = self.settings.targets.remove(index);
+        if let Err(e) = self.save_settings() {
+            self.settings.targets.insert(index, removed);
+            return Err(e);
+        }
+        self.stop_target(&p.id, state(ConnectionStatus::Disabled, None));
+        self.targets.remove(&p.id);
+        let id = p.id.clone();
+        self.open.retain(|(t, _), _| *t != id);
+        for c in self.clients.values_mut() {
+            c.subs.retain(|(t, _)| *t != id);
+        }
+        self.applied.retain(|(t, _), _| *t != id);
+        self.committed.retain(|(t, _), _| *t != id);
+        self.thread_states.retain(|(t, _), _| *t != id);
+        self.tokens.remove(&id);
+        self.worker.submit(move |stores| {
+            if let Err(e) = stores.cache.remove_target(&id) {
+                return Some(CoreEvent::StoreError(e.to_string()));
+            }
+            // Messages that were waiting for it fail; their senders are told.
+            let receipts = stores.relay.fail_for_removed(&id).unwrap_or_default();
+            let in_flight = stores.relay.in_flight().unwrap_or(0);
+            Some(CoreEvent::Receipts { receipts, in_flight })
+        });
+        self.targets_changed();
+        Ok(json!({}))
+    }
+
+    // ── Connections ──────────────────────────────────────────────────────────────────────
+
+    fn on_conn(&mut self, id: &TargetId, supervisor: u64, generation: u64, event: ConnEvent) {
+        let Some(t) = self.targets.get_mut(id) else { return };
+        if t.supervisor.as_ref().map(|(s, _, _)| *s) != Some(supervisor) {
+            return; // a stopped supervisor's last words
+        }
+        match event {
+            ConnEvent::Connecting => {
+                if t.conn.is_none() && t.state.status != ConnectionStatus::Offline {
+                    self.set_state(id, state(ConnectionStatus::Connecting, None));
+                }
+            }
+            ConnEvent::Failed(reason) => {
+                log(format!("{id}: connect failed: {reason}"));
+                self.set_state(id, state(ConnectionStatus::Offline, Some(reason)));
+            }
+            ConnEvent::Opened { writer, kill } => {
+                let client = ClientInfo {
+                    name: "yaac".into(),
+                    version: self.cfg.build.clone(),
+                    host: Some(self.cfg.host_name.clone()),
+                    id: self.settings.client_id.clone(),
+                };
+                let now = Instant::now();
+                t.conn = Some(Conn {
+                    generation,
+                    session: ClientSession::new(client),
+                    writer,
+                    kill: Some(kill),
+                    ready: false,
+                    pending: HashMap::new(),
+                    subs: HashMap::new(),
+                    delivering: HashSet::new(),
+                    last_rx: now,
+                    last_ping: now,
+                    sync_full: false,
+                });
+                self.flush(id);
+            }
+            ConnEvent::Bytes(bytes) => {
+                let Some(conn) = t.conn.as_mut().filter(|c| c.generation == generation) else { return };
+                conn.last_rx = Instant::now();
+                match conn.session.receive(&bytes) {
+                    Ok(events) => {
+                        for event in events {
+                            self.on_session(id, event);
+                        }
+                    }
+                    Err(e) => {
+                        log(format!("{id}: protocol error, dropping the connection: {e}"));
+                        if let Some(kill) = self.targets.get_mut(id).and_then(|t| t.conn.as_mut()).and_then(|c| c.kill.take()) {
+                            let _ = kill.send(());
+                        }
+                    }
+                }
+                self.flush(id);
+            }
+            ConnEvent::Closed(reason) => {
+                if t.conn.as_ref().is_some_and(|c| c.generation == generation) {
+                    log(format!("{id}: connection closed: {reason}"));
+                    self.on_closed(id, reason.clone());
+                    if self.targets.get(id).is_some_and(|t| t.def.enabled && t.supervisor.is_some()) {
+                        self.set_state(id, state(ConnectionStatus::Offline, Some(reason)));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drops the connection's state: pending requests fail, subscriptions end (the threads
+    /// stay open and are resubscribed on reconnect).
+    fn on_closed(&mut self, id: &TargetId, _reason: String) {
+        let Some(conn) = self.targets.get_mut(id).and_then(|t| t.conn.take()) else { return };
+        let was_ready = conn.ready;
+        // Batched events of this connection are still valid: commit them.
+        self.flush_batches();
+        for (_, pending) in conn.pending {
+            match pending {
+                Pending::Routed { client, id: rid, method, op } => {
+                    let error = if let Some(op) = op {
+                        self.worker.submit(move |s| s.drafts.op_uncertain(&op).err().map(|e| CoreEvent::StoreError(e.to_string())));
+                        err(ErrorCode::OutcomeUnknown, format!("the connection dropped before {method} was answered; it may or may not have taken effect"))
+                    } else {
+                        err(ErrorCode::TargetOffline, "the connection to the target dropped")
+                    };
+                    self.reply(client, rid, Err(error));
+                }
+                Pending::MeshQuery { source, generation, peer_id } => {
+                    self.respond_peer(&source, generation, peer_id, names::MESH_QUERY, Err(err(ErrorCode::TargetOffline, "the target went offline")));
+                }
+                _ => {}
+            }
+        }
+        for (_, sub) in conn.subs {
+            for (client, rid, _) in sub.waiters {
+                self.reply(client, rid, Err(err(ErrorCode::TargetOffline, "the connection to the target dropped")));
+            }
+        }
+        if was_ready {
+            self.send_rosters();
+        }
+    }
+
+    fn flush(&mut self, id: &TargetId) {
+        let Some(conn) = self.targets.get_mut(id).and_then(|t| t.conn.as_mut()) else { return };
+        while let Some(frame) = conn.session.poll_transmit() {
+            if conn.writer.send(frame).is_err() {
+                break;
+            }
+        }
+    }
+
+    fn on_session(&mut self, id: &TargetId, event: SessionEvent) {
+        match event {
+            SessionEvent::Ready(info) => self.on_ready(id, &info),
+            SessionEvent::NegotiationFailed { error, .. } => {
+                self.set_state(id, state(ConnectionStatus::Incompatible, Some(error.message)));
+            }
+            SessionEvent::Response { id: rid, method, outcome } => {
+                let pending = self.targets.get_mut(id).and_then(|t| t.conn.as_mut()).and_then(|c| c.pending.remove(&rid));
+                if let Some(pending) = pending {
+                    self.on_response(id, pending, method, outcome);
+                }
+            }
+            SessionEvent::Notification(inbound) => self.on_inbound(id, inbound),
+            SessionEvent::PeerRequest { id: peer_id, request, .. } => self.on_peer_request(id, peer_id, request),
+            SessionEvent::Data { .. } => {}
+            SessionEvent::OrphanError(e) => log(format!("{id}: daemon error without id: {}", e.code)),
+        }
+    }
+
+    fn send<M: methods::Method>(&mut self, id: &TargetId, params: &M::Params, pending: Pending) -> bool {
+        let Some(conn) = self.targets.get_mut(id).and_then(Target::ready_conn) else { return false };
+        match conn.session.request::<M>(params) {
+            Ok(rid) => {
+                conn.pending.insert(rid, pending);
+                true
+            }
+            Err(e) => {
+                log(format!("{id}: cannot send {}: {e}", M::NAME));
+                false
+            }
+        }
+    }
+
+    fn on_ready(&mut self, id: &TargetId, info: &ReadyInfo) {
+        let Some(t) = self.targets.get_mut(id) else { return };
+        let Some(conn) = t.conn.as_mut() else { return };
+        conn.ready = true;
+        let new = ConnectionState {
+            status: ConnectionStatus::Connected,
+            detail: None,
+            daemon: Some(DaemonSummary {
+                build: info.daemon.build.clone(),
+                older: info.daemon_is_older,
+                schema_hash_matches: info.schema_hash_matches,
+            }),
+        };
+        let facts = info.target.clone();
+        let target = id.clone();
+        let stored = new.clone();
+        self.worker.submit(move |s| s.cache.put_target(&target, Some(&facts), &stored).err().map(|e| CoreEvent::StoreError(e.to_string())));
+        self.set_state(id, new);
+        self.refresh_target(id);
+        self.send_rosters();
+        // The relay: deliver what waited for this target, and hand back receipts owed to it.
+        let target = id.clone();
+        self.worker.submit(move |s| {
+            let messages = s.relay.queued_for(&target).unwrap_or_default();
+            let in_flight = s.relay.in_flight().unwrap_or(0);
+            Some(CoreEvent::Deliver { dest: target, messages, in_flight })
+        });
+        let target = id.clone();
+        self.worker.submit(move |s| {
+            let receipts = s.relay.pending_receipts(&target).unwrap_or_default();
+            let in_flight = s.relay.in_flight().unwrap_or(0);
+            let receipts = receipts.into_iter().map(|(m, r)| (target.clone(), m, r)).collect();
+            Some(CoreEvent::Receipts { receipts, in_flight })
+        });
+    }
+
+    /// Providers, the thread index, and every open thread, from the stored positions.
+    fn refresh_target(&mut self, id: &TargetId) {
+        self.refresh_target_with(id, false);
+    }
+
+    fn refresh_target_with(&mut self, id: &TargetId, fresh: bool) {
+        self.send::<ProviderList>(id, &yaac_protocol::Empty {}, Pending::ProviderList);
+        let token = self.tokens.get(id).cloned().unwrap_or_default();
+        self.send::<ThreadSync>(id, &ThreadSyncParams { token, max_bytes: Some(256 * 1024) }, Pending::Sync);
+        let open: Vec<ThreadId> = self.open.keys().filter(|(t, _)| t == id).map(|(_, th)| th.clone()).collect();
+        for thread in open {
+            self.start_open(id, &thread, fresh);
+        }
+    }
+
+    fn send_rosters(&mut self) {
+        let entries: Vec<RosterEntry> = self
+            .settings
+            .targets
+            .iter()
+            .map(|d| RosterEntry {
+                id: d.id.clone(),
+                name: d.name.clone(),
+                reachable: self.targets.get(&d.id).is_some_and(|t| t.conn.as_ref().is_some_and(|c| c.ready)),
+            })
+            .collect();
+        let ready: Vec<(TargetId, TargetName)> =
+            self.targets.values().filter(|t| t.conn.as_ref().is_some_and(|c| c.ready)).map(|t| (t.def.id.clone(), t.def.name.clone())).collect();
+        for (id, name) in ready {
+            let params = MeshRosterParams { self_id: id.clone(), self_name: name, targets: entries.clone() };
+            self.send::<MeshRoster>(&id, &params, Pending::Ignore);
+            self.flush(&id);
+        }
+    }
+
+    fn on_response(&mut self, id: &TargetId, pending: Pending, method: &'static str, outcome: Result<Value, ErrorObject>) {
+        match pending {
+            Pending::Routed { client, id: rid, method: m, op } => {
+                let outcome = outcome.and_then(|wire| self.decode_current(id, m, wire));
+                if let Some(op) = op {
+                    self.worker.submit(move |s| s.drafts.op_done(&op).err().map(|e| CoreEvent::StoreError(e.to_string())));
+                }
+                self.reply(client, rid, outcome);
+            }
+            Pending::Open { thread, serial, flow } => self.on_open_response(id, thread, serial, *flow, outcome),
+            Pending::Page { thread, serial } => {
+                if self.sub_mut(id, &thread).is_some_and(|s| s.serial == serial) {
+                    self.on_page(id, &thread, outcome);
+                }
+            }
+            Pending::ProviderList => {
+                let Ok(result) = outcome.and_then(|w| self.decode_typed::<ProviderList>(id, w)) else { return };
+                let mut providers = result.providers;
+                if let Some(conn) = self.targets.get(id).and_then(|t| t.conn.as_ref()) {
+                    for p in &mut providers {
+                        conn.session.fold_capabilities(&mut p.capabilities);
+                    }
+                }
+                let target = id.clone();
+                self.worker.submit(move |s| match s.cache.replace_providers(&target, &providers) {
+                    Ok(()) => Some(CoreEvent::Broadcast(Message::notification(ext::names::PROVIDERS_CHANGED, json!({ "target": target })))),
+                    Err(e) => Some(CoreEvent::StoreError(e.to_string())),
+                });
+            }
+            Pending::Sync => {
+                let Ok(result) = outcome.and_then(|w| self.decode_typed::<ThreadSync>(id, w)) else { return };
+                self.on_sync(id, result);
+            }
+            Pending::MeshQuery { source, generation, peer_id } => {
+                let outcome = outcome.and_then(|wire| self.decode_current(id, method, wire));
+                self.respond_peer(&source, generation, peer_id, names::MESH_QUERY, outcome);
+            }
+            Pending::Deliver { message_id } => self.on_delivered(id, message_id, outcome),
+            Pending::Receipt { message_id } => {
+                if outcome.is_ok() {
+                    self.worker.submit(move |s| {
+                        let _ = s.relay.receipt_sent(&message_id);
+                        Some(CoreEvent::InFlight(s.relay.in_flight().unwrap_or(0)))
+                    });
+                }
+            }
+            Pending::Ignore => {}
+        }
+    }
+
+    fn decode_current(&self, id: &TargetId, method: &str, wire: Value) -> Result<Value, ErrorObject> {
+        if methods::allowed_before_initialize(method) {
+            return Ok(wire);
+        }
+        let dialect = self.targets.get(id).and_then(|t| t.conn.as_ref()).and_then(|c| c.session.dialect());
+        let dialect = dialect.ok_or_else(|| err(ErrorCode::TargetOffline, "the target is not connected"))?;
+        dialect.decode_result(method, wire).map_err(|e| err(ErrorCode::InternalError, e.to_string()))
+    }
+
+    fn decode_typed<M: methods::Method>(&self, id: &TargetId, wire: Value) -> Result<M::Result, ErrorObject> {
+        let conn = self.targets.get(id).and_then(|t| t.conn.as_ref()).ok_or_else(|| err(ErrorCode::TargetOffline, "offline"))?;
+        conn.session.decode::<M>(wire).map_err(|e| err(ErrorCode::InternalError, e.to_string()))
+    }
+
+    fn on_sync(&mut self, id: &TargetId, result: ThreadSyncResult) {
+        let Some(conn) = self.targets.get_mut(id).and_then(|t| t.conn.as_mut()) else { return };
+        let first_full = result.full && !conn.sync_full;
+        conn.sync_full = result.full && result.more;
+        if first_full {
+            self.thread_states.retain(|(t, _), _| t != id);
+        }
+        for summary in &result.changed {
+            self.thread_states.insert((id.clone(), summary.id.clone()), summary.state.clone());
+        }
+        for removed in &result.removed {
+            self.thread_states.remove(&(id.clone(), removed.clone()));
+        }
+        self.tokens.insert(id.clone(), result.token.clone());
+        if result.more {
+            let params = ThreadSyncParams { token: result.token.clone(), max_bytes: Some(256 * 1024) };
+            self.send::<ThreadSync>(id, &params, Pending::Sync);
+        }
+        let target = id.clone();
+        self.worker.submit(move |s| match s.cache.apply_index(&target, &result.changed, &result.removed, &result.token, first_full) {
+            Ok(()) => Some(CoreEvent::Broadcast(Message::notification(ext::names::INDEX_CHANGED, json!({ "target": target })))),
+            Err(e) => Some(CoreEvent::StoreError(e.to_string())),
+        });
+    }
+
+    fn on_inbound(&mut self, id: &TargetId, inbound: Inbound) {
+        match inbound {
+            Inbound::ThreadEvent(event) => self.on_thread_event(id, event),
+            Inbound::ThreadUpdated { thread, token } => {
+                self.thread_states.insert((id.clone(), thread.id.clone()), thread.state.clone());
+                self.tokens.insert(id.clone(), token.clone());
+                let target = id.clone();
+                self.worker.submit(move |s| match s.cache.apply_index(&target, std::slice::from_ref(&thread), &[], &token, false) {
+                    Ok(()) => Some(CoreEvent::Broadcast(Self::routed_notification(
+                        &target,
+                        names::THREAD_UPDATED,
+                        to_value(&ThreadUpdatedParams { thread, token }),
+                    ))),
+                    Err(e) => Some(CoreEvent::StoreError(e.to_string())),
+                });
+            }
+            Inbound::ThreadRemoved(p) => {
+                self.thread_states.remove(&(id.clone(), p.thread_id.clone()));
+                self.tokens.insert(id.clone(), p.token.clone());
+                let target = id.clone();
+                self.worker.submit(move |s| match s.cache.apply_index(&target, &[], std::slice::from_ref(&p.thread_id), &p.token, false) {
+                    Ok(()) => Some(CoreEvent::Broadcast(Self::routed_notification(&target, names::THREAD_REMOVED, to_value(&p)))),
+                    Err(e) => Some(CoreEvent::StoreError(e.to_string())),
+                });
+            }
+            Inbound::ProviderUpdated(mut p) => {
+                if let Some(conn) = self.targets.get(id).and_then(|t| t.conn.as_ref()) {
+                    conn.session.fold_capabilities(&mut p.provider.capabilities);
+                }
+                let target = id.clone();
+                self.worker.submit(move |s| match s.cache.put_provider(&target, &p.provider) {
+                    Ok(()) => Some(CoreEvent::Broadcast(Self::routed_notification(&target, names::PROVIDER_UPDATED, to_value(&p)))),
+                    Err(e) => Some(CoreEvent::StoreError(e.to_string())),
+                });
+            }
+            Inbound::StreamCredit(_) => {}
+            Inbound::Other { method, params } => self.broadcast(&Self::routed_notification(id, &method, params)),
+        }
+    }
+
+    // ── Threads: subscription, replay, reset ─────────────────────────────────────────────
+
+    /// Subscribes upstream from the stored position (or none, forcing a reset).
+    fn start_open(&mut self, id: &TargetId, thread: &ThreadId, fresh: bool) {
+        let key = (id.clone(), thread.clone());
+        let after = if fresh { None } else { self.applied.get(&key).copied() };
+        let cap = self.cfg.rebuild_cap_bytes;
+        self.serials += 1;
+        let serial = self.serials;
+        let Some(conn) = self.targets.get_mut(id).and_then(Target::ready_conn) else { return };
+        let waiters = conn.subs.remove(thread).map(|s| s.waiters).unwrap_or_default();
+        let command = OpenThread { thread_id: thread.clone(), after, page_bytes: Some(cap.min(256 * 1024)) };
+        match OpenThreadFlow::start(&mut conn.session, command.clone()) {
+            Ok(flow) => {
+                if let Some(rid) = flow.waiting().cloned() {
+                    conn.pending.insert(rid, Pending::Open { thread: thread.clone(), serial, flow: Box::new(flow) });
+                }
+                conn.subs.insert(
+                    thread.clone(),
+                    Sub {
+                        serial,
+                        phase: Phase::Subscribing,
+                        command,
+                        epoch: None,
+                        snapshot: Vec::new(),
+                        snapshot_bytes: 0,
+                        snapshot_position: None,
+                        buffered: Vec::new(),
+                        subscribed: None,
+                        waiters,
+                        ready: false,
+                        acked: None,
+                    },
+                );
+            }
+            Err(e) => log(format!("{id}: cannot subscribe: {e}")),
+        }
+    }
+
+    fn sub_mut(&mut self, id: &TargetId, thread: &ThreadId) -> Option<&mut Sub> {
+        self.targets.get_mut(id)?.conn.as_mut()?.subs.get_mut(thread)
+    }
+
+    fn on_open_response(
+        &mut self,
+        id: &TargetId,
+        thread: ThreadId,
+        serial: u64,
+        mut flow: OpenThreadFlow,
+        outcome: Result<Value, ErrorObject>,
+    ) {
+        let Some(conn) = self.targets.get_mut(id).and_then(|t| t.conn.as_mut()) else { return };
+        let current = conn.subs.get(&thread).map(|s| s.serial);
+        if current.is_some_and(|s| s != serial) {
+            return; // replaced by a newer subscription, which will be answered on its own
+        }
+        let step = flow.on_response(&mut conn.session, outcome);
+        if current.is_none() {
+            // Released while subscribing: let go upstream too.
+            if matches!(step, Ok(FlowStep::Done(_) | FlowStep::Waiting(_))) {
+                let params = ThreadUnsubscribeParams { thread_id: thread };
+                self.send::<methods::ThreadUnsubscribe>(id, &params, Pending::Ignore);
+            }
+            return;
+        }
+        match step {
+            Err(FlowError::Remote(e)) => self.fail_sub(id, &thread, &e),
+            Err(other) => self.fail_sub(id, &thread, &err(ErrorCode::InternalError, other.to_string())),
+            Ok(FlowStep::Waiting(rid)) => {
+                // Subscribed with a reset; the first snapshot page is on its way.
+                conn.pending.insert(rid, Pending::Open { thread: thread.clone(), serial, flow: Box::new(flow) });
+                if let Some(sub) = conn.subs.get_mut(&thread) {
+                    sub.phase = Phase::Reading;
+                }
+            }
+            Ok(FlowStep::Done(Opened { subscribed, snapshot: None })) => self.on_replay(id, &thread, subscribed),
+            Ok(FlowStep::Done(Opened { subscribed, snapshot: Some(snapshot) })) => {
+                let Some(sub) = self.sub_mut(id, &thread) else { return };
+                sub.phase = Phase::Reading;
+                sub.epoch = Some(snapshot.position.epoch);
+                sub.subscribed = Some(subscribed);
+                sub.snapshot_position = Some(snapshot.position);
+                sub.snapshot_bytes = serde_json::to_vec(&snapshot.items).map_or(0, |v| v.len() as u64);
+                sub.snapshot = snapshot.items;
+                self.next_page_or_finish(id, &thread, snapshot.cursor);
+            }
+        }
+    }
+
+    fn on_replay(&mut self, id: &TargetId, thread: &ThreadId, subscribed: ThreadSubscribeResult) {
+        let key = (id.clone(), thread.clone());
+        let stored = self.applied.get(&key).copied();
+        let ok = match &subscribed.mode {
+            SubscribeMode::Replay(r) => stored.is_some_and(|p| p.epoch == r.epoch && r.from_seq.0 <= p.seq.0 + 1),
+            _ => false,
+        };
+        if !ok {
+            // The daemon offered a replay this cache cannot continue (a gap, another epoch):
+            // rebuild from a snapshot instead.
+            log(format!("{id}: replay does not continue the cache; rebuilding"));
+            let params = ThreadUnsubscribeParams { thread_id: thread.clone() };
+            self.send::<methods::ThreadUnsubscribe>(id, &params, Pending::Ignore);
+            self.start_open(id, thread, true);
+            return;
+        }
+        let SubscribeMode::Replay(SubscribeReplay { epoch, .. }) = subscribed.mode else { return };
+        let live = LiveState::from_subscribed(&subscribed);
+        let Some(sub) = self.sub_mut(id, thread) else { return };
+        sub.phase = Phase::Live;
+        sub.epoch = Some(epoch);
+        sub.buffered.clear();
+        sub.subscribed = Some(subscribed);
+        sub.ready = true;
+        let (target, th) = key;
+        self.worker.submit(move |s| s.cache.set_live(&target, &th, &live).err().map(|e| CoreEvent::StoreError(e.to_string())));
+        self.answer_waiters(id, thread);
+    }
+
+    fn next_page_or_finish(&mut self, id: &TargetId, thread: &ThreadId, cursor: Option<PageCursor>) {
+        let cap = self.cfg.rebuild_cap_bytes;
+        let Some(conn) = self.targets.get_mut(id).and_then(Target::ready_conn) else { return };
+        let Some(sub) = conn.subs.get_mut(thread) else { return };
+        if let Some(cursor) = cursor
+            && sub.snapshot_bytes < cap
+        {
+            match read_older_page(&mut conn.session, &sub.command, &cursor) {
+                Ok(rid) => {
+                    conn.pending.insert(rid, Pending::Page { thread: thread.clone(), serial: sub.serial });
+                    return;
+                }
+                Err(e) => log(format!("{id}: cannot read the next page: {e}")),
+            }
+        }
+        self.finish_rebuild(id, thread);
+    }
+
+    fn on_page(&mut self, id: &TargetId, thread: &ThreadId, outcome: Result<Value, ErrorObject>) {
+        let page = match outcome {
+            Ok(wire) => {
+                let Some(conn) = self.targets.get(id).and_then(|t| t.conn.as_ref()) else { return };
+                finish_page(&conn.session, wire).ok()
+            }
+            Err(_) => None,
+        };
+        let Some(sub) = self.sub_mut(id, thread) else { return };
+        match page {
+            // A page from another snapshot cannot be mixed in: keep what is consistent.
+            Some(page) if Some(page.position) == sub.snapshot_position => {
+                sub.snapshot_bytes += serde_json::to_vec(&page.items).map_or(0, |v| v.len() as u64);
+                sub.snapshot.extend(page.items);
+                self.next_page_or_finish(id, thread, page.cursor);
+            }
+            _ => self.finish_rebuild(id, thread),
+        }
+    }
+
+    /// Commits the snapshot (items and position in one transaction), then applies what was
+    /// buffered while reading it.
+    fn finish_rebuild(&mut self, id: &TargetId, thread: &ThreadId) {
+        let key = (id.clone(), thread.clone());
+        self.flush_batch(&key);
+        let Some(sub) = self.sub_mut(id, thread) else { return };
+        let Some(position) = sub.snapshot_position else { return };
+        let mut items = std::mem::take(&mut sub.snapshot);
+        items.reverse(); // pages are newest first
+        let live = sub.subscribed.as_ref().map(LiveState::from_subscribed).unwrap_or_default();
+        sub.phase = Phase::Live;
+        let buffered = std::mem::take(&mut sub.buffered);
+        let (target, th) = (key.0.clone(), key.1.clone());
+        self.worker.submit(move |s| match s.cache.replace_thread(&target, &th, &items, position, &live) {
+            Ok(()) => Some(CoreEvent::Rebuilt { target, thread: th, position }),
+            Err(e) => Some(CoreEvent::StoreError(e.to_string())),
+        });
+        self.applied.insert(key, position);
+        for event in buffered {
+            self.on_thread_event(id, event);
+        }
+    }
+
+    fn on_rebuilt(&mut self, target: &TargetId, thread: &ThreadId, position: JournalPosition) {
+        let key = (target.clone(), thread.clone());
+        let newer = self.committed.get(&key).is_none_or(|c| c.epoch != position.epoch || c.seq <= position.seq);
+        if newer {
+            self.committed.insert(key.clone(), position);
+        }
+        let params = to_value(&ThreadResetParams { target: target.clone(), thread_id: thread.clone(), position });
+        let message = Message::notification(ext::names::THREAD_RESET, params);
+        for client in self.open.get(&key).into_iter().flatten() {
+            self.send_to(*client, message.clone());
+        }
+        if let Some(sub) = self.sub_mut(target, thread) {
+            sub.ready = true;
+        }
+        self.answer_waiters(target, thread);
+    }
+
+    fn on_thread_event(&mut self, id: &TargetId, event: ThreadEventParams) {
+        let key = (id.clone(), event.thread_id.clone());
+        let applied = self.applied.get(&key).copied();
+        let Some(sub) = self.sub_mut(id, &key.1) else { return };
+        match sub.phase {
+            Phase::Subscribing => return,
+            Phase::Reading => {
+                sub.buffered.push(event);
+                return;
+            }
+            Phase::Live => {}
+        }
+        if sub.epoch != Some(event.epoch) {
+            return; // another journal; the subscription result decides
+        }
+        // Keep control and effective capabilities current for later window answers.
+        if let Some(subscribed) = sub.subscribed.as_mut() {
+            match &event.event {
+                ThreadEvent::ControlChanged(c) => {
+                    subscribed.control = c.control.clone();
+                    subscribed.control_holder = c.holder.clone();
+                    subscribed.active_turn = c.active_turn.clone();
+                }
+                ThreadEvent::SettingsChanged(s) => subscribed.effective = Some(s.effective.clone()),
+                _ => {}
+            }
+        }
+        let after = event.position_after();
+        if let Some(p) = applied
+            && p.epoch == event.epoch
+        {
+            if after.seq <= p.seq {
+                return; // already applied: a replay overlap or a duplicate
+            }
+            if event.seq.0 > p.seq.0 + 1 {
+                // A gap: never skip events. Resubscribe from what is stored.
+                log(format!("{id}: gap in the journal (have {}, got {}); resubscribing", p.seq.0, event.seq.0));
+                self.flush_batch(&key);
+                let params = ThreadUnsubscribeParams { thread_id: key.1.clone() };
+                self.send::<methods::ThreadUnsubscribe>(id, &params, Pending::Ignore);
+                self.start_open(id, &key.1, false);
+                return;
+            }
+        }
+        self.applied.insert(key.clone(), after);
+        self.batch.entry(key).or_default().push(event);
+    }
+
+    fn flush_batch(&mut self, key: &Key) {
+        let Some(events) = self.batch.remove(key) else { return };
+        self.submit_commit(key.clone(), events);
+    }
+
+    fn flush_batches(&mut self) {
+        let batch = std::mem::take(&mut self.batch);
+        for (key, events) in batch {
+            self.submit_commit(key, events);
+        }
+    }
+
+    fn submit_commit(&self, (target, thread): Key, events: Vec<ThreadEventParams>) {
+        let Some(position) = events.last().map(ThreadEventParams::position_after) else { return };
+        self.worker.submit(move |s| match s.cache.commit_events(&target, &thread, &events, position) {
+            Ok(()) => Some(CoreEvent::Committed { target, thread, events, position }),
+            Err(e) => Some(CoreEvent::StoreError(e.to_string())),
+        });
+    }
+
+    fn on_committed(&mut self, target: &TargetId, thread: ThreadId, events: Vec<ThreadEventParams>, position: JournalPosition) {
+        let key = (target.clone(), thread);
+        self.committed.insert(key.clone(), position);
+        let Some(clients) = self.open.get(&key) else { return };
+        for event in events {
+            let message = Self::routed_notification(target, names::THREAD_EVENT, to_value(&event));
+            for client in clients {
+                self.send_to(*client, message.clone());
+            }
+        }
+    }
+
+    fn fail_sub(&mut self, id: &TargetId, thread: &ThreadId, error: &ErrorObject) {
+        let Some(sub) = self.targets.get_mut(id).and_then(|t| t.conn.as_mut()).and_then(|c| c.subs.remove(thread)) else { return };
+        let key = (id.clone(), thread.clone());
+        for (client, rid, _) in sub.waiters {
+            self.reply(client, rid, Err(error.clone()));
+        }
+        if let Some(clients) = self.open.remove(&key) {
+            for client in clients {
+                if let Some(c) = self.clients.get_mut(&client) {
+                    c.subs.remove(&key);
+                }
+            }
+        }
+    }
+
+    fn answer_waiters(&mut self, id: &TargetId, thread: &ThreadId) {
+        let key = (id.clone(), thread.clone());
+        let position = self.committed.get(&key).or_else(|| self.applied.get(&key)).copied();
+        let Some(sub) = self.sub_mut(id, thread) else { return };
+        if !sub.ready {
+            return;
+        }
+        let waiters = std::mem::take(&mut sub.waiters);
+        let subscribed = sub.subscribed.clone();
+        let epoch = sub.epoch;
+        for (client, rid, request) in waiters {
+            let result = window_answer(subscribed.as_ref(), position, epoch, &request);
+            self.reply(client, rid, Ok(to_value(&result)));
+        }
+    }
+
+    /// A window opens a thread.
+    fn window_subscribe(&mut self, client: ClientKey, rid: &RpcId, target: &TargetId, params: Value) -> Option<Result<Value, ErrorObject>> {
+        let request: ThreadSubscribeParams = match parse(params) {
+            Ok(r) => r,
+            Err(e) => return Some(Err(e)),
+        };
+        let key = (target.clone(), request.thread_id.clone());
+        let connected = self.targets.get(target).is_some_and(|t| t.conn.as_ref().is_some_and(|c| c.ready));
+        if !connected {
+            // Offline: answer from the cache if the thread is there; it is resubscribed
+            // upstream when the target connects.
+            let Some(position) = self.committed.get(&key).copied() else {
+                return Some(Err(err(ErrorCode::TargetOffline, "the target is not connected and the thread is not cached")));
+            };
+            self.hold(client, &key);
+            let rid = rid.clone();
+            self.worker.submit(move |s| {
+                let live = s.cache.thread(&key.0, &key.1).ok().flatten().map(|t| t.live).unwrap_or_default();
+                let result = ThreadSubscribeResult {
+                    mode: SubscribeMode::Reset(SubscribeReset { epoch: position.epoch, head_seq: position.seq }),
+                    // Last known; the target is offline, so the window cannot act on it anyway.
+                    control: live.control.unwrap_or(Control::Free),
+                    control_holder: live.control_holder,
+                    active_turn: live.active_turn,
+                    effective: live.effective,
+                };
+                Some(CoreEvent::Reply { client, id: rid, outcome: Ok(to_value(&result)) })
+            });
+            return None;
+        }
+        self.hold(client, &key);
+        let touch = key.clone();
+        self.worker.submit(move |s| s.cache.touch(&touch.0, &touch.1).err().map(|e| CoreEvent::StoreError(e.to_string())));
+        let has_sub = self.sub_mut(target, &request.thread_id).is_some();
+        if !has_sub {
+            self.start_open(target, &request.thread_id, false);
+        }
+        let Some(sub) = self.sub_mut(target, &request.thread_id) else {
+            return Some(Err(err(ErrorCode::InternalError, "could not subscribe")));
+        };
+        sub.waiters.push((client, rid.clone(), request));
+        let thread = key.1.clone();
+        self.answer_waiters(target, &thread);
+        None
+    }
+
+    fn hold(&mut self, client: ClientKey, key: &Key) {
+        self.open.entry(key.clone()).or_default().insert(client);
+        if let Some(c) = self.clients.get_mut(&client) {
+            c.subs.insert(key.clone());
+        }
+    }
+
+    /// A window lets go of a thread; the last one to let go ends the upstream subscription.
+    fn release(&mut self, client: ClientKey, key: &Key) {
+        if let Some(c) = self.clients.get_mut(&client) {
+            c.subs.remove(key);
+        }
+        let Some(holders) = self.open.get_mut(key) else { return };
+        holders.remove(&client);
+        if !holders.is_empty() {
+            return;
+        }
+        self.open.remove(key);
+        self.flush_batch(key);
+        let (target, thread) = key;
+        let committed = self.committed.get(key).copied();
+        let Some(sub) = self.targets.get_mut(target).and_then(|t| t.conn.as_mut()).and_then(|c| c.subs.remove(thread)) else { return };
+        if let Some(p) = committed
+            && sub.phase == Phase::Live
+            && sub.acked != Some(p)
+            && sub.epoch == Some(p.epoch)
+        {
+            self.send::<ThreadAck>(target, &ThreadAckParams { thread_id: thread.clone(), epoch: p.epoch, seq: p.seq }, Pending::Ignore);
+        }
+        self.send::<methods::ThreadUnsubscribe>(target, &ThreadUnsubscribeParams { thread_id: thread.clone() }, Pending::Ignore);
+        self.flush(target);
+    }
+
+    // ── The routing envelope ─────────────────────────────────────────────────────────────
+
+    fn on_routed(&mut self, client: ClientKey, rid: &RpcId, request: RoutedRequest) -> Option<Result<Value, ErrorObject>> {
+        let target = request.target.clone();
+        if !self.targets.contains_key(&target) {
+            return Some(Err(err(ErrorCode::TargetUnknown, format!("no target {target}"))));
+        }
+        let method = request.method.as_str();
+        match method {
+            names::INITIALIZE | names::MESH_RELAY | names::MESH_DELIVER | names::MESH_RECEIPT | names::MESH_ROSTER => {
+                return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, format!("{method} is handled by the hub itself"))));
+            }
+            names::THREAD_SUBSCRIBE => {
+                let outcome = self.window_subscribe(client, rid, &target, request.params);
+                self.flush(&target);
+                return outcome;
+            }
+            names::THREAD_UNSUBSCRIBE => {
+                let Ok(p) = parse::<ThreadUnsubscribeParams>(request.params) else {
+                    return Some(Err(err(ErrorCode::InvalidParams, "threadId missing")));
+                };
+                self.release(client, &(target, p.thread_id));
+                return Some(Ok(json!({})));
+            }
+            names::THREAD_ACK => return Some(Ok(json!({}))), // the hub acknowledges what it committed
+            _ => {}
+        }
+        let Some(info) = methods::request_info(method) else {
+            return Some(Err(err(ErrorCode::MethodNotFound, format!("unknown method {method}"))));
+        };
+        let connected = self.targets.get(&target).is_some_and(|t| t.conn.as_ref().is_some_and(|c| c.ready));
+        if !connected {
+            if let Some(outcome) = self.answer_offline(client, rid, &target, info.name, request.params.clone()) {
+                return outcome;
+            }
+            let frozen = methods::allowed_before_initialize(method);
+            if !(frozen && self.targets.get(&target).is_some_and(|t| t.conn.is_some())) {
+                return Some(Err(err(ErrorCode::TargetOffline, "the target is not connected")));
+            }
+        }
+        let op = info.state_changing.then(|| request.params.get("opId").and_then(Value::as_str).map(OpId::new)).flatten();
+        let thread = request.params.get("threadId").and_then(Value::as_str).map(ThreadId::new);
+        let Some(conn) = self.targets.get_mut(&target).and_then(|t| t.conn.as_mut()) else {
+            return Some(Err(err(ErrorCode::TargetOffline, "the target is not connected")));
+        };
+        match conn.session.request_value(info.name, request.params) {
+            Ok(id) => {
+                conn.pending.insert(id, Pending::Routed { client, id: rid.clone(), method: info.name, op: op.clone() });
+                if let Some(op) = op {
+                    let (t, m) = (target.clone(), info.name);
+                    self.worker.submit(move |s| s.drafts.op_sent(&op, &t, m, thread.as_ref()).err().map(|e| CoreEvent::StoreError(e.to_string())));
+                }
+                self.flush(&target);
+                None
+            }
+            Err(e) => Some(Err(err(ErrorCode::InvalidParams, e.to_string()))),
+        }
+    }
+
+    /// While a target is offline, the index, providers, and cached transcripts are served from
+    /// the cache. `None`: not answerable from the cache.
+    fn answer_offline(&self, client: ClientKey, rid: &RpcId, target: &TargetId, method: &str, params: Value) -> Option<Option<Result<Value, ErrorObject>>> {
+        let target = target.clone();
+        let id = rid.clone();
+        let reply = move |outcome: Result<Value, String>| Some(CoreEvent::Reply { client, id, outcome: outcome.map_err(|e| err(ErrorCode::InternalError, e)) });
+        match method {
+            names::PROVIDER_LIST => {
+                self.worker.submit(move |s| reply(s.cache.providers(&target).map(|providers| json!({ "providers": providers })).map_err(|e| e.to_string())));
+            }
+            names::THREAD_SYNC => {
+                let token = self.tokens.get(&target).cloned().unwrap_or_default();
+                self.worker.submit(move |s| {
+                    reply(s.cache.threads(&target).map_err(|e| e.to_string()).map(|changed| {
+                        to_value(&ThreadSyncResult { changed, removed: vec![], token, more: false, full: true, stale_instances: vec![] })
+                    }))
+                });
+            }
+            names::THREAD_READ => {
+                let Ok(p) = serde_json::from_value::<ThreadReadParams>(params) else { return None };
+                self.worker.submit(move |s| reply(read_from_cache(&mut s.cache, &target, &p)));
+            }
+            _ => return None,
+        }
+        Some(None)
+    }
+
+    // ── The mesh relay ───────────────────────────────────────────────────────────────────
+
+    fn on_peer_request(&mut self, source: &TargetId, peer_id: RpcId, request: PeerRequest) {
+        let generation = self.targets.get(source).and_then(|t| t.conn.as_ref()).map_or(0, |c| c.generation);
+        match request {
+            PeerRequest::MeshRelay(params) => {
+                let message = params.message;
+                if message.from.target().as_ref() != Some(source) {
+                    let e = err(ErrorCode::PolicyDenied, "the sender's address does not belong to this target");
+                    self.respond_peer(source, generation, peer_id, names::MESH_RELAY, Err(e));
+                    return;
+                }
+                let dest = message.to.target().filter(|d| self.targets.contains_key(d));
+                let online = dest.as_ref().is_some_and(|d| self.targets.get(d).is_some_and(|t| t.conn.as_ref().is_some_and(|c| c.ready)));
+                let source = source.clone();
+                self.worker.submit(move |s| {
+                    let accepted = s.relay.accept(&source, dest.as_ref(), &message, online).map_err(|e| e.to_string());
+                    let in_flight = s.relay.in_flight().unwrap_or(0);
+                    Some(CoreEvent::RelayAccepted { source, generation, peer_id, message, accepted, in_flight })
+                });
+            }
+            PeerRequest::MeshQuery(params) => self.route_query(source, generation, peer_id, &params),
+            PeerRequest::Other { .. } => {} // the session already answered method_not_found
+        }
+    }
+
+    fn respond_peer(&mut self, target: &TargetId, generation: u64, peer_id: RpcId, method: &str, outcome: Result<Value, ErrorObject>) {
+        let Some(conn) = self.targets.get_mut(target).and_then(|t| t.conn.as_mut()).filter(|c| c.generation == generation) else { return };
+        if let Err(e) = conn.session.respond(peer_id, method, outcome) {
+            log(format!("{target}: cannot answer {method}: {e}"));
+        }
+        self.flush(target);
+    }
+
+    fn on_relay_accepted(&mut self, source: &TargetId, generation: u64, peer_id: RpcId, message: MeshMessage, accepted: Result<Accepted, String>) {
+        match accepted {
+            Err(e) => {
+                // Not stored: do not acknowledge. The source retries until it is.
+                self.respond_peer(source, generation, peer_id, names::MESH_RELAY, Err(err(ErrorCode::InternalError, e)));
+            }
+            Ok(accepted) => {
+                let result = to_value(&yaac_protocol::MeshReceiptResult { receipt: accepted.receipt });
+                self.respond_peer(source, generation, peer_id, names::MESH_RELAY, Ok(result));
+                if accepted.fresh
+                    && let Some(dest) = message.to.target()
+                {
+                    self.deliver(&dest, message);
+                }
+            }
+        }
+    }
+
+    fn deliver(&mut self, dest: &TargetId, message: MeshMessage) {
+        let Some(conn) = self.targets.get_mut(dest).and_then(Target::ready_conn) else { return };
+        if !conn.delivering.insert(message.id.clone()) {
+            return; // already on its way on this connection
+        }
+        let message_id = message.id.clone();
+        if !self.send::<MeshDeliver>(dest, &MeshDeliverParams { message }, Pending::Deliver { message_id: message_id.clone() })
+            && let Some(conn) = self.targets.get_mut(dest).and_then(|t| t.conn.as_mut())
+        {
+            conn.delivering.remove(&message_id);
+        }
+        self.flush(dest);
+    }
+
+    fn on_delivered(&mut self, dest: &TargetId, message_id: MessageId, outcome: Result<Value, ErrorObject>) {
+        if let Some(conn) = self.targets.get_mut(dest).and_then(|t| t.conn.as_mut()) {
+            conn.delivering.remove(&message_id);
+        }
+        let receipt = match outcome {
+            Ok(wire) => match self.decode_typed::<MeshDeliver>(dest, wire) {
+                Ok(result) => result.receipt,
+                Err(_) => return, // undecodable: stays queued, retried on reconnect
+            },
+            Err(e) => {
+                let permanent = matches!(
+                    e.code,
+                    ErrorCode::ThreadNotFound | ErrorCode::InvalidParams | ErrorCode::MethodNotFound | ErrorCode::PolicyDenied
+                );
+                if !permanent {
+                    return; // stays queued; delivered again when the destination reconnects
+                }
+                let reason = match e.code {
+                    ErrorCode::ThreadNotFound => ReceiptReason::UnknownAddress,
+                    ErrorCode::PolicyDenied => ReceiptReason::PolicyDenied,
+                    _ => ReceiptReason::RemoteDisallowed,
+                };
+                receipt(ReceiptStatus::Failed, Some(reason), Some(e.message))
+            }
+        };
+        self.worker.submit(move |s| {
+            let source = match s.relay.finish(&message_id, &receipt) {
+                Ok(source) => source,
+                Err(e) => return Some(CoreEvent::StoreError(e.to_string())),
+            };
+            let in_flight = s.relay.in_flight().unwrap_or(0);
+            match source {
+                Some(source) => Some(CoreEvent::Receipts { receipts: vec![(source, message_id, receipt)], in_flight }),
+                None => Some(CoreEvent::InFlight(in_flight)),
+            }
+        });
+    }
+
+    fn send_receipt(&mut self, source: &TargetId, message_id: MessageId, receipt: Receipt) {
+        let params = MeshReceiptParams { message_id: message_id.clone(), receipt };
+        self.send::<MeshReceipt>(source, &params, Pending::Receipt { message_id });
+        self.flush(source);
+    }
+
+    fn route_query(&mut self, source: &TargetId, generation: u64, peer_id: RpcId, params: &MeshQueryParams) {
+        let dest = params.target.clone();
+        if !self.targets.contains_key(&dest) {
+            self.respond_peer(source, generation, peer_id, names::MESH_QUERY, Err(err(ErrorCode::TargetUnknown, format!("no target {dest}"))));
+            return;
+        }
+        let pending = Pending::MeshQuery { source: source.clone(), generation, peer_id: peer_id.clone() };
+        if !self.send::<MeshQuery>(&dest, params, pending) {
+            self.respond_peer(source, generation, peer_id, names::MESH_QUERY, Err(err(ErrorCode::TargetOffline, format!("{dest} is not connected"))));
+            return;
+        }
+        self.flush(&dest);
+    }
+
+    // ── Timers and lifecycle ─────────────────────────────────────────────────────────────
+
+    fn busy(&self) -> BusyReasons {
+        let enabled: HashSet<&TargetId> = self.targets.values().filter(|t| t.def.enabled).map(|t| &t.def.id).collect();
+        let active = self
+            .thread_states
+            .iter()
+            .filter(|((t, _), s)| enabled.contains(t) && matches!(s, ThreadState::Running | ThreadState::NeedsAttention))
+            .count();
+        let pending = self
+            .targets
+            .values()
+            .filter_map(|t| t.conn.as_ref())
+            .flat_map(|c| c.pending.values())
+            .filter(|p| matches!(p, Pending::Routed { .. } | Pending::MeshQuery { .. }))
+            .count();
+        BusyReasons {
+            windows: u32::try_from(self.clients.len()).unwrap_or(u32::MAX),
+            active_threads: u32::try_from(active).unwrap_or(u32::MAX),
+            pending_requests: u32::try_from(pending).unwrap_or(u32::MAX),
+            messages_in_flight: u32::try_from(self.in_flight).unwrap_or(u32::MAX),
+        }
+    }
+
+    pub(crate) fn tick(&mut self) {
+        let now = Instant::now();
+        // Acknowledge what is committed.
+        if now.duration_since(self.last_ack) >= self.cfg.ack_interval {
+            self.last_ack = now;
+            self.send_acks();
+        }
+        // Liveness: ping quiet connections; drop dead ones.
+        let ids: Vec<TargetId> = self.targets.keys().cloned().collect();
+        for id in &ids {
+            let Some(conn) = self.targets.get_mut(id).and_then(|t| t.conn.as_mut()) else { continue };
+            if now.duration_since(conn.last_rx) >= self.cfg.dead_after {
+                log(format!("{id}: no traffic for {:?}; reconnecting", self.cfg.dead_after));
+                if let Some(kill) = conn.kill.take() {
+                    let _ = kill.send(());
+                }
+                continue;
+            }
+            if conn.ready && now.duration_since(conn.last_ping) >= self.cfg.ping_interval {
+                conn.last_ping = now;
+                self.send::<Ping>(id, &yaac_protocol::Empty {}, Pending::Ignore);
+                self.flush(id);
+            }
+        }
+        // Keep the cache bounded.
+        if now.duration_since(self.last_evict) >= Duration::from_secs(60) {
+            self.last_evict = now;
+            let protected: Vec<Key> = self.open.keys().cloned().collect();
+            let cap = self.cfg.cache_cap_bytes;
+            self.worker.submit(move |s| {
+                let _ = s.relay.purge_finished();
+                s.cache.evict(cap, &protected).err().map(|e| CoreEvent::StoreError(e.to_string()))
+            });
+        }
+        // Lifecycle.
+        let busy = self.busy();
+        let idle = busy == BusyReasons::default();
+        if self.settings.hub.always || !idle {
+            self.idle_since = None;
+            return;
+        }
+        let since = *self.idle_since.get_or_insert(now);
+        let limit = self.cfg.idle_exit.unwrap_or(Duration::from_secs(self.settings.hub.idle_exit_secs));
+        if now.duration_since(since) >= limit {
+            log("idle: exiting");
+            self.exit = Some(ExitReason::Idle);
+        }
+    }
+
+    fn send_acks(&mut self) {
+        let mut acks: Vec<(TargetId, ThreadAckParams)> = Vec::new();
+        for (id, t) in &mut self.targets {
+            let Some(conn) = t.conn.as_mut().filter(|c| c.ready) else { continue };
+            for (thread, sub) in &mut conn.subs {
+                let Some(p) = self.committed.get(&(id.clone(), thread.clone())).copied() else { continue };
+                if sub.phase == Phase::Live && sub.epoch == Some(p.epoch) && sub.acked != Some(p) {
+                    sub.acked = Some(p);
+                    acks.push((id.clone(), ThreadAckParams { thread_id: thread.clone(), epoch: p.epoch, seq: p.seq }));
+                }
+            }
+        }
+        for (id, params) in acks {
+            self.send::<ThreadAck>(&id, &params, Pending::Ignore);
+            self.flush(&id);
+        }
+    }
+}
+
+/// Answers a window's `thread/subscribe` relative to what the cache holds.
+fn window_answer(
+    subscribed: Option<&ThreadSubscribeResult>,
+    position: Option<JournalPosition>,
+    epoch: Option<Epoch>,
+    request: &ThreadSubscribeParams,
+) -> ThreadSubscribeResult {
+    let position = position.unwrap_or(JournalPosition { epoch: epoch.unwrap_or_default(), seq: Seq(0) });
+    let mode = if request.epoch == Some(position.epoch) && request.after_seq == Some(position.seq) {
+        SubscribeMode::Replay(SubscribeReplay { epoch: position.epoch, from_seq: Seq(position.seq.0 + 1), head_seq: position.seq })
+    } else {
+        SubscribeMode::Reset(SubscribeReset { epoch: position.epoch, head_seq: position.seq })
+    };
+    ThreadSubscribeResult {
+        mode,
+        control: subscribed.map_or(Control::Free, |s| s.control.clone()),
+        control_holder: subscribed.and_then(|s| s.control_holder.clone()),
+        active_turn: subscribed.and_then(|s| s.active_turn.clone()),
+        effective: subscribed.and_then(|s| s.effective.clone()),
+    }
+}
+
+/// `thread/read` served from the cache while the target is offline: pages newest first,
+/// bounded by bytes, all valid at the cached position.
+fn read_from_cache(cache: &mut crate::cache::Cache, target: &TargetId, p: &ThreadReadParams) -> Result<Value, String> {
+    let cached = cache.thread(target, &p.thread_id).map_err(|e| e.to_string())?;
+    let Some(cached) = cached else { return Err("the thread is not cached".into()) };
+    let skip: usize = p.cursor.as_ref().and_then(|c| c.as_str().strip_prefix("hubcache:")).and_then(|n| n.parse().ok()).unwrap_or(0);
+    let max = p.max_bytes.unwrap_or(64 * 1024).max(1); // a page always holds at least one item
+    let mut items = Vec::new();
+    let mut bytes = 0u64;
+    let newest_first: Vec<&Item> = cached.items.iter().rev().collect();
+    let mut next = skip;
+    for item in newest_first.iter().skip(skip) {
+        let len = serde_json::to_vec(item).map_or(0, |v| v.len() as u64);
+        if !items.is_empty() && bytes + len > max {
+            break;
+        }
+        bytes += len;
+        items.push((*item).clone());
+        next += 1;
+    }
+    let cursor = (next < newest_first.len()).then(|| PageCursor::new(format!("hubcache:{next}")));
+    Ok(to_value(&ThreadReadResult { items, position: cached.position, cursor, uploads: vec![] }))
+}

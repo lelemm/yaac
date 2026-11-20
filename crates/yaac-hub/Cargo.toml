@@ -1,0 +1,25 @@
+[package]
+name = "yaac-hub"
+description = "The YAAC hub: the one connection to each target, reconnection with replay, the host cache, the durable draft store, the attach server, and the mesh relay queue."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+yaac-protocol = { path = "../yaac-protocol" }
+yaac-transport = { path = "../yaac-transport" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.43", default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros", "signal"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+fs4 = { version = "0.12", default-features = false, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1.43", default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+tempfile = "3.10"
+
+[lints]
+workspace = true

@@ -1,0 +1,304 @@
+//! The thread header, its banners, and the composer's state.
+
+use yaac_protocol::{Capability, Control, ItemBody, ReceiptReason, Support, has_capability};
+
+use crate::attention::{Attention, AttentionMap, Mark, ThreadDisplay, display};
+use crate::hints::RequestKindWord;
+use crate::images::{ImageRoute, route};
+use crate::key::ThreadKey;
+use crate::state::{AppState, Draft};
+
+/// The tone of the header tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    /// Needs the user.
+    NeedsYou,
+    /// Running.
+    Running,
+    /// Failed.
+    Failed,
+    /// Anything else.
+    Neutral,
+}
+
+/// One link in a link line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkPart {
+    /// Shown text.
+    pub title: String,
+    /// The thread, when it can be opened.
+    pub key: Option<ThreadKey>,
+}
+
+/// The line of links under the title.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkLine {
+    /// No relatives.
+    None,
+    /// "Spawned by X ↗ on local".
+    SpawnedBy {
+        /// The parent.
+        parent: LinkPart,
+        /// Its target.
+        target: String,
+    },
+    /// "A › B › **C**" for a worker several levels down (the last part is this thread).
+    Ancestry(Vec<LinkPart>),
+    /// "Forked from X ↗ at turn 12 · handoff".
+    ForkedFrom {
+        /// The source.
+        source: LinkPart,
+        /// "at turn 12 · handoff".
+        detail: String,
+    },
+}
+
+/// A banner under the header.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Banner {
+    /// The thread is held elsewhere; one action: fork to continue here.
+    InUseElsewhere {
+        /// The sentence.
+        text: String,
+    },
+    /// The target's daemon is older; one action: update now.
+    OlderDaemon {
+        /// The sentence.
+        text: String,
+    },
+}
+
+/// The header.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HeaderView {
+    /// Mark and attention.
+    pub display: ThreadDisplay,
+    /// Title.
+    pub title: String,
+    /// Tag text and tone.
+    pub tag: Option<(String, Tone)>,
+    /// target · project · worktree.
+    pub breadcrumb: Vec<String>,
+    /// Relatives.
+    pub links: LinkLine,
+    /// Banners.
+    pub banners: Vec<Banner>,
+}
+
+/// The header of a thread.
+pub fn header(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Option<HeaderView> {
+    let s = state.summary(key)?;
+    let d = display(state, map, key);
+    let tag = if d.read_only {
+        Some(("Read-only".to_owned(), Tone::Neutral))
+    } else {
+        match (d.attention, d.mark) {
+            (Some(Attention::BudgetReached), _) => Some(("Paused — budget reached".to_owned(), Tone::NeedsYou)),
+            (Some(a), _) => Some((format!("Needs you — {}", a.word()), Tone::NeedsYou)),
+            (None, Mark::Running) => Some(("Running".to_owned(), Tone::Running)),
+            (None, Mark::Waiting) => Some(("Waiting".to_owned(), Tone::Running)),
+            (None, Mark::Failed) => Some(("Failed".to_owned(), Tone::Failed)),
+            _ => None,
+        }
+    };
+    let mut breadcrumb = vec![state.target_name(&key.target)];
+    if let Some(p) = &s.project {
+        breadcrumb.push(p.display_name.clone());
+    }
+    if let Some(b) = s.worktree.as_ref().and_then(|w| w.branch.clone()).or_else(|| s.branch.clone()) {
+        breadcrumb.push(b);
+    }
+
+    // Ancestry.
+    let mut ancestors: Vec<LinkPart> = Vec::new();
+    let mut parent = s.spawned_by.clone();
+    let mut guard = 0;
+    while let Some(addr) = parent {
+        guard += 1;
+        if guard > 16 {
+            break;
+        }
+        let k = state.key_of(&addr);
+        let title = k.as_ref().and_then(|k| state.summary(k)).map_or_else(|| addr.to_string(), |s| s.title.clone());
+        parent = k.as_ref().and_then(|k| state.summary(k)).and_then(|s| s.spawned_by.clone());
+        ancestors.push(LinkPart { title, key: k });
+    }
+    ancestors.reverse();
+    let links = if ancestors.len() >= 2 {
+        let mut parts = ancestors;
+        parts.push(LinkPart { title: s.title.clone(), key: None });
+        LinkLine::Ancestry(parts)
+    } else if let Some(p) = ancestors.pop() {
+        let target = s.spawned_by.as_ref().and_then(|a| a.target()).map(|t| state.target_name(&t)).unwrap_or_default();
+        LinkLine::SpawnedBy { parent: p, target }
+    } else if let Some(src) = &s.forked_from {
+        let k = ThreadKey::new(key.target.clone(), src.clone());
+        let title = state.summary(&k).map_or_else(|| src.to_string(), |s| s.title.clone());
+        let mut detail = String::new();
+        if let Some(t) = state.transcripts.get(key) {
+            for item in t.items() {
+                if let ItemBody::Handoff(h) = &item.body {
+                    if let Some(turn) = &h.cutoff_turn {
+                        detail = format!("at turn {turn} · ");
+                    }
+                    detail.push_str(h.fork_kind.as_str());
+                    break;
+                }
+            }
+        }
+        LinkLine::ForkedFrom { source: LinkPart { title, key: state.threads.contains_key(&k).then_some(k) }, detail }
+    } else {
+        LinkLine::None
+    };
+
+    let mut banners = Vec::new();
+    let target_name = state.target_name(&key.target);
+    if d.read_only {
+        let text = match state.control(key) {
+            Control::OtherClient => format!(
+                "This thread is in use in YAAC on {}. You can watch, but not send.",
+                state.control_holder(key).unwrap_or_else(|| "another computer".to_owned())
+            ),
+            _ => format!("This thread is open in another program on {target_name}. You can watch, but not send."),
+        };
+        banners.push(Banner::InUseElsewhere { text });
+    }
+    if let Some(daemon) = state.target(&key.target).and_then(|t| t.entry.state.daemon.as_ref())
+        && daemon.older
+    {
+        banners.push(Banner::OlderDaemon {
+            text: format!("{target_name} is running an older YAAC daemon ({}). It will be updated when idle.", daemon.build),
+        });
+    }
+    Some(HeaderView { display: d, title: s.title.clone(), tag, breadcrumb, links, banners })
+}
+
+/// One attachment chip in the composer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChipView {
+    /// Local id.
+    pub id: u64,
+    /// File name.
+    pub name: String,
+    /// How it will be sent.
+    pub route: ImageRoute,
+    /// Upload progress.
+    pub progress: Option<f32>,
+}
+
+/// What the composer shows.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ComposerView {
+    /// Read-only: no input, no Send, no Stop — one quiet line instead.
+    Absent {
+        /// "Held by a terminal session on devbox."
+        holder_line: String,
+    },
+    /// The composer.
+    Shown {
+        /// "Message Codex…".
+        placeholder: String,
+        /// Dimmed with this hint while a request on this thread waits for the user.
+        dimmed_hint: Option<String>,
+        /// A turn is running and can be stopped: Send becomes Stop.
+        stop: bool,
+        /// Input can be added to the running turn.
+        steer: bool,
+        /// Attachment chips.
+        chips: Vec<ChipView>,
+        /// Every chip is ready to send.
+        ready: bool,
+    },
+}
+
+/// The provider's name without the instance suffix, for "Message Codex…".
+pub fn short_provider(display_name: &str, instance_name: Option<&str>) -> String {
+    match instance_name {
+        Some(n) => display_name.strip_suffix(&format!(" · {n}")).unwrap_or(display_name).to_owned(),
+        None => display_name.to_owned(),
+    }
+}
+
+/// Chips routed by the image support of the model selected now.
+pub fn chips(draft: Option<&Draft>, support: &Support) -> Vec<ChipView> {
+    draft
+        .map(|d| {
+            d.attachments
+                .iter()
+                .map(|a| ChipView { id: a.id, name: a.name.clone(), route: route(a.is_image, support, a.choice), progress: a.progress })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The composer of a started thread.
+pub fn composer(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> ComposerView {
+    if !state.may_act(key) {
+        let holder = state.control_holder(key).unwrap_or_else(|| "another program".to_owned());
+        return ComposerView::Absent { holder_line: format!("Held by {holder} on {}.", state.target_name(&key.target)) };
+    }
+    let provider = state.provider_of(key);
+    let name = provider.map_or_else(|| "the agent".to_owned(), |p| short_provider(&p.display_name, p.name.as_deref()));
+    let transcript = state.transcripts.get(key);
+    let effective = transcript.and_then(|t| t.effective.as_ref());
+    let caps = effective.map_or(&[][..], |e| e.capabilities.as_slice());
+    let running = transcript.is_some_and(|t| t.active_turn.is_some());
+    let dimmed_hint = match map.of(key) {
+        Some(Attention::Request(RequestKindWord::Permission)) => Some("Answer above to continue".to_owned()),
+        Some(Attention::Request(kind)) => Some(format!("Answer the {} above to continue", kind.word())),
+        Some(Attention::Unspecified) => Some("Answer the request above to continue".to_owned()),
+        _ => None,
+    };
+    let support = effective.map_or(Support::Unknown, |e| e.image_input.clone());
+    let chips = chips(state.drafts.get(key), &support);
+    let ready = chips.iter().all(|c| c.route.ready() && c.progress.is_none());
+    ComposerView::Shown {
+        placeholder: format!("Message {name}…"),
+        dimmed_hint,
+        stop: running && has_capability(caps, &Capability::Interrupt),
+        steer: running && has_capability(caps, &Capability::Steer),
+        chips,
+        ready,
+    }
+}
+
+/// A receipt in words (docs/07-ui.md: "A receipt says what it means").
+pub fn receipt_text(
+    status: &yaac_protocol::ReceiptStatus,
+    reason: Option<&ReceiptReason>,
+    detail: Option<&str>,
+    target_name: &str,
+) -> String {
+    use yaac_protocol::ReceiptStatus as S;
+    let why = |r: Option<&ReceiptReason>| -> String {
+        match r {
+            Some(ReceiptReason::TargetOffline) => {
+                format!("{target_name} is offline. It will be delivered when {target_name} reconnects.")
+            }
+            Some(ReceiptReason::HubUnavailable) => "no hub is running. It will be sent when the hub returns.".to_owned(),
+            Some(ReceiptReason::RecipientBusy) => "the recipient is running a turn.".to_owned(),
+            Some(ReceiptReason::AwaitingUser) => "the recipient is waiting for you.".to_owned(),
+            Some(ReceiptReason::InUseElsewhere) => "another program holds the recipient.".to_owned(),
+            Some(ReceiptReason::BudgetExhausted) => "the orchestration's budget ran out.".to_owned(),
+            Some(ReceiptReason::UnknownAddress) => "there is no such thread.".to_owned(),
+            Some(ReceiptReason::ThreadDeleted) => format!("that thread was deleted on {target_name}."),
+            Some(ReceiptReason::LimitExceeded) => "a mesh limit was exceeded.".to_owned(),
+            Some(ReceiptReason::PolicyDenied) => "the mesh policy refused it.".to_owned(),
+            Some(ReceiptReason::RemoteDisallowed) => format!("{target_name} does not accept messages from other machines."),
+            Some(ReceiptReason::Unknown(s)) => s.clone(),
+            None => String::new(),
+        }
+    };
+    match status {
+        S::Delivered => match detail {
+            Some(d) => format!("Delivered — stored in its mailbox · {d}"),
+            None => "Delivered — stored in its mailbox".to_owned(),
+        },
+        S::Queued => format!("Queued — {}", detail.map_or_else(|| why(reason), str::to_owned)),
+        S::Failed => {
+            let w = detail.map_or_else(|| why(reason), str::to_owned);
+            format!("Failed — {w} The message was not delivered.")
+        }
+        S::Unknown(s) => s.clone(),
+    }
+}

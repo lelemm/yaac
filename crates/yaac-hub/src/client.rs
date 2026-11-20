@@ -1,0 +1,231 @@
+//! The window side of the attach protocol: connect to the hub's socket, then exchange
+//! [`Message`]s without ever blocking the caller.
+//!
+//! ```text
+//! let link = HubClient::connect(&HubPaths::from_env()?.socket())?;   // fails if no hub runs
+//! link.send(Message::request(RpcId::Number(1), "hub/hello", json!({ "build": BUILD })))?;
+//! // every frame:
+//! while let Some(message) = link.try_recv() { … }
+//! ```
+//!
+//! Two small threads per client do the socket I/O: `send` only queues, and `try_recv` only
+//! looks at what has arrived. An optional waker runs whenever a message arrives, so a GUI can
+//! request a repaint instead of polling. Starting the hub is the caller's concern; see
+//! [`connect_or_start`].
+//!
+//! The shape matches the window's `HubLink` trait (`send` queues, a non-blocking receive):
+//! `impl HubLink for HubClient { fn send(&mut self, m) { let _ = HubClient::send(self, m); }
+//! fn poll(&mut self) -> Option<Message> { self.try_recv() } }`.
+
+use std::collections::VecDeque;
+use std::io::{Read, Write};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use serde_json::Value;
+use yaac_protocol::frame::{Frame, FrameDecoder, encode_message_frame};
+use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
+
+/// Sending failed: the connection to the hub is gone.
+#[derive(Debug, thiserror::Error)]
+#[error("the hub connection is closed")]
+pub struct Disconnected;
+
+/// A connection to a hub.
+pub struct HubClient {
+    outgoing: mpsc::Sender<Message>,
+    incoming: mpsc::Receiver<Message>,
+    held: Mutex<VecDeque<Message>>,
+    connected: Arc<AtomicBool>,
+    next_id: AtomicI64,
+    closer: Option<Box<dyn Fn() + Send + Sync>>,
+}
+
+impl Drop for HubClient {
+    /// Closes the socket, so the hub sees the window detach at once (the reader thread holds
+    /// a handle to it and would otherwise keep it open).
+    fn drop(&mut self) {
+        if let Some(close) = self.closer.take() {
+            close();
+        }
+    }
+}
+
+impl std::fmt::Debug for HubClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HubClient").field("connected", &self.is_connected()).finish_non_exhaustive()
+    }
+}
+
+impl HubClient {
+    /// Connects to the hub's socket. Fails at once if no hub is listening.
+    pub fn connect(socket: &Path) -> std::io::Result<Self> {
+        Self::connect_with_waker(socket, || {})
+    }
+
+    /// Connects, and calls `waker` (from the client's reader thread) whenever a message
+    /// arrives or the connection closes.
+    #[cfg(unix)]
+    pub fn connect_with_waker(socket: &Path, waker: impl Fn() + Send + 'static) -> std::io::Result<Self> {
+        let stream = std::os::unix::net::UnixStream::connect(socket)?;
+        let reader = stream.try_clone()?;
+        let closer = stream.try_clone()?;
+        let mut client = Self::start(reader, stream, waker)?;
+        client.closer = Some(Box::new(move || {
+            let _ = closer.shutdown(std::net::Shutdown::Both);
+        }));
+        Ok(client)
+    }
+
+    /// Windows named pipes are not implemented yet.
+    #[cfg(not(unix))]
+    pub fn connect_with_waker(_socket: &Path, _waker: impl Fn() + Send + 'static) -> std::io::Result<Self> {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "the hub client is not available on this platform yet"))
+    }
+
+    fn start(
+        mut reader: impl Read + Send + 'static,
+        mut writer: impl Write + Send + 'static,
+        waker: impl Fn() + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let connected = Arc::new(AtomicBool::new(true));
+        let (out_tx, out_rx) = mpsc::channel::<Message>();
+        let (in_tx, in_rx) = mpsc::channel::<Message>();
+        let alive = connected.clone();
+        std::thread::Builder::new().name("yaac-hub-client-write".into()).spawn(move || {
+            let mut frame = Vec::new();
+            while let Ok(message) = out_rx.recv() {
+                frame.clear();
+                if encode_message_frame(&message.to_json(), &mut frame).is_err() {
+                    continue;
+                }
+                if writer.write_all(&frame).and_then(|()| writer.flush()).is_err() {
+                    alive.store(false, Ordering::SeqCst);
+                    break;
+                }
+            }
+        })?;
+        let alive = connected.clone();
+        std::thread::Builder::new().name("yaac-hub-client-read".into()).spawn(move || {
+            let mut decoder = FrameDecoder::new();
+            let mut buf = vec![0u8; 64 * 1024];
+            'outer: loop {
+                let n = match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                decoder.push(&buf[..n]);
+                loop {
+                    match decoder.next_frame() {
+                        Ok(Some(Frame::Message(payload))) => {
+                            let Ok(message) = Message::from_json(&payload) else { break 'outer };
+                            if in_tx.send(message).is_err() {
+                                break 'outer;
+                            }
+                            waker();
+                        }
+                        Ok(Some(Frame::Data { .. })) => {}
+                        Ok(None) => break,
+                        Err(_) => break 'outer,
+                    }
+                }
+            }
+            alive.store(false, Ordering::SeqCst);
+            waker();
+        })?;
+        Ok(Self {
+            outgoing: out_tx,
+            incoming: in_rx,
+            held: Mutex::new(VecDeque::new()),
+            connected,
+            next_id: AtomicI64::new(1),
+            closer: None,
+        })
+    }
+
+    /// Queues a message for the hub. Never blocks.
+    pub fn send(&self, message: Message) -> Result<(), Disconnected> {
+        if !self.is_connected() {
+            return Err(Disconnected);
+        }
+        self.outgoing.send(message).map_err(|_| Disconnected)
+    }
+
+    /// The next message from the hub, if one has arrived. Never blocks.
+    pub fn try_recv(&self) -> Option<Message> {
+        if let Some(held) = self.held.lock().ok().and_then(|mut h| h.pop_front()) {
+            return Some(held);
+        }
+        self.incoming.try_recv().ok()
+    }
+
+    /// Closes the connection now (also done on drop).
+    pub fn close(&mut self) {
+        if let Some(close) = self.closer.take() {
+            close();
+        }
+    }
+
+    /// Whether the connection is still open (messages already received can still be read).
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::SeqCst)
+    }
+
+    /// A fresh request id (this client's own id space).
+    pub fn next_id(&self) -> RpcId {
+        RpcId::Number(self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Sends a request and **blocks** until its answer arrives — for tools, tests, and a
+    /// command line, never for a GUI thread. Other messages that arrive meanwhile are kept for
+    /// [`HubClient::try_recv`].
+    pub fn request_blocking(&self, method: &str, params: Value, timeout: Duration) -> Result<Value, ErrorObject> {
+        let id = self.next_id();
+        self.send(Message::request(id.clone(), method, params))
+            .map_err(|_| ErrorObject::new(ErrorCode::InternalError, "the hub connection is closed"))?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(ErrorObject::new(ErrorCode::InternalError, format!("no answer to {method} within {timeout:?}")));
+            }
+            match self.incoming.recv_timeout(left.min(Duration::from_millis(50))) {
+                Ok(Message::Response { id: rid, result }) if rid == id => return Ok(result),
+                Ok(Message::Error { id: Some(rid), error }) if rid == id => return Err(error),
+                Ok(other) => {
+                    if let Ok(mut held) = self.held.lock() {
+                        held.push_back(other);
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(ErrorObject::new(ErrorCode::InternalError, "the hub connection closed"));
+                }
+            }
+        }
+    }
+}
+
+/// Connects to a running hub, or calls `start` (which should launch `yaac hub` detached) and
+/// waits up to `timeout` for it to listen. `start` is called at most once.
+pub fn connect_or_start(
+    socket: &Path,
+    start: impl FnOnce() -> std::io::Result<()>,
+    timeout: Duration,
+) -> std::io::Result<HubClient> {
+    if let Ok(client) = HubClient::connect(socket) {
+        return Ok(client);
+    }
+    start()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match HubClient::connect(socket) {
+            Ok(client) => return Ok(client),
+            Err(e) if Instant::now() >= deadline => return Err(e),
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "yaac-transport"
+description = "YAAC transports: the Connector abstraction and the local connector (spawns the private runtime on the yaacd bundle)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio = { version = "1.43", default-features = false, features = ["process", "io-util", "rt"] }
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.43", default-features = false, features = ["process", "io-util", "rt", "macros", "time"] }
+
+[lints]
+workspace = true

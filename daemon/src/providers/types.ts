@@ -1,0 +1,259 @@
+// The provider contract inside yaacd (docs/04-providers.md#the-contract).
+//
+// A provider translates one harness into the YAAC item model. It never sees the wire
+// protocol, a client, a journal, or a protocol version: the session layer owns all of that.
+// Wire value types (items, descriptors, capabilities, …) come from the generated bindings.
+
+import type {
+  AppliedSettings,
+  BackendKind,
+  Capability,
+  ContextUsage,
+  DeltaField,
+  EffortId,
+  InputPart,
+  Item,
+  ItemId,
+  ModeId,
+  ModeInfo,
+  ModelId,
+  ModelInfo,
+  OriginKind,
+  ProviderInstanceConfig,
+  ProviderStatus,
+  RequestResponse,
+  StoreIdentity,
+  ThreadEffective,
+  Timestamp,
+  TokenUsage,
+  TurnId,
+  TurnOrigin,
+  TurnStatus,
+  ApprovalRequest,
+  QuestionRequest,
+  FormRequest,
+  RequestId,
+} from "../protocol/generated/types.js";
+import type { EventSource } from "../util/emitter.js";
+
+/** Whatever the harness uses to resume that exact conversation (Codex: `Thread.id`). */
+export type NativeId = string;
+
+export interface PageRequest {
+  cursor?: string | null;
+  /** A hint; providers may return fewer or more. */
+  limit?: number;
+}
+
+/** One conversation as the harness lists it. */
+export interface NativeThreadInfo {
+  native: NativeId;
+  title?: string | null;
+  preview?: string | null;
+  cwd: string;
+  model?: ModelId | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  /**
+   * How it came to exist as far as the harness can tell: `interactive` or `programmatic`.
+   * `yaac` is decided by yaacd from its own registry, never by the provider.
+   */
+  originKind: OriginKind;
+  archived?: boolean;
+  /** Native id of the conversation it was natively forked from, when the harness says. */
+  forkedFrom?: NativeId | null;
+}
+
+export interface ThreadPage {
+  threads: NativeThreadInfo[];
+  /** Next page; absent or null on the last page. */
+  cursor?: string | null;
+  /** False when the harness could not give a complete listing (the instance is then stale). */
+  complete?: boolean;
+}
+
+/** Items of a conversation's stored history, oldest first. */
+export interface ItemPage {
+  items: Item[];
+  /** Next (newer) page; absent or null on the last page. */
+  cursor?: string | null;
+}
+
+/** What the probe found. yaacd adds `instance`, `kind`, `name`, `revision`, and the " · name" suffix. */
+export interface ProbeResult {
+  /** Base display name of the kind ("Codex"). */
+  displayName: string;
+  backend: BackendKind;
+  harnessVersion?: string | null;
+  store: StoreIdentity;
+  status: ProviderStatus;
+  statusMessage?: string | null;
+  capabilities: Capability[];
+  /** From the harness. Never hardcoded (except inside the fake provider). */
+  models: ModelInfo[];
+  modelsComplete: boolean;
+  modes: ModeInfo[];
+}
+
+export interface StartThreadParams {
+  cwd: string;
+  model?: ModelId | null;
+  effort?: EffortId | null;
+  mode?: ModeId | null;
+}
+
+export interface TurnOverrides {
+  model?: ModelId | null;
+  effort?: EffortId | null;
+  mode?: ModeId | null;
+}
+
+/**
+ * A message as handed to the harness. `parts` are the original input parts (with upload ids);
+ * `text` is the text parts joined, with the fixed "Attached files" block appended for file
+ * parts (docs/06-attachments.md); `images` are image parts resolved to files on the target.
+ */
+export interface ProviderInput {
+  parts: InputPart[];
+  text: string;
+  images: Array<{ uploadId: string; path: string; mediaType: string | null }>;
+  files: Array<{ uploadId: string; path: string; name: string }>;
+  /** Who this input comes from; `mesh` input must never be presented as the user speaking. */
+  origin: TurnOrigin;
+}
+
+export interface ForkOptions extends TurnOverrides {
+  /** Fork after this turn; the last completed turn when absent. */
+  atTurn?: TurnId | null;
+  cwd: string;
+}
+
+/** Whether something other than yaacd is driving (or has open) a conversation. */
+export interface ExternalControl {
+  external: boolean;
+  /** "a terminal", a program name, … for "In use in …". */
+  holder?: string | null;
+  /** The provider cannot tell. yaacd treats this as in use (docs/05-threads.md#detecting-it). */
+  uncertain?: boolean;
+}
+
+/** A request the harness raised: an approval, a question, or a form. */
+export type RaisedRequest =
+  | ({ requestKind: "approval" } & ApprovalRequest)
+  | ({ requestKind: "question" } & QuestionRequest)
+  | ({ requestKind: "form" } & FormRequest);
+
+/**
+ * Normalised events. Every event names the native conversation it belongs to.
+ *
+ * Rules:
+ * - `turnStarted` comes before anything else of a turn. For a turn yaacd asked for
+ *   (`startThread`, `startTurn`), the provider must emit it — before or after the call
+ *   resolves — with the same turn id the call returns.
+ * - Do **not** emit `userMessage` items for input yaacd sent: yaacd journals the original
+ *   input parts itself. Emit them only for messages that came from elsewhere.
+ * - `requestRaised` must be emitted the moment the harness asks; yaacd journals it before
+ *   anything else happens to it. Never answer or time out a request inside the provider.
+ * - Item ids are unique within the conversation.
+ */
+export type ProviderEvent =
+  | { type: "turnStarted"; thread: NativeId; turnId: TurnId; origin?: TurnOrigin; at?: Timestamp }
+  | {
+      type: "turnCompleted";
+      thread: NativeId;
+      turnId: TurnId;
+      status: TurnStatus;
+      error?: string | null;
+      usage?: TokenUsage | null;
+      at?: Timestamp;
+    }
+  | { type: "itemStarted"; thread: NativeId; item: Item }
+  | { type: "itemDelta"; thread: NativeId; itemId: ItemId; field: DeltaField; delta: string }
+  | { type: "itemUpdated"; thread: NativeId; item: Item }
+  | { type: "itemCompleted"; thread: NativeId; item: Item }
+  | {
+      type: "requestRaised";
+      thread: NativeId;
+      turnId: TurnId;
+      requestId: RequestId;
+      request: RaisedRequest;
+      blocking?: boolean;
+    }
+  | {
+      type: "requestResolved";
+      thread: NativeId;
+      requestId: RequestId;
+      /** `client`: the answer yaacd handed over took effect. `elsewhere`: someone else answered. */
+      by: "client" | "elsewhere";
+      answer?: RequestResponse | null;
+    }
+  | { type: "requestExpired"; thread: NativeId; requestId: RequestId }
+  | { type: "controlChanged"; thread: NativeId; control: ExternalControl }
+  | { type: "settingsChanged"; thread: NativeId; applied: AppliedSettings }
+  | { type: "usageUpdated"; thread: NativeId; tokens?: TokenUsage | null; context?: ContextUsage | null }
+  /** A conversation appeared or changed in the harness's listing (including outside YAAC). */
+  | { type: "threadChanged"; info: NativeThreadInfo }
+  /** The harness positively reports a conversation gone. */
+  | { type: "threadRemoved"; thread: NativeId }
+  /** Anything in the descriptor changed (models, sign-in, …): yaacd re-probes. */
+  | { type: "descriptorChanged" };
+
+/** What a provider implements inside yaacd. */
+export interface HarnessProvider {
+  /** Install, sign-in, backend, models. Called at start, on `provider/refresh`, on `descriptorChanged`. */
+  probe(): Promise<ProbeResult>;
+  /** One page of the conversation listing, for the thread index. */
+  scanThreads(page: PageRequest): Promise<ThreadPage>;
+  /** One page of a conversation's stored history, oldest first. */
+  readThread(thread: NativeId, page: PageRequest): Promise<ItemPage>;
+
+  /** Creates a conversation and sends its first message, as one operation. */
+  startThread(params: StartThreadParams, input: ProviderInput): Promise<{ thread: NativeId; turn: TurnId }>;
+  /** Starts a turn on an idle conversation yaacd holds. */
+  startTurn(thread: NativeId, input: ProviderInput, overrides: TurnOverrides): Promise<TurnId>;
+  interrupt(thread: NativeId, turn: TurnId): Promise<void>;
+  /** Hands an answer to the harness. Confirm with `requestResolved { by: "client" }`. */
+  respond(thread: NativeId, requestId: RequestId, response: RequestResponse): Promise<void>;
+
+  /** Capabilities and settings for one conversation, given its model and current state. */
+  effective(thread: NativeId): Promise<ThreadEffective>;
+  /** Whether another client or program is currently driving (or has open) this conversation. */
+  control(thread: NativeId): Promise<ExternalControl>;
+  /**
+   * The turn the harness is running in this conversation, if any. Used after a yaacd restart
+   * to tell a turn that survived from one that died with the old process. Absent: turns do
+   * not survive a yaacd restart.
+   */
+  runningTurn?(thread: NativeId): Promise<TurnId | null>;
+
+  // Optional — presence must match the declared capabilities.
+  forkThread?(thread: NativeId, opts: ForkOptions): Promise<NativeId>;
+  steer?(thread: NativeId, turn: TurnId, input: ProviderInput): Promise<void>;
+  rename?(thread: NativeId, title: string): Promise<void>;
+  archive?(thread: NativeId): Promise<void>;
+  remove?(thread: NativeId): Promise<void>;
+
+  readonly events: EventSource<ProviderEvent>;
+  dispose(): Promise<void>;
+}
+
+/** Context yaacd gives a provider instance. */
+export interface ProviderContext {
+  /** The stored instance configuration. */
+  config: ProviderInstanceConfig;
+  /** A private state directory for this instance, under the yaacd home. */
+  stateDir: string;
+  /** The yaacd home directory (`~/.yaac`, or `YAAC_HOME`). */
+  home: string;
+  /** Diagnostic log. Never message content. */
+  log(line: string): void;
+}
+
+/** One provider kind. Registered with `ProviderRegistry.registerKind`. */
+export interface ProviderFactory {
+  /** The open kind string (`codex`, `claude`, `fake`). */
+  kind: string;
+  /** Whether an implicit default instance of this kind exists without configuration. */
+  implicit(env: NodeJS.ProcessEnv): boolean;
+  create(ctx: ProviderContext): HarnessProvider;
+}

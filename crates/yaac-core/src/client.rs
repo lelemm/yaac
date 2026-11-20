@@ -1,0 +1,710 @@
+//! The window's side of the attach protocol: turns user actions into hub messages, applies the
+//! hub's answers and notifications to [`AppState`], and remembers what each outstanding
+//! request was for. No I/O of its own: everything goes through a [`HubLink`].
+
+use std::collections::HashMap;
+
+use serde_json::{Value, json};
+use yaac_protocol::attach::{self, HelloResult, RoutedNotification, RoutedRequest, TargetStateParams};
+use yaac_protocol::methods::names as m;
+use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
+use yaac_protocol::{
+    Address, ClientId, Control, InputPart, InstanceId, ItemBody, MeshBudgetAction, MeshBudgetResult, NoticeKind,
+    OpId, ProviderListResult, ProviderUpdatedParams, RequestId, RequestResponse, RequestState, SubscribeMode,
+    TargetId, ThreadEvent, ThreadEventParams, ThreadId, ThreadReadResult, ThreadRemovedParams, ThreadState,
+    ThreadSubscribeResult, ThreadSummary, ThreadSyncResult, ThreadUpdatedParams, Timestamp, TurnId,
+};
+
+use crate::agents::root_of;
+use crate::images::{ImageRoute, route};
+use crate::key::ThreadKey;
+use crate::link::HubLink;
+use crate::state::{AppState, Draft, NewThreadDraft, Selection};
+
+/// What an outstanding request was for.
+#[derive(Clone, Debug, PartialEq)]
+enum Call {
+    Hello,
+    Targets,
+    Providers(TargetId),
+    Sync(TargetId),
+    Subscribe(ThreadKey),
+    Read(ThreadKey),
+    Budget,
+    Respond { key: ThreadKey, request_id: RequestId },
+    TurnStart { key: ThreadKey, draft: Draft },
+    ThreadStart { draft: NewThreadDraft },
+    Fork { target: TargetId },
+    Ignore,
+}
+
+/// A problem to show the user (as a notice, never a dialog).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientError {
+    /// What it concerns.
+    pub key: Option<ThreadKey>,
+    /// Text.
+    pub text: String,
+}
+
+/// The window's attach-protocol client.
+pub struct Client {
+    /// The state everything is drawn from.
+    pub state: AppState,
+    link: Box<dyn HubLink>,
+    next_id: i64,
+    pending: HashMap<RpcId, Call>,
+    ops: u64,
+    build: String,
+    warm: Vec<ThreadKey>,
+    /// Errors not yet shown.
+    pub errors: Vec<ClientError>,
+}
+
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client").field("pending", &self.pending.len()).finish_non_exhaustive()
+    }
+}
+
+impl Client {
+    /// Attach through `link`: sends `hub/hello` at once.
+    pub fn new(link: Box<dyn HubLink>, build: impl Into<String>, client_id: ClientId) -> Self {
+        let mut c = Self {
+            state: AppState::new(),
+            link,
+            next_id: 1,
+            pending: HashMap::new(),
+            ops: 0,
+            build: build.into(),
+            warm: Vec::new(),
+            errors: Vec::new(),
+        };
+        c.state.client_id = Some(client_id);
+        let params = json!({ "build": c.build });
+        c.request(attach::names::HELLO, params, Call::Hello);
+        c
+    }
+
+    /// Threads to subscribe to as soon as their target's index is known, so their hints and
+    /// transcripts are warm (the window's least-recently-used set from its last run).
+    pub fn set_warm(&mut self, keys: Vec<ThreadKey>) {
+        self.warm = keys;
+    }
+
+    /// Apply everything the hub has sent. Returns whether anything arrived.
+    pub fn pump(&mut self) -> bool {
+        let mut any = false;
+        for _ in 0..100_000 {
+            let Some(msg) = self.link.poll() else { break };
+            any = true;
+            self.handle(msg);
+        }
+        any
+    }
+
+    fn request(&mut self, method: &str, params: Value, call: Call) -> RpcId {
+        let id = RpcId::Number(self.next_id);
+        self.next_id += 1;
+        self.pending.insert(id.clone(), call);
+        self.link.send(Message::request(id.clone(), method, params));
+        id
+    }
+
+    fn routed(&mut self, target: &TargetId, method: &str, params: Value, call: Call) {
+        let env = RoutedRequest { target: target.clone(), method: method.to_owned(), params };
+        let value = serde_json::to_value(env).unwrap_or(Value::Null);
+        self.request(attach::names::REQUEST, value, call);
+    }
+
+    /// A fresh operation id.
+    pub fn op_id(&mut self) -> OpId {
+        self.ops += 1;
+        let me = self.state.client_id.clone().unwrap_or_default();
+        OpId::new(format!("op-{me}-{}", self.ops))
+    }
+
+    fn error(&mut self, key: Option<ThreadKey>, text: impl Into<String>) {
+        self.errors.push(ClientError { key, text: text.into() });
+    }
+
+    // ── incoming ────────────────────────────────────────────────────────────────────────
+
+    fn handle(&mut self, msg: Message) {
+        match msg {
+            Message::Response { id, result } => {
+                if let Some(call) = self.pending.remove(&id) {
+                    self.on_result(call, result);
+                }
+            }
+            Message::Error { id, error } => {
+                if let Some(call) = id.and_then(|id| self.pending.remove(&id)) {
+                    self.on_error(call, &error);
+                } else {
+                    self.state.hub.last_error = Some(error.message);
+                }
+            }
+            Message::Notification { method, params } => self.on_notification(&method, params),
+            Message::Request { id, method, .. } => {
+                let err = ErrorObject::new(ErrorCode::MethodNotFound, format!("the window does not serve {method}"));
+                self.link.send(Message::Error { id: Some(id), error: err });
+            }
+        }
+    }
+
+    fn on_result(&mut self, call: Call, result: Value) {
+        match call {
+            Call::Hello => {
+                let Ok(hello) = serde_json::from_value::<HelloResult>(result) else { return };
+                self.state.hub.attached = true;
+                self.state.hub.build = Some(hello.build);
+                let ids: Vec<(TargetId, bool)> =
+                    hello.targets.iter().map(|t| (t.id.clone(), t.state.status == attach::ConnectionStatus::Connected)).collect();
+                self.state.set_targets(hello.targets);
+                for (id, _connected) in ids {
+                    // Cached index and providers are served by the hub even while offline.
+                    self.load_target(&id);
+                }
+            }
+            Call::Targets => {
+                if let Ok(r) = serde_json::from_value::<attach::TargetsListResult>(result) {
+                    self.state.set_targets(r.targets);
+                }
+            }
+            Call::Providers(t) => {
+                if let Ok(r) = serde_json::from_value::<ProviderListResult>(result) {
+                    self.state.apply_providers(&t, r.providers, true);
+                }
+            }
+            Call::Sync(t) => {
+                let Ok(r) = serde_json::from_value::<ThreadSyncResult>(result) else { return };
+                let more = r.more;
+                self.state.apply_sync(&t, r);
+                if more {
+                    self.sync(&t);
+                } else {
+                    let warm: Vec<ThreadKey> = self.warm.iter().filter(|k| k.target == t).cloned().collect();
+                    for k in warm {
+                        if self.state.threads.contains_key(&k) && !self.state.transcripts.contains_key(&k) {
+                            self.state.transcripts.insert(k.clone(), crate::transcript::Transcript::new());
+                            self.state.recent.push_back(k.clone());
+                            self.subscribe(&k);
+                        }
+                    }
+                }
+            }
+            Call::Subscribe(key) => {
+                let Ok(r) = serde_json::from_value::<ThreadSubscribeResult>(result) else { return };
+                let Some(t) = self.state.transcripts.get_mut(&key) else { return };
+                t.control = Some(r.control);
+                t.control_holder = r.control_holder;
+                t.active_turn = r.active_turn;
+                if r.effective.is_some() {
+                    t.effective = r.effective;
+                }
+                let reset = match &r.mode {
+                    SubscribeMode::Replay(rp) => {
+                        let hints = self.state.hints.entry(key.clone()).or_default();
+                        hints.replay_until = Some(rp.head_seq);
+                        t.position.is_none()
+                    }
+                    _ => true,
+                };
+                if reset {
+                    t.begin_reset();
+                    self.read_page(&key, None);
+                }
+                self.refresh_budget_of(&key);
+            }
+            Call::Read(key) => {
+                let Ok(r) = serde_json::from_value::<ThreadReadResult>(result) else { return };
+                let rev = self.state.next_stamp();
+                let Some(t) = self.state.transcripts.get_mut(&key) else { return };
+                let Some(load) = t.loading.as_mut() else { return };
+                load.pages.extend(r.items);
+                for u in r.uploads {
+                    if !u.present {
+                        load.missing.insert(u.upload_id);
+                    }
+                }
+                if let Some(cursor) = r.cursor {
+                    self.read_page(&key, Some(cursor.to_string()));
+                    return;
+                }
+                let buffered = load.buffered.clone();
+                t.finish_reset(r.position, rev);
+                let items = t.items().to_vec();
+                let stamp = self.state.next_stamp();
+                let hints = self.state.hints.entry(key.clone()).or_default();
+                if hints.position.is_none_or(|p| p.epoch != r.position.epoch || p.seq <= r.position.seq) {
+                    hints.rebuild(&items, r.position, stamp);
+                    for ev in &buffered {
+                        hints.apply(ev, stamp);
+                    }
+                }
+            }
+            Call::Budget => {
+                if let Ok(b) = serde_json::from_value::<MeshBudgetResult>(result) {
+                    self.state.apply_budget(b);
+                }
+            }
+            Call::Respond { .. } | Call::TurnStart { .. } | Call::Ignore => {}
+            Call::ThreadStart { draft } => {
+                let Some(thread_id) = result.get("threadId").and_then(Value::as_str).map(ThreadId::new) else { return };
+                let key = ThreadKey::new(draft.target.clone(), thread_id.clone());
+                if !self.state.threads.contains_key(&key) {
+                    let title = draft.draft.text.lines().map(|l| l.trim_start_matches('#').trim()).find(|l| !l.is_empty()).unwrap_or("New thread").to_owned();
+                    let now = Timestamp::new("");
+                    let summary = ThreadSummary {
+                        id: thread_id,
+                        instance: draft.instance.clone().unwrap_or_default(),
+                        title,
+                        preview: String::new(),
+                        cwd: draft.cwd.clone().unwrap_or_default(),
+                        project: None,
+                        worktree: None,
+                        branch: None,
+                        model: draft.model.clone(),
+                        state: ThreadState::Running,
+                        control: Control::Mine,
+                        control_holder: None,
+                        forked_from: None,
+                        spawned_by: None,
+                        root: None,
+                        children: 0,
+                        peers: 0,
+                        origin_kind: yaac_protocol::OriginKind::Yaac,
+                        created_at: now.clone(),
+                        updated_at: now,
+                        archived: false,
+                    };
+                    self.state.upsert_summary(&draft.target, summary);
+                }
+                self.state.new_threads.retain(|d| d.id != draft.id);
+                if self.state.selection == Selection::NewThread(draft.id) {
+                    self.open(&key);
+                }
+            }
+            Call::Fork { target } => {
+                if let Some(thread_id) = result.get("threadId").and_then(Value::as_str) {
+                    let key = ThreadKey::new(target, thread_id);
+                    self.open(&key);
+                }
+            }
+        }
+    }
+
+    fn on_error(&mut self, call: Call, error: &ErrorObject) {
+        match call {
+            Call::Respond { key, request_id } => {
+                let rev = self.state.next_stamp();
+                if let Some(t) = self.state.transcripts.get_mut(&key) {
+                    match error.code {
+                        // Never re-sent: the card says so and offers "Check latest status".
+                        ErrorCode::OutcomeUnknown => {
+                            t.set_request_state(&request_id, RequestState::Unknown, rev);
+                        }
+                        // Someone else answered, or it expired: the harness's events will say.
+                        ErrorCode::RequestNotPending => {}
+                        _ => {
+                            t.set_request_state(&request_id, RequestState::Pending, rev);
+                            t.local_answers.remove(&request_id);
+                            self.error(Some(key), format!("Your answer was not sent: {}", error.message));
+                        }
+                    }
+                }
+            }
+            Call::TurnStart { key, draft } => {
+                if error.code == ErrorCode::OutcomeUnknown {
+                    self.error(Some(key), "YAAC lost contact while sending your message. It may or may not have arrived; it will not be sent again.");
+                } else {
+                    // Nothing was sent: give the text back.
+                    let slot = self.state.drafts.entry(key.clone()).or_default();
+                    if slot.text.is_empty() {
+                        *slot = draft;
+                    }
+                    self.error(Some(key), format!("Not sent: {}", error.message));
+                }
+            }
+            Call::ThreadStart { draft } => {
+                if !self.state.new_threads.iter().any(|d| d.id == draft.id) {
+                    self.state.new_threads.push(draft);
+                }
+                self.error(None, format!("The thread was not started: {}", error.message));
+            }
+            Call::Subscribe(key) | Call::Read(key) => {
+                if let Some(t) = self.state.transcripts.get_mut(&key) {
+                    t.loading = None;
+                }
+                self.error(Some(key), format!("Could not load the thread: {}", error.message));
+            }
+            Call::Hello => self.state.hub.last_error = Some(error.message.clone()),
+            _ => self.error(None, error.message.clone()),
+        }
+    }
+
+    fn on_notification(&mut self, method: &str, params: Value) {
+        match method {
+            attach::names::TARGET_STATE => {
+                let Ok(p) = serde_json::from_value::<TargetStateParams>(params) else { return };
+                let was = self.state.target(&p.id).map(|t| t.connected());
+                let id = p.id.clone();
+                let now_connected = p.state.status == attach::ConnectionStatus::Connected;
+                self.state.apply_target_state(p);
+                if now_connected && was == Some(false) {
+                    self.load_target(&id);
+                }
+                // The entry (enabled, transport) may have changed with the state: refresh it.
+                self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
+            }
+            attach::names::NOTIFICATION => {
+                let Ok(n) = serde_json::from_value::<RoutedNotification>(params) else { return };
+                self.on_routed(n);
+            }
+            _ => {}
+        }
+    }
+
+    fn on_routed(&mut self, n: RoutedNotification) {
+        let target = n.target;
+        match n.method.as_str() {
+            m::THREAD_EVENT => {
+                let Ok(ev) = serde_json::from_value::<ThreadEventParams>(n.params) else { return };
+                let key = ThreadKey::new(target.clone(), ev.thread_id.clone());
+                let stale_epoch = self
+                    .state
+                    .transcripts
+                    .get(&key)
+                    .and_then(|t| t.position)
+                    .is_some_and(|p| p.epoch != ev.epoch && self.state.transcripts.get(&key).is_some_and(|t| t.loading.is_none()));
+                let budget_notice = matches!(&ev.event,
+                    ThreadEvent::ItemStarted(e) | ThreadEvent::ItemCompleted(e)
+                        if matches!(&e.item.body, ItemBody::Notice(nn) if nn.notice_kind == NoticeKind::BudgetExhausted));
+                self.state.apply_thread_event(&target, &ev);
+                if stale_epoch {
+                    // A new journal: rebuild from a snapshot.
+                    if let Some(t) = self.state.transcripts.get_mut(&key) {
+                        t.position = None;
+                    }
+                    self.subscribe(&key);
+                }
+                if budget_notice {
+                    self.refresh_budget_of(&key);
+                }
+            }
+            m::THREAD_UPDATED => {
+                if let Ok(p) = serde_json::from_value::<ThreadUpdatedParams>(n.params) {
+                    if let Some(t) = self.state.targets.iter_mut().find(|t| t.entry.id == target) {
+                        t.sync_token = p.token;
+                    }
+                    self.state.upsert_summary(&target, p.thread);
+                }
+            }
+            m::THREAD_REMOVED => {
+                if let Ok(p) = serde_json::from_value::<ThreadRemovedParams>(n.params) {
+                    self.state.remove_thread(&ThreadKey::new(target, p.thread_id));
+                }
+            }
+            m::PROVIDER_UPDATED => {
+                if let Ok(p) = serde_json::from_value::<ProviderUpdatedParams>(n.params) {
+                    self.state.apply_providers(&target, vec![p.provider], false);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ── outgoing ────────────────────────────────────────────────────────────────────────
+
+    fn load_target(&mut self, target: &TargetId) {
+        self.routed(target, m::PROVIDER_LIST, json!({}), Call::Providers(target.clone()));
+        self.sync(target);
+    }
+
+    fn sync(&mut self, target: &TargetId) {
+        let token = self.state.target(target).map(|t| t.sync_token.clone()).unwrap_or_default();
+        self.routed(target, m::THREAD_SYNC, json!({ "token": token }), Call::Sync(target.clone()));
+    }
+
+    fn subscribe(&mut self, key: &ThreadKey) {
+        let pos = self.state.transcripts.get(key).and_then(|t| t.position);
+        let mut params = json!({ "threadId": key.thread });
+        if let Some(p) = pos {
+            params["epoch"] = json!(p.epoch);
+            params["afterSeq"] = json!(p.seq);
+        }
+        self.routed(&key.target, m::THREAD_SUBSCRIBE, params, Call::Subscribe(key.clone()));
+    }
+
+    fn read_page(&mut self, key: &ThreadKey, cursor: Option<String>) {
+        let mut params = json!({ "threadId": key.thread, "maxBytes": 262_144 });
+        if let Some(c) = cursor {
+            params["cursor"] = json!(c);
+        }
+        self.routed(&key.target, m::THREAD_READ, params, Call::Read(key.clone()));
+    }
+
+    fn refresh_budget_of(&mut self, key: &ThreadKey) {
+        if let Some(root) = root_of(&self.state, key) {
+            self.refresh_budget(&root);
+        }
+    }
+
+    /// Ask the root's target for an orchestration's budget.
+    pub fn refresh_budget(&mut self, root: &Address) {
+        let Some(target) = root.target() else { return };
+        let op = self.op_id();
+        let params = json!({ "opId": op, "root": root, "action": MeshBudgetAction::Status });
+        self.routed(&target, m::MESH_BUDGET, params, Call::Budget);
+    }
+
+    /// "Continue": grant the orchestration another allowance.
+    pub fn continue_budget(&mut self, root: &Address) {
+        let Some(target) = root.target() else { return };
+        let op = self.op_id();
+        let params = json!({ "opId": op, "root": root, "action": MeshBudgetAction::Continue });
+        self.routed(&target, m::MESH_BUDGET, params, Call::Budget);
+    }
+
+    /// Open a thread: select it, keep its transcript, subscribe if it is not loaded.
+    pub fn open(&mut self, key: &ThreadKey) {
+        self.state.selection = Selection::Thread(key.clone());
+        self.state.clear_arrival(key);
+        let fresh = !self.state.transcripts.contains_key(key);
+        if fresh {
+            self.state.transcripts.insert(key.clone(), crate::transcript::Transcript::new());
+        }
+        self.state.touch(key);
+        if fresh {
+            self.subscribe(key);
+        }
+    }
+
+    /// Re-subscribe from the current position to learn the latest state of everything —
+    /// "Check latest status" on an outcome-unknown card. Sends nothing else.
+    pub fn check_latest(&mut self, key: &ThreadKey) {
+        self.subscribe(key);
+    }
+
+    /// Ask the hub to reconnect a target now.
+    pub fn retry_target(&mut self, target: &TargetId) {
+        let params = json!({ "id": target, "enabled": true });
+        self.request(attach::names::TARGETS_ENABLE, params, Call::Ignore);
+    }
+
+    /// Answer a request. The card shows "submitted" at once; a lost answer becomes "outcome
+    /// unknown" and is never re-sent.
+    pub fn respond(&mut self, key: &ThreadKey, request_id: &RequestId, response: &RequestResponse, summary: String) {
+        if !self.state.may_act(key) {
+            return;
+        }
+        let rev = self.state.next_stamp();
+        if let Some(t) = self.state.transcripts.get_mut(key) {
+            t.set_request_state(request_id, RequestState::Submitted, rev);
+            t.local_answers.insert(request_id.clone(), crate::transcript::LocalAnswer { summary, verb: None });
+        }
+        let op = self.op_id();
+        let params = json!({ "opId": op, "threadId": key.thread, "requestId": request_id, "response": response });
+        self.routed(&key.target, m::REQUEST_RESPOND, params, Call::Respond { key: key.clone(), request_id: request_id.clone() });
+    }
+
+    /// Stop the running turn (by turn id, so a late Stop never hits the next turn).
+    pub fn interrupt(&mut self, key: &ThreadKey) {
+        let Some(turn) = self.state.transcripts.get(key).and_then(|t| t.active_turn.clone()) else { return };
+        let params = json!({ "threadId": key.thread, "turnId": turn });
+        self.routed(&key.target, m::TURN_INTERRUPT, params, Call::Ignore);
+    }
+
+    fn input_parts(draft: &Draft, support: &yaac_protocol::Support) -> Option<Vec<InputPart>> {
+        let mut parts = Vec::new();
+        if !draft.text.trim().is_empty() {
+            parts.push(InputPart::text(draft.text.clone()));
+        }
+        for a in &draft.attachments {
+            let upload = a.upload.clone()?;
+            if a.progress.is_some() {
+                return None;
+            }
+            match route(a.is_image, support, a.choice) {
+                ImageRoute::AsImage => parts.push(InputPart::Image(yaac_protocol::ImagePart { upload_id: upload })),
+                ImageRoute::AsFile | ImageRoute::AsFileCannotSee => {
+                    parts.push(InputPart::File(yaac_protocol::FilePart { upload_id: upload }));
+                }
+                ImageRoute::Ask => return None,
+            }
+        }
+        (!parts.is_empty()).then_some(parts)
+    }
+
+    /// Send the composer's content: a new turn, or input added to the running turn under
+    /// `steer`. Returns whether anything was sent.
+    pub fn send(&mut self, key: &ThreadKey) -> bool {
+        if !self.state.may_act(key) {
+            return false;
+        }
+        let Some(draft) = self.state.drafts.get(key).cloned() else { return false };
+        let t = self.state.transcripts.get(key);
+        let effective = t.and_then(|t| t.effective.as_ref());
+        let support = effective.map_or(yaac_protocol::Support::Unknown, |e| e.image_input.clone());
+        let Some(input) = Self::input_parts(&draft, &support) else { return false };
+        let active: Option<TurnId> = t.and_then(|t| t.active_turn.clone());
+        let can_steer = effective.is_some_and(|e| yaac_protocol::has_capability(&e.capabilities, &yaac_protocol::Capability::Steer));
+        let op = self.op_id();
+        let next = self.state.next_settings.get(key).cloned().unwrap_or_default();
+        self.state.drafts.remove(key);
+        match active {
+            Some(turn) if can_steer => {
+                let params = json!({ "opId": op, "threadId": key.thread, "turnId": turn, "input": input });
+                self.routed(&key.target, m::TURN_STEER, params, Call::TurnStart { key: key.clone(), draft });
+            }
+            Some(_) => {
+                self.state.drafts.insert(key.clone(), draft);
+                return false;
+            }
+            None => {
+                let mut params = json!({ "opId": op, "threadId": key.thread, "input": input });
+                if let Some(mdl) = next.model {
+                    params["model"] = json!(mdl);
+                }
+                if let Some(e) = next.effort {
+                    params["effort"] = json!(e);
+                }
+                if let Some(md) = next.mode {
+                    params["mode"] = json!(md);
+                }
+                self.routed(&key.target, m::TURN_START, params, Call::TurnStart { key: key.clone(), draft });
+            }
+        }
+        true
+    }
+
+    /// Start a new-thread draft on a target and select it.
+    pub fn new_thread(&mut self, target: TargetId, cwd: Option<yaac_protocol::TargetPath>) -> u64 {
+        let id = self.state.new_threads.iter().map(|d| d.id).max().unwrap_or(0) + 1;
+        self.state.new_threads.push(NewThreadDraft {
+            id,
+            target,
+            project: None,
+            cwd,
+            instance: None,
+            model: None,
+            effort: None,
+            mode: None,
+            draft: Draft::default(),
+        });
+        self.state.selection = Selection::NewThread(id);
+        id
+    }
+
+    /// Send a draft's first message: `thread/start` creates the thread and sends it, as one
+    /// operation.
+    pub fn start_thread(&mut self, draft_id: u64) -> bool {
+        let Some(draft) = self.state.new_threads.iter().find(|d| d.id == draft_id).cloned() else { return false };
+        let Some(target) = self.state.target(&draft.target) else { return false };
+        let instance = draft.instance.clone().or_else(|| {
+            target.providers.iter().find(|p| p.status == yaac_protocol::ProviderStatus::Ready).map(|p| p.instance.clone())
+        });
+        let Some(instance) = instance else { return false };
+        let support = target
+            .provider(&instance)
+            .and_then(|p| {
+                let model = draft.model.as_ref();
+                p.models.iter().find(|mm| Some(&mm.id) == model).or_else(|| p.models.iter().find(|mm| mm.is_default))
+            })
+            .map_or(yaac_protocol::Support::Unknown, crate::images::model_image_support);
+        let Some(input) = Self::input_parts(&draft.draft, &support) else { return false };
+        let Some(cwd) = draft.cwd.clone() else { return false };
+        let op = self.op_id();
+        let mut params = json!({ "opId": op, "instance": instance, "cwd": cwd, "input": input });
+        if let Some(mdl) = &draft.model {
+            params["model"] = json!(mdl);
+        }
+        if let Some(e) = &draft.effort {
+            params["effort"] = json!(e);
+        }
+        if let Some(md) = &draft.mode {
+            params["mode"] = json!(md);
+        }
+        let mut sent = draft.clone();
+        sent.instance = Some(instance);
+        self.routed(&draft.target, m::THREAD_START, params, Call::ThreadStart { draft: sent });
+        true
+    }
+
+    /// Mute or unmute a thread. **SEAM:** window-local until the wire carries `muted`.
+    pub fn set_muted(&mut self, key: &ThreadKey, muted: bool) {
+        if muted {
+            self.state.muted.insert(key.clone());
+        } else {
+            self.state.muted.remove(key);
+        }
+    }
+
+    /// Archive a thread (`thread/archive`, under `threadArchive`). Archived threads leave the
+    /// list; "Show archived" brings them back.
+    pub fn archive(&mut self, key: &ThreadKey) {
+        let op = self.op_id();
+        let params = json!({ "opId": op, "threadId": key.thread });
+        self.routed(&key.target, m::THREAD_ARCHIVE, params, Call::Ignore);
+    }
+
+    /// Rename a thread (`thread/rename`, under `threadRename`).
+    pub fn rename(&mut self, key: &ThreadKey, title: &str) {
+        let op = self.op_id();
+        let params = json!({ "opId": op, "threadId": key.thread, "title": title });
+        self.routed(&key.target, m::THREAD_RENAME, params, Call::Ignore);
+    }
+
+    /// Pin or unpin a thread. **SEAM:** window-local until the wire carries `pinned`.
+    pub fn set_pinned(&mut self, key: &ThreadKey, pinned: bool) {
+        if pinned {
+            self.state.pinned.insert(key.clone());
+        } else {
+            self.state.pinned.remove(key);
+        }
+    }
+
+    /// Create a project from a folder. **SEAM:** projects live on the target, but there is no
+    /// wire method yet; the window records it.
+    pub fn create_project(&mut self, target: &TargetId, folder: &str, name: &str) {
+        let id = format!("p-{}-{}", target, self.state.projects.len() + 1);
+        self.state.projects.push(crate::projects::Project {
+            id,
+            name: name.to_owned(),
+            target: target.clone(),
+            folder: folder.to_owned(),
+            repo: None,
+        });
+    }
+
+    /// Choose a draft's project: it starts in the project folder's root.
+    pub fn set_draft_project(&mut self, draft: u64, project_id: &str) {
+        let Some(p) = self.state.projects.iter().find(|p| p.id == project_id).cloned() else { return };
+        if let Some(d) = self.state.new_threads.iter_mut().find(|d| d.id == draft) {
+            if d.target != p.target {
+                d.instance = None;
+                d.model = None;
+                d.effort = None;
+                d.mode = None;
+            }
+            d.target = p.target.clone();
+            d.cwd = Some(p.folder.clone().into());
+            d.project = Some(p.id);
+        }
+    }
+
+    /// Set a chat's agents policy. **SEAM:** window-local until the wire carries a per-chat
+    /// mesh policy.
+    pub fn set_agents_policy(&mut self, key: &ThreadKey, policy: crate::state::AgentsPolicy) {
+        self.state.agents_policy.insert(key.clone(), policy);
+    }
+
+    /// Fork a thread into a destination instance on the same target, from its last completed
+    /// turn, with no first message yet. (The fork dialog with its preview is a later package;
+    /// this is the seam it calls.)
+    pub fn fork(&mut self, key: &ThreadKey, instance: &InstanceId) {
+        let op = self.op_id();
+        let params = json!({ "opId": op, "source": key.thread, "instance": instance, "input": [] });
+        self.routed(&key.target, m::THREAD_FORK, params, Call::Fork { target: key.target.clone() });
+    }
+}

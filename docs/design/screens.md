@@ -1,0 +1,875 @@
+# Screens
+
+The brief for YAAC's screens: what each one is for, what is on it, and what it must make easy.
+Mockups generated from this brief are in [`mockups/`](mockups/); the review of them is in
+[`review.md`](review.md). The behaviour behind each screen is specified in
+[07 UI](../07-ui.md) and [10 Agent mesh](../10-agent-mesh.md).
+
+This is revision 5 of the brief. Revisions 2 to 4 came out of the design review. **Revision 5
+is the owner's**, after seeing the mockups: the sidebar tree is replaced by a calm flat list
+under sticky headers; outlines around controls are removed; the "Since you left" page, the
+warning marks on parent threads, and the Agents settings tab are removed; Mute, Archive, and
+a per-chat agents toggle with a permission prompt are added.
+
+## Visual direction
+
+- A dense, calm **developer tool**. Closer to a good code editor than to a consumer chat app.
+- Built with egui, so: flat, small corner radii (4–6 px), no drop shadows except on floating
+  dialogs and menus, no gradients, no glass or blur.
+- **Calm before complete.** The owner's reaction to the first mockups was that they felt
+  polluted. Every mark on screen must earn its place; when in doubt, leave it out.
+- **No outlines.** A border around a control adds a rectangle for the eye to parse and says
+  nothing. Things are told apart by **space** first, then by a **faint fill**, and by a line
+  only where two regions genuinely meet. Concretely:
+  - **Text and prose have no box.** Agent prose sits directly on the window background. A user
+    message is set apart by a faint fill and space — no outline.
+  - **Collapsed reasoning and tool lines are plain lines of text** with a small mark, not
+    boxed rows.
+  - **Selectors are text with a chevron** — `gpt-6.2-sol ▾` — with no outline and no fill until
+    hovered. The control row is a quiet line of words, not a row of boxes.
+  - **One filled button per screen**: the primary action. Every other button is plain text,
+    with no outline; it gains a faint fill on hover.
+  - **Inputs** (search, composer, form fields) have a faint fill and no outline; the focused
+    one gets the 2 px focus ring.
+  - **Cards that need the user** (approval, question, permission) are the one thing worth
+    marking: a faint fill and a 3 px coloured left edge. No outline around them either.
+  - **Code blocks** are a faint fill, no outline.
+  - **The only lines in the window** are one hairline between the sidebar and the thread, and
+    one between the thread and the agents panel. Sections inside a panel are separated by
+    space and a small heading, not by rules or boxes.
+- **Fewer marks.** If an icon repeats on every row, it is decoration: remove it. No avatar
+  beside each message, no icon before every tool line, no chevron on things that do not
+  collapse, no folder icons.
+- **Type:** a clean sans-serif for UI at 13–14 px; a monospace for code, commands, paths, and
+  ids. Agent prose is the most readable thing on screen: 15 px, generous line height.
+- **One accent colour** for primary actions and selection.
+- **Dark and light are equals.** Same layout, same content, same hierarchy, same contrast
+  quality, and the same actions available. Neither is an inverted afterthought.
+
+| Token | Dark | Light |
+| --- | --- | --- |
+| Window background | `#16181D` | `#FFFFFF` |
+| Sidebar / panel background | `#1B1E24` | `#F5F6F8` |
+| Raised surface (request cards, menus, dialogs) | `#22262E` | `#F7F8FA` |
+| Faint fill (user message, input, code, hover) | `#1E2128` | `#F3F4F7` |
+| Hairline between regions (the only border) | `#2E333D` | `#DADDE3` |
+| Primary text | `#E6E8EC` | `#1A1D23` |
+| Secondary text | `#9AA2AF` | `#5B6472` |
+| Unavailable-control text | `#8891A0` | `#646E7C` |
+| Accent (button fills, focus ring) | `#6C8CFF` | `#3B5BDB` |
+| **Selected row fill** | `#263052` | `#E4EAFD` |
+| Text on an accent fill | `#0E1116` | `#FFFFFF` |
+| Link text | `#8FA8FF` | `#2F4AC0` |
+| Running | `#4C9AFF` | `#1A66C7` |
+| Needs you | `#F2B24C` | `#8F5600` |
+| Failed | `#FF7C87` | `#C92A3A` |
+| Done | `#4CC38A` | `#17754D` |
+| Modal scrim | black at 55 % | black at 35 % |
+
+### Contrast is a requirement, not a hope
+
+Every text colour above measures **at least 4.5 : 1** against all three backgrounds of its
+theme (window, panel, raised surface). The values were computed, not eyeballed; a token that
+drops below 4.5 : 1 is a bug.
+
+- **Anything the user must read is primary or secondary text** — including the *reason* a
+  control is unavailable ("not signed in on local", "Native fork is only available within the
+  same provider and store", "YAAC installed nothing on this server").
+- **An unavailable control is never shown by faint text alone.** It has no fill, a dashed
+  border, the unavailable-control text colour (still 4.5 : 1), and its reason beside it.
+- A button filled with the accent uses the "text on an accent fill" colour for its label.
+- **A selected row is a tint, never the solid accent.** Its fill is the "selected row fill"
+  token, and its text stays primary. Every label, link, and state word that can appear on a
+  row measures at least 4.5 : 1 against that tint too (links 5.7 dark / 6.1 light; the
+  weakest are *running* in dark, 4.53, and *failed* in light, 4.51). Link colour on the solid accent would measure about 1.3 : 1,
+  which is why the solid accent is never a row background. Unavailable-control text is not
+  used inside rows.
+
+## Rules that hold on every screen
+
+These exist because the first round of mockups broke each of them.
+
+### State is a shape and a word, never a colour alone
+
+| State | Mark | Word |
+| --- | --- | --- |
+| Running | play triangle in a circle | running |
+| **Needs you** | warning triangle | needs you |
+| Waiting on another agent | clock | waiting |
+| Done | check in a circle | done |
+| Failed | cross in a circle | failed |
+| Idle | hollow circle | — (a relative time instead) |
+| Offline / disabled | dashed hollow circle | offline, off |
+
+Every mark must be recognisable in greyscale. In the sidebar list the shape alone carries the
+state, to keep rows to one calm line; wherever there is room — the thread header, the *Needs
+you* section, cards, the agents panel — the word is shown beside it.
+
+### Needing the user outranks everything
+
+If a thread has a pending approval or question, its mark is **needs you** everywhere it
+appears — sidebar row, thread header, agents panel — even though a turn is technically still
+running. It is never shown as "running" while it is waiting for the user. This is the thread's **own**
+state: its parents carry no mark for it. Blocked threads are found in the *Needs you* list.
+
+### One shell
+
+```
+┌────────────┬───────────────────────────────────────────────────────────┐
+│ Sidebar    │ Thread header                                             │
+│ 280 px     ├───────────────────────────────────────────────────────┬───┤
+│            │ Transcript                                            │ ◉ │  ← agents pill,
+│ NEEDS YOU  │                                                       │ ◉↓│    floating; widens
+│ flat list  │                                                       │ ◉ │    to a card on hover;
+│            ├───────────────────────────────────────────────────────┴───┤    can be docked as
+│            │ Composer                                                  │    a third column
+│ ⚙  · Hub   │ Control row                                               │
+└────────────┴───────────────────────────────────────────────────────────┘
+```
+
+- There is **no title bar drawn by the app**, no "Pinned / Active / Recent" lists, no
+  "Add agent" button, no "+ Agent / + Tool" controls. Threads are the only objects.
+- The sidebar and the thread are separated by a single hairline, and by nothing else. A
+  docked agents panel gets one more.
+- **The selected sidebar row is always the thread that is open.**
+- **Settings** is a full-window page: its own left navigation, a "← Back to threads" control at
+  the top, no thread tree, no agents panel, no composer.
+
+### The sidebar: a flat list under sticky headers
+
+**There is no tree.** No indentation, no chevrons, no folder icons, no nested levels. The
+sidebar is a single scrolling list of thread rows, divided by section headers. It should feel
+closer to a mail client's message list than to a file explorer.
+
+- **A section header** is one quiet line, in small secondary text, naming the group: the
+  project on the left — `yaac` — and the machine on the right — `devbox`. (The branch is on
+  each row, so by default sections are per project; ticking *Worktree* in the grouping menu
+  splits them further, and the header then reads `yaac · feature/protocol`.) A connection mark appears beside the machine only when it is *not* connected.
+  Headers are **sticky**: as the list scrolls, the header of the group being read stays pinned
+  at the top until the next one pushes it away. A header has no fill and no rule; it is set
+  apart by extra space above it.
+- **A thread row has two lines.**
+  - **Line 1:** a state mark, the title, and — right-aligned, in secondary text — a relative
+    time.
+  - **Line 2**, smaller and in secondary text, aligned under the title: what the thread is
+    working on in git, **as compactly as it can be said** — the branch name, then
+    `Δ7` (seven files differ from origin) and `↑2` (two commits not pushed). A number appears
+    only when it is not zero, so a clean, pushed branch shows just its name. A thread that
+    started workers ends the line with a small people mark and their count.
+  - A thread whose folder is **not in git** has no second line; its row is one line tall.
+  - Still nothing else: no state word, no "spawned" arrow, no icons on line 2 beyond the
+    people mark. The state mark is a distinct shape, so it reads without the word; the word
+    appears in the thread's header when it is open, and in *Needs you*.
+  - Rows in *Needs you* and *Muted* stay one line: they are for finding a thread, not for
+    reading its status.
+- **The selected row** is the open thread, drawn with the selected-row tint.
+- **Grouping** is one small icon button at the right end of the search field, opening a menu
+  with three checkboxes — Machine, Project, Worktree. It is not three chips. Whatever is ticked
+  makes up the header text; with nothing ticked there are no headers at all, just the list,
+  newest first. Sections are ordered by most recent activity, and so are rows within them.
+- **Needs you** is the first section, above everything, with the header "Needs you · 2". Its
+  rows are the same one-line rows, with the machine in secondary text on the right. It is
+  hidden when empty.
+- **Pinned** is the second section, with the header "Pinned · 1": threads the user pinned,
+  whatever their project. A pinned thread is listed here instead of under its project. Hidden
+  when empty.
+- **A project header shows the name the user gave the project** — "Billing API", not a path.
+- **A temporary project** — a folder that has discovered threads but is not a project yet —
+  has its header in *italics*, with a small dashed-circle mark, showing the folder path
+  (`~/projects/abc/123`). Right-clicking that header opens a one-item menu,
+  **Create project…**.
+- **Muted** is the last section, collapsed to its header — "Muted · 4" — and expands on click.
+- **Right-clicking a row** opens a small menu: Pin (or Unpin), Mute (or Unmute), Archive,
+  Rename, Fork.
+
+Unless a screen says otherwise, the sidebar shows exactly this:
+
+- `YAAC`; a search field with the grouping button at its right end; a **New** button.
+- **Needs you · 2**
+  - needs-you mark · index-rebuild · `gpu-box`
+  - needs-you mark · Fix frame decoder · `devbox`
+- **Pinned · 1**
+  - running mark · Migrate auth module — orchestrator · "now" / line 2: `main  Δ4` and a
+    people mark with "3"
+- **api** — `local`
+  - done mark · users-service · "12m" / line 2: `auth/users  Δ12  ↑3`
+- **yaac** — `devbox`
+  - needs-you mark · Fix frame decoder · "2m" / line 2: `feature/protocol  Δ7  ↑2`
+  - idle mark · Explain the handshake · "2h" / line 2: `feature/protocol`
+- **api** — `devbox`
+  - done mark · billing-service · "9m" / line 2: `auth/billing  Δ9  ↑1`
+  - waiting mark · CI integration · "1m" / line 2: `main`
+- **search** — `gpu-box`
+  - running mark · search-service · "now" / line 2: `auth/search  Δ3`
+  - needs-you mark · index-rebuild · "41m" / line 2: `auth/search  Δ3`
+- **docs** — `staging`, with an offline mark and the word "offline" beside the machine
+  - idle mark · Release notes · "3h" / line 2: `main`
+- *~/scratch/spike-7* — `devbox` — a **temporary project**: italic, dashed mark
+  - idle mark · Try the new parser · "1d" (not in git: one line only)
+- **Muted · 4** — collapsed
+- Footer: a **Settings** control, and a quiet hub status: "Hub running · 3 of 4 targets".
+
+### The transcript: the conversation first
+
+**What the user and the agent say to each other is the content. Everything else is activity,
+and activity is quiet.**
+
+- **Full size, primary text:** the user's messages and the agent's prose. Nothing else.
+- **Activity** — reasoning, tool calls, messages to and from other agents, workers being
+  started, waiting — is shown **collapsed by default, as one muted line each**: small
+  secondary text, a small mark, a short description, and nothing more. No card, no fill, no
+  header row, no body. For example:
+  - `Thought for 4s`
+  - `Ran cargo test -p yaac-protocol — passed`
+  - `Edited 6 files`
+  - `Started 3 workers · 2 of 3 finished`
+  - `← billing-service · Migration merged. 14 tests pass. One flaky test…`
+  - `→ CI integration · delivered`
+  - `→ Release notes · queued, staging is offline`
+- **A run of consecutive activity lines sits tight together**, so a burst of ten tool calls is
+  a small quiet block between two paragraphs of prose, not ten rows competing with them. A
+  long run folds further into a single line — `12 steps · 9 commands, 3 messages` — that
+  expands to the individual lines.
+- **Clicking an activity line expands it in place** to its detail: the command and its output,
+  the full message with its *To* or *From* and its receipt, the list of workers. Expanded
+  detail is still drawn in the muted style. It collapses again on a second click.
+- **Something that went wrong stays one line, but is not muted**: a failed command or a failed
+  delivery keeps the failed mark and colour, so it is noticed without being opened.
+- **What needs the user is never collapsed**: approvals, questions, the permission prompt, and
+  the budget notice are full cards. They are the only cards in the transcript.
+- **In a thread an agent started**, the message that set its task is that thread's prompt, and
+  is shown in full where a user message would be — labelled *From* the agent that sent it —
+  because it is what this agent is answering. Everything after it follows the rules above.
+
+Who is working with whom, and how each worker is doing, is the job of the agents panel, not of
+the transcript.
+
+### The agents panel: a pill, a card, or a docked panel
+
+The agents a thread is working with are shown in one of three states. **The default is the
+smallest.** It appears only for a thread that has a parent, workers, or contacts, and is
+absent otherwise.
+
+**1. The pill — the default.** A narrow vertical pill floating over the right edge of the
+thread, vertically centred, about 44 px wide, with fully rounded ends and a soft shadow. It
+holds one small **harness icon** per related agent — the parent first, then workers, then
+contacts — stacked with a little space between. Nothing else: no names, no text.
+
+- Beside an icon, a small **arrow** shows data moving: **up** while this thread is sending to
+  that agent, **down** while it is receiving from it. The arrow is there only while something
+  is in flight and fades when it is done. An idle agent has no arrow.
+- An agent that **needs the user** shows the needs-you mark on its icon in place of an arrow.
+  That is the agent's own state.
+- A finished agent's icon is dimmed. With more than eight agents the pill shows the first
+  seven and a "+N".
+- The harness icon is a simple glyph per provider kind; a provider with no glyph gets its
+  initial in a circle.
+
+**2. The card — on hover or keyboard focus.** The pill widens leftwards into a floating
+rounded rectangle, about 300 px wide, over the transcript; it does not push the layout. Each
+icon becomes a row: the icon, the agent's **name**, and beneath it one line of secondary text
+with **the last thing it did**, cut off with an ellipsis — "Rebuilding the search index
+(68%)…", "Merged to main. 14 tests pass.", "Waiting for your approval". The arrows stay at the
+right of each row. Clicking a row opens that thread. Moving the pointer away shrinks it back
+to the pill. At the top right of the card is a small **dock** button.
+
+**3. Docked.** The user pins it to the side. It becomes a fixed panel on the right, like a
+sidebar, and the thread narrows to make room. It shows the same rows under three quiet
+headings — **Spawned by**, **Workers**, **In contact with** — with the orchestration's budget
+in small secondary text at the top ("14 of 100 agent turns · 4 of 20 threads"). It is drawn in
+the same muted style as everything else: no boxes around sections, no rules, rows as plain
+lines, names as links. An **undock** button returns it to the pill. The choice is remembered.
+
+In every state a row or icon is a link to that thread.
+
+### The control row
+
+Shows only what can actually be changed right now. In a draft: no Fork, no context meter. When
+a thread is read-only: no selectors at all. It is a line of plain-text selectors, each a word
+and a chevron, with no boxes around them.
+
+On a thread a person started, the row includes **agents: ask ▾** (or *allow*): whether this
+chat's agent may start and message other threads without asking. A new chat starts on *ask*.
+A worker thread has no such control — it acts under its root's answer.
+
+### Links between agents
+
+A thread name in a **To** or **From** line, a workers card, the agents panel, an ancestry
+line, or the Needs-you list is a link: link-coloured and underlined. (Rows of the thread tree
+are selectable rows, not underlined links.)
+
+- **Delivered:** following a *To* opens the other thread at the matching *From*, and back.
+- **Queued:** the name still opens the other thread; there is no matching item yet, and the
+  receipt stays visible saying why it is waiting.
+- **Failed because the recipient no longer exists:** the name is plain text, not a link, and
+  the permanent reason sits beside it. Nothing pretends to lead somewhere.
+
+### Keyboard and focus
+
+- Primary actions show their key: "Allow once  ⏎", "Deny  Esc".
+- **Those keys act only while that card has focus.** Enter in the composer sends a message; it
+  never approves something further up the page.
+- **A request that arrives while the user is typing does not take focus.** It is announced —
+  the Needs-you count changes and a one-line notice appears above the composer, "index-rebuild
+  needs an approval · Ctrl+J to go there" — and the caret stays where it was.
+- **Ctrl+J** opens the Needs-you list from anywhere; choosing an entry opens that thread,
+  scrolls to the request, and focuses its card.
+- One element per screen carries a visible focus ring (a 2 px accent outline).
+
+### A request held by another program
+
+Wherever a request is listed — the Needs-you section, *Since you left*, the agents panel — one
+that belongs to a thread in use elsewhere is labelled "answer in the other program" and has no
+buttons. It is never offered as something the user can act on here.
+
+## The fleet used in every mockup
+
+One story, so screens agree with each other.
+
+| Thread | Agent | Where | State |
+| --- | --- | --- | --- |
+| **Migrate auth module — orchestrator** | Codex · gpt-6.2-sol | local · api · main | running; the root, started by the user |
+| users-service | Claude · opus-5.5 | local · api · main | done — worker of the orchestrator |
+| billing-service | Claude · opus-5.5 | devbox · api · main | done — worker of the orchestrator |
+| search-service | Claude · opus-5.5 | gpu-box · search · main | running — worker of the orchestrator |
+| index-rebuild | Claude · opus-5.5 | gpu-box · search · main | **needs you** — worker of search-service |
+| CI integration | Codex · gpt-6.2-sol | devbox · api · main | waiting — a contact, not a worker |
+| Release notes | Codex · gpt-6.2-sol | staging | unreachable — staging is offline |
+| **Fix frame decoder** | Codex · work · gpt-6.2-sol | devbox · yaac · feature/protocol | **needs you** — unrelated to the migration |
+
+## Screens
+
+Each screen is drawn in dark and in light.
+
+### 01 — A thread that needs an approval
+
+*The everyday screen. Must answer at a glance: what is this agent doing, and does it need me?*
+
+- Sidebar as standard; **Fix frame decoder** selected.
+- Header: needs-you mark, "Fix frame decoder", a tag "Needs you — approval", breadcrumb
+  `devbox · yaac · feature/protocol`. No "Running" anywhere.
+- Transcript: user message "Why does decode() drop the last frame?" with an attachment chip
+  `decoder-log.txt`; two muted activity lines, tight together — "Thought for 4s" and
+  "Ran cargo test -p yaac-protocol — passed"; then the agent's prose at full size: "The length
+  prefix counts the kind byte, so the reader stops one byte early."; a six-line Rust code
+  block.
+- **Approval card** (amber left edge, focus ring on the first button): title "Run command",
+  `cargo fix --allow-dirty` in monospace, the directory `/home/dev/yaac`, and the buttons the
+  harness offers: **Allow once  ⏎**, **Allow for this thread**, **Deny  Esc**.
+- Composer: placeholder "Message Codex…", dimmed, hint "Answer the approval above to continue".
+- Control row: `Codex · work ▸ gpt-6.2-sol ▾` · `effort: high ▾` · `mode: ask ▾` ·
+  `agents: ask ▾` · context meter "38%" · **Fork**.
+- Agents panel: hidden (this thread has no relationships).
+
+### 02 — The orchestrator: agents talking to agents
+
+*The reason YAAC exists. Must make it obvious who is talking to whom, and how far along
+everyone is, without opening five windows.*
+
+- Sidebar as standard; **Migrate auth module — orchestrator** selected.
+- Header: running mark, title, the word "Running", breadcrumb `local · api · main`.
+- Transcript — the conversation is what stands out; the machinery is five quiet lines:
+  1. User, full size: "Split this migration across three Opus workers, one per service. Tell
+     the Codex thread on devbox when billing is merged, and send release notes to staging."
+  2. Agent prose, full size: "I'll run one worker per service and keep CI and the release
+     notes thread informed."
+  3. A tight run of muted activity lines:
+     `Started 3 workers · 2 of 3 finished`
+     `← billing-service · Migration merged. 14 tests pass. One flaky test…`
+     `→ CI integration · delivered`
+     `→ Release notes · queued, staging is offline`
+     `Waiting for search-service…`
+  4. Agent prose, full size: "users-service and billing-service are merged. One flaky test
+     was skipped in billing: `test_refund_race`. I'm waiting on search-service."
+  One of the activity lines — the one from billing-service — is shown **expanded** to
+  demonstrate: beneath it, still in the muted style and indented slightly, "From
+  **billing-service** · Claude · devbox" and the full text "Migration merged. 14 tests pass.
+  One flaky test skipped: `test_refund_race`."
+- Composer: "Message Codex…"; a **Stop** button.
+- Control row: `Codex ▸ gpt-6.2-sol ▾` · `effort: high ▾` · `mode: ask ▾` · `agents: allow ▾`
+  · "38%" · **Fork**.
+- **Agents panel, docked** (this is the docked state; the default is the pill — screens 27
+  and 28). Header "Agents", an undock button, and the budget line
+  "14 of 100 agent turns · 4 of 20 threads".
+  - **Spawned by** — "started by you".
+  - **Workers (3)** — a tree: users-service done; billing-service done; search-service
+    running, with a child row beneath it: **index-rebuild — needs you · approval**.
+  - **In contact with (2)** — CI integration · Codex · devbox · waiting;
+    Release notes · Codex · staging · offline.
+
+### 03 — The same conversation from a worker's side
+
+*A worker is a full thread. Must show where its task came from and that its answer went back.*
+
+- Sidebar as standard; **billing-service** selected.
+- Header: done mark, "billing-service", breadcrumb `devbox · api · main`, and a link line:
+  "Spawned by **Migrate auth module — orchestrator** ↗ on local".
+- Transcript:
+  1. The task that started this thread, **in full**, where a user message would be, labelled
+     "From **Migrate auth module — orchestrator** · Codex · local": "Migrate the billing
+     service to the new auth module. Report back when it is merged."
+  2. A tight run of muted activity lines: `Thought for 9s`, `Edited 6 files`,
+     `Ran cargo test -p billing — 14 passed`.
+  3. Agent prose, full size: "Merged to main. One flaky test was skipped."
+  4. One muted activity line: `→ Migrate auth module — orchestrator · delivered`
+- Composer enabled: "Message Claude…" — the user can continue a worker by hand.
+- Agents panel open: **Spawned by** — Migrate auth module — orchestrator · Codex · local ·
+  running; **Workers (0)**; **In contact with (0)**.
+
+### 04 — A blocked worker, two levels down
+
+*The hardest case: the thing that needs you is a grandchild on another machine. Must be
+reachable in one click and say where it sits.*
+
+- Sidebar as standard; **index-rebuild** selected (it is also first under Needs you).
+- Header: needs-you mark, "index-rebuild", tag "Needs you — approval", breadcrumb
+  `gpu-box · search · main`, and an ancestry line of links:
+  "Migrate auth module — orchestrator › search-service › **index-rebuild**".
+- Transcript: the task that started this thread, in full, labelled "From **search-service** ·
+  Claude · gpu-box": "Rebuild the search index against the new auth tables."; one muted
+  activity line "Ran ./scripts/reindex.sh --dry-run — 3 shards would be dropped"; then an
+  **approval card** — the only card on the screen: "Run command",
+  `./scripts/reindex.sh --drop-old`, directory `/srv/search`, a line "Started by an agent, not
+  by you", buttons **Allow once  ⏎**, **Deny  Esc**.
+- Agents panel open: **Spawned by** — search-service · Claude · gpu-box · running; above it in
+  small text "root: Migrate auth module — orchestrator".
+
+### 05 — Every state a request can be in
+
+*A request is not always answerable. Each outcome must be plain, and none may invite a blind
+retry.*
+
+Main shell, **Fix frame decoder** open, the transcript showing six request cards stacked, each
+labelled with its state:
+
+1. **Pending** — a question card: chip "Approach", "Which fix do you want?", radio options
+   "Patch the decoder", "Rewrite the reader", "Add a compatibility shim", a "Something else…"
+   text field; a second question chip "Scope" with checkboxes `yaac-protocol`,
+   `yaac-transport`, `yaac-core`; buttons **Send answers  ⏎** and a quiet text link
+   "Answer in my own words".
+2. **Submitted** — the same card collapsed: "You chose: Patch the decoder · yaac-protocol",
+   a spinner mark, "Sent — waiting for the agent to confirm". A second small example beside
+   it for a secret question: "You answered: ••••••••" — masked here too.
+3. **Confirmed** — a done mark: "**Answered by you** · Patch the decoder · yaac-protocol ·
+   confirmed 12s ago". This is the normal end of a request. Beside it, the secret example:
+   "Answered by you · •••••••• · confirmed".
+4. **Resolved elsewhere** — "Allowed in another program on devbox · 2m ago". No buttons.
+5. **Expired** — "No longer needed — the turn ended before this was answered." No buttons.
+   A secret answer is masked **while it is typed and in every summary afterwards** — pending,
+   submitted, confirmed. It is never shown in clear, and never cached on the host.
+
+   When the agent acknowledges an answer, the marks are **recomputed from the requests still
+   open**: if none remain on this thread its header returns to "Running", its row leaves
+   *Needs you*, the composer is enabled again, and each ancestor and the agents rail drop the
+   needs-you mark unless another descendant still needs the user.
+6. **Outcome unknown** — an amber note: "YAAC lost contact while sending your answer. It may
+   or may not have arrived." One button: **Check latest status**. Beneath, in secondary text:
+   "Your answer will not be sent again." No retry button.
+
+### 06 — (removed)
+
+*"Since you left" was removed by the owner in revision 5. The **Needs you** list is where
+waiting work is found. The number is left unused so the other screens keep theirs.*
+
+### 07 — First run
+
+*Nothing is configured. Must get to a first message in under a minute, with one obvious next
+step.*
+
+- Main shell with an **empty** sidebar (just `YAAC`, a disabled search field, and Settings /
+  "Hub running" in the footer). No composer. No agents panel.
+- Centre: "YAAC", the sentence "Run your coding agents on any machine, and let them work
+  together.", and three cards:
+  - **This computer** — "Codex — ready" with a check; "Claude — not signed in" with a warning
+    mark, the hint "Run `claude` in a terminal to sign in" (the command in monospace, no
+    literal backticks), and a small **Refresh** button beside it that re-checks this computer.
+    One primary button: **Start a thread  ⏎** (the only filled button on the screen).
+  - **Add a server** — "Run agents on another machine over SSH." Button **Add server…**
+  - **Turn on WSL** — "Run agents inside a Linux distro on this PC." Button **Turn on…**,
+    and a small note "Windows only".
+- Footer line: "Agents keep running when you close this window."
+
+### 08 — A new thread, before the first message
+
+*Must make three choices feel like one: which machine, which folder, which model.*
+
+- **This is the first thread ever, straight from screen 07.** The sidebar is that of a fresh
+  install: `YAAC`, search, **New**, the three toggle chips, **no Needs-you section**, and a
+  tree with only `local — connected` containing one selected row: "New thread" with a pencil
+  mark, in italics. Footer: Settings, "Hub running · 1 of 1 targets".
+- Header: "New thread", breadcrumb `local · api · main`.
+- Centre: empty, one hint line: "Describe what you want done."
+- A **draft bar** above the composer with one selector: `Project: api — local ▾`. The
+  thread will start in the root of that project's folder; the user picks a project, never a
+  path.
+- The **model picker is open**, attached directly above its trigger in the control row,
+  grouped by provider instance:
+  - **Codex** — gpt-6.2-sol (ticked, "default"), gpt-6.2-astra, gpt-6.1-terra
+  - **Claude** — "not signed in on local" (the whole group disabled, with the reason)
+  Each enabled row: a small image icon when the model reads images, and "effort: low – high".
+  Footer of the menu: "Read from local · updated just now".
+- Composer with text typed, **markdown styled in place** with its syntax still visible:
+  `# Investigate frame parsing` as a heading; "Reproduce the `**last-frame**` drop" with the
+  word bold and the asterisks shown; `decode()` as inline code. A **Send  ⏎** button.
+- Control row: `Codex ▸ gpt-6.2-sol ▾` (matching the tick) · `effort: high ▾` · `mode: ask ▾`.
+  **No Fork. No context meter.**
+- Agents panel hidden.
+
+### 09 — The first message, sent
+
+*The outcome of 07 and 08: the draft became a real thread.*
+
+- Sidebar, still the fresh install: no Needs-you section; under `local › api › main` the
+  first and only thread, selected: running mark · **Investigate frame parsing**. Footer:
+  "Hub running · 1 of 1 targets".
+- Header: running mark, "Investigate frame parsing", tag "Running", breadcrumb
+  `local · api · main`.
+- Transcript: the user's message rendered as markdown (heading, bold, inline code); the agent:
+  collapsed "Thinking…" with a spinner; a tool line "Reading `src/frame.rs`"; prose streaming,
+  ending mid-sentence with a cursor.
+- Composer: "Message Codex…", a **Stop** button.
+- Control row: `Codex ▸ gpt-6.2-sol ▾` · `effort: high ▾` · `mode: ask ▾` · "4%" · **Fork**.
+
+### 10 — In use elsewhere
+
+*Must explain itself in one line and never look actionable.*
+
+- Sidebar as standard; **Explain the handshake** selected, with a small lock mark.
+- Header: a lock mark, "Explain the handshake", tag "Read-only", breadcrumb.
+- A banner under the header: "This thread is open in another program on devbox. You can
+  watch, but not send." and one button: **Fork to continue here**.
+- Transcript live and normal, including an approval card with **no buttons**: "Waiting for an
+  answer in the other program."
+- **No composer input, no Send, no Stop.** In its place a single quiet line: "Held by a
+  terminal session on devbox since 14:02."
+- **No control row selectors.** No second Fork.
+
+### 11 — Fork
+
+*Must say what will be carried over, to whom, and why it is a handoff.*
+
+- A dialog centred over the main shell, the background clearly dimmed by the scrim.
+- Title "Fork this thread".
+- "From": "Fix frame decoder · Codex · work · gpt-6.2-sol", "at the last completed turn
+  (turn 12)".
+- "Continue with": a model selector showing `Claude ▸ opus-5.5`; beneath it
+  "Instance: Claude on devbox · account: work@example.com".
+- A **result line, not a choice**: "**Handoff** — the destination is a different provider, so
+  the conversation is passed as a transcript file." And beneath it in **secondary text** (it
+  is a reason the user must be able to read): "Native fork is only available within the same
+  provider and store."
+- "Carried over: 12 turns · 9,400 words · 3 files still on the target."
+  "Not carried over: hidden reasoning · 2 images no longer on the target."
+- A notice with an info mark: "This sends the conversation to Anthropic (work@example.com)."
+- A collapsible "Preview transcript" showing a few lines.
+- Buttons: **Cancel  Esc**, **Fork  ⏎**.
+
+### 12 — The forked thread
+
+*The outcome of 11.*
+
+- Sidebar: under `devbox › yaac › feature/protocol`, a new selected row:
+  idle mark · **Fix frame decoder (fork)** · a small fork mark.
+- Header: "Fix frame decoder (fork)", breadcrumb, and a link line:
+  "Forked from **Fix frame decoder** ↗ at turn 12 · handoff".
+- Transcript: the inherited history in a slightly dimmed, read-only style (the user question
+  and the agent's answer), then a full-width divider labelled
+  "Inherited from Fix frame decoder — read-only above this line", then empty space.
+- Composer enabled: "Message Claude…", **Send  ⏎**.
+- Control row: `Claude ▸ opus-5.5 ▾` · `effort: high ▾` · `mode: ask ▾` · "6%" · **Fork**.
+
+### 13 — Settings: targets
+
+*Must show, per machine, whether YAAC can reach it and what YAAC changed there.*
+
+- The settings shell: "← Back to threads" top-left; left navigation **Targets** (selected),
+  Providers, Appearance, Advanced.
+- Page title "Targets". Buttons top-right: **Add SSH server**, **Import from SSH config**.
+- **Local** — "This computer" — enabled switch.
+- **SSH** — rows, each with a state line and its own actions:
+  - `devbox` — done mark — "Ready — set up by YAAC on 2026-11-20" — switch on — buttons
+    **Revoke**, **Remove**.
+  - `gpu-box` — done mark — "Ready — access was already in place" — switch on — **Revoke**
+    disabled with the visible note "YAAC installed nothing on this server" — **Remove**.
+  - `staging` — offline mark — "Offline — last seen 3h ago · set up by YAAC on 2026-11-02" —
+    switch on — **Retry**, **Revoke**, **Remove**. Revoke stays available while offline,
+    because YAAC installed a key there; it leads to "Could not revoke" on screen 16 if the
+    server still cannot be reached.
+  - `legacy` — dashed mark — "Not set up" — **Set up…**, **Remove**.
+- A one-line legend: "Disable keeps the connection but stops using it. Remove forgets it.
+  Revoke removes the key YAAC installed on the server."
+- **WSL** — master switch on. Rows: `Ubuntu` · user "(default)" · on; `Ubuntu` · user `deploy`
+  · on · note "second session to this distro"; `Debian` · off. An add row: distro dropdown,
+  "User (optional)" field, **Add**.
+
+### 14 — SSH setup: confirm the server
+
+*The first contact with a new server.*
+
+- Settings shell, Targets. A panel "Add SSH server".
+- Fields filled: Name `legacy`, Host `legacy.example.com`, Port `22`, User `deploy`.
+- A step list: "Reached legacy.example.com" — done mark. "Confirm this is the right server" —
+  current step.
+- A box: "This server's key fingerprint", `SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8`
+  in monospace, "ED25519", and the line "Check it against what your server administrator gave
+  you."
+- Buttons: **Cancel  Esc**, **This is the right server  ⏎**.
+
+### 15 — SSH setup: password, key install, verified
+
+*The same panel, further on. Each step is visible; the result is unambiguous.*
+
+- Step list with marks:
+  "Reached legacy.example.com" done; "Server confirmed" done;
+  "Password-less login — not available yet" (hollow mark);
+  "Signed in with your password" done;
+  "Installed YAAC's key for deploy" done;
+  "Verified: signed in with the key alone" done.
+- A result block with a done mark: "**Ready.** YAAC can now connect to legacy without a
+  password. Your password was not saved."
+- Beneath, in secondary text: "YAAC added one line to `~/.ssh/authorized_keys` on the server,
+  marked `yaac:laptop:legacy`. Revoke removes exactly that line."
+- Buttons: **Done  ⏎**, and a quiet **Revoke**.
+- (Above the result, greyed as completed: the choice "Password / Key file" with Password
+  selected.)
+
+### 16 — SSH setup: when it fails, and after a revoke
+
+*Failure is recoverable and claims nothing it has not checked. Revoke has two endings, and
+both are honest.*
+
+Three panels in the settings shell:
+
+- "Could not finish" — steps "Signed in with your password" done; "Installed YAAC's key for
+  deploy" done; "Verified: signed in with the key alone" **failed** — "This server does not
+  accept key logins." Then, with a done mark: "Removed the key again — confirmed: nothing of
+  YAAC's is left on the server." Buttons: **Try again** (returns to the sign-in step, screen
+  22) and **Close**.
+- "Revoked" — the row for `devbox` reads dashed mark — "Not set up — YAAC's key was removed on
+  2026-11-20" — button **Set up…**. A note: "Only YAAC's own key was removed. Your other keys
+  were not touched."
+- "Could not revoke" — a warning mark: "**staging could not be reached**, so YAAC's key is
+  still on that server." Then: "YAAC has kept its copy of the key so it can finish this later."
+  A monospace box titled "To remove it by hand, delete this line from
+  `~/.ssh/authorized_keys` on staging:" containing the **complete** installed line, wrapped,
+  never abbreviated:
+  `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFq4mW1nJt0Xc8uPz3yKb7Vd2Lh9sRgE5oTa6QwNiYk3 yaac:laptop:staging`,
+  with a **Copy** button that copies the whole line. Buttons: **Try again**, and
+  **I removed it myself** — which records that the user confirmed it, deletes YAAC's local
+  copy of the key, and returns the row to "Not set up — removed by hand on 2026-11-20".
+
+### 17 — Settings: providers
+
+*Per machine: what is installed, whether it works, and where it came from.*
+
+- Settings shell; **Providers** selected. A target selector: `devbox ▾`.
+- Instances, each a row with a mark, version, backend, and a note:
+  - **Codex** — done mark — "Ready" · "daemon 0.171" · "found running" · "12 models" ·
+    **Refresh**.
+  - **Codex · work** — done mark — "Ready" · "daemon 0.171" · socket
+    `/run/user/1000/codex-work/control.sock` · "started by YAAC" · **Edit**, **Remove**.
+  - **Claude** — done mark — "Ready" · "2.1.329" · "SDK" · "account: work@example.com".
+  - Each instance row ends with a small switch: "Offer YAAC tools to sessions started outside
+    YAAC" — off — with the hint "edits this harness's own configuration".
+- An "Add instance" form, **empty**: Kind dropdown "Codex", Name field with placeholder
+  "optional", Socket path field with placeholder "/path/to/control.sock", **Add** (disabled).
+- A second example row, on a different target, shown beneath a divider "local":
+  **Claude** — warning mark — "Not signed in — run `claude` in a terminal on this computer".
+
+### 18 — (removed)
+
+*The Agents settings tab was removed by the owner in revision 5. Budgets are set in the
+permission prompt (screen 25); the tools switch for outside sessions moved to each provider
+instance on screen 17.*
+
+### 19 — Notices
+
+*Each problem says what happened, what it means, and the one thing to do next.*
+
+Main shell with **Fix frame decoder** open, plus:
+
+- Sidebar: `devbox` carries a small warning mark; `staging` reads "offline · retrying in 20s"
+  with a **Retry** link (in both themes); `wsl: Ubuntu` reads "not running".
+- A banner under the header: "devbox is running an older YAAC daemon (0.7). It will be updated
+  when idle." with **Update now**.
+- In the transcript, an attachment chip in an older message, greyed, with a broken-file mark:
+  "screenshot.png — no longer on the target".
+- In the composer, two chips: an image chip with a warning mark, "diagram.png — this model
+  cannot see images; it will be sent as a file"; a file chip "trace.log" with a progress bar
+  "62%".
+- A notification card bottom-right: "WSL distro Ubuntu is not running." with **Start it** and
+  **Disable its threads**.
+
+### 20 — The budget ran out
+
+*Runaway work stops by pausing, not by being killed, and one click resumes it.*
+
+- Main shell, the orchestrator open.
+- Header tag: "Paused — budget reached".
+- The transcript is as in 02 (prose at full size, activity as muted lines). At its end, a
+  notice card with a pause mark — a card, because it needs the user: "**This orchestration reached
+  its budget**: 100 of 100 agent-started turns. Nothing was cancelled. 2 messages are waiting
+  to be delivered." Buttons: **Continue (+100 turns)  ⏎**, **Review workers**, and a quiet
+  link "Change budgets".
+- Agents panel header: the budget line in the needs-you colour with a pause mark:
+  "100 of 100 agent turns · 7 of 20 threads".
+- Sidebar: the orchestrator row shows a pause mark, and it appears under **Needs you (3)** as
+  "Migrate auth module — orchestrator · budget reached · local".
+
+### 21 — A narrow window
+
+*At the smallest supported width (960 px) nothing is lost; panels fold away, and what needs
+you is still one keystroke off.*
+
+- The same thread as 02, at 960 × 720.
+- The sidebar is collapsed to a 56 px rail: at the top a Needs-you badge "2"; below it a
+  single "threads" button that opens the full list as an overlay; Settings at the bottom.
+- **The Needs-you list is open**, as a popover attached to the badge, with the first entry
+  focused: "index-rebuild — approval · gpu-box" and "Fix frame decoder — approval · devbox".
+  Footer of the popover: "↑ ↓ to move · ⏎ to open · Ctrl+J".
+- The agents panel is collapsed to a rail showing "5".
+- The transcript uses the full remaining width; message blocks and the workers card reflow
+  without truncating names. The control row wraps to two lines.
+
+### 22 — SSH setup: signing in
+
+*The step between confirming the server (14) and the result (15).*
+
+- Settings shell, Targets, the "Add SSH server" panel for `legacy`.
+- Step list: "Reached legacy.example.com" done; "Server confirmed" done;
+  "Tried signing in without a password — not available" with a hollow mark; then the current
+  step, "Sign in once so YAAC can set up password-less access".
+- A choice: **Password** (selected) / **Key file**. A password field, masked, with a
+  show/hide control; beneath it in secondary text: "Used once. YAAC does not save it."
+- Beneath, as the unselected alternative: a "Key file" chooser and "Passphrase, if the key has
+  one", in the unavailable-control style.
+- Buttons: **Cancel  Esc**, **Connect  ⏎**.
+- A one-line preview of what happens next: "YAAC will sign in, install its own key for
+  deploy, and check that the key works."
+
+### 23 — The queued message arrives, and one that never will
+
+*The outcome of the queued message in 02, seen from the sender.*
+
+- Main shell, the orchestrator open, later in the same transcript. Sidebar as standard, except
+  `staging` now reads "SSH · connected".
+- Transcript, later in the same thread — muted activity lines between two pieces of prose:
+  `staging reconnected · 3h 12m after it went offline`
+  `→ Release notes · delivered, after 3h 12m queued`
+  `← Release notes · Draft is in docs/release/auth-migration.md.`
+  and one line that is **not** muted, with the failed mark and colour:
+  `→ Old changelog bot · failed — that thread was deleted on staging`
+  That failed line is shown **expanded**: "To Old changelog bot · Codex · staging" with the
+  name in plain text, not a link; "Archive the 1.x notes."; and "**Failed** — that thread was
+  deleted on staging. The message was not delivered."
+  Then agent prose, full size: "The release notes draft is ready. I could not reach the old
+  changelog bot — that thread no longer exists."
+- Agents panel: **In contact with (2)** — CI integration · waiting; Release notes · Codex ·
+  staging · done.
+
+### 24 — The same message at its destination
+
+*The other end of 23: following a "To" lands on the matching "From".*
+
+- Sidebar as standard with staging connected; under `staging › docs › main` the selected row:
+  done mark · **Release notes**.
+- Header: done mark, "Release notes", breadcrumb `staging · docs · main`.
+- Transcript:
+  1. User, full size (this thread was started by a person): "Keep the release notes current."
+  2. One activity line, **expanded and highlighted** because it is the item just navigated to:
+     `← Migrate auth module — orchestrator · Draft the notes for the auth migration.` — and
+     beneath it "From **Migrate auth module — orchestrator** · Codex · local", the full text,
+     and "Sent 3h 14m ago · arrived when staging reconnected".
+  3. Muted activity lines: `Thought for 6s`, `Wrote docs/release/auth-migration.md`.
+  4. Agent prose, full size: "Drafted the release notes."
+  5. One muted activity line: `→ Migrate auth module — orchestrator · delivered`
+- Agents panel open: **Spawned by** — "started by you"; **Workers (0)**;
+  **In contact with (1)** — Migrate auth module — orchestrator · Codex · local · running.
+- Composer enabled: "Message Codex…".
+
+### 25 — An agent asks to work with other agents
+
+*The chat is set to "agents: ask". Must show what the agent wants and let the budget be set in
+the same place, in one decision.*
+
+- Main shell, the orchestrator open, at the start of its story. Sidebar as standard, except
+  the orchestrator is also listed first under **Needs you · 3**.
+- Header: needs-you mark, title, the words "Needs you — permission".
+- Transcript: the user's message; the agent's line "I'll split this across three workers.";
+  then a **permission card** (faint fill, amber left edge):
+  - Title: "This agent wants to work with other agents"
+  - "It will:" then two plain lines —
+    "Start 3 threads — Claude · opus-5.5 on local, devbox, and gpu-box";
+    "Message CI integration · Codex · devbox".
+  - "Budget for this orchestration" — three small number fields in a row:
+    "Agent turns 100", "Threads 20", "Hours 12"; beneath in secondary text:
+    "When a budget runs out, work pauses and asks you. Nothing is cancelled."
+  - Actions: one filled button **Allow  ⏎** (with the focus ring), then as plain text
+    **Deny  Esc** and "Always allow in this chat".
+- Composer dimmed with the hint "Answer above to continue".
+- Control row: `Codex ▸ gpt-6.2-sol ▾` · `effort: high ▾` · `mode: ask ▾` · `agents: ask ▾`
+  — the agents selector open as a small two-item menu: "Ask for permission" (ticked) and
+  "Allow without asking".
+- Agents panel hidden (no workers yet).
+
+### 26 — Muting and archiving
+
+*Too many agents to watch. Must let the list be cut down to the few that matter, without
+stopping anything.*
+
+- Main shell, **Fix frame decoder** open. In the sidebar, the row for **billing-service** has
+  a small **context menu** open beside it: "Mute", "Archive", "Rename", "Fork".
+- The **Muted** section at the foot of the list is **expanded**: header "Muted · 4", then four
+  one-line rows in secondary text: running mark · search-service; done mark · users-service;
+  idle mark · Old spike; done mark · Lint pass. One of them is running — a muted thread keeps
+  working. (Because they are muted, search-service and users-service do not also appear in
+  their project sections above.)
+- **Needs you · 2** still lists index-rebuild with the word "muted" in secondary text beside
+  it. A muted thread that is blocked is never hidden.
+- The grouping menu is open from the search field, showing three checkboxes — Machine,
+  Project, Worktree, all ticked — and, beneath a gap, a switch "Show archived", off.
+
+### 27 — The agents pill
+
+*The default. A thread working with five other agents, and the screen is still calm.*
+
+- Main shell, the orchestrator open, exactly as in 02 **except the agents panel is not
+  docked**: the thread uses the full width.
+- Floating over the right edge of the transcript, vertically centred: the **pill**. Five
+  harness icons stacked: three Claude glyphs (the workers), then two Codex glyphs (the
+  contacts). The first two Claude icons are dimmed (finished). The third has a small **down
+  arrow** beside it (receiving from search-service). The first Codex icon has a small **up
+  arrow** (sending to CI integration). The last Codex icon has the offline dashed mark.
+- Nothing else is different. No names, no labels on the pill.
+
+### 28 — The agents card, on hover
+
+*The pointer is over the pill.*
+
+- The same screen as 27, with the pill widened leftwards into the floating **card**, over the
+  transcript, with a soft shadow. A small dock button at its top right.
+- Five rows, each: harness icon, name, and one line of secondary text beneath, ellipsised:
+  - users-service — "Merged to main. 14 tests pass."
+  - billing-service — "Merged to main. One flaky test skipped…"
+  - search-service — "Rebuilding the search index (68%)…" — down arrow at the right
+  - CI integration — "Resuming the integration tests…" — up arrow at the right
+  - Release notes — "Offline — message queued"
+- One row, search-service, is highlighted as the row under the pointer.
+
+### 29 — Creating a project from a discovered folder
+
+*A thread was found in a folder YAAC knows nothing about. Must turn that folder — or, more
+often, one of its parents — into a named project in a few seconds.*
+
+- Main shell. In the sidebar, the temporary project *~/scratch/spike-7* is highlighted, as the
+  thing that was right-clicked.
+- A small dialog, centred, the background dimmed: title "Create project".
+  - "Machine": `devbox` — plain text, not editable here.
+  - "Folder": a text field containing `/home/dev/scratch/spike-7/` with the caret at the end,
+    and a quiet **Browse…** beside it. Beneath, in secondary text: "Prefilled from the thread's
+    folder. Shorten it if the project is a parent folder."
+  - A one-line suggestion as a link: "Use the repository root: /home/dev/scratch".
+  - "Name": a text field containing `spike-7`, with beneath it "Shown in the sidebar instead
+    of the folder name."
+  - A line in secondary text: "3 threads in this folder will move into the project."
+  - Actions: one filled button **Create project  ⏎**, and plain-text **Cancel  Esc**.

@@ -1,0 +1,256 @@
+# Harness surfaces
+
+What Codex and Claude Code expose to a program, as observed on **2026-11-20**. Everything here
+was read from installed tools or published packages, not recalled. Both harnesses change often;
+re-run the commands under "How to re-verify" before depending on a detail.
+
+| Component | Version examined |
+| --- | --- |
+| `codex` CLI | 0.170.0 |
+| Codex app-server daemon (running) | 0.171.0 — **newer than the CLI on `PATH`** |
+| `@openai/codex-sdk` | 0.171.0 |
+| `claude` CLI (Claude Code) | 2.1.329 |
+| `@anthropic-ai/claude-agent-sdk` | 0.3.329 |
+
+## Codex
+
+### App-server and daemon
+
+`codex app-server` is a JSON-RPC server, marked experimental by the CLI.
+
+**The daemon is versioned separately from the CLI.** `codex app-server daemon version` reports
+both (`cliVersion`, `appServerVersion`), and the daemon keeps its own managed copy of Codex
+under `~/.codex/packages/app-server-daemon/`. A schema generated from the CLI describes the
+CLI's version, not necessarily the daemon you are talking to.
+
+**Transports differ by listener** (tested):
+
+- The daemon's control socket (`~/.codex/app-server-control/app-server-control.sock`) speaks
+  **WebSocket**: an HTTP `Upgrade` request on the Unix socket is answered with
+  `101 Switching Protocols`.
+- A private `--listen stdio://` server speaks newline-delimited JSON.
+- `codex app-server proxy` copies bytes between standard I/O and the socket. It does not
+  translate, so what you send through it must already be WebSocket.
+
+**Handshake:** `initialize` (with `clientInfo`, optional `capabilities`), then an `initialized`
+notification.
+
+**Home versus socket:** the managed daemon derives its default socket and state from
+`CODEX_HOME`; `daemon start` takes no socket argument. A second endpoint comes from a second
+home, or from an explicitly launched `app-server --listen unix://PATH`. Session store,
+configuration, and sign-in follow the home, not the socket.
+
+| Command | What it does |
+| --- | --- |
+| `codex app-server --listen <url>` | Runs a server. Transports: `stdio://` (default), `unix://`, `unix://PATH`, `ws://IP:PORT`, `off`. |
+| `codex app-server daemon start \| stop \| restart \| version \| bootstrap \| update` | Manages a long-lived local daemon. `bootstrap` installs "durable local app-server management for SSH-driven use". |
+| `codex app-server proxy [--sock <path>]` | Proxies standard I/O bytes to a running daemon's control socket. `--sock` selects which socket, which is what makes several daemons per machine addressable. |
+| `codex app-server generate-ts` / `generate-json-schema --out <dir>` | Emits the protocol as TypeScript bindings or JSON Schema. **The authoritative reference for the protocol.** |
+| `codex remote-control start \| stop \| pair` | Daemon with remote control enabled. Not used by YAAC. |
+
+State on disk under `~/.codex/`: `app-server-control/`, `app-server-daemon/`, `sessions/`,
+`session_index.jsonl`, `models_cache.json`.
+
+**Client → server requests** (the ones YAAC cares about; the full list is over a hundred):
+
+- Session: `initialize`
+- Threads: `thread/start`, `thread/resume`, `thread/fork`, `thread/list`, `thread/read`,
+  `thread/turns/list`, `thread/items/list`, `thread/name/set`, `thread/archive`,
+  `thread/unarchive`, `thread/delete`, `thread/unsubscribe`, `thread/compact/start`,
+  `thread/revert`, `thread/metadata/update`
+- Turns: `turn/start`, `turn/steer`, `turn/interrupt`
+- Models and account: `model/list`, `modelProvider/list`, `account/read`,
+  `account/rateLimits/read`
+- Also present: `fs/*` (read, write, list, watch), `command/exec`, `skills/list`, `plugin/*`,
+  `mcpServerStatus/list`, `config/read`, `review/start`, `fuzzyFileSearch`
+
+**Server → client requests** (the server waits for an answer):
+
+`item/commandExecution/requestApproval`, `item/fileChange/requestApproval`,
+`item/permissions/requestApproval`, `item/tool/requestUserInput`,
+`mcpServer/elicitation/request`, `item/tool/call`, plus legacy `applyPatchApproval` and
+`execCommandApproval`.
+
+**Server → client notifications** (selection):
+
+- Lifecycle: `thread/started`, `thread/status/changed`, `thread/name/updated`,
+  `thread/archived`, `thread/deleted`, `thread/closed`, `thread/compacted`
+- Turn: `turn/started`, `turn/completed`, `turn/plan/updated`, `turn/diff/updated`
+- Items: `item/started`, `item/completed`, `item/agentMessage/delta`,
+  `item/reasoning/textDelta`, `item/reasoning/summaryTextDelta`,
+  `item/commandExecution/outputDelta`, `item/fileChange/patchUpdated`,
+  `item/mcpToolCall/progress`
+- Usage and account: `thread/tokenUsage/updated`, `account/rateLimits/updated`,
+  `account/updated`
+- Other: `model/rerouted`, `warning`, `error`, `serverRequest/resolved`
+
+**Types worth knowing:**
+
+- `Model`: `id`, `model`, `displayName`, `description`, `isDefault`, `hidden`,
+  `supportedReasoningEfforts[]`, `defaultReasoningEffort`, `inputModalities[]` (defaults to
+  `["text","image"]`), `serviceTiers[]`.
+- `ReasoningEffort` is an open string in the schema, not a closed enum.
+- `InputModality`: `text`, `image`, `audio`.
+- `UserInput` variants: `text`, `image` (by URL or file id), `localImage { path }`, `audio`,
+  `localAudio`.
+- `TurnStartParams`: `threadId`, `input[]`, and optional per-turn `model`, `effort`, `cwd`,
+  `approvalPolicy`, `sandboxPolicy`, `clientUserMessageId`. Per-turn `model` is what makes
+  mid-thread model switching direct.
+- `ThreadForkParams`: `threadId`, optional `lastTurnId`, `model`, `modelProvider`, `cwd`.
+- `ThreadListParams`: `cursor`, `limit`, `cwd` filter, `searchTerm`, `archived`, `sortKey`,
+  `sourceKinds`.
+- `Thread`: `id`, `sessionId`, `cwd`, `gitInfo`, `name`, `preview`, `model`, `modelProvider`,
+  `reasoningEffort`, `forkedFromId`, `parentThreadId`, `status`, `createdAt`, `updatedAt`.
+  **`id` identifies the thread** ("Codex-generated thread IDs are UUIDv7"). **`sessionId` is
+  "shared by threads that belong to the same session tree"** — it is not a conversation key.
+- `TurnInterruptParams` requires `threadId` **and `turnId`**. `TurnSteerParams` requires
+  `expectedTurnId`, and fails if that is not the active turn.
+- `turn/start` `model` and `effort` are documented as overriding "this turn and subsequent
+  turns".
+- `ThreadRevertParams` (`beforeTurnId`): "only changes persisted conversation history. It does
+  not revert local file changes."
+- `ModelListParams`: `cursor`, `limit`, `includeHidden`, `modelProvider` — the listing is paged.
+- `ThreadListParams.sourceKinds`: "when omitted or empty, defaults to interactive sources";
+  `archived` true returns only archived threads, false or null only non-archived.
+- `ToolRequestUserInputParams` (marked experimental): `threadId`, `turnId`, `itemId`,
+  `isBlocking`, `questions[]` each with `id`, `header`, `question`, optional `options[]`
+  (`label`, `description`), `isOther`, `isSecret`. The response maps question id to
+  `{ answers: string[] }`.
+
+### Codex SDK
+
+**Not used by YAAC** — Codex is driven through its daemon only. Recorded here because it is
+why that decision was made.
+
+A thin wrapper that runs `codex exec --experimental-json` and parses its event stream. It depends on the
+`@openai/codex` package for the binary and accepts `codexPathOverride` to use another one.
+
+```ts
+const codex = new Codex({ codexPathOverride, env, config });
+const thread = codex.startThread({ model, workingDirectory, sandboxMode,
+                                   modelReasoningEffort, approvalPolicy });
+// or: codex.resumeThread(id, options)
+const { events } = await thread.runStreamed(input, { signal });
+```
+
+- Input: a string, or parts of type `text` and `local_image { path }`.
+- Events: `thread.started`, `turn.started`, `turn.completed` (with usage), `turn.failed`,
+  `item.started`, `item.updated`, `item.completed`, `error`.
+- Item types: `agent_message`, `reasoning`, `command_execution`, `file_change`,
+  `mcp_tool_call`, `web_search`, `todo_list`, `error`.
+- **Not available:** listing threads, reading history, fork, listing models, interactive
+  approvals, questions to the user, steering. Approval policy is set per thread up front.
+- `thread.id` is `null` until the first turn starts; the id arrives in `thread.started`.
+- `CodexOptions.env`: "When provided, the SDK will not inherit variables from `process.env`."
+
+### Codex CLI, for reference
+
+`codex exec` accepts `--model`, `--image`, `--cd`, `--sandbox`, `--json`, `-c key=value`
+(for example `-c model_reasoning_effort="high"`), and has `resume` and `fork` subcommands.
+
+## Claude Code
+
+### Agent SDK
+
+The SDK runs a Claude Code process and exchanges messages with it. It ships the Claude Code
+binary through per-platform optional packages and accepts `pathToClaudeCodeExecutable` to use an
+installed one instead. Requires Node ≥ 18.14.
+
+```ts
+const q = query({ prompt: asyncIterableOfUserMessages, options });
+for await (const message of q) { … }
+```
+
+**`options`** (selection): `cwd`, `model`, `effort`, `thinking`, `permissionMode`, `canUseTool`,
+`includePartialMessages`, `resume`, `sessionId`, `forkSession`, `resumeSessionAt`, `continue`,
+`persistSession`, `settingSources`, `additionalDirectories`, `env`,
+`pathToClaudeCodeExecutable`, `spawnClaudeCodeProcess`, `sessionStore`, `fallbackModel`.
+
+**Asking the user:** permission prompts arrive through the `canUseTool` callback. Structured
+questions are the `AskUserQuestion` tool, whose input is `questions[]` each with `question`,
+`header`, 2–4 `options` (`label`, `description`, optional `preview`), and `multiSelect`. Other
+blocking dialogs arrive through `onUserDialog`, which must be opted into by listing the dialog
+kinds the client can render. After a transport gap, `reinitialize()` returns the requests the
+process is still blocked on so they can be re-delivered.
+
+**Effort on a live query:** `applyFlagSettings({ effortLevel })` is documented for this.
+
+**Methods on the running query:** `interrupt()`, `setModel()`, `setPermissionMode()`,
+`applyFlagSettings()`,
+`supportedModels()`, `supportedCommands()`, `supportedAgents()`, `accountInfo()`,
+`getContextUsage()`, `mcpServerStatus()`, `rewindFiles()`, `streamInput()`,
+`initializationResult()`, `reinitialize()`, `close()`.
+
+**Session functions** (no running query needed): `listSessions()`, `getSessionInfo()`,
+`getSessionMessages()`, `forkSession()`, `renameSession()`, `tagSession()`, `archiveSession()`,
+`unarchiveSession()`, `deleteSession()`, `listSubagents()`, `getSubagentMessages()`.
+
+**Types worth knowing:**
+
+- `ModelInfo`: `value`, `displayName`, `description`, `resolvedModel?`, `supportsEffort?`,
+  `supportedEffortLevels?`, `supportsAdaptiveThinking?`, `supportsFastMode?`,
+  `supportsAutoMode?`. **There is no image-input field.**
+- `SDKSessionInfo`: `sessionId`, `summary`, `lastModified`, `createdAt?`, `customTitle?`,
+  `firstPrompt?`, `gitBranch?`, `cwd?`, `tag?`, `archived?`.
+- `ListSessionsOptions`: `dir?` (omit for all projects), `limit`, `offset`, `includeWorktrees`
+  (default true), `includeProgrammatic` (default true; covers SDK and daemon-worker sessions).
+
+Images are sent as image content blocks inside the user message, not as paths.
+
+### The Claude Code daemon
+
+Claude Code has an on-demand local daemon that supervises background sessions.
+
+- State on disk under `~/.claude/`: `daemon/` (containing `control.key`, `roster.json`,
+  `attach-journal/`, `dispatch/`), `daemon.lock`, `daemon.log`, `daemon.status.json`
+  (`supervisorPid`, `workers`).
+- CLI surface: `claude --bg` starts a background session; `claude agents --json` lists active
+  sessions — **interactive and background** — as
+  `{ id, cwd, kind, startedAt, sessionId, name, state }`, which is the signal YAAC uses to tell
+  that a session is in use elsewhere; `claude attach <id>` opens
+  one in a terminal; `claude logs`, `stop`, `respawn`, `rm` manage them.
+- The SDK's type definitions mention daemon sessions in passing (`includeProgrammatic`,
+  `reinitialize()` "after … reattaching to a daemon") but export **no function to connect to
+  the daemon and drive a turn**.
+
+Conclusion: there is a daemon, and its sessions can be listed, but we found no supported way for
+a third-party program to converse through it. This is why the Claude daemon backend is an empty
+slot in the [provider design](../04-providers.md#daemon-backend-reserved) and an
+[open decision](../decisions.md).
+
+## How to re-verify
+
+```sh
+# Codex: dump the app-server protocol and list every method
+codex app-server generate-json-schema --out /tmp/codex-proto
+codex app-server --help && codex app-server daemon --help && codex app-server proxy --help
+
+# SDKs: fetch the packages and read their type definitions (read only — do not execute)
+npm pack @openai/codex-sdk @anthropic-ai/claude-agent-sdk
+#   codex-sdk:  package/dist/index.d.ts
+#   claude sdk: package/sdk.d.ts
+
+# Claude: CLI surface for background sessions
+claude --help && claude agents --help && claude agents --json
+```
+
+## For the agent mesh
+
+Facts that the [mesh design](../10-agent-mesh.md) leans on. **Provenance matters here:** the
+rows marked *source* were reported by the Codex reviewer from reading the Codex 0.171.0 release
+source and its tests — they were not run by us. Spike S10 exists to confirm them.
+
+| Fact | How we know |
+| --- | --- |
+| `ThreadStartParams` has a free-form `config` object and a `developerInstructions` string. | Schema, read here. |
+| `codex mcp add` accepts a stdio command with `--env`, or a `--url` with `--bearer-token-env-var`. | CLI help, read here. |
+| The Codex schema defines `DynamicToolSpec` and a server request `item/tool/call`. | Schema, read here. |
+| The Claude Agent SDK accepts `mcpServers` per query, including an in-process `type: "sdk"` server, and an `appendSystemPrompt`. | SDK type definitions, read here. |
+| One Codex thread can be given its own MCP server through `thread/start` config, as the dotted key `mcp_servers.<name>` with `command`, `args`, `env`. | *Source.* The reviewer also ran the 0.171.0 binary and saw it parse this configuration. |
+| A stdio MCP server is one child process per loaded thread unless the experimental `mcp_connection_sharing` feature is on. | *Source*; the feature flag was seen listed as under development and off. |
+| Codex's MCP `tools/call` requests carry the calling thread in `params._meta.threadId` (also `sessionId`, `callId`, and turn metadata). | *Source.* |
+| The MCP tool-call timeout defaults to 300 seconds and is set per server with `tool_timeout_sec`. | *Source* (the public guide says 60). The binary accepted `tool_timeout_sec`. |
+| `turn/start` on a thread with a turn in progress **steers that turn** and returns its id; it does not queue a new turn. | *Source* (an upstream test). |
+| `turn/start` can take `input: []` with a `toolOutput` so that agent-originated input arrives in the tool role. | *Source.* `toolOutput` is present in the schema read here. |
+| `developerInstructions` persists in history once the first turn has run; it must be passed again on a cold resume, and is ignored when rejoining a loaded thread. `thread/inject_items` can add a developer message to an existing thread. | *Source.* `thread/inject_items` is in the method list read here. |
+| A thread with no subscribers can be unloaded once idle; a running turn survives an unsubscribe. | *Source* (upstream tests). |

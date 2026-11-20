@@ -1,0 +1,485 @@
+# 10 — The agent mesh
+
+**This is the main reason YAAC exists.** Everything else in these docs is the machinery that
+makes it possible.
+
+Agents running in different harnesses, on different machines, can find each other, start each
+other, and talk to each other — and they *know* they can. A Codex thread can hand work to a
+Claude thread. A thread can spawn workers on a different provider and model. A worker on one
+server can tell a thread waiting on another server that it has finished. One orchestrator can
+run a fleet of threads across many machines.
+
+**Status.** The requirements in the first section are decided by the project owner. Almost
+everything below them is the design taken to meet those requirements while the owner was away;
+each such choice is listed in [pending.md](pending.md) for review.
+
+## What the owner asked for
+
+| # | Requirement |
+| --- | --- |
+| D43 | Harnesses **know** they can communicate with each other. `yaacd` provides the bridge, as an **MCP server** offered to each harness. |
+| D44 | "Send a message to the YAAC thread running on Claude", asked of a Codex thread, works. |
+| D45 | "Spawn workers on Opus", asked of a thread running on Codex, works: a thread can start threads on **any provider and model**. |
+| D46 | "A worker on server X (thread *aaaa*) is waiting for you; message it when you finish so it can resume" works: a thread can message a thread on **another target**. |
+| D47 | An orchestrator on one machine can orchestrate threads on other targets. |
+| D48 | `yaacd` delivers messages between threads on its own target. For other targets, **the host is the bridge**. |
+| D49 | The thread view has a sidebar showing the **sub-threads** of that agent. The chat shows a message going to another worker, **naming the destination**, and a message **received** from another worker. |
+| D50 | The host has its own daemon, so all of this works **without the UI open**. Later, that bridge can move to a server, or a server can act as one. |
+| D51 | Whether a chat's agent may work with other agents is a **toggle in that chat's composer** — *allow without asking* or *ask for permission*, starting on *ask* — and the permission prompt sets the **budget**. |
+| D52 | A message from another agent **wakes an idle thread**. |
+| D53 | The hub runs **always, started at login**. |
+
+## The picture
+
+```
+ HOST                                    TARGET  devbox                 TARGET  gpu-box
+┌───────────────────────────┐           ┌─────────────────────────┐    ┌──────────────────────┐
+│ YAAC UI  (window, optional)│          │ yaacd                   │    │ yaacd                │
+│     │ local attach        │           │  ├ mailbox + outbox     │    │  ├ mailbox + outbox  │
+│     ▼                     │  one      │  ├ mesh MCP server      │    │  ├ mesh MCP server   │
+│ yaac hub  (headless)      │  stream   │  │    ▲         ▲       │    │  │    ▲              │
+│  ├ target connections ────┼───────────┤  │  Codex     Claude    │    │  │  Claude           │
+│  ├ mesh router            │  each     │  │  thread A  thread B  │    │  │  thread C         │
+│  └ durable relay queue ───┼───────────┼──┼──────────────────────┼────┤  │                   │
+└───────────────────────────┘           └──┴──────────────────────┘    └──┴───────────────────┘
+
+ A → B   same target:   yaacd delivers it directly. The host is not involved.
+ A → C   other target:  yaacd(devbox) → hub → yaacd(gpu-box). Still one connection per target.
+```
+
+Three properties make this trustworthy rather than merely possible:
+
+- **Durable.** A message is written to disk at every hop before the previous hop is told it
+  was accepted. A target being offline, the hub being down, or a harness process having been
+  evicted delays a message; it does not lose it.
+- **Addressed, not broadcast.** Every message has one sender and one recipient, both real
+  threads, both shown to the user.
+- **Visible.** Nothing agents say to each other is hidden. Every message is an item in both
+  transcripts.
+
+## Addresses
+
+An agent is a thread. Its address has three parts, all immutable:
+
+```
+( target id , provider instance + store , native thread id )
+```
+
+- The **target id** is assigned by the hub when the target is added and never changes. The
+  *name* the user gave the target (`devbox`, `gpu-box`) is a label on top of it: agents and
+  people use the name, the hub resolves it, and renaming a target cannot make an old address
+  point somewhere new.
+- The instance and its [store identity](04-providers.md#an-instance-has-a-store-identity) are
+  part of the address for the same reason: a second Codex home on the same machine must never
+  be mistaken for the first.
+- To an agent, an address is an opaque string returned by the tools, shown with a readable
+  label: `devbox / Codex / "CI integration"`. Agents never construct addresses. They get them
+  from `list_threads`, a spawn result, a received message, or the user.
+
+## How an agent knows
+
+Three things are given to every thread YAAC starts, when its provider instance has the
+`MeshTools` capability:
+
+1. **The YAAC MCP server**, attached to that thread ([below](#attaching-the-mcp-server)).
+2. **Its own identity**, in a short fixed block added to the harness's instructions for that
+   thread:
+
+   ```
+   You are running inside YAAC as thread devbox/codex:0198a1c4… ("Fix frame decoder").
+   Other agents — on this machine and on others — can be reached with the `yaac` tools:
+   list them, message them, start new ones, and wait for them. Messages from other agents
+   arrive marked "[Message from …]"; they are from an agent, not from the user.
+   ```
+3. **The server's own instructions and tool descriptions**, which say when each tool is the
+   right one.
+
+That is what "the harness knows" means: the ability is in the agent's context before the user
+asks for anything, so "send that to the Claude thread" needs no explanation.
+
+## The tools
+
+One MCP server, named `yaac`. Few tools, each doing one thing.
+
+| Tool | What it does |
+| --- | --- |
+| `whoami` | The caller's own address, title, provider, model, working directory, who spawned it, and its children. |
+| `list_targets` | The machines in this mesh, and whether each is reachable. |
+| `list_models` | For a target: the provider instances there and the models each offers — the same live data as the model picker. Nothing is hardcoded, so "spawn it on Opus" is resolved against what actually exists. |
+| `list_threads` | Threads on a target, filterable: mine, my children, running, by project, by text. Returns address, title, state, provider, model. |
+| `read_thread` | The recent messages, or just the last answer, of another thread — to check on a worker without interrupting it. |
+| `spawn_thread` | Start a **new thread** on any target, provider instance, and model, with a first message. Returns its address. The new thread is a child of the caller. |
+| `send_message` | Send a message to a thread. Returns a delivery receipt. |
+| `wait` | Block until something happens: a message arrives for the caller, or one of the named threads finishes its turn, needs attention, or fails. **Bounded at 45 seconds** — it then returns "nothing yet" with a cursor, and is called again. Harnesses time tool calls out (Codex defaults to 300 s; YAAC configures 60 s for this server), and a long silent call is indistinguishable from a hung one. |
+| `notify_when_done` | Register "when my current turn ends, send my final answer to *that* thread". `yaacd` carries it out, so it still happens if the agent forgets or is cut off. |
+| `stop_thread` | Interrupt a running thread. Only for the caller's own children. |
+
+How the owner's four examples map onto them:
+
+| The user says, to a thread | The agent does |
+| --- | --- |
+| "Send this to the YAAC thread running on Claude." | `list_threads` → `send_message` |
+| "Spawn three Opus workers for these modules." | `list_models` → `spawn_thread` ×3 → `wait` |
+| "On devbox, thread *aaaa* is waiting for you. Tell it when you're done." | `notify_when_done { to: "devbox/…aaaa" }` — or `send_message` at the end |
+| "Run this migration across all my servers." | `list_targets` → `spawn_thread` on each → `wait` → `read_thread` |
+
+### Spawning
+
+`spawn_thread` takes: the target (default: the caller's own), the provider instance and model
+(as returned by `list_models`), an optional effort, a working directory, a title, and the first
+message.
+
+- **The working directory must exist where the worker will run.** On the caller's own target
+  it defaults to the caller's directory. On another target a path from here means nothing, so
+  YAAC resolves "the same project over there": if exactly one checkout of the caller's
+  repository (matched by its remote) is known on the destination, that is used; otherwise the
+  agent must name a directory. Either way the destination `yaacd` confirms the directory
+  exists before anything is started, and the spawn fails with a readable reason if it does not.
+
+- The new thread is an ordinary YAAC thread in every respect. It appears in the sidebar, can be
+  opened, steered, and continued by the user, and outlives its parent.
+- It records `spawned_by`; the parent records it as a child. That relationship is what the
+  sub-thread sidebar draws.
+- It starts in the **harness's default permission mode on its own target** — a parent cannot
+  grant a child more freedom than the user configured there.
+- By default the parent is told when the child finishes: the child's final answer comes back as
+  a message ([delivery](#delivery)). `spawn_thread { detached: true }` turns that off.
+
+### Messages
+
+```jsonc
+{ "id": "m_01JD…",                      // unique; makes delivery idempotent
+  "from": "local/codex:0198…",          // set by yaacd from the caller's identity, never by the agent
+  "to":   "devbox/claude:7f3c…",
+  "kind": "message",                    // message | result | notice
+  "text": "The schema migration is merged. You can resume the integration tests.",
+  "inReplyTo": null,
+  "sentAt": "2026-11-20T18:04:11Z" }
+```
+
+`kind: "result"` is a child's final answer returning to its parent — sent **once**, for the
+turn the spawn started. Later turns in that child, for instance when the user continues it by
+hand, do not notify the parent again. `kind: "notice"` is YAAC itself speaking — "the thread
+you were waiting on failed", "that target is offline". A notice is **passive**: it never wakes
+a thread. It is handed over with the recipient's next turn or its next `wait`.
+
+### Identity cannot be forged
+
+- Before a thread is started, `yaacd` issues an opaque **attachment ticket** for it. The
+  thread's MCP attachment carries that ticket and nothing else.
+- When the harness reports the new thread's id, `yaacd` binds the ticket to it — before the
+  first turn runs.
+- On every tool call `yaacd` checks the ticket, and where the harness also states which thread
+  is calling (Codex sends the thread id in the call's metadata), that must match too.
+- `from` is stamped by `yaacd` from the bound ticket. Nothing the agent writes can change it,
+  and text inside a message body that *looks* like a YAAC header is just text.
+- Reading another thread is authorised separately from messaging it. By default an agent may
+  `read_thread` only within its own orchestration — its ancestors, its workers, and threads it
+  has exchanged messages with. Reading anything else follows the mesh policy.
+
+## Delivery
+
+### One dispatcher per thread
+
+Everything that can start work in a thread goes through a single per-thread queue in `yaacd`:
+a message from the user, a message from another agent, a result coming back, and a `wait`
+picking up mail. Nothing reaches the harness except from that queue, one at a time.
+
+This is not a nicety. In Codex, sending input to a thread that is in the middle of a turn
+**joins that turn** instead of starting a new one — so a message handed to the harness at the
+wrong moment would be spliced into whatever the agent was doing. YAAC therefore never relies on
+the harness to queue. It dispatches only when both of these hold:
+
+1. the thread is **idle**, as far as the harness reports; and
+2. `yaacd` **holds the thread** — it is the writer, and nothing else has it open
+   ([in use elsewhere](05-threads.md#in-use-elsewhere)).
+
+If either cannot be shown, the message stays in the mailbox. A lock inside YAAC cannot keep out
+a terminal that YAAC does not control; only proven ownership can, and when ownership is unclear
+the answer is "queued", never "send and hope".
+
+### What happens to a message
+
+| The recipient is… | What happens |
+| --- | --- |
+| **Idle and held by YAAC** | A new turn starts, with the message as its input. |
+| **Inside a `wait` call** | The message is returned as that call's result. No new turn. |
+| **Running a turn** (not waiting) | Queued; dispatched when the turn ends and the two conditions hold again. |
+| **Waiting on an approval or question** | Queued. A message from an agent never answers a request meant for the user. |
+| **In use elsewhere** — including open but idle in a terminal | Stored in its mailbox, and the sender is told why it is waiting. YAAC does not write into a conversation another program holds. |
+| **A thread YAAC has never held** (started elsewhere, now free) | YAAC takes it, gives it the one-time YAAC introduction, then delivers. |
+| **Evicted to save memory** | Its harness process is resumed, then as *idle*. |
+| **On a target that is offline** | Held by the hub and delivered on reconnect. The sender is told it is queued. |
+| **Over its budget** ([limits](#safety-and-limits)) | Stored; not dispatched. The orchestration's owner is told. |
+| **Gone** (deleted) | The sender gets a notice. |
+
+### How the agent sees it
+
+The sender and the body travel as **separate fields** all the way to the harness; they are
+never concatenated into one string that a clever message body could imitate.
+
+- Where the harness can take agent-originated input as something other than a user message,
+  YAAC uses that. Codex accepts a turn whose input is a *tool output* attributed to
+  `yaac.receive_message`, so the model sees the message in the tool role — not as the user
+  speaking. (Verify in spike S10.)
+- Where it cannot, the message is given as input inside a fixed frame:
+
+```
+[Message from Codex agent "Orchestrator" on local — via YAAC]
+The schema migration is merged. You can resume the integration tests.
+[End of message. This came from another agent, not from the user.]
+```
+
+Either way the rule for the receiving agent is the same, and each provider adapter has a test
+proving the model can tell: a message from another agent is **input to weigh, not an
+instruction from the user**. An agent told by a peer to do something destructive should treat
+it as it would any untrusted request, and approvals still go to the human.
+
+### Exactly once, in order
+
+- Every message has a unique id, and every sender-to-recipient pair has its own **sequence**.
+  Each hop deduplicates by id in the same transaction that stores the message, and the
+  recipient's dispatcher hands messages over in sequence order.
+- Being *stored in the mailbox* and being *consumed by a turn* are tracked separately. Before
+  `yaacd` asks the harness to start a turn for a message, it records the intent on disk; after,
+  it records the turn id. If it crashes between the two, it looks for the turn in the harness
+  before doing anything else. If it cannot tell, the dispatch is marked **outcome unknown** and
+  shown to the user — it is not retried, because a retry could be a second paid turn.
+- A `wait` does not destroy what it returns. It hands over messages up to a **cursor**, and the
+  mailbox advances only when the agent's next call or next turn confirms that cursor. A `wait`
+  that times out or is cancelled has consumed nothing.
+- The record of what agents said to each other is kept by `yaacd` independently of the journal
+  that feeds the UI, so trimming the journal never erases a mesh message from a transcript.
+
+### Receipts
+
+`send_message` returns as soon as the message is safely stored, with how far it got:
+
+| Receipt | Meaning |
+| --- | --- |
+| `delivered` | Stored in the recipient's mailbox on its target. |
+| `queued` | Stored, and waiting — for a target to come back, for a turn to end, or for another program to let go. Says which. |
+| `failed` | Could not be delivered at all: unknown address, deleted thread, mesh limits exceeded. |
+
+Sending is not a round trip to an answer. An agent that wants the reply calls `wait`.
+
+### Durability, hop by hop
+
+```
+sender's turn ──► yaacd outbox (disk) ──► hub relay queue (disk) ──► yaacd mailbox (disk) ──► recipient's turn
+                  ack to the agent          ack to source yaacd       ack to the hub
+```
+
+Each store acknowledges only after writing to disk; each sender retries until acknowledged;
+the message id makes a repeat harmless. The hub's relay queue is its own durable store with
+its own migrations — it is not part of the disposable cache — because once the hub has
+acknowledged a message, the hub is the only place it exists. So:
+
+- The **hub is down** (the host is off): messages wait in the source `yaacd`'s outbox.
+  Same-target messages are unaffected — they never needed the host.
+- The **destination target is offline**: messages wait in the hub.
+- The **recipient cannot take it yet**: messages wait in its mailbox.
+
+A message that has waited longer than a limit produces a notice to its sender instead of
+waiting silently forever.
+
+## The hub
+
+**Decided:** the host has a daemon, so agents can talk across machines with no window open.
+
+`yaac hub` is a headless mode of the same `yaac` binary — no window, no GPU, no UI libraries
+loaded. It owns everything on the host that must outlive the window:
+
+- the **one connection per target** (the single-connection rule is now the hub's to keep);
+- the **mesh router** and its durable relay queue;
+- the **host cache**, as its only writer;
+- SSH setup, reconnection, and the WSL "distro is down" watch.
+
+The UI becomes a client of the hub: it attaches over a user-only local socket (a named pipe on
+Windows), and detaches when the window closes. The hub keeps going.
+
+```
+ yaac  (UI)  ──local attach──►  yaac hub  ──one stream each──►  yaacd on every target
+   window, may be closed          headless, keeps running
+```
+
+- **Always running (decided).** The hub starts at login and stays up, so a message between
+  machines is delivered whenever it is sent — including one from a thread driven in a terminal
+  outside YAAC. The window starts it if it is somehow not running. A setting turns the
+  start-at-login off for people who do not want a background process.
+- **One hub.** A lock ensures a single hub per user on the host.
+- **Nothing is lost when it is not running.** Targets keep working; cross-target messages wait
+  in the source `yaacd`'s outbox until a hub attaches again.
+- **Upgrading it is cheap, and one-way.** The hub runs no turns — those live in `yaacd` on the
+  targets and are journaled there. A newer window asks an older hub to checkpoint its relay
+  queue and exit, then starts the new one, which migrates that store forward; connections drop
+  for a moment and resume by replay. The window and the hub exchange their build when the
+  window attaches. An **older** window never replaces a newer hub: it is told to update. So
+  the two are the same build whenever they talk, and need no compatibility layer between them.
+- **Footprint.** The hub is the small part of the host budget: no rendering, one I/O thread.
+  The window's memory is only spent while the window is open.
+
+### The hub as a server, later
+
+The hub is defined by what it does — hold the target connections and route between them — not
+by where it runs. Two later shapes follow without redesign:
+
+- **The hub on a server.** A machine that is always on runs `yaac hub`; the desktop UI attaches
+  to it remotely (over SSH, like everything else) instead of to a local one. The mesh then
+  works while every laptop is closed.
+- **A target acting as a hub** for the targets it can reach, so messages between two servers do
+  not travel through a desktop at all.
+
+Neither is in the MVP. What the MVP must not do is assume the hub and the UI share a machine:
+they talk only through the attach protocol, never through shared memory or shared files other
+than the cache.
+
+## Attaching the MCP server
+
+`yaacd` gives each thread the `yaac` MCP server when the thread is started or resumed. How is
+provider-specific, and hidden behind the `MeshTools` capability:
+
+| Harness | Mechanism |
+| --- | --- |
+| Claude Code | An **in-process** MCP server (`type: "sdk"`) registered on that thread's `query()`. No extra process; the caller's identity is implicit. |
+| Codex | An MCP server entry in that thread's configuration — `thread/start` accepts per-thread config, under the key `mcp_servers.yaac` — launching a small bridge by absolute path: `yaacd mcp`. The bridge connects back to `yaacd` over its local socket and carries the thread's attachment ticket in its environment. The server's tool timeout is set explicitly. |
+
+The identity block goes in through each harness's instruction hook (`developerInstructions` for
+Codex, an appended system prompt for Claude), and is supplied again whenever a thread is
+resumed cold. A thread that was created outside YAAC gets it once, as an injected note, the
+first time YAAC takes the thread.
+
+**Verify (spike S10)** — with two real Codex threads and a concurrent terminal session, and
+with ownership and attribution as explicit pass criteria: that Codex honours the per-thread MCP
+entry; that tool calls carry the calling thread's id in their metadata; what one bridge process
+per loaded Codex thread costs in memory; that instructions survive a cold resume; that a turn
+can be started from a tool-output input; and that YAAC can tell reliably when it holds a
+thread.
+
+If a bridge per thread costs too much, the way out is **one shared bridge**: Codex states the
+calling thread in each call, so a single process can serve them all once Codex's connection
+sharing is available. A loopback HTTP endpoint is *not* an option — neither `yaacd` nor the hub
+listens on TCP. Codex's own "dynamic tools" would need no bridge at all, but they are
+experimental, and the owner asked for an MCP server.
+
+Threads started **outside** YAAC do not have the server unless the user adds it to that
+harness's own configuration; settings offers to do that per provider instance. Such a thread
+has a mailbox like any other, so a message addressed to it is never lost — but it is
+*delivered* only once YAAC holds the thread, which a terminal that still has it open prevents.
+
+## Safety and limits
+
+Agents that can start agents can also run away. The limits are on by default, visible, and
+adjustable.
+
+### Every orchestration has a root and a budget
+
+When a person starts or messages a thread, that thread is the **root** of whatever follows.
+Every thread spawned beneath it, on any target, and every message exchanged within it, carries
+that root's id. The root has a **budget**, counted across all targets:
+
+| Allowance, per root | Default |
+| --- | --- |
+| Turns started by agents (not by a person) | 100 |
+| Threads spawned in total | 20 |
+| Wall-clock time since a person last acted on it | 12 hours |
+
+When a budget runs out, nothing is cancelled: turns in progress finish, further messages are
+stored but not dispatched, and the root thread shows a notice with one button — **Continue** —
+which grants another allowance. A person acting on the root resets the clock.
+
+The budget is set where permission is given: in the
+[permission prompt](#permission-a-toggle-in-the-chat), or from defaults when the chat is set to
+*allow*.
+
+**Who keeps count.** The target that holds the root thread owns its budget. Other targets report
+what they spend against that root through the hub, and are told when the root is paused. A
+target that cannot reach the hub cannot do cross-target work in any case; what it does locally
+is counted locally and reconciled when the hub returns, and the local limits below still apply
+on their own.
+
+**Waiting across targets.** `wait` on a thread on another target is answered by the hub, which
+asks that target for the thread's state; within its 45 seconds a `wait` may poll a few times.
+
+This is what stops a loop. Pairwise limits cannot: three agents passing work in a circle stay
+under any limit between two of them. The budget also covers the quiet failure — a fleet that
+is not looping, just working longer and wider than anyone intended.
+
+### Local limits
+
+| Limit | Default | Why |
+| --- | --- | --- |
+| Workers per thread | 8 | A fan-out mistake should cost eight threads, not eighty. |
+| Depth of spawning | 3 | Workers of workers of workers is enough. |
+| Threads running at once, per target | 6 | Each is a harness process using memory and money. A thread blocked in `wait` does not count, so parents waiting on children can never use up every slot and deadlock the fleet. |
+| Messages between the same two threads | 30 per 10 minutes | Catches the simplest ping-pong early. |
+| A message waiting undelivered | notice to the sender after 15 minutes | Silence is not an answer. The message is not cancelled, and the notice does not start a turn. |
+
+Hitting a limit is never hidden: the tool call fails with a reason the agent can read, and the
+thread shows a notice the user can see.
+
+### A worker that is blocked must be seen
+
+A thread started by an agent can stop for an approval or a question with nobody watching it.
+That request is journaled like any other and never answered by an agent. It appears in the
+**Needs you** list wherever the worker is — on any target, muted or not — the worker's parent
+gets a notice at its next turn or `wait`, and with the window closed the hub raises a desktop
+notification.
+
+### Permission: a toggle in the chat
+
+**Decided.** Each chat has a toggle under its composer — **Agents: ask / allow** — and a new
+chat starts on **ask**.
+
+- **Ask.** The first time the agent tries to start another thread or message one, it stops and
+  a permission prompt appears in the transcript — a request like any other: journaled, listed
+  under *Needs you*, never lost. The prompt says what the agent wants ("start 3 threads: Claude
+  on local, devbox, gpu-box; message CI integration on devbox") and shows the **budget** it
+  will work within — agent-started turns, threads, hours — each editable before answering.
+  **Allow** covers the rest of that orchestration, including everything its workers do, up to
+  that budget. **Deny** returns an error the agent can read, and it carries on alone.
+- **Allow.** No prompt. The orchestration runs within the default budget.
+
+Either way, when the budget runs out the work pauses and asks to continue; nothing is
+cancelled. Replying to a thread that messaged you needs no permission — a worker reporting
+back, or a contact answering, is not an agent striking out on its own.
+
+The toggle belongs to the **root** of an orchestration, the thread a person started. Workers
+have no toggle of their own: they act under their root's answer and its budget.
+
+### Who may do what
+
+- An agent acts only as itself ([identity](#identity-cannot-be-forged)).
+- `stop_thread` works only on the caller's own workers.
+- Approvals and questions always go to the human. No agent can approve on the user's behalf,
+  and a message never resolves a pending request.
+- Cross-target traffic passes only through the user's own hub, between targets the user added.
+
+## In the protocol
+
+The mesh adds to the [YAAC protocol](03-protocol.md) additively — new methods, events, and
+item kinds, no version bump.
+
+| Addition | Purpose |
+| --- | --- |
+| Capability `MeshTools` | This provider instance can be given the `yaac` tools. |
+| Item kinds `meshSent`, `meshReceived`, `meshSpawn`, `meshWait` | What agents did with the mesh, in the transcript ([07 UI](07-ui.md#agents-in-the-thread-view)). |
+| `ThreadSummary.spawned_by`, `children`, `peers` | Relationships, for the sub-thread sidebar. |
+| `mesh/relay` (target → hub), `mesh/deliver` (hub → target), each acknowledged | Cross-target delivery. These are the one place where a **target** originates a request — see [03](03-protocol.md#messages). |
+| `mesh/query` | A tool call that needs another target (`list_threads`, `spawn_thread`, `read_thread` there), routed through the hub and answered. |
+| `mesh/roster` (hub → target) | The target's own name and the list of targets, kept current. |
+| `mesh/receipt` (hub → source target) | A queued message was later delivered, or failed. This is what moves a *sent* item's receipt from "queued" to "delivered". |
+| `mesh/usage` (target → hub → the root's target) | Agent-started turns and spawns counted against a root, reported from wherever they happened. |
+| A `meshPermission` request, and a per-thread `agents` setting (`ask` / `allow`) | The permission prompt and the composer toggle. |
+| `mesh/policy` | Read and change limits and default budgets. |
+| `mesh/budget` (and a notice item) | An orchestration's budget ran out; **Continue** grants more. |
+| `hub/*` | The UI ⇄ hub attach protocol: targets, connections, settings, and a routing envelope that carries ordinary YAAC protocol traffic to a named target. |
+
+## What is deliberately not here
+
+- **No shared memory or blackboard between agents.** They exchange messages and can read each
+  other's transcripts; that is all. Shared state is a later, separate design.
+- **No agent-to-agent file transfer across targets.** A message is text. Moving files between
+  machines is what git and the user's own tooling are for.
+- **No broadcast.** Every message has one recipient.
+- **No answering on the user's behalf**, ever.

@@ -1,0 +1,30 @@
+[package]
+name = "yaac-app"
+description = "The `yaac` binary: the window (egui), and later `yaac hub`."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "yaac"
+path = "src/main.rs"
+
+[features]
+default = ["glow"]
+# OpenGL renderer: the default (smaller and lighter, docs/02-architecture.md#footprint-budget).
+glow = ["eframe/glow"]
+# wgpu renderer, kept behind a feature.
+wgpu = ["eframe/wgpu"]
+
+[dependencies]
+yaac-core = { path = "../yaac-core" }
+yaac-protocol = { path = "../yaac-protocol" }
+serde_json.workspace = true
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "accesskit", "wayland", "x11"] }
+pulldown-cmark = { version = "0.13.0", default-features = false }
+png = "0.17"
+
+[lints]
+workspace = true

@@ -1,0 +1,182 @@
+//! Where the hub keeps its files, and how the environment moves them.
+//!
+//! | What | Default (Linux) | Override |
+//! | --- | --- | --- |
+//! | Config directory — `hub.json` (targets, hub settings) | `$XDG_CONFIG_HOME/yaac`, else `~/.config/yaac` | `YAAC_CONFIG_DIR` |
+//! | Data directory — `cache.sqlite`, `drafts.sqlite`, `relay.sqlite` | `$XDG_DATA_HOME/yaac`, else `~/.local/share/yaac` | `YAAC_DATA_DIR` |
+//! | Runtime directory — `hub.sock`, `hub.lock` | `$XDG_RUNTIME_DIR/yaac`, else `<data>/run` | `YAAC_RUNTIME_DIR` |
+//!
+//! When `YAAC_DATA_DIR` is set and `YAAC_RUNTIME_DIR` is not, the runtime directory is
+//! `<data>/run`: an isolated data directory (a test, a second profile) never shares a socket
+//! or a lock with the user's real hub. macOS uses `~/Library/Application Support/yaac` for
+//! both config and data; Windows uses `%APPDATA%\yaac` and `%LOCALAPPDATA%\yaac`.
+//!
+//! The window resolves the same paths with [`HubPaths::from_env`] to find the socket and the
+//! cache file.
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+/// The longest socket path accepted (`sun_path` is 108 bytes on Linux, 104 on macOS).
+pub const MAX_SOCKET_PATH: usize = 100;
+
+/// The hub's directories.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HubPaths {
+    /// Settings (`hub.json`).
+    pub config_dir: PathBuf,
+    /// SQLite stores.
+    pub data_dir: PathBuf,
+    /// Socket and lock.
+    pub runtime_dir: PathBuf,
+}
+
+/// The paths could not be determined.
+#[derive(Debug, thiserror::Error)]
+#[error("cannot determine the {0} directory: set {1}")]
+pub struct PathsError(pub &'static str, pub &'static str);
+
+impl HubPaths {
+    /// All three under one root (tests, portable installs): `<root>/config`, `<root>/data`,
+    /// `<root>/run`.
+    pub fn under(root: &Path) -> Self {
+        Self { config_dir: root.join("config"), data_dir: root.join("data"), runtime_dir: root.join("run") }
+    }
+
+    /// From the process environment.
+    pub fn from_env() -> Result<Self, PathsError> {
+        Self::from_lookup(|key| std::env::var_os(key))
+    }
+
+    /// From any variable lookup (testable without touching the process environment).
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<OsString>) -> Result<Self, PathsError> {
+        let get = |key: &str| lookup(key).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let home = get("HOME").or_else(|| get("USERPROFILE"));
+        let config_dir = match get("YAAC_CONFIG_DIR") {
+            Some(dir) => dir,
+            None => platform_config(&get, home.as_deref()).ok_or(PathsError("config", "YAAC_CONFIG_DIR"))?,
+        };
+        let explicit_data = get("YAAC_DATA_DIR");
+        let data_dir = match &explicit_data {
+            Some(dir) => dir.clone(),
+            None => platform_data(&get, home.as_deref()).ok_or(PathsError("data", "YAAC_DATA_DIR"))?,
+        };
+        let runtime_dir = match get("YAAC_RUNTIME_DIR") {
+            Some(dir) => dir,
+            None if explicit_data.is_some() => data_dir.join("run"),
+            None => get("XDG_RUNTIME_DIR").map_or_else(|| data_dir.join("run"), |dir| dir.join("yaac")),
+        };
+        Ok(Self { config_dir, data_dir, runtime_dir })
+    }
+
+    /// The settings file.
+    pub fn settings_file(&self) -> PathBuf {
+        self.config_dir.join("hub.json")
+    }
+
+    /// The disposable cache.
+    pub fn cache_file(&self) -> PathBuf {
+        self.data_dir.join("cache.sqlite")
+    }
+
+    /// The durable draft store.
+    pub fn drafts_file(&self) -> PathBuf {
+        self.data_dir.join("drafts.sqlite")
+    }
+
+    /// The durable mesh relay queue.
+    pub fn relay_file(&self) -> PathBuf {
+        self.data_dir.join("relay.sqlite")
+    }
+
+    /// The attach socket (Unix). On Windows this will be a named pipe derived from the user.
+    pub fn socket(&self) -> PathBuf {
+        self.runtime_dir.join("hub.sock")
+    }
+
+    /// The single-hub lock.
+    pub fn lock_file(&self) -> PathBuf {
+        self.runtime_dir.join("hub.lock")
+    }
+}
+
+fn platform_config(get: &impl Fn(&str) -> Option<PathBuf>, home: Option<&Path>) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return get("APPDATA").map(|d| d.join("yaac"));
+    }
+    if cfg!(target_os = "macos") {
+        return home.map(|h| h.join("Library").join("Application Support").join("yaac"));
+    }
+    get("XDG_CONFIG_HOME").or_else(|| home.map(|h| h.join(".config"))).map(|d| d.join("yaac"))
+}
+
+fn platform_data(get: &impl Fn(&str) -> Option<PathBuf>, home: Option<&Path>) -> Option<PathBuf> {
+    if cfg!(windows) {
+        return get("LOCALAPPDATA").map(|d| d.join("yaac"));
+    }
+    if cfg!(target_os = "macos") {
+        return home.map(|h| h.join("Library").join("Application Support").join("yaac"));
+    }
+    get("XDG_DATA_HOME").or_else(|| home.map(|h| h.join(".local").join("share"))).map(|d| d.join("yaac"))
+}
+
+/// Creates a directory (and parents) readable only by the user.
+pub(crate) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Restricts a file to the user.
+pub(crate) fn make_private_file(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
+        let pairs: Vec<(String, String)> = pairs.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect();
+        move |key| pairs.iter().find(|(k, _)| k == key).map(|(_, v)| OsString::from(v))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_defaults_follow_xdg() {
+        let p = HubPaths::from_lookup(lookup(&[("HOME", "/h/u"), ("XDG_RUNTIME_DIR", "/run/user/1")])).unwrap();
+        assert_eq!(p.config_dir, PathBuf::from("/h/u/.config/yaac"));
+        assert_eq!(p.data_dir, PathBuf::from("/h/u/.local/share/yaac"));
+        assert_eq!(p.socket(), PathBuf::from("/run/user/1/yaac/hub.sock"));
+        let p = HubPaths::from_lookup(lookup(&[("HOME", "/h/u")])).unwrap();
+        assert_eq!(p.runtime_dir, PathBuf::from("/h/u/.local/share/yaac/run"));
+    }
+
+    #[test]
+    fn overrides_win_and_an_explicit_data_dir_isolates_the_socket() {
+        let p = HubPaths::from_lookup(lookup(&[
+            ("HOME", "/h/u"),
+            ("XDG_RUNTIME_DIR", "/run/user/1"),
+            ("YAAC_CONFIG_DIR", "/t/c"),
+            ("YAAC_DATA_DIR", "/t/d"),
+        ]))
+        .unwrap();
+        assert_eq!(p.settings_file(), PathBuf::from("/t/c/hub.json"));
+        assert_eq!(p.cache_file(), PathBuf::from("/t/d/cache.sqlite"));
+        assert_eq!(p.socket(), PathBuf::from("/t/d/run/hub.sock"), "never the real runtime dir");
+        let p = HubPaths::from_lookup(lookup(&[("YAAC_CONFIG_DIR", "/c"), ("YAAC_DATA_DIR", "/d"), ("YAAC_RUNTIME_DIR", "/r")]))
+            .unwrap();
+        assert_eq!(p.lock_file(), PathBuf::from("/r/hub.lock"));
+    }
+}

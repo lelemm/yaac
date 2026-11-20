@@ -1,0 +1,115 @@
+// yaacd — the YAAC daemon that runs on each target.
+//
+//   yaacd serve      the persistent per-user daemon, on a user-only Unix socket
+//   yaacd connect    a stdio ⇄ socket bridge; starts the daemon (detached) if none is serving
+//   yaacd version    print the build
+//
+// Environment: YAAC_HOME (state directory, default ~/.yaac), YAAC_SOCKET (socket path),
+// YAAC_IDLE_TIMEOUT_MS (idle exit, default 10 minutes; 0 = never), YAAC_FAKE_PROVIDER=1 (an
+// implicit fake provider instance).
+
+import * as net from "node:net";
+import { spawn } from "node:child_process";
+import { Daemon, DEFAULT_IDLE_TIMEOUT_MS, defaultHome } from "./session/daemon.js";
+import { AlreadyServing, socketPathFor } from "./session/server.js";
+
+declare const __YAAC_BUILD__: string | undefined;
+export const BUILD: string = typeof __YAAC_BUILD__ === "string" ? __YAAC_BUILD__ : "0.1.0+dev";
+
+function flag(args: string[], name: string): string | undefined {
+  const i = args.indexOf(name);
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
+async function serve(args: string[]): Promise<void> {
+  const env = process.env;
+  const idleRaw = flag(args, "--idle-timeout") ?? env.YAAC_IDLE_TIMEOUT_MS;
+  const idleTimeoutMs = idleRaw !== undefined && /^\d+$/.test(idleRaw) ? Number(idleRaw) : DEFAULT_IDLE_TIMEOUT_MS;
+  let daemon: Daemon;
+  try {
+    daemon = await Daemon.start({
+      home: defaultHome(env),
+      build: BUILD,
+      env,
+      idleTimeoutMs,
+      onExit: () => process.exit(0),
+    });
+  } catch (e) {
+    if (e instanceof AlreadyServing) {
+      process.stderr.write(`yaacd: ${e.message}\n`);
+      process.exit(0);
+    }
+    throw e;
+  }
+  for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+    process.on(sig, () => void daemon.stop(`signal ${sig}`));
+  }
+}
+
+function connectOnce(socket: string): Promise<net.Socket | null> {
+  return new Promise((resolve) => {
+    const s = net.connect(socket);
+    s.once("connect", () => {
+      s.removeAllListeners("error");
+      resolve(s);
+    });
+    s.once("error", () => resolve(null));
+  });
+}
+
+async function connect(): Promise<void> {
+  const env = process.env;
+  const home = defaultHome(env);
+  const socket = socketPathFor(home, env);
+  let sock = await connectOnce(socket);
+  if (!sock) {
+    // Nothing is serving: start the daemon, detached, so it outlives this bridge.
+    const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "serve"], {
+      detached: true,
+      stdio: "ignore",
+      env,
+    });
+    child.unref();
+    const deadline = Date.now() + 15000;
+    while (!sock && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+      sock = await connectOnce(socket);
+    }
+    if (!sock) {
+      process.stderr.write(`yaacd connect: no daemon is serving on ${socket}\n`);
+      process.exit(1);
+    }
+  }
+  const s = sock;
+  process.stdin.pipe(s);
+  s.pipe(process.stdout);
+  process.stdin.on("end", () => s.end());
+  s.on("close", () => {
+    process.stdout.end(() => process.exit(0));
+  });
+  s.on("error", () => process.exit(1));
+}
+
+async function main(): Promise<void> {
+  const [cmd, ...args] = process.argv.slice(2);
+  switch (cmd) {
+    case "serve":
+      await serve(args);
+      return;
+    case "connect":
+      await connect();
+      return;
+    case "version":
+    case "--version":
+      process.stdout.write(`${BUILD}\n`);
+      return;
+    default:
+      process.stderr.write("usage: yaacd serve [--idle-timeout <ms>] | yaacd connect | yaacd version\n");
+      process.exit(2);
+  }
+}
+
+main().catch((e) => {
+  process.stderr.write(`yaacd: ${(e as Error)?.stack ?? e}\n`);
+  process.exit(1);
+});

@@ -1,0 +1,383 @@
+// One host connection, server role: framing, the frozen core, `initialize`, the dialect, and
+// two-class outbound scheduling. The session layer above sees only domain values: it never
+// learns the negotiated version (docs/09-compatibility.md#the-three-rules).
+
+import type { Duplex } from "node:stream";
+import { performance } from "node:perf_hooks";
+import type {
+  ClientInfo,
+  DaemonBusy,
+  DaemonInfo,
+  HandoverState,
+  HandoverWhen,
+  TargetFacts,
+  ThreadEventParams,
+} from "./generated/types.js";
+import { FROZEN_CORE_METHODS, METHODS, METHOD_INFO, NOTIFICATIONS, NOTIFICATION_INFO } from "./generated/constants.js";
+import type { MethodInfo } from "./generated/constants.js";
+import { FrameDecoder, FrameError, encodeMessageFrame, type Frame } from "./frame.js";
+import { decodeMessage, encodeMessage, MessageDecodeError, RpcError, type Message } from "./rpc.js";
+import { Scheduler, type TrafficClass } from "./scheduler.js";
+import { negotiate, NegotiationError, parseRange, select, supportedRange, type Negotiated } from "./negotiation.js";
+import type { Dialect, FeatureSet } from "./dialect.js";
+
+/** What the daemon provides to the frozen core and to `initialize`. */
+export interface FrozenCoreHost {
+  daemonInfo(): DaemonInfo;
+  targetFacts(): TargetFacts;
+  busy(): DaemonBusy;
+  /** Idempotent. "exiting": the connection closes once the answer is written. */
+  handover(when: HandoverWhen): HandoverState;
+}
+
+/** What a negotiated connection hands its requests to. */
+export interface SessionHandler {
+  /** A request (never a frozen-core one). Return the domain result or throw RpcError. */
+  handle(method: string, params: unknown): Promise<unknown> | unknown;
+  /** A data frame on a stream this side receives. */
+  onData?(stream: number, bytes: Buffer): void;
+  /** A notification from the host other than `stream/credit`. */
+  onNotification?(method: string, params: unknown): void;
+  /** The connection ended. */
+  onClose?(): void;
+}
+
+export interface ConnectionView {
+  readonly client: ClientInfo;
+  /** Wire features of the negotiated version (fold capabilities through it). */
+  readonly features: FeatureSet;
+  /** Whether this daemon adapts to an older client. */
+  readonly peerIsOlder: boolean;
+  /** Diagnostics only. */
+  readonly label: string;
+  notify(method: string, params: unknown): void;
+  sendEvent(params: ThreadEventParams): void;
+  /** Bytes queued but not yet handed to the transport, plus the transport's own buffer. */
+  backlogBytes(): number;
+  /** Calls `listener` once, when the outbound backlog is below the low-water mark. */
+  whenWritable(listener: () => void): void;
+  grantCredit(stream: number, bytes: number): void;
+  close(): void;
+}
+
+const LOW_WATER = 64 * 1024;
+
+function info(method: string): MethodInfo | undefined {
+  return (METHOD_INFO as Record<string, MethodInfo>)[method];
+}
+
+export class ServerConnection implements ConnectionView {
+  private readonly decoder = new FrameDecoder();
+  private readonly scheduler = new Scheduler();
+  private dialect: Dialect | null = null;
+  private negotiated: Negotiated | null = null;
+  private session: SessionHandler | null = null;
+  private clientInfo: ClientInfo = { name: "unknown", version: "unknown" };
+  private closed = false;
+  private closing = false;
+  private waitingDrain = false;
+  private bulkInFlight = false;
+  private writableListeners: Array<() => void> = [];
+  private closeListeners: Array<() => void> = [];
+
+  constructor(
+    private readonly transport: Duplex,
+    private readonly host: FrozenCoreHost,
+    private readonly openSession: (view: ConnectionView) => SessionHandler,
+    private readonly log: (line: string) => void = () => {},
+  ) {
+    transport.on("data", (chunk: Buffer) => this.onBytes(chunk));
+    transport.on("drain", () => {
+      this.waitingDrain = false;
+      this.flush();
+    });
+    transport.on("error", (e) => this.log(`connection error: ${e.message}`));
+    transport.on("close", () => this.teardown());
+    transport.on("end", () => this.teardown());
+  }
+
+  get client(): ClientInfo {
+    return this.clientInfo;
+  }
+
+  get features(): FeatureSet {
+    return this.dialect!.features();
+  }
+
+  get peerIsOlder(): boolean {
+    return this.negotiated?.peerIsOlder() ?? false;
+  }
+
+  get label(): string {
+    return this.negotiated?.diagnosticLabel() ?? "not negotiated";
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  onClose(listener: () => void): void {
+    this.closeListeners.push(listener);
+  }
+
+  whenWritable(listener: () => void): void {
+    this.writableListeners.push(listener);
+    if (this.backlogBytes() < LOW_WATER) this.fireWritable();
+  }
+
+  private writableScheduled = false;
+
+  private fireWritable(): void {
+    if (this.writableScheduled || this.writableListeners.length === 0) return;
+    this.writableScheduled = true;
+    setImmediate(() => {
+      this.writableScheduled = false;
+      if (this.closed) return;
+      const listeners = this.writableListeners;
+      this.writableListeners = [];
+      for (const l of listeners) l();
+    });
+  }
+
+  // ── Inbound ────────────────────────────────────────────────────────────────────────────
+
+  private onBytes(chunk: Buffer): void {
+    if (this.closed) return;
+    let frames: Frame[];
+    try {
+      frames = this.decoder.decode(chunk);
+    } catch (e) {
+      // Framing cannot resynchronise: close the stream.
+      this.log(`fatal framing error: ${(e as FrameError).message}`);
+      this.destroy();
+      return;
+    }
+    for (const frame of frames) {
+      if (this.closed) return;
+      if (frame.kind === "data") {
+        if (this.session?.onData) {
+          try {
+            this.session.onData(frame.stream, frame.bytes);
+          } catch (e) {
+            this.log(`fatal data-stream error: ${(e as Error).message}`);
+            this.destroy();
+            return;
+          }
+        }
+        continue;
+      }
+      let message: Message;
+      try {
+        message = decodeMessage(frame.payload);
+      } catch (e) {
+        const err = e as MessageDecodeError;
+        this.reply({ type: "error", id: err.id, error: { code: err.code, message: err.message } }, "control");
+        continue;
+      }
+      this.onMessage(message);
+    }
+  }
+
+  private onMessage(message: Message): void {
+    switch (message.type) {
+      case "request":
+        void this.onRequest(message.id, message.method, message.params);
+        return;
+      case "notification":
+        if (message.method === NOTIFICATIONS.STREAM_CREDIT) {
+          const p = message.params as { stream?: unknown; bytes?: unknown };
+          if (typeof p.stream === "number" && typeof p.bytes === "number") this.scheduler.grantCredit(p.stream, p.bytes);
+          this.flush();
+        } else if (this.session) {
+          this.session.onNotification?.(message.method, this.dialect!.decodeParams(message.method, message.params));
+        }
+        return;
+      default:
+        // Responses to daemon-originated requests (the mesh) are handled by a later package.
+        return;
+    }
+  }
+
+  private responseClass(method: string): TrafficClass {
+    return info(method)?.responseClass ?? "control";
+  }
+
+  private async onRequest(id: number | string, method: string, params: unknown): Promise<void> {
+    if ((FROZEN_CORE_METHODS as readonly string[]).includes(method)) {
+      this.frozenCore(id, method, params);
+      return;
+    }
+    if (!this.session || !this.dialect) {
+      this.reply(
+        { type: "error", id, error: { code: "not_initialized", message: `${method} before a successful initialize` } },
+        "control",
+      );
+      return;
+    }
+    try {
+      const domain = this.dialect.decodeParams(method, params ?? {});
+      const result = await this.session.handle(method, domain);
+      if (this.closed) return;
+      this.reply({ type: "response", id, result: this.dialect.encodeResult(method, result ?? {}) }, this.responseClass(method));
+    } catch (e) {
+      if (this.closed) return;
+      const error =
+        e instanceof RpcError
+          ? e.toObject()
+          : { code: "internal_error" as const, message: (e as Error)?.message ?? String(e) };
+      if (!(e instanceof RpcError)) this.log(`internal error in ${method}: ${(e as Error)?.stack ?? e}`);
+      this.reply({ type: "error", id, error }, "control");
+    }
+  }
+
+  private frozenCore(id: number | string, method: string, params: unknown): void {
+    switch (method) {
+      case METHODS.INITIALIZE:
+        this.initialize(id, params);
+        return;
+      case METHODS.DAEMON_STATUS: {
+        const daemon = this.host.daemonInfo();
+        this.reply(
+          {
+            type: "response",
+            id,
+            result: { build: daemon.build, protocol: supportedRange(), stateFormat: daemon.stateFormat, busy: this.host.busy() },
+          },
+          "control",
+        );
+        return;
+      }
+      case METHODS.DAEMON_HANDOVER: {
+        const when = (params as { when?: unknown })?.when;
+        if (when !== "idle" && when !== "now") {
+          this.reply({ type: "error", id, error: { code: "invalid_params", message: "when must be \"idle\" or \"now\"" } }, "control");
+          return;
+        }
+        const state = this.host.handover(when);
+        this.reply({ type: "response", id, result: { state } }, "control");
+        return;
+      }
+    }
+  }
+
+  private initialize(id: number | string, params: unknown): void {
+    if (this.session) {
+      this.reply({ type: "error", id, error: { code: "invalid_request", message: "already initialized" } }, "control");
+      return;
+    }
+    const p = (params ?? {}) as { protocol?: unknown; client?: unknown };
+    const remote = parseRange(p.protocol);
+    const client = p.client as ClientInfo | undefined;
+    if (!remote || !client || typeof client.name !== "string" || typeof client.version !== "string") {
+      this.reply(
+        { type: "error", id, error: { code: "invalid_params", message: "initialize needs protocol { min, max } and client { name, version }" } },
+        "control",
+      );
+      return;
+    }
+    let negotiated: Negotiated;
+    try {
+      negotiated = negotiate(remote);
+    } catch (e) {
+      if (e instanceof NegotiationError) {
+        this.reply({ type: "error", id, error: e.toErrorObject() }, "control");
+        return;
+      }
+      throw e;
+    }
+    this.negotiated = negotiated;
+    this.dialect = select(negotiated);
+    this.clientInfo = client;
+    const result = {
+      protocol: negotiated.answer(),
+      schemaHash: this.dialect.schemaHash(),
+      daemon: this.host.daemonInfo(),
+      target: this.host.targetFacts(),
+    };
+    this.reply({ type: "response", id, result }, "control");
+    this.session = this.openSession(this);
+  }
+
+  // ── Outbound ───────────────────────────────────────────────────────────────────────────
+
+  private reply(message: Message, cls: TrafficClass): void {
+    if (this.closed) return;
+    let frame: Buffer;
+    try {
+      frame = encodeMessageFrame(encodeMessage(message));
+    } catch (e) {
+      if (e instanceof FrameError && message.type === "response") {
+        // A result too large for one frame is a bug in paging; say so instead of hanging.
+        frame = encodeMessageFrame(
+          encodeMessage({ type: "error", id: message.id, error: { code: "internal_error", message: "result exceeds the frame limit" } }),
+        );
+      } else throw e;
+    }
+    this.scheduler.pushFrame(cls, frame);
+    this.flush();
+  }
+
+  notify(method: string, params: unknown): void {
+    if (!this.dialect || this.closed) return;
+    const cls = (NOTIFICATION_INFO as Record<string, { class: TrafficClass }>)[method]?.class ?? "control";
+    this.reply({ type: "notification", method, params: this.dialect.encodeNotification(method, params) }, cls);
+  }
+
+  sendEvent(params: ThreadEventParams): void {
+    this.notify(NOTIFICATIONS.THREAD_EVENT, params);
+  }
+
+  grantCredit(stream: number, bytes: number): void {
+    this.notify(NOTIFICATIONS.STREAM_CREDIT, { stream, bytes });
+  }
+
+  backlogBytes(): number {
+    return this.scheduler.pendingControlBytes() + this.scheduler.pendingBulkBytes() + (this.transport.writableLength ?? 0);
+  }
+
+  /** Writes frames while the transport takes them. Bulk frames go one at a time. */
+  private flush(): void {
+    if (this.closed) return;
+    while (!this.waitingDrain && !this.bulkInFlight) {
+      const next = this.scheduler.next();
+      if (!next) break;
+      if (next.class === "bulk") {
+        this.bulkInFlight = true;
+        const started = performance.now();
+        const len = next.bytes.length;
+        const ok = this.transport.write(next.bytes, () => {
+          this.bulkInFlight = false;
+          this.scheduler.onWritten(len, performance.now() - started);
+          this.flush();
+        });
+        if (!ok) this.waitingDrain = true;
+      } else if (!this.transport.write(next.bytes)) {
+        this.waitingDrain = true;
+      }
+    }
+    if (this.closing && this.scheduler.isIdle() && !this.bulkInFlight) {
+      this.transport.end();
+      return;
+    }
+    if (this.backlogBytes() < LOW_WATER) this.fireWritable();
+  }
+
+  /** Closes once everything queued is written. */
+  close(): void {
+    if (this.closed || this.closing) return;
+    this.closing = true;
+    this.flush();
+  }
+
+  destroy(): void {
+    this.transport.destroy();
+    this.teardown();
+  }
+
+  private teardown(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.session?.onClose?.();
+    for (const l of this.closeListeners) l();
+  }
+}
