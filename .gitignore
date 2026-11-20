@@ -21,3 +21,6 @@ Thumbs.db
 .claude/settings.local.json
 .env
 .env.*
+
+# Agent worktrees
+.claude/worktrees/
