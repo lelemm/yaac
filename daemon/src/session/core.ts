@@ -809,7 +809,12 @@ export class Core {
       while (i > 0 && (buf[i]! & 0xc0) === 0x80 && buf.length - i < 4) i--;
       const leadByte = buf[i] ?? 0;
       const need = leadByte >= 0xf0 ? 4 : leadByte >= 0xe0 ? 3 : leadByte >= 0xc0 ? 2 : 1;
-      const end = i >= 0 && i + need > buf.length ? i : buf.length;
+      let end = i >= 0 && i + need > buf.length ? i : buf.length;
+      // A range smaller than one character still makes progress: it returns that character.
+      if (end === 0 && buf.length > 0) {
+        buf = readAt(start, Math.min(need, total - start));
+        end = buf.length;
+      }
       buf = buf.subarray(0, Math.max(0, end));
     }
     const next = start + buf.length;

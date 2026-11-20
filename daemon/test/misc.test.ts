@@ -25,7 +25,9 @@ test("before initialize only the frozen calls work; mesh methods are method_not_
     await assert.rejects(c.request(m, {}), code("method_not_found"));
   }
   await assert.rejects(c.request("no/such"), code("method_not_found"));
-  await assert.rejects(c.request("item/read", {}), code("method_not_found"));
+  await assert.rejects(c.request("mesh/usage", {}), code("method_not_found"));
+  // item/read exists now; without its params it is invalid, not unknown.
+  await assert.rejects(c.request("item/read", {}), code("invalid_params"));
   const diag: any = await c.request("diagnostics/get");
   assert.ok(diag.sections.some((s: any) => s.title === "daemon"));
   await c.close();

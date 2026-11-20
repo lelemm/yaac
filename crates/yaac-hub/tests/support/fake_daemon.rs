@@ -77,6 +77,9 @@ struct State {
     peer_answers: HashMap<i64, Result<Value, ErrorObject>>,
     page_items: usize,
     deliver_fails: bool,
+    projects: Vec<yaac_protocol::Project>,
+    usage_reports: Vec<yaac_protocol::MeshUsageParams>,
+    usage_exhausted: bool,
 }
 
 /// A fake daemon. Cheap to clone; clones share state.
@@ -96,11 +99,14 @@ pub fn summary(id: &str) -> ThreadSummary {
     ThreadSummary {
         id: ThreadId::new(id),
         instance: InstanceId::new("fake"),
+        native_id: Some(format!("native-{id}")),
         title: format!("thread {id}"),
         preview: String::new(),
         cwd: TargetPath::new("/work"),
         project: None,
         worktree: None,
+        repo: None,
+        git: None,
         branch: None,
         model: None,
         state: ThreadState::Idle,
@@ -115,6 +121,9 @@ pub fn summary(id: &str) -> ThreadSummary {
         created_at: Timestamp::new("2026-01-01T00:00:00Z"),
         updated_at: Timestamp::new("2026-01-01T00:00:00Z"),
         archived: false,
+        muted: false,
+        pinned: false,
+        agents: yaac_protocol::AgentsPolicy::Ask,
     }
 }
 
@@ -123,6 +132,8 @@ pub fn agent_item(id: &str, turn: &str, text: &str, status: ItemStatus) -> Item 
         id: yaac_protocol::ItemId::new(id),
         turn_id: TurnId::new(turn),
         status,
+        started_at: None,
+        completed_at: None,
         body: ItemBody::AgentMessage(AgentMessageItem { text: text.to_owned() }),
     }
 }
@@ -275,6 +286,27 @@ impl FakeDaemon {
 
     pub fn rosters(&self) -> Vec<MeshRosterParams> {
         self.lock().rosters.clone()
+    }
+
+    pub fn set_projects(&self, projects: Vec<yaac_protocol::Project>) {
+        self.lock().projects = projects;
+    }
+
+    /// Sends `project/updated` on every connection.
+    pub fn originate_projects_updated(&self) {
+        let s = self.lock();
+        let params = json!({ "projects": s.projects });
+        for c in s.conns.values() {
+            let _ = c.tx.send(frame(&Message::notification(names::PROJECT_UPDATED, params.clone())));
+        }
+    }
+
+    pub fn usage_reports(&self) -> Vec<yaac_protocol::MeshUsageParams> {
+        self.lock().usage_reports.clone()
+    }
+
+    pub fn set_usage_exhausted(&self, exhausted: bool) {
+        self.lock().usage_exhausted = exhausted;
     }
 
     pub fn queries(&self) -> u64 {
@@ -451,7 +483,15 @@ impl FakeDaemon {
                 } else {
                     (SubscribeMode::Reset(SubscribeReset { epoch: t.epoch, head_seq: Seq(head) }), Subscribed::Reset { epoch: t.epoch.0 })
                 };
-                let result = ThreadSubscribeResult { mode, control: Control::Free, control_holder: None, active_turn: None, effective: None };
+                let result = ThreadSubscribeResult {
+                    mode,
+                    control: Control::Free,
+                    control_holder: None,
+                    active_turn: None,
+                    effective: None,
+                    context: None,
+                    tokens: None,
+                };
                 s.subscribes.push((p.thread_id.clone(), logged));
                 if let Some(conn) = s.conns.get_mut(&conn_id) {
                     conn.subs.insert(p.thread_id);
@@ -485,7 +525,7 @@ impl FakeDaemon {
                 let (items, position) = s.conns[&conn_id].snapshots[&snap_id].clone();
                 let end = (offset + page).min(items.len());
                 let cursor = (end < items.len()).then(|| yaac_protocol::PageCursor::new(format!("{snap_id}:{end}")));
-                let result = ThreadReadResult { items: items[offset..end].to_vec(), position, cursor, uploads: vec![] };
+                let result = ThreadReadResult { items: items[offset..end].to_vec(), position, cursor, uploads: vec![], context: None };
                 Ok(serde_json::to_value(result).unwrap())
             }
             names::THREAD_ACK => {
@@ -512,6 +552,12 @@ impl FakeDaemon {
                 }
                 let receipt = Receipt { status: ReceiptStatus::Delivered, reason: None, detail: None };
                 Ok(json!({ "receipt": receipt }))
+            }
+            names::PROJECT_LIST => Ok(json!({ "projects": s.projects })),
+            names::MESH_USAGE => {
+                let p: yaac_protocol::MeshUsageParams = serde_json::from_value(params).map_err(bad)?;
+                s.usage_reports.push(p);
+                Ok(json!({ "exhausted": s.usage_exhausted }))
             }
             names::MESH_QUERY => {
                 s.queries += 1;

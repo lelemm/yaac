@@ -15,6 +15,8 @@ fn started(seq: u64) -> ThreadEventParams {
         id: ItemId::new("m"),
         turn_id: TurnId::new("u"),
         status: ItemStatus::InProgress,
+        started_at: None,
+        completed_at: None,
         body: ItemBody::AgentMessage(AgentMessageItem { text: String::new() }),
     };
     ThreadEventParams { thread_id: ThreadId::new("t"), epoch: Epoch(1), seq: Seq(seq), event: ThreadEvent::ItemStarted(ItemEvent { item }) }

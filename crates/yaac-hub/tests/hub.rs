@@ -524,6 +524,8 @@ fn secret_answers_are_never_written_to_the_cache() {
         id: yaac_protocol::ItemId::new("r1"),
         turn_id: yaac_protocol::TurnId::new("u1"),
         status: ItemStatus::Completed,
+        started_at: None,
+        completed_at: None,
         body: ItemBody::Request(RequestItem {
             request_id: RequestId::new("q1"),
             blocking: true,

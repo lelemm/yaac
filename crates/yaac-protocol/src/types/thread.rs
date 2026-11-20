@@ -39,6 +39,8 @@ open_enum! {
     }
 }
 
+// The enum comes from `open_enum!`, which cannot carry `#[default]`.
+#[allow(clippy::derivable_impls)]
 impl Default for AgentsPolicy {
     fn default() -> Self {
         AgentsPolicy::Ask

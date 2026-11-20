@@ -287,6 +287,7 @@ impl Fleet {
             muted: false,
             pinned: false,
             agents: yaac_protocol::AgentsPolicy::default(),
+            native_id: None,
         };
         let effective = self.effective_for(key, instance, model_id);
         self.threads.insert(

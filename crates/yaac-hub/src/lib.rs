@@ -30,6 +30,7 @@ pub mod config;
 mod conn;
 mod core;
 pub mod drafts;
+pub mod find;
 mod lock;
 mod migrate;
 pub mod paths;

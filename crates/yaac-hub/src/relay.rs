@@ -39,7 +39,55 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX messages_by_dest ON messages (dest_target, state);
     CREATE INDEX messages_by_source ON messages (source_target, receipt_pending);
     ",
+    // 2: whether the sender was told the message is overdue.
+    r"
+    ALTER TABLE messages ADD COLUMN noticed INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
+
+/// The source recorded for messages the hub itself originates (undelivered notices): no
+/// target has this id, so no receipt is ever owed for them.
+pub fn system_source() -> TargetId {
+    TargetId::new("")
+}
+
+/// The passive notice a sender gets when its message has waited `waited` undelivered. It is
+/// a `notice` (never wakes a thread), about the recipient, addressed to the sender, with an id
+/// derived from the message's so a repeat is harmless.
+pub fn undelivered_notice(message: &MeshMessage, waited: std::time::Duration) -> MeshMessage {
+    let minutes = waited.as_secs() / 60;
+    MeshMessage {
+        id: MessageId::new(format!("undelivered:{}", message.id)),
+        from: message.to.clone(),
+        to: message.from.clone(),
+        kind: yaac_protocol::MeshMessageKind::Notice,
+        text: format!(
+            "Your message to {} has not been delivered after {minutes} minutes. It is still queued and will be delivered when it can; it has not been cancelled.",
+            message.to
+        ),
+        in_reply_to: Some(message.id.clone()),
+        sent_at: yaac_protocol::Timestamp::new(now_rfc3339()),
+        seq: 0,
+        root: message.root.clone(),
+    }
+}
+
+fn now_rfc3339() -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let days = secs / 86_400;
+    let rem = secs % 86_400;
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = i64::try_from(days).unwrap_or(0) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, (rem % 3600) / 60, rem % 60)
+}
 
 /// How long a finished message is kept, so a late duplicate of it is still recognised.
 pub const RETAIN_FINISHED_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -163,12 +211,36 @@ impl RelayQueue {
             return Ok(None);
         };
         let state = if receipt.status == ReceiptStatus::Failed { "failed" } else { "handedOff" };
+        // The hub's own notices owe nobody a receipt.
+        let owed = i64::from(!source.is_empty());
         tx.execute(
-            "UPDATE messages SET state = ?2, receipt = ?3, receipt_pending = 1, updated_at = ?4 WHERE message_id = ?1",
-            params![message.as_str(), state, serde_json::to_string(receipt)?, now_ms()],
+            "UPDATE messages SET state = ?2, receipt = ?3, receipt_pending = ?5, updated_at = ?4 WHERE message_id = ?1",
+            params![message.as_str(), state, serde_json::to_string(receipt)?, now_ms(), owed],
         )?;
         tx.commit()?;
-        Ok(Some(TargetId::new(source)))
+        Ok((!source.is_empty()).then(|| TargetId::new(source)))
+    }
+
+    /// Messages from agents queued longer than `limit` whose sender has not been told: each
+    /// with its source target.
+    pub fn overdue(&self, limit: std::time::Duration) -> Result<Vec<(TargetId, MeshMessage)>, RelayError> {
+        let cutoff = now_ms() - i64::try_from(limit.as_millis()).unwrap_or(i64::MAX);
+        let mut stmt = self.conn.prepare(
+            "SELECT source_target, message FROM messages WHERE state = 'queued' AND noticed = 0 AND source_target != '' AND created_at <= ?1 ORDER BY rowid",
+        )?;
+        let rows = stmt.query_map(params![cutoff], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (source, message) = row?;
+            out.push((TargetId::new(source), serde_json::from_str(&message)?));
+        }
+        Ok(out)
+    }
+
+    /// The sender of `message` has been told it is overdue.
+    pub fn mark_noticed(&mut self, message: &MessageId) -> Result<(), RelayError> {
+        self.conn.execute("UPDATE messages SET noticed = 1 WHERE message_id = ?1", params![message.as_str()])?;
+        Ok(())
     }
 
     /// Receipts owed to `source`.

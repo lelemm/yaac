@@ -101,6 +101,8 @@ pub(crate) struct UiState {
     pub fork: Option<ForkDialog>,
     /// Narrow layout: the thread list is open as an overlay.
     pub threads_overlay: bool,
+    /// Screenshots only: lay the shell out in this size instead of the window's.
+    pub layout_size: Option<egui::Vec2>,
     /// The settings pages' own state.
     pub set: crate::settings::SettingsUi,
     /// Item heights, keyed by content hash and width.
@@ -136,6 +138,7 @@ impl UiState {
             create_project: None,
             fork: None,
             threads_overlay: false,
+            layout_size: None,
             set: crate::settings::SettingsUi::default(),
             heights: HashMap::new(),
         }
@@ -363,8 +366,7 @@ fn waker(ctx: &egui::Context) -> crate::attach::Waker {
 
 #[cfg(feature = "hub")]
 fn hub_client(attach: &Arc<Mutex<HubAttach>>) -> Client {
-    // SEAM: the hub's hello does not hand the window its own client id yet; the window uses a
-    // fixed one until it does ("answered by you" needs it).
+    // The client id is a placeholder until `hub/hello` returns this host's own.
     Client::new(Box::new(SharedAttach(attach.clone())), crate::BUILD, ClientId::new("window"))
 }
 
@@ -707,7 +709,6 @@ impl YaacApp {
                 c.state.hub.outcome = HelloOutcome::WindowOutdated { message };
                 self.client = c;
                 self.hub = None;
-                return;
             }
             HelloOutcome::Attached if !h.prefs_loaded => {
                 let stored = h.attach.lock().ok().and_then(|mut a| a.take_prefs());
@@ -736,7 +737,7 @@ impl YaacApp {
         #[cfg(feature = "hub")]
         if self.hub.as_ref().is_some_and(|h| h.prefs_loaded) {
             for k in now.changed(&self.saved_prefs) {
-                self.client.set_ui_state(k, now.value(k));
+                self.client.set_ui_state(k, &now.value(k));
             }
         }
         self.saved_prefs = now;

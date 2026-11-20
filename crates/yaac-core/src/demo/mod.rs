@@ -324,7 +324,7 @@ impl Inner {
                 }
                 let entry = attach::TargetEntry {
                     id: TargetId::new(name.clone()),
-                    name: yaac_protocol::TargetName::new(name.clone()),
+                    name: yaac_protocol::TargetName::new(name),
                     transport,
                     enabled: true,
                     state: ConnectionState { status: ConnectionStatus::Connected, detail: None, daemon: None },

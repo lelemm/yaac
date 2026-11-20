@@ -198,6 +198,10 @@ impl Client {
                 }
                 self.state.hub.attached = true;
                 self.state.hub.outcome = HelloOutcome::Attached;
+                // The hub tells the window its own client id ("answered by you").
+                if let Some(id) = hello.client_id {
+                    self.state.client_id = Some(id);
+                }
                 self.state.hub.build = Some(hello.build);
                 self.request(hub_names::SETTINGS_GET, json!({}), Call::HubSettings);
                 let ids: Vec<(TargetId, bool)> =
@@ -359,6 +363,7 @@ impl Client {
                         muted: false,
                         pinned: false,
                         agents: yaac_protocol::AgentsPolicy::default(),
+                        native_id: None,
                     };
                     self.state.upsert_summary(&draft.target, summary);
                 }
@@ -875,7 +880,7 @@ impl Client {
     }
 
     /// Store a window-side choice in the hub's `ui_state` (only when attached to a real hub).
-    pub fn set_ui_state(&mut self, key: &str, value: Value) {
+    pub fn set_ui_state(&mut self, key: &str, value: &Value) {
         if self.state.hub.attached {
             self.request(hub_names::UI_STATE_SET, json!({ "key": key, "value": value }), Call::Ignore);
         }

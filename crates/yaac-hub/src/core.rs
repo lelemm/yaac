@@ -19,11 +19,13 @@ use yaac_protocol::attach::{
 };
 use yaac_protocol::dialect::{Inbound, PeerRequest};
 use yaac_protocol::flows::{FlowError, FlowStep, OpenThread, OpenThreadFlow, Opened, finish_page, read_older_page};
-use yaac_protocol::methods::{self, MeshDeliver, MeshQuery, MeshReceipt, MeshRoster, Ping, ProviderList, ThreadAck, ThreadSync, names};
+use yaac_protocol::methods::{
+    self, MeshDeliver, MeshQuery, MeshReceipt, MeshRoster, MeshUsage, Ping, ProjectList, ProviderList, ThreadAck, ThreadSync, names,
+};
 use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
 use yaac_protocol::session::{ClientSession, ReadyInfo, SessionEvent};
 use yaac_protocol::{
-    ClientInfo, Control, Epoch, Item, JournalPosition, MeshDeliverParams, MeshMessage, MeshQueryParams, MeshReceiptParams,
+    ClientInfo, Control, Epoch, Item, JournalPosition, MeshDeliverParams, MeshUsageParams, MeshMessage, MeshQueryParams, MeshReceiptParams,
     MeshRosterParams, MessageId, OpId, PageCursor, Receipt, ReceiptReason, ReceiptStatus, RosterEntry, Seq,
     StreamCreditParams, SubscribeMode, SubscribeReplay, SubscribeReset, SyncToken, TargetId, TargetName, ThreadAckParams,
     ThreadEvent, ThreadEventParams, ThreadId, ThreadReadParams, ThreadReadResult, ThreadState, ThreadSubscribeParams,
@@ -37,6 +39,7 @@ use crate::protocol::{
     self as ext, BusyReasons, Draft, DraftKey, DraftsListResult, OperationRef, OperationsListResult, SettingsResult,
     SettingsUpdateParams, StatusResult, TargetRef, ThreadResetParams, UiStateSetParams,
 };
+use crate::find::{FindParams, Pager};
 use crate::relay::{Accepted, receipt};
 use crate::settings::{Settings, TargetDef, new_id};
 use crate::worker::Worker;
@@ -73,6 +76,10 @@ pub(crate) enum CoreEvent {
     Deliver { dest: TargetId, messages: Vec<MeshMessage>, in_flight: u64 },
     /// Receipts owed to sources (one that just connected, or that just became due).
     Receipts { receipts: Vec<(TargetId, MessageId, Receipt)>, in_flight: u64 },
+    /// Undelivered-message notices to hand to their senders' targets now.
+    Notices { deliveries: Vec<(TargetId, MeshMessage)>, in_flight: u64 },
+    /// The cached index of every target, for `hub/threads/find`.
+    FindReady { client: ClientKey, id: RpcId, params: FindParams, threads: Vec<(TargetId, yaac_protocol::ThreadSummary)> },
     /// The relay changed; how much is still in flight.
     InFlight(u64),
     /// Checkpoint done; answer `hub/shutdown` and stop.
@@ -131,6 +138,9 @@ enum Pending {
     ProviderList,
     Sync,
     MeshQuery { source: TargetId, generation: u64, peer_id: RpcId },
+    /// A peer request forwarded to another target; its answer goes back to the source.
+    PeerForward { source: TargetId, generation: u64, peer_id: RpcId, method: &'static str },
+    ProjectList,
     Deliver { message_id: MessageId },
     Receipt { message_id: MessageId },
     Ignore,
@@ -270,6 +280,8 @@ pub(crate) struct Core {
     idle_since: Option<Instant>,
     last_ack: Instant,
     last_evict: Instant,
+    last_notice_sweep: Instant,
+    finder: Pager,
     pub(crate) exit: Option<ExitReason>,
 }
 
@@ -309,6 +321,8 @@ impl Core {
             idle_since: None,
             last_ack: Instant::now(),
             last_evict: Instant::now(),
+            last_notice_sweep: Instant::now(),
+            finder: Pager::default(),
             exit: None,
         };
         for (target, thread, position) in loaded.positions {
@@ -365,6 +379,13 @@ impl Core {
                     self.send_receipt(&source, message_id, receipt);
                 }
             }
+            CoreEvent::Notices { deliveries, in_flight } => {
+                self.in_flight = in_flight;
+                for (dest, message) in deliveries {
+                    self.deliver(&dest, message);
+                }
+            }
+            CoreEvent::FindReady { client, id, params, threads } => self.on_find_ready(client, id, &params, &threads),
             CoreEvent::InFlight(n) => self.in_flight = n,
             CoreEvent::ShutdownReady { client, id } => {
                 self.reply(client, id, Ok(json!({})));
@@ -487,6 +508,22 @@ impl Core {
                 Ok(json!({}))
             })),
             ext::names::STATUS => Some(Ok(to_value(&self.status()))),
+            ext::names::THREADS_FIND => match parse::<FindParams>(params) {
+                Ok(p) => {
+                    self.find_threads(client, id, p);
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::PROJECTS_LIST => match parse::<TargetRef>(params) {
+                Ok(p) => {
+                    self.store_reply(client, id, move |s| {
+                        s.cache.projects(&p.id).map(|projects| json!({ "projects": projects })).map_err(|e| e.to_string())
+                    });
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
             ext::names::SETTINGS_GET => Some(Ok(to_value(&SettingsResult { settings: self.settings.hub.clone() }))),
             ext::names::SETTINGS_UPDATE => Some(parse::<SettingsUpdateParams>(params).and_then(|p| {
                 if let Some(always) = p.always {
@@ -583,7 +620,7 @@ impl Core {
             ));
         }
         self.idle_since = None;
-        Ok(to_value(&HelloResult { build: self.cfg.build.clone(), targets: self.entries() }))
+        Ok(to_value(&HelloResult { build: self.cfg.build.clone(), targets: self.entries(), client_id: self.settings.client_id.clone() }))
     }
 
     fn entries(&self) -> Vec<TargetEntry> {
@@ -641,7 +678,7 @@ impl Core {
             return;
         }
         t.state = new.clone();
-        let params = to_value(&TargetStateParams { id: id.clone(), state: new.clone() });
+        let params = to_value(&TargetStateParams { id: id.clone(), state: new.clone(), enabled: t.def.enabled });
         self.notify_all(attach::names::TARGET_STATE, params);
         let target = id.clone();
         self.worker.submit(move |stores| stores.cache.put_target(&target, None, &new).err().map(|e| CoreEvent::StoreError(e.to_string())));
@@ -982,6 +1019,7 @@ impl Core {
 
     fn refresh_target_with(&mut self, id: &TargetId, fresh: bool) {
         self.send::<ProviderList>(id, &yaac_protocol::Empty {}, Pending::ProviderList);
+        self.send::<ProjectList>(id, &yaac_protocol::ProjectListParams {}, Pending::ProjectList);
         let token = self.tokens.get(id).cloned().unwrap_or_default();
         self.send::<ThreadSync>(id, &ThreadSyncParams { token, max_bytes: Some(256 * 1024) }, Pending::Sync);
         let open: Vec<ThreadId> = self.open.keys().filter(|(t, _)| t == id).map(|(_, th)| th.clone()).collect();
@@ -1046,6 +1084,18 @@ impl Core {
             Pending::MeshQuery { source, generation, peer_id } => {
                 let outcome = outcome.and_then(|wire| self.decode_current(id, method, wire));
                 self.respond_peer(&source, generation, peer_id, names::MESH_QUERY, outcome);
+            }
+            Pending::PeerForward { source, generation, peer_id, method: m } => {
+                let outcome = outcome.and_then(|wire| self.decode_current(id, m, wire));
+                self.respond_peer(&source, generation, peer_id, m, outcome);
+            }
+            Pending::ProjectList => {
+                let Ok(result) = outcome.and_then(|w| self.decode_typed::<ProjectList>(id, w)) else { return };
+                let target = id.clone();
+                self.worker.submit(move |s| match s.cache.replace_projects(&target, &result.projects) {
+                    Ok(()) => Some(CoreEvent::Broadcast(Message::notification(ext::names::PROJECTS_CHANGED, json!({ "target": target })))),
+                    Err(e) => Some(CoreEvent::StoreError(e.to_string())),
+                });
             }
             Pending::Deliver { message_id } => self.on_delivered(id, message_id, outcome),
             Pending::Receipt { message_id } => {
@@ -1131,6 +1181,13 @@ impl Core {
                 let target = id.clone();
                 self.worker.submit(move |s| match s.cache.put_provider(&target, &p.provider) {
                     Ok(()) => Some(CoreEvent::Broadcast(Self::routed_notification(&target, names::PROVIDER_UPDATED, to_value(&p)))),
+                    Err(e) => Some(CoreEvent::StoreError(e.to_string())),
+                });
+            }
+            Inbound::ProjectUpdated(p) => {
+                let target = id.clone();
+                self.worker.submit(move |s| match s.cache.replace_projects(&target, &p.projects) {
+                    Ok(()) => Some(CoreEvent::Broadcast(Self::routed_notification(&target, names::PROJECT_UPDATED, to_value(&p)))),
                     Err(e) => Some(CoreEvent::StoreError(e.to_string())),
                 });
             }
@@ -1471,6 +1528,8 @@ impl Core {
                     control_holder: live.control_holder,
                     active_turn: live.active_turn,
                     effective: live.effective,
+                    context: live.context,
+                    tokens: live.tokens,
                 };
                 Some(CoreEvent::Reply { client, id: rid, outcome: Ok(to_value(&result)) })
             });
@@ -1633,6 +1692,7 @@ impl Core {
                 });
             }
             PeerRequest::MeshQuery(params) => self.route_query(source, generation, peer_id, &params),
+            PeerRequest::MeshUsage(params) => self.route_usage(source, generation, peer_id, &params),
             PeerRequest::Other { .. } => {} // the session already answered method_not_found
         }
     }
@@ -1735,6 +1795,86 @@ impl Core {
         self.flush(&dest);
     }
 
+    /// `mesh/usage`: a target's spending against a root on another target, forwarded to the
+    /// root's target, whose answer (exhausted or not) goes back to the reporter. Counts are
+    /// cumulative, so a report that fails is simply sent again later by the reporter.
+    fn route_usage(&mut self, source: &TargetId, generation: u64, peer_id: RpcId, params: &MeshUsageParams) {
+        if &params.source != source {
+            let e = err(ErrorCode::PolicyDenied, "the reporting target does not match the connection");
+            self.respond_peer(source, generation, peer_id, names::MESH_USAGE, Err(e));
+            return;
+        }
+        let Some(dest) = params.root.target().filter(|d| self.targets.contains_key(d)) else {
+            let e = err(ErrorCode::TargetUnknown, format!("the root {} is on no known target", params.root));
+            self.respond_peer(source, generation, peer_id, names::MESH_USAGE, Err(e));
+            return;
+        };
+        if &dest == source {
+            let e = err(ErrorCode::InvalidParams, "the root is on the reporting target itself; it counts its own usage");
+            self.respond_peer(source, generation, peer_id, names::MESH_USAGE, Err(e));
+            return;
+        }
+        let pending = Pending::PeerForward { source: source.clone(), generation, peer_id: peer_id.clone(), method: names::MESH_USAGE };
+        if !self.send::<MeshUsage>(&dest, params, pending) {
+            let e = err(ErrorCode::TargetOffline, format!("{dest} is not connected"));
+            self.respond_peer(source, generation, peer_id, names::MESH_USAGE, Err(e));
+            return;
+        }
+        self.flush(&dest);
+    }
+
+    /// Messages that have waited undelivered past the limit: a passive notice to each sender,
+    /// once. It is a `notice` message (it never starts a turn), carried by the relay like any
+    /// other, so it reaches a sender whose target is offline when it comes back.
+    fn notice_undelivered(&mut self) {
+        let limit = self.cfg.undelivered_notice;
+        let ready: Vec<TargetId> = self.targets.iter().filter(|(_, t)| t.conn.as_ref().is_some_and(|c| c.ready)).map(|(id, _)| id.clone()).collect();
+        self.worker.submit(move |s| {
+            let overdue = match s.relay.overdue(limit) {
+                Ok(o) => o,
+                Err(e) => return Some(CoreEvent::StoreError(e.to_string())),
+            };
+            let mut deliver: Vec<(TargetId, MeshMessage)> = Vec::new();
+            for (source, message) in overdue {
+                let notice = crate::relay::undelivered_notice(&message, limit);
+                let online = ready.contains(&source);
+                match s.relay.accept(&crate::relay::system_source(), Some(&source), &notice, online) {
+                    Ok(a) if a.fresh && online => deliver.push((source, notice)),
+                    Ok(_) => {}
+                    Err(e) => return Some(CoreEvent::StoreError(e.to_string())),
+                }
+                let _ = s.relay.mark_noticed(&message.id);
+            }
+            let in_flight = s.relay.in_flight().unwrap_or(0);
+            Some(CoreEvent::Notices { deliveries: deliver, in_flight })
+        });
+    }
+
+    /// `hub/threads/find`: the cached index of every target, searched and paged.
+    fn find_threads(&mut self, client: ClientKey, id: &RpcId, params: FindParams) {
+        let id = id.clone();
+        let targets: Vec<TargetId> = self.targets.keys().cloned().collect();
+        self.worker.submit(move |s| {
+            let mut threads = Vec::new();
+            for t in &targets {
+                match s.cache.threads(t) {
+                    Ok(list) => threads.extend(list.into_iter().map(|th| (t.clone(), th))),
+                    Err(e) => return Some(CoreEvent::Reply { client, id, outcome: Err(err(ErrorCode::InternalError, e.to_string())) }),
+                }
+            }
+            Some(CoreEvent::FindReady { client, id, params, threads })
+        });
+    }
+
+    fn on_find_ready(&mut self, client: ClientKey, id: RpcId, params: &FindParams, threads: &[(TargetId, yaac_protocol::ThreadSummary)]) {
+        let outcome = self
+            .finder
+            .page(threads, params, Instant::now())
+            .map(|r| to_value(&r))
+            .map_err(|e| err(ErrorCode::InvalidParams, e.to_string()));
+        self.reply(client, id, outcome);
+    }
+
     // ── Timers and lifecycle ─────────────────────────────────────────────────────────────
 
     fn busy(&self) -> BusyReasons {
@@ -1782,6 +1922,11 @@ impl Core {
                 self.send::<Ping>(id, &yaac_protocol::Empty {}, Pending::Ignore);
                 self.flush(id);
             }
+        }
+        // Senders of messages that have waited too long are told so, once.
+        if now.duration_since(self.last_notice_sweep) >= self.cfg.notice_sweep {
+            self.last_notice_sweep = now;
+            self.notice_undelivered();
         }
         // Keep the cache bounded.
         if now.duration_since(self.last_evict) >= Duration::from_secs(60) {
@@ -1846,6 +1991,8 @@ fn window_answer(
         control_holder: subscribed.and_then(|s| s.control_holder.clone()),
         active_turn: subscribed.and_then(|s| s.active_turn.clone()),
         effective: subscribed.and_then(|s| s.effective.clone()),
+        context: subscribed.and_then(|s| s.context.clone()),
+        tokens: subscribed.and_then(|s| s.tokens.clone()),
     }
 }
 
@@ -1870,5 +2017,6 @@ fn read_from_cache(cache: &mut crate::cache::Cache, target: &TargetId, p: &Threa
         next += 1;
     }
     let cursor = (next < newest_first.len()).then(|| PageCursor::new(format!("hubcache:{next}")));
-    Ok(to_value(&ThreadReadResult { items, position: cached.position, cursor, uploads: vec![] }))
+    let context = if skip == 0 { cached.live.context.clone() } else { None };
+    Ok(to_value(&ThreadReadResult { items, position: cached.position, cursor, uploads: vec![], context }))
 }

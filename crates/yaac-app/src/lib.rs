@@ -51,7 +51,7 @@ pub(crate) struct Launch {
 }
 
 /// The entry point: `args` without the program name.
-pub fn run(args: Vec<String>) -> ExitCode {
+pub fn run(args: &[String]) -> ExitCode {
     if args.first().map(String::as_str) == Some("hub") {
         #[cfg(feature = "hub")]
         return hubmode::run(BUILD);

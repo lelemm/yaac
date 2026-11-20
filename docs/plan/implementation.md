@@ -82,7 +82,7 @@ itself, not that the worker said so.
 | --- | --- | --- | --- |
 | WP1 | **done** | **yes** — build, 73 tests, clippy `-D warnings`, generated-file staleness check, all re-run by the orchestrator | 9,400 lines. API and rules in `crates/yaac-protocol/README.md`. |
 | WP2 | **done** | **yes** — typecheck, 42 tests, bundle build, and the version-ban test re-run by the orchestrator | 192 KB single-file bundle, no runtime dependencies. Fake provider directives in `daemon/src/providers/fake/README.md`. Runs Node with `--no-turbofan` because Node 22.22.3 crashed intermittently in its optimising compiler on this machine — to investigate before release. |
-| WP3 | **done** | **yes** — build, 26 tests including one against the real daemon bundle, clippy `-D warnings`, re-run by the orchestrator | Mesh relay built (store-and-forward, dedupe, receipts, roster, query routing). Not built: `mesh/usage`, budget forwarding, the 15-minute undelivered notice. |
+| WP3 | **done** | **yes** — build, 26 tests including one against the real daemon bundle, clippy `-D warnings`, re-run by the orchestrator | Mesh relay built (store-and-forward, dedupe, receipts, roster, query routing). Later added: `mesh/usage` forwarding, the 15-minute undelivered notice, paged thread search. |
 | WP4a | **done** | **yes** — 52 tests and clippy `-D warnings` re-run by the orchestrator; no provider-kind branches and no model names outside the demo module; screenshots inspected | Stripped release binary 8.4 MiB (budget 20). Idle CPU 0. Idle memory measured only under software rendering (123 MB) — to re-measure on a GPU driver. Runs on scripted demo data; not yet attached to the real hub. Real screenshots in `docs/design/screenshots/`. Twelve protocol gaps reported, listed in the worker's notes below. |
 | WP4b | not started | — | Settings pages, first run, *Since you left*, fork dialog, narrow layout. |
 | WP5 | **done** | **yes** — 21 Codex tests (replay, under the session layer, and live against the real daemon) re-run by the orchestrator; only `daemon start` is ever invoked; no model names in source; fixtures use placeholder paths and model ids | Registered in the daemon. One real turn and one fork were run by hand to record fixtures, then deleted. Modes: read-only, auto, full access (flagged `skipsApprovals`). |
@@ -91,7 +91,16 @@ itself, not that the worker said so.
 | WP8 | not started | — | |
 | WP9 | not started | — | |
 
-## Follow-up: protocol and daemon additions the design now needs
+## Follow-up: protocol and daemon additions — done
+
+**Done and verified** (114 Rust tests, 93 daemon tests, bindings and the frozen baseline check,
+all re-run by the orchestrator). The exact names are in [wire-additions.md](wire-additions.md).
+Also in this pass: uncertain control is treated as free (D72); a thread keeps one attachment
+folder for life; `ProviderContext` carries the daemon's environment; the hub forwards
+`mesh/usage`, sends the 15-minute undelivered notice, and answers `hub/threads/find`. The
+original list follows for the record.
+
+### The original list
 
 Owner decisions made after the protocol crate and daemon were finished, plus gaps the window
 worker found. To be done as one pass once the provider workers land:

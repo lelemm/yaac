@@ -84,6 +84,11 @@ pub struct HubConfig {
     pub host_name: String,
     /// Stop cleanly on SIGINT / SIGTERM (off in tests that run several hubs in one process).
     pub handle_signals: bool,
+    /// A relayed message undelivered this long earns its sender a passive notice
+    /// (docs/10-agent-mesh.md#local-limits: 15 minutes).
+    pub undelivered_notice: Duration,
+    /// How often the relay is swept for such messages.
+    pub notice_sweep: Duration,
 }
 
 impl std::fmt::Debug for HubConfig {
@@ -136,6 +141,8 @@ impl HubConfig {
             test_methods: false,
             host_name: host_name(),
             handle_signals: true,
+            undelivered_notice: Duration::from_secs(15 * 60),
+            notice_sweep: Duration::from_secs(60),
         }
     }
 }

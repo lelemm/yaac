@@ -339,7 +339,9 @@ impl FeatureSet {
     }
 }
 
-/// A typed notification from the daemon, decoded by the dialect.
+/// A typed notification from the daemon, decoded by the dialect. Moved once from the session
+/// to its caller; boxing the summary would only make every match clumsier.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Inbound {
     /// `thread/event`.

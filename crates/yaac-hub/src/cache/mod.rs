@@ -9,6 +9,7 @@
 //! | `threads` | One `ThreadSummary` per thread; `sync_tokens` holds the per-target token |
 //! | `thread_positions` | For each cached transcript: the journal position it is valid at, and the thread's live state |
 //! | `items` | Cached transcripts, in order |
+//! | `projects` | Each target's user-created projects (one JSON list per target) |
 //! | `ui_state` | The window's grouping toggles, collapsed groups, last selection |
 //!
 //! Rules kept here:
@@ -28,7 +29,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use yaac_protocol::attach::ConnectionState;
 use yaac_protocol::{
-    Epoch, Item, ItemBody, JournalPosition, ProviderDescriptor, Seq, SyncToken, TargetFacts, TargetId, ThreadEvent,
+    Epoch, Item, ItemBody, JournalPosition, Project, ProviderDescriptor, Seq, SyncToken, TargetFacts, TargetId, ThreadEvent,
     ThreadEventParams, ThreadId, ThreadState, ThreadSummary,
 };
 
@@ -36,7 +37,7 @@ pub use apply::LiveState;
 
 /// The cache schema. Any change to the tables bumps it; a file with another number is
 /// dropped and rebuilt from the targets.
-pub const CACHE_SCHEMA: i64 = 1;
+pub const CACHE_SCHEMA: i64 = 2;
 
 const SCHEMA: &str = r"
 CREATE TABLE targets (
@@ -85,6 +86,10 @@ CREATE TABLE items (
     PRIMARY KEY (target_id, thread_id, item_id)
 );
 CREATE INDEX items_by_ord ON items (target_id, thread_id, ord);
+CREATE TABLE projects (
+    target_id TEXT PRIMARY KEY,
+    projects TEXT NOT NULL
+);
 CREATE TABLE ui_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -382,10 +387,19 @@ impl Cache {
         Ok(())
     }
 
+    /// Replaces a target's projects (`project/list` on connect, `project/updated`).
+    pub fn replace_projects(&mut self, target: &TargetId, projects: &[Project]) -> Result<(), CacheError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO projects (target_id, projects) VALUES (?1, ?2)",
+            params![target.as_str(), serde_json::to_string(projects)?],
+        )?;
+        Ok(())
+    }
+
     /// Deletes every row of a target.
     pub fn remove_target(&mut self, target: &TargetId) -> Result<(), CacheError> {
         let tx = self.conn.transaction()?;
-        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items"] {
+        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items", "projects"] {
             tx.execute(&format!("DELETE FROM {table} WHERE target_id = ?1"), params![target.as_str()])?;
         }
         tx.commit()?;
@@ -395,7 +409,7 @@ impl Cache {
     /// "Clear cache": every row of every table (drafts live elsewhere and are not touched).
     pub fn clear(&mut self) -> Result<(), CacheError> {
         let tx = self.conn.transaction()?;
-        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items", "ui_state"] {
+        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items", "projects", "ui_state"] {
             tx.execute(&format!("DELETE FROM {table}"), [])?;
         }
         tx.commit()?;
@@ -535,6 +549,15 @@ impl Cache {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// The target's cached projects.
+    pub fn projects(&self, target: &TargetId) -> Result<Vec<Project>, CacheError> {
+        let text = self
+            .conn
+            .query_row("SELECT projects FROM projects WHERE target_id = ?1", params![target.as_str()], |r| r.get::<_, String>(0))
+            .optional()?;
+        Ok(text.map(|t| serde_json::from_str(&t)).transpose()?.unwrap_or_default())
+    }
+
     /// The target's cached provider descriptors.
     pub fn providers(&self, target: &TargetId) -> Result<Vec<ProviderDescriptor>, CacheError> {
         let mut stmt = self.conn.prepare("SELECT descriptor FROM providers WHERE target_id = ?1 ORDER BY instance_id")?;
@@ -572,7 +595,7 @@ impl Cache {
     /// Number of rows a target has across the cache (tests, diagnostics).
     pub fn target_row_count(&self, target: &TargetId) -> Result<u64, CacheError> {
         let mut total = 0;
-        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items"] {
+        for table in ["targets", "providers", "threads", "sync_tokens", "thread_positions", "items", "projects"] {
             let n: i64 =
                 self.conn.query_row(&format!("SELECT count(*) FROM {table} WHERE target_id = ?1"), params![target.as_str()], |r| {
                     r.get(0)

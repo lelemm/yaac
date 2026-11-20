@@ -4100,6 +4100,7 @@ dependencies = [
  "yaac-core",
  "yaac-hub",
  "yaac-protocol",
+ "yaac-transport",
 ]
 
 [[package]]

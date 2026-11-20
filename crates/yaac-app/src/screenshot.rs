@@ -52,7 +52,16 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
 const NARROW_SIZE: [f32; 2] = [960.0, 720.0];
-const FULL_SIZE: [f32; 2] = [1600.0, 1000.0];
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "small positive pixel sizes")]
+fn crop(img: &ColorImage, w: f32, h: f32) -> ColorImage {
+    let (w, h) = ((w as usize).min(img.size[0]), (h as usize).min(img.size[1]));
+    let mut pixels = Vec::with_capacity(w * h);
+    for y in 0..h {
+        pixels.extend_from_slice(&img.pixels[y * img.size[0]..y * img.size[0] + w]);
+    }
+    ColorImage::new([w, h], pixels)
+}
 
 const SETTLE_FRAMES: u32 = 14;
 
@@ -98,6 +107,7 @@ impl Shots {
             let img = self.image.lock().ok().and_then(|mut g| g.take());
             if let Some(img) = img {
                 let file = self.dir.join(format!("{id}-{name}-{}.png", if dark { "dark" } else { "light" }));
+                let img = if id == "21" { crop(&img, NARROW_SIZE[0] * 1.25, NARROW_SIZE[1] * 1.25) } else { (*img).clone() };
                 match write_png(&file, &img) {
                     Ok(()) => {
                         eprintln!("wrote {} ({}x{})", file.display(), img.size[0], img.size[1]);
@@ -122,21 +132,17 @@ impl Shots {
                 );
             }
             ctx.set_zoom_factor(1.25);
-            let narrow_now = ctx.content_rect().width() < crate::shell::NARROW;
-            if (id == "21") != narrow_now {
-                let size = if id == "21" { [NARROW_SIZE[0] * 1.25, NARROW_SIZE[1] * 1.25] } else { FULL_SIZE };
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(size[0], size[1])));
-            }
             setup(app, id);
+            // This display cannot resize the window reliably, so screen 21 lays the shell out in
+            // 960 × 720 points and the picture is cropped to it.
+            app.ui.layout_size = (id == "21").then(|| egui::vec2(NARROW_SIZE[0], NARROW_SIZE[1]));
             app.ui.theme = if dark { ThemeChoice::Dark } else { ThemeChoice::Light };
             app.applied = None;
             self.started = ctx.input(|i| i.time);
         }
         self.frame += 1;
         // Wait for layout to settle and for popups and dialogs to finish fading in.
-        let want_narrow = id == "21";
-        let is_narrow = ctx.content_rect().width() < crate::shell::NARROW;
-        if self.frame >= SETTLE_FRAMES && ctx.input(|i| i.time) - self.started > 0.6 && want_narrow == is_narrow {
+        if self.frame >= SETTLE_FRAMES && ctx.input(|i| i.time) - self.started > 0.6 {
             let slot = self.image.clone();
             ctx.request_screenshot(move |img| {
                 if let Ok(mut g) = slot.lock() {
@@ -243,6 +249,7 @@ fn setup(app: &mut YaacApp, id: &str) {
             panel.name = "legacy".into();
             panel.host = "legacy.example.com".into();
             panel.user = "deploy".into();
+            panel.existing = Some("legacy".into());
             panel.setup = SshSetup::new(SshConn { name: "legacy".into(), host: "legacy.example.com".into(), port: 22, user: "deploy".into() }, STORY_NOW);
             let b = app.ssh.as_mut();
             panel.setup.start(b);

@@ -39,6 +39,14 @@ pub mod names {
     pub const INDEX_CHANGED: &str = "hub/index/changed";
     /// Hub → window notification `{ target }`: the target's providers in the cache were replaced.
     pub const PROVIDERS_CHANGED: &str = "hub/providers/changed";
+    /// Window → hub: find threads across every target in the cached index, by id or by a
+    /// fuzzy title match, one page at a time ([`crate::find`]).
+    pub const THREADS_FIND: &str = "hub/threads/find";
+    /// Window → hub `{ id }`: a target's projects, from the cache (`{ projects }`).
+    pub const PROJECTS_LIST: &str = "hub/projects/list";
+    /// Hub → window notification `{ target }`: a target's projects in the cache were replaced
+    /// (on connect). Changes while connected also arrive as routed `project/updated`.
+    pub const PROJECTS_CHANGED: &str = "hub/projects/changed";
     /// Window → hub: the hub's status (build, attached windows, why it is staying up, files).
     pub const STATUS: &str = "hub/status";
     /// Window → hub: read the hub settings.

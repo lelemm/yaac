@@ -413,8 +413,8 @@ fn start_revoke(app: &mut YaacApp, id: &TargetId) {
 }
 
 /// The step list: done, hollow, failed, and the current step.
-fn steps(ui: &mut egui::Ui, p: &Palette, lines: &[StepLine], current: Option<StepLine>) {
-    for l in lines.iter().chain(current.as_ref()) {
+fn steps(ui: &mut egui::Ui, p: &Palette, lines: &[StepLine], current: Option<&StepLine>) {
+    for l in lines.iter().chain(current) {
         ui.horizontal(|ui| {
             widgets::mark(ui, p, mark_for(l.mark), 15.0);
             let text = if l.mark == StepMark::Current { RichText::new(&l.text).font(theme::bold(size::UI)) } else { RichText::new(&l.text) };
@@ -453,9 +453,12 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     {
         let conn = panel.setup.conn.clone();
         let id = panel.existing.clone().unwrap_or_else(|| TargetId::new(conn.name.clone()));
-        if panel.existing.is_none() {
+        if panel.existing.is_some() {
+            // The connection already exists (its row's "Set up…"): start using it.
+            actions.push(Action::TargetEnabled(id.clone(), true));
+        } else {
             let transport = TargetTransport::Ssh(SshTransport { host: conn.host.clone(), port: (conn.port != 22).then_some(conn.port), user: Some(conn.user.clone()) });
-            actions.push(Action::AddTarget(conn.name.clone(), transport));
+            actions.push(Action::AddTarget(conn.name, transport));
         }
         // SEAM: the record is window-local (keyed by the name, which the demo hub uses as id).
         actions.push(Action::SetRecord(id, rec.clone()));
@@ -463,7 +466,6 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     }
     let title = match &panel.setup.phase {
         Phase::Failed { .. } => "Could not finish",
-        _ if panel.existing.is_some() => "Set up SSH server",
         _ => "Add SSH server",
     };
     panel_frame(ui, &p, |ui| {
@@ -483,7 +485,7 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
             ui.end_row();
         });
         ui.add_space(10.0);
-        steps(ui, &p, &panel.setup.steps, panel.setup.current());
+        steps(ui, &p, &panel.setup.steps, panel.setup.current().as_ref());
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
         let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
         match panel.setup.phase.clone() {
@@ -696,6 +698,8 @@ fn revoke_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>)
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 widgets::icon(ui, 16.0, |pa, c, d| icons::warning(pa, c, d, p.needs, p.panel));
+                ui.add_space(4.0);
+                ui.spacing_mut().item_spacing.x = 0.0;
                 ui.label(RichText::new(format!("{name} could not be reached")).font(theme::bold(size::UI)));
                 ui.label(", so YAAC's key is still on that server.");
             });
@@ -720,8 +724,11 @@ fn revoke_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>)
                 });
             });
             ui.add_space(8.0);
+            // One filled button per screen: plain when the setup panel above has its own.
+            let other_primary = app.ui.set.ssh.is_some();
             ui.horizontal(|ui| {
-                if widgets::primary(ui, &p, "Try again", None).clicked() {
+                let again = if other_primary { widgets::plain(ui, &p, "Try again", None) } else { widgets::primary(ui, &p, "Try again", None) };
+                if again.clicked() {
                     panel.revoke.retry(app.ssh.as_mut());
                 }
                 if widgets::plain(ui, &p, "I removed it myself", None).clicked() {
@@ -885,6 +892,8 @@ fn instance_row(ui: &mut egui::Ui, app: &mut YaacApp, target: &TargetId, row: &y
         ui.add_space(4.0);
         widgets::rich_inline(ui, &p, &row.status, p.text, size::UI);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.allocate_ui_with_layout(vec2(250.0, 30.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.set_width(250.0);
             if row.editable {
                 if widgets::plain(ui, &p, "Remove", None).clicked() {
                     actions.push(Action::RemoveInstance(target.clone(), row.instance.clone()));
@@ -897,6 +906,7 @@ fn instance_row(ui: &mut egui::Ui, app: &mut YaacApp, target: &TargetId, row: &y
             if widgets::plain(ui, &p, "Refresh", None).on_hover_text("Re-check this instance and its models").clicked() {
                 actions.push(Action::RefreshProviders(target.clone(), Some(row.instance.clone())));
             }
+            });
             ui.add_space(8.0);
             if widgets::switch(ui, &p, row.enabled).on_hover_text(if row.enabled { "Disable this instance" } else { "Enable this instance" }).clicked() {
                 actions.push(Action::InstanceEnabled(target.clone(), row.instance.clone(), !row.enabled));

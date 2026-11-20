@@ -424,7 +424,7 @@ fn window_choices_round_trip_through_ui_state_values() {
 #[test]
 fn ui_state_is_sent_only_when_attached() {
     let (mut c, hub) = boot();
-    c.set_ui_state(keys::THEME, json!("dark"));
+    c.set_ui_state(keys::THEME, &json!("dark"));
     settle(&mut c, &hub);
     assert!(c.errors.is_empty(), "{:?}", c.errors);
 }

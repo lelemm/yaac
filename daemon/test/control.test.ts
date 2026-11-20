@@ -83,7 +83,7 @@ test("another YAAC client drives the turn: read-only until it ends, then free", 
   await daemon.stop("test");
 });
 
-test("when unsure whether a thread is in use, it is treated as in use", async () => {
+test("when unsure whether a thread is in use, it is free: only positive evidence makes it read-only", async () => {
   const home = tmpHome();
   const daemon = await startDaemon(home);
   const c = await client(daemon);
@@ -91,11 +91,22 @@ test("when unsure whether a thread is in use, it is treated as in use", async ()
   await c.request("thread/subscribe", { threadId, epoch: 1, afterSeq: 0 });
   await waitTurnDone(c, threadId, turnId);
   const fake = fakeOf(daemon);
+  // The provider cannot tell (it throws, or reports uncertain without external).
   fake.control = async () => {
     throw new Error("cannot tell");
   };
-  await assert.rejects(c.request("turn/start", { opId: opId(), threadId, input: text("hello") }), inUse);
-  assert.equal(await daemon.core.isHeldAndIdle(threadId), false);
+  assert.equal(await daemon.core.isHeldAndIdle(threadId), true);
+  const t2: any = await c.request("turn/start", { opId: opId(), threadId, input: text("/fake say hello") });
+  await waitTurnDone(c, threadId, t2.turnId);
+  fake.control = async () => ({ external: false, uncertain: true, holder: "maybe a terminal" });
+  const sync: any = await c.request("thread/sync", {});
+  const s = sync.changed.find((x: any) => x.id === threadId);
+  assert.equal(s.control, "free");
+  assert.equal(s.controlHolder, undefined);
+  // The dispatcher may hand an agent's message over too.
+  const h = daemon.core.enqueueAgentInput(threadId, { input: text("/fake say from an agent") });
+  const t3 = await h.started;
+  await waitTurnDone(c, threadId, t3);
   await c.close();
   await daemon.stop("test");
 });

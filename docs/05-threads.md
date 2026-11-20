@@ -77,6 +77,9 @@ pub struct ThreadSummary {
     pub updated_at: Timestamp,
     pub archived: bool,              // off the list entirely; kept, and found by search
     pub muted: bool,                 // out of the main list, still working
+    pub native_id: Option<String>,   // the harness's own id, as shown in a terminal
+    pub repo: Option<RepoLocation>,  // repository, path within the checkout, worktree name
+    pub agents: AgentsPolicy,        // Ask | Allow — may this chat's agent work with others unasked
     pub pinned: bool,                // kept in the Pinned section
 }
 ```

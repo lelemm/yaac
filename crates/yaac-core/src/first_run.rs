@@ -141,6 +141,6 @@ pub fn project_picker(state: &AppState, selected: Option<&str>) -> Vec<PickerMac
             },
         ));
     }
-    machines.sort_by(|a, b| b.0.cmp(&a.0));
+    machines.sort_by_key(|m| std::cmp::Reverse(m.0));
     machines.into_iter().map(|m| m.1).collect()
 }

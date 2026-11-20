@@ -18,7 +18,12 @@ const RAIL: f32 = 56.0;
 pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, actions: &mut Vec<Action>, _frame: &mut eframe::Frame) {
     let p = app.p;
     // Fixed regions, split by hand so the layout is exact: sidebar | thread | docked panel.
-    let full = ui.max_rect();
+    // The screenshot runner can pin the layout to a smaller window (screen 21) when the
+    // display cannot resize the real one.
+    let full = match app.ui.layout_size {
+        Some(sz) => egui::Rect::from_min_size(ui.max_rect().min, sz),
+        None => ui.max_rect(),
+    };
     ui.painter().rect_filled(full, 0.0, p.bg);
     let narrow = full.width() < NARROW;
     let selected = app.client.state.selected_thread().cloned();
