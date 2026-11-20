@@ -129,15 +129,21 @@ export async function computeStatus(git: GitRunner, root: string): Promise<GitSt
     const mb = await git(root, ["merge-base", base, "HEAD"]);
     if (mb.ok && mb.out.trim()) compareWith = mb.out.trim();
   }
+  let added = 0;
+  let modified = 0;
+  let deleted = 0;
   const diff = await git(root, ["diff", "--name-status", "--no-renames", "-z", compareWith, "--"]);
   if (diff.ok) {
     const c = countNameStatus(diff.out);
-    status.added += c.added;
-    status.modified += c.modified;
-    status.deleted += c.deleted;
+    added += c.added;
+    modified += c.modified;
+    deleted += c.deleted;
   }
   const untracked = await git(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
-  if (untracked.ok) status.added += untracked.out.split("\0").filter((x) => x.length > 0).length;
+  if (untracked.ok) added += untracked.out.split("\0").filter((x) => x.length > 0).length;
+  status.added = added;
+  status.modified = modified;
+  status.deleted = deleted;
   return status;
 }
 

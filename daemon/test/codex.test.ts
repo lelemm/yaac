@@ -41,6 +41,7 @@ async function rig(opts: Partial<CodexOptions> = {}, init?: unknown): Promise<Ri
       config: { id: "pi_codex_test", kind: "codex", enabled: true, backend: "auto" },
       stateDir: path.join(dir, "state"),
       home: dir,
+      env: {},
       log: (l) => logs.push(l),
     },
     { socket: fake.socket, exec: failExec, reconnectMinMs: 20, reconnectMaxMs: 50, ...opts },

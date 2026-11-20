@@ -126,7 +126,7 @@ One MCP server, named `yaac`. Few tools, each doing one thing.
 | `list_targets` | The machines in this mesh: name, whether each is reachable, and how many threads are active there. Names and counts only — never the threads themselves. |
 | `list_models` | For a target: the provider instances there and the models each offers — the same live data as the model picker. Nothing is hardcoded, so "spawn it on Opus" is resolved against what actually exists. |
 | `list_threads` | A **small, scoped** list of threads — by default only the caller's own orchestration. See [listing is scoped and bounded](#listing-is-scoped-and-bounded). |
-| `find_thread` | Find a specific thread by words from its title, on one target or across all of them. Needs a query; returns at most ten matches. |
+| `find_thread` | Find a specific thread **across all targets**, either by **id** or by a **fuzzy match on its title**. Needs a query; returns at most ten matches. |
 | `read_thread` | The recent messages, or just the last answer, of another thread — to check on a worker without interrupting it. |
 | `spawn_thread` | Start a **new thread** on any target, provider instance, and model, with a first message. Returns its address. The new thread is a child of the caller. |
 | `send_message` | Send a message to a thread. Returns a delivery receipt. |
@@ -168,9 +168,20 @@ can do that, and there is no "all targets" listing.
 - **The answer says what it left out**: "20 of 143 on devbox — narrow with a query, a state, or
   a project." An agent is told to refine, not handed the rest.
 
-**To find one particular thread**, an agent uses `find_thread` with words from its title —
-"the Codex thread about CI on devbox". It needs a query, so it cannot be used to dump a
-machine, and returns at most ten matches.
+**To find one particular thread**, an agent uses `find_thread`. It searches **every target**,
+and takes one of two things:
+
+- **An id.** The user says "thread `0198a1c4` on devbox is waiting for you". The id may be the
+  harness's own conversation id — the one Codex or Claude Code shows in a terminal — or a YAAC
+  address, in full or as a prefix of at least four characters. A unique match returns that one
+  thread. A prefix that matches several returns them, so the agent can ask which was meant;
+  an id is never guessed.
+- **Words from the title, matched fuzzily.** "ci integ", "auth migr orchestrator". Typos and
+  partial words are tolerated; results are ranked by how well they match, then by recency, and
+  each says which machine it is on. An optional target or state narrows it.
+
+It needs a query, so it cannot be used to dump a machine, and returns at most ten matches. An
+id that looks like an id is tried as one first; anything else is a title search.
 
 **Cost.** A listing never fans out to every machine. `related` is answered from what `yaacd`
 already knows about the caller's orchestration. A search across targets is answered by the hub

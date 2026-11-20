@@ -198,6 +198,8 @@ export class Core {
     await this.reconcileAfterRestart();
     await this.scanAll();
     void this.refreshProjectRepos();
+    // Threads whose repository was never looked up (older records): in the background.
+    for (const rt of this.allThreads()) if (!rt.record.repoResolved) void this.resolveProject(rt);
     const every = this.opts.gitRefreshMs ?? DEFAULT_GIT_REFRESH_MS;
     if (every > 0) {
       this.gitTimer = setInterval(() => this.refreshWatchedGit(), every);
