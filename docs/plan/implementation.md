@@ -86,7 +86,7 @@ itself, not that the worker said so.
 | WP4a | **done** | **yes** — 52 tests and clippy `-D warnings` re-run by the orchestrator; no provider-kind branches and no model names outside the demo module; screenshots inspected | Stripped release binary 8.4 MiB (budget 20). Idle CPU 0. Idle memory measured only under software rendering (123 MB) — to re-measure on a GPU driver. Runs on scripted demo data; not yet attached to the real hub. Real screenshots in `docs/design/screenshots/`. Twelve protocol gaps reported, listed in the worker's notes below. |
 | WP4b | not started | — | Settings pages, first run, *Since you left*, fork dialog, narrow layout. |
 | WP5 | in progress | — | |
-| WP6 | in progress | — | |
+| WP6 | **done** | **yes** — 16 unit tests and 1 live test re-run by the orchestrator; no model names in source; fixture free of personal data | Not yet registered in the daemon (waits for the Codex provider so both go in together). Bundles into one file with no build change; the SDK adds about 2 MB to `yaacd` (estimate until built). One real turn was run by hand to record a fixture, then deleted. An idle Claude thread costs about 229 MB on the target. |
 | WP7 | not started | — | |
 | WP8 | not started | — | |
 | WP9 | not started | — | |

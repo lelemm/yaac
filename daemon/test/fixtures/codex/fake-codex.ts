@@ -46,6 +46,8 @@ export class FakeCodex {
   /** Replies the client sent to server requests, by id. */
   readonly replies = new Map<number | string, unknown>();
   connections = 0;
+  /** While a script runs, unhandled requests wait for it; otherwise they get "method not found". */
+  private scripted = 0;
   private sockets = new Set<WebSocket>();
   private current: WebSocket | null = null;
   private queue: Msg[] = [];
@@ -106,7 +108,8 @@ export class FakeCodex {
       else this.sendTo(ws, { id: msg.id, result: out ?? {} });
       return;
     }
-    this.queue.push(msg);
+    if (this.scripted > 0) this.queue.push(msg);
+    else this.sendTo(ws, { id: msg.id, error: { code: -32601, message: `fake: no handler for ${msg.method}` } });
   }
 
   private sendTo(ws: WebSocket, msg: Msg): void {
@@ -148,6 +151,15 @@ export class FakeCodex {
 
   /** Runs recorded steps in order. Returns the requests matched to `expect` steps. */
   async run(steps: Step[]): Promise<Msg[]> {
+    this.scripted += 1;
+    try {
+      return await this.runSteps(steps);
+    } finally {
+      this.scripted -= 1;
+    }
+  }
+
+  private async runSteps(steps: Step[]): Promise<Msg[]> {
     const matched: Msg[] = [];
     for (const s of steps) {
       if ("expect" in s) {

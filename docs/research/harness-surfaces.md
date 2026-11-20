@@ -234,6 +234,25 @@ npm pack @openai/codex-sdk @anthropic-ai/claude-agent-sdk
 claude --help && claude agents --help && claude agents --json
 ```
 
+## Verified against the real Claude SDK and CLI (2026-11-20)
+
+Run by the worker that built the Claude provider, not read from documentation:
+
+- `applyFlagSettings({ effortLevel })` **takes effect on a live query**, without spending a
+  turn. `setModel()` resets effort to the new model's default, so the chosen effort has to be
+  applied again after a model switch.
+- `claude agents --json` entries differ by kind. Interactive:
+  `{ pid, cwd, kind: "interactive", startedAt, sessionId, name, status }`. Background:
+  `{ id, cwd, kind: "background", startedAt, sessionId, name, state }`.
+- **A process started through the SDK also appears in that list**, as `kind: "interactive"`
+  with its pid. Anything using the list to detect "in use elsewhere" must exclude its own
+  children.
+- The `sessionId` option is honoured, and the `uuid` set on a user message is kept in the
+  stored transcript — so a turn can have the same id live and in history.
+- The complete assistant message arrives before the stream's `content_block_stop`.
+- **An idle query's child process uses about 229 MB of memory.** An active one was not measured.
+- The SDK imports only Node built-ins and bundles into a single file with esbuild unchanged.
+
 ## For the agent mesh
 
 Facts that the [mesh design](../10-agent-mesh.md) leans on. **Provenance matters here:** the

@@ -430,8 +430,13 @@ One `query()` in streaming-input mode per active thread; the SDK runs the Claude
 
 Notes:
 
-- Each active Claude thread is a live process on the target. `yaacd` closes idle ones and resumes
-  them on demand. This eviction is central to the target-side memory budget.
+- Each active Claude thread is a live process on the target, and a measured one is not small:
+  **about 229 MB while idle**. `yaacd` closes a thread's process after five idle minutes and
+  resumes it on demand, and keeps at most four alive at once (least recently used closed
+  first, never one with a running turn or an open request). Both limits are configurable.
+  This eviction is central to the target-side memory budget.
+- The modes offered are the SDK's permission modes **except the one that bypasses all
+  permission checks**, which YAAC deliberately does not offer.
 - The Claude process is a child of `yaacd`. If `yaacd` dies, so does a turn in progress, and
   any request it was waiting on becomes `expired` — still visible, with its full text.
 - `supportedModels()` reports effort levels per model but has no image-input flag. The Claude

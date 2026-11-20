@@ -1,7 +1,7 @@
 // The Claude provider against a stubbed SDK: recorded and scripted `SDKMessage` streams are
 // replayed into it, and `canUseTool` is driven by hand. No Claude Code process is started.
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -189,8 +189,19 @@ interface Rig {
   dir: string;
 }
 
+const tmpDirs: string[] = [];
+after(() => {
+  for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
+});
+
+function tmp(prefix: string): string {
+  const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  tmpDirs.push(d);
+  return d;
+}
+
 function rig(opts: Partial<ClaudeProviderOptions> = {}): Rig {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "yaac-claude-test-"));
+  const dir = tmp("yaac-claude-test-");
   const sdk = new StubSdk();
   const cli = new StubCli();
   const provider = new ClaudeProvider({ sdk, cli, executable: "/nonexistent/claude", env: {}, stateDir: path.join(dir, "state"), idleMs: 0, controlCacheMs: 0, ...opts });
@@ -612,7 +623,7 @@ test("the mesh hook's MCP servers and system-prompt text reach the SDK options, 
 
 test("images become image content blocks; the thread's attachment folder is readable to Claude Code", async () => {
   const r = rig();
-  const uploads = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "yaac-claude-up-")));
+  const uploads = tmp("yaac-claude-up-");
   const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("rest")]);
   fs.writeFileSync(path.join(uploads, "1-shot.png"), png);
   const { thread, q } = await (async () => {
@@ -633,7 +644,7 @@ test("images become image content blocks; the thread's attachment folder is read
   q.push(result());
   await until(() => of(r.events, "turnCompleted")[0], "turn");
   // A file from another folder: the query is re-opened with both folders.
-  const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "yaac-claude-up2-")));
+  const other = tmp("yaac-claude-up2-");
   await r.provider.startTurn(thread, input("read it", { files: [{ uploadId: "u2", path: path.join(other, "1-a.txt"), name: "a.txt" }] }), {});
   const q2 = r.sdk.queries.at(-1)!;
   assert.notEqual(q2, q);
