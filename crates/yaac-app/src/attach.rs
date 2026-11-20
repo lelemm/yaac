@@ -104,6 +104,23 @@ pub fn spawn_hub(config: &AttachConfig) -> std::io::Result<()> {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+    #[cfg(windows)]
+    let mut child = {
+        // No console, its own process group (a Ctrl+C in the window's terminal does not reach
+        // it), and out of the window's job when the job allows it, so closing whatever started
+        // the window does not take the hub down with it.
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        let flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+        match cmd.creation_flags(flags | CREATE_BREAKAWAY_FROM_JOB).spawn() {
+            Ok(child) => child,
+            // The job does not allow breaking away.
+            Err(_) => cmd.creation_flags(flags).spawn()?,
+        }
+    };
+    #[cfg(not(windows))]
     let mut child = cmd.spawn()?;
     // Reap it if it exits while the window still runs (the hub normally outlives the window).
     std::thread::Builder::new().name("yaac-hub-reaper".into()).spawn(move || {

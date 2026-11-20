@@ -4127,6 +4127,7 @@ dependencies = [
  "tokio",
  "yaac-protocol",
  "yaac-transport",
+ "yaac-winsys",
 ]
 
 [[package]]

@@ -1,7 +1,10 @@
 //! The window attaches to a real hub without opening a window: `yaac hub` runs headless in a
 //! temporary profile (the `YAAC_CONFIG_DIR` / `YAAC_DATA_DIR` / `YAAC_RUNTIME_DIR`
 //! overrides), and the window's own link completes `hub/hello` — in all three outcomes.
-#![cfg(all(unix, feature = "hub"))]
+//!
+//! Runs on Unix (a socket file) and on Windows (a named pipe; the login entry goes to a
+//! throwaway registry key that is deleted afterwards).
+#![cfg(all(any(unix, windows), feature = "hub"))]
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -15,7 +18,11 @@ use yaac_hub::HubPaths;
 use yaac_hub::autostart::{Autostart, autostart_installed};
 use yaac_protocol::ClientId;
 
-const EXE: &str = env!("CARGO_BIN_EXE_yaac");
+/// The `yaac` binary: `YAAC_TEST_EXE` when the tests run somewhere other than where they
+/// were built (a cross-compiled test run on Windows), else the one Cargo built.
+fn exe() -> PathBuf {
+    std::env::var_os("YAAC_TEST_EXE").map_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_yaac")), PathBuf::from)
+}
 const WAIT: Duration = Duration::from_secs(20);
 
 struct Profile {
@@ -25,7 +32,26 @@ struct Profile {
 impl Profile {
     fn new() -> Self {
         // Under /tmp, so the socket path stays short.
-        Self { dir: tempfile::Builder::new().prefix("ya").tempdir_in("/tmp").expect("temp dir") }
+        #[cfg(unix)]
+        let dir = tempfile::Builder::new().prefix("ya").tempdir_in("/tmp").expect("temp dir");
+        #[cfg(windows)]
+        let dir = tempfile::Builder::new().prefix("ya").tempdir().expect("temp dir");
+        Self { dir }
+    }
+
+    /// Where this profile's login entry goes: a private directory, or on Windows a throwaway
+    /// key under `HKEY_CURRENT_USER\Software`.
+    fn autostart(&self) -> Autostart {
+        #[cfg(unix)]
+        let at = self.var("autostart");
+        #[cfg(windows)]
+        let at = PathBuf::from(self.registry_key());
+        Autostart::new(at, exe())
+    }
+
+    #[cfg(windows)]
+    fn registry_key(&self) -> String {
+        format!(r"Software\YAAC-test-{}", self.dir.path().file_name().unwrap().to_string_lossy())
     }
 
     fn var(&self, name: &str) -> PathBuf {
@@ -47,8 +73,8 @@ impl Profile {
     fn config(&self) -> AttachConfig {
         AttachConfig {
             paths: self.paths(),
-            exe: PathBuf::from(EXE),
-            autostart: Some(Autostart::new(self.var("autostart"), EXE)),
+            exe: exe(),
+            autostart: Some(self.autostart()),
             start_timeout: Duration::from_secs(15),
         }
     }
@@ -61,7 +87,7 @@ impl Profile {
 
     /// `yaac hub`, headless, in this profile.
     fn spawn_hub(&self) -> Child {
-        Command::new(EXE)
+        Command::new(exe())
             .arg("hub")
             .env("YAAC_CONFIG_DIR", self.var("config"))
             .env("YAAC_DATA_DIR", self.var("data"))
@@ -74,6 +100,21 @@ impl Profile {
             .spawn()
             .expect("yaac hub")
     }
+}
+
+#[cfg(windows)]
+impl Drop for Profile {
+    fn drop(&mut self) {
+        let _ = yaac_winsys::registry_delete_tree(&self.registry_key());
+    }
+}
+
+/// Whether a hub listens. A named pipe cannot be probed without connecting to it.
+fn listening(socket: &Path) -> bool {
+    #[cfg(unix)]
+    return socket.exists();
+    #[cfg(windows)]
+    return yaac_hub::client::HubClient::connect(socket).is_ok();
 }
 
 fn attach(config: AttachConfig) -> (Client, Arc<Mutex<HubAttach>>) {
@@ -104,7 +145,7 @@ fn wait_exit(child: &mut Child) {
 
 fn wait_gone(socket: &Path) {
     let deadline = Instant::now() + WAIT;
-    while socket.exists() {
+    while listening(socket) {
         assert!(Instant::now() < deadline, "the hub socket is still there");
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -125,7 +166,7 @@ fn yaac_hub_runs_headless_and_the_window_attaches() {
     pump_until(&mut c, "hub settings", |c| c.state.hub.always.is_some());
     assert_eq!(c.state.hub.always, Some(false));
     // A running hub with settings is not a first run: no login entry is installed.
-    assert!(!autostart_installed(&Autostart::new(p.var("autostart"), EXE)));
+    assert!(!autostart_installed(&p.autostart()));
     c.shutdown_hub();
     pump_until(&mut c, "shutdown", |c| c.state.hub.shutdown_answered);
     wait_exit(&mut hub);
@@ -138,7 +179,7 @@ fn the_window_starts_the_hub_when_none_runs_and_installs_autostart_on_first_run(
     pump_until(&mut c, "hello", |c| c.state.hub.outcome != HelloOutcome::Pending);
     assert_eq!(c.state.hub.outcome, HelloOutcome::Attached);
     assert!(a.lock().unwrap().first_run());
-    assert!(autostart_installed(&Autostart::new(p.var("autostart"), EXE)), "first run installs the login entry");
+    assert!(autostart_installed(&p.autostart()), "first run installs the login entry");
     assert!(p.var("config").join("hub.json").exists());
     c.shutdown_hub();
     pump_until(&mut c, "shutdown", |c| c.state.hub.shutdown_answered);
@@ -157,7 +198,7 @@ fn in_process_hub(p: &Profile, build: &str) -> std::thread::JoinHandle<()> {
         let _ = yaac_hub::run_hub(config);
     });
     let deadline = Instant::now() + WAIT;
-    while !socket.exists() {
+    while !listening(&socket) {
         assert!(Instant::now() < deadline, "the in-process hub did not listen");
         std::thread::sleep(Duration::from_millis(10));
     }
