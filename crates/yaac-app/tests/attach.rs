@@ -189,7 +189,7 @@ fn the_window_starts_the_hub_when_none_runs_and_installs_autostart_on_first_run(
 fn in_process_hub(p: &Profile, build: &str) -> std::thread::JoinHandle<()> {
     p.no_targets();
     let local = yaac_transport::LocalConfig::from_lookup(Path::new("."), |_| None);
-    let mut config = yaac_hub::HubConfig::new(build, p.paths(), Arc::new(yaac_hub::DefaultConnectors { local }));
+    let mut config = yaac_hub::HubConfig::new(build, p.paths(), Arc::new(yaac_hub::DefaultConnectors { local, wsl: yaac_hub::WslDefaults::default() }));
     config.seed_local_target = false;
     config.handle_signals = false;
     config.idle_exit = Some(Duration::from_secs(600));

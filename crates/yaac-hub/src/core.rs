@@ -844,13 +844,20 @@ impl Core {
         }
         match event {
             ConnEvent::Connecting => {
-                if t.conn.is_none() && t.state.status != ConnectionStatus::Offline {
+                // A target that is down stays shown as down while it is checked again.
+                if t.conn.is_none() && !matches!(t.state.status, ConnectionStatus::Offline | ConnectionStatus::Disabled) {
                     self.set_state(id, state(ConnectionStatus::Connecting, None));
                 }
             }
             ConnEvent::Failed(reason) => {
                 log(format!("{id}: connect failed: {reason}"));
                 self.set_state(id, state(ConnectionStatus::Offline, Some(reason)));
+            }
+            ConnEvent::Down(reason) => {
+                // D35: "WSL distro Ubuntu is not running". The target stays enabled; it
+                // connects when the distro runs, or when the user asks to start it
+                // (`hub/targets/reconnect`). The window offers that, or disabling it.
+                self.set_state(id, state(ConnectionStatus::Disabled, Some(reason)));
             }
             ConnEvent::Opened { writer, kill } => {
                 let client = ClientInfo {

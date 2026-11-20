@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc, oneshot};
 use yaac_protocol::TargetId;
-use yaac_transport::{ConnectCtx, Connector, Stream};
+use yaac_transport::{ConnectCtx, ConnectError, Connector, Stream};
 
 use crate::config::Backoff;
 use crate::core::CoreEvent;
@@ -19,6 +19,10 @@ pub(crate) enum ConnEvent {
     Connecting,
     /// The connector failed; retrying after the delay.
     Failed(String),
+    /// The target's machine is not running and is not started behind the user's back (a
+    /// stopped WSL distro, D35). Checked again after the delay — which starts nothing — and
+    /// connected as soon as it runs, or at once when the user asks to start it.
+    Down(String),
     /// A stream is open: write frames to `writer`; send on `kill` to drop it.
     Opened { writer: mpsc::UnboundedSender<Vec<u8>>, kill: oneshot::Sender<()> },
     /// Bytes from the target.
@@ -38,7 +42,7 @@ pub(crate) async fn supervise(
     retry_now: Arc<Notify>,
     core: mpsc::UnboundedSender<CoreEvent>,
 ) {
-    let ctx = ConnectCtx { target_id: target.as_str().to_owned(), target_name: name };
+    let mut ctx = ConnectCtx { target_id: target.as_str().to_owned(), target_name: name, allow_start: false };
     let mut delay = backoff.initial;
     let mut generation = 0u64;
     loop {
@@ -47,7 +51,15 @@ pub(crate) async fn supervise(
         if !send(ConnEvent::Connecting) {
             return;
         }
-        match connector.connect(&ctx).await {
+        let attempt = connector.connect(&ctx).await;
+        // Permission to boot the target covers one attempt: the one the user asked for.
+        ctx.allow_start = false;
+        match attempt {
+            Err(ConnectError::TargetDown(why)) => {
+                if !send(ConnEvent::Down(why)) {
+                    return;
+                }
+            }
             Err(error) => {
                 if !send(ConnEvent::Failed(error.to_string())) {
                     return;
@@ -70,7 +82,11 @@ pub(crate) async fn supervise(
         }
         tokio::select! {
             () = tokio::time::sleep(delay) => {}
-            () = retry_now.notified() => delay = backoff.initial,
+            () = retry_now.notified() => {
+                // The user asked: connect now, even if that starts the target's machine.
+                delay = backoff.initial;
+                ctx.allow_start = true;
+            }
         }
         delay = (delay * 2).min(backoff.max);
     }
