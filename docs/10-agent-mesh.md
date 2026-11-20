@@ -132,10 +132,11 @@ One MCP server, named `yaac`. Few tools, each doing one thing.
 | `find_thread` | Find a specific thread **across all targets**, either by **id** or by a **fuzzy match on its title**. Needs a query; ten matches per page. |
 | `read_thread` | The recent messages, or just the last answer, of another thread — to check on a worker without interrupting it. |
 | `spawn_thread` | Start a **new thread** on any target, provider instance, and model, with a first message. Returns its address. The new thread is a child of the caller. |
-| `send_message` | Send a message to a thread. Returns a delivery receipt. |
+| `send_message` | Send a message to a thread, either **queued** (the default: it waits for the recipient's current turn to end) or **now** (it reaches the recipient at once, even mid-turn). Returns a delivery receipt. See [queued or now](#queued-or-now). |
 | `wait` | Block until something happens: a message arrives for the caller, or one of the named threads finishes its turn, needs attention, or fails. **Bounded at 45 seconds** — it then returns "nothing yet" with a cursor, and is called again. Harnesses time tool calls out (Codex defaults to 300 s; YAAC configures 60 s for this server), and a long silent call is indistinguishable from a hung one. |
 | `notify_when_done` | Register "when my current turn ends, send my final answer to *that* thread". `yaacd` carries it out, so it still happens if the agent forgets or is cut off. |
-| `stop_thread` | Interrupt a running thread. Only for the caller's own children. |
+| `stop_thread` | Stop a worker **and everything it spawned**, and hold them stopped. Only for threads beneath the caller. Reports what actually happened. See [stopping workers](#stopping-workers). |
+| `stop_all` | Stop every worker beneath the caller, in one call. |
 
 How the owner's four examples map onto them:
 
@@ -235,6 +236,66 @@ message.
   grant a child more freedom than the user configured there.
 - By default the parent is told when the child finishes: the child's final answer comes back as
   a message ([delivery](#delivery)). `spawn_thread { detached: true }` turns that off.
+
+### Stopping workers
+
+**Decided.** An orchestrator can stop the agents working for it.
+
+- **Whose.** Any thread beneath the caller: its workers, their workers, and so on. Never a
+  parent, a sibling, or a stranger. The destination daemon checks this itself, so the rule
+  holds across machines.
+- **The whole subtree by default.** Stopping a worker also stops everything that worker
+  spawned — otherwise its own workers carry on with nobody to report to. `subtree: false`
+  stops just the one thread.
+- **Stopped means held.** A stopped thread does not start again by itself. Messages already in
+  its mailbox, and any that arrive from other agents, wait; their senders are told it is
+  stopped. It runs again when the agent that stopped it — or the user — sends it a message, or
+  the user resumes it. Its state is shown as *stopped*, with who stopped it.
+- **The worker is told.** Its transcript gets a notice — "Stopped by *orchestrator*" — so the
+  next turn, and the user reading it, know why the work broke off.
+- **A real answer.** The tool reports, per thread: *stopped*, *was not running*, or *did not
+  respond*. Across machines it waits for the other daemon's answer instead of reporting "asked".
+- **If the harness does not comply.** The interrupt is a request to the harness. If the turn
+  has not ended after a few seconds the result is *did not respond*, and the thread is held
+  anyway, so nothing more is sent to it. Where YAAC owns the harness process (Claude Code) it
+  ends that process; where it does not (the shared Codex daemon) it cannot, and says so.
+- `stop_all` does this for every worker beneath the caller at once.
+
+A pending approval or question in a stopped thread is not answered; it expires with the turn
+and stays visible in the transcript.
+
+### Queued or now
+
+**Decided.** A message to a busy thread can wait its turn, or go in at once.
+
+| `delivery` | The recipient is idle | The recipient is mid-turn |
+| --- | --- | --- |
+| `queue` (the default) | Delivered at once: a new turn starts. | Waits in the mailbox; delivered when the turn ends. |
+| `now` | Delivered at once. | **Reaches it immediately**, by whichever means its harness has. |
+
+How *now* reaches a thread mid-turn depends on a capability, not on the harness's name:
+
+- **The harness can steer** (`Steer` — Codex): the message is added to the running turn. The
+  agent sees it at its next step and carries on with it in mind.
+- **It cannot** (Claude Code): the running turn is interrupted and a new turn starts with the
+  message. The work in progress stops where it was.
+
+So *now* costs more on some harnesses than on others, and the tool's description says so:
+`queue` is for "when you get a moment", `now` is for "stop what you are doing".
+
+Rules:
+
+- **Who may send *now*:** only toward threads beneath the sender — the same rule as stopping,
+  because it interrupts work. Sent to anyone else, a *now* message is delivered as *queue* and
+  the receipt says why.
+- **It never answers the user's question.** If the recipient is waiting on an approval or a
+  question for the user, a *now* message does not interrupt it: it is queued and the receipt
+  says "waiting on the user". An orchestrator that really wants that worker redirected can
+  stop it first.
+- **It releases a hold.** A *now* message from the agent that stopped a thread is what starts
+  that thread again.
+- The receipt for *now* says what was done: *steered into the running turn*, *interrupted and
+  delivered*, *delivered* (it was idle), or *queued* with the reason.
 
 ### Messages
 
