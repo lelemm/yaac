@@ -1,0 +1,23 @@
+{
+  "about": "yaac tool calls made by the real harnesses in the live check of 2026-11-20 (Codex CLI 0.170.0 with app-server daemon 0.171.0, model gpt-6.2-sol at low effort; Claude Code 2.1.329 via the Agent SDK, model alias haiku at low effort). Arguments as the harness sent them; addresses replaced by placeholders <self>, <peer>, <worker>. The call metadata Codex attached to every call had the fields progressToken, callId, x-codex-turn-metadata, threadId, sessionId, windowId, itemId (threadId equal to the calling thread); Claude Code's had progressToken and claudecode/toolUseId.",
+  "codexMetaFields": ["progressToken", "callId", "x-codex-turn-metadata", "threadId", "sessionId", "windowId", "itemId"],
+  "claudeMetaFields": ["progressToken", "claudecode/toolUseId"],
+  "calls": [
+    { "harness": "codex", "instruction": "Send a message to the other thread saying hello.", "tool": "list_threads", "args": {} },
+    { "harness": "codex", "tool": "whoami", "args": {} },
+    { "harness": "codex", "tool": "list_threads", "args": { "scope": "project" } },
+    { "harness": "codex", "tool": "send_message", "args": { "text": "hello", "to": "<peer>" } },
+    { "harness": "claude", "instruction": "(woken by the message above)", "tool": "send_message", "args": { "text": "hello", "to": "<peer>" } },
+    { "harness": "claude", "instruction": "Send a message to the Codex thread saying hello.", "tool": "find_thread", "args": { "query": "codex" } },
+    { "harness": "claude", "tool": "list_threads", "args": {} },
+    { "harness": "claude", "tool": "list_threads", "args": { "scope": "machine" } },
+    { "harness": "claude", "tool": "list_targets", "args": {} },
+    { "harness": "claude", "tool": "send_message", "args": { "message": "Hello from the Claude thread!", "to": "<peer>" } },
+    { "harness": "codex", "instruction": "Spawn a worker on Claude Haiku, low effort, that answers: what is 2+2? Wait for it, then tell me its answer.", "tool": "list_models", "args": {} },
+    { "harness": "codex", "tool": "spawn_thread", "args": { "effort": "low", "instance": "pi_claude", "model": "haiku", "text": "What is 2+2?", "title": "Answer 2+2" } },
+    { "harness": "codex", "tool": "wait", "args": { "threads": ["<worker>"] } },
+    { "harness": "codex", "instruction": "On this machine, thread <peer> is waiting for you. Tell it when you're done. Task: reply with one word, the capital of Italy.", "tool": "notify_when_done", "args": { "to": "<peer>" } },
+    { "harness": "claude", "instruction": "Send a message to thread <peer> saying hi. (chat in ask mode)", "tool": "send_message", "args": { "text": "Hi!", "to": "<peer>" } },
+    { "harness": "codex", "instruction": "Using the yaac tools, find the thread whose title is like \"banan bred recipe\" and the thread whose id starts with <prefix>. Tell me their addresses. Do not message them.", "tool": "find_thread", "args": { "query": "banan bred recipe" } }
+  ]
+}

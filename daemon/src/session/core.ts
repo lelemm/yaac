@@ -45,7 +45,7 @@ import type {
 } from "../protocol/generated/types.js";
 import { canonical } from "../protocol/json.js";
 import { RpcError } from "../protocol/rpc.js";
-import type { ExternalControl, HarnessProvider, NativeId, NativeThreadInfo, ProviderEvent, ProviderFactory, ProviderInput, TurnOverrides } from "../providers/types.js";
+import type { ExternalControl, HarnessProvider, MeshInputMessage, RaisedRequest, NativeId, NativeThreadInfo, ProviderEvent, ProviderFactory, ProviderInput, TurnOverrides } from "../providers/types.js";
 import { ProviderRegistry, type Instance } from "../providers/registry.js";
 import { Emitter } from "../util/emitter.js";
 import { ensureDir, nowIso, randomId, readJson, sha256Hex } from "../util/fsx.js";
@@ -107,6 +107,30 @@ interface Snapshot {
   at: number;
 }
 
+// ── Agent mesh wiring (WP7) ──────────────────────────────────────────────────────────────
+/**
+ * What the agent mesh (`../mesh/`) hears from the session core. Every call site is guarded
+ * (`this.mesh?.…`): the core works the same without a mesh.
+ */
+export interface CoreMeshHooks {
+  /** A turn began (journaled already). */
+  turnStarted(rt: ThreadRuntime, turnId: TurnId, origin: TurnOrigin): void;
+  /** A turn ended (journaled already), before queued work is dispatched. */
+  turnCompleted(rt: ThreadRuntime, turnId: TurnId, status: string, error: string | null): void;
+  /** An item reached its final state. */
+  itemCompleted(rt: ThreadRuntime, item: Item): void;
+  /** A request was raised and journaled. */
+  requestRaised(rt: ThreadRuntime, rec: RequestRecord): void;
+  /** Adds the mesh's relationships to a summary. */
+  decorate(rt: ThreadRuntime, summary: ThreadSummary): void;
+  /** Answers a request the mesh raised (`meshPermission`). */
+  respond(rt: ThreadRuntime, rec: RequestRecord, response: RequestResponse, client: ClientLink): Promise<void>;
+  /** The thread's summary changed. */
+  stateChanged(rt: ThreadRuntime): void;
+  /** The thread is about to be forgotten (deleted). */
+  threadRemoved(rt: ThreadRuntime): void;
+}
+
 /** Agent-originated input for the dispatcher (the mesh's entry point). */
 export interface AgentDispatch {
   /** The input the turn starts with (e.g. a framed agent message). */
@@ -118,6 +142,10 @@ export interface AgentDispatch {
   onStarted?: (turnId: TurnId) => void | Promise<void>;
   /** The harness refused or failed. The dispatch is not retried automatically. */
   onFailed?: (error: Error) => void;
+  /** Items journaled at the turn's start instead of a user message (`meshReceived`). */
+  journalItems?: Item[];
+  /** The agent messages, sender and body apart, for the provider. */
+  mesh?: MeshInputMessage[];
 }
 
 export interface DispatchHandle {
@@ -162,6 +190,8 @@ export class Core {
   readonly activity = new Emitter<void>();
   /** Fires with a thread id whenever a thread becomes held by yaacd and idle. */
   readonly heldAndIdle = new Emitter<string>();
+  /** The agent mesh, when one is attached (WP7). */
+  mesh: CoreMeshHooks | null = null;
   private threads = new Map<string, ThreadRuntime>();
   private byNative = new Map<string, string>();
   private snapshots = new Map<string, Snapshot>();
@@ -246,7 +276,7 @@ export class Core {
       for (const r of rt.requests.values()) {
         // An answer handed over but not confirmed: yaacd cannot tell whether it arrived.
         if (r.state === "submitted") this.setRequestState(rt, r, "unknown", null);
-        else if (r.state === "pending" && !survived) this.setRequestState(rt, r, "expired", null);
+        else if (r.state === "pending" && !survived && r.requestKind !== "meshPermission") this.setRequestState(rt, r, "expired", null);
       }
       if (rt.activeTurn && !survived) {
         journal.append({ type: "turnCompleted", turnId: rt.activeTurn, status: "interrupted", error: "yaacd stopped while the turn was running", at: nowIso() });
@@ -535,6 +565,7 @@ export class Core {
     if (r.model) s.model = r.model;
     if (r.forkedFrom) s.forkedFrom = r.forkedFrom;
     if (r.spawnedBy) s.spawnedBy = r.spawnedBy;
+    this.mesh?.decorate(rt, s);
     s.project = projectRefFor(this.projects.list(), { folder: r.cwd, repo: r.repo ?? null });
     if (r.repo) {
       s.repo = r.repo;
@@ -567,6 +598,7 @@ export class Core {
     if (!this.index.upsert(summary, holder)) return;
     const token = this.index.token;
     for (const c of this.clients) c.notify("thread/updated", { thread: this.renderSummary(summary, holder, c.key), token });
+    this.mesh?.stateChanged(rt);
   }
 
   broadcast(method: string, params: unknown): void {
@@ -1073,7 +1105,7 @@ export class Core {
   }
 
   /** Journals the start of a turn yaacd asked for: `turnStarted`, then the user's message. */
-  private turnBegan(rt: ThreadRuntime, turnId: TurnId, origin: TurnOrigin, parts: InputPart[], driver: Driver | null): void {
+  private turnBegan(rt: ThreadRuntime, turnId: TurnId, origin: TurnOrigin, parts: InputPart[], driver: Driver | null, items?: Item[]): void {
     if (rt.activeTurn === turnId) return;
     rt.expectTurn = null;
     rt.activeTurn = turnId;
@@ -1083,14 +1115,24 @@ export class Core {
     rt.saveRuntime();
     this.append(rt, { type: "turnStarted", turnId, origin, at: nowIso() });
     const at = nowIso();
-    const user: Item = { id: `user:${turnId}`, turnId, status: "completed", kind: "userMessage", parts, startedAt: at, completedAt: at };
-    this.append(rt, { type: "itemStarted", item: user });
-    this.append(rt, { type: "itemCompleted", item: user });
+    if (items && items.length > 0) {
+      // Mesh input is journaled as what it is (`meshReceived`), never as a user message.
+      for (const raw of items) {
+        const item = { ...raw, turnId, startedAt: raw.startedAt ?? at, completedAt: raw.completedAt ?? at } as Item;
+        this.append(rt, { type: "itemStarted", item });
+        this.append(rt, { type: "itemCompleted", item });
+      }
+    } else {
+      const user: Item = { id: `user:${turnId}`, turnId, status: "completed", kind: "userMessage", parts, startedAt: at, completedAt: at };
+      this.append(rt, { type: "itemStarted", item: user });
+      this.append(rt, { type: "itemCompleted", item: user });
+    }
     if (driver) this.appendControl(rt);
     rt.record.updatedAt = nowIso();
     rt.saveRecord();
     this.updateIndex(rt);
     this.activity.emit();
+    this.mesh?.turnStarted(rt, turnId, origin);
   }
 
   /** `turn/start`: a client's message goes through the thread's queue, and only if it can go now. */
@@ -1166,7 +1208,8 @@ export class Core {
       }
       await work.beforeStart?.();
       const input = this.buildInput(rt.uploadsKey, work.parts, work.origin);
-      rt.expectTurn = { origin: work.origin, parts: work.parts, driver: work.driver };
+      if (work.mesh) input.mesh = work.mesh;
+      rt.expectTurn = { origin: work.origin, parts: work.parts, driver: work.driver, ...(work.journalItems ? { items: work.journalItems } : {}) };
       let turnId: TurnId;
       try {
         turnId = await provider.startTurn(rt.record.native, input, work.overrides);
@@ -1174,7 +1217,7 @@ export class Core {
         rt.expectTurn = null;
         throw rpc("provider_unavailable", `the harness did not start the turn: ${(e as Error).message}`);
       }
-      this.turnBegan(rt, turnId, work.origin, work.parts, work.driver);
+      this.turnBegan(rt, turnId, work.origin, work.parts, work.driver, work.journalItems);
       rt.dispatching = false;
       try {
         await work.onStarted?.(turnId);
@@ -1217,6 +1260,8 @@ export class Core {
         ...(dispatch.beforeStart ? { beforeStart: dispatch.beforeStart } : {}),
         ...(dispatch.onStarted ? { onStarted: dispatch.onStarted } : {}),
         ...(dispatch.onFailed ? { onFailed: dispatch.onFailed } : {}),
+        ...(dispatch.journalItems ? { journalItems: dispatch.journalItems } : {}),
+        ...(dispatch.mesh ? { mesh: dispatch.mesh } : {}),
       };
     });
     rt.queue.push(work!);
@@ -1243,6 +1288,115 @@ export class Core {
   /** Agent input waiting in a thread's queue. */
   queuedInputs(threadId: string): number {
     return this.requireThread(threadId).queue.length;
+  }
+
+  // ── Agent mesh API (WP7) ───────────────────────────────────────────────────────────────
+
+  /** The thread a provider instance knows by this native id. */
+  threadByNative(instance: string, native: NativeId): ThreadRuntime | undefined {
+    const id = this.byNative.get(this.nativeKey(instance, native));
+    const rt = id ? this.threads.get(id) : undefined;
+    return rt && !rt.deleted ? rt : undefined;
+  }
+
+  /** Journals an item yaacd itself produced (mesh items), through the provider-item path. */
+  injectItem(threadId: string, type: "itemStarted" | "itemUpdated" | "itemCompleted", item: Item): void {
+    const rt = this.requireThread(threadId);
+    this.handleProviderEvent(rt.record.instance, { type, thread: rt.record.native, item } as ProviderEvent);
+  }
+
+  /** Raises yaacd's own request (`meshPermission`): journaled durably, listed like any request. */
+  raiseMeshRequest(threadId: string, request: RaisedRequest): string {
+    const rt = this.requireThread(threadId);
+    const requestId = randomId("mp-", 12);
+    this.handleProviderEvent(rt.record.instance, { type: "requestRaised", thread: rt.record.native, turnId: rt.activeTurn ?? "", requestId, request, blocking: true });
+    return requestId;
+  }
+
+  /** Records the answer to a request yaacd raised itself. */
+  resolveOwnRequest(rt: ThreadRuntime, rec: RequestRecord, answer: RequestResponse, client: ClientLink | null): void {
+    const resolution: RequestResolution = { by: client ? "client" : "elsewhere", at: nowIso(), answer };
+    if (client) {
+      resolution.clientId = client.key;
+      if (client.host) resolution.clientHost = client.host;
+    }
+    this.setRequestState(rt, rec, "resolved", resolution);
+  }
+
+  /**
+   * Starts a thread for an agent (`spawn_thread`): no client drives it, its first turn has
+   * origin `mesh`, and it starts in the harness's default mode (no mode is sent).
+   */
+  async startThreadForAgent(p: {
+    instance: string;
+    cwd: string;
+    model?: string | null;
+    effort?: string | null;
+    title: string;
+    parts: InputPart[];
+    journalItems: Item[];
+    mesh: MeshInputMessage[];
+    spawnedBy: string;
+    agents?: ThreadRecord["agents"] | null;
+  }): Promise<{ threadId: string; turnId: TurnId }> {
+    const { instance, provider } = this.registry.usable(p.instance);
+    if (!fs.existsSync(p.cwd) || !fs.statSync(p.cwd).isDirectory()) throw rpc("invalid_params", `the working directory ${p.cwd} does not exist on this target`);
+    this.checkModel(instance.descriptor, p.model);
+    const uploadsKey = `spawn:${randomId("s", 12)}`;
+    const input = this.buildInput(uploadsKey, p.parts, "mesh");
+    input.mesh = p.mesh;
+    const key = instance.config.id;
+    this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
+    let started: { thread: NativeId; turn: TurnId };
+    try {
+      started = await provider.startThread({ cwd: p.cwd, model: p.model ?? null, effort: p.effort ?? null, mode: null }, input);
+    } catch (e) {
+      this.finishPendingStart(key);
+      throw rpc("provider_unavailable", `${instance.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
+    }
+    const rt = this.createThread(
+      instance,
+      started.thread,
+      {
+        cwd: p.cwd,
+        originKind: "yaac",
+        title: p.title,
+        preview: "",
+        model: p.model ?? null,
+        uploadsKey,
+        spawnedBy: p.spawnedBy,
+        ...(p.agents ? { agents: p.agents } : {}),
+      },
+      true,
+    );
+    this.turnBegan(rt, started.turn, "mesh", p.parts, null, p.journalItems);
+    this.finishPendingStart(key);
+    return { threadId: rt.id, turnId: started.turn };
+  }
+
+  /** Interrupts a thread's running turn on an agent's behalf (`stop_thread`, own workers only). */
+  async interruptForAgent(threadId: string): Promise<boolean> {
+    const rt = this.requireThread(threadId);
+    if (!rt.activeTurn) return false;
+    await this.provider(rt).interrupt(rt.record.native, rt.activeTurn);
+    return true;
+  }
+
+  /** Threads running a turn now, not counting those blocked in a mesh `wait`. */
+  runningCount(): number {
+    let n = 0;
+    for (const rt of this.threads.values()) if (!rt.deleted && rt.activeTurn && rt.waiting.size === 0) n++;
+    return n;
+  }
+
+  /** Whether the thread is idle and not known to be held elsewhere (no harness round trip). */
+  dispatchableNow(rt: ThreadRuntime): boolean {
+    return rt.canDispatch() && rt.queue.length === 0 && rt.pendingRequestCount() === 0;
+  }
+
+  /** Asks the provider who holds the thread (public for the mesh). */
+  async checkExternal(threadId: string): Promise<ExternalControl> {
+    return this.refreshExternal(this.requireThread(threadId));
   }
 
   // ── Turn control ───────────────────────────────────────────────────────────────────────
@@ -1306,6 +1460,12 @@ export class Core {
       if (rec.state !== "pending") throw notActed("request_not_pending", `the request is ${rec.state}`, { state: rec.state });
       if (!p.response || p.response.requestKind !== rec.requestKind) {
         throw notActed("invalid_params", `the answer must be a ${rec.requestKind} answer`);
+      }
+      if (rec.requestKind === "meshPermission") {
+        // yaacd's own request: answered by the mesh, never by the harness.
+        if (!this.mesh) throw notActed("capability_missing", "the agent mesh is not available");
+        await this.mesh.respond(rt, rec, p.response, client);
+        return {};
       }
       let provider: HarnessProvider;
       try {
@@ -1484,6 +1644,7 @@ export class Core {
   }
 
   private forget(rt: ThreadRuntime): void {
+    this.mesh?.threadRemoved(rt);
     rt.deleted = true;
     for (const w of rt.queue.splice(0)) w.reject(rpc("thread_not_found", "the thread was deleted"));
     if (rt.flushTimer) clearTimeout(rt.flushTimer);
@@ -1540,7 +1701,7 @@ export class Core {
         if (rt.activeTurn === ev.turnId) return;
         if (rt.expectTurn) {
           const x = rt.expectTurn;
-          this.turnBegan(rt, ev.turnId, x.origin, x.parts, x.driver);
+          this.turnBegan(rt, ev.turnId, x.origin, x.parts, x.driver, x.items);
           return;
         }
         rt.activeTurn = ev.turnId;
@@ -1551,12 +1712,15 @@ export class Core {
         this.append(rt, { type: "turnStarted", turnId: ev.turnId, origin: rt.turnOrigin, at: ev.at ?? nowIso() });
         this.updateIndex(rt);
         this.activity.emit();
+        this.mesh?.turnStarted(rt, ev.turnId, rt.turnOrigin);
         return;
       }
       case "turnCompleted": {
         this.flushDeltas(rt);
         for (const r of rt.requests.values()) {
           if (r.turnId !== ev.turnId) continue;
+          // A mesh permission prompt is yaacd's own, not the harness's: it outlives the turn.
+          if (r.requestKind === "meshPermission") continue;
           if (r.state === "pending") this.setRequestState(rt, r, "expired", null);
           else if (r.state === "submitted") this.setRequestState(rt, r, "unknown", null);
         }
@@ -1586,6 +1750,7 @@ export class Core {
         rt.saveRecord();
         this.updateIndex(rt);
         this.activity.emit();
+        this.mesh?.turnCompleted(rt, ev.turnId, status, ev.error ?? null);
         if (rt.canDispatch()) this.afterIdle(rt);
         // A turn ended in this checkout: its git status may have changed.
         if (rt.record.repo) void this.gitStatus.refresh(rt.record.repo.root, true);
@@ -1604,6 +1769,7 @@ export class Core {
         else rt.waiting.delete(item.id);
         this.append(rt, { type: ev.type, item });
         if (wasWaiting !== rt.waiting.size > 0) this.updateIndex(rt);
+        if (ev.type === "itemCompleted") this.mesh?.itemCompleted(rt, item);
         return;
       }
       case "itemDelta": {
@@ -1627,6 +1793,7 @@ export class Core {
         this.append(rt, { type: "itemStarted", item }, undefined, true);
         this.updateIndex(rt);
         this.activity.emit();
+        this.mesh?.requestRaised(rt, rec);
         return;
       }
       case "requestResolved": {

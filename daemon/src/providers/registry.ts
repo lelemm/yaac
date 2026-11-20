@@ -15,7 +15,7 @@ import type {
 import { canonical } from "../protocol/json.js";
 import { RpcError } from "../protocol/rpc.js";
 import { ensureDir, randomId, readJson, writeJsonAtomic } from "../util/fsx.js";
-import type { HarnessProvider, ProbeResult, ProviderEvent, ProviderFactory } from "./types.js";
+import type { HarnessProvider, MeshHooks, ProbeResult, ProviderEvent, ProviderFactory } from "./types.js";
 
 export interface Instance {
   config: ProviderInstanceConfig;
@@ -46,6 +46,8 @@ export class ProviderRegistry {
   private eventListeners = new Set<(instance: string, event: ProviderEvent) => void>();
   private descriptorListeners = new Set<(descriptor: ProviderDescriptor) => void>();
   private readonly file: string;
+  /** The agent mesh's hooks, per instance id (WP7); offered to every provider that takes them. */
+  private meshHooks: ((instanceId: string) => MeshHooks) | null = null;
 
   constructor(
     private readonly home: string,
@@ -53,6 +55,12 @@ export class ProviderRegistry {
     private readonly log: (line: string) => void,
   ) {
     this.file = path.join(home, "instances.json");
+  }
+
+  /** The agent mesh: offer the `yaac` tools to every provider instance, now and when created. */
+  setMeshHooks(hooks: ((instanceId: string) => MeshHooks) | null): void {
+    this.meshHooks = hooks;
+    for (const i of this.byId.values()) i.provider?.attachMesh?.(hooks ? hooks(i.config.id) : null);
   }
 
   /** Registers a provider kind. Call before `load`. */
@@ -134,6 +142,7 @@ export class ProviderRegistry {
       const stateDir = path.join(this.home, "providers", config.id);
       ensureDir(stateDir);
       provider = factory.create({ config, stateDir, home: this.home, env: this.env, log: (l) => this.log(`[${config.id}] ${l}`) });
+      if (this.meshHooks) provider.attachMesh?.(this.meshHooks(config.id));
       descriptor = this.placeholder(config, "probing");
     }
     const instance: Instance = { config, provider, descriptor };

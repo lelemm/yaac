@@ -30,6 +30,7 @@ import type {
   ForkOptions,
   HarnessProvider,
   ItemPage,
+  MeshHooks,
   NativeId,
   PageRequest,
   ProbeResult,
@@ -60,12 +61,20 @@ import {
 
 // ── The mesh hook ──────────────────────────────────────────────────────────────────────────
 
+/** The MCP server name the agent mesh is attached under. */
+const MESH_SERVER = "yaac";
+
 /** Extra settings for one Codex thread (docs/10-agent-mesh.md#attaching-the-mcp-server). */
 export interface CodexThreadSetup {
   /** Merged into `config` on `thread/start` / `thread/resume` / `thread/fork` (dotted keys allowed). */
   config?: Record<string, unknown> | null;
   /** Passed as `developerInstructions`. */
   developerInstructions?: string | null;
+  /**
+   * Called with the new thread's id as soon as Codex has assigned it (`start`, `fork`), before
+   * its first turn: the mesh binds the thread's attachment ticket here.
+   */
+  bind?: ((native: NativeId) => void) | null;
 }
 
 export interface CodexThreadSetupRequest {
@@ -218,6 +227,8 @@ export class CodexProvider implements HarnessProvider {
   private authMode: string | null | undefined = undefined;
   private sourceKinds: string[] = [...THREAD_SOURCE_KINDS];
   private setupHook: CodexThreadSetupHook | null = null;
+  /** The agent mesh is attached (the `meshTools` capability). */
+  private meshAttached = false;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectDelay: number;
   private disposed = false;
@@ -241,6 +252,34 @@ export class CodexProvider implements HarnessProvider {
    */
   setThreadSetupHook(hook: CodexThreadSetupHook | null): void {
     this.setupHook = hook;
+  }
+
+  /**
+   * The agent mesh (WP7): each thread gets a `mcp_servers.yaac` entry launching the
+   * `yaacd mcp` bridge by absolute path with its attachment ticket, an explicit tool timeout,
+   * and the identity block as `developerInstructions` (docs/10-agent-mesh.md#attaching-the-mcp-server).
+   */
+  attachMesh(hooks: MeshHooks | null): void {
+    this.meshAttached = !!hooks;
+    if (!hooks) {
+      this.setThreadSetupHook(null);
+      return;
+    }
+    this.setThreadSetupHook((req) => {
+      const att = hooks.open({ native: req.phase === "resume" ? req.thread : null, cwd: req.cwd, phase: req.phase });
+      if (!att) return null;
+      const stdio = att.stdio();
+      return {
+        config: {
+          // The yaac tools are governed by the chat's own Agents toggle and budget (D51), so
+          // Codex is told not to ask again for each call (verified live: without it, every
+          // call raises "Allow the yaac MCP server to run tool …?").
+          [`mcp_servers.${MESH_SERVER}`]: { command: stdio.command, args: stdio.args, env: stdio.env, tool_timeout_sec: att.toolTimeoutSec, default_tools_approval_mode: "approve" },
+        },
+        developerInstructions: att.identity,
+        bind: (native) => att.bind(native),
+      };
+    });
   }
 
   // ── Connection ───────────────────────────────────────────────────────────────────────────
@@ -437,12 +476,16 @@ export class CodexProvider implements HarnessProvider {
   }
 
   private async setup(req: CodexThreadSetupRequest): Promise<Record<string, unknown>> {
-    if (!this.setupHook) return {};
+    return (await this.setupWithBind(req)).params;
+  }
+
+  private async setupWithBind(req: CodexThreadSetupRequest): Promise<{ params: Record<string, unknown>; bind: ((native: NativeId) => void) | null }> {
+    if (!this.setupHook) return { params: {}, bind: null };
     const s = await this.setupHook(req);
     const out: Record<string, unknown> = {};
     if (s?.config && Object.keys(s.config).length > 0) out.config = s.config;
     if (s?.developerInstructions) out.developerInstructions = s.developerInstructions;
-    return out;
+    return { params: out, bind: s?.bind ?? null };
   }
 
   /** `thread/resume`: subscribes this connection (rejoins a loaded thread). */
@@ -522,6 +565,7 @@ export class CodexProvider implements HarnessProvider {
       "modes",
     ];
     if (models.some((m) => m.capabilities?.some((c) => c.capability === "imageInput" && c.support !== "unsupported"))) caps.push("imageInput");
+    if (this.meshAttached) caps.push("meshTools");
     return {
       displayName: "Codex",
       backend: "daemon",
@@ -625,7 +669,7 @@ export class CodexProvider implements HarnessProvider {
   async startThread(params: StartThreadParams, input: ProviderInput): Promise<{ thread: NativeId; turn: TurnId }> {
     const conn = await this.ensure();
     const mode = findMode(params.mode);
-    const extras = await this.setup({ phase: "start", thread: null, cwd: params.cwd });
+    const { params: extras, bind } = await this.setupWithBind({ phase: "start", thread: null, cwd: params.cwd });
     const r = (await conn.request("thread/start", {
       cwd: params.cwd,
       ...(params.model ? { model: params.model } : {}),
@@ -637,6 +681,8 @@ export class CodexProvider implements HarnessProvider {
       reasoningEffort?: string | null;
     };
     const native = r.thread.id;
+    // The mesh's ticket is bound to the thread before its first turn runs.
+    bind?.(native);
     const st = this.state(native);
     st.subscribed = true;
     st.status = r.thread.status ?? { type: "idle" };
@@ -906,7 +952,7 @@ export class CodexProvider implements HarnessProvider {
       }
     }
     const mode = findMode(opts.mode);
-    const extras = await this.setup({ phase: "fork", thread, cwd: opts.cwd });
+    const { params: extras, bind } = await this.setupWithBind({ phase: "fork", thread, cwd: opts.cwd });
     const r = (await conn.request("thread/fork", {
       threadId: thread,
       excludeTurns: true,
@@ -916,6 +962,7 @@ export class CodexProvider implements HarnessProvider {
       ...(mode ? { approvalPolicy: mode.approvalPolicy, sandbox: mode.sandbox } : {}),
       ...extras,
     })) as { thread: Thread; model?: string; reasoningEffort?: string | null };
+    bind?.(r.thread.id);
     const st = this.state(r.thread.id);
     st.subscribed = true;
     st.status = r.thread.status ?? { type: "idle" };

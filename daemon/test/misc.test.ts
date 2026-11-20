@@ -12,7 +12,7 @@ import { normaliseRemote } from "../src/session/fsinfo.js";
 
 const code = (c: string) => (e: unknown) => e instanceof RpcFailure && e.code === c;
 
-test("before initialize only the frozen calls work; mesh methods are method_not_found", async () => {
+test("before initialize only the frozen calls work; the mesh methods the daemon serves exist", async () => {
   const daemon = await startDaemon(tmpHome());
   const c = await TestClient.connect(daemon.socketPath);
   await assert.rejects(c.request("ping"), code("not_initialized"));
@@ -21,11 +21,14 @@ test("before initialize only the frozen calls work; mesh methods are method_not_
   await c.initialize();
   assert.deepEqual(await c.request("ping"), {});
   await assert.rejects(c.request("initialize", { protocol: { min: 1, max: 1 }, client: { name: "x", version: "1" } }), code("invalid_request"));
-  for (const m of ["mesh/relay", "mesh/deliver", "mesh/query", "mesh/roster", "mesh/policy", "mesh/budget", "mesh/receipt"]) {
-    await assert.rejects(c.request(m, {}), code("method_not_found"));
+  // The mesh (WP7): `mesh/relay` is a request the daemon sends, never one it serves; the
+  // methods the hub and the window send exist and check their params.
+  await assert.rejects(c.request("mesh/relay", {}), code("method_not_found"));
+  for (const m of ["mesh/deliver", "mesh/query", "mesh/roster", "mesh/budget", "mesh/receipt", "mesh/usage"]) {
+    await assert.rejects(c.request(m, {}), code("invalid_params"));
   }
+  assert.ok(((await c.request("mesh/policy", {})) as any).policy.limits.workersPerThread > 0);
   await assert.rejects(c.request("no/such"), code("method_not_found"));
-  await assert.rejects(c.request("mesh/usage", {}), code("method_not_found"));
   // item/read exists now; without its params it is invalid, not unknown.
   await assert.rejects(c.request("item/read", {}), code("invalid_params"));
   const diag: any = await c.request("diagnostics/get");

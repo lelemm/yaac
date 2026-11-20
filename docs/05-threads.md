@@ -229,6 +229,23 @@ has enough — so an old machine costs a short listing, not a full one.
 - anything running, waiting, or needing the user right now;
 - any thread that belongs to an orchestration still in progress.
 
+### Dismissing a discovered thread
+
+**Decided.** A thread YAAC discovered and the user does not care about can be **dismissed**
+from its right-click menu. It disappears from the interface and nothing else happens: the
+harness is not told, the conversation is not archived or changed, and it can still be opened
+in a terminal as before.
+
+- The choice is remembered on the target, so the thread does not come back on the next scan
+  and is hidden on every host.
+- It is for discovered threads. A thread started from YAAC has **Archive** instead — the
+  difference is that Archive also archives the conversation in the harness.
+- A dismissed thread still turns up when looked for by id, and a "Show dismissed" switch in
+  the same menu as "Show archived" lists them, where each can be restored.
+- If a dismissed thread ever needs the user — an agent messaged it and it is now blocked on an
+  approval — it appears under *Needs you*, like a muted one. It is never silently stuck.
+- A temporary project's header offers **Dismiss all**, for a folder full of old conversations.
+
 **Nothing is out of reach.** The caps decide what is *listed*, not what exists:
 
 - **By id.** Looking a thread up by its id — in the sidebar search, or an agent's

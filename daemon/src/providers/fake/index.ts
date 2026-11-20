@@ -26,6 +26,8 @@ import type {
   ForkOptions,
   HarnessProvider,
   ItemPage,
+  MeshAttachment,
+  MeshHooks,
   NativeId,
   NativeThreadInfo,
   PageRequest,
@@ -152,6 +154,10 @@ export class FakeProvider implements HarnessProvider {
   failNextScan = false;
   /** Called inside startTurn/startThread after the harness accepted the turn, before returning. */
   afterAccept: ((thread: NativeId, turn: TurnId) => Promise<void> | void) | null = null;
+  /** The agent mesh (WP7): the hooks, each thread's attachment, and the `$` variables of `/fake mesh-*`. */
+  private meshHooks: MeshHooks | null = null;
+  private readonly attachments = new Map<NativeId, MeshAttachment>();
+  private readonly meshVars = new Map<NativeId, { spawned: string[]; from: string | null }>();
 
   constructor(
     private readonly ctx: ProviderContext,
@@ -238,6 +244,7 @@ export class FakeProvider implements HarnessProvider {
       "plan",
     ];
     if (this.options.nativeFork) caps.push("threadFork");
+    if (this.meshHooks) caps.push("meshTools");
     return {
       displayName: "Fake",
       backend: "sdk",
@@ -294,6 +301,7 @@ export class FakeProvider implements HarnessProvider {
       settings: { model: params.model ?? "fake-large", effort: params.effort ?? null, mode: params.mode ?? "fake-ask" },
       turnLog: [],
     };
+    this.attachMeshTo(native, params.cwd, "start");
     const turn = await this.beginTurn(native, input, "user");
     return { thread: native, turn };
   }
@@ -306,6 +314,7 @@ export class FakeProvider implements HarnessProvider {
     if (overrides.model) t.settings.model = overrides.model;
     if (overrides.effort) t.settings.effort = overrides.effort;
     if (overrides.mode) t.settings.mode = overrides.mode;
+    if (!this.attachments.has(thread)) this.attachMeshTo(thread, t.info.cwd, "resume");
     return this.beginTurn(thread, input, input.origin);
   }
 
@@ -318,6 +327,8 @@ export class FakeProvider implements HarnessProvider {
     t.info.updatedAt = nowIso();
     this.save();
     this.received.push({ thread: native, input });
+    const lastFrom = [...(input.mesh ?? [])].reverse().find((m) => m.kind !== "notice")?.from;
+    if (lastFrom) this.vars(native).from = lastFrom;
     const script = parseScript(input.text);
     if (script.steps.some((s) => s.k === "crash")) {
       // The harness has accepted the turn; yaacd dies before it can record that.
@@ -476,6 +487,9 @@ export class FakeProvider implements HarnessProvider {
             break;
           case "expire":
             mods.expireMs = step.ms;
+            break;
+          case "mesh":
+            await this.meshCall(native, turnId, id("mesh"), step, signal);
             break;
         }
         for (const s of live.steered.splice(0)) {
@@ -723,6 +737,110 @@ export class FakeProvider implements HarnessProvider {
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
     for (const live of this.live.values()) live.abort.abort();
+  }
+
+  // ── The agent mesh ─────────────────────────────────────────────────────────────────────
+
+  attachMesh(hooks: MeshHooks | null): void {
+    this.meshHooks = hooks;
+    if (!hooks) this.attachments.clear();
+  }
+
+  private attachMeshTo(native: NativeId, cwd: string, phase: "start" | "resume"): void {
+    const att = this.meshHooks?.open({ native, cwd, phase });
+    if (att) this.attachments.set(native, att);
+  }
+
+  /** The attachment a thread's tool calls go through (tests call tools with it directly). */
+  meshAttachment(native: NativeId): MeshAttachment | undefined {
+    return this.attachments.get(native);
+  }
+
+  private vars(native: NativeId): { spawned: string[]; from: string | null } {
+    let v = this.meshVars.get(native);
+    if (!v) {
+      v = { spawned: [], from: null };
+      this.meshVars.set(native, v);
+    }
+    return v;
+  }
+
+  /** `$spawned`, `$spawned1`…, `$from` (the last agent that messaged this thread). */
+  private substitute(native: NativeId, text: string): string {
+    const v = this.vars(native);
+    return text
+      .replace(/\$spawned(\d+)/g, (_m, n: string) => v.spawned[Number(n) - 1] ?? `$spawned${n}`)
+      .replace(/\$spawned\b/g, () => v.spawned.at(-1) ?? "$spawned")
+      .replace(/\$from\b/g, () => v.from ?? "$from");
+  }
+
+  private meshArgs(native: NativeId, step: Extract<Step, { k: "mesh" }>): Record<string, unknown> {
+    const raw = this.substitute(native, step.args);
+    const kv = (text: string, bare: (w: string, out: Record<string, unknown>) => void): Record<string, unknown> => {
+      const out: Record<string, unknown> = {};
+      for (const w of text.split(/\s+/).filter(Boolean)) {
+        const eq = w.indexOf("=");
+        if (eq > 0) {
+          const k = w.slice(0, eq);
+          const val = w.slice(eq + 1);
+          out[k] = val === "true" ? true : val === "false" ? false : /^\d+$/.test(val) && k !== "cursor" ? Number(val) : val;
+        } else bare(w, out);
+      }
+      return out;
+    };
+    switch (step.form) {
+      case "json":
+        return raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      case "send": {
+        const bar = raw.indexOf("|");
+        return { to: (bar < 0 ? raw : raw.slice(0, bar)).trim(), text: bar < 0 ? "" : raw.slice(bar + 1).trim() };
+      }
+      case "spawn": {
+        const bar = raw.indexOf("|");
+        const head = bar < 0 ? "" : raw.slice(0, bar);
+        const text = (bar < 0 ? raw : raw.slice(bar + 1)).trim().replace(/\\n/g, "\n");
+        return { ...kv(head, () => {}), text };
+      }
+      case "positional": {
+        const key = step.tool === "find_thread" ? "query" : step.tool === "notify_when_done" ? "to" : "thread";
+        return { [key]: raw.trim() };
+      }
+      case "kv":
+        return kv(raw, (w, out) => {
+          if (step.tool === "wait") out.threads = [...((out.threads as string[]) ?? []), ...(w === "$all" ? this.vars(native).spawned : [w])];
+          else if (step.tool === "list_threads") out.scope = w;
+        });
+    }
+  }
+
+  private async meshCall(native: NativeId, turnId: TurnId, itemId: string, step: Extract<Step, { k: "mesh" }>, signal: AbortSignal): Promise<void> {
+    const att = this.attachments.get(native);
+    let args: Record<string, unknown> = {};
+    let output: string;
+    let failed = false;
+    const start: Item = { id: itemId, turnId, status: "inProgress", kind: "toolCall", tool: "mcp", title: `yaac.${step.tool}`, input: {}, output: "" };
+    try {
+      args = this.meshArgs(native, step);
+      (start as { input?: unknown }).input = args;
+      this.emit({ type: "itemStarted", thread: native, item: start });
+      if (!att) throw new Error("the yaac tools are not attached to this thread");
+      const r = await att.call({ tool: step.tool, args, meta: { threadId: native }, signal });
+      output = r.text;
+      failed = r.isError;
+      const v = this.vars(native);
+      for (const m of r.text.matchAll(/^Address: (\S+)$/gm)) v.spawned.push(m[1]!);
+      const froms = [...r.text.matchAll(/\(address (\S+), id /g)];
+      if (froms.length > 0) v.from = froms.at(-1)![1]!;
+    } catch (e) {
+      if (signal.aborted) throw new Aborted();
+      output = (e as Error).message;
+      failed = true;
+      if (!start.input || Object.keys(args).length === 0) this.emit({ type: "itemStarted", thread: native, item: start });
+    }
+    if (signal.aborted) throw new Aborted();
+    const done: Item = { ...start, status: failed ? "failed" : "completed", output } as Item;
+    this.record(native, done);
+    this.emit({ type: "itemCompleted", thread: native, item: done });
   }
 
   // ── Test controls ──────────────────────────────────────────────────────────────────────

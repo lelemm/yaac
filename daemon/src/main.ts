@@ -2,6 +2,8 @@
 //
 //   yaacd serve      the persistent per-user daemon, on a user-only Unix socket
 //   yaacd connect    a stdio ⇄ socket bridge; starts the daemon (detached) if none is serving
+//   yaacd mcp        the `yaac` MCP server on stdio, for one harness thread (started by the
+//                    harness; see src/mesh/bridge.ts)
 //   yaacd version    print the build
 //
 // Environment: YAAC_HOME (state directory, default ~/.yaac), YAAC_SOCKET (socket path),
@@ -10,8 +12,8 @@
 
 import * as net from "node:net";
 import { spawn } from "node:child_process";
-import { Daemon, DEFAULT_IDLE_TIMEOUT_MS, defaultHome } from "./session/daemon.js";
-import { AlreadyServing, socketPathFor } from "./session/server.js";
+// Each subcommand loads only what it needs: `yaacd mcp` runs once per Codex thread and must
+// stay small, so the daemon's modules are imported lazily.
 
 declare const __YAAC_BUILD__: string | undefined;
 export const BUILD: string = typeof __YAAC_BUILD__ === "string" ? __YAAC_BUILD__ : "0.1.0+dev";
@@ -22,10 +24,12 @@ function flag(args: string[], name: string): string | undefined {
 }
 
 async function serve(args: string[]): Promise<void> {
+  const { Daemon, DEFAULT_IDLE_TIMEOUT_MS, defaultHome } = await import("./session/daemon.js");
+  const { AlreadyServing } = await import("./session/server.js");
   const env = process.env;
   const idleRaw = flag(args, "--idle-timeout") ?? env.YAAC_IDLE_TIMEOUT_MS;
   const idleTimeoutMs = idleRaw !== undefined && /^\d+$/.test(idleRaw) ? Number(idleRaw) : DEFAULT_IDLE_TIMEOUT_MS;
-  let daemon: Daemon;
+  let daemon: import("./session/daemon.js").Daemon;
   try {
     daemon = await Daemon.start({
       home: defaultHome(env),
@@ -59,6 +63,8 @@ function connectOnce(socket: string): Promise<net.Socket | null> {
 
 async function connect(): Promise<void> {
   const env = process.env;
+  const { defaultHome } = await import("./session/daemon.js");
+  const { socketPathFor } = await import("./session/server.js");
   const home = defaultHome(env);
   const socket = socketPathFor(home, env);
   let sock = await connectOnce(socket);
@@ -99,12 +105,17 @@ async function main(): Promise<void> {
     case "connect":
       await connect();
       return;
+    case "mcp": {
+      const { runBridge } = await import("./mesh/bridge.js");
+      await runBridge(process.env, [process.argv[1]!]);
+      return;
+    }
     case "version":
     case "--version":
       process.stdout.write(`${BUILD}\n`);
       return;
     default:
-      process.stderr.write("usage: yaacd serve [--idle-timeout <ms>] | yaacd connect | yaacd version\n");
+      process.stderr.write("usage: yaacd serve [--idle-timeout <ms>] | yaacd connect | yaacd mcp | yaacd version\n");
       process.exit(2);
   }
 }

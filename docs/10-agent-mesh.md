@@ -146,6 +146,20 @@ How the owner's four examples map onto them:
 | "On devbox, thread *aaaa* is waiting for you. Tell it when you're done." | `notify_when_done { to: "devbox/…aaaa" }` — or `send_message` at the end |
 | "Run this migration across all my servers." | `list_targets` → `spawn_thread` on each → `wait` → `read_thread` |
 
+### What the live tests changed
+
+Running the tools with real Codex and Claude threads, on plain-words instructions, changed
+four things:
+
+- **An empty `related` listing falls back to the caller's project.** A fresh thread has no
+  orchestration yet, and "the other thread" is almost always in the same project.
+- **`list_threads` and `find_thread` take a `provider` filter.** Asked for "the Codex thread",
+  a small model searched titles for the word "codex" and found nothing.
+- **A worker's first message is framed as a task** — "[Task from …]" — because a worker read
+  its parent's title as its own job.
+- **`send_message` accepts `message` as well as `text`**, since Claude Code hides tool
+  schemas until they are looked up and a small model guessed the name.
+
 ### Listing is scoped and bounded
 
 **Decided.** With ten targets and hundreds of threads, a tool that lists "every running agent"
@@ -435,7 +449,8 @@ per loaded Codex thread costs in memory; that instructions survive a cold resume
 can be started from a tool-output input; and that YAAC can tell reliably when it holds a
 thread.
 
-If a bridge per thread costs too much, the way out is **one shared bridge**: Codex states the
+Measured: one bridge process is about **80 MB**, per live Codex thread. That is too much to
+leave as it is. If a bridge per thread costs too much, the way out is **one shared bridge**: Codex states the
 calling thread in each call, so a single process can serve them all once Codex's connection
 sharing is available. A loopback HTTP endpoint is *not* an option — neither `yaacd` nor the hub
 listens on TCP. Codex's own "dynamic tools" would need no bridge at all, but they are

@@ -57,6 +57,11 @@ export interface ConnectionView {
   /** Calls `listener` once, when the outbound backlog is below the low-water mark. */
   whenWritable(listener: () => void): void;
   grantCredit(stream: number, bytes: number): void;
+  /**
+   * A request this daemon originates (the mesh: `mesh/relay`, `mesh/query`, `mesh/usage`).
+   * Resolves with the host's result; rejects with an RpcError, or when the connection closes.
+   */
+  request(method: string, params: unknown, timeoutMs?: number): Promise<unknown>;
   close(): void;
 }
 
@@ -79,6 +84,9 @@ export class ServerConnection implements ConnectionView {
   private bulkInFlight = false;
   private writableListeners: Array<() => void> = [];
   private closeListeners: Array<() => void> = [];
+  /** Requests this daemon originated, by id (their own id space). */
+  private outgoing = new Map<number, { method: string; resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout | null }>();
+  private nextOutgoingId = 1;
 
   constructor(
     private readonly transport: Duplex,
@@ -192,10 +200,39 @@ export class ServerConnection implements ConnectionView {
           this.session.onNotification?.(message.method, this.dialect!.decodeParams(message.method, message.params));
         }
         return;
+      case "response":
+      case "error": {
+        // An answer to a request this daemon originated (the mesh).
+        const id = typeof message.id === "number" ? message.id : Number.NaN;
+        const pending = this.outgoing.get(id);
+        if (!pending) return;
+        this.outgoing.delete(id);
+        if (pending.timer) clearTimeout(pending.timer);
+        if (message.type === "error") pending.reject(new RpcError(message.error.code, message.error.message, message.error.data));
+        else pending.resolve(this.dialect ? this.dialect.decodeHostResult(pending.method, message.result) : message.result);
+        return;
+      }
       default:
-        // Responses to daemon-originated requests (the mesh) are handled by a later package.
         return;
     }
+  }
+
+  request(method: string, params: unknown, timeoutMs = 30000): Promise<unknown> {
+    if (this.closed || this.closing || !this.dialect) return Promise.reject(new RpcError("not_initialized", "the host connection is not open"));
+    const id = this.nextOutgoingId++;
+    return new Promise<unknown>((resolve, reject) => {
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              this.outgoing.delete(id);
+              reject(new RpcError("timeout", `${method}: the host did not answer within ${Math.round(timeoutMs / 1000)} s`));
+            }, timeoutMs)
+          : null;
+      timer?.unref?.();
+      this.outgoing.set(id, { method, resolve, reject, timer });
+      const cls = info(method)?.requestClass ?? "control";
+      this.reply({ type: "request", id, method, params: this.dialect!.encodeRequestParams(method, params ?? {}) }, cls);
+    });
   }
 
   private responseClass(method: string): TrafficClass {
@@ -377,6 +414,11 @@ export class ServerConnection implements ConnectionView {
   private teardown(): void {
     if (this.closed) return;
     this.closed = true;
+    for (const p of this.outgoing.values()) {
+      if (p.timer) clearTimeout(p.timer);
+      p.reject(new RpcError("connection_closed", `${p.method}: the host connection closed`));
+    }
+    this.outgoing.clear();
     this.session?.onClose?.();
     for (const l of this.closeListeners) l();
   }

@@ -51,11 +51,38 @@ Steps run in order.
 
 `turn/steer` input is answered at the next step boundary as `Steered: <text>`.
 
+### Agent-mesh directives
+
+Each is one call of a `yaac` mesh tool (docs/10-agent-mesh.md#the-tools), made through the
+thread's attachment ticket exactly as a harness would (with `_meta.threadId` set to the fake's
+own conversation id). The call appears in the transcript as a `toolCall` item titled
+`yaac.<tool>` whose output is the tool's text result (`failed` when the tool returned an error).
+A message delivered to a fake thread is framed as from an agent; `/fake` lines in its body run,
+so one fake agent can script another.
+
+| Directive | Tool call |
+| --- | --- |
+| `/fake mesh <tool> <json>` | Any tool with JSON arguments, e.g. `/fake mesh list_threads {"scope":"project"}`. |
+| `/fake mesh-send <address> \| <text>` | `send_message { to, text }`. |
+| `/fake mesh-spawn [key=value …] \| <text>` | `spawn_thread { text, … }`; keys `target`, `instance`, `model`, `effort`, `cwd`, `title`, `detached=true`. `\n` in the text is a line break, so the worker can be given several directives. |
+| `/fake mesh-wait [address …] [timeoutSecs=n] [messages=false]` | `wait`; `$all` stands for every thread this one has spawned. |
+| `/fake mesh-list [scope] [key=value …]` | `list_threads`; keys `target`, `query`, `state`, `includeInactive=true`, `limit`, `cursor`. |
+| `/fake mesh-find <query>` | `find_thread { query }`. |
+| `/fake mesh-read <address>` | `read_thread { thread }`. |
+| `/fake mesh-notify-when-done <address>` | `notify_when_done { to }`. |
+| `/fake mesh-stop <address>` | `stop_thread { thread }`. |
+| `/fake mesh-whoami`, `/fake mesh-targets`, `/fake mesh-models [target]` | `whoami`, `list_targets`, `list_models`. |
+
+In the arguments, `$spawned` is the address of the last thread this one spawned (`$spawned1`,
+`$spawned2`, … the first, second, …), and `$from` the agent that last messaged it (from the
+turn's input or a `wait` result).
+
 ## Programmatic control (tests)
 
 `FakeProvider` (from `daemon.core.registry.get(id).provider`) exposes: `setExternal(native,
 control)`, `runExternalTurn(native, text, holdMs, extraSteps)`, `resolveElsewhere(native,
 requestId)`, `expireRequest(native, requestId)`, `addOutsideThread(title)`, `failNextScan`,
 `afterAccept` (a hook between the harness accepting a turn and yaacd recording it),
+`meshAttachment(native)` (the thread's mesh attachment, to call tools as that thread),
 `received` (every input handed over), `answers` (every answer, secrets included), `turnLog`,
 and `nativeIds`.

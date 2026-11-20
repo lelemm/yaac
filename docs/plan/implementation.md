@@ -87,7 +87,7 @@ itself, not that the worker said so.
 | WP4b | **done** | **yes** — 79 tests (including 4 that start the real `yaac hub` in a temporary profile and attach to it) and clippy `-D warnings` re-run by the orchestrator; no provider-kind branches, no model names outside the demo; screenshots inspected | `yaac hub` runs headless; the window attaches to it or starts it; settings, first run, fork, create project, the bypass confirmation, the narrow layout. Stripped release binary 11.5 MiB (budget 20). `yaac hub` idle: 6 MB, no graphics libraries loaded. 28 screens in `docs/design/screenshots/`. Remaining seams: the real SSH backend (needs `hub/ssh/*`), SSH setup records, the outside-tools switch, the WSL master switch and distro list, "found running / started by YAAC" for Codex, a connection-step log, unarchive. |
 | WP5 | **done** | **yes** — 21 Codex tests (replay, under the session layer, and live against the real daemon) re-run by the orchestrator; only `daemon start` is ever invoked; no model names in source; fixtures use placeholder paths and model ids | Registered in the daemon. One real turn and one fork were run by hand to record fixtures, then deleted. Modes: read-only, auto, full access (flagged `skipsApprovals`). |
 | WP6 | **done** | **yes** — 16 unit tests and 1 live test re-run by the orchestrator; no model names in source; fixture free of personal data | Registered in the daemon. Offers the bypass-permissions mode flagged `skipsApprovals`. Bundles into one file with no build change; the SDK adds about 2 MB to `yaacd` (estimate until built). One real turn was run by hand to record a fixture, then deleted. An idle Claude thread costs about 229 MB on the target. |
-| WP7 | not started | — | |
+| WP7 | **done** | **yes** — 121 daemon tests and 120 Rust tests re-run by the orchestrator, including two real daemons and a real hub end to end; no model names in mesh source; no TCP listeners; fixture free of personal data | Eleven tools; tickets; durable mailbox/outbox; delivery through the dispatcher; permission and budgets; cross-target relay, find, list, read, stop. **Live with real Codex and Claude:** messaging both ways, a cross-provider spawn, notify-when-done, the permission prompt, find by id and fuzzy title — about 7 Codex and 8 Claude turns, all threads deleted. Not done: tool-output-role delivery on Codex, the cold-resume instruction check, the desktop notification for a blocked worker, enforcement of the per-target mesh policy. One Codex bridge process costs about 80 MB. |
 | WP8 | not started | — | |
 | WP9 | not started | — | |
 
@@ -121,6 +121,14 @@ worker found. To be done as one pass once the provider workers land:
   scanning (both providers list newest first — stop early), with the never-cut rules; on-demand
   lookup by id at the harness; "Show older" / "Search older" paging from a target; the
   per-target settings; the two sidebar affordances.
+- **Dismiss (D79, N40):** a `dismissed` flag stored on the target, the row menu item, "Show
+  dismissed", "Dismiss all" on a temporary project.
+- **From the mesh report:** enforce the per-target mesh policy and `acceptFromOtherTargets`;
+  the hub's desktop notification for a blocked worker; a test that an uncertain holder is taken
+  over (D72); a remote worker's state updating live in the parent's workers item; `Daemon.stop`
+  must not delete a socket a newer daemon has already bound; reduce the 80 MB Codex bridge
+  (a tiny dedicated bundle, or one shared bridge); connect the window to the real mesh items,
+  the permission card, and the Continue action.
 - Unarchive on the wire; the Codex "found running / started by YAAC" fact in the descriptor;
   a connection-step log for diagnostics; `hub/ssh/*` and the real SSH backend; WSL distro
   listing; the outside-tools switch.

@@ -5,6 +5,7 @@ import type {
   AgentsPolicy,
   ContextUsage,
   InputPart,
+  Item,
   RepoLocation,
   TokenUsage,
   OriginKind,
@@ -16,7 +17,7 @@ import type {
   TurnOrigin,
   WorktreeRef,
 } from "../protocol/generated/types.js";
-import type { ExternalControl, NativeId, TurnOverrides } from "../providers/types.js";
+import type { ExternalControl, MeshInputMessage, NativeId, TurnOverrides } from "../providers/types.js";
 import { Journal, type JournalOptions } from "./journal.js";
 import type { Projection } from "./items.js";
 import { readJson, sha256Hex, writeJsonAtomic } from "../util/fsx.js";
@@ -100,6 +101,10 @@ export interface Work {
   beforeStart?: () => void | Promise<void>;
   onStarted?: (turnId: TurnId) => void | Promise<void>;
   onFailed?: (error: Error) => void;
+  /** Mesh (WP7): items journaled at the turn's start instead of a user message (`meshReceived`). */
+  journalItems?: Item[];
+  /** Mesh (WP7): the agent messages the turn carries, sender and body apart. */
+  mesh?: MeshInputMessage[];
   resolve: (turnId: TurnId) => void;
   reject: (error: Error) => void;
 }
@@ -128,7 +133,7 @@ export class ThreadRuntime {
   queue: Work[] = [];
   dispatching = false;
   /** Set while yaacd waits for the harness to start a turn it asked for. */
-  expectTurn: { origin: TurnOrigin; parts: InputPart[]; driver: Driver | null } | null = null;
+  expectTurn: { origin: TurnOrigin; parts: InputPart[]; driver: Driver | null; items?: Item[] } | null = null;
   pendingDeltas = new Map<string, { itemId: string; field: "text" | "reasoning" | "output"; delta: string }>();
   pendingDeltaBytes = 0;
   flushTimer: NodeJS.Timeout | null = null;

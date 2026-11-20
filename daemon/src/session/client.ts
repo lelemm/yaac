@@ -62,6 +62,7 @@ export class ClientSession implements SessionHandler, ClientLink {
   private pumpScheduled = false;
   private waitingWritable = false;
   private closed = false;
+  private closeListeners: Array<() => void> = [];
 
   constructor(
     private readonly core: Core,
@@ -207,7 +208,29 @@ export class ClientSession implements SessionHandler, ClientLink {
     this.core.uploads.onData(stream, bytes, this, (s, n) => this.view.grantCredit(s, n));
   }
 
+  /** Mesh (WP7): called once when this client goes away. */
+  onClosed(listener: () => void): void {
+    if (this.closed) listener();
+    else this.closeListeners.push(listener);
+  }
+
+  /** Mesh (WP7): a request this daemon originates to this host (`mesh/relay`, `mesh/query`, `mesh/usage`). */
+  requestHost(method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
+    return this.view.request(method, params, timeoutMs);
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
   onClose(): void {
+    for (const l of this.closeListeners.splice(0)) {
+      try {
+        l();
+      } catch {
+        /* a listener must not break teardown */
+      }
+    }
     this.closed = true;
     this.core.clients.delete(this);
     this.core.uploads.dropOwner(this);

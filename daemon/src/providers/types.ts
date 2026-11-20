@@ -33,6 +33,7 @@ import type {
   QuestionRequest,
   FormRequest,
   RequestId,
+  MeshPermissionRequest,
 } from "../protocol/generated/types.js";
 import type { EventSource } from "../util/emitter.js";
 
@@ -120,6 +121,69 @@ export interface ProviderInput {
   files: Array<{ uploadId: string; path: string; name: string }>;
   /** Who this input comes from; `mesh` input must never be presented as the user speaking. */
   origin: TurnOrigin;
+  /**
+   * For `mesh` input: the agent messages this turn carries, sender and body as separate
+   * fields. `text` already holds them in the fixed frame (docs/10-agent-mesh.md#how-the-agent-sees-it),
+   * for harnesses that cannot take agent input in a non-user role.
+   */
+  mesh?: MeshInputMessage[];
+}
+
+/** One agent message handed to a harness (docs/10-agent-mesh.md#how-the-agent-sees-it). */
+export interface MeshInputMessage {
+  id: string;
+  kind: "message" | "result" | "notice" | string;
+  /** The sender's address, stamped by yaacd. */
+  from: string;
+  /** "Codex agent \"Orchestrator\" on local". */
+  fromLabel: string;
+  text: string;
+  /** The first message of a spawned worker: its task from the thread that started it. */
+  task?: boolean;
+}
+
+// ── The agent mesh: how a provider offers the `yaac` tools to one thread ────────────────
+
+export interface MeshToolCall {
+  tool: string;
+  args: Record<string, unknown>;
+  /** What the harness itself says about the call (Codex: `_meta.threadId`). */
+  meta?: Record<string, unknown> | null;
+  signal?: AbortSignal;
+}
+
+export interface MeshToolResult {
+  text: string;
+  isError: boolean;
+}
+
+/**
+ * The `yaac` tools for one thread (docs/10-agent-mesh.md#attaching-the-mcp-server). It carries
+ * an attachment ticket: every call made through it acts as the thread the ticket is bound to.
+ */
+export interface MeshAttachment {
+  readonly ticket: string;
+  /** The identity block for the harness's instructions for this thread. */
+  readonly identity: string;
+  /** Tool-call timeout to configure for the server, in seconds. */
+  readonly toolTimeoutSec: number;
+  /** Binds the ticket to the harness's id for the thread — before its first turn runs. */
+  bind(native: NativeId): void;
+  /** Calls a tool as this thread (in-process harnesses, and the fake). */
+  call(call: MeshToolCall): Promise<MeshToolResult>;
+  /** An in-process MCP server (an `McpServer`), for harnesses that host one (Claude Agent SDK). */
+  inProcessServer(): unknown;
+  /** How to launch the stdio bridge, for harnesses that start MCP servers themselves (Codex). */
+  stdio(): { command: string; args: string[]; env: Record<string, string> };
+}
+
+/** What the mesh gives a provider instance (`HarnessProvider.attachMesh`). */
+export interface MeshHooks {
+  /**
+   * A thread is being opened: started, resumed, or forked. `native` is null when the harness
+   * has not assigned the id yet (then `bind` it as soon as it has). Null: no tools for it.
+   */
+  open(req: { native: NativeId | null; cwd: string | null; phase: "start" | "resume" | "fork" }): MeshAttachment | null;
 }
 
 export interface ForkOptions extends TurnOverrides {
@@ -141,7 +205,9 @@ export interface ExternalControl {
 export type RaisedRequest =
   | ({ requestKind: "approval" } & ApprovalRequest)
   | ({ requestKind: "question" } & QuestionRequest)
-  | ({ requestKind: "form" } & FormRequest);
+  | ({ requestKind: "form" } & FormRequest)
+  /** Raised by yaacd itself (the agent mesh), never by a harness. */
+  | ({ requestKind: "meshPermission" } & MeshPermissionRequest);
 
 /**
  * Normalised events. Every event names the native conversation it belongs to.
@@ -232,6 +298,11 @@ export interface HarnessProvider {
   rename?(thread: NativeId, title: string): Promise<void>;
   archive?(thread: NativeId): Promise<void>;
   remove?(thread: NativeId): Promise<void>;
+  /**
+   * The agent mesh: offer the `yaac` tools to this instance's threads. A provider that
+   * implements it declares the `meshTools` capability once attached.
+   */
+  attachMesh?(hooks: MeshHooks | null): void;
 
   readonly events: EventSource<ProviderEvent>;
   dispose(): Promise<void>;

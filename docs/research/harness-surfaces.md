@@ -263,6 +263,22 @@ matching rows in the mesh table further down.
   setting, connection sharing, tool-output input, `thread/inject_items`, whether developer
   instructions survive a cold resume, and a live `requestUserInput`.
 
+## Verified live while building the mesh (2026-11-20)
+
+- **Codex states the calling thread on every MCP tool call**: `_meta` carries `threadId`
+  (equal to the calling thread), `sessionId`, `callId`, `itemId`, `windowId`, a progress
+  token, and turn metadata. Claude Code sends a progress token and its tool-use id.
+- **A per-thread `mcp_servers` entry works** on Codex, and accepts
+  `default_tools_approval_mode = "approve"` — without it Codex asks the user to allow each
+  call to the server, as a form request.
+- `tool_timeout_sec` is accepted on that entry; its effect was not exercised.
+- **Claude Code defers MCP tool schemas** behind its tool search, so a small model may call a
+  tool with a guessed parameter name on its first try.
+- **One `yaacd mcp` bridge process costs about 80 MB** resident (a bare Node process is about
+  43 MB). There is one per live Codex thread.
+- Still unsettled: tool-output-role input on Codex, whether developer instructions survive a
+  cold resume, and Codex's MCP connection sharing.
+
 ## Verified against the real Claude SDK and CLI (2026-11-20)
 
 Run by the worker that built the Claude provider, not read from documentation:

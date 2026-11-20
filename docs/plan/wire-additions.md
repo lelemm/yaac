@@ -67,8 +67,19 @@ is right.
   — by id (full or a prefix of four or more characters) or fuzzy title, ten per page.
 - `hub/projects/list`, and the notification `hub/projects/changed { target }`.
 
+## Added with the mesh
+
+- `MeshQuery` gains `findThreads` and `listTargets`, with their replies (answered by the hub
+  from its own index); `SpawnThreadQuery.depth`; `MeshThreadFilter` gains `includeInactive`,
+  `state`, `cursor`, and a provider filter; `ListThreadsReply` gains `total`, `cursor`.
+- Item ids: `sent:<msgId>` (updated in place as its receipt changes), `recv:<msgId>`,
+  `spawn:<turnId>` (one live item), and `meshWait`. Mesh items made outside a turn have an
+  empty `turnId`.
+- Notice kinds `budgetExhausted`, `meshLimit`.
+- `mesh/budget { action: "continue", opId, root }` is the Continue action.
+
 ## Not on the wire yet
 
 - Unarchive (`thread/update` does not take `archived`).
-- The daemon does not yet raise `meshPermission`, enforce budgets, set `spawnedBy`, or emit
-  wait items — that is the mesh package.
+- A `dismissed` flag on summaries (D79), and a way to ask a target for older threads than the
+  discovery caps list (D78).

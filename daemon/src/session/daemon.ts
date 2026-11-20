@@ -20,6 +20,8 @@ import { Core } from "./core.js";
 import { ClientSession, DEFAULT_CLIENT_OPTIONS, type ClientOptions, type MethodHandler } from "./client.js";
 import { DEFAULT_JOURNAL_OPTIONS, type JournalOptions } from "./journal.js";
 import { listenExclusive, socketPathFor } from "./server.js";
+import { Mesh, type MeshOptions } from "../mesh/mesh.js";
+import { serveBridge, sniffBridge } from "../mesh/mcp.js";
 
 /** The on-disk state format. Separate from the protocol version and the build. */
 export const STATE_FORMAT = 1;
@@ -44,6 +46,8 @@ export interface DaemonConfig {
   onExit?: (reason: string) => void;
   /** Do not listen on a socket (in-process tests attach streams directly). */
   noSocket?: boolean;
+  /** The agent mesh's options (tests shorten its waits). */
+  mesh?: Partial<Omit<MeshOptions, "log" | "socketPath" | "home" | "env">>;
 }
 
 interface StateFile {
@@ -68,6 +72,8 @@ export function targetFacts(): TargetFacts {
 
 export class Daemon implements FrozenCoreHost {
   readonly core: Core;
+  /** The agent mesh (WP7). */
+  readonly mesh: Mesh;
   readonly socketPath: string;
   /** Extra request handlers by method name (for later packages, e.g. the mesh). */
   readonly extraMethods = new Map<string, MethodHandler>();
@@ -107,6 +113,9 @@ export class Daemon implements FrozenCoreHost {
       ...(config.tempDir ? { tempDir: config.tempDir } : {}),
     });
     this.core.activity.on(() => this.checkIdle());
+    // The agent mesh (WP7): its tools, mailbox, and the daemon side of the hub's relay.
+    this.mesh = new Mesh(this.core, { ...config.mesh, log: (l) => this.log(l), socketPath: this.socketPath, home: config.home, env: config.env });
+    for (const [method, handler] of this.mesh.methods()) this.extraMethods.set(method, handler);
   }
 
   /** Starts a daemon: state, providers, the thread index, and (unless `noSocket`) the socket. */
@@ -129,11 +138,17 @@ export class Daemon implements FrozenCoreHost {
       // The socket is the lock: bind it before touching any state another daemon might own.
       // Connections accepted before start-up finishes wait for `ready`.
       daemon.server = await listenExclusive(daemon.socketPath, path.join(config.home, "run"), (s) => {
-        void daemon.ready.then(() => daemon.attach(s));
+        void daemon.ready.then(async () => {
+          // A `yaacd mcp` bridge announces itself with a magic no YAAC frame can start with.
+          if (await sniffBridge(s)) serveBridge(s, (ticket, call) => daemon.mesh.callWithTicket(ticket, call), (l) => daemon.log(l));
+          else daemon.attach(s);
+          s.resume();
+        });
       });
     }
     writeJsonAtomic(stateFile, { stateFormat: STATE_FORMAT, clean: false } satisfies StateFile);
     await daemon.core.start();
+    daemon.mesh.start();
     daemon.markReady();
     daemon.log(`serving build ${config.build} on ${daemon.socketPath}`);
     daemon.checkIdle();
@@ -259,6 +274,7 @@ export class Daemon implements FrozenCoreHost {
             }),
         ),
       );
+      this.mesh.close();
       await this.core.close();
       if (this.server) {
         fs.rmSync(this.socketPath, { force: true });

@@ -41,6 +41,7 @@ import type {
   ForkOptions,
   HarnessProvider,
   ItemPage,
+  MeshHooks,
   NativeId,
   NativeThreadInfo,
   PageRequest,
@@ -92,12 +93,17 @@ const MODES: Array<ModeInfo & { id: PermissionMode; needsAutoMode?: boolean }> =
 
 // ── The mesh hook ────────────────────────────────────────────────────────────────────────
 
+/** The MCP server name the agent mesh is attached under. */
+const MESH_SERVER = "yaac";
+
 /** What a caller (the agent mesh) may add to one thread's query. */
 export interface ClaudeThreadExtras {
   /** Extra MCP servers, by name. An in-process server (`type: "sdk"`, from `createSdkMcpServer`) is allowed. */
   mcpServers?: Record<string, McpServerConfig>;
   /** Text appended to Claude Code's own system prompt (the identity block). */
   appendSystemPrompt?: string;
+  /** Tool permission rules allowed without prompting (the mesh's own tools: `mcp__yaac`). */
+  allowedTools?: string[];
 }
 
 /**
@@ -262,6 +268,8 @@ export class ClaudeProvider implements HarnessProvider {
   private models: ModelInfo[] = [];
   private lastProbe: ProbeResult | null = null;
   private extrasHook: ClaudeExtrasHook | null = null;
+  /** The agent mesh is attached (the `meshTools` capability). */
+  private meshAttached = false;
   /** Pids of Claude Code processes yaacd ran, kept a while after they end (their registry entry can linger). */
   private ownPids = new Map<number, number>();
   private agentsCache: { at: number; entries: Promise<AgentEntry[]> } | null = null;
@@ -284,6 +292,26 @@ export class ClaudeProvider implements HarnessProvider {
   /** The mesh hook: extra MCP servers and system-prompt text, per thread, on every open. */
   setThreadExtras(hook: ClaudeExtrasHook | null): void {
     this.extrasHook = hook;
+  }
+
+  /**
+   * The agent mesh (WP7): every query a thread opens gets the `yaac` tools as an in-process
+   * MCP server (`type: "sdk"`) carrying that thread's attachment ticket, the identity block
+   * appended to the system prompt, and the server's tools allowed without a permission prompt
+   * (what agents may do with each other is governed by the mesh's own permission and budget).
+   */
+  attachMesh(hooks: MeshHooks | null): void {
+    this.meshAttached = !!hooks;
+    if (!hooks) {
+      this.setThreadExtras(null);
+      return;
+    }
+    this.setThreadExtras((t) => {
+      const att = hooks.open({ native: t.native, cwd: t.cwd, phase: t.resumed ? "resume" : "start" });
+      if (!att) return undefined;
+      const server = { type: "sdk", name: MESH_SERVER, instance: att.inProcessServer(), timeout: att.toolTimeoutSec * 1000 } as unknown as McpServerConfig;
+      return { mcpServers: { [MESH_SERVER]: server }, appendSystemPrompt: att.identity, allowedTools: [`mcp__${MESH_SERVER}`] };
+    });
   }
 
   /** Native ids of the threads that have a live query now, least recently used first. */
@@ -447,6 +475,7 @@ export class ClaudeProvider implements HarnessProvider {
       } satisfies ModelInfo;
     });
     const capabilities = this.baseCapabilities();
+    if (this.meshAttached) capabilities.push("meshTools");
     if (this.models.some((m) => (m.efforts ?? []).length > 0)) capabilities.push("reasoning");
     const autoMode = models.some((m) => m.supportsAutoMode === true);
     const modes = MODES.filter((m) => !m.needsAutoMode || autoMode).map(({ needsAutoMode: _n, ...m }) => m as ModeInfo);
@@ -622,6 +651,7 @@ export class ClaudeProvider implements HarnessProvider {
       additionalDirectories: [...dirs],
       systemPrompt: { type: "preset", preset: "claude_code", ...(extras.appendSystemPrompt ? { append: extras.appendSystemPrompt } : {}) },
       ...(extras.mcpServers && Object.keys(extras.mcpServers).length > 0 ? { mcpServers: extras.mcpServers } : {}),
+      ...(extras.allowedTools && extras.allowedTools.length > 0 ? { allowedTools: extras.allowedTools } : {}),
       canUseTool: (toolName, input, opts) => this.canUseTool(live, toolName, input, opts),
       onElicitation: (request, opts) => this.onElicitation(live, request, opts.signal),
       stderr: (data) => {

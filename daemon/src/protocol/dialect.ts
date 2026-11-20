@@ -60,6 +60,18 @@ export class Dialect {
     return wire;
   }
 
+  // ── Requests this daemon originates (the mesh) ─────────────────────────────────────────
+
+  /** Current-shape params of a daemon-originated request → wire params. */
+  encodeRequestParams(_method: string, params: unknown): unknown {
+    return params;
+  }
+
+  /** Wire result of a daemon-originated request → current shape. */
+  decodeHostResult(_method: string, wire: unknown): unknown {
+    return wire;
+  }
+
   // ── Outbound: results ──────────────────────────────────────────────────────────────────
 
   /** Current-shape result → wire result for `method`. */

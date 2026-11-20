@@ -20,7 +20,9 @@ export type Step =
   | { k: "crash" }
   | { k: "crashOnAnswer" }
   | { k: "resolveElsewhere"; ms: number }
-  | { k: "expire"; ms: number };
+  | { k: "expire"; ms: number }
+  /** A call of a `yaac` mesh tool (README.md): `args` is resolved when the step runs. */
+  | { k: "mesh"; tool: string; args: string; form: "json" | "send" | "spawn" | "kv" | "positional" };
 
 export interface Script {
   steps: Step[];
@@ -119,6 +121,44 @@ export function parseScript(text: string): Script {
         break;
       case "expire":
         steps.push({ k: "expire", ms: num(words[0], 200) });
+        break;
+      case "mesh": {
+        const sp2 = rest.indexOf(" ");
+        steps.push({ k: "mesh", tool: sp2 < 0 ? rest : rest.slice(0, sp2), args: sp2 < 0 ? "" : rest.slice(sp2 + 1).trim(), form: "json" });
+        break;
+      }
+      case "mesh-send":
+        steps.push({ k: "mesh", tool: "send_message", args: rest, form: "send" });
+        break;
+      case "mesh-spawn":
+        steps.push({ k: "mesh", tool: "spawn_thread", args: rest, form: "spawn" });
+        break;
+      case "mesh-wait":
+        steps.push({ k: "mesh", tool: "wait", args: rest, form: "kv" });
+        break;
+      case "mesh-list":
+        steps.push({ k: "mesh", tool: "list_threads", args: rest, form: "kv" });
+        break;
+      case "mesh-find":
+        steps.push({ k: "mesh", tool: "find_thread", args: rest, form: "positional" });
+        break;
+      case "mesh-notify-when-done":
+        steps.push({ k: "mesh", tool: "notify_when_done", args: rest, form: "positional" });
+        break;
+      case "mesh-stop":
+        steps.push({ k: "mesh", tool: "stop_thread", args: rest, form: "positional" });
+        break;
+      case "mesh-read":
+        steps.push({ k: "mesh", tool: "read_thread", args: rest, form: "positional" });
+        break;
+      case "mesh-whoami":
+        steps.push({ k: "mesh", tool: "whoami", args: "", form: "kv" });
+        break;
+      case "mesh-targets":
+        steps.push({ k: "mesh", tool: "list_targets", args: "", form: "kv" });
+        break;
+      case "mesh-models":
+        steps.push({ k: "mesh", tool: "list_models", args: rest ? `target=${rest}` : "", form: "kv" });
         break;
       default:
         steps.push({ k: "say", text: `Unknown fake directive: ${cmd}` });
