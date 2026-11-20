@@ -190,7 +190,7 @@ fn connection(state: &AppState, target: &TargetId) -> (Option<(Mark, String)>, b
         "off".to_owned()
     } else {
         match (&st.status, &st.detail) {
-            (ConnectionStatus::Disabled, Some(d)) => d.clone(),
+            (ConnectionStatus::Disabled | ConnectionStatus::Stopped, Some(d)) => d.clone(),
             (ConnectionStatus::Disabled, None) => "off".to_owned(),
             (s, Some(d)) => format!("{} · {d}", s.as_str()),
             (s, None) => s.as_str().to_owned(),

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
-use tokio::sync::{Notify, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use yaac_protocol::attach::{
     self, ConnectionState, ConnectionStatus, DaemonSummary, HelloParams, HelloResult, RoutedNotification, RoutedRequest,
@@ -196,7 +196,7 @@ struct Conn {
 struct Target {
     def: TargetDef,
     state: ConnectionState,
-    supervisor: Option<(u64, JoinHandle<()>, Arc<Notify>)>,
+    supervisor: Option<(u64, JoinHandle<()>, Arc<crate::conn::Wake>)>,
     conn: Option<Conn>,
 }
 
@@ -284,6 +284,8 @@ pub(crate) struct Core {
     last_evict: Instant,
     last_notice_sweep: Instant,
     finder: Pager,
+    /// `hub/targets/start` requests waiting for their target to end connected or not.
+    starts: HashMap<TargetId, Vec<(ClientKey, RpcId)>>,
     pub(crate) exit: Option<ExitReason>,
 }
 
@@ -325,6 +327,7 @@ impl Core {
             last_evict: Instant::now(),
             last_notice_sweep: Instant::now(),
             finder: Pager::default(),
+            starts: HashMap::new(),
             exit: None,
         };
         for (target, thread, position) in loaded.positions {
@@ -507,11 +510,15 @@ impl Core {
             },
             ext::names::TARGETS_RECONNECT => Some(parse::<TargetRef>(params).and_then(|p| {
                 let t = self.targets.get(&p.id).ok_or_else(|| err(ErrorCode::TargetUnknown, "no such target"))?;
-                if let Some((_, _, notify)) = &t.supervisor {
-                    notify.notify_one();
+                if let Some((_, _, wake)) = &t.supervisor {
+                    wake.retry();
                 }
                 Ok(json!({}))
             })),
+            ext::names::TARGETS_START => match parse::<TargetRef>(params) {
+                Ok(p) => self.targets_start(client, id, &p.id),
+                Err(e) => Some(Err(e)),
+            },
             ext::names::STATUS => Some(Ok(to_value(&self.status()))),
             ext::names::THREADS_FIND => match parse::<FindParams>(params) {
                 Ok(p) => {
@@ -678,6 +685,7 @@ impl Core {
     }
 
     fn set_state(&mut self, id: &TargetId, new: ConnectionState) {
+        self.settle_starts(id, &new);
         let Some(t) = self.targets.get_mut(id) else { return };
         if t.state == new {
             return;
@@ -701,7 +709,7 @@ impl Core {
             }
             Ok(connector) => {
                 let sup = self.supervisors.fetch_add(1, Ordering::Relaxed) + 1;
-                let notify = Arc::new(Notify::new());
+                let notify = Arc::new(crate::conn::Wake::default());
                 let core = self.tx.clone();
                 let (target, name) = (id.clone(), t.def.name.as_str().to_owned());
                 let backoff = self.cfg.backoff;
@@ -711,6 +719,42 @@ impl Core {
                 let handle = tokio::spawn(supervise(sup, target, name, connector, backoff, retry, core));
                 t.supervisor = Some((sup, handle, notify));
             }
+        }
+    }
+
+    /// **Start it** (D96): connect a target whose machine is not running, booting it. Answered
+    /// when the target ends connected or the attempt fails ([`Core::settle_starts`]).
+    fn targets_start(&mut self, client: ClientKey, rid: &RpcId, id: &TargetId) -> Option<Result<Value, ErrorObject>> {
+        let Some(t) = self.targets.get(id) else { return Some(Err(err(ErrorCode::TargetUnknown, "no such target"))) };
+        if !t.def.enabled {
+            return Some(Err(hub_err(ext::codes::START_FAILED, "the target is disabled; enable it first")));
+        }
+        if t.state.status == ConnectionStatus::Connected {
+            return Some(Ok(json!({})));
+        }
+        let Some((_, _, wake)) = &t.supervisor else {
+            let why = t.state.detail.clone().unwrap_or_else(|| "the target cannot be connected".into());
+            return Some(Err(hub_err(ext::codes::START_FAILED, why)));
+        };
+        wake.start();
+        self.starts.entry(id.clone()).or_default().push((client, rid.clone()));
+        self.set_state(id, state(ConnectionStatus::Connecting, None));
+        None
+    }
+
+    /// Answers waiting `hub/targets/start` requests once the target's state says how the
+    /// attempt ended. `stopped` does not end one: a check that was already under way when the
+    /// user chose Start it may still report the machine down; the starting attempt follows.
+    fn settle_starts(&mut self, id: &TargetId, new: &ConnectionState) {
+        let outcome = match new.status {
+            ConnectionStatus::Connected => Ok(json!({})),
+            ConnectionStatus::Offline | ConnectionStatus::Incompatible | ConnectionStatus::Disabled => {
+                Err(hub_err(ext::codes::START_FAILED, new.detail.clone().unwrap_or_else(|| "the target did not connect".into())))
+            }
+            _ => return,
+        };
+        for (client, rid) in self.starts.remove(id).unwrap_or_default() {
+            self.reply(client, rid, outcome.clone());
         }
     }
 
@@ -844,8 +888,8 @@ impl Core {
         }
         match event {
             ConnEvent::Connecting => {
-                // A target that is down stays shown as down while it is checked again.
-                if t.conn.is_none() && !matches!(t.state.status, ConnectionStatus::Offline | ConnectionStatus::Disabled) {
+                // A stopped target stays shown as stopped while it is checked again.
+                if t.conn.is_none() && !matches!(t.state.status, ConnectionStatus::Offline | ConnectionStatus::Stopped) {
                     self.set_state(id, state(ConnectionStatus::Connecting, None));
                 }
             }
@@ -854,10 +898,10 @@ impl Core {
                 self.set_state(id, state(ConnectionStatus::Offline, Some(reason)));
             }
             ConnEvent::Down(reason) => {
-                // D35: "WSL distro Ubuntu is not running". The target stays enabled; it
-                // connects when the distro runs, or when the user asks to start it
-                // (`hub/targets/reconnect`). The window offers that, or disabling it.
-                self.set_state(id, state(ConnectionStatus::Disabled, Some(reason)));
+                // D35, D96: "WSL distro Ubuntu is not running". The target stays enabled and
+                // its threads unusable; it connects as soon as the distro runs, or when the
+                // user chooses Start it (`hub/targets/start`). The hub never starts it.
+                self.set_state(id, state(ConnectionStatus::Stopped, Some(reason)));
             }
             ConnEvent::Opened { writer, kill } => {
                 let client = ClientInfo {

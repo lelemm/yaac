@@ -121,8 +121,12 @@ open_enum! {
         Connected = "connected",
         /// Not connected; retrying.
         Offline = "offline",
-        /// Disabled by the user (or a stopped WSL distro that is not restarted automatically).
+        /// Disabled by the user.
         Disabled = "disabled",
+        /// The target's machine is not running — a stopped WSL distro — and is never started
+        /// behind the user's back (D35, D96). Its threads are unusable until it runs; the window
+        /// offers **Start it** (`hub/targets/start`). The detail says which distro.
+        Stopped = "stopped",
         /// Connected, but no common protocol version.
         Incompatible = "incompatible",
     }

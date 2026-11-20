@@ -53,8 +53,13 @@ pub mod names {
     pub const SETTINGS_GET: &str = "hub/settings/get";
     /// Window → hub: change the hub settings (a patch).
     pub const SETTINGS_UPDATE: &str = "hub/settings/update";
-    /// Window → hub: reconnect a target now (user request), skipping the backoff.
+    /// Window → hub: reconnect a target now (user request), skipping the backoff. Never
+    /// starts a stopped WSL distro.
     pub const TARGETS_RECONNECT: &str = "hub/targets/reconnect";
+    /// Window → hub: **Start it** — connect a target whose machine is not running (status
+    /// `stopped`), which boots the WSL distro. `{ id }`; answered `{}` once the target is
+    /// connected, or with an error carrying the reason (code `start_failed`).
+    pub const TARGETS_START: &str = "hub/targets/start";
     /// Window → hub: clear the cache ("clear cache"). Drafts are not touched.
     pub const CACHE_CLEAR: &str = "hub/cache/clear";
     /// Window → hub: store a `ui_state` value in the cache (the hub is its only writer).
@@ -86,6 +91,8 @@ pub mod codes {
     pub const NOT_ROUTABLE: &str = "not_routable";
     /// A target name is empty or already used.
     pub const NAME_TAKEN: &str = "name_taken";
+    /// `hub/targets/start` did not end connected; the message says why.
+    pub const START_FAILED: &str = "start_failed";
 }
 
 /// `hub/thread/reset` params.

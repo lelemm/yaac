@@ -114,12 +114,12 @@ impl HubPaths {
     }
 }
 
-/// A short, stable hash of a runtime directory (FNV-1a over its lower-cased text, since
-/// Windows paths are case-insensitive) for the pipe name.
+/// A short, stable hash of a runtime directory (FNV-1a over its lower-cased text with one kind
+/// of separator, since Windows paths are case-insensitive and accept both) for the pipe name.
 #[cfg(any(windows, test))]
 fn pipe_suffix(runtime_dir: &Path) -> String {
-    let text = runtime_dir.to_string_lossy().to_lowercase();
-    let text = text.trim_end_matches(['\\', '/']);
+    let text = runtime_dir.to_string_lossy().to_lowercase().replace('/', "\\");
+    let text = text.trim_end_matches('\\');
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in text.bytes() {
         hash ^= u64::from(byte);
@@ -195,6 +195,7 @@ mod tests {
     fn the_pipe_suffix_is_stable_and_separates_profiles() {
         let a = pipe_suffix(Path::new(r"C:\Users\u\AppData\Local\yaac\run"));
         assert_eq!(a, pipe_suffix(Path::new(r"c:\users\U\AppData\Local\yaac\run\")), "case and a trailing separator do not matter");
+        assert_eq!(a, pipe_suffix(Path::new("C:/Users/u/AppData/Local/yaac/run")), "nor the kind of separator");
         assert_ne!(a, pipe_suffix(Path::new(r"C:\Temp\t1\data\run")));
         assert_eq!(a.len(), 12);
     }

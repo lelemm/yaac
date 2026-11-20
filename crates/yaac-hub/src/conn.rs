@@ -3,6 +3,7 @@
 //! hub core. The protocol session itself lives in the core; the pump only moves bytes.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -11,6 +12,27 @@ use yaac_transport::{ConnectCtx, ConnectError, Connector, Stream};
 
 use crate::config::Backoff;
 use crate::core::CoreEvent;
+
+/// How the core nudges a supervisor: retry now (never boots a stopped machine), or start —
+/// one attempt that may boot it (the user's **Start it**).
+#[derive(Debug, Default)]
+pub(crate) struct Wake {
+    notify: Notify,
+    start: AtomicBool,
+}
+
+impl Wake {
+    /// Skip the backoff.
+    pub(crate) fn retry(&self) {
+        self.notify.notify_one();
+    }
+
+    /// Skip the backoff, and let the next attempt start the target's machine.
+    pub(crate) fn start(&self) {
+        self.start.store(true, Ordering::SeqCst);
+        self.notify.notify_one();
+    }
+}
 
 /// What happened on a connection, tagged by generation (one per stream opened).
 #[derive(Debug)]
@@ -39,7 +61,7 @@ pub(crate) async fn supervise(
     name: String,
     connector: Arc<dyn Connector>,
     backoff: Backoff,
-    retry_now: Arc<Notify>,
+    wake: Arc<Wake>,
     core: mpsc::UnboundedSender<CoreEvent>,
 ) {
     let mut ctx = ConnectCtx { target_id: target.as_str().to_owned(), target_name: name, allow_start: false };
@@ -82,10 +104,10 @@ pub(crate) async fn supervise(
         }
         tokio::select! {
             () = tokio::time::sleep(delay) => {}
-            () = retry_now.notified() => {
-                // The user asked: connect now, even if that starts the target's machine.
+            () = wake.notify.notified() => {
                 delay = backoff.initial;
-                ctx.allow_start = true;
+                // Only **Start it** may boot the target's machine, for this one attempt.
+                ctx.allow_start = wake.start.swap(false, Ordering::SeqCst);
             }
         }
         delay = (delay * 2).min(backoff.max);

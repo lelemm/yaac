@@ -161,6 +161,27 @@ fn a_windows_hub_runs_a_turn_in_wsl_on_the_fake_provider() {
         std::thread::sleep(Duration::from_millis(100));
     }
 
+    // D96 against the real wsl.exe: a distro that is not running is `stopped` (never started),
+    // and Start it on one that cannot start comes back with wsl.exe's own reason.
+    let ghost = call(&c, attach::names::TARGETS_ADD, json!({ "name": "ghost", "transport": { "kind": "wsl", "distro": "yaac-no-such-distro" }, "enabled": true }));
+    let ghost: TargetEntry = serde_json::from_value(ghost["target"].clone()).unwrap();
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let list: TargetsListResult = serde_json::from_value(call(&c, attach::names::TARGETS_LIST, json!({}))).unwrap();
+        let t = list.targets.into_iter().find(|t| t.id == ghost.id).unwrap();
+        if t.state.status == ConnectionStatus::Stopped {
+            eprintln!("ghost: {:?}", t.state.detail);
+            break;
+        }
+        assert!(Instant::now() < deadline, "never reported stopped: {:?}", t.state);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let failed = c
+        .request_blocking(yaac_hub::protocol::names::TARGETS_START, json!({ "id": ghost.id }), WAIT)
+        .expect_err("a distro that does not exist cannot start");
+    eprintln!("start it on ghost: {}", failed.message);
+    assert!(failed.message.contains("yaac-no-such-distro"), "{failed:?}");
+
     // Stop the hub (which kills its wsl.exe child), then the daemon, then remove its home.
     call(&c, attach::names::SHUTDOWN, json!({}));
     drop(c);
