@@ -236,10 +236,15 @@ Two things to prove before building on WSL (spikes S2 and S8):
 
 **Decided:** YAAC does not keep a distro alive artificially, and it does not start one behind
 the user's back. When a WSL distro that has an enabled connection is down, the host shows a
-notification — *"WSL distro Ubuntu is not running"* — with two choices: **start it** (YAAC
-connects, which boots the distro) or **disable its threads** (the connection is switched off
-and its threads are greyed out until it is enabled again). Turns that were running when the
-distro stopped are shown as interrupted, with everything the harness had saved.
+notification — *"WSL distro Ubuntu is not running"* — with **one action: Start it** (YAAC
+connects, which boots the distro). It is not a choice between starting and disabling (D96):
+while the distro is down, **its threads stay visible but are disabled** — readable from the
+cache, with the composer and every action unavailable and a single line in its place, "Ubuntu
+is not running · Start it". Pressing Start it — on the notification or in any of its threads
+— boots the distro, YAAC connects, and the threads become responsive again by themselves.
+Turning a WSL connection off remains a setting on the Targets page, not something offered
+here. Turns that were running when the distro stopped are shown as interrupted, with
+everything the harness had saved.
 
 Because merely running `wsl.exe -d <distro>` boots a distro, the automatic reconnect logic does
 not apply to WSL as it does to SSH: YAAC first checks the distro's state with

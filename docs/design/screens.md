@@ -844,8 +844,9 @@ Main shell with **Fix frame decoder** open, plus:
 - In the composer, two chips: an image chip with a warning mark, "diagram.png — this model
   cannot see images; it will be sent as a file"; a file chip "trace.log" with a progress bar
   "62%".
-- A notification card bottom-right: "WSL distro Ubuntu is not running." with **Start it** and
-  **Disable its threads**.
+- A notification card bottom-right: "WSL distro Ubuntu is not running." with one action,
+  **Start it**. A thread on that distro, when open, is readable but disabled: no composer, no
+  control row, a single line "Ubuntu is not running · Start it" in its place.
 
 ### 20 — The budget ran out
 
