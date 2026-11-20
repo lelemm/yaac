@@ -206,6 +206,41 @@ Each summary carries an `origin_kind`, so the filter is a view over the cached i
 The index is synchronised incrementally ([protocol](03-protocol.md#the-thread-index)): a
 reconnect after a week costs one small exchange, not a full listing.
 
+### Discovery is capped by age and by number
+
+**Decided.** A harness that has been used for months holds hundreds of old conversations.
+Showing them all would flood the sidebar the first time a machine is connected. So a
+conversation that YAAC did not create is brought in only if it is **recent enough** and
+**among the most recent**:
+
+| Cap | Default | Applies to |
+| --- | --- | --- |
+| Age | last active within **30 days** | each discovered conversation |
+| Number | the **50 most recent** | per provider instance, per target |
+
+Both must hold. The caps are applied **on the target, while scanning**: `yaacd` asks the
+harness for conversations newest first and stops at the first one that is too old or once it
+has enough — so an old machine costs a short listing, not a full one.
+
+**Never cut by the caps**, however old or however many:
+
+- threads started from YAAC, and threads an agent started through the mesh;
+- anything pinned, muted, or archived by the user — the user has touched it;
+- anything running, waiting, or needing the user right now;
+- any thread that belongs to an orchestration still in progress.
+
+**Nothing is out of reach.** The caps decide what is *listed*, not what exists:
+
+- **By id.** Looking a thread up by its id — in the sidebar search, or an agent's
+  `find_thread` — asks the harness directly when the index does not have it, and brings that
+  one thread in.
+- **"Show older"** at the foot of a project section, and "Search older threads on *devbox*"
+  under the search results, fetch the next batch from that target on demand.
+- A thread brought in either way stays for as long as it is open, pinned, or active, and is
+  dropped from the index again afterwards.
+
+The caps are settings per target (Advanced), and can be raised or switched off.
+
 ## Sidebar grouping
 
 Three levels — machine (origin), project, worktree — each independently switchable at any

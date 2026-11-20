@@ -114,3 +114,13 @@ worker found. To be done as one pass once the provider workers land:
   subscribe result; the window's own client id in the hub's hello; `thread/fork` without a
   first message; `enabled` in target-state notifications.
 - `item/read` on the wire; `mesh/usage` and budget forwarding in the hub.
+
+## Follow-up: after the mesh lands
+
+- **Discovery caps (D78, N39):** apply the age and number caps in `yaacd`'s thread index while
+  scanning (both providers list newest first — stop early), with the never-cut rules; on-demand
+  lookup by id at the harness; "Show older" / "Search older" paging from a target; the
+  per-target settings; the two sidebar affordances.
+- Unarchive on the wire; the Codex "found running / started by YAAC" fact in the descriptor;
+  a connection-step log for diagnostics; `hub/ssh/*` and the real SSH backend; WSL distro
+  listing; the outside-tools switch.
