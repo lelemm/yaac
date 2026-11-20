@@ -210,7 +210,8 @@ closer to a mail client's message list than to a file explorer.
 
 Unless a screen says otherwise, the sidebar shows exactly this:
 
-- `YAAC`; a search field with the grouping button at its right end; a **New** button.
+- `YAAC`, with the back and forward buttons beside it; a search field with the grouping button
+  at its right end; a **New** button.
 - **Needs you · 2**
   - needs-you mark · index-rebuild · `gpu-box`
   - needs-you mark · Fix frame decoder · `devbox`
@@ -269,6 +270,25 @@ and activity is quiet.**
 
 Who is working with whom, and how each worker is doing, is the job of the agents panel, not of
 the transcript.
+
+### Going back and forward
+
+Following a link from one chat to another must be undoable. Beside the `YAAC` title at the top
+of the sidebar sit two small icon buttons, **back** (‹) and **forward** (›), which work like a
+browser's:
+
+- Opening a thread — from the sidebar, a link in a transcript, the agents panel, *Needs you*,
+  or search — adds it to the history. **Back** returns to where the user was; **forward**
+  becomes available once they have gone back.
+- Going somewhere new after going back discards the forward entries, as in a browser.
+- Each entry remembers **where the user was reading**, not just which thread: going back to a
+  long transcript returns to the same scroll position, and a link that landed on a particular
+  message lands there again going forward.
+- A button with nowhere to go is drawn in the unavailable style and does nothing.
+- The **mouse's back and forward buttons** do the same, as do **Alt+←** and **Alt+→**.
+- Settings and a new-thread draft are places too: back from Settings returns to the thread
+  that was open.
+- A thread that has since been deleted is skipped.
 
 ### Text can be selected and copied
 
