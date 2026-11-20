@@ -40,7 +40,9 @@ a per-chat agents toggle with a permission prompt are added.
 - **Icons are real icons.** Every icon comes from one small icon set embedded in the app, drawn
   as vector shapes at the text's size. The one exception is the **harness marks**: each
   provider is shown with its **real logo** (the Codex mark, the Claude mark), embedded as a
-  vector asset from the vendor's official brand material and drawn monochrome at icon size; a
+  vector asset and drawn **in its brand colour** — the Claude mark in its orange, the Codex
+  mark in the theme's text colour (it has no colour of its own) — the one place colour appears
+  that does not report a state; a
   provider with no logo gets its initial in a circle. Which logo belongs to which provider is a
   lookup table, not a branch in UI code. Unicode symbols and emoji are never used as icons —
   they render differently on every machine.
