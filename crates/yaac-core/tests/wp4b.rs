@@ -281,7 +281,8 @@ fn boot_with_fresh() -> (Client, DemoHub) {
 #[test]
 fn projects_are_grouped_by_machine_most_recent_first() {
     let (c, _) = boot_with(Scenario::Fleet);
-    let groups = yaac_core::first_run::project_picker(&c.state, Some("devbox:yaac"));
+    let yaac = c.state.projects.iter().find(|p| p.name == "yaac").map(|p| p.id.clone()).expect("yaac");
+    let groups = yaac_core::first_run::project_picker(&c.state, Some(&yaac));
     let names: Vec<_> = groups.iter().map(|g| g.name.as_str()).collect();
     // gpu-box has the most recent activity (search-service, 20 s ago), then local (30 s).
     assert_eq!(&names[..2], ["gpu-box", "local"]);
@@ -427,4 +428,64 @@ fn ui_state_is_sent_only_when_attached() {
     c.set_ui_state(keys::THEME, &json!("dark"));
     settle(&mut c, &hub);
     assert!(c.errors.is_empty(), "{:?}", c.errors);
+}
+
+// ── wire data instead of window-local seams ────────────────────────────────────────────
+
+#[test]
+fn mute_pin_and_agents_go_through_thread_update() {
+    let (mut c, hub) = boot();
+    let fix = threads::fix();
+    assert!(!c.state.is_muted(&fix));
+    c.set_muted(&fix, true);
+    c.set_pinned(&fix, true);
+    c.set_agents_policy(&fix, yaac_core::state::AgentsPolicy::Allow);
+    settle(&mut c, &hub);
+    let s = c.state.summary(&fix).unwrap();
+    assert!(s.muted && s.pinned);
+    assert_eq!(s.agents, yaac_protocol::AgentsPolicy::Allow);
+    assert_eq!(c.state.agents_policy(&fix), yaac_core::state::AgentsPolicy::Allow);
+}
+
+#[test]
+fn projects_come_from_the_target_and_threads_carry_their_own() {
+    let (mut c, hub) = boot();
+    assert_eq!(c.state.projects.len(), 6);
+    let fix = threads::fix();
+    assert_eq!(c.state.project_of(&fix).map(|p| p.name.as_str()), Some("yaac"));
+    assert!(c.state.project_of(&threads::parser()).is_none(), "a temporary project");
+    c.create_project(&"devbox".into(), "/home/dev", "Home", None);
+    settle(&mut c, &hub);
+    assert_eq!(c.state.projects.iter().filter(|p| p.target.as_str() == "devbox").count(), 3);
+    // The deeper project still wins.
+    assert_eq!(c.state.project_of(&fix).map(|p| p.name.as_str()), Some("yaac"));
+}
+
+#[test]
+fn the_hub_search_pages_its_results() {
+    let (mut c, hub) = boot();
+    c.find("frame");
+    settle(&mut c, &hub);
+    let f = c.state.find.clone().expect("results");
+    assert!(f.results.contains(&threads::fix()));
+    assert!(!f.loading);
+    c.find("");
+    assert!(c.state.find.is_none());
+}
+
+#[test]
+fn thought_has_a_duration_from_the_item_times() {
+    let (mut c, hub) = boot();
+    let fix = threads::fix();
+    c.open(&fix);
+    settle(&mut c, &hub);
+    let map = yaac_core::attention::AttentionMap::compute(&c.state);
+    let lines: Vec<String> = yaac_core::activity::blocks(&c.state, &map, &fix, &Default::default())
+        .iter()
+        .filter_map(|b| match b {
+            yaac_core::activity::Block::Run { lines, .. } => Some(lines.iter().map(|l| l.text.clone()).collect::<Vec<_>>().join("|")),
+            _ => None,
+        })
+        .collect();
+    assert!(lines.iter().any(|l| l.contains("Thought for 4s")), "{lines:?}");
 }

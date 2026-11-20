@@ -7,7 +7,7 @@ use yaac_protocol::{
     Address, ClientId, Control, EffortId, InstanceId, ItemId, MeshBudgetResult, ModeId, ModelId,
     FsListResult, ProviderDescriptor, ProviderInstanceConfig, SyncToken,
     ThreadForkPreviewResult, TargetId, TargetPath, ThreadEventParams, ThreadSummary,
-    ThreadSyncResult, UploadId,
+    ThreadSyncResult, UploadId, ProjectKind,
 };
 
 use crate::hints::{HintChange, Hints, RequestKindWord};
@@ -171,21 +171,21 @@ pub struct Arrival {
     pub kind: RequestKindWord,
 }
 
-/// A thread's git status, as compactly as the sidebar shows it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GitStatus {
-    /// The branch.
-    pub branch: String,
-    /// Files added relative to origin.
-    pub added: u32,
-    /// Files modified relative to origin.
-    pub modified: u32,
-    /// Files deleted relative to origin.
-    pub deleted: u32,
-    /// Commits not pushed.
-    pub ahead: u32,
-    /// Commits not yet pulled.
-    pub behind: u32,
+/// The sidebar search, answered by the hub across every cached target.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FindState {
+    /// The query these results are for.
+    pub query: String,
+    /// Still asking.
+    pub loading: bool,
+    /// Matches so far (pages appended), as thread keys.
+    pub results: Vec<ThreadKey>,
+    /// More pages: the cursor to ask with.
+    pub cursor: Option<String>,
+    /// Total matches.
+    pub total: u32,
+    /// The failure, shown as-is.
+    pub error: Option<String>,
 }
 
 /// Whether a chat's agent may start and message other threads without asking.
@@ -288,22 +288,11 @@ pub struct AppState {
     pub client_id: Option<ClientId>,
     /// Requests that arrived while the user was elsewhere.
     pub arrivals: Vec<Arrival>,
-    /// SEAM (wire field missing): muted threads. `ThreadSummary` has `archived` but no
-    /// `muted`; until the protocol carries it, mute is window-local state.
-    pub muted: BTreeSet<ThreadKey>,
-    /// SEAM (wire field missing): pinned threads, window-local like `muted`.
-    pub pinned: BTreeSet<ThreadKey>,
-    /// SEAM (wire field missing): each thread's git status (branch, files differing from
-    /// origin, commits not pushed). Absent: the folder is not in git (or not known).
-    pub git: BTreeMap<ThreadKey, GitStatus>,
-    /// SEAM (wire field missing): the projects the user created (see [`crate::projects`]).
+    /// The projects of every target (`project/list`, `project/updated`), with window-unique
+    /// ids (see [`crate::projects::Project`]).
     pub projects: Vec<crate::projects::Project>,
-    /// SEAM (wire field missing): where each thread's folder sits in a repository, for the
-    /// repository rule of [`crate::projects::project_for`].
-    pub repo_locations: BTreeMap<ThreadKey, crate::projects::RepoLocation>,
-    /// SEAM (wire field missing): the per-chat "agents: ask / allow" choice of threads a
-    /// person started. No per-thread mesh policy exists on the wire yet.
-    pub agents_policy: BTreeMap<ThreadKey, AgentsPolicy>,
+    /// `hub/threads/find` results for the sidebar search, when attached to a real hub.
+    pub find: Option<FindState>,
     /// SEAM (wire field missing): what YAAC did on each SSH target during setup (who set it
     /// up and when, the line it installed). The hub's `TargetEntry` has no such record yet.
     pub ssh_records: BTreeMap<TargetId, crate::ssh_setup::SetupRecord>,
@@ -434,6 +423,7 @@ impl AppState {
     pub fn apply_target_state(&mut self, params: TargetStateParams) {
         if let Some(t) = self.target_mut(&params.id) {
             t.entry.state = params.state;
+            t.entry.enabled = params.enabled;
         }
     }
 
@@ -540,30 +530,50 @@ impl AppState {
         }
     }
 
-    /// Whether a thread is muted (see the seam on [`AppState::muted`]).
+    /// Whether a thread is muted.
     pub fn is_muted(&self, key: &ThreadKey) -> bool {
-        self.muted.contains(key)
+        self.summary(key).is_some_and(|s| s.muted)
     }
 
-    /// Whether a thread is pinned (see the seam on [`AppState::pinned`]).
+    /// Whether a thread is pinned.
     pub fn is_pinned(&self, key: &ThreadKey) -> bool {
-        self.pinned.contains(key)
+        self.summary(key).is_some_and(|s| s.pinned)
     }
 
-    /// The project a thread belongs to, if any.
+    /// The project a thread belongs to, if any: the user project its target resolved
+    /// (`ProjectRef.kind = user`); a temporary project (or none known) is `None`. A target that
+    /// does not resolve projects yet falls back to the folder rule over the known projects.
     pub fn project_of(&self, key: &ThreadKey) -> Option<&crate::projects::Project> {
         let s = self.summary(key)?;
-        let loc = crate::projects::Location {
-            target: key.target.clone(),
-            folder: s.cwd.to_string(),
-            repo: self.repo_locations.get(key).cloned(),
-        };
-        crate::projects::project_for(&self.projects, &loc)
+        match s.project.as_ref().and_then(|p| p.kind.as_ref()) {
+            Some(ProjectKind::User) => {
+                let id = s.project.as_ref().and_then(|p| p.id.as_ref())?;
+                self.projects.iter().find(|p| p.target == key.target && p.wire_id == id.as_str())
+            }
+            Some(_) => None,
+            None => {
+                let loc = crate::projects::Location {
+                    target: key.target.clone(),
+                    folder: s.cwd.to_string(),
+                    repo: s.repo.as_ref().map(crate::projects::RepoLocation::from_wire),
+                };
+                crate::projects::project_for(&self.projects, &loc)
+            }
+        }
     }
 
     /// The chat's agents policy (default: ask).
     pub fn agents_policy(&self, key: &ThreadKey) -> AgentsPolicy {
-        self.agents_policy.get(key).copied().unwrap_or_default()
+        match self.summary(key).map(|s| &s.agents) {
+            Some(yaac_protocol::AgentsPolicy::Allow) => AgentsPolicy::Allow,
+            _ => AgentsPolicy::Ask,
+        }
+    }
+
+    /// Replace one target's projects (from `project/list` or `project/updated`).
+    pub fn set_projects(&mut self, target: &TargetId, projects: Vec<yaac_protocol::Project>) {
+        self.projects.retain(|p| &p.target != target);
+        self.projects.extend(projects.into_iter().map(|p| crate::projects::Project::from_wire(target, p)));
     }
 
     /// Forget arrivals for a thread (it was opened).

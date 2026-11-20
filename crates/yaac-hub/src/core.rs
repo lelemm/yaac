@@ -80,6 +80,8 @@ pub(crate) enum CoreEvent {
     Notices { deliveries: Vec<(TargetId, MeshMessage)>, in_flight: u64 },
     /// The cached index of every target, for `hub/threads/find`.
     FindReady { client: ClientKey, id: RpcId, params: FindParams, threads: Vec<(TargetId, yaac_protocol::ThreadSummary)> },
+    /// The cached index of every target, for an agent's `findThreads` / `listTargets`.
+    MeshIndexReady { source: TargetId, generation: u64, peer_id: RpcId, query: yaac_protocol::MeshQuery, threads: Vec<(TargetId, yaac_protocol::ThreadSummary)>, labels: Vec<(TargetId, crate::mesh::TargetLabels)> },
     /// The relay changed; how much is still in flight.
     InFlight(u64),
     /// Checkpoint done; answer `hub/shutdown` and stop.
@@ -386,6 +388,9 @@ impl Core {
                 }
             }
             CoreEvent::FindReady { client, id, params, threads } => self.on_find_ready(client, id, &params, &threads),
+            CoreEvent::MeshIndexReady { source, generation, peer_id, query, threads, labels } => {
+                self.on_mesh_index(&source, generation, peer_id, &query, &threads, &labels);
+            }
             CoreEvent::InFlight(n) => self.in_flight = n,
             CoreEvent::ShutdownReady { client, id } => {
                 self.reply(client, id, Ok(json!({})));
@@ -1782,6 +1787,17 @@ impl Core {
     }
 
     fn route_query(&mut self, source: &TargetId, generation: u64, peer_id: RpcId, params: &MeshQueryParams) {
+        // The caller is stamped by its own yaacd: it must be a thread of the connection's target.
+        if params.caller.target().as_ref() != Some(source) {
+            let e = err(ErrorCode::PolicyDenied, "the calling thread does not belong to this target");
+            self.respond_peer(source, generation, peer_id, names::MESH_QUERY, Err(e));
+            return;
+        }
+        // Questions about the whole fleet are answered here, from the hub's own index.
+        if matches!(params.query, yaac_protocol::MeshQuery::FindThreads(_) | yaac_protocol::MeshQuery::ListTargets(_)) {
+            self.mesh_index_query(source, generation, peer_id, params.query.clone());
+            return;
+        }
         let dest = params.target.clone();
         if !self.targets.contains_key(&dest) {
             self.respond_peer(source, generation, peer_id, names::MESH_QUERY, Err(err(ErrorCode::TargetUnknown, format!("no target {dest}"))));
@@ -1848,6 +1864,58 @@ impl Core {
             let in_flight = s.relay.in_flight().unwrap_or(0);
             Some(CoreEvent::Notices { deliveries: deliver, in_flight })
         });
+    }
+
+    /// An agent's `findThreads` or `listTargets`: read the cached index off the core thread.
+    fn mesh_index_query(&mut self, source: &TargetId, generation: u64, peer_id: RpcId, query: yaac_protocol::MeshQuery) {
+        let targets: Vec<(TargetId, Option<TargetName>, bool)> = self
+            .settings
+            .targets
+            .iter()
+            .map(|d| (d.id.clone(), Some(d.name.clone()), self.targets.get(&d.id).is_some_and(|t| t.conn.as_ref().is_some_and(|c| c.ready))))
+            .collect();
+        let source = source.clone();
+        self.worker.submit(move |s| {
+            let mut threads = Vec::new();
+            let mut labels = Vec::new();
+            for (t, name, reachable) in &targets {
+                match s.cache.threads(t) {
+                    Ok(list) => threads.extend(list.into_iter().map(|th| (t.clone(), th))),
+                    Err(e) => return Some(CoreEvent::StoreError(e.to_string())),
+                }
+                let providers = s.cache.providers(t).unwrap_or_default();
+                labels.push((t.clone(), crate::mesh::TargetLabels { name: name.clone(), reachable: *reachable, providers }));
+            }
+            Some(CoreEvent::MeshIndexReady { source, generation, peer_id, query, threads, labels })
+        });
+    }
+
+    fn on_mesh_index(
+        &mut self,
+        source: &TargetId,
+        generation: u64,
+        peer_id: RpcId,
+        query: &yaac_protocol::MeshQuery,
+        threads: &[(TargetId, yaac_protocol::ThreadSummary)],
+        labels: &[(TargetId, crate::mesh::TargetLabels)],
+    ) {
+        let outcome = match query {
+            yaac_protocol::MeshQuery::FindThreads(q) => self
+                .finder
+                .page(threads, &crate::mesh::find_params(q), Instant::now())
+                .map(|page| {
+                    let label = |t: &TargetId| labels.iter().find(|(id, _)| id == t).map(|(_, l)| l.clone());
+                    to_value(&yaac_protocol::MeshQueryResult::FindThreads(crate::mesh::find_reply(&page, &label)))
+                })
+                .map_err(|e| err(ErrorCode::InvalidParams, e.to_string())),
+            _ => {
+                let targets: Vec<(TargetId, TargetName, bool)> =
+                    labels.iter().map(|(id, l)| (id.clone(), l.name.clone().unwrap_or_else(|| TargetName::new(id.as_str())), l.reachable)).collect();
+                let states: Vec<(TargetId, ThreadState)> = threads.iter().map(|(t, s)| (t.clone(), s.state.clone())).collect();
+                Ok(to_value(&yaac_protocol::MeshQueryResult::ListTargets(crate::mesh::targets_reply(&targets, &states))))
+            }
+        };
+        self.respond_peer(source, generation, peer_id, names::MESH_QUERY, outcome);
     }
 
     /// `hub/threads/find`: the cached index of every target, searched and paged.

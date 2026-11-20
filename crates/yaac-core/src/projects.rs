@@ -1,10 +1,10 @@
 //! Projects (docs/05-threads.md#projects): folders the user created, with names the user gave
 //! them, and which project a thread belongs to.
 //!
-//! **SEAM (wire field missing):** projects are stored on the target, but the protocol carries
-//! no project registry yet (`ThreadSummary.project` is the git identity, not a user project).
-//! Until it does, the window keeps them in [`crate::state::AppState::projects`] and the demo
-//! fills them.
+//! Projects are stored on the target (`project/list`, `project/create`, …) and each summary
+//! says which one its thread belongs to (`ProjectRef.kind` and `id`): the target applies the
+//! matching rule. [`project_for`] is the same rule, kept for a target that does not resolve
+//! projects itself.
 
 use yaac_protocol::TargetId;
 
@@ -22,8 +22,10 @@ pub struct RepoLocation {
 /// A project the user created.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Project {
-    /// Stable id.
+    /// Unique across targets in this window: `<target>/<id>`.
     pub id: String,
+    /// The target's own id for it (`ProjectId`).
+    pub wire_id: String,
     /// The name the user gave it.
     pub name: String,
     /// Its machine.
@@ -32,6 +34,27 @@ pub struct Project {
     pub folder: String,
     /// Where that folder sits in a repository, when it is in one.
     pub repo: Option<RepoLocation>,
+}
+
+impl RepoLocation {
+    /// From the wire.
+    pub fn from_wire(r: &yaac_protocol::RepoLocation) -> Self {
+        Self { repo: r.repo.to_string(), relative: r.relative.clone(), checkout: r.worktree_name.clone() }
+    }
+}
+
+impl Project {
+    /// From the wire, on `target`.
+    pub fn from_wire(target: &TargetId, p: yaac_protocol::Project) -> Self {
+        Self {
+            id: format!("{target}/{}", p.id),
+            wire_id: p.id.to_string(),
+            name: p.name,
+            target: target.clone(),
+            folder: p.folder.to_string(),
+            repo: p.repo.as_ref().map(RepoLocation::from_wire),
+        }
+    }
 }
 
 /// Where a thread runs.
@@ -91,6 +114,7 @@ mod tests {
     fn proj(name: &str, folder: &str, repo: Option<(&str, &str)>) -> Project {
         Project {
             id: name.to_owned(),
+            wire_id: name.to_owned(),
             name: name.to_owned(),
             target: TargetId::new("m"),
             folder: folder.to_owned(),

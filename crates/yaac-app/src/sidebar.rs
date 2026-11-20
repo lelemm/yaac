@@ -40,6 +40,17 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     ui.add_space(6.0);
     drafts(ui, app, actions);
 
+    // Attached to a real hub, the search goes to the hub (by id or fuzzy title, across every
+    // cached target, paged); the demo filters its own list.
+    if app.uses_hub_search() {
+        let q = app.ui.search.clone();
+        app.client.find(&q);
+        if app.client.state.find.is_some() {
+            find_results(ui, app, map, actions);
+            footer(ui, app, actions);
+            return;
+        }
+    }
     let secs = sections(&app.client.state, map, app.ui.grouping, &app.ui.search, app.ui.muted_open, now);
     let mut lines: Vec<(f32, f32, Line<'_>)> = Vec::new();
     let mut y = 0.0;
@@ -91,6 +102,51 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         }
     });
 
+    footer(ui, app, actions);
+}
+
+/// The hub's search results: one-line rows, then "More results" while there are pages left.
+fn find_results(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let Some(f) = app.client.state.find.clone() else { return };
+    let list_h = ui.available_height() - if app.demo.is_some() { 74.0 } else { 40.0 };
+    egui::ScrollArea::vertical().id_salt("find-list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
+        if let Some(e) = &f.error {
+            ui.label(egui::RichText::new(e).font(theme::ui(size::SMALL)).color(p.failed));
+        }
+        ui.label(widgets::secondary(if f.loading && f.results.is_empty() { "Searching…".to_owned() } else { format!("{} found", f.total) }, &p));
+        ui.add_space(4.0);
+        for key in &f.results {
+            let st = &app.client.state;
+            let Some(s) = st.summary(key) else { continue };
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
+            if st.selected_thread() == Some(key) {
+                ui.painter().rect_filled(rect.shrink2(vec2(0.0, 1.0)), 5.0, p.selected);
+            } else if resp.hovered() {
+                ui.painter().rect_filled(rect.shrink2(vec2(0.0, 1.0)), 5.0, p.faint);
+            }
+            let mark = yaac_core::attention::display(st, map, key).mark;
+            icons::mark(ui.painter(), pos2(rect.left() + 13.0, rect.center().y), 15.0, mark, &p);
+            let machine = ui.fonts_mut(|fo| fo.layout_no_wrap(st.target_name(&key.target), theme::ui(size::SMALL), p.text2));
+            let rx = rect.right() - 8.0 - machine.size().x;
+            ui.painter().galley(pos2(rx, rect.center().y - machine.size().y / 2.0), machine, p.text2);
+            let g = widgets::elided(ui, &s.title, &theme::ui(size::UI), p.text, rx - rect.left() - 36.0);
+            ui.painter().galley(pos2(rect.left() + 28.0, rect.center().y - g.size().y / 2.0), g, p.text);
+            if resp.clicked() {
+                actions.push(Action::Open(key.clone()));
+            }
+        }
+        if f.results.is_empty() && !f.loading && f.error.is_none() {
+            ui.label(widgets::secondary("No thread matches.", &p));
+        }
+        if f.cursor.is_some() && !f.loading && widgets::link(ui, &p, "More results", theme::ui(size::SMALL)).clicked() {
+            app.client.find_more();
+        }
+    });
+}
+
+fn footer(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
     // Footer: Settings, and the quiet hub status.
     ui.add_space(4.0);
     if app.demo.is_some() {
@@ -445,6 +501,11 @@ fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, 
                 }
                 if ui.button("Fork").clicked() {
                     actions.push(Action::OpenFork(row.key.clone()));
+                }
+                if ui.button("Copy ID").clicked() {
+                    // The harness's own id (what a terminal shows), else YAAC's address.
+                    let id = app.client.state.summary(&row.key).and_then(|s| s.native_id.clone()).unwrap_or_else(|| row.key.address().to_string());
+                    ui.ctx().copy_text(id);
                 }
             });
         if !open && app.ui.menu == Some(Menu::Context(row.key.clone())) {

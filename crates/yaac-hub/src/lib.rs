@@ -32,6 +32,7 @@ mod core;
 pub mod drafts;
 pub mod find;
 mod lock;
+pub mod mesh;
 mod migrate;
 pub mod paths;
 pub mod protocol;

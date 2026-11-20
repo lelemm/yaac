@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use yaac_protocol::attach::ConnectionStatus;
-use yaac_protocol::{Address, ThreadState};
+use yaac_protocol::ThreadState;
 
 use crate::hints::RequestKindWord;
 use crate::key::ThreadKey;
@@ -181,45 +181,16 @@ fn base_mark(state: &AppState, key: &ThreadKey) -> Mark {
     }
     let Some(s) = state.summary(key) else { return Mark::Idle };
     let hints = state.hints.get(key);
-    let running = match &s.state {
-        ThreadState::Running => true,
-        ThreadState::NeedsAttention => hints.is_some_and(|h| h.running_turn.is_some()),
-        _ => false,
-    };
-    if running {
-        // Waiting on another agent: blocked in a wait for messages, or on threads that are not
-        // its own workers. A parent waiting on its own workers is still running its
-        // orchestration.
-        let waiting = hints.is_some_and(|h| {
-            h.wait_targets().any(|targets| targets.is_empty() || targets.iter().any(|a| !is_descendant(state, a, key)))
-        });
-        return if waiting { Mark::Waiting } else { Mark::Running };
-    }
+    // The target reports waiting (on another agent) and done (a spawned thread whose work
+    // completed) itself; the window does not derive them.
     match &s.state {
+        ThreadState::Running => Mark::Running,
+        ThreadState::NeedsAttention if hints.is_some_and(|h| h.running_turn.is_some()) => Mark::Running,
+        ThreadState::Waiting => Mark::Waiting,
+        ThreadState::Done => Mark::Done,
         ThreadState::Failed => Mark::Failed,
-        _ => {
-            // A thread that took part in an orchestration (spawned, or messaged within one)
-            // and is not its root has finished its part: done. Anything else is idle.
-            let address = key.address();
-            let in_orchestration =
-                s.spawned_by.is_some() || s.root.as_ref().is_some_and(|r: &Address| r != &address);
-            if in_orchestration { Mark::Done } else { Mark::Idle }
-        }
+        _ => Mark::Idle,
     }
-}
-
-/// Whether the thread at `address` was spawned (at any depth) by `ancestor`.
-fn is_descendant(state: &AppState, address: &Address, ancestor: &ThreadKey) -> bool {
-    let target = ancestor.address();
-    let mut cur = state.key_of(address).and_then(|k| state.summary(&k).and_then(|s| s.spawned_by.clone()));
-    for _ in 0..32 {
-        let Some(a) = cur else { return false };
-        if a == target {
-            return true;
-        }
-        cur = state.key_of(&a).and_then(|k| state.summary(&k).and_then(|s| s.spawned_by.clone()));
-    }
-    false
 }
 
 /// The mark of a target's connection.

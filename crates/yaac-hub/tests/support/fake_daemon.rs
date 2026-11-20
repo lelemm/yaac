@@ -561,7 +561,7 @@ impl FakeDaemon {
             }
             names::MESH_QUERY => {
                 s.queries += 1;
-                Ok(serde_json::to_value(MeshQueryResult::ListThreads(ListThreadsReply { threads: vec![] })).unwrap())
+                Ok(serde_json::to_value(MeshQueryResult::ListThreads(ListThreadsReply { threads: vec![], ..Default::default() })).unwrap())
             }
             other => Err(ErrorObject::new(ErrorCode::MethodNotFound, format!("fake daemon: unknown method {other}"))),
         }

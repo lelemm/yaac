@@ -10,7 +10,7 @@ use yaac_protocol::{
     ModeInfo, ModelCapability, ModelId, ModelInfo, OriginKind, ProjectRef, ProviderDescriptor, ProviderKind,
     ProviderStatus, ReceiptReason, Seq, StoreIdentity, Support, TargetId, TargetName, TargetPath, ThreadEffective,
     ThreadEvent, ThreadEventParams, ThreadId, ThreadState, ThreadSummary, Timestamp, ToolKind, TurnId, UploadId,
-    WorktreeRef, ItemEvent,
+    WorktreeRef, ItemEvent, GitStatus, Project, ProjectId, ProjectKind,
 };
 
 use super::build::*;
@@ -47,6 +47,8 @@ pub(crate) struct Fleet {
     pub providers: BTreeMap<TargetId, Vec<ProviderDescriptor>>,
     pub threads: BTreeMap<ThreadKey, DemoThread>,
     pub budgets: BTreeMap<Address, MeshBudgetResult>,
+    /// Each target's projects.
+    pub projects: BTreeMap<TargetId, Vec<Project>>,
 }
 
 pub(crate) const ORCH: (&str, &str) = ("local", "t-orch");
@@ -390,6 +392,7 @@ impl Fleet {
             providers: BTreeMap::new(),
             threads: BTreeMap::new(),
             budgets: BTreeMap::new(),
+            projects: BTreeMap::new(),
         };
         f.providers.insert(TargetId::new("local"), vec![codex("codex", None, ProviderStatus::Ready), claude(ProviderStatus::Ready)]);
         f.providers.insert(
@@ -625,6 +628,8 @@ impl Fleet {
             decision("deny", "Deny", DecisionKind::Deny),
         ])));
         f.journal(&fix, ThreadEvent::TurnStarted(yaac_protocol::TurnStartedEvent { turn_id: TurnId::new("f-t1"), origin: yaac_protocol::TurnOrigin::User, at: None }));
+        // "Thought for 4s".
+        f.time_item(&fix, "f2", -184, -180);
 
         // Explain the handshake (10): held by a terminal session.
         f.push(&hs, done("h1", "h-t1", user("Can you explain the handshake between the client and server, step by step? Please include the key messages and what each one does.", &[], &[])));
@@ -636,7 +641,111 @@ impl Fleet {
             decision("deny", "Deny", DecisionKind::Deny),
         ])));
         f.push(&hs, item("h4", "h-t2", ItemStatus::InProgress, agent("I'll pause here until the approval is handled in the other program.")));
+
+        // What the targets report beyond the brief's table: muted and pinned threads, git
+        // status, and the projects the user created (the targets resolve which one each
+        // thread belongs to).
+        for key in [k(OLD_SPIKE), k(LINT), k(BENCH), k(V2PLAN)] {
+            f.set(&key, |s| s.muted = true);
+        }
+        f.set(&k(ORCH), |s| s.pinned = true);
+        // The targets report a finished worker as done and a thread blocked on another agent as
+        // waiting.
+        for key in [k(USERS), k(BILLING), k(NOTES), k(LINT)] {
+            f.set(&key, |s| s.state = ThreadState::Done);
+        }
+        f.set(&k(CI), |s| s.state = ThreadState::Waiting);
+        f.time_item(&k(BILLING), "b2", -9 * 60 - 40, -9 * 60 - 31);
+        f.time_item(&k(USERS), "u2", -12 * 60 - 30, -12 * 60 - 25);
+        for (key, branch, [added, modified, deleted, ahead, behind]) in [
+            (k(ORCH), "main", [0, 4, 0, 0, 0]),
+            (k(USERS), "auth/users", [3, 8, 1, 3, 0]),
+            (k(FIX), "feature/protocol", [1, 6, 0, 2, 0]),
+            (k(HANDSHAKE), "feature/protocol", [0, 0, 0, 0, 0]),
+            (k(BILLING), "auth/billing", [2, 6, 1, 1, 0]),
+            (k(CI), "main", [0, 0, 0, 0, 2]),
+            (k(SEARCH), "auth/search", [0, 3, 0, 0, 0]),
+            (k(INDEX), "auth/search", [0, 3, 0, 0, 0]),
+            (k(NOTES), "main", [0, 0, 0, 0, 0]),
+            (k(LINT), "main", [0, 0, 0, 0, 0]),
+            (k(BENCH), "main", [0, 1, 0, 0, 0]),
+            (k(V2PLAN), "main", [0, 0, 0, 0, 0]),
+            (k(OLD_SPIKE), "main", [0, 0, 0, 0, 0]),
+        ] {
+            f.set(&key, |s| {
+                s.git = Some(GitStatus { branch: Some(branch.into()), base: None, added, modified, deleted, ahead, behind, removed: false, at: None });
+                s.branch = Some(branch.into());
+            });
+        }
+        for (target, name, folder) in [
+            ("local", "api", "/home/dev/api"),
+            ("local", "spike", "/home/dev/spike"),
+            ("devbox", "yaac", "/home/dev/yaac"),
+            ("devbox", "api", "/home/dev/api"),
+            ("gpu-box", "search", "/home/dev/search"),
+            ("staging", "docs", "/home/dev/docs"),
+        ] {
+            f.create_project(&TargetId::new(target), name, folder);
+        }
         f
+    }
+
+    /// Give an item start and end times (seconds from now), for "Thought for 4s".
+    pub(super) fn time_item(&mut self, key: &ThreadKey, id: &str, start: i64, end: i64) {
+        let (s, e) = (self.ts(start), self.ts(end));
+        if let Some(t) = self.threads.get_mut(key)
+            && let Some(i) = t.items.iter_mut().find(|i| i.id.as_str() == id)
+        {
+            i.started_at = Some(s);
+            i.completed_at = Some(e);
+        }
+    }
+
+    /// Add a project on a target, and resolve every thread there again.
+    pub(super) fn create_project(&mut self, target: &TargetId, name: &str, folder: &str) -> Project {
+        let created_at = self.ts(0);
+        let list = self.projects.entry(target.clone()).or_default();
+        let p = Project {
+            id: ProjectId::new(format!("p{}", list.len() + 1)),
+            name: name.to_owned(),
+            folder: TargetPath::new(folder.trim_end_matches('/')),
+            repo: None,
+            cross_target_key: None,
+            created_at,
+        };
+        list.push(p.clone());
+        self.resolve_projects(target);
+        p
+    }
+
+    /// The target's matching rule: the deepest project folder containing the thread's folder;
+    /// otherwise a temporary project named after the folder.
+    pub(super) fn resolve_projects(&mut self, target: &TargetId) {
+        let projects: Vec<crate::projects::Project> =
+            self.projects.get(target).cloned().unwrap_or_default().into_iter().map(|p| crate::projects::Project::from_wire(target, p)).collect();
+        for (key, t) in self.threads.iter_mut().filter(|(k, _)| &k.target == target) {
+            let loc = crate::projects::Location { target: key.target.clone(), folder: t.summary.cwd.to_string(), repo: None };
+            let found = crate::projects::project_for(&projects, &loc);
+            let cross = t.summary.project.as_ref().and_then(|p| p.cross_target_key.clone());
+            t.summary.project = Some(match found {
+                Some(p) => ProjectRef {
+                    path: TargetPath::new(p.folder.clone()),
+                    display_name: p.name.clone(),
+                    cross_target_key: cross,
+                    kind: Some(ProjectKind::User),
+                    id: Some(ProjectId::new(p.wire_id.clone())),
+                    repo: None,
+                },
+                None => ProjectRef {
+                    path: t.summary.cwd.clone(),
+                    display_name: t.summary.cwd.to_string(),
+                    cross_target_key: None,
+                    kind: Some(ProjectKind::Temporary),
+                    id: None,
+                    repo: None,
+                },
+            });
+        }
     }
 
     /// A fresh install: only this computer, no threads yet (screens 07–09).
@@ -647,6 +756,7 @@ impl Fleet {
             providers: BTreeMap::new(),
             threads: BTreeMap::new(),
             budgets: BTreeMap::new(),
+            projects: BTreeMap::new(),
         };
         let mut c = claude(ProviderStatus::NeedsAuth);
         c.status_message = Some(SIGN_IN_HINT.into());

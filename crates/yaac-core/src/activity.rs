@@ -197,7 +197,20 @@ pub fn short_receipt(sent: &yaac_protocol::MeshSentItem) -> String {
 fn line_of(state: &AppState, map: &AttentionMap, index: usize, item: &Item) -> Option<ActivityLine> {
     let in_progress = item.status == ItemStatus::InProgress;
     let (mark, text, failed) = match &item.body {
-        ItemBody::Reasoning(_) => (LineMark::Thought, if in_progress { "Thinking…".to_owned() } else { "Thought".to_owned() }, false),
+        ItemBody::Reasoning(_) => {
+            let took = item
+                .started_at
+                .as_ref()
+                .zip(item.completed_at.as_ref())
+                .and_then(|(a, b)| Some(crate::time::secs(b)? - crate::time::secs(a)?))
+                .filter(|s| *s >= 0);
+            let text = match (in_progress, took) {
+                (true, _) => "Thinking…".to_owned(),
+                (false, Some(s)) => format!("Thought for {}", crate::time::duration(s)),
+                (false, None) => "Thought".to_owned(),
+            };
+            (LineMark::Thought, text, false)
+        }
         ItemBody::ToolCall(t) => {
             let failed = item.status == ItemStatus::Failed || t.exit_code.is_some_and(|c| c != 0);
             let mut text = plain(&t.title);

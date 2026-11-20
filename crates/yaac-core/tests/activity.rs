@@ -51,7 +51,7 @@ fn a_spawned_thread_shows_its_task_in_full_and_cards_are_never_collapsed() {
     let (c, _) = boot();
     assert_eq!(
         shape(&c, &threads::billing(), &Expansion::default()),
-        ["task", "run[Thought | Edited 6 files | Ran cargo test -p billing — 14 passed]", "prose", "run[Migrate auth module — orchestrator · delivered]"]
+        ["task", "run[Thought for 9s | Edited 6 files | Ran cargo test -p billing — 14 passed]", "prose", "run[Migrate auth module — orchestrator · delivered]"]
     );
     assert_eq!(shape(&c, &threads::index(), &Expansion::default())[2], "card");
 }

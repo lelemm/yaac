@@ -29,7 +29,7 @@ use yaac_protocol::{
 };
 
 use self::build::*;
-use self::fleet::{PARSER, BENCH, BILLING, CI, FIX, Fleet, HANDSHAKE, INDEX, LINT, NOTES, OLD_SPIKE, ORCH, SEARCH, USERS, V2PLAN, k};
+use self::fleet::{PARSER, BENCH, BILLING, CI, FIX, Fleet, HANDSHAKE, INDEX, LINT, NOTES, ORCH, SEARCH, USERS, V2PLAN, k};
 use crate::key::ThreadKey;
 use crate::link::HubLink;
 use crate::state::{AppState, DraftAttachment, SendAs};
@@ -194,63 +194,14 @@ impl DemoHub {
         while self.tick() {}
     }
 
-    /// Threads the demo window starts with muted (window-local, see the mute seam).
-    pub fn initially_muted() -> Vec<ThreadKey> {
-        vec![k(OLD_SPIKE), k(LINT), k(BENCH), k(V2PLAN)]
-    }
-
-    /// Window-side data the protocol does not carry yet (the seams): muted and pinned threads,
-    /// git status per thread, and the projects the user created. Demo only.
+    /// Window-side data the protocol does not carry yet (the remaining seam): what YAAC did
+    /// on each SSH server. Demo only.
     pub fn apply_seams(state: &mut AppState) {
-        use crate::projects::Project;
-        use crate::state::GitStatus;
-        state.muted.extend(Self::initially_muted());
-        state.pinned.insert(k(ORCH));
-        let git = |b: &str, [added, modified, deleted, ahead, behind]: [u32; 5]| GitStatus {
-            branch: b.to_owned(),
-            added,
-            modified,
-            deleted,
-            ahead,
-            behind,
-        };
-        for (key, g) in [
-            (k(ORCH), git("main", [0, 4, 0, 0, 0])),
-            (k(USERS), git("auth/users", [3, 8, 1, 3, 0])),
-            (k(FIX), git("feature/protocol", [1, 6, 0, 2, 0])),
-            (k(HANDSHAKE), git("feature/protocol", [0, 0, 0, 0, 0])),
-            (k(BILLING), git("auth/billing", [2, 6, 1, 1, 0])),
-            (k(CI), git("main", [0, 0, 0, 0, 2])),
-            (k(SEARCH), git("auth/search", [0, 3, 0, 0, 0])),
-            (k(INDEX), git("auth/search", [0, 3, 0, 0, 0])),
-            (k(NOTES), git("main", [0, 0, 0, 0, 0])),
-            (k(LINT), git("main", [0, 0, 0, 0, 0])),
-            (k(BENCH), git("main", [0, 1, 0, 0, 0])),
-            (k(V2PLAN), git("main", [0, 0, 0, 0, 0])),
-            (k(OLD_SPIKE), git("main", [0, 0, 0, 0, 0])),
-        ] {
-            state.git.insert(key, g);
-        }
-        let project = |target: &str, name: &str, folder: &str| Project {
-            id: format!("{target}:{name}"),
-            name: name.to_owned(),
-            target: target.into(),
-            folder: folder.to_owned(),
-            repo: None,
-        };
         use crate::ssh_setup::SetupRecord;
         state.ssh_records.insert("devbox".into(), SetupRecord::InstalledByYaac { key: ssh::demo_line("devbox"), date: "2026-11-20".into() });
         state.ssh_records.insert("gpu-box".into(), SetupRecord::AlreadyInPlace { date: "2026-10-02".into() });
         state.ssh_records.insert("staging".into(), SetupRecord::InstalledByYaac { key: ssh::demo_line("staging"), date: "2026-11-02".into() });
         state.ssh_records.insert("legacy".into(), SetupRecord::NotSetUp);
-        state.projects = vec![
-            project("local", "api", "/home/dev/api"),
-            project("local", "spike", "/home/dev/spike"),
-            project("devbox", "yaac", "/home/dev/yaac"),
-            project("devbox", "api", "/home/dev/api"),
-            project("gpu-box", "search", "/home/dev/search"),
-            project("staging", "docs", "/home/dev/docs"),
-        ];
     }
 
     /// Screen 26: mute search-service, users-service, and index-rebuild; unmute two others so
@@ -306,6 +257,7 @@ impl Inner {
                 self.ready.push_back(result(id, json!({})));
             }
             crate::client::hub_names::CACHE_CLEAR => self.ready.push_back(result(id, json!({}))),
+            crate::client::hub_names::THREADS_FIND => self.find(id, &params),
             crate::client::hub_names::SETTINGS_GET | crate::client::hub_names::SETTINGS_UPDATE => {
                 if let Some(a) = params.get("always").and_then(Value::as_bool) {
                     self.always = a;
@@ -555,7 +507,51 @@ impl Inner {
                 }
                 self.ready.push_back(result(id, json!({ "instance": { "id": iid, "kind": "", "enabled": true, "backend": "auto" } })));
             }
-            m::THREAD_FORK => self.fork(id, target, p),
+            m::THREAD_FORK | m::THREAD_FORK_ONLY => self.fork(id, target, p),
+            m::THREAD_UPDATE => {
+                let Some(key) = thread(p, "threadId") else { return };
+                let Some(t) = self.fleet.threads.get_mut(&key) else {
+                    self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
+                    return;
+                };
+                if let Some(v) = p.get("muted").and_then(Value::as_bool) {
+                    t.summary.muted = v;
+                }
+                if let Some(v) = p.get("pinned").and_then(Value::as_bool) {
+                    t.summary.pinned = v;
+                }
+                if let Some(v) = p.get("agents").and_then(|v| serde_json::from_value::<yaac_protocol::AgentsPolicy>(v.clone()).ok()) {
+                    t.summary.agents = v;
+                }
+                let summary = t.summary.clone();
+                self.ready.push_back(result(id, json!({ "thread": summary })));
+                self.ready.push_back(routed(target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
+            }
+            m::PROJECT_LIST => {
+                let projects = self.fleet.projects.get(target).cloned().unwrap_or_default();
+                self.ready.push_back(result(id, json!({ "projects": projects })));
+            }
+            m::PROJECT_CREATE => {
+                let folder = p.get("folder").and_then(Value::as_str).unwrap_or("").to_owned();
+                let name = p.get("name").and_then(Value::as_str).unwrap_or("").to_owned();
+                let project = self.fleet.create_project(target, &name, &folder);
+                self.ready.push_back(result(id, json!({ "project": project })));
+                self.projects_changed(target);
+            }
+            m::PROJECT_RENAME | m::PROJECT_DELETE => {
+                let pid = p.get("projectId").and_then(Value::as_str).unwrap_or("").to_owned();
+                let name = p.get("name").and_then(Value::as_str).map(str::to_owned);
+                if let Some(list) = self.fleet.projects.get_mut(target) {
+                    match name {
+                        Some(n) => list.iter_mut().filter(|x| x.id.as_str() == pid).for_each(|x| x.name = n.clone()),
+                        None => list.retain(|x| x.id.as_str() != pid),
+                    }
+                }
+                self.fleet.resolve_projects(target);
+                let project = self.fleet.projects.get(target).and_then(|l| l.iter().find(|x| x.id.as_str() == pid)).cloned();
+                self.ready.push_back(result(id, json!({ "project": project })));
+                self.projects_changed(target);
+            }
             _ => self.ready.push_back(error(id, ErrorCode::MethodNotFound, method)),
         }
     }
@@ -745,6 +741,15 @@ impl Inner {
                 t.summary.cwd = TargetPath::new(cwd);
             }
         }
+        // `thread/start { project }`: the thread starts in that project's folder.
+        let folder = p
+            .get("project")
+            .and_then(Value::as_str)
+            .and_then(|pid| self.fleet.projects.get(target)?.iter().find(|x| x.id.as_str() == pid).map(|x| x.folder.clone()));
+        if let (Some(folder), Some(t)) = (folder, self.fleet.threads.get_mut(&key)) {
+            t.summary.cwd = folder;
+        }
+        self.fleet.resolve_projects(target);
         let turn = TurnId::new(self.next("turn"));
         let summary = self.fleet.threads[&key].summary.clone();
         self.ready.push_back(routed(target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
@@ -805,6 +810,45 @@ impl Inner {
         self.ready.push_back(routed(target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
         let kind = if native { "native" } else { "handoff" };
         self.ready.push_back(result(id, json!({ "threadId": thread_id, "turnId": "fork-0", "forkKind": kind })));
+    }
+
+    /// `project/updated`, and every summary on the target again (their projects moved).
+    fn projects_changed(&mut self, target: &TargetId) {
+        let projects = self.fleet.projects.get(target).cloned().unwrap_or_default();
+        self.ready.push_back(routed(target, m::PROJECT_UPDATED, json!({ "projects": projects })));
+        let summaries: Vec<ThreadSummary> = self.fleet.threads.iter().filter(|(k, _)| &k.target == target).map(|(_, t)| t.summary.clone()).collect();
+        for summary in summaries {
+            self.ready.push_back(routed(target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
+        }
+    }
+
+    /// `hub/threads/find`: by id (a prefix of four or more characters) or by words of the
+    /// title, ten per page.
+    fn find(&mut self, id: RpcId, params: &Value) {
+        let query = params.get("query").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
+        let start: usize = params.get("cursor").and_then(Value::as_str).and_then(|c| c.parse().ok()).unwrap_or(0);
+        let hits: Vec<(TargetId, ThreadSummary)> = self
+            .fleet
+            .threads
+            .iter()
+            .filter(|(k, t)| {
+                (query.len() >= 4 && (k.thread.as_str().starts_with(&query) || t.summary.native_id.as_deref().is_some_and(|n| n.starts_with(&query))))
+                    || query.split_whitespace().all(|w| t.summary.title.to_lowercase().contains(w))
+            })
+            .map(|(k, t)| (k.target.clone(), t.summary.clone()))
+            .collect();
+        let total = hits.len();
+        let page: Vec<Value> = hits
+            .iter()
+            .skip(start)
+            .take(10)
+            .map(|(t, s)| json!({ "target": t, "address": yaac_protocol::Address::new(t, &s.id), "matched": "title", "exact": false, "score": 1.0, "thread": s }))
+            .collect();
+        let mut res = json!({ "results": page, "total": total, "ambiguous": false });
+        if start + 10 < total {
+            res["cursor"] = json!((start + 10).to_string());
+        }
+        self.ready.push_back(result(id, res));
     }
 
     fn targets_changed(&mut self) {
@@ -1064,6 +1108,7 @@ impl Inner {
                     p_orch.clone(),
                 )));
                 self.fleet.push(&notes, done("n2", "n-t1", reasoning("Collect the merged changes of the three workers.")));
+                self.fleet.time_item(&notes, "n2", -3 * 3600 - 800, -3 * 3600 - 794);
                 self.fleet.push(&notes, done("n3", "n-t1", tool(ToolKind::FileChange, "Wrote `docs/release/auth-migration.md`", None, "")));
                 self.fleet.push(&notes, done("n4", "n-t1", agent("Drafted the release notes.")));
                 self.fleet.push(&notes, done("n5", "n-t1", sent(

@@ -467,6 +467,51 @@ export interface FilePart {
 }
 
 /**
+ * `findThreads`: find threads across every target by id or fuzzy title. Answered by the hub
+ * from its own thread index (no fan-out); the query's `target` is ignored.
+ */
+export interface FindThreadsQuery {
+  /**
+   * The cursor of a previous page.
+   */
+  cursor?: string | null;
+  /**
+   * Only threads of this target.
+   */
+  onlyTarget?: TargetId | null;
+  /**
+   * An id, an id prefix (four characters or more), an address, or words of a title.
+   */
+  query: string;
+  /**
+   * Only threads in this state.
+   */
+  state?: ThreadState | null;
+}
+
+/**
+ * `findThreads` reply: one page, best first.
+ */
+export interface FindThreadsReply {
+  /**
+   * The query was an id prefix that matched several threads.
+   */
+  ambiguous?: boolean;
+  /**
+   * The next page, when there is one.
+   */
+  cursor?: string | null;
+  /**
+   * This page.
+   */
+  results: FoundThreadInfo[];
+  /**
+   * How many matched in all.
+   */
+  total: number;
+}
+
+/**
  * How a fork carries history.
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
@@ -500,6 +545,24 @@ export interface FormRequest {
    * Who asks (e.g. an MCP server name).
    */
   source?: string | null;
+}
+
+/**
+ * One `findThreads` match.
+ */
+export interface FoundThreadInfo {
+  /**
+   * Whether an id matched in full (rather than by prefix).
+   */
+  exact?: boolean;
+  /**
+   * How it matched: `id`, `nativeId`, `address`, or `title`.
+   */
+  matched: string;
+  /**
+   * The thread.
+   */
+  thread: MeshThreadInfo;
 }
 
 /**
@@ -919,6 +982,22 @@ export interface ListModelsReply {
 }
 
 /**
+ * `listTargets`: the targets of the mesh with counts. Answered by the hub; the query's
+ * `target` is ignored.
+ */
+export type ListTargetsQuery = { [key: string]: unknown };
+
+/**
+ * `listTargets` reply.
+ */
+export interface ListTargetsReply {
+  /**
+   * Every target.
+   */
+  targets: TargetCount[];
+}
+
+/**
  * `listThreads`.
  */
 export interface ListThreadsQuery {
@@ -933,9 +1012,17 @@ export interface ListThreadsQuery {
  */
 export interface ListThreadsReply {
   /**
-   * Matching threads.
+   * The next page, when there is one.
+   */
+  cursor?: string | null;
+  /**
+   * Matching threads (one page).
    */
   threads: MeshThreadInfo[];
+  /**
+   * How many threads matched in all, when the answer is paged.
+   */
+  total?: number | null;
 }
 
 /**
@@ -1361,7 +1448,11 @@ export type MeshQuery = ({
   tool: "stopThread";
 } & StopThreadQuery) | ({
   tool: "threadStates";
-} & ThreadStatesQuery);
+} & ThreadStatesQuery) | ({
+  tool: "findThreads";
+} & FindThreadsQuery) | ({
+  tool: "listTargets";
+} & ListTargetsQuery);
 
 /**
  * `mesh/query`. Sent by the source `yaacd` to the hub with `target` = destination; the hub
@@ -1400,7 +1491,11 @@ export type MeshQueryResult = ({
   tool: "stopThread";
 } & StopThreadReply) | ({
   tool: "threadStates";
-} & ThreadStatesReply);
+} & ThreadStatesReply) | ({
+  tool: "findThreads";
+} & FindThreadsReply) | ({
+  tool: "listTargets";
+} & ListTargetsReply);
 
 /**
  * `mesh/receipt` (hub → source target): a relayed message moved on (for example it reached
@@ -1510,6 +1605,14 @@ export interface MeshThreadFilter {
    */
   childrenOf?: Address | null;
   /**
+   * The cursor of a previous page (bound to the filter and to a snapshot of the results).
+   */
+  cursor?: string | null;
+  /**
+   * Include idle, archived, and automated threads (by default only active ones).
+   */
+  includeInactive?: boolean;
+  /**
    * Upper bound on results.
    */
   limit?: number | null;
@@ -1525,6 +1628,10 @@ export interface MeshThreadFilter {
    * Only running threads.
    */
   running?: boolean;
+  /**
+   * Only threads in this state.
+   */
+  state?: ThreadState | null;
   /**
    * Free text matched against title and preview.
    */
@@ -2722,6 +2829,10 @@ export interface SpawnThreadQuery {
    */
   cwd?: TargetPath | null;
   /**
+   * The new thread's depth of spawning (the caller's depth plus one).
+   */
+  depth?: number | null;
+  /**
    * Do not send the child's final answer back to the parent.
    */
   detached?: boolean;
@@ -2887,6 +2998,28 @@ export type Support = "supported" | "unsupported" | "unknown";
  * A position in `yaacd`'s thread-index change counter. Empty means "full listing".
  */
 export type SyncToken = string;
+
+/**
+ * One target in a `listTargets` reply.
+ */
+export interface TargetCount {
+  /**
+   * Threads active there (running, waiting, or needing the user), as last known.
+   */
+  activeThreads: number;
+  /**
+   * Immutable id.
+   */
+  id: TargetId;
+  /**
+   * The user's label.
+   */
+  name: TargetName;
+  /**
+   * Whether the hub is connected to it now.
+   */
+  reachable: boolean;
+}
 
 /**
  * Facts about the target.

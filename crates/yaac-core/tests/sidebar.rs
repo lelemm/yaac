@@ -152,13 +152,14 @@ fn needs_you_lists_every_machine_most_recent_first() {
 
 #[test]
 fn pinned_threads_leave_their_project_and_projects_take_new_threads() {
-    let (mut c, _) = boot();
+    let (mut c, hub) = boot();
     c.set_pinned(&threads::fix(), true);
     let r = render(&c, Grouping::default());
     assert!(r.contains(&"# Pinned · 2".to_owned()));
     assert_eq!(r.iter().filter(|l| l.starts_with("Fix frame decoder")).count(), 2, "Needs you and Pinned: {r:#?}");
     // Creating a project from a temporary one moves its threads in.
-    c.create_project(&"devbox".into(), "~/scratch/spike-7", "Parser spike");
+    c.create_project(&"devbox".into(), "~/scratch/spike-7", "Parser spike", None);
+    common::settle(&mut c, &hub);
     let r = render(&c, Grouping::default());
     assert!(r.contains(&"# Parser spike — devbox".to_owned()), "{r:#?}");
     assert!(!r.iter().any(|l| l.contains("_~/scratch")));

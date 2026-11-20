@@ -491,6 +491,18 @@ impl YaacApp {
         })
     }
 
+    /// The sidebar search goes to the hub (`hub/threads/find`) when attached to a real one.
+    pub(crate) fn uses_hub_search(&self) -> bool {
+        #[cfg(feature = "hub")]
+        {
+            self.hub.is_some() && self.client.state.hub.attached
+        }
+        #[cfg(not(feature = "hub"))]
+        {
+            false
+        }
+    }
+
     pub(crate) fn pump_demo(&mut self) -> bool {
         let mut any = false;
         for _ in 0..1000 {
@@ -514,9 +526,16 @@ impl YaacApp {
         let Some(t) = target else { return };
         let selected_project = st.selected_thread().and_then(|k| st.project_of(k)).map(|p| p.id.clone());
         let first_here = st.projects.iter().find(|p| p.target == t).map(|p| p.id.clone());
-        let id = self.client.new_thread(t, None);
-        if let Some(p) = selected_project.or(first_here) {
-            self.client.set_draft_project(id, &p);
+        let id = self.client.new_thread(t.clone(), None);
+        match selected_project.or(first_here) {
+            Some(p) => self.client.set_draft_project(id, &p),
+            None => {
+                // No project on this machine yet: a thread starts in a project's folder, so ask
+                // for one right away (the draft goes into it once created).
+                let mut cp = crate::sidebar::create_project_for(self, &t, "~");
+                cp.for_draft = Some(id);
+                self.ui.create_project = Some(cp);
+            }
         }
         self.ui.settings = false;
         self.ui.threads_overlay = false;
@@ -567,10 +586,8 @@ impl YaacApp {
                 Action::SetMuted(k, m) => self.client.set_muted(&k, m),
                 Action::SetPinned(k, v) => self.client.set_pinned(&k, v),
                 Action::CreateProject(cp) => {
-                    self.client.create_project(&cp.target, &cp.folder, &cp.name);
-                    if let (Some(d), Some(p)) = (cp.for_draft, self.client.state.projects.last().map(|p| p.id.clone())) {
-                        self.client.set_draft_project(d, &p);
-                    }
+                    // The draft (if any) is put in the project once the target created it.
+                    self.client.create_project(&cp.target, &cp.folder, &cp.name, cp.for_draft);
                 }
                 Action::DraftProject(d, p) => self.client.set_draft_project(d, &p),
                 Action::Archive(k) => self.client.archive(&k),

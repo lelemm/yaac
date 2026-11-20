@@ -41,6 +41,10 @@ pub mod hub_names {
     pub const INDEX_CHANGED: &str = "hub/index/changed";
     /// A target's cached providers changed.
     pub const PROVIDERS_CHANGED: &str = "hub/providers/changed";
+    /// Find threads by id or fuzzy title across every cached target.
+    pub const THREADS_FIND: &str = "hub/threads/find";
+    /// A target's cached projects were replaced.
+    pub const PROJECTS_CHANGED: &str = "hub/projects/changed";
     /// The window is newer than the hub.
     pub const HUB_OUTDATED: &str = "hub_outdated";
     /// The window is older than the hub.
@@ -66,6 +70,9 @@ enum Call {
     InstanceChanged(TargetId),
     FsList { target: TargetId, path: String },
     HubSettings,
+    Projects(TargetId),
+    ProjectCreate { target: TargetId, for_draft: Option<u64> },
+    Find { query: String },
     Shutdown,
     TargetChanged,
     Ignore,
@@ -253,6 +260,23 @@ impl Client {
             Call::HubSettings => {
                 self.state.hub.always = result.get("settings").and_then(|s| s.get("always")).and_then(Value::as_bool);
             }
+            Call::Projects(t) => {
+                if let Ok(r) = serde_json::from_value::<yaac_protocol::ProjectListResult>(result) {
+                    self.state.set_projects(&t, r.projects);
+                }
+            }
+            Call::ProjectCreate { target, for_draft } => {
+                let Ok(r) = serde_json::from_value::<yaac_protocol::ProjectResult>(result) else { return };
+                let p = crate::projects::Project::from_wire(&target, r.project);
+                let id = p.id.clone();
+                if !self.state.projects.iter().any(|x| x.id == id) {
+                    self.state.projects.push(p);
+                }
+                if let Some(d) = for_draft {
+                    self.set_draft_project(d, &id);
+                }
+            }
+            Call::Find { query } => self.on_find(&query, &result),
             Call::Shutdown => self.state.hub.shutdown_answered = true,
             Call::TargetChanged => {
                 self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
@@ -283,6 +307,9 @@ impl Client {
                 if r.effective.is_some() {
                     t.effective = r.effective;
                 }
+                if r.context.is_some() {
+                    t.context = r.context;
+                }
                 let reset = match &r.mode {
                     SubscribeMode::Replay(rp) => {
                         let hints = self.state.hints.entry(key.clone()).or_default();
@@ -301,6 +328,9 @@ impl Client {
                 let Ok(r) = serde_json::from_value::<ThreadReadResult>(result) else { return };
                 let rev = self.state.next_stamp();
                 let Some(t) = self.state.transcripts.get_mut(&key) else { return };
+                if r.context.is_some() {
+                    t.context = r.context;
+                }
                 let Some(load) = t.loading.as_mut() else { return };
                 load.pages.extend(r.items);
                 for u in r.uploads {
@@ -440,7 +470,13 @@ impl Client {
             Call::FsList { target, path } => {
                 self.state.fs_listings.insert((target, path), FsListingState::Failed(error.message.clone()));
             }
-            Call::HubSettings => {}
+            Call::HubSettings | Call::Projects(_) => {}
+            Call::Find { query } => {
+                if let Some(f) = self.state.find.as_mut().filter(|f| f.query == query) {
+                    f.loading = false;
+                    f.error = Some(error.message.clone());
+                }
+            }
             _ => self.error(None, error.message.clone()),
         }
     }
@@ -462,6 +498,11 @@ impl Client {
             hub_names::TARGETS_CHANGED => {
                 if let Ok(r) = serde_json::from_value::<attach::TargetsListResult>(params) {
                     self.state.set_targets(r.targets);
+                }
+            }
+            hub_names::PROJECTS_CHANGED => {
+                if let Some(t) = params.get("target").and_then(Value::as_str).map(TargetId::new) {
+                    self.routed(&t, m::PROJECT_LIST, json!({}), Call::Projects(t.clone()));
                 }
             }
             hub_names::INDEX_CHANGED => {
@@ -522,6 +563,11 @@ impl Client {
                     self.state.remove_thread(&ThreadKey::new(target, p.thread_id));
                 }
             }
+            m::PROJECT_UPDATED => {
+                if let Ok(r) = serde_json::from_value::<yaac_protocol::ProjectListResult>(n.params) {
+                    self.state.set_projects(&target, r.projects);
+                }
+            }
             m::PROVIDER_UPDATED => {
                 if let Ok(p) = serde_json::from_value::<ProviderUpdatedParams>(n.params) {
                     self.state.apply_providers(&target, vec![p.provider], false);
@@ -535,6 +581,7 @@ impl Client {
 
     fn load_target(&mut self, target: &TargetId) {
         self.routed(target, m::PROVIDER_LIST, json!({}), Call::Providers(target.clone()));
+        self.routed(target, m::PROJECT_LIST, json!({}), Call::Projects(target.clone()));
         self.sync(target);
     }
 
@@ -733,6 +780,9 @@ impl Client {
         let Some(cwd) = draft.cwd.clone() else { return false };
         let op = self.op_id();
         let mut params = json!({ "opId": op, "instance": instance, "cwd": cwd, "input": input });
+        if let Some(p) = draft.project.as_ref().and_then(|pid| self.state.projects.iter().find(|p| &p.id == pid)) {
+            params["project"] = json!(p.wire_id);
+        }
         if let Some(mdl) = &draft.model {
             params["model"] = json!(mdl);
         }
@@ -748,13 +798,23 @@ impl Client {
         true
     }
 
-    /// Mute or unmute a thread. **SEAM:** window-local until the wire carries `muted`.
-    pub fn set_muted(&mut self, key: &ThreadKey, muted: bool) {
-        if muted {
-            self.state.muted.insert(key.clone());
-        } else {
-            self.state.muted.remove(key);
+    /// A `thread/update` patch, applied to the summary at once; the target's `thread/updated`
+    /// confirms it.
+    fn update_thread(&mut self, key: &ThreadKey, patch: Value, local: impl FnOnce(&mut ThreadSummary)) {
+        if let Some(r) = self.state.threads.get_mut(key) {
+            local(&mut r.summary);
         }
+        let op = self.op_id();
+        let mut params = json!({ "opId": op, "threadId": key.thread });
+        if let (Some(p), Value::Object(fields)) = (params.as_object_mut(), patch) {
+            p.extend(fields);
+        }
+        self.routed(&key.target, m::THREAD_UPDATE, params, Call::Ignore);
+    }
+
+    /// Mute or unmute a thread (`thread/update`).
+    pub fn set_muted(&mut self, key: &ThreadKey, muted: bool) {
+        self.update_thread(key, json!({ "muted": muted }), |s| s.muted = muted);
     }
 
     /// Archive a thread (`thread/archive`, under `threadArchive`). Archived threads leave the
@@ -772,26 +832,74 @@ impl Client {
         self.routed(&key.target, m::THREAD_RENAME, params, Call::Ignore);
     }
 
-    /// Pin or unpin a thread. **SEAM:** window-local until the wire carries `pinned`.
+    /// Pin or unpin a thread (`thread/update`).
     pub fn set_pinned(&mut self, key: &ThreadKey, pinned: bool) {
-        if pinned {
-            self.state.pinned.insert(key.clone());
-        } else {
-            self.state.pinned.remove(key);
-        }
+        self.update_thread(key, json!({ "pinned": pinned }), |s| s.pinned = pinned);
     }
 
-    /// Create a project from a folder. **SEAM:** projects live on the target, but there is no
-    /// wire method yet; the window records it.
-    pub fn create_project(&mut self, target: &TargetId, folder: &str, name: &str) {
-        let id = format!("p-{}-{}", target, self.state.projects.len() + 1);
-        self.state.projects.push(crate::projects::Project {
-            id,
-            name: name.to_owned(),
-            target: target.clone(),
-            folder: folder.to_owned(),
-            repo: None,
-        });
+    /// Create a project from a folder on a target (`project/create`). Once created, the draft
+    /// `for_draft` (if any) is put in it.
+    pub fn create_project(&mut self, target: &TargetId, folder: &str, name: &str, for_draft: Option<u64>) {
+        let op = self.op_id();
+        let params = json!({ "opId": op, "folder": folder, "name": name });
+        self.routed(target, m::PROJECT_CREATE, params, Call::ProjectCreate { target: target.clone(), for_draft });
+    }
+
+    /// Rename a project (`project/rename`); `project/updated` brings the new list.
+    pub fn rename_project(&mut self, project_id: &str, name: &str) {
+        let Some(p) = self.state.projects.iter().find(|p| p.id == project_id).cloned() else { return };
+        let op = self.op_id();
+        let params = json!({ "opId": op, "projectId": p.wire_id, "name": name });
+        self.routed(&p.target, m::PROJECT_RENAME, params, Call::Ignore);
+    }
+
+    /// Delete a project (`project/delete`); its threads become temporary projects again.
+    pub fn delete_project(&mut self, project_id: &str) {
+        let Some(p) = self.state.projects.iter().find(|p| p.id == project_id).cloned() else { return };
+        let op = self.op_id();
+        self.routed(&p.target, m::PROJECT_DELETE, json!({ "opId": op, "projectId": p.wire_id }), Call::Ignore);
+    }
+
+    /// Search threads through the hub (`hub/threads/find`: by id or fuzzy title, paged), when
+    /// attached to a real hub. An empty query clears the results.
+    pub fn find(&mut self, query: &str) {
+        let q = query.trim().to_owned();
+        if q.is_empty() {
+            self.state.find = None;
+            return;
+        }
+        if self.state.find.as_ref().is_some_and(|f| f.query == q) {
+            return;
+        }
+        self.state.find = Some(crate::state::FindState { query: q.clone(), loading: true, ..Default::default() });
+        self.request(hub_names::THREADS_FIND, json!({ "query": q }), Call::Find { query: q });
+    }
+
+    /// The next page of the current search.
+    pub fn find_more(&mut self) {
+        let Some(f) = self.state.find.as_mut() else { return };
+        let Some(cursor) = f.cursor.take() else { return };
+        f.loading = true;
+        let q = f.query.clone();
+        self.request(hub_names::THREADS_FIND, json!({ "query": q, "cursor": cursor }), Call::Find { query: q });
+    }
+
+    fn on_find(&mut self, query: &str, result: &Value) {
+        let Ok(page) = serde_json::from_value::<FindPage>(result.clone()) else { return };
+        let mut keys = Vec::new();
+        for h in page.results {
+            let key = ThreadKey::new(h.target.clone(), h.thread.id.clone());
+            // A match may be a thread this window has not indexed yet (another target's cache).
+            if !self.state.threads.contains_key(&key) {
+                self.state.upsert_summary(&h.target, h.thread);
+            }
+            keys.push(key);
+        }
+        let Some(f) = self.state.find.as_mut().filter(|f| f.query == query) else { return };
+        f.results.extend(keys);
+        f.total = page.total;
+        f.cursor = page.cursor;
+        f.loading = false;
     }
 
     /// Choose a draft's project: it starts in the project folder's root.
@@ -810,22 +918,25 @@ impl Client {
         }
     }
 
-    /// Set a chat's agents policy. **SEAM:** window-local until the wire carries a per-chat
-    /// mesh policy.
+    /// Set a chat's agents policy (`thread/update`).
     pub fn set_agents_policy(&mut self, key: &ThreadKey, policy: crate::state::AgentsPolicy) {
-        self.state.agents_policy.insert(key.clone(), policy);
+        let wire = match policy {
+            crate::state::AgentsPolicy::Ask => yaac_protocol::AgentsPolicy::Ask,
+            crate::state::AgentsPolicy::Allow => yaac_protocol::AgentsPolicy::Allow,
+        };
+        let w = wire.clone();
+        self.update_thread(key, json!({ "agents": wire }), move |s| s.agents = w);
     }
 
     /// Fork a thread into a destination on the same target, from its last completed turn,
-    /// with no first message yet. **SEAM:** `thread/fork` requires `input`; an empty list is
-    /// sent until the protocol allows a fork without a first message.
+    /// with no first message yet (`thread/forkOnly`).
     pub fn fork(&mut self, key: &ThreadKey, choice: &crate::fork::ForkChoice) {
         let op = self.op_id();
-        let mut params = json!({ "opId": op, "source": key.thread, "instance": choice.instance, "input": [] });
+        let mut params = json!({ "opId": op, "source": key.thread, "instance": choice.instance });
         if let Some(mdl) = &choice.model {
             params["model"] = json!(mdl);
         }
-        self.routed(&key.target, m::THREAD_FORK, params, Call::Fork { target: key.target.clone() });
+        self.routed(&key.target, m::THREAD_FORK_ONLY, params, Call::Fork { target: key.target.clone() });
     }
 
     /// Ask what a fork into `instance` would send and where (`thread/forkPreview`). Asked once
@@ -1009,4 +1120,21 @@ impl Client {
             }
         }
     }
+}
+
+/// One page of `hub/threads/find` (the parts the window uses).
+#[derive(serde::Deserialize)]
+struct FindPage {
+    #[serde(default)]
+    results: Vec<FindHit>,
+    #[serde(default)]
+    total: u32,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct FindHit {
+    target: TargetId,
+    thread: ThreadSummary,
 }

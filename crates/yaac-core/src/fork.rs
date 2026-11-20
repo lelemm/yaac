@@ -38,7 +38,7 @@ pub struct Destination {
 /// The dialog.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForkView {
-    /// "Fix frame decoder · Codex · work · gpt-6.2-sol".
+    /// "Fix frame decoder · Codex · work · <model>".
     pub from: String,
     /// "at the last completed turn (turn 12)".
     pub at: String,

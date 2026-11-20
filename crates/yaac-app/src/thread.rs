@@ -275,21 +275,23 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
                     let refs: Vec<&markdown::Block> = parsed.blocks().collect();
                     markdown::show(ui, &refs, &p, p.text, size::PROSE);
                 }
-                let files: Vec<(&yaac_protocol::UploadId, bool)> = u
+                let files: Vec<(&yaac_protocol::UploadId, Option<&String>, bool)> = u
                     .parts
                     .iter()
                     .filter_map(|x| match x {
-                        InputPart::File(f) => Some((&f.upload_id, false)),
-                        InputPart::Image(i) => Some((&i.upload_id, true)),
+                        InputPart::File(f) => Some((&f.upload_id, f.name.as_ref(), false)),
+                        InputPart::Image(i) => Some((&i.upload_id, i.name.as_ref(), true)),
                         _ => None,
                     })
                     .collect();
                 if !files.is_empty() {
                     ui.add_space(6.0);
                     ui.horizontal_wrapped(|ui| {
-                        for (up, image) in files {
+                        for (up, name, image) in files {
                             let gone = t.missing_uploads.contains(up);
-                            chip(ui, &p, &upload_name(up.as_str()), image, gone);
+                            // The file's own name when the part carries it.
+                            let name = name.cloned().unwrap_or_else(|| upload_name(up.as_str()));
+                            chip(ui, &p, &name, image, gone);
                         }
                     });
                 }

@@ -170,6 +170,15 @@ pub struct MeshThreadFilter {
     /// Upper bound on results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// Include idle, archived, and automated threads (by default only active ones).
+    #[serde(default)]
+    pub include_inactive: bool,
+    /// Only threads in this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<ThreadState>,
+    /// The cursor of a previous page (bound to the filter and to a snapshot of the results).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
 }
 
 /// `listModels`: the instances on the destination and their models.
@@ -230,7 +239,34 @@ pub struct SpawnThreadQuery {
     /// The orchestration root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<Address>,
+    /// The new thread's depth of spawning (the caller's depth plus one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<u32>,
 }
+
+/// `findThreads`: find threads across every target by id or fuzzy title. Answered by the hub
+/// from its own thread index (no fan-out); the query's `target` is ignored.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FindThreadsQuery {
+    /// An id, an id prefix (four characters or more), an address, or words of a title.
+    pub query: String,
+    /// Only threads of this target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub only_target: Option<TargetId>,
+    /// Only threads in this state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<ThreadState>,
+    /// The cursor of a previous page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// `listTargets`: the targets of the mesh with counts. Answered by the hub; the query's
+/// `target` is ignored.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTargetsQuery {}
 
 /// `stopThread`: interrupt a thread there. Only for the caller's own workers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -263,6 +299,10 @@ open_union! {
         StopThread(StopThreadQuery) = "stopThread",
         /// Thread states there.
         ThreadStates(ThreadStatesQuery) = "threadStates",
+        /// `find_thread` across every target (answered by the hub).
+        FindThreads(FindThreadsQuery) = "findThreads",
+        /// `list_targets` (answered by the hub).
+        ListTargets(ListTargetsQuery) = "listTargets",
     }
 }
 
@@ -347,8 +387,65 @@ pub struct ListModelsReply {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListThreadsReply {
-    /// Matching threads.
+    /// Matching threads (one page).
     pub threads: Vec<MeshThreadInfo>,
+    /// How many threads matched in all, when the answer is paged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u32>,
+    /// The next page, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// One `findThreads` match.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FoundThreadInfo {
+    /// The thread.
+    pub thread: MeshThreadInfo,
+    /// How it matched: `id`, `nativeId`, `address`, or `title`.
+    pub matched: String,
+    /// Whether an id matched in full (rather than by prefix).
+    #[serde(default)]
+    pub exact: bool,
+}
+
+/// `findThreads` reply: one page, best first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FindThreadsReply {
+    /// This page.
+    pub results: Vec<FoundThreadInfo>,
+    /// How many matched in all.
+    pub total: u32,
+    /// The query was an id prefix that matched several threads.
+    #[serde(default)]
+    pub ambiguous: bool,
+    /// The next page, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// One target in a `listTargets` reply.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetCount {
+    /// Immutable id.
+    pub id: TargetId,
+    /// The user's label.
+    pub name: TargetName,
+    /// Whether the hub is connected to it now.
+    pub reachable: bool,
+    /// Threads active there (running, waiting, or needing the user), as last known.
+    pub active_threads: u32,
+}
+
+/// `listTargets` reply.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListTargetsReply {
+    /// Every target.
+    pub targets: Vec<TargetCount>,
 }
 
 /// `readThread` reply.
@@ -401,6 +498,10 @@ open_union! {
         StopThread(StopThreadReply) = "stopThread",
         /// `threadStates`.
         ThreadStates(ThreadStatesReply) = "threadStates",
+        /// `findThreads`.
+        FindThreads(FindThreadsReply) = "findThreads",
+        /// `listTargets`.
+        ListTargets(ListTargetsReply) = "listTargets",
     }
 }
 

@@ -201,10 +201,12 @@ fn connection(state: &AppState, target: &TargetId) -> (Option<(Mark, String)>, b
 }
 
 fn branch_of(state: &AppState, key: &ThreadKey, s: &ThreadSummary) -> Option<String> {
-    state
-        .git
-        .get(key)
-        .map(|g| g.branch.clone())
+    let _ = (state, key);
+    // A linked worktree is named by its checkout; the main checkout by its branch.
+    s.repo
+        .as_ref()
+        .and_then(|r| r.worktree_name.clone())
+        .or_else(|| s.git.as_ref().and_then(|g| g.branch.clone()))
         .or_else(|| s.worktree.as_ref().and_then(|w| w.branch.clone()))
         .or_else(|| s.branch.clone())
 }
@@ -282,14 +284,14 @@ pub fn sections(
     let row = |key: &ThreadKey, right: RowRight, two_lines: bool| -> ThreadRow {
         let s = state.summary(key);
         let line2 = if two_lines {
-            state.git.get(key).map(|g| Line2 {
-                branch: g.branch.clone(),
+            s.and_then(|s| s.git.as_ref().map(|g| (s, g))).map(|(s, g)| Line2 {
+                branch: g.branch.clone().or_else(|| s.branch.clone()).unwrap_or_default(),
                 added: g.added,
                 modified: g.modified,
                 deleted: g.deleted,
                 ahead: g.ahead,
                 behind: g.behind,
-                workers: s.map_or(0, |s| s.children),
+                workers: s.children,
             })
         } else {
             None

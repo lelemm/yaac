@@ -78,8 +78,11 @@ pub(crate) fn mode_confirm(ctx: &egui::Context, app: &mut YaacApp, actions: &mut
                 actions.push(Action::ConfirmMode);
             }
             // Cancel is the default: it holds the focus unless the user tabbed to the other.
-            if !confirm.has_focus() && !cancel.has_focus() {
-                cancel.request_focus();
+            if !confirm.has_focus() {
+                if !cancel.has_focus() {
+                    cancel.request_focus();
+                }
+                widgets::focus_ring(ui, cancel.rect, &p);
             }
         });
     });

@@ -194,7 +194,8 @@ fn setup(app: &mut YaacApp, id: &str) {
         "07" => {}
         "08" | "09" => {
             // The user made a project for their first thread ("New project…" in the picker).
-            app.client.create_project(&"local".into(), "/home/dev/api", "api");
+            app.client.create_project(&"local".into(), "/home/dev/api", "api", None);
+            app.pump_demo();
             app.new_thread();
             if let Some(d) = app.client.state.new_threads.first_mut() {
                 d.draft.text = "# Investigate frame parsing\nReproduce the **last-frame** drop in `decode()`.".into();
