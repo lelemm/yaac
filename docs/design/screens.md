@@ -284,6 +284,11 @@ browser's:
 - Each entry remembers **where the user was reading**, not just which thread: going back to a
   long transcript returns to the same scroll position, and a link that landed on a particular
   message lands there again going forward.
+- **Jumping several steps.** Pressing and holding either button, or right-clicking it, opens a
+  small list of the places in that direction — nearest first, up to ten, each a thread title
+  with its machine in secondary text. Choosing one jumps straight there; the entries skipped
+  over stay in the history on the other side, exactly as if the button had been pressed that
+  many times. The forward button has its list whenever there is anywhere forward to go.
 - A button with nowhere to go is drawn in the unavailable style and does nothing.
 - The **mouse's back and forward buttons** do the same, as do **Alt+←** and **Alt+→**.
 - Settings and a new-thread draft are places too: back from Settings returns to the thread
