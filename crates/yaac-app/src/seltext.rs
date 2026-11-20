@@ -242,3 +242,106 @@ impl SelCx<'_> {
         self.ts.whole.insert(self.unit, rect);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Driven through a headless egui context with simulated pointer and key events.
+    use eframe::egui::{Event, FontId, OutputCommand, PointerButton, RawInput, pos2, vec2};
+
+    use super::*;
+
+    const TEXTS: [&str; 6] = [
+        "First message, about the frame decoder.",
+        "Ran cargo test — passed",
+        "Third item in the middle.",
+        "Fourth item: the length prefix counts the kind byte.",
+        "Fifth item.",
+        "Sixth and last item of the transcript.",
+    ];
+
+    fn key() -> ThreadKey {
+        ThreadKey::new(yaac_protocol::TargetId::new("local"), yaac_protocol::ThreadId::new("t"))
+    }
+
+    /// One frame drawing `units` (a virtualised window onto TEXTS) with `events`.
+    fn frame(ctx: &egui::Context, ts: &mut TextSel, units: &[usize], events: Vec<Event>, t: f64) -> egui::FullOutput {
+        let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))), events, time: Some(t), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            ts.begin(&key());
+            for &i in units {
+                SelCx { ts, unit: Unit::new(i, 0) }.text(ui, TEXTS[i], FontId::proportional(14.0), Color32::WHITE);
+                ui.add_space(8.0);
+            }
+            let area = ui.max_rect();
+            ts.end(ui, area, |n| vec![(Unit::new(n, 0), vec![TEXTS[n].to_owned()])]);
+        });
+        out.textures_delta.clear();
+        out
+    }
+
+    fn placed(ts: &TextSel, unit: usize) -> Rect {
+        ts.frame.iter().find(|g| g.unit.item == unit).map(Placed::rect).unwrap()
+    }
+
+    fn press(p: Pos2, pressed: bool) -> Event {
+        Event::PointerButton { pos: p, button: PointerButton::Primary, pressed, modifiers: Default::default() }
+    }
+
+    fn copied(out: &egui::FullOutput) -> Option<String> {
+        out.platform_output.commands.iter().find_map(|c| match c {
+            OutputCommand::CopyText(s) => Some(s.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_drag_across_items_copies_them_in_reading_order_even_after_they_scroll_away() {
+        let ctx = egui::Context::default();
+        let mut ts = TextSel::default();
+        // Units 0..=3 are on screen.
+        frame(&ctx, &mut ts, &[0, 1, 2, 3], vec![], 0.0);
+        let r0 = placed(&ts, 0);
+        // Press in the middle of the first message.
+        let start = pos2(r0.left() + r0.width() * 0.45, r0.center().y);
+        frame(&ctx, &mut ts, &[0, 1, 2, 3], vec![Event::PointerMoved(start), press(start, true)], 0.1);
+        // The list scrolls: units 0 and 1 leave the view, 4 and 5 arrive. Drag into unit 5.
+        frame(&ctx, &mut ts, &[2, 3, 4, 5], vec![], 0.2);
+        let r5 = placed(&ts, 5);
+        let end = pos2(r5.left() + r5.width() * 0.3, r5.center().y);
+        frame(&ctx, &mut ts, &[2, 3, 4, 5], vec![Event::PointerMoved(end)], 0.3);
+        frame(&ctx, &mut ts, &[2, 3, 4, 5], vec![press(end, false)], 0.4);
+        let sel = ts.selection().expect("a selection");
+        assert_eq!((sel.anchor.unit.item, sel.focus.unit.item), (0, 5));
+        let out = frame(&ctx, &mut ts, &[2, 3, 4, 5], vec![Event::Copy], 0.5);
+        let text = copied(&out).expect("Ctrl+C copies");
+        let (a, b) = (sel.anchor.ch, sel.focus.ch);
+        let first: String = TEXTS[0].chars().skip(a).collect();
+        let last: String = TEXTS[5].chars().take(b).collect();
+        let want = [first, TEXTS[1].into(), TEXTS[2].into(), TEXTS[3].into(), TEXTS[4].into(), last].join("\n\n");
+        assert_eq!(text, want);
+        assert!(a > 0 && b > 0 && b < TEXTS[5].chars().count(), "both ends are mid-item");
+    }
+
+    #[test]
+    fn a_click_selects_nothing_and_escape_clears() {
+        let ctx = egui::Context::default();
+        let mut ts = TextSel::default();
+        frame(&ctx, &mut ts, &[0, 1, 2], vec![], 0.0);
+        let r1 = placed(&ts, 1);
+        let p = r1.center();
+        frame(&ctx, &mut ts, &[0, 1, 2], vec![Event::PointerMoved(p), press(p, true)], 0.1);
+        frame(&ctx, &mut ts, &[0, 1, 2], vec![press(p, false)], 0.2);
+        assert!(ts.selection().is_none(), "a click is a click");
+        let out = frame(&ctx, &mut ts, &[0, 1, 2], vec![Event::Copy], 0.3);
+        assert_eq!(copied(&out), None);
+        // Select within one item, then press Escape.
+        let a = pos2(r1.left() + 2.0, r1.center().y);
+        frame(&ctx, &mut ts, &[0, 1, 2], vec![Event::PointerMoved(a), press(a, true)], 0.4);
+        frame(&ctx, &mut ts, &[0, 1, 2], vec![Event::PointerMoved(p)], 0.5);
+        frame(&ctx, &mut ts, &[0, 1, 2], vec![press(p, false)], 0.6);
+        assert!(ts.selection().is_some());
+        let esc = Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        frame(&ctx, &mut ts, &[0, 1, 2], vec![esc], 0.7);
+        assert!(ts.selection().is_none());
+    }
+}

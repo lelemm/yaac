@@ -320,6 +320,11 @@ impl HubSshPending {
     }
 }
 
+/// What construction needs from eframe's creation context.
+struct Cc {
+    egui_ctx: egui::Context,
+}
+
 /// The window.
 pub(crate) struct YaacApp {
     pub client: Client,
@@ -381,6 +386,12 @@ fn hub_client(attach: &Arc<Mutex<HubAttach>>) -> Client {
 
 impl YaacApp {
     pub(crate) fn new(cc: &eframe::CreationContext<'_>, launch: crate::Launch) -> Self {
+        Self::from_ctx(&cc.egui_ctx, launch)
+    }
+
+    /// The window on an egui context (the real one, or a headless one in tests).
+    pub(crate) fn from_ctx(egui_ctx: &egui::Context, launch: crate::Launch) -> Self {
+        let cc = Cc { egui_ctx: egui_ctx.clone() };
         theme::install_fonts(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx, &Palette::DARK);
         theme::apply(&cc.egui_ctx, &Palette::LIGHT);
@@ -551,7 +562,7 @@ impl YaacApp {
         self.ui.focus_composer = true;
     }
 
-    fn apply(&mut self, actions: Vec<Action>) {
+    pub(crate) fn apply(&mut self, actions: Vec<Action>) {
         for a in actions {
             match a {
                 Action::Open(k) => self.open(&k, None),

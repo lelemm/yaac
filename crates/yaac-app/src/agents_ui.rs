@@ -279,3 +279,113 @@ fn heading(ui: &mut egui::Ui, p: &Palette, text: &str, n: Option<usize>) {
     ui.label(egui::RichText::new(t).font(theme::bold(size::SMALL)).color(p.text2));
     ui.add_space(4.0);
 }
+
+#[cfg(test)]
+mod tests {
+    //! The real widget on a headless egui context, with the demo fleet and simulated pointer
+    //! positions: the card must not flicker, and must not keep the window repainting.
+    use eframe::egui::{Event, Pos2, RawInput, ViewportId, vec2};
+    use yaac_core::agents::agents_panel;
+    use yaac_core::attention::AttentionMap;
+
+    use super::*;
+
+    fn app(ctx: &egui::Context) -> YaacApp {
+        let launch = crate::Launch {
+            demo: Some(yaac_core::demo::Scenario::Fleet),
+            theme: crate::theme::ThemeChoice::Dark,
+            shots: None,
+            host_windows: false,
+            #[cfg(feature = "hub")]
+            attach: None,
+        };
+        YaacApp::from_ctx(ctx, launch)
+    }
+
+    /// One frame with the pointer at `p`; returns the panel mode after it and the repaint
+    /// delay egui was asked for.
+    fn frame(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, p: Option<Pos2>, t: f64) -> (PanelMode, std::time::Duration) {
+        // An event only when the pointer moves (a frame without input is what an idle window
+        // sees).
+        let last: Option<Pos2> = ctx.input(|i| i.pointer.latest_pos());
+        let events = match p {
+            Some(p) if last != Some(p) => vec![Event::PointerMoved(p)],
+            Some(_) => vec![],
+            None => vec![Event::PointerGone],
+        };
+        let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, time: Some(t), ..Default::default() };
+        let mut actions = Vec::new();
+        let mut out = ctx.run_ui(input, |ui| {
+            let map = AttentionMap::compute(&app.client.state);
+            let key = app.client.state.selected_thread().cloned().unwrap();
+            let panel = agents_panel(&app.client.state, &map, &key).unwrap();
+            floating(ui.ctx(), app, thread, &panel, &mut actions);
+        });
+        out.textures_delta.clear();
+        app.apply(actions);
+        (app.ui.panel, out.viewport_output[&ViewportId::ROOT].repaint_delay)
+    }
+
+    #[test]
+    fn the_card_stays_open_while_the_pointer_moves_over_it_and_closes_once_after_leaving() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        let thread = Rect::from_min_max(pos2(280.0, 0.0), pos2(1600.0, 1000.0));
+        let panel = {
+            let map = AttentionMap::compute(&app.client.state);
+            agents_panel(&app.client.state, &map, app.client.state.selected_thread().unwrap()).unwrap()
+        };
+        let (icons, more) = pill_icons(&panel);
+        let (strip, card) = floating_regions(thread, panel.all().count(), icons.len() + usize::from(more > 0));
+        // Idle, pointer far away: the pill, and (once egui's first-frame layout passes are
+        // done) nothing keeps the window awake.
+        for i in 0..10 {
+            frame(&ctx, &mut app, thread, Some(pos2(600.0, 500.0)), f64::from(i) * 0.1 - 2.0);
+        }
+        let (mode, delay) = frame(&ctx, &mut app, thread, Some(pos2(600.0, 500.0)), 0.0);
+        assert_eq!(mode, PanelMode::Pill);
+        assert!(delay > std::time::Duration::from_secs(60), "idle repaints: {delay:?}");
+        // Onto the pill: the card opens.
+        let (mode, _) = frame(&ctx, &mut app, thread, Some(strip.center()), 0.1);
+        assert_eq!(mode, PanelMode::Card);
+        // Across the card, frame by frame, including over parts far from the pill: it never
+        // closes (the owner's flicker).
+        let mut t = 0.1;
+        for i in 0..40 {
+            t += 0.016;
+            let f = i as f32 / 39.0;
+            let p = pos2(card.left() + 4.0 + (card.width() - 8.0) * (1.0 - f), card.top() + 4.0 + (card.height() - 8.0) * f);
+            let (mode, _) = frame(&ctx, &mut app, thread, Some(p), t);
+            assert_eq!(mode, PanelMode::Card, "closed at {p:?}");
+        }
+        // Resting over the card: open, and idle (no repaint pending) once settled.
+        let mut d = std::time::Duration::ZERO;
+        for k in 0..5 {
+            let (mode, delay) = frame(&ctx, &mut app, thread, Some(card.center()), t + 0.1 * f64::from(k) + 0.1);
+            assert_eq!(mode, PanelMode::Card);
+            d = delay;
+        }
+        assert!(d > std::time::Duration::from_secs(60), "{d:?}");
+        t += 0.6;
+        // Out: still open for a quarter of a second, with one scheduled repaint to close it.
+        let (mode, _) = frame(&ctx, &mut app, thread, Some(pos2(600.0, 500.0)), t + 0.01);
+        assert_eq!(mode, PanelMode::Card);
+        // (The frame of the move and egui's hover-out pass repaint for themselves; after that
+        // the window is woken only by the pending close.)
+        frame(&ctx, &mut app, thread, Some(pos2(600.0, 500.0)), t + 0.05);
+        let (mode, delay) = frame(&ctx, &mut app, thread, Some(pos2(600.0, 500.0)), t + 0.1);
+        assert_eq!(mode, PanelMode::Card);
+        assert!(delay <= std::time::Duration::from_millis(250) && delay > std::time::Duration::ZERO, "{delay:?}");
+        let (mode, _) = frame(&ctx, &mut app, thread, Some(pos2(600.0, 500.0)), t + 0.2);
+        assert_eq!(mode, PanelMode::Card);
+        let (mode, _) = frame(&ctx, &mut app, thread, Some(pos2(600.0, 500.0)), t + 0.3);
+        assert_eq!(mode, PanelMode::Pill);
+        // Closed and idle again: once egui's own short layout and fade passes are over, no
+        // repaint is pending.
+        let mut delay = std::time::Duration::ZERO;
+        for i in 0..6 {
+            delay = frame(&ctx, &mut app, thread, Some(pos2(600.0, 500.0)), t + 0.4 + f64::from(i) * 0.2).1;
+        }
+        assert!(delay > std::time::Duration::from_secs(60), "{delay:?}");
+    }
+}
