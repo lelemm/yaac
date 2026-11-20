@@ -75,7 +75,7 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(widgets::secondary("Spawned by", &p));
                 link_part(ui, &p, &parent.title, parent.key.as_ref(), actions);
-                widgets::icon(ui, 12.0, |pa, c, d| icons::arrow_out(pa, c, d, p.link));
+                widgets::icon(ui, 12.0, |pa, c, d| icons::arrow_out(pa, c, d, p.text2));
                 ui.label(widgets::secondary(format!("on {target}"), &p));
             });
         }
@@ -102,7 +102,7 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(widgets::secondary("Forked from", &p));
                 link_part(ui, &p, &source.title, source.key.as_ref(), actions);
-                widgets::icon(ui, 12.0, |pa, c, d| icons::arrow_out(pa, c, d, p.link));
+                widgets::icon(ui, 12.0, |pa, c, d| icons::arrow_out(pa, c, d, p.text2));
                 ui.label(widgets::secondary(detail.clone(), &p));
             });
         }

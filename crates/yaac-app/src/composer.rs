@@ -116,7 +116,7 @@ fn chips(ui: &mut egui::Ui, p: &Palette, chips: &[ChipView]) {
                     if let Some(pr) = c.progress {
                         let (r, _) = ui.allocate_exact_size(egui::vec2(90.0, 4.0), egui::Sense::hover());
                         ui.painter().rect_filled(r, 2.0, p.faint);
-                        ui.painter().rect_filled(egui::Rect::from_min_size(r.min, egui::vec2(90.0 * pr, 4.0)), 2.0, p.accent);
+                        ui.painter().rect_filled(egui::Rect::from_min_size(r.min, egui::vec2(90.0 * pr, 4.0)), 2.0, p.text2);
                         ui.label(widgets::secondary(format!("{}%", (pr * 100.0).round()), p));
                     }
                 });
@@ -363,7 +363,7 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
             let (r, _) = ui.allocate_exact_size(egui::vec2(64.0, 26.0), egui::Sense::hover());
             let bar = egui::Rect::from_center_size(r.center(), egui::vec2(64.0, 4.0));
             ui.painter().rect_filled(bar, 2.0, p.faint);
-            ui.painter().rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(64.0 * f32::from(pct) / 100.0, 4.0)), 2.0, p.accent);
+            ui.painter().rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(64.0 * f32::from(pct) / 100.0, 4.0)), 2.0, p.text2);
             ui.label(widgets::secondary(format!("{pct}%"), &p)).on_hover_text("How full the context window is");
         }
         if row.fork

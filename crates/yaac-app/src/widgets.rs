@@ -7,9 +7,9 @@ use yaac_core::attention::Mark;
 use crate::icons;
 use crate::theme::{self, Palette, size};
 
-/// The 2 px accent focus ring.
+/// The 2 px focus ring (a neutral).
 pub(crate) fn focus_ring(ui: &Ui, rect: Rect, p: &Palette) {
-    ui.painter().rect_stroke(rect.expand(2.0), CornerRadius::same(6), Stroke::new(2.0, p.accent), StrokeKind::Outside);
+    ui.painter().rect_stroke(rect.expand(2.0), CornerRadius::same(6), Stroke::new(2.0, p.focus), StrokeKind::Outside);
 }
 
 fn text_size(ui: &Ui, text: &str, font: &egui::FontId) -> Vec2 {
@@ -40,9 +40,9 @@ fn button(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>, filled: bool
     let size = vec2(tw.x + kw + pad.x * 2.0, (tw.y + pad.y * 2.0).max(28.0));
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-    let fg = if filled { p.on_accent } else { color.unwrap_or(p.text) };
+    let fg = if filled { p.on_primary } else { color.unwrap_or(p.text) };
     if filled {
-        let fill = if resp.hovered() { p.accent.gamma_multiply(0.9) } else { p.accent };
+        let fill = if resp.hovered() { p.primary.gamma_multiply(0.88) } else { p.primary };
         ui.painter().rect_filled(rect, 5.0, fill);
     } else if resp.hovered() || resp.has_focus() {
         ui.painter().rect_filled(rect, 5.0, p.faint);
@@ -51,7 +51,7 @@ fn button(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>, filled: bool
     let y = rect.center().y - galley.size().y / 2.0;
     ui.painter().galley(pos2(rect.left() + pad.x, y), galley, fg);
     if let Some(k) = key {
-        let kc = if filled { p.on_accent } else { p.text2 };
+        let kc = if filled { p.on_primary } else { p.text2 };
         if k == "Enter" {
             icons::return_key(ui.painter(), pos2(rect.right() - pad.x - 7.0, rect.center().y), 14.0, kc);
         } else {
@@ -65,12 +65,14 @@ fn button(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>, filled: bool
     resp
 }
 
-/// A link: the link colour, no underline at rest; underlined on hover or keyboard focus.
+/// A link: not coloured — the surrounding text's colour, set bolder; no underline at rest,
+/// underlined on hover or keyboard focus.
 pub(crate) fn link(ui: &mut Ui, p: &Palette, text: &str, font: egui::FontId) -> Response {
-    let resp = ui.add(egui::Label::new(egui::RichText::new(text).font(font).color(p.link)).sense(Sense::click()));
+    let font = theme::bold(font.size);
+    let resp = ui.add(egui::Label::new(egui::RichText::new(text).font(font).color(p.text)).selectable(false).sense(Sense::click()));
     if resp.hovered() || resp.has_focus() {
         let r = resp.rect;
-        ui.painter().hline(r.x_range(), r.bottom() - 1.0, Stroke::new(1.0, p.link));
+        ui.painter().hline(r.x_range(), r.bottom() - 1.0, Stroke::new(1.0, p.text));
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -195,15 +197,15 @@ pub(crate) fn selector_pair(ui: &mut Ui, p: &Palette, left: &str, right: &str, e
     resp
 }
 
-/// A switch: a filled track (the accent when on) and a knob. No outline.
+/// A switch: a filled track (the primary-button neutral when on) and a knob. No outline.
 pub(crate) fn switch(ui: &mut Ui, p: &Palette, on: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(32.0, 18.0), Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     let off_fill = if p.dark { Color32::from_rgb(0x3A, 0x40, 0x4C) } else { Color32::from_rgb(0xC9, 0xCE, 0xD6) };
-    let track = if on { p.accent } else { off_fill };
+    let track = if on { p.primary } else { off_fill };
     ui.painter().rect_filled(rect, 9.0, track);
     let x = if on { rect.right() - 9.0 } else { rect.left() + 9.0 };
-    let knob = if on { p.on_accent } else { p.bg };
+    let knob = if on { p.on_primary } else { p.bg };
     ui.painter().circle_filled(pos2(x, rect.center().y), 6.5, knob);
     if resp.has_focus() {
         focus_ring(ui, rect, p);
@@ -275,7 +277,7 @@ pub(crate) fn secret_field(ui: &mut Ui, p: &Palette, secret: &mut yaac_core::ssh
         }
     }
     if focused {
-        ui.painter().line_segment([pos2(x + 2.0, cy - 8.0), pos2(x + 2.0, cy + 8.0)], Stroke::new(1.5, p.accent));
+        ui.painter().line_segment([pos2(x + 2.0, cy - 8.0), pos2(x + 2.0, cy + 8.0)], Stroke::new(1.5, p.text));
         focus_ring(ui, rect, p);
     }
     resp

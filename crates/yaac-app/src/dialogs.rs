@@ -91,11 +91,11 @@ pub(crate) fn mode_confirm(ctx: &egui::Context, app: &mut YaacApp, actions: &mut
 /// The filled button in the failed colour.
 fn danger(ui: &mut egui::Ui, p: &Palette, label: &str) -> egui::Response {
     let font = theme::bold(size::UI);
-    let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font, p.on_accent));
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font, p.on_primary));
     let (rect, resp) = ui.allocate_exact_size(vec2(g.size().x + 24.0, 28.0), egui::Sense::click());
     let fill = if resp.hovered() { p.failed.gamma_multiply(0.9) } else { p.failed };
     ui.painter().rect_filled(rect, 5.0, fill);
-    ui.painter().galley(egui::pos2(rect.left() + 12.0, rect.center().y - g.size().y / 2.0), g, p.on_accent);
+    ui.painter().galley(egui::pos2(rect.left() + 12.0, rect.center().y - g.size().y / 2.0), g, p.on_primary);
     if resp.has_focus() {
         widgets::focus_ring(ui, rect, p);
     }

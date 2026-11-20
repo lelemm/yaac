@@ -225,14 +225,14 @@ fn job_for(spans: &[Span], font: &FontId, color: Color32, p: &Palette, wrap: f32
     for s in spans {
         let font_id = if s.code {
             theme::mono(font.size * 0.9)
-        } else if s.bold {
+        } else if s.bold || s.link {
             theme::bold(font.size)
         } else {
             font.clone()
         };
         let mut fmt = egui::TextFormat {
             font_id,
-            color: if s.link { p.link } else { color },
+            color,
             italics: s.italic,
             line_height: Some(font.size * 1.45),
             ..Default::default()

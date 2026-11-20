@@ -51,7 +51,7 @@ fn harness_icon(painter: &egui::Painter, c: egui::Pos2, d: f32, row: &AgentRow, 
 
 fn arrow(painter: &egui::Painter, c: egui::Pos2, flow: Flow, p: &Palette) {
     let s = 4.0;
-    let w = Stroke::new(1.6, p.accent);
+    let w = Stroke::new(1.6, p.text);
     match flow {
         Flow::Sending => {
             painter.line_segment([pos2(c.x, c.y + s), pos2(c.x, c.y - s)], w);

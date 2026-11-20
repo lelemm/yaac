@@ -318,12 +318,12 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
     }
     let mut rx = rect.right() - 4.0;
     if h.retry {
-        let g = ui.fonts_mut(|f| f.layout_no_wrap("Retry".to_owned(), font.clone(), p.link));
+        let g = ui.fonts_mut(|f| f.layout_no_wrap("Retry".to_owned(), font.clone(), p.text));
         let r = Rect::from_min_size(pos2(rx - g.size().x, y - g.size().y), g.size());
-        ui.painter().galley(r.min, g, p.link);
+        ui.painter().galley(r.min, g, p.text);
         let retry = ui.interact(r, egui::Id::unique(("retry", s.id.as_str())), Sense::click());
         if retry.hovered() || retry.has_focus() {
-            ui.painter().hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, p.link));
+            ui.painter().hline(r.x_range(), r.bottom(), egui::Stroke::new(1.0, p.text));
         }
         if retry.clicked()
             && let Some(m) = &h.machine
