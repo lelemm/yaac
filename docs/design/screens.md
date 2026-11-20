@@ -45,7 +45,11 @@ a per-chat agents toggle with a permission prompt are added.
   collapse, no folder icons.
 - **Type:** a clean sans-serif for UI at 13–14 px; a monospace for code, commands, paths, and
   ids. Agent prose is the most readable thing on screen: 15 px, generous line height.
-- **One accent colour** for primary actions and selection.
+- **No accent colour.** The interface is monochrome; the owner found a blue accent grating.
+  The only colours on screen are the ones that *mean* something: **needs you** (amber),
+  **failed** (red), **done** (green), and the git changes on a sidebar row. Everything else —
+  selection, the primary button, the focus ring, links, the running mark — is drawn in
+  neutrals.
 - **Dark and light are equals.** Same layout, same content, same hierarchy, same contrast
   quality, and the same actions available. Neither is an inverted afterthought.
 
@@ -59,13 +63,14 @@ a per-chat agents toggle with a permission prompt are added.
 | Primary text | `#E6E8EC` | `#1A1D23` |
 | Secondary text | `#9AA2AF` | `#5B6472` |
 | Unavailable-control text | `#8891A0` | `#646E7C` |
-| Accent (button fills, focus ring) | `#6C8CFF` | `#3B5BDB` |
-| **Selected row fill** | `#263052` | `#E4EAFD` |
-| Text on an accent fill | `#0E1116` | `#FFFFFF` |
-| Link text (accent, never underlined at rest) | `#8FA8FF` | `#2F4AC0` |
-| Running | `#4C9AFF` | `#1A66C7` |
+| Primary button fill | `#E6E8EC` | `#1A1D23` |
+| **Selected row fill** (neutral) | `#2A2E37` | `#E6E8EC` |
+| Text on the primary button | `#16181D` | `#FFFFFF` |
+| Focus ring | `#C9CED6` | `#3A4050` |
+| Link text | primary text colour, semibold | primary text colour, semibold |
+| Running | primary text colour — no hue | primary text colour — no hue |
 | Needs you | `#F2B24C` | `#8F5600` |
-| Failed | `#FF7C87` | `#C92A3A` |
+| Failed (and the dangerous-action button) | `#FF7C87` | `#BF2636` |
 | Done | `#4CC38A` | `#17754D` |
 | Git: added | `#73C991` | `#166F31` |
 | Git: modified | `#E2C08D` | `#855D00` |
@@ -83,13 +88,14 @@ drops below 4.5 : 1 is a bug.
   same provider and store", "YAAC installed nothing on this server").
 - **An unavailable control is never shown by faint text alone.** It has no fill, a dashed
   border, the unavailable-control text colour (still 4.5 : 1), and its reason beside it.
-- A button filled with the accent uses the "text on an accent fill" colour for its label.
-- **A selected row is a tint, never the solid accent.** Its fill is the "selected row fill"
-  token, and its text stays primary. Every label, link, and state word that can appear on a
-  row measures at least 4.5 : 1 against that tint too (links 5.7 dark / 6.1 light; the
-  weakest are *running* in dark, 4.53, and *failed* in light, 4.51). Link colour on the solid accent would measure about 1.3 : 1,
-  which is why the solid accent is never a row background. Unavailable-control text is not
-  used inside rows.
+- The one filled button on a screen is solid in the primary-button colour — near-white on
+  dark, near-black on light — with its label in the opposite. A dangerous action's filled
+  button uses the failed colour instead.
+- **Running has no colour.** It is the normal state, so its mark (the play triangle) is drawn
+  in the primary text colour. Colour is kept for what wants attention or reports an outcome.
+- **A selected row is a neutral tint** — the "selected row fill" token — and its text stays
+  primary. Every label and state colour that can appear on a row measures at least 4.5 : 1
+  against that tint too. Unavailable-control text is not used inside rows.
 
 ## Rules that hold on every screen
 
@@ -264,6 +270,29 @@ and activity is quiet.**
 Who is working with whom, and how each worker is doing, is the job of the agents panel, not of
 the transcript.
 
+### Text can be selected and copied
+
+Everything readable in a transcript can be selected with the mouse and copied with Ctrl+C:
+user messages, agent prose, code, activity lines and their expanded detail, cards. A selection
+can **run across several items** — drag from the middle of one message to the middle of
+another three items down — and copies as plain text in reading order, with a blank line
+between items and code blocks kept as they are. The same holds for text in the agents panel,
+settings, and dialogs. Right-clicking a message also offers "Copy message".
+
+### Code blocks and diffs
+
+- **Every code block has a copy button**, at its top right, shown when the pointer is over the
+  block (and always reachable by keyboard). It copies the code alone, without line numbers.
+  It briefly reads "Copied".
+- **A file change is a diff.** Collapsed, it is one activity line: `Edited src/frame.rs`
+  followed by the lines added in the git-added colour and removed in the git-deleted colour —
+  `+12 −3`. Expanded in place, it is a unified diff: removed lines on a faint red ground,
+  added lines on a faint green ground, unchanged context between them, old and new line
+  numbers in secondary text, and its own copy button. A long diff shows its first hunks and a
+  "show the rest" line.
+- **A turn that changed files ends with one summary line**: `Changed 3 files  +40 −12 · show
+  all`, which expands every diff of that turn.
+
 ### The agents panel: a pill, a card, or a docked panel
 
 The agents a thread is working with are shown in one of three states. **The default is the
@@ -286,7 +315,11 @@ contacts — stacked with a little space between. Nothing else: no names, no tex
   initial in a circle.
 
 **2. The card — on hover or keyboard focus.** The pill widens leftwards into a floating
-rounded rectangle, about 300 px wide, over the transcript; it does not push the layout. Each
+rounded rectangle, about 300 px wide, over the transcript; it does not push the layout. **It
+must not flicker:** once open, the card stays open for as long as the pointer is anywhere
+over the card *or* the strip where the pill was, and closes only after the pointer has been
+outside both for a short moment (about a quarter of a second). Opening and closing never
+depend on the pill's own shrinking and growing outline. Each
 icon becomes a row: the icon, the agent's **name**, and beneath it one line of secondary text
 with **the last thing it did**, cut off with an ellipsis — "Rebuilding the search index
 (68%)…", "Merged to main. 14 tests pass.", "Waiting for your approval". The arrows stay at the
@@ -315,9 +348,9 @@ A worker thread has no such control — it acts under its root's answer.
 ### Links between agents
 
 A thread name in a **To** or **From** line, a workers card, the agents panel, an ancestry
-line, or the Needs-you list is a link. **A link is shown in the accent link colour with no
-underline** — blue underlined text is ugly and loud. The underline appears only while the
-pointer is over the link or it has keyboard focus. (Rows of the thread list are selectable
+line, or the Needs-you list is a link. **A link is not coloured.** It is the same colour as
+the text around it, set slightly bolder, with no underline; the underline appears only while
+the pointer is over it or it has keyboard focus. A link should be findable, not loud. (Rows of the thread list are selectable
 rows in primary text, not links.)
 
 - **Delivered:** following a *To* opens the other thread at the matching *From*, and back.
