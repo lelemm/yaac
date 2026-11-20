@@ -11,6 +11,7 @@ use yaac_core::header::{ChipView, ComposerView, composer, short_provider};
 use yaac_core::images::ImageRoute;
 use yaac_core::markstyle::{self, Style};
 use yaac_core::mode_confirm::ModeTarget;
+use yaac_core::compose::{self, EnterAction};
 use yaac_core::prefs::SendKey;
 
 use crate::app::{Action, Menu, YaacApp};
@@ -63,23 +64,60 @@ fn track_ime(ui: &egui::Ui, composing: &mut bool) {
 fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &str, p: &Palette, composing: &mut bool, enabled: bool, focus: &mut bool, send_key: SendKey) -> bool {
     track_ime(ui, composing);
     let focused = ui.memory(|m| m.has_focus(id));
-    let (send_mods, newline) = match send_key {
-        SendKey::Enter => (Modifiers::NONE, KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter)),
-        SendKey::CtrlEnter => (Modifiers::COMMAND, KeyboardShortcut::new(Modifiers::NONE, Key::Enter)),
+    let newline = match send_key {
+        SendKey::Enter => KeyboardShortcut::new(Modifiers::SHIFT, Key::Enter),
+        SendKey::CtrlEnter => KeyboardShortcut::new(Modifiers::NONE, Key::Enter),
     };
-    let send = enabled && focused && !*composing && ui.input_mut(|i| i.consume_key(send_mods, Key::Enter));
+    // Enter is decided here with exact modifiers (egui's shortcut matching ignores an extra
+    // Shift, which made Shift+Enter send). A press that sends, or that does nothing, is taken
+    // out of the input so the text box does not also break the line.
+    let mut send = false;
+    if focused {
+        ui.input_mut(|i| {
+            let comp = *composing;
+            i.events.retain(|e| match e {
+                egui::Event::Key { key: Key::Enter, pressed: true, modifiers, .. } => {
+                    match compose::enter(send_key, modifiers.shift, modifiers.command || modifiers.ctrl, comp) {
+                        EnterAction::Send => {
+                            send |= enabled;
+                            false
+                        }
+                        EnterAction::Newline => true,
+                        EnterAction::None => comp,
+                    }
+                }
+                _ => true,
+            });
+        });
+    }
     let pp = *p;
     let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| layout(ui, buf.as_str(), wrap, &pp);
+    // Two lines empty; one more per line of text (wrapped lines counted) up to five; then the
+    // text scrolls inside.
+    let width = ui.available_width();
+    let lines = if text.is_empty() { 1 } else { layout(ui, text, width - 8.0, p).rows.len() };
+    let (rows, scrolls) = compose::rows(lines);
+    let row_h = ui.fonts_mut(|f| f.row_height(&theme::ui(size::PROSE - 0.5)));
     let te = egui::TextEdit::multiline(text)
         .id(id)
         .frame(egui::Frame::NONE)
         .hint_text(placeholder)
-        .desired_rows(1)
-        .desired_width(ui.available_width())
+        .font(theme::ui(size::PROSE - 0.5))
+        .desired_rows(rows)
+        .desired_width(width)
         .return_key(newline)
         .interactive(enabled)
         .layouter(&mut layouter);
-    let r = ui.add(te);
+    let r = if scrolls {
+        egui::ScrollArea::vertical()
+            .id_salt(("composer-scroll", id))
+            .max_height(row_h * compose::MAX_ROWS as f32 + 2.0)
+            .auto_shrink([false, true])
+            .show(ui, |ui| ui.add(te))
+            .inner
+    } else {
+        ui.add(te)
+    };
     if *focus {
         r.request_focus();
         *focus = false;
@@ -474,4 +512,82 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
     egui::CentralPanel::no_frame().show(ui, |ui| {
         ui.centered_and_justified(|ui| ui.label(widgets::secondary("Describe what you want done.", &p)));
     });
+}
+
+#[cfg(test)]
+mod tests {
+    //! The text box on a headless egui context with simulated keys.
+    use eframe::egui::{Event, RawInput};
+
+    use super::*;
+
+    fn key(k: Key, modifiers: Modifiers) -> Event {
+        Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    /// One frame of the text box (focused) with `events`; returns (sent, text, height).
+    fn frame(ctx: &egui::Context, text: &mut String, events: Vec<Event>, composing: bool) -> (bool, f32) {
+        let input = RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))),
+            events,
+            ..Default::default()
+        };
+        let id = egui::Id::unique("composer-test");
+        let mut sent = false;
+        let mut h = 0.0;
+        let mut out = ctx.run_ui(input, |ui| {
+            ui.memory_mut(|m| m.request_focus(id));
+            let mut ime = composing;
+            let mut focus = false;
+            let top = ui.cursor().top();
+            sent = text_box(ui, text, id, "Message", &Palette::DARK, &mut ime, true, &mut focus, SendKey::Enter);
+            h = ui.min_rect().bottom() - top;
+        });
+        out.textures_delta.clear();
+        (sent, h)
+    }
+
+    #[test]
+    fn shift_enter_breaks_the_line_and_enter_sends() {
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        frame(&ctx, &mut text, vec![], false);
+        frame(&ctx, &mut text, vec![Event::Text("one".into())], false);
+        let (sent, _) = frame(&ctx, &mut text, vec![key(Key::Enter, Modifiers::SHIFT)], false);
+        assert!(!sent, "Shift+Enter must not send");
+        frame(&ctx, &mut text, vec![Event::Text("two".into())], false);
+        assert_eq!(text, "one\ntwo");
+        // Enter while an input method composes belongs to the input method.
+        let (sent, _) = frame(&ctx, &mut text, vec![key(Key::Enter, Modifiers::NONE)], true);
+        assert!(!sent);
+        let (sent, _) = frame(&ctx, &mut text, vec![key(Key::Enter, Modifiers::NONE)], false);
+        assert!(sent, "Enter sends");
+        assert_eq!(text, "one\ntwo", "and adds no line break");
+    }
+
+    #[test]
+    fn grows_a_line_at_a_time_to_five_then_stops() {
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        let mut heights = Vec::new();
+        for lines in 1..=8 {
+            text = (1..=lines).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+            frame(&ctx, &mut text, vec![], false);
+            let (_, h) = frame(&ctx, &mut text, vec![], false);
+            heights.push(h);
+        }
+        // 1 and 2 lines: the same two-line box; then one step per line to five; then flat.
+        assert!((heights[0] - heights[1]).abs() < 1.0, "{heights:?}");
+        for w in heights[1..5].windows(2) {
+            assert!(w[1] > w[0] + 5.0, "{heights:?}");
+        }
+        for w in heights[4..].windows(2) {
+            assert!((w[1] - w[0]).abs() < 1.0, "{heights:?}");
+        }
+        // Back to empty: two lines again.
+        text.clear();
+        frame(&ctx, &mut text, vec![], false);
+        let (_, h) = frame(&ctx, &mut text, vec![], false);
+        assert!((h - heights[0]).abs() < 1.0);
+    }
 }

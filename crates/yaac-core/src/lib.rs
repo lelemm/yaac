@@ -21,6 +21,7 @@ pub mod activity;
 pub mod agents;
 pub mod attention;
 pub mod client;
+pub mod compose;
 pub mod controls;
 pub mod demo;
 pub mod diff;

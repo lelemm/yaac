@@ -184,6 +184,9 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.open(&threads::fix(), None);
             app.open(&k, None);
             if id == "02" {
+                // A three-line message being written: the composer has grown to three lines.
+                app.client.state.drafts.entry(k.clone()).or_default().text =
+                    "When search-service finishes:\n- merge it behind the flag\n- then tell CI to run the full suite".into();
                 app.ui.expansion.toggle_line(&k, &"o4".into());
             }
             if id == "28" {
