@@ -113,6 +113,9 @@ Three things are given to every thread YAAC starts, when its provider instance h
 3. **The server's own instructions and tool descriptions**, which say when each tool is the
    right one.
 
+The block is appended after the harness's own system prompt, which is kept intact, and its
+text is fixed: there is no setting for adding to it.
+
 That is what "the harness knows" means: the ability is in the agent's context before the user
 asks for anything, so "send that to the Claude thread" needs no explanation.
 
