@@ -43,7 +43,7 @@ fn answering_recomputes_from_the_requests_still_open() {
     settle(&mut c, &hub);
     let map = AttentionMap::compute(&c.state);
     assert_eq!(map.of(&index), None);
-    let list: Vec<_> = needs_you(&c.state, &map).into_iter().map(|e| e.title).collect();
+    let list: Vec<_> = needs_you(&c.state, &map, common::NOW).into_iter().map(|e| e.title).collect();
     assert_eq!(list, ["Fix frame decoder"]);
     assert!(matches!(composer(&c.state, &map, &index), ComposerView::Shown { dimmed_hint: None, .. }));
 }
@@ -70,7 +70,7 @@ fn budget_reached_pauses_the_root_and_a_request_still_outranks_it() {
     let orch = threads::orchestrator();
     assert_eq!(map.of(&orch), Some(Attention::BudgetReached));
     assert_eq!(display(&c.state, &map, &orch).mark, Mark::Paused);
-    let list: Vec<_> = needs_you(&c.state, &map).into_iter().map(|e| (e.title, e.attention)).collect();
+    let list: Vec<_> = needs_you(&c.state, &map, common::NOW).into_iter().map(|e| (e.title, e.attention)).collect();
     assert!(list.contains(&("Migrate auth module — orchestrator".to_owned(), Attention::BudgetReached)));
     assert_eq!(list.len(), 3);
     assert_eq!(header(&c.state, &map, &orch).unwrap().tag.unwrap().0, "Paused — budget reached");
@@ -107,5 +107,5 @@ fn a_permission_prompt_needs_you() {
     assert_eq!(map.of(&orch), Some(Attention::Request(RequestKindWord::Permission)));
     assert_eq!(header(&c.state, &map, &orch).unwrap().tag.unwrap().0, "Needs you — permission");
     assert!(matches!(composer(&c.state, &map, &orch), ComposerView::Shown { dimmed_hint: Some(ref h), .. } if h == "Answer above to continue"));
-    assert_eq!(needs_you(&c.state, &map).len(), 3);
+    assert_eq!(needs_you(&c.state, &map, common::NOW).len(), 3);
 }

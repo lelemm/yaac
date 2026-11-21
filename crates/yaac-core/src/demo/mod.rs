@@ -9,6 +9,7 @@
 //! 06, 19, 20, 23) — and stream replies tick by tick.
 
 mod build;
+mod diffs;
 mod fleet;
 pub mod ssh;
 
@@ -253,33 +254,51 @@ impl Inner {
                 let targets = self.fleet.targets.clone();
                 self.ready.push_back(result(id, json!({ "build": build, "targets": targets })));
             }
-            attach::names::SHUTDOWN | crate::client::hub_names::UI_STATE_SET | crate::client::hub_names::TARGETS_RECONNECT => {
+            attach::names::SHUTDOWN | crate::client::hub_names::UI_STATE_SET => {
                 self.ready.push_back(result(id, json!({})));
             }
+            crate::client::hub_names::TARGETS_RECONNECT => {
+                self.ready.push_back(result(id, json!({})));
+                // Connecting to a stopped WSL distro boots it: the connection comes up.
+                let tid = params.get("id").and_then(Value::as_str).unwrap_or("").to_owned();
+                if self.fleet.targets.iter().any(|t| t.id.as_str() == tid && matches!(t.transport, attach::TargetTransport::Wsl(_))) {
+                    self.target_state(&tid, ConnectionStatus::Connected, None, Some(true), None);
+                }
+            }
             crate::client::hub_names::CACHE_CLEAR => self.ready.push_back(result(id, json!({}))),
+            // SEAM (D92): the hub's view preferences; see `client::hub_names::VIEW_GET`.
             crate::client::hub_names::VIEW_GET => {
-                let views: Vec<Value> = self
+                let threads: Vec<Value> = self
                     .fleet
                     .view
                     .iter()
-                    .map(|(k, (pinned, muted))| json!({ "target": k.target, "threadId": k.thread, "pinned": pinned, "muted": muted }))
+                    .map(|(k, v)| {
+                        json!({
+                            "target": k.target, "threadId": k.thread, "pinned": v.pinned, "muted": v.muted,
+                            "mutedUntil": v.muted_until.map(crate::time::format_rfc3339), "dismissed": v.dismissed,
+                        })
+                    })
                     .collect();
-                self.ready.push_back(result(id, json!({ "views": views })));
+                self.ready.push_back(result(id, json!({ "threads": threads })));
             }
             crate::client::hub_names::VIEW_SET => {
-                let (Some(t), Some(th)) = (params.get("target").and_then(Value::as_str), params.get("threadId").and_then(Value::as_str)) else {
-                    self.ready.push_back(error(id, ErrorCode::InvalidParams, "target and threadId"));
-                    return;
-                };
-                let entry = self.fleet.view.entry(ThreadKey::new(t, th)).or_default();
-                if let Some(p) = params.get("pinned").and_then(Value::as_bool) {
-                    entry.0 = p;
+                if let (Some(t), Some(th)) = (params.get("target").and_then(Value::as_str), params.get("threadId").and_then(Value::as_str)) {
+                    let key = ThreadKey::new(TargetId::new(t), yaac_protocol::ThreadId::new(th));
+                    let v = self.fleet.view.entry(key).or_default();
+                    if let Some(x) = params.get("pinned").and_then(Value::as_bool) {
+                        v.pinned = x;
+                    }
+                    if let Some(x) = params.get("muted").and_then(Value::as_bool) {
+                        v.muted = x;
+                    }
+                    if let Some(x) = params.get("dismissed").and_then(Value::as_bool) {
+                        v.dismissed = x;
+                    }
+                    if let Some(u) = params.get("mutedUntil") {
+                        v.muted_until = u.as_str().and_then(crate::time::parse_rfc3339);
+                    }
                 }
-                if let Some(m) = params.get("muted").and_then(Value::as_bool) {
-                    entry.1 = m;
-                }
-                let (pinned, muted) = *entry;
-                self.ready.push_back(result(id, json!({ "view": { "target": t, "threadId": th, "pinned": pinned, "muted": muted } })));
+                self.ready.push_back(result(id, json!({})));
             }
             crate::client::hub_names::THREADS_FIND => self.find(id, &params),
             crate::client::hub_names::SETTINGS_GET | crate::client::hub_names::SETTINGS_UPDATE => {
@@ -328,6 +347,13 @@ impl Inner {
                 {
                     t.enabled = e;
                     t.state.status = if e { ConnectionStatus::Connected } else { ConnectionStatus::Disabled };
+                }
+                // "Start it": connecting to a stopped WSL distro boots it.
+                let boot = target.as_ref().and_then(|tid| self.fleet.targets.iter().find(|t| &t.id == tid)).is_some_and(|t| {
+                    enabled == Some(true) && matches!(t.transport, attach::TargetTransport::Wsl(_)) && t.state.status != ConnectionStatus::Connected
+                });
+                if boot && let Some(t) = &target {
+                    self.target_state(t.as_str(), ConnectionStatus::Connected, None, Some(true), None);
                 }
                 let entry = self.fleet.targets.iter().find(|t| Some(&t.id) == target.as_ref()).cloned();
                 match entry {
@@ -532,6 +558,17 @@ impl Inner {
                 self.ready.push_back(result(id, json!({ "instance": { "id": iid, "kind": "", "enabled": true, "backend": "auto" } })));
             }
             m::THREAD_FORK | m::THREAD_FORK_ONLY => self.fork(id, target, p),
+            m::THREAD_ARCHIVE | crate::client::hub_names::THREAD_UNARCHIVE => {
+                let Some(key) = thread(p, "threadId") else { return };
+                let Some(t) = self.fleet.threads.get_mut(&key) else {
+                    self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
+                    return;
+                };
+                t.summary.archived = method == m::THREAD_ARCHIVE;
+                let summary = t.summary.clone();
+                self.ready.push_back(result(id, json!({})));
+                self.ready.push_back(routed(target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
+            }
             m::THREAD_UPDATE => {
                 let Some(key) = thread(p, "threadId") else { return };
                 let Some(t) = self.fleet.threads.get_mut(&key) else {

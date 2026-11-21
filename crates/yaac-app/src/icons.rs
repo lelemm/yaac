@@ -183,19 +183,6 @@ pub(crate) fn people(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.circle_stroke(pos2(c.x + d * 0.22, c.y - d * 0.18), d * 0.12, stroke(col, w));
 }
 
-/// The agent's mark: a four-pointed spark.
-pub(crate) fn spark(p: &Painter, c: Pos2, d: f32, col: Color32) {
-    let r = d * 0.42;
-    let k = r * 0.22;
-    let pts = vec![
-        pos2(c.x, c.y - r), pos2(c.x + k, c.y - k), pos2(c.x + r, c.y), pos2(c.x + k, c.y + k),
-        pos2(c.x, c.y + r), pos2(c.x - k, c.y + k), pos2(c.x - r, c.y), pos2(c.x - k, c.y - k),
-    ];
-    p.add(Shape::Path(eframe::epaint::PathShape::closed_line(pts.clone(), Stroke::new(1.0, col))));
-    // Fill as two convex quads.
-    p.add(Shape::convex_polygon(vec![pts[0], pts[1], pts[3], pts[4], pts[5], pts[7]], col, Stroke::NONE));
-    p.add(Shape::convex_polygon(vec![pts[1], pts[2], pts[3], pts[5], pts[6], pts[7]], col, Stroke::NONE));
-}
 
 pub(crate) fn terminal(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let w = (d * 0.08).max(1.1);
@@ -326,14 +313,6 @@ pub(crate) fn pencil(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.add(Shape::convex_polygon(vec![tip, pos2(neck.x - w, neck.y - w), pos2(neck.x + w, neck.y + w)], col, Stroke::NONE));
 }
 
-/// Three lines: the thread list.
-pub(crate) fn list(p: &Painter, c: Pos2, d: f32, col: Color32) {
-    let w = d * 0.36;
-    for i in -1..=1 {
-        let y = c.y + i as f32 * d * 0.24;
-        p.line_segment([pos2(c.x - w, y), pos2(c.x + w, y)], stroke(col, (d * 0.1).max(1.3)));
-    }
-}
 
 /// A fork: one stem splitting in two.
 pub(crate) fn fork(p: &Painter, c: Pos2, d: f32, col: Color32) {
@@ -347,4 +326,46 @@ pub(crate) fn fork(p: &Painter, c: Pos2, d: f32, col: Color32) {
     for q in [base, pos2(c.x - s * 0.8, c.y - s), pos2(c.x + s * 0.8, c.y - s)] {
         p.circle_filled(q, w * 1.3, col);
     }
+}
+
+/// Copy: two overlapping sheets.
+pub(crate) fn copy(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.09).max(1.1);
+    let s = d * 0.5;
+    let back = Rect::from_min_size(pos2(c.x - s * 0.75, c.y - s * 0.75), vec2(s, s));
+    let front = Rect::from_min_size(pos2(c.x - s * 0.25, c.y - s * 0.25), vec2(s, s));
+    p.line(vec![pos2(back.left(), back.bottom()), back.left_top(), pos2(back.right(), back.top())], stroke(col, w));
+    p.rect_stroke(front, 1.5, stroke(col, w), eframe::egui::StrokeKind::Middle);
+}
+
+/// A check mark (done; "Copied").
+pub(crate) fn check(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.1).max(1.3);
+    let s = d * 0.36;
+    p.line(vec![pos2(c.x - s, c.y), pos2(c.x - s * 0.3, c.y + s * 0.7), pos2(c.x + s, c.y - s * 0.6)], stroke(col, w));
+}
+
+/// Back (‹) and forward (›): a single chevron pointing left or right.
+pub(crate) fn nav(p: &Painter, c: Pos2, d: f32, forward: bool, col: Color32) {
+    let w = (d * 0.1).max(1.4);
+    let s = d * 0.22;
+    let dir = if forward { 1.0 } else { -1.0 };
+    p.line(vec![pos2(c.x - s * dir * 0.6, c.y - s * 1.4), pos2(c.x + s * dir * 0.8, c.y), pos2(c.x - s * dir * 0.6, c.y + s * 1.4)], stroke(col, w));
+}
+
+/// Plus: a new thread.
+pub(crate) fn plus(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.1).max(1.4);
+    let s = d * 0.34;
+    p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke(col, w));
+    p.line_segment([pos2(c.x, c.y - s), pos2(c.x, c.y + s)], stroke(col, w));
+}
+
+/// The sidebar toggle: a frame with a narrow left column.
+pub(crate) fn sidebar(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.08).max(1.2);
+    let r = Rect::from_center_size(c, vec2(d * 0.8, d * 0.66));
+    p.rect_stroke(r, 2.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
+    let x = r.left() + r.width() * 0.34;
+    p.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], stroke(col, w));
 }

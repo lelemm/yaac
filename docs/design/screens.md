@@ -80,7 +80,7 @@ a per-chat agents toggle with a permission prompt are added.
 | Done | `#4CC38A` | `#17754D` |
 | Git: added | `#73C991` | `#166F31` |
 | Git: modified | `#E2C08D` | `#855D00` |
-| Git: deleted | `#F47C7C` | `#C4302B` |
+| Git: deleted | `#F47C7C` | `#C22E29` |
 | Modal scrim | black at 55 % | black at 35 % |
 
 ### Contrast is a requirement, not a hope

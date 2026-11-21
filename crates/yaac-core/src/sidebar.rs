@@ -14,7 +14,8 @@ use crate::key::ThreadKey;
 use crate::state::AppState;
 use crate::time;
 
-/// The three grouping checkboxes, plus "Show archived".
+/// The three grouping checkboxes, plus "Show dismissed". (Archived threads have their own
+/// section, D93; there is no "Show archived" switch.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Grouping {
     /// Group by machine (target).
@@ -23,15 +24,24 @@ pub struct Grouping {
     pub project: bool,
     /// Group by worktree.
     pub worktree: bool,
-    /// Archived threads are listed too.
-    pub show_archived: bool,
+    /// Dismissed threads are listed too.
+    pub show_dismissed: bool,
 }
 
 impl Default for Grouping {
     fn default() -> Self {
         // Each row carries its branch, so sections are per project by default.
-        Self { machine: true, project: true, worktree: false, show_archived: false }
+        Self { machine: true, project: true, worktree: false, show_dismissed: false }
     }
+}
+
+/// Which collapsed sections the user opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Open {
+    /// Muted.
+    pub muted: bool,
+    /// Archived.
+    pub archived: bool,
 }
 
 /// What the right end of a row shows.
@@ -46,13 +56,19 @@ pub enum RowRight {
         /// The thread is muted.
         muted: bool,
     },
+    /// When a timed mute ends ("until 14:30", "until Sat", "until 3 Dec"), in the Muted
+    /// section, in the host's local time.
+    Until(String),
 }
 
 /// The second line of a row: what the thread is doing in git. The window draws each part
 /// with an icon; every count is shown only when it is not zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line2 {
-    /// The branch.
+    /// The provider kind, for the harness logo that starts the line (display only — never
+    /// branched on).
+    pub kind: Option<String>,
+    /// The branch; empty for a folder outside git (the line is then the logo alone).
     pub branch: String,
     /// Files added relative to origin.
     pub added: u32,
@@ -86,8 +102,10 @@ pub struct ThreadRow {
     pub selected: bool,
     /// Muted (drawn in secondary text in the Muted section).
     pub muted: bool,
-    /// Archived (only listed with "Show archived").
+    /// Archived (listed only under Archived).
     pub archived: bool,
+    /// Dismissed (listed only with "Show dismissed").
+    pub dismissed: bool,
 }
 
 /// What a section is.
@@ -99,8 +117,10 @@ pub enum SectionKind {
     Pinned,
     /// A group of the chosen grouping.
     Group,
-    /// "Muted · N", last, collapsed unless opened.
+    /// "Muted · N", collapsed unless opened.
     Muted,
+    /// "Archived · N", the last, collapsed unless opened.
+    Archived,
 }
 
 /// A sticky section header: project · worktree on the left, the machine on the right.
@@ -160,18 +180,20 @@ fn updated(state: &AppState, key: &ThreadKey) -> i64 {
 }
 
 /// Every thread waiting on the user, from all machines, ignoring grouping; most recent first.
-pub fn needs_you(state: &AppState, map: &AttentionMap) -> Vec<NeedsYouEntry> {
+/// A muted (or dismissed) thread that gets blocked is still listed; an archived one is listed
+/// only under Archived.
+pub fn needs_you(state: &AppState, map: &AttentionMap, now: i64) -> Vec<NeedsYouEntry> {
     let mut out: Vec<NeedsYouEntry> = map
         .own
         .iter()
         .filter_map(|(key, a)| {
-            let s = state.summary(key)?;
+            let s = state.summary(key).filter(|s| !s.archived)?;
             Some(NeedsYouEntry {
                 key: key.clone(),
                 title: s.title.clone(),
                 attention: *a,
                 target_name: state.target_name(&key.target),
-                muted: state.is_muted(key),
+                muted: state.is_muted(key, now),
             })
         })
         .collect();
@@ -262,36 +284,36 @@ pub fn section_of(state: &AppState, grouping: Grouping, key: &ThreadKey) -> Opti
 /// A section's header and its threads.
 type Group = (Option<Header>, Vec<ThreadKey>);
 
-/// The whole list. `filter` matches title and preview, case-insensitively; `muted_open`
-/// expands the Muted section.
-pub fn sections(
-    state: &AppState,
-    map: &AttentionMap,
-    grouping: Grouping,
-    filter: &str,
-    muted_open: bool,
-    now: i64,
-) -> Vec<Section> {
+/// The whole list. `filter` matches title and preview, case-insensitively; `open` expands
+/// the Muted and Archived sections. Times are in the host's `zone`.
+pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, filter: &str, open: Open, now: i64, zone: time::Zone) -> Vec<Section> {
     let needle = filter.trim().to_lowercase();
     let selected = state.selected_thread();
-    let matches = |s: &ThreadSummary| {
-        (grouping.show_archived || !s.archived)
-            && (needle.is_empty() || s.title.to_lowercase().contains(&needle) || s.preview.to_lowercase().contains(&needle))
-    };
+    let text_matches = |s: &ThreadSummary| needle.is_empty() || s.title.to_lowercase().contains(&needle) || s.preview.to_lowercase().contains(&needle);
+    let matches = |key: &ThreadKey, s: &ThreadSummary| !s.archived && (grouping.show_dismissed || !state.is_dismissed(key)) && text_matches(s);
     let age = |key: &ThreadKey| {
         RowRight::Age(state.summary(key).and_then(|s| time::secs(&s.updated_at)).map(|u| time::short_age(now - u)).unwrap_or_default())
     };
     let row = |key: &ThreadKey, right: RowRight, two_lines: bool| -> ThreadRow {
         let s = state.summary(key);
+        // Every row outside Needs you, Muted and Archived has a second line: the harness logo,
+        // then (in git) the branch and the counts.
         let line2 = if two_lines {
-            s.and_then(|s| s.git.as_ref().map(|g| (s, g))).map(|(s, g)| Line2 {
-                branch: g.branch.clone().or_else(|| s.branch.clone()).unwrap_or_default(),
-                added: g.added,
-                modified: g.modified,
-                deleted: g.deleted,
-                ahead: g.ahead,
-                behind: g.behind,
-                workers: s.children,
+            s.map(|s| {
+                let kind = state.provider_of(key).map(|p| p.kind.to_string());
+                match &s.git {
+                    Some(g) => Line2 {
+                        kind,
+                        branch: g.branch.clone().or_else(|| s.branch.clone()).unwrap_or_default(),
+                        added: g.added,
+                        modified: g.modified,
+                        deleted: g.deleted,
+                        ahead: g.ahead,
+                        behind: g.behind,
+                        workers: s.children,
+                    },
+                    None => Line2 { kind, branch: String::new(), added: 0, modified: 0, deleted: 0, ahead: 0, behind: 0, workers: s.children },
+                }
             })
         } else {
             None
@@ -303,8 +325,9 @@ pub fn sections(
             right,
             line2,
             selected: selected == Some(key),
-            muted: state.is_muted(key),
+            muted: state.is_muted(key, now),
             archived: s.is_some_and(|s| s.archived),
+            dismissed: state.is_dismissed(key),
         }
     };
     let simple_header = |left: String| Header {
@@ -321,7 +344,7 @@ pub fn sections(
 
     // Needs you: one-line rows, the machine on the right.
     let needs: Vec<NeedsYouEntry> =
-        needs_you(state, map).into_iter().filter(|e| state.summary(&e.key).is_some_and(&matches)).collect();
+        needs_you(state, map, now).into_iter().filter(|e| state.summary(&e.key).is_some_and(&text_matches)).collect();
     if !needs.is_empty() {
         let rows: Vec<ThreadRow> = needs
             .iter()
@@ -341,12 +364,19 @@ pub fn sections(
     let mut pinned: Vec<ThreadKey> = Vec::new();
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
     let mut muted: Vec<ThreadKey> = Vec::new();
+    let mut archived: Vec<ThreadKey> = Vec::new();
     for (key, rec) in &state.threads {
         let s = &rec.summary;
-        if !matches(s) {
+        if s.archived {
+            if text_matches(s) {
+                archived.push(key.clone());
+            }
             continue;
         }
-        if state.is_muted(key) {
+        if !matches(key, s) {
+            continue;
+        }
+        if state.is_muted(key, now) {
             // A blocked muted thread is listed under Needs you only.
             if map.of(key).is_none() {
                 muted.push(key.clone());
@@ -393,8 +423,33 @@ pub fn sections(
             id: "muted".into(),
             kind: SectionKind::Muted,
             header: Some(simple_header(format!("Muted · {count}"))),
-            collapsed: !muted_open,
-            rows: if muted_open { muted.iter().map(|k| row(k, age(k), false)).collect() } else { Vec::new() },
+            collapsed: !open.muted,
+            rows: if open.muted {
+                muted
+                    .iter()
+                    .map(|k| {
+                        let right = match state.muted_until(k, now) {
+                            Some(u) => RowRight::Until(time::until_label(now, u, zone)),
+                            None => age(k),
+                        };
+                        row(k, right, false)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            count,
+        });
+    }
+    if !archived.is_empty() {
+        newest_first(&mut archived);
+        let count = archived.len();
+        out.push(Section {
+            id: "archived".into(),
+            kind: SectionKind::Archived,
+            header: Some(simple_header(format!("Archived · {count}"))),
+            collapsed: !open.archived,
+            rows: if open.archived { archived.iter().map(|k| row(k, age(k), false)).collect() } else { Vec::new() },
             count,
         });
     }

@@ -32,7 +32,7 @@ pub enum SendKey {
 /// The persisted choices.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UiPrefs {
-    /// The sidebar grouping checkboxes and "Show archived".
+    /// The sidebar grouping checkboxes and "Show dismissed".
     pub grouping: Grouping,
     /// The agents panel is docked.
     pub docked: bool,
@@ -44,11 +44,13 @@ pub struct UiPrefs {
     pub font_size: f32,
     /// The send key.
     pub send_key: SendKey,
+    /// The sidebar's width, and whether it is collapsed to the strip.
+    pub sidebar: crate::strip::SidebarSize,
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { grouping: Grouping::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter }
+        Self { grouping: Grouping::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default() }
     }
 }
 
@@ -66,8 +68,10 @@ pub mod keys {
     pub const FONT_SIZE: &str = "fontSize";
     /// Send key.
     pub const SEND_KEY: &str = "sendKey";
+    /// The sidebar's width and collapsed state.
+    pub const SIDEBAR: &str = "sidebar";
     /// Every key.
-    pub const ALL: [&str; 6] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, FONT_SIZE, SEND_KEY];
+    pub const ALL: [&str; 7] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, FONT_SIZE, SEND_KEY, SIDEBAR];
 }
 
 impl UiPrefs {
@@ -78,7 +82,7 @@ impl UiPrefs {
                 "machine": self.grouping.machine,
                 "project": self.grouping.project,
                 "worktree": self.grouping.worktree,
-                "showArchived": self.grouping.show_archived,
+                "showDismissed": self.grouping.show_dismissed,
             }),
             keys::AGENTS_DOCKED => json!(self.docked),
             keys::THEME => json!(match self.theme {
@@ -88,6 +92,7 @@ impl UiPrefs {
             }),
             keys::COLLAPSED => json!({ "muted": !self.muted_open }),
             keys::FONT_SIZE => json!(self.font_size),
+            keys::SIDEBAR => json!({ "width": self.sidebar.width, "collapsed": self.sidebar.collapsed }),
             keys::SEND_KEY => json!(match self.send_key {
                 SendKey::Enter => "enter",
                 SendKey::CtrlEnter => "ctrlEnter",
@@ -105,7 +110,7 @@ impl UiPrefs {
                 g.machine = b("machine", g.machine);
                 g.project = b("project", g.project);
                 g.worktree = b("worktree", g.worktree);
-                g.show_archived = b("showArchived", g.show_archived);
+                g.show_dismissed = b("showDismissed", g.show_dismissed);
             }
             keys::AGENTS_DOCKED => self.docked = v.as_bool().unwrap_or(self.docked),
             keys::THEME => {
@@ -122,6 +127,13 @@ impl UiPrefs {
                 if let Some(f) = v.as_f64().filter(|f| (9.0..=24.0).contains(f)) {
                     self.font_size = f as f32;
                 }
+            }
+            #[allow(clippy::cast_possible_truncation, reason = "widths are small")]
+            keys::SIDEBAR => {
+                if let Some(w) = v.get("width").and_then(Value::as_f64) {
+                    self.sidebar.width = (w as f32).clamp(crate::strip::MIN_WIDTH, crate::strip::MAX_WIDTH);
+                }
+                self.sidebar.collapsed = b("collapsed", self.sidebar.collapsed);
             }
             keys::SEND_KEY => {
                 self.send_key = match v.as_str() {

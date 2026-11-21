@@ -48,6 +48,12 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("28", "agents-card"),
     ("29", "create-project"),
     ("30", "bypass-confirm"),
+    ("31", "history-list"),
+    ("32", "ssh-form"),
+    ("33", "mute-dialog"),
+    ("34", "wsl-stopped"),
+    ("35", "sidebar-strip"),
+    ("36", "sidebar-wide"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -132,6 +138,11 @@ impl Shots {
                 );
             }
             ctx.set_zoom_factor(1.25);
+            // Each screen starts from fresh widget memory (scroll positions from the screen
+            // before must not carry over).
+            ctx.data_mut(egui::util::IdTypeMap::clear);
+            // Code blocks show their copy button as on hover.
+            ctx.data_mut(|d| d.insert_temp(egui::Id::unique(crate::markdown::FORCE_COPY_BUTTONS), true));
             setup(app, id);
             // This display cannot resize the window reliably, so screen 21 lays the shell out in
             // 960 × 720 points and the picture is cropped to it.
@@ -177,15 +188,28 @@ fn setup(app: &mut YaacApp, id: &str) {
         }
         "02" | "27" | "28" => {
             let k = threads::orchestrator();
+            // Came here from the frame decoder: Back is available, Forward is not.
+            app.open(&threads::fix(), None);
             app.open(&k, None);
             if id == "02" {
+                // A three-line message being written: the composer has grown to three lines.
+                app.client.state.drafts.entry(k.clone()).or_default().text =
+                    "When search-service finishes:\n- merge it behind the flag\n- then tell CI to run the full suite".into();
                 app.ui.expansion.toggle_line(&k, &"o4".into());
             }
             if id == "28" {
                 app.ui.panel = PanelMode::Card;
             }
         }
-        "03" => app.open(&threads::billing(), None),
+        "03" => {
+            // A file change: one diff expanded in place, the others collapsed, and the turn's
+            // summary line at the end.
+            let k = threads::billing();
+            app.open(&k, None);
+            app.ui.expansion.toggle_file(&k, &"b3".into(), 0);
+            app.ui.scroll_to = Some("b3".into());
+            app.ui.scroll_end = false;
+        }
         "04" => app.open(&threads::index(), None),
         "05" => {
             play(app, Scene::RequestStates);
@@ -352,6 +376,9 @@ fn setup(app: &mut YaacApp, id: &str) {
                 app.client.set_muted(&k, false);
             }
             app.ui.muted_open = true;
+            // The end of the list: Muted open (a timed mute shows when it ends), Archived
+            // collapsed to its header beneath it.
+            app.ui.sidebar_to_end = true;
             app.ui.menu = Some(Menu::Context(threads::billing()));
         }
         "29" => {
@@ -365,6 +392,67 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.ui.focus_card = None;
             app.ui.menu = Some(Menu::Mode);
             app.client.choose_mode(ModeTarget::Thread(fix), "bypass".into());
+        }
+        "35" => {
+            // The sidebar collapsed to the strip, the card of one thread open as on hover.
+            app.open(&threads::orchestrator(), None);
+            app.ui.sidebar.collapsed = true;
+            app.ui.strip_hover_key = Some((threads::billing(), egui::Rect::NOTHING));
+        }
+        "36" => {
+            // The sidebar dragged wider.
+            app.open(&threads::orchestrator(), None);
+            app.ui.sidebar.width = 440.0;
+        }
+        "34" => {
+            // A thread on a stopped WSL distro (D96): readable from the cache; the composer and
+            // control row give way to one line with Start it.
+            play(app, Scene::Notices);
+            let wsl = yaac_protocol::TargetId::new("wsl-ubuntu");
+            let key = yaac_core::ThreadKey::new(wsl, yaac_protocol::ThreadId::new("t-wsl-build"));
+            let hs = threads::notes();
+            app.open(&hs, None);
+            if let Some(mut rec) = app.client.state.threads.get(&hs).cloned() {
+                rec.summary.id = key.thread.clone();
+                rec.summary.title = "Port the build script".into();
+                app.client.state.threads.insert(key.clone(), rec);
+            }
+            if let Some(t) = app.client.state.transcripts.get(&hs).cloned() {
+                app.client.state.transcripts.insert(key.clone(), t);
+            }
+            app.client.state.selection = yaac_core::state::Selection::Thread(key);
+        }
+        "33" => {
+            // Mute, with "For 2 hours" chosen: the moment it ends shows beneath, in local time.
+            app.open(&threads::fix(), None);
+            app.ui.focus_card = None;
+            app.apply(vec![crate::app::Action::OpenMute(threads::billing(), false)]);
+            if let Some(d) = &mut app.ui.mute {
+                d.choice = yaac_core::mute::MuteChoice::For;
+            }
+        }
+        "32" => {
+            // The Add SSH server form with realistic long values: every field usable.
+            app.ui.settings = true;
+            app.ui.settings_page = Page::Targets;
+            let mut panel = SshPanel::new(STORY_NOW, None);
+            panel.name = "build-cluster-west".into();
+            panel.host = "build-runner-07.eu-west.example.org".into();
+            panel.user = "deploy".into();
+            panel.port = "2222".into();
+            app.ui.set.ssh = Some(panel);
+        }
+        "31" => {
+            // Several places visited; the back button's list is open.
+            for k in [threads::billing(), threads::index(), threads::ci(), threads::fix()] {
+                app.open(&k, None);
+            }
+            app.ui.settings_page = Page::Providers;
+            app.ui.history.visit(yaac_core::history::Place::Settings(Page::Providers), None);
+            app.ui.history.visit(yaac_core::history::Place::Thread(threads::orchestrator()), None);
+            app.open(&threads::orchestrator(), None);
+            app.ui.nav_menu = Some(false);
+            app.ui.nav_sel = 0;
         }
         _ => {}
     }

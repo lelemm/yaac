@@ -48,7 +48,7 @@ impl SshPanel {
         };
         let conn = SshConn { name: name.clone(), host: host.clone(), port: 22, user: user.clone() };
         Self {
-            setup: SshSetup::new(conn, now),
+            setup: SshSetup::new(conn, now).in_zone(now, crate::app::host_zone()),
             name,
             host,
             port,
@@ -407,7 +407,7 @@ fn start_revoke(app: &mut YaacApp, id: &TargetId) {
     let Some(key) = app.client.state.ssh_records.get(id).and_then(|r| r.installed()).cloned() else { return };
     let conn = SshConn { name: t.entry.name.to_string(), host: s.host.clone(), port: s.port.unwrap_or(22), user: s.user.clone().unwrap_or_default() };
     let now = app.now();
-    let revoke = Revoke::start(conn, key, now, app.ssh.as_mut());
+    let revoke = Revoke::start(conn, key, now, app.ssh.as_mut()).in_zone(now, app.zone);
     app.ui.set.revoke = Some(RevokePanel { target: id.clone(), revoke });
     app.ui.set.ssh = None;
 }
@@ -472,18 +472,23 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         ui.label(RichText::new(title).font(theme::bold(size::SECTION + 1.0)));
         ui.add_space(8.0);
         let editable = matches!(panel.setup.phase, Phase::Form | Phase::Unreached(_));
-        egui::Grid::new("ssh-form").num_columns(4).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
-            ui.label(widgets::secondary("Name", &p));
-            if editable { widgets::field(ui, &p, &mut panel.name, "devbox", 200.0, false); } else { ui.label(&panel.name); }
-            ui.label(widgets::secondary("User", &p));
-            if editable { widgets::field(ui, &p, &mut panel.user, "user", 140.0, false); } else { ui.label(&panel.user); }
-            ui.end_row();
-            ui.label(widgets::secondary("Host", &p));
-            if editable { widgets::field(ui, &p, &mut panel.host, "host.example.com", 200.0, false); } else { ui.label(&panel.host); }
-            ui.label(widgets::secondary("Port", &p));
-            if editable { widgets::field(ui, &p, &mut panel.port, "22", 60.0, false); } else { ui.label(&panel.port); }
-            ui.end_row();
-        });
+        // Name and Host are the widest (a host name is often long), User medium, Port narrow.
+        let SshPanel { name, user, host, port, .. } = &mut panel;
+        widgets::form(
+            ui,
+            &p,
+            vec![
+                vec![
+                    widgets::Field { label: "Name", text: name, hint: "devbox", width: widgets::FieldWidth::Fill, mono: false },
+                    widgets::Field { label: "User", text: user, hint: "user", width: widgets::FieldWidth::Fill, mono: false },
+                ],
+                vec![
+                    widgets::Field { label: "Host", text: host, hint: "host.example.com", width: widgets::FieldWidth::Fill, mono: false },
+                    widgets::Field { label: "Port", text: port, hint: "22", width: widgets::FieldWidth::Chars(6), mono: false },
+                ],
+            ],
+            editable,
+        );
         ui.add_space(10.0);
         steps(ui, &p, &panel.setup.steps, panel.setup.current().as_ref());
         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -498,7 +503,7 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                     let ready = form_ready(&panel.host, &panel.port);
                     if ready {
                         if widgets::primary(ui, &p, "Setup", Some("Enter")).clicked() || enter {
-                            panel.setup = SshSetup::new(panel.conn(), now);
+                            panel.setup = SshSetup::new(panel.conn(), now).in_zone(now, crate::app::host_zone());
                             panel.setup.start(app.ssh.as_mut());
                         }
                     } else {
@@ -627,7 +632,7 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                     if matches!(rec, SetupRecord::InstalledByYaac { .. }) && widgets::plain(ui, &p, "Revoke", None).clicked() {
                         let id = panel.existing.clone().unwrap_or_else(|| TargetId::new(name.clone()));
                         if let SetupRecord::InstalledByYaac { key, .. } = &rec {
-                            let revoke = Revoke::start(panel.setup.conn.clone(), key.clone(), now, app.ssh.as_mut());
+                            let revoke = Revoke::start(panel.setup.conn.clone(), key.clone(), now, app.ssh.as_mut()).in_zone(now, crate::app::host_zone());
                             app.ui.set.revoke = Some(RevokePanel { target: id, revoke });
                         }
                         keep = false;

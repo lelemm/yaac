@@ -10,10 +10,9 @@ use crate::app::{Action, YaacApp};
 use crate::theme::{self, size};
 use crate::widgets;
 
-/// Below this width (in points) the sidebar folds to a rail and a docked agents panel folds
-/// back to the pill (screen 21).
+/// Below this width (in points) the sidebar folds to the strip and a docked agents panel
+/// folds back to the pill (screen 21).
 pub(crate) const NARROW: f32 = 1000.0;
-const RAIL: f32 = 56.0;
 
 pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, actions: &mut Vec<Action>, _frame: &mut eframe::Frame) {
     let p = app.p;
@@ -27,9 +26,12 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     ui.painter().rect_filled(full, 0.0, p.bg);
     let narrow = full.width() < NARROW;
     let selected = app.client.state.selected_thread().cloned();
-    let panel = selected.as_ref().and_then(|k| agents_panel(&app.client.state, map, k));
+    // No related agent known in the index: no panel (not an empty pill).
+    let panel = selected.as_ref().and_then(|k| agents_panel(&app.client.state, map, k)).filter(|p| p.all().next().is_some());
     let docked = panel.is_some() && app.ui.panel == PanelMode::Docked && !narrow;
-    let side_w = if narrow { RAIL } else { 280.0 };
+    // The sidebar's own width, or the strip (collapsed, or a window too narrow for it).
+    let side_w = app.ui.sidebar.shown(narrow);
+    let strip = side_w <= yaac_core::strip::STRIP_WIDTH;
     let side = egui::Rect::from_min_max(full.min, egui::pos2(full.left() + side_w, full.bottom()));
     let right = if docked { egui::Rect::from_min_max(egui::pos2(full.right() - 300.0, full.top()), full.max) } else { egui::Rect::NOTHING };
     let center = egui::Rect::from_min_max(egui::pos2(side.right(), full.top()), egui::pos2(if docked { right.left() } else { full.right() }, full.bottom()));
@@ -37,14 +39,17 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     ui.painter().rect_filled(side, 0.0, p.panel);
     ui.painter().vline(side.right(), full.y_range(), hair);
     let mut badge = None;
-    if narrow {
-        badge = Some(rail(ui, app, map, side, actions));
+    app.ui.threads_overlay = false;
+    if strip {
+        badge = Some(crate::strip::show(ui, app, map, now, side, actions));
     } else {
-        app.ui.threads_overlay = false;
         ui.scope_builder(egui::UiBuilder::new().max_rect(side.shrink2(vec2(12.0, 10.0))).id_salt("sidebar"), |ui| {
             ui.set_clip_rect(side);
             crate::sidebar::show(ui, app, map, now, actions);
         });
+    }
+    if !narrow {
+        resize_edge(ui, app, side);
     }
     if docked && let Some(panel) = &panel {
         ui.painter().rect_filled(right, 0.0, p.panel);
@@ -77,9 +82,6 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     {
         crate::agents_ui::floating(ui.ctx(), app, center, panel, actions);
     }
-    if narrow && app.ui.threads_overlay {
-        threads_overlay(ui.ctx(), app, map, now, full, actions);
-    }
 
     if app.ui.needs_popup {
         needs_popup(ui.ctx(), app, map, badge, actions);
@@ -90,69 +92,6 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     crate::dialogs::fork(ui.ctx(), app, actions);
 }
 
-/// The narrow sidebar: a Needs-you badge (opens the Needs-you popover), a "threads" button
-/// (opens the full list as an overlay), and Settings at the bottom. Returns the badge's rect.
-fn rail(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, side: egui::Rect, actions: &mut Vec<Action>) -> egui::Rect {
-    let p = app.p;
-    let count = yaac_core::sidebar::needs_you(&app.client.state, map).len();
-    let cx = side.center().x;
-    let button = |ui: &mut egui::Ui, y: f32, id: &str, tip: &str| {
-        let r = egui::Rect::from_center_size(egui::pos2(cx, y), vec2(40.0, 40.0));
-        let resp = ui.interact(r, egui::Id::unique(("rail", id)), egui::Sense::click()).on_hover_text(tip);
-        if resp.hovered() || resp.has_focus() {
-            ui.painter().rect_filled(r, 6.0, p.faint);
-        }
-        (r, resp)
-    };
-    let (badge, resp) = button(ui, side.top() + 34.0, "needs", "Needs you (Ctrl+J)");
-    if count > 0 {
-        crate::icons::mark(ui.painter(), egui::pos2(cx - 6.0, badge.center().y), 16.0, yaac_core::attention::Mark::NeedsYou, &p);
-        let g = ui.fonts_mut(|f| f.layout_no_wrap(count.to_string(), theme::bold(size::UI), p.text));
-        ui.painter().galley(egui::pos2(cx + 5.0, badge.center().y - g.size().y / 2.0), g, p.text);
-    } else {
-        crate::icons::mark(ui.painter(), badge.center(), 16.0, yaac_core::attention::Mark::Idle, &p);
-    }
-    if resp.clicked() {
-        app.ui.needs_popup = !app.ui.needs_popup;
-        app.ui.needs_sel = 0;
-    }
-    let (r, resp) = button(ui, side.top() + 82.0, "threads", "Threads");
-    crate::icons::list(ui.painter(), r.center(), 18.0, p.text);
-    if resp.clicked() {
-        app.ui.threads_overlay = !app.ui.threads_overlay;
-    }
-    let (r, resp) = button(ui, side.bottom() - 30.0, "settings", "Settings (Ctrl+,)");
-    crate::icons::gear(ui.painter(), r.center(), 17.0, p.text2);
-    if resp.clicked() {
-        actions.push(Action::Settings(true));
-    }
-    badge
-}
-
-/// The full thread list over the thread, in a narrow window.
-fn threads_overlay(ctx: &egui::Context, app: &mut YaacApp, map: &AttentionMap, now: i64, full: egui::Rect, actions: &mut Vec<Action>) {
-    let p = app.p;
-    let panel = egui::Rect::from_min_size(egui::pos2(full.left() + RAIL, full.top()), vec2(300.0, full.height()));
-    let mut close = false;
-    egui::Area::new(egui::Id::unique("threads-scrim")).order(egui::Order::Middle).fixed_pos(egui::pos2(panel.right(), full.top())).interactable(true).show(ctx, |ui| {
-        let r = egui::Rect::from_min_max(egui::pos2(panel.right(), full.top()), full.max);
-        ui.painter().rect_filled(r, 0.0, p.scrim);
-        if ui.allocate_rect(r, egui::Sense::click()).clicked() {
-            close = true;
-        }
-    });
-    egui::Area::new(egui::Id::unique("threads-overlay")).order(egui::Order::Foreground).fixed_pos(panel.min).show(ctx, |ui| {
-        ui.set_min_size(panel.size());
-        ui.painter().rect_filled(panel, 0.0, p.panel);
-        ui.scope_builder(egui::UiBuilder::new().max_rect(panel.shrink2(vec2(12.0, 10.0))).id_salt("sidebar-overlay"), |ui| {
-            ui.set_clip_rect(panel);
-            crate::sidebar::show(ui, app, map, now, actions);
-        });
-    });
-    if close || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-        app.ui.threads_overlay = false;
-    }
-}
 
 /// Create project (screen 29): machine (read-only), folder, name; one filled button.
 fn create_project_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
@@ -330,7 +269,7 @@ fn rename_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Actio
 /// Ctrl+J: the Needs-you list from anywhere. ↑ ↓ to move, ⏎ to open (and focus the card).
 fn needs_popup(ctx: &egui::Context, app: &mut YaacApp, map: &AttentionMap, badge: Option<egui::Rect>, actions: &mut Vec<Action>) {
     let p = app.p;
-    let list = yaac_core::sidebar::needs_you(&app.client.state, map);
+    let list = yaac_core::sidebar::needs_you(&app.client.state, map, app.now());
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
         app.ui.needs_sel = (app.ui.needs_sel + 1).min(list.len().saturating_sub(1));
     }
@@ -406,16 +345,37 @@ fn wsl_notification(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Ac
                     ui.label(format!("WSL distro {distro} is not running."));
                 });
                 ui.add_space(8.0);
+                // One action (D96): starting it asks the hub to connect, which boots the distro.
+                // Turning the connection off lives only in Settings → Targets.
                 ui.horizontal(|ui| {
                     if widgets::plain(ui, &p, "Start it", None).clicked() {
                         actions.push(Action::Retry(id.clone()));
                         app.ui.dismissed.insert(id.clone());
                     }
-                    if widgets::plain(ui, &p, "Disable its threads", None).clicked() {
-                        app.ui.dismissed.insert(id.clone());
-                    }
                 });
             });
         });
+    }
+}
+
+/// The hairline beside the sidebar is its resize handle: drag it between the minimum and the
+/// maximum width; well below the minimum the sidebar collapses to the strip, and dragging out
+/// of the strip brings it back (yaac_core::strip).
+fn resize_edge(ui: &mut egui::Ui, app: &mut YaacApp, side: egui::Rect) {
+    let edge = egui::Rect::from_min_max(egui::pos2(side.right() - 3.0, side.top()), egui::pos2(side.right() + 3.0, side.bottom()));
+    let resp = ui.interact(edge, egui::Id::unique("sidebar-edge"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+    if resp.drag_started() {
+        app.ui.sidebar_drag = Some(side.width());
+    }
+    if resp.dragged()
+        && let (Some(start), Some(origin), Some(now)) = (app.ui.sidebar_drag, ui.input(|i| i.pointer.press_origin()), ui.input(|i| i.pointer.interact_pos()))
+    {
+        app.ui.sidebar.drag_to(start + now.x - origin.x);
+    }
+    if resp.drag_stopped() {
+        app.ui.sidebar_drag = None;
+    }
+    if resp.hovered() || resp.dragged() {
+        ui.painter().vline(side.right(), side.y_range(), egui::Stroke::new(2.0, app.p.focus));
     }
 }

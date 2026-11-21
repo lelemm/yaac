@@ -433,17 +433,21 @@ fn ui_state_is_sent_only_when_attached() {
 // ── wire data instead of window-local seams ────────────────────────────────────────────
 
 #[test]
-fn mute_and_pin_are_view_preferences_and_agents_goes_through_thread_update() {
+fn mute_and_pin_are_hub_view_preferences_and_agents_go_through_thread_update() {
     let (mut c, hub) = boot();
     let fix = threads::fix();
-    assert!(!c.state.is_muted(&fix));
+    assert!(!c.state.is_muted(&fix, common::NOW));
     c.set_muted(&fix, true);
     c.set_pinned(&fix, true);
     c.set_agents_policy(&fix, yaac_core::state::AgentsPolicy::Allow);
     settle(&mut c, &hub);
-    // Pin and mute are the host's view preferences (D92), not on the summary.
-    assert!(c.state.is_muted(&fix) && c.state.is_pinned(&fix));
+    // Pin and mute are kept by the hub (`hub/view/set`), never read from the summary.
+    assert!(c.state.is_muted(&fix, common::NOW) && c.state.is_pinned(&fix));
     let s = c.state.summary(&fix).unwrap();
+    // A fresh window gets them back from the hub (`hub/view/get`).
+    let mut c2 = yaac_core::client::Client::new(Box::new(hub.clone()), "test", yaac_protocol::ClientId::new(yaac_core::demo::DEMO_CLIENT));
+    settle(&mut c2, &hub);
+    assert!(c2.state.is_muted(&fix, common::NOW) && c2.state.is_pinned(&fix));
     assert_eq!(s.agents, yaac_protocol::AgentsPolicy::Allow);
     assert_eq!(c.state.agents_policy(&fix), yaac_core::state::AgentsPolicy::Allow);
 }
@@ -489,4 +493,25 @@ fn thought_has_a_duration_from_the_item_times() {
         })
         .collect();
     assert!(lines.iter().any(|l| l.contains("Thought for 4s")), "{lines:?}");
+}
+
+#[test]
+fn a_stopped_wsl_distro_disables_its_threads_until_started() {
+    let (mut c, hub) = boot();
+    hub.play(yaac_core::demo::Scene::Notices);
+    settle(&mut c, &hub);
+    let wsl = yaac_protocol::TargetId::new("wsl-ubuntu");
+    assert_eq!(c.state.stopped_distro(&wsl).as_deref(), Some("Ubuntu"));
+    // A cached thread on the distro: listed and readable, but nothing that changes state.
+    let key = yaac_core::ThreadKey::new(wsl.clone(), yaac_protocol::ThreadId::new("t-wsl"));
+    let mut rec = c.state.threads[&threads::fix()].clone();
+    rec.summary.id = key.thread.clone();
+    c.state.threads.insert(key.clone(), rec);
+    assert!(!c.state.may_act(&key));
+    assert!(c.state.may_act(&threads::fix()), "other machines are not affected");
+    // Start it: the hub connects (booting the distro); the threads come back by themselves.
+    c.retry_target(&wsl);
+    settle(&mut c, &hub);
+    assert_eq!(c.state.stopped_distro(&wsl), None);
+    assert!(c.state.may_act(&key));
 }

@@ -99,7 +99,9 @@ impl Attention {
 /// program" instead).
 pub fn own_attention(state: &AppState, key: &ThreadKey) -> Option<Attention> {
     let rec = state.threads.get(key)?;
-    if !state.may_act(key) {
+    // Held by another program: not "needs you" here. (A stopped WSL distro does not hide a
+    // blocked thread: its question is still the user's.)
+    if !state.control(key).may_act() {
         return None;
     }
     let from_requests = match state.hints.get(key) {
@@ -160,7 +162,7 @@ pub struct ThreadDisplay {
 /// The display of a thread.
 pub fn display(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> ThreadDisplay {
     let attention = map.of(key);
-    let read_only = state.threads.contains_key(key) && !state.may_act(key);
+    let read_only = state.threads.contains_key(key) && !state.control(key).may_act();
     let mark = match attention {
         Some(Attention::BudgetReached) => Mark::Paused,
         Some(_) => Mark::NeedsYou,

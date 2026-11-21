@@ -49,8 +49,8 @@ pub(crate) struct Fleet {
     pub budgets: BTreeMap<Address, MeshBudgetResult>,
     /// Each target's projects.
     pub projects: BTreeMap<TargetId, Vec<Project>>,
-    /// The hub's view preferences (D92): (pinned, muted) per thread.
-    pub view: BTreeMap<ThreadKey, (bool, bool)>,
+    /// The hub's view preferences (pin, mute, dismiss), by thread (D92).
+    pub view: BTreeMap<ThreadKey, crate::state::ViewPref>,
 }
 
 pub(crate) const ORCH: (&str, &str) = ("local", "t-orch");
@@ -531,7 +531,7 @@ impl Fleet {
             p_orch.clone(),
         )));
         f.push(&users, done("u2", "u-t1", reasoning("Plan the users-service migration.")));
-        f.push(&users, done("u3", "u-t1", tool(ToolKind::FileChange, "Edited 4 files", None, "")));
+        f.push(&users, done("u3", "u-t1", tool(ToolKind::FileChange, "Edited 3 files", None, super::diffs::USERS)));
         f.push(&users, done("u4", "u-t1", tool(ToolKind::Command, "Ran `cargo test -p users` — 14 passed", Some(0), "test result: ok. 14 passed")));
         f.push(&users, done("u5", "u-t1", agent("Merged to main. All 14 tests pass.")));
         f.push(&users, done("u6", "u-t1", sent(
@@ -546,7 +546,7 @@ impl Fleet {
             p_orch.clone(),
         )));
         f.push(&billing, done("b2", "b-t1", reasoning("Find every call into the old auth module in the billing service, then swap them for the new client.")));
-        f.push(&billing, done("b3", "b-t1", tool(ToolKind::FileChange, "Edited 6 files", None, "")));
+        f.push(&billing, done("b3", "b-t1", tool(ToolKind::FileChange, "Edited 4 files", None, super::diffs::BILLING)));
         f.push(&billing, done("b4", "b-t1", tool(ToolKind::Command, "Ran `cargo test -p billing` — 14 passed", Some(0), "test result: ok. 14 passed; 1 ignored")));
         f.push(&billing, done("b5", "b-t1", agent("Merged to main. One flaky test was skipped.")));
         f.push(&billing, done("b6", "b-t1", sent(
@@ -561,7 +561,7 @@ impl Fleet {
             message("m-search-task", &orch.address(), &search.address(), MeshMessageKind::Message, &task("search"), f.ts(-3000)),
             p_orch.clone(),
         )));
-        f.push(&search, done("s2", "s-t1", tool(ToolKind::FileChange, "Edited 3 files", None, "")));
+        f.push(&search, done("s2", "s-t1", tool(ToolKind::FileChange, "Edited 2 files", None, super::diffs::SEARCH)));
         f.push(&search, done("s3", "s-t1", agent("The index must be rebuilt against the new auth tables. Starting a worker for it.")));
         f.push(&search, item("s4", "s-t1", ItemStatus::InProgress, spawn(vec![(p_index.clone(), ThreadState::NeedsAttention)])));
         f.push(&search, item("s5", "s-t1", ItemStatus::InProgress, wait(vec![(p_index, ThreadState::NeedsAttention)], false)));
@@ -651,11 +651,21 @@ impl Fleet {
         // What the targets report beyond the brief's table: muted and pinned threads, git
         // status, and the projects the user created (the targets resolve which one each
         // thread belongs to).
-        // Muted and pinned threads: the hub's view preferences (D92), served as `hub/view/get`.
+        // Pin and mute are the hub's view preferences, not thread fields (D92). Lint pass is
+        // muted until later today (a timed mute).
         for key in [k(OLD_SPIKE), k(LINT), k(BENCH), k(V2PLAN)] {
-            f.view.insert(key, (false, true));
+            f.view.entry(key).or_default().muted = true;
         }
-        f.view.insert(k(ORCH), (true, false));
+        f.view.entry(k(LINT)).or_default().muted_until = Some(f.base + 2 * 3600 + 30 * 60);
+        f.view.entry(k(ORCH)).or_default().pinned = true;
+        // Archived threads: listed only in the Archived section (D93).
+        for (n, (id, title)) in [("t-arch-1", "Spike: protobuf codec"), ("t-arch-2", "Old CI flake hunt"), ("t-arch-3", "Rename the crates")].into_iter().enumerate() {
+            let key = ThreadKey::new(TargetId::new("local"), yaac_protocol::ThreadId::new(id));
+            let ago = -(i64::try_from(n).unwrap_or(0) + 8) * 86_400;
+            f.add(&key, title, "codex", "gpt-6.2-sol", ("api", "main"), ThreadState::Idle, ago);
+            f.push(&key, done(&format!("{id}-1"), "a-t1", user(title, &[], &[])));
+            f.set(&key, |s| s.archived = true);
+        }
         // The targets report a finished worker as done and a thread blocked on another agent as
         // waiting.
         for key in [k(USERS), k(BILLING), k(NOTES), k(LINT)] {

@@ -22,11 +22,17 @@ fn shape(c: &yaac_core::client::Client, key: &ThreadKey, e: &Expansion) -> Vec<S
                 "run[{}]",
                 lines
                     .iter()
-                    .map(|l| format!("{}{}{}", if l.failed { "!" } else { "" }, if l.expanded { "+" } else { "" }, l.text))
+                    .map(|l| {
+                        let counts = l.diff.map(|d| format!(" +{} −{}", d.added, d.removed)).unwrap_or_default();
+                        format!("{}{}{}{counts}", if l.failed { "!" } else { "" }, if l.expanded { "+" } else { "" }, l.text)
+                    })
                     .collect::<Vec<_>>()
                     .join(" | ")
             ),
             Block::Folded { text, failed, .. } => format!("folded[{text}{}]", if failed { " !" } else { "" }),
+            Block::TurnChanges { totals, expanded, .. } => {
+                format!("changes[{} +{} −{}{}]", totals.text(), totals.added, totals.removed, if expanded { " open" } else { "" })
+            }
         })
         .collect()
 }
@@ -51,7 +57,13 @@ fn a_spawned_thread_shows_its_task_in_full_and_cards_are_never_collapsed() {
     let (c, _) = boot();
     assert_eq!(
         shape(&c, &threads::billing(), &Expansion::default()),
-        ["task", "run[Thought for 9s | Edited 6 files | Ran cargo test -p billing — 14 passed]", "prose", "run[Migrate auth module — orchestrator · delivered]"]
+        [
+            "task",
+            "run[Thought for 9s | Edited services/billing/src/client.rs +4 −9 | Edited services/billing/Cargo.toml +1 −1 | Deleted services/billing/src/session.rs +0 −6 | Created services/billing/tests/auth.rs +9 −0 | Ran cargo test -p billing — 14 passed]",
+            "prose",
+            "run[Migrate auth module — orchestrator · delivered]",
+            "changes[Changed 4 files +14 −16]",
+        ]
     );
     assert_eq!(shape(&c, &threads::index(), &Expansion::default())[2], "card");
 }
@@ -80,7 +92,7 @@ fn a_long_run_folds_into_one_line_that_opens() {
     let key = threads::billing();
     // Make a long run: duplicate the tool line many times.
     let mut t = c.state.transcripts.get(&key).unwrap().clone();
-    let tool = t.items()[2].clone();
+    let tool = t.items()[3].clone();
     let mut items: Vec<_> = t.items()[..3].to_vec();
     for i in 0..10 {
         let mut x = tool.clone();
@@ -100,7 +112,7 @@ fn a_long_run_folds_into_one_line_that_opens() {
     let e = Expansion::default();
     let s = shape(&c, &key, &e);
     const { assert!(13 > FOLD_AFTER) };
-    assert_eq!(s[1], "folded[13 steps · 12 commands !]", "{s:#?}");
+    assert_eq!(s[1], "folded[16 steps · 15 commands !]", "{s:#?}");
     let map = AttentionMap::compute(&c.state);
     let first = match &blocks(&c.state, &map, &key, &e)[1] {
         Block::Folded { first, .. } => first.clone(),
@@ -111,7 +123,7 @@ fn a_long_run_folds_into_one_line_that_opens() {
     let opened = blocks(&c.state, &map, &key, &e);
     match &opened[1] {
         Block::Run { lines } => {
-            assert_eq!(lines.len(), 13);
+            assert_eq!(lines.len(), 16);
             assert!(lines.iter().any(|l| l.failed && l.mark == LineMark::Tool));
         }
         other => panic!("{other:?}"),
@@ -137,4 +149,28 @@ fn the_item_navigated_to_is_expanded_and_highlighted() {
     assert!(line.highlighted && line.expanded);
     assert_eq!(line.mark, LineMark::Received);
     assert!(matches!(b[0], Block::User { .. }), "a thread a person started opens with the user");
+}
+
+#[test]
+fn a_file_change_is_one_line_per_file_and_show_all_expands_the_turn() {
+    let (c, _) = boot();
+    let key = threads::billing();
+    let mut e = Expansion::default();
+    // One file opened by itself.
+    e.toggle_file(&key, &"b3".into(), 1);
+    let s = shape(&c, &key, &e);
+    assert!(s[1].contains("+Edited services/billing/Cargo.toml +1 −1"), "{}", s[1]);
+    assert!(!s[1].contains("+Edited services/billing/src/client.rs"), "{}", s[1]);
+    // "show all" opens every diff of the turn.
+    e.toggle_turn(&key, &"b-t1".into(), &["b3".into()]);
+    let s = shape(&c, &key, &e);
+    assert_eq!(s[1].matches("| +").count(), 4, "{}", s[1]);
+    assert_eq!(s.last().unwrap(), "changes[Changed 4 files +14 −16 open]");
+    // Closing it returns the turn to its collapsed form, including the file opened alone.
+    e.toggle_turn(&key, &"b-t1".into(), &["b3".into()]);
+    let s = shape(&c, &key, &e);
+    assert_eq!(s[1].matches("| +").count(), 0, "{}", s[1]);
+    // A turn that changed one file has no summary line; a non-diff output stays one plain line.
+    let search = shape(&c, &threads::search(), &Expansion::default());
+    assert!(search.iter().any(|b| b.starts_with("changes[Changed 2 files")), "{search:#?}");
 }
