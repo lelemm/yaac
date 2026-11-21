@@ -172,7 +172,10 @@ one after the other.
   collapse button (over the collapsed strip, the strip's mark); over the thread, the thread's
   state mark, title and tag (the breadcrumb stays on the line below); at the far right,
   minimize, maximize (restore while maximized; the icon changes) and close, which turns the
-  failed colour on hover. Every empty part of the row, and the title itself, drags the window;
+  failed colour on hover. Just left of minimize, only while there is one, the **update item**
+  (D136): a monochrome download icon ("YAAC <version>+<id> is available · Download"), a mini
+  progress bar while it downloads, then a restart icon ("Restart to update").
+  Every empty part of the row, and the title itself, drags the window;
   a double click maximizes or restores it; a press on a control in the row never moves the
   window. The docked agents panel starts below the row. The window's edges and corners resize
   it. No "Pinned / Active / Recent" lists, no

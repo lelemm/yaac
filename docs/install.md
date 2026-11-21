@@ -4,9 +4,10 @@
 user, without administrator rights**. The installer is `installer/yaac.iss`; it is built from
 WSL with `scripts/build-installer.sh`, which builds the release `yaac.exe`
 (`scripts/build-windows.sh`), reads the version from the workspace `Cargo.toml`, and writes
-`dist/windows/YAAC-Setup-<version>.exe`. Inno Setup 6 must be installed on the Windows side
+`dist/windows/YAAC-Setup-<version>+<id>.exe` (the build id, [02](02-architecture.md#build-ids)).
+Inno Setup 6 must be installed on the Windows side
 (`winget install --id JRSoftware.InnoSetup -e --scope user`); the script finds `ISCC.exe`
-there, or takes `$ISCC`.
+there, or takes `$ISCC`. Published releases are built by CI instead ([Releases](#releases)).
 
 There is one program file. The window and the hub are the same `yaac.exe` (`yaac` and
 `yaac hub`, [02](02-architecture.md#processes)); the `yaacd` bundle the hub installs on WSL
@@ -60,7 +61,9 @@ temporary folder first so the installed file itself is not held open.
    the installed `yaac.exe`, and the hub is running again, so the mesh keeps working without
    waiting for the next login.
 4. The finish page's **Launch YAAC** (ticked) opens the window. A silent install
-   (`/VERYSILENT`) does not open it.
+   (`/VERYSILENT`) does not open it, unless it was given **`/RELAUNCH`** (what the in-app
+   updater passes): then the installed `yaac.exe` is started once setup has finished. A setup
+   that failed runs neither.
 
 Installing the same or another version over an existing install follows the same steps, in
 the same folder (the folder of the first install is kept).
@@ -78,6 +81,117 @@ settings, the cache, drafts, the relay queue, and YAAC's generated SSH keys — 
 install picks up where this one left off. **Never touched, either way:** anything on a target
 (its `~/.yaac`, the line YAAC added to `authorized_keys` — use *Revoke* before uninstalling to
 remove that), and the user's own `~/.ssh` (invariant #12).
+
+## Releases
+
+**Decided** (D136): releases are made by GitHub Actions, `.github/workflows/release.yml`, on a
+push of a tag `v*` (it must equal `v<version>` of the workspace `Cargo.toml`) or by hand
+(*Run workflow*, which tags the commit `v<version>-build.<id>`). The repository is public, so
+releases are read without a token.
+
+| Job | Runs on | Does | Produces |
+| --- | --- | --- | --- |
+| `build` | `ubuntu-latest` | Node 22 and `npm ci` in `daemon/`; the daemon's `npm test`; `node --test scripts/make-manifest.test.mjs`; `cargo test --workspace --locked`; `scripts/build-windows.sh` (MinGW-w64 cross toolchain, Rust target `x86_64-pc-windows-gnu`) | `yaac.exe` (window and hub, with `yaacd` embedded), `yaacd.mjs`, `yaacd-mcp.mjs`, the exe's `yaac.ico` |
+| `installer` | `windows-latest` | `ISCC.exe installer\yaac.iss` with the same `/D` defines as `scripts/build-installer.sh`. Inno Setup 6 is preinstalled on GitHub's Windows images (actions/runner-images lists it); the job installs it with Chocolatey only if it is missing | `YAAC-Setup-<version>+<id>.exe` |
+| `release` | `ubuntu-latest` | `scripts/make-manifest.mjs`, then `gh release create <tag> … --latest` with the job's `GITHUB_TOKEN` (`contents: write`, this job only) | the release |
+
+A release holds `YAAC-Setup-<version>-build.<id>.exe` (asset names keep to letters, digits,
+`.`, `-` and `_`, which GitHub never renames), `yaac.exe`, `yaacd.mjs`, `yaacd-mcp.mjs`, and
+`manifest.json`. Actions are pinned to commit SHAs.
+
+**Build ids.** Every artefact of a release carries `<version>+<id>` with
+**id = 1000 + the workflow's run number** (`RELEASE_BASE` in the workflow), passed to the
+build as `YAAC_BUILD_ID`. CI ids are the release ids. `scripts/build-id.sh` hands an id given
+in `YAAC_BUILD_ID` straight back without touching the local counter, and refuses to count a
+local build past 999, so every release is newer than every local build (P87).
+
+### The manifest
+
+`manifest.json`, written by `scripts/make-manifest.mjs` (`node --test
+scripts/make-manifest.test.mjs` tests it; `scripts/testdata/manifest.sample.json` is the
+sample the Rust parser is tested against):
+
+```json
+{
+  "schema": 1,
+  "version": "0.1.0",
+  "build": 1005,
+  "tag": "v0.1.0",
+  "releasedAt": "2026-11-21T12:00:00.000Z",
+  "artifacts": [
+    { "name": "YAAC-Setup-0.1.0-build.1005.exe", "component": "installer", "version": "0.1.0+1005",
+      "size": 9123456, "sha256": "<64 hex>", "url": "https://github.com/lelemm/yaac/releases/download/v0.1.0/YAAC-Setup-0.1.0-build.1005.exe" },
+    { "name": "yaac.exe", "component": "app", … },
+    { "name": "yaacd.mjs", "component": "daemon", … },
+    { "name": "yaacd-mcp.mjs", "component": "daemon-mcp", … }
+  ]
+}
+```
+
+`schema` is the format: a reader uses only the schema it knows (a manifest of another one
+offers no update) and ignores fields it does not know, so fields are only ever added.
+`build` is the number the updater compares; each artefact's `version` is its own version with
+the same build id.
+
+## Updating
+
+**Decided** (D136); the details are P87–P90. Windows only: a build for another system has the
+code but never starts it, and a development build (`+dev…`) never updates itself.
+
+1. **As the window starts** (not `yaac hub`, not the commands, not the demo), on a worker
+   thread: one `GET https://api.github.com/repos/lelemm/yaac/releases/latest` with the
+   generic `User-Agent: yaac-updater` and nothing else, then that release's `manifest.json`.
+   10 s timeouts; offline, a timeout, an HTTP error, or GitHub's rate limit (403 with
+   `x-ratelimit-remaining: 0`, or 429) is silent — the title row shows nothing, Settings →
+   Advanced → Components says why — and is not retried until the next start.
+2. **A newer build** (`build` above this one's) puts an **update icon** in the title row,
+   left of the window buttons: *"YAAC <version>+<id> is available · Download"*.
+3. **Download** (a click): on a worker, into `%LOCALAPPDATA%\yaac\updates\` (YAAC's own
+   data folder; earlier downloads there are deleted first). The icon becomes a **mini progress
+   bar**, repainted only when it moves a visible step and at most ten times a second. The
+   size and SHA-256 are checked against the manifest as the bytes arrive; a mismatch deletes
+   the file. Only a verified installer gets **`pending.json`** (`build`, `version`, `path`,
+   `sha256`, `size`, `attempted`). A failed download leaves the icon, which tries again.
+4. **"Restart to update"** (a click): `pending.json` is marked `attempted`, the installer is
+   started with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /RELAUNCH
+   /LOG=<updates>\install.log`, and the window quits. The installer closes anything left and
+   stops the hub (`yaac quit`), replaces `yaac.exe`, starts the hub again (`autostart sync
+   --start`, when *start at login* is on), and starts YAAC (`/RELAUNCH`).
+5. **At the next start**, before the window opens:
+
+   | `pending.json` | Then |
+   | --- | --- |
+   | missing | start |
+   | unreadable, or its installer is outside the updates folder | delete it, start |
+   | for this build or an older one (the update went in) | delete it and the installer, start |
+   | newer, not yet attempted, installer still matches its hash | mark it attempted, run the installer as in 4, exit |
+   | newer, but the installer no longer matches | delete it, start |
+   | newer and already attempted (the installer failed) | delete it, start, and say once *"The update to YAAC … could not be installed"* with the log's path |
+   | anything, and this is a development build | start, leaving it alone |
+
+   An update can therefore be tried once; it never loops.
+
+Settings → Advanced → **Components** has a row **YAAC (latest release)**: the latest
+release's build and whether this YAAC is behind it, or why it was not checked.
+
+### How targets get the new daemon
+
+The updater downloads only the installer. Targets never download YAAC from GitHub, and the
+hub opens nothing new to reach them (invariant #1): the `yaacd` bundle is embedded in
+`yaac.exe` (`yaac-hub/build.rs`, `config::embedded_bundle`), and the hub installs it on a
+target in-band, over that target's one connection, when the target lacks that build
+(stage 0's `PUT daemon`, [02](02-architecture.md#stage-0)). So installing a new YAAC gives
+the hub a new `yaacd`, and each target receives it on its next connection. A target whose
+serving `yaacd` is older is shown as older (D135) and moves to the new build by the rules of
+[one serving daemon per user](02-architecture.md#one-serving-daemon-per-user): when nothing
+is serving, stage 0 starts the newest installed build.
+
+**Not built yet:** the hub never asks an older serving daemon to hand over
+(`daemon/handover` is in the protocol and the daemon, but no hub code sends it), and the
+thread banner's **Update now** button does nothing. Until it does, an older daemon is replaced
+only when it exits by itself — idle, with no host attached, for its idle period — which a hub
+that stays connected prevents. `yaacd-mcp.mjs` is not installed on targets either: the daemon
+falls back to `yaacd mcp` from its own bundle when the small bridge is not beside it.
 
 ## Testing the installer without touching the real profile
 
