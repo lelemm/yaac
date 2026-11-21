@@ -2,6 +2,7 @@
 //! window, and the routing between them. Everything that can block runs on the store worker;
 //! the core never waits for it — finished jobs come back as [`CoreEvent`]s.
 
+mod ssh;
 mod uploads;
 
 pub use uploads::UploadLimits;
@@ -103,6 +104,8 @@ pub(crate) enum CoreEvent {
     UploadSource { handle: String, result: Result<(std::path::PathBuf, String, Option<String>), ErrorObject> },
     /// A pool worker hashed an upload's file.
     UploadHashed { handle: String, result: Result<uploads::Hashed, ErrorObject> },
+    /// An SSH setup task reported something (`hub/ssh/*`).
+    Ssh(ssh::SshEvent),
     /// A pool worker read the next chunk of an upload's file.
     UploadChunk { handle: String, offset: u64, result: Result<Vec<u8>, ErrorObject> },
 }
@@ -321,6 +324,8 @@ pub(crate) struct Core {
     pool: Pool,
     /// `hub/targets/start` requests waiting for their target to end connected or not.
     starts: HashMap<TargetId, Vec<(ClientKey, RpcId)>>,
+    /// SSH setup state: host keys to confirm, open install sessions.
+    ssh: ssh::SshState,
     pub(crate) exit: Option<ExitReason>,
 }
 
@@ -405,6 +410,7 @@ impl Core {
             upload_seq: 0,
             pool,
             starts: HashMap::new(),
+            ssh: ssh::SshState::default(),
             exit: None,
         };
         for (target, thread) in loaded.kept {
@@ -485,6 +491,7 @@ impl Core {
             CoreEvent::UploadSource { handle, result } => self.on_upload_source(&handle, result),
             CoreEvent::UploadHashed { handle, result } => self.on_upload_hashed(&handle, result),
             CoreEvent::UploadChunk { handle, offset, result } => self.on_upload_chunk(&handle, offset, result),
+            CoreEvent::Ssh(event) => self.on_ssh(event),
         }
         self.flush_batches();
     }
@@ -770,6 +777,7 @@ impl Core {
                 }
                 json!({})
             })),
+            m if m.starts_with("hub/ssh/") => self.ssh_request(client, id, m, params),
             _ => Some(Err(err(ErrorCode::MethodNotFound, format!("unknown hub method {method}")))),
         }
     }
@@ -974,7 +982,16 @@ impl Core {
         if !t.def.enabled || t.supervisor.is_some() {
             return;
         }
-        match self.cfg.connectors.connector(&t.def) {
+        // SSH targets: the hub's own connector, with YAAC's key when YAAC set the server up.
+        let made = match (&t.def.transport, &self.cfg.ssh) {
+            (attach::TargetTransport::Ssh(s), Some(ssh)) => {
+                let ident = crate::ssh::Ident::from_transport(s);
+                let record = self.settings.ssh.iter().find(|e| crate::ssh::Ident::from_params(&e.conn) == ident).map(|e| &e.record);
+                Ok(ssh.connector(s, record))
+            }
+            _ => self.cfg.connectors.connector(&t.def),
+        };
+        match made {
             Err(message) => {
                 let new = state(ConnectionStatus::Offline, Some(message));
                 self.set_state(id, new);

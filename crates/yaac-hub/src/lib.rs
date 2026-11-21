@@ -14,6 +14,7 @@
 //! | [`config`] | [`HubConfig`], connector factory, timings. |
 //! | [`paths`] | Where files go and the environment variables that move them. |
 //! | [`settings`] | `hub.json`: targets (id, name, transport, enabled) and hub settings. |
+//! | [`ssh`] | SSH targets: the connector, and Setup, Verify, and Revoke (`hub/ssh/*`). |
 //! | [`protocol`] | The hub's additions to `yaac_protocol::attach`. |
 //! | [`client`] | The window side: connect to the socket, `send` / `try_recv`, never blocking. |
 //! | [`cache`] | The disposable SQLite cache; items and position commit together. |
@@ -42,6 +43,7 @@ pub mod protocol;
 pub mod relay;
 mod server;
 pub mod settings;
+pub mod ssh;
 mod worker;
 
 use std::time::Duration;
