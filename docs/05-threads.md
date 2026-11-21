@@ -120,12 +120,34 @@ take threads out of the way:
 | For | A thread that is still working but that you do not need to watch. | A thread you are done with but may want again. |
 | The thread | **Keeps working**, receives messages, and can be woken, exactly as before. | Is left as it is. |
 | In the sidebar | Moves to a collapsed **Muted (n)** section at the foot of the list. | Disappears; shown by a "Show archived" switch, and found by search. |
-| If it becomes blocked on you | **Appears under *Needs you*** until answered, then goes back to muted. An agent is never silently stuck because it was muted. | Not applicable — an archived thread is not running. |
+| If it becomes blocked on you | **Comes back to the top of its group** (with the needs-you mark, D116) until answered, then goes back to muted. An agent is never silently stuck because it was muted. | Not applicable — an archived thread is not running. |
 | Undo | Unmute — or it ends by itself: a mute can be given an end, a duration or a date and time, and the thread returns to the list when it passes. | Unarchive. |
 
 Muting is about the user's attention, not the agent's behaviour: nothing about the thread
 changes for the agents that work with it. Archive uses the harness's own archive where it has
-one.
+one, and asks for confirmation first (D111).
+
+### Unseen: a turn that finished while nobody looked
+
+**Decided (D114).** When a thread's turn ends — its state moves from running, needs you, or
+waiting to anything else — and **no attached window reports it as shown**, the hub marks it
+**unseen**. Each window tells the hub what it shows (`hub/view/showing`, the open thread while
+the thread view is on screen); with no window attached, every finished turn is unseen. The
+mark is a view preference beside pin, mute and dismiss (D92): kept in the hub's durable store,
+sent to every window in `hub/view/changed`, read back by `hub/view/get` after a restart. The
+window clears it (`hub/view/set { unseen: false }`) when the thread is opened or is on screen
+when the mark arrives. A thread gone from its target loses it. It is not *Needs you*.
+
+### Delete
+
+**Decided (D110).** **Delete…** in the thread menu asks first. `thread/delete` carries an
+operation id and `alsoInHarness`: `yaacd` always removes its own record of the thread and its
+journal; with `alsoInHarness` — offered only under the `threadDelete` capability, ticked by
+default — it first asks the harness to delete its session (if that fails, nothing is removed).
+Without it the harness keeps its session and `yaacd` remembers to leave it out of discovery;
+asking for it by id (`thread/lookup`) brings it back. A lost answer is an unknown outcome,
+shown and never re-sent. On `thread/removed` the window drops the thread from the list and the
+history, and the hub drops its pin, mute and unseen mark.
 
 ## In use elsewhere
 
@@ -244,7 +266,8 @@ in a terminal as before.
 - A dismissed thread still turns up when looked for by id, and a "Show dismissed" switch in
   the same menu as "Show archived" lists them, where each can be restored.
 - If a dismissed thread ever needs the user — an agent messaged it and it is now blocked on an
-  approval — it appears under *Needs you*, like a muted one. It is never silently stuck.
+  approval — it is listed again at the top of its group, like a muted one. It is never silently
+  stuck.
 - A temporary project's header offers **Dismiss all**, for a folder full of old conversations.
 
 **Nothing is out of reach.** The caps decide what is *listed*, not what exists:

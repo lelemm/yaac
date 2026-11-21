@@ -52,8 +52,10 @@ a per-chat agents toggle with a permission prompt are added.
 - **Type:** a clean sans-serif for UI at 13–14 px; a monospace for code, commands, paths, and
   ids. Agent prose is the most readable thing on screen: 15 px, generous line height.
 - **No accent colour.** The interface is monochrome; the owner found a blue accent grating.
-  The only colours on screen are the ones that *mean* something: **needs you** (amber),
-  **failed** (red), **done** (green), and the git changes on a sidebar row. Everything else —
+  The only colours on screen are the ones that *mean* something: **needs you** (the red
+  exclamation mark, D113; its words stay amber), **failed** (red), **done** (green), the git
+  changes on a sidebar row, and **unseen** (cornflower blue, an outline only — D114, the one
+  exception to D83). Everything else —
   selection, the primary button, the focus ring, links, the running mark — is drawn in
   neutrals.
 - **Dark and light are equals.** Same layout, same content, same hierarchy, same contrast
@@ -81,13 +83,16 @@ a per-chat agents toggle with a permission prompt are added.
 | Git: added | `#73C991` | `#166F31` |
 | Git: modified | `#E2C08D` | `#855D00` |
 | Git: deleted | `#F47C7C` | `#C22E29` |
+| Unseen finished turn (an outline, never text — D114) | `#6495ED` | `#4A7FE0` |
 | Modal scrim | black at 55 % | black at 35 % |
 
 ### Contrast is a requirement, not a hope
 
 Every text colour above measures **at least 4.5 : 1** against all three backgrounds of its
 theme (window, panel, raised surface). The values were computed, not eyeballed; a token that
-drops below 4.5 : 1 is a bug.
+drops below 4.5 : 1 is a bug. The **unseen** outline is a graphic, not text: it measures at
+least **3 : 1** against every surface it is drawn on (light `#4A7FE0`: 3.2 : 1 on the selected
+tint, 3.6 : 1 on the panel, 3.9 : 1 on white; dark `#6495ED`: 4.6 : 1 or more).
 
 - **Anything the user must read is primary or secondary text** — including the *reason* a
   control is unavailable ("not signed in on local", "Native fork is only available within the
@@ -112,7 +117,7 @@ These exist because the first round of mockups broke each of them.
 | State | Mark | Word |
 | --- | --- | --- |
 | Running | play triangle in a circle | running |
-| **Needs you** | warning triangle | needs you |
+| **Needs you** | a red disc with an exclamation (rounded bar and dot), in the failed colour (D113) | needs you |
 | Waiting on another agent | clock | waiting |
 | Done | check in a circle | done |
 | Failed | cross in a circle | failed |
@@ -120,15 +125,23 @@ These exist because the first round of mockups broke each of them.
 | Offline / disabled | dashed hollow circle | offline, off |
 
 Every mark must be recognisable in greyscale. In the sidebar list the shape alone carries the
-state, to keep rows to one calm line; wherever there is room — the thread header, the *Needs
-you* section, cards, the agents panel — the word is shown beside it.
+state, to keep rows to one calm line; wherever there is room — the thread header, cards, the
+agents panel — the word is shown beside it.
+
+A finished turn nobody looked at (D114) is not a state: it is a **cornflower outline** around
+the row (sidebar, docked panel, the strip's hover card) and a **ring** around the agent's icon
+(pill, strip). It clears when the thread is opened. Needs you, paused, failed and running
+take precedence: while a thread shows one of those marks the outline is not drawn (the mark
+is kept and returns once the louder state has passed).
 
 ### Needing the user outranks everything
 
 If a thread has a pending approval or question, its mark is **needs you** everywhere it
 appears — sidebar row, thread header, agents panel — even though a turn is technically still
 running. It is never shown as "running" while it is waiting for the user. This is the thread's **own**
-state: its parents carry no mark for it. Blocked threads are found in the *Needs you* list.
+state: its parents carry no mark for it. Blocked threads float to the top of their group in
+the sidebar (D116), and the **Needs-you button** beside the history buttons (D117) opens them
+one after the other.
 
 ### One shell
 
@@ -200,18 +213,34 @@ closer to a mail client's message list than to a file explorer.
   - The git colours are softer than the state colours and sit on small icons on line 2; a
     thread's **state** is the larger shaped mark on line 1. Green, yellow, and red on line 2
     always mean files, never the agent. The state mark is a distinct shape, so it reads without the word; the word
-    appears in the thread's header when it is open, and in *Needs you*.
-  - Rows in *Needs you* and *Muted* stay one line: they are for finding a thread, not for
+    appears in the thread's header when it is open.
+  - Rows in *Muted* and *Archived* stay one line: they are for finding a thread, not for
     reading its status.
+  - **Narrow, a row keeps every mark** (D115): the title — and on line 2 the branch — is
+    ellipsised, down to nothing; the state mark, the harness logo, the git counts, and ahead /
+    behind keep their places.
+  - A row whose last turn ended while nobody looked has a **cornflower outline** (D114).
 - **The selected row** is the open thread, drawn with the selected-row tint.
 - **Grouping** is one small icon button at the right end of the search field, opening a menu
   with three checkboxes — Machine, Project, Worktree. It is not three chips. Whatever is ticked
   makes up the header text; with nothing ticked there are no headers at all, just the list,
-  newest first. Sections are ordered by most recent activity, and so are rows within them.
-- **Needs you** is the first section, above everything, with the header "Needs you · 2". Its
-  rows are the same one-line rows, with the machine in secondary text on the right. It is
-  hidden when empty.
-- **Pinned** is the second section, with the header "Pinned · 1": threads the user pinned,
+  newest first. Sections are ordered by most recent activity.
+- **Ordering** (D116) is a second small icon button beside the grouping button, opening a menu
+  in the shared style: three radio choices — **Last message** (the default), **A → Z**,
+  **Z → A** (by title, ignoring case, numbers in natural order) — then two checkboxes, both
+  on by default: **Keep unseen finished threads at the top** and **Keep threads that need you
+  at the top**. The order applies inside each group, in *Pinned*, and in the plain list.
+  Floated threads sit at the top of their group — those that need the user first, then the
+  unseen ones, each in the chosen order — and drop back once answered or seen. While the
+  pointer is over the list (or a row's menu is open) a reorder waits until it leaves, so a
+  row never jumps away under the pointer. The choice is remembered like the grouping.
+- **There is no *Needs you* section** (D116): what needs the user floats to the top of its
+  group and carries the red exclamation, and the **Needs-you button** (D117) — the red
+  exclamation with a count, beside the back and forward buttons, shown only while something
+  needs the user — opens the next such thread on each press (Ctrl+J too), cycling through
+  the ones still unresolved. Its tooltip: "Next thread that needs you (2)". A blocked muted
+  thread is listed in its group, not under *Muted*, until it is answered.
+- **Pinned** is the first section, with the header "Pinned · 1": threads the user pinned,
   whatever their project. A pinned thread is listed here instead of under its project. Hidden
   when empty.
 - **A project header shows the name the user gave the project** — "Billing API", not a path.
@@ -222,30 +251,40 @@ closer to a mail client's message list than to a file explorer.
 - **Muted** follows the projects, collapsed to its header — "Muted · 4" — and expands on click.
 - **Archived** is the last section, under *Muted*, also collapsed — "Archived · 12". Archiving
   a thread takes it out of *Pinned* and *Muted*: it is only ever listed here.
-- **Right-clicking a row** opens a small menu: Pin (or Unpin), Mute (or Unmute), Archive,
-  Rename, Fork.
+- **Right-clicking a row** opens the thread menu (D109), in the shared menu style: **Copy
+  thread ID**, **Rename** — hairline — **Fork**, **Pin** (or Unpin), **Mute…** (or Unmute and
+  Change mute…), **Archive…** — hairline — **Delete…** in the failed colour. An archived row has
+  **Unarchive** where Archive was and no Pin or Mute. An entry the harness cannot do is shown
+  unavailable with its reason. While the menu is open the row **keeps its hover colour**
+  (D108). The docked agents panel's rows have the same menu.
+- **Archive…** asks first (D111): "Archive *billing-service*?", one filled **Archive  ⏎** and
+  **Cancel  Esc**.
+- **Delete…** asks first (D110): "Delete *billing-service*?", with a checkbox **"Also delete
+  the session from Claude"** (the harness's display name), checked by default, shown only when
+  the harness can delete its own sessions (the `threadDelete` capability); a line in secondary
+  text says what will happen; **Cancel  Esc** is the focused default and **Delete** is the one
+  filled button, in the failed colour. Without the checkbox (or unchecked) YAAC forgets the
+  thread and its history, and the harness keeps its session. If the target's answer is lost,
+  the window says the outcome is unknown and never asks again by itself.
 
 Unless a screen says otherwise, the sidebar shows exactly this:
 
-- `YAAC`, with the back and forward buttons beside it; a search field with the grouping button
-  at its right end; a **New** button.
-- **Needs you · 2**
-  - needs-you mark · index-rebuild · `gpu-box`
-  - needs-you mark · Fix frame decoder · `devbox`
+- `YAAC`, with the back and forward buttons beside it, then the Needs-you button with "2"; a
+  search field with the ordering and grouping buttons at its right end; a **New** button.
 - **Pinned · 1**
   - running mark · Migrate auth module — orchestrator · "now" / line 2: branch `main` · 1 added · 3 modified, and a
     people icon with "3"
 - **api** — `local`
   - done mark · users-service · "12m" / line 2: branch `auth/users` · 4 added · 7 modified · 1 deleted · 3 not pushed
-- **yaac** — `devbox`
+- **yaac** — `devbox` (the thread that needs the user floats to the top)
   - needs-you mark · Fix frame decoder · "2m" / line 2: branch `feature/protocol` · 2 added · 5 modified · 2 not pushed
   - idle mark · Explain the handshake · "2h" / line 2: branch `feature/protocol` (clean)
 - **api** — `devbox`
   - done mark · billing-service · "9m" / line 2: branch `auth/billing` · 3 added · 6 modified · 1 not pushed
   - waiting mark · CI integration · "1m" / line 2: branch `main` (clean)
 - **search** — `gpu-box`
-  - running mark · search-service · "now" / line 2: branch `auth/search` · 3 modified
   - needs-you mark · index-rebuild · "41m" / line 2: branch `auth/search` · 3 modified
+  - running mark · search-service · "now" / line 2: branch `auth/search` · 3 modified
 - **docs** — `staging`, with an offline mark and the word "offline" beside the machine
   - idle mark · Release notes · "3h" / line 2: branch `main` (clean)
 - *~/scratch/spike-7* — `devbox` — a **temporary project**: italic, dashed mark
@@ -308,9 +347,13 @@ now, but tell me again tomorrow".
   - **For** a number and a unit — a number field and a dropdown of *minutes*, *hours*,
     *days*. Beneath it, in secondary text, the moment that works out to: "until Sat 21 Nov,
     14:30".
-  - **Until** a date and a time — a date picker and an editable time of day.
-- One line in secondary text: "The agent keeps working. It will still appear under Needs you
-  if it gets blocked."
+  - **Until** a date and a time — a **date field** ("2026-11-21", typed or picked) with a
+    **calendar button** that opens the calendar as a **dropdown** (D112), not inside the
+    dialog, and an editable time of day. The calendar is the month with two arrows, weekday
+    initials, and **always six week rows**, so it never changes size between months; past
+    days are unavailable; picking a day fills the field and closes the dropdown.
+- One line in secondary text: "The agent keeps working. If it gets blocked it still comes to
+  the top of its group."
 - Actions: one filled button **Mute  ⏎**, and plain-text **Cancel  Esc**.
 
 A duration is turned into a fixed moment when the dialog is confirmed; the thread stores that
@@ -342,12 +385,14 @@ A time in the past cannot be chosen.
   - the `YAAC` mark;
   - a **+** button (new thread);
   - the **‹ ›** history buttons, **side by side on one row** (D103);
+  - the **Needs-you button** under them (D117), only while something needs the user;
   - then the list itself: each **project's name written vertically** (rotated a quarter turn,
     reading bottom to top) as a quiet header — *Pinned* as a **pin icon** — followed by **one
     harness logo per thread** in that project, in the same order as the full list, with the
     thread's state as a **small badge on the logo's bottom-right corner** (running, waiting,
-    done, failed, idle); when the thread needs the user, the **needs-you triangle replaces the
-    badge**. A **hairline** follows each project's last thread. There is **no Needs-you
+    done, failed, idle); when the thread needs the user, the **red needs-you exclamation
+    replaces the badge**, and a thread whose turn ended unseen has a **cornflower ring**
+    around its logo (D114). A **hairline** follows each project's last thread. There is **no Needs-you
     section** in the strip (D103).
   - Settings at the bottom.
 - **Hovering a thread icon** shows a floating card with everything its full row shows — title,
@@ -363,8 +408,8 @@ Following a link from one chat to another must be undoable. Beside the `YAAC` ti
 of the sidebar sit two small icon buttons, **back** (‹) and **forward** (›), which work like a
 browser's:
 
-- Opening a thread — from the sidebar, a link in a transcript, the agents panel, *Needs you*,
-  or search — adds it to the history. **Back** returns to where the user was; **forward**
+- Opening a thread — from the sidebar, a link in a transcript, the agents panel, the Needs-you
+  button, or search — adds it to the history. **Back** returns to where the user was; **forward**
   becomes available once they have gone back.
 - Going somewhere new after going back discards the forward entries, as in a browser.
 - Each entry remembers **where the user was reading**, not just which thread: going back to a
@@ -412,16 +457,20 @@ absent otherwise.
 
 **1. The pill — the default.** A narrow vertical pill floating over the right edge of the
 thread, vertically centred, about 44 px wide, with fully rounded ends and a soft shadow. It
-holds one small **harness icon** per related agent — the parent first, then workers, then
-contacts — stacked with a little space between. Nothing else: no names, no text.
+holds one small **harness icon** per related agent in **three fixed clusters** (D118) — the
+parent, then workers, then contacts — separated by short hairlines, each headed by a tiny
+muted glyph drawn as an icon: an **up arrow** for *spawned by*, a **branch** for *workers*,
+**⇄** for *in contact with*. An empty cluster and its hairline are not drawn. No names, no
+text.
 
 - Beside an icon, a small **arrow** shows data moving: **up** while this thread is sending to
   that agent, **down** while it is receiving from it. The arrow is there only while something
   is in flight and fades when it is done. An idle agent has no arrow.
-- An agent that **needs the user** shows the needs-you mark on its icon in place of an arrow.
-  That is the agent's own state.
-- A finished agent's icon is dimmed. With more than eight agents the pill shows the first
-  seven and a "+N".
+- An agent that **needs the user** shows the red exclamation on its icon's corner. That is the
+  agent's own state. An agent whose turn ended unseen has a **cornflower ring** around its
+  icon (D114).
+- A finished agent's icon is dimmed. The pill holds at most eight slots: the largest cluster
+  gives up icons first (never below one) and ends with "+N".
 - The harness icon is a simple glyph per provider kind; a provider with no glyph gets its
   initial in a circle.
 
@@ -434,11 +483,19 @@ depend on the pill's own shrinking and growing outline. Each
 icon becomes a row: the icon, the agent's **name**, and beneath it one line of secondary text
 with **the last thing it did**, cut off with an ellipsis — "Rebuilding the search index
 (68%)…", "Merged to main. 14 tests pass.", "Waiting for your approval". The arrows stay at the
-right of each row. Clicking a row opens that thread. Moving the pointer away shrinks it back
-to the pill. At the top right of the card is a small **dock** button.
+right of each row. The rows sit under the same three quiet headings as the docked panel —
+**Spawned by**, **Workers**, **In contact with** (D118) — and an unseen agent's row has the
+cornflower outline. The card is titled **Related agents**. Clicking a row opens that thread.
+Moving the pointer away shrinks it back to the pill. At the top right of the card is a small
+**dock** button. The card's and the pill's hover regions follow their real heights.
 
 **3. Docked.** The user pins it to the side. It becomes a fixed panel on the right, like a
-sidebar, and the thread narrows to make room. It shows the same rows under three quiet
+sidebar, titled **Related agents** (D115), and the thread narrows to make room. Each row: the
+state mark, the title, and the state word at the right; then, as in the sidebar, the harness
+logo, branch, git counts and ahead / behind; then provider · model · target and the latest
+activity. When the panel is narrow a row **ellipsises its title (and branch) and keeps every
+mark**. A row keeps its hover colour while its menu (the thread menu) is open, and has the
+cornflower outline when its turn ended unseen. It shows the rows under three quiet
 headings — **Spawned by**, **Workers**, **In contact with** — with the orchestration's budget
 in small secondary text at the top ("14 of 100 agent turns · 4 of 20 threads"). It is drawn in
 the same muted style as everything else: no boxes around sections, no rules, rows as plain
@@ -587,7 +644,7 @@ everyone is, without opening five windows.*
 *The hardest case: the thing that needs you is a grandchild on another machine. Must be
 reachable in one click and say where it sits.*
 
-- Sidebar as standard; **index-rebuild** selected (it is also first under Needs you).
+- Sidebar as standard; **index-rebuild** selected (it is also at the top of its group, with the needs-you mark).
 - Header: needs-you mark, "index-rebuild", tag "Needs you — approval", breadcrumb
   `gpu-box · search · main`, and an ancestry line of links:
   "Migrate auth module — orchestrator › search-service › **index-rebuild**".
@@ -880,8 +937,8 @@ Main shell with **Fix frame decoder** open, plus:
   link "Change budgets".
 - Agents panel header: the budget line in the needs-you colour with a pause mark:
   "100 of 100 agent turns · 7 of 20 threads".
-- Sidebar: the orchestrator row shows a pause mark, and it appears under **Needs you (3)** as
-  "Migrate auth module — orchestrator · budget reached · local".
+- Sidebar: the orchestrator row shows a pause mark at the top of *Pinned*, and the Needs-you
+  button counts it ("3").
 
 ### 21 — A narrow window
 
@@ -960,7 +1017,8 @@ you is still one keystroke off.*
 the same place, in one decision.*
 
 - Main shell, the orchestrator open, at the start of its story. Sidebar as standard, except
-  the orchestrator is also listed first under **Needs you · 3**.
+  the orchestrator floats to the top of *Pinned* with the needs-you mark, and the Needs-you
+  button shows "3".
 - Header: needs-you mark, title, the words "Needs you — permission".
 - Transcript: the user's message; the agent's line "I'll split this across three workers.";
   then a **permission card** (faint fill, amber left edge):
@@ -991,8 +1049,8 @@ stopping anything.*
   idle mark · Old spike; done mark · Lint pass. One of them is running — a muted thread keeps
   working. (Because they are muted, search-service and users-service do not also appear in
   their project sections above.)
-- **Needs you · 2** still lists index-rebuild with the word "muted" in secondary text beside
-  it. A muted thread that is blocked is never hidden.
+- index-rebuild, muted but blocked, stays in its group at the top until answered. A muted
+  thread that is blocked is never hidden.
 - The grouping menu is open from the search field, showing three checkboxes — Machine,
   Project, Worktree, all ticked — and, beneath a gap, a switch "Show archived", off.
 
@@ -1002,9 +1060,9 @@ stopping anything.*
 
 - Main shell, the orchestrator open, exactly as in 02 **except the agents panel is not
   docked**: the thread uses the full width.
-- Floating over the right edge of the transcript, vertically centred: the **pill**. Five
-  harness icons stacked: three Claude glyphs (the workers), then two Codex glyphs (the
-  contacts). The first two Claude icons are dimmed (finished). The third has a small **down
+- Floating over the right edge of the transcript, vertically centred: the **pill**, in two
+  clusters (D118): a branch glyph over the workers' Claude icons, a hairline, then a ⇄ glyph
+  over the two contacts' Codex icons. The first two Claude icons are dimmed (finished). The third has a small **down
   arrow** beside it (receiving from search-service). The first Codex icon has a small **up
   arrow** (sending to CI integration). The last Codex icon has the offline dashed mark.
 - Nothing else is different. No names, no labels on the pill.
@@ -1014,8 +1072,10 @@ stopping anything.*
 *The pointer is over the pill.*
 
 - The same screen as 27, with the pill widened leftwards into the floating **card**, over the
-  transcript, with a soft shadow. A small dock button at its top right.
-- Five rows, each: harness icon, name, and one line of secondary text beneath, ellipsised:
+  transcript, with a soft shadow. Its title "Related agents" and a small dock button at its
+  top right.
+- The rows under the headings **Workers** and **In contact with** (D118), each: harness icon,
+  name, and one line of secondary text beneath, ellipsised:
   - users-service — "Merged to main. 14 tests pass."
   - billing-service — "Merged to main. One flaky test skipped…"
   - search-service — "Rebuilding the search index (68%)…" — down arrow at the right
@@ -1078,10 +1138,62 @@ reflex.*
 
 *One menu style everywhere: context menus, dropdowns, pickers, the history list.*
 
-- A sidebar row's right-click menu: **Pin, Mute…, Archive, Rename, Fork, Copy ID**. The menu
-  is the raised surface with a soft shadow, a small corner radius and a little inner padding.
+- A sidebar row's right-click menu (D109): **Copy thread ID, Rename** — hairline — **Fork,
+  Pin, Mute…, Archive…** — hairline — **Delete…** in the failed colour. The row it belongs to,
+  billing-service, keeps its hover tint while the menu is open (D108). The menu is the raised
+  surface with a soft shadow, a small corner radius and a little inner padding.
   Items are full-width rows with no fill of their own and no gaps; the hovered row
   (**Mute…**) has the hovered-sidebar-row tint, a pressed one is a little stronger. Disabled
   items are in the unavailable colour with no hover; destructive items in the failed colour;
   separators are hairlines; a shortcut, when an item has one, is right-aligned in the
   secondary colour (the transcript's **Copy  Ctrl+C**).
+
+### 42 — Deleting a thread
+
+*Deleting must be deliberate, and must say whether the harness's own session goes too.*
+
+- Main shell, Fix frame decoder open; the shell dimmed by the scrim.
+- A dialog: "Delete billing-service?"; a checkbox, ticked, **"Also delete the session from
+  Claude"** (shown because Claude can delete its sessions); in secondary text "The thread and
+  its session in the harness are deleted. This cannot be undone."; **Cancel  Esc** and a
+  filled **Delete** in the failed colour (D110).
+
+### 43 — Archiving asks first
+
+- The same shell; a dialog "Archive billing-service?", "It moves to Archived, and loses its
+  pin and its mute. Unarchive brings it back.", a filled **Archive  ⏎** and **Cancel  Esc**
+  (D111).
+
+### 44 — Turns that finished unseen
+
+*Work that ended while nobody looked must be findable at a glance, without being mistaken for
+something that needs the user.*
+
+- The orchestrator open with the agents panel docked. billing-service and users-service
+  finished while no window showed them: their sidebar rows and their rows in the docked panel
+  have a **cornflower rounded outline** (D114). index-rebuild needs the user and has no outline
+  (the red exclamation wins).
+
+### 45 — Ordering the sidebar
+
+- The ordering menu (D116) open from its button on the search field: Order — Last message,
+  **A → Z** (chosen), Z → A — then both checkboxes ticked. In each group what needs the user
+  is first (index-rebuild above search-service), then what finished unseen (billing-service
+  above CI integration), then the rest A → Z.
+
+### 46 — The pill with all three relations
+
+- The orchestrator, this time spawned by another agent: the pill has three clusters (D118) —
+  an up-arrow glyph over the parent, a branch glyph over the four workers (two with the
+  cornflower ring, one with the red exclamation), a ⇄ glyph over the contact — separated by
+  short hairlines.
+
+### 47 — The pill with workers only
+
+- A thread started by the user with one worker: one cluster, the branch glyph over one icon,
+  and no hairline.
+
+### 48 — The docked panel at its narrowest
+
+- The docked panel at 240 points: titles and branches are ellipsised; every state mark, the
+  state word, the harness logo, the git counts and ahead / behind stay visible (D115).
