@@ -75,6 +75,9 @@ pub struct MuteDialog {
     pub date_text: String,
     /// The calendar dropdown under the date field is open (D112).
     pub calendar_open: bool,
+    /// A bulk mute (D138): every thread the choice applies to (`key` is the first). Empty for
+    /// one thread.
+    pub many: Vec<ThreadKey>,
 }
 
 /// A date as the field shows it.
@@ -122,7 +125,18 @@ impl MuteDialog {
             month: (later.year, later.month),
             date_text: date_label((later.year, later.month, later.day)),
             calendar_open: false,
+            many: Vec::new(),
         }
+    }
+
+    /// A bulk mute (D138): "Mute 3 threads", one choice for all of `keys`; `None` when there
+    /// are none.
+    pub fn many(keys: Vec<ThreadKey>, now: i64, zone: Zone) -> Option<Self> {
+        let first = keys.first()?.clone();
+        let mut d = Self::new(first, "", now, zone);
+        d.title = format!("Mute {}", crate::bulk::threads(keys.len()));
+        d.many = keys;
+        Some(d)
     }
 
     /// "Change…" on a muted thread: the dialog with its current mute.

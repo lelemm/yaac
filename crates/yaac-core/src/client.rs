@@ -42,6 +42,8 @@ pub mod hub_names {
     pub const VIEW_GET: &str = "hub/view/get";
     /// Change one thread's view preferences.
     pub const VIEW_SET: &str = "hub/view/set";
+    /// Change several threads' view preferences in one request (a bulk mute, D138).
+    pub const VIEW_SET_MANY: &str = "hub/view/setMany";
     /// View preferences changed (another window, or a timed mute the hub cleared).
     pub const VIEW_CHANGED: &str = "hub/view/changed";
     /// Which threads this window shows (D114): the hub marks a thread unseen when its turn
@@ -106,6 +108,8 @@ enum Call {
     Fork { target: TargetId },
     /// `thread/delete`.
     Delete(ThreadKey),
+    /// One `thread/archive` of a bulk Archive (D138).
+    BulkArchive { batch: u64, key: ThreadKey },
     ForkPreview { key: ThreadKey, instance: InstanceId },
     InstanceList(TargetId),
     InstanceChanged(TargetId),
@@ -189,6 +193,17 @@ pub struct Client {
     ssh_wire: Option<Vec<ssh::SshWire>>,
     /// The host's time zone, for the dates of SSH records (D91).
     pub ssh_zone: crate::time::Zone,
+    /// Bulk Archives still waiting for answers (D138).
+    batches: HashMap<u64, ArchiveBatch>,
+    next_batch: u64,
+    /// The report of the last bulk Archive that did not simply succeed, until dismissed.
+    pub bulk_report: Option<crate::bulk::BulkReport>,
+}
+
+/// A bulk Archive in flight: each thread's outcome, in the order asked; `None` while waiting.
+#[derive(Clone, Debug, Default)]
+struct ArchiveBatch {
+    outcomes: Vec<(ThreadKey, Option<crate::bulk::Outcome>)>,
 }
 
 impl std::fmt::Debug for Client {
@@ -216,6 +231,9 @@ impl Client {
             ssh_replies: Vec::new(),
             ssh_wire: None,
             ssh_zone: crate::time::Zone::UTC,
+            batches: HashMap::new(),
+            next_batch: 0,
+            bulk_report: None,
         };
         c.state.client_id = Some(client_id);
         let params = json!({ "build": c.build });
@@ -527,6 +545,7 @@ impl Client {
                 }
             }
             Call::Delete(key) => self.deleted(&key),
+            Call::BulkArchive { batch, key } => self.archived_one(batch, &key, crate::bulk::Outcome::Ok),
             c @ (Call::ForgePrs(_) | Call::ForgePrepare(_) | Call::ForgeCreate(_) | Call::ForgeAsk(_)) => self.on_forge_result(c, result),
             Call::Fork { target } => {
                 if let Some(thread_id) = result.get("threadId").and_then(Value::as_str) {
@@ -588,6 +607,10 @@ impl Client {
                 ErrorCode::ThreadNotFound => self.deleted(&key),
                 _ => self.error(Some(key), format!("Not deleted: {}", error.message)),
             },
+            Call::BulkArchive { batch, key } => {
+                let outcome = if error.code == ErrorCode::OutcomeUnknown { crate::bulk::Outcome::Uncertain } else { crate::bulk::Outcome::Failed(error.message.clone()) };
+                self.archived_one(batch, &key, outcome);
+            }
             Call::UploadStart { draft, id, attempt } => self.upload_failed(&draft, id, attempt, error),
             Call::BlobBegin { draft, id, .. } | Call::BlobAppend { draft, id } | Call::BlobEnd { draft, id } => {
                 self.upload_failed(&draft, id, u32::MAX, error);
@@ -1015,6 +1038,22 @@ impl Client {
     /// Change a thread's view preferences: applied at once, and stored by the hub
     /// (`hub/view/set`, see the SEAM on [`hub_names::VIEW_SET`]).
     pub fn set_view(&mut self, key: &ThreadKey, patch: crate::state::ViewPatch) {
+        let params = self.view_entry(key, &patch);
+        self.request(hub_names::VIEW_SET, params, Call::Ignore);
+    }
+
+    /// Change several threads' view preferences in one `hub/view/setMany` (D138): applied at
+    /// once, stored by the hub as one change.
+    pub fn set_view_many(&mut self, changes: &[(ThreadKey, crate::state::ViewPatch)]) {
+        if changes.is_empty() {
+            return;
+        }
+        let entries: Vec<Value> = changes.iter().map(|(k, p)| self.view_entry(k, p)).collect();
+        self.request(hub_names::VIEW_SET_MANY, json!({ "entries": entries }), Call::Ignore);
+    }
+
+    /// Apply a patch locally; the wire entry for it.
+    fn view_entry(&mut self, key: &ThreadKey, patch: &crate::state::ViewPatch) -> Value {
         let v = self.state.view.entry(key.clone()).or_default();
         let mut params = json!({ "target": key.target, "threadId": key.thread });
         if let Some(p) = patch.pinned {
@@ -1040,7 +1079,7 @@ impl Client {
             v.unseen = u;
             params["unseen"] = json!(u);
         }
-        self.request(hub_names::VIEW_SET, params, Call::Ignore);
+        params
     }
 
     /// Mute (with no end, or until a moment) or unmute a thread.
@@ -1067,6 +1106,80 @@ impl Client {
         if v.pinned || v.muted {
             self.set_view(key, crate::state::ViewPatch { pinned: Some(false), muted: Some(false), muted_until: Some(None), ..Default::default() });
         }
+    }
+
+    /// Mute several threads (until a moment, or with no end) in one `hub/view/setMany` (D138).
+    pub fn mute_many(&mut self, keys: &[ThreadKey], until: Option<i64>) {
+        let patch = crate::state::ViewPatch { muted: Some(true), muted_until: Some(until), ..Default::default() };
+        let changes: Vec<_> = keys.iter().map(|k| (k.clone(), patch)).collect();
+        self.set_view_many(&changes);
+    }
+
+    /// Unmute several threads in one `hub/view/setMany` (D138).
+    pub fn unmute_many(&mut self, keys: &[ThreadKey]) {
+        let patch = crate::state::ViewPatch { muted: Some(false), muted_until: Some(None), ..Default::default() };
+        let changes: Vec<_> = keys.iter().map(|k| (k.clone(), patch)).collect();
+        self.set_view_many(&changes);
+    }
+
+    /// Archive several threads (D138): one `thread/archive` per thread, each with its own
+    /// operation id and routed to its own target. Nothing is re-sent: once every answer is in,
+    /// the pins and mutes of those archived go in one `hub/view/setMany`, and anything that
+    /// failed or whose outcome is unknown is reported once ([`Client::bulk_report`]).
+    pub fn archive_many(&mut self, keys: &[ThreadKey]) {
+        if keys.is_empty() {
+            return;
+        }
+        self.next_batch += 1;
+        let batch = self.next_batch;
+        self.batches.insert(batch, ArchiveBatch { outcomes: keys.iter().map(|k| (k.clone(), None)).collect() });
+        self.bulk_report = None;
+        for key in keys {
+            let op = self.op_id();
+            let params = json!({ "opId": op, "threadId": key.thread });
+            self.routed(&key.target, m::THREAD_ARCHIVE, params, Call::BulkArchive { batch, key: key.clone() });
+            if let Some(r) = self.state.threads.get_mut(key) {
+                r.summary.archived = true;
+            }
+        }
+    }
+
+    /// One answer of a bulk Archive; the last one finishes it.
+    fn archived_one(&mut self, batch: u64, key: &ThreadKey, outcome: crate::bulk::Outcome) {
+        let Some(b) = self.batches.get_mut(&batch) else { return };
+        let refused = matches!(outcome, crate::bulk::Outcome::Failed(_));
+        if let Some(slot) = b.outcomes.iter_mut().find(|(k, o)| k == key && o.is_none()) {
+            slot.1 = Some(outcome);
+        }
+        // A refusal leaves the thread where it was.
+        if refused
+            && let Some(r) = self.state.threads.get_mut(key)
+        {
+            r.summary.archived = false;
+        }
+        if b.outcomes.iter().any(|(_, o)| o.is_none()) {
+            return;
+        }
+        let Some(b) = self.batches.remove(&batch) else { return };
+        let off = crate::state::ViewPatch { pinned: Some(false), muted: Some(false), muted_until: Some(None), ..Default::default() };
+        let clear: Vec<_> = b
+            .outcomes
+            .iter()
+            .filter(|(k, o)| *o == Some(crate::bulk::Outcome::Ok) && self.state.view.get(k).is_some_and(|v| v.pinned || v.muted))
+            .map(|(k, _)| (k.clone(), off))
+            .collect();
+        self.set_view_many(&clear);
+        let titled: Vec<(String, crate::bulk::Outcome)> = b
+            .outcomes
+            .into_iter()
+            .map(|(k, o)| (self.state.summary(&k).map_or_else(|| k.thread.to_string(), |s| s.title.clone()), o.unwrap_or(crate::bulk::Outcome::Uncertain)))
+            .collect();
+        self.bulk_report = crate::bulk::archive_report(&titled);
+    }
+
+    /// Bulk Archives still waiting for an answer.
+    pub fn archives_in_flight(&self) -> usize {
+        self.batches.len()
     }
 
     /// Unarchive a thread (`thread/unarchive`).

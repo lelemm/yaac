@@ -58,6 +58,9 @@ pub enum Cmd {
     Fork,
     CheckLatest,
     ContinueBudget,
+    ArchiveSelected,
+    MuteSelected,
+    ClearSelection,
     // Composer and turns
     FocusComposer,
     Send,
@@ -266,6 +269,9 @@ pub static COMMANDS: &[CommandDef] = &[
     def(Cmd::Fork, "fork", "Fork…", "Open the fork dialog (native or handoff).", &["branch", "copy", "handoff", "switch provider"], G::Threads, &["Ctrl+Shift+F"]),
     def(Cmd::CheckLatest, "check-latest", "Check for the latest", "Read this thread again from its target.", &["refresh", "reload", "status"], G::Threads, &[]),
     def(Cmd::ContinueBudget, "continue-budget", "Continue (budget)", "Resume an orchestration paused on its budget.", &["resume", "allowance"], G::Threads, &[]),
+    def(Cmd::ArchiveSelected, "archive-selected", "Archive selected…", "Archive the rows selected in the sidebar, with one confirmation.", &["bulk", "many", "multiple", "hide"], G::Threads, &[]),
+    def(Cmd::MuteSelected, "mute-selected", "Mute selected…", "Mute the rows selected in the sidebar, with one choice of how long.", &["bulk", "many", "multiple", "silence", "snooze"], G::Threads, &[]),
+    local(def(Cmd::ClearSelection, "clear-selection", "Clear selection", "Unselect the rows selected in the sidebar.", &["deselect", "unselect", "bulk"], G::Threads, &["Escape"]), "in the sidebar list"),
     // ── Composer and turns
     def(Cmd::FocusComposer, "focus-composer", "Focus the composer", "Put the caret in the message box.", &["type", "message", "input"], G::Composer, &["Ctrl+L"]),
     local(def(Cmd::Send, "send", "Send / queue", "Send; while a turn runs, queue.", &["submit"], G::Composer, &["Enter"]), "in the message box"),
@@ -362,6 +368,8 @@ pub struct Ctx<'a> {
     pub host_windows: bool,
     /// The request card that had focus when the Commander opened (or has it now).
     pub focused_card: Option<&'a ItemId>,
+    /// How many rows are selected in the sidebar (D138).
+    pub list_selected: usize,
 }
 
 /// Whether a command can be used now.
@@ -617,6 +625,7 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
         Cmd::TargetEnable => when(!st.targets.is_empty(), "No targets yet"),
         Cmd::RefreshProviders => when(st.targets.iter().any(|t| t.connected()), "No target is connected"),
         Cmd::HideToTray => when(ctx.has_tray, "There is no tray icon on this system"),
+        Cmd::ArchiveSelected | Cmd::MuteSelected | Cmd::ClearSelection => when(ctx.list_selected > 0, "Nothing is selected in the sidebar (Ctrl+click rows)"),
         Cmd::Commander
         | Cmd::SearchThreads
         | Cmd::Settings
@@ -648,6 +657,8 @@ pub fn title(cmd: Cmd, ctx: &Ctx<'_>) -> String {
         Cmd::Mute => k.map_or_else(|| d.name.to_owned(), |k| pick(st.is_muted(k, ctx.now), "Unmute", "Mute…")),
         Cmd::Archive => k.map_or_else(|| d.name.to_owned(), |k| pick(st.summary(k).is_some_and(|s| s.archived), "Unarchive", "Archive…")),
         Cmd::Dismiss => k.map_or_else(|| d.name.to_owned(), |k| pick(st.is_dismissed(k), "Show again", "Dismiss")),
+        Cmd::ArchiveSelected if ctx.list_selected > 0 => format!("Archive selected ({})…", ctx.list_selected),
+        Cmd::MuteSelected if ctx.list_selected > 0 => format!("Mute selected ({})…", ctx.list_selected),
         Cmd::Dock => pick(ctx.docked, "Undock the agents panel", "Dock the agents panel"),
         Cmd::Fast => match control_row(ctx).and_then(|r| r.fast) {
             Some(f) => pick(f.on, "Fast mode off", "Fast mode on"),

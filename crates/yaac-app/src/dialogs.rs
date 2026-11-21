@@ -349,7 +349,7 @@ pub(crate) fn mute(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
         ui.horizontal(|ui| match &outcome {
             MuteOutcome::Mute(until) => {
                 if widgets::primary(ui, &p, "Mute", Some("Enter")).clicked() || enter {
-                    actions.push(Action::MuteUntil(d.key.clone(), *until));
+                    actions.push(if d.many.is_empty() { Action::MuteUntil(d.key.clone(), *until) } else { Action::MuteMany(d.many.clone(), *until) });
                     done = true;
                 }
                 if widgets::plain(ui, &p, "Cancel", Some("Esc")).clicked() {
@@ -588,5 +588,51 @@ pub(crate) fn update_notice(ctx: &egui::Context, app: &mut YaacApp) {
     });
     if ok {
         app.updater.notice = None;
+    }
+}
+
+/// D138: one confirmation for a bulk Archive — "Archive 3 threads?", and, when some of the
+/// chosen threads cannot be archived, which and why ("3 of 5 can be archived; 2 are
+/// running"). Archive (Enter) or Cancel (Esc); with nothing to archive only Close.
+pub(crate) fn bulk_archive(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let Some(d) = app.ui.bulk_archive.take() else { return };
+    scrim(ctx, &p, "bulk-archive");
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        return;
+    }
+    let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    let mut keep = true;
+    window("bulk-archive", &p, ctx).show(ctx, |ui| {
+        ui.set_width(440.0);
+        ui.label(RichText::new(&d.title).font(theme::bold(size::SECTION + 1.5)));
+        ui.add_space(10.0);
+        if d.can_archive() {
+            ui.label(widgets::secondary(d.body, &p));
+        }
+        if let Some(why) = &d.skipped {
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                crate::widgets::icon(ui, 14.0, |pa, c, dd| crate::icons::info(pa, c, dd, p.text2));
+                ui.add(egui::Label::new(RichText::new(format!("{why}.")).font(theme::ui(size::SMALL)).color(p.text)).wrap());
+            });
+        }
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            if d.can_archive() {
+                if widgets::primary(ui, &p, "Archive", Some("Enter")).clicked() || enter {
+                    actions.push(Action::BulkArchive(d.plan.eligible.clone()));
+                    keep = false;
+                }
+                if widgets::plain(ui, &p, "Cancel", Some("Esc")).clicked() {
+                    keep = false;
+                }
+            } else if widgets::primary(ui, &p, "Close", Some("Esc")).clicked() || enter {
+                keep = false;
+            }
+        });
+    });
+    if keep {
+        app.ui.bulk_archive = Some(d);
     }
 }

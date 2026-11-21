@@ -581,6 +581,15 @@ pub(crate) fn paperclip(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.line(pts, stroke(col, w));
 }
 
+/// Three dots in a row: more actions (a section header's menu, D138).
+pub(crate) fn dots(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let r = (d * 0.09).max(1.2);
+    for i in [-1.0, 0.0, 1.0] {
+        p.circle_filled(pos2(c.x + i * d * 0.3, c.y), r, col);
+    }
+}
+
 /// A small cross: remove.
 pub(crate) fn close(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let p = &soft(p);

@@ -22,6 +22,7 @@ pub mod activity;
 pub mod agents;
 pub mod attachments;
 pub mod attention;
+pub mod bulk;
 pub mod client;
 pub mod compose;
 pub mod commands;

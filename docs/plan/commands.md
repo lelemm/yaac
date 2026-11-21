@@ -63,6 +63,7 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 | Fork… | Open the fork dialog (native or handoff). | Ctrl+Shift+F **new** |
 | Check for the latest | Re-read a thread used elsewhere. | — |
 | Continue (budget) | Resume an orchestration paused on its budget. | — |
+| Archive selected… / Mute selected… / Clear selection | The rows selected in the sidebar (D138): Archive asks once for all and says which are skipped and why; Mute opens the Mute dialog once and applies it to all. Enabled only with a selection. | — / — / Esc in the list |
 
 ### Composer and turns
 
@@ -164,6 +165,11 @@ the catalogue above is in the table and every command is in the catalogue.
   distribution…* exist only on Windows (hidden elsewhere); *Renderer…* opens Settings → Window.
 - *Quit YAAC* asks first when the tray is not in use; *Hide to the tray* is disabled where there
   is no tray icon (Linux) (P79).
+- **Keys in the sidebar list** (D138, P96): with focus in the list (a row was clicked last),
+  **Esc** clears the selection, **Ctrl+A** selects every listed row and **Shift+↑ / Shift+↓**
+  extend the selection a row at a time. They never fire in a text field. Esc is listed as
+  *Clear selection*'s local key; Ctrl+A and Shift+↑/↓ are list keys like the clicks
+  (Ctrl+click, Shift+click). *Archive selected…* and *Mute selected…* have no default key.
 - *Check for the latest* is enabled for a thread in use elsewhere or with an answer whose
   outcome is unknown; *Continue (budget)* when the orchestration is paused on its budget.
 - Every catalogue command exists; none is missing. Commands disabled by design in some states
