@@ -78,6 +78,13 @@ All dated entries are from 2026-11-20.
 | D65 | A thread created from YAAC starts in the **root of its project's folder**. | Owner |
 | D66 | **Sidebar rows are more informative: more than one line**, with room for the **git branch** and, very compactly, **how many files differ from origin** for that branch. | Owner |
 | D68 | The git changes in a sidebar row use **real icons, not Unicode characters**, and the **usual git colours** (green, red, …). | Owner |
+| D107 | **One way to start a new thread**: the New button at the top. A draft is not listed as a row in the sidebar. | Owner |
+| D106 | The sidebar footer shows the hub as a **connection icon** (crossed out when the hub is not reachable, plain when connected, in a muted colour) and targets as **counts only**: an up arrow with the number of connected targets, a down arrow with the number not connected. | Owner |
+| D105 | The **right-hand agents panel is resizable** like the left sidebar. | Owner |
+| D104 | **No OS title bar.** The window draws its own: three buttons at the top right — minimize, maximize/restore, close — and the top strip drags the window. | Owner |
+| D103 | **The collapsed strip is redesigned**: each thread is its **harness logo** with its state as a small badge on the logo's bottom-right corner (the needs-you triangle replaces the badge when the thread needs the user); no *Needs you* section in the strip; *Pinned* is a **pin icon**; a **horizontal line between projects**; the history buttons **side by side** on one row. | Owner |
+| D102 | When the composer reaches its five lines and starts to scroll, it **keeps the caret's line in view** — typing at the end scrolls to the end. | Owner (bug report) |
+| D101 | **Copy must actually copy**: Ctrl+C, the context menu's Copy, and Copy message all put the text on the system clipboard. | Owner (bug report) |
 | D98 | The harness logos **keep their brand colour** (an exception to the monochrome rule). | Owner |
 | D97 | The agents pill and the sidebar use the **real Codex and Claude logos**, and a sidebar row's second line starts with the **harness logo** before the branch. | Owner |
 | D96 | **When a WSL distro is not running, its threads are disabled** and the only action is **Start it**; once the distro is up, they become responsive again. There is no "disable its threads" choice. *(Refines D35.)* | Owner |
