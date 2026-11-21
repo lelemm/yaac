@@ -163,3 +163,136 @@ async fn a_target_that_never_prints_the_marker_shows_what_it_said() {
     let err = bootstrap(stdout, stdin, &bundle, "test target", Stage0Timeouts::default()).await.unwrap_err();
     assert!(err.to_string().contains("yaac: not found"), "{err}");
 }
+
+// ── The private runtime, from a fake archive served from a temporary folder ──────────────
+
+/// The real Node.js on this machine's `PATH` (the fake runtime is a script that runs it).
+fn real_node() -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("node")).find(|n| n.is_file()))
+}
+
+/// `<dir>/node-v22.99.0-test.tar.gz` holding `node-v22.99.0-test/bin/node`, a script that
+/// runs the real Node.js, and a `RuntimeSource` offering it for this machine at a `file://`
+/// URL (or, with `broken`, at a URL nothing can download).
+fn fake_runtime(dir: &Path, node: &Path, broken: bool) -> yaac_transport::RuntimeSource {
+    let top = dir.join("pkg").join("node-v22.99.0-test").join("bin");
+    std::fs::create_dir_all(&top).unwrap();
+    let script = top.join("node");
+    std::fs::write(&script, format!("#!/bin/sh\nexec '{}' \"$@\"\n", node.display())).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let archive = dir.join("node-v22.99.0-test.tar.gz");
+    let ok = std::process::Command::new("tar").arg("-czf").arg(&archive).arg("-C").arg(dir.join("pkg")).arg("node-v22.99.0-test").status().unwrap();
+    assert!(ok.success());
+    let sha256 = yaac_transport::runtime::sha256_file(&archive).unwrap();
+    let arch = String::from_utf8(std::process::Command::new("uname").arg("-m").output().unwrap().stdout).unwrap().trim().to_owned();
+    let libc = if Path::new("/lib").read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().starts_with("ld-musl-")) { "musl" } else { "glibc" };
+    let url = if broken { format!("file://{}/missing.tar.gz", dir.display()) } else { format!("file://{}", archive.display()) };
+    yaac_transport::RuntimeSource {
+        artifacts: vec![yaac_transport::runtime::RuntimeArtifact {
+            name: "node-22.99.0-test".into(),
+            os: "Linux".into(),
+            arch: vec![arch],
+            libc: libc.into(),
+            url,
+            sha256,
+        }],
+        cache_dir: Some(dir.join("host-cache")),
+        curl: "curl".into(),
+        target_download: true,
+    }
+}
+
+/// Stage 0 with the system Node.js switched off (`YAAC_SYSTEM_NODE=0`), so the target has no
+/// runtime until one is installed.
+async fn run_private(home: &Path, source: &yaac_transport::RuntimeSource) -> Result<yaac_transport::bootstrap::Bootstrapped<tokio::process::ChildStdout, tokio::process::ChildStdin>, ConnectError> {
+    let mut c = Command::new("/bin/sh");
+    c.arg("-c").arg(STAGE0).arg("yaac-stage0").arg(format!("YAAC_HOME={}", home.display())).arg("YAAC_SYSTEM_NODE=0");
+    c.arg(format!("YAAC_RUNTIME_VERSION={}", source.name().unwrap()));
+    c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).kill_on_drop(true);
+    let mut child = c.spawn().unwrap();
+    let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+    let bundle = DaemonBundle::new("0.0.6", ECHO_DAEMON.to_vec());
+    let done = yaac_transport::bootstrap::bootstrap_with(stdout, stdin, &bundle, Some(source), "test target", Stage0Timeouts::default()).await;
+    // The child must outlive the stream in the test; it is killed when dropped otherwise.
+    std::mem::drop(tokio::spawn(async move { let _ = child.wait().await; }));
+    done
+}
+
+async fn echo_works<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin>(reader: &mut R, writer: &mut W) {
+    writer.write_all(b"\x00hello\r\n").await.unwrap();
+    writer.flush().await.unwrap();
+    let mut back = [0u8; 8];
+    tokio::time::timeout(Duration::from_secs(20), reader.read_exact(&mut back)).await.expect("echo in time").unwrap();
+    assert_eq!(&back, b"\x00hello\r\n");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_target_without_node_downloads_the_pinned_runtime_itself_then_reuses_it() {
+    let Some(node) = real_node() else { return eprintln!("skipped: no node on PATH") };
+    let has_curl = std::process::Command::new("sh").arg("-c").arg("command -v curl").status().is_ok_and(|s| s.success());
+    if !has_curl {
+        return eprintln!("skipped: no curl for the target to download with");
+    }
+    let dir = temp_dir("rt-get");
+    let home = dir.join("home");
+    let source = fake_runtime(&dir, &node, false);
+    let mut done = run_private(&home, &source).await.expect("first connection");
+    assert_eq!(done.report.get("runtime"), None, "no runtime at first");
+    assert_eq!(done.runtime, Some(yaac_transport::bootstrap::RuntimeInstall::Downloaded));
+    echo_works(&mut done.reader, &mut done.writer).await;
+    assert!(home.join("runtime/node-22.99.0-test/bin/node").is_file());
+    assert!(!dir.join("host-cache").exists(), "the host fetched nothing");
+    let entries: Vec<_> = std::fs::read_dir(home.join("runtime")).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(entries, vec![std::ffi::OsString::from("node-22.99.0-test")], "no temporary, download, or lock left behind");
+    drop(done);
+    let mut again = run_private(&home, &source).await.expect("second connection");
+    assert_eq!(again.report.get("private"), Some("node-22.99.0-test"));
+    assert_eq!(again.runtime, None, "installed once");
+    echo_works(&mut again.reader, &mut again.writer).await;
+    drop(again);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn when_the_target_cannot_download_the_host_sends_its_verified_copy() {
+    let Some(node) = real_node() else { return eprintln!("skipped: no node on PATH") };
+    let dir = temp_dir("rt-put");
+    let home = dir.join("home");
+    let mut source = fake_runtime(&dir, &node, false);
+    // The target is not allowed to download; the host fetches (with curl, from file://).
+    source.target_download = false;
+    let mut done = run_private(&home, &source).await.expect("connection");
+    assert_eq!(done.runtime, Some(yaac_transport::bootstrap::RuntimeInstall::Uploaded));
+    echo_works(&mut done.reader, &mut done.writer).await;
+    assert_eq!(std::fs::read_dir(dir.join("host-cache")).unwrap().count(), 1, "the host cached one verified archive");
+    drop(done);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_runtime_whose_checksum_differs_is_never_installed() {
+    let Some(node) = real_node() else { return eprintln!("skipped: no node on PATH") };
+    let dir = temp_dir("rt-hash");
+    let home = dir.join("home");
+    let mut source = fake_runtime(&dir, &node, false);
+    source.artifacts[0].sha256 = "0".repeat(64);
+    let err = run_private(&home, &source).await.unwrap_err();
+    assert!(matches!(err, ConnectError::NoRuntime(_)), "{err}");
+    assert!(err.to_string().contains("hash mismatch") && err.to_string().contains("pinned checksum"), "both paths refused it: {err}");
+    assert!(!home.join("runtime/node-22.99.0-test").exists());
+    assert_eq!(std::fs::read_dir(dir.join("host-cache")).unwrap().count(), 0, "nothing unverified is cached");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_failed_download_falls_back_to_the_host_and_reports_both_when_it_fails_too() {
+    let Some(node) = real_node() else { return eprintln!("skipped: no node on PATH") };
+    let dir = temp_dir("rt-broken");
+    let home = dir.join("home");
+    let source = fake_runtime(&dir, &node, true);
+    let err = run_private(&home, &source).await.unwrap_err();
+    assert!(matches!(err, ConnectError::NoRuntime(_)), "{err}");
+    let text = err.to_string();
+    assert!(text.contains("could not download the runtime") && text.contains("the host could not download"), "{text}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
