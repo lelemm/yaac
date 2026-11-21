@@ -79,6 +79,8 @@ pub mod hub_names {
     pub const SSH_RECORDS: &str = "hub/ssh/records";
     /// Those records changed.
     pub const SSH_CHANGED: &str = "hub/ssh/changed";
+    /// The WSL distros installed on this PC (`yaac_hub::protocol::names::WSL_DISTROS`).
+    pub const WSL_DISTROS: &str = "hub/wsl/distros";
     /// A target's cached projects were replaced.
     pub const PROJECTS_CHANGED: &str = "hub/projects/changed";
     /// The window is newer than the hub.
@@ -130,6 +132,8 @@ enum Call {
     Ssh(RpcId),
     /// `hub/ssh/records`.
     SshRecords,
+    /// `hub/wsl/distros`.
+    WslDistros,
     /// `forge/prs` for a thread's row (D119).
     ForgePrs(ThreadKey),
     /// `forge/prepare` for the Create PR modal (D120).
@@ -144,6 +148,7 @@ enum Call {
 mod forge;
 mod ssh;
 mod uploads;
+mod wsl;
 
 /// A problem to show the user (as a notice, never a dialog).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -467,6 +472,7 @@ impl Client {
             Call::Respond { .. } | Call::Ignore => {}
             Call::Ssh(id) => self.ssh_replies.push((id, Ok(result))),
             Call::SshRecords => self.on_ssh_records(&result),
+            Call::WslDistros => self.on_wsl_distros(result),
             Call::TurnStart { key, draft } => self.sent(&DraftRef::Thread(key), &draft),
             Call::UploadStart { draft, id, attempt } => self.on_upload_started(&draft, id, attempt, &result),
             Call::BlobBegin { draft, id, chunks } => self.on_blob_begun(&draft, id, chunks, &result),
@@ -603,6 +609,7 @@ impl Client {
             }
             Call::HubSettings | Call::Projects(_) | Call::SshRecords => {}
             Call::Ssh(id) => self.ssh_replies.push((id, Err(error.clone()))),
+            Call::WslDistros => self.on_wsl_distros_error(error),
             c @ (Call::ForgePrs(_) | Call::ForgePrepare(_) | Call::ForgeCreate(_) | Call::ForgeAsk(_)) => self.on_forge_error(c, error),
             Call::Find { query } => {
                 if let Some(f) = self.state.find.as_mut().filter(|f| f.query == query) {
