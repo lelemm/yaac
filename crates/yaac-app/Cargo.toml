@@ -40,6 +40,16 @@ png = "0.17"
 chrono = { version = "0.4.42", default-features = false, features = ["clock"] }
 # Rasterises the two harness logos (SVG path data) into alpha masks; no dependencies.
 zeno = { version = "0.3.3", default-features = false, features = ["eval", "std"] }
+# Attachments (docs/06-attachments.md), all used on worker threads only:
+# the system file picker (Windows: the common item dialog; Linux: the XDG desktop portal over
+# D-Bus, no GTK);
+rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
+# the clipboard's file list (`CF_HDROP`; `text/uri-list` on X11 and Wayland), image and text;
+arboard = { version = "3.7.0", default-features = false, features = ["image-data", "wayland-data-control"] }
+# thumbnails decoded at display size (the formats the MVP sends as images);
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+# clipboard bytes go to the hub's draft store in base64 chunks.
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 yaac-winsys = { path = "../yaac-winsys" }

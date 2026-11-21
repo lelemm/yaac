@@ -7,7 +7,9 @@ use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Margin, text::LayoutJ
 use yaac_core::ThreadKey;
 use yaac_core::attention::AttentionMap;
 use yaac_core::controls::{Choice, ControlRow, ControlRowView, StartedInputs, draft_row, started_row};
-use yaac_core::header::{ChipView, ComposerView, composer, short_provider};
+use yaac_core::attachments::{DraftRef, Phase, Source};
+use yaac_core::header::{ChipStatus, ChipView, ComposerView, composer, short_provider};
+use yaac_core::state::SendAs;
 use yaac_core::images::ImageRoute;
 use yaac_core::markstyle::{self, Style};
 use yaac_core::mode_confirm::ModeTarget;
@@ -15,6 +17,7 @@ use yaac_core::compose::{self, EnterAction};
 use yaac_core::prefs::SendKey;
 
 use crate::app::{Action, Menu, YaacApp};
+use crate::files::ThumbKey;
 use crate::icons;
 use crate::theme::{self, Palette, size};
 use crate::widgets;
@@ -125,43 +128,172 @@ fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &st
     send
 }
 
-fn chips(ui: &mut egui::Ui, p: &Palette, chips: &[ChipView]) {
+/// The focus id of a composer's text box.
+pub(crate) fn composer_id(d: &DraftRef) -> egui::Id {
+    match d {
+        DraftRef::Thread(k) => egui::Id::unique(("composer", k.to_string())),
+        DraftRef::New(id) => egui::Id::unique(("draft", *id)),
+    }
+}
+
+/// The chips above the text: a thumbnail (images) or a file mark, the name, the upload's
+/// progress or error, the image routing, and a remove control.
+fn chips(ui: &mut egui::Ui, app: &mut YaacApp, d: &DraftRef, chips: &[ChipView], actions: &mut Vec<Action>) {
+    let p = app.p;
+    // A long text paste waiting for a choice, and anything the clipboard could not give.
+    if app.files.large_paste.as_ref().is_some_and(|lp| &lp.draft == d) {
+        let len = app.files.large_paste.as_ref().map_or(0, |lp| lp.text.len());
+        ui.horizontal_wrapped(|ui| {
+            ui.label(widgets::secondary(format!("The pasted text is long ({}).", human_size(len as u64)), &p));
+            if widgets::plain(ui, &p, "Attach as a file", None).clicked() {
+                actions.push(Action::LargePaste(true));
+            }
+            if widgets::plain(ui, &p, "Paste as text", None).clicked() {
+                actions.push(Action::LargePaste(false));
+            }
+        });
+        ui.add_space(4.0);
+    }
+    if let Some(n) = app.files.notice.clone() {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(n).font(theme::ui(size::SMALL)).color(p.failed));
+            if widgets::icon_button(ui, &p, 12.0, "Dismiss", icons::close).clicked() {
+                app.files.notice = None;
+            }
+        });
+    }
     if chips.is_empty() {
         return;
     }
+    let sources: Vec<(u64, Option<Source>)> = app.client.draft(d).map(|x| x.attachments.iter().map(|a| (a.id, a.source.clone())).collect()).unwrap_or_default();
     ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
         for c in chips {
-            egui::Frame::NONE.fill(p.raised).corner_radius(5).inner_margin(Margin::symmetric(8, 5)).show(ui, |ui| {
+            let key = match sources.iter().find(|(id, _)| *id == c.id).and_then(|(_, s)| s.clone()) {
+                Some(Source::Path { path }) => ThumbKey::Path(path),
+                _ => ThumbKey::Chip(d.clone(), c.id),
+            };
+            let thumb = app.files.thumb(&key);
+            // A chip is one piece: start a new row when this one would not fit (a frame cannot
+            // wrap by itself).
+            let status_text = match &c.status {
+                ChipStatus::Storing => "saving…".to_owned(),
+                ChipStatus::Uploading { fraction: Some(_), .. } => "0000000000000 100%".to_owned(),
+                ChipStatus::Uploading { .. } => "uploading…".to_owned(),
+                ChipStatus::Failed { message, retry } => format!("{message}{}", if *retry { " Retry" } else { "" }),
+                ChipStatus::Ready => match c.route {
+                    ImageRoute::AsFileCannotSee => "00 this model cannot see images; it will be sent as a file".to_owned(),
+                    ImageRoute::Ask => "send as image file 0000".to_owned(),
+                    _ => String::new(),
+                },
+            };
+            let text_w = ui.fonts_mut(|f| {
+                let font = theme::ui(size::UI);
+                f.layout_no_wrap(c.name.clone(), font.clone(), p.text).size().x + f.layout_no_wrap(status_text, font, p.text).size().x
+            });
+            let est = text_w + 90.0;
+            if ui.cursor().left() > ui.max_rect().left() + 1.0 && ui.cursor().left() + est > ui.max_rect().right() {
+                ui.end_row();
+            }
+            egui::Frame::NONE.fill(p.raised).corner_radius(5).inner_margin(Margin { left: 6, right: 2, top: 3, bottom: 3 }).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let image = c.image;
-                    widgets::icon(ui, 15.0, |pa, ce, d| if image { icons::image(pa, ce, d, p.text) } else { icons::file(pa, ce, d, p.text, false) });
-                    match c.route {
-                        ImageRoute::AsFileCannotSee => {
-                            widgets::icon(ui, 13.0, |pa, ce, d| icons::warning(pa, ce, d, p.needs, p.raised));
-                            ui.label(&c.name);
-                            ui.label(widgets::secondary("— this model cannot see images; it will be sent as a file", p));
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    match &thumb {
+                        Some(t) => {
+                            let sz = t.size_vec2();
+                            let h = 24.0;
+                            let w = (sz.x / sz.y.max(1.0) * h).clamp(16.0, 40.0);
+                            ui.add(egui::Image::new((t.id(), egui::vec2(w, h))).corner_radius(3));
                         }
-                        ImageRoute::Ask => {
-                            ui.label(&c.name);
-                            ui.label(widgets::secondary("send as", p));
-                            widgets::plain(ui, p, "image", None);
-                            widgets::plain(ui, p, "file", None);
-                        }
-                        _ => {
-                            ui.label(&c.name);
+                        None => {
+                            let image = c.image;
+                            widgets::icon(ui, 16.0, |pa, ce, dd| if image { icons::image(pa, ce, dd, p.text2) } else { icons::file(pa, ce, dd, p.text2, false) });
                         }
                     }
-                    if let yaac_core::header::ChipStatus::Uploading { fraction: Some(pr), .. } = c.status {
-                        let (r, _) = ui.allocate_exact_size(egui::vec2(90.0, 4.0), egui::Sense::hover());
-                        ui.painter().rect_filled(r, 2.0, p.faint);
-                        ui.painter().rect_filled(egui::Rect::from_min_size(r.min, egui::vec2(90.0 * pr, 4.0)), 2.0, p.text2);
-                        ui.label(widgets::secondary(format!("{}%", (pr * 100.0).round()), p));
+                    let failed = matches!(c.status, ChipStatus::Failed { .. });
+                    ui.label(egui::RichText::new(&c.name).color(if failed { p.text2 } else { p.text }));
+                    match &c.status {
+                        ChipStatus::Storing => {
+                            ui.label(widgets::secondary("saving…", &p));
+                        }
+                        ChipStatus::Uploading { fraction: Some(f), .. } => {
+                            let (r, _) = ui.allocate_exact_size(egui::vec2(64.0, 4.0), egui::Sense::hover());
+                            ui.painter().rect_filled(r, 2.0, p.faint);
+                            ui.painter().rect_filled(egui::Rect::from_min_size(r.min, egui::vec2(64.0 * f, 4.0)), 2.0, p.text2);
+                            ui.label(widgets::secondary(format!("{}%", (f * 100.0).round()), &p));
+                        }
+                        ChipStatus::Uploading { phase, .. } => {
+                            let word = match phase {
+                                Phase::Hashing => "reading…",
+                                Phase::Queued => "waiting…",
+                                Phase::Beginning | Phase::Sending => "uploading…",
+                                Phase::Verifying => "checking…",
+                            };
+                            ui.label(widgets::secondary(word, &p));
+                        }
+                        ChipStatus::Failed { message, retry } => {
+                            ui.label(egui::RichText::new(message).font(theme::ui(size::SMALL)).color(p.failed));
+                            if *retry && widgets::link(ui, &p, "Retry", theme::ui(size::SMALL)).clicked() {
+                                actions.push(Action::RetryAttachment(d.clone(), c.id));
+                            }
+                        }
+                        ChipStatus::Ready => match c.route {
+                            ImageRoute::AsFileCannotSee => {
+                                widgets::icon(ui, 13.0, |pa, ce, dd| icons::warning(pa, ce, dd, p.needs, p.raised));
+                                ui.label(widgets::secondary("this model cannot see images; it will be sent as a file", &p));
+                            }
+                            ImageRoute::Ask => {
+                                // YAAC does not guess: the user chooses.
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                ui.label(widgets::secondary("send as", &p));
+                                if widgets::link(ui, &p, "image", theme::ui(size::SMALL)).on_hover_text("The model will see it").clicked() {
+                                    actions.push(Action::SendAs(d.clone(), c.id, SendAs::Image));
+                                }
+                                ui.label(widgets::secondary("·", &p));
+                                if widgets::link(ui, &p, "file", theme::ui(size::SMALL)).on_hover_text("The agent gets its path").clicked() {
+                                    actions.push(Action::SendAs(d.clone(), c.id, SendAs::File));
+                                }
+                            }
+                            ImageRoute::AsImage | ImageRoute::AsFile => {}
+                        },
+                    }
+                    let tip = if c.status.pending() { "Remove (cancels the upload)" } else { "Remove" };
+                    if widgets::icon_button(ui, &p, 12.0, tip, icons::close).clicked() {
+                        actions.push(Action::RemoveAttachment(d.clone(), c.id));
                     }
                 });
             });
         }
     });
-    ui.add_space(4.0);
+    ui.add_space(6.0);
+}
+
+fn human_size(bytes: u64) -> String {
+    #[allow(clippy::cast_precision_loss, reason = "a rounded size for people")]
+    let b = bytes as f64;
+    if b >= 1024.0 * 1024.0 { format!("{:.1} MB", b / 1024.0 / 1024.0) } else { format!("{:.0} KB", (b / 1024.0).ceil()) }
+}
+
+/// The attachment button: the system's file picker, several files at once.
+fn attach_button(ui: &mut egui::Ui, app: &YaacApp, d: &DraftRef, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let tip = if app.files.picking { "The file picker is open" } else { "Attach files (or drop them here, or paste)" };
+    if widgets::icon_button(ui, &p, 16.0, tip, icons::paperclip).clicked() && !app.files.picking {
+        actions.push(Action::AttachPick(d.clone()));
+    }
+}
+
+/// The send button: filled when the message can go; otherwise plain, saying why.
+fn send_button(ui: &mut egui::Ui, p: &Palette, has_content: bool, blocked: Option<&str>) -> bool {
+    match blocked {
+        Some(why) if has_content => {
+            let r = widgets::plain(ui, p, "Send", Some("Enter")).on_hover_text(why);
+            let _ = r.clicked();
+            false
+        }
+        _ if has_content => widgets::primary(ui, p, "Send", Some("Enter")).clicked(),
+        _ => widgets::plain(ui, p, "Send", Some("Enter")).clicked(),
+    }
 }
 
 /// Everything under the transcript of a started thread.
@@ -193,24 +325,31 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                 });
             });
         }
-        ComposerView::Shown { placeholder, dimmed_hint, stop, chips: chip_views, ready, .. } => {
+        ComposerView::Shown { placeholder, dimmed_hint, stop, chips: chip_views, blocked, .. } => {
             let dimmed = dimmed_hint.is_some();
-            let id = egui::Id::unique(("composer", key.to_string()));
+            let d = DraftRef::Thread(key.clone());
+            let id = composer_id(&d);
             let mut send = false;
             let inner = widgets::faint_frame(&p).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if dimmed {
                     ui.multiply_opacity(0.6);
                 }
-                chips(ui, &p, &chip_views);
+                chips(ui, app, &d, &chip_views, actions);
                 ui.horizontal(|ui| {
-                    let btn_w = 96.0;
+                    let btn_w = 130.0;
                     ui.vertical(|ui| {
                         ui.set_width(ui.available_width() - btn_w);
                         let draft = app.client.state.drafts.entry(key.clone()).or_default();
+                        let had = draft.text.clone();
                         send = text_box(ui, &mut draft.text, id, &placeholder, &p, &mut app.ui.ime_composing, !dimmed, &mut app.ui.focus_composer, app.ui.send_key);
+                        if draft.text != had {
+                            actions.push(Action::DraftEdited(d.clone()));
+                        }
                         if let Some(h) = &dimmed_hint {
                             ui.label(widgets::secondary(h, &p));
+                        } else if let Some(why) = blocked.as_ref().filter(|_| !chip_views.is_empty()) {
+                            ui.label(widgets::secondary(why, &p));
                         }
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -221,11 +360,11 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                                 actions.push(Action::Stop(key.clone()));
                             }
                         } else if !dimmed {
-                            let has_text = app.client.state.drafts.get(key).is_some_and(|d| !d.text.trim().is_empty());
-                            let r = if has_text && ready { widgets::primary(ui, &p, "Send", Some("Enter")) } else { widgets::plain(ui, &p, "Send", Some("Enter")) };
-                            if r.clicked() {
+                            let has = app.client.state.drafts.get(key).is_some_and(|x| !x.text.trim().is_empty() || !x.attachments.is_empty());
+                            if send_button(ui, &p, has, blocked.as_deref()) {
                                 send = true;
                             }
+                            attach_button(ui, app, &d, actions);
                         }
                     });
                 });
@@ -482,20 +621,34 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
             .or_else(|| providers.iter().find(|p| p.status == yaac_protocol::ProviderStatus::Ready))
             .map_or("the agent".to_owned(), |p| short_provider(&p.display_name, p.name.as_deref()));
         let mut send = false;
-        let eid = egui::Id::unique(("draft", id));
+        let dref = DraftRef::New(id);
+        let eid = composer_id(&dref);
+        let support = yaac_core::attachments::draft_image_support(&app.client.state, &d);
+        let chip_views = yaac_core::attachments::chips(&d.draft.attachments, &support, Some(&d.target));
+        let blocked = yaac_core::attachments::blocked(&chip_views);
+        let has = !d.draft.text.trim().is_empty() || !d.draft.attachments.is_empty();
         let inner = widgets::faint_frame(&p).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
             ui.set_width(ui.available_width());
+            chips(ui, app, &dref, &chip_views, actions);
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.set_width(ui.available_width() - 96.0);
+                    ui.set_width(ui.available_width() - 130.0);
                     if let Some(dd) = app.client.state.new_threads.iter_mut().find(|x| x.id == id) {
+                        let had = dd.draft.text.clone();
                         send = text_box(ui, &mut dd.draft.text, eid, &format!("Message {name}…"), &p, &mut app.ui.ime_composing, true, &mut app.ui.focus_composer, app.ui.send_key);
+                        if dd.draft.text != had {
+                            actions.push(Action::DraftEdited(dref.clone()));
+                        }
+                    }
+                    if let Some(why) = blocked.as_ref().filter(|_| !chip_views.is_empty()) {
+                        ui.label(widgets::secondary(why, &p));
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::primary(ui, &p, "Send", Some("Enter")).clicked() {
+                    if send_button(ui, &p, has, blocked.as_deref()) {
                         send = true;
                     }
+                    attach_button(ui, app, &dref, actions);
                 });
             });
         });

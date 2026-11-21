@@ -75,6 +75,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             }
         }
     });
+    drop_target(ui, app, below(center), actions);
     // The hairlines, painted after the thread view (whose panels fill their own background)
     // and snapped to one pixel column, so each is one unbroken line the full height.
     let snap = |x: f32| ui.painter().round_to_pixel_center(x);
@@ -365,6 +366,36 @@ fn wsl_notification(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Ac
             });
         });
     }
+}
+
+/// Files dragged over the window attach to the open composer (docs/06-attachments.md): while
+/// they hover, the thread view shows a quiet "Drop to attach"; dropped anywhere — transcript or
+/// composer — they become chips. Nothing happens where there is no composer to take them.
+fn drop_target(ui: &mut egui::Ui, app: &mut YaacApp, area: egui::Rect, actions: &mut Vec<Action>) {
+    let Some(d) = app.open_composer() else { return };
+    let (hovering, dropped) = ui.input(|i| {
+        let paths: Vec<String> = i.raw.dropped_files.iter().map(|f| f.path()).filter(|p| p.is_absolute()).map(|p| p.to_string_lossy().into_owned()).collect();
+        (!i.raw.hovered_files.is_empty(), paths)
+    });
+    if !dropped.is_empty() {
+        actions.push(Action::AttachPaths(d, dropped));
+    }
+    if !(hovering || app.ui.drop_preview) {
+        return;
+    }
+    let p = app.p;
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("drop-target")));
+    // Leave the hairline beside the sidebar visible.
+    let area = egui::Rect::from_min_max(egui::pos2(area.left() + 1.0, area.top()), area.max);
+    painter.rect_filled(area, 0.0, p.bg.gamma_multiply(0.7));
+    let inner = area.shrink2(vec2(28.0, 20.0));
+    painter.rect_filled(inner, 10.0, p.faint);
+    let font = theme::ui(size::SECTION);
+    let g = ui.fonts_mut(|f| f.layout_no_wrap("Drop to attach".to_owned(), font, p.text));
+    let total = 26.0 + g.size().x;
+    let left = inner.center().x - total / 2.0;
+    crate::icons::paperclip(&painter, egui::pos2(left + 9.0, inner.center().y), 20.0, p.text2);
+    painter.galley(egui::pos2(left + 26.0, inner.center().y - g.size().y / 2.0), g, p.text);
 }
 
 /// The hairline beside the docked agents panel resizes it (D105), between its minimum and

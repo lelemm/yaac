@@ -15,9 +15,8 @@ const BUTTON_W: f32 = 44.0;
 /// How far in from the window's edge a drag resizes it.
 const GRIP: f32 = 5.0;
 
-/// The strip along the top of `full`, its buttons, and the window's edges. Call before the
-/// content (so the content's own widgets in the strip take precedence) with `drag_only`, and
-/// once more after it to draw the buttons on top.
+/// The strip's draggable part. Called before the content, so the content's own widgets in the
+/// strip take precedence; [`buttons`] is called after it, so the buttons are on top.
 pub(crate) fn drag_area(ui: &mut egui::Ui, full: Rect) {
     let bar = Rect::from_min_size(full.min, vec2(full.width() - 3.0 * BUTTON_W, HEIGHT));
     let resp = ui.interact(bar, egui::Id::unique("title-drag"), Sense::click_and_drag());

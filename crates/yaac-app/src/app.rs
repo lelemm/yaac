@@ -24,7 +24,8 @@ use yaac_core::prefs::{SendKey, ThemePref, UiPrefs};
 use yaac_core::settings::Page;
 use yaac_core::sidebar::Grouping;
 use yaac_core::ssh_setup::{SetupRecord, SshSetupBackend};
-use yaac_core::state::{AgentsPolicy, HelloOutcome};
+use yaac_core::attachments::DraftRef;
+use yaac_core::state::{AgentsPolicy, HelloOutcome, SendAs};
 use yaac_core::ThreadKey;
 use yaac_protocol::attach::TargetTransport;
 use yaac_protocol::{Address, ClientId, InstanceId, ItemId, ModeId, ProviderKind, QuestionId, RequestId, RequestResponse, TargetId};
@@ -120,6 +121,8 @@ pub(crate) struct UiState {
     pub fork: Option<ForkDialog>,
     /// Narrow layout: the thread list is open as an overlay.
     pub threads_overlay: bool,
+    /// Screenshots only: show the "Drop to attach" target as if files were dragged over.
+    pub drop_preview: bool,
     /// Screenshots only: lay the shell out in this size instead of the window's.
     pub layout_size: Option<egui::Vec2>,
     /// The settings pages' own state.
@@ -181,6 +184,7 @@ impl UiState {
             create_project: None,
             fork: None,
             threads_overlay: false,
+            drop_preview: false,
             layout_size: None,
             set: crate::settings::SettingsUi::default(),
             heights: HashMap::new(),
@@ -310,6 +314,20 @@ pub(crate) enum Action {
     Scene(Scene),
     DemoReset,
     StreamReply,
+    /// The attachment button: open the file picker for this composer.
+    AttachPick(DraftRef),
+    /// Files to attach (dropped, picked, or pasted as a file list).
+    AttachPaths(DraftRef, Vec<String>),
+    /// The × on a chip.
+    RemoveAttachment(DraftRef, u64),
+    /// "Send as image" / "as file" on a chip whose model's image support is unknown.
+    SendAs(DraftRef, u64, SendAs),
+    /// "Retry" on a failed chip.
+    RetryAttachment(DraftRef, u64),
+    /// A long pasted text: attach it as a file (`true`) or paste it as text.
+    LargePaste(bool),
+    /// The composer's text changed: store the draft soon.
+    DraftEdited(DraftRef),
 }
 
 /// The time the view models are computed at.
@@ -394,6 +412,10 @@ pub(crate) struct YaacApp {
     /// The host is Windows (or pretends to be, `--host windows`): WSL settings are shown.
     pub host_windows: bool,
     pub ssh: Box<dyn SshSetupBackend>,
+    /// The file picker, the clipboard, and thumbnails, on worker threads.
+    pub files: crate::files::Files,
+    /// When drafts were last stored in the hub (seconds of egui time).
+    drafts_flushed: f64,
     /// The host's time zone (D91): every time shown or asked for is local to this computer.
     pub zone: yaac_core::time::Zone,
     zone_checked: f64,
@@ -497,6 +519,8 @@ impl YaacApp {
             clock,
             started: std::time::Instant::now(),
             shots: launch.shots,
+            files: crate::files::Files::new(&cc.egui_ctx),
+            drafts_flushed: 0.0,
             #[cfg(feature = "hub")]
             hub,
             host_windows: launch.host_windows,
@@ -771,11 +795,13 @@ impl YaacApp {
                         d.instance = Some(inst);
                         d.model = Some(model);
                     }
+                    self.client.draft_changed(&DraftRef::New(id));
                 }
                 Action::DraftEffort(id, e) => {
                     if let Some(d) = self.client.state.new_threads.iter_mut().find(|d| d.id == id) {
                         d.effort = Some(e);
                     }
+                    self.client.draft_changed(&DraftRef::New(id));
                 }
                 Action::Retry(t) => self.client.retry_target(&t),
                 Action::Panel(i) => {
@@ -850,6 +876,24 @@ impl YaacApp {
                     }
                 }
                 Action::DemoReset => self.reset_demo(self.scenario),
+                Action::AttachPick(d) => self.files.pick(d),
+                Action::AttachPaths(d, paths) => {
+                    self.client.attach_files(&d, &paths);
+                }
+                Action::RemoveAttachment(d, id) => self.client.remove_attachment(&d, id),
+                Action::SendAs(d, id, c) => self.client.choose_send_as(&d, id, c),
+                Action::RetryAttachment(d, id) => self.client.retry_attachment(&d, id),
+                Action::LargePaste(as_file) => {
+                    if let Some(lp) = self.files.large_paste.take() {
+                        if as_file {
+                            self.files.text_as_file(lp.draft, lp.text);
+                        } else {
+                            self.files.paste_events.push(egui::Event::Paste(lp.text));
+                            self.ctx.request_repaint();
+                        }
+                    }
+                }
+                Action::DraftEdited(d) => self.client.draft_changed(&d),
                 Action::StreamReply => {
                     if let Some(k) = self.client.state.selected_thread().cloned() {
                         self.client.state.drafts.entry(k.clone()).or_default().text =
@@ -936,6 +980,68 @@ impl YaacApp {
         if dark { Palette::DARK } else { Palette::LIGHT }
     }
 
+    /// The composer of what is open, when it takes attachments: a thread this window may act
+    /// on, or a new-thread draft.
+    pub(crate) fn open_composer(&self) -> Option<DraftRef> {
+        match &self.client.state.selection {
+            yaac_core::state::Selection::Thread(k) if self.client.state.may_act(k) && !self.ui.settings => Some(DraftRef::Thread(k.clone())),
+            yaac_core::state::Selection::NewThread(id) if !self.ui.settings => Some(DraftRef::New(*id)),
+            _ => None,
+        }
+    }
+
+    /// Ctrl+V: the clipboard is read off the UI thread. Into the open composer (focused, or
+    /// nothing focused) a copied file list or a bitmap becomes chips; into any other field only
+    /// text is pasted.
+    fn paste(&mut self, ctx: &egui::Context) {
+        let focused = ctx.memory(|m| m.focused());
+        let into = self.open_composer().filter(|d| focused.is_none() || focused == Some(crate::composer::composer_id(d)));
+        use chrono::{Datelike as _, Timelike as _};
+        let now = chrono::Local::now();
+        self.files.paste(into, (now.year(), now.month(), now.day(), now.hour(), now.minute()));
+    }
+
+    /// Apply what the file workers finished. Returns whether anything arrived.
+    fn pump_files(&mut self) -> bool {
+        use crate::files::{Clip, Outcome};
+        let outcomes = self.files.poll();
+        let any = !outcomes.is_empty();
+        for o in outcomes {
+            match o {
+                Outcome::Picked(d, paths) => {
+                    self.files.picking = false;
+                    if let Some(paths) = paths {
+                        let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+                        self.client.attach_files(&d, &paths);
+                    }
+                }
+                Outcome::Pasted(into, clip) => match (into, clip) {
+                    (Some(d), Clip::Files(paths)) => {
+                        self.client.attach_files(&d, &paths);
+                    }
+                    (Some(_), Clip::Image(enc)) => self.attach_encoded(enc),
+                    (Some(d), Clip::Text(text)) if yaac_core::attachments::is_large_paste(&text) => {
+                        self.files.large_paste = Some(crate::files::LargePaste { draft: d, text });
+                    }
+                    (_, Clip::Text(text)) => self.files.paste_events.push(egui::Event::Paste(text)),
+                    (_, Clip::Refused(why)) => self.files.notice = Some(why),
+                    _ => {}
+                },
+                Outcome::Encoded(enc) => self.attach_encoded(enc),
+                Outcome::Thumb(k, img) => self.files.set_thumb(k, img),
+                Outcome::Notice(n) => self.files.notice = Some(n),
+            }
+        }
+        any
+    }
+
+    fn attach_encoded(&mut self, enc: crate::files::Encoded) {
+        let id = self.client.attach_bytes(&enc.draft, &enc.name, Some(&enc.media_type), enc.size, enc.chunks);
+        if let (Some(id), Some(t)) = (id, enc.thumb) {
+            self.files.set_thumb(crate::files::ThumbKey::Chip(enc.draft, id), Some(t));
+        }
+    }
+
     pub(crate) fn keyboard(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let ctrl = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, k));
         if ctrl(Key::J) {
@@ -953,6 +1059,13 @@ impl YaacApp {
         }
         if ctrl(Key::Comma) {
             actions.push(Action::Settings(true));
+        }
+        // Ctrl+V arrives as a key (`clipboard_shortcuts` is off): see `paste`.
+        let paste = ctx.input_mut(|i| {
+            i.consume_key(Modifiers::COMMAND, Key::V) || i.consume_key(Modifiers::NONE, Key::Paste) || (cfg!(windows) && i.consume_key(Modifiers::SHIFT, Key::Insert))
+        });
+        if paste {
+            self.paste(ctx);
         }
         // Back and forward: Alt+Left / Alt+Right, and the mouse's side buttons.
         let (alt_left, alt_right, extra1, extra2) = ctx.input_mut(|i| {
@@ -979,6 +1092,24 @@ impl YaacApp {
 }
 
 impl eframe::App for YaacApp {
+    /// Ctrl+C and Ctrl+X become egui's copy and cut again (the clipboard shortcuts are off so
+    /// that Ctrl+V reaches the window as a key), and text read from the clipboard by a worker
+    /// is pasted into the focused field.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        for e in &mut raw.events {
+            if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
+                let copy = (modifiers.command_only() && *key == Key::C) || *key == Key::Copy || (cfg!(windows) && modifiers.ctrl && *key == Key::Insert);
+                let cut = (modifiers.command_only() && *key == Key::X) || *key == Key::Cut || (cfg!(windows) && modifiers.shift && *key == Key::Delete);
+                if copy {
+                    *e = egui::Event::Copy;
+                } else if cut {
+                    *e = egui::Event::Cut;
+                }
+            }
+        }
+        raw.events.append(&mut self.files.paste_events);
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply everything that arrived since the last frame: a burst of events becomes one
         // repaint. Arrivals from a real hub wake the window through the link's waker.
@@ -987,6 +1118,16 @@ impl eframe::App for YaacApp {
         self.hub_upkeep();
         let ssh_changed = self.ui.set.pump_ssh(self.ssh.as_mut());
         let t = ctx.input(|i| i.time);
+        let files_changed = self.pump_files();
+        // Drafts go to the hub's store at a calm pace, not on every key.
+        if self.client.drafts_dirty() {
+            if t - self.drafts_flushed >= 1.0 {
+                self.client.flush_drafts();
+                self.drafts_flushed = t;
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 - (t - self.drafts_flushed)));
+            }
+        }
         // The offset changes with daylight saving: look again once a minute (only when a
         // frame happens anyway).
         if t - self.zone_checked > 60.0 || self.zone_checked == 0.0 {
@@ -1009,7 +1150,7 @@ impl eframe::App for YaacApp {
             }
             ctx.request_repaint_after(std::time::Duration::from_millis(35));
         }
-        if arrived || ssh_changed {
+        if arrived || ssh_changed || files_changed {
             ctx.request_repaint();
         }
     }
@@ -1144,5 +1285,49 @@ mod tests {
             app.apply(actions);
             assert_eq!(app.client.state.selected_thread(), Some(want));
         }
+    }
+
+    #[derive(Debug)]
+    struct Dropped(std::path::PathBuf);
+
+    impl egui::DroppedFile for Dropped {
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+        fn bytes(&self) -> Result<Vec<u8>, String> {
+            std::fs::read(&self.0).map_err(|e| e.to_string())
+        }
+    }
+
+    /// One frame of the whole window (`App::ui`), headless.
+    fn window_frame(ctx: &egui::Context, app: &mut YaacApp, input: egui::RawInput) {
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn dropping_a_file_on_the_thread_view_starts_its_upload() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let billing = threads::billing();
+        app.apply(vec![Action::Open(billing.clone())]);
+        let screen = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+        window_frame(&ctx, &mut app, egui::RawInput { screen_rect: screen, ..Default::default() });
+        // Hovering shows the drop target; nothing is attached yet.
+        let hover = egui::HoveredFile { path: Some("/tmp/trace.log".into()), mime: String::new() };
+        window_frame(&ctx, &mut app, egui::RawInput { screen_rect: screen, hovered_files: vec![hover], ..Default::default() });
+        let d = DraftRef::Thread(billing);
+        assert!(app.client.draft(&d).is_none_or(|x| x.attachments.is_empty()));
+        // Dropped (over the transcript): a chip, and its upload asked of the hub at once.
+        let file: egui::DroppedFileHandle = std::sync::Arc::new(Dropped("/tmp/trace.log".into()));
+        window_frame(&ctx, &mut app, egui::RawInput { screen_rect: screen, dropped_files: vec![file], ..Default::default() });
+        let draft = app.client.draft(&d).expect("a draft");
+        assert_eq!(draft.attachments.len(), 1);
+        assert_eq!(draft.attachments[0].name, "trace.log");
+        assert!(matches!(draft.attachments[0].source, Some(yaac_core::attachments::Source::Path { ref path }) if path == "/tmp/trace.log"));
+        // The demo hub answered `hub/upload/start` with a handle: it is running.
+        app.pump_demo();
+        assert!(matches!(app.client.draft(&d).unwrap().attachments[0].upload, yaac_core::attachments::Upload::Running { .. }));
     }
 }

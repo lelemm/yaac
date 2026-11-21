@@ -22,6 +22,7 @@ mod app;
 mod cards;
 mod composer;
 mod dialogs;
+mod files;
 mod first_run;
 mod icons;
 mod logos;
@@ -148,6 +149,10 @@ pub fn run(args: &[String]) -> ExitCode {
             .with_inner_size(size)
             .with_min_inner_size([960.0, 600.0])
             .with_icon(eframe::egui::IconData { rgba: app_icon::rgba(64), width: 64, height: 64 }),
+        // Ctrl+V reaches the window as a key, so the clipboard is read off the UI thread and a
+        // copied file list or bitmap can be attached (docs/06-attachments.md); Ctrl+C and
+        // Ctrl+X are turned back into egui's copy and cut in `raw_input_hook`.
+        clipboard_shortcuts: false,
         #[cfg(feature = "glow")]
         renderer: eframe::Renderer::Glow,
         #[cfg(all(feature = "wgpu", not(feature = "glow")))]

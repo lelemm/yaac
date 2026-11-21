@@ -406,3 +406,15 @@ pub(crate) fn form(ui: &mut Ui, p: &Palette, rows: Vec<Vec<Field<'_>>>, editable
         }
     });
 }
+
+/// A small icon button: no outline, a faint fill on hover; the hover text says what it does.
+pub(crate) fn icon_button(ui: &mut Ui, p: &Palette, d: f32, hover: &str, f: impl FnOnce(&egui::Painter, egui::Pos2, f32, Color32)) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(d + 8.0), Sense::click());
+    let resp = resp.on_hover_text(hover);
+    if resp.hovered() || resp.has_focus() {
+        ui.painter().rect_filled(rect, 4.0, p.faint);
+    }
+    let col = if resp.hovered() { p.text } else { p.text2 };
+    f(ui.painter(), rect.center(), d, col);
+    resp
+}

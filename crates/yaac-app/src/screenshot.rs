@@ -54,6 +54,10 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("34", "wsl-stopped"),
     ("35", "sidebar-strip"),
     ("36", "sidebar-wide"),
+    ("37", "attach-uploading"),
+    ("38", "attach-unsupported"),
+    ("39", "attach-unknown"),
+    ("40", "attach-drop"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -398,6 +402,46 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.open(&threads::orchestrator(), None);
             app.ui.sidebar.collapsed = true;
             app.ui.strip_hover_key = Some((threads::billing(), egui::Rect::NOTHING));
+        }
+        "37" | "38" | "39" | "40" => {
+            // Attachments in the composer of billing-service (devbox).
+            let k = threads::billing();
+            app.open(&k, None);
+            let support = match id {
+                "38" => yaac_protocol::Support::Unsupported,
+                "39" => yaac_protocol::Support::Unknown,
+                _ => yaac_protocol::Support::Supported,
+            };
+            if let Some(e) = app.client.state.transcripts.get_mut(&k).and_then(|t| t.effective.as_mut()) {
+                e.image_input = support;
+            }
+            let draft = app.client.state.drafts.entry(k.clone()).or_default();
+            match id {
+                "37" => {
+                    draft.text = "The trace from the failing run, and the latency plot.".into();
+                    draft.attachments = vec![DemoHub::uploading(1, "trace.log", 0.62), DemoHub::chip(2, "plot.png", Some("image/png"), true)];
+                }
+                "38" => {
+                    draft.text = "This is the flow I mean.".into();
+                    draft.attachments = vec![
+                        DemoHub::chip(2, "diagram.png", Some("image/png"), true),
+                        DemoHub::failed(3, "build-cache.tar", "build-cache.tar is larger than 512 MiB."),
+                    ];
+                }
+                "39" => {
+                    draft.text = "Make the settings page look like this sketch.".into();
+                    draft.attachments = vec![DemoHub::chip(4, "sketch.png", Some("image/png"), true), DemoHub::chip(5, "notes.md", Some("text/markdown"), true)];
+                }
+                _ => {
+                    draft.text = "Compare these two logs.".into();
+                    draft.attachments = vec![DemoHub::chip(5, "run-1.log", None, true)];
+                    app.ui.drop_preview = true;
+                }
+            }
+            for name in ["plot.png", "diagram.png", "sketch.png"] {
+                app.files.set_thumb(crate::files::ThumbKey::Path(format!("/home/dev/Pictures/{name}")), Some(crate::files::demo_thumb()));
+            }
+            app.ui.focus_card = None;
         }
         "36" => {
             // The sidebar dragged wider.
