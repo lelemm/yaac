@@ -33,6 +33,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("11n", "fork-native"),
     ("12", "forked-thread"),
     ("13", "settings-targets"),
+    ("13d", "settings-wsl-distros"),
     ("14", "ssh-confirm"),
     ("15", "ssh-ready"),
     ("16", "ssh-fail-revoke"),
@@ -291,12 +292,19 @@ fn setup(app: &mut YaacApp, id: &str) {
                 app.open(&k, None);
             }
         }
-        "13" => {
+        "13" | "13d" => {
             play(app, Scene::WslConnections);
             app.host_windows = true;
             app.client.state.wsl_on = true;
             app.ui.settings = true;
             app.ui.settings_page = Page::Targets;
+            app.client.load_wsl_distros();
+            app.pump_demo();
+            if id == "13d" {
+                // The distro dropdown open: Ubuntu, the default, already has a connection, so
+                // nothing is chosen.
+                app.ui.menu = Some(Menu::WslDistro);
+            }
         }
         "14" | "22" | "15" => {
             app.ui.settings = true;

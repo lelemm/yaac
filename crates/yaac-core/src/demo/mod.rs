@@ -138,6 +138,8 @@ struct Inner {
     blobs: std::collections::BTreeMap<String, Value>,
     /// Pull requests created in the demo (D120), by thread.
     created: Vec<(ThreadKey, yaac_protocol::PrSummary)>,
+    /// What `hub/wsl/distros` answers: the distros, or an error message.
+    distros: Result<Value, String>,
 }
 
 /// The demo hub. Clone it to keep a handle for [`DemoHub::play`] and [`DemoHub::tick`] after
@@ -170,7 +172,7 @@ impl DemoHub {
             Scenario::Fleet => Fleet::standard(now),
             Scenario::Fresh => Fleet::fresh(now),
         };
-        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new() })) }
+        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()) })) }
     }
 
     /// Every thread of the scenario — the window's "recently used" set, so their hints are
@@ -202,6 +204,11 @@ impl DemoHub {
     /// Release everything scheduled.
     pub fn drain(&self) {
         while self.tick() {}
+    }
+
+    /// What `hub/wsl/distros` answers from now on: `{ distros }`, or a failure's message.
+    pub fn set_wsl_distros(&self, answer: Result<Value, String>) {
+        self.inner.borrow_mut().distros = answer;
     }
 
     /// Window-side data the protocol does not carry yet (the remaining seam): what YAAC did
@@ -260,6 +267,15 @@ impl DemoHub {
     }
 }
 
+/// The demo PC's distros: Ubuntu is Windows' default and running; two more are stopped.
+fn demo_distros() -> Value {
+    json!({ "distros": [
+        { "name": "Ubuntu", "default": true, "running": true, "version": 2 },
+        { "name": "Debian", "default": false, "running": false, "version": 2 },
+        { "name": "Ubuntu-24.04", "default": false, "running": false, "version": 2 },
+    ] })
+}
+
 fn result(id: RpcId, value: Value) -> Message {
     Message::Response { id, result: value }
 }
@@ -300,6 +316,10 @@ impl Inner {
                 }
             }
             crate::client::hub_names::CACHE_CLEAR => self.ready.push_back(result(id, json!({}))),
+            crate::client::hub_names::WSL_DISTROS => match self.distros.clone() {
+                Ok(v) => self.ready.push_back(result(id, v)),
+                Err(m) => self.ready.push_back(error(id, ErrorCode::from_wire("wsl_failed"), &m)),
+            },
             // SEAM (D92): the hub's view preferences; see `client::hub_names::VIEW_GET`.
             crate::client::hub_names::VIEW_GET => {
                 let threads: Vec<Value> = self

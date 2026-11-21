@@ -104,18 +104,36 @@ pub async fn running_distros(wsl_exe: &OsStr) -> Result<Vec<String>, String> {
     Ok(parse_list_quiet(&console_text(&out.stdout)))
 }
 
+/// Why the distros could not be listed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListError {
+    /// There is no `wsl.exe` to run (WSL is not installed on this PC).
+    Unavailable(String),
+    /// `wsl.exe` ran and failed, or could not be run for another reason; the message says why.
+    Failed(String),
+}
+
+impl std::fmt::Display for ListError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ListError::Unavailable(m) | ListError::Failed(m) => f.write_str(m),
+        }
+    }
+}
+
+impl std::error::Error for ListError {}
+
 /// Every installed distro with its state. Starts nothing.
-pub async fn list_distros(wsl_exe: &OsStr) -> Result<Vec<Distro>, String> {
-    let out = quiet_command(wsl_exe)
-        .args(["-l", "-v"])
-        .output()
-        .await
-        .map_err(|e| format!("cannot run {}: {e}", wsl_exe.to_string_lossy()))?;
+pub async fn list_distros(wsl_exe: &OsStr) -> Result<Vec<Distro>, ListError> {
+    let out = quiet_command(wsl_exe).args(["-l", "-v"]).output().await.map_err(|e| {
+        let message = format!("cannot run {}: {e}", wsl_exe.to_string_lossy());
+        if e.kind() == std::io::ErrorKind::NotFound { ListError::Unavailable(message) } else { ListError::Failed(message) }
+    })?;
     if !out.status.success() {
         let text = console_text(if out.stdout.is_empty() { &out.stderr } else { &out.stdout });
-        return Err(format!("wsl.exe -l -v failed: {}", text.trim()));
+        return Err(ListError::Failed(format!("wsl.exe -l -v failed: {}", text.trim())));
     }
-    let running = running_distros(wsl_exe).await?;
+    let running = running_distros(wsl_exe).await.map_err(ListError::Failed)?;
     let mut distros = parse_list_verbose(&console_text(&out.stdout));
     for d in &mut distros {
         d.running = running.iter().any(|r| r.eq_ignore_ascii_case(&d.name));

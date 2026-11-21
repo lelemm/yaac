@@ -209,6 +209,129 @@ pub fn targets_view(state: &AppState) -> TargetsView {
     TargetsView { local, ssh, wsl }
 }
 
+// ── WSL: the installed distros ──────────────────────────────────────────────────────────
+
+/// One installed WSL distro, as the hub lists it (`hub/wsl/distros`). The window never runs
+/// `wsl.exe` itself.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WslDistro {
+    /// Its name, as `wsl.exe -d` takes it.
+    pub name: String,
+    /// Windows' default distro.
+    #[serde(default)]
+    pub default: bool,
+    /// Running now.
+    #[serde(default)]
+    pub running: bool,
+    /// WSL version (1 or 2), when known.
+    #[serde(default)]
+    pub version: Option<u8>,
+}
+
+/// Where asking the hub for the installed distros stands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum DistroPhase {
+    /// Not asked since the window started.
+    #[default]
+    NotAsked,
+    /// Asked; no answer yet.
+    Loading,
+    /// Answered with [`WslDistros::list`].
+    Ready,
+    /// Listing failed; the hub's message. The distro is typed instead.
+    Failed(String),
+}
+
+/// The installed distros and the one chosen in the Add row.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WslDistros {
+    /// Where the last request stands.
+    pub phase: DistroPhase,
+    /// The last list the hub gave.
+    pub list: Vec<WslDistro>,
+    /// The distro chosen in the dropdown (`None`: nothing chosen).
+    pub selected: Option<String>,
+}
+
+/// Distro names compare without case, as Windows does.
+fn same_distro(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+fn has_target(targets: &[TargetRecord], distro: &str) -> bool {
+    targets.iter().any(|t| matches!(&t.entry.transport, TargetTransport::Wsl(w) if same_distro(&w.distro, distro)))
+}
+
+/// The distro to select once a list arrives: the one already chosen, if it is still
+/// installed; else Windows' default distro, unless a WSL target for it exists already (for
+/// any user) — then nothing, so the user picks another.
+pub fn choose_distro(list: &[WslDistro], targets: &[TargetRecord], current: Option<&str>) -> Option<String> {
+    if let Some(c) = current.and_then(|c| list.iter().find(|d| same_distro(&d.name, c))) {
+        return Some(c.name.clone());
+    }
+    list.iter().find(|d| d.default).filter(|d| !has_target(targets, &d.name)).map(|d| d.name.clone())
+}
+
+/// One entry of the distro dropdown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DistroOption {
+    /// The distro's name.
+    pub name: String,
+    /// "Ubuntu · default".
+    pub label: String,
+    /// "running", "stopped".
+    pub state: &'static str,
+    /// A WSL target for it exists already. Still selectable: another user opens a second
+    /// session to it.
+    pub added: bool,
+}
+
+/// The placeholder of the dropdown when nothing is chosen.
+pub const CHOOSE_DISTRO: &str = "Choose a distro";
+
+/// The distro control of the WSL Add row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DistroPicker {
+    /// The hub is listing them: the dropdown says "Loading…".
+    Loading,
+    /// A dropdown of the installed distros, with the one chosen (`None`: [`CHOOSE_DISTRO`]).
+    Choose {
+        /// Every installed distro, in the order `wsl.exe` lists them.
+        options: Vec<DistroOption>,
+        /// The chosen one.
+        selected: Option<String>,
+    },
+    /// No list to choose from: the distro is typed, and this says why.
+    Typed {
+        /// The hub's message, or "No distros were found".
+        message: String,
+    },
+}
+
+/// The distro control of the WSL Add row, from what the hub last said.
+pub fn distro_picker(state: &AppState) -> DistroPicker {
+    let d = &state.wsl_distros;
+    match &d.phase {
+        DistroPhase::NotAsked | DistroPhase::Loading => DistroPicker::Loading,
+        DistroPhase::Failed(m) => DistroPicker::Typed { message: m.clone() },
+        DistroPhase::Ready if d.list.is_empty() => DistroPicker::Typed { message: "No distros were found".to_owned() },
+        DistroPhase::Ready => DistroPicker::Choose {
+            options: d
+                .list
+                .iter()
+                .map(|x| DistroOption {
+                    name: x.name.clone(),
+                    label: if x.default { format!("{} · default", x.name) } else { x.name.clone() },
+                    state: if x.running { "running" } else { "stopped" },
+                    added: has_target(&state.targets, &x.name),
+                })
+                .collect(),
+            selected: d.selected.clone(),
+        },
+    }
+}
+
 /// One provider instance on the Providers page.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstanceRow {

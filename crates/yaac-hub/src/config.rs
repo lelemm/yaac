@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yaac_protocol::attach::TargetTransport;
-use yaac_transport::{Connector, DaemonBundle, LocalConfig, LocalConnector, RuntimeSource, WslConfig, WslConnector};
+use yaac_transport::wsl::{Distro, ListError, list_distros};
+use yaac_transport::{BoxFuture, Connector, DaemonBundle, LocalConfig, LocalConnector, RuntimeSource, WslConfig, WslConnector};
 
 use crate::notify::{Notifier, SystemNotifier};
 use crate::paths::{HubPaths, PathsError};
@@ -69,6 +70,33 @@ impl WslDefaults {
             })
             .unwrap_or_default();
         Self { wsl_exe: get("YAAC_WSL_EXE"), bundle, env, runtime: None }
+    }
+}
+
+/// Lists the WSL distros installed on this PC (`hub/wsl/distros`). Starts nothing. Tests
+/// supply a fixed list.
+pub trait WslLister: Send + Sync {
+    /// The distros, in the order `wsl.exe` lists them.
+    fn list(&self) -> BoxFuture<'static, Result<Vec<Distro>, ListError>>;
+}
+
+/// The default lister: `wsl.exe -l -v` on Windows (or the `wsl.exe` of
+/// [`WslDefaults::wsl_exe`] anywhere); an empty list on a host that is not Windows.
+#[derive(Clone, Debug, Default)]
+pub struct DefaultWslLister {
+    /// `wsl.exe` (default: found on `PATH`, on Windows only).
+    pub wsl_exe: Option<std::ffi::OsString>,
+}
+
+impl WslLister for DefaultWslLister {
+    fn list(&self) -> BoxFuture<'static, Result<Vec<Distro>, ListError>> {
+        let exe = self.wsl_exe.clone().or_else(|| cfg!(windows).then(|| "wsl.exe".into()));
+        Box::pin(async move {
+            match exe {
+                Some(exe) => list_distros(&exe).await,
+                None => Ok(Vec::new()),
+            }
+        })
     }
 }
 
@@ -170,6 +198,8 @@ pub struct HubConfig {
     /// How SSH targets are reached and set up (`hub/ssh/*`). `None`: SSH targets stay offline
     /// with a message (the default of [`HubConfig::new`]; [`HubConfig::from_env`] sets it).
     pub ssh: Option<Arc<SshDefaults>>,
+    /// Lists the installed WSL distros (`hub/wsl/distros`).
+    pub wsl_distros: Arc<dyn WslLister>,
 }
 
 impl std::fmt::Debug for HubConfig {
@@ -206,7 +236,9 @@ impl HubConfig {
         wsl.runtime = Some(runtime.clone());
         let mut ssh = SshDefaults::new(&paths.data_dir, &paths.runtime_dir, wsl.bundle.clone(), wsl.env.clone());
         ssh.runtime = Some(runtime);
+        let lister = DefaultWslLister { wsl_exe: wsl.wsl_exe.clone() };
         let mut config = Self::new(build, paths, Arc::new(DefaultConnectors { local, wsl }));
+        config.wsl_distros = Arc::new(lister);
         config.ssh = Some(Arc::new(ssh));
         config.notifier = Some(Arc::new(SystemNotifier));
         Ok(config)
@@ -236,6 +268,7 @@ impl HubConfig {
             uploads: crate::UploadLimits::default(),
             pool_threads: 2,
             ssh: None,
+            wsl_distros: Arc::new(DefaultWslLister::default()),
         }
     }
 }

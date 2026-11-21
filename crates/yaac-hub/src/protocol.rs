@@ -87,6 +87,11 @@ pub mod names {
     /// `stopped`), which boots the WSL distro. `{ id }`; answered `{}` once the target is
     /// connected, or with an error carrying the reason (code `start_failed`).
     pub const TARGETS_START: &str = "hub/targets/start";
+    /// Window → hub: the WSL distros installed on this PC, for Settings → Targets
+    /// ([`super::WslDistrosResult`]). Asks `wsl.exe -l -v` and `-l --running -q`, which start
+    /// nothing. An empty list on a host that is not Windows; code `wsl_unavailable` when there
+    /// is no `wsl.exe`, `wsl_failed` (with the reason) when listing fails.
+    pub const WSL_DISTROS: &str = "hub/wsl/distros";
     /// Window → hub: clear the cache ("clear cache"). Drafts are not touched.
     pub const CACHE_CLEAR: &str = "hub/cache/clear";
     /// Window → hub: store a `ui_state` value in the cache (the hub is its only writer).
@@ -193,6 +198,10 @@ pub mod codes {
     pub const BLOB_NOT_FOUND: &str = "blob_not_found";
     /// `hub/targets/start` did not end connected; the message says why.
     pub const START_FAILED: &str = "start_failed";
+    /// `hub/wsl/distros`: this PC has no `wsl.exe`.
+    pub const WSL_UNAVAILABLE: &str = "wsl_unavailable";
+    /// `hub/wsl/distros`: `wsl.exe` failed; the message is its reason in plain words.
+    pub const WSL_FAILED: &str = "wsl_failed";
     /// An SSH setup step was asked for while the server's target is connected (or another
     /// setup step for it is running).
     pub const TARGET_CONNECTED: &str = "target_connected";
@@ -214,6 +223,29 @@ pub struct ThreadResetParams {
     pub thread_id: ThreadId,
     /// The position the rebuilt cache is valid at.
     pub position: JournalPosition,
+}
+
+/// One installed WSL distro (`hub/wsl/distros`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WslDistroEntry {
+    /// Its name, as `wsl.exe -d` takes it.
+    pub name: String,
+    /// Windows' default distro.
+    pub default: bool,
+    /// Running now.
+    pub running: bool,
+    /// WSL version (1 or 2), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u8>,
+}
+
+/// `hub/wsl/distros` result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WslDistrosResult {
+    /// In the order `wsl.exe` lists them.
+    pub distros: Vec<WslDistroEntry>,
 }
 
 /// Why the hub is staying up.

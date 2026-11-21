@@ -67,6 +67,10 @@ is right.
   `{ results: [{ target, address, matched, exact, score, thread }], total, ambiguous, cursor? }`
   — by id (full or a prefix of four or more characters) or fuzzy title, ten per page.
 - `hub/projects/list`, and the notification `hub/projects/changed { target }`.
+- `hub/wsl/distros {}` → `{ distros: [{ name, default, running, version? }] }` — the WSL
+  distros installed on the hub's PC, for Settings → Targets, from `wsl.exe -l -v` and
+  `-l --running -q` (which start nothing). An empty list on a host that is not Windows;
+  errors `wsl_unavailable` (no `wsl.exe`) and `wsl_failed` (the reason as a plain message).
 
 ## Added with the mesh
 

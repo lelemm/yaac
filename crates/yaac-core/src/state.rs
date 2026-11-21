@@ -306,6 +306,8 @@ pub struct AppState {
     /// SEAM (wire field missing): the WSL master switch (off by default). The hub settings
     /// carry no such field; window-local.
     pub wsl_on: bool,
+    /// The installed WSL distros (`hub/wsl/distros`) and the one chosen to add.
+    pub wsl_distros: crate::settings::WslDistros,
     /// `thread/forkPreview` answers, by source thread and destination instance.
     pub fork_previews: BTreeMap<(ThreadKey, InstanceId), ForkPreviewState>,
     /// `fs/list` answers, by target and directory asked for ("" for the home directory).

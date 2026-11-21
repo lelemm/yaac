@@ -617,6 +617,10 @@ impl Core {
                 Ok(p) => self.targets_start(client, id, &p.id),
                 Err(e) => Some(Err(e)),
             },
+            ext::names::WSL_DISTROS => {
+                self.wsl_distros(client, id);
+                None
+            }
             ext::names::STATUS => Some(Ok(to_value(&self.status()))),
             ext::names::THREADS_FIND => match parse::<FindParams>(params) {
                 Ok(p) => {
@@ -1051,6 +1055,30 @@ impl Core {
         self.starts.entry(id.clone()).or_default().push((client, rid.clone()));
         self.set_state(id, state(ConnectionStatus::Connecting, None));
         None
+    }
+
+    /// `hub/wsl/distros`: lists the installed distros on a task (it runs `wsl.exe`, which
+    /// starts nothing) and answers when it is done.
+    fn wsl_distros(&self, client: ClientKey, id: &RpcId) {
+        let lister = self.cfg.wsl_distros.clone();
+        let core = self.tx.clone();
+        let id = id.clone();
+        tokio::spawn(async move {
+            let outcome = match lister.list().await {
+                Ok(list) => {
+                    let distros = list
+                        .into_iter()
+                        .map(|d| ext::WslDistroEntry { name: d.name, default: d.default, running: d.running, version: d.version })
+                        .collect();
+                    Ok(to_value(&ext::WslDistrosResult { distros }))
+                }
+                Err(yaac_transport::wsl::ListError::Unavailable(_)) => {
+                    Err(hub_err(ext::codes::WSL_UNAVAILABLE, "WSL is not installed on this PC"))
+                }
+                Err(yaac_transport::wsl::ListError::Failed(m)) => Err(hub_err(ext::codes::WSL_FAILED, m)),
+            };
+            let _ = core.send(CoreEvent::Reply { client, id, outcome });
+        });
     }
 
     /// Answers waiting `hub/targets/start` requests once the target's state says how the
