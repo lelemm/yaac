@@ -107,7 +107,7 @@ pub const LEGEND: &str = "Disable keeps the connection but stops using it. Remov
 
 fn mark_of(t: &TargetRecord) -> Mark {
     match (&t.entry.state.status, t.entry.enabled) {
-        (_, false) | (ConnectionStatus::Disabled, _) => Mark::Off,
+        (_, false) | (ConnectionStatus::Disabled | ConnectionStatus::Stopped, _) => Mark::Off,
         (ConnectionStatus::Connected, _) => Mark::Done,
         (ConnectionStatus::Incompatible, _) => Mark::Failed,
         _ => Mark::Offline,

@@ -200,18 +200,26 @@ pub(crate) fn apply(ctx: &egui::Context, p: &Palette) {
 }
 
 /// Fonts: egui's bundled faces, plus a regular and bold system sans when one is installed in a
-/// well-known place (egui bundles no bold face). Nothing is shipped with the binary.
+/// well-known place (egui bundles no bold face). Nothing is shipped with the binary. On Windows
+/// that is Segoe UI from the system font folder, `%WINDIR%\Fonts`, wherever Windows lives.
 pub(crate) fn install_fonts(ctx: &egui::Context) {
+    use std::path::PathBuf;
     let mut fonts = egui::FontDefinitions::default();
-    let candidates: &[(&str, &str)] = &[
+    let mut candidates: Vec<(PathBuf, PathBuf)> = Vec::new();
+    if let Some(windir) = std::env::var_os("WINDIR").or_else(|| std::env::var_os("SystemRoot")).filter(|_| cfg!(windows)) {
+        let dir = PathBuf::from(windir).join("Fonts");
+        candidates.push((dir.join("segoeui.ttf"), dir.join("segoeuib.ttf")));
+    }
+    for (regular, bold) in [
         ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         ("/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"),
         ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"),
-        ("C:\\Windows\\Fonts\\segoeui.ttf", "C:\\Windows\\Fonts\\segoeuib.ttf"),
         ("/System/Library/Fonts/Supplemental/Arial.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
-    ];
+    ] {
+        candidates.push((regular.into(), bold.into()));
+    }
     let mut bold_family = Vec::new();
-    for (regular, boldf) in candidates {
+    for (regular, boldf) in &candidates {
         if let (Ok(r), Ok(b)) = (std::fs::read(regular), std::fs::read(boldf)) {
             fonts.font_data.insert("sys-regular".into(), std::sync::Arc::new(egui::FontData::from_owned(r)));
             fonts.font_data.insert("sys-bold".into(), std::sync::Arc::new(egui::FontData::from_owned(b)));

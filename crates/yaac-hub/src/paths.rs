@@ -89,15 +89,43 @@ impl HubPaths {
         self.data_dir.join("relay.sqlite")
     }
 
-    /// The attach socket (Unix). On Windows this will be a named pipe derived from the user.
+    /// The attach socket: `<runtime>/hub.sock` on Unix. On Windows, a named pipe,
+    /// `\\.\pipe\yaac-hub-<user SID>-<runtime hash>`: pipes live in one machine-wide namespace,
+    /// so the name carries the user, and a hash of the runtime directory keeps a second
+    /// profile (tests, `YAAC_RUNTIME_DIR`) off the user's real hub, exactly as a separate
+    /// socket file does on Unix.
+    #[cfg(not(windows))]
     pub fn socket(&self) -> PathBuf {
         self.runtime_dir.join("hub.sock")
+    }
+
+    /// See the Unix variant.
+    #[cfg(windows)]
+    pub fn socket(&self) -> PathBuf {
+        let user = yaac_winsys::current_user_sid()
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "user".to_owned());
+        PathBuf::from(format!(r"\\.\pipe\yaac-hub-{user}-{}", pipe_suffix(&self.runtime_dir)))
     }
 
     /// The single-hub lock.
     pub fn lock_file(&self) -> PathBuf {
         self.runtime_dir.join("hub.lock")
     }
+}
+
+/// A short, stable hash of a runtime directory (FNV-1a over its lower-cased text with one kind
+/// of separator, since Windows paths are case-insensitive and accept both) for the pipe name.
+#[cfg(any(windows, test))]
+fn pipe_suffix(runtime_dir: &Path) -> String {
+    let text = runtime_dir.to_string_lossy().to_lowercase().replace('/', "\\");
+    let text = text.trim_end_matches('\\');
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{:012x}", hash >> 16)
 }
 
 fn platform_config(get: &impl Fn(&str) -> Option<PathBuf>, home: Option<&Path>) -> Option<PathBuf> {
@@ -164,6 +192,15 @@ mod tests {
     }
 
     #[test]
+    fn the_pipe_suffix_is_stable_and_separates_profiles() {
+        let a = pipe_suffix(Path::new(r"C:\Users\u\AppData\Local\yaac\run"));
+        assert_eq!(a, pipe_suffix(Path::new(r"c:\users\U\AppData\Local\yaac\run\")), "case and a trailing separator do not matter");
+        assert_eq!(a, pipe_suffix(Path::new("C:/Users/u/AppData/Local/yaac/run")), "nor the kind of separator");
+        assert_ne!(a, pipe_suffix(Path::new(r"C:\Temp\t1\data\run")));
+        assert_eq!(a.len(), 12);
+    }
+
+    #[test]
     fn overrides_win_and_an_explicit_data_dir_isolates_the_socket() {
         let p = HubPaths::from_lookup(lookup(&[
             ("HOME", "/h/u"),
@@ -174,7 +211,10 @@ mod tests {
         .unwrap();
         assert_eq!(p.settings_file(), PathBuf::from("/t/c/hub.json"));
         assert_eq!(p.cache_file(), PathBuf::from("/t/d/cache.sqlite"));
+        #[cfg(not(windows))]
         assert_eq!(p.socket(), PathBuf::from("/t/d/run/hub.sock"), "never the real runtime dir");
+        #[cfg(windows)]
+        assert!(p.socket().to_string_lossy().ends_with(&pipe_suffix(Path::new("/t/d/run"))), "never the real hub's pipe");
         let p = HubPaths::from_lookup(lookup(&[("YAAC_CONFIG_DIR", "/c"), ("YAAC_DATA_DIR", "/d"), ("YAAC_RUNTIME_DIR", "/r")]))
             .unwrap();
         assert_eq!(p.lock_file(), PathBuf::from("/r/hub.lock"));

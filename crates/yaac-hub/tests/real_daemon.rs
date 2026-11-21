@@ -67,7 +67,7 @@ fn a_turn_on_the_real_daemon_survives_a_dropped_connection() {
         .with_env("YAAC_SOCKET", home.dir.path().join("d.sock"))
         .with_env("YAAC_IDLE_TIMEOUT_MS", "3000")
         .with_env("HOME", &daemon_home);
-    let mut config = HubConfig::new(BUILD, home.paths(), Arc::new(DefaultConnectors { local }));
+    let mut config = HubConfig::new(BUILD, home.paths(), Arc::new(DefaultConnectors { local, wsl: Default::default() }));
     config.seed_local_target = false;
     config.test_methods = true;
     config.handle_signals = false;

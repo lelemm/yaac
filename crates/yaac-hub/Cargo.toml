@@ -19,6 +19,9 @@ fs4 = { version = "0.12", default-features = false, features = ["sync"] }
 sha2 = "0.10"
 base64 = "0.22"
 
+[target.'cfg(windows)'.dependencies]
+yaac-winsys = { path = "../yaac-winsys" }
+
 [dev-dependencies]
 tokio = { version = "1.43", default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros"] }
 tempfile = "3.10"

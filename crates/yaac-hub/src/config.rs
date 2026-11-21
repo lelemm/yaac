@@ -5,17 +5,67 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yaac_protocol::attach::TargetTransport;
-use yaac_transport::{Connector, LocalConfig, LocalConnector};
+use yaac_transport::{Connector, DaemonBundle, LocalConfig, LocalConnector, WslConfig, WslConnector};
 
 use crate::notify::{Notifier, SystemNotifier};
 use crate::paths::{HubPaths, PathsError};
 use crate::settings::TargetDef;
 
 /// Makes the connector for a target. The default builds a [`LocalConnector`] for local
-/// targets and refuses SSH and WSL (a later package); tests supply in-memory daemons.
+/// targets and a [`WslConnector`] for WSL targets, and refuses SSH (a later package); tests
+/// supply in-memory daemons.
 pub trait ConnectorFactory: Send + Sync {
     /// The connector for this target, or a message to show as the target's state.
     fn connector(&self, target: &TargetDef) -> Result<Arc<dyn Connector>, String>;
+}
+
+/// The `yaacd` bundle built into this hub (`daemon/dist/yaacd.mjs` when the hub was built),
+/// which stage 0 installs on remote targets that lack its build. `None` when the hub was built
+/// without one.
+pub fn embedded_bundle() -> Option<DaemonBundle> {
+    #[cfg(yaac_daemon_bundle)]
+    {
+        static BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/yaacd.mjs"));
+        Some(DaemonBundle::new(env!("YAAC_DAEMON_VERSION"), BYTES.to_vec()))
+    }
+    #[cfg(not(yaac_daemon_bundle))]
+    None
+}
+
+/// How WSL targets are reached.
+#[derive(Clone, Debug, Default)]
+pub struct WslDefaults {
+    /// `wsl.exe` (default: found on `PATH`).
+    pub wsl_exe: Option<std::ffi::OsString>,
+    /// The bundle to install.
+    pub bundle: Option<DaemonBundle>,
+    /// Variables stage 0 exports on the target before the daemon starts (`YAAC_` names only).
+    pub env: Vec<(String, String)>,
+}
+
+impl WslDefaults {
+    /// From the environment: the bundle is `YAAC_DAEMON_BUNDLE` when set (development), else
+    /// [`embedded_bundle`]; `YAAC_TARGET_ENV` (`NAME=value;NAME=value`, `YAAC_` names only)
+    /// passes variables to the daemon on remote targets — a development and test hook, for
+    /// example a temporary `YAAC_HOME` and the fake provider.
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<std::ffi::OsString>) -> Self {
+        let get = |k: &str| lookup(k).filter(|v| !v.is_empty());
+        let bundle = get("YAAC_DAEMON_BUNDLE")
+            .and_then(|path| std::fs::read(path).ok())
+            .map(|bytes| DaemonBundle::new(env!("YAAC_DAEMON_VERSION"), bytes))
+            .or_else(embedded_bundle);
+        let env = get("YAAC_TARGET_ENV")
+            .map(|v| {
+                v.to_string_lossy()
+                    .split(';')
+                    .filter_map(|kv| kv.split_once('='))
+                    .filter(|(k, _)| k.starts_with("YAAC_") && k.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_'))
+                    .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { wsl_exe: get("YAAC_WSL_EXE"), bundle, env }
+    }
 }
 
 /// The default connector factory.
@@ -23,6 +73,8 @@ pub trait ConnectorFactory: Send + Sync {
 pub struct DefaultConnectors {
     /// How the local runtime and bundle are found.
     pub local: LocalConfig,
+    /// How WSL targets are reached.
+    pub wsl: WslDefaults,
 }
 
 impl ConnectorFactory for DefaultConnectors {
@@ -30,7 +82,17 @@ impl ConnectorFactory for DefaultConnectors {
         match &target.transport {
             TargetTransport::Local(_) => Ok(Arc::new(LocalConnector::new(self.local.clone()))),
             TargetTransport::Ssh(_) => Err("SSH targets are not supported by this build yet".into()),
-            TargetTransport::Wsl(_) => Err("WSL targets are not supported by this build yet".into()),
+            TargetTransport::Wsl(w) => {
+                if !cfg!(windows) && self.wsl.wsl_exe.is_none() {
+                    return Err("WSL targets are reached from a Windows host".into());
+                }
+                let mut config = WslConfig::new(&w.distro, w.user.clone(), self.wsl.bundle.clone());
+                if let Some(exe) = &self.wsl.wsl_exe {
+                    config.wsl_exe.clone_from(exe);
+                }
+                config.env.clone_from(&self.wsl.env);
+                Ok(Arc::new(WslConnector::new(config)))
+            }
             TargetTransport::Unknown(other) => Err(format!("unknown transport {:?}", other.tag("kind"))),
         }
     }
@@ -74,7 +136,9 @@ pub struct HubConfig {
     pub cache_cap_bytes: u64,
     /// Cap on the bytes read when a thread's transcript is rebuilt after a `reset`.
     pub rebuild_cap_bytes: u64,
-    /// On first run, add an enabled local target named `local`.
+    /// On first run, add an enabled local target named `local`. Off by default on Windows:
+    /// the daemon's runtime and harnesses are not assumed to exist natively there; agents run
+    /// in WSL distros, which the user adds.
     pub seed_local_target: bool,
     /// On first run, the `always` setting written to `hub.json` (default `true`: the hub
     /// runs always and starts at login; `false` is the idle-exit mode).
@@ -128,7 +192,8 @@ impl HubConfig {
     pub fn from_env(build: impl Into<String>) -> Result<Self, PathsError> {
         let paths = HubPaths::from_env()?;
         let local = LocalConfig::from_env(&default_root());
-        let mut config = Self::new(build, paths, Arc::new(DefaultConnectors { local }));
+        let wsl = WslDefaults::from_lookup(|k| std::env::var_os(k));
+        let mut config = Self::new(build, paths, Arc::new(DefaultConnectors { local, wsl }));
         config.notifier = Some(Arc::new(SystemNotifier));
         Ok(config)
     }
@@ -146,7 +211,7 @@ impl HubConfig {
             dead_after: Duration::from_secs(45),
             cache_cap_bytes: 256 * 1024 * 1024,
             rebuild_cap_bytes: 8 * 1024 * 1024,
-            seed_local_target: true,
+            seed_local_target: !cfg!(windows),
             first_run_always: true,
             test_methods: false,
             host_name: host_name(),

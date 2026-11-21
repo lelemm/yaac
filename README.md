@@ -77,3 +77,28 @@ yaac/
   needed to *run* YAAC.
 - Target runtime: only the harness CLIs you want to use (`codex`, `claude`), already signed in.
   `yaacd` is self-contained and installs itself on first connect.
+
+## Building for Windows (from Linux or WSL)
+
+`yaac.exe` is cross-compiled; nothing has to be installed on Windows.
+
+```sh
+scripts/build-windows.sh          # → dist/windows/yaac.exe
+scripts/build-windows.sh --demo   # window-only build (no hub), for UI work
+```
+
+It needs `rustup` (the script adds the `x86_64-pc-windows-gnu` target if missing), the
+MinGW-w64 cross compiler (`x86_64-w64-mingw32-gcc` and `-windres`; on Ubuntu the
+`gcc-mingw-w64-x86-64` and `binutils-mingw-w64-x86-64` packages), and Node.js 22 with npm,
+which bundles the `yaacd` daemon the hub installs into WSL distros.
+
+From WSL, copy the exe to a Windows folder before running it (a `\\wsl.localhost` path is not
+reliable), for example:
+
+```sh
+cp dist/windows/yaac.exe /mnt/c/Users/<you>/AppData/Local/Temp/
+/mnt/c/Users/<you>/AppData/Local/Temp/yaac.exe --demo
+```
+
+`yaac.exe` is a GUI program and never opens a console window; `yaac.exe hub` and
+`yaac.exe --demo --screenshots <dir>` print to the terminal they are started from.

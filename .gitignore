@@ -1,5 +1,7 @@
 # Rust
 /target/
+# Packaged builds (scripts/build-windows.sh)
+/dist/
 **/*.rs.bk
 
 # Node / yaacd

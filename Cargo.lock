@@ -4172,6 +4172,7 @@ dependencies = [
  "yaac-hub",
  "yaac-protocol",
  "yaac-transport",
+ "yaac-winsys",
 ]
 
 [[package]]
@@ -4199,6 +4200,7 @@ dependencies = [
  "tokio",
  "yaac-protocol",
  "yaac-transport",
+ "yaac-winsys",
 ]
 
 [[package]]
@@ -4216,8 +4218,17 @@ dependencies = [
 name = "yaac-transport"
 version = "0.1.0"
 dependencies = [
+ "sha2",
  "thiserror 2.0.21",
  "tokio",
+]
+
+[[package]]
+name = "yaac-winsys"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

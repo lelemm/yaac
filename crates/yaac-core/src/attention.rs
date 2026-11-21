@@ -172,7 +172,7 @@ pub fn display(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> ThreadD
 /// The mark from the thread's own state, without attention.
 fn base_mark(state: &AppState, key: &ThreadKey) -> Mark {
     if let Some(t) = state.target(&key.target) {
-        if !t.entry.enabled || t.entry.state.status == ConnectionStatus::Disabled {
+        if !t.entry.enabled || matches!(t.entry.state.status, ConnectionStatus::Disabled | ConnectionStatus::Stopped) {
             return Mark::Off;
         }
         if t.entry.state.status == ConnectionStatus::Offline {
@@ -200,7 +200,7 @@ pub fn target_mark(state: &AppState, target: &yaac_protocol::TargetId) -> Mark {
         Some(t) => match t.entry.state.status {
             ConnectionStatus::Connected => Mark::Done,
             ConnectionStatus::Connecting => Mark::Running,
-            ConnectionStatus::Disabled => Mark::Off,
+            ConnectionStatus::Disabled | ConnectionStatus::Stopped => Mark::Off,
             ConnectionStatus::Incompatible => Mark::Failed,
             _ => Mark::Offline,
         },

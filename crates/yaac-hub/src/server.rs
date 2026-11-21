@@ -2,8 +2,10 @@
 //! frames as the YAAC protocol. Several windows may attach at once; each is one task pair
 //! (reader, writer) feeding the hub core.
 //!
-//! The platform part is [`Listener`]: a Unix socket now (mode `0600` in a `0700` directory).
-//! A Windows named pipe restricted to the current user slots in behind the same two calls.
+//! The platform part is [`Listener`]: a Unix socket (mode `0600` in a `0700` directory), or on
+//! Windows a named pipe whose only access-control entry is the current user, which refuses
+//! remote clients and is created as the first instance of its name (so another process
+//! cannot have taken the name first).
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +22,9 @@ use crate::core::{ClientKey, CoreEvent};
 pub(crate) struct Listener {
     #[cfg(unix)]
     inner: tokio::net::UnixListener,
+    /// The instance the next window connects to.
+    #[cfg(windows)]
+    next: std::sync::Mutex<Option<tokio::net::windows::named_pipe::NamedPipeServer>>,
     path: PathBuf,
 }
 
@@ -62,7 +67,15 @@ impl Listener {
         Ok(Self { inner, path: path.to_owned() })
     }
 
-    #[cfg(not(unix))]
+    /// Creates the first instance of the pipe. Fails if any process already has one.
+    #[cfg(windows)]
+    pub(crate) fn bind(path: &Path) -> Result<Self, ListenError> {
+        let first = yaac_winsys::create_pipe_server(path.as_os_str(), true)
+            .map_err(|source| ListenError::Io { path: path.display().to_string(), source })?;
+        Ok(Self { next: std::sync::Mutex::new(Some(first)), path: path.to_owned() })
+    }
+
+    #[cfg(not(any(unix, windows)))]
     pub(crate) fn bind(_path: &Path) -> Result<Self, ListenError> {
         Err(ListenError::Unsupported)
     }
@@ -74,13 +87,36 @@ impl Listener {
         Ok(stream.into_split())
     }
 
-    #[cfg(not(unix))]
+    /// Waits for a window on the pending instance, then creates the next instance before
+    /// handing this one over, so there is always one to connect to.
+    #[cfg(windows)]
+    async fn accept(&self) -> std::io::Result<(impl AsyncRead + Send + Unpin + 'static, impl AsyncWrite + Send + Unpin + 'static)> {
+        let pending = self.next.lock().ok().and_then(|mut n| n.take());
+        let server = match pending {
+            Some(server) => server,
+            None => yaac_winsys::create_pipe_server(self.path.as_os_str(), false)?,
+        };
+        server.connect().await?;
+        let next = yaac_winsys::create_pipe_server(self.path.as_os_str(), false).ok();
+        if let Ok(mut slot) = self.next.lock() {
+            *slot = next;
+        }
+        Ok(tokio::io::split(server))
+    }
+
+    #[cfg(not(any(unix, windows)))]
     async fn accept(&self) -> std::io::Result<(tokio::io::Empty, tokio::io::Sink)> {
         Err(std::io::Error::other("unsupported"))
     }
 
-    /// Removes the socket file.
+    /// Removes the socket file (on Windows: closes the waiting pipe instance; the name goes
+    /// away with the last handle).
     pub(crate) fn remove(&self) {
+        #[cfg(windows)]
+        if let Ok(mut slot) = self.next.lock() {
+            slot.take();
+        }
+        #[cfg(not(windows))]
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -90,7 +126,12 @@ impl Listener {
 pub(crate) async fn serve(listener: &Listener, core: mpsc::UnboundedSender<CoreEvent>, writers: mpsc::UnboundedSender<JoinHandle<()>>) {
     let mut next: ClientKey = 0;
     loop {
-        let Ok((reader, writer)) = listener.accept().await else { continue };
+        let Ok((reader, writer)) = listener.accept().await else {
+            // A failed pipe instance must not turn into a busy loop.
+            #[cfg(windows)]
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            continue;
+        };
         next += 1;
         let client = next;
         let (tx, rx) = mpsc::unbounded_channel();
