@@ -17,21 +17,21 @@ fn the_default_matches_the_brief() {
     let (c, _) = boot();
     let want = [
         "# Pinned · 1",
-        "Migrate auth module — orchestrator (running) now / main ~4 3w",
-        "# search — gpu-box",
+        "Migrate auth module · orchestrator (running) now / main ~4 3w",
+        "# search · gpu-box",
         "index-rebuild (needs you) 41m / auth/search ~3",
         "search-service (running) now / auth/search ~3 1w",
-        "# api — devbox",
+        "# api · devbox",
         "CI integration (waiting) 1m / main v2",
         "billing-service (done) 9m / auth/billing +2 ~6 -1 ^1",
-        "# yaac — devbox",
+        "# yaac · devbox",
         "Fix frame decoder (needs you) 2m / feature/protocol +1 ~6 ^2",
         "Explain the handshake () 2h / feature/protocol",
-        "# api — local",
+        "# api · local",
         "users-service (done) 12m / auth/users +3 ~8 -1 ^3",
-        "# docs — staging (offline · last seen 3h ago)",
+        "# docs · staging (offline · last seen 3h ago)",
         "Release notes (offline) 3h / main",
-        "# _~/scratch/spike-7_ — devbox",
+        "# _~/scratch/spike-7_ · devbox",
         "Try the new parser () 1d",
         "# Muted · 4",
         "# Archived · 3",
@@ -89,8 +89,8 @@ fn header_text_follows_the_ticks() {
     let r = render(&c, g(false, true, false));
     assert_eq!(r.iter().filter(|l| *l == "# api").count(), 2, "{r:#?}");
     let r = render(&c, g(true, true, true));
-    assert!(r.contains(&"# yaac · feature/protocol — devbox".to_owned()), "{r:#?}");
-    assert!(r.contains(&"# api · auth/billing — devbox".to_owned()));
+    assert!(r.contains(&"# yaac · feature/protocol · devbox".to_owned()), "{r:#?}");
+    assert!(r.contains(&"# api · auth/billing · devbox".to_owned()));
     let r = render(&c, g(true, false, false));
     assert!(r.contains(&"# devbox".to_owned()));
     let r = render(&c, g(false, false, true));
@@ -202,7 +202,7 @@ fn pinned_threads_leave_their_project_and_projects_take_new_threads() {
     c.create_project(&"devbox".into(), "~/scratch/spike-7", "Parser spike", None);
     common::settle(&mut c, &hub);
     let r = render(&c, Grouping::default());
-    assert!(r.contains(&"# Parser spike — devbox".to_owned()), "{r:#?}");
+    assert!(r.contains(&"# Parser spike · devbox".to_owned()), "{r:#?}");
     assert!(!r.iter().any(|l| l.contains("_~/scratch")));
 }
 

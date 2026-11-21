@@ -190,7 +190,7 @@ mod tests {
         let mut t = Texts::new();
         // A user message (two paragraphs), an activity line, a code-bearing prose item, a diff.
         t.insert(Unit::new(0, 0), vec!["Why does decode() drop the last frame?".into(), "It happens on every run.".into()]);
-        t.insert(Unit::new(1, 0), vec!["Ran cargo test -p yaac-protocol — passed".into()]);
+        t.insert(Unit::new(1, 0), vec!["Ran cargo test -p yaac-protocol · passed".into()]);
         t.insert(Unit::new(2, 0), vec!["The length prefix counts the kind byte.".into(), "let kind = buf[0];\n    let len = 4;".into(), "That is the fix.".into()]);
         t.insert(Unit::new(3, 1), vec!["Edited src/frame.rs".into()]);
         t
@@ -210,7 +210,7 @@ mod tests {
                 "middle of one message to the middle of another two items down",
                 pos(0, 1, 11),
                 pos(2, 0, 10),
-                "on every run.\n\nRan cargo test -p yaac-protocol — passed\n\nThe length",
+                "on every run.\n\nRan cargo test -p yaac-protocol · passed\n\nThe length",
             ),
             ("a code block in the middle is kept verbatim", pos(2, 0, 29), pos(2, 2, 4), "kind byte.\nlet kind = buf[0];\n    let len = 4;\nThat"),
             ("to the end of the transcript", TextPos::new(Unit::new(2, 0), 2, 12), TextPos::new(Unit::new(3, 1), 0, 6), "fix.\n\nEdited"),

@@ -341,7 +341,7 @@ pub fn blocked(chips: &[ChipView]) -> Option<String> {
         return Some(if pending == 1 { "Waiting for 1 upload".to_owned() } else { format!("Waiting for {pending} uploads") });
     }
     if let Some(c) = chips.iter().find(|c| matches!(c.status, ChipStatus::Failed { .. })) {
-        return Some(format!("{} was not uploaded — remove it or retry", c.name));
+        return Some(format!("{} was not uploaded · remove it or retry", c.name));
     }
     if let Some(c) = chips.iter().find(|c| !c.route.ready()) {
         return Some(format!("Choose how to send {}", c.name));
@@ -456,7 +456,7 @@ mod tests {
         a.upload = Upload::Failed { message: "The file is larger than 512 MiB.".into(), offline: false };
         let c = chip(&a, &Support::Supported, Some(&t));
         assert_eq!(c.status, ChipStatus::Failed { message: "The file is larger than 512 MiB.".into(), retry: true });
-        assert_eq!(blocked(&[c]).as_deref(), Some("trace.log was not uploaded — remove it or retry"));
+        assert_eq!(blocked(&[c]).as_deref(), Some("trace.log was not uploaded · remove it or retry"));
     }
 
     #[test]

@@ -238,7 +238,7 @@ pub fn row_for(state: &AppState, map: &AttentionMap, key: &ThreadKey, depth: u8)
         None => s.preview.clone(),
     };
     let last_action = match d.attention {
-        Some(crate::attention::Attention::BudgetReached) => "Paused — the budget ran out".to_owned(),
+        Some(crate::attention::Attention::BudgetReached) => "Paused · the budget ran out".to_owned(),
         Some(a) => format!("Waiting for your {}", a.word()),
         None if !s.preview.is_empty() => s.preview.clone(),
         None => d.mark.word().to_owned(),

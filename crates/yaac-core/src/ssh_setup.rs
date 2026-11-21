@@ -443,11 +443,11 @@ impl SshSetup {
             }
             StepReport::Reached(Err(e)) => self.phase = Phase::Unreached(e.message),
             StepReport::Probed(Ok(ProbeOutcome::AccessInPlace)) => {
-                self.line(StepMark::Done, "Signed in without a password — access was already in place", None);
+                self.line(StepMark::Done, "Signed in without a password · access was already in place", None);
                 self.phase = Phase::Ready(SetupRecord::AlreadyInPlace { date: self.today.clone() });
             }
             StepReport::Probed(Ok(ProbeOutcome::SignInNeeded)) => {
-                self.line(StepMark::Hollow, "Tried signing in without a password — not available", None);
+                self.line(StepMark::Hollow, "Tried signing in without a password · not available", None);
                 self.phase = Phase::SignIn { error: None };
             }
             StepReport::Probed(Err(e)) => self.phase = Phase::Unreached(e.message),
@@ -492,7 +492,7 @@ impl SshSetup {
             }
             StepReport::KeyRemoved(Ok(())) => {
                 self.installed = None;
-                self.line(StepMark::Done, "Removed the key again — confirmed: nothing of YAAC's is left on the server.", None);
+                self.line(StepMark::Done, "Removed the key again · confirmed: nothing of YAAC's is left on the server.", None);
                 self.phase = Phase::Failed { cleaned_up: true };
             }
             StepReport::KeyRemoved(Err(e)) => {

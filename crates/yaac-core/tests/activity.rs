@@ -59,9 +59,9 @@ fn a_spawned_thread_shows_its_task_in_full_and_cards_are_never_collapsed() {
         shape(&c, &threads::billing(), &Expansion::default()),
         [
             "task",
-            "run[Thought for 9s | Edited services/billing/src/client.rs +4 −9 | Edited services/billing/Cargo.toml +1 −1 | Deleted services/billing/src/session.rs +0 −6 | Created services/billing/tests/auth.rs +9 −0 | Ran cargo test -p billing — 14 passed]",
+            "run[Thought for 9s | Edited services/billing/src/client.rs +4 −9 | Edited services/billing/Cargo.toml +1 −1 | Deleted services/billing/src/session.rs +0 −6 | Created services/billing/tests/auth.rs +9 −0 | Ran cargo test -p billing · 14 passed]",
             "prose",
-            "run[Migrate auth module — orchestrator · delivered]",
+            "run[Migrate auth module · orchestrator · delivered]",
             "changes[Changed 4 files +14 −16]",
         ]
     );
@@ -77,7 +77,7 @@ fn clicking_expands_in_place_and_a_failure_is_never_muted() {
     let mut e = Expansion::default();
     let s = shape(&c, &orch, &e);
     let last_run = s.iter().rev().find(|b| b.starts_with("run[")).unwrap();
-    assert!(last_run.contains("!Old changelog bot · failed — that thread was deleted on staging"), "{last_run}");
+    assert!(last_run.contains("!Old changelog bot · failed · that thread was deleted on staging"), "{last_run}");
     e.toggle_line(&orch, &"o9".into());
     assert!(shape(&c, &orch, &e).iter().any(|b| b.contains("!+Old changelog bot")));
     e.toggle_line(&orch, &"o9".into());

@@ -22,7 +22,7 @@ fn a_pending_request_is_the_threads_own_needs_you_and_parents_carry_nothing() {
     let h = header(&c.state, &map, &threads::orchestrator()).unwrap();
     assert_eq!(h.tag, Some(("Running".to_owned(), Tone::Running)));
     let h = header(&c.state, &map, &threads::index()).unwrap();
-    assert_eq!(h.tag, Some(("Needs you — approval".to_owned(), Tone::NeedsYou)));
+    assert_eq!(h.tag, Some(("Needs you · approval".to_owned(), Tone::NeedsYou)));
     assert_eq!(display(&c.state, &map, &threads::billing()).mark, Mark::Done);
     assert_eq!(display(&c.state, &map, &threads::ci()).mark, Mark::Waiting);
 }
@@ -71,9 +71,9 @@ fn budget_reached_pauses_the_root_and_a_request_still_outranks_it() {
     assert_eq!(map.of(&orch), Some(Attention::BudgetReached));
     assert_eq!(display(&c.state, &map, &orch).mark, Mark::Paused);
     let list: Vec<_> = needs_you(&c.state, &map, common::NOW).into_iter().map(|e| (e.title, e.attention)).collect();
-    assert!(list.contains(&("Migrate auth module — orchestrator".to_owned(), Attention::BudgetReached)));
+    assert!(list.contains(&("Migrate auth module · orchestrator".to_owned(), Attention::BudgetReached)));
     assert_eq!(list.len(), 3);
-    assert_eq!(header(&c.state, &map, &orch).unwrap().tag.unwrap().0, "Paused — budget reached");
+    assert_eq!(header(&c.state, &map, &orch).unwrap().tag.unwrap().0, "Paused · budget reached");
     // A request on the root outranks the budget.
     let fix = threads::fix();
     let mut s = c.state.clone();
@@ -105,7 +105,7 @@ fn a_permission_prompt_needs_you() {
     let map = AttentionMap::compute(&c.state);
     let orch = threads::orchestrator();
     assert_eq!(map.of(&orch), Some(Attention::Request(RequestKindWord::Permission)));
-    assert_eq!(header(&c.state, &map, &orch).unwrap().tag.unwrap().0, "Needs you — permission");
+    assert_eq!(header(&c.state, &map, &orch).unwrap().tag.unwrap().0, "Needs you · permission");
     assert!(matches!(composer(&c.state, &map, &orch), ComposerView::Shown { dimmed_hint: Some(ref h), .. } if h == "Answer above to continue"));
     assert_eq!(needs_you(&c.state, &map, common::NOW).len(), 3);
 }

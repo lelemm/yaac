@@ -43,7 +43,7 @@ pub fn render_open(c: &Client, g: Grouping, muted_open: bool) -> Vec<String> {
         if let Some(h) = &s.header {
             let mut line = if h.temporary { format!("# _{}_", h.left) } else { format!("# {}", h.left) };
             if let Some(m) = &h.machine {
-                line.push_str(&format!(" — {m}"));
+                line.push_str(&format!(" · {m}"));
             }
             if let Some((_, w)) = &h.connection {
                 line.push_str(&format!(" ({w})"));

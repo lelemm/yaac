@@ -126,13 +126,13 @@ fn ssh_row(t: &TargetRecord, record: Option<&SetupRecord>) -> Option<SshRow> {
     let connected = t.connected();
     let offline_detail = || {
         let d = t.entry.state.detail.clone().unwrap_or_default();
-        if d.is_empty() { "Offline".to_owned() } else { format!("Offline — {d}") }
+        if d.is_empty() { "Offline".to_owned() } else { format!("Offline · {d}") }
     };
     let state_word = |suffix: String| -> String {
         if !t.entry.enabled {
-            format!("Off — {suffix}")
+            format!("Off · {suffix}")
         } else if connected {
-            format!("Ready — {suffix}")
+            format!("Ready · {suffix}")
         } else {
             format!("{} · {suffix}", offline_detail())
         }
@@ -165,11 +165,11 @@ fn ssh_row(t: &TargetRecord, record: Option<&SetupRecord>) -> Option<SshRow> {
         }
         Some(SetupRecord::Revoked { date }) => {
             actions.push(SshAction::SetUp);
-            (Mark::Off, format!("Not set up — YAAC's key was removed on {date}"), None)
+            (Mark::Off, format!("Not set up · YAAC's key was removed on {date}"), None)
         }
         Some(SetupRecord::RemovedByHand { date }) => {
             actions.push(SshAction::SetUp);
-            (Mark::Off, format!("Not set up — removed by hand on {date}"), None)
+            (Mark::Off, format!("Not set up · removed by hand on {date}"), None)
         }
     };
     actions.push(SshAction::Remove);
@@ -290,7 +290,7 @@ pub fn providers_view(state: &AppState, target: &TargetId) -> Option<ProvidersVi
             }
             let status = match (&p.status, &p.status_message) {
                 (ProviderStatus::Ready, _) | (_, None) => status_word(&p.status).to_owned(),
-                (_, Some(m)) => format!("{} — {m}", status_word(&p.status)),
+                (_, Some(m)) => format!("{} · {m}", status_word(&p.status)),
             };
             InstanceRow {
                 instance: p.instance.clone(),
@@ -338,7 +338,7 @@ pub fn diagnostics(state: &AppState, target: &TargetId) -> Vec<(String, String)>
     if let Some(d) = &t.entry.state.daemon {
         let mut v = d.build.clone();
         if d.older {
-            v.push_str(" — older than this YAAC; it will be updated when idle");
+            v.push_str(" · older than this YAAC; it will be updated when idle");
         }
         out.push(("yaacd".to_owned(), v));
         if !d.schema_hash_matches {
@@ -352,7 +352,7 @@ pub fn diagnostics(state: &AppState, target: &TargetId) -> Vec<(String, String)>
     for p in &t.providers {
         let mut v = status_word(&p.status).to_owned();
         if let Some(m) = &p.status_message {
-            v.push_str(" — ");
+            v.push_str(" · ");
             v.push_str(m);
         }
         out.push((p.display_name.clone(), v));

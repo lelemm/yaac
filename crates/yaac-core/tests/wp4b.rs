@@ -65,7 +65,7 @@ fn the_happy_path_confirms_signs_in_once_installs_and_verifies() {
         [
             "Reached legacy.example.com",
             "Server confirmed",
-            "Tried signing in without a password — not available",
+            "Tried signing in without a password · not available",
             "Signed in with your password",
             "Installed YAAC's key for deploy",
             "Verified: signed in with the key alone"
@@ -100,7 +100,7 @@ fn a_failed_verification_removes_the_key_and_says_so() {
     assert_eq!(s.phase, Phase::Failed { cleaned_up: true });
     let failed = s.steps.iter().find(|l| l.mark == StepMark::Failed).expect("a failed step");
     assert_eq!(failed.detail.as_deref(), Some("This server does not accept key logins."));
-    assert!(s.steps.last().is_some_and(|l| l.text.starts_with("Removed the key again — confirmed")));
+    assert!(s.steps.last().is_some_and(|l| l.text.starts_with("Removed the key again · confirmed")));
     assert!(s.leftover().is_none());
     s.try_again();
     assert!(matches!(s.phase, Phase::SignIn { .. }));
@@ -165,12 +165,12 @@ fn targets_show_distinct_disable_remove_and_revoke() {
     let v = targets_view(&c.state);
     assert!(v.local.is_some());
     let row = |n: &str| v.ssh.iter().find(|r| r.name == n).unwrap_or_else(|| panic!("{n}"));
-    assert_eq!(row("devbox").line, "Ready — set up by YAAC on 2026-11-20");
+    assert_eq!(row("devbox").line, "Ready · set up by YAAC on 2026-11-20");
     assert_eq!(row("devbox").actions, [SshAction::Revoke, SshAction::Remove]);
-    assert_eq!(row("gpu-box").line, "Ready — access was already in place");
+    assert_eq!(row("gpu-box").line, "Ready · access was already in place");
     assert_eq!(row("gpu-box").actions, [SshAction::RevokeUnavailable("YAAC installed nothing on this server".into()), SshAction::Remove]);
     // Revoke stays available while offline, because YAAC installed a key there.
-    assert_eq!(row("staging").line, "Offline — last seen 3h ago · set up by YAAC on 2026-11-02");
+    assert_eq!(row("staging").line, "Offline · last seen 3h ago · set up by YAAC on 2026-11-02");
     assert_eq!(row("staging").actions, [SshAction::Retry, SshAction::Revoke, SshAction::Remove]);
     assert_eq!(row("legacy").line, "Not set up");
     assert_eq!(row("legacy").actions, [SshAction::SetUp, SshAction::Remove]);
@@ -207,7 +207,7 @@ fn providers_page_lists_instances_with_their_facts() {
     hub.play(Scene::LocalSignedOut);
     settle(&mut c, &hub);
     let local = providers_view(&c.state, &"local".into()).expect("local");
-    assert!(local.rows.iter().any(|r| r.status.starts_with("Not signed in — Run `claude`")));
+    assert!(local.rows.iter().any(|r| r.status.starts_with("Not signed in · Run `claude`")));
 }
 
 #[test]

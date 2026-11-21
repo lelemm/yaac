@@ -10,7 +10,7 @@ fn labels(entries: &[MenuEntry]) -> Vec<String> {
     entries
         .iter()
         .map(|e| match e {
-            MenuEntry::Separator => "—".to_owned(),
+            MenuEntry::Separator => " · ".to_owned(),
             MenuEntry::Item(i) => {
                 let mut s = i.label.to_owned();
                 if i.danger {
@@ -32,13 +32,13 @@ fn the_thread_menu_has_the_owners_order() {
     let k = threads::billing();
     assert_eq!(
         labels(&thread_menu(&c.state, &k, NOW)),
-        ["Copy thread ID", "Rename", "—", "Fork", "Pin", "Mute…", "Archive…", "—", "Delete… [danger]"]
+        ["Copy thread ID", "Rename", " · ", "Fork", "Pin", "Mute…", "Archive…", " · ", "Delete… [danger]"]
     );
     // The pinned orchestrator: Unpin where Pin was; it is running, so Delete waits.
     let o = threads::orchestrator();
     assert_eq!(
         labels(&thread_menu(&c.state, &o, NOW)),
-        ["Copy thread ID", "Rename", "—", "Fork", "Unpin", "Mute…", "Archive…", "—", "Delete… [danger] [off]"]
+        ["Copy thread ID", "Rename", " · ", "Fork", "Unpin", "Mute…", "Archive…", " · ", "Delete… [danger] [off]"]
     );
     let del = thread_menu(&c.state, &o, NOW).into_iter().filter_map(|e| e.item().cloned()).find(|i| i.action == MenuAction::Delete).unwrap();
     assert_eq!(del.reason, Some("Stop the running turn first"));
@@ -51,10 +51,10 @@ fn muted_archived_and_capability_less_threads() {
     c.set_muted(&k, true);
     assert_eq!(
         labels(&thread_menu(&c.state, &k, NOW)),
-        ["Copy thread ID", "Rename", "—", "Fork", "Pin", "Unmute", "Change mute…", "Archive…", "—", "Delete… [danger]"]
+        ["Copy thread ID", "Rename", " · ", "Fork", "Pin", "Unmute", "Change mute…", "Archive…", " · ", "Delete… [danger]"]
     );
     c.archive(&k);
-    assert_eq!(labels(&thread_menu(&c.state, &k, NOW)), ["Copy thread ID", "Rename", "—", "Fork", "Unarchive", "—", "Delete… [danger]"]);
+    assert_eq!(labels(&thread_menu(&c.state, &k, NOW)), ["Copy thread ID", "Rename", " · ", "Fork", "Unarchive", " · ", "Delete… [danger]"]);
     // A harness that cannot rename or archive: the entries are there, unavailable, with why.
     let b = threads::users();
     let inst = c.state.summary(&b).unwrap().instance.clone();

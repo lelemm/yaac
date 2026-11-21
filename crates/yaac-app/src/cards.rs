@@ -45,7 +45,7 @@ fn budget(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, text: &str, item
                     ui.label(egui::RichText::new(rest).font(theme::ui(size::UI + 0.5)));
                 });
                 if !exhausted {
-                    ui.label(widgets::secondary("Continued — the orchestration has a new allowance.", &p));
+                    ui.label(widgets::secondary("Continued · the orchestration has a new allowance.", &p));
                     return;
                 }
                 ui.add_space(8.0);
@@ -152,7 +152,7 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript,
                 ui.label(format!("You chose: {summary}"));
                 ui.horizontal(|ui| {
                     widgets::icon(ui, 14.0, |pa, c, d| icons::dashed_circle(pa, c, d * 0.4, egui::Stroke::new(1.4, p.text2)));
-                    ui.label(widgets::secondary("Sent — waiting for the agent to confirm", &p));
+                    ui.label(widgets::secondary("Sent · waiting for the agent to confirm", &p));
                 });
             }
             CardState::Confirmed { summary, when } => {
@@ -171,7 +171,7 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript,
             }
             CardState::Expired => {
                 header_line(ui, &p, "Expired", Some(Mark::Failed));
-                ui.label("No longer needed — the turn ended before this was answered.");
+                ui.label("No longer needed · the turn ended before this was answered.");
             }
             CardState::OutcomeUnknown => {
                 ui.horizontal(|ui| {

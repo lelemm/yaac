@@ -188,7 +188,7 @@ pub fn view(state: &AppState, key: &ThreadKey, choice: &ForkChoice) -> Option<Fo
     });
 
     let (result_word, result_text, reason) = if native {
-        ("Native fork".to_owned(), "— the harness copies the conversation with its full context.".to_owned(), None)
+        ("Native fork".to_owned(), "· the harness copies the conversation with its full context.".to_owned(), None)
     } else {
         let why = if source.is_some_and(|s| !has_capability(&s.capabilities, &Capability::ThreadFork)) {
             "This provider cannot fork natively."
@@ -196,9 +196,9 @@ pub fn view(state: &AppState, key: &ThreadKey, choice: &ForkChoice) -> Option<Fo
             "Native fork is only available within the same provider and store."
         };
         let text = if source.zip(dest).is_some_and(|(s, d)| s.display_name == d.display_name) {
-            "— the destination keeps its conversations elsewhere, so the conversation is passed as a transcript file."
+            "· the destination keeps its conversations elsewhere, so the conversation is passed as a transcript file."
         } else {
-            "— the destination is a different provider, so the conversation is passed as a transcript file."
+            "· the destination is a different provider, so the conversation is passed as a transcript file."
         };
         ("Handoff".to_owned(), text.to_owned(), Some(why.to_owned()))
     };

@@ -900,7 +900,7 @@ impl Inner {
         }
         self.schedule(0, Pending::State(k2.clone(), ThreadState::Running));
         let turn = item_v.turn_id.clone();
-        let text = if denied { "Understood — I will not run it. Tell me how you would like to proceed." } else { "Done. The command finished without errors." };
+        let text = if denied { "Understood · I will not run it. Tell me how you would like to proceed." } else { "Done. The command finished without errors." };
         self.schedule(6, Pending::Event(k2.clone(), ThreadEvent::ItemCompleted(ItemEvent { item: done(&format!("{}-after", item_v.id), turn.as_str(), agent(text)) })));
         self.schedule(1, Pending::Event(k2.clone(), ThreadEvent::TurnCompleted(TurnCompletedEvent { turn_id: turn, status: TurnStatus::Completed, usage: None, error: None, at: None })));
         self.schedule(0, Pending::State(k2, ThreadState::Idle));
@@ -1166,7 +1166,7 @@ impl Inner {
                 let t = "o-t0";
                 self.emit_now(&orch, ThreadEvent::ItemCompleted(ItemEvent { item: done("p1", t, agent("I'll split this across three workers.")) }));
                 let body = crate::permission::body(
-                    &["Start 3 threads — Claude · opus-5.5 on local, devbox, and gpu-box", "Message CI integration · Codex · devbox"],
+                    &["Start 3 threads · Claude · opus-5.5 on local, devbox, and gpu-box", "Message CI integration · Codex · devbox"],
                     crate::permission::BudgetFields { agent_turns: 100, threads: 20, hours: 12 },
                 );
                 let req = ItemBody::Request(yaac_protocol::RequestItem {
@@ -1272,7 +1272,7 @@ impl Inner {
                     )),
                 }));
                 self.emit_now(&orch, ThreadEvent::ItemCompleted(ItemEvent {
-                    item: done("o10", "o-t1", agent("The release notes draft is ready. I could not reach the old changelog bot — that thread no longer exists.")),
+                    item: done("o10", "o-t1", agent("The release notes draft is ready. I could not reach the old changelog bot · that thread no longer exists.")),
                 }));
                 // The other end (24).
                 let sent_at = crate::time::timestamp(base - 3 * 3600 - 840);
@@ -1350,7 +1350,7 @@ fn demo_transcript(title: &str, items: &[Item]) -> (String, Option<TurnId>) {
                     yaac_protocol::ItemStatus::Declined => "declined",
                     _ => "succeeded",
                 };
-                blocks.push(format!("- Tool ({}): `{}` — {outcome}", t.tool.as_str(), t.title.replace('`', "'")));
+                blocks.push(format!("- Tool ({}): `{}` · {outcome}", t.tool.as_str(), t.title.replace('`', "'")));
             }
             _ => {}
         }

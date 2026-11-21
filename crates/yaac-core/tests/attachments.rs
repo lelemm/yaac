@@ -180,7 +180,7 @@ fn an_unsupported_image_is_sent_as_a_file_and_a_failure_shows_the_hubs_text() {
         "error": { "code": "limit_exceeded", "message": "huge.bin is larger than 512 MiB." } }));
     c.pump();
     assert_eq!(chip_status(&c, &d, ids[1]), ChipStatus::Failed { message: "huge.bin is larger than 512 MiB.".into(), retry: true });
-    assert_eq!(view(&c, &fix).1.as_deref(), Some("huge.bin was not uploaded — remove it or retry"));
+    assert_eq!(view(&c, &fix).1.as_deref(), Some("huge.bin was not uploaded · remove it or retry"));
     // Retry asks again; removing it lets the message go.
     c.retry_attachment(&d, ids[1]);
     assert_eq!(wire.requests(names::UPLOAD_START).len(), 3);

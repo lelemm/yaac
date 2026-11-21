@@ -92,8 +92,8 @@ pub fn header(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Option<H
         Some(("Read-only".to_owned(), Tone::Neutral))
     } else {
         match (d.attention, d.mark) {
-            (Some(Attention::BudgetReached), _) => Some(("Paused — budget reached".to_owned(), Tone::NeedsYou)),
-            (Some(a), _) => Some((format!("Needs you — {}", a.word()), Tone::NeedsYou)),
+            (Some(Attention::BudgetReached), _) => Some(("Paused · budget reached".to_owned(), Tone::NeedsYou)),
+            (Some(a), _) => Some((format!("Needs you · {}", a.word()), Tone::NeedsYou)),
             (None, Mark::Running) => Some(("Running".to_owned(), Tone::Running)),
             (None, Mark::Waiting) => Some(("Waiting".to_owned(), Tone::Running)),
             (None, Mark::Failed) => Some(("Failed".to_owned(), Tone::Failed)),
@@ -289,13 +289,13 @@ pub fn receipt_text(
     };
     match status {
         S::Delivered => match detail {
-            Some(d) => format!("Delivered — stored in its mailbox · {d}"),
-            None => "Delivered — stored in its mailbox".to_owned(),
+            Some(d) => format!("Delivered · stored in its mailbox · {d}"),
+            None => "Delivered · stored in its mailbox".to_owned(),
         },
-        S::Queued => format!("Queued — {}", detail.map_or_else(|| why(reason), str::to_owned)),
+        S::Queued => format!("Queued · {}", detail.map_or_else(|| why(reason), str::to_owned)),
         S::Failed => {
             let w = detail.map_or_else(|| why(reason), str::to_owned);
-            format!("Failed — {w} The message was not delivered.")
+            format!("Failed · {w} The message was not delivered.")
         }
         S::Unknown(s) => s.clone(),
     }

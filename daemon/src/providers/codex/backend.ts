@@ -101,7 +101,7 @@ export async function connectBackend(plan: EndpointPlan, opts: ConnectOptions): 
   const found = (version.stdout || version.stderr).trim().split("\n")[0] ?? "";
   const daemonHelp = await opts.exec(plan.codexBin, ["app-server", "daemon", "--help"], plan.env, 20_000);
   if (daemonHelp.code !== 0) {
-    return { ok: false, status: "tooOld", message: `Codex is too old for YAAC — update Codex on this target (found ${found || "an unknown version"}, which has no app-server daemon)` };
+    return { ok: false, status: "tooOld", message: `Codex is too old for YAAC · update Codex on this target (found ${found || "an unknown version"}, which has no app-server daemon)` };
   }
 
   opts.log("no Codex daemon is running; starting one with `codex app-server daemon start`");

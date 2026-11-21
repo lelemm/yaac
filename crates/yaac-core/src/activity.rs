@@ -246,7 +246,7 @@ pub fn short_receipt(sent: &yaac_protocol::MeshSentItem) -> String {
         }
         ReceiptStatus::Failed => {
             let w = r.detail.clone().unwrap_or(why);
-            if w.is_empty() { "failed".to_owned() } else { format!("failed — {w}") }
+            if w.is_empty() { "failed".to_owned() } else { format!("failed · {w}") }
         }
         ReceiptStatus::Unknown(s) => s.clone(),
     }
@@ -275,12 +275,12 @@ fn line_of(state: &AppState, map: &AttentionMap, index: usize, item: &Item) -> O
             let mut text = plain(&t.title);
             if failed {
                 match t.exit_code {
-                    Some(c) if c != 0 => text.push_str(&format!(" — failed (exit {c})")),
-                    _ => text.push_str(" — failed"),
+                    Some(c) if c != 0 => text.push_str(&format!(" · failed (exit {c})")),
+                    _ => text.push_str(" · failed"),
                 }
             }
             if item.status == ItemStatus::Declined {
-                text.push_str(" — declined");
+                text.push_str(" · declined");
             }
             (LineMark::Tool, text, failed)
         }

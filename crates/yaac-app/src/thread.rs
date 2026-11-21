@@ -509,7 +509,7 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
             }
             ui.add_space(10.0);
             let src = v.state.summary(&ThreadKey::new(key.target.clone(), h.forked_from.clone())).map_or_else(|| h.forked_from.to_string(), |s| s.title.clone());
-            let label = format!("Inherited from {src} — read-only above this line");
+            let label = format!("Inherited from {src} · read-only above this line");
             let g = ui.fonts_mut(|f| f.layout_no_wrap(label, theme::ui(size::SMALL), p.text2));
             let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
             let gx = r.center().x - g.size().x / 2.0;
@@ -563,7 +563,7 @@ fn chip(ui: &mut egui::Ui, p: &Palette, name: &str, image: bool, gone: bool) {
             widgets::icon(ui, 15.0, |pa, ce, d| if image && !gone { icons::image(pa, ce, d, c) } else { icons::file(pa, ce, d, c, gone) });
             ui.label(egui::RichText::new(name).color(c));
             if gone {
-                ui.label(widgets::secondary("— no longer on the target", p));
+                ui.label(widgets::secondary("· no longer on the target", p));
             }
         });
     });

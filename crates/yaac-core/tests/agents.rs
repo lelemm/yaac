@@ -31,11 +31,11 @@ fn worker_panel_and_hidden_panel() {
     let (c, _) = boot();
     let map = AttentionMap::compute(&c.state);
     let p = agents_panel(&c.state, &map, &threads::billing()).unwrap();
-    assert!(matches!(&p.spawned_by, SpawnedBy::Agent(r) if r.title == "Migrate auth module — orchestrator" && r.display.mark == Mark::Running));
+    assert!(matches!(&p.spawned_by, SpawnedBy::Agent(r) if r.title == "Migrate auth module · orchestrator" && r.display.mark == Mark::Running));
     assert!(p.workers.is_empty() && p.contacts.is_empty(), "the parent is not a contact");
     assert!(agents_panel(&c.state, &map, &threads::fix()).is_none(), "no relationships: hidden");
     let p = agents_panel(&c.state, &map, &threads::index()).unwrap();
-    assert_eq!(p.root.unwrap().0, "Migrate auth module — orchestrator");
+    assert_eq!(p.root.unwrap().0, "Migrate auth module · orchestrator");
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn link_lines() {
     let map = AttentionMap::compute(&c.state);
     match header(&c.state, &map, &threads::billing()).unwrap().links {
         LinkLine::SpawnedBy { parent, target } => {
-            assert_eq!((parent.title.as_str(), target.as_str()), ("Migrate auth module — orchestrator", "local"));
+            assert_eq!((parent.title.as_str(), target.as_str()), ("Migrate auth module · orchestrator", "local"));
             assert!(parent.key.is_some());
         }
         other => panic!("{other:?}"),
@@ -52,7 +52,7 @@ fn link_lines() {
     match header(&c.state, &map, &threads::index()).unwrap().links {
         LinkLine::Ancestry(parts) => {
             let titles: Vec<_> = parts.iter().map(|p| p.title.as_str()).collect();
-            assert_eq!(titles, ["Migrate auth module — orchestrator", "search-service", "index-rebuild"]);
+            assert_eq!(titles, ["Migrate auth module · orchestrator", "search-service", "index-rebuild"]);
             assert!(parts[2].key.is_none(), "the thread itself is not a link");
         }
         other => panic!("{other:?}"),

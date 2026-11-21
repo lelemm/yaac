@@ -55,7 +55,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
             for line in &v.providers {
                 ui.horizontal(|ui| {
                     widgets::mark(ui, &p, if line.ready { Mark::Done } else { Mark::NeedsYou }, 15.0);
-                    ui.label(format!("{} — {}", line.name, line.word));
+                    ui.label(format!("{} · {}", line.name, line.word));
                 });
                 if let Some(h) = &line.hint {
                     ui.horizontal(|ui| {

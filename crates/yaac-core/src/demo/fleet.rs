@@ -418,7 +418,7 @@ impl Fleet {
         let (orch, users, billing, search, index, ci, notes, fix, hs) =
             (k(ORCH), k(USERS), k(BILLING), k(SEARCH), k(INDEX), k(CI), k(NOTES), k(FIX), k(HANDSHAKE));
         let root = orch.address();
-        f.add(&orch, "Migrate auth module — orchestrator", "codex", "gpt-6.2-sol", ("api", "main"), ThreadState::Running, -30);
+        f.add(&orch, "Migrate auth module · orchestrator", "codex", "gpt-6.2-sol", ("api", "main"), ThreadState::Running, -30);
         f.add(&users, "users-service", "claude", "opus-5.5", ("api", "main"), ThreadState::Idle, -12 * 60);
         f.add(&billing, "billing-service", "claude", "opus-5.5", ("api", "main"), ThreadState::Idle, -9 * 60);
         f.add(&search, "search-service", "claude", "opus-5.5", ("search", "main"), ThreadState::Running, -20);
@@ -535,7 +535,7 @@ impl Fleet {
         )));
         f.push(&users, done("u2", "u-t1", reasoning("Plan the users-service migration.")));
         f.push(&users, done("u3", "u-t1", tool(ToolKind::FileChange, "Edited 3 files", None, super::diffs::USERS)));
-        f.push(&users, done("u4", "u-t1", tool(ToolKind::Command, "Ran `cargo test -p users` — 14 passed", Some(0), "test result: ok. 14 passed")));
+        f.push(&users, done("u4", "u-t1", tool(ToolKind::Command, "Ran `cargo test -p users` · 14 passed", Some(0), "test result: ok. 14 passed")));
         f.push(&users, done("u5", "u-t1", agent("Merged to main. All 14 tests pass.")));
         f.push(&users, done("u6", "u-t1", sent(
             message("m-users-result", &users.address(), &orch.address(), MeshMessageKind::Result, "Migration merged. 14 tests pass.", f.ts(-2400)),
@@ -550,7 +550,7 @@ impl Fleet {
         )));
         f.push(&billing, done("b2", "b-t1", reasoning("Find every call into the old auth module in the billing service, then swap them for the new client.")));
         f.push(&billing, done("b3", "b-t1", tool(ToolKind::FileChange, "Edited 4 files", None, super::diffs::BILLING)));
-        f.push(&billing, done("b4", "b-t1", tool(ToolKind::Command, "Ran `cargo test -p billing` — 14 passed", Some(0), "test result: ok. 14 passed; 1 ignored")));
+        f.push(&billing, done("b4", "b-t1", tool(ToolKind::Command, "Ran `cargo test -p billing` · 14 passed", Some(0), "test result: ok. 14 passed; 1 ignored")));
         f.push(&billing, done("b5", "b-t1", agent("Merged to main. One flaky test was skipped.")));
         f.push(&billing, done("b6", "b-t1", sent(
             message("m-bill-result", &billing.address(), &orch.address(), MeshMessageKind::Result,
@@ -576,7 +576,7 @@ impl Fleet {
                 "Rebuild the search index against the new auth tables.", f.ts(-2700)),
             p_search,
         )));
-        f.push(&index, done("i2", "i-t1", tool(ToolKind::Command, "Ran `./scripts/reindex.sh --dry-run` — 3 shards would be dropped", Some(0), "would drop: shard-03, shard-07, shard-11")));
+        f.push(&index, done("i2", "i-t1", tool(ToolKind::Command, "Ran `./scripts/reindex.sh --dry-run` · 3 shards would be dropped", Some(0), "would drop: shard-03, shard-07, shard-11")));
         f.push(&index, item("i3", "i-t1", ItemStatus::InProgress, approval("r-index", "./scripts/reindex.sh --drop-old", "/srv/search", vec![
             decision("allow", "Allow once", DecisionKind::Allow),
             decision("deny", "Deny", DecisionKind::Deny),
@@ -627,7 +627,7 @@ impl Fleet {
         // Fix frame decoder (01).
         f.push(&fix, done("f1", "f-t1", user("Why does decode() drop the last frame?", &["u1/decoder-log.txt"], &[])));
         f.push(&fix, done("f2", "f-t1", reasoning("The reader computes the payload end from the length prefix; check whether the prefix includes the kind byte.")));
-        f.push(&fix, done("f3", "f-t1", tool(ToolKind::Command, "Ran `cargo test -p yaac-protocol` — passed", Some(0), "test result: ok. 73 passed")));
+        f.push(&fix, done("f3", "f-t1", tool(ToolKind::Command, "Ran `cargo test -p yaac-protocol` · passed", Some(0), "test result: ok. 73 passed")));
         f.push(&fix, done("f4", "f-t1", agent(
             "The length prefix counts the kind byte, so the reader stops one byte early.\n\n```rust\nlet kind = buf[0];\nlet len = u32::from_be_bytes(buf[1..5].try_into()?);\nlet total = 1 + len as usize; // include the kind byte\nif buf.len() < total {\n    return Err(Error::Incomplete);\n}\n```",
         )));
@@ -643,7 +643,7 @@ impl Fleet {
         // Explain the handshake (10): held by a terminal session.
         f.push(&hs, done("h1", "h-t1", user("Can you explain the handshake between the client and server, step by step? Please include the key messages and what each one does.", &[], &[])));
         f.push(&hs, done("h2", "h-t1", agent(
-            "The handshake has four main steps:\n\n1. **ClientHello** — the client proposes protocol versions and cipher suites.\n2. **ServerHello** — the server selects the version and cipher suite.\n3. **Key exchange** — both sides establish a shared session key.\n4. **Finished** — each side verifies the handshake and transitions to an encrypted session.\n\nHere is a more detailed breakdown with the exact messages and fields …",
+            "The handshake has four main steps:\n\n1. **ClientHello** · the client proposes protocol versions and cipher suites.\n2. **ServerHello** · the server selects the version and cipher suite.\n3. **Key exchange** · both sides establish a shared session key.\n4. **Finished** · each side verifies the handshake and transitions to an encrypted session.\n\nHere is a more detailed breakdown with the exact messages and fields …",
         )));
         f.push(&hs, item("h3", "h-t2", ItemStatus::InProgress, approval("r-hs", "openssl s_client -connect localhost:8443", "/home/dev/yaac", vec![
             decision("allow", "Allow once", DecisionKind::Allow),

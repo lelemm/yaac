@@ -122,7 +122,7 @@ fn effort_range(efforts: &[EffortInfo]) -> Option<String> {
     match efforts {
         [] => None,
         [one] => Some(format!("effort: {}", label(one))),
-        [first, .., last] => Some(format!("effort: {} – {}", label(first), label(last))),
+        [first, .., last] => Some(format!("effort: {} · {}", label(first), label(last))),
     }
 }
 

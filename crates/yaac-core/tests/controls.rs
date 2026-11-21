@@ -87,7 +87,7 @@ fn a_draft_offers_every_instance_and_no_fork_or_meter() {
     assert_eq!(claude.reason.as_deref(), Some("not signed in on local"));
     let codex = model.groups.iter().find(|g| g.name == "Codex").unwrap();
     assert!(codex.models.iter().find(|m| m.is_default).unwrap().selected);
-    assert_eq!(codex.models[0].effort_range.as_deref(), Some("effort: low – high"));
+    assert_eq!(codex.models[0].effort_range.as_deref(), Some("effort: low · high"));
     assert_eq!(r.effort.unwrap().label, "effort: high");
     assert_eq!(r.mode.unwrap().label, "mode: ask", "the harness's own default");
     assert!(!r.fork);

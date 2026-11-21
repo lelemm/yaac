@@ -533,7 +533,7 @@ export class CodexProvider implements HarnessProvider {
         this.authMode = a.type.toLowerCase();
       } else if (acc.requiresOpenaiAuth !== false) {
         status = "needsAuth";
-        statusMessage = "Codex is not signed in on this target — run `codex login` there";
+        statusMessage = "Codex is not signed in on this target · run `codex login` there";
         this.authMode = null;
       }
     } catch (e) {

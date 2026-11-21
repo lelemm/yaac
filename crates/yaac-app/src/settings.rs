@@ -220,7 +220,7 @@ fn targets(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     if let Some(hosts) = app.ui.set.ssh_config_hosts.clone() {
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(widgets::secondary(if hosts.is_empty() { "No hosts were found in ~/.ssh/config." } else { "Hosts in ~/.ssh/config — choose one to fill in the form:" }, &p));
+            ui.label(widgets::secondary(if hosts.is_empty() { "No hosts were found in ~/.ssh/config." } else { "Hosts in ~/.ssh/config · choose one to fill in the form:" }, &p));
             for h in &hosts {
                 if widgets::link(ui, &p, h, theme::ui(size::UI)).clicked() {
                     let mut panel = SshPanel::new(app.now(), None);
@@ -686,8 +686,8 @@ fn revoke_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>)
                 .ssh_records
                 .get(&panel.target)
                 .map(|r| match r {
-                    SetupRecord::RemovedByHand { date } => format!("Not set up — removed by hand on {date}"),
-                    SetupRecord::Revoked { date } => format!("Not set up — YAAC's key was removed on {date}"),
+                    SetupRecord::RemovedByHand { date } => format!("Not set up · removed by hand on {date}"),
+                    SetupRecord::Revoked { date } => format!("Not set up · YAAC's key was removed on {date}"),
                     _ => "Not set up".to_owned(),
                 })
                 .unwrap_or_default();
@@ -819,7 +819,7 @@ fn providers(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         ui.label(widgets::secondary("Target", &p));
     });
     if v.offline {
-        ui.label(widgets::secondary(format!("{} is not connected — showing what was last read.", v.target_name), &p));
+        ui.label(widgets::secondary(format!("{} is not connected · showing what was last read.", v.target_name), &p));
     }
     ui.add_space(8.0);
     for row in &v.rows {
@@ -880,7 +880,7 @@ fn providers(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         .collect();
     for (name, rows) in others {
         ui.add_space(22.0);
-        ui.label(widgets::secondary(format!("{name} — needs attention"), &p));
+        ui.label(widgets::secondary(format!("{name} · needs attention"), &p));
         ui.add_space(4.0);
         for r in &rows {
             ui.horizontal(|ui| {
@@ -957,7 +957,7 @@ fn instance_row(ui: &mut egui::Ui, app: &mut YaacApp, target: &TargetId, row: &y
             actions.push(Action::OutsideTools(target.clone(), row.instance.clone(), !row.outside_tools));
         }
         ui.label("Offer YAAC tools to sessions started outside YAAC");
-        ui.label(widgets::secondary("— edits this harness's own configuration", &p));
+        ui.label(widgets::secondary("· edits this harness's own configuration", &p));
     });
 }
 

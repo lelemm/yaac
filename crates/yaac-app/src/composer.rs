@@ -585,7 +585,7 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
             .project
             .as_ref()
             .and_then(|pid| app.client.state.projects.iter().find(|x| &x.id == pid))
-            .map_or_else(|| format!("Project: none — {target_name}"), |x| format!("Project: {} — {}", x.name, app.client.state.target_name(&x.target)));
+            .map_or_else(|| format!("Project: none · {target_name}"), |x| format!("Project: {} · {}", x.name, app.client.state.target_name(&x.target)));
         let r = widgets::selector(ui, &p, &project_label, true);
         if r.clicked() {
             app.ui.toggle_menu(Menu::Project);

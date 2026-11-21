@@ -252,7 +252,7 @@ mod tests {
 
     const TEXTS: [&str; 6] = [
         "First message, about the frame decoder.",
-        "Ran cargo test — passed",
+        "Ran cargo test · passed",
         "Third item in the middle.",
         "Fourth item: the length prefix counts the kind byte.",
         "Fifth item.",
