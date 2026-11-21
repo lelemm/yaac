@@ -2,6 +2,10 @@
 //! window, and the routing between them. Everything that can block runs on the store worker;
 //! the core never waits for it — finished jobs come back as [`CoreEvent`]s.
 
+mod uploads;
+
+pub use uploads::UploadLimits;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,7 +38,7 @@ use yaac_protocol::{
 
 use crate::cache::LiveState;
 use crate::config::HubConfig;
-use crate::conn::{ConnEvent, supervise};
+use crate::conn::{ConnEvent, Outgoing, supervise};
 use crate::protocol::{
     self as ext, BusyReasons, ConnectionStep, Draft, DraftKey, DraftsListResult, LookupHit, LookupParams, LookupResult, OperationRef,
     OperationsListResult, SettingsResult, SettingsUpdateParams, StatusResult, TargetLogResult, TargetRef, ThreadResetParams, UiStateSetParams,
@@ -42,6 +46,7 @@ use crate::protocol::{
 use crate::find::{FindParams, Pager};
 use crate::relay::{Accepted, receipt};
 use crate::settings::{Settings, TargetDef, new_id};
+use crate::pool::Pool;
 use crate::worker::Worker;
 
 /// One attached window.
@@ -94,6 +99,12 @@ pub(crate) enum CoreEvent {
     StoreError(String),
     /// SIGINT / SIGTERM.
     Signal,
+    /// An upload's draft blob was looked up: its file, name, and media type.
+    UploadSource { handle: String, result: Result<(std::path::PathBuf, String, Option<String>), ErrorObject> },
+    /// A pool worker hashed an upload's file.
+    UploadHashed { handle: String, result: Result<uploads::Hashed, ErrorObject> },
+    /// A pool worker read the next chunk of an upload's file.
+    UploadChunk { handle: String, offset: u64, result: Result<Vec<u8>, ErrorObject> },
 }
 
 /// Why the hub stopped.
@@ -152,6 +163,9 @@ enum Pending {
     Lookup { lookup: u64 },
     Deliver { message_id: MessageId },
     Receipt { message_id: MessageId },
+    UploadBegin { handle: String },
+    UploadEnd { handle: String },
+    UploadCancel { handle: String },
     Ignore,
 }
 
@@ -188,7 +202,9 @@ struct Sub {
 struct Conn {
     generation: u64,
     session: ClientSession,
-    writer: mpsc::UnboundedSender<Vec<u8>>,
+    writer: mpsc::UnboundedSender<Outgoing>,
+    /// A bulk frame is with the writer and not yet written: hand out no other bulk frame.
+    bulk_in_writer: bool,
     kill: Option<oneshot::Sender<()>>,
     ready: bool,
     pending: HashMap<RpcId, Pending>,
@@ -298,6 +314,11 @@ pub(crate) struct Core {
     steps: HashMap<TargetId, std::collections::VecDeque<ConnectionStep>>,
     /// Threads the user keeps (pinned or muted), per target: sent as `thread/keep`.
     kept: HashMap<TargetId, BTreeSet<ThreadId>>,
+    /// Uploads in progress, by handle ([`uploads`]).
+    uploads: HashMap<String, uploads::Upload>,
+    upload_seq: u64,
+    /// File reads and hashing.
+    pool: Pool,
     pub(crate) exit: Option<ExitReason>,
 }
 
@@ -345,7 +366,14 @@ pub(crate) struct Loaded {
 }
 
 impl Core {
-    pub(crate) fn new(cfg: HubConfig, settings: Settings, worker: Worker, tx: mpsc::UnboundedSender<CoreEvent>, loaded: Loaded) -> Self {
+    pub(crate) fn new(
+        cfg: HubConfig,
+        settings: Settings,
+        worker: Worker,
+        pool: Pool,
+        tx: mpsc::UnboundedSender<CoreEvent>,
+        loaded: Loaded,
+    ) -> Self {
         let mut core = Self {
             cfg,
             settings,
@@ -371,6 +399,9 @@ impl Core {
             next_lookup: 0,
             steps: HashMap::new(),
             kept: HashMap::new(),
+            uploads: HashMap::new(),
+            upload_seq: 0,
+            pool,
             exit: None,
         };
         for (target, thread) in loaded.kept {
@@ -448,6 +479,9 @@ impl Core {
             }
             CoreEvent::StoreError(e) => log(format!("store: {e}")),
             CoreEvent::Signal => self.exit = Some(ExitReason::Signal),
+            CoreEvent::UploadSource { handle, result } => self.on_upload_source(&handle, result),
+            CoreEvent::UploadHashed { handle, result } => self.on_upload_hashed(&handle, result),
+            CoreEvent::UploadChunk { handle, offset, result } => self.on_upload_chunk(&handle, offset, result),
         }
         self.flush_batches();
     }
@@ -667,6 +701,62 @@ impl Core {
                 }
                 Err(e) => Some(Err(e)),
             },
+            ext::names::UPLOAD_START => Some(parse::<ext::UploadStartParams>(params).and_then(|p| self.upload_start(p))),
+            ext::names::UPLOAD_CANCEL => Some(parse::<ext::UploadHandleParams>(params).map(|p| self.upload_cancel(&p.handle))),
+            ext::names::UPLOAD_LIST => Some(Ok(self.upload_list())),
+            ext::names::BLOB_BEGIN => match parse::<ext::BlobBeginParams>(params) {
+                Ok(p) => {
+                    let max = self.cfg.uploads.max_blob;
+                    self.blob_reply(client, id, move |s| {
+                        let blob_id = s.drafts.blob_begin(&p.draft, &p.name, p.media_type.as_deref(), p.size, max)?;
+                        Ok(to_value(&ext::BlobBeginResult { blob_id }))
+                    });
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::BLOB_APPEND => match parse::<ext::BlobAppendParams>(params) {
+                Ok(p) => {
+                    // Decoded on the store worker, not here.
+                    self.blob_reply(client, id, move |s| {
+                        use base64::Engine as _;
+                        let bytes = base64::engine::general_purpose::STANDARD
+                            .decode(p.data_base64.as_bytes())
+                            .map_err(|e| crate::drafts::DraftsError::Blob { code: "invalid_params", message: format!("dataBase64: {e}") })?;
+                        if bytes.len() > ext::BLOB_CHUNK_MAX {
+                            return Err(crate::drafts::DraftsError::Blob {
+                                code: "invalid_params",
+                                message: format!("a chunk is at most {} bytes", ext::BLOB_CHUNK_MAX),
+                            });
+                        }
+                        let received = s.drafts.blob_append(&p.blob_id, p.offset, &bytes)?;
+                        Ok(to_value(&ext::BlobAppendResult { received }))
+                    });
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::BLOB_END => match parse::<ext::BlobRef>(params) {
+                Ok(p) => {
+                    self.blob_reply(client, id, move |s| Ok(to_value(&s.drafts.blob_end(&p.blob_id)?)));
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::BLOB_LIST => match parse::<ext::BlobListParams>(params) {
+                Ok(p) => {
+                    self.blob_reply(client, id, move |s| Ok(to_value(&ext::BlobListResult { blobs: s.drafts.blobs(p.draft.as_deref())? })));
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::BLOB_DELETE => match parse::<ext::BlobRef>(params) {
+                Ok(p) => {
+                    self.blob_reply(client, id, move |s| s.drafts.blob_delete(&p.blob_id).map(|()| json!({})));
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
             ext::names::DEBUG_DROP_CONNECTION if self.cfg.test_methods => Some(parse::<TargetRef>(params).map(|p| {
                 if let Some(kill) = self.targets.get_mut(&p.id).and_then(|t| t.conn.as_mut()).and_then(|c| c.kill.take()) {
                     let _ = kill.send(());
@@ -686,6 +776,23 @@ impl Core {
         let id = id.clone();
         self.worker.submit(move |stores| {
             let outcome = job(stores).map_err(|e| err(ErrorCode::InternalError, e));
+            Some(CoreEvent::Reply { client, id, outcome })
+        });
+    }
+
+    /// A draft-store job whose refusals keep their own error code.
+    fn blob_reply(
+        &self,
+        client: ClientKey,
+        id: &RpcId,
+        job: impl FnOnce(&mut crate::worker::Stores) -> Result<Value, crate::drafts::DraftsError> + Send + 'static,
+    ) {
+        let id = id.clone();
+        self.worker.submit(move |stores| {
+            let outcome = job(stores).map_err(|e| match e {
+                crate::drafts::DraftsError::Blob { code, message } => hub_err(code, message),
+                other => err(ErrorCode::InternalError, other.to_string()),
+            });
             Some(CoreEvent::Reply { client, id, outcome })
         });
     }
@@ -1040,6 +1147,7 @@ impl Core {
                     generation,
                     session: ClientSession::new(client),
                     writer,
+                    bulk_in_writer: false,
                     kill: Some(kill),
                     ready: false,
                     pending: HashMap::new(),
@@ -1068,6 +1176,12 @@ impl Core {
                         }
                     }
                 }
+                self.flush(id);
+            }
+            ConnEvent::Written { bytes, elapsed } => {
+                let Some(conn) = t.conn.as_mut().filter(|c| c.generation == generation) else { return };
+                conn.bulk_in_writer = false;
+                conn.session.on_written(bytes, elapsed);
                 self.flush(id);
             }
             ConnEvent::Closed(reason) => {
@@ -1113,15 +1227,30 @@ impl Core {
                 self.reply(client, rid, Err(err(ErrorCode::TargetOffline, "the connection to the target dropped")));
             }
         }
+        self.uploads_on_closed(id);
         if was_ready {
             self.send_rosters();
         }
     }
 
+    /// Hands the writer what the session has to send. Control frames all go; a bulk frame
+    /// goes only when the writer holds none, so control never waits behind more than one
+    /// bulk chunk (docs/03-protocol.md#scheduling-and-flow-control). The next bulk frame is
+    /// handed out when the writer reports this one written ([`ConnEvent::Written`]).
     fn flush(&mut self, id: &TargetId) {
+        if !self.uploads.is_empty() {
+            self.upload_pump(id);
+        }
         let Some(conn) = self.targets.get_mut(id).and_then(|t| t.conn.as_mut()) else { return };
-        while let Some(frame) = conn.session.poll_transmit() {
-            if conn.writer.send(frame).is_err() {
+        loop {
+            let control = conn.session.scheduler().pending_control() > 0;
+            if !control && conn.bulk_in_writer {
+                break;
+            }
+            let Some(bytes) = conn.session.poll_transmit() else { break };
+            let bulk = !control;
+            conn.bulk_in_writer |= bulk;
+            if conn.writer.send(Outgoing { bytes, bulk }).is_err() {
                 break;
             }
         }
@@ -1295,6 +1424,9 @@ impl Core {
                 self.lookup_answered(lookup, id, found);
             }
             Pending::Deliver { message_id } => self.on_delivered(id, message_id, outcome),
+            Pending::UploadBegin { handle } => self.on_upload_begun(id, &handle, outcome),
+            Pending::UploadEnd { handle } => self.on_upload_ended(id, &handle, outcome),
+            Pending::UploadCancel { handle } => self.on_upload_cancelled(&handle),
             Pending::Receipt { message_id } => {
                 if outcome.is_ok() {
                     self.worker.submit(move |s| {
@@ -2295,6 +2427,7 @@ impl Core {
             active_threads: u32::try_from(active).unwrap_or(u32::MAX),
             pending_requests: u32::try_from(pending).unwrap_or(u32::MAX),
             messages_in_flight: u32::try_from(self.in_flight).unwrap_or(u32::MAX),
+            uploads: u32::try_from(self.uploads_active()).unwrap_or(u32::MAX),
         }
     }
 

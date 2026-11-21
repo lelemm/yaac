@@ -3,6 +3,7 @@
 //! hub core. The protocol session itself lives in the core; the pump only moves bytes.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -12,6 +13,18 @@ use yaac_transport::{ConnectCtx, Connector, Stream};
 use crate::config::Backoff;
 use crate::core::CoreEvent;
 
+/// One frame for the writer.
+#[derive(Debug)]
+pub(crate) struct Outgoing {
+    /// The encoded frame.
+    pub(crate) bytes: Vec<u8>,
+    /// A bulk frame (an upload chunk): the pump reports when it has been written
+    /// ([`ConnEvent::Written`]), and the core hands out the next bulk frame only then — so a
+    /// control frame queued at any moment waits behind at most one bulk chunk
+    /// (docs/03-protocol.md#scheduling-and-flow-control).
+    pub(crate) bulk: bool,
+}
+
 /// What happened on a connection, tagged by generation (one per stream opened).
 #[derive(Debug)]
 pub(crate) enum ConnEvent {
@@ -20,9 +33,11 @@ pub(crate) enum ConnEvent {
     /// The connector failed; retrying after the delay.
     Failed(String),
     /// A stream is open: write frames to `writer`; send on `kill` to drop it.
-    Opened { writer: mpsc::UnboundedSender<Vec<u8>>, kill: oneshot::Sender<()> },
+    Opened { writer: mpsc::UnboundedSender<Outgoing>, kill: oneshot::Sender<()> },
     /// Bytes from the target.
     Bytes(Vec<u8>),
+    /// A bulk frame of `bytes` bytes was written, taking `elapsed`.
+    Written { bytes: usize, elapsed: Duration },
     /// The stream ended.
     Closed(String),
 }
@@ -59,7 +74,7 @@ pub(crate) async fn supervise(
                 if !send(ConnEvent::Opened { writer, kill }) {
                     return;
                 }
-                let (reason, got_bytes) = pump(stream, frames, killed, |bytes| send(ConnEvent::Bytes(bytes))).await;
+                let (reason, got_bytes) = pump(stream, frames, killed, &send).await;
                 if !send(ConnEvent::Closed(reason)) {
                     return;
                 }
@@ -77,12 +92,12 @@ pub(crate) async fn supervise(
 }
 
 /// Moves bytes until the stream ends or is killed. Returns why it ended, and whether the
-/// target sent anything at all.
+/// target sent anything at all. `on_event` gets [`ConnEvent::Bytes`] and [`ConnEvent::Written`].
 async fn pump(
     stream: Stream,
-    mut frames: mpsc::UnboundedReceiver<Vec<u8>>,
+    mut frames: mpsc::UnboundedReceiver<Outgoing>,
     killed: oneshot::Receiver<()>,
-    mut on_bytes: impl FnMut(Vec<u8>) -> bool,
+    on_event: impl Fn(ConnEvent) -> bool,
 ) -> (String, bool) {
     let Stream { mut reader, mut writer, child } = stream;
     let mut got_bytes = false;
@@ -93,7 +108,7 @@ async fn pump(
                 Ok(0) => return "the target closed the connection".to_owned(),
                 Ok(n) => {
                     got_bytes = true;
-                    if !on_bytes(buf[..n].to_vec()) {
+                    if !on_event(ConnEvent::Bytes(buf[..n].to_vec())) {
                         return "the hub is stopping".to_owned();
                     }
                 }
@@ -103,11 +118,15 @@ async fn pump(
     };
     let write = async {
         while let Some(frame) = frames.recv().await {
-            if let Err(e) = writer.write_all(&frame).await {
+            let started = Instant::now();
+            if let Err(e) = writer.write_all(&frame.bytes).await {
                 return format!("write failed: {e}");
             }
             if let Err(e) = writer.flush().await {
                 return format!("write failed: {e}");
+            }
+            if frame.bulk && !on_event(ConnEvent::Written { bytes: frame.bytes.len(), elapsed: started.elapsed() }) {
+                return "the hub is stopping".to_owned();
             }
         }
         "the hub dropped the connection".to_owned()

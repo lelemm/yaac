@@ -24,7 +24,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use yaac_protocol::{ClientId, JournalPosition, OpId, TargetId, ThreadId, ThreadSummary};
+use yaac_protocol::rpc::ErrorObject;
+use yaac_protocol::{ClientId, JournalPosition, OpId, Sha256Hex, TargetId, ThreadId, ThreadSummary, UploadId};
 
 use crate::settings::HubSettings;
 
@@ -92,6 +93,36 @@ pub mod names {
     /// Window → hub, test builds only (`HubConfig::test_methods`): drop a target's connection
     /// as if the link had died.
     pub const DEBUG_DROP_CONNECTION: &str = "hub/debug/dropConnection";
+
+    // ── Uploads (docs/06-attachments.md) — see [`super::UploadStartParams`] ─────────────
+    /// Window → hub: upload a local file, or a draft's stored clipboard bytes, to a target
+    /// ([`super::UploadStartParams`] → [`super::UploadStartResult`]). The hub reads and hashes
+    /// the file itself; progress and the outcome arrive as notifications.
+    pub const UPLOAD_START: &str = "hub/upload/start";
+    /// Window → hub: stop an upload ([`super::UploadHandleParams`] → `{}`). The outcome is
+    /// still reported by `hub/upload/done`, with the error `upload_cancelled`.
+    pub const UPLOAD_CANCEL: &str = "hub/upload/cancel";
+    /// Window → hub: every unfinished upload ([`super::UploadListResult`]), for a window that
+    /// attached while uploads were running.
+    pub const UPLOAD_LIST: &str = "hub/upload/list";
+    /// Hub → every window: an upload's progress ([`super::UploadProgressParams`]).
+    pub const UPLOAD_PROGRESS: &str = "hub/upload/progress";
+    /// Hub → every window: an upload finished, failed, or was cancelled
+    /// ([`super::UploadDoneParams`]). Sent exactly once per handle.
+    pub const UPLOAD_DONE: &str = "hub/upload/done";
+    /// Window → hub: start storing bytes that exist only in the window's memory (a clipboard
+    /// image) in the durable draft store ([`super::BlobBeginParams`] → [`super::BlobBeginResult`]).
+    pub const BLOB_BEGIN: &str = "hub/drafts/blob/begin";
+    /// Window → hub: the next bounded chunk of a blob ([`super::BlobAppendParams`] →
+    /// [`super::BlobAppendResult`]). At most [`super::BLOB_CHUNK_MAX`] bytes before encoding.
+    pub const BLOB_APPEND: &str = "hub/drafts/blob/append";
+    /// Window → hub: all bytes sent ([`super::BlobRef`] → [`super::DraftBlob`]).
+    pub const BLOB_END: &str = "hub/drafts/blob/end";
+    /// Window → hub: the stored blobs, of one draft or all ([`super::BlobListParams`] →
+    /// [`super::BlobListResult`]).
+    pub const BLOB_LIST: &str = "hub/drafts/blob/list";
+    /// Window → hub: forget a blob (its chip was removed) ([`super::BlobRef`] → `{}`).
+    pub const BLOB_DELETE: &str = "hub/drafts/blob/delete";
 }
 
 /// Error codes the hub adds (the `code` strings of [`yaac_protocol::rpc::ErrorObject`]).
@@ -106,6 +137,13 @@ pub mod codes {
     pub const NOT_ROUTABLE: &str = "not_routable";
     /// A target name is empty or already used.
     pub const NAME_TAKEN: &str = "name_taken";
+    /// The upload was cancelled (`hub/upload/cancel`).
+    pub const UPLOAD_CANCELLED: &str = "upload_cancelled";
+    /// The hub could not read the file to upload (missing, a directory, no permission), or it
+    /// changed while it was being uploaded.
+    pub const FILE_UNREADABLE: &str = "file_unreadable";
+    /// No such draft blob, or it is not complete.
+    pub const BLOB_NOT_FOUND: &str = "blob_not_found";
 }
 
 /// `hub/thread/reset` params.
@@ -132,6 +170,9 @@ pub struct BusyReasons {
     pub pending_requests: u32,
     /// Mesh messages queued in the relay, or receipts not yet handed back.
     pub messages_in_flight: u32,
+    /// Uploads not yet finished.
+    #[serde(default)]
+    pub uploads: u32,
 }
 
 /// `hub/status` result.
@@ -419,6 +460,254 @@ pub struct ViewSetManyParams {
 pub struct ViewChangedParams {
     /// The changed entries.
     pub views: Vec<ThreadView>,
+}
+
+// ── Uploads ───────────────────────────────────────────────────────────────────────────────
+//
+// The window never opens a connection to a target and never puts a file into a JSON message
+// (docs/06-attachments.md). It names the file; the hub, on the same computer, reads it,
+// hashes it on its worker pool, and sends it on the target's one connection as bulk data
+// under credit, behind control traffic. Bytes that exist only in the window's memory (a
+// clipboard image) are first stored in the hub's durable draft store as a *blob*, in bounded
+// chunks, and uploaded from there — so they survive a hub restart and can be sent again when
+// the draft's target changes.
+//
+// ```text
+// hub/drafts/blob/begin { draft, name, size, mediaType? }      → { blobId }      (clipboard only)
+// hub/drafts/blob/append { blobId, offset, dataBase64 } …      → { received }
+// hub/drafts/blob/end { blobId }                               → DraftBlob
+// hub/upload/start { target, draft?, path | blobId, name?, mediaType? } → { handle }
+//   ← hub/upload/progress { handle, target, draft?, uploadId?, phase, sent, total } …
+//   ← hub/upload/done { handle, target, draft?, uploadId?, name, size, mediaType?, sha256?, skipped, error? }
+// turn/start { input: [ { type: "image" | "file", uploadId, name, mediaType } … ] } (hub/request)
+// ```
+//
+// An `uploadId` is only meaningful on the target that issued it: when a draft's target
+// changes, the window calls `hub/upload/start` again for the new target (content addressing
+// makes a repeat cheap: `skipped` says no bytes were sent).
+
+/// The largest chunk `hub/drafts/blob/append` accepts, before base64.
+pub const BLOB_CHUNK_MAX: usize = 512 * 1024;
+
+/// `hub/upload/start` params. Exactly one of `path` and `blobId`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadStartParams {
+    /// The target to upload to.
+    pub target: TargetId,
+    /// The window's key for the composer the attachment belongs to (as in [`Draft::key`]).
+    /// Carried back in progress and done notifications; nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<String>,
+    /// An absolute path to a file on this computer. The hub reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// A blob in the draft store (`hub/drafts/blob/*`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_id: Option<String>,
+    /// The name the agent sees. Default: the file's name, or the blob's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The media type, when the window knows better than the hub's sniffing (which recognises
+    /// PNG, JPEG, GIF, WebP and PDF by content). The target sniffs again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+}
+
+/// `hub/upload/start` result: the hub's handle for this upload. Errors found later (the file
+/// is unreadable, too large, the target dropped) arrive in `hub/upload/done`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadStartResult {
+    /// The handle (`hu_…`), unique within this hub's run.
+    pub handle: String,
+}
+
+/// `hub/upload/cancel` params.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadHandleParams {
+    /// The handle.
+    pub handle: String,
+}
+
+/// Where an upload is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UploadPhase {
+    /// The hub is reading the file to compute its SHA-256.
+    Hashing,
+    /// Waiting for a free upload slot on the target.
+    Queued,
+    /// `upload/begin` sent.
+    Beginning,
+    /// Sending bytes.
+    Sending,
+    /// All bytes sent; the target is verifying them (`upload/end`).
+    Verifying,
+}
+
+/// `hub/upload/progress` params (also each entry of `hub/upload/list`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadProgressParams {
+    /// The handle.
+    pub handle: String,
+    /// The target.
+    pub target: TargetId,
+    /// The draft, as given to `hub/upload/start`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<String>,
+    /// The target's id for the upload, once `upload/begin` has answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_id: Option<UploadId>,
+    /// The phase.
+    pub phase: UploadPhase,
+    /// Bytes handed to the connection so far.
+    pub sent: u64,
+    /// The file's size (0 until it is known).
+    pub total: u64,
+}
+
+/// `hub/upload/list` result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadListResult {
+    /// Unfinished uploads, oldest first.
+    pub uploads: Vec<UploadProgressParams>,
+}
+
+/// `hub/upload/done` params: exactly one per handle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadDoneParams {
+    /// The handle.
+    pub handle: String,
+    /// The target.
+    pub target: TargetId,
+    /// The draft, as given to `hub/upload/start`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<String>,
+    /// On success: the id to put in `image` and `file` input parts on this target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_id: Option<UploadId>,
+    /// The name sent (the target sanitises it; `name` in the journaled part is the final one).
+    pub name: String,
+    /// Bytes.
+    pub size: u64,
+    /// The media type the hub determined (by content), or the window's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    /// The content's full SHA-256, once computed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<Sha256Hex>,
+    /// The target already had this content: no bytes were sent.
+    #[serde(default)]
+    pub skipped: bool,
+    /// Why it failed: `limit_exceeded`, `file_unreadable`, `blob_not_found`, `target_offline`,
+    /// `upload_mismatch`, `upload_cancelled`, or a target's error passed through. The message
+    /// is meant to be shown as-is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ErrorObject>,
+}
+
+/// `hub/drafts/blob/begin` params.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobBeginParams {
+    /// The draft (composer key) it belongs to; deleting the draft deletes its blobs.
+    pub draft: String,
+    /// The name it will be uploaded under (e.g. `screenshot-2026-11-20-1405.png`).
+    pub name: String,
+    /// The media type, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    /// Total bytes that will be appended.
+    pub size: u64,
+}
+
+/// `hub/drafts/blob/begin` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobBeginResult {
+    /// The blob (`b_…`).
+    pub blob_id: String,
+}
+
+/// `hub/drafts/blob/append` params. Chunks must arrive in order (`offset` = bytes so far).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobAppendParams {
+    /// The blob.
+    pub blob_id: String,
+    /// Where this chunk starts.
+    pub offset: u64,
+    /// The bytes, standard base64 with padding; at most [`BLOB_CHUNK_MAX`] before encoding.
+    pub data_base64: String,
+}
+
+impl BlobAppendParams {
+    /// Splits `bytes` into append requests of at most [`BLOB_CHUNK_MAX`] bytes each.
+    pub fn chunks<'a>(blob_id: &'a str, bytes: &'a [u8]) -> impl Iterator<Item = BlobAppendParams> + 'a {
+        use base64::Engine as _;
+        bytes.chunks(BLOB_CHUNK_MAX).enumerate().map(move |(i, chunk)| BlobAppendParams {
+            blob_id: blob_id.to_owned(),
+            offset: (i * BLOB_CHUNK_MAX) as u64,
+            data_base64: base64::engine::general_purpose::STANDARD.encode(chunk),
+        })
+    }
+}
+
+/// `hub/drafts/blob/append` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobAppendResult {
+    /// Bytes stored so far.
+    pub received: u64,
+}
+
+/// `hub/drafts/blob/end` and `hub/drafts/blob/delete` params.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobRef {
+    /// The blob.
+    pub blob_id: String,
+}
+
+/// A complete blob in the draft store (`hub/drafts/blob/end` result).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftBlob {
+    /// The blob.
+    pub blob_id: String,
+    /// Its draft.
+    pub draft: String,
+    /// Its name.
+    pub name: String,
+    /// Its media type, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    /// Bytes.
+    pub size: u64,
+    /// Full SHA-256.
+    pub sha256: Sha256Hex,
+}
+
+/// `hub/drafts/blob/list` params.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobListParams {
+    /// Only this draft's blobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<String>,
+}
+
+/// `hub/drafts/blob/list` result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobListResult {
+    /// Complete blobs, oldest first.
+    pub blobs: Vec<DraftBlob>,
 }
 
 /// Absent = `None`, `null` = `Some(None)`, a value = `Some(Some(value))`.

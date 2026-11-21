@@ -9,6 +9,19 @@ Files and images reach a thread in three ways (decided):
 - **Paste (Ctrl+V)**: files copied in a file manager, or an image on the clipboard such as a
   screenshot.
 
+## Who reads the file
+
+The **hub** reads, sniffs, and hashes a file the user attaches — the window only names it
+(`hub/upload/start` with a path). An image that exists only on the clipboard is handed to the
+hub in 512 KiB chunks and kept as a durable draft blob first, so every upload is from a file.
+Progress and the result come back as `hub/upload/progress` and `hub/upload/done`; a dropped
+connection fails the upload and the window asks again (content addressing makes that cheap).
+The hub hands a bulk frame to the writer only after the previous one is written, so a Stop
+never waits behind more than one chunk — measured at about 1 ms during a 20 MB upload.
+
+Limits: 512 MiB per file, 2 GiB of unfinished uploads, 4 sending to one target at once,
+64 clipboard MiB per image.
+
 ## The flow
 
 ```

@@ -37,6 +37,7 @@ pub mod mesh;
 mod migrate;
 pub mod notify;
 pub mod paths;
+mod pool;
 pub mod protocol;
 pub mod relay;
 mod server;
@@ -48,7 +49,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 pub use crate::config::{Backoff, ConnectorFactory, DefaultConnectors, HubConfig};
-pub use crate::core::ExitReason;
+pub use crate::core::{ExitReason, UploadLimits};
 pub use crate::lock::{HubLock, LockError};
 pub use crate::migrate::MigrateError;
 pub use crate::paths::HubPaths;
@@ -147,7 +148,8 @@ pub fn run_hub(config: HubConfig) -> Result<HubExit, HubError> {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let worker = worker::Worker::start(worker::Stores { cache, drafts, relay }, tx.clone())?;
         let core_handles_signals = config.handle_signals;
-        let mut core = Core::new(config, settings, worker, tx.clone(), loaded);
+        let pool = pool::Pool::start(config.pool_threads, &tx)?;
+        let mut core = Core::new(config, settings, worker, pool, tx.clone(), loaded);
         let (writers_tx, mut writers_rx) = mpsc::unbounded_channel();
         let reason = {
             let serve = server::serve(&listener, tx.clone(), writers_tx);

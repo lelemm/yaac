@@ -381,6 +381,31 @@ test("uploads: bytes under credit, verified on end; a hash mismatch is upload_mi
   await daemon.stop("test");
 });
 
+test("uploads: the size of one file and of the unfinished uploads together are limited", async () => {
+  const home = tmpHome();
+  const daemon = await startDaemon(home);
+  const c = await client(daemon);
+  const digest = "0".repeat(64);
+  await assert.rejects(
+    c.request("upload/begin", { name: "huge.bin", size: 600 * 1024 * 1024, sha256: digest }),
+    (e: RpcFailure) => e.code === "limit_exceeded",
+  );
+  // Declared, not yet sent: five of 400 MiB fit, a sixth would pass the total.
+  const ids: string[] = [];
+  for (let i = 0; i < 5; i++) {
+    const b: any = await c.request("upload/begin", { name: `p${i}.bin`, size: 400 * 1024 * 1024, sha256: digest });
+    ids.push(b.uploadId);
+  }
+  await assert.rejects(
+    c.request("upload/begin", { name: "p5.bin", size: 400 * 1024 * 1024, sha256: digest }),
+    (e: RpcFailure) => e.code === "limit_exceeded" && /together/.test(e.message),
+  );
+  for (const id of ids) await c.request("upload/cancel", { uploadId: id });
+  assert.deepEqual(fs.readdirSync(path.join(daemon.core.uploads.root, "partial")), []);
+  await c.close();
+  await daemon.stop("test");
+});
+
 test("a very large tool output is bounded: a head, its true size, the rest on disk", async () => {
   const home = tmpHome();
   const daemon = await startDaemon(home);

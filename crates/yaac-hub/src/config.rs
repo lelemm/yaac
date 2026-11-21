@@ -93,6 +93,10 @@ pub struct HubConfig {
     /// Desktop notifications when a thread needs the user and no window is attached. `None`:
     /// off (the default of [`HubConfig::new`], and so of tests).
     pub notifier: Option<Arc<dyn Notifier>>,
+    /// Upload limits (docs/06-attachments.md).
+    pub uploads: crate::UploadLimits,
+    /// Threads in the worker pool that reads and hashes files for uploads.
+    pub pool_threads: usize,
 }
 
 impl std::fmt::Debug for HubConfig {
@@ -150,6 +154,8 @@ impl HubConfig {
             undelivered_notice: Duration::from_secs(15 * 60),
             notice_sweep: Duration::from_secs(60),
             notifier: None,
+            uploads: crate::UploadLimits::default(),
+            pool_threads: 2,
         }
     }
 }

@@ -49,6 +49,7 @@ Steps run in order.
 | `/fake pace <ms>` | Delay between deltas for the rest of the turn. |
 | `/fake fail <message>` | The turn fails with that error. |
 | `/fake usage` | A `usageUpdated` event. |
+| `/fake inputs` | An agent message listing what the provider was handed: `image <path> <mediaType>` per image input and `file <path> <name>` per file part (or `Inputs: none`). |
 | `/fake in-use [holder] [ms]` | After the turn, the thread is held by another program (`external`), released after `ms` if given. |
 | `/fake external-turn [ms] [text]` | After the turn, another program takes the thread, runs a turn (origin `external`) that says `text`, and lets go `ms` later (default 2000). |
 | `/fake outside-thread <title>` | A new conversation "created outside YAAC" appears in the listing. |

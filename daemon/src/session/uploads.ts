@@ -21,6 +21,8 @@ import { randomId, readJson, sha256Hex, writeJsonAtomic } from "../util/fsx.js";
 export const UPLOAD_WINDOW = 256 * 1024;
 export const UPLOAD_MAX_FILE = 512 * 1024 * 1024;
 export const UPLOAD_MAX_CONCURRENT = 8;
+/** Bytes declared by one connection's unfinished uploads, together. */
+export const UPLOAD_MAX_IN_PROGRESS = 2 * 1024 * 1024 * 1024;
 export const UPLOAD_READ_MAX = 512 * 1024;
 
 export interface UploadMeta {
@@ -132,9 +134,16 @@ export class UploadStore {
       writeJsonAtomic(this.metaPath(uploadId), meta);
       return { uploadId, exists: true };
     }
-    const mine = [...this.partials.values()].filter((p) => p.owner === owner).length;
-    if (mine >= UPLOAD_MAX_CONCURRENT) {
+    const mine = [...this.partials.values()].filter((p) => p.owner === owner);
+    if (mine.length >= UPLOAD_MAX_CONCURRENT) {
       throw new RpcError("limit_exceeded", `at most ${UPLOAD_MAX_CONCURRENT} uploads at once`);
+    }
+    const inProgress = mine.reduce((sum, p) => sum + p.meta.size, 0);
+    if (inProgress + params.size > UPLOAD_MAX_IN_PROGRESS) {
+      throw new RpcError(
+        "limit_exceeded",
+        `unfinished uploads are limited to ${UPLOAD_MAX_IN_PROGRESS} bytes together; wait for one to finish`,
+      );
     }
     const stream = this.nextStream++;
     const file = path.join(this.root, "partial", uploadId);

@@ -115,6 +115,15 @@ interface LiveTurn {
 
 class Aborted extends Error {}
 
+/** One line per attachment the provider was handed (`/fake inputs`). */
+function describeInputs(input: ProviderInput): string {
+  const lines = [
+    ...input.images.map((i) => `image ${i.path} ${i.mediaType ?? "unknown"}`),
+    ...input.files.map((f) => `file ${f.path} ${f.name}`),
+  ];
+  return lines.length > 0 ? `Inputs:\n${lines.join("\n")}` : "Inputs: none";
+}
+
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Aborted());
@@ -376,8 +385,11 @@ export class FakeProvider implements HarnessProvider {
     const abort = new AbortController();
     const live: LiveTurn = { turnId, abort, steered: [], done: Promise.resolve() };
     this.live.set(native, live);
+    // `/fake inputs` answers with what this provider was handed, so a test can see whether an
+    // attachment arrived as image input or as a file path.
+    const steps: Step[] = script.steps.map((s) => (s.k === "inputs" ? { k: "say", text: describeInputs(input) } : s));
     live.done = new Promise<void>((resolve) => setImmediate(resolve)).then(() =>
-      this.runTurn(native, live, script.plain ? [{ k: "say", text: `Echo: ${input.text}` }] : script.steps, origin),
+      this.runTurn(native, live, script.plain ? [{ k: "say", text: `Echo: ${input.text}` }] : steps, origin),
     );
     return turnId;
   }
@@ -553,6 +565,8 @@ export class FakeProvider implements HarnessProvider {
           case "expire":
             mods.expireMs = step.ms;
             break;
+          case "inputs":
+            break; // replaced by a `say` when the turn began
           case "mesh":
             await this.meshCall(native, turnId, id("mesh"), step, signal);
             break;

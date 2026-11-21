@@ -23,6 +23,8 @@ export type Step =
   | { k: "crashOnAnswer" }
   | { k: "resolveElsewhere"; ms: number }
   | { k: "expire"; ms: number }
+  /** Reports the input the provider was handed: each image (path, media type) and file (path, name). */
+  | { k: "inputs" }
   /** A call of a `yaac` mesh tool (README.md): `args` is resolved when the step runs. */
   | { k: "mesh"; tool: string; args: string; form: "json" | "send" | "spawn" | "kv" | "positional" };
 
@@ -117,6 +119,9 @@ export function parseScript(text: string): Script {
         break;
       case "usage":
         steps.push({ k: "usage" });
+        break;
+      case "inputs":
+        steps.push({ k: "inputs" });
         break;
       case "crash":
         steps.push({ k: "crash" });
