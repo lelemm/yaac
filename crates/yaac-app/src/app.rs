@@ -806,10 +806,7 @@ impl YaacApp {
     pub(crate) fn new_in_project(&mut self, key: &ThreadKey) {
         let instance_model = self.client.state.summary(key).map(|s| (s.instance.clone(), s.model.clone()));
         self.new_thread();
-        let id = match self.client.state.selection {
-            yaac_core::state::Selection::NewThread(id) => id,
-            _ => return,
-        };
+        let yaac_core::state::Selection::NewThread(id) = self.client.state.selection else { return };
         if let Some((inst, Some(model))) = instance_model {
             self.client.set_draft_model(id, inst, model);
         }

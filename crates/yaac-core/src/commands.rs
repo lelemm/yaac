@@ -199,7 +199,7 @@ pub enum StepKind {
 }
 
 /// One row of the table.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct CommandDef {
     /// The command.
     pub cmd: Cmd,
@@ -928,7 +928,10 @@ fn word_score(word: &str, text: &str) -> u32 {
             return 0;
         }
     }
-    score
+    // Letters scattered through unrelated words are noise: most letters must start a word or
+    // follow the one before.
+    let len = u32::try_from(word.chars().count()).unwrap_or(0);
+    if score * 2 < len * 5 { 0 } else { score }
 }
 
 /// The score of a command for a query: its name counts most, then aliases, then the
@@ -938,7 +941,9 @@ pub fn command_score(d: &CommandDef, name: &str, query: &str) -> u32 {
     let a = d.aliases.iter().map(|a| fuzzy_score(query, a)).max().unwrap_or(0) * 8;
     let e = fuzzy_score(query, d.explain) * 5;
     let joined = format!("{name} {} {}", d.aliases.join(" "), d.explain);
-    let all = fuzzy_score(query, &joined) * 4;
+    // Words spread over the name, aliases and explanation: each must appear as typed.
+    let lower = joined.to_lowercase();
+    let all = if query.to_lowercase().split_whitespace().all(|w| lower.contains(w)) { fuzzy_score(query, &joined) * 4 } else { 0 };
     n.max(a).max(e).max(all)
 }
 

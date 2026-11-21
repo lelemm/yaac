@@ -21,7 +21,9 @@ Rules:
 - The Commander searches names, explanations and aliases (e.g. "dock" finds *Dock the agents
   panel*), fuzzy, and ranks recently used commands first.
 - Keys never fire while a text field has focus unless they carry Ctrl or Alt; plain keys
-  (F2, Delete) act only when focus is in the list or thread view.
+  (F2, Delete) act only when focus is in the list or thread view. The keys text editing itself
+  uses (Delete, Backspace, Home, End, Ctrl+←/→, Ctrl+A/C/V/X/Y/Z, so also Ctrl+Delete) never
+  fire in a text field (P77).
 
 ## Catalogue
 
@@ -107,7 +109,7 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 | Show only running on / off | D129. | Ctrl+Shift+R **new** |
 | Show dismissed / Show archived | — | — |
 | Theme: system / light / dark | — | — |
-| Zoom in / out / reset | Interface scale. | Ctrl+= / Ctrl+- / Ctrl+0 **new** |
+| Zoom in / out / reset | Interface scale (the Appearance font size, 11–18 pt, persisted). | Ctrl+= (or Ctrl++) / Ctrl+- / Ctrl+0 **new** |
 | Expand / collapse all tool lines | In the open thread. | — |
 | Copy the selection / Copy message | D84. | Ctrl+C / — |
 
@@ -137,10 +139,42 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 - **Ctrl+W / Ctrl+Q / Ctrl+P / Ctrl+L** are common browser/editor keys; YAAC is its own window,
   so they do not collide while it has focus.
 
+## As built
+
+The table lives in `yaac-core` (`commands::COMMANDS`): stable id, name, explanation, aliases,
+group, default keys, scope, and the choice it continues with. The Commander, Settings →
+Keyboard and the window's one keyboard dispatcher all read it. A test checks that every row of
+the catalogue above is in the table and every command is in the catalogue.
+
+- Rows with "/" are one command each, or one toggle whose name follows the state (P75).
+- **Local keys** — Send, Send now, New line, Stop (in the message box), Allow once, Deny (on
+  the focused card), Paste and Copy the selection — are shown but not rebindable (P76); from
+  the Commander, Send and Send now send the composer, New line adds a line break, Stop stops,
+  Paste pastes into the composer, Copy copies the selection.
+- **Allow once / Allow for this thread / Deny** from the Commander act on the card that had
+  focus when it opened; otherwise they are disabled with "Focus the request card first
+  (Ctrl+J)" (P78).
+- Steps inside the Commander: *Find a thread…* (threads the window knows, every cached target),
+  *History…*, *Go to a related agent…* (parent, workers, contacts), *Settings: a page…*, *Change
+  model / effort / mode…*, *Agents: ask / allow…*, *Mute…* (1 hour, 4 hours, 1 day, 1 week,
+  until unmuted, "Until a date…" opens the Mute dialog), *Order*, *Grouping* (stays open to
+  toggle several), *Theme*, *Retry connecting…*, *Start a WSL distribution…*, *Enable / disable a
+  target…*, *Refresh providers and models…* (P82).
+- *Add an SSH target…* opens Settings → Targets with the SSH form; *Add WSL…* and *Start a WSL
+  distribution…* exist only on Windows (hidden elsewhere); *Renderer…* opens Settings → Window.
+- *Quit YAAC* asks first when the tray is not in use; *Hide to the tray* is disabled where there
+  is no tray icon (Linux) (P79).
+- *Check for the latest* is enabled for a thread in use elsewhere or with an answer whose
+  outcome is unknown; *Continue (budget)* when the orchestration is paused on its budget.
+- Every catalogue command exists; none is missing. Commands disabled by design in some states
+  carry their reason on the row.
+
 ## Settings → Keyboard
 
 A list of every command (same names and explanations as the Commander), grouped as above,
 each with its binding: click to record a new chord, Backspace/Delete to clear, a reset per row
 and "Reset all". A chord already in use is flagged with the command that has it and must be
-resolved (replace or cancel). Bindings are a window preference stored like the others; only
-differences from the defaults are stored.
+resolved (replace or cancel). Bindings are a window preference stored like the others
+(`keyBindings`); only differences from the defaults are stored. Local keys are listed with
+where they work, without a record button. Ctrl+Space carries a fixed note about input-method
+layouts: a chord the OS swallows never reaches the window, so it cannot be detected (P81).

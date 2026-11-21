@@ -1263,3 +1263,44 @@ the list.*
 - Under the composer, after the effort selector, the lightning toggle is **on**: filled in the
   fast yellow on the selected-row tint (an outline in the secondary colour when off), tooltip
   "Fast mode". On a thread whose model has no fast mode the icon is not drawn at all.
+
+### 64 — The Commander
+
+*Everything the window can do, one key away (D130).* Over the orchestrator thread.
+
+- The window dims under the scrim. A raised panel, 600 points wide, sits centred near the top:
+  a borderless search field ("Type a command…") over a hairline, then the list.
+- With nothing typed: **Recent** first (*Show only running*, *Fork…*), then the catalogue's
+  groups — *Go to*, *Threads*, … — each a small bold heading in the secondary colour.
+- Each row: the name; under it the explanation in the secondary colour; the key on the right in
+  an outlined key cap (Ctrl+Shift+R, Ctrl+Space…). The highlighted row has the selection tint.
+  A command that cannot run now is drawn in the unavailable colour with its reason in place of
+  the explanation ("Nowhere to go forward to"). View switches carry a tick when on.
+
+### 65 — The Commander, filtered
+
+- "agent" typed: *Agents: ask / allow…*, *Dock the agents panel* (Ctrl+Shift+B), *Go to a related
+  agent…* (Alt+↓), *Copy message* (its explanation mentions the agent). No group headings while
+  a query is typed; best matches first, recently used ones ahead.
+
+### 66 — A step inside the Commander
+
+- *Change model…* (Ctrl+M) continues in place: a small tinted chip "Change model" before the
+  field ("Choose…"), and the list becomes the harness's models — the current one ticked, each
+  with its instance, "default", and its effort range — and the other provider listed disabled
+  with "fork to switch provider". Esc goes back to the whole list.
+
+### 67 — Settings: keyboard
+
+*Every key, rebindable (D131).*
+
+- Left navigation with **Keyboard** selected (between Window and Advanced). Title "Keyboard",
+  **Reset all** on the right, and one line on how recording works.
+- Groups as in the catalogue. Each row: name and explanation on the left; on the right the key
+  cap (click to record: "Press a key…  Esc cancels"), **Clear**, and **Reset** (enabled only
+  when the row differs from its default). A command with no key shows "Add a key".
+- Under *Commander*, Ctrl+K was just recorded: a warning mark and "Ctrl+K is used by Search
+  threads." with **Replace** (filled) and **Cancel**. Under it, an information mark and the note
+  about Ctrl+Space and input-method layouts.
+- Local keys (Send, Stop, Allow once, Deny, Paste, Copy) show their key in a plain cap with
+  where they work ("in the message box", "on the focused card"), and no buttons.

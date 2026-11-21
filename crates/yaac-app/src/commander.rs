@@ -585,7 +585,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
                 // A steady caret: a blinking one would repaint the idle window twice a second.
                 ui.visuals_mut().text_cursor.blink = false;
                 // The field, with the step's name before it.
-                ui.horizontal(|ui| {
+                ui.allocate_ui_with_layout(vec2(ui.available_width(), 38.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add_space(6.0);
                     if let Some(t) = &title {
                         egui::Frame::NONE.fill(p.faint).corner_radius(4).inner_margin(egui::Margin::symmetric(7, 3)).show(ui, |ui| {

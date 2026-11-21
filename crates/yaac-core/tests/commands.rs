@@ -207,6 +207,8 @@ fn search_finds_by_name_alias_and_explanation_and_ranks_recent_first() {
     assert_eq!(list(&x, "snooze", &[]).first().map(|r| r.cmd), Some(Cmd::Mute));
     assert_eq!(list(&x, "shwrun", &[]).first().map(|r| r.cmd), Some(Cmd::RunningOnly));
     assert!(list(&x, "zzqqxx", &[]).is_empty());
+    // Letters scattered through unrelated words do not match.
+    assert!(list(&x, "agent", &[]).iter().all(|r| r.cmd != Cmd::Attach), "{:?}", list(&x, "agent", &[]));
     // Two equally good matches: the recently used one comes first.
     let plain: Vec<Cmd> = list(&x, "thread", &[]).into_iter().map(|r| r.cmd).collect();
     let last = *plain.last().unwrap();
@@ -245,7 +247,9 @@ fn moving_through_the_list_and_to_the_next_unseen() {
     assert_eq!(step_in_list(&order, Some(&order[0]), -1), None);
     if let Some(u) = next_unseen(&c.state, &order, None) {
         assert!(c.state.is_unseen(&u));
-        assert_ne!(next_unseen(&c.state, &order, Some(&u)).as_ref(), Some(&u).filter(|_| order.iter().filter(|k| c.state.is_unseen(k)).count() > 1));
+        if order.iter().filter(|k| c.state.is_unseen(k)).count() > 1 {
+            assert_ne!(next_unseen(&c.state, &order, Some(&u)), Some(u.clone()), "moves on to another");
+        }
     }
 }
 

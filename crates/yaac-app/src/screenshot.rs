@@ -73,6 +73,10 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("63", "pr-create"),
     ("49", "settings-window"),
     ("50", "fast-mode"),
+    ("64", "commander"),
+    ("65", "commander-filtered"),
+    ("66", "commander-model"),
+    ("67", "settings-keyboard"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -576,6 +580,30 @@ fn setup(app: &mut YaacApp, id: &str) {
             // renderer this very window runs on (D127, D128).
             app.ui.settings = true;
             app.ui.settings_page = Page::Window;
+        }
+        "64" | "65" | "66" => {
+            // The Commander (D130): over the orchestrator, every group (64); typed "agent" (65);
+            // Change model… continuing inside it as the model list (66).
+            use yaac_core::commands::{Cmd, StepKind};
+            app.open(&threads::orchestrator(), None);
+            let mut c = crate::commander::CommanderUi::at(if id == "66" { Some((Cmd::Model, StepKind::Model)) } else { None }, None);
+            if id == "65" {
+                c.query = "agent".into();
+            }
+            if id == "64" {
+                // Used a moment ago, so they lead under Recent.
+                app.ui.recent = vec!["running-only".into(), "fork".into()];
+            }
+            app.ui.commander = Some(c);
+        }
+        "67" => {
+            // Settings → Keyboard (D131): Ctrl+K was pressed for the Commander, which Search
+            // threads has; the row asks to replace or cancel. Rename was moved to F6.
+            use yaac_core::commands::Cmd;
+            app.ui.settings = true;
+            app.ui.settings_page = Page::Keyboard;
+            app.ui.bindings.assign(Cmd::Rename, yaac_core::keys::Chord::parse("F6").unwrap_or_else(|| yaac_core::keys::Chord::key(false, false, false, "F6")), false);
+            app.ui.set.keys.conflict = Some((Cmd::Commander, yaac_core::keys::Chord::key(true, false, false, "K"), Cmd::SearchThreads));
         }
         "50" => {
             // Fast mode (D125): a worker running in it. The lightning toggle under the
