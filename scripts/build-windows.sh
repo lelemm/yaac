@@ -34,8 +34,9 @@ if ! rustup target list --installed | grep -qx "$target"; then
 fi
 
 # One build id for everything this build makes (scripts/build-id.sh): the exe (window and
-# hub) and the daemon bundle it embeds. A caller that already allocated one passes it on.
-YAAC_BUILD_ID=${YAAC_BUILD_ID:-$("$root/scripts/build-id.sh")}
+# hub) and the daemon bundle it embeds. A caller that already has one (CI, the release
+# workflow) passes it in YAAC_BUILD_ID, and build-id.sh hands it back without counting.
+YAAC_BUILD_ID=$("$root/scripts/build-id.sh")
 export YAAC_BUILD_ID
 
 # The hub embeds the daemon bundle it installs on WSL targets.
@@ -50,6 +51,11 @@ cargo build --release --locked --target "$target" -p yaac-app $features
 mkdir -p "$out"
 cp "$CARGO_TARGET_DIR/$target/release/yaac.exe" "$out/yaac.exe"
 printf '%s\n' "$YAAC_BUILD_ID" >"$out/build-id"
+# The icon build.rs drew for the exe's resources, for the installer (installer/yaac.iss).
+# (Cargo has laid build-script output out as build/yaac-app-<hash>/out and build/yaac-app/<hash>/out.)
+case "$CARGO_TARGET_DIR" in /*) ;; *) CARGO_TARGET_DIR="$PWD/$CARGO_TARGET_DIR" ;; esac
+icon=$(find "$CARGO_TARGET_DIR/$target/release/build" -path '*yaac-app*' -name yaac.ico -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n 1 | cut -d' ' -f2-)
+if [ -n "$icon" ]; then cp "$icon" "$out/yaac.ico"; fi
 size=$(wc -c <"$out/yaac.exe")
 echo "built $out/yaac.exe ($size bytes), build $YAAC_BUILD_ID"
 sha256sum "$out/yaac.exe"

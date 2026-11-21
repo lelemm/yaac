@@ -389,6 +389,7 @@ mod tests {
             display: crate::display::DisplayState::default(),
             shell: crate::tray::Shell::new(),
             tray: false,
+            updater: crate::updater::Updater::off("tests"),
         };
         YaacApp::from_ctx(ctx, launch)
     }

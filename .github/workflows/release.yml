@@ -1,0 +1,232 @@
+# Makes a GitHub release of YAAC (D136, docs/install.md#releases): the Windows installer, the
+# binaries (yaac.exe, yaacd.mjs, yaacd-mcp.mjs) and manifest.json, which the in-app updater
+# reads. The repository is public, so releases are readable without a token.
+#
+# Build ids (D135): every artefact of one release carries `<version>+<id>` with
+# id = RELEASE_BASE + the workflow's run number. CI ids are the release ids; local builds
+# (scripts/build-id.sh) stay at or below RELEASE_BASE - 1, so every release is newer than any
+# local build.
+#
+# Actions are pinned to commit SHAs (the tag is in the comment).
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  RELEASE_BASE: "1000"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Test, and build yaac.exe and yaacd (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.id.outputs.version }}
+      build: ${{ steps.id.outputs.build }}
+      tag: ${{ steps.id.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Version, build id and tag
+        id: id
+        shell: bash
+        run: |
+          set -eu
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml)
+          [ -n "$version" ] || { echo "::error::no [workspace.package] version in Cargo.toml"; exit 1; }
+          build=$((RELEASE_BASE + GITHUB_RUN_NUMBER))
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag=$GITHUB_REF_NAME
+            [ "$tag" = "v$version" ] || { echo "::error::tag $tag does not match the version in Cargo.toml (v$version)"; exit 1; }
+          else
+            # A release made by hand from a branch gets its own tag at this commit.
+            tag="v$version-build.$build"
+          fi
+          {
+            echo "version=$version"
+            echo "build=$build"
+            echo "tag=$tag"
+          } >>"$GITHUB_OUTPUT"
+          echo "YAAC $version+$build, tag $tag"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: daemon/package-lock.json
+
+      - name: Rust and the MinGW-w64 cross toolchain
+        shell: bash
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add x86_64-pc-windows-gnu
+          rustc --version
+          x86_64-w64-mingw32-gcc --version | head -n 1
+
+      - name: Daemon dependencies
+        working-directory: daemon
+        run: npm ci
+
+      - name: Daemon tests
+        working-directory: daemon
+        env:
+          YAAC_BUILD_ID: ${{ steps.id.outputs.build }}
+        run: npm test
+
+      - name: Manifest script tests
+        run: node --test scripts/make-manifest.test.mjs
+
+      - name: Rust tests
+        run: cargo test --workspace --locked
+
+      - name: Build yaac.exe (window and hub, embedding yaacd)
+        env:
+          YAAC_BUILD_ID: ${{ steps.id.outputs.build }}
+        run: scripts/build-windows.sh
+
+      - name: Collect the build
+        shell: bash
+        run: |
+          set -eu
+          [ "$(cat dist/windows/build-id)" = "${{ steps.id.outputs.build }}" ]
+          mkdir -p dist/stage
+          cp dist/windows/yaac.exe dist/windows/yaac.ico dist/windows/build-id dist/stage/
+          cp daemon/dist/yaacd.mjs daemon/dist/yaacd-mcp.mjs dist/stage/
+          # The daemon bundle says the same build.
+          grep -q "${{ steps.id.outputs.version }}+${{ steps.id.outputs.build }}" dist/stage/yaacd.mjs
+          ls -l dist/stage
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build
+          path: dist/stage
+          if-no-files-found: error
+          retention-days: 7
+
+  installer:
+    name: Installer (Inno Setup, Windows)
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build
+          path: dist/stage
+
+      # Inno Setup 6 is on GitHub's Windows images (listed in actions/runner-images); it is
+      # installed here only if an image ever lacks it.
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # The same /D defines as scripts/build-installer.sh.
+      - name: Build the installer
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD: ${{ needs.build.outputs.build }}
+        run: |
+          $numeric = ($env:VERSION -split '[-+]')[0] + ".$env:BUILD"
+          $stage = Join-Path $PWD 'dist\stage'
+          $out = Join-Path $PWD 'dist\setup'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & $env:ISCC /Q "/DAppVersion=$env:VERSION+$env:BUILD" "/DNumericVersion=$numeric" "/DSourceDir=$stage" "/DIconFile=$stage\yaac.ico" "/DOutputDir=$out" installer\yaac.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $setup = Join-Path $out "YAAC-Setup-$env:VERSION+$env:BUILD.exe"
+          if (-not (Test-Path $setup)) { throw "ISCC did not write $setup" }
+          Get-Item $setup | Format-List Name, Length
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installer
+          path: dist/setup/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Release
+    needs: [build, installer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: build
+          path: dist/stage
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: installer
+          path: dist/setup
+
+      # Asset names keep to letters, digits, '.', '-' and '_' (GitHub renames others), so the
+      # installer is YAAC-Setup-<version>-build.<id>.exe here.
+      - name: Assets and manifest
+        shell: bash
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD: ${{ needs.build.outputs.build }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -eu
+          mkdir -p dist/release
+          setup="dist/release/YAAC-Setup-$VERSION-build.$BUILD.exe"
+          cp "dist/setup/YAAC-Setup-$VERSION+$BUILD.exe" "$setup"
+          cp dist/stage/yaac.exe dist/stage/yaacd.mjs dist/stage/yaacd-mcp.mjs dist/release/
+          node scripts/make-manifest.mjs --version "$VERSION" --build "$BUILD" --tag "$TAG" \
+            --repo "$GITHUB_REPOSITORY" --out dist/release/manifest.json \
+            "installer=$setup" app=dist/release/yaac.exe \
+            daemon=dist/release/yaacd.mjs daemon-mcp=dist/release/yaacd-mcp.mjs
+          cat dist/release/manifest.json
+          (cd dist/release && sha256sum -- *)
+
+      - name: Create the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD: ${{ needs.build.outputs.build }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -eu
+          notes="YAAC $VERSION+$BUILD. Install with YAAC-Setup-$VERSION-build.$BUILD.exe (per user, no administrator rights); an installed YAAC offers this update itself. manifest.json lists every file with its SHA-256."
+          gh release create "$TAG" dist/release/* \
+            --target "$GITHUB_SHA" \
+            --title "YAAC $VERSION+$BUILD" \
+            --notes "$notes" \
+            --latest

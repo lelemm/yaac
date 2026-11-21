@@ -8,6 +8,7 @@
 //! gathers those answers into one list: nothing here asks the network itself.
 
 use crate::state::{AppState, HelloOutcome};
+use crate::update::{Offer, ReleaseCheck, offer};
 
 /// Where a component stands against this window's build.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +67,27 @@ pub fn components(state: &AppState, window_build: &str) -> Vec<Component> {
     out
 }
 
+/// The "YAAC (latest release)" row (D136): the latest release found as the window started,
+/// and whether this build is behind it. Not counted by [`outdated`]: the title row offers the
+/// update itself.
+pub fn release(check: &ReleaseCheck, window_build: &str) -> Component {
+    let name = "YAAC (latest release)".to_owned();
+    match check {
+        ReleaseCheck::Off(why) => Component { name, build: None, status: ComponentStatus::Unknown(why.clone()) },
+        ReleaseCheck::Checking => Component { name, build: None, status: ComponentStatus::Unknown("checking…".into()) },
+        ReleaseCheck::Unavailable(why) => Component { name, build: None, status: ComponentStatus::Unknown(why.clone()) },
+        ReleaseCheck::Latest { version, build } => {
+            let label = format!("{version}+{build}");
+            let status = match offer(window_build, *build) {
+                Offer::Newer => ComponentStatus::Outdated("this YAAC is behind; update from the title bar".into()),
+                Offer::Same | Offer::Ahead => ComponentStatus::Current,
+                Offer::Dev => ComponentStatus::Unknown("this is a development build; it is not updated from releases".into()),
+            };
+            Component { name, build: Some(label), status }
+        }
+    }
+}
+
 /// How many components need updating.
 pub fn outdated(state: &AppState, window_build: &str) -> usize {
     components(state, window_build).iter().filter(|c| matches!(c.status, ComponentStatus::Outdated(_))).count()
@@ -76,7 +98,8 @@ mod tests {
     use serde_json::json;
     use yaac_protocol::attach::TargetEntry;
 
-    use super::{ComponentStatus as S, components, outdated};
+    use super::{ComponentStatus as S, components, outdated, release};
+    use crate::update::ReleaseCheck;
     use crate::state::{AppState, HelloOutcome};
 
     fn target(id: &str, enabled: bool, daemon: Option<(&str, bool)>) -> TargetEntry {
@@ -121,5 +144,19 @@ mod tests {
         s.hub.outcome = HelloOutcome::Pending;
         assert!(matches!(components(&s, "0.1.0+42")[1].status, S::Unknown(_)));
         assert_eq!(outdated(&s, "0.1.0+42"), 0);
+    }
+
+    #[test]
+    fn the_latest_release_row_says_whether_this_build_is_behind() {
+        let latest = ReleaseCheck::Latest { version: "0.1.0".into(), build: 1005 };
+        let r = release(&latest, "0.1.0+1004");
+        assert_eq!(r.name, "YAAC (latest release)");
+        assert_eq!(r.build.as_deref(), Some("0.1.0+1005"));
+        assert!(matches!(r.status, S::Outdated(_)));
+        assert_eq!(release(&latest, "0.1.0+1005").status, S::Current);
+        assert_eq!(release(&latest, "0.1.0+1006").status, S::Current);
+        assert!(matches!(release(&latest, "0.1.0+dev.ab").status, S::Unknown(_)));
+        assert!(matches!(release(&ReleaseCheck::Unavailable("offline".into()), "0.1.0+1").status, S::Unknown(_)));
+        assert_eq!(release(&ReleaseCheck::Checking, "0.1.0+1").build, None);
     }
 }

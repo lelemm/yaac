@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "version": "0.1.0",
+  "build": 1005,
+  "tag": "v0.1.0",
+  "releasedAt": "2026-11-21T12:00:00.000Z",
+  "artifacts": [
+    {
+      "name": "YAAC-Setup-0.1.0-build.1005.exe",
+      "component": "installer",
+      "version": "0.1.0+1005",
+      "size": 11,
+      "sha256": "e6a3e3c8bfa2b2bf5ef11b1aa9f0fdd5a4b8b23b4bd7f8c3f0d2de6d8f8e6f00",
+      "url": "https://github.com/lelemm/yaac/releases/download/v0.1.0/YAAC-Setup-0.1.0-build.1005.exe"
+    },
+    {
+      "name": "yaac.exe",
+      "component": "app",
+      "version": "0.1.0+1005",
+      "size": 7,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000001",
+      "url": "https://github.com/lelemm/yaac/releases/download/v0.1.0/yaac.exe"
+    },
+    {
+      "name": "yaacd.mjs",
+      "component": "daemon",
+      "version": "0.1.0+1005",
+      "size": 6,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000002",
+      "url": "https://github.com/lelemm/yaac/releases/download/v0.1.0/yaacd.mjs"
+    },
+    {
+      "name": "yaacd-mcp.mjs",
+      "component": "daemon-mcp",
+      "version": "0.1.0+1005",
+      "size": 3,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000003",
+      "url": "https://github.com/lelemm/yaac/releases/download/v0.1.0/yaacd-mcp.mjs"
+    }
+  ]
+}

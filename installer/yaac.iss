@@ -10,7 +10,9 @@
 ;   the window and stops the hub gracefully (hub/shutdown) and waits until the file is free;
 ; - the hub's login entry is written by YAAC itself (`yaac autostart sync --start`), never by
 ;   this script, so the two cannot disagree;
-; - uninstalling keeps the user's settings and data unless asked (/REMOVEDATA=yes when silent).
+; - uninstalling keeps the user's settings and data unless asked (/REMOVEDATA=yes when silent);
+; - /RELAUNCH starts the installed yaac.exe when setup finishes, even when silent: the in-app
+;   updater runs `setup /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH` (docs/install.md).
 
 #ifndef AppVersion
   #error Pass /DAppVersion=<version> (scripts/build-installer.sh does)
@@ -75,7 +77,10 @@ Name: "{autodesktop}\YAAC"; Filename: "{app}\yaac.exe"; Tasks: desktopicon
 ; when the hub's "start at login" setting is on, and the hub is started again as login would.
 ; Before the first run of the window nothing is written: the window's first run does it.
 Filename: "{app}\yaac.exe"; Parameters: "autostart sync --start"; WorkingDir: "{app}"; Flags: runhidden; StatusMsg: "Starting the YAAC hub..."
-Filename: "{app}\yaac.exe"; Description: "{cm:LaunchProgram,YAAC}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\yaac.exe"; Description: "{cm:LaunchProgram,YAAC}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent; Check: not RelaunchRequested
+; The in-app updater's /RELAUNCH: an entry without `postinstall` runs in silent mode too, after
+; the hub entry above. Only after a successful install: a failed setup runs no [Run] entry.
+Filename: "{app}\yaac.exe"; WorkingDir: "{app}"; Flags: nowait; Check: RelaunchRequested
 
 [Code]
 const
@@ -84,6 +89,17 @@ const
     'and the SSH keys YAAC generated for its own connections. Nothing on your targets and ' +
     'nothing in your own .ssh folder is touched.' + #13#10 + #13#10 +
     'Choose No to keep them for a later install.';
+
+{ Whether setup was started with /RELAUNCH (by YAAC's updater). }
+function RelaunchRequested: Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+    if CompareText(ParamStr(I), '/RELAUNCH') = 0 then
+      Result := True;
+end;
 
 { Runs the installed yaac.exe with Params from a copy in the temporary folder, so the
   installed file itself is not held open. Returns the exit code, or -1 if it did not run. }

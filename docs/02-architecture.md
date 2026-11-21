@@ -363,8 +363,8 @@ The checksum is compiled into YAAC per runtime version and platform, so neither 
 tricked into running something else.
 
 *Proposed detail:* for step 2 the host downloads by running the operating system's own `curl`
-(present on Windows 10+ and on practically every Linux desktop), keeping the host binary free
-of an HTTP and TLS stack ([footprint](#footprint-budget)).
+(present on Windows 10+ and on practically every Linux desktop). (The window now links one
+HTTPS client for [the updater](#the-updater); the runtime fetch has not moved to it.)
 
 **Built (P39):** the runtime is **Node.js 22.22.3**, `.tar.gz` builds from nodejs.org (musl
 builds from the Node.js project's unofficial-builds site), checksums in
@@ -510,6 +510,35 @@ installer (`YAAC-Setup-<version>+<id>.exe`, file version `<numeric version>.<id>
 - Detecting is all this does: updating an older daemon follows the rules above (at idle, or
   **Update now**). Build ids are build identity, not the protocol version: no protocol
   behaviour depends on them (CLAUDE.md, invariant 5).
+- Release builds are numbered by CI: id = 1000 + the release workflow's run number; local
+  ids stay at or below 999 (P87, [install](install.md#releases)).
+
+### The updater
+
+**Decided (D136):** on Windows the window updates YAAC from the repository's GitHub releases
+([install](install.md#updating)). The flow lives in `yaac-app/src/updater.rs` (network and
+files, worker threads only), its decisions in `yaac-core/src/update.rs` (manifest, build
+comparison, the start-up decision table, progress throttling), the title-row item in
+`yaac-app/src/titlebar.rs`, and the start-up step in `yaac_app::run` before the window is
+created.
+
+- **Network use at start:** the window, as it opens, makes one HTTPS request to
+  `api.github.com` for the latest release and one for its `manifest.json` (from GitHub's
+  release download host), on a worker thread with 10 s timeouts. Nothing else of YAAC's host
+  side talks to the internet except the runtime fetch below. The request carries a generic
+  `User-Agent: yaac-updater` and no personal data; failures are silent and not retried until
+  the next start. The hub never makes these requests, and nothing is sent to or asked of a
+  target (invariant #1): targets get the new `yaacd` from the updated hub, in-band
+  ([install](install.md#how-targets-get-the-new-daemon)).
+- **Downloading** the installer happens only on a click, on a worker; progress repaints are
+  throttled (a visible step, at most ten a second). The installer is verified (size,
+  SHA-256 from the manifest) before `pending.json` is written.
+- **Installing** never happens behind the user's back: on *Restart to update*, or at the next
+  start when a verified update is waiting. Each update is tried once (`attempted`); a failed
+  one starts the old build and says so once.
+- **The UI thread never blocks on it** (invariant #7): the check and the download are
+  workers, the window only polls a channel each frame. The one synchronous step, re-hashing a
+  waiting installer, runs at start before any window exists.
 
 ### Staying small
 
@@ -586,6 +615,9 @@ object on Windows, a distro shutdown on WSL. Each is specified and tested on its
   store.
 - Anything rendered from an agent is untrusted: markdown rendering does no network fetches, and
   links open only on explicit click.
+- The window's only internet traffic is [the updater](#the-updater)'s release check (and an
+  installer download the user asked for): no personal data, a generic User-Agent, and every
+  installer checked against the release manifest's SHA-256 before it is kept or run.
 - **The host cache contains conversation content** — previews, transcripts, tool output,
   thumbnails. It lives in the user's private data directory with user-only permissions.
   Removing a target from settings deletes that target's cached data, and "clear cache" removes
@@ -614,8 +646,12 @@ Memory is measured for the whole local process tree — the window, the hub, its
 
 Design choices that serve the budget:
 
-- **No network stack in the host.** The UI talks only to child processes over pipes, so it links
-  no HTTP client and no TLS library.
+- **One small network stack, in the window only, for the updater.** The UI talks to targets only
+  through the hub over pipes. Its one HTTP client is [the updater](#the-updater)'s: `ureq` with
+  rustls on *ring* and the webpki root store (no OpenSSL, no system TLS), used on worker
+  threads and only by a Windows build (P89). `yaac hub` never calls it. Measured cost: the
+  release `yaac.exe` grew from 18.42 MB to 19.60 MB (+1.18 MB), inside the 20 MB budget with
+  little room left.
 - **One small async runtime** on a single I/O thread, plus a small bounded worker pool — in
   the hub. The window links no async runtime at all beyond what its one local socket needs.
 - **One binary, two modes.** `yaac hub` loads no window, GPU, or font code, so the part that

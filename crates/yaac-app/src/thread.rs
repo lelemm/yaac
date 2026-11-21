@@ -68,7 +68,8 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
             widgets::icon(ui, 18.0, |pa, c, d| icons::lock(pa, c, d, p.text2));
         }
         ui.add_space(2.0);
-        let tag_w = if h.tag.is_some() { 230.0 } else { 0.0 };
+        // The tag, and the update item when the title row shows one (D136).
+        let tag_w = if h.tag.is_some() { 230.0 } else { 0.0 } + app.updater.title_width();
         ui.scope(|ui| {
             ui.set_max_width((ui.available_width() - tag_w).max(80.0));
             // Not selectable: the title is part of the title row, which drags the window.

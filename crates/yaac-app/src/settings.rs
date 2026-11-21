@@ -1176,6 +1176,16 @@ fn advanced(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
             };
             ui.end_row();
         }
+        // The latest release on GitHub, checked as the window started (D136).
+        let c = yaac_core::components::release(&app.updater.check, crate::BUILD);
+        ui.label(widgets::secondary(&c.name, &p));
+        ui.label(c.build.as_deref().unwrap_or("—"));
+        match &c.status {
+            ComponentStatus::Current => ui.label(widgets::secondary("this YAAC is up to date", &p)),
+            ComponentStatus::Outdated(why) => ui.label(RichText::new(why).color(p.failed)),
+            ComponentStatus::Unknown(why) => ui.label(widgets::secondary(why, &p)),
+        };
+        ui.end_row();
     });
     widgets::heading(ui, "Diagnostics");
     let target = app.ui.set.diag_target.clone().filter(|t| app.client.state.target(t).is_some()).or_else(|| app.client.state.targets.first().map(|t| t.entry.id.clone()));

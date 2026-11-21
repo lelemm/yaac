@@ -51,6 +51,7 @@ mod theme;
 mod thread;
 mod titlebar;
 mod tray;
+mod updater;
 mod widgets;
 
 use std::process::ExitCode;
@@ -77,6 +78,8 @@ pub(crate) struct Launch {
     pub shell: tray::Shell,
     /// Put an icon in the tray (not for screenshots and tests).
     pub tray: bool,
+    /// The in-app updater (D136): off unless this is the real window on Windows.
+    pub updater: updater::Updater,
 }
 
 /// The entry point: `args` without the program name.
@@ -184,6 +187,21 @@ pub fn run(args: &[String]) -> ExitCode {
         eprintln!("yaac: YAAC is already open; showing it");
         return ExitCode::SUCCESS;
     }
+    // The in-app updater (D136): only the real window on Windows, in YAAC's own updates folder.
+    // A verified update for a newer build that was downloaded earlier is installed now,
+    // instead of starting (the installer starts YAAC again).
+    #[cfg(feature = "hub")]
+    let updates = attach.as_ref().filter(|_| updater::ENABLED && shots.is_none()).map(|c| c.paths.data_dir.join("updates"));
+    #[cfg(not(feature = "hub"))]
+    let updates: Option<std::path::PathBuf> = None;
+    let updater = match updates {
+        Some(dir) => match updater::at_start(&dir, BUILD) {
+            updater::AtStart::Exit => return ExitCode::SUCCESS,
+            updater::AtStart::Continue(notice) => updater::Updater::new(updater::Config::github(dir), BUILD, notice),
+        },
+        None if !updater::ENABLED => updater::Updater::off("updates are offered on Windows only"),
+        None => updater::Updater::off("not checked in this window"),
+    };
     // The renderer (D128): read before the window exists. Only a real start keeps a display
     // file; the demo uses one only in an explicit profile (`YAAC_CONFIG_DIR`).
     #[cfg(feature = "hub")]
@@ -229,6 +247,7 @@ pub fn run(args: &[String]) -> ExitCode {
         display: display::DisplayState::default(),
         shell,
         tray,
+        updater,
     };
     display::run_window(&base, &plan, choice, file, &store, launch)
 }
