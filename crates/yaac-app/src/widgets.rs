@@ -418,3 +418,4 @@ pub(crate) fn icon_button(ui: &mut Ui, p: &Palette, d: f32, hover: &str, f: impl
     f(ui.painter(), rect.center(), d, col);
     resp
 }
+

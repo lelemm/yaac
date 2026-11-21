@@ -25,7 +25,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key
     let p = app.p;
     Panel::top("thread-header")
         .show_separator_line(false)
-        .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 28, right: 28, top: 14, bottom: 6 }))
+        // The first line sits in the window's title row (D104); room is left for its buttons.
+        .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 28, right: 127, top: 7, bottom: 6 }))
         .show(ui, |ui| header_view(ui, app, map, key, actions));
     Panel::bottom("thread-composer")
         .show_separator_line(false)
@@ -70,13 +71,14 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
         let tag_w = if h.tag.is_some() { 230.0 } else { 0.0 };
         ui.scope(|ui| {
             ui.set_max_width((ui.available_width() - tag_w).max(80.0));
-            ui.add(egui::Label::new(egui::RichText::new(&h.title).font(theme::bold(size::TITLE))).truncate());
+            // Not selectable: the title is part of the title row, which drags the window.
+            ui.add(egui::Label::new(egui::RichText::new(&h.title).font(theme::bold(size::TITLE))).truncate().selectable(false));
         });
         if let Some((tag, tone)) = &h.tag {
             ui.add_space(4.0);
             let c = tone_color(&p, *tone);
             egui::Frame::NONE.fill(p.wash(c)).corner_radius(4).inner_margin(Margin::symmetric(7, 2)).show(ui, |ui| {
-                ui.label(egui::RichText::new(tag).font(theme::ui(size::SMALL)).color(c));
+                ui.add(egui::Label::new(egui::RichText::new(tag).font(theme::ui(size::SMALL)).color(c)).selectable(false));
             });
         }
     });

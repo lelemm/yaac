@@ -561,7 +561,7 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
     let p = app.p;
     let Some(d) = app.client.state.new_threads.iter().find(|d| d.id == id).cloned() else { return };
     let target_name = app.client.state.target_name(&d.target);
-    egui::Panel::top("draft-header").show_separator_line(false).frame(egui::Frame::NONE.inner_margin(Margin { left: 28, right: 28, top: 14, bottom: 6 })).show(ui, |ui| {
+    egui::Panel::top("draft-header").show_separator_line(false).frame(egui::Frame::NONE.inner_margin(Margin { left: 28, right: 127, top: 9, bottom: 6 })).show(ui, |ui| {
         ui.label(egui::RichText::new("New thread").font(theme::bold(size::TITLE)));
         let project = d.project.as_ref().and_then(|pid| app.client.state.projects.iter().find(|x| &x.id == pid)).map(|x| x.name.clone());
         let crumb = match project {

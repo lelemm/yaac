@@ -145,11 +145,15 @@ state: its parents carry no mark for it. Blocked threads are found in the *Needs
 └────────────┴───────────────────────────────────────────────────────────┘
 ```
 
-- **The window has no system title bar** (D104). A quiet strip along the top — each column's
-  background runs into it — holds three buttons at the far right: minimize, maximize (restore
-  while maximized; the icon changes), and close, which turns the failed colour on hover. The
-  rest of the strip drags the window; a double click maximizes or restores it; the window's
-  edges and corners resize it. No "Pinned / Active / Recent" lists, no
+- **The window has no system title bar** (D104). Its **top row is the title bar**, about
+  42 px tall, like a browser's tab strip: over the sidebar it holds `YAAC`, ‹ ›, **New** and the
+  collapse button (over the collapsed strip, the strip's mark); over the thread, the thread's
+  state mark, title and tag (the breadcrumb stays on the line below); at the far right,
+  minimize, maximize (restore while maximized; the icon changes) and close, which turns the
+  failed colour on hover. Every empty part of the row, and the title itself, drags the window;
+  a double click maximizes or restores it; a press on a control in the row never moves the
+  window. The docked agents panel starts below the row. The window's edges and corners resize
+  it. No "Pinned / Active / Recent" lists, no
   "Add agent" button, no "+ Agent / + Tool" controls. Threads are the only objects.
 - The sidebar and the thread are separated by a single hairline, and by nothing else. A
   docked agents panel gets one more.

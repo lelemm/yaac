@@ -133,10 +133,11 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
     let nav = egui::Rect::from_min_max(full.min, pos2(full.left() + 220.0, full.bottom()));
     ui.painter().rect_filled(nav, 0.0, p.panel);
     ui.painter().vline(nav.right(), full.y_range(), egui::Stroke::new(1.0, p.border));
-    // Below the window's title strip (D104), which the columns' backgrounds run into.
+    // "Back to threads" sits in the window's title row (D104); the page itself starts below
+    // it, clear of the window buttons above its right side.
     let inset = crate::titlebar::HEIGHT;
-    let nav_content = egui::Rect::from_min_max(pos2(nav.left(), nav.top() + inset), nav.max);
-    ui.scope_builder(egui::UiBuilder::new().max_rect(nav_content.shrink2(vec2(12.0, 12.0))).id_salt("settings-nav"), |ui| {
+    let nav_content = egui::Rect::from_min_max(nav.min + vec2(12.0, 7.0), nav.max - vec2(12.0, 12.0));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(nav_content).id_salt("settings-nav"), |ui| {
         let back = widgets::plain(ui, &p, "     Back to threads", Some("Esc"));
         icons::arrow_left(ui.painter(), pos2(back.rect.left() + 18.0, back.rect.center().y), 14.0, p.text);
         if back.clicked() {

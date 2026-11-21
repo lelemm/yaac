@@ -1,21 +1,23 @@
-//! The window's own title strip (D104): the window has no system title bar. A strip across
-//! the top of the window — each column's own background continues into it — holds three
-//! buttons at the right (minimize, maximize or restore, close); the rest of the strip drags the
-//! window, and a double click maximizes or restores it. While the window is not maximized,
-//! its edges and corners resize it.
+//! The window's own title row (D104): the window has no system title bar. The top row of the
+//! window is the title bar — like a browser's tab strip: over the sidebar it holds YAAC, back
+//! and forward, New and the collapse button; over the thread, the thread's state, title and
+//! tag; at the far right, minimize, maximize or restore, and close. Every empty part of the
+//! row (and the non-interactive title) drags the window, and a double click maximizes or
+//! restores it; the controls in it work as usual. While the window is not maximized, its edges
+//! and corners resize it.
 
 use eframe::egui::{self, Rect, Sense, ViewportCommand, pos2, vec2};
 
 use crate::icons;
 use crate::theme::Palette;
 
-/// The strip's height.
-pub(crate) const HEIGHT: f32 = 30.0;
+/// The title row's height.
+pub(crate) const HEIGHT: f32 = 42.0;
 const BUTTON_W: f32 = 44.0;
 /// How far in from the window's edge a drag resizes it.
 const GRIP: f32 = 5.0;
 
-/// The strip's draggable part. Called before the content, so the content's own widgets in the
+/// The row's draggable part. Called before the content, so the content's own widgets in the
 /// strip take precedence; [`buttons`] is called after it, so the buttons are on top.
 pub(crate) fn drag_area(ui: &mut egui::Ui, full: Rect) {
     let bar = Rect::from_min_size(full.min, vec2(full.width() - 3.0 * BUTTON_W, HEIGHT));
@@ -24,7 +26,15 @@ pub(crate) fn drag_area(ui: &mut egui::Ui, full: Rect) {
     if resp.double_clicked() {
         ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(!maximized));
     } else if resp.drag_started_by(egui::PointerButton::Primary) {
-        ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        // A press on a control in the row (a button senses clicks, not drags, so egui hands
+        // the drag to the row underneath) never moves the window.
+        let origin = ui.input(|i| i.pointer.press_origin());
+        let on_control = origin.is_some_and(|o| {
+            ui.ctx().interactive_rects_last_pass().iter().any(|r| r.contains(o) && r.area() < bar.area() * 0.5)
+        });
+        if !on_control {
+            ui.ctx().send_viewport_cmd(ViewportCommand::StartDrag);
+        }
     }
 }
 

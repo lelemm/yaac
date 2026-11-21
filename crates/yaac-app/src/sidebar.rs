@@ -26,7 +26,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     let fresh = yaac_core::first_run::is_first_run(&app.client.state);
     ui.horizontal(|ui| {
         ui.set_min_height(28.0);
-        ui.label(egui::RichText::new("YAAC").font(theme::bold(17.0)));
+        ui.add(egui::Label::new(egui::RichText::new("YAAC").font(theme::bold(17.0))).selectable(false));
         if !fresh {
             ui.add_space(6.0);
             crate::nav::buttons(ui, app, actions, false);

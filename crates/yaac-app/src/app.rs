@@ -1337,4 +1337,41 @@ mod tests {
         app.pump_demo();
         assert!(matches!(app.client.draft(&d).unwrap().attachments[0].upload, yaac_core::attachments::Upload::Running { .. }));
     }
+
+    /// Drags the pointer from `from` 30 points to the right over a few frames; returns
+    /// whether the window was asked to start a move.
+    fn drag_starts_window_move(ctx: &egui::Context, app: &mut YaacApp, from: egui::Pos2) -> bool {
+        let screen = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+        let mut moved = false;
+        let steps: Vec<Vec<egui::Event>> = vec![
+            vec![egui::Event::PointerMoved(from)],
+            vec![egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }],
+            vec![egui::Event::PointerMoved(from + egui::vec2(15.0, 0.0))],
+            vec![egui::Event::PointerMoved(from + egui::vec2(30.0, 0.0))],
+            vec![egui::Event::PointerButton { pos: from + egui::vec2(30.0, 0.0), button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }],
+        ];
+        for events in steps {
+            let mut frame = eframe::Frame::_new_kittest();
+            let mut out = ctx.run_ui(egui::RawInput { screen_rect: screen, events, ..Default::default() }, |ui| eframe::App::ui(app, ui, &mut frame));
+            out.textures_delta.clear();
+            moved |= out.viewport_output.values().any(|v| v.commands.contains(&egui::ViewportCommand::StartDrag));
+        }
+        moved
+    }
+
+    #[test]
+    fn the_title_row_drags_the_window_but_not_from_its_controls() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.apply(vec![Action::Open(threads::billing())]);
+        for _ in 0..3 {
+            window_frame(&ctx, &mut app, egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() });
+        }
+        // An empty part of the row, right of the thread's title: the window moves.
+        assert!(drag_starts_window_move(&ctx, &mut app, egui::pos2(1000.0, 20.0)));
+        // The sidebar's collapse button sits in the row: pressing it never moves the window.
+        let collapsed = app.ui.sidebar.collapsed;
+        assert!(!drag_starts_window_move(&ctx, &mut app, egui::pos2(255.0, 21.0)));
+        assert_eq!(app.ui.sidebar.collapsed, collapsed, "a drag is not a click");
+    }
 }
