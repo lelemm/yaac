@@ -4,7 +4,10 @@
 //!
 //! ```text
 //! target → host   <noise, ignored up to the marker>
-//! target → host   YAAC0 os=… arch=… libc=… runtime=<node-V|none> daemon=<builds|none> serving=<build|none|unknown> found=<V|none>
+//! target → host   YAAC0 os=… arch=… libc=… runtime=<node-V|none> daemon=<builds|none> serving=<build|none|unknown> found=<V|none> private=<name|none> fetch=<curl|wget|none>
+//! host → target   GET runtime <name> <url> <sha256>                              (only if no runtime)
+//!           or    PUT runtime <name> <bytes> <sha256>  + exactly <bytes> bytes   (if GET failed)
+//! target → host   OK runtime | ERR <reason>
 //! host → target   PUT daemon <build> <bytes> <sha256>  + exactly <bytes> bytes   (only if missing)
 //! target → host   OK daemon | ERR <reason>
 //! host → target   RUN node <build>
@@ -12,13 +15,17 @@
 //!                 ── from the next byte on, the stream is the YAAC protocol ──
 //! ```
 //!
-//! Transport-independent: the WSL connector uses it now, SSH will. The program itself is
-//! [`STAGE0`]; [`stage0_argv`] is how a transport runs it (`sh -c <program> yaac-stage0
-//! [YAAC_NAME=value …]`, no login shell, so no profile runs).
+//! Transport-independent: the WSL and SSH connectors use it. The program itself is
+//! [`STAGE0`]; [`stage0_argv`] is how WSL runs it (`sh -c <program> yaac-stage0
+//! [YAAC_NAME=value …]`, no login shell, so no profile runs); SSH sends the program on the
+//! stream itself ([`stage0_remote_command`]), because a remote command line passes through the
+//! user's login shell.
 //!
-//! SEAM(private-runtime): the runtime is a Node.js 22+ already installed for the target user
-//! (`runtime=node-<version>`). The `GET runtime` / `PUT runtime` steps for YAAC's own pinned
-//! runtime (D17, D25) come with the runtime itself; until then a target without Node.js 22
+//! The runtime (D17, D25): stage 0 uses YAAC's own pinned Node.js in
+//! `~/.yaac/runtime/<name>/` when it is installed, else a Node.js 22+ already installed for the
+//! user. With neither, the host sends `GET runtime` (the target downloads the pinned archive
+//! itself and verifies its pinned checksum), and if that fails `PUT runtime` with the host's own
+//! verified copy ([`crate::runtime`]). Without a [`RuntimeSource`] a target without Node.js 22
 //! fails with [`ConnectError::NoRuntime`].
 
 use std::collections::BTreeMap;
@@ -29,9 +36,37 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::ConnectError;
+use crate::runtime::{self, RuntimeArtifact, RuntimeSource};
 
 /// The stage 0 program (POSIX sh).
 pub const STAGE0: &str = include_str!("stage0.sh");
+
+/// Quotes one word for a POSIX shell (`'…'`, with `'` as `'\''`).
+pub fn shell_quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
+/// The remote command that runs stage 0 when the program itself comes first on standard input
+/// (exactly [`STAGE0`]`.len()` bytes, then the stage 0 dialogue): `exec <shell> -c 'eval
+/// "$(dd bs=1 count=<n> 2>/dev/null)"' yaac-stage0 'YAAC_NAME=value' …`.
+///
+/// A remote command line is run by the user's login shell, whatever it is (bash, zsh, fish,
+/// csh): this one is a single line of plain words in single quotes, which they all read the
+/// same way, and `dd bs=1` reads exactly the program's bytes and no more, so the rest of the
+/// stream is left for stage 0. `shell` is the POSIX shell that runs stage 0 (`sh`).
+///
+/// Values containing a newline or a single quote cannot be passed (csh) and are dropped.
+pub fn stage0_remote_command(shell: &str, env: &[(String, String)]) -> String {
+    let mut cmd = format!("exec {shell} -c 'eval \"$(dd bs=1 count={} 2>/dev/null)\"' yaac-stage0", STAGE0.len());
+    for (k, v) in env {
+        if v.contains(['\n', '\r', '\'']) || !k.starts_with("YAAC_") {
+            continue;
+        }
+        cmd.push(' ');
+        cmd.push_str(&shell_quote(&format!("{k}={v}")));
+    }
+    cmd
+}
 
 /// The oldest Node.js major version the daemon runs on (`engines` in `daemon/package.json`).
 pub const MIN_NODE_MAJOR: u32 = 22;
@@ -118,11 +153,13 @@ pub struct Stage0Timeouts {
     pub marker: Duration,
     /// For each reply.
     pub reply: Duration,
+    /// For a runtime download or upload (tens of MB).
+    pub runtime: Duration,
 }
 
 impl Default for Stage0Timeouts {
     fn default() -> Self {
-        Self { marker: Duration::from_secs(60), reply: Duration::from_secs(120) }
+        Self { marker: Duration::from_secs(60), reply: Duration::from_secs(120), runtime: Duration::from_secs(900) }
     }
 }
 
@@ -132,6 +169,8 @@ pub struct Bootstrapped<R, W> {
     pub report: Stage0Report,
     /// Whether the daemon was uploaded on this connection.
     pub uploaded: bool,
+    /// Whether, and how, the runtime was installed on this connection.
+    pub runtime: Option<RuntimeInstall>,
     /// Bytes from the target, starting at the first protocol byte.
     pub reader: tokio::io::Chain<std::io::Cursor<Vec<u8>>, R>,
     /// Bytes to the target.
@@ -183,12 +222,80 @@ fn shown(bytes: &[u8]) -> String {
     if count > 600 { format!("…{}", text.chars().skip(count - 600).collect::<String>()) } else { text.to_owned() }
 }
 
+/// Runs stage 0 to completion with no runtime source (a target needs a Node.js 22+ of its
+/// own). See [`bootstrap_with`].
+pub async fn bootstrap<R, W>(reader: R, writer: W, bundle: &DaemonBundle, what: &str, timeouts: Stage0Timeouts) -> Result<Bootstrapped<R, W>, ConnectError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    bootstrap_with(reader, writer, bundle, None, what, timeouts).await
+}
+
+/// Runs stage 0 on a spawned child whose standard streams are piped: writes `preamble` first
+/// (the program itself, for SSH), keeps the tail of its standard error for error messages,
+/// and on success hands back the [`crate::Stream`] that owns the child.
+pub(crate) async fn bootstrap_child(
+    mut child: tokio::process::Child,
+    preamble: &[u8],
+    bundle: &DaemonBundle,
+    runtime: Option<&RuntimeSource>,
+    what: &str,
+    timeouts: Stage0Timeouts,
+    explain: fn(&str) -> Option<String>,
+) -> Result<crate::Stream, ConnectError> {
+    let (Some(mut stdin), Some(stdout), Some(mut stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
+        return Err(ConnectError::Other("the child's standard streams were not captured".into()));
+    };
+    // Keep the tail of standard error for error messages (and never let it fill up).
+    let tail = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = tail.clone();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stderr.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            if let Ok(mut t) = sink.lock() {
+                t.extend_from_slice(&buf[..n]);
+                let excess = t.len().saturating_sub(8192);
+                t.drain(..excess);
+            }
+        }
+    });
+    let started = async {
+        if !preamble.is_empty() {
+            stdin.write_all(preamble).await.map_err(|e| ConnectError::Other(format!("{what}: sending stage 0: {e}")))?;
+        }
+        bootstrap_with(stdout, stdin, bundle, runtime, what, timeouts).await
+    };
+    match started.await {
+        Ok(done) => Ok(crate::Stream { reader: Box::new(done.reader), writer: Box::new(done.writer), child: crate::ChildGuard::process(child) }),
+        Err(e) => {
+            let _ = child.start_kill();
+            // Give the drain a moment to collect what the child said on its way out.
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let said = tail.lock().map(|t| crate::wsl::console_text(&t)).unwrap_or_default();
+            let said = said.trim();
+            if let Some(plain) = explain(said) {
+                return Err(ConnectError::Other(format!("{what}: {plain}")));
+            }
+            Err(match e {
+                ConnectError::Other(m) if !said.is_empty() => ConnectError::Other(format!("{m} (stderr: {said})")),
+                other => other,
+            })
+        }
+    }
+}
+
 /// Runs stage 0 to completion. `what` names the target in error messages ("WSL distro
-/// Ubuntu"); `bundle` is installed when the target lacks its build.
-pub async fn bootstrap<R, W>(
+/// Ubuntu"); `bundle` is installed when the target lacks its build; `runtime`, when given, is
+/// where a target with no runtime gets one.
+pub async fn bootstrap_with<R, W>(
     reader: R,
     mut writer: W,
     bundle: &DaemonBundle,
+    runtime: Option<&RuntimeSource>,
     what: &str,
     timeouts: Stage0Timeouts,
 ) -> Result<Bootstrapped<R, W>, ConnectError>
@@ -226,17 +333,25 @@ where
     .await
     .map_err(|_| ConnectError::Other(format!("{what}: no YAAC0 marker within {:?}; got: {}", timeouts.marker, shown(&noise))))??;
 
-    // 2. The runtime. SEAM(private-runtime): only a system Node.js 22+ for now.
-    let Some(runtime) = report.get("runtime").filter(|r| r.starts_with("node-")) else {
-        let found = report.get("found").map_or_else(
-            || "no Node.js was found".to_owned(),
-            |v| format!("only Node.js {v} was found"),
-        );
-        return Err(ConnectError::NoRuntime(format!(
-            "{what}: YAAC needs Node.js {MIN_NODE_MAJOR} or newer on the target for now, and {found} (looked on PATH, in ~/.nvm, ~/.volta, fnm, asdf, /usr/local/bin and /usr/bin; set YAAC_NODE to point at one)"
-        )));
-    };
-    let _ = runtime;
+    // 2. The runtime: YAAC's own or a Node.js 22+ already there; otherwise the pinned build,
+    //    downloaded by the target itself or sent by the host.
+    let mut fetched = None;
+    if report.get("runtime").filter(|r| r.starts_with("node-")).is_none() {
+        let found = report.get("found").map_or_else(|| "no Node.js was found".to_owned(), |v| format!("only Node.js {v} was found"));
+        let Some(source) = runtime else {
+            return Err(ConnectError::NoRuntime(format!(
+                "{what}: YAAC needs Node.js {MIN_NODE_MAJOR} or newer on the target, and {found} (looked on PATH, in ~/.nvm, ~/.volta, fnm, asdf, /usr/local/bin and /usr/bin; set YAAC_NODE to point at one)"
+            )));
+        };
+        let (os, arch, libc) = (report.get("os").unwrap_or("?"), report.get("arch").unwrap_or("?"), report.get("libc").unwrap_or("?"));
+        let Some(artifact) = source.pick(os, arch, libc) else {
+            return Err(ConnectError::NoRuntime(format!(
+                "{what}: {found}, and YAAC has no runtime build for {os} {arch} ({libc}); install Node.js {MIN_NODE_MAJOR} or newer there"
+            )));
+        };
+        fetched = Some(install_runtime(&mut lines, &mut writer, source, artifact, &report, what, timeouts).await?);
+    }
+
 
     // 3. The daemon, in-band, only if this build is missing.
     let mut uploaded = false;
@@ -255,7 +370,71 @@ where
     expect(&mut lines, "OK run", what, "starting the daemon", timeouts.reply).await?;
 
     let Lines { reader, buf } = lines;
-    Ok(Bootstrapped { report, uploaded, reader: std::io::Cursor::new(buf).chain(reader), writer })
+    Ok(Bootstrapped { report, uploaded, runtime: fetched, reader: std::io::Cursor::new(buf).chain(reader), writer })
+}
+
+/// How the runtime got onto the target on this connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeInstall {
+    /// The target downloaded it itself (`GET runtime`).
+    Downloaded,
+    /// The host sent it over the stream (`PUT runtime`).
+    Uploaded,
+}
+
+/// `GET runtime` first (when the target can download and the source allows it), then
+/// `PUT runtime` from the host's verified copy.
+async fn install_runtime<R, W>(
+    lines: &mut Lines<R>,
+    writer: &mut W,
+    source: &RuntimeSource,
+    artifact: &RuntimeArtifact,
+    report: &Stage0Report,
+    what: &str,
+    timeouts: Stage0Timeouts,
+) -> Result<RuntimeInstall, ConnectError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let io = |e: std::io::Error| ConnectError::Other(format!("{what}: sending the runtime: {e}"));
+    let mut why = Vec::new();
+    if source.target_download && report.get("fetch").is_some() {
+        let line = format!("GET runtime {} {} {}\n", artifact.name, artifact.url, artifact.sha256);
+        writer.write_all(line.as_bytes()).await.map_err(io)?;
+        writer.flush().await.map_err(io)?;
+        match expect(lines, "OK runtime", what, "downloading the runtime", timeouts.runtime).await {
+            Ok(()) => return Ok(RuntimeInstall::Downloaded),
+            Err(e) => why.push(e.to_string()),
+        }
+    } else if source.target_download {
+        why.push(format!("{what}: has neither curl nor wget"));
+    }
+    if source.cache_dir.is_none() {
+        return Err(ConnectError::NoRuntime(why.join("; ")));
+    }
+    let file = runtime::host_copy(source, artifact).await.map_err(|e| {
+        why.push(e);
+        ConnectError::NoRuntime(format!("{what}: could not install the runtime: {}", why.join("; ")))
+    })?;
+    let len = std::fs::metadata(&file).map_err(io)?.len();
+    let header = format!("PUT runtime {} {len} {}\n", artifact.name, artifact.sha256);
+    writer.write_all(header.as_bytes()).await.map_err(io)?;
+    let mut f = std::fs::File::open(&file).map_err(io)?;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut sent = 0u64;
+    while sent < len {
+        let n = std::io::Read::read(&mut f, &mut buf).map_err(io)?;
+        if n == 0 {
+            return Err(ConnectError::Other(format!("{what}: the runtime archive {} shrank while it was sent", file.display())));
+        }
+        let n = n.min(usize::try_from(len - sent).unwrap_or(usize::MAX));
+        writer.write_all(&buf[..n]).await.map_err(io)?;
+        sent += n as u64;
+    }
+    writer.flush().await.map_err(io)?;
+    expect(lines, "OK runtime", what, "installing the runtime", timeouts.runtime).await?;
+    Ok(RuntimeInstall::Uploaded)
 }
 
 async fn expect<R: AsyncRead + Unpin>(lines: &mut Lines<R>, ok: &str, what: &str, step: &str, timeout: Duration) -> Result<(), ConnectError> {

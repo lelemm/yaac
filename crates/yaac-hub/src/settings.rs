@@ -79,6 +79,10 @@ pub struct Settings {
     /// This host's stable client id, sent to every `yaacd` in `initialize`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<ClientId>,
+    /// What YAAC did on each SSH server during setup (docs/02-architecture.md#setting-up-an-ssh-connection),
+    /// by *user@host:port*. Never a password; YAAC's own keys are files beside this one's data.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ssh: Vec<crate::protocol::SshRecordEntry>,
     /// Fields this build does not know.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -135,7 +139,7 @@ impl Settings {
     /// `always` seeds the lifecycle setting.
     pub fn first_run(seed_local: bool, always: bool) -> Self {
         let hub = HubSettings { always, ..HubSettings::default() };
-        let mut settings = Self { targets: Vec::new(), hub, client_id: None, extra: Map::new() };
+        let mut settings = Self { targets: Vec::new(), hub, client_id: None, ssh: Vec::new(), extra: Map::new() };
         if seed_local {
             settings.targets.push(TargetDef {
                 id: TargetId::new(new_id("t")),

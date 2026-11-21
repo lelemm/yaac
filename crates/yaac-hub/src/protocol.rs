@@ -29,6 +29,9 @@ use yaac_protocol::{ClientId, JournalPosition, OpId, Sha256Hex, TargetId, Thread
 
 use crate::settings::HubSettings;
 
+mod ssh;
+pub use ssh::*;
+
 /// Additional attach method names.
 pub mod names {
     /// Hub → window notification: a cached thread was rebuilt; re-read it from the cache.
@@ -131,6 +134,42 @@ pub mod names {
     pub const BLOB_LIST: &str = "hub/drafts/blob/list";
     /// Window → hub: forget a blob (its chip was removed) ([`super::BlobRef`] → `{}`).
     pub const BLOB_DELETE: &str = "hub/drafts/blob/delete";
+
+    // ── SSH setup, verify, and revoke (docs/02-architecture.md#setting-up-an-ssh-connection) ──
+    // Each runs short `ssh` sessions from the hub, one after another, and only while the
+    // server's target has no live connection (refused with `target_connected` otherwise).
+    /// Window → hub: contact the server and read its host key ([`super::SshConnParams`] →
+    /// [`super::SshHostKey`]). Unreachable: code `ssh_unreachable`.
+    pub const SSH_REACH: &str = "hub/ssh/reach";
+    /// Window → hub: the user confirmed this host key; trust it (in YAAC's own known-hosts
+    /// file) and try signing in with no password ([`super::SshProbeParams`] →
+    /// [`super::SshProbeResult`]).
+    pub const SSH_PROBE: &str = "hub/ssh/probe";
+    /// Window → hub: sign in once with a password or a key file, generate YAAC's own key,
+    /// and append its public half to `authorized_keys` ([`super::SshSignInParams`] →
+    /// [`super::SshInstalledKey`]). The password is used once and wiped; the session stays
+    /// open until `verify` or `removeKey` decides whether the line stays.
+    pub const SSH_SIGN_IN: &str = "hub/ssh/signIn";
+    /// Window → hub: sign in again with YAAC's key alone ([`super::SshConnParams`] → `{}`).
+    /// During setup, success keeps the line; on its own, it checks that password-less access
+    /// still works.
+    pub const SSH_VERIFY: &str = "hub/ssh/verify";
+    /// Window → hub: after a failed verify, remove the line just added and confirm it is gone
+    /// ([`super::SshConnParams`] → `{}`).
+    pub const SSH_REMOVE_KEY: &str = "hub/ssh/removeKey";
+    /// Window → hub: **Revoke** — close the target's connection, remove exactly YAAC's line
+    /// (matched by the key itself), and delete YAAC's key ([`super::SshConnParams`] →
+    /// [`super::SshRevokeResult`]). Refused with `nothing_to_revoke` when YAAC installed
+    /// nothing; a no-op when it was already revoked. Unreachable: code `ssh_unreachable`,
+    /// and the key is kept.
+    pub const SSH_REVOKE: &str = "hub/ssh/revoke";
+    /// Window → hub: the user removed YAAC's line by hand; delete YAAC's key
+    /// ([`super::SshConnParams`] → `{}`).
+    pub const SSH_REMOVED_BY_HAND: &str = "hub/ssh/removedByHand";
+    /// Window → hub: what YAAC did on each SSH server ([`super::SshRecordsResult`]).
+    pub const SSH_RECORDS: &str = "hub/ssh/records";
+    /// Hub → window notification: the SSH records changed; ask `hub/ssh/records` again.
+    pub const SSH_CHANGED: &str = "hub/ssh/changed";
 }
 
 /// Error codes the hub adds (the `code` strings of [`yaac_protocol::rpc::ErrorObject`]).
@@ -154,6 +193,15 @@ pub mod codes {
     pub const BLOB_NOT_FOUND: &str = "blob_not_found";
     /// `hub/targets/start` did not end connected; the message says why.
     pub const START_FAILED: &str = "start_failed";
+    /// An SSH setup step was asked for while the server's target is connected (or another
+    /// setup step for it is running).
+    pub const TARGET_CONNECTED: &str = "target_connected";
+    /// The SSH server could not be reached (or no longer accepts YAAC's key, for Revoke).
+    pub const SSH_UNREACHABLE: &str = "ssh_unreachable";
+    /// An SSH setup step failed; the message is the plain-words reason or the SSH error.
+    pub const SSH_FAILED: &str = "ssh_failed";
+    /// Revoke on a server where YAAC installed nothing.
+    pub const NOTHING_TO_REVOKE: &str = "nothing_to_revoke";
 }
 
 /// `hub/thread/reset` params.

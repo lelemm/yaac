@@ -13,10 +13,12 @@
 //!
 //! The machine is pure: it calls the [`SshSetupBackend`] and applies its [`StepReport`]s.
 //! **The backend never blocks**: each call starts one step and its typed result arrives later
-//! through [`SshSetupBackend::poll`]. **SEAM:** the real backend belongs to the hub (it owns
-//! every connection to a target, and Setup's short sessions run only while the target has no
-//! live one); the attach protocol has no `hub/ssh/*` methods yet, so the window ships only the
-//! scripted [`crate::demo::ssh::ScriptedSsh`].
+//! through [`SshSetupBackend::poll`]. The real backend is the hub's (it owns every connection
+//! to a target, and Setup's short sessions run only while the target has no live one): the
+//! window sends each step as a `hub/ssh/*` request ([`crate::client::Client::ssh_request`]);
+//! the demo uses the scripted [`crate::demo::ssh::ScriptedSsh`]. With the hub, `sign_in` is
+//! the sign-in *and* the install (one session, so the password is used once) and
+//! `install_key` reports what it installed.
 //!
 //! **The password is never stored.** It lives in a [`Secret`] — a zeroised buffer owned by the
 //! dialog — and is moved into the backend exactly once, inside a [`Credential`]. Nothing here

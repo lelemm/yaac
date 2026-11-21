@@ -48,7 +48,7 @@ never opens a connection of its own.
 | Target | The one child process | Notes |
 | --- | --- | --- |
 | Local | `<private runtime> yaacd.mjs connect` | No shell in between. |
-| SSH | `ssh -T <host> <bootstrap>` | One SSH session, one exec channel, no PTY. |
+| SSH | `ssh -T … -- <host> <one-line stage 0 loader>` | One SSH session, one exec channel, no PTY, no connection sharing. |
 | WSL | `wsl.exe -d <distro> [-u <user>] --exec <bootstrap>` | One `wsl.exe` per enabled WSL connection. |
 
 ### What a target is
@@ -115,11 +115,31 @@ shell are involved.
 - It honours `~/.ssh/config`, agents, `ProxyJump`, hardware keys, `known_hosts`, and every
   corporate quirk already solved on the user's machine.
 - Windows has shipped `ssh.exe` since Windows 10 1809.
-- Prompts (a password, a key passphrase, a new host key to confirm) are answered through
-  `SSH_ASKPASS`, which we point at the YAAC binary, so they come from YAAC's own window.
+- Prompts happen only during [Setup](#setting-up-an-ssh-connection): the password or key
+  passphrase is answered through `SSH_ASKPASS`, which points at the YAAC binary, so it comes
+  from YAAC's own window. A new host key is confirmed in the window before any login.
 
-Invocation shape: `ssh -T -o EscapeChar=none -o ServerAliveInterval=15 <args> <host> <bootstrap>`.
-`-T` and `EscapeChar=none` keep the stream binary-clean.
+Invocation shape (`yaac-transport`, `ssh.rs`):
+
+```
+ssh -T -o ControlMaster=no -o ControlPath=none -o EscapeChar=none -o ServerAliveInterval=15
+    -o StrictHostKeyChecking=yes -o UserKnownHostsFile="<YAAC's known_hosts>" ~/.ssh/known_hosts …
+    -o BatchMode=yes [-o IdentitiesOnly=yes -o IdentityFile=<YAAC's key>] [-p <port>] [-l <user>]
+    -- <host> "exec sh -c 'eval \"\$(dd bs=1 count=<n> 2>/dev/null)\"' yaac-stage0 'YAAC_…=…'"
+```
+
+- `-T` and `EscapeChar=none` keep the stream binary-clean; `ControlMaster=no` and
+  `ControlPath=none` keep it from sharing (or offering) a multiplexed master connection.
+- **A normal connection never prompts** (`BatchMode=yes`). It uses YAAC's own key when YAAC
+  set the server up, otherwise whatever the user's `ssh` is set up with (agent, config, keys).
+  A refused login, an unknown host key, or a changed one fails with a plain-words message.
+- **The remote command is a one-line loader** and stage 0 itself is the first thing written on
+  standard input (P38): the command passes through the user's login shell, whatever it is.
+- Reconnection is the hub's supervisor's, with capped backoff, as for every transport.
+
+**Verified on Linux** against OpenSSH 9.6 (a throwaway `sshd` in the tests). On Windows the
+same arguments go to `ssh.exe` with no console window; that path is built but not yet run
+against a server.
 
 **Decided:** SSH targets are POSIX machines — Linux, including musl distributions; macOS works
 as a side effect. Windows machines reached over SSH are not supported in the MVP. Windows is
@@ -207,8 +227,39 @@ Hosts that are already configured — an alias in `~/.ssh/config`, an agent, a j
 through the same Setup button: step 1 succeeds and the connection is ready. Settings can import
 hosts from `~/.ssh/config` to pre-fill the form.
 
-**Verify (spike S9):** the askpass flow for a password, a key passphrase, and a host-key prompt
-through the system `ssh` on both Windows and Linux, with no terminal attached.
+##### How the hub does it
+
+Setup, Verify, and Revoke are the hub's (`hub/ssh/*`, in `yaac-hub`'s `protocol` and `ssh`
+modules); the window only sends the steps and shows their answers (P45).
+
+| Step | Sessions |
+| --- | --- |
+| Reach | `ssh -G` resolves what `ssh` would connect to (aliases, `HostName`, `HostKeyAlias`); `ssh-keyscan` reads the host key; the strongest (Ed25519 first) is shown with its `SHA256:` fingerprint. |
+| Confirm + probe | The confirmed key goes into **YAAC's own** `known_hosts` (`<data>/ssh/known_hosts`), never the user's (P40). Then `ssh BatchMode=yes … echo` with the user's own setup: works → *already in place*, recorded, Revoke stays disabled. |
+| Sign in + install | `ssh-keygen` makes YAAC's Ed25519 key (`<data>/ssh/keys/<server>/id_ed25519`, user-only). One session signs in with the password (`PubkeyAuthentication=no`) or the key file (`IdentitiesOnly=yes`), and runs the install script: `~/.ssh` `0700` and `authorized_keys` `0600` if missing, the line appended only if its key is absent. The session then **waits** (P42). |
+| Proof | A second login with YAAC's key alone. Works → the waiting session is told `KEEP` and records the line in `~/.yaac/ssh/<id>` on the server; fails → `REMOVE`, and the line is removed and its absence checked. If the hub goes away, the session ends and the server removes the line itself. |
+| Revoke | The target's connection is closed first. A login with YAAC's key runs the revoke script: every line in which some field equals YAAC's key is dropped, the file is rewritten atomically (temporary file, `mv`), and the key's absence is checked; then YAAC's key and record are deleted. Unreachable, or YAAC's key no longer accepted → `ssh_unreachable`, the key is kept, and the window shows the line to remove by hand. Revoking twice is a no-op; Revoke where access was already in place is refused (`nothing_to_revoke`). |
+
+**The password never touches a disk.** The window moves it from its zeroised buffer into the
+one `hub/ssh/signIn` request. The hub moves it into a zeroised buffer and serves it once, over
+a one-shot user-only local socket, to the `SSH_ASKPASS` helper (the `yaac` binary itself,
+which `ssh` runs with the socket's path and a random token in its environment — never the
+secret). The secret is wiped as soon as the sign-in is over (P41). The attach protocol's
+frame buffers and the JSON value of that one request are transient and not zeroised.
+
+**The single-connection rule is enforced by the hub** (P44): a setup step is refused with
+`target_connected` while the server has a connection open or being opened, and a connection
+attempt waits out a running setup step. The record of what YAAC did is kept per server in
+`hub.json` (P43), so it applies to every target of that server.
+
+**Verified on Linux** (OpenSSH 9.6): a throwaway `sshd` runs the whole matrix in
+`crates/yaac-hub/tests/ssh_setup.rs` — key-file setup, verify, revoke leaving exactly the
+original lines, revoke again, access already in place, a failed proof, setup refused while
+connected, and a turn end to end. A non-root `sshd` cannot check passwords, so the password
+case puts a stand-in in front of `ssh` that asks `SSH_ASKPASS` exactly as `ssh` does.
+
+**Verify (spike S9):** the askpass flow for a password and a key passphrase through
+`ssh.exe` on Windows, with no terminal attached (Linux is verified).
 
 ### WSL
 
@@ -308,6 +359,15 @@ tricked into running something else.
 (present on Windows 10+ and on practically every Linux desktop), keeping the host binary free
 of an HTTP and TLS stack ([footprint](#footprint-budget)).
 
+**Built (P39):** the runtime is **Node.js 22.22.3**, `.tar.gz` builds from nodejs.org (musl
+builds from the Node.js project's unofficial-builds site), checksums in
+`yaac-transport/src/runtime.rs`. The target downloads with `curl` or `wget` and checks the
+archive with `sha256sum` or `shasum`; the host caches its verified copy in
+`<data>/runtime-cache/` and sends it with `PUT runtime`. Both paths were run once against the
+real nodejs.org; the tests use a fake archive served from a temporary folder. Until spike S3
+decides otherwise, a **Node.js 22+ already installed for the user is used** when YAAC's own is
+not there (P39 departs from P4 here); `YAAC_SYSTEM_NODE=0` makes stage 0 ignore it.
+
 ### Stage 0
 
 The command the transport runs on a remote target is a tiny POSIX shell program, *stage 0*. It
@@ -315,12 +375,12 @@ does as little as possible: report what is there, get a runtime in place, and ha
 
 ```
 target → host   <any shell start-up noise — ignored up to the marker>
-target → host   YAAC0 os=<uname -s> arch=<uname -m> libc=<glibc|musl> runtime=<version|none> daemon=<builds|none> serving=<build|none>
-host → target   GET runtime <version> <url> <sha256>          # target downloads it itself …
-          or    PUT runtime <version> <byte-count> <sha256>   # … or receives exactly that many bytes
+target → host   YAAC0 os=<uname -s> arch=<uname -m> libc=<glibc|musl> runtime=<node-version|none> daemon=<builds|none> serving=<build|none> found=<older node|none> private=<name|none> fetch=<curl|wget|none>
+host → target   GET runtime <name> <url> <sha256>             # target downloads it itself …
+          or    PUT runtime <name> <byte-count> <sha256>      # … or receives exactly that many bytes (if GET failed)
 target → host   OK runtime | ERR <reason>
 host → target   PUT daemon <build> <byte-count> <sha256>      # only if missing
-host → target   RUN <runtime-version> <build>
+host → target   RUN node <build>
 target          exec the bridge of the build that is serving — or, if none is, of the newest installed:
                 ~/.yaac/runtime/<version>/<bin> ~/.yaac/daemon/<build>/yaacd.mjs connect
                 ── from this byte on, the stream is the YAAC protocol ──
@@ -467,7 +527,10 @@ object on Windows, a distro shutdown on WSL. Each is specified and tested on its
 | Uploaded attachments | **Target**, in the system temp directory | The harness reads them there; the operating system cleans them up. |
 | Fork handoff transcripts | **Target**, in `~/.yaac/` | A forked thread's inherited history must outlive a reboot. |
 | Targets (SSH and WSL connections, how each SSH connection was set up), appearance, UI preferences | **Host** settings file | They describe this host's view of the world. |
-| YAAC-generated SSH keys, one per connection that YAAC set up | **Host**, in a user-only key directory | Needed to connect; removed on Revoke. |
+| YAAC-generated SSH keys, one per server that YAAC set up | **Host**, `<data>/ssh/keys/<server>/` (user-only) | Needed to connect; removed on Revoke. |
+| Host keys the user confirmed during SSH setup | **Host**, `<data>/ssh/known_hosts` | Checked before the user's own `known_hosts`, which YAAC never writes. |
+| What YAAC did on each SSH server | **Host** settings file (`ssh`); **target**, `~/.yaac/ssh/<id>` | Revoke must know whether there is anything of YAAC's to remove. |
+| The private runtime archives the host fetched | **Host**, `<data>/runtime-cache/` | Verified against the pinned checksum; sent to targets that cannot download. Safe to delete. |
 | **Drafts** — unsent text and attachments | **Host**, in their own durable store | User-authored data. Never part of the disposable cache. |
 | Agent-to-agent messages in transit | **Target** outbox and mailbox; **host** relay queue | Each hop stores a message on disk before acknowledging it ([10](10-agent-mesh.md#durability-hop-by-hop)). |
 | Thread index, model lists, opened transcripts | **Host** cache (SQLite), written by the hub, read by the window | Speed only. Always safe to delete. |

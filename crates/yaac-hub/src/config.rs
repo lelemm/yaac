@@ -5,15 +5,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yaac_protocol::attach::TargetTransport;
-use yaac_transport::{Connector, DaemonBundle, LocalConfig, LocalConnector, WslConfig, WslConnector};
+use yaac_transport::{Connector, DaemonBundle, LocalConfig, LocalConnector, RuntimeSource, WslConfig, WslConnector};
 
 use crate::notify::{Notifier, SystemNotifier};
 use crate::paths::{HubPaths, PathsError};
 use crate::settings::TargetDef;
+use crate::ssh::SshDefaults;
 
 /// Makes the connector for a target. The default builds a [`LocalConnector`] for local
-/// targets and a [`WslConnector`] for WSL targets, and refuses SSH (a later package); tests
-/// supply in-memory daemons.
+/// targets and a [`WslConnector`] for WSL targets; SSH targets are built by the hub itself
+/// from [`HubConfig::ssh`] (their key and setup state are the hub's); tests supply in-memory
+/// daemons.
 pub trait ConnectorFactory: Send + Sync {
     /// The connector for this target, or a message to show as the target's state.
     fn connector(&self, target: &TargetDef) -> Result<Arc<dyn Connector>, String>;
@@ -41,6 +43,8 @@ pub struct WslDefaults {
     pub bundle: Option<DaemonBundle>,
     /// Variables stage 0 exports on the target before the daemon starts (`YAAC_` names only).
     pub env: Vec<(String, String)>,
+    /// Where a distro with no runtime gets one (`None`: it needs a Node.js 22+ of its own).
+    pub runtime: Option<RuntimeSource>,
 }
 
 impl WslDefaults {
@@ -64,7 +68,7 @@ impl WslDefaults {
                     .collect()
             })
             .unwrap_or_default();
-        Self { wsl_exe: get("YAAC_WSL_EXE"), bundle, env }
+        Self { wsl_exe: get("YAAC_WSL_EXE"), bundle, env, runtime: None }
     }
 }
 
@@ -81,7 +85,8 @@ impl ConnectorFactory for DefaultConnectors {
     fn connector(&self, target: &TargetDef) -> Result<Arc<dyn Connector>, String> {
         match &target.transport {
             TargetTransport::Local(_) => Ok(Arc::new(LocalConnector::new(self.local.clone()))),
-            TargetTransport::Ssh(_) => Err("SSH targets are not supported by this build yet".into()),
+            // The hub builds SSH connectors itself, from `HubConfig::ssh`.
+            TargetTransport::Ssh(_) => Err("SSH is not configured in this hub".into()),
             TargetTransport::Wsl(w) => {
                 if !cfg!(windows) && self.wsl.wsl_exe.is_none() {
                     return Err("WSL targets are reached from a Windows host".into());
@@ -91,6 +96,7 @@ impl ConnectorFactory for DefaultConnectors {
                     config.wsl_exe.clone_from(exe);
                 }
                 config.env.clone_from(&self.wsl.env);
+                config.runtime.clone_from(&self.wsl.runtime);
                 Ok(Arc::new(WslConnector::new(config)))
             }
             TargetTransport::Unknown(other) => Err(format!("unknown transport {:?}", other.tag("kind"))),
@@ -161,6 +167,9 @@ pub struct HubConfig {
     pub uploads: crate::UploadLimits,
     /// Threads in the worker pool that reads and hashes files for uploads.
     pub pool_threads: usize,
+    /// How SSH targets are reached and set up (`hub/ssh/*`). `None`: SSH targets stay offline
+    /// with a message (the default of [`HubConfig::new`]; [`HubConfig::from_env`] sets it).
+    pub ssh: Option<Arc<SshDefaults>>,
 }
 
 impl std::fmt::Debug for HubConfig {
@@ -192,8 +201,13 @@ impl HubConfig {
     pub fn from_env(build: impl Into<String>) -> Result<Self, PathsError> {
         let paths = HubPaths::from_env()?;
         let local = LocalConfig::from_env(&default_root());
-        let wsl = WslDefaults::from_lookup(|k| std::env::var_os(k));
+        let mut wsl = WslDefaults::from_lookup(|k| std::env::var_os(k));
+        let runtime = RuntimeSource::pinned(Some(paths.data_dir.join("runtime-cache")));
+        wsl.runtime = Some(runtime.clone());
+        let mut ssh = SshDefaults::new(&paths.data_dir, &paths.runtime_dir, wsl.bundle.clone(), wsl.env.clone());
+        ssh.runtime = Some(runtime);
         let mut config = Self::new(build, paths, Arc::new(DefaultConnectors { local, wsl }));
+        config.ssh = Some(Arc::new(ssh));
         config.notifier = Some(Arc::new(SystemNotifier));
         Ok(config)
     }
@@ -221,6 +235,7 @@ impl HubConfig {
             notifier: None,
             uploads: crate::UploadLimits::default(),
             pool_threads: 2,
+            ssh: None,
         }
     }
 }
