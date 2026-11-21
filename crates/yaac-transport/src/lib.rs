@@ -7,11 +7,13 @@
 //!
 //! | Item | What |
 //! | --- | --- |
-//! | [`Connector`] | Opens the one stream to a target. Local now; SSH and WSL are later packages. |
+//! | [`Connector`] | Opens the one stream to a target: local, SSH, or WSL. |
 //! | [`Stream`] | Reader, writer, and the [`ChildGuard`] that kills the child when dropped. |
 //! | [`local::LocalConnector`] | `<private runtime> yaacd.mjs connect`, no shell in between. |
+//! | [`ssh::SshConnector`] | The system `ssh -T … <host> <one-line stage 0 loader>`: one child, never prompts. |
 //! | [`wsl::WslConnector`] | `wsl.exe -d <distro> [-u <user>] --exec sh -c <stage 0>`: one child, no console window. |
-//! | [`bootstrap`] | Stage 0, the host side: report, in-band daemon install, hand-over. |
+//! | [`bootstrap`] | Stage 0, the host side: report, in-band runtime and daemon install, hand-over. |
+//! | [`runtime`] | The pinned private runtime (D17, D25) and the host's verified copy of it. |
 //!
 //! The stream carries the YAAC protocol from its first byte on the local target (there is no
 //! stage 0 locally). A remote connector completes stage 0 inside `connect` and hands back a
@@ -25,11 +27,20 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 pub mod bootstrap;
 pub mod local;
+pub mod runtime;
+pub mod ssh;
 pub mod wsl;
 
 pub use bootstrap::DaemonBundle;
 pub use local::{LocalConfig, LocalConnector};
+pub use runtime::RuntimeSource;
+pub use ssh::{SshConfig, SshConnector, SshTarget};
 pub use wsl::{WslConfig, WslConnector};
+
+/// `CREATE_NO_WINDOW`: `wsl.exe`, `ssh.exe`, and `curl.exe` are console programs; without
+/// this a GUI host would flash a console window for each.
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// A boxed, sendable future (the trait stays object-safe without an extra dependency).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -97,6 +108,13 @@ impl ChildGuard {
     /// A guard that owns nothing.
     pub fn none() -> Self {
         Self::default()
+    }
+
+    /// Also runs `f` when dropped, after the child is killed (replacing any earlier `f`).
+    #[must_use]
+    pub fn and_on_drop(mut self, f: impl FnOnce() + Send + 'static) -> Self {
+        self.on_drop = Some(Box::new(f));
+        self
     }
 
     /// The child's process id, while it runs.

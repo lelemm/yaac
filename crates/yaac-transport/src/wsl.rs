@@ -16,18 +16,14 @@
 
 use std::ffi::{OsStr, OsString};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
 
-use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-use crate::bootstrap::{DaemonBundle, Stage0Timeouts, bootstrap, stage0_argv};
-use crate::{BoxFuture, ChildGuard, ConnectCtx, ConnectError, Connector, Stream};
-
-/// `CREATE_NO_WINDOW`: `wsl.exe` is a console program; without this a GUI host would flash a
-/// console window for it.
+use crate::bootstrap::{DaemonBundle, Stage0Timeouts, bootstrap_child, stage0_argv};
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+use crate::CREATE_NO_WINDOW;
+use crate::runtime::RuntimeSource;
+use crate::{BoxFuture, ConnectCtx, ConnectError, Connector, Stream};
 
 /// Decodes console output that may be UTF-16LE (what `wsl.exe` prints by default) or UTF-8.
 pub fn console_text(bytes: &[u8]) -> String {
@@ -159,6 +155,8 @@ pub struct WslConfig {
     pub env: Vec<(String, String)>,
     /// Stage 0 timings.
     pub timeouts: Stage0Timeouts,
+    /// Where a distro with no runtime gets one (`None`: it needs a Node.js 22+ of its own).
+    pub runtime: Option<RuntimeSource>,
 }
 
 impl WslConfig {
@@ -171,6 +169,7 @@ impl WslConfig {
             bundle,
             env: Vec::new(),
             timeouts: Stage0Timeouts::default(),
+            runtime: None,
         }
     }
 
@@ -213,43 +212,15 @@ impl WslConnector {
                 return Err(ConnectError::TargetDown(format!("WSL distro {} is not running", config.distro)));
             }
         }
-        let argv = stage0_argv(&config.env);
-        let mut child = wsl_command(&config.wsl_exe, &config.distro, config.user.as_deref(), &argv)
+        let mut env = config.env.clone();
+        if let Some(name) = config.runtime.as_ref().and_then(RuntimeSource::name) {
+            env.push(("YAAC_RUNTIME_VERSION".into(), name.to_owned()));
+        }
+        let argv = stage0_argv(&env);
+        let child = wsl_command(&config.wsl_exe, &config.distro, config.user.as_deref(), &argv)
             .spawn()
             .map_err(|source| ConnectError::Spawn { what: self.describe(), source })?;
-        let (Some(stdin), Some(stdout), Some(mut stderr)) = (child.stdin.take(), child.stdout.take(), child.stderr.take()) else {
-            return Err(ConnectError::Other("the child's standard streams were not captured".into()));
-        };
-        // Keep the tail of standard error for error messages (and never let it fill up).
-        let tail = Arc::new(Mutex::new(Vec::new()));
-        let sink = tail.clone();
-        tokio::spawn(async move {
-            let mut buf = [0u8; 4096];
-            while let Ok(n) = stderr.read(&mut buf).await {
-                if n == 0 {
-                    break;
-                }
-                if let Ok(mut t) = sink.lock() {
-                    t.extend_from_slice(&buf[..n]);
-                    let excess = t.len().saturating_sub(8192);
-                    t.drain(..excess);
-                }
-            }
-        });
-        match bootstrap(stdout, stdin, bundle, &what, config.timeouts).await {
-            Ok(done) => Ok(Stream { reader: Box::new(done.reader), writer: Box::new(done.writer), child: ChildGuard::process(child) }),
-            Err(e) => {
-                let _ = child.start_kill();
-                // Give the drain a moment to collect what the child said on its way out.
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                let said = tail.lock().map(|t| console_text(&t)).unwrap_or_default();
-                let said = said.trim();
-                Err(match e {
-                    ConnectError::Other(m) if !said.is_empty() => ConnectError::Other(format!("{m} (stderr: {said})")),
-                    other => other,
-                })
-            }
-        }
+        bootstrap_child(child, &[], bundle, config.runtime.as_ref(), &what, config.timeouts, |_| None).await
     }
 }
 
