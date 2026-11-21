@@ -302,18 +302,6 @@ pub(crate) fn arrow_left(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.line(vec![pos2(c.x - s * 0.2, c.y - s * 0.7), pos2(c.x - s, c.y), pos2(c.x - s * 0.2, c.y + s * 0.7)], stroke(col, w));
 }
 
-/// A pencil: a draft that has not been sent.
-pub(crate) fn pencil(p: &Painter, c: Pos2, d: f32, col: Color32) {
-    let s = d * 0.38;
-    let tip = pos2(c.x - s, c.y + s);
-    let end = pos2(c.x + s, c.y - s);
-    let neck = pos2(c.x - s * 0.55, c.y + s * 0.55);
-    let w = (d * 0.11).max(1.3);
-    p.line_segment([neck, end], stroke(col, w * 2.2));
-    p.add(Shape::convex_polygon(vec![tip, pos2(neck.x - w, neck.y - w), pos2(neck.x + w, neck.y + w)], col, Stroke::NONE));
-}
-
-
 /// A fork: one stem splitting in two.
 pub(crate) fn fork(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let s = d * 0.36;
@@ -434,4 +422,16 @@ pub(crate) fn maximize(p: &Painter, c: Pos2, d: f32, col: Color32, restore: bool
     } else {
         p.rect_stroke(Rect::from_center_size(c, Vec2::splat(s)), 1.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
     }
+}
+
+/// A push pin, tilted: the Pinned section in the strip.
+pub(crate) fn pin(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.08).max(1.2);
+    // Drawn upright around the origin, then turned 45°.
+    let (sin, cos) = (std::f32::consts::FRAC_PI_4.sin(), std::f32::consts::FRAC_PI_4.cos());
+    let t = |x: f32, y: f32| pos2(c.x + x * cos - y * sin, c.y + x * sin + y * cos);
+    let (hw, bw) = (d * 0.16, d * 0.3);
+    let head = vec![t(-hw, -d * 0.42), t(hw, -d * 0.42), t(hw, -d * 0.12), t(bw, d * 0.04), t(-bw, d * 0.04), t(-hw, -d * 0.12), t(-hw, -d * 0.42)];
+    p.line(head, stroke(col, w));
+    p.line_segment([t(0.0, d * 0.04), t(0.0, d * 0.44)], stroke(col, w));
 }

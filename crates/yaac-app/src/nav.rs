@@ -14,21 +14,22 @@ use crate::theme::{self, Palette, size};
 /// Hold this long to open the list.
 const HOLD: f64 = 0.4;
 
-/// The two buttons. `vertical` stacks them (the collapsed sidebar strip).
-pub(crate) fn buttons(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>, vertical: bool) {
+/// The two buttons, side by side; `compact` makes them narrower (the collapsed sidebar strip).
+pub(crate) fn buttons(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>, compact: bool) {
     let p = app.p;
     let exists = |pl: &Place| app.place_exists(pl);
     let can = [app.ui.history.can_back(&exists), app.ui.history.can_forward(&exists)];
     let mut draw = |ui: &mut egui::Ui, forward: bool| {
         let enabled = can[usize::from(forward)];
-        let (rect, resp) = ui.allocate_exact_size(vec2(24.0, 24.0), if enabled { Sense::click() } else { Sense::hover() });
+        let side = if compact { 20.0 } else { 24.0 };
+        let (rect, resp) = ui.allocate_exact_size(vec2(side, 24.0), if enabled { Sense::click() } else { Sense::hover() });
         let tip = if forward { "Forward (Alt+Right) · hold for the list" } else { "Back (Alt+Left) · hold for the list" };
         let resp = if enabled { resp.on_hover_text(tip) } else { resp };
         if enabled && (resp.hovered() || resp.has_focus() || app.ui.nav_menu == Some(forward)) {
             ui.painter().rect_filled(rect, 5.0, p.faint);
         }
         let color = if enabled { p.text } else { p.unavailable };
-        icons::nav(ui.painter(), rect.center(), 16.0, forward, color);
+        icons::nav(ui.painter(), rect.center(), if compact { 15.0 } else { 16.0 }, forward, color);
         if resp.has_focus() {
             crate::widgets::focus_ring(ui, rect, &p);
         }
@@ -65,17 +66,12 @@ pub(crate) fn buttons(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Ac
             menu(ui, app, rect, forward, actions);
         }
     };
-    if vertical {
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            draw(ui, false);
-            draw(ui, true);
-        });
-    } else {
-        ui.spacing_mut().item_spacing.x = 2.0;
+    // Side by side, also in the strip (D103), where they are narrower.
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = if compact { 0.0 } else { 2.0 };
         draw(ui, false);
         draw(ui, true);
-    }
+    });
 }
 
 /// How an entry reads in the list: a thread's title with its machine; Settings and drafts by

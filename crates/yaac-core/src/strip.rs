@@ -5,9 +5,11 @@
 //! collapses it to a [`STRIP_WIDTH`] strip, and the same controls bring back the remembered
 //! width. A window too narrow for the full sidebar shows the strip by itself.
 //!
-//! The strip's content comes from the same sidebar model as the full list, in the same order:
-//! the Needs-you threads first under a small amber count, then each section's name (drawn
-//! vertically) followed by one state icon per thread.
+//! The strip's content comes from the same sidebar model as the full list, in the same order
+//! (D103): each section's name drawn vertically (a pin icon for *Pinned*), then one harness
+//! logo per thread with its state as a badge, and a hairline before the next section. The
+//! *Needs you* section is left out: a thread that needs the user carries the triangle where
+//! it is listed.
 
 use crate::attention::Mark;
 use crate::key::ThreadKey;
@@ -63,20 +65,21 @@ impl SidebarSize {
     }
 }
 
-/// One entry of the strip, top to bottom.
+/// One entry of the strip, top to bottom (D103).
 #[derive(Clone, Debug, PartialEq)]
 pub enum StripEntry {
-    /// "Needs you": a small amber count.
-    NeedsCount(usize),
-    /// A section's name, drawn vertically (reading bottom to top); `count` for a collapsed
-    /// section (Muted, Archived) whose threads are not listed.
+    /// A section's name, drawn vertically (reading bottom to top), or the pin icon for
+    /// *Pinned*; `collapsed` for a section (Muted, Archived) whose threads are not listed.
     Label {
-        /// The name ("api", "Pinned", "Muted").
+        /// The name ("api", "Muted").
         text: String,
         /// Collapsed: its threads are not listed.
         collapsed: bool,
+        /// The Pinned section: a pin icon instead of the name.
+        pinned: bool,
     },
-    /// A thread's state icon.
+    /// A thread: its harness's logo, with its state as a badge (the needs-you triangle when
+    /// it needs the user).
     Thread {
         /// The thread.
         key: ThreadKey,
@@ -84,29 +87,31 @@ pub enum StripEntry {
         mark: Mark,
         /// It is open (drawn on the selected-row tint).
         selected: bool,
-        /// Its section is Needs you.
+        /// It needs the user: the triangle replaces the state badge.
         needs_you: bool,
     },
+    /// A hairline between one section's last thread and the next section.
+    Separator,
 }
 
-/// The strip's entries from the sidebar's sections, in the same order as the full list.
+/// The strip's entries from the sidebar's sections, in the same order as the full list. The
+/// *Needs you* section is not part of the strip (its threads show the triangle where they
+/// are listed).
 pub fn entries(sections: &[Section]) -> Vec<StripEntry> {
     let mut out = Vec::new();
-    for s in sections {
-        match s.kind {
-            SectionKind::NeedsYou => out.push(StripEntry::NeedsCount(s.count)),
-            _ => {
-                let text = s.header.as_ref().map_or_else(String::new, |h| {
-                    // The section's own name, without its count ("Muted · 4" → "Muted").
-                    h.left.split(" · ").next().unwrap_or(&h.left).to_owned()
-                });
-                if !text.is_empty() || s.collapsed {
-                    out.push(StripEntry::Label { text, collapsed: s.collapsed });
-                }
-            }
+    for s in sections.iter().filter(|s| s.kind != SectionKind::NeedsYou) {
+        if matches!(out.last(), Some(StripEntry::Thread { .. })) {
+            out.push(StripEntry::Separator);
+        }
+        let text = s.header.as_ref().map_or_else(String::new, |h| {
+            // The section's own name, without its count ("Muted · 4" → "Muted").
+            h.left.split(" · ").next().unwrap_or(&h.left).to_owned()
+        });
+        if !text.is_empty() || s.collapsed {
+            out.push(StripEntry::Label { text, collapsed: s.collapsed, pinned: s.kind == SectionKind::Pinned });
         }
         for r in &s.rows {
-            out.push(StripEntry::Thread { key: r.key.clone(), mark: r.display.mark, selected: r.selected, needs_you: s.kind == SectionKind::NeedsYou });
+            out.push(StripEntry::Thread { key: r.key.clone(), mark: r.display.mark, selected: r.selected, needs_you: r.display.mark == Mark::NeedsYou });
         }
     }
     out

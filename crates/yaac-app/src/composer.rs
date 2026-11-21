@@ -116,7 +116,7 @@ fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &st
         .max_height(row_h * compose::MAX_ROWS as f32 + 2.0)
         .auto_shrink([false, true])
         .show(ui, |ui| ui.add(te));
-    ui.data_mut(|d| d.insert_temp(id.with("scroll-offset"), out.state.offset().y));
+    ui.data_mut(|d| d.insert_temp(id.with("scroll-offset"), out.state.clamped_offset().y));
     let r = out.inner;
     if *focus {
         r.request_focus();

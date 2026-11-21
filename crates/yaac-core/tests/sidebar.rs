@@ -213,15 +213,19 @@ fn the_strip_follows_the_list() {
     let secs = sections(&c.state, &map, Grouping::default(), "", Open::default(), NOW, Zone::UTC);
     let e = yaac_core::strip::entries(&secs);
     use yaac_core::strip::StripEntry as S;
-    // Needs you first, under its count; then each section's name and its threads, in the
-    // list's order; the collapsed sections as their names only.
-    assert_eq!(e[0], S::NeedsCount(2));
-    assert!(matches!(&e[1], S::Thread { key, needs_you: true, .. } if *key == threads::fix()));
+    // No Needs-you section: each section's name and its threads, in the list's order, a
+    // hairline between sections; Pinned is marked as such; the collapsed sections as names.
+    assert!(matches!(&e[0], S::Label { text, pinned: true, .. } if text == "Pinned"), "{:?}", e[0]);
     let labels: Vec<_> = e.iter().filter_map(|x| if let S::Label { text, .. } = x { Some(text.as_str()) } else { None }).collect();
-    assert_eq!(labels[0], "Pinned");
     assert_eq!(&labels[labels.len() - 2..], ["Muted", "Archived"]);
-    let list_order: Vec<_> = secs.iter().flat_map(|s| s.rows.iter().map(|r| r.key.clone())).collect();
+    for w in e.windows(2) {
+        if let [S::Thread { .. }, S::Label { .. }] = w {
+            panic!("no hairline between sections: {w:?}");
+        }
+    }
+    assert!(e.iter().any(|x| matches!(x, S::Thread { key, needs_you: true, .. } if *key == threads::fix())), "the triangle where it is listed");
+    let list_order: Vec<_> = secs.iter().filter(|s| s.kind != SectionKind::NeedsYou).flat_map(|s| s.rows.iter().map(|r| r.key.clone())).collect();
     let strip_order: Vec<_> = e.iter().filter_map(|x| if let S::Thread { key, .. } = x { Some(key.clone()) } else { None }).collect();
     assert_eq!(strip_order, list_order);
-    assert!(e.iter().any(|x| matches!(x, S::Label { text, collapsed: true } if text == "Muted")));
+    assert!(e.iter().any(|x| matches!(x, S::Label { text, collapsed: true, .. } if text == "Muted")));
 }

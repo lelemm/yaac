@@ -145,7 +145,11 @@ state: its parents carry no mark for it. Blocked threads are found in the *Needs
 └────────────┴───────────────────────────────────────────────────────────┘
 ```
 
-- There is **no title bar drawn by the app**, no "Pinned / Active / Recent" lists, no
+- **The window has no system title bar** (D104). A quiet strip along the top — each column's
+  background runs into it — holds three buttons at the far right: minimize, maximize (restore
+  while maximized; the icon changes), and close, which turns the failed colour on hover. The
+  rest of the strip drags the window; a double click maximizes or restores it; the window's
+  edges and corners resize it. No "Pinned / Active / Recent" lists, no
   "Add agent" button, no "+ Agent / + Tool" controls. Threads are the only objects.
 - The sidebar and the thread are separated by a single hairline, and by nothing else. A
   docked agents panel gets one more.
@@ -333,11 +337,14 @@ A time in the past cannot be chosen.
 - **The strip shows, from top to bottom:**
   - the `YAAC` mark;
   - a **+** button (new thread);
-  - the **‹ ›** history buttons, stacked;
+  - the **‹ ›** history buttons, **side by side on one row** (D103);
   - then the list itself: each **project's name written vertically** (rotated a quarter turn,
-    reading bottom to top) as a quiet header, followed by **one state icon per thread** in that
-    project — running, needs you, waiting, done, failed, idle — in the same order as the full
-    list. *Needs you* threads come first, under a small amber count, as in the full sidebar.
+    reading bottom to top) as a quiet header — *Pinned* as a **pin icon** — followed by **one
+    harness logo per thread** in that project, in the same order as the full list, with the
+    thread's state as a **small badge on the logo's bottom-right corner** (running, waiting,
+    done, failed, idle); when the thread needs the user, the **needs-you triangle replaces the
+    badge**. A **hairline** follows each project's last thread. There is **no Needs-you
+    section** in the strip (D103).
   - Settings at the bottom.
 - **Hovering a thread icon** shows a floating card with everything its full row shows — title,
   time, branch and git counts, workers — and clicking the icon opens the thread. The open

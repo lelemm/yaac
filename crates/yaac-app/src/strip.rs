@@ -1,12 +1,14 @@
-//! The collapsed sidebar: a narrow vertical strip (D94). Top to bottom: the YAAC mark, expand,
-//! a new-thread button, back and forward stacked, then the list — Needs-you threads under a
-//! small amber count, each section's name written vertically (reading bottom to top) followed
-//! by one state icon per thread, in the full list's order — and Settings at the bottom. The
-//! wheel scrolls it. Hovering a thread's icon shows a card with everything its full row shows,
-//! with the agents card's no-flicker rule (`yaac_core::hover`).
+//! The collapsed sidebar: a narrow vertical strip (D94, redesigned by D103). Top to bottom:
+//! the YAAC mark, expand, a new-thread button, back and forward side by side, then the list —
+//! each section's name written vertically (reading bottom to top; a pin icon for *Pinned*),
+//! one harness logo per thread with its state as a small badge on the logo's corner (the
+//! needs-you triangle in place of the badge when the thread needs the user), and a hairline
+//! after each section's last thread — and Settings at the bottom. There is no *Needs you*
+//! section. The wheel scrolls it. Hovering a thread shows a card with everything its full row
+//! shows, with the agents card's no-flicker rule (`yaac_core::hover`).
 
 use eframe::egui::{self, Rect, Sense, pos2, vec2};
-use yaac_core::attention::{AttentionMap, Mark};
+use yaac_core::attention::AttentionMap;
 use yaac_core::hover::Region;
 use yaac_core::sidebar::{Open, sections};
 use yaac_core::strip::{StripEntry, entries};
@@ -18,8 +20,7 @@ use crate::theme::{self, size};
 const CELL: f32 = 32.0;
 const CARD_W: f32 = 300.0;
 
-/// Draw the strip in `side`. Returns the Needs-you count's rectangle (the Needs-you list opens
-/// beside it).
+/// Draw the strip in `side`. Returns the rectangle the Needs-you list (Ctrl+J) opens beside.
 pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, side: Rect, actions: &mut Vec<Action>) -> Rect {
     let p = app.p;
     let cx = side.center().x;
@@ -46,18 +47,19 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     if resp.clicked() {
         actions.push(Action::NewThread);
     }
-    y += CELL - 10.0;
-    ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(cx - 12.0, y), vec2(24.0, 52.0))).id_salt("strip-nav"), |ui| {
+    y += CELL - 12.0;
+    // Back and forward on one row.
+    ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(cx - 20.0, y), vec2(40.0, 24.0))).id_salt("strip-nav"), |ui| {
         crate::nav::buttons(ui, app, actions, true);
     });
-    y += 60.0;
+    y += 34.0;
     // The list, scrolled by the wheel.
     let footer = 40.0;
     let list = Rect::from_min_max(pos2(side.left(), y), pos2(side.right(), side.bottom() - footer));
     let open = Open { muted: app.ui.muted_open, archived: app.ui.archived_open };
     let secs = sections(&app.client.state, map, app.ui.grouping, "", open, now, app.zone);
     let list_entries = entries(&secs);
-    let mut badge = Rect::from_center_size(pos2(cx, y + 14.0), vec2(CELL, 24.0));
+    let badge = Rect::from_center_size(pos2(cx, y + 14.0), vec2(CELL, 24.0));
     let mut hovered: Option<(yaac_core::ThreadKey, Rect)> = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(list).id_salt("strip-list"), |ui| {
         ui.set_clip_rect(list);
@@ -65,37 +67,52 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             ui.spacing_mut().item_spacing.y = 2.0;
             for e in &list_entries {
                 match e {
-                    StripEntry::NeedsCount(n) => {
-                        let (r, resp) = ui.allocate_exact_size(vec2(list.width(), 26.0), Sense::click());
-                        badge = r;
-                        icons::mark(ui.painter(), pos2(cx - 7.0, r.center().y), 13.0, Mark::NeedsYou, &p);
-                        let g = ui.fonts_mut(|f| f.layout_no_wrap(n.to_string(), theme::bold(size::SMALL), p.needs));
-                        ui.painter().galley(pos2(cx + 3.0, r.center().y - g.size().y / 2.0), g, p.needs);
-                        if resp.on_hover_text("Needs you (Ctrl+J)").clicked() {
-                            app.ui.needs_popup = !app.ui.needs_popup;
-                            app.ui.needs_sel = 0;
-                        }
+                    StripEntry::Separator => {
+                        let (r, _) = ui.allocate_exact_size(vec2(list.width(), 9.0), Sense::hover());
+                        let yy = ui.painter().round_to_pixel_center(r.center().y);
+                        ui.painter().hline((cx - 12.0)..=(cx + 12.0), yy, egui::Stroke::new(1.0, p.border));
                     }
-                    StripEntry::Label { text, collapsed } => {
+                    StripEntry::Label { pinned: true, .. } => {
+                        let (r, resp) = ui.allocate_exact_size(vec2(list.width(), 22.0), Sense::hover());
+                        icons::pin(ui.painter(), r.center(), 14.0, p.text2);
+                        resp.on_hover_text("Pinned");
+                    }
+                    StripEntry::Label { text, collapsed, .. } => {
                         // The section's name, rotated to read bottom to top.
                         let g = crate::widgets::elided(ui, text, &theme::ui(size::SMALL - 0.5), p.text2, 110.0);
                         let len = g.size().x;
-                        let (r, resp) = ui.allocate_exact_size(vec2(list.width(), len + 14.0), Sense::click());
+                        let (r, resp) = ui.allocate_exact_size(vec2(list.width(), len + 12.0), Sense::click());
                         let pos = pos2(cx - g.size().y / 2.0, r.bottom() - 6.0);
                         ui.painter().add(egui::epaint::TextShape::new(pos, g, p.text2).with_angle(-std::f32::consts::FRAC_PI_2));
                         if *collapsed && resp.on_hover_text(format!("{text} (collapsed)")).clicked() {
                             app.ui.sidebar.toggle();
                         }
                     }
-                    StripEntry::Thread { key, mark, selected, .. } => {
+                    StripEntry::Thread { key, mark, selected, needs_you } => {
                         let (r, resp) = ui.allocate_exact_size(vec2(list.width(), CELL - 2.0), Sense::click());
                         let cell = Rect::from_center_size(r.center(), vec2(CELL, CELL - 4.0));
-                        if *selected {
+                        let under = if *selected {
                             ui.painter().rect_filled(cell, 6.0, p.selected);
+                            p.selected
                         } else if resp.hovered() {
                             ui.painter().rect_filled(cell, 6.0, p.faint);
+                            p.faint
+                        } else {
+                            p.panel
+                        };
+                        // The harness's logo, and the thread's state on its corner.
+                        let provider = app.client.state.provider_of(key);
+                        let kind = provider.map(|d| d.kind.as_str().to_owned());
+                        let name = provider.map(|d| d.display_name.clone());
+                        let c = cell.center() - vec2(1.5, 1.5);
+                        crate::agents_ui::harness_mark(ui.painter(), c, 18.0, kind.as_deref(), name.as_deref(), false, &p);
+                        let corner = c + vec2(7.5, 7.0);
+                        if *needs_you {
+                            icons::warning(ui.painter(), corner, 11.0, p.needs, under);
+                        } else {
+                            ui.painter().circle_filled(corner, 5.5, under);
+                            icons::mark(ui.painter(), corner, 9.5, *mark, &p);
                         }
-                        icons::mark(ui.painter(), cell.center(), 16.0, *mark, &p);
                         if resp.hovered() {
                             hovered = Some((key.clone(), cell));
                         }
