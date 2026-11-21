@@ -51,6 +51,8 @@ pub(crate) enum Menu {
     Agents,
     ForkDest,
     SettingsTarget,
+    /// The WSL distro dropdown of Settings → Targets.
+    WslDistro,
     InstanceKind,
     /// The renderer dropdown (D128).
     Renderer,
@@ -377,6 +379,8 @@ pub(crate) enum Action {
     AddTarget(String, TargetTransport),
     SetRecord(TargetId, SetupRecord),
     WslOn(bool),
+    /// Ask the hub for the installed WSL distros again (`hub/wsl/distros`).
+    LoadDistros,
     RefreshProviders(TargetId, Option<InstanceId>),
     AddInstance(TargetId, ProviderKind, String, String),
     UpdateInstance(TargetId, InstanceId, String, String),
@@ -680,6 +684,14 @@ impl YaacApp {
         self.ui.history.visit(Place::Thread(key.clone()), anchor);
     }
 
+    /// Settings → Targets with its WSL section came into view: ask the hub for the installed
+    /// distros (the window never runs `wsl.exe` itself).
+    fn wsl_section_opened(&mut self) {
+        if self.ui.settings && self.ui.settings_page == Page::Targets && self.host_windows && self.client.state.wsl_on {
+            self.client.load_wsl_distros();
+        }
+    }
+
     /// Whether a place in the history still exists (a deleted thread is skipped).
     pub(crate) fn place_exists(&self, p: &Place) -> bool {
         match p {
@@ -931,6 +943,7 @@ impl YaacApp {
                     self.ui.threads_overlay = false;
                     if open {
                         self.ui.history.visit(Place::Settings(self.ui.settings_page), None);
+                        self.wsl_section_opened();
                     } else {
                         // Leaving Settings goes back to where the user was.
                         let exists = |p: &Place| self.place_exists(p) && !matches!(p, Place::Settings(_));
@@ -945,6 +958,7 @@ impl YaacApp {
                     self.ui.settings_page = p;
                     self.ui.menu = None;
                     self.ui.history.visit(Place::Settings(p), None);
+                    self.wsl_section_opened();
                 }
                 Action::Nav(n) => self.nav(n),
                 Action::Theme(t) => {
@@ -962,7 +976,11 @@ impl YaacApp {
                     }
                     self.client.state.ssh_records.insert(t, r);
                 }
-                Action::WslOn(on) => self.client.state.wsl_on = on,
+                Action::WslOn(on) => {
+                    self.client.state.wsl_on = on;
+                    self.wsl_section_opened();
+                }
+                Action::LoadDistros => self.client.load_wsl_distros(),
                 Action::RefreshProviders(t, i) => self.client.refresh_providers(&t, i.as_ref()),
                 Action::AddInstance(t, kind, name, socket) => self.client.add_instance(&t, &kind, Some(&name), Some(&socket)),
                 Action::UpdateInstance(t, i, name, socket) => {

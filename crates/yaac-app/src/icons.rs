@@ -183,6 +183,31 @@ pub(crate) fn swap(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.line(vec![pos2(l + h, y2 - h), pos2(l, y2), pos2(l + h, y2 + h)], s);
 }
 
+/// Refresh: an open circle with an arrowhead at its end (ask again).
+pub(crate) fn refresh(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let r = d * 0.36;
+    let s = Stroke::new((d * 0.1).max(1.2), col);
+    // From the top right, counter-clockwise most of the way round, ending at the right; the
+    // gap is between the two.
+    let (start, sweep) = (-TAU * 0.2, TAU * 0.8);
+    let n = 24;
+    let pts: Vec<Pos2> = (0..=n)
+        .map(|i| {
+            let a = start - (i as f32 / n as f32) * sweep;
+            pos2(c.x + r * a.cos(), c.y + r * a.sin())
+        })
+        .collect();
+    p.add(Shape::line(pts, s));
+    // The arrowhead at the end, pointing the way the arc travels.
+    let end = start - sweep;
+    let tip = pos2(c.x + r * end.cos(), c.y + r * end.sin());
+    let dir = vec2(end.sin(), -end.cos());
+    let side = vec2(-dir.y, dir.x);
+    let h = d * 0.2;
+    p.line(vec![tip - dir * h + side * h, tip, tip - dir * h - side * h], s);
+}
+
 /// The warning triangle with an exclamation mark.
 pub(crate) fn warning(p: &Painter, c: Pos2, d: f32, col: Color32, ink: Color32) {
     let p = &soft(p);

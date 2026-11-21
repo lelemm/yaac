@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Margin, RichText, pos2, vec2};
 use yaac_core::attention::Mark;
-use yaac_core::settings::{LEGEND, Page, SshAction, diagnostics, kind_label, providers_view, targets_view};
+use yaac_core::settings::{CHOOSE_DISTRO, DistroOption, DistroPhase, DistroPicker, LEGEND, Page, SshAction, diagnostics, distro_picker, kind_label, providers_view, targets_view};
 use yaac_core::ssh_setup::{Credential, Phase, Revoke, RevokePhase, Secret, SetupRecord, SignInMethod, SshConn, SshSetup, SshSetupBackend, StepLine, StepMark, form_ready};
 use yaac_protocol::attach::{SshTransport, TargetTransport, WslTransport};
 use yaac_protocol::{InstanceId, TargetId};
@@ -382,31 +382,98 @@ fn targets(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                 });
             }
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                // SEAM: the installed distros (`wsl.exe -l -q`) are not offered by the hub yet;
-                // the distro is typed.
-                widgets::field(ui, &p, &mut app.ui.set.wsl_distro, "Distro", 160.0, false);
-                widgets::field(ui, &p, &mut app.ui.set.wsl_user, "User (optional)", 200.0, false);
-                let ok = !app.ui.set.wsl_distro.trim().is_empty();
-                if ok {
-                    if widgets::plain(ui, &p, "Add", None).clicked() {
-                        let distro = app.ui.set.wsl_distro.trim().to_owned();
-                        let user = Some(app.ui.set.wsl_user.trim().to_owned()).filter(|u| !u.is_empty());
-                        let name = match &user {
-                            Some(u) => format!("wsl: {distro} ({u})"),
-                            None => format!("wsl: {distro}"),
-                        };
-                        actions.push(Action::AddTarget(name, TargetTransport::Wsl(WslTransport { distro, user })));
-                        app.ui.set.wsl_distro.clear();
-                        app.ui.set.wsl_user.clear();
-                    }
-                } else {
-                    widgets::unavailable(ui, &p, "Add", "");
-                }
-            });
+            wsl_add_row(ui, app, actions);
             ui.label(widgets::secondary("Adding a distro again with another user opens a second session to it.", &p));
         }
     }
+}
+
+/// The Add row of the WSL section: a dropdown of the installed distros (from the hub), a
+/// refresh button, the optional user, and Add. When the hub cannot list them, the distro is
+/// typed instead, so the user is never stuck.
+fn wsl_add_row(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    if app.client.state.wsl_distros.phase == DistroPhase::NotAsked {
+        actions.push(Action::LoadDistros);
+    }
+    let picker = distro_picker(&app.client.state);
+    let mut picked: Option<String> = None;
+    ui.horizontal(|ui| {
+        let chosen = match &picker {
+            DistroPicker::Loading => {
+                widgets::selector(ui, &p, "Loading…", false);
+                None
+            }
+            DistroPicker::Choose { options, selected } => {
+                let r = widgets::selector(ui, &p, selected.as_deref().unwrap_or(CHOOSE_DISTRO), true);
+                if r.clicked() {
+                    app.ui.toggle_menu(Menu::WslDistro);
+                }
+                let mut open = app.ui.menu == Some(Menu::WslDistro);
+                widgets::menu_popup(egui::Popup::from_response(&r), &p)
+                    .kind(egui::PopupKind::Menu)
+                    .open_bool(&mut open)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+                    .show(|ui| {
+                        // A fixed width: the rows fill what they are given.
+                        ui.set_width(320.0);
+                        for o in options {
+                            if distro_row(ui, &p, o, selected.as_deref() == Some(o.name.as_str())).clicked() {
+                                picked = Some(o.name.clone());
+                            }
+                        }
+                    });
+                if !open && app.ui.menu == Some(Menu::WslDistro) {
+                    app.ui.menu = None;
+                }
+                selected.clone()
+            }
+            DistroPicker::Typed { .. } => {
+                widgets::field(ui, &p, &mut app.ui.set.wsl_distro, "Distro", 160.0, false);
+                Some(app.ui.set.wsl_distro.trim().to_owned()).filter(|d| !d.is_empty())
+            }
+        };
+        if widgets::icon_button(ui, &p, 14.0, "List the installed distros again", icons::refresh).clicked() {
+            actions.push(Action::LoadDistros);
+        }
+        ui.add_space(6.0);
+        widgets::field(ui, &p, &mut app.ui.set.wsl_user, "User (optional)", 200.0, false);
+        match chosen {
+            Some(distro) => {
+                if widgets::plain(ui, &p, "Add", None).clicked() {
+                    let user = Some(app.ui.set.wsl_user.trim().to_owned()).filter(|u| !u.is_empty());
+                    let name = match &user {
+                        Some(u) => format!("wsl: {distro} ({u})"),
+                        None => format!("wsl: {distro}"),
+                    };
+                    actions.push(Action::AddTarget(name, TargetTransport::Wsl(WslTransport { distro, user })));
+                    app.client.choose_wsl_distro(None);
+                    app.ui.set.wsl_distro.clear();
+                    app.ui.set.wsl_user.clear();
+                }
+            }
+            None => widgets::unavailable(ui, &p, "Add", if matches!(picker, DistroPicker::Typed { .. }) { "Type a distro's name" } else { "Choose a distro first" }),
+        }
+    });
+    if let Some(name) = picked {
+        app.client.choose_wsl_distro(Some(name));
+    }
+    if let DistroPicker::Typed { message } = &picker {
+        ui.label(widgets::secondary(format!("The installed distros could not be listed ({message}). Type the distro's name."), &p));
+    }
+}
+
+/// One distro in the dropdown: its name ("Ubuntu · default") and, on the right, whether it
+/// runs and whether it already has a connection.
+fn distro_row(ui: &mut egui::Ui, p: &Palette, o: &DistroOption, selected: bool) -> egui::Response {
+    let (resp, rect) = widgets::menu_row(ui, p, selected, true);
+    let font = theme::ui(size::UI);
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(o.label.clone(), font.clone(), p.text));
+    ui.painter().galley(pos2(rect.left() + 10.0, rect.center().y - g.size().y / 2.0), g, p.text);
+    let right = if o.added { format!("{} · already added", o.state) } else { o.state.to_owned() };
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(right, theme::ui(size::SMALL), p.text2));
+    ui.painter().galley(pos2(rect.right() - 10.0 - g.size().x, rect.center().y - g.size().y / 2.0), g, p.text2);
+    resp
 }
 
 fn start_revoke(app: &mut YaacApp, id: &TargetId) {

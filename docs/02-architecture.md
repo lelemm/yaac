@@ -265,9 +265,10 @@ case puts a stand-in in front of `ssh` that asks `SSH_ASKPASS` exactly as `ssh` 
 
 ### WSL
 
-Only offered on Windows hosts, and **off by default**. When the user turns it on, YAAC lists
-distros with `wsl.exe -l -q` (note: that command prints UTF-16LE) and the user adds the ones
-they want.
+Only offered on Windows hosts, and **off by default**. When the user turns it on, the hub
+lists the installed distros (`hub/wsl/distros`, from `wsl.exe -l -v` and `-l --running -q`,
+which start nothing; note: they print UTF-16LE) and the user adds the ones they want from a
+dropdown that starts on Windows' default distro.
 
 **Decided:** a WSL connection is a **distro** plus an **optional user**. A distro can have
 several Linux users, each with its own home directory, harness sign-ins, and conversations.
