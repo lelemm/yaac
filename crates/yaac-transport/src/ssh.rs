@@ -268,6 +268,10 @@ impl Connector for SshConnector {
         let key = if self.config.identity.is_some() { " with YAAC's key" } else { "" };
         format!("ssh: {} {}{key} <stage 0>", self.config.target.ssh_exe.to_string_lossy(), self.config.target.label())
     }
+
+    fn daemon_build(&self) -> Option<String> {
+        self.config.bundle.as_ref().map(|b| b.build.clone())
+    }
 }
 
 #[cfg(test)]

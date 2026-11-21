@@ -30,6 +30,10 @@ pub struct LocalConfig {
     pub env: Vec<(OsString, OsString)>,
     /// Whether the child's standard error is passed through (otherwise discarded).
     pub inherit_stderr: bool,
+    /// The bundle's build (`<version>+<id>`), when the configuration knows it
+    /// ([`Connector::daemon_build`]). `None`: unknown, and the hub never asks an older local
+    /// daemon to hand over.
+    pub build: Option<String>,
 }
 
 impl LocalConfig {
@@ -49,7 +53,14 @@ impl LocalConfig {
         let bundle = lookup("YAAC_DAEMON_BUNDLE")
             .filter(|v| !v.is_empty())
             .map_or_else(|| Self::default_bundle(root), PathBuf::from);
-        Self { runtime, bundle, env: Vec::new(), inherit_stderr: true }
+        Self { runtime, bundle, env: Vec::new(), inherit_stderr: true, build: None }
+    }
+
+    /// Declares the bundle's build ([`LocalConfig::build`]).
+    #[must_use]
+    pub fn with_build(mut self, build: impl Into<String>) -> Self {
+        self.build = Some(build.into());
+        self
     }
 
     /// Adds an environment variable for the child.
@@ -111,5 +122,9 @@ impl Connector for LocalConnector {
 
     fn describe(&self) -> String {
         format!("local: {} {} connect", self.config.runtime.to_string_lossy(), self.config.bundle.display())
+    }
+
+    fn daemon_build(&self) -> Option<String> {
+        self.config.build.clone()
     }
 }

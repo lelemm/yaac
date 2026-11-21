@@ -25,7 +25,12 @@ fn main() {
             println!("cargo:warning=daemon/dist/yaacd.mjs not found: this hub cannot install yaacd on WSL targets (run `npm run build` in daemon/)");
         }
     }
-    // The daemon's version, for the install folder name (`<version>-<sha256 prefix>`).
+    // The daemon's version, for the install folder name (`<version>-<sha256 prefix>`), with
+    // the build id when the build scripts gave one (`<version>+<id>-<sha256 prefix>`, the same
+    // id the bundle was built with, D135): stage 0 runs the installed build with the highest
+    // id, and the hub hands an older daemon over only to a newer id.
+    println!("cargo:rerun-if-env-changed=YAAC_BUILD_ID");
+    let id = std::env::var("YAAC_BUILD_ID").ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()));
     let version = std::fs::read_to_string(&package)
         .ok()
         .and_then(|text| {
@@ -36,5 +41,9 @@ fn main() {
             Some(rest[start..end].to_owned())
         })
         .unwrap_or_else(|| "0.0.0".to_owned());
+    let version = match id {
+        Some(id) => format!("{version}+{id}"),
+        None => version,
+    };
     println!("cargo:rustc-env=YAAC_DAEMON_VERSION={version}");
 }

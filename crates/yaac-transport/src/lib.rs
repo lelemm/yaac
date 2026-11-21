@@ -69,6 +69,14 @@ pub trait Connector: Send + Sync {
 
     /// A short description for diagnostics (`local: node …/yaacd.mjs connect`).
     fn describe(&self) -> String;
+
+    /// The `yaacd` build this connector installs and starts when nothing is serving (its
+    /// bundle's build, `<version>+<id>-<sha16>`), when it knows it. The hub asks an older
+    /// serving daemon to hand over only when this is a newer numbered build
+    /// (docs/02-architecture.md#one-serving-daemon-per-user). `None`: unknown; never hand over.
+    fn daemon_build(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The byte stream to one `yaacd`.

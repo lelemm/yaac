@@ -129,6 +129,64 @@ async fn a_wrong_hash_is_refused_and_nothing_is_installed() {
     std::fs::remove_dir_all(&home).unwrap();
 }
 
+/// A stand-in daemon that says its name, then echoes.
+fn named_daemon(name: &str) -> Vec<u8> {
+    format!("if (process.argv[2] !== 'connect') process.exit(3);\nprocess.stdout.write('{name}\\n');\nprocess.stdin.pipe(process.stdout);\n").into_bytes()
+}
+
+/// Installs `bytes` as build `build` in `home`, as an earlier connection would have.
+fn preinstall(home: &Path, build: &str, bytes: &[u8]) {
+    let dir = home.join("daemon").join(build);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("yaacd.mjs"), bytes).unwrap();
+}
+
+/// Bootstraps with `bundle` and returns the build run and the first line the daemon said.
+async fn ran_with(home: &Path, bundle: &DaemonBundle) -> (String, String) {
+    let mut child = spawn("/bin/sh", home, &[], false);
+    let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+    let mut done = bootstrap(stdout, stdin, bundle, "test target", Stage0Timeouts::default()).await.expect("bootstrap");
+    let mut line = Vec::new();
+    let mut byte = [0u8; 1];
+    while tokio::time::timeout(Duration::from_secs(20), done.reader.read_exact(&mut byte)).await.expect("in time").is_ok() && byte[0] != b'\n' {
+        line.push(byte[0]);
+    }
+    drop(done.writer);
+    let _ = child.kill().await;
+    (done.ran, String::from_utf8_lossy(&line).into_owned())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn daemons_only_move_forward_the_highest_build_number_runs() {
+    if !has_node("/bin/sh").await {
+        eprintln!("skipped: no Node.js 22+");
+        return;
+    }
+    let home = temp_dir("order");
+    // Installed by earlier hubs: build 9 and build 41 (41 > 9 as numbers, not as text), and a
+    // development build, which has no order.
+    preinstall(&home, "0.0.8+9-aaaaaaaaaaaaaaaa", &named_daemon("nine"));
+    preinstall(&home, "0.0.8+41-bbbbbbbbbbbbbbbb", &named_daemon("forty-one"));
+    preinstall(&home, "0.0.8+dev-cccccccccccccccc", &named_daemon("dev"));
+
+    // An older hub (build 40) installs its own bundle but runs the newest: 41.
+    let older = DaemonBundle::new("0.0.8+40", named_daemon("forty"));
+    let (ran, said) = ran_with(&home, &older).await;
+    assert_eq!((ran.as_str(), said.as_str()), ("0.0.8+41-bbbbbbbbbbbbbbbb", "forty-one"));
+    assert!(home.join("daemon").join(&older.build).join("yaacd.mjs").is_file(), "its own build is still installed alongside");
+
+    // A newer hub (build 42) runs its own.
+    let newer = DaemonBundle::new("0.0.8+42", named_daemon("forty-two"));
+    let (ran, said) = ran_with(&home, &newer).await;
+    assert_eq!((ran, said.as_str()), (newer.build.clone(), "forty-two"));
+
+    // A development bundle runs itself, as before build numbers.
+    let dev = DaemonBundle::new("0.0.8", named_daemon("mine"));
+    let (ran, said) = ran_with(&home, &dev).await;
+    assert_eq!((ran, said.as_str()), (dev.build.clone(), "mine"));
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn no_runtime_is_a_specific_error() {
     let home = temp_dir("noruntime");

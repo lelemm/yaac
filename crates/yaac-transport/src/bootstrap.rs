@@ -10,7 +10,7 @@
 //! target → host   OK runtime | ERR <reason>
 //! host → target   PUT daemon <build> <bytes> <sha256>  + exactly <bytes> bytes   (only if missing)
 //! target → host   OK daemon | ERR <reason>
-//! host → target   RUN node <build>
+//! host → target   RUN node <build>     (the newest installed build: [`build_to_run`])
 //! target → host   OK run | ERR <reason>
 //!                 ── from the next byte on, the stream is the YAAC protocol ──
 //! ```
@@ -112,6 +112,37 @@ impl DaemonBundle {
     }
 }
 
+/// The build number in a daemon build or install folder name: the `<id>` of
+/// `<version>+<id>` or `<version>+<id>-<sha16>` when it is a number (a build made by the build
+/// scripts, D135). `None` for a development build (`+dev…`) or a name without one.
+pub fn build_number(build: &str) -> Option<u64> {
+    let (_, id) = build.split_once('+')?;
+    let id = id.split('-').next().unwrap_or_default();
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    id.parse().ok()
+}
+
+/// Which installed build stage 0 runs: daemons only move forward
+/// (docs/02-architecture.md#one-serving-daemon-per-user). When this host's bundle carries a
+/// build number, the installed build with the highest number runs (this host's own on a tie);
+/// its `connect` attaches to whatever is serving, or starts it when nothing is. A development
+/// bundle has no order, so it runs itself, as before build numbers existed.
+pub fn build_to_run<'a>(installed: &[&'a str], bundle: &'a str) -> &'a str {
+    let Some(mut best) = build_number(bundle) else { return bundle };
+    let mut run = bundle;
+    for b in installed {
+        if let Some(n) = build_number(b)
+            && n > best
+        {
+            best = n;
+            run = b;
+        }
+    }
+    run
+}
+
 /// Lower-case hex SHA-256.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
@@ -169,6 +200,8 @@ pub struct Bootstrapped<R, W> {
     pub report: Stage0Report,
     /// Whether the daemon was uploaded on this connection.
     pub uploaded: bool,
+    /// The installed build whose `yaacd connect` was run ([`build_to_run`]).
+    pub ran: String,
     /// Whether, and how, the runtime was installed on this connection.
     pub runtime: Option<RuntimeInstall>,
     /// Bytes from the target, starting at the first protocol byte.
@@ -364,13 +397,14 @@ where
         uploaded = true;
     }
 
-    // 4. Hand over.
-    writer.write_all(format!("RUN node {}\n", bundle.build).as_bytes()).await.map_err(|e| io(e, "starting the daemon"))?;
+    // 4. Hand over, to the newest installed build: daemons only move forward.
+    let ran = build_to_run(&report.daemons(), &bundle.build).to_owned();
+    writer.write_all(format!("RUN node {ran}\n").as_bytes()).await.map_err(|e| io(e, "starting the daemon"))?;
     writer.flush().await.map_err(|e| io(e, "starting the daemon"))?;
     expect(&mut lines, "OK run", what, "starting the daemon", timeouts.reply).await?;
 
     let Lines { reader, buf } = lines;
-    Ok(Bootstrapped { report, uploaded, runtime: fetched, reader: std::io::Cursor::new(buf).chain(reader), writer })
+    Ok(Bootstrapped { report, uploaded, ran, runtime: fetched, reader: std::io::Cursor::new(buf).chain(reader), writer })
 }
 
 /// How the runtime got onto the target on this connection.
@@ -473,5 +507,30 @@ mod tests {
         assert_eq!(b.sha256, "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03");
         assert_eq!(b.build, "0.1.0-5891b5b522d5df08");
         assert_eq!(DaemonBundle::new("1 2/3", b"x".to_vec()).build.split('-').next(), Some("1_2_3"));
+    }
+
+    #[test]
+    fn build_numbers_come_from_versions_and_install_folders() {
+        assert_eq!(build_number("0.1.0+42"), Some(42));
+        assert_eq!(build_number("0.1.0+42-5891b5b522d5df08"), Some(42));
+        assert_eq!(build_number("0.1.0+dev"), None);
+        assert_eq!(build_number("0.1.0+dev-5891b5b522d5df08"), None);
+        assert_eq!(build_number("0.1.0+dev.ab12"), None);
+        assert_eq!(build_number("0.1.0-5891b5b522d5df08"), None);
+        assert_eq!(build_number("0.1.0+-x"), None);
+    }
+
+    #[test]
+    fn the_newest_numbered_build_runs_and_a_development_bundle_runs_itself() {
+        let installed = ["0.1.0+9-aaaa", "0.1.0+41-bbbb", "0.1.0+dev-cccc", "0.0.9-dddd"];
+        // Numbers, not text: 41 is newer than 9, and newer than this host's 40.
+        assert_eq!(build_to_run(&installed, "0.1.0+40-eeee"), "0.1.0+41-bbbb");
+        assert_eq!(build_to_run(&installed, "0.1.0+42-eeee"), "0.1.0+42-eeee");
+        // A tie runs this host's own.
+        assert_eq!(build_to_run(&["0.1.0+42-ffff"], "0.1.0+42-eeee"), "0.1.0+42-eeee");
+        // Development bundles: the old behaviour.
+        assert_eq!(build_to_run(&installed, "0.1.0+dev-eeee"), "0.1.0+dev-eeee");
+        assert_eq!(build_to_run(&installed, "0.1.0-eeee"), "0.1.0-eeee");
+        assert_eq!(build_to_run(&[], "0.1.0+40-eeee"), "0.1.0+40-eeee");
     }
 }

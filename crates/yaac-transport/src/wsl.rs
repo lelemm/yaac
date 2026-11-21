@@ -251,6 +251,10 @@ impl Connector for WslConnector {
         let user = self.config.user.as_ref().map(|u| format!(" -u {u}")).unwrap_or_default();
         format!("wsl: {} -d {}{user} --exec sh -c <stage 0>", self.config.wsl_exe.to_string_lossy(), self.config.distro)
     }
+
+    fn daemon_build(&self) -> Option<String> {
+        self.config.bundle.as_ref().map(|b| b.build.clone())
+    }
 }
 
 #[cfg(test)]
