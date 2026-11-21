@@ -177,7 +177,49 @@ egui's built-in paste event delivers text only. Files and images need direct cli
 Hashing a large file and encoding a screenshot happen on worker threads, never on the UI or I/O
 thread.
 
-**Verify (spike S4):** reading a *file list* from the clipboard on Windows (`CF_HDROP`) and on
-Linux under both X11 and Wayland (`text/uri-list`). Image and text are well supported by the
-`arboard` crate; file lists may need platform code. Drag-and-drop of files is already supported
-by egui and uses the same pipeline.
+**How the window does it (P26, P27).** Ctrl+V is delivered to the window as a key (eframe's
+clipboard shortcuts are off; Ctrl+C and Ctrl+X are turned back into egui's copy and cut), and a
+worker thread reads the clipboard with `arboard` in this order:
+
+1. **A file list** — only into a composer: one chip per file, uploaded by path.
+2. **Text** — pasted into the focused field. Into a composer, 64 KiB or more is offered as a
+   file (`pasted-text.txt`) or as text.
+3. **A bitmap** — only into a composer: encoded to PNG on the worker, named
+   `screenshot-<local date and time>.png`, stored in the hub as a draft blob, then uploaded.
+
+If the worker cannot open the clipboard at all, egui's own text paste is used.
+
+**Spike S4, verified (2026-11-20).** `arboard` 3.7 reads file lists itself — `CF_HDROP` on
+Windows, `text/uri-list` on X11, and on Wayland through the data-control protocol — so no
+platform code was needed.
+
+| Platform | Verified |
+| --- | --- |
+| Windows (the WSL host) | A file list put on the clipboard by another program (PowerShell `Set-Clipboard -Path`, which writes `CF_HDROP` as Explorer does) is read as two absolute paths, one with a space; text and a bitmap round-trip (the cross-compiled test run on Windows). |
+| Linux, X11 | File list (`text/uri-list`, percent-decoded), text, and bitmap, under Xvfb. |
+| Linux, Wayland | Not verified: the only compositor available (WSLg's Weston) has no data-control protocol, so `arboard` falls back to X11 (XWayland). Without XWayland, files and images cannot be pasted and text falls back to egui's paste. |
+
+Drag and drop comes from egui (winit): Windows and X11 report dropped files; winit does not
+report dropped files on Wayland.
+
+## In the window
+
+- **The attachment button** (a paper clip beside Send) opens the system's file picker on a
+  worker thread (`rfd`: the common item dialog on Windows, the XDG desktop portal on Linux).
+- **Dropping files** anywhere in the window attaches them to the open composer (P28).
+- **Chips** sit above the text: a thumbnail for an image (decoded at display size on a worker;
+  only the thumbnail's pixels are kept) or a file mark, the name, then the upload's progress
+  ("62%") or phase ("reading…", "waiting…", "checking…"), or the hub's error as-is with
+  **Retry**; for an image, "this model cannot see images; it will be sent as a file" or, when
+  support is unknown, "send as image · file". An × removes the chip and cancels its upload.
+- **Send** is plain, not filled, while anything holds the message back, and says why: "Waiting
+  for 1 upload", "trace.log was not uploaded — remove it or retry", "Choose how to send
+  sketch.png".
+
+### Drafts across a restart
+
+A composer's text and chips are kept in the hub's durable draft store (P29), so a window
+restart brings them back: finished uploads keep their `uploadId`, an upload that was running
+is checked against `hub/upload/list` and asked again if the hub no longer has it, and clipboard
+bytes come back from their draft blob. Sending deletes the message's blobs and the stored
+draft. Moving a new-thread draft to a project on another target uploads every chip again there.

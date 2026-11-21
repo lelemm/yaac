@@ -1053,3 +1053,19 @@ reflex.*
   screen's one filled button, in the failed colour: **Bypass permissions**. Enter does not
   confirm.
 - Behind the dialog, the control row's mode selector is open on the mode being chosen.
+
+### 37–40 — Attachments in the composer
+
+*Every chip state, in the composer of billing-service on devbox.*
+
+- **37** — two chips above the text: `trace.log` with a thin progress bar and "62%", and an
+  image chip `plot.png` with its thumbnail. Under the text, "Waiting for 1 upload"; **Send** is
+  plain until the upload finishes. A paper clip beside Send opens the file picker.
+- **38** — the model cannot see images: `diagram.png` with a warning mark, "this model cannot
+  see images; it will be sent as a file"; and `build-cache.tar`, which failed: the hub's
+  message in the failed colour and **Retry**. Under the text: "build-cache.tar was not
+  uploaded — remove it or retry".
+- **39** — the model's image support is unknown: `sketch.png` asks "send as image · file";
+  "Choose how to send sketch.png" under the text.
+- **40** — files dragged over the window: the thread view dims and shows a quiet faint panel
+  with a paper clip and "Drop to attach".
