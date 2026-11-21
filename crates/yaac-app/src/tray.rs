@@ -122,6 +122,20 @@ impl Shell {
         let _ = self.tx.send(cmd);
     }
 
+    /// "Hide to the tray": hide the window now (only with a tray icon, which brings it back).
+    pub(crate) fn hide(&mut self, ctx: &egui::Context) {
+        if self.has_tray() {
+            ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            self.hidden = true;
+        }
+    }
+
+    /// "Quit YAAC": close the window process; a close request is let through.
+    pub(crate) fn quit(&mut self, ctx: &egui::Context) {
+        self.quitting = true;
+        ctx.send_viewport_cmd(ViewportCommand::Close);
+    }
+
     /// Whether this system can have a tray icon at all (Settings says so when it cannot).
     pub(crate) const fn supported() -> bool {
         cfg!(windows)

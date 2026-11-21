@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 #[cfg(feature = "hub")]
 use std::sync::{Arc, Mutex};
 
-use eframe::egui::{self, Key, Modifiers};
+use eframe::egui::{self, Key};
 use yaac_core::activity::Expansion;
 use yaac_core::agents::{PanelInput, PanelMode};
 use yaac_core::attention::AttentionMap;
@@ -171,6 +171,16 @@ pub(crate) struct UiState {
     pub nav_sel: usize,
     /// A press on a history button opened its list by holding: its release is not a click.
     pub nav_held: bool,
+    /// The Commander, while open (D130).
+    pub commander: Option<crate::commander::CommanderUi>,
+    /// The key bindings in effect (D131).
+    pub bindings: yaac_core::commands::Bindings,
+    /// The Commander's recently used commands, most recent first.
+    pub recent: Vec<String>,
+    /// The request card whose button has keyboard focus (set while drawing it).
+    pub card_focus: Option<ItemId>,
+    /// "Quit YAAC?" is asked (Quit with the tray off).
+    pub quit_confirm: bool,
 }
 
 impl UiState {
@@ -232,6 +242,11 @@ impl UiState {
             nav_menu: None,
             nav_sel: 0,
             nav_held: false,
+            commander: None,
+            bindings: yaac_core::commands::Bindings::default(),
+            recent: Vec::new(),
+            card_focus: None,
+            quit_confirm: false,
         }
     }
 
@@ -260,6 +275,8 @@ impl UiState {
             sidebar: self.sidebar,
             agents_width: self.agents_width,
             tray_on_close: self.tray_on_close,
+            bindings: self.bindings.overrides.clone(),
+            recent: self.recent.clone(),
         }
     }
 
@@ -279,6 +296,8 @@ impl UiState {
         self.sidebar = p.sidebar;
         self.agents_width = p.agents_width;
         self.tray_on_close = p.tray_on_close;
+        self.bindings.overrides = p.bindings.clone();
+        self.recent = p.recent.clone();
     }
 }
 
@@ -307,6 +326,8 @@ pub(crate) enum Action {
     Stop(ThreadKey),
     StartDraft(u64),
     NewThread,
+    /// A draft in this thread's project and target, with its harness and model.
+    NewInProject(ThreadKey),
     CheckLatest(ThreadKey),
     ContinueBudget(Address),
     OpenFork(ThreadKey),
@@ -780,6 +801,20 @@ impl YaacApp {
         self.ui.history.visit(Place::Draft(id), None);
     }
 
+    /// "New thread in this project": a draft beside the open thread, with the same harness and
+    /// model (the draft's model picker can still change both).
+    pub(crate) fn new_in_project(&mut self, key: &ThreadKey) {
+        let instance_model = self.client.state.summary(key).map(|s| (s.instance.clone(), s.model.clone()));
+        self.new_thread();
+        let id = match self.client.state.selection {
+            yaac_core::state::Selection::NewThread(id) => id,
+            _ => return,
+        };
+        if let Some((inst, Some(model))) = instance_model {
+            self.client.set_draft_model(id, inst, model);
+        }
+    }
+
     pub(crate) fn apply(&mut self, actions: Vec<Action>) {
         for a in actions {
             match a {
@@ -805,6 +840,7 @@ impl YaacApp {
                     self.client.start_thread(id);
                 }
                 Action::NewThread => self.new_thread(),
+                Action::NewInProject(k) => self.new_in_project(&k),
                 Action::CheckLatest(k) => self.client.check_latest(&k),
                 Action::ContinueBudget(r) => self.client.continue_budget(&r),
                 Action::OpenFork(k) => {
@@ -1102,7 +1138,7 @@ impl YaacApp {
     /// Ctrl+V: the clipboard is read off the UI thread. Into the open composer (focused, or
     /// nothing focused) a copied file list or a bitmap becomes chips; into any other field only
     /// text is pasted.
-    fn paste(&mut self, ctx: &egui::Context) {
+    pub(crate) fn paste(&mut self, ctx: &egui::Context) {
         let focused = ctx.memory(|m| m.focused());
         let into = self.open_composer().filter(|d| focused.is_none() || focused == Some(crate::composer::composer_id(d)));
         use chrono::{Datelike as _, Timelike as _};
@@ -1156,48 +1192,9 @@ impl YaacApp {
         }
     }
 
+    /// The keyboard: one dispatcher, through the command table (D131).
     pub(crate) fn keyboard(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let ctrl = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, k));
-        if ctrl(Key::J) {
-            actions.push(Action::NeedsNext);
-        }
-        if ctrl(Key::N) {
-            actions.push(Action::NewThread);
-        }
-        if ctrl(Key::B) {
-            self.ui.sidebar.toggle();
-        }
-        if ctrl(Key::K) {
-            self.ui.focus_search = true;
-        }
-        if ctrl(Key::Comma) {
-            actions.push(Action::Settings(true));
-        }
-        // Ctrl+V arrives as a key (`clipboard_shortcuts` is off): see `paste`.
-        let paste = ctx.input_mut(|i| {
-            i.consume_key(Modifiers::COMMAND, Key::V) || i.consume_key(Modifiers::NONE, Key::Paste) || (cfg!(windows) && i.consume_key(Modifiers::SHIFT, Key::Insert))
-        });
-        if paste {
-            self.paste(ctx);
-        }
-        // Back and forward: Alt+Left / Alt+Right, and the mouse's side buttons.
-        let (alt_left, alt_right, extra1, extra2) = ctx.input_mut(|i| {
-            (
-                i.consume_key(Modifiers::ALT, Key::ArrowLeft),
-                i.consume_key(Modifiers::ALT, Key::ArrowRight),
-                i.pointer.button_pressed(egui::PointerButton::Extra1),
-                i.pointer.button_pressed(egui::PointerButton::Extra2),
-            )
-        });
-        if alt_left || extra1 {
-            actions.push(Action::Nav(-1));
-        }
-        if alt_right || extra2 {
-            actions.push(Action::Nav(1));
-        }
-        if self.ui.menu.is_some() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            self.ui.menu = None;
-        }
+        crate::commander::dispatch(self, ctx, actions);
     }
 }
 
@@ -1335,6 +1332,8 @@ impl eframe::App for YaacApp {
         crate::dialogs::mode_confirm(ui.ctx(), self, &mut actions);
         crate::dialogs::mute(ui.ctx(), self, &mut actions);
         crate::pr_ui::create_dialog(ui.ctx(), self, &mut actions);
+        crate::dialogs::quit(ui.ctx(), self);
+        crate::commander::show(ui.ctx(), self, &mut actions);
         // Pull requests of the rows on screen (D119): asked when due, never polled; one calm
         // repaint when the next refresh is due.
         let visible = std::mem::take(&mut self.ui.pr_visible);
@@ -1356,6 +1355,7 @@ mod tests {
     use yaac_core::history::{Anchor, Place};
 
     use super::*;
+    use eframe::egui::Modifiers;
 
     pub(crate) fn demo_app(ctx: &egui::Context) -> YaacApp {
         let launch = crate::Launch {
@@ -1564,5 +1564,140 @@ mod tests {
         let cmds = full_pass(&ctx, &mut app, close_request());
         assert!(!cmds.contains(&egui::ViewportCommand::CancelClose) && !cmds.contains(&egui::ViewportCommand::Visible(false)));
         assert!(!app.shell.hidden);
+    }
+
+    fn screen() -> Option<egui::Rect> {
+        Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)))
+    }
+
+    /// One frame with these events; every key pressed is released at its end (else the next
+    /// press of it would be a repeat).
+    fn keys(ctx: &egui::Context, app: &mut YaacApp, mut events: Vec<egui::Event>) {
+        let ups: Vec<egui::Event> = events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::Key { key, modifiers, .. } => Some(egui::Event::Key { key: *key, physical_key: None, pressed: false, repeat: false, modifiers: *modifiers }),
+                _ => None,
+            })
+            .collect();
+        events.extend(ups);
+        window_frame(ctx, app, egui::RawInput { screen_rect: screen(), events, ..Default::default() });
+    }
+
+    fn press(k: Key, m: Modifiers) -> egui::Event {
+        egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: m }
+    }
+
+    const CTRL: Modifiers = Modifiers { alt: false, ctrl: true, shift: false, mac_cmd: false, command: true };
+    const CTRL_SHIFT: Modifiers = Modifiers { alt: false, ctrl: true, shift: true, mac_cmd: false, command: true };
+
+    #[test]
+    fn ctrl_space_opens_the_commander_typing_filters_and_enter_runs() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.apply(vec![Action::Open(threads::fix())]);
+        keys(&ctx, &mut app, vec![]);
+        assert!(!app.ui.ordering.running_only);
+        keys(&ctx, &mut app, vec![press(Key::Space, CTRL)]);
+        assert!(app.ui.commander.is_some(), "Ctrl+Space opens it");
+        // The field has the caret: typing filters.
+        keys(&ctx, &mut app, vec![egui::Event::Text("only running".into())]);
+        assert_eq!(app.ui.commander.as_ref().map(|c| c.query.as_str()), Some("only running"));
+        keys(&ctx, &mut app, vec![press(Key::Enter, Modifiers::NONE)]);
+        assert!(app.ui.ordering.running_only, "Enter ran Show only running (D129)");
+        assert!(app.ui.commander.is_none());
+        assert_eq!(app.ui.recent.first().map(String::as_str), Some("running-only"), "remembered as recent");
+        // Esc closes it without running anything.
+        keys(&ctx, &mut app, vec![press(Key::Space, CTRL)]);
+        keys(&ctx, &mut app, vec![press(Key::Escape, Modifiers::NONE)]);
+        assert!(app.ui.commander.is_none());
+        assert!(app.ui.ordering.running_only);
+    }
+
+    #[test]
+    fn a_command_with_a_choice_continues_inside_the_commander() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.apply(vec![Action::Open(threads::fix())]);
+        keys(&ctx, &mut app, vec![]);
+        // Ctrl+M: the model list, in the Commander.
+        keys(&ctx, &mut app, vec![press(Key::M, CTRL)]);
+        let c = app.ui.commander.as_ref().expect("open at the step");
+        assert_eq!(c.step.map(|s| s.0), Some(yaac_core::commands::Cmd::Model));
+        // Esc goes back to the whole list, a second Esc closes it.
+        keys(&ctx, &mut app, vec![press(Key::Escape, Modifiers::NONE)]);
+        assert!(app.ui.commander.as_ref().is_some_and(|c| c.step.is_none()));
+        keys(&ctx, &mut app, vec![press(Key::Escape, Modifiers::NONE)]);
+        assert!(app.ui.commander.is_none());
+    }
+
+    #[test]
+    fn a_rebound_key_works_and_the_old_one_no_longer_does() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.apply(vec![Action::Open(threads::fix())]);
+        keys(&ctx, &mut app, vec![]);
+        let y = yaac_core::keys::Chord::parse("Ctrl+Shift+Y").unwrap();
+        assert!(app.ui.bindings.assign(yaac_core::commands::Cmd::RunningOnly, y, false));
+        keys(&ctx, &mut app, vec![press(Key::R, CTRL_SHIFT)]);
+        assert!(!app.ui.ordering.running_only, "the old key does nothing");
+        keys(&ctx, &mut app, vec![press(Key::Y, CTRL_SHIFT)]);
+        assert!(app.ui.ordering.running_only, "the new key runs it");
+        // The change is a window preference, stored as a difference.
+        assert_eq!(app.ui.prefs().bindings.0.len(), 1);
+    }
+
+    #[test]
+    fn plain_keys_do_not_fire_inside_the_composer() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.apply(vec![Action::Open(threads::billing())]);
+        app.ui.focus_card = None;
+        app.ui.focus_composer = true;
+        keys(&ctx, &mut app, vec![]);
+        keys(&ctx, &mut app, vec![]);
+        assert!(ctx.text_edit_focused(), "the composer has the caret");
+        // F2 (Rename) is a plain key: typing in the composer keeps it.
+        keys(&ctx, &mut app, vec![press(Key::F2, Modifiers::NONE)]);
+        assert!(app.ui.rename.is_none());
+        // A chord with Ctrl still works there (Ctrl+Shift+P pins).
+        let pinned = app.client.state.is_pinned(&threads::billing());
+        keys(&ctx, &mut app, vec![press(Key::P, CTRL_SHIFT)]);
+        assert_ne!(app.client.state.is_pinned(&threads::billing()), pinned);
+        // Out of the field, F2 renames.
+        ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        keys(&ctx, &mut app, vec![]);
+        assert!(!ctx.text_edit_focused());
+        keys(&ctx, &mut app, vec![press(Key::F2, Modifiers::NONE)]);
+        assert!(app.ui.rename.is_some());
+    }
+
+    #[test]
+    fn settings_keyboard_records_flags_a_conflict_and_replaces() {
+        use yaac_core::commands::Cmd;
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.apply(vec![Action::SettingsPage(Page::Keyboard)]);
+        keys(&ctx, &mut app, vec![]);
+        // Recording the Commander's key: Ctrl+K belongs to Search threads.
+        app.ui.set.keys.recording = Some(Cmd::Commander);
+        keys(&ctx, &mut app, vec![press(Key::K, CTRL)]);
+        assert_eq!(app.ui.set.keys.conflict.as_ref().map(|c| c.2), Some(Cmd::SearchThreads));
+        assert_eq!(app.ui.bindings.label(Cmd::Commander), "Ctrl+Space", "nothing changes until resolved");
+        assert!(app.ui.settings, "the page stays open");
+        // Replace.
+        let (cmd, chord, _) = app.ui.set.keys.conflict.take().unwrap();
+        app.ui.bindings.assign(cmd, chord, true);
+        assert_eq!(app.ui.bindings.label(Cmd::Commander), "Ctrl+K");
+        assert_eq!(app.ui.bindings.label(Cmd::SearchThreads), "");
+        // Esc cancels a recording without leaving Settings.
+        app.ui.set.keys.recording = Some(Cmd::Rename);
+        keys(&ctx, &mut app, vec![press(Key::Escape, Modifiers::NONE)]);
+        assert!(app.ui.set.keys.recording.is_none() && app.ui.settings);
+        assert_eq!(app.ui.bindings.label(Cmd::Rename), "F2");
     }
 }

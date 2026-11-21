@@ -39,10 +39,10 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
                     ui.painter().rect_filled(r, 5.0, p.faint);
                 }
                 icons::sidebar(ui.painter(), r.center(), 16.0, p.text2);
-                if resp.on_hover_text("Collapse the sidebar (Ctrl+B)").clicked() {
+                if resp.on_hover_text(crate::commander::tip(app, "Collapse the sidebar", yaac_core::commands::Cmd::ToggleSidebar)).clicked() {
                     app.ui.sidebar.toggle();
                 }
-                if widgets::plain(ui, &p, "New", None).on_hover_text("New thread (Ctrl+N)").clicked() {
+                if widgets::plain(ui, &p, "New", None).on_hover_text(crate::commander::tip(app, "New thread", yaac_core::commands::Cmd::NewThread)).clicked() {
                     actions.push(Action::NewThread);
                 }
             });
@@ -146,7 +146,7 @@ pub(crate) fn needs_button(ui: &mut egui::Ui, app: &YaacApp, map: &AttentionMap,
     }
     icons::exclaim(ui.painter(), pos2(r.left() + 12.0, r.center().y), 16.0, p.failed);
     ui.painter().galley(pos2(r.left() + 22.0, r.center().y - count.size().y / 2.0), count, p.failed);
-    if resp.on_hover_text(format!("{} (Ctrl+J)", NeedsCycle::tooltip(n))).clicked() {
+    if resp.on_hover_text(crate::commander::tip(app, &NeedsCycle::tooltip(n), yaac_core::commands::Cmd::NeedsNext)).clicked() {
         actions.push(Action::NeedsNext);
     }
 }
@@ -296,7 +296,7 @@ fn footer(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     }
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::hover());
     let settings = Rect::from_min_size(rect.min, vec2(96.0, 30.0));
-    let resp = ui.interact(settings, egui::Id::unique("settings-button"), Sense::click()).on_hover_text("Settings (Ctrl+,)");
+    let resp = ui.interact(settings, egui::Id::unique("settings-button"), Sense::click()).on_hover_text(crate::commander::tip(app, "Settings", yaac_core::commands::Cmd::Settings));
     if resp.hovered() {
         ui.painter().rect_filled(settings, 5.0, p.faint);
     }

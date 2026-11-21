@@ -94,6 +94,8 @@ pub(crate) struct SettingsUi {
     pub ssh_config_hosts: Option<Vec<String>>,
     /// Records the setup and revoke flows produced, to store.
     pub records: Vec<(TargetId, SetupRecord)>,
+    /// Settings → Keyboard: recording a chord, and a conflict to resolve.
+    pub keys: crate::keyboard::KeysUi,
 }
 
 impl SettingsUi {
@@ -169,12 +171,13 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
                     Page::Providers => providers(ui, app, actions),
                     Page::Appearance => appearance(ui, app, actions),
                     Page::Window => window(ui, app),
+                    Page::Keyboard => crate::keyboard::page(ui, app),
                     Page::Advanced => advanced(ui, app, actions),
                 }
             });
         });
     });
-    let busy = app.ui.menu.is_some() || app.ui.set.ssh.is_some() || app.ui.set.revoke.is_some();
+    let busy = app.ui.menu.is_some() || app.ui.set.ssh.is_some() || app.ui.set.revoke.is_some() || app.ui.set.keys.conflict.is_some() || app.ui.commander.is_some();
     if !busy && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
         actions.push(Action::Settings(false));
     }

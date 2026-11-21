@@ -305,7 +305,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
         let k = a.key.clone();
         ui.horizontal(|ui| {
             widgets::icon(ui, 14.0, |pa, c, d| icons::warning(pa, c, d, p.needs, p.bg));
-            let r = ui.add(egui::Label::new(widgets::secondary(format!("{title} needs {} {} · Ctrl+J to go there", article(a.kind.word()), a.kind.word()), &p)).sense(egui::Sense::click()));
+            let r = ui.add(egui::Label::new(widgets::secondary(format!("{title} needs {} {} · {} to go there", article(a.kind.word()), a.kind.word(), app.ui.bindings.label(yaac_core::commands::Cmd::NeedsNext)), &p)).sense(egui::Sense::click()));
             if r.clicked() {
                 actions.push(Action::OpenRequest(k));
             }

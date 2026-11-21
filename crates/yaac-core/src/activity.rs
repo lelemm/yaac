@@ -452,3 +452,30 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
     flush(&mut run, &mut out);
     out
 }
+
+/// "Expand all tool lines": every folded run of the thread opens and every activity line in
+/// it is expanded (file diffs keep their own state: a turn's "show all" opens those).
+pub fn expand_all(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: &mut Expansion) {
+    for b in blocks(state, map, key, expansion) {
+        if let Block::Folded { first, .. } = b {
+            expansion.runs.insert((key.clone(), first));
+        }
+    }
+    for b in blocks(state, map, key, expansion) {
+        if let Block::Run { lines } = b {
+            for l in lines.into_iter().filter(|l| l.diff.is_none()) {
+                expansion.lines.insert((key.clone(), l.id));
+            }
+        }
+    }
+}
+
+/// "Collapse all tool lines": the thread's lines, runs and diffs return to their collapsed
+/// form.
+pub fn collapse_all(key: &ThreadKey, expansion: &mut Expansion) {
+    expansion.lines.retain(|(k, _)| k != key);
+    expansion.runs.retain(|(k, _)| k != key);
+    expansion.files.retain(|(k, _, _)| k != key);
+    expansion.rest.retain(|(k, _, _)| k != key);
+    expansion.turns.retain(|(k, _)| k != key);
+}

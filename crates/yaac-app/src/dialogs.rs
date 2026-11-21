@@ -498,3 +498,40 @@ pub(crate) fn archive(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<
         app.ui.archive = Some(d);
     }
 }
+
+/// "Quit YAAC?" — Quit from the Commander or its key while the tray is not in use, so closing
+/// the window is not a slip of the keyboard. The hub keeps running either way.
+pub(crate) fn quit(ctx: &egui::Context, app: &mut YaacApp) {
+    if !app.ui.quit_confirm {
+        return;
+    }
+    let p = app.p;
+    scrim(ctx, &p, "quit");
+    let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    if esc {
+        app.ui.quit_confirm = false;
+        return;
+    }
+    let mut quit = enter;
+    window("quit-confirm", &p, ctx).show(ctx, |ui| {
+        ui.set_width(400.0);
+        ui.label(RichText::new("Quit YAAC?").font(theme::bold(size::SECTION + 1.5)));
+        ui.add_space(8.0);
+        ui.label("The window closes. The hub keeps running, and so do the agents' turns; open YAAC again to see them.");
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            if widgets::plain(ui, &p, "Cancel", Some("Esc")).clicked() {
+                app.ui.quit_confirm = false;
+            }
+            ui.add_space(8.0);
+            if widgets::primary(ui, &p, "Quit", Some("Enter")).clicked() {
+                quit = true;
+            }
+        });
+    });
+    if quit {
+        app.ui.quit_confirm = false;
+        app.shell.quit(ctx);
+    }
+}

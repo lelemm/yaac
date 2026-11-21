@@ -37,13 +37,13 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     let g = ui.fonts_mut(|f| f.layout_no_wrap("Y".to_owned(), theme::bold(18.0), p.text));
     ui.painter().galley(pos2(cx - g.size().x / 2.0, side.top() + 12.0), g, p.text);
     let mut y = side.top() + 56.0;
-    let (r, resp) = button(ui, y, "expand", "Expand the sidebar (Ctrl+B)");
+    let (r, resp) = button(ui, y, "expand", &crate::commander::tip(app, "Expand the sidebar", yaac_core::commands::Cmd::ToggleSidebar));
     icons::sidebar(ui.painter(), r.center(), 16.0, p.text2);
     if resp.clicked() {
         app.ui.sidebar.toggle();
     }
     y += CELL;
-    let (r, resp) = button(ui, y, "new", "New thread (Ctrl+N)");
+    let (r, resp) = button(ui, y, "new", &crate::commander::tip(app, "New thread", yaac_core::commands::Cmd::NewThread));
     icons::plus(ui.painter(), r.center(), 16.0, p.text);
     if resp.clicked() {
         actions.push(Action::NewThread);
@@ -143,7 +143,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             }
         });
     });
-    let (r, resp) = button(ui, side.bottom() - 22.0, "settings", "Settings (Ctrl+,)");
+    let (r, resp) = button(ui, side.bottom() - 22.0, "settings", &crate::commander::tip(app, "Settings", yaac_core::commands::Cmd::Settings));
     icons::gear(ui.painter(), r.center(), 17.0, p.text2);
     if resp.clicked() {
         actions.push(Action::Settings(true));

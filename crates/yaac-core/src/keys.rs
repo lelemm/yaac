@@ -151,10 +151,22 @@ impl Chord {
         Some(c)
     }
 
-    /// Whether it carries Ctrl or Alt — such a chord may fire while a text field has focus;
-    /// a plain one (F2, Delete, Shift+X) only when focus is in the list or the thread view.
+    /// Whether it may fire while a text field has focus: it carries Ctrl or Alt, and is not one
+    /// of the keys text editing itself uses (Ctrl+Delete deletes a word, Ctrl+A selects all,
+    /// Ctrl+← moves a word…). A plain chord (F2, Delete, Shift+X) acts only when focus is in
+    /// the list or the thread view.
     pub fn works_in_text(&self) -> bool {
-        self.ctrl || self.alt || matches!(self.key, ChordKey::Mouse(_))
+        let ChordKey::Key(k) = &self.key else { return true };
+        if matches!(k.as_str(), "Delete" | "Backspace" | "Home" | "End") {
+            return false;
+        }
+        if self.ctrl && !self.alt && matches!(k.as_str(), "Left" | "Right") {
+            return false;
+        }
+        if self.ctrl && !self.alt && !self.shift && matches!(k.as_str(), "A" | "C" | "V" | "X" | "Y" | "Z") {
+            return false;
+        }
+        self.ctrl || self.alt
     }
 
     /// The same chord without Shift: a symbol typed with Shift ("+" on "=") is tried again
@@ -247,6 +259,12 @@ mod tests {
         assert!(Chord::parse("Alt+↑").is_some_and(|c| c.works_in_text()));
         assert!(Chord::parse("F2").is_some_and(|c| !c.works_in_text()));
         assert!(Chord::parse("Shift+Delete").is_some_and(|c| !c.works_in_text()));
+        // Text editing keeps its own keys: Ctrl+Delete deletes a word, Ctrl+A selects all.
+        assert!(Chord::parse("Ctrl+Delete").is_some_and(|c| !c.works_in_text()));
+        assert!(Chord::parse("Ctrl+A").is_some_and(|c| !c.works_in_text()));
+        assert!(Chord::parse("Ctrl+Shift+A").is_some_and(|c| c.works_in_text()));
+        assert!(Chord::parse("Alt+←").is_some_and(|c| c.works_in_text()));
+        assert!(Chord::parse("Mouse back").is_some_and(|c| c.works_in_text()));
     }
 
     #[test]

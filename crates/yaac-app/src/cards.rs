@@ -252,6 +252,10 @@ fn approval_buttons(
             }
             card_focused |= resp.has_focus();
             responses.push((resp.clicked(), d.clone()));
+            if resp.has_focus() {
+                // The Commander's Allow and Deny act on this card only (D130).
+                v.ui.card_focus = Some(item.id.clone());
+            }
         }
     });
     // Esc denies only while this card has focus; Enter acts on the focused button (the first

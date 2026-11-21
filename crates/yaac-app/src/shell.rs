@@ -73,7 +73,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
                 let text = match &app.client.state.hub.last_error {
                     Some(e) if !app.client.state.hub.attached => e.clone(),
                     _ if !app.client.state.hub.attached => "Attaching to the hub…".to_owned(),
-                    _ => "Choose a thread, or start one with New (Ctrl+N).".to_owned(),
+                    _ => format!("Choose a thread, or start one with {}.", crate::commander::tip(app, "New", yaac_core::commands::Cmd::NewThread)),
                 };
                 ui.centered_and_justified(|ui| {
                     ui.label(widgets::secondary(text, &p));

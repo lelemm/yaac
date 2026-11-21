@@ -287,3 +287,18 @@ fn the_recent_list_is_stored_and_unknown_ids_dropped() {
     assert_eq!(p.recent, ["pin", "dock"]);
     assert_eq!(p.value(keys::COMMANDER_RECENT), serde_json::json!(["pin", "dock"]));
 }
+
+#[test]
+fn expand_and_collapse_all_tool_lines() {
+    let (c, _) = boot();
+    let k = threads::orchestrator();
+    let map = yaac_core::attention::AttentionMap::compute(&c.state);
+    let mut e = yaac_core::activity::Expansion::default();
+    yaac_core::activity::expand_all(&c.state, &map, &k, &mut e);
+    let blocks = yaac_core::activity::blocks(&c.state, &map, &k, &e);
+    assert!(!blocks.iter().any(|b| matches!(b, yaac_core::activity::Block::Folded { .. })));
+    let lines: Vec<_> = blocks.iter().filter_map(|b| if let yaac_core::activity::Block::Run { lines } = b { Some(lines) } else { None }).flatten().filter(|l| l.diff.is_none()).collect();
+    assert!(!lines.is_empty() && lines.iter().all(|l| l.expanded));
+    yaac_core::activity::collapse_all(&k, &mut e);
+    assert_eq!(e, yaac_core::activity::Expansion::default());
+}

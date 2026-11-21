@@ -23,7 +23,7 @@ pub(crate) fn buttons(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Ac
         let enabled = can[usize::from(forward)];
         let side = if compact { 20.0 } else { 24.0 };
         let (rect, resp) = ui.allocate_exact_size(vec2(side, 24.0), if enabled { Sense::click() } else { Sense::hover() });
-        let tip = if forward { "Forward (Alt+Right) · hold for the list" } else { "Back (Alt+Left) · hold for the list" };
+        let tip = if forward { crate::commander::tip(app, "Forward", yaac_core::commands::Cmd::Forward) } else { crate::commander::tip(app, "Back", yaac_core::commands::Cmd::Back) } + " · hold for the list";
         let resp = if enabled { resp.on_hover_text(tip) } else { resp };
         if enabled && (resp.hovered() || resp.has_focus() || app.ui.nav_menu == Some(forward)) {
             ui.painter().rect_filled(rect, 5.0, p.faint);
@@ -76,7 +76,7 @@ pub(crate) fn buttons(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Ac
 
 /// How an entry reads in the list: a thread's title with its machine; Settings and drafts by
 /// name.
-fn label(app: &YaacApp, e: &Entry) -> (String, Option<String>) {
+pub(crate) fn label(app: &YaacApp, e: &Entry) -> (String, Option<String>) {
     match &e.place {
         Place::Thread(k) => {
             let st = &app.client.state;
