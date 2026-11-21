@@ -198,6 +198,7 @@ fn backend_name(b: eframe::wgpu::Backend) -> String {
 
 /// What eframe created, read from the creation context.
 fn describe(cc: &eframe::CreationContext<'_>, r: Renderer) -> InUse {
+    #[cfg_attr(not(feature = "wgpu"), allow(unused_mut))]
     let mut u = InUse { renderer: r, ..InUse::default() };
     #[cfg(feature = "wgpu")]
     if let Some(rs) = &cc.wgpu_render_state {

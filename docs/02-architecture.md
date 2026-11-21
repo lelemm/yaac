@@ -626,9 +626,29 @@ the CPU adapter only for software — or when it is all there is, and then Setti
 `software`) overrides the choice for one start; `YAAC_RENDERER_FAIL=1` makes the first attempt
 fail, to exercise the fallback.
 
-Building `wgpu` in costs RENDERER_SIZE_DELTA of executable (Windows, release).
+Building `wgpu` in costs **3.3 MB** of executable: the Windows release `yaac.exe` is 14.6 MB with
+`glow` only and 17.9 MB with both (still under the 20 MB budget). The tray adds four small
+crates on Windows (`tray-icon`, `muda`, `keyboard-types`, `crossbeam-channel`).
 
-Idle footprint per renderer, Windows 11, the demo fleet (`--demo`, maximised 1440×900 window
-on a 2560×1440 screen), after settling, CPU over 15 s:
+Footprint per renderer, measured on a Windows 11 laptop with an integrated and a dedicated GPU, the
+window maximised, 12 s to settle, then CPU time over 15 s (`Get-Process` TotalProcessorTime)
+and memory at the end. *Idle* is the demo's first-run page (`--demo fresh`), where nothing
+moves; *busy* is the demo fleet (`--demo`), whose streaming turns and spinners repaint
+continuously.
 
-RENDERER_TABLE
+| Renderer | Adapter picked | CPU idle | CPU busy | Working set (idle) | Private bytes (idle) |
+| --- | --- | --- | --- | --- | --- |
+| OpenGL (glow) — *Automatic* | the default OpenGL driver | 0.1 % | 18.8 % | 163 MB | 88 MB |
+| Direct3D 12 | dedicated GPU | 0.1 % | 2.5 % | 247 MB | 427 MB |
+| Vulkan | dedicated GPU | 0.3 % | 2.3 % | 199 MB | 418 MB |
+| OpenGL (wgpu) | integrated GPU | 0.1 % | 3.5 % | 196 MB | 59 MB |
+| Software (WARP) | Microsoft Basic Render Driver | 0.1 % | **~2 300 %** (23 cores) | 145 MB | 360 MB |
+
+(CPU percentages are of one core.) Idle is zero for every renderer, as the reactive repaint
+promises. While something animates, software rendering is expensive — WARP spreads each frame
+over every core — which is acceptable for a fallback that exists to make YAAC usable on a
+machine with no GPU, and is a reason to keep animations few and slow. `glow` costs more CPU per
+repaint than wgpu on this machine but has the smallest memory, which is why *Automatic* stays
+`glow`. A window hidden in the tray used 0 ms of CPU over 15 s while the demo fleet streamed
+(it had used 25 % visible). On WSLg the only Vulkan adapter is lavapipe ("llvmpipe"), so
+*Vulkan* and *Software* both run on the CPU there, and Settings says so.
