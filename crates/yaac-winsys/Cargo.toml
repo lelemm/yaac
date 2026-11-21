@@ -1,6 +1,6 @@
 [package]
 name = "yaac-winsys"
-description = "The only place YAAC calls the Windows API directly: console attach, the user's SID, the attach pipe's access control, and the per-user Run registry value. Empty on other platforms."
+description = "The only place YAAC calls the Windows API directly: console attach, the user's SID, the attach pipe's access control, the per-user Run registry value, and the window's single-instance event. Empty on other platforms."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

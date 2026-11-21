@@ -806,7 +806,7 @@ step.*
 *Must show, per machine, whether YAAC can reach it and what YAAC changed there.*
 
 - The settings shell: "← Back to threads" top-left; left navigation **Targets** (selected),
-  Providers, Appearance, Advanced.
+  Providers, Appearance, Window, Advanced.
 - Page title "Targets". Buttons top-right: **Add SSH server**, **Import from SSH config**.
 - **Local** — "This computer" — enabled switch.
 - **SSH** — rows, each with a state line and its own actions:
@@ -1227,3 +1227,21 @@ the list.*
   agent to write it** (greyed: that agent is busy, which the tooltip says); "Create will push
   feature/protocol first: it is not on the remote yet."; the warning "3 files have uncommitted
   changes · they are not part of the pull request."; **Create** and **Cancel**.
+
+### 49 — Settings: window
+
+*Closing to the tray, and what the window draws with (D127, D128).*
+
+- Left navigation with **Window** selected. Page title "Window".
+- **Closing the window** — a switch, on, "Keep running in the tray when closed"; under it, in
+  the secondary colour: "Closing the window hides it in the system tray. Click the tray icon to
+  open it again; its menu has Quit. The hub keeps running either way." (On Linux the switch is
+  off and disabled, and the note says the tray icon is available on Windows.)
+- **Display** — "Renderer" and a dropdown showing the choice (*Automatic*); its list has the
+  renderers this build offers. Under it, "A change applies when YAAC starts again. If the
+  renderer cannot start, YAAC falls back to software rendering and says so here." — after a
+  change, "Applies when YAAC starts again." in the primary colour instead.
+- The in-use line: "In use: OpenGL (glow)", or with a fallback, in the primary colour, "In use:
+  Direct3D 12 (WARP, software) · fell back because Direct3D 12 failed to start: …". When a
+  renderer did not finish starting last time: "Vulkan is skipped until you try it again." and
+  **Try it again**.

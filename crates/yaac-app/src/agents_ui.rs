@@ -386,6 +386,9 @@ mod tests {
             host_windows: false,
             #[cfg(feature = "hub")]
             attach: None,
+            display: crate::display::DisplayState::default(),
+            shell: crate::tray::Shell::new(),
+            tray: false,
         };
         YaacApp::from_ctx(ctx, launch)
     }

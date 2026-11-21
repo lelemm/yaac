@@ -21,13 +21,15 @@ pub enum Page {
     Providers,
     /// Appearance.
     Appearance,
+    /// Window: the tray and the renderer (D127, D128).
+    Window,
     /// Advanced.
     Advanced,
 }
 
 impl Page {
     /// Every page, in navigation order.
-    pub const ALL: [Page; 4] = [Page::Targets, Page::Providers, Page::Appearance, Page::Advanced];
+    pub const ALL: [Page; 5] = [Page::Targets, Page::Providers, Page::Appearance, Page::Window, Page::Advanced];
 
     /// The navigation label.
     pub fn label(self) -> &'static str {
@@ -35,6 +37,7 @@ impl Page {
             Page::Targets => "Targets",
             Page::Providers => "Providers",
             Page::Appearance => "Appearance",
+            Page::Window => "Window",
             Page::Advanced => "Advanced",
         }
     }

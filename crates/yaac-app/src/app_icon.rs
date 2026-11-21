@@ -39,3 +39,33 @@ pub(crate) fn rgba(size: u32) -> Vec<u8> {
     }
     out
 }
+
+/// The icon with a small red badge on its bottom-right corner: the tray's "some thread needs
+/// you" variant (D127), in a red that reads on light and dark taskbars alike.
+#[allow(dead_code, reason = "only the Windows tray uses it; build.rs includes this file too")]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "colour channels clamped to 0..=255")]
+pub(crate) fn badged(size: u32) -> Vec<u8> {
+    const RED: [f32; 3] = [229.0, 72.0, 77.0];
+    let mut out = rgba(size);
+    let s = size as f32;
+    // The badge's centre and radius, and a ring of transparency around it so it reads as a
+    // separate mark over the icon.
+    let (cx, cy, r, ring) = (0.76 * s, 0.76 * s, 0.24 * s, 0.07 * s);
+    for y in 0..size {
+        for x in 0..size {
+            let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+            let i = ((y * size + x) * 4) as usize;
+            let dot = (r - d + 0.5).clamp(0.0, 1.0);
+            let gap = (r + ring - d + 0.5).clamp(0.0, 1.0);
+            // Cut the gap out of the icon, then lay the dot over it.
+            let under = f32::from(out[i + 3]) * (1.0 - gap);
+            let alpha = dot * 255.0 + under * (1.0 - dot);
+            for c in 0..3 {
+                let base = f32::from(out[i + c]);
+                out[i + c] = (RED[c] * dot + base * (1.0 - dot)).round() as u8;
+            }
+            out[i + 3] = alpha.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}

@@ -12,7 +12,8 @@
 //! * [`ssh_setup`] (SSH setup and revoke: the step machine and its backend trait),
 //!   [`settings`] (the settings pages), [`fork`] (the fork dialog), [`first_run`] (screen 07 and
 //!   the project picker), [`mode_confirm`] (confirming a mode that bypasses approvals),
-//!   [`prefs`] (window-side choices persisted through the hub).
+//!   [`prefs`] (window-side choices persisted through the hub), [`display`] (the renderer
+//!   choice and its fallback, the tray).
 //! * [`demo`] — **demo only**: a scripted in-memory hub playing the fleet of the screen brief.
 //!
 //! No I/O, no clock, no UI toolkit. Nothing here branches on provider kind.
@@ -26,6 +27,7 @@ pub mod compose;
 pub mod controls;
 pub mod demo;
 pub mod diff;
+pub mod display;
 pub mod first_run;
 pub mod fork;
 pub mod header;

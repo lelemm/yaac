@@ -71,6 +71,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("61", "pr-more"),
     ("62", "pr-menu"),
     ("63", "pr-create"),
+    ("49", "settings-window"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -568,6 +569,12 @@ fn setup(app: &mut YaacApp, id: &str) {
                 }
                 _ => {}
             }
+        }
+        "49" => {
+            // Settings → Window: the tray option and the renderer, with the line about the
+            // renderer this very window runs on (D127, D128).
+            app.ui.settings = true;
+            app.ui.settings_page = Page::Window;
         }
         "48" => {
             // The docked panel at its narrowest: titles ellipsised, every mark kept (D115).

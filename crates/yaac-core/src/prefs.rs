@@ -1,7 +1,9 @@
 //! Window-side choices that persist: grouping, the docked agents panel, theme, font size, send
-//! key, and collapsed sections. Attached to a hub, each change is sent as `hub/uiState/set`
-//! (the hub is the cache's only writer) and read back from the cache file's `ui_state` table at
-//! start; in demo mode they stay in memory.
+//! key, collapsed sections, and keeping running in the tray. Attached to a hub, each change is
+//! sent as `hub/uiState/set` (the hub is the cache's only writer) and read back from the cache
+//! file's `ui_state` table at start; in demo mode they stay in memory. (The renderer choice is
+//! not here: it is needed before the window exists, so the window keeps it in its own display
+//! file, [`crate::display::DisplayFile`].)
 
 use serde_json::{Value, json};
 
@@ -51,6 +53,8 @@ pub struct UiPrefs {
     /// The docked agents panel's width (D105), between [`AGENTS_MIN_WIDTH`] and
     /// [`AGENTS_MAX_WIDTH`].
     pub agents_width: f32,
+    /// D127: closing the window hides it to the system tray (on by default).
+    pub tray_on_close: bool,
 }
 
 /// The narrowest docked agents panel.
@@ -67,7 +71,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { grouping: Grouping::default(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH }
+        Self { grouping: Grouping::default(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, tray_on_close: true }
     }
 }
 
@@ -91,8 +95,10 @@ pub mod keys {
     pub const AGENTS_WIDTH: &str = "agentsPanelWidth";
     /// The sidebar's ordering (D116).
     pub const ORDERING: &str = "ordering";
+    /// Closing the window hides it to the tray (D127).
+    pub const TRAY_ON_CLOSE: &str = "trayOnClose";
     /// Every key.
-    pub const ALL: [&str; 9] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING];
+    pub const ALL: [&str; 10] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING, TRAY_ON_CLOSE];
 }
 
 impl UiPrefs {
@@ -125,6 +131,7 @@ impl UiPrefs {
             keys::FONT_SIZE => json!(self.font_size),
             keys::SIDEBAR => json!({ "width": self.sidebar.width, "collapsed": self.sidebar.collapsed }),
             keys::AGENTS_WIDTH => json!(self.agents_width),
+            keys::TRAY_ON_CLOSE => json!(self.tray_on_close),
             keys::SEND_KEY => json!(match self.send_key {
                 SendKey::Enter => "enter",
                 SendKey::CtrlEnter => "ctrlEnter",
@@ -157,6 +164,7 @@ impl UiPrefs {
                 o.running_only = b("runningOnly", o.running_only);
             }
             keys::AGENTS_DOCKED => self.docked = v.as_bool().unwrap_or(self.docked),
+            keys::TRAY_ON_CLOSE => self.tray_on_close = v.as_bool().unwrap_or(self.tray_on_close),
             keys::THEME => {
                 self.theme = match v.as_str() {
                     Some("dark") => ThemePref::Dark,
@@ -219,5 +227,17 @@ mod tests {
         assert_eq!(p.agents_width, 410.0);
         p.load(keys::AGENTS_WIDTH, &json!(5000));
         assert_eq!(p.agents_width, AGENTS_MAX_WIDTH);
+    }
+
+    #[test]
+    fn keeping_running_in_the_tray_is_on_by_default_and_stored() {
+        assert!(UiPrefs::default().tray_on_close);
+        let off = UiPrefs { tray_on_close: false, ..UiPrefs::default() };
+        assert_eq!(off.changed(&UiPrefs::default()), [keys::TRAY_ON_CLOSE]);
+        let mut p = UiPrefs::default();
+        p.load(keys::TRAY_ON_CLOSE, &off.value(keys::TRAY_ON_CLOSE));
+        assert!(!p.tray_on_close);
+        p.load(keys::TRAY_ON_CLOSE, &json!("yes"));
+        assert!(!p.tray_on_close, "a malformed value keeps what was there");
     }
 }
