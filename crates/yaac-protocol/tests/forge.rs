@@ -31,7 +31,7 @@ fn forge_prs_result_round_trips_with_unknown_values() {
 
 #[test]
 fn create_is_state_changing_and_the_rest_are_not() {
-    assert!(ForgePrCreate::INFO.state_changing);
+    const { assert!(ForgePrCreate::INFO.state_changing) };
     for name in [names::FORGE_PRS, names::FORGE_PREPARE, names::FORGE_PR_GET] {
         assert!(!methods::request_info(name).unwrap().state_changing, "{name}");
     }

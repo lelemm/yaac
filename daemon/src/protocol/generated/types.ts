@@ -621,7 +621,7 @@ export interface ForgeAccess {
   capabilities: ForgeCapability[];
   /**
    * Why nothing (or less) can be done, in words to show as they are ("gh is not logged in
-   * on devbox — run `gh auth login` there").
+   * on devbox · run `gh auth login` there").
    */
   reason?: string | null;
   /**

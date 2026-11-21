@@ -91,7 +91,7 @@ test(`the stdio bridge (${label}) serves the yaac tools as the ticket's thread, 
     assert.equal(unknown.error.code, -32601);
     const list = await mcp.request("tools/list", {});
     const names = list.result.tools.map((x: any) => x.name).sort();
-    assert.deepEqual(names, ["find_thread", "list_models", "list_targets", "list_threads", "notify_when_done", "read_thread", "send_message", "spawn_thread", "stop_all", "stop_thread", "wait", "whoami"]);
+    assert.deepEqual(names, ["find_thread", "list_models", "list_targets", "list_threads", "notify_when_done", "pr_checks", "pr_comments", "pr_create", "pr_get", "pr_list", "pr_reply", "pr_rerun_checks", "read_thread", "send_message", "spawn_thread", "stop_all", "stop_thread", "wait", "whoami"]);
     const who = await mcp.request("tools/call", { name: "whoami", arguments: {}, _meta: { threadId: native } });
     assert.equal(who.result.isError, undefined);
     assert.match(who.result.content[0].text, new RegExp(`Address: local/${threadId}`));

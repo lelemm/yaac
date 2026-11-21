@@ -95,21 +95,21 @@ tools and their logins — the host never talks to a forge and holds no forge cr
   Enterprise host the target's `gh auth status` lists) in its HTTPS, SSH and scp forms; Azure
   DevOps as `dev.azure.com/{org}/{project}/_git/{repo}`, `{org}.visualstudio.com/…`,
   `ssh.dev.azure.com:v3/…` or `vs-ssh.visualstudio.com:v3/…`. Anything else: no badge. A GitHub
-  fork whose `upstream` remote is its parent works against the upstream repository (P39).
+  fork whose `upstream` remote is its parent works against the upstream repository (P47).
 - **GitHub** is driven through `gh` with `-R HOST/OWNER/REPO`, JSON output, prompts disabled.
-  **Azure DevOps** through `az` for a token and the REST API (P38), with the **tenant that can
+  **Azure DevOps** through `az` for a token and the REST API (P46), with the **tenant that can
   reach the organisation discovered** and remembered in `~/.yaac/remotes.json` — a generic
   per-remote record (an open `data` map keyed by the normalised remote URL), not a forge
   schema.
 - **Missing or signed out** is not an error: the capabilities are empty and a reason says what
-  to do, on which machine ("gh is not logged in on devbox — run `gh auth login` there").
-- **Caching and refresh** (P41): one entry per checkout and branch, fresh for 2 minutes;
+  to do, on which machine ("gh is not logged in on devbox · run `gh auth login` there").
+- **Caching and refresh** (P49): one entry per checkout and branch, fresh for 2 minutes;
   refreshed when the checkout's git status changes (a commit, a push — the same queue as the
   [sidebar's git line](07-ui.md#sidebar)) for branches someone asked about recently; asked again
   by the window only for rows it draws, at most every 5 minutes; never a busy poll; a
   rate-limit answer pauses that host.
 - **Creating** pushes first when needed, carries an operation id, and never re-sends an
-  uncertain create (P43). Agents have the same abilities through the `yaac` MCP server's PR
+  uncertain create (P51). Agents have the same abilities through the `yaac` MCP server's PR
   tools ([10](10-agent-mesh.md#pull-requests)).
 
 ## Threads that belong together

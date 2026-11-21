@@ -50,7 +50,7 @@ fn badges_open_draft_more_merged_create_disabled_and_absent() {
     let notes = badge_of(&c.state, &threads::ci()).unwrap();
     assert!(!notes.enabled);
     assert_eq!(click(&notes), BadgeClick::Nothing);
-    assert_eq!(notes.tooltip(), "az is not logged in on devbox — run `az login` there");
+    assert_eq!(notes.tooltip(), "az is not logged in on devbox · run `az login` there");
 
     // On the default branch with no pull request: no badge.
     assert_eq!(badge_of(&c.state, &threads::orchestrator()), None);
@@ -122,7 +122,7 @@ fn the_create_modal_prefills_warns_and_creates() {
     assert!(d.body.contains("two frames back to back"));
     assert!(d.branches().contains(&"release/1.4".to_owned()));
     assert_eq!(d.push_notice().as_deref(), Some("Create will push feature/protocol first: it is not on the remote yet."));
-    assert_eq!(d.uncommitted_warning().as_deref(), Some("3 files have uncommitted changes — they are not part of the pull request."));
+    assert_eq!(d.uncommitted_warning().as_deref(), Some("3 files have uncommitted changes · they are not part of the pull request."));
     assert_eq!(d.create_blocked(), None);
 
     // The target branch can be the branch itself only by mistake.

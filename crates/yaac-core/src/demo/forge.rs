@@ -85,7 +85,7 @@ impl Inner {
             ForgeAccess { repo: None, capabilities: Vec::new(), reason: None }
         } else if key.target == k(CI).target && ci_root.as_ref() == Some(&root) && branch.as_deref() == Some("main") {
             let ado = ForgeRepo { kind: ForgeKind::AzureDevOps, host: "dev.azure.com".into(), slug: "contoso/Platform/api".into(), web_url: "https://dev.azure.com/contoso/Platform/_git/api".into(), from_fork: false };
-            ForgeAccess { repo: Some(ado), capabilities: Vec::new(), reason: Some(format!("az is not logged in on {} — run `az login` there", key.target)) }
+            ForgeAccess { repo: Some(ado), capabilities: Vec::new(), reason: Some(format!("az is not logged in on {} · run `az login` there", key.target)) }
         } else {
             ForgeAccess { repo: Some(repo()), capabilities: ALL.to_vec(), reason: None }
         };

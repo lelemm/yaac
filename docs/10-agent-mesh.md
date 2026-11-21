@@ -161,7 +161,7 @@ approve are not offered.**
 | --- | --- |
 | `pr_list` | Pull requests whose head is the branch (or a named branch): number, state, checks, title, URL. |
 | `pr_get` | One pull request in full: description, reviewers and their votes, every check or policy. |
-| `pr_create` | Open one from the current branch; pushes first when needed; refuses when the branch already has an open one; an uncertain outcome is reported and not retried (P43). |
+| `pr_create` | Open one from the current branch; pushes first when needed; refuses when the branch already has an open one; an uncertain outcome is reported and not retried (P51). |
 | `pr_checks` | Checks (GitHub) or policies (Azure DevOps) with status, and the end of the failed steps' log (`gh run view --log-failed`; the build timeline's failed logs). |
 | `pr_rerun_checks` | Rerun failed GitHub Actions jobs (`gh run rerun --failed`) or requeue failed build policies. |
 | `pr_comments` | Review threads: id, file and line, resolved or not, comments with authors. |

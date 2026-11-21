@@ -154,7 +154,7 @@ export class GithubAdapter implements ForgeAdapter {
 
   private loginReason(): string {
     const login = this.r.host === "github.com" ? "gh auth login" : `gh auth login --hostname ${this.r.host}`;
-    return `gh is not logged in on ${this.targetName} — run \`${login}\` there`;
+    return `gh is not logged in on ${this.targetName} · run \`${login}\` there`;
   }
 
   async access(): Promise<ForgeAccess> {

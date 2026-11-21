@@ -109,7 +109,7 @@ pub struct ForgeAccess {
     /// What can be done now. Empty with a `reason` when the CLI is missing or signed out.
     pub capabilities: Vec<ForgeCapability>,
     /// Why nothing (or less) can be done, in words to show as they are ("gh is not logged in
-    /// on devbox — run `gh auth login` there").
+    /// on devbox · run `gh auth login` there").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }

@@ -104,7 +104,7 @@ pub fn due(state: &AppState, visible: &[ThreadKey], now: i64) -> Vec<ThreadKey> 
     out
 }
 
-/// A small, monochrome hint inside the badge (P-entry in decisions.md).
+/// A small, monochrome hint inside the badge (P48 in decisions.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BadgeHint {
     /// A draft: the outline is dashed.
@@ -152,7 +152,7 @@ impl PrBadge {
         }
         match &self.primary {
             None => "Create a pull request for this branch".to_owned(),
-            Some(p) => format!("{} — {}\nOpen in the browser", describe(p), p.title),
+            Some(p) => format!("{} · {}\nOpen in the browser", describe(p), p.title),
         }
     }
 }
@@ -200,7 +200,7 @@ pub fn badge_of(state: &AppState, key: &ThreadKey) -> Option<PrBadge> {
     let reason = (!enabled).then(|| r.access.reason.clone().unwrap_or_else(|| "Pull requests are not available on this target".into()));
     // The badge stands for the open pull request when there is one, else the most recent.
     let mut prs = if can_list { r.prs.clone() } else { Vec::new() };
-    // The default branch itself: no create badge, only a pull request from it (P-entry).
+    // The default branch itself: no create badge, only a pull request from it (P48).
     if prs.is_empty() && enabled && r.branch.is_some() && r.branch == r.default_branch {
         return None;
     }
@@ -391,7 +391,7 @@ impl CreatePr {
     /// The uncommitted-changes warning (D120): warned about, never pushed.
     pub fn uncommitted_warning(&self) -> Option<String> {
         let n = self.ready()?.push.uncommitted;
-        (n > 0).then(|| format!("{n} file{} uncommitted changes — they are not part of the pull request.", if n == 1 { " has" } else { "s have" }))
+        (n > 0).then(|| format!("{n} file{} uncommitted changes · they are not part of the pull request.", if n == 1 { " has" } else { "s have" }))
     }
 
     /// Why Create cannot be pressed now, or `None` when it can.

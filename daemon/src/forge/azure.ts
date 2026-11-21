@@ -83,7 +83,7 @@ export class AzureAdapter implements ForgeAdapter {
   }
 
   private loginReason(): string {
-    return `az is not logged in on ${this.targetName} — run \`az login\` there`;
+    return `az is not logged in on ${this.targetName} · run \`az login\` there`;
   }
 
   private async azJson(args: string[]): Promise<unknown> {
@@ -150,7 +150,7 @@ export class AzureAdapter implements ForgeAdapter {
         return { tenant, token };
       }
     }
-    throw new ForgeError(`None of the tenants az is signed in to on ${this.targetName} can reach the Azure DevOps organisation ${this.r.org} — run \`az login --tenant <the organisation's tenant>\` there`, "auth");
+    throw new ForgeError(`None of the tenants az is signed in to on ${this.targetName} can reach the Azure DevOps organisation ${this.r.org} · run \`az login --tenant <the organisation's tenant>\` there`, "auth");
   }
 
   private async credentials(): Promise<{ tenant: string; token: string }> {

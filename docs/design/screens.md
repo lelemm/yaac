@@ -1214,7 +1214,7 @@ the list.*
 ### 61 — The `+1` list
 
 - Hovering billing-service's `+1`: a small list under the badge, "Also from this branch",
-  `#33301 · closed — Billing: first try at the token refresh`; clicking a row opens it.
+  `#33301 · closed · Billing: first try at the token refresh`; clicking a row opens it.
 
 ### 62 — The badge's menu
 
@@ -1226,4 +1226,4 @@ the list.*
   **main**; the title and description prefilled from the branch's commits; **Draft**; **Ask the
   agent to write it** (greyed: that agent is busy, which the tooltip says); "Create will push
   feature/protocol first: it is not on the remote yet."; the warning "3 files have uncommitted
-  changes — they are not part of the pull request."; **Create** and **Cancel**.
+  changes · they are not part of the pull request."; **Create** and **Cancel**.

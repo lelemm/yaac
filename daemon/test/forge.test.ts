@@ -132,7 +132,7 @@ test("azure devops: no tenant reaches the organisation, az signed out, az missin
   const a = new AzureAdapter(fake.az, fake.fetch, new RemoteStore(home), repo, "devbox");
   assert.match((await a.access()).reason!, /None of the tenants az is signed in to on devbox can reach the Azure DevOps organisation contoso/);
   fake.tenants = [];
-  assert.match((await new AzureAdapter(fake.az, fake.fetch, new RemoteStore(home), repo, "devbox").access()).reason!, /az is not logged in on devbox — run `az login` there/);
+  assert.match((await new AzureAdapter(fake.az, fake.fetch, new RemoteStore(home), repo, "devbox").access()).reason!, /az is not logged in on devbox · run `az login` there/);
   fake.installed = false;
   assert.match((await new AzureAdapter(fake.az, fake.fetch, new RemoteStore(home), repo, "devbox").access()).reason!, /az is not installed on devbox/);
 });
@@ -217,7 +217,7 @@ test("forge/prs: not logged in and not installed give a reason; nothing is liste
   const { daemon, c, threadId } = await setup(gh);
   const r: any = await c.request("forge/prs", { threadId });
   assert.deepEqual(r.access.capabilities, []);
-  assert.match(r.access.reason, /^gh is not logged in on .+ — run `gh auth login` there$/);
+  assert.match(r.access.reason, /^gh is not logged in on .+ · run `gh auth login` there$/);
   assert.equal(gh.calls.filter((x) => x[1] === "list").length, 0);
   await c.close();
   await daemon.stop("test");
@@ -390,7 +390,7 @@ test("the yaac MCP server lists the PR tools, and they do what they say", async 
   r = await call("pr_list");
   assert.equal(r.isError, true);
   r = await call("pr_list");
-  assert.match(r.text, /gh is not logged in on .+ — run `gh auth login` there/);
+  assert.match(r.text, /gh is not logged in on .+ · run `gh auth login` there/);
   assert.ok(fs.existsSync(work));
   await c.close();
   await daemon.stop("test");

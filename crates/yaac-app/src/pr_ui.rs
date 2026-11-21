@@ -184,7 +184,7 @@ fn more_list(ctx: &egui::Context, p: &Palette, others: &[yaac_protocol::PrSummar
                 ui.label(widgets::secondary("Also from this branch", p));
                 for pr in others {
                     let (r, rect) = widgets::menu_row(ui, p, false, true);
-                    let text = format!("{} — {}", describe(pr), pr.title);
+                    let text = format!("{} · {}", describe(pr), pr.title);
                     let g = widgets::elided(ui, &text, &theme::ui(size::SMALL), p.text, rect.width() - 16.0);
                     ui.painter().galley(pos2(rect.left() + 8.0, rect.center().y - g.size().y / 2.0), g, p.text);
                     if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
