@@ -78,6 +78,14 @@ All dated entries are from 2026-11-20.
 | D65 | A thread created from YAAC starts in the **root of its project's folder**. | Owner |
 | D66 | **Sidebar rows are more informative: more than one line**, with room for the **git branch** and, very compactly, **how many files differ from origin** for that branch. | Owner |
 | D68 | The git changes in a sidebar row use **real icons, not Unicode characters**, and the **usual git colours** (green, red, …). | Owner |
+| D115 | The docked agents panel is titled **Related agents**. When narrowed, a row **ellipsizes its title** and keeps every mark (state, git counts, ahead/behind) visible. | Owner |
+| D114 | **A finished turn nobody has looked at is marked**: a thread (or a subagent) whose turn ended while the user was not viewing it gets a **cornflower-blue border** — the row's rounded outline in the sidebar and in the docked panel, a round ring in the floating pill. It clears when the thread is opened. It is *not* "Needs you" (that stays for approvals, questions, permissions and budgets). The unseen mark is a host view preference kept by the hub (like pin and mute, D92), so it survives a restart and is the same in every window. Cornflower blue is the one hue allowed beside the failed red and git colours (an exception to D83). | Owner |
+| D113 | **The needs-you mark is a stylized red exclamation icon** (not text, not the yellow triangle). | Owner |
+| D112 | The Mute dialog's date is a **field with a button that opens a calendar dropdown**, not a calendar embedded in the dialog. The calendar keeps **six week rows** always, so it never changes size between months. | Owner |
+| D111 | **Archive asks for confirmation** in a modal. | Owner |
+| D110 | **Delete** is in the thread menu, in the destructive colour, and opens a modal: "Delete <thread>?" with a checkbox **"Also delete the session from <harness name>"**, checked by default. The checkbox is shown only when the provider can delete its own sessions (a capability); otherwise YAAC removes only its own record. | Owner |
+| D109 | The thread menu's order: **Copy thread ID, Rename** — separator — **Fork, Mute…, Archive** — separator — **Delete**. | Owner |
+| D108 | While a row's context menu is open, the row **keeps its hover colour**. | Owner |
 | D107 | **One way to start a new thread**: the New button at the top. A draft is not listed as a row in the sidebar. | Owner |
 | D106 | The sidebar footer shows the hub as a **connection icon** (crossed out when the hub is not reachable, plain when connected, in a muted colour) and targets as **counts only**: an up arrow with the number of connected targets, a down arrow with the number not connected. | Owner |
 | D105 | The **right-hand agents panel is resizable** like the left sidebar. | Owner |
