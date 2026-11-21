@@ -44,6 +44,9 @@ pub(crate) struct Palette {
     /// A finished turn nobody has looked at (D114): the one hue beside the failed red and
     /// the git colours (an exception to D83). Drawn as an outline, never as text.
     pub unseen: Color32,
+    /// Fast mode (D125): the lightning toggle when on, and the running spinner of a turn in
+    /// fast mode. A graphic, never text: 3:1 against every surface it is drawn on.
+    pub fast: Color32,
     pub scrim: Color32,
     /// Fill of code blocks.
     pub code_bg: Color32,
@@ -79,6 +82,7 @@ impl Palette {
         git_modified: hex(0xE2C08D),
         git_deleted: hex(0xF47C7C),
         unseen: hex(0x6495ED),
+        fast: hex(0xF5C518),
         scrim: Color32::from_black_alpha(140),
         code_bg: hex(0x1E2128),
         user_bg: hex(0x1E2128),
@@ -106,6 +110,7 @@ impl Palette {
         git_modified: hex(0x855D00),
         git_deleted: hex(0xC22E29),
         unseen: hex(0x4A7FE0),
+        fast: hex(0x9A7000),
         scrim: Color32::from_black_alpha(89),
         code_bg: hex(0xF3F4F7),
         user_bg: hex(0xF3F4F7),
@@ -144,7 +149,7 @@ impl Palette {
         vec![
             self.bg, self.panel, self.raised, self.faint, self.border, self.text, self.text2, self.unavailable, self.primary,
             self.on_primary, self.selected, self.focus, self.running, self.needs, self.failed, self.done, self.git_added,
-            self.git_modified, self.git_deleted, self.unseen, self.code_bg, self.user_bg, self.text_selection(),
+            self.git_modified, self.git_deleted, self.unseen, self.fast, self.code_bg, self.user_bg, self.text_selection(),
         ]
     }
 
@@ -300,6 +305,13 @@ mod tests {
         0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
     }
 
+    /// `fg` drawn at opacity `a` over `bg`.
+    fn blend(fg: Color32, bg: Color32, a: f32) -> Color32 {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a channel in 0..=255")]
+        let mix = |f: u8, b: u8| (f32::from(f) * a + f32::from(b) * (1.0 - a)).round() as u8;
+        Color32::from_rgb(mix(fg.r(), bg.r()), mix(fg.g(), bg.g()), mix(fg.b(), bg.b()))
+    }
+
     pub(crate) fn contrast(a: Color32, b: Color32) -> f64 {
         let (x, y) = (lum(a), lum(b));
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
@@ -353,6 +365,13 @@ mod tests {
             for (sname, s) in [("bg", p.bg), ("panel", p.panel), ("raised", p.raised), ("selected", p.selected), ("faint", p.faint)] {
                 let r = contrast(p.unseen, s);
                 assert!(r >= 3.0, "{} unseen on {sname}: {r:.2}", if p.dark { "dark" } else { "light" });
+            }
+            // The fast-mode yellow is a graphic too: 3:1 on every surface, even at the icon
+            // opacity (87%) it is drawn with.
+            for (sname, s) in [("bg", p.bg), ("panel", p.panel), ("raised", p.raised), ("selected", p.selected), ("faint", p.faint)] {
+                let soft = blend(p.fast, s, crate::icons::ICON_OPACITY);
+                let r = contrast(soft, s);
+                assert!(r >= 3.0, "{} fast on {sname}: {r:.2}", if p.dark { "dark" } else { "light" });
             }
         }
     }

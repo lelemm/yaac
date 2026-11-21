@@ -266,7 +266,7 @@ fn summary_flags_git_status_and_projects() {
     let summary: ThreadSummary = exact(json!({
         "id": "t1", "instance": "pi_1", "title": "Fix", "preview": "", "cwd": "/home/u/code/yaac-wt/feature-x", "state": "waiting",
         "control": "free", "originKind": "yaac", "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
-        "children": 0, "peers": 0, "archived": false, "agents": "allow",
+        "children": 0, "peers": 0, "archived": false, "agents": "allow", "fast": false,
         "project": {
             "path": "/home/u/code/yaac", "displayName": "YAAC", "kind": "user", "id": "pj_1",
             "repo": { "repo": "/home/u/code/yaac/.git", "relative": ".", "root": "/home/u/code/yaac" }

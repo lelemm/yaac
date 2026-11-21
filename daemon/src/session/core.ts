@@ -936,6 +936,7 @@ export class Core {
       agents: r.agents ?? "ask",
     };
     if (r.hold) s.hold = r.hold;
+    if (r.fast) s.fast = true;
     if (r.model) s.model = r.model;
     if (r.forkedFrom) s.forkedFrom = r.forkedFrom;
     if (r.spawnedBy) s.spawnedBy = r.spawnedBy;
@@ -1309,6 +1310,9 @@ export class Core {
       const method = needs[c];
       return !method || typeof provider[method] === "function";
     });
+    // Fast mode (D125) is a model-level capability: present when the thread's model has it.
+    eff.capabilities = eff.capabilities.filter((c) => c !== "fastMode");
+    if (this.modelHasFast(inst.descriptor, eff.applied?.model ?? this.modelOf(rt))) eff.capabilities.push("fastMode");
     rt.effective = eff;
     return eff;
   }
@@ -1361,6 +1365,31 @@ export class Core {
     if (descriptor.modelsComplete && !models.some((m) => m.id === model)) {
       throw notActed("model_unavailable", `${model} is not offered by ${descriptor.displayName} now`);
     }
+  }
+
+  /** The model a thread's turns run on, as far as yaacd knows (null: the harness default). */
+  private modelOf(rt: ThreadRuntime): ModelId | null {
+    return rt.effective?.applied?.model ?? rt.record.model ?? null;
+  }
+
+  /**
+   * Whether a model offers fast mode (D125): a definite `supported` on its descriptor (the
+   * default model when none is named). Unknown is not yes.
+   */
+  modelHasFast(descriptor: ProviderDescriptor, model: ModelId | null | undefined): boolean {
+    const models = descriptor.models ?? [];
+    const m = model ? models.find((x) => x.id === model) : models.find((x) => x.isDefault) ?? models[0];
+    return m?.capabilities?.some((c) => c.capability === "fastMode" && c.support === "supported") ?? false;
+  }
+
+  /** Validates a client's `fast`: a boolean, and `true` only for a model that has fast mode. */
+  private checkFast(descriptor: ProviderDescriptor, model: ModelId | null | undefined, fast: unknown): boolean {
+    if (fast === undefined || fast === null) return false;
+    if (typeof fast !== "boolean") throw notActed("invalid_params", "fast must be true or false");
+    if (fast && !this.modelHasFast(descriptor, model)) {
+      throw notActed("invalid_params", `${model ?? "the default model"} has no fast mode on ${descriptor.displayName}`);
+    }
+    return fast;
   }
 
   private modelImageSupport(descriptor: ProviderDescriptor, model: ModelId | null | undefined): "supported" | "unsupported" | "unknown" {
@@ -1444,6 +1473,7 @@ export class Core {
       }
       if (p.agents !== undefined && p.agents !== null && typeof p.agents !== "string") throw notActed("invalid_params", "agents must be a string");
       this.checkModel(instance.descriptor, p.model);
+      const fast = this.checkFast(instance.descriptor, p.model, p.fast);
       const parts = this.validateParts(p.input, this.modelImageSupport(instance.descriptor, p.model));
       // The thread's id is not known until the harness has started it: its attachment
       // folder is keyed by this operation, for the thread's whole life.
@@ -1453,7 +1483,7 @@ export class Core {
       this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
       let started: { thread: NativeId; turn: TurnId };
       try {
-        started = await provider.startThread({ cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null }, input);
+        started = await provider.startThread({ cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null, fast }, input);
       } catch (e) {
         this.finishPendingStart(key);
         throw rpc("provider_unavailable", `${instance.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
@@ -1469,6 +1499,7 @@ export class Core {
           preview: (firstText?.text ?? "").slice(0, 120),
           model: p.model ?? null,
           uploadsKey,
+          ...(fast ? { fast: true } : {}),
           ...(typeof p.agents === "string" ? { agents: p.agents } : {}),
         },
         true,
@@ -1540,9 +1571,10 @@ export class Core {
       this.checkWriter(rt, client, true);
       this.checkModel(inst.descriptor, p.model);
       const eff = rt.effective ?? (await this.computeEffective(rt));
+      if (p.fast !== undefined && p.fast !== null) this.checkFast(inst.descriptor, p.model ?? this.modelOf(rt), p.fast);
       const imageSupport = p.model ? this.modelImageSupport(inst.descriptor, p.model) : eff.imageInput;
       const parts = this.validateParts(p.input, imageSupport);
-      const overrides = { model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null };
+      const overrides = { model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null, fast: p.fast ?? null };
       const driver: Driver = { key: client.key, host: client.host };
       const busy = !!rt.activeTurn || rt.dispatching || rt.claimed;
       if (!busy) {
@@ -1585,6 +1617,7 @@ export class Core {
       ...(overrides.model ? { model: overrides.model } : {}),
       ...(overrides.effort ? { effort: overrides.effort } : {}),
       ...(overrides.mode ? { mode: overrides.mode } : {}),
+      ...(typeof overrides.fast === "boolean" ? { fast: overrides.fast } : {}),
       driver,
     };
     rt.userQueue.push(entry);
@@ -1651,7 +1684,7 @@ export class Core {
       this.queueEvent(rt, "removed", e);
       rt.queuePaused = false;
       if (rt.record.hold) this.releaseHold(rt, false);
-      const overrides = { model: e.model ?? null, effort: e.effort ?? null, mode: e.mode ?? null };
+      const overrides = { model: e.model ?? null, effort: e.effort ?? null, mode: e.mode ?? null, fast: e.fast ?? null };
       const driver: Driver = { key: client.key, host: client.host };
       if (!rt.activeTurn && !rt.dispatching && !rt.claimed) {
         const turnId = await this.submit(rt, { origin: "user", parts: e.input, overrides, driver }, "now");
@@ -1738,7 +1771,7 @@ export class Core {
     const work: Work = {
       origin: "user",
       parts: entry.input,
-      overrides: { model: entry.model ?? null, effort: entry.effort ?? null, mode: entry.mode ?? null },
+      overrides: { model: entry.model ?? null, effort: entry.effort ?? null, mode: entry.mode ?? null, fast: entry.fast ?? null },
       driver: entry.driver ?? null,
       onStarted: (turnId) => {
         rt.userQueue = rt.userQueue.filter((q) => q !== entry);
@@ -1865,12 +1898,20 @@ export class Core {
       const input = this.buildInput(rt.uploadsKey, work.parts, work.origin);
       if (work.mesh) input.mesh = work.mesh;
       rt.expectTurn = { origin: work.origin, parts: work.parts, driver: work.driver, ...(work.journalItems ? { items: work.journalItems } : {}) };
+      // Fast mode for this turn (D125): asked for, else the thread's setting — and only while
+      // the model the turn runs on has it.
+      const descriptor = this.registry.get(rt.record.instance)?.descriptor;
+      const fast = (work.overrides.fast ?? rt.record.fast ?? false) === true && !!descriptor && this.modelHasFast(descriptor, work.overrides.model ?? this.modelOf(rt));
       let turnId: TurnId;
       try {
-        turnId = await provider.startTurn(rt.record.native, input, work.overrides);
+        turnId = await provider.startTurn(rt.record.native, input, { ...work.overrides, fast });
       } catch (e) {
         rt.expectTurn = null;
         throw rpc("provider_unavailable", `the harness did not start the turn: ${(e as Error).message}`);
+      }
+      if ((rt.record.fast ?? false) !== fast) {
+        if (fast) rt.record.fast = true;
+        else delete rt.record.fast;
       }
       this.turnBegan(rt, turnId, work.origin, work.parts, work.driver, work.journalItems);
       rt.dispatching = false;

@@ -40,6 +40,18 @@ export function modelId(m: Model): string {
   return typeof m.model === "string" && m.model.length > 0 ? m.model : m.id;
 }
 
+/**
+ * The service tier that is Codex's fast mode for this model (D125), from the model list: the
+ * tier Codex names "Fast", or, by its id, the `fast` / `priority` tier. `null` when the model
+ * lists tiers and none is fast, or lists none.
+ */
+export function fastTier(m: Model): string | null {
+  const tiers = arr(m.serviceTiers).map((t) => obj(t)).filter((t) => typeof t.id === "string" && t.id.length > 0);
+  const named = tiers.find((t) => typeof t.name === "string" && t.name.trim().toLowerCase() === "fast");
+  const byId = tiers.find((t) => t.id === "fast" || t.id === "priority");
+  return ((named ?? byId)?.id as string | undefined) ?? null;
+}
+
 export function mapModel(m: Model): ModelInfo {
   const efforts: EffortInfo[] = arr(m.supportedReasoningEfforts)
     .map((e) => obj(e))
@@ -53,6 +65,13 @@ export function mapModel(m: Model): ModelInfo {
   } else {
     // Codex gave no modality data for this model: that is "unknown", not "yes".
     capabilities.push({ capability: "imageInput", support: "unknown" });
+  }
+  // Fast mode: a fast service tier listed for the model. No tier list at all is "unknown"
+  // (an older Codex), never "yes".
+  if (Array.isArray(m.serviceTiers)) {
+    capabilities.push({ capability: "fastMode", support: fastTier(m) ? "supported" : "unsupported" });
+  } else {
+    capabilities.push({ capability: "fastMode", support: "unknown" });
   }
   const info: ModelInfo = {
     id: modelId(m),

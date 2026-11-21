@@ -334,12 +334,16 @@ pub(crate) enum Action {
     Rename(ThreadKey, String),
     SetModel(ThreadKey, yaac_protocol::ModelId),
     SetEffort(ThreadKey, yaac_protocol::EffortId),
+    /// Fast mode on or off for a thread's next turns (D125).
+    SetFast(ThreadKey, bool),
     ChooseMode(ModeTarget, ModeId),
     ConfirmMode,
     CancelMode,
     SetAgents(ThreadKey, AgentsPolicy),
     DraftModel(u64, InstanceId, yaac_protocol::ModelId),
     DraftEffort(u64, yaac_protocol::EffortId),
+    /// Fast mode on or off for a new-thread draft (D125).
+    DraftFast(u64, bool),
     Retry(TargetId),
     Panel(PanelInput),
     Settings(bool),
@@ -865,9 +869,9 @@ impl YaacApp {
                     self.ui.archive = None;
                 }
                 Action::Rename(k, t) => self.client.rename(&k, &t),
-                Action::SetModel(k, m) => {
-                    self.client.state.next_settings.entry(k).or_default().model = Some(m);
-                }
+                Action::SetModel(k, m) => self.client.set_next_model(&k, m),
+                Action::SetFast(k, on) => self.client.set_fast(&k, on),
+                Action::DraftFast(id, on) => self.client.set_draft_fast(id, on),
                 Action::SetEffort(k, e) => {
                     self.client.state.next_settings.entry(k).or_default().effort = Some(e);
                 }
@@ -875,27 +879,7 @@ impl YaacApp {
                 Action::ConfirmMode => self.client.confirm_mode(),
                 Action::CancelMode => self.client.cancel_mode(),
                 Action::SetAgents(k, pol) => self.client.set_agents_policy(&k, pol),
-                Action::DraftModel(id, inst, model) => {
-                    let providers = self
-                        .client
-                        .state
-                        .new_threads
-                        .iter()
-                        .find(|d| d.id == id)
-                        .and_then(|d| self.client.state.target(&d.target))
-                        .map(|t| t.providers.clone())
-                        .unwrap_or_default();
-                    if let Some(d) = self.client.state.new_threads.iter_mut().find(|d| d.id == id) {
-                        let info = providers.iter().find(|p| p.instance == inst).and_then(|p| p.models.iter().find(|m| m.id == model));
-                        d.effort = info.and_then(|m| yaac_core::controls::reconcile_effort(m, d.effort.as_ref()));
-                        if d.instance.as_ref() != Some(&inst) {
-                            d.mode = None;
-                        }
-                        d.instance = Some(inst);
-                        d.model = Some(model);
-                    }
-                    self.client.draft_changed(&DraftRef::New(id));
-                }
+                Action::DraftModel(id, inst, model) => self.client.set_draft_model(id, inst, model),
                 Action::DraftEffort(id, e) => {
                     if let Some(d) = self.client.state.new_threads.iter_mut().find(|d| d.id == id) {
                         d.effort = Some(e);

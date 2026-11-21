@@ -224,12 +224,14 @@ fn requests_notifications_peer_requests_and_data_after_the_handshake() {
         effort: None,
         delivery: None,
         mode: None,
+        fast: Some(true),
     };
     let id = session.request::<methods::TurnStart>(&params).unwrap();
     let (messages, _) = daemon.take(&mut session);
     let [Message::Request { method, params: wire, .. }] = messages.as_slice() else { panic!() };
     assert_eq!(method, methods::TurnStart::NAME);
     assert_eq!(wire["input"][0], json!({ "type": "text", "text": "hello" }));
+    assert_eq!(wire["fast"], json!(true), "fast mode goes with the turn (D125)");
     let events = send(&mut session, &Message::Response { id, result: json!({ "turnId": "u1" }) });
     let [SessionEvent::Response { outcome: Ok(result), .. }] = events.as_slice() else { panic!() };
     assert_eq!(session.decode::<methods::TurnStart>(result.clone()).unwrap().turn_id, TurnId::new("u1"));
@@ -315,6 +317,7 @@ fn start_thread_flow() {
         model: Some(ModelId::new("fake-model")),
         effort: None,
         mode: None,
+        fast: Some(true),
         input: vec![InputPart::text("go")],
     };
     let id = flows::start_thread(&mut session, &command).unwrap();
@@ -323,6 +326,7 @@ fn start_thread_flow() {
     assert_eq!(method, "thread/start");
     assert_eq!(params["opId"], "op-start");
     assert_eq!(params["model"], "fake-model");
+    assert_eq!(params["fast"], true, "fast mode goes with the first turn (D125)");
     let events = send(&mut session, &Message::Response { id, result: json!({ "threadId": "fake:1", "turnId": "u1" }) });
     let [SessionEvent::Response { outcome: Ok(wire), .. }] = events.as_slice() else { panic!() };
     let started = flows::finish_start_thread(&session, wire.clone()).unwrap();

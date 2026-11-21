@@ -100,6 +100,31 @@ pub(crate) fn selector(ui: &mut Ui, p: &Palette, label: &str, enabled: bool) -> 
     resp
 }
 
+/// The fast-mode toggle under the composer (D125): the lightning bolt, an outline when off;
+/// when on, filled in the fast yellow on the selected tint, so it reads in greyscale too.
+pub(crate) fn fast_toggle(ui: &mut Ui, p: &Palette, on: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 26.0), Sense::click());
+    let resp = resp.on_hover_text(yaac_core::controls::FAST_TOOLTIP);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, yaac_core::controls::FAST_TOOLTIP));
+    if on {
+        ui.painter().rect_filled(rect, 5.0, p.selected);
+    } else if resp.hovered() || resp.has_focus() {
+        ui.painter().rect_filled(rect, 5.0, p.faint);
+    }
+    let col = if on {
+        p.fast
+    } else if resp.hovered() {
+        p.text
+    } else {
+        p.text2
+    };
+    icons::bolt(ui.painter(), rect.center(), 16.0, on, col);
+    if resp.has_focus() {
+        focus_ring(ui, rect, p);
+    }
+    resp
+}
+
 /// A state mark in a square of `d` points, allocated in the layout.
 pub(crate) fn mark(ui: &mut Ui, p: &Palette, m: Mark, d: f32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(d), Sense::hover());

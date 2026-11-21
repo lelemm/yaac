@@ -74,6 +74,11 @@ export interface ThreadRecord {
   broughtIn?: boolean;
   /** Stopped and held (docs/10-agent-mesh.md#stopping-workers). */
   hold?: ThreadHold | null;
+  /**
+   * Fast mode (D125): the setting the last turn started with, and the next turns' unless a
+   * `turn/start` changes it. Only ever true while the model has `fastMode`.
+   */
+  fast?: boolean;
 }
 
 /** A user message waiting for the running turn to end (`queue.json`). */

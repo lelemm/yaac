@@ -565,7 +565,7 @@ pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, r
         unseen_outline(ui, fill_rect, &p);
     }
     let cy = rect.top() + 14.0;
-    icons::mark(ui.painter(), pos2(rect.left() + 13.0, cy), 15.0, row.display.mark, &p);
+    icons::thread_mark(ui.painter(), pos2(rect.left() + 13.0, cy), 15.0, &row.display, &p);
     let mut title_x = rect.left() + 28.0;
     if row.display.read_only {
         icons::lock(ui.painter(), pos2(title_x + 5.0, cy), 12.0, p.text2);

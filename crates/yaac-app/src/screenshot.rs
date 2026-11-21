@@ -72,6 +72,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("62", "pr-menu"),
     ("63", "pr-create"),
     ("49", "settings-window"),
+    ("50", "fast-mode"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -197,7 +198,7 @@ fn setup(app: &mut YaacApp, id: &str) {
         }
         app.pump_demo();
     };
-    let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24" | "44" | "48" | "60");
+    let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24" | "44" | "48" | "50" | "60");
     app.ui.panel = if docked { PanelMode::Docked } else { PanelMode::Pill };
     match id {
         "01" | "10" => {
@@ -575,6 +576,11 @@ fn setup(app: &mut YaacApp, id: &str) {
             // renderer this very window runs on (D127, D128).
             app.ui.settings = true;
             app.ui.settings_page = Page::Window;
+        }
+        "50" => {
+            // Fast mode (D125): a worker running in it. The lightning toggle under the
+            // composer is on; its spinner is yellow in the header, the sidebar and the panel.
+            app.open(&threads::search(), None);
         }
         "48" => {
             // The docked panel at its narrowest: titles ellipsised, every mark kept (D115).

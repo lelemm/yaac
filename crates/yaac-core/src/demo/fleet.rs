@@ -107,6 +107,17 @@ fn model(id: &str, default: bool, images: Support) -> ModelInfo {
     }
 }
 
+/// The model, offering fast mode (D125). One demo model does.
+fn with_fast(mut m: ModelInfo) -> ModelInfo {
+    m.capabilities.push(ModelCapability { capability: Capability::FastMode, support: Support::Supported });
+    m
+}
+
+/// Whether a demo model offers fast mode.
+pub(super) fn has_fast(m: &ModelInfo) -> bool {
+    crate::controls::model_has_fast(m)
+}
+
 fn modes() -> Vec<ModeInfo> {
     vec![
         ModeInfo { id: ModeId::new("ask"), display_name: "ask".into(), description: None, is_default: true, skips_approvals: false },
@@ -178,7 +189,7 @@ pub(crate) fn claude(status: ProviderStatus) -> ProviderDescriptor {
         status,
         status_message: None,
         capabilities: caps(),
-        models: vec![model("opus-5.5", true, Support::Supported), model("haiku-5", false, Support::Unsupported)],
+        models: vec![with_fast(model("opus-5.5", true, Support::Supported)), model("haiku-5", false, Support::Unsupported)],
         models_complete: true,
         modes: modes(),
         revision: 1,
@@ -236,8 +247,12 @@ impl Fleet {
     fn effective_for(&self, key: &ThreadKey, instance: &str, model_id: &str) -> ThreadEffective {
         let p = self.providers.get(&key.target).and_then(|ps| ps.iter().find(|p| p.instance.as_str() == instance));
         let m = p.and_then(|p| p.models.iter().find(|m| m.id.as_str() == model_id));
+        let mut capabilities = p.map(|p| p.capabilities.clone()).unwrap_or_default();
+        if m.is_some_and(has_fast) {
+            capabilities.push(Capability::FastMode);
+        }
         ThreadEffective {
-            capabilities: p.map(|p| p.capabilities.clone()).unwrap_or_default(),
+            capabilities,
             image_input: m.map_or(Support::Unknown, crate::images::model_image_support),
             image_formats: vec!["image/png".into(), "image/jpeg".into()],
             efforts: m.map(|m| m.efforts.clone()).unwrap_or_default(),
@@ -298,6 +313,7 @@ impl Fleet {
             agents: yaac_protocol::AgentsPolicy::default(),
             native_id: None,
             hold: None,
+            fast: false,
         };
         let effective = self.effective_for(key, instance, model_id);
         self.threads.insert(
@@ -422,6 +438,8 @@ impl Fleet {
         f.add(&users, "users-service", "claude", "opus-5.5", ("api", "main"), ThreadState::Idle, -12 * 60);
         f.add(&billing, "billing-service", "claude", "opus-5.5", ("api", "main"), ThreadState::Idle, -9 * 60);
         f.add(&search, "search-service", "claude", "opus-5.5", ("search", "main"), ThreadState::Running, -20);
+        // A worker running in fast mode (D125): its spinner is yellow.
+        f.threads.get_mut(&search).expect("search").summary.fast = true;
         f.add(&index, "index-rebuild", "claude", "opus-5.5", ("search", "main"), ThreadState::NeedsAttention, -41 * 60);
         f.add(&ci, "CI integration", "codex", "gpt-6.2-sol", ("api", "main"), ThreadState::Running, -60);
         f.add(&notes, "Release notes", "codex", "gpt-6.2-sol", ("docs", "main"), ThreadState::Idle, -3 * 3600 - 900);

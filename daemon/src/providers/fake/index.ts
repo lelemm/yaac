@@ -52,7 +52,10 @@ const MODELS: ModelInfo[] = [
     displayName: "Fake Large",
     description: "Invented by the fake provider. Sees images.",
     isDefault: true,
-    capabilities: [{ capability: "imageInput", support: "supported" }],
+    capabilities: [
+      { capability: "imageInput", support: "supported" },
+      { capability: "fastMode", support: "supported" },
+    ],
     efforts: [
       { id: "fake-low", displayName: "Fake low" },
       { id: "fake-high", displayName: "Fake high" },
@@ -64,7 +67,10 @@ const MODELS: ModelInfo[] = [
     id: "fake-small",
     displayName: "Fake Small",
     description: "Invented by the fake provider. Cannot see images.",
-    capabilities: [{ capability: "imageInput", support: "unsupported" }],
+    capabilities: [
+      { capability: "imageInput", support: "unsupported" },
+      { capability: "fastMode", support: "unsupported" },
+    ],
     efforts: [{ id: "fake-low", displayName: "Fake low" }],
     defaultEffort: "fake-low",
     contextWindow: 20000,
@@ -165,7 +171,8 @@ export class FakeProvider implements HarnessProvider {
 
   // ── Test controls ──────────────────────────────────────────────────────────────────────
   /** Every input handed to the harness, in order (tests read secrets back from here). */
-  readonly received: Array<{ thread: NativeId; input: ProviderInput }> = [];
+  /** Every input handed to it; `fast`: the fast-mode flag the turn was started with (D125). */
+  readonly received: Array<{ thread: NativeId; input: ProviderInput; fast?: boolean | null }> = [];
   /** Every answer handed to the harness, in full (including secrets). */
   readonly answers: Array<{ thread: NativeId; requestId: string; response: RequestResponse }> = [];
   /** The next scan fails (the instance becomes stale; no thread is removed). */
@@ -365,7 +372,7 @@ export class FakeProvider implements HarnessProvider {
       turnLog: [],
     };
     this.attachMeshTo(native, params.cwd, "start");
-    const turn = await this.beginTurn(native, input, "user");
+    const turn = await this.beginTurn(native, input, "user", params.fast ?? null);
     return { thread: native, turn };
   }
 
@@ -378,10 +385,10 @@ export class FakeProvider implements HarnessProvider {
     if (overrides.effort) t.settings.effort = overrides.effort;
     if (overrides.mode) t.settings.mode = overrides.mode;
     if (!this.attachments.has(thread)) this.attachMeshTo(thread, t.info.cwd, "resume");
-    return this.beginTurn(thread, input, input.origin);
+    return this.beginTurn(thread, input, input.origin, overrides.fast ?? null);
   }
 
-  private async beginTurn(native: NativeId, input: ProviderInput, origin: TurnOrigin): Promise<TurnId> {
+  private async beginTurn(native: NativeId, input: ProviderInput, origin: TurnOrigin, fast: boolean | null): Promise<TurnId> {
     const t = this.thread(native);
     t.turns += 1;
     const turnId = `turn-${t.turns}`;
@@ -389,7 +396,7 @@ export class FakeProvider implements HarnessProvider {
     t.items.push({ id: `user:${turnId}`, turnId, status: "completed", kind: "userMessage", parts: input.parts });
     t.info.updatedAt = nowIso();
     this.save();
-    this.received.push({ thread: native, input });
+    this.received.push({ thread: native, input, fast });
     const lastFrom = [...(input.mesh ?? [])].reverse().find((m) => m.kind !== "notice")?.from;
     if (lastFrom) this.vars(native).from = lastFrom;
     const script = parseScript(input.text);

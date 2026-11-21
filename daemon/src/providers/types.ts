@@ -121,12 +121,23 @@ export interface StartThreadParams {
   model?: ModelId | null;
   effort?: EffortId | null;
   mode?: ModeId | null;
+  /**
+   * Fast mode for this turn (D125), resolved by yaacd: `true` only when the model has
+   * `fastMode`. The provider maps it to its harness's own option.
+   */
+  fast?: boolean | null;
 }
 
 export interface TurnOverrides {
   model?: ModelId | null;
   effort?: EffortId | null;
   mode?: ModeId | null;
+  /**
+   * Fast mode (D125). From a client: the choice for this and later turns (absent: the
+   * thread's setting). Handed to a provider: resolved by yaacd for this turn — always
+   * `true` or `false`, `true` only when the model has `fastMode`.
+   */
+  fast?: boolean | null;
 }
 
 /**

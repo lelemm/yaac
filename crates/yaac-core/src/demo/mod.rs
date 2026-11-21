@@ -621,6 +621,12 @@ impl Inner {
                 let turn = TurnId::new(self.next("turn"));
                 self.ready.push_back(result(id, json!({ "turnId": turn })));
                 let input: Vec<InputPart> = serde_json::from_value(p.get("input").cloned().unwrap_or(Value::Null)).unwrap_or_default();
+                if let Some(mdl) = p.get("model").and_then(Value::as_str) {
+                    let mdl = yaac_protocol::ModelId::new(mdl);
+                    self.summary_now(&key, |s| s.model = Some(mdl));
+                }
+                let fast = p.get("fast").and_then(Value::as_bool);
+                self.set_fast(&key, fast);
                 self.stream_turn(&key, &turn, input);
             }
             m::TURN_INTERRUPT => {
@@ -775,6 +781,24 @@ impl Inner {
         t.summary.updated_at = crate::time::timestamp(base);
         let summary = t.summary.clone();
         self.ready.push_back(routed(&key.target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
+    }
+
+    /// Fast mode as `turn/start` / `thread/start` asked (absent: unchanged), kept only while
+    /// the thread's model offers it — as `yaacd` does.
+    fn set_fast(&mut self, key: &ThreadKey, asked: Option<bool>) {
+        let Some(t) = self.fleet.threads.get(key) else { return };
+        let model = t.summary.model.clone();
+        let offers = self
+            .fleet
+            .providers
+            .get(&key.target)
+            .and_then(|ps| ps.iter().find(|x| x.instance == t.summary.instance))
+            .and_then(|x| x.models.iter().find(|m| Some(&m.id) == model.as_ref()))
+            .is_some_and(fleet::has_fast);
+        let on = asked.unwrap_or(t.summary.fast) && offers;
+        if on != t.summary.fast {
+            self.summary_now(key, |s| s.fast = on);
+        }
     }
 
     fn summary_now(&mut self, key: &ThreadKey, f: impl FnOnce(&mut ThreadSummary)) {
@@ -932,6 +956,7 @@ impl Inner {
             .unwrap_or_default();
         self.fleet.add(&key, &title, &instance, &model, ("api", "main"), ThreadState::Running, 0);
         if let Some(t) = self.fleet.threads.get_mut(&key) {
+            t.summary.fast = p.get("fast").and_then(Value::as_bool).unwrap_or(false);
             t.subscribed = true;
             t.context = Some(ContextUsage { used: Some(8_000), window: Some(200_000) });
             if let Some(cwd) = p.get("cwd").and_then(Value::as_str) {

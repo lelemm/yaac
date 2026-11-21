@@ -120,6 +120,8 @@ interface ThreadSettings {
   model?: string | null;
   effort?: string | null;
   mode?: string | null;
+  /** Fast mode (D125): Claude Code's `fastMode` setting for this session's turns. */
+  fast?: boolean;
   /** Whether Claude Code has stored the session (resume, rather than create, on the next open). */
   stored?: boolean;
   /** Folders kept readable for the session's whole life (a handoff fork's transcript). */
@@ -195,6 +197,8 @@ class Live {
   model: string | null;
   effort: string | null;
   mode: string;
+  /** Fast mode as last given to the query (its `fastMode` flag setting). */
+  fast: boolean;
 
   constructor(
     readonly native: NativeId,
@@ -206,6 +210,7 @@ class Live {
     this.model = settings.model ?? null;
     this.effort = settings.effort ?? null;
     this.mode = settings.mode ?? "default";
+    this.fast = settings.fast === true;
     this.translator = new LiveTranslator(emit, cwd);
   }
 
@@ -235,6 +240,11 @@ export interface ClaudeProviderOptions {
 }
 
 const iso = (ms: number | undefined | null): string => new Date(typeof ms === "number" && Number.isFinite(ms) ? ms : Date.now()).toISOString();
+
+/** Claude Code's per-model `supportsFastMode` as a three-valued support (absent: unknown). */
+export function fastSupport(v: boolean | undefined): "supported" | "unsupported" | "unknown" {
+  return v === true ? "supported" : v === false ? "unsupported" : "unknown";
+}
 
 function sniffImage(head: Buffer): string | null {
   if (head.length >= 8 && head.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
@@ -472,7 +482,8 @@ export class ClaudeProvider implements HarnessProvider {
         // The SDK's model info has no image-input field. Claude Code takes images as content
         // blocks, so image input is reported as supported for every model: a statement about
         // the harness, and the only such default in this provider (docs/04-providers.md#claude).
-        capabilities: [{ capability: "imageInput", support: "supported" }],
+        // Fast mode is what Claude Code reports per model (`supportsFastMode`); absent: unknown.
+        capabilities: [{ capability: "imageInput", support: "supported" }, { capability: "fastMode", support: fastSupport(m.supportsFastMode) }],
         efforts,
         defaultEffort: isDefault && applied?.effort && efforts.some((e) => e.id === applied!.effort) ? applied.effort : null,
       } satisfies ModelInfo;
@@ -655,6 +666,9 @@ export class ClaudeProvider implements HarnessProvider {
       ...(resumed ? { resume: native } : { sessionId: native }),
       ...(live.model ? { model: live.model } : {}),
       ...(live.effort ? { effort: live.effort as NonNullable<Options["effort"]> } : {}),
+      // Fast mode (D125) is Claude Code's `fastMode` setting; set in the flag layer it is also
+      // the Agent SDK's opt-in to fast mode.
+      ...(live.fast ? { settings: { fastMode: true } } : {}),
       permissionMode: live.mode as PermissionMode,
       ...(bypass ? { allowDangerouslySkipPermissions: true, hooks: { PreToolUse: [{ matcher: ASK_TOOL, hooks: [(h, id, o) => this.askHook(live, h, id, o.signal)] }] } } : {}),
       additionalDirectories: [...dirs],
@@ -761,6 +775,15 @@ export class ClaudeProvider implements HarnessProvider {
         const turn = live.turn;
         if (!turn) return;
         const usage = usageOf(m.usage);
+        // Asked for fast mode, and Claude Code says the turn did not get it (D125): said in
+        // the transcript, with Claude Code's reason, never hidden.
+        const fms = (m as { fast_mode_state?: string; fast_mode_disabled_reason?: string });
+        if (live.fast && typeof fms.fast_mode_state === "string" && fms.fast_mode_state !== "on") {
+          const why = fms.fast_mode_disabled_reason ? ` (${fms.fast_mode_disabled_reason})` : fms.fast_mode_state === "cooldown" ? " (cooling down after a rate limit)" : "";
+          const item = { id: `notice:fast:${turn.turnId}`, turnId: turn.turnId, status: "completed", kind: "notice", noticeKind: "warning", text: `Claude Code did not run this turn in fast mode${why}.` } as const;
+          this.emit({ type: "itemStarted", thread: live.native, item });
+          this.emit({ type: "itemCompleted", thread: live.native, item });
+        }
         if (m.subtype === "success" && !m.is_error) this.finishTurn(live, "completed", null, usage);
         else if (turn.interrupting) this.finishTurn(live, "interrupted", null, usage);
         else {
@@ -951,6 +974,7 @@ export class ClaudeProvider implements HarnessProvider {
       model: params.model ?? null,
       effort: params.effort ?? null,
       mode: params.mode ?? null,
+      ...(params.fast ? { fast: true } : {}),
       ...(input.readable && input.readable.length > 0 ? { readable: [...input.readable] } : {}),
     };
     this.save();
@@ -966,6 +990,7 @@ export class ClaudeProvider implements HarnessProvider {
     if (overrides.model) s.model = overrides.model;
     if (overrides.effort) s.effort = overrides.effort;
     if (overrides.mode) s.mode = overrides.mode;
+    if (typeof overrides.fast === "boolean") s.fast = overrides.fast;
     this.save();
     let live = await this.ensureLive(thread, this.attachmentDirs(input, s.readable));
     live = await this.applySettings(live, s);
@@ -1002,6 +1027,20 @@ export class ClaudeProvider implements HarnessProvider {
       } else if (!fits) {
         s.effort = null;
         this.save();
+      }
+    }
+    const fast = s.fast === true;
+    if (fast !== live.fast) {
+      try {
+        await live.query.applyFlagSettings({ fastMode: fast });
+        live.fast = fast;
+      } catch (e) {
+        // Fast mode could not be set on the live query: re-open it with `resume`, invisibly
+        // (it opens with the thread's settings, fast mode included).
+        this.log(`fast mode change on a live query failed (${(e as Error).message}); re-opening it`);
+        const dirs = new Set(live.dirs);
+        this.closeLive(live, "a fast mode change");
+        return this.openLive(live.native, dirs);
       }
     }
     const mode = s.mode ?? "default";

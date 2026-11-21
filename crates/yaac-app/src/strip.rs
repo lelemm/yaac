@@ -96,7 +96,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
                             app.ui.sidebar.toggle();
                         }
                     }
-                    StripEntry::Thread { key, mark, selected, needs_you, unseen } => {
+                    StripEntry::Thread { key, mark, selected, needs_you, unseen, fast } => {
                         let (r, resp) = ui.allocate_exact_size(vec2(list.width(), CELL - 2.0), Sense::click());
                         let cell = Rect::from_center_size(r.center(), vec2(CELL, CELL - 4.0));
                         let under = if *selected {
@@ -124,7 +124,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
                             icons::exclaim(ui.painter(), corner, 11.5, p.failed);
                         } else {
                             ui.painter().circle_filled(corner, 5.5, under);
-                            icons::mark(ui.painter(), corner, 9.5, *mark, &p);
+                            icons::mark_fast(ui.painter(), corner, 9.5, *mark, *fast, &p);
                         }
                         if resp.hovered() {
                             hovered = Some((key.clone(), cell));

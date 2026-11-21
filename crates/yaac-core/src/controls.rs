@@ -82,12 +82,42 @@ pub struct ControlRow {
     pub mode: Option<Choice<ModeId>>,
     /// "agents: ask / allow" — only on a thread a person started.
     pub agents: Option<Choice<AgentsPolicy>>,
+    /// The fast-mode toggle (D125): shown only when the selected model has `fastMode`.
+    pub fast: Option<FastToggle>,
+    /// A quiet note beside the row ("Fast mode is off: … has none").
+    pub note: Option<String>,
     /// Context meter, percent full.
     pub context_percent: Option<u8>,
     /// Fork button.
     pub fork: bool,
     /// Target and working directory pickers (drafts).
     pub target_and_folder: bool,
+}
+
+/// The lightning toggle under the composer (D125).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FastToggle {
+    /// Fast mode is on for the next turns.
+    pub on: bool,
+}
+
+/// The tooltip of the toggle.
+pub const FAST_TOOLTIP: &str = "Fast mode";
+
+/// Whether a model offers fast mode: a definite yes from the target. Unknown is not yes.
+pub fn model_has_fast(m: &ModelInfo) -> bool {
+    m.capabilities.iter().any(|c| c.capability == Capability::FastMode && c.support.is_supported())
+}
+
+/// Fast mode after the model changes: kept when the new model has it; otherwise turned off,
+/// with the quiet note to show. `None` for the model: not known, so off.
+pub fn reconcile_fast(model: Option<&ModelInfo>, on: bool) -> (bool, Option<String>) {
+    match model {
+        Some(m) if model_has_fast(m) => (on, None),
+        _ if !on => (false, None),
+        Some(m) => (false, Some(format!("Fast mode is off: {} has no fast mode.", m.display_name))),
+        None => (false, Some("Fast mode is off: this model has no fast mode.".to_owned())),
+    }
 }
 
 /// The row, or nothing at all (a read-only thread shows no selectors).
@@ -217,6 +247,7 @@ pub fn draft_row(providers: &[ProviderDescriptor], target_name: &str, draft: &Ne
     let mode = selected_p
         .filter(|p| has_capability(&p.capabilities, &Capability::Modes) && !p.modes.is_empty())
         .map(|p| mode_choice(&p.modes, draft.mode.as_ref()));
+    let fast = model_info.filter(|m| model_has_fast(m)).map(|_| FastToggle { on: draft.fast });
     ControlRow {
         model: Some(ModelControl {
             instance_label: selected_p.map_or_else(|| "No provider".to_owned(), |p| p.display_name.clone()),
@@ -227,6 +258,8 @@ pub fn draft_row(providers: &[ProviderDescriptor], target_name: &str, draft: &Ne
         effort,
         mode,
         agents: None,
+        fast,
+        note: draft.fast_note.clone(),
         context_percent: None,
         fork: false,
         target_and_folder: true,
@@ -246,6 +279,8 @@ pub struct StartedInputs<'a> {
     pub effective: Option<&'a ThreadEffective>,
     /// The model the summary last reported, used until `applied` is known.
     pub summary_model: Option<&'a ModelId>,
+    /// Fast mode as the summary reports it (the thread's setting on the target).
+    pub summary_fast: bool,
     /// Selections for the next message.
     pub next: Option<&'a NextSettings>,
     /// Context usage.
@@ -312,6 +347,14 @@ pub fn started_row(input: StartedInputs<'_>) -> ControlRowView {
         (has_capability(caps, &Capability::Modes) && !e.modes.is_empty())
             .then(|| mode_choice(&e.modes, input.next.and_then(|n| n.mode.as_ref()).or(e.applied.mode.as_ref())))
     });
+    // Fast mode: shown when the model the next message goes to has it (D125).
+    let next_model = applied_model.and_then(|id| own.and_then(|p| p.models.iter().find(|m| &m.id == id)));
+    let fast = next_model.filter(|m| model_has_fast(m)).map(|_| FastToggle {
+        on: input
+            .next
+            .and_then(|n| n.fast)
+            .unwrap_or(input.summary_fast),
+    });
     let context_percent = if has_capability(caps, &Capability::ContextUsage) {
         input.context.and_then(|c| match (c.used, c.window) {
             (Some(u), Some(w)) if w > 0 => Some(u8::try_from((u.saturating_mul(100) / w).min(100)).unwrap_or(100)),
@@ -333,6 +376,8 @@ pub fn started_row(input: StartedInputs<'_>) -> ControlRowView {
             .agents
             .filter(|_| has_capability(caps, &Capability::MeshTools))
             .map(agents_choice),
+        fast,
+        note: input.next.and_then(|n| n.fast_note.clone()),
         context_percent,
         fork: true,
         target_and_folder: false,

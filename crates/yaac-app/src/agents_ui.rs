@@ -245,7 +245,7 @@ fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, ac
     let right = rect.right() - 8.0;
     let mut y = rect.top() + 5.0 + DOCK_LINE / 2.0;
     // Line 1: state mark, title, then the state word and the arrow at the right.
-    icons::mark(ui.painter(), pos2(left + 7.0, y), 14.0, row.display.mark, &p);
+    icons::thread_mark(ui.painter(), pos2(left + 7.0, y), 14.0, &row.display, &p);
     let mut rx = right;
     if let Some(f) = row.flow {
         arrow(ui.painter(), pos2(rx - 5.0, y), f, &p);

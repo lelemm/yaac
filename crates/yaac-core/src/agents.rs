@@ -280,7 +280,7 @@ fn row_for_peer(state: &AppState, map: &AttentionMap, peer: &MeshPeer) -> AgentR
         provider: peer.provider.clone(),
         model: peer.model.as_ref().map(ToString::to_string),
         target,
-        display: ThreadDisplay { mark, attention: None, read_only: false, unseen: false },
+        display: ThreadDisplay { mark, attention: None, read_only: false, unseen: false, fast: false },
         activity: mark.word().to_owned(),
         depth: 0,
         git: None,

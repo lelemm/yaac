@@ -395,6 +395,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
         target_name: &target_name,
         effective: t.and_then(|t| t.effective.as_ref()),
         summary_model: s.model.as_ref(),
+        summary_fast: s.fast,
         next: app.client.state.next_settings.get(key),
         context: t.and_then(|t| t.context.as_ref()),
         may_act: app.client.state.may_act(key),
@@ -535,6 +536,14 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
                 Target::Draft(d) => Action::DraftEffort(*d, id),
             }, actions);
         }
+        if let Some(f) = row.fast
+            && widgets::fast_toggle(ui, &p, f.on).clicked()
+        {
+            actions.push(match target {
+                Target::Thread(k) => Action::SetFast(k.clone(), !f.on),
+                Target::Draft(d) => Action::DraftFast(*d, !f.on),
+            });
+        }
         if let Some(m) = &row.mode {
             let t = target.clone();
             choice_menu(ui, app, &Menu::Mode, m, move |id| match &t {
@@ -553,6 +562,10 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
             ui.painter().rect_filled(bar, 2.0, p.faint);
             ui.painter().rect_filled(egui::Rect::from_min_size(bar.min, egui::vec2(64.0 * f32::from(pct) / 100.0, 4.0)), 2.0, p.text2);
             ui.label(widgets::secondary(format!("{pct}%"), &p)).on_hover_text("How full the context window is");
+        }
+        if let Some(n) = &row.note {
+            ui.add_space(8.0);
+            ui.label(widgets::secondary(n, &p));
         }
         if row.fork
             && let Target::Thread(k) = target
