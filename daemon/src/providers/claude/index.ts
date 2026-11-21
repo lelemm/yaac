@@ -122,6 +122,8 @@ interface ThreadSettings {
   mode?: string | null;
   /** Whether Claude Code has stored the session (resume, rather than create, on the next open). */
   stored?: boolean;
+  /** Folders kept readable for the session's whole life (a handoff fork's transcript). */
+  readable?: string[];
 }
 
 interface Pending {
@@ -568,8 +570,8 @@ export class ClaudeProvider implements HarnessProvider {
 
   // ── Live queries ───────────────────────────────────────────────────────────────────────
 
-  private attachmentDirs(input: ProviderInput): string[] {
-    const dirs = new Set<string>();
+  private attachmentDirs(input: ProviderInput, kept: string[] = []): string[] {
+    const dirs = new Set<string>([...kept, ...(input.readable ?? [])]);
     for (const p of [...input.images.map((i) => i.path), ...input.files.map((f) => f.path)]) {
       const dir = path.dirname(p);
       try {
@@ -944,7 +946,13 @@ export class ClaudeProvider implements HarnessProvider {
   async startThread(params: StartThreadParams, input: ProviderInput): Promise<{ thread: NativeId; turn: TurnId }> {
     this.requireExecutable();
     const native = randomUUID();
-    this.settings[native] = { cwd: params.cwd, model: params.model ?? null, effort: params.effort ?? null, mode: params.mode ?? null };
+    this.settings[native] = {
+      cwd: params.cwd,
+      model: params.model ?? null,
+      effort: params.effort ?? null,
+      mode: params.mode ?? null,
+      ...(input.readable && input.readable.length > 0 ? { readable: [...input.readable] } : {}),
+    };
     this.save();
     const live = await this.ensureLive(native, this.attachmentDirs(input));
     const turn = await this.send(live, input);
@@ -959,7 +967,7 @@ export class ClaudeProvider implements HarnessProvider {
     if (overrides.effort) s.effort = overrides.effort;
     if (overrides.mode) s.mode = overrides.mode;
     this.save();
-    let live = await this.ensureLive(thread, this.attachmentDirs(input));
+    let live = await this.ensureLive(thread, this.attachmentDirs(input, s.readable));
     live = await this.applySettings(live, s);
     return this.send(live, input);
   }

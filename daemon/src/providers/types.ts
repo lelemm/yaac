@@ -139,6 +139,12 @@ export interface ProviderInput {
   text: string;
   images: Array<{ uploadId: string; path: string; mediaType: string | null }>;
   files: Array<{ uploadId: string; path: string; name: string }>;
+  /**
+   * Further folders the harness must be able to read for this conversation from now on — a
+   * handoff fork's transcript folder. A provider that confines reads (Claude Code) keeps them
+   * for the conversation's whole life.
+   */
+  readable?: string[];
   /** Who this input comes from; `mesh` input must never be presented as the user speaking. */
   origin: TurnOrigin;
   /**

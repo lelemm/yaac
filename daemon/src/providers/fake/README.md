@@ -32,6 +32,7 @@ Steps run in order.
 | `/fake say <text>` | An agent message, streamed in several deltas. |
 | `/fake reason <text>` | A reasoning item, streamed. |
 | `/fake tool <command> => <output>` | A command tool call with streamed output, exit 0. |
+| `/fake tool-fail <command> => <output>` | A command tool call that fails: exit 1, status `failed`. |
 | `/fake big-output <bytes>` | A tool call whose output is `<bytes>` long (default 2 MiB), in 64 KiB deltas. |
 | `/fake plan a \| b \| c` | A plan item. |
 | `/fake edit <path>` | A file change (`toolCall`, tool `fileChange`, title "Edited <path>") whose `output` is a small unified diff of that file, as every provider reports file changes (D86). |
