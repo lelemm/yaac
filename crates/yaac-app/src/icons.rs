@@ -28,7 +28,22 @@ fn stroke(c: Color32, w: f32) -> Stroke {
 
 /// A state mark centred at `c`, `d` across.
 pub(crate) fn mark(p: &Painter, c: Pos2, d: f32, m: Mark, pal: &Palette) {
+    mark_fast(p, c, d, m, false, pal);
+}
+
+/// A thread's mark: as [`mark`], and a running turn in fast mode (D125) spins yellow and a
+/// little faster.
+pub(crate) fn thread_mark(p: &Painter, c: Pos2, d: f32, display: &yaac_core::attention::ThreadDisplay, pal: &Palette) {
+    mark_fast(p, c, d, display.mark, display.fast, pal);
+}
+
+/// A state mark; `fast` only changes the running spinner.
+pub(crate) fn mark_fast(p: &Painter, c: Pos2, d: f32, m: Mark, fast: bool, pal: &Palette) {
     let p = &soft(p);
+    if fast && m == Mark::Running {
+        spinner_turning(p, c, d, pal.fast, SPINNER_TURN_FAST);
+        return;
+    }
     let col = pal.mark(m);
     let r = d * 0.45;
     let w = (d * 0.11).max(1.3);
@@ -65,16 +80,24 @@ const SPINNER_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
 /// Seconds per turn: slow and calm, but visibly moving.
 const SPINNER_TURN: f64 = 2.5;
 
+/// Seconds per turn of a running turn in fast mode (D125): a little quicker.
+pub(crate) const SPINNER_TURN_FAST: f64 = 1.8;
+
 /// Running: a three-quarter arc turning once every [`SPINNER_TURN`] seconds. Drawing it asks for the next frame, so
 /// the window repaints only while a running mark is actually painted.
 pub(crate) fn spinner(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    spinner_turning(p, c, d, col, SPINNER_TURN);
+}
+
+/// The spinner, turning once every `turn` seconds.
+pub(crate) fn spinner_turning(p: &Painter, c: Pos2, d: f32, col: Color32, turn: f64) {
     let p = &soft(p);
     let r = d * 0.38;
     let w = (d * 0.12).max(1.5);
     let ctx = p.ctx();
     let (t, focused) = ctx.input(|i| (i.time, i.focused));
     #[allow(clippy::cast_possible_truncation, reason = "a phase in 0..1")]
-    let start = ((t / SPINNER_TURN).fract() as f32) * TAU;
+    let start = ((t / turn).fract() as f32) * TAU;
     let n = 24;
     let pts: Vec<Pos2> = (0..=n)
         .map(|i| {
@@ -211,6 +234,31 @@ pub(crate) fn question(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.line(pts, stroke(col, w));
     p.line_segment([pos2(c.x, c.y + r * 0.05), pos2(c.x, c.y + r * 0.25)], stroke(col, w));
     p.circle_filled(pos2(c.x, c.y + r * 0.55), w * 0.6, col);
+}
+
+/// Fast mode's lightning bolt (D125), `d` tall: filled when on, an outline when off — the
+/// two read apart in greyscale; the colour is the caller's (the fast yellow when on).
+pub(crate) fn bolt(p: &Painter, c: Pos2, d: f32, filled: bool, col: Color32) {
+    let p = &soft(p);
+    let h = d / 2.0;
+    let w = h * 0.62;
+    // The six corners, from the top: down to the left corner, in to the lower notch, down to
+    // the bottom tip, up to the right corner, in to the upper notch.
+    let v = [(0.30, -1.0), (-0.50, 0.12), (-0.02, 0.12), (-0.30, 1.0), (0.50, -0.12), (0.02, -0.12)];
+    let pts: Vec<Pos2> = v.iter().map(|&(x, y)| pos2(c.x + x * w * 2.0, c.y + y * h)).collect();
+    if filled {
+        // A concave outline: filled as four triangles.
+        let mut mesh = egui::Mesh::default();
+        for q in &pts {
+            mesh.colored_vertex(*q, col);
+        }
+        for [a, b, t] in [[0, 1, 5], [1, 2, 5], [5, 2, 4], [2, 3, 4]] {
+            mesh.add_triangle(a, b, t);
+        }
+        p.add(Shape::mesh(mesh));
+    } else {
+        p.add(Shape::closed_line(pts, Stroke::new((d * 0.08).max(1.2), col)));
+    }
 }
 
 pub(crate) fn chevron(p: &Painter, c: Pos2, d: f32, open: bool, col: Color32) {

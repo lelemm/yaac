@@ -125,6 +125,10 @@ pub struct NewThreadDraft {
     pub effort: Option<EffortId>,
     /// The chosen mode; `None` means the harness's own default.
     pub mode: Option<ModeId>,
+    /// Fast mode (D125), offered only when the chosen model has it.
+    pub fast: bool,
+    /// "Fast mode is off …": a quiet note after a model change turned fast mode off.
+    pub fast_note: Option<String>,
     /// Composer content.
     pub draft: Draft,
 }
@@ -138,6 +142,10 @@ pub struct NextSettings {
     pub effort: Option<EffortId>,
     /// Mode override.
     pub mode: Option<ModeId>,
+    /// Fast mode on or off (D125); `None` keeps the thread's own setting.
+    pub fast: Option<bool>,
+    /// "Fast mode is off …": a quiet note after a model change turned fast mode off.
+    pub fast_note: Option<String>,
 }
 
 /// What fills the centre of the window.
@@ -372,6 +380,28 @@ impl AppState {
     /// A thread's summary.
     pub fn summary(&self, key: &ThreadKey) -> Option<&ThreadSummary> {
         self.threads.get(key).map(|r| &r.summary)
+    }
+
+    /// The model a thread's next message goes to: the one chosen for it, else the one the
+    /// harness reports applied, else the summary's — as listed by its instance.
+    pub fn next_model_info(&self, key: &ThreadKey) -> Option<&yaac_protocol::ModelInfo> {
+        let p = self.provider_of(key)?;
+        let id = self
+            .next_settings
+            .get(key)
+            .and_then(|n| n.model.as_ref())
+            .or_else(|| self.transcripts.get(key).and_then(|t| t.effective.as_ref()).and_then(|e| e.applied.model.as_ref()))
+            .or_else(|| self.summary(key).and_then(|s| s.model.as_ref()))?;
+        p.models.iter().find(|m| &m.id == id)
+    }
+
+    /// Whether a thread's next turns run in fast mode (D125): the choice made here, else what
+    /// the target reports.
+    pub fn thread_fast(&self, key: &ThreadKey) -> bool {
+        self.next_settings
+            .get(key)
+            .and_then(|n| n.fast)
+            .unwrap_or_else(|| self.summary(key).is_some_and(|s| s.fast))
     }
 
     /// The provider descriptor of a thread.

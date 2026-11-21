@@ -498,6 +498,7 @@ impl Client {
                         agents: yaac_protocol::AgentsPolicy::default(),
                         native_id: None,
                         hold: None,
+                        fast: draft.fast,
                     };
                     self.state.upsert_summary(&draft.target, summary);
                 }
@@ -889,6 +890,12 @@ impl Client {
                 if let Some(md) = next.mode {
                     params["mode"] = json!(md);
                 }
+                if let Some(f) = next.fast {
+                    params["fast"] = json!(f);
+                }
+                if let Some(n) = self.state.next_settings.get_mut(key) {
+                    n.fast_note = None;
+                }
                 self.routed(&key.target, m::TURN_START, params, Call::TurnStart { key: key.clone(), draft });
             }
         }
@@ -907,6 +914,8 @@ impl Client {
             model: None,
             effort: None,
             mode: None,
+            fast: false,
+            fast_note: None,
             draft: Draft::default(),
         });
         self.state.selection = Selection::NewThread(id);
@@ -940,6 +949,9 @@ impl Client {
         }
         if let Some(md) = &draft.mode {
             params["mode"] = json!(md);
+        }
+        if draft.fast {
+            params["fast"] = json!(true);
         }
         let mut sent = draft.clone();
         sent.instance = Some(instance);
@@ -1131,6 +1143,64 @@ impl Client {
             self.retarget_uploads(&DraftRef::New(draft));
         }
         self.dirty.insert(DraftRef::New(draft));
+    }
+
+    /// Turn fast mode on or off for a thread's next turns (D125). Sent with the next
+    /// `turn/start`; the target keeps it from then on.
+    pub fn set_fast(&mut self, key: &ThreadKey, on: bool) {
+        let n = self.state.next_settings.entry(key.clone()).or_default();
+        n.fast = Some(on);
+        n.fast_note = None;
+    }
+
+    /// Choose the model for a thread's next message. A model without fast mode turns fast
+    /// mode off, with a quiet note.
+    pub fn set_next_model(&mut self, key: &ThreadKey, model: yaac_protocol::ModelId) {
+        let was = self.state.thread_fast(key);
+        self.state.next_settings.entry(key.clone()).or_default().model = Some(model);
+        let info = self.state.next_model_info(key).cloned();
+        let (on, note) = crate::controls::reconcile_fast(info.as_ref(), was);
+        let n = self.state.next_settings.entry(key.clone()).or_default();
+        if on != was {
+            n.fast = Some(on);
+        }
+        n.fast_note = note;
+    }
+
+    /// Turn fast mode on or off for a new-thread draft.
+    pub fn set_draft_fast(&mut self, id: u64, on: bool) {
+        if let Some(d) = self.state.new_threads.iter_mut().find(|d| d.id == id) {
+            d.fast = on;
+            d.fast_note = None;
+        }
+        self.draft_changed(&crate::attachments::DraftRef::New(id));
+    }
+
+    /// Choose a draft's instance and model: effort is kept when the model offers it, the mode
+    /// goes back to the default on another instance, and fast mode goes off (with a quiet note)
+    /// when the model has none.
+    pub fn set_draft_model(&mut self, id: u64, instance: yaac_protocol::InstanceId, model: yaac_protocol::ModelId) {
+        let providers = self
+            .state
+            .new_threads
+            .iter()
+            .find(|d| d.id == id)
+            .and_then(|d| self.state.target(&d.target))
+            .map(|t| t.providers.clone())
+            .unwrap_or_default();
+        if let Some(d) = self.state.new_threads.iter_mut().find(|d| d.id == id) {
+            let info = providers.iter().find(|p| p.instance == instance).and_then(|p| p.models.iter().find(|m| m.id == model));
+            d.effort = info.and_then(|m| crate::controls::reconcile_effort(m, d.effort.as_ref()));
+            let (on, note) = crate::controls::reconcile_fast(info, d.fast);
+            d.fast = on;
+            d.fast_note = note;
+            if d.instance.as_ref() != Some(&instance) {
+                d.mode = None;
+            }
+            d.instance = Some(instance);
+            d.model = Some(model);
+        }
+        self.draft_changed(&crate::attachments::DraftRef::New(id));
     }
 
     /// Set a chat's agents policy (`thread/update`).

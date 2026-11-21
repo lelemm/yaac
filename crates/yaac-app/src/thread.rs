@@ -63,7 +63,7 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
     let p = app.p;
     let Some(h) = header(&app.client.state, map, key) else { return };
     ui.horizontal(|ui| {
-        widgets::mark(ui, &p, h.display.mark, 22.0);
+        widgets::icon(ui, 22.0, |pa, c, d| icons::thread_mark(pa, c, d * 0.95, &h.display, &p));
         if h.display.read_only {
             widgets::icon(ui, 18.0, |pa, c, d| icons::lock(pa, c, d, p.text2));
         }

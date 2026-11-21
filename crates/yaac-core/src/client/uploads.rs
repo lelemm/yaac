@@ -371,6 +371,8 @@ impl Client {
                     model: s("model").map(Into::into),
                     effort: s("effort").map(Into::into),
                     mode: s("mode").map(Into::into),
+                    fast: meta.get("fast").and_then(Value::as_bool).unwrap_or(false),
+                    fast_note: None,
                     draft,
                 });
                 DraftRef::New(new_id)
@@ -443,6 +445,9 @@ fn new_thread_meta(d: &NewThreadDraft) -> Value {
     put("model", d.model.as_ref().map(ToString::to_string));
     put("effort", d.effort.as_ref().map(ToString::to_string));
     put("mode", d.mode.as_ref().map(ToString::to_string));
+    if d.fast {
+        v["fast"] = json!(true);
+    }
     v
 }
 
