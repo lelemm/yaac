@@ -134,7 +134,7 @@ ssh -T -o ControlMaster=no -o ControlPath=none -o EscapeChar=none -o ServerAlive
   set the server up, otherwise whatever the user's `ssh` is set up with (agent, config, keys).
   A refused login, an unknown host key, or a changed one fails with a plain-words message.
 - **The remote command is a one-line loader** and stage 0 itself is the first thing written on
-  standard input (P32): the command passes through the user's login shell, whatever it is.
+  standard input (P38): the command passes through the user's login shell, whatever it is.
 - Reconnection is the hub's supervisor's, with capped backoff, as for every transport.
 
 **Verified on Linux** against OpenSSH 9.6 (a throwaway `sshd` in the tests). On Windows the
@@ -230,13 +230,13 @@ hosts from `~/.ssh/config` to pre-fill the form.
 ##### How the hub does it
 
 Setup, Verify, and Revoke are the hub's (`hub/ssh/*`, in `yaac-hub`'s `protocol` and `ssh`
-modules); the window only sends the steps and shows their answers (P39).
+modules); the window only sends the steps and shows their answers (P45).
 
 | Step | Sessions |
 | --- | --- |
 | Reach | `ssh -G` resolves what `ssh` would connect to (aliases, `HostName`, `HostKeyAlias`); `ssh-keyscan` reads the host key; the strongest (Ed25519 first) is shown with its `SHA256:` fingerprint. |
-| Confirm + probe | The confirmed key goes into **YAAC's own** `known_hosts` (`<data>/ssh/known_hosts`), never the user's (P34). Then `ssh BatchMode=yes … echo` with the user's own setup: works → *already in place*, recorded, Revoke stays disabled. |
-| Sign in + install | `ssh-keygen` makes YAAC's Ed25519 key (`<data>/ssh/keys/<server>/id_ed25519`, user-only). One session signs in with the password (`PubkeyAuthentication=no`) or the key file (`IdentitiesOnly=yes`), and runs the install script: `~/.ssh` `0700` and `authorized_keys` `0600` if missing, the line appended only if its key is absent. The session then **waits** (P36). |
+| Confirm + probe | The confirmed key goes into **YAAC's own** `known_hosts` (`<data>/ssh/known_hosts`), never the user's (P40). Then `ssh BatchMode=yes … echo` with the user's own setup: works → *already in place*, recorded, Revoke stays disabled. |
+| Sign in + install | `ssh-keygen` makes YAAC's Ed25519 key (`<data>/ssh/keys/<server>/id_ed25519`, user-only). One session signs in with the password (`PubkeyAuthentication=no`) or the key file (`IdentitiesOnly=yes`), and runs the install script: `~/.ssh` `0700` and `authorized_keys` `0600` if missing, the line appended only if its key is absent. The session then **waits** (P42). |
 | Proof | A second login with YAAC's key alone. Works → the waiting session is told `KEEP` and records the line in `~/.yaac/ssh/<id>` on the server; fails → `REMOVE`, and the line is removed and its absence checked. If the hub goes away, the session ends and the server removes the line itself. |
 | Revoke | The target's connection is closed first. A login with YAAC's key runs the revoke script: every line in which some field equals YAAC's key is dropped, the file is rewritten atomically (temporary file, `mv`), and the key's absence is checked; then YAAC's key and record are deleted. Unreachable, or YAAC's key no longer accepted → `ssh_unreachable`, the key is kept, and the window shows the line to remove by hand. Revoking twice is a no-op; Revoke where access was already in place is refused (`nothing_to_revoke`). |
 
@@ -244,13 +244,13 @@ modules); the window only sends the steps and shows their answers (P39).
 one `hub/ssh/signIn` request. The hub moves it into a zeroised buffer and serves it once, over
 a one-shot user-only local socket, to the `SSH_ASKPASS` helper (the `yaac` binary itself,
 which `ssh` runs with the socket's path and a random token in its environment — never the
-secret). The secret is wiped as soon as the sign-in is over (P35). The attach protocol's
+secret). The secret is wiped as soon as the sign-in is over (P41). The attach protocol's
 frame buffers and the JSON value of that one request are transient and not zeroised.
 
-**The single-connection rule is enforced by the hub** (P38): a setup step is refused with
+**The single-connection rule is enforced by the hub** (P44): a setup step is refused with
 `target_connected` while the server has a connection open or being opened, and a connection
 attempt waits out a running setup step. The record of what YAAC did is kept per server in
-`hub.json` (P37), so it applies to every target of that server.
+`hub.json` (P43), so it applies to every target of that server.
 
 **Verified on Linux** (OpenSSH 9.6): a throwaway `sshd` runs the whole matrix in
 `crates/yaac-hub/tests/ssh_setup.rs` — key-file setup, verify, revoke leaving exactly the
@@ -359,14 +359,14 @@ tricked into running something else.
 (present on Windows 10+ and on practically every Linux desktop), keeping the host binary free
 of an HTTP and TLS stack ([footprint](#footprint-budget)).
 
-**Built (P33):** the runtime is **Node.js 22.22.3**, `.tar.gz` builds from nodejs.org (musl
+**Built (P39):** the runtime is **Node.js 22.22.3**, `.tar.gz` builds from nodejs.org (musl
 builds from the Node.js project's unofficial-builds site), checksums in
 `yaac-transport/src/runtime.rs`. The target downloads with `curl` or `wget` and checks the
 archive with `sha256sum` or `shasum`; the host caches its verified copy in
 `<data>/runtime-cache/` and sends it with `PUT runtime`. Both paths were run once against the
 real nodejs.org; the tests use a fake archive served from a temporary folder. Until spike S3
 decides otherwise, a **Node.js 22+ already installed for the user is used** when YAAC's own is
-not there (P33 departs from P4 here); `YAAC_SYSTEM_NODE=0` makes stage 0 ignore it.
+not there (P39 departs from P4 here); `YAAC_SYSTEM_NODE=0` makes stage 0 ignore it.
 
 ### Stage 0
 
