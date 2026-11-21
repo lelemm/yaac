@@ -36,7 +36,8 @@ is right.
 - `thread/update { opId, threadId, muted?, pinned?, agents? }` → `{ thread }` — a patch; also
   pushed as `thread/updated`.
 - `thread/forkOnly { opId, source, instance, model?, effort?, mode?, atTurn? }` →
-  `{ threadId, forkKind }` — a fork with no first message. (`thread/fork` is unchanged: its
+  `{ threadId, forkKind }` — a **native** fork with no first message; a handoff is refused
+  (`capability_missing`) and goes through `thread/fork`. (`thread/fork` is unchanged: its
   first message could not be made optional additively.)
 - `item/read { threadId, itemId, offset, maxBytes }` →
   `{ present, data, offset, nextOffset, totalBytes, more }`.

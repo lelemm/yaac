@@ -145,7 +145,7 @@ interface HarnessProvider {
   control(thread: NativeId): Promise<ExternalControl>;
 
   // Optional — presence must match the declared capabilities.
-  forkThread?(thread: NativeId, opts: ForkOptions): Promise<NativeId>;
+  forkThread?(thread: NativeId, opts: ForkOptions): Promise<NativeId>;   // native fork only
   steer?(thread: NativeId, turn: TurnId, input: InputPart[]): Promise<void>;
   rename?(thread: NativeId, title: string): Promise<void>;
   archive?(thread: NativeId): Promise<void>;
@@ -159,6 +159,14 @@ interface HarnessProvider {
 `NativeId` is whatever the harness uses to resume that exact conversation
 ([05 Threads](05-threads.md#identity)). A provider's whole job is translation: harness-native
 calls and events on one side, the [YAAC item model](03-protocol.md#the-item-model) on the other.
+
+A provider takes part in a **handoff fork** without any fork-specific code: `yaacd` reads the
+source with `readThread`, renders the transcript itself, and creates the destination with an
+ordinary `startThread` whose input carries the preamble in its `text` and the transcript's
+folder in `readable` — folders the harness must be able to read for the conversation's whole
+life. A provider that confines reads (Claude Code) keeps them; one that does not (Codex's
+sandbox reads anywhere) may ignore them. `forkThread` is only the native fork
+([05 Threads](05-threads.md#fork)).
 
 ## Capabilities
 
@@ -378,7 +386,7 @@ Facts that shape the adapter:
 | thread index | `thread/list` (cursor, `sourceKinds`, `archived`), `thread/started`, `thread/name/updated`, `thread/archived`, `thread/deleted`, `thread/status/changed` |
 | history | `thread/read`, `thread/turns/list`, `thread/items/list` |
 | start / resume | `thread/start` (`cwd`, `model`), `thread/resume` |
-| native fork | `thread/fork` (`threadId`, optional `lastTurnId`, `model`) |
+| native fork | `thread/fork` (`threadId`, optional `lastTurnId` — inclusive, not a turn in progress — `model`, `cwd`, `approvalPolicy`/`sandbox`, `excludeTurns`); result `{ thread, model, reasoningEffort, … }`. Verified against 0.171.0 (`generate-ts`). |
 | turn | `turn/start` (`input`, `model`, `effort`), `turn/steer` (`expectedTurnId`), `turn/interrupt` (`turnId`) |
 | streaming | `item/started`, `item/agentMessage/delta`, `item/reasoning/summaryTextDelta`, `item/reasoning/textDelta`, `item/commandExecution/outputDelta`, `item/completed`, `turn/completed` |
 | approvals | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `item/permissions/requestApproval`; cleared by `serverRequest/resolved` |
@@ -417,14 +425,14 @@ One `query()` in streaming-input mode per active thread; the SDK runs the Claude
 | thread index | `listSessions()` (across projects, worktree-aware), `getSessionInfo()` |
 | history | `getSessionMessages()` |
 | start / resume | `query({ options: { cwd, model, sessionId } })`, `options.resume` |
-| native fork | `forkSession()`, or `options.forkSession` with `resumeSessionAt` |
+| native fork | `forkSession(sessionId, { upToMessageId?, title?, dir? })` → `{ sessionId }` (`upToMessageId` inclusive; omitted = full copy); verified against SDK 0.3.329 |
 | turn | push an `SDKUserMessage` into the input stream; `interrupt()` |
 | streaming | `includePartialMessages` stream events → deltas; assistant and tool-result messages → items |
 | approvals | `canUseTool` callback → approval `request` items |
 | questions | the `AskUserQuestion` tool arriving through `canUseTool` → question `request` items; `onUserDialog` for other dialog kinds |
 | model / effort / mode switch | `setModel()`, `applyFlagSettings({ effortLevel })`, `setPermissionMode()` |
 | images | image content blocks in the user message (`yaacd` reads the uploaded file) |
-| attachments readable | the upload store is passed in `additionalDirectories` |
+| attachments readable | the upload store is passed in `additionalDirectories`; so is a handoff fork's transcript folder (`ProviderInput.readable`), kept for the session's whole life |
 | in use elsewhere | `claude agents --json` lists live sessions with their session ids |
 | rename / archive / delete | `renameSession()`, `archiveSession()`, `deleteSession()` |
 | usage | result messages, `getContextUsage()` |

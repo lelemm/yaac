@@ -116,9 +116,9 @@ requests. They are items in the thread, answered with `request/respond`
 | `thread/start` | Create a thread **and send its first message**, as one operation: instance, working directory, model, effort, mode, input. Returns the thread id and the first turn id. There is no separate "create empty thread" call: an abandoned draft should leave nothing behind, and one operation is one thing to make idempotent. |
 | `thread/read` | A page of items, newest first, with the journal position the snapshot is valid at, and whether each attachment it mentions still exists on the target. |
 | `item/read` | A further byte range of one large item's output. |
-| `thread/forkPreview` | What a fork to a given destination would carry: mechanism, turn it cuts at, sizes, what is left out, and the destination account. Changes nothing. |
+| `thread/forkPreview` | What a fork to a given destination would carry: mechanism, turn it cuts at, sizes, what is left out, and the destination account. For a handoff, the transcript's size and its first `maxPreviewBytes`, rendered from the harness's store exactly as the fork would; `unavailableReason` when it cannot fork (no completed turn yet, no history, destination not usable). Changes nothing. |
 | `thread/subscribe` · `unsubscribe` · `ack` | Start or stop live events for a thread, and report how far the client has durably got ([journal and replay](#journal-and-replay)). |
-| `thread/fork` | Create a new thread from an existing one, on any instance and model ([05 Threads](05-threads.md#fork)). |
+| `thread/fork` | Create a new thread from an existing one, on any instance and model, with its first message ([05 Threads](05-threads.md#fork)). The result's `forkKind` says which mechanism was used. A handoff can only be made this way; `thread/forkOnly` (no first message) is native only. |
 | `thread/rename` · `archive` · `delete` | Gated by capability. |
 | → `thread/updated` · `thread/removed` | Index changes pushed while connected, including for threads created outside YAAC. |
 
@@ -188,7 +188,7 @@ into these item kinds:
 | `plan` | The agent's task list and each step's state. |
 | `request` | Something awaiting the user: an approval or a question. |
 | `notice` | Out-of-band information: errors, context compaction, model rerouting, rate-limit warnings. |
-| `handoff` | Marks history a forked thread inherited from its parent. |
+| `handoff` | Marks history a forked thread inherited from its parent: the source, the mechanism, the cut-off turn and — for a handoff — the frozen transcript (bounded; its end) and the file's path. The first item of a forked thread, before its first turn. |
 | `meshSent` · `meshReceived` | A message this agent sent to, or received from, another agent — with the other side's address and a delivery receipt. |
 | `meshSpawn` · `meshWait` | Threads this agent started, and a wait on other agents, with their live states. |
 
