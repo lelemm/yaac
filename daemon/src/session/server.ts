@@ -38,6 +38,31 @@ function tryConnect(socket: string, timeoutMs = 1000): Promise<boolean> {
 
 export class AlreadyServing extends Error {}
 
+/** How long a starting daemon waits for the previous one (named by the pid file) to exit. */
+export const PREVIOUS_EXIT_WAIT_MS = 8000;
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Waits until the process in `<runDir>/yaacd.pid` (if any, and not this one) has exited. */
+async function waitForPrevious(runDir: string, maxMs = PREVIOUS_EXIT_WAIT_MS): Promise<void> {
+  let pid: number;
+  try {
+    pid = Number(fs.readFileSync(path.join(runDir, "yaacd.pid"), "utf8").trim());
+  } catch {
+    return;
+  }
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return;
+  const deadline = Date.now() + maxMs;
+  while (alive(pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+}
+
 async function withStartupLock<T>(runDir: string, fn: () => Promise<T>): Promise<T> {
   const lock = path.join(runDir, "startup.lock");
   const deadline = Date.now() + 10000;
@@ -73,6 +98,13 @@ export async function listenExclusive(socket: string, runDir: string, onConnecti
   ensurePrivateDir(runDir);
   ensurePrivateDir(path.dirname(socket));
   return withStartupLock(runDir, async () => {
+    if (fs.existsSync(socket)) {
+      if (await tryConnect(socket)) throw new AlreadyServing(`a yaacd is already serving on ${socket}`);
+    }
+    // A daemon that stopped listening may still be finishing (a hand-over closes its socket
+    // first, then flushes journals and marks the state clean): it owns the state until it
+    // exits, so wait for it — bounded, in case the pid file names some other process now.
+    await waitForPrevious(runDir);
     if (fs.existsSync(socket)) {
       if (await tryConnect(socket)) throw new AlreadyServing(`a yaacd is already serving on ${socket}`);
       fs.rmSync(socket, { force: true });

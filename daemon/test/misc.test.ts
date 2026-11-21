@@ -298,6 +298,23 @@ test("one serving daemon per user; idle exit; hand-over when idle", async () => 
   assert.equal(r2, "handover idle");
 });
 
+test("a starting daemon waits for the previous one to finish exiting before it binds", async () => {
+  const home = tmpHome();
+  // The previous daemon: stopped listening (no socket), still finishing for a moment.
+  const { spawn } = await import("node:child_process");
+  const previous = spawn(process.execPath, ["-e", "setTimeout(() => {}, 700)"], { stdio: "ignore" });
+  const exited = new Promise<void>((r) => previous.once("exit", () => r()));
+  let gone = false;
+  void exited.then(() => (gone = true));
+  fs.mkdirSync(path.join(home, "run"), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(home, "run", "yaacd.pid"), `${previous.pid}\n`);
+  const started = Date.now();
+  const daemon = await startDaemon(home);
+  assert.ok(gone, `it started only after the previous daemon exited (after ${Date.now() - started} ms)`);
+  assert.equal(fs.readFileSync(path.join(home, "run", "yaacd.pid"), "utf8").trim(), String(process.pid));
+  await daemon.stop("test");
+});
+
 test("handover now interrupts running turns, marked as interrupted by an update", async () => {
   const home = tmpHome();
   const daemon = await startDaemon(home);
