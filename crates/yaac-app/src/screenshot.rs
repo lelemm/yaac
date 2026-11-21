@@ -67,7 +67,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("46", "pill-relations"),
     ("47", "pill-workers"),
     ("48", "docked-narrow"),
-    ("49", "fast-mode"),
+    ("50", "fast-mode"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -193,7 +193,7 @@ fn setup(app: &mut YaacApp, id: &str) {
         }
         app.pump_demo();
     };
-    let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24" | "44" | "48" | "49");
+    let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24" | "44" | "48" | "50");
     app.ui.panel = if docked { PanelMode::Docked } else { PanelMode::Pill };
     match id {
         "01" | "10" => {
@@ -542,7 +542,7 @@ fn setup(app: &mut YaacApp, id: &str) {
                 r.summary.spawned_by = None;
             }
         }
-        "49" => {
+        "50" => {
             // Fast mode (D125): a worker running in it. The lightning toggle under the
             // composer is on; its spinner is yellow in the header, the sidebar and the panel.
             app.open(&threads::search(), None);

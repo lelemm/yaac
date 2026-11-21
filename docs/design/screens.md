@@ -1207,7 +1207,7 @@ something that needs the user.*
 - The docked panel at 240 points: titles and branches are ellipsised; every state mark, the
   state word, the harness logo, the git counts and ahead / behind stay visible (D115).
 
-### 49 — Fast mode
+### 50 — Fast mode
 
 - The search-service worker (Claude · opus-5.5, a model that reports fast mode) is running in
   fast mode (D125). Its spinner is yellow and a little quicker in the sidebar row and the

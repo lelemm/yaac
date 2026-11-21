@@ -307,7 +307,7 @@ capability. If a feature needs a distinction no capability expresses, add a capa
 
 ### Fast mode is a model capability
 
-**Decided (D125); the rules below are Proposed (P46–P48).** Fast mode runs a turn faster, at a
+**Decided (D125); the rules below are Proposed (P54–P56).** Fast mode runs a turn faster, at a
 higher cost. Whether a model has it is a **model-level capability**, `fastMode`, on its
 descriptor (`ModelInfo.capabilities`), as each provider reads it from its harness at runtime —
 never from a list in source. Unknown is not yes: a model whose harness says nothing is not
