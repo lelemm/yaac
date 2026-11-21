@@ -369,3 +369,69 @@ pub(crate) fn sidebar(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let x = r.left() + r.width() * 0.34;
     p.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], stroke(col, w));
 }
+
+/// A paper clip: the attachment button. One wire: up the right side, round the top, down the
+/// left side, round a smaller bottom, and up the middle.
+pub(crate) fn paperclip(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    use std::f32::consts::PI;
+    let w = (d * 0.08).max(1.3);
+    let arc = |cx: f32, cy: f32, r: f32, from: f32, to: f32| -> Vec<Pos2> {
+        (0..=10).map(|i| {
+            let a = from + (to - from) * i as f32 / 10.0;
+            pos2(cx + r * a.cos(), cy + r * a.sin())
+        }).collect()
+    };
+    let (top, bot) = (c.y - d * 0.42, c.y + d * 0.42);
+    let r = d * 0.2;
+    let rb = d * 0.12;
+    let mut pts = vec![pos2(c.x + r, c.y + d * 0.1), pos2(c.x + r, top + r)];
+    pts.extend(arc(c.x, top + r, r, 0.0, -PI));
+    pts.push(pos2(c.x - r, bot - rb));
+    pts.extend(arc(c.x - r + rb, bot - rb, rb, PI, 0.0));
+    pts.push(pos2(c.x - r + 2.0 * rb, top + r + d * 0.08));
+    p.line(pts, stroke(col, w));
+}
+
+/// A small cross: remove.
+pub(crate) fn close(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let w = (d * 0.1).max(1.3);
+    let s = d * 0.26;
+    p.line_segment([pos2(c.x - s, c.y - s), pos2(c.x + s, c.y + s)], stroke(col, w));
+    p.line_segment([pos2(c.x - s, c.y + s), pos2(c.x + s, c.y - s)], stroke(col, w));
+}
+
+/// A connection: two nodes joined by a link; crossed out when there is none (the hub cannot
+/// be reached).
+pub(crate) fn connection(p: &Painter, c: Pos2, d: f32, col: Color32, crossed: bool) {
+    let w = (d * 0.08).max(1.2);
+    let a = pos2(c.x - d * 0.28, c.y + d * 0.18);
+    let b = pos2(c.x + d * 0.28, c.y - d * 0.18);
+    p.circle_stroke(a, d * 0.12, stroke(col, w));
+    p.circle_stroke(b, d * 0.12, stroke(col, w));
+    let v = (b - a).normalized() * d * 0.12;
+    p.line_segment([a + v, b - v], stroke(col, w));
+    if crossed {
+        p.line_segment([pos2(c.x - d * 0.36, c.y - d * 0.36), pos2(c.x + d * 0.36, c.y + d * 0.36)], stroke(col, w));
+    }
+}
+
+/// Minimize: a short horizontal bar.
+pub(crate) fn minimize(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let s = d * 0.32;
+    p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke(col, (d * 0.08).max(1.1)));
+}
+
+/// Maximize: a square; restore: two overlapping squares.
+pub(crate) fn maximize(p: &Painter, c: Pos2, d: f32, col: Color32, restore: bool) {
+    let w = (d * 0.08).max(1.1);
+    let s = d * 0.56;
+    if restore {
+        let o = d * 0.1;
+        let front = Rect::from_center_size(pos2(c.x - o, c.y + o), Vec2::splat(s * 0.85));
+        p.rect_stroke(front, 1.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
+        let back = front.translate(vec2(2.0 * o, -2.0 * o));
+        p.line(vec![pos2(back.left(), front.top()), back.left_top(), back.right_top(), back.right_bottom(), pos2(front.right(), back.bottom())], stroke(col, w));
+    } else {
+        p.rect_stroke(Rect::from_center_size(c, Vec2::splat(s)), 1.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
+    }
+}

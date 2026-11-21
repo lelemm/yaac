@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, Margin, Rect, Sense, pos2, vec2};
 use yaac_core::attention::{AttentionMap, Mark};
-use yaac_core::sidebar::{RowRight, Section, SectionKind, hub_status, sections};
+use yaac_core::sidebar::{RowRight, Section, SectionKind, hub_footer, sections};
 use yaac_core::state::Selection;
 
 use crate::app::{Action, Menu, YaacApp};
@@ -49,7 +49,6 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     ui.add_space(8.0);
     search_field(ui, app, !fresh);
     ui.add_space(6.0);
-    drafts(ui, app, actions);
 
     // Attached to a real hub, the search goes to the hub (by id or fuzzy title, across every
     // cached target, paged); the demo filters its own list.
@@ -186,51 +185,31 @@ fn footer(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     if resp.clicked() {
         actions.push(Action::Settings(true));
     }
-    let status = hub_status(&app.client.state);
-    let g = ui.fonts_mut(|f| f.layout_no_wrap(status, theme::ui(size::SMALL), p.text2));
-    ui.painter().galley(pos2(rect.right() - g.size().x, rect.center().y - g.size().y / 2.0), g, p.text2);
-}
-
-/// New-thread drafts: their own selected row, "New thread" in italics with a pencil mark, under
-/// the draft's project and machine.
-fn drafts(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
-    let p = app.p;
-    let st = &app.client.state;
-    let rows: Vec<(u64, String, String)> = st
-        .new_threads
-        .iter()
-        .map(|d| {
-            let project = d.project.as_ref().and_then(|pid| st.projects.iter().find(|x| &x.id == pid)).map_or_else(|| "No project".to_owned(), |x| x.name.clone());
-            (d.id, project, st.target_name(&d.target))
-        })
-        .collect();
-    for (id, project, machine) in rows {
-        let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEAD), Sense::hover());
-        let font = theme::ui(size::SMALL);
-        let g = ui.fonts_mut(|f| f.layout_no_wrap(project, font.clone(), p.text2));
-        ui.painter().galley(pos2(head.left() + 4.0, head.bottom() - 7.0 - g.size().y), g, p.text2);
-        let g = ui.fonts_mut(|f| f.layout_no_wrap(machine, font, p.text2));
-        ui.painter().galley(pos2(head.right() - 4.0 - g.size().x, head.bottom() - 7.0 - g.size().y), g, p.text2);
-        let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::click());
-        let sel = app.client.state.selection == Selection::NewThread(id);
-        if sel {
-            ui.painter().rect_filled(rect.shrink2(vec2(0.0, 1.0)), 5.0, p.selected);
-        } else if resp.hovered() {
-            ui.painter().rect_filled(rect.shrink2(vec2(0.0, 1.0)), 5.0, p.faint);
+    // The hub as a connection icon, and the targets as counts (D106), right-aligned in what
+    // is left beside Settings.
+    let f = hub_footer(&app.client.state);
+    let mut x = rect.right();
+    let cy = rect.center().y;
+    let font = theme::ui(size::SMALL);
+    let mut tip = Vec::new();
+    for (n, up) in [(f.down, false), (f.up, true)] {
+        if !up && n == 0 {
+            continue;
         }
-        icons::pencil(ui.painter(), pos2(rect.left() + 13.0, rect.center().y), 14.0, p.text2);
-        let mut job = egui::text::LayoutJob::simple_singleline("New thread".to_owned(), theme::ui(size::UI), p.text);
-        if let Some(sec) = job.sections.first_mut() {
-            sec.format.italics = true;
-        }
-        let g = ui.fonts_mut(|f| f.layout_job(job));
-        ui.painter().galley(pos2(rect.left() + 28.0, rect.center().y - g.size().y / 2.0), g, p.text);
-        if resp.clicked() {
-            actions.push(Action::OpenDraft(id));
-        }
-        ui.add_space(HEAD_GAP);
+        let g = ui.fonts_mut(|fo| fo.layout_no_wrap(n.to_string(), font.clone(), p.text2));
+        x -= g.size().x;
+        ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, p.text2);
+        x -= 9.0;
+        icons::arrow_vertical(ui.painter(), pos2(x, cy), 13.0, p.text2, up);
+        x -= 14.0;
+        tip.push(format!("{n} {}", if up { "connected" } else { "not connected" }));
     }
-    let _ = actions;
+    x -= 2.0;
+    icons::connection(ui.painter(), pos2(x - 8.0, cy), 15.0, p.text2, !f.reachable);
+    tip.reverse();
+    let hub = if f.reachable { "Hub running" } else { "The hub cannot be reached" };
+    let area = Rect::from_min_max(pos2((x - 18.0).max(settings.right()), rect.top()), rect.max);
+    ui.interact(area, egui::Id::unique("hub-status"), Sense::hover()).on_hover_text(format!("{hub} · targets: {}", tip.join(", ")));
 }
 
 fn search_field(ui: &mut egui::Ui, app: &mut YaacApp, enabled: bool) {

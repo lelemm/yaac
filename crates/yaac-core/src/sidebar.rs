@@ -456,12 +456,21 @@ pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, filter
     out
 }
 
-/// "Hub running · 3 of 4 targets": connected of enabled targets.
-pub fn hub_status(state: &AppState) -> String {
-    if !state.hub.attached {
-        return "Hub not attached".to_owned();
-    }
+/// The footer's hub line (D106): a connection icon — crossed out while the hub cannot be
+/// reached — and the targets as counts only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HubFooter {
+    /// The window is attached to the hub.
+    pub reachable: bool,
+    /// Enabled targets that are connected.
+    pub up: usize,
+    /// Enabled targets that are not (hidden when 0).
+    pub down: usize,
+}
+
+/// The footer's hub line, from the state.
+pub fn hub_footer(state: &AppState) -> HubFooter {
     let enabled = state.targets.iter().filter(|t| t.entry.enabled).count();
-    let connected = state.targets.iter().filter(|t| t.entry.enabled && t.connected()).count();
-    format!("Hub running · {connected} of {enabled} targets")
+    let up = state.targets.iter().filter(|t| t.entry.enabled && t.connected()).count();
+    HubFooter { reachable: state.hub.attached, up, down: enabled - up }
 }

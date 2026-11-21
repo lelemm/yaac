@@ -5,7 +5,7 @@ use common::{NOW, boot, render, render_open};
 use yaac_core::attention::{Attention, AttentionMap};
 use yaac_core::demo::{DemoHub, threads};
 use yaac_core::hints::RequestKindWord;
-use yaac_core::sidebar::{Grouping, Open, SectionKind, hub_status, needs_you, sections};
+use yaac_core::sidebar::{Grouping, Open, SectionKind, hub_footer, needs_you, sections};
 use yaac_core::time::Zone;
 
 fn g(machine: bool, project: bool, worktree: bool) -> Grouping {
@@ -188,7 +188,7 @@ fn needs_you_lists_every_machine_most_recent_first() {
         got,
         [("Fix frame decoder".to_owned(), a, "devbox".to_owned()), ("index-rebuild".to_owned(), a, "gpu-box".to_owned())]
     );
-    assert_eq!(hub_status(&c.state), "Hub running · 3 of 4 targets");
+    assert_eq!(hub_footer(&c.state), yaac_core::sidebar::HubFooter { reachable: true, up: 3, down: 1 });
 }
 
 #[test]

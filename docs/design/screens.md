@@ -243,7 +243,8 @@ Unless a screen says otherwise, the sidebar shows exactly this:
 - *~/scratch/spike-7* — `devbox` — a **temporary project**: italic, dashed mark
   - idle mark · Try the new parser · "1d" (not in git: one line only)
 - **Muted · 4** — collapsed
-- Footer: a **Settings** control, and a quiet hub status: "Hub running · 3 of 4 targets".
+- Footer: a **Settings** control, and a quiet hub status (D106): the connection icon, "↑ 3",
+  "↓ 1" (drawn as arrow icons).
 
 ### The transcript: the conversation first
 
@@ -631,7 +632,7 @@ waiting work is found. The number is left unused so the other screens keep their
 step.*
 
 - Main shell with an **empty** sidebar (just `YAAC`, a disabled search field, and Settings /
-  "Hub running" in the footer). No composer. No agents panel.
+  the connection icon in the footer). No composer. No agents panel.
 - Centre: "YAAC", the sentence "Run your coding agents on any machine, and let them work
   together.", and three cards:
   - **This computer** — "Codex — ready" with a check; "Claude — not signed in" with a warning
@@ -649,8 +650,8 @@ step.*
 
 - **This is the first thread ever, straight from screen 07.** The sidebar is that of a fresh
   install: `YAAC`, search, **New**, the three toggle chips, **no Needs-you section**, and a
-  tree with only `local — connected` containing one selected row: "New thread" with a pencil
-  mark, in italics. Footer: Settings, "Hub running · 1 of 1 targets".
+  tree with only `local — connected`; the draft is not listed (D107). Footer: Settings, the
+  connection icon and "↑ 1".
 - Header: "New thread", breadcrumb `local · api · main`.
 - Centre: empty, one hint line: "Describe what you want done."
 - A **draft bar** above the composer with one selector: `Project: api — local ▾`. The
@@ -674,8 +675,8 @@ step.*
 *The outcome of 07 and 08: the draft became a real thread.*
 
 - Sidebar, still the fresh install: no Needs-you section; under `local › api › main` the
-  first and only thread, selected: running mark · **Investigate frame parsing**. Footer:
-  "Hub running · 1 of 1 targets".
+  first and only thread, selected: running mark · **Investigate frame parsing**. Footer: the
+  connection icon and "↑ 1".
 - Header: running mark, "Investigate frame parsing", tag "Running", breadcrumb
   `local · api · main`.
 - Transcript: the user's message rendered as markdown (heading, bold, inline code); the agent:
