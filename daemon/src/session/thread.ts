@@ -37,6 +37,11 @@ export interface ThreadRecord {
   updatedAt: string;
   originKind: OriginKind;
   forkedFrom?: string | null;
+  /**
+   * A handoff fork's transcript file (in `~/.yaac/handoffs/`), pinned to this thread: kept
+   * for its whole life, removed with it.
+   */
+  handoffTranscript?: string | null;
   title?: string | null;
   titleOverride?: string | null;
   preview?: string | null;

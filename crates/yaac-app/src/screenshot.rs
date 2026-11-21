@@ -30,6 +30,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("09", "first-message"),
     ("10", "in-use"),
     ("11", "fork"),
+    ("11n", "fork-native"),
     ("12", "forked-thread"),
     ("13", "settings-targets"),
     ("14", "ssh-confirm"),
@@ -261,12 +262,20 @@ fn setup(app: &mut YaacApp, id: &str) {
             let dest = ForkChoice { instance: "claude".into(), model: None };
             app.client.fork_preview(&fix, &dest.instance);
             app.pump_demo();
-            app.ui.fork = Some(ForkDialog { key: fix, choice: dest, preview_open: true });
+            app.ui.fork = Some(ForkDialog { key: fix, choice: dest, preview_open: true, message: "Carry on from here: add the regression test for the split frame.".into() });
+        }
+        "11n" => {
+            let fix = threads::fix();
+            app.open(&fix, None);
+            let Some(dest) = yaac_core::fork::default_choice(&app.client.state, &fix) else { return };
+            app.client.fork_preview(&fix, &dest.instance);
+            app.pump_demo();
+            app.ui.fork = Some(ForkDialog { key: fix, choice: dest, preview_open: true, message: String::new() });
         }
         "12" => {
             let fix = threads::fix();
             app.open(&fix, None);
-            app.client.fork(&fix, &ForkChoice { instance: "claude".into(), model: None });
+            app.client.fork(&fix, &ForkChoice { instance: "claude".into(), model: None }, Some("Carry on from here: add the regression test for the split frame."));
             app.pump_demo();
             if let Some(k) = app.client.state.selected_thread().cloned() {
                 app.open(&k, None);

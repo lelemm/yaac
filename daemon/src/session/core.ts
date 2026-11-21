@@ -66,6 +66,7 @@ import { NotActed, OpLog } from "./ops.js";
 import { ThreadIndex, type Holder } from "./thread-index.js";
 import { ThreadRuntime, threadDirName, type Driver, type QueuedEntry, type RequestRecord, type ThreadRecord, type Work } from "./thread.js";
 import { UploadStore } from "./uploads.js";
+import { HANDOFF_ITEM_BYTES, boundTranscript, cutoffTurn, itemsThrough, preamble, previewOf, renderTranscript, type AttachmentLookup, type RenderedTranscript } from "./handoff.js";
 import { normaliseRemote } from "./fsinfo.js";
 import { GitStatusStore, gitRunner, resolveRepo, type GitRunner } from "./git.js";
 import { ProjectStore, projectRefFor } from "./projects.js";
@@ -167,6 +168,8 @@ export interface CoreMeshHooks {
   keeps?(rt: ThreadRuntime): boolean;
   /** The thread's hold was released (a message from its stopper, or the user). */
   holdReleased?(rt: ThreadRuntime): void;
+  /** How the mesh names the thread's machine and the thread itself (a handoff's preamble). */
+  whereIs?(rt: ThreadRuntime): { target: string; address: string };
 }
 
 /** Agent-originated input for the dispatcher (the mesh's entry point). */
@@ -2136,9 +2139,14 @@ export class Core {
     });
   }
 
-  // ── Fork ───────────────────────────────────────────────────────────────────────────────
+  // ── Fork (docs/05-threads.md#fork) ───────────────────────────────────────────────────
 
-  private forkPlan(src: ThreadRuntime, instanceId: string): { kind: "native"; dest: Instance } | { kind: "handoff"; reason: string } {
+  /**
+   * Native or handoff, from the source and destination pair: native when the destination is
+   * the same kind, shares the source's conversation store, and the source can fork natively.
+   * Everything else is a handoff, which needs only that the source can read its history.
+   */
+  private forkPlan(src: ThreadRuntime, instanceId: string): { kind: "native"; dest: Instance } | { kind: "handoff"; dest: Instance; unavailable: string | null } {
     const dest = this.registry.get(instanceId);
     if (!dest) throw rpc("instance_not_found", `no provider instance ${instanceId} on this target`);
     const srcInst = this.registry.get(src.record.instance);
@@ -2150,7 +2158,19 @@ export class Core {
       src.record.storeKey === dest.descriptor.store.key;
     const can = sameStore && typeof srcInst?.provider?.forkThread === "function" && (srcInst.descriptor.capabilities ?? []).includes("threadFork");
     if (can) return { kind: "native", dest };
-    return { kind: "handoff", reason: "a handoff fork (through a transcript) is not available in this build of yaacd" };
+    let unavailable: string | null = null;
+    if (!srcInst?.provider || !(srcInst.descriptor.capabilities ?? []).includes("threadRead")) {
+      unavailable = "this thread's provider cannot read its history back, so YAAC will not fork it";
+    } else if (!fs.existsSync(src.record.cwd)) {
+      unavailable = `the working directory ${src.record.cwd} no longer exists on this target`;
+    } else {
+      try {
+        this.registry.usable(instanceId);
+      } catch (e) {
+        unavailable = (e as Error).message;
+      }
+    }
+    return { kind: "handoff", dest, unavailable };
   }
 
   private lastCompletedTurn(rt: ThreadRuntime): TurnId | null {
@@ -2159,19 +2179,88 @@ export class Core {
     return turns.at(-1) ?? null;
   }
 
+  /**
+   * The source's history from the harness's own store, cut at the last completed turn (or
+   * `atTurn`), rendered to a transcript. `uploadsKey` (a fork, not a preview) links the
+   * attachments still on the target into the new thread's folder so its agent can read them.
+   */
+  private async renderHandoff(src: ThreadRuntime, atTurn: TurnId | null, uploadsKey: string | null): Promise<{ cutoff: TurnId | null; rendered: RenderedTranscript; readable: string[] }> {
+    const inst = this.registry.get(src.record.instance)!;
+    const provider = inst.provider!;
+    const items: Item[] = [];
+    let cursor: string | null | undefined = null;
+    try {
+      for (let i = 0; i < 100000; i++) {
+        const page = await provider.readThread(src.record.native, { cursor });
+        items.push(...page.items);
+        cursor = page.cursor;
+        if (!cursor) break;
+      }
+    } catch (e) {
+      throw rpc("provider_unavailable", `${inst.descriptor.displayName} could not read the thread's history: ${(e as Error).message}`);
+    }
+    const running = [src.activeTurn, await provider.runningTurn?.(src.record.native).catch(() => null)];
+    const cutoff = cutoffTurn(items, running, atTurn);
+    if (atTurn && !cutoff) throw notActed("invalid_params", `turn ${atTurn} is not in the thread's history`);
+    const journaled = (await this.ensureProjection(src)).items();
+    const readable = new Set<string>();
+    const look: AttachmentLookup = {
+      upload: (id) => {
+        if (!this.uploads.present(id)) return null;
+        const meta = this.uploads.meta(id)!;
+        if (!uploadsKey) return { path: meta.name, name: meta.name };
+        const l = this.uploads.linkForThread(uploadsKey, id);
+        readable.add(path.dirname(l.path));
+        return { path: l.path, name: meta.name };
+      },
+      exists: (p) => fs.existsSync(p),
+    };
+    const where = this.mesh?.whereIs?.(src);
+    const rendered = renderTranscript(
+      itemsThrough(items, cutoff),
+      { title: this.summaryOf(src).title, provider: inst.descriptor.displayName, target: where?.target ?? "this machine", threadId: src.id },
+      look,
+      journaled,
+    );
+    return { cutoff, rendered, readable: [...readable] };
+  }
+
   async forkPreview(p: ThreadForkPreviewParams): Promise<ThreadForkPreviewResult> {
     const src = this.requireThread(p.source);
     await this.ensureProjection(src);
     const plan = this.forkPlan(src, p.instance);
-    if (plan.kind === "handoff") return { forkKind: "handoff", unavailableReason: plan.reason };
-    const cutoff = p.atTurn ?? this.lastCompletedTurn(src);
-    const out: ThreadForkPreviewResult = { forkKind: "native", cutoffTurn: cutoff };
-    if (plan.dest.descriptor.store.account) out.destinationAccount = plan.dest.descriptor.store.account;
+    const account = plan.dest.descriptor.store.account ?? null;
+    if (plan.kind === "native") {
+      const out: ThreadForkPreviewResult = { forkKind: "native", cutoffTurn: p.atTurn ?? this.lastCompletedTurn(src) };
+      if (account) out.destinationAccount = account;
+      return out;
+    }
+    if (plan.unavailable) return { forkKind: "handoff", unavailableReason: plan.unavailable };
+    const { cutoff, rendered } = await this.renderHandoff(src, p.atTurn ?? null, null);
+    const max = Math.max(256, Math.min(Number(p.maxPreviewBytes ?? 4096) || 4096, PAGE_MAX_BYTES));
+    const out: ThreadForkPreviewResult = {
+      forkKind: "handoff",
+      transcriptBytes: Buffer.byteLength(rendered.markdown),
+      transcriptPreview: previewOf(rendered.markdown, max),
+      omittedAttachments: rendered.omitted,
+    };
+    if (cutoff) out.cutoffTurn = cutoff;
+    else out.unavailableReason = "the thread has no completed turn to fork from yet";
+    if (account) out.destinationAccount = account;
     return out;
   }
 
   async threadFork(client: ClientLink, p: ThreadForkParams): Promise<ThreadForkResult> {
     return this.ops.run("thread/fork", p.opId, async () => {
+      const src = this.findThread(p.source);
+      if (!src || src.deleted) throw notActed("thread_not_found", `no thread ${String(p.source)} on this target`);
+      let plan;
+      try {
+        plan = this.forkPlan(src, p.instance);
+      } catch (e) {
+        throw new NotActed(e as RpcError);
+      }
+      if (plan.kind === "handoff") return this.handoffFork(client, p, src, plan.dest, plan.unavailable);
       const { rt, parts } = await this.forkInto(p, true);
       const turnId = await this.submit(rt, {
         origin: "user",
@@ -2183,7 +2272,11 @@ export class Core {
     });
   }
 
-  /** `thread/forkOnly`: the fork, idle, with no first message. */
+  /**
+   * `thread/forkOnly`: the fork, idle, with no first message. Native only: a handoff creates
+   * the destination conversation with its first message (the preamble goes in front of it),
+   * so a handoff is `thread/fork`.
+   */
   async threadForkOnly(p: ThreadForkOnlyParams): Promise<ThreadForkOnlyResult> {
     return this.ops.run("thread/forkOnly", p.opId, async () => {
       const { rt } = await this.forkInto({ ...p, input: [] }, false);
@@ -2192,52 +2285,128 @@ export class Core {
   }
 
   private async forkInto(p: ThreadForkParams, withInput: boolean): Promise<{ rt: ThreadRuntime; parts: InputPart[] | null }> {
-    {
-      const src = this.findThread(p.source);
-      if (!src || src.deleted) throw notActed("thread_not_found", `no thread ${String(p.source)} on this target`);
-      let plan;
-      try {
-        plan = this.forkPlan(src, p.instance);
-      } catch (e) {
-        throw new NotActed(e as RpcError);
-      }
-      if (plan.kind === "handoff") throw notActed("capability_missing", plan.reason);
-      const srcInst = this.registry.get(src.record.instance)!;
-      if (p.atTurn && !(srcInst.descriptor.capabilities ?? []).includes("threadForkAtTurn")) {
-        throw notActed("capability_missing", "this provider forks only from the last completed turn");
-      }
-      this.checkModel(plan.dest.descriptor, p.model);
-      const parts = withInput ? this.validateParts(p.input, this.modelImageSupport(plan.dest.descriptor, p.model)) : null;
-      let native: NativeId;
-      try {
-        native = await srcInst.provider!.forkThread!(src.record.native, {
-          atTurn: p.atTurn ?? null,
-          cwd: src.record.cwd,
-          model: p.model ?? null,
-          effort: p.effort ?? null,
-          mode: p.mode ?? null,
-        });
-      } catch (e) {
-        throw rpc("provider_unavailable", `the harness did not fork the thread: ${(e as Error).message}`);
-      }
-      const rt = this.createThread(
-        plan.dest,
-        native,
-        {
-          cwd: src.record.cwd,
-          originKind: "yaac",
-          forkedFrom: src.id,
-          title: `${src.record.titleOverride ?? src.record.title ?? "Thread"} (fork)`,
-          model: p.model ?? src.record.model ?? null,
-        },
-        false,
-      );
-      const cutoff = p.atTurn ?? this.lastCompletedTurn(src);
-      const handoff: Item = { id: `fork:${src.id}`, turnId: cutoff ?? "", status: "completed", kind: "handoff", forkKind: "native", forkedFrom: src.id, cutoffTurn: cutoff, startedAt: nowIso(), completedAt: nowIso() };
-      this.append(rt, { type: "itemStarted", item: handoff });
-      this.append(rt, { type: "itemCompleted", item: handoff });
-      return { rt, parts };
+    const src = this.findThread(p.source);
+    if (!src || src.deleted) throw notActed("thread_not_found", `no thread ${String(p.source)} on this target`);
+    let plan;
+    try {
+      plan = this.forkPlan(src, p.instance);
+    } catch (e) {
+      throw new NotActed(e as RpcError);
     }
+    if (plan.kind === "handoff") {
+      throw notActed("capability_missing", "a handoff fork starts with its first message: send it with thread/fork");
+    }
+    const srcInst = this.registry.get(src.record.instance)!;
+    if (p.atTurn && !(srcInst.descriptor.capabilities ?? []).includes("threadForkAtTurn")) {
+      throw notActed("capability_missing", "this provider forks only from the last completed turn");
+    }
+    this.checkModel(plan.dest.descriptor, p.model);
+    const parts = withInput ? this.validateParts(p.input, this.modelImageSupport(plan.dest.descriptor, p.model)) : null;
+    let native: NativeId;
+    try {
+      native = await srcInst.provider!.forkThread!(src.record.native, {
+        atTurn: p.atTurn ?? null,
+        cwd: src.record.cwd,
+        model: p.model ?? null,
+        effort: p.effort ?? null,
+        mode: p.mode ?? null,
+      });
+    } catch (e) {
+      throw rpc("provider_unavailable", `the harness did not fork the thread: ${(e as Error).message}`);
+    }
+    const rt = this.createThread(
+      plan.dest,
+      native,
+      {
+        cwd: src.record.cwd,
+        originKind: "yaac",
+        forkedFrom: src.id,
+        title: `${src.record.titleOverride ?? src.record.title ?? "Thread"} (fork)`,
+        model: p.model ?? src.record.model ?? null,
+      },
+      false,
+    );
+    const cutoff = p.atTurn ?? this.lastCompletedTurn(src);
+    const handoff: Item = { id: `fork:${src.id}`, turnId: cutoff ?? "", status: "completed", kind: "handoff", forkKind: "native", forkedFrom: src.id, cutoffTurn: cutoff, startedAt: nowIso(), completedAt: nowIso() };
+    this.append(rt, { type: "itemStarted", item: handoff });
+    this.append(rt, { type: "itemCompleted", item: handoff });
+    return { rt, parts };
+  }
+
+  /**
+   * A handoff fork: the transcript is rendered from the harness's store and written to
+   * `~/.yaac/handoffs/` before anything is sent; the destination conversation is created with
+   * the fixed preamble in front of the user's first message; the new thread journals the
+   * `handoff` item (the frozen transcript) before its first turn.
+   */
+  private async handoffFork(client: ClientLink, p: ThreadForkParams, src: ThreadRuntime, dest: Instance, unavailable: string | null): Promise<ThreadForkResult> {
+    if (unavailable) throw notActed("capability_missing", unavailable);
+    const { provider } = this.registry.usable(dest.config.id);
+    this.checkModel(dest.descriptor, p.model);
+    const parts = this.validateParts(p.input, this.modelImageSupport(dest.descriptor, p.model));
+    // The new thread's attachment folder is keyed by this operation, for its whole life.
+    const uploadsKey = `fork:${p.opId}`;
+    const { cutoff, rendered, readable } = await this.renderHandoff(src, p.atTurn ?? null, uploadsKey);
+    if (!cutoff) throw notActed("invalid_params", "the thread has no completed turn to fork from yet");
+    const file = path.join(this.opts.home, "handoffs", sha256Hex(uploadsKey).slice(0, 24), "transcript.md");
+    ensureDir(path.dirname(file));
+    fs.writeFileSync(file, rendered.markdown, { mode: 0o600 });
+    const where = this.mesh?.whereIs?.(src);
+    const meshTools = (dest.descriptor.capabilities ?? []).includes("meshTools");
+    const input = this.buildInput(uploadsKey, parts, "user");
+    input.text = preamble(file, { target: where?.target ?? "this machine", threadId: src.id, address: where?.address ?? null }, meshTools) + input.text;
+    input.readable = [path.dirname(file), ...readable];
+    const key = dest.config.id;
+    this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
+    let started: { thread: NativeId; turn: TurnId };
+    try {
+      started = await provider.startThread({ cwd: src.record.cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null }, input);
+    } catch (e) {
+      this.finishPendingStart(key);
+      throw rpc("provider_unavailable", `${dest.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
+    }
+    const title = `${this.summaryOf(src).title} (fork)`;
+    const firstText = parts.find((x) => x.type === "text") as { text?: string } | undefined;
+    const rt = this.createThread(
+      dest,
+      started.thread,
+      {
+        cwd: src.record.cwd,
+        originKind: "yaac",
+        forkedFrom: src.id,
+        handoffTranscript: file,
+        title,
+        // The harness titles the conversation from its first message, which starts with the
+        // preamble: YAAC names it after its source instead.
+        titleOverride: title,
+        preview: (firstText?.text ?? "").slice(0, 120),
+        model: p.model ?? null,
+        uploadsKey,
+      },
+      true,
+    );
+    const at = nowIso();
+    const handoff: Item = {
+      id: `fork:${src.id}`,
+      turnId: "",
+      status: "completed",
+      kind: "handoff",
+      forkKind: "handoff",
+      forkedFrom: src.id,
+      cutoffTurn: cutoff,
+      transcript: boundTranscript(rendered.markdown, HANDOFF_ITEM_BYTES, file),
+      transcriptPath: file,
+      startedAt: at,
+      completedAt: at,
+    };
+    this.append(rt, { type: "itemStarted", item: handoff });
+    this.append(rt, { type: "itemCompleted", item: handoff });
+    this.turnBegan(rt, started.turn, "user", parts, { key: client.key, host: client.host });
+    this.finishPendingStart(key);
+    if (typeof provider.rename === "function" && (dest.descriptor.capabilities ?? []).includes("threadRename")) {
+      void provider.rename(started.thread, title).catch((e: Error) => this.opts.log(`naming the fork ${rt.id} failed: ${e.message}`));
+    }
+    return { threadId: rt.id, turnId: started.turn, forkKind: "handoff" as const };
   }
 
   // ── Rename, archive, delete ────────────────────────────────────────────────────────────
@@ -2341,6 +2510,8 @@ export class Core {
     rt.journal?.destroy();
     fs.rmSync(rt.dir, { recursive: true, force: true });
     this.uploads.removeThread(rt.uploadsKey);
+    // A handoff transcript is pinned to its thread: it goes with it.
+    if (rt.record.handoffTranscript) fs.rmSync(path.dirname(rt.record.handoffTranscript), { recursive: true, force: true });
     this.threads.delete(rt.id);
     this.byNative.delete(this.nativeKey(rt.record.instance, rt.record.native));
     if (this.index.remove(rt.id)) this.broadcast("thread/removed", { threadId: rt.id, token: this.index.token });

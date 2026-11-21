@@ -160,6 +160,8 @@ export class FakeProvider implements HarnessProvider {
   private external = new Map<NativeId, ExternalControl>();
   private timers = new Set<NodeJS.Timeout>();
   private disposed = false;
+  /** Conversations deleted here (a shared store must not bring them back). */
+  private removed = new Set<NativeId>();
 
   // ── Test controls ──────────────────────────────────────────────────────────────────────
   /** Every input handed to the harness, in order (tests read secrets back from here). */
@@ -194,11 +196,24 @@ export class FakeProvider implements HarnessProvider {
     this.save();
   }
 
+  /**
+   * Two instances may share one store (`FAKE_STORE`): take in what the other wrote — its
+   * conversations and its id counter — before writing, and on a miss.
+   */
+  private sync(): void {
+    const disk = readJson<StoreFile>(this.storeFile);
+    if (!disk) return;
+    for (const [k, v] of Object.entries(disk.threads ?? {})) if (!this.store.threads[k] && !this.removed.has(k)) this.store.threads[k] = v;
+    this.store.seq = Math.max(this.store.seq, disk.seq ?? 0);
+  }
+
   private save(): void {
+    this.sync();
     writeJsonAtomic(this.storeFile, this.store);
   }
 
   private next(prefix: string): string {
+    this.sync();
     this.store.seq += 1;
     return `${prefix}${this.store.seq}`;
   }
@@ -222,6 +237,7 @@ export class FakeProvider implements HarnessProvider {
   }
 
   private thread(native: NativeId): StoredThread {
+    if (!this.store.threads[native]) this.sync();
     const t = this.store.threads[native];
     if (!t) throw new Error(`fake: no conversation ${native}`);
     return t;
@@ -667,7 +683,7 @@ export class FakeProvider implements HarnessProvider {
       else if (signal.aborted) throw new Aborted();
       this.emit({ type: "itemDelta", thread: native, itemId, field: "output", delta: piece });
     }
-    const done: Item = { ...start, status: "completed", output, exitCode, outputBytes: Buffer.byteLength(output) } as Item;
+    const done: Item = { ...start, status: exitCode === 0 ? "completed" : "failed", output, exitCode, outputBytes: Buffer.byteLength(output) } as Item;
     // The harness's own store keeps the output; a 2 MB string in the fake's JSON store is fine.
     this.record(native, done);
     this.emit({ type: "itemCompleted", thread: native, item: done });
@@ -829,6 +845,7 @@ export class FakeProvider implements HarnessProvider {
 
   async remove(thread: NativeId): Promise<void> {
     delete this.store.threads[thread];
+    this.removed.add(thread);
     this.save();
   }
 

@@ -441,6 +441,73 @@ handoff fork.
 The new thread records `forked_from`. The UI shows the inherited history above a divider
 (`handoff` item), read-only, rendered from that same frozen transcript.
 
+**A handoff is created with its first message** (`thread/fork`), because the destination
+conversation does not exist until the harness is sent one; `thread/forkOnly` (no first message)
+is for native forks only and refuses a handoff (P33). Steps 1 and 2 happen before the destination
+is asked; the operation id makes a resend return the recorded outcome, never a second thread.
+
+#### The transcript
+
+One renderer, shared by every provider, works on the items each provider's `readThread` returns
+(P34):
+
+```markdown
+# Prior conversation
+
+Forked from "Fix frame decoder" (Codex on devbox, thread t_3f…), through turn 2.
+Hidden reasoning and full tool output are not included.
+
+## Turn 1
+
+**User:**
+
+Why does decode() drop the last frame?
+
+- Tool (command): `cargo test -p yaac-protocol` — succeeded (exit 0)
+- Tool (command): `cargo clippy` — failed (exit 1): error: unused variable `n`
+
+**Agent:**
+
+The length prefix counts the kind byte, so the reader stops one byte early.
+```
+
+- User and agent messages are kept in full; agent-mesh messages keep their sender.
+- One line per tool call, with its outcome: *succeeded*, *failed* (with the exit code and the
+  first 160 characters of output on one line), *declined*, or *did not finish*. No other output.
+- Approvals and questions are one line each; reasoning and notices are left out.
+- An attachment still on the target is linked into the new thread's attachment folder and
+  referenced by that path; one that is gone reads `[file omitted: log.txt — no longer on the
+  target]`. Where the harness keeps no file (Claude stores image bytes inline), what `yaacd`
+  journaled for that turn names the attachment.
+
+The file is `~/.yaac/handoffs/<key>/transcript.md` (private to the user), keyed by the fork's
+operation id since the new thread's id is not known yet. Its folder is made readable to the
+harness for the thread's whole life (`ProviderInput.readable`), and is deleted with the thread.
+The `handoff` item carries the same transcript, bounded to 48 KiB — its end, cut at a turn
+heading, with a note naming the file (P35).
+
+#### The preamble
+
+Fixed text, in front of the user's first message (P36):
+
+```text
+[YAAC handoff] This conversation continues an earlier one, held with a different agent.
+The prior conversation is in this file: /home/dev/.yaac/handoffs/3f9a…/transcript.md
+Read it before you answer; it is the history of this conversation. It leaves out hidden reasoning and full tool output.
+The earlier thread is t_3f… on devbox.
+You can read it or message it with the yaac tools (read_thread, send_message; its address is tg_…/t_3f…).
+The user's message follows.
+
+---
+
+<the user's message>
+```
+
+The line about the `yaac` tools is there **only when the new thread is offered them**
+(`MeshTools`). The new thread's own transcript shows the user's message without the preamble;
+only the harness receives it. Because the harness would title the conversation from that first
+message, YAAC names the fork "<source title> (fork)" (P37).
+
 #### Threads created outside YAAC fork the same way
 
 Nothing in a handoff depends on YAAC having seen the conversation happen. The transcript is
@@ -478,6 +545,18 @@ gated on `ThreadForkAtTurn` for native forks and always possible for handoff for
 The fork button sits with the other controls under the composer. It opens the same model picker
 as a new thread — all instances on the target, grouped by provider instance — and labels each
 choice as *native* or *handoff*.
+
+The dialog asks `thread/forkPreview` for each destination chosen. It names the cut-off turn by
+its position ("at the last completed turn (turn 12)"), never by its id.
+
+- **Native:** the result line, what is carried, and **Fork** (Enter). The new thread opens idle;
+  its first message goes with `turn/start`.
+- **Handoff:** additionally the destination account, the transcript size, what is not carried
+  (hidden reasoning, attachments no longer on the target), the preview (open), and a box for the
+  **first message to the new agent**. The button is **Send and fork**: it waits for the preview,
+  needs a message, and is not bound to Enter (P33).
+
+The dialog's body scrolls; its title and buttons always show.
 
 ## Local storage on the host
 

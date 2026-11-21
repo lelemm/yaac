@@ -137,8 +137,19 @@ pub fn header(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Option<H
         if let Some(t) = state.transcripts.get(key) {
             for item in t.items() {
                 if let ItemBody::Handoff(h) = &item.body {
-                    if let Some(turn) = &h.cutoff_turn {
-                        detail = format!("at turn {turn} · ");
+                    // Turn ids are opaque: name the turn by its position in the source, when
+                    // the source's transcript is at hand.
+                    let position = h.cutoff_turn.as_ref().and_then(|turn| {
+                        let mut seen: Vec<&str> = Vec::new();
+                        for it in state.transcripts.get(&k)?.items() {
+                            if !it.turn_id.as_str().is_empty() && !seen.contains(&it.turn_id.as_str()) {
+                                seen.push(it.turn_id.as_str());
+                            }
+                        }
+                        seen.iter().position(|t| *t == turn.as_str()).map(|i| i + 1)
+                    });
+                    if let Some(n) = position {
+                        detail = format!("at turn {n} · ");
                     }
                     detail.push_str(h.fork_kind.as_str());
                     break;

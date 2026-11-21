@@ -61,6 +61,11 @@ export function parseScript(text: string): Script {
         steps.push({ k: "tool", command: command || "echo hello", output: output ?? `ran ${command || "echo hello"}`, exitCode: 0 });
         break;
       }
+      case "tool-fail": {
+        const [command, output] = rest.split("=>").map((s) => s.trim());
+        steps.push({ k: "tool", command: command || "false", output: output ?? "error", exitCode: 1 });
+        break;
+      }
       case "big-output":
         steps.push({ k: "bigOutput", bytes: num(words[0], 2 * 1024 * 1024) });
         break;

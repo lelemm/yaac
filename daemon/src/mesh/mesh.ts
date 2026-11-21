@@ -2228,6 +2228,11 @@ export class Mesh implements CoreMeshHooks {
     this.kick(rt.id);
   }
 
+  /** How the mesh names a thread's machine and the thread (a handoff fork's preamble). */
+  whereIs(rt: ThreadRuntime): { target: string; address: string } {
+    return { target: this.selfName(), address: this.addressOf(rt.id) };
+  }
+
   stateChanged(rt: ThreadRuntime): void {
     const address = this.addressOf(rt.id);
     const state = this.core.summaryOf(rt).state;

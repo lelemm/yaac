@@ -97,6 +97,11 @@ State on disk under `~/.codex/`: `app-server-control/`, `app-server-daemon/`, `s
   `approvalPolicy`, `sandboxPolicy`, `clientUserMessageId`. Per-turn `model` is what makes
   mid-thread model switching direct.
 - `ThreadForkParams`: `threadId`, optional `lastTurnId`, `model`, `modelProvider`, `cwd`.
+  Re-checked 2026-11-20 against CLI 0.170.0 / daemon 0.171.0: `lastTurnId` is inclusive and
+  may not name a turn in progress; also `approvalPolicy`, `sandbox`, `config`, `ephemeral`,
+  `excludeTurns` (return metadata only; use `thread/turns/list`). `ThreadForkResponse`:
+  `thread`, `model`, `modelProvider`, `cwd`, `approvalPolicy`, `sandbox`, `reasoningEffort`.
+  A live Codex→Codex fork with another model kept the conversation.
 - `ThreadListParams`: `cursor`, `limit`, `cwd` filter, `searchTerm`, `archived`, `sortKey`,
   `sourceKinds`.
 - `Thread`: `id`, `sessionId`, `cwd`, `gitInfo`, `name`, `preview`, `model`, `modelProvider`,
@@ -184,6 +189,11 @@ process is still blocked on so they can be re-delivered.
 **Session functions** (no running query needed): `listSessions()`, `getSessionInfo()`,
 `getSessionMessages()`, `forkSession()`, `renameSession()`, `tagSession()`, `archiveSession()`,
 `unarchiveSession()`, `deleteSession()`, `listSubagents()`, `getSubagentMessages()`.
+
+`forkSession(sessionId, { upToMessageId?, title?, dir?, sessionStore? })` → `{ sessionId }`
+(re-checked 2026-11-20, SDK 0.3.329, CLI 2.1.330): `upToMessageId` slices inclusive at that
+message `uuid`, omitted copies everything; the title defaults to the original's plus " (fork)".
+A live Claude→Claude fork kept the conversation.
 
 **Types worth knowing:**
 

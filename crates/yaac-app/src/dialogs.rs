@@ -117,116 +117,135 @@ pub(crate) fn fork(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
             ui.add_space(6.0);
             ui.label(widgets::secondary(t, &p));
         };
-        label(ui, "From");
-        ui.label(&v.from);
-        ui.label(widgets::secondary(&v.at, &p));
-        label(ui, "Continue with");
-        let (inst, model) = v.chosen.clone().unwrap_or_default();
-        let r = widgets::selector_pair(ui, &p, &inst, &model, true);
-        if r.clicked() {
-            app.ui.toggle_menu(Menu::ForkDest);
-        }
-        let mut open = app.ui.menu == Some(Menu::ForkDest);
-        let mut picked: Option<ForkChoice> = None;
-        crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
-            ui.set_min_width(300.0);
-            for dest in &v.destinations {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&dest.name).font(theme::bold(size::UI)));
-                    ui.label(widgets::secondary(if dest.native { "native" } else { "handoff" }, &p));
-                });
-                if let Some(reason) = &dest.reason {
-                    widgets::unavailable(ui, &p, &dest.name, reason);
-                    continue;
-                }
-                for (id, name, default) in &dest.models {
-                    let sel = d.choice.instance == dest.instance && d.choice.model.as_ref().map_or(*default, |m| m == id);
-                    let text = if *default { format!("{name}   default") } else { name.clone() };
-                    if ui.selectable_label(sel, text).clicked() {
-                        picked = Some(ForkChoice { instance: dest.instance.clone(), model: Some(id.clone()) });
-                    }
-                }
-                ui.add_space(4.0);
+        // The body scrolls; the title and the buttons always show (a handoff's preview and
+        // first message make it taller than a small window).
+        let body_max = (ctx.content_rect().height() - 200.0).max(200.0);
+        egui::ScrollArea::vertical().max_height(body_max).auto_shrink([false, true]).show(ui, |ui| {
+            label(ui, "From");
+            ui.label(&v.from);
+            ui.label(widgets::secondary(&v.at, &p));
+            label(ui, "Continue with");
+            let (inst, model) = v.chosen.clone().unwrap_or_default();
+            let r = widgets::selector_pair(ui, &p, &inst, &model, true);
+            if r.clicked() {
+                app.ui.toggle_menu(Menu::ForkDest);
             }
-        });
-        if !open && app.ui.menu == Some(Menu::ForkDest) {
-            app.ui.menu = None;
-        }
-        if let Some(c) = picked {
-            app.client.fork_preview(&d.key, &c.instance);
-            d.choice = c;
-        }
-        if let Some(l) = &v.instance_line {
-            ui.label(widgets::secondary(l, &p));
-        }
-        ui.add_space(12.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.label(RichText::new(&v.result_word).font(theme::bold(size::UI)));
-            ui.label(&v.result_text);
-        });
-        if let Some(r) = &v.reason {
-            ui.label(widgets::secondary(r, &p));
-        }
-        ui.add_space(10.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label(widgets::secondary("Carried over:", &p));
-            ui.label(&v.carried);
-        });
-        if let Some(n) = &v.not_carried {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(widgets::secondary("Not carried over:", &p));
-                ui.label(n);
+            let mut open = app.ui.menu == Some(Menu::ForkDest);
+            let mut picked: Option<ForkChoice> = None;
+            crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+                ui.set_min_width(300.0);
+                for dest in &v.destinations {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&dest.name).font(theme::bold(size::UI)));
+                        ui.label(widgets::secondary(if dest.native { "native" } else { "handoff" }, &p));
+                    });
+                    if let Some(reason) = &dest.reason {
+                        widgets::unavailable(ui, &p, &dest.name, reason);
+                        continue;
+                    }
+                    for (id, name, default) in &dest.models {
+                        let sel = d.choice.instance == dest.instance && d.choice.model.as_ref().map_or(*default, |m| m == id);
+                        let text = if *default { format!("{name}   default") } else { name.clone() };
+                        if ui.selectable_label(sel, text).clicked() {
+                            picked = Some(ForkChoice { instance: dest.instance.clone(), model: Some(id.clone()) });
+                        }
+                    }
+                    ui.add_space(4.0);
+                }
             });
-        }
-        if let Some(n) = &v.notice {
+            if !open && app.ui.menu == Some(Menu::ForkDest) {
+                app.ui.menu = None;
+            }
+            if let Some(c) = picked {
+                app.client.fork_preview(&d.key, &c.instance);
+                d.choice = c;
+            }
+            if let Some(l) = &v.instance_line {
+                ui.label(widgets::secondary(l, &p));
+            }
+            ui.add_space(12.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(RichText::new(&v.result_word).font(theme::bold(size::UI)));
+                ui.label(&v.result_text);
+            });
+            if let Some(r) = &v.reason {
+                ui.label(widgets::secondary(r, &p));
+            }
             ui.add_space(10.0);
-            egui::Frame::NONE.fill(p.faint).corner_radius(5).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    widgets::icon(ui, 15.0, |pa, c, dd| icons::info(pa, c, dd, p.text2));
+            ui.horizontal_wrapped(|ui| {
+                ui.label(widgets::secondary("Carried over:", &p));
+                ui.label(&v.carried);
+            });
+            if let Some(s) = &v.size {
+                ui.label(widgets::secondary(s, &p));
+            }
+            if let Some(n) = &v.not_carried {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(widgets::secondary("Not carried over:", &p));
                     ui.label(n);
                 });
-            });
-        }
-        if v.preview.is_some() || v.preview_loading {
-            ui.add_space(10.0);
-            let r = ui.horizontal(|ui| {
-                widgets::icon(ui, 12.0, |pa, c, dd| icons::chevron(pa, c, dd, d.preview_open, p.text2));
-                widgets::link(ui, &p, "Preview transcript", theme::ui(size::UI))
-            });
-            if r.inner.clicked() {
-                d.preview_open = !d.preview_open;
             }
-            if d.preview_open {
-                egui::Frame::NONE.fill(p.faint).corner_radius(5).inner_margin(Margin::same(10)).show(ui, |ui| {
+            if let Some(n) = &v.notice {
+                ui.add_space(10.0);
+                egui::Frame::NONE.fill(p.faint).corner_radius(5).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| match &v.preview {
-                        Some(t) => {
-                            ui.label(RichText::new(t).font(theme::mono(size::SMALL)).color(p.text2));
-                        }
-                        None => {
-                            ui.label(widgets::secondary("Reading the transcript…", &p));
-                        }
+                    ui.horizontal(|ui| {
+                        widgets::icon(ui, 15.0, |pa, c, dd| icons::info(pa, c, dd, p.text2));
+                        ui.label(n);
                     });
                 });
             }
-        }
-        if let Some(u) = &v.unavailable {
-            ui.add_space(8.0);
-            ui.label(RichText::new(u).color(p.failed));
-        }
-        ui.add_space(14.0);
-        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter)) && app.ui.menu.is_none();
-        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape)) && app.ui.menu.is_none();
-        ui.horizontal(|ui| {
-            if v.unavailable.is_none() {
-                if widgets::primary(ui, &p, "Fork", Some("Enter")).clicked() || enter {
-                    actions.push(Action::Fork(d.key.clone(), d.choice.clone()));
-                    keep = false;
+            if v.preview.is_some() || v.preview_loading {
+                ui.add_space(10.0);
+                let r = ui.horizontal(|ui| {
+                    widgets::icon(ui, 12.0, |pa, c, dd| icons::chevron(pa, c, dd, d.preview_open, p.text2));
+                    widgets::link(ui, &p, "Preview transcript", theme::ui(size::UI))
+                });
+                if r.inner.clicked() {
+                    d.preview_open = !d.preview_open;
                 }
-            } else {
-                widgets::unavailable(ui, &p, "Fork", "");
+                if d.preview_open {
+                    egui::Frame::NONE.fill(p.faint).corner_radius(5).inner_margin(Margin::same(10)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| match &v.preview {
+                            Some(t) => {
+                                ui.label(RichText::new(t).font(theme::mono(size::SMALL)).color(p.text2));
+                            }
+                            None => {
+                                ui.label(widgets::secondary("Reading the transcript…", &p));
+                            }
+                        });
+                    });
+                }
+            }
+            if let Some(u) = &v.unavailable {
+                ui.add_space(8.0);
+                ui.label(RichText::new(u).color(p.failed));
+            }
+            if v.handoff && v.unavailable.is_none() {
+                // A handoff creates the new conversation with its first message: it is written
+                // here, and sent after the preamble that points the agent at the transcript.
+                label(ui, "First message to the new agent");
+                ui.add(egui::TextEdit::multiline(&mut d.message).desired_rows(3).desired_width(f32::INFINITY).hint_text("What should it do next?"));
+            }
+        });
+        ui.add_space(14.0);
+        // Enter confirms a native fork; a handoff is confirmed only with the button.
+        let enter = !v.handoff && ui.input(|i| i.key_pressed(egui::Key::Enter)) && app.ui.menu.is_none();
+        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape)) && app.ui.menu.is_none();
+        let empty = v.handoff && d.message.trim().is_empty();
+        ui.horizontal(|ui| {
+            if v.unavailable.is_some() {
+                widgets::unavailable(ui, &p, &v.confirm, "");
+            } else if v.confirm_waits {
+                widgets::unavailable(ui, &p, &v.confirm, "reading the transcript…");
+            } else if empty {
+                widgets::unavailable(ui, &p, &v.confirm, "write the first message");
+            } else if widgets::primary(ui, &p, &v.confirm, (!v.handoff).then_some("Enter")).clicked() || enter {
+                let message = v.handoff.then(|| d.message.clone());
+                actions.push(Action::Fork(d.key.clone(), d.choice.clone(), message));
+                keep = false;
             }
             if widgets::plain(ui, &p, "Cancel", Some("Esc")).clicked() || esc {
                 keep = false;

@@ -68,6 +68,28 @@ pub struct ForkView {
     pub preview_loading: bool,
     /// The fork is not possible, and why (the Fork button is then unavailable).
     pub unavailable: Option<String>,
+    /// A handoff: the conversation crosses as a transcript. The dialog then asks for the new
+    /// thread's first message (the preamble goes in front of it) and an explicit confirmation.
+    pub handoff: bool,
+    /// "Transcript: 9.4 KB" — what a handoff sends, once the preview arrived.
+    pub size: Option<String>,
+    /// The confirm button: "Fork", or "Send and fork" for a handoff.
+    pub confirm: String,
+    /// The confirm button waits for the preview: a handoff is confirmed only after it is shown.
+    pub confirm_waits: bool,
+}
+
+/// "812 bytes", "9.4 KB", "1.2 MB".
+fn size_text(bytes: u64) -> String {
+    #[allow(clippy::cast_precision_loss)]
+    let b = bytes as f64;
+    if bytes < 1024 {
+        plural(usize::try_from(bytes).unwrap_or(usize::MAX), "byte", "bytes")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", b / 1024.0)
+    } else {
+        format!("{:.1} MB", b / (1024.0 * 1024.0))
+    }
 }
 
 /// Native from `source` into `dest`: the source can fork natively and both share one store.
@@ -152,8 +174,10 @@ pub fn view(state: &AppState, key: &ThreadKey, choice: &ForkChoice) -> Option<Fo
         None => matches!((source, dest), (Some(s), Some(d)) if is_native(s, d)),
     };
     let cutoff = preview.and_then(|p| p.cutoff_turn.as_ref()).map(ToString::to_string);
-    let at = match &cutoff {
-        Some(t) => format!("at the last completed turn (turn {t})"),
+    // Turn ids are opaque: the dialog names the turn by its position in the thread.
+    let at = match cutoff.as_ref().and_then(|t| turns.iter().position(|x| *x == t.as_str())) {
+        Some(i) if turns.len() > i + 1 => format!("at the last completed turn (turn {} of {}; the last one is still running)", i + 1, turns.len()),
+        Some(i) => format!("at the last completed turn (turn {})", i + 1),
         None => "at the last completed turn".to_owned(),
     };
     let account = preview.and_then(|p| p.destination_account.clone()).or_else(|| dest.and_then(|d| d.store.account.clone()));
@@ -234,5 +258,9 @@ pub fn view(state: &AppState, key: &ThreadKey, choice: &ForkChoice) -> Option<Fo
         preview: preview.and_then(|p| p.transcript_preview.clone()),
         preview_loading: matches!(preview_state, None | Some(ForkPreviewState::Loading)),
         unavailable,
+        handoff: !native,
+        size: preview.and_then(|p| p.transcript_bytes).filter(|_| !native).map(|b| format!("Transcript: {}", size_text(b))),
+        confirm: if native { "Fork" } else { "Send and fork" }.to_owned(),
+        confirm_waits: !native && preview.is_none(),
     })
 }

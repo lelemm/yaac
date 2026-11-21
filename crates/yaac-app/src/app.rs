@@ -69,6 +69,8 @@ pub(crate) struct ForkDialog {
     pub key: ThreadKey,
     pub choice: ForkChoice,
     pub preview_open: bool,
+    /// A handoff's first message, typed in the dialog.
+    pub message: String,
 }
 
 /// View state that is not application state.
@@ -290,7 +292,8 @@ pub(crate) enum Action {
     CheckLatest(ThreadKey),
     ContinueBudget(Address),
     OpenFork(ThreadKey),
-    Fork(ThreadKey, ForkChoice),
+    /// Fork; a handoff carries its first message.
+    Fork(ThreadKey, ForkChoice, Option<String>),
     SetMuted(ThreadKey, bool),
     /// Mute until a moment (`None`: no end), from the Mute dialog.
     MuteUntil(ThreadKey, Option<i64>),
@@ -761,12 +764,12 @@ impl YaacApp {
                             self.open(&k, None);
                         }
                         self.client.fork_preview(&k, &choice.instance);
-                        self.ui.fork = Some(ForkDialog { key: k, choice, preview_open: false });
+                        self.ui.fork = Some(ForkDialog { key: k, choice, preview_open: true, message: String::new() });
                         self.ui.menu = None;
                     }
                 }
-                Action::Fork(k, c) => {
-                    self.client.fork(&k, &c);
+                Action::Fork(k, c, message) => {
+                    self.client.fork(&k, &c, message.as_deref());
                     self.ui.fork = None;
                 }
                 Action::SetMuted(k, m) => self.client.set_muted(&k, m),
