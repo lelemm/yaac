@@ -186,12 +186,16 @@ serving `yaacd` is older is shown as older (D135) and moves to the new build by 
 [one serving daemon per user](02-architecture.md#one-serving-daemon-per-user): when nothing
 is serving, stage 0 starts the newest installed build.
 
-**Not built yet:** the hub never asks an older serving daemon to hand over
-(`daemon/handover` is in the protocol and the daemon, but no hub code sends it), and the
-thread banner's **Update now** button does nothing. Until it does, an older daemon is replaced
-only when it exits by itself — idle, with no host attached, for its idle period — which a hub
-that stays connected prevents. `yaacd-mcp.mjs` is not installed on targets either: the daemon
-falls back to `yaacd mcp` from its own bundle when the small bridge is not beside it.
+The hub then moves the target over: when the serving `yaacd` has a lower build number than
+the bundle it just installed, it asks it to hand over when idle (`daemon/handover`), sees the
+stream end, reconnects over the same single path, and stage 0 starts the newest installed
+build. **Update now** on the thread banner does the same at once, interrupting running turns
+(asking first when there are any). A pair of builds is asked at most once; if the old build
+comes back, the target's row in Components says so instead of asking again
+([how the hub does it](02-architecture.md#one-serving-daemon-per-user), P91–P93).
+
+`yaacd-mcp.mjs` is not installed on targets: the daemon falls back to `yaacd mcp` from its
+own bundle when the small bridge is not beside it.
 
 ## Testing the installer without touching the real profile
 

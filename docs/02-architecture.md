@@ -387,8 +387,8 @@ host → target   GET runtime <name> <url> <sha256>             # target downloa
           or    PUT runtime <name> <byte-count> <sha256>      # … or receives exactly that many bytes (if GET failed)
 target → host   OK runtime | ERR <reason>
 host → target   PUT daemon <build> <byte-count> <sha256>      # only if missing
-host → target   RUN node <build>
-target          exec the bridge of the build that is serving — or, if none is, of the newest installed:
+host → target   RUN node <build>                              # the installed build with the highest build number
+target          exec that build's bridge, which attaches to the daemon that is serving or starts itself:
                 ~/.yaac/runtime/<version>/<bin> ~/.yaac/daemon/<build>/yaacd.mjs connect
                 ── from this byte on, the stream is the YAAC protocol ──
 ```
@@ -478,6 +478,47 @@ and will be updated once idle, and offers a button to update it immediately.
   exits; the next connection starts the new one, which migrates the on-disk state forward.
 - **"Update now"** interrupts running turns — marked as interrupted by an update — and hands
   over at once.
+
+**How the hub does it** (*Proposed*, P91–P93). The hub is the UI side here: it owns the
+connections (invariant #14).
+
+- **Which build is newer.** Each target's connector names the build it installs and starts
+  (`Connector::daemon_build`): for WSL and SSH, the hub's embedded bundle, whose install
+  folder is `<version>+<id>-<sha16>` (the build id is in the folder name since P92); for the
+  local target, only a build the configuration declares. The hub hands over only to a
+  **strictly higher build number** than the serving daemon's. No bundle, a development build
+  on either side, or the same or an older build: no hand-over, and no **Update now**
+  (`DaemonSummary.canUpdate` is false).
+- **"Newest" in stage 0.** The host chooses what `RUN` starts: of the installed builds, the
+  one with the highest build number (its own on a tie); its `yaacd connect` attaches to
+  whatever serves, or starts itself when nothing does. A development bundle runs itself, as
+  before build numbers. So an older YAAC never starts an older daemon over a newer one.
+- **At idle.** When a target connects and its daemon can be updated, the hub sends
+  `daemon/handover { when: "idle" }` once. The daemon exits as soon as it has no running turn
+  and no pending request (a pending approval or question holds it, and stays pending); it
+  flushes its journals and marks its state clean first. The hub sees the stream end and
+  reconnects through its normal path — the same one connection, never a side channel
+  (invariant #1) — and stage 0 starts the newest build, which migrates the state. A starting
+  `yaacd` waits (at most 8 s) for the process named in `run/yaacd.pid` to exit, so the new
+  daemon never opens state the old one is still writing.
+- **The loop guard** (invariant #10). The hub remembers, per target, the pair of builds it
+  asked for. It asks a pair at most once per hub run. If after the reconnect the same older
+  build serves again (the new build did not start, or the connector started the old one), or
+  the daemon refused, it stops: the update shows as **stuck** with the reason, in the banner,
+  in Components, and in the target's connection log; it is not asked again. A different
+  build serving clears it. The memory is the hub's, in memory only: a restarted hub may ask
+  once more. **Update now** stays available, since it is the user's own action.
+- **Update now** is `hub/targets/updateDaemon`, sent as `daemon/handover { when: "now" }`.
+  It asks first only when turns are in progress on that target, with how many: "*N* turns
+  are in progress on devbox. Updating now interrupts them…". Each interrupted turn is marked
+  *interrupted because yaacd was updated*; requests waiting in those turns end as expired
+  (journaled, visible); a mesh permission prompt is yaacd's own and survives. The window
+  shows the answer only through the target's state; a lost answer is reported, never re-sent.
+- **What the window shows.** The hub keeps the update in the target's state
+  (`ConnectionState.update`: `waiting`, `updating`, `stuck`) across the reconnect: the
+  banner says *"devbox is running an older YAAC daemon (…). It will be updated when idle."*
+  with **Update now**, then *"Updating yaacd on devbox…"*; Settings → Advanced → Components
+  shows *updating to …* or the stuck reason, and the new build once it serves.
 - Three things are versioned separately and all visible in diagnostics: the **protocol
   version** (what is spoken on the wire, negotiated in the handshake), the **build** (which
   code is running), and the **state format** (what is on disk).
@@ -507,8 +548,8 @@ installer (`YAAC-Setup-<version>+<id>.exe`, file version `<numeric version>.<id>
   older protocol). The window gathers these answers — window, hub, and `yaacd` on each enabled
   target — into **Settings → About → Components**, and the footer shows "N to update" while
   any is older.
-- Detecting is all this does: updating an older daemon follows the rules above (at idle, or
-  **Update now**). Build ids are build identity, not the protocol version: no protocol
+- Updating an older daemon follows the rules above (at idle, or **Update now**; the hub's
+  side is *How the hub does it*). Build ids are build identity, not the protocol version: no protocol
   behaviour depends on them (CLAUDE.md, invariant 5).
 - Release builds are numbered by CI: id = 1000 + the release workflow's run number; local
   ids stay at or below 999 (P87, [install](install.md#releases)).
