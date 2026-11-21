@@ -119,7 +119,8 @@ requests. They are items in the thread, answered with `request/respond`
 | `thread/forkPreview` | What a fork to a given destination would carry: mechanism, turn it cuts at, sizes, what is left out, and the destination account. Changes nothing. |
 | `thread/subscribe` · `unsubscribe` · `ack` | Start or stop live events for a thread, and report how far the client has durably got ([journal and replay](#journal-and-replay)). |
 | `thread/fork` | Create a new thread from an existing one, on any instance and model ([05 Threads](05-threads.md#fork)). |
-| `thread/rename` · `archive` · `delete` | Gated by capability. |
+| `thread/rename` · `archive` | Gated by capability. |
+| `thread/delete` | `{ opId, threadId, alsoInHarness }` (D110). Always removes YAAC's record and journal; `alsoInHarness: true` (only under `threadDelete`) first deletes the harness's session too, and nothing is removed if that fails. Absent means `false`. Without it, discovery leaves the session out until it is looked up by id. Followed by `thread/removed`. |
 | → `thread/updated` · `thread/removed` | Index changes pushed while connected, including for threads created outside YAAC. |
 
 ### Turns

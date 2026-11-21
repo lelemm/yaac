@@ -175,7 +175,7 @@ pub enum Capability {
     ThreadForkAtTurn,    // native fork from a chosen point, not only the end
     ThreadRename,
     ThreadArchive,
-    ThreadDelete,
+    ThreadDelete,        // the harness can delete its own sessions (`thread/delete { alsoInHarness }`, D110)
     FollowExternal,      // can show live updates of a thread someone else is driving
 
     // ── Turn control ────────────────────────────────────────────────────────
@@ -385,7 +385,7 @@ Facts that shape the adapter:
 | questions | `item/tool/requestUserInput` → `UserQuestions`; `mcpServer/elicitation/request` → `UserForms` |
 | plan, diff, usage | `turn/plan/updated`, `turn/diff/updated`, `thread/tokenUsage/updated`, `account/rateLimits/read` |
 | images | input part `localImage { path }`; per-model `inputModalities` |
-| rename / archive / delete | `thread/name/set`, `thread/archive`, `thread/delete` |
+| rename / archive / delete | `thread/name/set`, `thread/archive`, `thread/delete` (`{ threadId }` → `{}`, and a `thread/deleted { threadId }` notification — verified against `codex app-server generate-ts` of codex-cli 0.170.0, 2026-11-20) |
 
 This backend supports essentially the whole capability list.
 
@@ -426,7 +426,7 @@ One `query()` in streaming-input mode per active thread; the SDK runs the Claude
 | images | image content blocks in the user message (`yaacd` reads the uploaded file) |
 | attachments readable | the upload store is passed in `additionalDirectories` |
 | in use elsewhere | `claude agents --json` lists live sessions with their session ids |
-| rename / archive / delete | `renameSession()`, `archiveSession()`, `deleteSession()` |
+| rename / archive / delete | `renameSession()`, `archiveSession()`, `deleteSession(sessionId, { dir? })` (verified in the installed Agent SDK 0.3.329) |
 | usage | result messages, `getContextUsage()` |
 
 Notes:

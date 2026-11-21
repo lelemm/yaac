@@ -307,3 +307,19 @@ fn malformed_envelopes_are_errors_not_panics() {
         assert!(Message::from_json(bad).is_err(), "{}", String::from_utf8_lossy(bad));
     }
 }
+
+/// D110: `thread/delete` carries whether the harness's session goes too; an older host that
+/// does not send it means YAAC's record only.
+#[test]
+fn thread_delete_carries_also_in_harness_and_defaults_to_the_record_only() {
+    use yaac_protocol::types::ThreadDeleteParams;
+    let p: ThreadDeleteParams = serde_json::from_value(serde_json::json!({ "opId": "op-1", "threadId": "t1", "alsoInHarness": true })).unwrap();
+    assert!(p.also_in_harness);
+    let back = serde_json::to_value(&p).unwrap();
+    assert_eq!(back, serde_json::json!({ "opId": "op-1", "threadId": "t1", "alsoInHarness": true }));
+    assert_eq!(serde_json::from_value::<ThreadDeleteParams>(back).unwrap(), p);
+    let old: ThreadDeleteParams = serde_json::from_value(serde_json::json!({ "opId": "op-2", "threadId": "t2" })).unwrap();
+    assert!(!old.also_in_harness);
+    // The bool is always written (no skip): a reader never has to guess.
+    assert_eq!(serde_json::to_value(&old).unwrap()["alsoInHarness"], false);
+}

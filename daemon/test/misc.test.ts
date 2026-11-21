@@ -157,6 +157,45 @@ test("native fork, fork preview, rename, archive, delete", async () => {
   await daemon.stop("test");
 });
 
+test("delete (D110): YAAC's record always; the harness's session only when asked", async () => {
+  const home = tmpHome();
+  const daemon = await startDaemon(home);
+  const c = await client(daemon);
+  const fake = fakeOf(daemon);
+  const a = await startThread(c, "/fake say one");
+  const b = await startThread(c, "/fake say two");
+  await c.request("thread/subscribe", { threadId: a.threadId, epoch: 1, afterSeq: 0 });
+  await c.request("thread/subscribe", { threadId: b.threadId, epoch: 1, afterSeq: 0 });
+  await waitTurnDone(c, a.threadId, a.turnId);
+  await waitTurnDone(c, b.threadId, b.turnId);
+  const nativeA = daemon.core.thread(a.threadId)!.record.native;
+  const nativeB = daemon.core.thread(b.threadId)!.record.native;
+  // Also in the harness: the session is gone there too.
+  await c.request("thread/delete", { opId: opId(), threadId: a.threadId, alsoInHarness: true });
+  await until(() => c.notifications.find((n) => n.method === "thread/removed" && n.params.threadId === a.threadId), "a removed");
+  assert.ok(!fake.nativeIds().includes(nativeA), "the harness deleted its session");
+  // YAAC's record only: the harness keeps it, and a rescan does not bring it back.
+  await c.request("thread/delete", { opId: opId(), threadId: b.threadId, alsoInHarness: false });
+  await until(() => c.notifications.find((n) => n.method === "thread/removed" && n.params.threadId === b.threadId), "b removed");
+  assert.ok(fake.nativeIds().includes(nativeB), "the harness keeps its session");
+  assert.equal(daemon.core.thread(b.threadId), undefined);
+  await daemon.core.scanAll();
+  const sync: any = await c.request("thread/sync", {});
+  assert.ok(!sync.changed.some((s: any) => s.nativeId === nativeB), "not rediscovered");
+  // The same operation id again is answered from the log, never acted twice.
+  const op = opId();
+  const x = await startThread(c, "/fake say three");
+  await c.request("thread/subscribe", { threadId: x.threadId, epoch: 1, afterSeq: 0 });
+  await waitTurnDone(c, x.threadId, x.turnId);
+  await c.request("thread/delete", { opId: op, threadId: x.threadId });
+  assert.deepEqual(await c.request("thread/delete", { opId: op, threadId: x.threadId }), {});
+  // Asked by its own id, it is wanted again.
+  const found: any = await c.request("thread/lookup", { id: nativeB });
+  assert.equal(found.threads.length, 1);
+  await c.close();
+  await daemon.stop("test");
+});
+
 test("input validation: models from the live list, images only where the model can see them", async () => {
   const home = tmpHome();
   const daemon = await startDaemon(home);

@@ -3322,9 +3322,16 @@ export interface ThreadArchiveParams {
 }
 
 /**
- * `thread/delete` (under `threadDelete`).
+ * `thread/delete` (D110): `yaacd` always removes its own record of the thread and its
+ * journal; with `alsoInHarness` (offered only under `threadDelete`) it first asks the
+ * provider to delete its own session too.
  */
 export interface ThreadDeleteParams {
+  /**
+   * Also delete the session in the harness (under `threadDelete`). Absent: `false` — only
+   * YAAC's record goes, the harness keeps its session.
+   */
+  alsoInHarness?: boolean;
   /**
    * Operation id.
    */

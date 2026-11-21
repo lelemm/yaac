@@ -232,6 +232,9 @@ export class Core {
   private olderMemo = new Map<string, { instance: string; info: NativeThreadInfo }>();
   private caps: DiscoveryCaps;
   private readonly capsFile: string;
+  /** Harness sessions the user deleted from YAAC only (D110): discovery leaves them out. */
+  private readonly forgottenFile: string;
+  private forgotten: Set<string>;
   /** Threads the host keeps (`thread/keep`): never cut by the discovery caps. */
   private kept = new Set<string>();
   private readonly keepFile: string;
@@ -258,6 +261,12 @@ export class Core {
       stored = undefined;
     }
     this.caps = { ...DEFAULT_CAPS, ...(stored ?? {}) };
+    this.forgottenFile = path.join(opts.home, "forgotten.json");
+    try {
+      this.forgotten = new Set(readJson<{ natives?: string[] }>(this.forgottenFile)?.natives ?? []);
+    } catch {
+      this.forgotten = new Set();
+    }
     this.keepFile = path.join(opts.home, "keep.json");
     try {
       this.kept = new Set(readJson<{ threadIds?: string[] }>(this.keepFile)?.threadIds ?? []);
@@ -401,6 +410,7 @@ export class Core {
       .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
     const within = new Set((numCap ? candidates.slice(0, numCap) : candidates).map((i) => i.native));
     for (const info of seen) {
+      if (this.isForgotten(id, info.native)) continue;
       if (keptNow(info) || within.has(info.native)) {
         const rt = this.discovered(instance, info, false);
         if (rt.record.capped) this.setCapped(rt, false);
@@ -541,6 +551,7 @@ export class Core {
         this.opts.log(`lookup in ${inst.config.id} failed: ${(e as Error).message}`);
       }
       if (!info) continue;
+      this.remember(inst.config.id, info.native);
       const rt = this.discovered(inst, info, true);
       this.bringIn(rt);
       out.push(rt);
@@ -2270,18 +2281,38 @@ export class Core {
     });
   }
 
-  async threadDelete(client: ClientLink, p: { opId: string; threadId: string }): Promise<void> {
+  /**
+   * `thread/delete` (D110). YAAC's own record and journal always go. With `alsoInHarness`
+   * (under `threadDelete`) the harness is asked to delete its session first; if that fails
+   * nothing is removed. Without it the harness keeps the session, and discovery leaves it
+   * out from then on (an explicit `thread/lookup` by id brings it back).
+   */
+  async threadDelete(client: ClientLink, p: { opId: string; threadId: string; alsoInHarness?: boolean }): Promise<void> {
     await this.ops.run("thread/delete", p.opId, async () => {
       const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)}`);
       await this.refreshExternal(rt);
       this.checkWriter(rt, client, true);
       if (rt.activeTurn) throw notActed("turn_in_progress", "stop the running turn before deleting the thread");
-      const provider = await this.gated(rt, "threadDelete", "remove");
-      await provider.remove!(rt.record.native);
+      if (p.alsoInHarness === true) {
+        const provider = await this.gated(rt, "threadDelete", "remove");
+        await provider.remove!(rt.record.native);
+      } else {
+        this.forgotten.add(this.nativeKey(rt.record.instance, rt.record.native));
+        writeJsonAtomic(this.forgottenFile, { natives: [...this.forgotten] });
+      }
       this.forget(rt);
       return {};
     });
+  }
+
+  private isForgotten(instanceId: string, native: string): boolean {
+    return this.forgotten.has(this.nativeKey(instanceId, native));
+  }
+
+  /** An explicit lookup found a forgotten session: it is wanted again. */
+  private remember(instanceId: string, native: string): void {
+    if (this.forgotten.delete(this.nativeKey(instanceId, native))) writeJsonAtomic(this.forgottenFile, { natives: [...this.forgotten] });
   }
 
   private forget(rt: ThreadRuntime): void {
@@ -2317,6 +2348,7 @@ export class Core {
         this.bufferEvent(instanceId, ev);
         return;
       }
+      if (this.isForgotten(instanceId, ev.info.native) && !this.byNative.has(this.nativeKey(instanceId, ev.info.native))) return;
       this.discovered(instance, ev.info);
       return;
     }
@@ -2333,6 +2365,8 @@ export class Core {
         this.bufferEvent(instanceId, ev);
         return;
       }
+      // A conversation the user deleted from YAAC only stays out.
+      if (this.isForgotten(instanceId, ev.thread)) return;
       // A conversation yaacd has not seen: someone else started it.
       rt = this.discovered(instance, { native: ev.thread, cwd: this.opts.home, createdAt: nowIso(), updatedAt: nowIso(), originKind: "interactive" });
     }

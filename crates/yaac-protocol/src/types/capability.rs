@@ -24,7 +24,8 @@ open_enum! {
         ThreadRename = "threadRename",
         /// Can archive a thread.
         ThreadArchive = "threadArchive",
-        /// Can delete a thread.
+        /// The harness can delete its own sessions: `thread/delete` may be asked to delete the
+        /// session there too (`alsoInHarness`, D110). Without it YAAC removes only its record.
         ThreadDelete = "threadDelete",
         /// Can show live updates of a thread someone else is driving.
         FollowExternal = "followExternal",

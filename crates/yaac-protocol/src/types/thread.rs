@@ -620,7 +620,9 @@ pub struct ThreadUpdateResult {
     pub thread: ThreadSummary,
 }
 
-/// `thread/delete` (under `threadDelete`).
+/// `thread/delete` (D110): `yaacd` always removes its own record of the thread and its
+/// journal; with `alsoInHarness` (offered only under `threadDelete`) it first asks the
+/// provider to delete its own session too.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDeleteParams {
@@ -628,6 +630,10 @@ pub struct ThreadDeleteParams {
     pub op_id: OpId,
     /// The thread.
     pub thread_id: ThreadId,
+    /// Also delete the session in the harness (under `threadDelete`). Absent: `false` — only
+    /// YAAC's record goes, the harness keeps its session.
+    #[serde(default)]
+    pub also_in_harness: bool,
 }
 
 // ── turns ─────────────────────────────────────────────────────────────────────────────────
