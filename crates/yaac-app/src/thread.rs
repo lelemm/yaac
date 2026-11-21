@@ -363,8 +363,8 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
                 let bg = ui.interact(rect, ui.scope_id().with(("message-menu", hashes[i])), Sense::click());
                 let has_sel = app.ui.textsel.selection().is_some();
                 let mut copy_sel = false;
-                bg.context_menu(|ui| {
-                    if has_sel && ui.button("Copy").clicked() {
+                crate::widgets::menu_popup(egui::Popup::context_menu(&bg), &p).show(|ui| {
+                    if has_sel && crate::widgets::menu_item(ui, &p, "Copy", Some("Ctrl+C"), crate::widgets::ItemKind::Normal).clicked() {
                         copy_sel = true;
                         ui.close();
                     }

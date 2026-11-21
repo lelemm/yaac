@@ -419,3 +419,78 @@ pub(crate) fn icon_button(ui: &mut Ui, p: &Palette, d: f32, hover: &str, f: impl
     resp
 }
 
+/// The one menu style (every context menu, dropdown and picker): items are full-width rows
+/// with no fill of their own, sitting on the menu's raised surface; hover and keyboard focus
+/// show the row tint of a hovered sidebar row, a press a little stronger; no gaps between
+/// rows; separators are hairlines; a small inner padding and corner radius.
+pub(crate) fn menu_popup<'a>(popup: egui::Popup<'a>, p: &Palette) -> egui::Popup<'a> {
+    let p = *p;
+    popup
+        .style(move |s: &mut egui::Style| {
+            s.spacing.button_padding = egui::vec2(10.0, 5.0);
+            s.spacing.item_spacing = egui::vec2(8.0, 0.0);
+            s.spacing.menu_margin = egui::Margin::same(4);
+            s.spacing.interact_size.y = 26.0;
+            let w = &mut s.visuals.widgets;
+            for v in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+                v.bg_stroke = Stroke::NONE;
+                v.corner_radius = CornerRadius::same(4);
+                v.expansion = 0.0;
+            }
+            w.inactive.weak_bg_fill = Color32::TRANSPARENT;
+            w.hovered.weak_bg_fill = p.faint;
+            w.open.weak_bg_fill = p.faint;
+            w.active.weak_bg_fill = p.selected;
+            w.noninteractive.bg_stroke = Stroke::new(1.0, p.border);
+            s.visuals.window_fill = p.raised;
+        })
+        .layout(egui::Layout::top_down_justified(egui::Align::Min))
+}
+
+/// What kind of menu row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ItemKind {
+    /// An ordinary action.
+    Normal,
+    /// One that destroys or stops something (Delete, Stop…): the failed colour. No menu has
+    /// such an item yet.
+    #[allow(dead_code, reason = "the shared menu style offers it; no menu has a destructive item yet")]
+    Danger,
+    /// Not available now: the unavailable colour, no hover.
+    Disabled,
+}
+
+/// One menu row, with an optional right-aligned shortcut in the secondary colour.
+pub(crate) fn menu_item(ui: &mut Ui, p: &Palette, label: &str, shortcut: Option<&str>, kind: ItemKind) -> Response {
+    let color = match kind {
+        ItemKind::Normal => p.text,
+        ItemKind::Danger => p.failed,
+        ItemKind::Disabled => p.unavailable,
+    };
+    let mut b = egui::Button::new(egui::RichText::new(label).color(color));
+    if let Some(s) = shortcut {
+        b = b.shortcut_text(egui::RichText::new(s).color(p.text2).font(theme::ui(size::SMALL)));
+    }
+    ui.add_enabled(kind != ItemKind::Disabled, b)
+}
+
+/// A full-width menu row the caller draws into (for rows with more than a label): the row
+/// tint on hover or keyboard focus, stronger when pressed, the selection tint when chosen.
+/// Disabled rows do not react.
+pub(crate) fn menu_row(ui: &mut Ui, p: &Palette, selected: bool, enabled: bool) -> (Response, Rect) {
+    let h = ui.spacing().interact_size.y.max(26.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), if enabled { Sense::click() } else { Sense::hover() });
+    let fill = if !enabled {
+        None
+    } else if resp.is_pointer_button_down_on() || selected {
+        Some(p.selected)
+    } else if resp.hovered() || resp.has_focus() {
+        Some(p.faint)
+    } else {
+        None
+    };
+    if let Some(f) = fill {
+        ui.painter().rect_filled(rect, 4.0, f);
+    }
+    (resp, rect)
+}

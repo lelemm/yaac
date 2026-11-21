@@ -1073,3 +1073,15 @@ reflex.*
   "Choose how to send sketch.png" under the text.
 - **40** — files dragged over the window: the thread view dims and shows a quiet faint panel
   with a paper clip and "Drop to attach".
+
+### 41 — A context menu
+
+*One menu style everywhere: context menus, dropdowns, pickers, the history list.*
+
+- A sidebar row's right-click menu: **Pin, Mute…, Archive, Rename, Fork, Copy ID**. The menu
+  is the raised surface with a soft shadow, a small corner radius and a little inner padding.
+  Items are full-width rows with no fill of their own and no gaps; the hovered row
+  (**Mute…**) has the hovered-sidebar-row tint, a pressed one is a little stronger. Disabled
+  items are in the unavailable colour with no hover; destructive items in the failed colour;
+  separators are hairlines; a shortcut, when an item has one, is right-aligned in the
+  secondary colour (the transcript's **Copy  Ctrl+C**).

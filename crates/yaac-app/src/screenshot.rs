@@ -58,6 +58,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("38", "attach-unsupported"),
     ("39", "attach-unknown"),
     ("40", "attach-drop"),
+    ("41", "context-menu"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -442,6 +443,13 @@ fn setup(app: &mut YaacApp, id: &str) {
                 app.files.set_thumb(crate::files::ThumbKey::Path(format!("/home/dev/Pictures/{name}")), Some(crate::files::demo_thumb()));
             }
             app.ui.focus_card = None;
+        }
+        "41" => {
+            // A sidebar row's right-click menu, its second row hovered.
+            app.open(&threads::fix(), None);
+            app.ui.focus_card = None;
+            app.ui.menu = Some(Menu::Context(threads::fix()));
+            app.ui.shot_pointer = Some(egui::pos2(320.0, 590.0));
         }
         "36" => {
             // The sidebar dragged wider.

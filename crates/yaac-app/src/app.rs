@@ -123,6 +123,8 @@ pub(crate) struct UiState {
     pub threads_overlay: bool,
     /// Screenshots only: show the "Drop to attach" target as if files were dragged over.
     pub drop_preview: bool,
+    /// Screenshots only: the pointer rests here (a hovered menu row).
+    pub shot_pointer: Option<egui::Pos2>,
     /// Screenshots only: lay the shell out in this size instead of the window's.
     pub layout_size: Option<egui::Vec2>,
     /// The settings pages' own state.
@@ -185,6 +187,7 @@ impl UiState {
             fork: None,
             threads_overlay: false,
             drop_preview: false,
+            shot_pointer: None,
             layout_size: None,
             set: crate::settings::SettingsUi::default(),
             heights: HashMap::new(),
@@ -1113,6 +1116,9 @@ impl eframe::App for YaacApp {
             }
         }
         raw.events.append(&mut self.files.paste_events);
+        if let Some(at) = self.ui.shot_pointer.filter(|_| self.shots.is_some()) {
+            raw.events.push(egui::Event::PointerMoved(at));
+        }
     }
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {

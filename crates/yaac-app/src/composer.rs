@@ -429,7 +429,7 @@ fn choice_menu<T: Clone + PartialEq>(
         app.ui.toggle_menu(menu.clone());
     }
     let mut open = app.ui.menu.as_ref() == Some(menu);
-    egui::Popup::from_response(&r)
+    crate::widgets::menu_popup(egui::Popup::from_response(&r), &p)
         .kind(egui::PopupKind::Menu)
         .align(egui::RectAlign::TOP_START)
         .open_bool(&mut open)
@@ -471,13 +471,14 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
                 app.ui.toggle_menu(Menu::Model);
             }
             let mut open = app.ui.menu == Some(Menu::Model);
-            egui::Popup::from_response(&r)
+            crate::widgets::menu_popup(egui::Popup::from_response(&r), &p)
                 .kind(egui::PopupKind::Menu)
                 .align(egui::RectAlign::TOP_START)
                 .open_bool(&mut open)
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
                 .show(|ui| {
                     ui.set_min_width(300.0);
+                    ui.set_max_width(360.0);
                     for g in &m.groups {
                         if let Some(reason) = &g.reason {
                             // The whole group is unavailable: its name in the unavailable
@@ -488,25 +489,33 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
                         }
                         ui.label(egui::RichText::new(&g.name).font(theme::bold(size::UI)));
                         for model in &g.models {
-                            ui.horizontal(|ui| {
-                                let mut text = model.name.clone();
-                                if model.is_default {
-                                    text.push_str("   default");
-                                }
-                                let r = ui.add_enabled(model.enabled, egui::Button::selectable(model.selected, text));
-                                if model.image.is_supported() {
-                                    widgets::icon(ui, 14.0, |pa, c, d| icons::image(pa, c, d, p.text2));
-                                }
-                                if let Some(e) = &model.effort_range {
-                                    ui.label(widgets::secondary(e, &p));
-                                }
-                                if r.clicked() {
-                                    actions.push(match target {
-                                        Target::Thread(k) => Action::SetModel(k.clone(), model.id.clone()),
-                                        Target::Draft(id) => Action::DraftModel(*id, g.instance.clone(), model.id.clone()),
-                                    });
-                                }
-                            });
+                            // One full-width menu row: the name (and "default"), the image mark,
+                            // and the effort range right-aligned.
+                            let (r, rect) = widgets::menu_row(ui, &p, model.selected, model.enabled);
+                            let ink = if model.enabled { p.text } else { p.unavailable };
+                            let font = theme::ui(size::UI);
+                            let mut x = rect.left() + 10.0;
+                            let g1 = ui.fonts_mut(|f| f.layout_no_wrap(model.name.clone(), font.clone(), ink));
+                            ui.painter().galley(egui::pos2(x, rect.center().y - g1.size().y / 2.0), g1.clone(), ink);
+                            x += g1.size().x + 8.0;
+                            if model.is_default {
+                                let gd = ui.fonts_mut(|f| f.layout_no_wrap("default".to_owned(), theme::ui(size::SMALL), p.text2));
+                                ui.painter().galley(egui::pos2(x, rect.center().y - gd.size().y / 2.0), gd.clone(), p.text2);
+                                x += gd.size().x + 8.0;
+                            }
+                            if model.image.is_supported() {
+                                icons::image(ui.painter(), egui::pos2(x + 7.0, rect.center().y), 14.0, p.text2);
+                            }
+                            if let Some(e) = &model.effort_range {
+                                let ge = ui.fonts_mut(|f| f.layout_no_wrap(e.clone(), theme::ui(size::SMALL), p.text2));
+                                ui.painter().galley(egui::pos2(rect.right() - 10.0 - ge.size().x, rect.center().y - ge.size().y / 2.0), ge, p.text2);
+                            }
+                            if r.clicked() {
+                                actions.push(match target {
+                                    Target::Thread(k) => Action::SetModel(k.clone(), model.id.clone()),
+                                    Target::Draft(id) => Action::DraftModel(*id, g.instance.clone(), model.id.clone()),
+                                });
+                            }
                         }
                         ui.add_space(4.0);
                     }
@@ -584,7 +593,7 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
         let mut open = app.ui.menu == Some(Menu::Project);
         let groups = yaac_core::first_run::project_picker(&app.client.state, d.project.as_deref());
         let mut new_project = false;
-        egui::Popup::from_response(&r).kind(egui::PopupKind::Menu).align(egui::RectAlign::TOP_START).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+        crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).align(egui::RectAlign::TOP_START).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
             ui.set_min_width(280.0);
             for g in &groups {
                 ui.horizontal(|ui| {

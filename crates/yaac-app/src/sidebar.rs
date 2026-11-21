@@ -250,7 +250,7 @@ fn search_field(ui: &mut egui::Ui, app: &mut YaacApp, enabled: bool) {
         app.ui.toggle_menu(Menu::Grouping);
     }
     let mut open = app.ui.menu == Some(Menu::Grouping);
-    egui::Popup::from_response(&resp)
+    crate::widgets::menu_popup(egui::Popup::from_response(&resp), &p)
         .kind(egui::PopupKind::Menu)
         .open_bool(&mut open)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
@@ -288,7 +288,7 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
         }
         let mut open = app.ui.menu == Some(Menu::TempProject(s.id.clone()));
         if open {
-            egui::Popup::from_response(&resp)
+            crate::widgets::menu_popup(egui::Popup::from_response(&resp), &p)
                 .kind(egui::PopupKind::Menu)
                 .open_bool(&mut open)
                 .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
@@ -491,7 +491,7 @@ pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, r
     }
     let mut open = app.ui.menu == Some(Menu::Context(row.key.clone())) && s.kind != SectionKind::NeedsYou;
     if open {
-        egui::Popup::from_response(&resp)
+        crate::widgets::menu_popup(egui::Popup::from_response(&resp), &p)
             .kind(egui::PopupKind::Menu)
             .align(egui::RectAlign::RIGHT_START)
             .open_bool(&mut open)
@@ -549,7 +549,7 @@ pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, r
 
 fn demo_menu(ui: &mut egui::Ui, app: &mut YaacApp, resp: &egui::Response, actions: &mut Vec<Action>) {
     let mut open = app.ui.menu == Some(Menu::Demo);
-    egui::Popup::from_response(resp)
+    crate::widgets::menu_popup(egui::Popup::from_response(resp), &app.p)
         .kind(egui::PopupKind::Menu)
         .align(egui::RectAlign::TOP_START)
         .open_bool(&mut open)

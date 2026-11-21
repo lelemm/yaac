@@ -128,7 +128,7 @@ pub(crate) fn fork(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
         }
         let mut open = app.ui.menu == Some(Menu::ForkDest);
         let mut picked: Option<ForkChoice> = None;
-        egui::Popup::from_response(&r).kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+        crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
             ui.set_min_width(300.0);
             for dest in &v.destinations {
                 ui.horizontal(|ui| {
@@ -275,7 +275,7 @@ pub(crate) fn mute(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
             }
             // A selector (a word and a chevron), not a boxed combo.
             let sel = widgets::selector(ui, &p, d.unit.label(), true);
-            egui::Popup::menu(&sel).show(|ui| {
+            crate::widgets::menu_popup(egui::Popup::menu(&sel), &p).show(|ui| {
                 for u in DurationUnit::ALL {
                     if ui.selectable_label(u == d.unit, u.label()).clicked() {
                         d.unit = u;

@@ -805,7 +805,7 @@ fn providers(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         }
         let mut open = app.ui.menu == Some(Menu::SettingsTarget);
         let names: Vec<(TargetId, String)> = app.client.state.targets.iter().map(|t| (t.entry.id.clone(), t.entry.name.to_string())).collect();
-        egui::Popup::from_response(&r).kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+        crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
             ui.set_min_width(160.0);
             for (id, n) in &names {
                 if ui.selectable_label(id == &target, n).clicked() {
@@ -838,7 +838,7 @@ fn providers(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         }
         let mut open = app.ui.menu == Some(Menu::InstanceKind);
         let kinds: Vec<_> = v.kinds.iter().map(|k| (k.clone(), kind_label(&app.client.state, k))).collect();
-        egui::Popup::from_response(&r).kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+        crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
             for (k, l) in &kinds {
                 if ui.selectable_label(app.ui.set.add_kind.as_ref() == Some(k), l).clicked() {
                     app.ui.set.add_kind = Some(k.clone());
