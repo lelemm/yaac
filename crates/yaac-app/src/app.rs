@@ -1025,7 +1025,12 @@ impl YaacApp {
                     }
                     (_, Clip::Text(text)) => self.files.paste_events.push(egui::Event::Paste(text)),
                     (_, Clip::Refused(why)) => self.files.notice = Some(why),
-                    _ => {}
+                    // The worker could not read the clipboard (a Wayland compositor without
+                    // the data-control protocol and no XWayland): egui's own paste, which
+                    // reads text through the window's connection, still works.
+                    (_, Clip::Nothing) => self.ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste),
+                    // Files and bitmaps are read only for a composer.
+                    (None, Clip::Files(_) | Clip::Image(_)) => {}
                 },
                 Outcome::Encoded(enc) => self.attach_encoded(enc),
                 Outcome::Thumb(k, img) => self.files.set_thumb(k, img),
@@ -1315,17 +1320,19 @@ mod tests {
         let screen = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
         window_frame(&ctx, &mut app, egui::RawInput { screen_rect: screen, ..Default::default() });
         // Hovering shows the drop target; nothing is attached yet.
-        let hover = egui::HoveredFile { path: Some("/tmp/trace.log".into()), mime: String::new() };
+        // An absolute path on this system (the window ignores anything else).
+        let trace = std::env::temp_dir().join("trace.log");
+        let hover = egui::HoveredFile { path: Some(trace.clone()), mime: String::new() };
         window_frame(&ctx, &mut app, egui::RawInput { screen_rect: screen, hovered_files: vec![hover], ..Default::default() });
         let d = DraftRef::Thread(billing);
         assert!(app.client.draft(&d).is_none_or(|x| x.attachments.is_empty()));
         // Dropped (over the transcript): a chip, and its upload asked of the hub at once.
-        let file: egui::DroppedFileHandle = std::sync::Arc::new(Dropped("/tmp/trace.log".into()));
+        let file: egui::DroppedFileHandle = std::sync::Arc::new(Dropped(trace.clone()));
         window_frame(&ctx, &mut app, egui::RawInput { screen_rect: screen, dropped_files: vec![file], ..Default::default() });
         let draft = app.client.draft(&d).expect("a draft");
         assert_eq!(draft.attachments.len(), 1);
         assert_eq!(draft.attachments[0].name, "trace.log");
-        assert!(matches!(draft.attachments[0].source, Some(yaac_core::attachments::Source::Path { ref path }) if path == "/tmp/trace.log"));
+        assert!(matches!(draft.attachments[0].source, Some(yaac_core::attachments::Source::Path { ref path }) if *path == trace.to_string_lossy()));
         // The demo hub answered `hub/upload/start` with a handle: it is running.
         app.pump_demo();
         assert!(matches!(app.client.draft(&d).unwrap().attachments[0].upload, yaac_core::attachments::Upload::Running { .. }));

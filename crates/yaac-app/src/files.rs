@@ -358,4 +358,51 @@ mod tests {
         assert!(decode_thumb(&text.to_string_lossy()).is_none());
         assert!(decode_thumb("/nonexistent/x.png").is_none());
     }
+
+    /// The real clipboard: needs a display, so it runs only with `YAAC_CLIPBOARD_TEST=1`
+    /// (Linux under X11 or Wayland, or the Windows test executable). With
+    /// `YAAC_CLIPBOARD_EXPECT_FILES=<path>;<path>` it first reads a file list another program
+    /// put there (Explorer, or PowerShell's `Set-Clipboard -Path`).
+    #[test]
+    fn the_real_clipboard_gives_files_then_text_then_a_bitmap() {
+        if std::env::var("YAAC_CLIPBOARD_TEST").as_deref() != Ok("1") {
+            eprintln!("SKIPPED: set YAAC_CLIPBOARD_TEST=1 on a machine with a display");
+            return;
+        }
+        let d = DraftRef::New(1);
+        let t = (2026, 11, 20, 14, 5);
+        if let Ok(expect) = std::env::var("YAAC_CLIPBOARD_EXPECT_FILES") {
+            let want: Vec<String> = expect.split(';').map(str::to_owned).collect();
+            match read_clipboard(Some(&d), t) {
+                Clip::Files(got) => assert_eq!(got, want, "a file list copied by another program"),
+                other => panic!("expected the copied files, got {other:?}"),
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let files: Vec<std::path::PathBuf> = ["error log.txt", "shot.png"].iter().map(|n| dir.path().join(n)).collect();
+        for f in &files {
+            std::fs::write(f, "x").unwrap();
+        }
+        // The clipboard's owner must stay alive while it is read (X11 serves it from here).
+        let mut owner = arboard::Clipboard::new().expect("a clipboard");
+        owner.set().file_list(&files).expect("set a file list");
+        match read_clipboard(Some(&d), t) {
+            Clip::Files(got) => assert_eq!(got, files.iter().map(|f| f.to_string_lossy().into_owned()).collect::<Vec<_>>()),
+            other => panic!("expected files, got {other:?}"),
+        }
+        owner.set_text("plain words").unwrap();
+        assert!(matches!(read_clipboard(Some(&d), t), Clip::Text(ref x) if x == "plain words"));
+        let rgba: Vec<u8> = (0..20 * 10 * 4).map(|i| u8::try_from(i % 256).unwrap_or(0)).collect();
+        owner.set_image(arboard::ImageData { width: 20, height: 10, bytes: rgba.into() }).unwrap();
+        match read_clipboard(Some(&d), t) {
+            Clip::Image(e) => {
+                assert_eq!(e.name, "screenshot-2026-11-20-1405.png");
+                assert_eq!(e.media_type, "image/png");
+                assert!(e.thumb.is_some());
+            }
+            other => panic!("expected an image, got {other:?}"),
+        }
+        // Outside a composer only text is taken.
+        assert!(matches!(read_clipboard(None, t), Clip::Nothing | Clip::Text(_)));
+    }
 }
