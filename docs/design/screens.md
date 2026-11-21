@@ -73,6 +73,7 @@ a per-chat agents toggle with a permission prompt are added.
 | Unavailable-control text | `#8891A0` | `#646E7C` |
 | Primary button fill | `#E6E8EC` | `#1A1D23` |
 | **Selected row fill** (neutral) | `#2A2E37` | `#E6E8EC` |
+| Row in a multi-selection (D138; with a 3 px bar in the primary text colour) | `#30353F` | `#E6E8EC` |
 | Text on the primary button | `#16181D` | `#FFFFFF` |
 | Focus ring | `#C9CED6` | `#3A4050` |
 | Link text | primary text colour, semibold | primary text colour, semibold |
@@ -258,8 +259,8 @@ closer to a mail client's message list than to a file explorer.
 - **A project header shows the name the user gave the project** — "Billing API", not a path.
 - **A temporary project** — a folder that has discovered threads but is not a project yet —
   has its header in *italics*, with a small dashed-circle mark, showing the folder path
-  (`~/projects/abc/123`). Right-clicking that header opens a one-item menu,
-  **Create project…**.
+  (`~/projects/abc/123`). Right-clicking that header opens its menu: **Create project…**,
+  **Dismiss all**, then, like every group header, **Archive all (N)…** and **Mute all…** (D138).
 - **Muted** follows the projects, collapsed to its header — "Muted · 4" — and expands on click.
 - **Archived** is the last section, under *Muted*, also collapsed — "Archived · 12". Archiving
   a thread takes it out of *Pinned* and *Muted*: it is only ever listed here.
@@ -271,6 +272,16 @@ closer to a mail client's message list than to a file explorer.
   (D108). The docked agents panel's rows have the same menu.
 - **Archive…** asks first (D111): "Archive *billing-service*?", one filled **Archive  ⏎** and
   **Cancel  Esc**.
+- **Several rows at once** (D138): Ctrl+click and Shift+click select rows without opening them.
+  A selected row has the multi-selection tint and a short bar in the primary text colour at its
+  left edge — the open thread keeps the plain selected tint and no bar. A quiet bar under the
+  list, on the faint fill, reads "3 selected  **Archive**  **Mute**" with a cross at its right
+  end. Right-clicking a selected row opens the selection's menu; a group header shows three
+  dots at its right end while the pointer is on it, and right-clicking the header or clicking
+  the dots opens **Archive all (N)…** and **Mute all…**. Archive asks once for all and names
+  what it skips and why, on one line with an information mark; after it, anything that failed
+  or whose outcome is unknown is reported once in the same bar, with a warning mark, until
+  closed.
 - **Delete…** asks first (D110): "Delete *billing-service*?", with a checkbox **"Also delete
   the session from Claude"** (the harness's display name), checked by default, shown only when
   the harness can delete its own sessions (the `threadDelete` capability); a line in secondary
@@ -1318,3 +1329,45 @@ the list.*
 - **Components**: Window, Hub, `yaacd` on each enabled target, and *YAAC (latest release)*, each
   with its build and "up to date", "needs updating · …" in the failed colour, or why it is not
   known ("not connected (offline)", "connected; its build is not reported yet").
+
+### 69 — Several rows selected
+
+*Choosing threads for a bulk action without opening them (D138).*
+
+- The default sidebar with **Fix frame decoder** open (the plain selected tint). Three rows were
+  Ctrl+clicked across three groups — **search-service**, **billing-service** and
+  **users-service** — and carry the multi-selection tint with a short bar in the primary text
+  colour at their left edge; each row keeps every mark.
+- Under the list, above *Demo* and Settings, a bar on the faint fill: "3 selected" in the
+  secondary colour, then **Archive** and **Mute** as semibold words, and a cross at the right
+  end (Clear the selection, Esc).
+
+### 70 — The selection's menu
+
+- As 69, with **billing-service** right-clicked: the shared menu style beside the row —
+  **Archive selected (3)…**, **Mute selected (3)…** — hairline — **Clear selection** with
+  **Esc** right-aligned in the secondary colour. (**Unmute selected** appears when any selected
+  thread is muted.) The row keeps its tint while the menu is open.
+
+### 71 — Archiving several asks once
+
+- Five threads chosen; the shell dimmed by the scrim. A dialog "Archive 2 threads?", in
+  secondary text "They move to Archived, and lose their pins and mutes. Unarchive brings each
+  back.", then an information mark and "2 of 5 can be archived; 2 are running; 1 is in use
+  elsewhere." in the primary text colour; a filled **Archive  ⏎** and **Cancel  Esc** (D111).
+  With nothing that can be archived the dialog says "N threads cannot be archived", gives the
+  reasons, and offers only **Close**.
+
+### 72 — A group header's menu
+
+- The **api · devbox** header with its dots (shown while the pointer is on the header, or while
+  its menu is open) on the faint selected tint; below them the shared menu: **Archive all
+  (2)…**, **Mute all…** — over the rows the header lists now. A temporary project's header
+  menu has **Create project…** and **Dismiss all** above them.
+
+### 73 — After a bulk Archive
+
+- The bar under the list, on the faint fill, with a warning mark: "1 could not be archived:
+  Release notes · uncertain: billing-service", wrapped to at most three lines, and a cross that
+  dismisses it. Hovering it lists each thread with its reason ("Release notes: staging is
+  offline"; for an uncertain one, that it may or may not be archived and is not asked again).
