@@ -174,6 +174,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
                     Page::Window => window(ui, app),
                     Page::Keyboard => crate::keyboard::page(ui, app),
                     Page::Advanced => advanced(ui, app, actions),
+                    Page::About => about(ui, app),
                 }
             });
         });
@@ -1162,6 +1163,58 @@ fn advanced(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         }
         ui.label(widgets::secondary("Thread lists and transcripts are read again from each target. Drafts are never touched.", &p));
     });
+    widgets::heading(ui, "Diagnostics");
+    let target = app.ui.set.diag_target.clone().filter(|t| app.client.state.target(t).is_some()).or_else(|| app.client.state.targets.first().map(|t| t.entry.id.clone()));
+    let Some(target) = target else {
+        ui.label(widgets::secondary("No targets.", &p));
+        return;
+    };
+    ui.horizontal_wrapped(|ui| {
+        let names: Vec<(TargetId, String)> = app.client.state.targets.iter().map(|t| (t.entry.id.clone(), t.entry.name.to_string())).collect();
+        for (id, n) in names {
+            let sel = id == target;
+            if ui.selectable_label(sel, n).clicked() {
+                app.ui.set.diag_target = Some(id);
+            }
+        }
+    });
+    ui.add_space(6.0);
+    egui::Grid::new("diag").num_columns(2).spacing(vec2(18.0, 6.0)).show(ui, |ui| {
+        for (k, v) in diagnostics(&app.client.state, &target) {
+            ui.label(widgets::secondary(k, &p));
+            widgets::rich_inline(ui, &p, &v, p.text, size::UI);
+            ui.end_row();
+        }
+    });
+}
+
+/// The repository, where releases are published (D136).
+const REPOSITORY: &str = "https://github.com/lelemm/yaac";
+
+/// About: this YAAC's version and build (D135), the hub's, the latest release, and every
+/// component checked as YAAC started.
+fn about(ui: &mut egui::Ui, app: &mut YaacApp) {
+    let p = app.p;
+    title_row(ui, "About", |_| {});
+    ui.add_space(6.0);
+    let (version, id) = crate::BUILD.split_once('+').unwrap_or((crate::BUILD, ""));
+    ui.label(RichText::new(format!("YAAC {version}")).font(theme::bold(size::TITLE)));
+    let build = if id.bytes().all(|b| b.is_ascii_digit()) && !id.is_empty() {
+        format!("Build {id}")
+    } else {
+        format!("Development build ({id})")
+    };
+    ui.label(widgets::secondary(format!("{build} · {}", crate::BUILD), &p));
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if widgets::link(ui, &p, "Releases", theme::ui(size::UI)).clicked() {
+            crate::browser::open(&format!("{REPOSITORY}/releases"));
+        }
+        ui.label(widgets::secondary("·", &p));
+        if widgets::link(ui, &p, "Source", theme::ui(size::UI)).clicked() {
+            crate::browser::open(REPOSITORY);
+        }
+    });
     // Every component against this window's build (D135): checked as YAAC starts — the hub at
     // `hub/hello`, each target's yaacd when the hub connects to it.
     widgets::heading(ui, "Components");
@@ -1187,28 +1240,4 @@ fn advanced(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         };
         ui.end_row();
     });
-    widgets::heading(ui, "Diagnostics");
-    let target = app.ui.set.diag_target.clone().filter(|t| app.client.state.target(t).is_some()).or_else(|| app.client.state.targets.first().map(|t| t.entry.id.clone()));
-    let Some(target) = target else {
-        ui.label(widgets::secondary("No targets.", &p));
-        return;
-    };
-    ui.horizontal_wrapped(|ui| {
-        let names: Vec<(TargetId, String)> = app.client.state.targets.iter().map(|t| (t.entry.id.clone(), t.entry.name.to_string())).collect();
-        for (id, n) in names {
-            let sel = id == target;
-            if ui.selectable_label(sel, n).clicked() {
-                app.ui.set.diag_target = Some(id);
-            }
-        }
-    });
-    ui.add_space(6.0);
-    egui::Grid::new("diag").num_columns(2).spacing(vec2(18.0, 6.0)).show(ui, |ui| {
-        for (k, v) in diagnostics(&app.client.state, &target) {
-            ui.label(widgets::secondary(k, &p));
-            widgets::rich_inline(ui, &p, &v, p.text, size::UI);
-            ui.end_row();
-        }
-    });
-    ui.label(widgets::secondary(format!("This window: YAAC {} · hub {}", crate::BUILD, app.client.state.hub.build.clone().unwrap_or_else(|| "not attached".into())), &p));
 }

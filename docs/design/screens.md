@@ -1307,3 +1307,14 @@ the list.*
   about Ctrl+Space and input-method layouts.
 - Local keys (Send, Stop, Allow once, Deny, Paste, Copy) show their key in a plain cap with
   where they work ("in the message box", "on the focused card"), and no buttons.
+
+### 68 — Settings: About
+
+*Which YAAC this is, and whether anything needs updating (D135–D137).*
+
+- Left navigation with **About** selected, last. "YAAC 0.1.0" in the title size; under it, in the
+  secondary colour, "Build 1001 · 0.1.0+1001" (or *Development build (dev.…)* for a build made
+  without the build scripts). **Releases · Source** link to GitHub.
+- **Components**: Window, Hub, `yaacd` on each enabled target, and *YAAC (latest release)*, each
+  with its build and "up to date", "needs updating · …" in the failed colour, or why it is not
+  known ("not connected (offline)", "connected; its build is not reported yet").

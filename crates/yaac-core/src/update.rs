@@ -244,7 +244,7 @@ impl Throttle {
     }
 }
 
-/// What the window knows about the latest release, for Settings → Advanced → Components.
+/// What the window knows about the latest release, for Settings → About → Components.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReleaseCheck {
     /// Not checked, and why (not Windows, a development build, …).

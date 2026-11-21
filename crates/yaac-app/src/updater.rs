@@ -75,7 +75,7 @@ fn agent(cfg: &Config, body_timeout: Option<Duration>) -> ureq::Agent {
         .into()
 }
 
-/// Why a check found nothing. Shown only in Settings → Advanced → Components.
+/// Why a check found nothing. Shown only in Settings → About → Components.
 fn describe(e: &ureq::Error) -> String {
     match e {
         ureq::Error::Timeout(_) => "no answer from GitHub (timed out)".into(),

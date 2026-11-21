@@ -27,11 +27,13 @@ pub enum Page {
     Keyboard,
     /// Advanced.
     Advanced,
+    /// About: this YAAC's version and build, its components, the latest release.
+    About,
 }
 
 impl Page {
     /// Every page, in navigation order.
-    pub const ALL: [Page; 6] = [Page::Targets, Page::Providers, Page::Appearance, Page::Window, Page::Keyboard, Page::Advanced];
+    pub const ALL: [Page; 7] = [Page::Targets, Page::Providers, Page::Appearance, Page::Window, Page::Keyboard, Page::Advanced, Page::About];
 
     /// The navigation label.
     pub fn label(self) -> &'static str {
@@ -42,6 +44,7 @@ impl Page {
             Page::Window => "Window",
             Page::Keyboard => "Keyboard",
             Page::Advanced => "Advanced",
+            Page::About => "About",
         }
     }
 }

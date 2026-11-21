@@ -78,6 +78,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("65", "commander-filtered"),
     ("66", "commander-model"),
     ("67", "settings-keyboard"),
+    ("68", "settings-about"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -582,6 +583,11 @@ fn setup(app: &mut YaacApp, id: &str) {
                 }
                 _ => {}
             }
+        }
+        "68" => {
+            // Settings → About: version, build, links, components (D137).
+            app.ui.settings = true;
+            app.ui.settings_page = Page::About;
         }
         "49" => {
             // Settings → Window: the tray option and the renderer, with the line about the

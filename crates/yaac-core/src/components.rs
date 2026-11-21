@@ -60,6 +60,7 @@ pub fn components(state: &AppState, window_build: &str) -> Vec<Component> {
                 status: ComponentStatus::Outdated("older build than this YAAC".into()),
             },
             Some(d) => Component { name, build: Some(d.build.clone()), status: ComponentStatus::Current },
+            None if t.connected() => Component { name, build: None, status: ComponentStatus::Unknown("connected; its build is not reported yet".into()) },
             None => Component { name, build: None, status: ComponentStatus::Unknown(format!("not connected ({})", t.entry.state.status.as_str())) },
         };
         out.push(c);

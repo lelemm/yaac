@@ -332,7 +332,7 @@ fn footer(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     let area = Rect::from_min_max(pos2((x - 18.0).max(settings.right()), rect.top()), rect.max);
     ui.interact(area, egui::Id::unique("hub-status"), Sense::hover()).on_hover_text(format!("{hub} · targets: {}", tip.join(", ")));
     // Components older than this build (D135), found as YAAC started: "2 to update", which
-    // opens the list in Settings → Advanced. Nothing is drawn while everything is current.
+    // opens the list in Settings → About. Nothing is drawn while everything is current.
     let n = yaac_core::components::outdated(&app.client.state, crate::BUILD);
     if n > 0 {
         let g = ui.fonts_mut(|fo| fo.layout_no_wrap(format!("{n} to update"), font.clone(), p.failed));
@@ -343,7 +343,7 @@ fn footer(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
             let resp = ui.interact(r, egui::Id::unique("components-outdated"), Sense::click()).on_hover_text("Some of YAAC's components are older than this build. Show them");
             if resp.clicked() {
                 actions.push(Action::Settings(true));
-                actions.push(Action::SettingsPage(yaac_core::settings::Page::Advanced));
+                actions.push(Action::SettingsPage(yaac_core::settings::Page::About));
             }
         }
     }

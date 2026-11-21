@@ -505,7 +505,7 @@ installer (`YAAC-Setup-<version>+<id>.exe`, file version `<numeric version>.<id>
   target's serving `yaacd` with its own build as it connects, and reports a daemon of a lower
   build number as **older** (`DaemonSummary.older`, also set when the daemon only speaks an
   older protocol). The window gathers these answers — window, hub, and `yaacd` on each enabled
-  target — into **Settings → Advanced → Components**, and the footer shows "N to update" while
+  target — into **Settings → About → Components**, and the footer shows "N to update" while
   any is older.
 - Detecting is all this does: updating an older daemon follows the rules above (at idle, or
   **Update now**). Build ids are build identity, not the protocol version: no protocol

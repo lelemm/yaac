@@ -143,7 +143,7 @@ code but never starts it, and a development build (`+dev…`) never updates itse
    generic `User-Agent: yaac-updater` and nothing else, then that release's `manifest.json`.
    10 s timeouts; offline, a timeout, an HTTP error, or GitHub's rate limit (403 with
    `x-ratelimit-remaining: 0`, or 429) is silent — the title row shows nothing, Settings →
-   Advanced → Components says why — and is not retried until the next start.
+   About → Components says why — and is not retried until the next start.
 2. **A newer build** (`build` above this one's) puts an **update icon** in the title row,
    left of the window buttons: *"YAAC <version>+<id> is available · Download"*.
 3. **Download** (a click): on a worker, into `%LOCALAPPDATA%\yaac\updates\` (YAAC's own
@@ -171,7 +171,7 @@ code but never starts it, and a development build (`+dev…`) never updates itse
 
    An update can therefore be tried once; it never loops.
 
-Settings → Advanced → **Components** has a row **YAAC (latest release)**: the latest
+Settings → **About** → Components has a row **YAAC (latest release)**: the latest
 release's build and whether this YAAC is behind it, or why it was not checked.
 
 ### How targets get the new daemon
