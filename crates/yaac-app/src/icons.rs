@@ -8,26 +8,34 @@ use yaac_core::attention::Mark;
 
 use crate::theme::Palette;
 
+/// Icons are drawn at Material Design's high-emphasis opacity (87%), never fully opaque —
+/// the owner's choice, for every icon, mark and logo.
+pub(crate) const ICON_OPACITY: f32 = 0.87;
+
+/// The painter an icon draws with: [`ICON_OPACITY`] applied once (an icon drawn by another
+/// icon, or on an already faded painter, is not faded twice).
+pub(crate) fn soft(p: &Painter) -> Painter {
+    let mut q = p.clone();
+    if q.opacity() >= 1.0 {
+        q.multiply_opacity(ICON_OPACITY);
+    }
+    q
+}
+
 fn stroke(c: Color32, w: f32) -> Stroke {
     Stroke::new(w, c)
 }
 
 /// A state mark centred at `c`, `d` across.
 pub(crate) fn mark(p: &Painter, c: Pos2, d: f32, m: Mark, pal: &Palette) {
+    let p = &soft(p);
     let col = pal.mark(m);
     let r = d * 0.45;
     let w = (d * 0.11).max(1.3);
     // The symbol alone, in its colour — no circle around it (owner, D122). Idle, offline and
     // off draw nothing: the row's dimming and its words carry those.
     match m {
-        Mark::Running => {
-            let s = r * 0.85;
-            p.add(Shape::convex_polygon(
-                vec![pos2(c.x - s * 0.6, c.y - s), pos2(c.x + s * 0.9, c.y), pos2(c.x - s * 0.6, c.y + s)],
-                col,
-                Stroke::NONE,
-            ));
-        }
+        Mark::Running => spinner(p, c, d, col),
         Mark::NeedsYou => exclaim(p, c, d, col),
         Mark::Paused => {
             let h = r * 0.8;
@@ -49,8 +57,40 @@ pub(crate) fn mark(p: &Painter, c: Pos2, d: f32, m: Mark, pal: &Palette) {
     }
 }
 
+/// How often a visible spinner is redrawn: about 30 frames a second, so the slow turn stays smooth, only while one is on
+/// screen and the window has focus. Unfocused (or hidden, or minimised) it stands still and
+/// costs nothing.
+const SPINNER_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+
+/// Seconds per turn: slow and calm, but visibly moving.
+const SPINNER_TURN: f64 = 2.5;
+
+/// Running: a three-quarter arc turning once every [`SPINNER_TURN`] seconds. Drawing it asks for the next frame, so
+/// the window repaints only while a running mark is actually painted.
+pub(crate) fn spinner(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let r = d * 0.38;
+    let w = (d * 0.12).max(1.5);
+    let ctx = p.ctx();
+    let (t, focused) = ctx.input(|i| (i.time, i.focused));
+    #[allow(clippy::cast_possible_truncation, reason = "a phase in 0..1")]
+    let start = ((t / SPINNER_TURN).fract() as f32) * TAU;
+    let n = 24;
+    let pts: Vec<Pos2> = (0..=n)
+        .map(|i| {
+            let a = start + (i as f32 / n as f32) * TAU * 0.75;
+            pos2(c.x + r * a.cos(), c.y + r * a.sin())
+        })
+        .collect();
+    p.add(Shape::line(pts, Stroke::new(w, col)));
+    if focused {
+        ctx.request_repaint_after(SPINNER_FRAME);
+    }
+}
+
 /// Waiting: an hourglass, the symbol alone.
 pub(crate) fn hourglass(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let r = d * 0.45;
     let w = (d * 0.1).max(1.3);
     let (x0, x1, y0, y1) = (c.x - r * 0.62, c.x + r * 0.62, c.y - r * 0.9, c.y + r * 0.9);
@@ -64,6 +104,7 @@ pub(crate) fn hourglass(p: &Painter, c: Pos2, d: f32, col: Color32) {
 /// The needs-you mark (D113): the exclamation symbol alone, in `col` (the failed colour) —
 /// a bar tapering towards its foot, and a dot. No disc behind it.
 pub(crate) fn exclaim(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let h = d * 0.86;
     let top = c.y - h / 2.0;
     let wt = (d * 0.2).max(2.2);
@@ -81,6 +122,7 @@ pub(crate) fn exclaim(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// The ordering control (D116): three bars of falling length beside a down arrow.
 pub(crate) fn order(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let s = Stroke::new(1.5, col);
     let x0 = c.x - d * 0.42;
     for (i, w) in [0.5_f32, 0.36, 0.22].iter().enumerate() {
@@ -94,6 +136,7 @@ pub(crate) fn order(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// A calendar page: a rounded box, two rings at the top, a rule under the header.
 pub(crate) fn calendar(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let s = Stroke::new((d * 0.09).max(1.2), col);
     let r = Rect::from_center_size(c + vec2(0.0, d * 0.04), vec2(d * 0.84, d * 0.74));
     p.rect_stroke(r, d * 0.12, s, egui::StrokeKind::Middle);
@@ -106,6 +149,7 @@ pub(crate) fn calendar(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// Two opposed arrows (⇄): "in contact with" (D118).
 pub(crate) fn swap(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let s = Stroke::new((d * 0.1).max(1.2), col);
     let (l, r) = (c.x - d * 0.4, c.x + d * 0.4);
     let (y1, y2) = (c.y - d * 0.18, c.y + d * 0.18);
@@ -118,6 +162,7 @@ pub(crate) fn swap(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// The warning triangle with an exclamation mark.
 pub(crate) fn warning(p: &Painter, c: Pos2, d: f32, col: Color32, ink: Color32) {
+    let p = &soft(p);
     let h = d * 0.9;
     let top = pos2(c.x, c.y - h * 0.52);
     let l = pos2(c.x - h * 0.56, c.y + h * 0.44);
@@ -129,6 +174,7 @@ pub(crate) fn warning(p: &Painter, c: Pos2, d: f32, col: Color32, ink: Color32) 
 }
 
 pub(crate) fn dashed_circle(p: &Painter, c: Pos2, r: f32, s: Stroke) {
+    let p = &soft(p);
     let n = 8;
     for i in 0..n {
         let a0 = i as f32 / n as f32 * TAU;
@@ -143,6 +189,7 @@ pub(crate) fn dashed_circle(p: &Painter, c: Pos2, r: f32, s: Stroke) {
 
 
 pub(crate) fn info(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let r = d * 0.45;
     let w = (d * 0.1).max(1.2);
     p.circle_stroke(c, r, stroke(col, w));
@@ -151,6 +198,7 @@ pub(crate) fn info(p: &Painter, c: Pos2, d: f32, col: Color32) {
 }
 
 pub(crate) fn question(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let r = d * 0.45;
     let w = (d * 0.1).max(1.2);
     p.circle_stroke(c, r, stroke(col, w));
@@ -166,6 +214,7 @@ pub(crate) fn question(p: &Painter, c: Pos2, d: f32, col: Color32) {
 }
 
 pub(crate) fn chevron(p: &Painter, c: Pos2, d: f32, open: bool, col: Color32) {
+    let p = &soft(p);
     let s = d * 0.22;
     let w = (d * 0.09).max(1.2);
     let pts = if open {
@@ -178,6 +227,7 @@ pub(crate) fn chevron(p: &Painter, c: Pos2, d: f32, open: bool, col: Color32) {
 
 /// ↗: "spawned by an agent", "To".
 pub(crate) fn arrow_out(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let s = d * 0.32;
     let w = (d * 0.09).max(1.3);
     p.line_segment([pos2(c.x - s, c.y + s), pos2(c.x + s, c.y - s)], stroke(col, w));
@@ -186,6 +236,7 @@ pub(crate) fn arrow_out(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// ↙: "From".
 pub(crate) fn arrow_in(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let s = d * 0.32;
     let w = (d * 0.09).max(1.3);
     p.line_segment([pos2(c.x + s, c.y - s), pos2(c.x - s, c.y + s)], stroke(col, w));
@@ -193,6 +244,7 @@ pub(crate) fn arrow_in(p: &Painter, c: Pos2, d: f32, col: Color32) {
 }
 
 pub(crate) fn lock(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.09).max(1.2);
     let body = Rect::from_center_size(pos2(c.x, c.y + d * 0.14), vec2(d * 0.62, d * 0.46));
     p.rect_stroke(body, 1.5, stroke(col, w), eframe::egui::StrokeKind::Middle);
@@ -206,6 +258,7 @@ pub(crate) fn lock(p: &Painter, c: Pos2, d: f32, col: Color32) {
 }
 
 pub(crate) fn folder(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.08).max(1.1);
     let r = Rect::from_center_size(c + vec2(0.0, d * 0.05), vec2(d * 0.8, d * 0.55));
     p.line(
@@ -223,6 +276,7 @@ pub(crate) fn folder(p: &Painter, c: Pos2, d: f32, col: Color32) {
 }
 
 pub(crate) fn person(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.08).max(1.2);
     p.circle_stroke(pos2(c.x, c.y - d * 0.15), d * 0.17, stroke(col, w));
     let pts: Vec<Pos2> = (0..=12).map(|k| {
@@ -233,6 +287,7 @@ pub(crate) fn person(p: &Painter, c: Pos2, d: f32, col: Color32) {
 }
 
 pub(crate) fn people(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     person(p, c - vec2(d * 0.12, 0.0), d * 0.85, col);
     let w = (d * 0.07).max(1.1);
     p.circle_stroke(pos2(c.x + d * 0.22, c.y - d * 0.18), d * 0.12, stroke(col, w));
@@ -240,6 +295,7 @@ pub(crate) fn people(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 
 pub(crate) fn terminal(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.08).max(1.1);
     let r = Rect::from_center_size(c, vec2(d * 0.8, d * 0.62));
     p.rect_stroke(r, 2.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
@@ -250,6 +306,7 @@ pub(crate) fn terminal(p: &Painter, c: Pos2, d: f32, col: Color32) {
 }
 
 pub(crate) fn file(p: &Painter, c: Pos2, d: f32, col: Color32, broken: bool) {
+    let p = &soft(p);
     let w = (d * 0.08).max(1.1);
     let r = Rect::from_center_size(c, vec2(d * 0.56, d * 0.74));
     let f = d * 0.18;
@@ -264,6 +321,7 @@ pub(crate) fn file(p: &Painter, c: Pos2, d: f32, col: Color32, broken: bool) {
 }
 
 pub(crate) fn image(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.08).max(1.1);
     let r = Rect::from_center_size(c, vec2(d * 0.8, d * 0.62));
     p.rect_stroke(r, 2.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
@@ -272,6 +330,7 @@ pub(crate) fn image(p: &Painter, c: Pos2, d: f32, col: Color32) {
 }
 
 pub(crate) fn gear(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.09).max(1.2);
     p.circle_stroke(c, d * 0.16, stroke(col, w));
     let n = 8;
@@ -284,6 +343,7 @@ pub(crate) fn gear(p: &Painter, c: Pos2, d: f32, col: Color32) {
 }
 
 pub(crate) fn search(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.09).max(1.2);
     let cc = c - vec2(d * 0.08, d * 0.08);
     p.circle_stroke(cc, d * 0.26, stroke(col, w));
@@ -292,6 +352,7 @@ pub(crate) fn search(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 
 pub(crate) fn stop_square(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     p.rect_filled(Rect::from_center_size(c, Vec2::splat(d * 0.5)), 2.0, col);
 }
 
@@ -301,6 +362,7 @@ pub(crate) fn stop_square(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// The Return key.
 pub(crate) fn return_key(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.09).max(1.2);
     let s = d * 0.32;
     p.line(vec![pos2(c.x + s, c.y - s), pos2(c.x + s, c.y + s * 0.3), pos2(c.x - s, c.y + s * 0.3)], stroke(col, w));
@@ -309,6 +371,7 @@ pub(crate) fn return_key(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// A git branch.
 pub(crate) fn branch(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.09).max(1.1);
     let a = pos2(c.x - d * 0.18, c.y - d * 0.3);
     let b = pos2(c.x - d * 0.18, c.y + d * 0.3);
@@ -322,6 +385,7 @@ pub(crate) fn branch(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// Git change kinds: a small square with a plus, a dot, or a minus.
 pub(crate) fn git_square(p: &Painter, c: Pos2, d: f32, col: Color32, kind: char) {
+    let p = &soft(p);
     let w = (d * 0.09).max(1.1);
     let r = Rect::from_center_size(c, Vec2::splat(d * 0.72));
     p.rect_stroke(r, 2.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
@@ -342,6 +406,7 @@ pub(crate) fn git_square(p: &Painter, c: Pos2, d: f32, col: Color32, kind: char)
 
 /// An arrow pointing up (or down).
 pub(crate) fn arrow_vertical(p: &Painter, c: Pos2, d: f32, col: Color32, up: bool) {
+    let p = &soft(p);
     let w = (d * 0.09).max(1.2);
     let s = d * 0.32;
     let dir = if up { -1.0 } else { 1.0 };
@@ -351,6 +416,7 @@ pub(crate) fn arrow_vertical(p: &Painter, c: Pos2, d: f32, col: Color32, up: boo
 
 /// An arrow pointing left.
 pub(crate) fn arrow_left(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.09).max(1.2);
     let s = d * 0.32;
     p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke(col, w));
@@ -359,6 +425,7 @@ pub(crate) fn arrow_left(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// A fork: one stem splitting in two.
 pub(crate) fn fork(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let s = d * 0.36;
     let w = (d * 0.09).max(1.2);
     let base = pos2(c.x, c.y + s);
@@ -373,6 +440,7 @@ pub(crate) fn fork(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// Copy: two overlapping sheets.
 pub(crate) fn copy(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.09).max(1.1);
     let s = d * 0.5;
     let back = Rect::from_min_size(pos2(c.x - s * 0.75, c.y - s * 0.75), vec2(s, s));
@@ -383,6 +451,7 @@ pub(crate) fn copy(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// A check mark (done; "Copied").
 pub(crate) fn check(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.1).max(1.3);
     let s = d * 0.36;
     p.line(vec![pos2(c.x - s, c.y), pos2(c.x - s * 0.3, c.y + s * 0.7), pos2(c.x + s, c.y - s * 0.6)], stroke(col, w));
@@ -390,6 +459,7 @@ pub(crate) fn check(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// Back (‹) and forward (›): a single chevron pointing left or right.
 pub(crate) fn nav(p: &Painter, c: Pos2, d: f32, forward: bool, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.1).max(1.4);
     let s = d * 0.22;
     let dir = if forward { 1.0 } else { -1.0 };
@@ -398,6 +468,7 @@ pub(crate) fn nav(p: &Painter, c: Pos2, d: f32, forward: bool, col: Color32) {
 
 /// Plus: a new thread.
 pub(crate) fn plus(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.1).max(1.4);
     let s = d * 0.34;
     p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke(col, w));
@@ -406,6 +477,7 @@ pub(crate) fn plus(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// The sidebar toggle: a frame with a narrow left column.
 pub(crate) fn sidebar(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.08).max(1.2);
     let r = Rect::from_center_size(c, vec2(d * 0.8, d * 0.66));
     p.rect_stroke(r, 2.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
@@ -416,6 +488,7 @@ pub(crate) fn sidebar(p: &Painter, c: Pos2, d: f32, col: Color32) {
 /// A paper clip: the attachment button. One wire: up the right side, round the top, down the
 /// left side, round a smaller bottom, and up the middle.
 pub(crate) fn paperclip(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     use std::f32::consts::PI;
     let w = (d * 0.08).max(1.3);
     let arc = |cx: f32, cy: f32, r: f32, from: f32, to: f32| -> Vec<Pos2> {
@@ -437,6 +510,7 @@ pub(crate) fn paperclip(p: &Painter, c: Pos2, d: f32, col: Color32) {
 
 /// A small cross: remove.
 pub(crate) fn close(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.1).max(1.3);
     let s = d * 0.26;
     p.line_segment([pos2(c.x - s, c.y - s), pos2(c.x + s, c.y + s)], stroke(col, w));
@@ -446,6 +520,7 @@ pub(crate) fn close(p: &Painter, c: Pos2, d: f32, col: Color32) {
 /// A connection: two nodes joined by a link; crossed out when there is none (the hub cannot
 /// be reached).
 pub(crate) fn connection(p: &Painter, c: Pos2, d: f32, col: Color32, crossed: bool) {
+    let p = &soft(p);
     let w = (d * 0.08).max(1.2);
     let a = pos2(c.x - d * 0.28, c.y + d * 0.18);
     let b = pos2(c.x + d * 0.28, c.y - d * 0.18);
@@ -460,12 +535,14 @@ pub(crate) fn connection(p: &Painter, c: Pos2, d: f32, col: Color32, crossed: bo
 
 /// Minimize: a short horizontal bar.
 pub(crate) fn minimize(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let s = d * 0.32;
     p.line_segment([pos2(c.x - s, c.y), pos2(c.x + s, c.y)], stroke(col, (d * 0.08).max(1.1)));
 }
 
 /// Maximize: a square; restore: two overlapping squares.
 pub(crate) fn maximize(p: &Painter, c: Pos2, d: f32, col: Color32, restore: bool) {
+    let p = &soft(p);
     let w = (d * 0.08).max(1.1);
     let s = d * 0.56;
     if restore {
@@ -481,6 +558,7 @@ pub(crate) fn maximize(p: &Painter, c: Pos2, d: f32, col: Color32, restore: bool
 
 /// A push pin, tilted: the Pinned section in the strip.
 pub(crate) fn pin(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
     let w = (d * 0.08).max(1.2);
     // Drawn upright around the origin, then turned 45°.
     let (sin, cos) = (std::f32::consts::FRAC_PI_4.sin(), std::f32::consts::FRAC_PI_4.cos());

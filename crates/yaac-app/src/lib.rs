@@ -147,6 +147,8 @@ pub fn run(args: &[String]) -> ExitCode {
             .with_decorations(false)
             .with_resizable(true)
             .with_inner_size(size)
+            // Always opens maximized (owner); screenshots keep their fixed size.
+            .with_maximized(shots.is_none())
             .with_min_inner_size([960.0, 600.0])
             .with_icon(eframe::egui::IconData { rgba: app_icon::rgba(64), width: 64, height: 64 }),
         // Ctrl+V reaches the window as a key, so the clipboard is read off the UI thread and a

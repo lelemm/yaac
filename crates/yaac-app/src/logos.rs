@@ -90,6 +90,7 @@ fn texture(ctx: &egui::Context, logo: Logo, px: u32) -> TextureHandle {
 
 /// Draw `logo` centred at `c`, `d` points across, in `color`.
 pub(crate) fn draw(painter: &Painter, c: Pos2, d: f32, logo: Logo, color: Color32) {
+    let painter = &crate::icons::soft(painter);
     let ppp = painter.ctx().pixels_per_point();
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "an icon's size in pixels")]
     let px = ((d * ppp).round() as u32).clamp(8, 256);
