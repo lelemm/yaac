@@ -299,6 +299,11 @@ pub struct ThreadSummary {
     /// Set while the thread is stopped and held (state `stopped`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<ThreadHold>,
+    /// Fast mode (D125) is on for this thread: its running turn (while `state` is running)
+    /// was started in fast mode, and its next turns run in it unless `turn/start` says
+    /// otherwise. Only ever true while the thread's model has `fastMode`. Absent: off.
+    #[serde(default)]
+    pub fast: bool,
 }
 
 /// The model / effort / mode the harness reports it is **actually** using.
@@ -426,6 +431,10 @@ pub struct ThreadStartParams {
     /// Mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<ModeId>,
+    /// Fast mode for the thread's turns (D125), offered under the model's `fastMode`.
+    /// Absent: off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast: Option<bool>,
     /// The first message.
     pub input: Vec<InputPart>,
 }
@@ -657,6 +666,10 @@ pub struct TurnStartParams {
     /// Mode override (under `modes`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<ModeId>,
+    /// Fast mode on or off (D125), under the model's `fastMode`. Sticks for later turns, like
+    /// `model`. Absent: the thread's current setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast: Option<bool>,
     /// What to do while a turn is running (docs/07-ui.md#composer). Absent: refuse with
     /// `turn_in_progress`, as before. `queue`: kept by `yaacd` (durably, in order, ahead of
     /// queued agent messages) and delivered when the turn ends. `now`: steered into the
@@ -713,6 +726,9 @@ pub struct QueuedMessage {
     /// Mode override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<ModeId>,
+    /// Fast mode for the turn it starts (and after).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast: Option<bool>,
 }
 
 /// `turn/queueEdit`: replace a queued message's text and attachments before it is delivered.

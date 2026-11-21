@@ -110,6 +110,7 @@ pub(super) fn build_start(_: &Dialect, command: &StartThread) -> Result<Value, D
         model: command.model.clone(),
         effort: command.effort.clone(),
         mode: command.mode.clone(),
+        fast: command.fast,
         input: command.input.clone(),
     };
     encode("thread/start", &params)

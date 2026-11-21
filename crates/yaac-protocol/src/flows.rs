@@ -36,6 +36,8 @@ pub struct StartThread {
     pub effort: Option<EffortId>,
     /// Mode.
     pub mode: Option<ModeId>,
+    /// Fast mode (D125).
+    pub fast: Option<bool>,
     /// The first message.
     pub input: Vec<InputPart>,
 }

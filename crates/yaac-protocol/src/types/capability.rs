@@ -70,6 +70,12 @@ open_enum! {
         Reasoning = "reasoning",
         /// Reasoning is visible to the user in some form.
         ReasoningSummary = "reasoningSummary",
+        // Speed (model-level)
+        /// Fast mode (D125): the harness can run this model's turns faster, at a higher cost.
+        /// Reported per model from what the harness lists; a model without it, or with it
+        /// unknown, is never offered fast mode. In a thread's effective capabilities: the
+        /// thread's current model has it.
+        FastMode = "fastMode",
         // Reporting
         /// Reports token usage.
         TokenUsage = "tokenUsage",

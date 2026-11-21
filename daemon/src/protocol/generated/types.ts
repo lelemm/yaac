@@ -183,7 +183,7 @@ export type BackendPreference = "auto" | "daemon" | "sdk";
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "followExternal" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
+export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "followExternal" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
 
 /**
  * A stable id for one host's YAAC client (the hub), sent in `initialize`, so `yaacd` can
@@ -2650,6 +2650,10 @@ export interface QueuedMessage {
    */
   effort?: EffortId | null;
   /**
+   * Fast mode for the turn it starts (and after).
+   */
+  fast?: boolean | null;
+  /**
    * The message.
    */
   input: InputPart[];
@@ -3786,6 +3790,11 @@ export interface ThreadStartParams {
    */
   effort?: EffortId | null;
   /**
+   * Fast mode for the thread's turns (D125), offered under the model's `fastMode`.
+   * Absent: off.
+   */
+  fast?: boolean | null;
+  /**
    * The first message.
    */
   input: InputPart[];
@@ -3953,6 +3962,12 @@ export interface ThreadSummary {
    * Working directory.
    */
   cwd: TargetPath;
+  /**
+   * Fast mode (D125) is on for this thread: its running turn (while `state` is running)
+   * was started in fast mode, and its next turns run in it unless `turn/start` says
+   * otherwise. Only ever true while the thread's model has `fastMode`. Absent: off.
+   */
+  fast?: boolean;
   /**
    * The thread whose history this one began with.
    */
@@ -4356,6 +4371,11 @@ export interface TurnStartParams {
    * Effort override (under `effortSwitch`).
    */
   effort?: EffortId | null;
+  /**
+   * Fast mode on or off (D125), under the model's `fastMode`. Sticks for later turns, like
+   * `model`. Absent: the thread's current setting.
+   */
+  fast?: boolean | null;
   /**
    * The message.
    */
