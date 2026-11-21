@@ -269,8 +269,8 @@ fn parse<T: DeserializeOwned>(params: Value) -> Result<T, ErrorObject> {
     serde_json::from_value(params).map_err(|e| err(ErrorCode::InvalidParams, e.to_string()))
 }
 
-/// A build's numbered id: the `<id>` of `<version>+<id>` when it is a number (a build made by
-/// the build scripts, `scripts/build-id.sh`); `None` for a development build (`+dev…`) or none.
+// A build's numbered id: the `<id>` of `<version>+<id>` when it is a number (a build made by
+// the build scripts, `scripts/build-id.sh`); `None` for a development build (`+dev…`) or none.
 use yaac_transport::bootstrap::build_number;
 
 /// Compares builds, window against hub: by their leading `major.minor.patch`, then by their

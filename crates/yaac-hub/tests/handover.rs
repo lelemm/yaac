@@ -111,6 +111,9 @@ impl Rig {
         for (k, v) in self.env() {
             c.env(k, v);
         }
+        // It must not idle out before the hub attaches, however loaded the machine is: only a
+        // hand-over may end it (the test kills it otherwise).
+        c.env("YAAC_IDLE_TIMEOUT_MS", "0");
         self.serving = Some(c.spawn().expect("start the older daemon"));
         wait_until("the older daemon listening", || self.socket.exists());
     }
