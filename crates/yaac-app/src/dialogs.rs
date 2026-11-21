@@ -535,3 +535,26 @@ pub(crate) fn quit(ctx: &egui::Context, app: &mut YaacApp) {
         app.shell.quit(ctx);
     }
 }
+
+/// An update that did not install (D136), said once as the window starts: the installer ran
+/// and this is still the older build, or it could not be started. One button closes it.
+pub(crate) fn update_notice(ctx: &egui::Context, app: &mut YaacApp) {
+    let Some(message) = app.updater.notice.clone() else { return };
+    let p = app.p;
+    scrim(ctx, &p, "update-notice");
+    let close = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) || i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    let mut ok = close;
+    window("update-notice", &p, ctx).show(ctx, |ui| {
+        ui.set_width(420.0);
+        ui.label(RichText::new("The update was not installed").font(theme::bold(size::SECTION + 1.5)));
+        ui.add_space(8.0);
+        ui.label(&message);
+        ui.add_space(14.0);
+        if widgets::primary(ui, &p, "OK", Some("Enter")).clicked() {
+            ok = true;
+        }
+    });
+    if ok {
+        app.updater.notice = None;
+    }
+}

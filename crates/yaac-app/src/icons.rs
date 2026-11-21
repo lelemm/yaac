@@ -641,3 +641,13 @@ pub(crate) fn pin(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.line(head, stroke(col, w));
     p.line_segment([t(0.0, d * 0.04), t(0.0, d * 0.44)], stroke(col, w));
 }
+
+/// An update to download: an arrow down onto a tray.
+pub(crate) fn download(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let w = (d * 0.09).max(1.2);
+    let s = d * 0.3;
+    p.line_segment([pos2(c.x, c.y - s * 1.1), pos2(c.x, c.y + s * 0.45)], stroke(col, w));
+    p.line(vec![pos2(c.x - s * 0.6, c.y - s * 0.1), pos2(c.x, c.y + s * 0.5), pos2(c.x + s * 0.6, c.y - s * 0.1)], stroke(col, w));
+    p.line(vec![pos2(c.x - s * 1.1, c.y + s * 0.4), pos2(c.x - s * 1.1, c.y + s * 1.05), pos2(c.x + s * 1.1, c.y + s * 1.05), pos2(c.x + s * 1.1, c.y + s * 0.4)], stroke(col, w));
+}

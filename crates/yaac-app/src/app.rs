@@ -523,6 +523,8 @@ pub(crate) struct YaacApp {
     pub shell: crate::tray::Shell,
     /// The renderer in use and the stored choice (D128).
     pub display: crate::display::DisplayState,
+    /// The in-app updater (D136): the title row's update item and Components' release row.
+    pub updater: crate::updater::Updater,
     #[cfg_attr(not(feature = "hub"), allow(dead_code))]
     ctx: egui::Context,
 }
@@ -637,8 +639,11 @@ impl YaacApp {
             debug_copy: std::env::var("YAAC_DEBUG_COPY").ok().filter(|t| !t.is_empty()),
             shell,
             display: launch.display,
+            updater: launch.updater,
             ctx: cc.egui_ctx,
         };
+        // The release check, on a worker (nothing when the updater is off).
+        app.updater.start(&app.ctx);
         if app.demo.is_some() {
             app.land();
         }
@@ -1344,6 +1349,18 @@ impl eframe::App for YaacApp {
             crate::shell::show(ui, self, &map, now, &mut actions, frame);
         }
         crate::titlebar::buttons(ui, window, &p);
+        self.updater.poll();
+        match crate::titlebar::update(ui, window, &p, &self.updater) {
+            Some(crate::titlebar::UpdateClick::Download) => self.updater.download(&ctx),
+            // The installer closes the window and the hub itself (`yaac quit`), so quitting
+            // here only saves it the wait; it starts YAAC again when done (`/RELAUNCH`).
+            Some(crate::titlebar::UpdateClick::Install) => match self.updater.install() {
+                Ok(()) => self.shell.quit(&ctx),
+                Err(e) => self.updater.notice = Some(e),
+            },
+            None => {}
+        }
+        crate::dialogs::update_notice(ui.ctx(), self);
         crate::dialogs::mode_confirm(ui.ctx(), self, &mut actions);
         crate::dialogs::mute(ui.ctx(), self, &mut actions);
         crate::pr_ui::create_dialog(ui.ctx(), self, &mut actions);
@@ -1383,6 +1400,7 @@ mod tests {
             display: crate::display::DisplayState::default(),
             shell: crate::tray::Shell::new(),
             tray: false,
+            updater: crate::updater::Updater::off("tests"),
         };
         YaacApp::from_ctx(ctx, launch)
     }

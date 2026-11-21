@@ -233,7 +233,7 @@ impl Throttle {
             self.shown_at = Some(now);
             return true;
         }
-        let step = if total == 0 { 0 } else { u32::try_from(done.saturating_mul(u64::from(Self::STEPS)) / total).unwrap_or(Self::STEPS) };
+        let step = done.saturating_mul(u64::from(Self::STEPS)).checked_div(total).map_or(0, |s| u32::try_from(s).unwrap_or(Self::STEPS));
         let due = self.shown_at.is_none_or(|t| now - t >= Self::MIN_INTERVAL);
         if self.shown_step != Some(step) && due {
             self.shown_at = Some(now);
