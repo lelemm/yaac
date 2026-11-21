@@ -186,6 +186,20 @@ export type BackendPreference = "auto" | "daemon" | "sdk";
 export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "followExternal" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
 
 /**
+ * One check's (or policy's) state.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type CheckState = "pending" | "success" | "failure" | "skipped";
+
+/**
+ * The combined state of a pull request's checks (GitHub) or policies (Azure DevOps).
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type ChecksState = "none" | "pending" | "passing" | "failing";
+
+/**
  * A stable id for one host's YAAC client (the hub), sent in `initialize`, so `yaacd` can
  * say which client answered a request or drives a thread.
  */
@@ -595,6 +609,245 @@ export interface FindThreadsReply {
    * How many matched in all.
    */
   total: number;
+}
+
+/**
+ * Whether a repository's pull requests can be worked with from this target, and if not, why.
+ */
+export interface ForgeAccess {
+  /**
+   * What can be done now. Empty with a `reason` when the CLI is missing or signed out.
+   */
+  capabilities?: ForgeCapability[];
+  /**
+   * Why nothing (or less) can be done, in words to show as they are ("gh is not logged in
+   * on devbox — run `gh auth login` there").
+   */
+  reason?: string | null;
+  /**
+   * The forge, when the remote is on a supported one. Absent: no badge at all (not in git,
+   * no remote, or a forge YAAC does not support).
+   */
+  repo?: ForgeRepo | null;
+}
+
+/**
+ * What can be done with a repository's pull requests from this target, now.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type ForgeCapability = "prList" | "prGet" | "prCreate" | "prChecks" | "prRerun" | "prComments" | "prReply";
+
+/**
+ * Which forge hosts a repository. Display only: branch on capabilities.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type ForgeKind = "github" | "azureDevOps";
+
+/**
+ * `forge/pr/create` (D120). Pushes the branch first when it has unpushed commits or no
+ * upstream (`git push -u` on the target); uncommitted changes are left alone.
+ */
+export interface ForgePrCreateParams {
+  /**
+   * Target branch.
+   */
+  base: string;
+  /**
+   * Description (markdown).
+   */
+  body?: string;
+  /**
+   * Open it as a draft.
+   */
+  draft?: boolean;
+  /**
+   * Operation id: an uncertain outcome is `outcome_unknown`, never re-sent.
+   */
+  opId: OpId;
+  /**
+   * The thread whose branch the pull request is from.
+   */
+  threadId: ThreadId;
+  /**
+   * Title.
+   */
+  title: string;
+}
+
+/**
+ * `forge/pr/create` result.
+ */
+export interface ForgePrCreateResult {
+  /**
+   * The new pull request.
+   */
+  pr: PrSummary;
+  /**
+   * The branch was pushed first.
+   */
+  pushed?: boolean;
+}
+
+/**
+ * `forge/pr/get`: one pull request in full.
+ */
+export interface ForgePrGetParams {
+  /**
+   * The pull request's number.
+   */
+  number: number;
+  /**
+   * The thread whose repository is meant.
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * `forge/pr/get` result.
+ */
+export interface ForgePrGetResult {
+  /**
+   * The description.
+   */
+  body?: string;
+  /**
+   * Checks or policies.
+   */
+  checks?: PrCheck[];
+  /**
+   * The summary.
+   */
+  pr: PrSummary;
+  /**
+   * Reviewers.
+   */
+  reviewers?: PrReviewer[];
+}
+
+/**
+ * `forge/prepare`: what the Create PR modal needs (D120).
+ */
+export interface ForgePrepareParams {
+  /**
+   * The target branch to prefill against. Absent: the repository's default branch.
+   */
+  base?: string | null;
+  /**
+   * The thread whose branch the pull request is from.
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * `forge/prepare` result.
+ */
+export interface ForgePrepareResult {
+  /**
+   * The forge and what can be done.
+   */
+  access?: ForgeAccess;
+  /**
+   * The target branch the title and description were prefilled against.
+   */
+  base?: string | null;
+  /**
+   * Prefilled description (from the branch's commits).
+   */
+  body?: string;
+  /**
+   * The branch the pull request would be from.
+   */
+  branch?: string | null;
+  /**
+   * Branches on the remote, for the target-branch dropdown (bounded).
+   */
+  branches?: string[];
+  /**
+   * The repository's default branch.
+   */
+  defaultBranch?: string | null;
+  /**
+   * Push state of the branch.
+   */
+  push?: PushState;
+  /**
+   * Prefilled title (from the branch's commits).
+   */
+  title?: string;
+}
+
+/**
+ * `forge/prs`: the pull requests whose head is the thread's branch.
+ */
+export interface ForgePrsParams {
+  /**
+   * Ask the forge now instead of answering from the target's cache (opening the row's
+   * menu). Still rate-limited by `yaacd`.
+   */
+  refresh?: boolean;
+  /**
+   * The thread whose checkout and branch are meant.
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * `forge/prs` result, and the params of `forge/prs/changed`.
+ */
+export interface ForgePrsResult {
+  /**
+   * The forge and what can be done.
+   */
+  access?: ForgeAccess;
+  /**
+   * When the forge was last asked.
+   */
+  at?: Timestamp | null;
+  /**
+   * The branch asked about; absent on a detached head (then there are no pull requests).
+   */
+  branch?: string | null;
+  /**
+   * The last ask failed (the list is the last one known).
+   */
+  error?: string | null;
+  /**
+   * Pull requests from that branch: open ones first, then the most recently updated.
+   */
+  prs?: PrSummary[];
+  /**
+   * The checkout's root (the cache is per repository root and branch).
+   */
+  root?: TargetPath;
+}
+
+/**
+ * The forge of a repository, as detected from its `origin` URL.
+ */
+export interface ForgeRepo {
+  /**
+   * Pull requests are opened from a fork (`origin`) into this repository (`upstream`).
+   */
+  fromFork?: boolean;
+  /**
+   * Host name (`github.com`, a GitHub Enterprise host, `dev.azure.com`).
+   */
+  host: string;
+  /**
+   * Which forge (display only).
+   */
+  kind: ForgeKind;
+  /**
+   * The repository's name on the forge: `owner/repo` (GitHub) or `org/project/repo`
+   * (Azure DevOps). For a fork whose pull requests go upstream, the upstream repository.
+   */
+  slug: string;
+  /**
+   * The repository's web page.
+   */
+  webUrl: string;
 }
 
 /**
@@ -2044,6 +2297,100 @@ export interface PlanStep {
 export type PlanStepState = "pending" | "inProgress" | "completed";
 
 /**
+ * One check or policy.
+ */
+export interface PrCheck {
+  /**
+   * It blocks merging (Azure DevOps policies).
+   */
+  blocking?: boolean;
+  /**
+   * Its name.
+   */
+  name: string;
+  /**
+   * Its state.
+   */
+  state: CheckState;
+  /**
+   * Where to see it.
+   */
+  url?: string | null;
+}
+
+/**
+ * A reviewer and where they stand.
+ */
+export interface PrReviewer {
+  /**
+   * Name on the forge.
+   */
+  name: string;
+  /**
+   * A required reviewer (Azure DevOps).
+   */
+  required?: boolean;
+  /**
+   * Their verdict in words ("approved", "changes requested", "waiting for author",
+   * "requested", …).
+   */
+  state: string;
+}
+
+/**
+ * Where a pull request is in its life.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type PrState = "open" | "merged" | "closed";
+
+/**
+ * A pull request in a list.
+ */
+export interface PrSummary {
+  /**
+   * Author's name on the forge.
+   */
+  author?: string | null;
+  /**
+   * The branch it merges into.
+   */
+  base: string;
+  /**
+   * The combined state of its checks, when known.
+   */
+  checks?: ChecksState | null;
+  /**
+   * A draft.
+   */
+  draft?: boolean;
+  /**
+   * The branch it merges from.
+   */
+  head: string;
+  /**
+   * The forge's number (GitHub) or id (Azure DevOps).
+   */
+  number: number;
+  /**
+   * Open, merged, or closed.
+   */
+  state: PrState;
+  /**
+   * Title.
+   */
+  title: string;
+  /**
+   * When it was last updated (or created).
+   */
+  updatedAt?: Timestamp | null;
+  /**
+   * Its web page (what the badge opens).
+   */
+  url: string;
+}
+
+/**
  * A project.
  */
 export interface Project {
@@ -2518,6 +2865,24 @@ export interface ProviderUpdatedParams {
    * The new descriptor; its `revision` is higher than any sent before for this instance.
    */
   provider: ProviderDescriptor;
+}
+
+/**
+ * How the thread's branch stands against its remote, for Create's "push first" notice.
+ */
+export interface PushState {
+  /**
+   * Commits not pushed.
+   */
+  ahead?: number;
+  /**
+   * Files with uncommitted changes (untracked included): warned about, never pushed.
+   */
+  uncommitted?: number;
+  /**
+   * The branch has an upstream.
+   */
+  upstream?: boolean;
 }
 
 /**

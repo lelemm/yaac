@@ -412,6 +412,20 @@ catalogue! {
         /// Target → hub → the root's target: spending counted against a root on another target.
         MeshUsage = "mesh/usage" as MESH_USAGE:
             t::MeshUsageParams => t::MeshUsageResult, Both, request Control, response Control;
+
+        // ── Pull requests (D119–D121) ──────────────────────────────────────────────────
+        /// The pull requests whose head is a thread's branch, and what can be done with them.
+        ForgePrs = "forge/prs" as FORGE_PRS:
+            t::ForgePrsParams => t::ForgePrsResult, HostToDaemon, request Control, response Control;
+        /// What the Create PR modal needs: default branch, branches, prefilled text, push state.
+        ForgePrepare = "forge/prepare" as FORGE_PREPARE:
+            t::ForgePrepareParams => t::ForgePrepareResult, HostToDaemon, request Control, response Control;
+        /// Create a pull request from a thread's branch, pushing it first when needed.
+        ForgePrCreate = "forge/pr/create" as FORGE_PR_CREATE:
+            t::ForgePrCreateParams => t::ForgePrCreateResult, HostToDaemon, request Control, response Control, op;
+        /// One pull request in full: description, reviewers, checks.
+        ForgePrGet = "forge/pr/get" as FORGE_PR_GET:
+            t::ForgePrGetParams => t::ForgePrGetResult, HostToDaemon, request Control, response Control;
     }
     notifications {
         /// An instance's descriptor changed.
@@ -435,6 +449,9 @@ catalogue! {
         /// The receiver of a data stream grants more credit.
         StreamCredit = "stream/credit" as STREAM_CREDIT:
             t::StreamCreditParams, Both, Control;
+        /// A branch's pull requests changed (or were asked again after a push or commit).
+        ForgePrsChanged = "forge/prs/changed" as FORGE_PRS_CHANGED:
+            t::ForgePrsResult, DaemonToHost, Control;
     }
 }
 

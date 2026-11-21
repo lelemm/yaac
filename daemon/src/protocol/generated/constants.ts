@@ -11,6 +11,14 @@ import type {
   DiscoveryCapsParams,
   DiscoveryCapsResult,
   Empty,
+  ForgePrCreateParams,
+  ForgePrCreateResult,
+  ForgePrGetParams,
+  ForgePrGetResult,
+  ForgePrepareParams,
+  ForgePrepareResult,
+  ForgePrsParams,
+  ForgePrsResult,
   FsListParams,
   FsListResult,
   InitializeParams,
@@ -169,6 +177,10 @@ export const METHODS = {
   MESH_POLICY: "mesh/policy",
   MESH_BUDGET: "mesh/budget",
   MESH_USAGE: "mesh/usage",
+  FORGE_PRS: "forge/prs",
+  FORGE_PREPARE: "forge/prepare",
+  FORGE_PR_CREATE: "forge/pr/create",
+  FORGE_PR_GET: "forge/pr/get",
 } as const;
 
 /** Every notification method name. */
@@ -180,6 +192,7 @@ export const NOTIFICATIONS = {
   PROJECT_UPDATED: "project/updated",
   DISCOVERY_UPDATED: "discovery/updated",
   STREAM_CREDIT: "stream/credit",
+  FORGE_PRS_CHANGED: "forge/prs/changed",
 } as const;
 
 /** A request method name. */
@@ -338,6 +351,14 @@ export interface RequestMap {
   "mesh/budget": { params: MeshBudgetParams; result: MeshBudgetResult };
   /** Target → hub → the root's target: spending counted against a root on another target. */
   "mesh/usage": { params: MeshUsageParams; result: MeshUsageResult };
+  /** The pull requests whose head is a thread's branch, and what can be done with them. */
+  "forge/prs": { params: ForgePrsParams; result: ForgePrsResult };
+  /** What the Create PR modal needs: default branch, branches, prefilled text, push state. */
+  "forge/prepare": { params: ForgePrepareParams; result: ForgePrepareResult };
+  /** Create a pull request from a thread's branch, pushing it first when needed. */
+  "forge/pr/create": { params: ForgePrCreateParams; result: ForgePrCreateResult };
+  /** One pull request in full: description, reviewers, checks. */
+  "forge/pr/get": { params: ForgePrGetParams; result: ForgePrGetResult };
 }
 
 /** Params type of every notification. */
@@ -356,6 +377,8 @@ export interface NotificationMap {
   "discovery/updated": DiscoveryCapsResult;
   /** The receiver of a data stream grants more credit. */
   "stream/credit": StreamCreditParams;
+  /** A branch's pull requests changed (or were asked again after a push or commit). */
+  "forge/prs/changed": ForgePrsResult;
 }
 
 /** Who sends a method. */
@@ -431,6 +454,10 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "mesh/policy": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "mesh/budget": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "mesh/usage": { direction: "both", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "forge/prs": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "forge/prepare": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "forge/pr/create": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "forge/pr/get": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
 };
 
 /** Static facts about a notification. */
@@ -448,4 +475,5 @@ export const NOTIFICATION_INFO: { readonly [N in keyof NotificationMap]: Notific
   "project/updated": { direction: "daemonToHost", class: "control" },
   "discovery/updated": { direction: "daemonToHost", class: "control" },
   "stream/credit": { direction: "both", class: "control" },
+  "forge/prs/changed": { direction: "daemonToHost", class: "control" },
 };

@@ -7,6 +7,7 @@
 
 mod capability;
 mod event;
+mod forge;
 mod fs;
 mod ids;
 mod input;
@@ -22,6 +23,7 @@ mod upload;
 
 pub use capability::*;
 pub use event::*;
+pub use forge::*;
 pub use fs::*;
 pub use ids::*;
 pub use input::*;
