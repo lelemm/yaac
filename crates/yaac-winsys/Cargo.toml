@@ -1,6 +1,6 @@
 [package]
 name = "yaac-winsys"
-description = "The only place YAAC calls the Windows API directly: console attach, the user's SID, the attach pipe's access control, and the per-user Run registry value. Empty on other platforms."
+description = "The only place YAAC calls the Windows API directly: console attach, the user's SID, the attach pipe's access control, the per-user Run registry value, and the window's single-instance event. Empty on other platforms."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,6 +16,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Console",
     "Win32_System_Registry",
     "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 # The workspace forbids `unsafe`; this crate exists to hold the few FFI calls Windows needs,

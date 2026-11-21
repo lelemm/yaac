@@ -67,6 +67,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("46", "pill-relations"),
     ("47", "pill-workers"),
     ("48", "docked-narrow"),
+    ("49", "settings-window"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -540,6 +541,12 @@ fn setup(app: &mut YaacApp, id: &str) {
             if let Some(r) = app.client.state.threads.get_mut(&threads::search()) {
                 r.summary.spawned_by = None;
             }
+        }
+        "49" => {
+            // Settings → Window: the tray option and the renderer, with the line about the
+            // renderer this very window runs on (D127, D128).
+            app.ui.settings = true;
+            app.ui.settings_page = Page::Window;
         }
         "48" => {
             // The docked panel at its narrowest: titles ellipsised, every mark kept (D115).

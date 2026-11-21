@@ -8,7 +8,9 @@ use std::ptr;
 use std::sync::OnceLock;
 
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE, LocalFree};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
+};
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
 };
@@ -20,7 +22,8 @@ use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole, 
 use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW,
 };
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentProcess, INFINITE, OpenProcessToken, SetEvent, WaitForSingleObject};
+use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
 
 fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
     s.as_ref().encode_wide().chain(Some(0)).collect()
@@ -225,3 +228,62 @@ pub fn registry_delete_tree(subkey: &str) -> io::Result<()> {
     let rc = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, subkey.as_ptr()) };
     if rc == ERROR_FILE_NOT_FOUND { Ok(()) } else { win32(rc) }
 }
+
+/// The window's single-instance claim (D127): a named auto-reset event in the session's
+/// `Local\` namespace. The first window creates it and waits on it; a second `yaac` finds it,
+/// signals it (the first window shows itself), and exits.
+#[derive(Debug)]
+pub struct WindowInstance(Handle);
+
+impl std::fmt::Debug for Handle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Handle")
+    }
+}
+
+/// [`claim_window_instance`]'s outcome.
+#[derive(Debug)]
+pub enum InstanceClaim {
+    /// This is the only window: keep the claim for as long as the window runs.
+    First(WindowInstance),
+    /// Another window holds the name; it was asked to show itself.
+    Signalled,
+}
+
+/// Claims `name` (`Local\yaac-window-…`) for this window, or, when another window holds it,
+/// asks that window to show itself and lets it take the foreground.
+pub fn claim_window_instance(name: &str) -> io::Result<InstanceClaim> {
+    let w = wide(name);
+    // SAFETY: default security, auto-reset, not signalled, NUL-terminated name.
+    let raw = unsafe { CreateEventW(ptr::null(), 0, 0, w.as_ptr()) };
+    // SAFETY: no preconditions; read right after the call it describes.
+    let existed = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    if raw.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let event = Handle(raw);
+    if !existed {
+        return Ok(InstanceClaim::First(WindowInstance(event)));
+    }
+    // The running window is a background process: let it come to the front, since the user
+    // just asked for it by starting this one.
+    // SAFETY: no preconditions; failure only means the foreground stays where it is.
+    unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+    // SAFETY: an open event handle owned here.
+    check(unsafe { SetEvent(event.0) })?;
+    Ok(InstanceClaim::Signalled)
+}
+
+impl WindowInstance {
+    /// Blocks until another `yaac` asks this window to show itself. Returns `false` if the
+    /// wait failed (the caller stops waiting). Call it on a thread of its own.
+    pub fn wait(&self) -> bool {
+        // SAFETY: an open event handle owned by `self`, which outlives the call.
+        unsafe { WaitForSingleObject(self.0.0, INFINITE) == WAIT_OBJECT_0 }
+    }
+}
+
+// SAFETY: an event handle may be waited on and closed from any thread.
+unsafe impl Send for WindowInstance {}
+// SAFETY: waiting on an event from several threads at once is allowed.
+unsafe impl Sync for WindowInstance {}

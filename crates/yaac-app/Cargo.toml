@@ -16,13 +16,15 @@ name = "yaac"
 path = "src/main.rs"
 
 [features]
-default = ["glow", "hub"]
+default = ["glow", "wgpu", "hub"]
 # The real hub: `yaac hub` and attaching to it. Without it the binary runs only `--demo`
 # (a window-only build for UI work).
 hub = ["dep:yaac-hub"]
-# OpenGL renderer: the default (smaller and lighter, docs/02-architecture.md#footprint-budget).
+# Both renderers are built in and chosen at start (D128, docs/02-architecture.md#the-renderer):
+# OpenGL through glow, the default (smaller and lighter);
 glow = ["eframe/glow"]
-# wgpu renderer, kept behind a feature.
+# wgpu on Direct3D 12, Vulkan or OpenGL, and the software adapters (WARP on Windows) that
+# the window falls back to when the chosen renderer cannot start.
 wgpu = ["eframe/wgpu"]
 
 [dependencies]
@@ -53,6 +55,9 @@ base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 yaac-winsys = { path = "../yaac-winsys" }
+# The notification-area icon and its menu (D127). Windows only: no Linux backend is built
+# (its GTK one would pull in GTK; see docs/07-ui.md#the-tray).
+tray-icon = { version = "0.26.1", default-features = false }
 
 [build-dependencies]
 # The Windows icon resource's 256 px image (build.rs).

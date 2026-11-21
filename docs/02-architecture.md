@@ -28,7 +28,9 @@ The host runs up to two processes from one binary:
   closed, so agents on different machines can go on working together
   ([10 Agent mesh](10-agent-mesh.md#the-hub)).
 - **`yaac`** — the window. It attaches to the hub over a user-only local socket, reads the
-  cache for an instant first frame, and paints. Closing it stops nothing.
+  cache for an instant first frame, and paints. Closing it stops nothing. By default closing
+  only hides it in the system tray (D127, [07](07-ui.md#the-tray)); Quit in the tray menu ends
+  the window process, never the hub.
 
 Inside the window the UI thread never blocks on I/O: it reads an in-memory state snapshot and
 paints. Inside the hub one I/O thread owns every connection and decodes frames; anything that
@@ -534,6 +536,7 @@ object on Windows, a distro shutdown on WSL. Each is specified and tested on its
 | **Drafts** — unsent text and attachments | **Host**, in their own durable store | User-authored data. Never part of the disposable cache. |
 | Agent-to-agent messages in transit | **Target** outbox and mailbox; **host** relay queue | Each hop stores a message on disk before acknowledging it ([10](10-agent-mesh.md#durability-hop-by-hop)). |
 | Thread index, model lists, opened transcripts | **Host** cache (SQLite), written by the hub, read by the window | Speed only. Always safe to delete. |
+| The renderer choice and its start marker | **Host**, `<config>/display.json`, written by the window | Needed before the window exists, and must survive "clear cache" so a crashing renderer stays skipped. |
 
 ## Security and privacy
 
@@ -589,7 +592,43 @@ Design choices that serve the budget:
 - **Reactive repaint.** egui repaints on input or on an explicit request from the I/O thread.
 - **Bounded memory by construction.** Only open threads hold transcripts in memory; everything
   else is rows in SQLite. See [07 UI](07-ui.md#rendering-and-memory).
-- **Renderer chosen by measurement.** egui offers an OpenGL backend (`glow`) and a `wgpu`
-  backend; both are GPU-accelerated. `glow` usually uses noticeably less memory, `wgpu` is the
-  more future-proof path. Spike S1 measures both and picks one, with the other kept behind a
-  cargo feature.
+- **Renderer chosen by measurement, and by the user.** egui offers an OpenGL backend (`glow`)
+  and a `wgpu` backend; both are GPU-accelerated. Both are built in, and the user picks one
+  ([the renderer](#the-renderer)); *Automatic* is `glow`, which uses less memory.
+
+### The renderer
+
+D128. The window can draw with OpenGL through `glow`, or with `wgpu` on Direct3D 12, Vulkan or
+OpenGL; and in software — on Windows Direct3D 12 on **WARP**, Microsoft's software rasteriser
+that every Windows has, so YAAC runs in VMs without a GPU such as Windows 365; elsewhere
+wgpu's CPU adapter (lavapipe for Vulkan, llvmpipe for OpenGL).
+
+At start, before any window exists, the window reads its **display file**
+(`<config>/display.json`, written by the window itself — it is not the hub's cache, and it is
+needed before the attach): the user's choice, and a start marker. Then:
+
+| Last start | First try | If it fails to initialise |
+| --- | --- | --- |
+| reached its first frame, or first start | the choice | software |
+| the choice never reached a first frame (crashed or killed) | software | the choice |
+| the choice is software | software | *Automatic* |
+
+"Fails to initialise" is eframe returning an error — no adapter, no device, no OpenGL context
+— and the retry happens in the same process (eframe keeps its event loop for a second
+window). The marker "starting with X" is written before X is initialised and cleared after the
+first frame, so a driver that takes the whole process down is caught at the next start; that
+renderer is then skipped until the user picks a renderer again (P72), so a crash cannot become
+a loop. On wgpu the adapter is picked by YAAC: hardware first (discrete, integrated, virtual),
+the CPU adapter only for software — or when it is all there is, and then Settings says
+"software". What runs is recorded and shown in Settings → Window ([07](07-ui.md#display)).
+
+`YAAC_RENDERER=<id>` or `--renderer <id>` (`auto`, `dx12`, `vulkan`, `wgpu-gl`, `glow`,
+`software`) overrides the choice for one start; `YAAC_RENDERER_FAIL=1` makes the first attempt
+fail, to exercise the fallback.
+
+Building `wgpu` in costs RENDERER_SIZE_DELTA of executable (Windows, release).
+
+Idle footprint per renderer, Windows 11, the demo fleet (`--demo`, maximised 1440×900 window
+on a 2560×1440 screen), after settling, CPU over 15 s:
+
+RENDERER_TABLE

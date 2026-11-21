@@ -1,5 +1,5 @@
 //! Settings: a full-window page with its own navigation (Targets, Providers, Appearance,
-//! Advanced) and "Back to threads". No thread list, no agents panel, no composer.
+//! Window, Advanced) and "Back to threads". No thread list, no agents panel, no composer.
 
 use eframe::egui::{self, Margin, RichText, pos2, vec2};
 use yaac_core::attention::Mark;
@@ -168,6 +168,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
                     Page::Targets => targets(ui, app, actions),
                     Page::Providers => providers(ui, app, actions),
                     Page::Appearance => appearance(ui, app, actions),
+                    Page::Window => window(ui, app),
                     Page::Advanced => advanced(ui, app, actions),
                 }
             });
@@ -986,6 +987,78 @@ fn appearance(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         }
     });
     ui.label(widgets::secondary("Scales the whole window; agent prose stays the largest text.", &p));
+}
+
+// ── Window: the tray and the renderer ──────────────────────────────────────────────────
+
+fn window(ui: &mut egui::Ui, app: &mut YaacApp) {
+    use yaac_core::display::{Host, Renderer, in_use_line, offered};
+    let p = app.p;
+    title_row(ui, "Window", |_| {});
+    widgets::heading(ui, "Closing the window");
+    let supported = crate::tray::Shell::supported();
+    ui.horizontal(|ui| {
+        let on = app.ui.tray_on_close && supported;
+        if supported {
+            if widgets::switch(ui, &p, on).clicked() {
+                app.ui.tray_on_close = !app.ui.tray_on_close;
+            }
+        } else {
+            ui.add_enabled_ui(false, |ui| widgets::switch(ui, &p, false));
+        }
+        ui.label("Keep running in the tray when closed");
+    });
+    let note = if supported {
+        "Closing the window hides it in the system tray. Click the tray icon to open it again; its menu has Quit. The hub keeps running either way."
+    } else {
+        "The tray icon is available on Windows. Here, closing the window closes it; the hub keeps running."
+    };
+    ui.label(widgets::secondary(note, &p));
+
+    widgets::heading(ui, "Display");
+    let host = Host::current();
+    let choices = offered(host, crate::display::BUILT);
+    let current = app.display.file.renderer;
+    ui.horizontal(|ui| {
+        ui.label("Renderer");
+        let r = widgets::selector(ui, &p, current.label(host), true);
+        if r.clicked() {
+            app.ui.toggle_menu(Menu::Renderer);
+        }
+        let mut open = app.ui.menu == Some(Menu::Renderer);
+        let mut picked: Option<Renderer> = None;
+        crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+            for c in &choices {
+                if ui.selectable_label(*c == current, c.label(host)).clicked() {
+                    picked = Some(*c);
+                }
+            }
+        });
+        if !open && app.ui.menu == Some(Menu::Renderer) {
+            app.ui.menu = None;
+        }
+        if let Some(c) = picked {
+            app.display.choose(c);
+        }
+    });
+    if app.display.restart_needed() {
+        ui.label(RichText::new("Applies when YAAC starts again.").font(theme::ui(size::SMALL)).color(p.text));
+    } else {
+        ui.label(widgets::secondary("A change applies when YAAC starts again. If the renderer cannot start, YAAC falls back to software rendering and says so here.", &p));
+    }
+    ui.add_space(6.0);
+    let u = &app.display.in_use;
+    let line = in_use_line(u, host);
+    let color = if u.fell_back.is_some() || u.software { p.text } else { p.text2 };
+    ui.label(RichText::new(line).font(theme::ui(size::UI)).color(color));
+    if let Some(crashed) = app.display.file.crashed {
+        ui.horizontal(|ui| {
+            ui.label(widgets::secondary(format!("{} is skipped until you try it again.", crashed.label(host)), &p));
+            if widgets::plain(ui, &p, "Try it again", None).clicked() {
+                app.display.choose(current);
+            }
+        });
+    }
 }
 
 fn advanced(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {

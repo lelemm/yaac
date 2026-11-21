@@ -52,6 +52,8 @@ pub(crate) enum Menu {
     ForkDest,
     SettingsTarget,
     InstanceKind,
+    /// The renderer dropdown (D128).
+    Renderer,
     Demo,
 }
 
@@ -125,6 +127,8 @@ pub(crate) struct UiState {
     pub theme: ThemeChoice,
     pub font_size: f32,
     pub send_key: SendKey,
+    /// D127: closing the window hides it to the tray.
+    pub tray_on_close: bool,
     pub questions: HashMap<RequestId, QuestionDraft>,
     pub budgets: HashMap<RequestId, BudgetFields>,
     pub dismissed: BTreeSet<TargetId>,
@@ -195,6 +199,7 @@ impl UiState {
             theme,
             font_size: theme::size::UI,
             send_key: SendKey::Enter,
+            tray_on_close: true,
             questions: HashMap::new(),
             budgets: HashMap::new(),
             dismissed: BTreeSet::new(),
@@ -243,6 +248,7 @@ impl UiState {
             send_key: self.send_key,
             sidebar: self.sidebar,
             agents_width: self.agents_width,
+            tray_on_close: self.tray_on_close,
         }
     }
 
@@ -261,6 +267,7 @@ impl UiState {
         self.send_key = p.send_key;
         self.sidebar = p.sidebar;
         self.agents_width = p.agents_width;
+        self.tray_on_close = p.tray_on_close;
     }
 }
 
@@ -460,6 +467,10 @@ pub(crate) struct YaacApp {
     /// same path as Copy (egui's copy command, handed to the system clipboard by egui-winit),
     /// so the clipboard can be checked from outside the window.
     debug_copy: Option<String>,
+    /// The tray and what closing does (D127).
+    pub shell: crate::tray::Shell,
+    /// The renderer in use and the stored choice (D128).
+    pub display: crate::display::DisplayState,
     #[cfg_attr(not(feature = "hub"), allow(dead_code))]
     ctx: egui::Context,
 }
@@ -545,6 +556,11 @@ impl YaacApp {
         };
         let ui = UiState::new(launch.theme);
         let saved_prefs = ui.prefs();
+        let mut shell = launch.shell;
+        shell.bind(&cc.egui_ctx);
+        if launch.tray {
+            shell.install_tray(&cc.egui_ctx);
+        }
         let mut app = Self {
             client,
             demo,
@@ -567,6 +583,8 @@ impl YaacApp {
             last_tick: 0.0,
             applied: None,
             debug_copy: std::env::var("YAAC_DEBUG_COPY").ok().filter(|t| !t.is_empty()),
+            shell,
+            display: launch.display,
             ctx: cc.egui_ctx,
         };
         if app.demo.is_some() {
@@ -1225,6 +1243,13 @@ impl eframe::App for YaacApp {
         if arrived || ssh_changed || files_changed {
             ctx.request_repaint();
         }
+        // The tray (D127): show and quit requests, close-to-tray, the needs-you badge. This
+        // runs while the window is hidden too (eframe calls only `logic` then).
+        let state = &self.client.state;
+        self.shell.upkeep(ctx, self.ui.tray_on_close, || {
+            let map = AttentionMap::compute(state);
+            yaac_core::sidebar::needs_you(state, &map, now).len()
+        });
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -1241,6 +1266,8 @@ impl eframe::App for YaacApp {
             }
         }
         self.p = p;
+        // The renderer reached a frame: it did not crash the start (D128).
+        self.display.first_frame();
         // A few frames in, once the window and its clipboard are up.
         if ctx.cumulative_frame_nr() > 5
             && let Some(text) = self.debug_copy.take()
@@ -1299,6 +1326,9 @@ mod tests {
             host_windows: false,
             #[cfg(feature = "hub")]
             attach: None,
+            display: crate::display::DisplayState::default(),
+            shell: crate::tray::Shell::new(),
+            tray: false,
         };
         YaacApp::from_ctx(ctx, launch)
     }
@@ -1440,5 +1470,60 @@ mod tests {
         let collapsed = app.ui.sidebar.collapsed;
         assert!(!drag_starts_window_move(&ctx, &mut app, egui::pos2(255.0, 21.0)));
         assert_eq!(app.ui.sidebar.collapsed, collapsed, "a drag is not a click");
+    }
+
+    /// One whole pass as eframe runs it (`logic`, then `ui`); returns the root's commands.
+    fn full_pass(ctx: &egui::Context, app: &mut YaacApp, input: egui::RawInput) -> Vec<egui::ViewportCommand> {
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(input, |ui| {
+            eframe::App::logic(app, ui.ctx(), &mut frame);
+            eframe::App::ui(app, ui, &mut frame);
+        });
+        out.textures_delta.clear();
+        out.viewport_output.remove(&egui::ViewportId::ROOT).map(|v| v.commands).unwrap_or_default()
+    }
+
+    fn close_request() -> egui::RawInput {
+        let mut input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0))), ..Default::default() };
+        input.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        input
+    }
+
+    #[test]
+    fn closing_with_the_tray_option_on_hides_the_window_instead_of_quitting() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.shell.fake_tray = true;
+        assert!(app.ui.tray_on_close, "on by default");
+        // The title bar's close button and Alt+F4 both arrive as a close request.
+        let cmds = full_pass(&ctx, &mut app, close_request());
+        assert!(cmds.contains(&egui::ViewportCommand::CancelClose), "{cmds:?}");
+        assert!(cmds.contains(&egui::ViewportCommand::Visible(false)));
+        assert!(app.shell.hidden);
+        // The tray's left click shows it again and brings it to the front.
+        app.shell.inject(crate::tray::ShellCmd::Show);
+        let cmds = full_pass(&ctx, &mut app, egui::RawInput::default());
+        assert!(cmds.contains(&egui::ViewportCommand::Visible(true)) && cmds.contains(&egui::ViewportCommand::Focus), "{cmds:?}");
+        assert!(!app.shell.hidden);
+        // Quit in the tray menu: the close goes through.
+        app.shell.inject(crate::tray::ShellCmd::Quit);
+        let cmds = full_pass(&ctx, &mut app, egui::RawInput::default());
+        assert!(cmds.contains(&egui::ViewportCommand::Close));
+        let cmds = full_pass(&ctx, &mut app, close_request());
+        assert!(!cmds.contains(&egui::ViewportCommand::CancelClose), "{cmds:?}");
+    }
+
+    #[test]
+    fn closing_quits_with_the_option_off_or_without_a_tray() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        // No tray icon (Linux, or the icon could not be added): hiding would lose the window.
+        let cmds = full_pass(&ctx, &mut app, close_request());
+        assert!(!cmds.contains(&egui::ViewportCommand::CancelClose));
+        app.shell.fake_tray = true;
+        app.ui.tray_on_close = false;
+        let cmds = full_pass(&ctx, &mut app, close_request());
+        assert!(!cmds.contains(&egui::ViewportCommand::CancelClose) && !cmds.contains(&egui::ViewportCommand::Visible(false)));
+        assert!(!app.shell.hidden);
     }
 }
