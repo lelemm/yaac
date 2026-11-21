@@ -300,17 +300,27 @@ fn compare_builds(window: &str, hub: &str) -> std::cmp::Ordering {
 
 /// Whether a target's `yaacd` comes from an older build than this hub: both carry a build
 /// number (every artefact of one build shares it, whatever each one's own version) and the
-/// daemon's is lower. Development builds are never called older: they have no order.
+/// daemon's is lower. A development daemon counts as older than a numbered hub (a release
+/// replaces it); a development hub never calls anything older (P94).
 fn daemon_build_older(daemon: &str, hub: &str) -> bool {
-    matches!((build_number(daemon), build_number(hub)), (Some(d), Some(h)) if d < h)
+    match (build_number(daemon), build_number(hub)) {
+        (Some(d), Some(h)) => d < h,
+        (None, Some(_)) => true,
+        _ => false,
+    }
 }
 
 /// Whether a serving daemon may be handed over to the build `to` (the build this target's
-/// connector installs and starts): only to a strictly newer numbered build. A hub without a
-/// bundle, a development build on either side, or the same or an older build never hands over
+/// connector installs and starts): only to a numbered build, strictly newer than the serving
+/// one — a serving development build counts as older than any numbered one (P94). A hub
+/// without a bundle, a development bundle, or the same or an older build never hands over
 /// (docs/02-architecture.md#one-serving-daemon-per-user).
 fn hands_over_to(serving: &str, to: Option<&str>) -> bool {
-    matches!((build_number(serving), to.and_then(build_number)), (Some(s), Some(t)) if t > s)
+    match (build_number(serving), to.and_then(build_number)) {
+        (Some(s), Some(t)) => t > s,
+        (None, Some(_)) => true,
+        _ => false,
+    }
 }
 
 /// A hand-over the hub asked of a target's daemon, kept per target across the reconnect: the
@@ -2913,7 +2923,7 @@ mod build_tests {
         assert!(daemon_build_older("0.3.0+41", "0.1.0+42"));
         assert!(!daemon_build_older("0.1.0+42", "0.1.0+42"));
         assert!(!daemon_build_older("0.1.0+43", "0.1.0+42"));
-        assert!(!daemon_build_older("0.1.0+dev", "0.1.0+42"), "a development daemon has no order");
+        assert!(daemon_build_older("0.1.0+dev", "0.1.0+42"), "a release replaces a development daemon (P94)");
         assert!(!daemon_build_older("0.1.0+41", "0.1.0+dev.ab12"));
     }
 
@@ -2926,6 +2936,6 @@ mod build_tests {
         assert!(!hands_over_to("0.1.0+43", Some("0.1.0+42-0123456789abcdef")), "an older bundle");
         assert!(!hands_over_to("0.1.0+41", None), "no bundle");
         assert!(!hands_over_to("0.1.0+41", Some("0.1.0-0123456789abcdef")), "a development bundle");
-        assert!(!hands_over_to("0.1.0+dev", Some("0.1.0+42-0123456789abcdef")), "a development daemon");
+        assert!(hands_over_to("0.1.0+dev", Some("0.1.0+42-0123456789abcdef")), "a development daemon gives way to a release (P94)");
     }
 }

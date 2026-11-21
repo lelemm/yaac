@@ -486,8 +486,9 @@ connections (invariant #14).
   (`Connector::daemon_build`): for WSL and SSH, the hub's embedded bundle, whose install
   folder is `<version>+<id>-<sha16>` (the build id is in the folder name since P92); for the
   local target, only a build the configuration declares. The hub hands over only to a
-  **strictly higher build number** than the serving daemon's. No bundle, a development build
-  on either side, or the same or an older build: no hand-over, and no **Update now**
+  **strictly higher build number** than the serving daemon's; a serving development build
+  counts as older than any numbered one, so a release replaces it (P94). No bundle, a
+  development bundle, or the same or an older build: no hand-over, and no **Update now**
   (`DaemonSummary.canUpdate` is false).
 - **"Newest" in stage 0.** The host chooses what `RUN` starts: of the installed builds, the
   one with the highest build number (its own on a tie); its `yaacd connect` attaches to
@@ -539,7 +540,8 @@ installer (`YAAC-Setup-<version>+<id>.exe`, file version `<numeric version>.<id>
   `scripts/build-installer.sh`.
 - A build made without the scripts — a plain `cargo build`, tests — is a **development build**:
   `+dev.<hash of its sources>` for the window and hub, `+dev` for the daemon. Development
-  builds are told apart but have no order.
+  builds are told apart but have no order among themselves; a numbered build counts as newer
+  than a development daemon (P94).
 - **Checked when YAAC starts, not when it is built.** The window compares itself with the hub
   at `hub/hello`: a hub of an older build (or a different development build) is replaced by
   this build's hub; a window older than the hub is told to update. The hub compares each
