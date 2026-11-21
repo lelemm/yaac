@@ -408,3 +408,31 @@ pub fn reconcile_effort(model: &ModelInfo, current: Option<&EffortId>) -> Option
         _ => model.default_effort.clone(),
     }
 }
+
+/// The control row of an open thread, as the composer shows it (the Commander's model,
+/// effort, mode and agents steps read the same row, so both offer the same choices).
+pub fn thread_row(state: &crate::state::AppState, key: &crate::key::ThreadKey) -> ControlRowView {
+    let Some(s) = state.summary(key) else { return ControlRowView::Hidden };
+    let t = state.transcripts.get(key);
+    let providers = state.target(&key.target).map(|t| t.providers.as_slice()).unwrap_or_default();
+    let target_name = state.target_name(&key.target);
+    started_row(StartedInputs {
+        providers,
+        instance: &s.instance,
+        target_name: &target_name,
+        effective: t.and_then(|t| t.effective.as_ref()),
+        summary_model: s.model.as_ref(),
+        summary_fast: s.fast,
+        next: state.next_settings.get(key),
+        context: t.and_then(|t| t.context.as_ref()),
+        may_act: state.may_act(key),
+        agents: s.spawned_by.is_none().then(|| state.agents_policy(key)),
+    })
+}
+
+/// The control row of a new-thread draft.
+pub fn draft_row_of(state: &crate::state::AppState, id: u64) -> Option<ControlRow> {
+    let d = state.new_threads.iter().find(|d| d.id == id)?;
+    let providers = state.target(&d.target).map(|t| t.providers.as_slice()).unwrap_or_default();
+    Some(draft_row(providers, &state.target_name(&d.target), d))
+}

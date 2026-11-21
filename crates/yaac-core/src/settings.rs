@@ -23,13 +23,15 @@ pub enum Page {
     Appearance,
     /// Window: the tray and the renderer (D127, D128).
     Window,
+    /// Keyboard: every command's keys (D131).
+    Keyboard,
     /// Advanced.
     Advanced,
 }
 
 impl Page {
     /// Every page, in navigation order.
-    pub const ALL: [Page; 5] = [Page::Targets, Page::Providers, Page::Appearance, Page::Window, Page::Advanced];
+    pub const ALL: [Page; 6] = [Page::Targets, Page::Providers, Page::Appearance, Page::Window, Page::Keyboard, Page::Advanced];
 
     /// The navigation label.
     pub fn label(self) -> &'static str {
@@ -38,6 +40,7 @@ impl Page {
             Page::Providers => "Providers",
             Page::Appearance => "Appearance",
             Page::Window => "Window",
+            Page::Keyboard => "Keyboard",
             Page::Advanced => "Advanced",
         }
     }

@@ -1,5 +1,6 @@
 //! Window-side choices that persist: grouping, the docked agents panel, theme, font size, send
-//! key, collapsed sections, and keeping running in the tray. Attached to a hub, each change is
+//! key, collapsed sections, keeping running in the tray, key bindings and the Commander's recent
+//! commands. Attached to a hub, each change is
 //! sent as `hub/uiState/set` (the hub is the cache's only writer) and read back from the cache
 //! file's `ui_state` table at start; in demo mode they stay in memory. (The renderer choice is
 //! not here: it is needed before the window exists, so the window keeps it in its own display
@@ -32,7 +33,7 @@ pub enum SendKey {
 }
 
 /// The persisted choices.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct UiPrefs {
     /// The sidebar grouping checkboxes and "Show dismissed".
     pub grouping: Grouping,
@@ -55,6 +56,10 @@ pub struct UiPrefs {
     pub agents_width: f32,
     /// D127: closing the window hides it to the system tray (on by default).
     pub tray_on_close: bool,
+    /// The user's key bindings, as differences from the defaults (D131).
+    pub bindings: crate::keys::Overrides,
+    /// The Commander's recently used commands, most recent first (D130).
+    pub recent: Vec<String>,
 }
 
 /// The narrowest docked agents panel.
@@ -71,7 +76,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { grouping: Grouping::default(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, tray_on_close: true }
+        Self { grouping: Grouping::default(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, tray_on_close: true, bindings: crate::keys::Overrides::default(), recent: Vec::new() }
     }
 }
 
@@ -97,8 +102,12 @@ pub mod keys {
     pub const ORDERING: &str = "ordering";
     /// Closing the window hides it to the tray (D127).
     pub const TRAY_ON_CLOSE: &str = "trayOnClose";
+    /// The key bindings that differ from the defaults (D131).
+    pub const KEY_BINDINGS: &str = "keyBindings";
+    /// The Commander's recently used commands (D130).
+    pub const COMMANDER_RECENT: &str = "commanderRecent";
     /// Every key.
-    pub const ALL: [&str; 10] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING, TRAY_ON_CLOSE];
+    pub const ALL: [&str; 12] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT];
 }
 
 impl UiPrefs {
@@ -132,6 +141,8 @@ impl UiPrefs {
             keys::SIDEBAR => json!({ "width": self.sidebar.width, "collapsed": self.sidebar.collapsed }),
             keys::AGENTS_WIDTH => json!(self.agents_width),
             keys::TRAY_ON_CLOSE => json!(self.tray_on_close),
+            keys::KEY_BINDINGS => self.bindings.value(),
+            keys::COMMANDER_RECENT => json!(self.recent),
             keys::SEND_KEY => json!(match self.send_key {
                 SendKey::Enter => "enter",
                 SendKey::CtrlEnter => "ctrlEnter",
@@ -165,6 +176,16 @@ impl UiPrefs {
             }
             keys::AGENTS_DOCKED => self.docked = v.as_bool().unwrap_or(self.docked),
             keys::TRAY_ON_CLOSE => self.tray_on_close = v.as_bool().unwrap_or(self.tray_on_close),
+            keys::KEY_BINDINGS => {
+                if v.is_object() {
+                    self.bindings = crate::keys::Overrides::from_value(v);
+                }
+            }
+            keys::COMMANDER_RECENT => {
+                if let Some(list) = v.as_array() {
+                    self.recent = list.iter().filter_map(Value::as_str).filter(|id| crate::commands::by_id(id).is_some()).take(crate::commands::RECENT_MAX).map(str::to_owned).collect();
+                }
+            }
             keys::THEME => {
                 self.theme = match v.as_str() {
                     Some("dark") => ThemePref::Dark,
