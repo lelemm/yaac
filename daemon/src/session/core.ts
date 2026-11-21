@@ -74,6 +74,24 @@ import { Limiter } from "../util/exec.js";
 export const PAGE_MAX_BYTES = 64 * 1024;
 export const ITEM_READ_MAX = 512 * 1024;
 const SNAPSHOT_TTL_MS = 10 * 60 * 1000;
+/** The longest a stop waits for git status computations in flight. */
+const CLOSE_GIT_WAIT_MS = 2000;
+/** The longest a stop waits for the providers to close. */
+const CLOSE_DISPOSE_WAIT_MS = 5000;
+
+/** Whether `p` settled within `ms` (it is not cancelled either way). */
+async function within(p: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<false>((resolve) => {
+    // Not unref'd: the stop itself keeps the process alive until it has finished.
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([p.then(() => true as const), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 const SNAPSHOT_MAX = 64;
 /** How long a `now` delivery waits for an interrupted turn to end before giving up. */
 const NOW_INTERRUPT_WAIT_MS = 5000;
@@ -2596,10 +2614,18 @@ export class Core {
     return { sections };
   }
 
+  /**
+   * Stops: journals flushed and closed, the index saved, providers disposed. Bounded: nothing
+   * here may keep the process from exiting (idle exit, a signal). What must not be lost is on
+   * disk before the waits that can be cut short — git status is only a cache, and a provider
+   * that does not finish disposing has nothing yaacd still needs.
+   */
   async close(): Promise<void> {
     if (this.gitTimer) clearInterval(this.gitTimer);
     this.gitTimer = null;
-    await this.gitStatus.idle().catch(() => {});
+    if (!(await within(this.gitStatus.idle().catch(() => {}), CLOSE_GIT_WAIT_MS))) {
+      this.opts.log(`stop: git status still computing after ${CLOSE_GIT_WAIT_MS} ms; not waiting for it`);
+    }
     this.gitStatus.close();
     for (const rt of this.threads.values()) {
       this.flushDeltas(rt);
@@ -2607,7 +2633,9 @@ export class Core {
     }
     this.index.save();
     this.ops.close();
-    await this.registry.dispose();
+    if (!(await within(this.registry.dispose().catch(() => {}), CLOSE_DISPOSE_WAIT_MS))) {
+      this.opts.log(`stop: a provider had not finished closing after ${CLOSE_DISPOSE_WAIT_MS} ms; not waiting for it`);
+    }
   }
 
   /** Expose for tests: the last journal sequence of a thread. */
