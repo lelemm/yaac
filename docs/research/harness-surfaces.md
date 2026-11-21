@@ -328,3 +328,38 @@ source and its tests — they were not run by us. Spike S10 exists to confirm th
 | `turn/start` can take `input: []` with a `toolOutput` so that agent-originated input arrives in the tool role. | *Source.* `toolOutput` is present in the schema read here. |
 | `developerInstructions` persists in history once the first turn has run; it must be passed again on a cold resume, and is ignored when rejoining a loaded thread. `thread/inject_items` can add a developer message to an existing thread. | *Source.* `thread/inject_items` is in the method list read here. |
 | A thread with no subscribers can be unloaded once idle; a running turn survives an unsubscribe. | *Source* (upstream tests). |
+
+## Forge CLIs for pull requests (2026-11-21)
+
+What `yaacd`'s forge layer (`daemon/src/forge/`) relies on, for D119–D121.
+
+**GitHub — `gh` 2.45.0, verified on the development machine** (help output, and read-only
+calls against `lelemm/yaac` and the public `cli/cli`):
+
+| Use | Command | Checked |
+| --- | --- | --- |
+| Signed in? GHE hosts | `gh auth status [--hostname H]` — hosts are the unindented lines; exit 1 when signed out ("You are not logged into any GitHub hosts…") | live |
+| Branch's PRs | `gh pr list -R HOST/OWNER/REPO --head B --state all --limit 20 --json number,title,state,isDraft,url,headRefName,baseRefName,statusCheckRollup,author,updatedAt,headRepositoryOwner` — `--head` also matches same-named branches of other forks (filter on `headRepositoryOwner.login`); `state` is `OPEN`/`MERGED`/`CLOSED` | live |
+| One PR | `gh pr view N -R … --json …,body,latestReviews,reviewRequests` | live |
+| Checks | `statusCheckRollup`: `CheckRun {name,status,conclusion,detailsUrl,workflowName}` or `StatusContext {context,state,targetUrl}`. **`gh pr checks` has no `--json` in 2.45.** The Actions run id is in `detailsUrl` (`/actions/runs/<id>/job/<id>`) | live |
+| Failed log / rerun | `gh run view <run> -R … --log-failed`; `gh run rerun <run> -R … --failed` | help only (no PR of ours to run them on) |
+| Create | `gh pr create -R … --head [owner:]B --base T --title … --body … [--draft]` — prints the new URL | help only (no real PR created) |
+| Default branch, fork parent | `gh repo view HOST/OWNER/REPO --json defaultBranchRef` / `--json parent` | live |
+| Review threads | `gh api --hostname H graphql` with `repository.pullRequest.reviewThreads{id isResolved path line comments{…}}`; mutations `addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId, body})` and `resolveReviewThread(input:{threadId})` | query live; mutations by schema introspection |
+| Needs a login | exit code 4 ("To get started with GitHub CLI, please run: gh auth login") | live |
+
+**Azure DevOps — `az` is not installed on the development machine.** Built from the Microsoft
+Learn reference pages (az `account`, `config`; Azure DevOps REST 7.1) and tested against a fake:
+
+- Confirmed in the docs: `az account list [--all]`; `az account get-access-token --resource
+  … --tenant <id>` (with `expires_on` POSIX and `expiresOn` local); the Azure DevOps resource id
+  `499b84ac-1321-427f-aa17-267ca6975798`; the REST paths for repositories, pull requests
+  (`searchCriteria.sourceRefName`, `searchCriteria.status=all`), create (`isDraft`), policy
+  evaluations (artifact `vstfs:///CodeReview/CodeReviewId/{projectId}/{prId}`, api-version
+  `7.1-preview.1`, requeue by PATCH `status: queued`), build timeline, PR threads, thread
+  comments, thread update (`status: fixed`); vote values 10/5/0/-5/-10.
+- **Not confirmed**: the `tenantId`/`homeTenantId` and `accessToken` field names of the `az`
+  output; what a token from the wrong tenant gets back (treated as: anything but 200 with
+  JSON); the build-log endpoint `…/build/builds/{id}/logs/{logId}`; the timeline path without
+  `{timelineId}`; the PR web URL `{repo webUrl}/pullrequest/{id}`; `context.buildId` in a policy
+  evaluation (untyped in the schema); `$top` on the projects probe.

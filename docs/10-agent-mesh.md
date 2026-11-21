@@ -138,6 +138,8 @@ One MCP server, named `yaac`. Few tools, each doing one thing.
 | `stop_thread` | Stop a worker **and everything it spawned**, and hold them stopped. Only for threads beneath the caller. Reports what actually happened. See [stopping workers](#stopping-workers). |
 | `stop_all` | Stop every worker beneath the caller, in one call. |
 
+| `pr_list` · `pr_get` · `pr_create` · `pr_checks` · `pr_rerun_checks` · `pr_comments` · `pr_reply` | Pull requests of the caller's branch — see [pull requests](#pull-requests). |
+
 How the owner's four examples map onto them:
 
 | The user says, to a thread | The agent does |
@@ -146,6 +148,26 @@ How the owner's four examples map onto them:
 | "Spawn three Opus workers for these modules." | `list_models` → `spawn_thread` ×3 → `wait` |
 | "On devbox, thread *aaaa* is waiting for you. Tell it when you're done." | `notify_when_done { to: "devbox/…aaaa" }` — or `send_message` at the end |
 | "Run this migration across all my servers." | `list_targets` → `spawn_thread` on each → `wait` → `read_thread` |
+
+### Pull requests
+
+D121: the same server offers seven tools for the pull requests of the **caller's own checkout
+and branch**, run by `yaacd` on the caller's machine with that machine's `gh` or `az` login
+([05](05-threads.md#pull-requests)). They are allowed like the other tools here — no per-call
+approval — and each call shows in the transcript as the harness's own tool call. **Merge and
+approve are not offered.**
+
+| Tool | What it does |
+| --- | --- |
+| `pr_list` | Pull requests whose head is the branch (or a named branch): number, state, checks, title, URL. |
+| `pr_get` | One pull request in full: description, reviewers and their votes, every check or policy. |
+| `pr_create` | Open one from the current branch; pushes first when needed; refuses when the branch already has an open one; an uncertain outcome is reported and not retried (P43). |
+| `pr_checks` | Checks (GitHub) or policies (Azure DevOps) with status, and the end of the failed steps' log (`gh run view --log-failed`; the build timeline's failed logs). |
+| `pr_rerun_checks` | Rerun failed GitHub Actions jobs (`gh run rerun --failed`) or requeue failed build policies. |
+| `pr_comments` | Review threads: id, file and line, resolved or not, comments with authors. |
+| `pr_reply` | Reply to a thread and/or resolve it. |
+
+Without a number, a tool means the branch's open pull request.
 
 ### What the live tests changed
 

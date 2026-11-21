@@ -156,6 +156,24 @@ Methods and fields added after this document was drafted — projects, `thread/u
 thread search — are listed with their exact names in
 [plan/wire-additions.md](plan/wire-additions.md). All are additive.
 
+### Pull requests
+
+D119–D121: the pull requests of a thread's branch. **All forge work runs on the target**, in
+`yaacd`, with the target's own `gh` (GitHub) or `az` (Azure DevOps) and their logins; the host
+only opens the URLs it is given. Everything is keyed by thread: `yaacd` knows its checkout and
+branch. All additive; a `yaacd` without them answers `method_not_found` and the window shows no
+badge.
+
+| Method / notification | Purpose |
+| --- | --- |
+| `forge/prs` | `{ threadId, refresh? }` → `{ root, branch?, access, defaultBranch?, prs, at?, error? }`. `access` is `{ repo?, capabilities, reason? }`: `repo` (kind, host, slug, web URL, `fromFork`) is absent when the remote is not on a supported forge; `capabilities` (`prList`, `prGet`, `prCreate`, `prChecks`, `prRerun`, `prComments`, `prReply`) are empty with a `reason` when the CLI is missing or signed out. `prs`: number, title, state (`open` · `merged` · `closed`), draft, URL, head, base, combined checks (`none` · `pending` · `passing` · `failing`). Answered from `yaacd`'s cache while fresh; `refresh` asks the forge (rate-limited). |
+| `forge/prepare` | `{ threadId, base? }` → what the Create PR modal needs: `access`, `branch`, `defaultBranch`, the remote's `branches`, `base`, a `title` and `body` prefilled from the branch's commits, and `push` (`upstream`, `ahead`, `uncommitted`). |
+| `forge/pr/create` | `{ opId, threadId, base, title, body, draft }` → `{ pr, pushed }`. Pushes first (`git push -u`) when the branch has no upstream or unpushed commits; uncommitted changes are never pushed. A create whose outcome cannot be told is `outcome_unknown`, never re-sent. |
+| `forge/pr/get` | `{ threadId, number }` → `{ pr, body, reviewers, checks }`. |
+| → `forge/prs/changed` | A branch's list changed (after a commit or push in its checkout, or a create); same shape as the `forge/prs` result. |
+
+The forge kind is data for display; the window branches only on the capabilities.
+
 ### Filesystem (read-only, for pickers)
 
 | Method | Purpose |

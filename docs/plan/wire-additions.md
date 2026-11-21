@@ -79,6 +79,15 @@ is right.
 - Notice kinds `budgetExhausted`, `meshLimit`.
 - `mesh/budget { action: "continue", opId, root }` is the Continue action.
 
+## Pull requests (D119–D121)
+
+- `forge/prs { threadId, refresh? }` → `ForgePrsResult { root, branch?, access, defaultBranch?, prs, at?, error? }`.
+- `forge/prepare { threadId, base? }` → `ForgePrepareResult`.
+- `forge/pr/create { opId, threadId, base, title, body, draft }` → `{ pr, pushed }` (state-changing).
+- `forge/pr/get { threadId, number }` → `{ pr, body, reviewers, checks }`.
+- Notification `forge/prs/changed` (a `ForgePrsResult`).
+- Open enums `ForgeKind`, `ForgeCapability`, `PrState`, `ChecksState`, `CheckState`.
+
 ## Not on the wire yet
 
 - Unarchive (`thread/update` does not take `archived`).

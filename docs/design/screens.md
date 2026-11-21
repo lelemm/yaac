@@ -1197,3 +1197,33 @@ something that needs the user.*
 
 - The docked panel at 240 points: titles and branches are ellipsised; every state mark, the
   state word, the harness logo, the git counts and ahead / behind stay visible (D115).
+
+### 60 — Pull request badges
+
+*Which branch already has a pull request, and in what state, at a glance — without leaving
+the list.*
+
+- The orchestrator open, agents docked. Line 1 of each row ends with the PR badge before the
+  time (D119): index-rebuild and search-service `[ PR# 33290 ]` with a merge mark (merged);
+  billing-service `[ PR# 33343 +1 ]` with a dashed outline (draft) and a dotted ring (checks
+  running); Fix frame decoder `[ PR#      ]` (create); CI integration's badge shows a lock — `az`
+  is signed out on devbox, and the reason is the tooltip. The orchestrator, on `main` with no
+  pull request, has none. The docked rows carry the same badges (users-service with a cross:
+  checks failing). Titles ellipsize; badges and times never do.
+
+### 61 — The `+1` list
+
+- Hovering billing-service's `+1`: a small list under the badge, "Also from this branch",
+  `#33301 · closed — Billing: first try at the token refresh`; clicking a row opens it.
+
+### 62 — The badge's menu
+
+- Right-click on billing-service's badge: **Create a new PR**, **Copy link**.
+
+### 63 — Creating a pull request
+
+- The Create PR modal for Fix frame decoder (D120): *feature/protocol · acme/platform*; Into
+  **main**; the title and description prefilled from the branch's commits; **Draft**; **Ask the
+  agent to write it** (greyed: that agent is busy, which the tooltip says); "Create will push
+  feature/protocol first: it is not on the remote yet."; the warning "3 files have uncommitted
+  changes — they are not part of the pull request."; **Create** and **Cancel**.
