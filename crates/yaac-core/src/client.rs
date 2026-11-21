@@ -57,6 +57,25 @@ pub mod hub_names {
     pub const PROVIDERS_CHANGED: &str = "hub/providers/changed";
     /// Find threads by id or fuzzy title across every cached target.
     pub const THREADS_FIND: &str = "hub/threads/find";
+    // SSH setup, verify, and revoke (`yaac_hub::protocol::names::SSH_*`).
+    /// Contact the server and read its host key.
+    pub const SSH_REACH: &str = "hub/ssh/reach";
+    /// Trust the confirmed host key and try signing in with no password.
+    pub const SSH_PROBE: &str = "hub/ssh/probe";
+    /// Sign in once and install YAAC's key.
+    pub const SSH_SIGN_IN: &str = "hub/ssh/signIn";
+    /// Sign in with YAAC's key alone.
+    pub const SSH_VERIFY: &str = "hub/ssh/verify";
+    /// Remove the line just added (after a failed verify).
+    pub const SSH_REMOVE_KEY: &str = "hub/ssh/removeKey";
+    /// Revoke YAAC's key.
+    pub const SSH_REVOKE: &str = "hub/ssh/revoke";
+    /// The user removed YAAC's line by hand.
+    pub const SSH_REMOVED_BY_HAND: &str = "hub/ssh/removedByHand";
+    /// What YAAC did on each SSH server.
+    pub const SSH_RECORDS: &str = "hub/ssh/records";
+    /// Those records changed.
+    pub const SSH_CHANGED: &str = "hub/ssh/changed";
     /// A target's cached projects were replaced.
     pub const PROJECTS_CHANGED: &str = "hub/projects/changed";
     /// The window is newer than the hub.
@@ -102,9 +121,14 @@ enum Call {
     UploadList,
     /// `hub/drafts/list` after attaching.
     DraftsList,
+    /// A `hub/ssh/*` step: the answer goes to the setup backend under this id.
+    Ssh(RpcId),
+    /// `hub/ssh/records`.
+    SshRecords,
     Ignore,
 }
 
+mod ssh;
 mod uploads;
 
 /// A problem to show the user (as a notice, never a dialog).
@@ -135,6 +159,12 @@ pub struct Client {
     /// Upload notifications for handles not known yet (their `hub/upload/start` answer has
     /// not arrived), oldest first, bounded.
     orphans: std::collections::VecDeque<(String, Value)>,
+    /// Answers to `hub/ssh/*` steps, for the setup backend.
+    ssh_replies: Vec<(RpcId, Result<Value, ErrorObject>)>,
+    /// The hub's SSH records, once it has answered `hub/ssh/records`.
+    ssh_wire: Option<Vec<ssh::SshWire>>,
+    /// The host's time zone, for the dates of SSH records (D91).
+    pub ssh_zone: crate::time::Zone,
 }
 
 impl std::fmt::Debug for Client {
@@ -158,6 +188,9 @@ impl Client {
             attach_ids: 0,
             dirty: std::collections::BTreeSet::new(),
             orphans: std::collections::VecDeque::new(),
+            ssh_replies: Vec::new(),
+            ssh_wire: None,
+            ssh_zone: crate::time::Zone::UTC,
         };
         c.state.client_id = Some(client_id);
         let params = json!({ "build": c.build });
@@ -178,6 +211,10 @@ impl Client {
             let Some(msg) = self.link.poll() else { break };
             any = true;
             self.handle(msg);
+        }
+        if any {
+            // Targets may have been added or changed: show the hub's SSH records on them.
+            self.map_ssh_records();
         }
         any
     }
@@ -252,6 +289,7 @@ impl Client {
                 self.request(hub_names::SETTINGS_GET, json!({}), Call::HubSettings);
                 self.request(hub_names::VIEW_GET, json!({}), Call::View);
                 self.request(crate::attachments::names::DRAFTS_LIST, json!({}), Call::DraftsList);
+                self.load_ssh_records();
                 let ids: Vec<(TargetId, bool)> =
                     hello.targets.iter().map(|t| (t.id.clone(), t.state.status == attach::ConnectionStatus::Connected)).collect();
                 self.state.set_targets(hello.targets);
@@ -402,6 +440,8 @@ impl Client {
                 }
             }
             Call::Respond { .. } | Call::Ignore => {}
+            Call::Ssh(id) => self.ssh_replies.push((id, Ok(result))),
+            Call::SshRecords => self.on_ssh_records(&result),
             Call::TurnStart { key, draft } => self.sent(&DraftRef::Thread(key), &draft),
             Call::UploadStart { draft, id, attempt } => self.on_upload_started(&draft, id, attempt, &result),
             Call::BlobBegin { draft, id, chunks } => self.on_blob_begun(&draft, id, chunks, &result),
@@ -526,7 +566,8 @@ impl Client {
             Call::FsList { target, path } => {
                 self.state.fs_listings.insert((target, path), FsListingState::Failed(error.message.clone()));
             }
-            Call::HubSettings | Call::Projects(_) => {}
+            Call::HubSettings | Call::Projects(_) | Call::SshRecords => {}
+            Call::Ssh(id) => self.ssh_replies.push((id, Err(error.clone()))),
             Call::Find { query } => {
                 if let Some(f) = self.state.find.as_mut().filter(|f| f.query == query) {
                     f.loading = false;
@@ -552,6 +593,7 @@ impl Client {
                 // The entry (enabled, transport) may have changed with the state: refresh it.
                 self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
             }
+            hub_names::SSH_CHANGED => self.load_ssh_records(),
             hub_names::TARGETS_CHANGED => {
                 if let Ok(r) = serde_json::from_value::<attach::TargetsListResult>(params) {
                     self.state.set_targets(r.targets);

@@ -350,11 +350,13 @@ pub(crate) struct HubConn {
     shutdown_sent: bool,
     restarted: bool,
     prefs_loaded: bool,
+    /// The SSH setup backend's requests and answers (`hub/ssh/*`).
+    ssh: std::rc::Rc<std::cell::RefCell<crate::ssh_hub::SshBridge>>,
 }
 
-/// SEAM: the real SSH setup backend belongs to the hub (it owns every connection to a target),
-/// and the attach protocol has no `hub/ssh/*` methods yet. Attached to a real hub, every step
-/// fails with this message rather than opening an SSH session from the window.
+/// The SSH setup backend of a window attached to no hub (or built without one): SSH setup is
+/// the hub's (it owns every connection to a target), so every step fails with this message
+/// rather than opening an SSH session from the window.
 #[derive(Debug, Default)]
 pub(crate) struct HubSshPending {
     queue: std::collections::VecDeque<yaac_core::ssh_setup::StepReport>,
@@ -390,7 +392,7 @@ impl SshSetupBackend for HubSshPending {
 
 impl HubSshPending {
     fn err() -> yaac_core::ssh_setup::StepError {
-        yaac_core::ssh_setup::StepError::new("SSH setup is not available in this build yet: the hub does not offer it.")
+        yaac_core::ssh_setup::StepError::new("SSH setup needs the hub, and this window is not attached to one.")
     }
 }
 
@@ -497,8 +499,10 @@ impl YaacApp {
                 if let Some(config) = launch.attach {
                     let attach = Arc::new(Mutex::new(HubAttach::start(config.clone(), waker(&cc.egui_ctx))));
                     let c = hub_client(&attach);
-                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false });
-                    (c, None, Scenario::Fleet, Clock::System, Box::new(HubSshPending::default()) as Box<dyn SshSetupBackend>)
+                    let ssh = std::rc::Rc::new(std::cell::RefCell::new(crate::ssh_hub::SshBridge::new(cc.egui_ctx.clone())));
+                    let backend = crate::ssh_hub::HubSsh(ssh.clone());
+                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false, ssh });
+                    (c, None, Scenario::Fleet, Clock::System, Box::new(backend) as Box<dyn SshSetupBackend>)
                 } else {
                     let c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
                     (c, None, Scenario::Fleet, Clock::System, Box::new(HubSshPending::default()))
@@ -842,6 +846,11 @@ impl YaacApp {
                 Action::RemoveTarget(t) => self.client.remove_target(&t),
                 Action::AddTarget(name, transport) => self.client.add_target(&name, &transport),
                 Action::SetRecord(t, r) => {
+                    // With a hub, its records win; it only needs to hear what the user did by hand.
+                    #[cfg(feature = "hub")]
+                    if self.hub.is_some() && matches!(r, SetupRecord::RemovedByHand { .. }) {
+                        self.client.ssh_removed_by_hand(&t);
+                    }
                     self.client.state.ssh_records.insert(t, r);
                 }
                 Action::WslOn(on) => self.client.state.wsl_on = on,
@@ -1127,6 +1136,11 @@ impl eframe::App for YaacApp {
         let arrived = self.pump_demo();
         #[cfg(feature = "hub")]
         self.hub_upkeep();
+        #[cfg(feature = "hub")]
+        if let Some(h) = &self.hub {
+            self.client.ssh_zone = self.zone;
+            crate::ssh_hub::SshBridge::exchange(&h.ssh, &mut self.client);
+        }
         let ssh_changed = self.ui.set.pump_ssh(self.ssh.as_mut());
         let t = ctx.input(|i| i.time);
         let files_changed = self.pump_files();

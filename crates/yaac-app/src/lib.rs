@@ -15,6 +15,8 @@
 pub mod attach;
 #[cfg(feature = "hub")]
 pub mod hubmode;
+#[cfg(feature = "hub")]
+mod ssh_hub;
 
 mod agents_ui;
 mod app_icon;
@@ -59,6 +61,11 @@ pub(crate) struct Launch {
 
 /// The entry point: `args` without the program name.
 pub fn run(args: &[String]) -> ExitCode {
+    // Started by `ssh` as SSH_ASKPASS during the hub's SSH setup: answer and exit.
+    #[cfg(feature = "hub")]
+    if let Some(code) = yaac_hub::ssh::askpass::client_main() {
+        return code;
+    }
     if args.first().map(String::as_str) == Some("hub") {
         #[cfg(feature = "hub")]
         return hubmode::run(BUILD);

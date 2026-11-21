@@ -285,8 +285,9 @@ pub struct AppState {
     pub projects: Vec<crate::projects::Project>,
     /// `hub/threads/find` results for the sidebar search, when attached to a real hub.
     pub find: Option<FindState>,
-    /// SEAM (wire field missing): what YAAC did on each SSH target during setup (who set it
-    /// up and when, the line it installed). The hub's `TargetEntry` has no such record yet.
+    /// What YAAC did on each SSH target during setup (when, the line it installed): from the
+    /// hub's `hub/ssh/records`, per server, shown on every target of that server (window-local
+    /// only with the demo hub).
     pub ssh_records: BTreeMap<TargetId, crate::ssh_setup::SetupRecord>,
     /// SEAM (wire field missing): the per-instance switch "Offer YAAC tools to sessions
     /// started outside YAAC". No wire field or method exists; window-local.
