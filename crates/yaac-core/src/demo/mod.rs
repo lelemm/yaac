@@ -381,7 +381,7 @@ impl Inner {
                     name: yaac_protocol::TargetName::new(name),
                     transport,
                     enabled: true,
-                    state: ConnectionState { status: ConnectionStatus::Connected, detail: None, daemon: None },
+                    state: ConnectionState { status: ConnectionStatus::Connected, detail: None, daemon: None, update: None },
                 };
                 self.fleet.targets.push(entry.clone());
                 self.fleet.providers.entry(entry.id.clone()).or_insert_with(|| vec![fleet::codex("codex", None, yaac_protocol::ProviderStatus::Ready)]);
@@ -1146,7 +1146,8 @@ impl Inner {
         t.state = ConnectionState {
             status,
             detail: detail.map(str::to_owned),
-            daemon: older.map(|b| DaemonSummary { build: b.to_owned(), older: true, schema_hash_matches: true }),
+            daemon: older.map(|b| DaemonSummary { build: b.to_owned(), older: true, schema_hash_matches: true, can_update: true }),
+            update: None,
         };
         if let Some(e) = enabled {
             t.enabled = e;

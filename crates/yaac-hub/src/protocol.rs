@@ -198,6 +198,9 @@ pub mod codes {
     pub const BLOB_NOT_FOUND: &str = "blob_not_found";
     /// `hub/targets/start` did not end connected; the message says why.
     pub const START_FAILED: &str = "start_failed";
+    /// `hub/targets/updateDaemon`: this hub holds no newer `yaacd` for the target than the one
+    /// serving (no bundle, a development build, or the same or an older build).
+    pub const UPDATE_UNAVAILABLE: &str = "update_unavailable";
     /// `hub/wsl/distros`: this PC has no `wsl.exe`.
     pub const WSL_UNAVAILABLE: &str = "wsl_unavailable";
     /// `hub/wsl/distros`: `wsl.exe` failed; the message is its reason in plain words.

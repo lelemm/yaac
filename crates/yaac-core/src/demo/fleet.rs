@@ -204,7 +204,7 @@ fn target(id: &str, name: &str, transport: TargetTransport, status: ConnectionSt
         name: TargetName::new(name),
         transport,
         enabled,
-        state: ConnectionState { status, detail: detail.map(str::to_owned), daemon: None },
+        state: ConnectionState { status, detail: detail.map(str::to_owned), daemon: None, update: None },
     }
 }
 

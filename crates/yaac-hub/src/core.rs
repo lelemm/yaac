@@ -18,19 +18,19 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use yaac_protocol::attach::{
-    self, ConnectionState, ConnectionStatus, DaemonSummary, HelloParams, HelloResult, RoutedNotification, RoutedRequest,
+    self, ConnectionState, ConnectionStatus, DaemonSummary, DaemonUpdate, DaemonUpdatePhase, HelloParams, HelloResult, RoutedNotification, RoutedRequest,
     TargetEntry, TargetResult, TargetStateParams, TargetsAddParams, TargetsEnableParams, TargetsListResult,
-    TargetsRemoveParams, TargetsUpdateParams,
+    TargetsRemoveParams, TargetsUpdateDaemonParams, TargetsUpdateDaemonResult, TargetsUpdateParams,
 };
 use yaac_protocol::dialect::{Inbound, PeerRequest};
 use yaac_protocol::flows::{FlowError, FlowStep, OpenThread, OpenThreadFlow, Opened, finish_page, read_older_page};
 use yaac_protocol::methods::{
-    self, DiscoveryCapsMethod, MeshDeliver, MeshQuery, MeshReceipt, MeshRoster, MeshUsage, Ping, ProjectList, ProviderList, ThreadAck, ThreadKeep, ThreadLookup, ThreadSync, names,
+    self, DaemonHandover, DiscoveryCapsMethod, MeshDeliver, MeshQuery, MeshReceipt, MeshRoster, MeshUsage, Ping, ProjectList, ProviderList, ThreadAck, ThreadKeep, ThreadLookup, ThreadSync, names,
 };
 use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
 use yaac_protocol::session::{ClientSession, ReadyInfo, SessionEvent};
 use yaac_protocol::{
-    ClientInfo, Control, Epoch, Item, JournalPosition, MeshDeliverParams, MeshUsageParams, MeshMessage, MeshQueryParams, MeshReceiptParams,
+    ClientInfo, Control, DaemonHandoverParams, Epoch, HandoverState, HandoverWhen, Item, JournalPosition, MeshDeliverParams, MeshUsageParams, MeshMessage, MeshQueryParams, MeshReceiptParams,
     MeshRosterParams, MessageId, OpId, PageCursor, Receipt, ReceiptReason, ReceiptStatus, RosterEntry, Seq,
     StreamCreditParams, SubscribeMode, SubscribeReplay, SubscribeReset, SyncToken, TargetId, TargetName, ThreadAckParams,
     ThreadEvent, ThreadEventParams, ThreadId, ThreadReadParams, ThreadReadResult, ThreadState, ThreadSubscribeParams,
@@ -171,6 +171,8 @@ enum Pending {
     UploadBegin { handle: String },
     UploadEnd { handle: String },
     UploadCancel { handle: String },
+    /// `daemon/handover`; **Update now** answers the window that asked.
+    Handover { reply: Option<(ClientKey, RpcId)> },
     Ignore,
 }
 
@@ -226,6 +228,9 @@ struct Target {
     state: ConnectionState,
     supervisor: Option<(u64, JoinHandle<()>, Arc<crate::conn::Wake>)>,
     conn: Option<Conn>,
+    /// The `yaacd` build this target's connector installs and starts when nothing serves
+    /// ([`yaac_transport::Connector::daemon_build`]); `None` when it does not know.
+    daemon_build: Option<String>,
 }
 
 impl Target {
@@ -245,7 +250,7 @@ impl Target {
 }
 
 fn state(status: ConnectionStatus, detail: Option<String>) -> ConnectionState {
-    ConnectionState { status, detail, daemon: None }
+    ConnectionState { status, detail, daemon: None, update: None }
 }
 
 fn err(code: ErrorCode, message: impl Into<String>) -> ErrorObject {
@@ -266,9 +271,7 @@ fn parse<T: DeserializeOwned>(params: Value) -> Result<T, ErrorObject> {
 
 /// A build's numbered id: the `<id>` of `<version>+<id>` when it is a number (a build made by
 /// the build scripts, `scripts/build-id.sh`); `None` for a development build (`+dev…`) or none.
-fn build_number(build: &str) -> Option<u64> {
-    build.split_once('+').and_then(|(_, id)| id.trim().parse().ok())
-}
+use yaac_transport::bootstrap::build_number;
 
 /// Compares builds, window against hub: by their leading `major.minor.patch`, then by their
 /// build numbers when both have one. Otherwise, equal numbers with a different suffix count as
@@ -300,6 +303,47 @@ fn compare_builds(window: &str, hub: &str) -> std::cmp::Ordering {
 /// daemon's is lower. Development builds are never called older: they have no order.
 fn daemon_build_older(daemon: &str, hub: &str) -> bool {
     matches!((build_number(daemon), build_number(hub)), (Some(d), Some(h)) if d < h)
+}
+
+/// Whether a serving daemon may be handed over to the build `to` (the build this target's
+/// connector installs and starts): only to a strictly newer numbered build. A hub without a
+/// bundle, a development build on either side, or the same or an older build never hands over
+/// (docs/02-architecture.md#one-serving-daemon-per-user).
+fn hands_over_to(serving: &str, to: Option<&str>) -> bool {
+    matches!((build_number(serving), to.and_then(build_number)), (Some(s), Some(t)) if t > s)
+}
+
+/// A hand-over the hub asked of a target's daemon, kept per target across the reconnect: the
+/// loop guard. A pair of builds is asked at most once; if the same older build serves again
+/// after it, the hub stops and says so ([`DaemonUpdatePhase::Stuck`]) instead of asking again
+/// (CLAUDE.md, invariant 10).
+#[derive(Debug)]
+struct Handover {
+    /// The build that was serving.
+    from: String,
+    /// The build that should start.
+    to: String,
+    /// **Update now** (`when: now`).
+    forced: bool,
+    /// The daemon's answer, once it came.
+    answer: Option<HandoverState>,
+    /// A connection closed since it was asked.
+    closed: bool,
+    /// The same older build served again after the hand-over: not asked again.
+    stuck: Option<String>,
+}
+
+impl Handover {
+    fn view(&self) -> DaemonUpdate {
+        let phase = if self.stuck.is_some() {
+            DaemonUpdatePhase::Stuck
+        } else if self.forced || self.closed || self.answer == Some(HandoverState::Exiting) {
+            DaemonUpdatePhase::Updating
+        } else {
+            DaemonUpdatePhase::Waiting
+        };
+        DaemonUpdate { from: self.from.clone(), to: self.to.clone(), phase, forced: self.forced, detail: self.stuck.clone() }
+    }
 }
 
 // ── The core ──────────────────────────────────────────────────────────────────────────────
@@ -346,6 +390,8 @@ pub(crate) struct Core {
     starts: HashMap<TargetId, Vec<(ClientKey, RpcId)>>,
     /// SSH setup state: host keys to confirm, open install sessions.
     ssh: ssh::SshState,
+    /// Hand-overs asked of older daemons, per target ([`Handover`]).
+    handovers: HashMap<TargetId, Handover>,
     pub(crate) exit: Option<ExitReason>,
 }
 
@@ -434,6 +480,7 @@ impl Core {
             pool,
             starts: HashMap::new(),
             ssh: ssh::SshState::default(),
+            handovers: HashMap::new(),
             exit: None,
         };
         for (target, thread) in loaded.kept {
@@ -447,7 +494,7 @@ impl Core {
         for def in defs {
             let id = def.id.clone();
             let initial = if def.enabled { state(ConnectionStatus::Connecting, None) } else { state(ConnectionStatus::Disabled, None) };
-            core.targets.insert(id.clone(), Target { def, state: initial, supervisor: None, conn: None });
+            core.targets.insert(id.clone(), Target { def, state: initial, supervisor: None, conn: None, daemon_build: None });
             core.start_target(&id);
         }
         core
@@ -631,6 +678,10 @@ impl Core {
             })),
             ext::names::TARGETS_START => match parse::<TargetRef>(params) {
                 Ok(p) => self.targets_start(client, id, &p.id),
+                Err(e) => Some(Err(e)),
+            },
+            attach::names::TARGETS_UPDATE_DAEMON => match parse::<TargetsUpdateDaemonParams>(params) {
+                Ok(p) => self.targets_update_daemon(client, id, &p.id),
                 Err(e) => Some(Err(e)),
             },
             ext::names::WSL_DISTROS => {
@@ -918,7 +969,9 @@ impl Core {
         self.send_rosters();
     }
 
-    fn set_state(&mut self, id: &TargetId, new: ConnectionState) {
+    fn set_state(&mut self, id: &TargetId, mut new: ConnectionState) {
+        // An update under way stays visible across the reconnect it causes.
+        new.update = self.handovers.get(id).map(Handover::view);
         self.settle_starts(id, &new);
         let Some(t) = self.targets.get_mut(id) else { return };
         if t.state == new {
@@ -1039,6 +1092,7 @@ impl Core {
                 self.set_state(id, new);
             }
             Ok(connector) => {
+                t.daemon_build = connector.daemon_build();
                 let sup = self.supervisors.fetch_add(1, Ordering::Relaxed) + 1;
                 let notify = Arc::new(crate::conn::Wake::default());
                 let core = self.tx.clone();
@@ -1114,6 +1168,7 @@ impl Core {
     }
 
     fn stop_target(&mut self, id: &TargetId, new: ConnectionState) {
+        self.handovers.remove(id);
         let Some(t) = self.targets.get_mut(id) else { return };
         if let Some((_, handle, _)) = t.supervisor.take() {
             handle.abort();
@@ -1143,7 +1198,7 @@ impl Core {
         }
         let id = def.id.clone();
         let initial = if def.enabled { state(ConnectionStatus::Connecting, None) } else { state(ConnectionStatus::Disabled, None) };
-        self.targets.insert(id.clone(), Target { def, state: initial, supervisor: None, conn: None });
+        self.targets.insert(id.clone(), Target { def, state: initial, supervisor: None, conn: None, daemon_build: None });
         self.start_target(&id);
         self.targets_changed();
         Ok(to_value(&TargetResult { target: self.targets[&id].entry() }))
@@ -1321,6 +1376,9 @@ impl Core {
             ConnEvent::Closed(reason) => {
                 if t.conn.as_ref().is_some_and(|c| c.generation == generation) {
                     log(format!("{id}: connection closed: {reason}"));
+                    if let Some(h) = self.handovers.get_mut(id) {
+                        h.closed = true;
+                    }
                     self.step(id, "closed", Some(reason.clone()));
                     self.on_closed(id, reason.clone());
                     if self.targets.get(id).is_some_and(|t| t.def.enabled && t.supervisor.is_some()) {
@@ -1353,6 +1411,11 @@ impl Core {
                     self.respond_peer(&source, generation, peer_id, names::MESH_QUERY, Err(err(ErrorCode::TargetOffline, "the target went offline")));
                 }
                 Pending::Lookup { lookup } => self.lookup_answered(lookup, id, None),
+                Pending::Handover { reply: Some((client, rid)) } => {
+                    // Never asked again: the update shows how it went once the target is back.
+                    let e = err(ErrorCode::OutcomeUnknown, "the connection dropped before yaacd answered; it may be handing over");
+                    self.reply(client, rid, Err(e));
+                }
                 _ => {}
             }
         }
@@ -1430,15 +1493,18 @@ impl Core {
         let Some(t) = self.targets.get_mut(id) else { return };
         let Some(conn) = t.conn.as_mut() else { return };
         conn.ready = true;
+        let can_update = self.handover_on_ready(id, &info.daemon.build);
         let new = ConnectionState {
             status: ConnectionStatus::Connected,
             detail: None,
             daemon: Some(DaemonSummary {
                 build: info.daemon.build.clone(),
                 // Older by protocol, or by build: either way it needs updating.
-                older: info.daemon_is_older || daemon_build_older(&info.daemon.build, &self.cfg.build),
+                older: can_update || info.daemon_is_older || daemon_build_older(&info.daemon.build, &self.cfg.build),
                 schema_hash_matches: info.schema_hash_matches,
+                can_update,
             }),
+            update: None,
         };
         let facts = info.target.clone();
         let target = id.clone();
@@ -1462,6 +1528,111 @@ impl Core {
             let receipts = receipts.into_iter().map(|(m, r)| (target.clone(), m, r)).collect();
             Some(CoreEvent::Receipts { receipts, in_flight })
         });
+    }
+
+    // ── Updating an older daemon (docs/02-architecture.md#one-serving-daemon-per-user) ──────
+
+    /// A connection is ready with `serving` serving: settles a hand-over asked earlier, and
+    /// asks a newer-able daemon to hand over when idle — once per pair of builds. Returns
+    /// whether this hub can update the daemon ([`DaemonSummary::can_update`]).
+    fn handover_on_ready(&mut self, id: &TargetId, serving: &str) -> bool {
+        let to = self.targets.get(id).and_then(|t| t.daemon_build.clone());
+        let newer = hands_over_to(serving, to.as_deref());
+        if let Some(h) = self.handovers.get_mut(id) {
+            if h.from == serving {
+                // The same older build serves again after a hand-over was asked: stop here.
+                if h.closed && h.stuck.is_none() {
+                    let why = match h.answer {
+                        Some(HandoverState::Scheduled) => format!(
+                            "yaacd {} still serves after it was asked to hand over to {} when idle. If the connection only dropped, it still hands over once idle; YAAC does not ask again.",
+                            h.from, h.to
+                        ),
+                        _ => format!("yaacd {} started again after handing over to {}. YAAC does not ask again; see the target's log (diagnostics).", h.from, h.to),
+                    };
+                    log(format!("{id}: {why}"));
+                    h.stuck = Some(why.clone());
+                    self.step(id, "update stuck", Some(why));
+                }
+                return newer;
+            }
+            // Another build serves now: the update went in (or something else replaced it).
+            let done = self.handovers.remove(id).map(|h| h.from).unwrap_or_default();
+            self.step(id, "updated", Some(format!("yaacd {done} -> {serving}")));
+        }
+        if newer && let Some(to) = to {
+            self.ask_handover(id, serving.to_owned(), to, false, None);
+        }
+        newer
+    }
+
+    /// Sends `daemon/handover` (`now` when `forced`) and remembers it. False when it could not
+    /// be sent.
+    fn ask_handover(&mut self, id: &TargetId, from: String, to: String, forced: bool, reply: Option<(ClientKey, RpcId)>) -> bool {
+        let when = if forced { HandoverWhen::Now } else { HandoverWhen::Idle };
+        if !self.send::<DaemonHandover>(id, &DaemonHandoverParams { when }, Pending::Handover { reply }) {
+            return false;
+        }
+        let how = if forced { "now" } else { "when idle" };
+        self.step(id, "handover", Some(format!("asked yaacd {from} to hand over {how}, to {to}")));
+        self.handovers.insert(id.clone(), Handover { from, to, forced, answer: None, closed: false, stuck: None });
+        self.flush(id);
+        true
+    }
+
+    /// The daemon answered `daemon/handover`.
+    fn on_handover_answer(&mut self, id: &TargetId, reply: Option<(ClientKey, RpcId)>, outcome: Result<Value, ErrorObject>) {
+        let outcome = outcome.and_then(|w| self.decode_typed::<DaemonHandover>(id, w));
+        let answered = match &outcome {
+            Ok(r) => {
+                if let Some(h) = self.handovers.get_mut(id) {
+                    h.answer = Some(r.state.clone());
+                }
+                self.step(id, "handover", Some(format!("yaacd answered {}", r.state.as_str())));
+                Ok(to_value(&TargetsUpdateDaemonResult { state: r.state.clone() }))
+            }
+            Err(e) => {
+                // Refused: not asked again for this pair; the window shows why.
+                if let Some(h) = self.handovers.get_mut(id) {
+                    h.stuck = Some(format!("yaacd {} refused to hand over: {}", h.from, e.message));
+                }
+                self.step(id, "handover", Some(format!("refused: {}", e.message)));
+                Err(e.clone())
+            }
+        };
+        if let Some((client, rid)) = reply {
+            self.reply(client, rid, answered);
+        }
+        self.refresh_state(id);
+    }
+
+    /// **Update now** (`hub/targets/updateDaemon`): a forced hand-over, the user's explicit
+    /// action — allowed after a stuck one too, since nothing is retried behind their back.
+    fn targets_update_daemon(&mut self, client: ClientKey, rid: &RpcId, id: &TargetId) -> Option<Result<Value, ErrorObject>> {
+        let Some(t) = self.targets.get(id) else { return Some(Err(err(ErrorCode::TargetUnknown, "no such target"))) };
+        let name = t.def.name.as_str().to_owned();
+        let daemon = t.state.daemon.as_ref().filter(|_| t.state.status == ConnectionStatus::Connected && t.conn.as_ref().is_some_and(|c| c.ready));
+        let Some(daemon) = daemon else { return Some(Err(err(ErrorCode::TargetOffline, format!("{name} is not connected")))) };
+        let (from, to) = (daemon.build.clone(), t.daemon_build.clone());
+        let Some(to) = to.filter(|to| hands_over_to(&from, Some(to))) else {
+            return Some(Err(hub_err(ext::codes::UPDATE_UNAVAILABLE, format!("this YAAC has no newer yaacd for {name} than {from}"))));
+        };
+        if self.handovers.get(id).is_some_and(|h| h.forced && h.stuck.is_none() && h.from == from) {
+            // Already asked to hand over now: the same answer, nothing sent twice.
+            return Some(Ok(to_value(&TargetsUpdateDaemonResult { state: HandoverState::Exiting })));
+        }
+        self.handovers.remove(id);
+        if !self.ask_handover(id, from, to, true, Some((client, rid.clone()))) {
+            return Some(Err(err(ErrorCode::TargetOffline, format!("{name} is not connected"))));
+        }
+        self.refresh_state(id);
+        None
+    }
+
+    /// Broadcasts a target's state again (its update changed).
+    fn refresh_state(&mut self, id: &TargetId) {
+        if let Some(s) = self.targets.get(id).map(|t| t.state.clone()) {
+            self.set_state(id, s);
+        }
     }
 
     /// Providers, the thread index, and every open thread, from the stored positions.
@@ -1558,6 +1729,7 @@ impl Core {
                 let found = outcome.and_then(|w| self.decode_typed::<ThreadLookup>(id, w)).ok().map(|r| r.threads);
                 self.lookup_answered(lookup, id, found);
             }
+            Pending::Handover { reply } => self.on_handover_answer(id, reply, outcome),
             Pending::Deliver { message_id } => self.on_delivered(id, message_id, outcome),
             Pending::UploadBegin { handle } => self.on_upload_begun(id, &handle, outcome),
             Pending::UploadEnd { handle } => self.on_upload_ended(id, &handle, outcome),
@@ -2718,7 +2890,7 @@ fn read_from_cache(cache: &mut crate::cache::Cache, target: &TargetId, p: &Threa
 mod build_tests {
     use std::cmp::Ordering as O;
 
-    use super::{compare_builds, daemon_build_older};
+    use super::{compare_builds, daemon_build_older, hands_over_to};
 
     #[test]
     fn numbered_builds_order_by_their_number() {
@@ -2743,5 +2915,17 @@ mod build_tests {
         assert!(!daemon_build_older("0.1.0+43", "0.1.0+42"));
         assert!(!daemon_build_older("0.1.0+dev", "0.1.0+42"), "a development daemon has no order");
         assert!(!daemon_build_older("0.1.0+41", "0.1.0+dev.ab12"));
+    }
+
+    #[test]
+    fn a_daemon_is_handed_over_only_to_a_newer_numbered_build() {
+        // The connector names its install folder, `<version>+<id>-<sha16>`.
+        assert!(hands_over_to("0.1.0+41", Some("0.1.0+42-0123456789abcdef")));
+        assert!(hands_over_to("0.1.0+9", Some("0.1.0+10-0123456789abcdef")), "numbers, not text");
+        assert!(!hands_over_to("0.1.0+42", Some("0.1.0+42-0123456789abcdef")), "the same build");
+        assert!(!hands_over_to("0.1.0+43", Some("0.1.0+42-0123456789abcdef")), "an older bundle");
+        assert!(!hands_over_to("0.1.0+41", None), "no bundle");
+        assert!(!hands_over_to("0.1.0+41", Some("0.1.0-0123456789abcdef")), "a development bundle");
+        assert!(!hands_over_to("0.1.0+dev", Some("0.1.0+42-0123456789abcdef")), "a development daemon");
     }
 }

@@ -34,6 +34,12 @@ pub mod names {
     pub const TARGETS_REMOVE: &str = "hub/targets/remove";
     /// Window → hub: enable or disable a target.
     pub const TARGETS_ENABLE: &str = "hub/targets/enable";
+    /// Window → hub: **Update now** — ask the target's older `yaacd` to hand over at once
+    /// ([`TargetsUpdateDaemonParams`] → [`TargetsUpdateDaemonResult`]). Running turns are
+    /// interrupted, marked as interrupted by an update; the hub reconnects through the normal
+    /// path and the newest installed build serves. Refused unless the hub holds a newer build
+    /// for that target ([`DaemonSummary::can_update`]).
+    pub const TARGETS_UPDATE_DAEMON: &str = "hub/targets/updateDaemon";
     /// Hub → window notification: a target's connection state changed.
     pub const TARGET_STATE: &str = "hub/target/state";
     /// Window → hub: carry a YAAC request to a target; answered with the target's result.
@@ -143,6 +149,43 @@ pub struct DaemonSummary {
     pub older: bool,
     /// The daemon's schema hash matched (a mismatch is a build error, for diagnostics).
     pub schema_hash_matches: bool,
+    /// The hub holds a newer numbered build for this target than the one serving, so it can
+    /// replace it: at idle by itself, or at once with **Update now**.
+    #[serde(default)]
+    pub can_update: bool,
+}
+
+open_enum! {
+    /// Where the update of a target's older `yaacd` stands.
+    pub enum DaemonUpdatePhase fallback Unknown {
+        /// The daemon was asked to hand over when idle; it is busy (a running turn, or a
+        /// request waiting for the user).
+        Waiting = "waiting",
+        /// The daemon is handing over (or has, and the hub is reconnecting).
+        Updating = "updating",
+        /// After the hand-over the same older build serves again. The hub does not ask again
+        /// for this pair of builds (no blind retries); the detail says what happened.
+        Stuck = "stuck",
+    }
+}
+
+/// The update of a target's older `yaacd`: kept by the hub per target while it is under way,
+/// across the reconnect, and cleared once the newer build serves.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonUpdate {
+    /// The build that was serving.
+    pub from: String,
+    /// The build the hub installed for it.
+    pub to: String,
+    /// Where it stands.
+    pub phase: DaemonUpdatePhase,
+    /// **Update now** (running turns interrupted), not a hand-over at idle.
+    #[serde(default)]
+    pub forced: bool,
+    /// Text to show as-is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// A target's connection state.
@@ -157,6 +200,9 @@ pub struct ConnectionState {
     /// The daemon, once connected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daemon: Option<DaemonSummary>,
+    /// An update of the target's older `yaacd` under way (kept while it reconnects).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<DaemonUpdate>,
 }
 
 /// A target as the hub stores it.
@@ -236,6 +282,22 @@ pub struct TargetsEnableParams {
     pub id: TargetId,
     /// Enabled or not.
     pub enabled: bool,
+}
+
+/// `hub/targets/updateDaemon` params.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetsUpdateDaemonParams {
+    /// The target.
+    pub id: TargetId,
+}
+
+/// `hub/targets/updateDaemon` result: the daemon's answer to the hand-over.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetsUpdateDaemonResult {
+    /// What the daemon does next (`exiting`).
+    pub state: crate::HandoverState,
 }
 
 /// `hub/target/state` notification.
