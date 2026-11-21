@@ -11,6 +11,7 @@
 mod build;
 mod diffs;
 mod fleet;
+mod forge;
 pub mod ssh;
 
 use std::cell::RefCell;
@@ -135,6 +136,8 @@ struct Inner {
     /// The draft store: drafts by key, and blobs (`DraftBlob`) by id.
     drafts: std::collections::BTreeMap<String, Value>,
     blobs: std::collections::BTreeMap<String, Value>,
+    /// Pull requests created in the demo (D120), by thread.
+    created: Vec<(ThreadKey, yaac_protocol::PrSummary)>,
 }
 
 /// The demo hub. Clone it to keep a handle for [`DemoHub::play`] and [`DemoHub::tick`] after
@@ -167,7 +170,7 @@ impl DemoHub {
             Scenario::Fleet => Fleet::standard(now),
             Scenario::Fresh => Fleet::fresh(now),
         };
-        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default() })) }
+        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new() })) }
     }
 
     /// Every thread of the scenario — the window's "recently used" set, so their hints are
@@ -743,6 +746,7 @@ impl Inner {
                 self.ready.push_back(result(id, json!({ "project": project })));
                 self.projects_changed(target);
             }
+            m::FORGE_PRS | m::FORGE_PREPARE | m::FORGE_PR_CREATE => self.forge(id, target, method, p),
             _ => self.ready.push_back(error(id, ErrorCode::MethodNotFound, method)),
         }
     }
@@ -837,10 +841,10 @@ impl Inner {
         self.schedule(8, ev(item_ev(done(&id("read"), turn.as_str(), tool(ToolKind::Other, "Read `src/frame.rs`", None, "")))));
         self.schedule(1, ev(item_ev(item(&id("answer"), turn.as_str(), ItemStatus::InProgress, agent("")))));
         let first = text.lines().map(|l| l.trim_start_matches('#').trim()).find(|l| !l.is_empty()).unwrap_or("that").to_owned();
-        let reply = format!(
+        let reply = if text.starts_with(forge::ASK_START) { forge::agent_reply() } else { format!(
             "Looking into **{first}**.\n\nThe frame reader in `src/frame.rs` reads a four-byte length prefix, then the kind byte, then the payload. \
              If the prefix already counts the kind byte, the loop below stops one byte early on the last frame:\n\n```rust\nwhile pos + 4 <= buf.len() {{\n    let len = read_len(&buf[pos..])?;\n    pos += 4 + len;\n}}\n```\n\nNext I will add a test that feeds two frames back to back and checks that both are returned."
-        );
+        ) };
         let mut acc = String::new();
         for chunk in reply.split_inclusive(' ') {
             acc.push_str(chunk);

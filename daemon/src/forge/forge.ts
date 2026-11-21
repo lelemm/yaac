@@ -67,6 +67,8 @@ export interface ForgeOptions {
 interface RepoCtx {
   root: string;
   remote: string;
+  /** `origin/HEAD`, as the checkout knows it. */
+  defaultBranch: string | null;
   origin: string | null;
   parsed: ParsedRemote | null;
   repo: ForgeRepo | null;
@@ -168,7 +170,7 @@ export class Forge {
     const cwd = rt.record.cwd;
     if (!fs.existsSync(cwd)) throw new RpcError("invalid_params", `${cwd} no longer exists`);
     const root = rt.record.repo?.root ?? (await this.gitOut(cwd, ["rev-parse", "--show-toplevel"]));
-    if (!root) return { rt, cwd, root: cwd, branch: null, ctx: { root: cwd, remote: "origin", origin: null, parsed: null, repo: null, adapter: null, at: this.now() } };
+    if (!root) return { rt, cwd, root: cwd, branch: null, ctx: { root: cwd, remote: "origin", defaultBranch: null, origin: null, parsed: null, repo: null, adapter: null, at: this.now() } };
     const branch = (await this.gitOut(root, ["symbolic-ref", "--quiet", "--short", "HEAD"])) || null;
     return { rt, cwd, root, branch, ctx: await this.context(root) };
   }
@@ -190,7 +192,9 @@ export class Forge {
   private async buildContext(root: string): Promise<RepoCtx> {
     const remote = "origin";
     const origin = await this.gitOut(root, ["remote", "get-url", remote]);
-    const base: RepoCtx = { root, remote, origin, parsed: null, repo: null, adapter: null, at: this.now() };
+    const head = await this.gitOut(root, ["symbolic-ref", "--quiet", "--short", `refs/remotes/${remote}/HEAD`]);
+    const defaultBranch = head ? head.replace(new RegExp(`^${remote}/`), "") : null;
+    const base: RepoCtx = { root, remote, defaultBranch, origin, parsed: null, repo: null, adapter: null, at: this.now() };
     if (!origin) return base;
     let parsed = parseRemote(origin);
     if (!parsed) parsed = parseRemote(origin, await this.githubHosts());
@@ -269,7 +273,7 @@ export class Forge {
     const p = (async () => {
       const access = await this.access(ctx);
       const before = JSON.stringify(stable(e.result));
-      const next: ForgePrsResult = { root: e.root, branch: e.branch, access, prs: e.result.prs };
+      const next: ForgePrsResult = { root: e.root, branch: e.branch, access, prs: e.result.prs, ...(ctx.defaultBranch ? { defaultBranch: ctx.defaultBranch } : {}) };
       const host = ctx.repo!.host;
       const paused = (this.pausedUntil.get(host) ?? 0) > this.now();
       if (!access.capabilities.includes("prList")) {

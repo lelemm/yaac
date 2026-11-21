@@ -179,6 +179,10 @@ pub struct ForgePrsResult {
     pub branch: Option<String>,
     /// The forge and what can be done.
     pub access: ForgeAccess,
+    /// The repository's default branch as the checkout knows it (`origin/HEAD`): a row on it
+    /// with no pull request shows no create badge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
     /// Pull requests from that branch: open ones first, then the most recently updated.
     pub prs: Vec<PrSummary>,
     /// When the forge was last asked.

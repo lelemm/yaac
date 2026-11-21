@@ -810,6 +810,11 @@ export interface ForgePrsResult {
    */
   branch?: string | null;
   /**
+   * The repository's default branch as the checkout knows it (`origin/HEAD`): a row on it
+   * with no pull request shows no create badge.
+   */
+  defaultBranch?: string | null;
+  /**
    * The last ask failed (the list is the last one known).
    */
   error?: string | null;

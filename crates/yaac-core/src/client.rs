@@ -130,9 +130,18 @@ enum Call {
     Ssh(RpcId),
     /// `hub/ssh/records`.
     SshRecords,
+    /// `forge/prs` for a thread's row (D119).
+    ForgePrs(ThreadKey),
+    /// `forge/prepare` for the Create PR modal (D120).
+    ForgePrepare(ThreadKey),
+    /// `forge/pr/create`.
+    ForgeCreate(ThreadKey),
+    /// The `turn/start` of "Ask the agent to write it".
+    ForgeAsk(ThreadKey),
     Ignore,
 }
 
+mod forge;
 mod ssh;
 mod uploads;
 
@@ -508,6 +517,7 @@ impl Client {
                 }
             }
             Call::Delete(key) => self.deleted(&key),
+            c @ (Call::ForgePrs(_) | Call::ForgePrepare(_) | Call::ForgeCreate(_) | Call::ForgeAsk(_)) => self.on_forge_result(c, result),
             Call::Fork { target } => {
                 if let Some(thread_id) = result.get("threadId").and_then(Value::as_str) {
                     let key = ThreadKey::new(target, thread_id);
@@ -592,6 +602,7 @@ impl Client {
             }
             Call::HubSettings | Call::Projects(_) | Call::SshRecords => {}
             Call::Ssh(id) => self.ssh_replies.push((id, Err(error.clone()))),
+            c @ (Call::ForgePrs(_) | Call::ForgePrepare(_) | Call::ForgeCreate(_) | Call::ForgeAsk(_)) => self.on_forge_error(c, error),
             Call::Find { query } => {
                 if let Some(f) = self.state.find.as_mut().filter(|f| f.query == query) {
                     f.loading = false;
@@ -696,6 +707,7 @@ impl Client {
                     self.state.set_projects(&target, r.projects);
                 }
             }
+            m::FORGE_PRS_CHANGED => self.on_forge_changed(&target, n.params),
             m::PROVIDER_UPDATED => {
                 if let Ok(p) = serde_json::from_value::<ProviderUpdatedParams>(n.params) {
                     self.state.apply_providers(&target, vec![p.provider], false);

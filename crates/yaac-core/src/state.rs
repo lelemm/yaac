@@ -310,6 +310,10 @@ pub struct AppState {
     /// (D92; filled from `hub/view/get`, see the SEAM in `client::hub_names`). Never read from
     /// the thread summary.
     pub view: BTreeMap<ThreadKey, ViewPref>,
+    /// Pull requests of the threads' branches (D119), from `forge/prs` and `forge/prs/changed`.
+    pub prs: crate::pr::PrStore,
+    /// The Create PR modal (D120), while open.
+    pub create_pr: Option<crate::pr::CreatePr>,
     stamp: u64,
 }
 

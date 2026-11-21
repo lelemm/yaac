@@ -38,6 +38,7 @@ pub mod link;
 pub mod markstyle;
 pub mod mode_confirm;
 pub mod mute;
+pub mod pr;
 pub mod prefs;
 pub mod settings;
 pub mod ssh_setup;
