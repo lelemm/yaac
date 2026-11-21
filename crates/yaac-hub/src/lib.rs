@@ -50,7 +50,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-pub use crate::config::{Backoff, ConnectorFactory, DefaultConnectors, HubConfig, WslDefaults, embedded_bundle};
+pub use crate::config::{Backoff, ConnectorFactory, DefaultConnectors, DefaultWslLister, HubConfig, WslDefaults, WslLister, embedded_bundle};
 pub use crate::core::{ExitReason, UploadLimits};
 pub use crate::lock::{HubLock, LockError};
 pub use crate::migrate::MigrateError;
