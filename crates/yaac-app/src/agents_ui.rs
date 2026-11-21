@@ -259,6 +259,13 @@ fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, ac
     }
     let tx = left + 20.0;
     let color = if row.finished { p.text2 } else { p.text };
+    // The PR badge (D119), before the state word; the title gives way.
+    if let Some(k) = row.key.clone() {
+        app.ui.pr_visible.push(k.clone());
+        if let Some(b) = yaac_core::pr::badge_of(&app.client.state, &k) {
+            rx = crate::pr_ui::badge(ui, app, &k, &b, rx, y, "dock", actions) - 6.0;
+        }
+    }
     let room = yaac_core::sidebar::title_width(rx - tx, &[], 4.0);
     let g = widgets::elided(ui, &row.title, &theme::ui(size::UI), color, room.max(1.0));
     let tw = g.size().x;

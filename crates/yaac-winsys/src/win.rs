@@ -21,6 +21,8 @@ use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
+use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
     s.as_ref().encode_wide().chain(Some(0)).collect()
@@ -224,4 +226,19 @@ pub fn registry_delete_tree(subkey: &str) -> io::Result<()> {
     // SAFETY: the string is NUL-terminated.
     let rc = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, subkey.as_ptr()) };
     if rc == ERROR_FILE_NOT_FOUND { Ok(()) } else { win32(rc) }
+}
+
+/// Opens an `http(s)` URL in the user's default browser (`ShellExecuteW`, verb `open`). Blocks
+/// for as long as the shell takes: call it from a worker thread. Anything but `http://` and
+/// `https://` is refused, so a URL can never name a program.
+pub fn open_url(url: &str) -> io::Result<()> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(io::Error::other("only http and https URLs are opened"));
+    }
+    let (verb, target) = (wide("open"), wide(url));
+    // SAFETY: both strings are NUL-terminated and outlive the call; no window handle, no
+    // parameters, no directory.
+    let rc = unsafe { ShellExecuteW(ptr::null_mut(), verb.as_ptr(), target.as_ptr(), ptr::null(), ptr::null(), SW_SHOWNORMAL) };
+    // ShellExecuteW returns a value greater than 32 on success.
+    if rc as usize > 32 { Ok(()) } else { Err(io::Error::other(format!("ShellExecuteW failed ({})", rc as usize))) }
 }

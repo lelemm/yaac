@@ -53,6 +53,8 @@ pub(crate) enum Menu {
     SettingsTarget,
     InstanceKind,
     Demo,
+    /// A row's PR badge menu (D119): Create a new PR, Copy link.
+    PrBadge(ThreadKey),
 }
 
 /// The user's in-progress answers to a question card. UI memory only: never written to the
@@ -112,6 +114,12 @@ pub(crate) struct UiState {
     pub delete: Option<yaac_core::thread_menu::DeleteDialog>,
     /// The Archive confirmation (D111).
     pub archive: Option<yaac_core::thread_menu::ArchiveDialog>,
+    /// The `+N` list of a PR badge while it is open, and where it was drawn (D119).
+    pub pr_more: Option<((ThreadKey, String), egui::Rect)>,
+    /// The threads whose rows were drawn this frame (their pull requests are kept fresh).
+    pub pr_visible: Vec<ThreadKey>,
+    /// Screenshots only: show this sidebar row's `+N` list as if hovered.
+    pub pr_more_force: Option<ThreadKey>,
     /// Focus this request card's first button on the next frame.
     pub focus_card: Option<ItemId>,
     /// Scroll the transcript to this item on the next frame.
@@ -186,6 +194,9 @@ impl UiState {
             needs_cycle: yaac_core::sidebar::NeedsCycle::default(),
             delete: None,
             archive: None,
+            pr_more: None,
+            pr_visible: Vec::new(),
+            pr_more_force: None,
             focus_card: None,
             scroll_to: None,
             scroll_end: false,
@@ -360,6 +371,18 @@ pub(crate) enum Action {
     LargePaste(bool),
     /// The composer's text changed: store the draft soon.
     DraftEdited(DraftRef),
+    /// Open a URL in the host's default browser (a pull request, D119).
+    OpenUrl(String),
+    /// Open the Create PR modal for a thread (D120).
+    OpenCreatePr(ThreadKey),
+    /// The modal's Create.
+    CreatePr,
+    /// The modal's "Ask the agent to write it".
+    AskAgentPr,
+    /// The modal's target branch.
+    PrBase(String),
+    /// A PR badge's menu was opened: ask the target again.
+    PrRefresh(ThreadKey),
 }
 
 /// The time the view models are computed at.
@@ -957,6 +980,27 @@ impl YaacApp {
                     }
                 }
                 Action::DraftEdited(d) => self.client.draft_changed(&d),
+                Action::OpenUrl(url) => {
+                    // In the demo and while taking screenshots nothing leaves the window.
+                    if self.demo.is_none() {
+                        crate::browser::open(&url);
+                    }
+                }
+                Action::OpenCreatePr(k) => {
+                    self.ui.menu = None;
+                    self.client.open_create_pr(&k);
+                }
+                Action::CreatePr => {
+                    self.client.submit_create_pr();
+                }
+                Action::AskAgentPr => {
+                    self.client.ask_agent_for_pr();
+                }
+                Action::PrBase(b) => self.client.set_create_pr_base(&b),
+                Action::PrRefresh(k) => {
+                    let now = self.now();
+                    self.client.forge_refresh(&k, now);
+                }
                 Action::StreamReply => {
                     if let Some(k) = self.client.state.selected_thread().cloned() {
                         self.client.state.drafts.entry(k.clone()).or_default().text =
@@ -1279,6 +1323,17 @@ impl eframe::App for YaacApp {
         crate::titlebar::buttons(ui, window, &p);
         crate::dialogs::mode_confirm(ui.ctx(), self, &mut actions);
         crate::dialogs::mute(ui.ctx(), self, &mut actions);
+        crate::pr_ui::create_dialog(ui.ctx(), self, &mut actions);
+        // Pull requests of the rows on screen (D119): asked when due, never polled; one calm
+        // repaint when the next refresh is due.
+        let visible = std::mem::take(&mut self.ui.pr_visible);
+        if !visible.is_empty() && self.shots.is_none() {
+            self.client.forge_visible(&visible, now);
+            ctx.request_repaint_after(std::time::Duration::from_secs(u64::try_from(yaac_core::pr::VISIBLE_REFRESH_SECS).unwrap_or(300)));
+        }
+        if self.client.poll_create_pr() {
+            ctx.request_repaint();
+        }
         self.apply(actions);
         self.persist_prefs();
     }

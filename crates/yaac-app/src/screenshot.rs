@@ -67,6 +67,10 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("46", "pill-relations"),
     ("47", "pill-workers"),
     ("48", "docked-narrow"),
+    ("60", "pr-badges"),
+    ("61", "pr-more"),
+    ("62", "pr-menu"),
+    ("63", "pr-create"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -192,7 +196,7 @@ fn setup(app: &mut YaacApp, id: &str) {
         }
         app.pump_demo();
     };
-    let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24" | "44" | "48");
+    let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24" | "44" | "48" | "60");
     app.ui.panel = if docked { PanelMode::Docked } else { PanelMode::Pill };
     match id {
         "01" | "10" => {
@@ -539,6 +543,30 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.open(&threads::search(), None);
             if let Some(r) = app.client.state.threads.get_mut(&threads::search()) {
                 r.summary.spawned_by = None;
+            }
+        }
+        "60" | "61" | "62" | "63" => {
+            // Pull requests (D119, D120): every badge state in the sidebar and the docked
+            // panel — open with failing checks, a draft with +1, merged, create, and one whose
+            // target's az is signed out — then the +1 list, the badge menu, and the modal.
+            app.open(&threads::orchestrator(), None);
+            let keys: Vec<_> = app.client.state.threads.keys().cloned().collect();
+            app.client.forge_visible(&keys, STORY_NOW);
+            if let Some(h) = &hub {
+                h.drain();
+            }
+            app.pump_demo();
+            match id {
+                "61" => app.ui.pr_more_force = Some(threads::billing()),
+                "62" => app.ui.menu = Some(Menu::PrBadge(threads::billing())),
+                "63" => {
+                    app.client.open_create_pr(&threads::fix());
+                    if let Some(h) = &hub {
+                        h.drain();
+                    }
+                    app.pump_demo();
+                }
+                _ => {}
             }
         }
         "48" => {

@@ -10,6 +10,7 @@
 //! | [`current_user_sid`] | The attach pipe's name and access control. |
 //! | [`create_pipe_server`] | The hub's attach pipe: one instance, accessible only to the current user, never to remote clients. |
 //! | [`owned_by_current_user`] | The window checks the pipe it opened belongs to its own user (no squatting by another user). |
+//! | [`open_url`] | Opening a pull request's page in the default browser (D119): `ShellExecuteW` with the `open` verb, from a worker thread. |
 //! | [`registry_set_string`], [`registry_get_string`], [`registry_delete_value`], [`registry_delete_tree`] | The per-user `Run` value that starts the hub at login (under `HKEY_CURRENT_USER` only). |
 
 #[cfg(windows)]

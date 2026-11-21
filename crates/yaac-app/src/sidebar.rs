@@ -581,6 +581,12 @@ pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, r
     let g = ui.fonts_mut(|f| f.layout_no_wrap(right_text, font.clone(), p.text2));
     let rx = rect.right() - 8.0 - g.size().x;
     ui.painter().galley(pos2(rx, cy - g.size().y / 2.0), g, p.text2);
+    // The PR badge (D119, on line 1 before the time): the title gives way, never the badge.
+    app.ui.pr_visible.push(row.key.clone());
+    let mut title_end = rx;
+    if let Some(b) = yaac_core::pr::badge_of(&app.client.state, &row.key) {
+        title_end = crate::pr_ui::badge(ui, app, &row.key, &b, rx - 6.0, cy, "side", actions) - 2.0;
+    }
     if let Some(l2) = &row.line2 {
         // Line 2: the harness logo, the branch, then file counts in git colours, then commits
         // ahead and behind; the workers sit at the right edge, under the time. Every count
@@ -600,7 +606,7 @@ pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, r
     }
     let color = if s.kind == SectionKind::Muted { p.text2 } else { p.text };
     let forked = app.client.state.summary(&row.key).is_some_and(|s| s.forked_from.is_some());
-    let tw_room = title_width(rx - title_x, &[if forked { 18.0 } else { 0.0 }], 8.0);
+    let tw_room = title_width(title_end - title_x, &[if forked { 18.0 } else { 0.0 }], 8.0);
     let tg = widgets::elided(ui, &row.title, &theme::ui(size::UI), color, tw_room.max(1.0));
     let tw = tg.size().x;
     ui.painter().galley(pos2(title_x, cy - tg.size().y / 2.0), tg, color);
