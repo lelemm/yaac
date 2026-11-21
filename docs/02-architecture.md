@@ -41,6 +41,10 @@ The window and the hub are always the same build: a newer window restarts an old
 is safe because the hub holds no work of its own — turns live in `yaacd` on the targets and
 are journaled there.
 
+On Windows both are one `yaac.exe`, installed per user by an Inno Setup installer that stops
+the window and the hub before an upgrade and starts the hub again after it; the hub's login
+entry is the per-user `Run` value `YAAC hub` ([Installing on Windows](install.md)).
+
 ## The single-connection rule
 
 **Decided.** For each target the host holds exactly one open connection, and it is a plain

@@ -13,6 +13,8 @@ Read in order the first time; each doc stands alone afterwards.
 9. [Compatibility](09-compatibility.md) — protocol versions, dialects, upgrading a busy daemon
 10. [Agent mesh](10-agent-mesh.md) — **the main purpose**: agents working together across
     harnesses and machines. Read this one even if you read nothing else.
+11. [Installing on Windows](install.md) — the per-user setup: where files go, what runs at
+    login, upgrade and uninstall
 
 Reference:
 

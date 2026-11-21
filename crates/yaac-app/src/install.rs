@@ -300,4 +300,27 @@ mod tests {
         std::fs::write(&f, "x").unwrap();
         assert!(wait_until_replaceable(&f, Duration::ZERO));
     }
+
+    /// `yaac quit` against a stand-in window: it holds the single-instance event and listens on
+    /// the quit event as the real one does, and lets go of both when asked.
+    #[cfg(windows)]
+    #[test]
+    fn quit_closes_a_listening_window_and_waits_for_it() {
+        let t = tempfile::tempdir().unwrap();
+        let paths = HubPaths::under(t.path());
+        let name = crate::tray::instance_name(&paths);
+        assert!(!yaac_winsys::named_event_exists(&name));
+        assert!(quit_window(&paths).is_ok(), "no window: nothing to do");
+        let yaac_winsys::InstanceClaim::First(instance) = yaac_winsys::claim_window_instance(&name).unwrap() else { panic!("claimed") };
+        let quit = yaac_winsys::listen_named_event(&format!("{name}-quit")).unwrap();
+        let window = std::thread::spawn(move || {
+            assert!(quit.wait());
+            std::thread::sleep(Duration::from_millis(200));
+            drop((instance, quit));
+        });
+        assert!(yaac_winsys::named_event_exists(&name));
+        quit_window(&paths).unwrap();
+        assert!(!yaac_winsys::named_event_exists(&name), "quit returns once the window has let go");
+        window.join().unwrap();
+    }
 }
