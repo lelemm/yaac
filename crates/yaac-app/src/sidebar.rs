@@ -417,6 +417,8 @@ fn search_field(ui: &mut egui::Ui, app: &mut YaacApp, enabled: bool) {
             ui.add_space(8.0);
             ui.checkbox(&mut o.unseen_first, "Keep unseen finished threads at the top");
             ui.checkbox(&mut o.needs_first, "Keep threads that need you at the top");
+            ui.add_space(8.0);
+            ui.checkbox(&mut o.running_only, "Show only running");
         });
     if !open && app.ui.menu == Some(Menu::Ordering) {
         app.ui.menu = None;

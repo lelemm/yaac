@@ -321,3 +321,26 @@ fn card_docked_and_pill_share_one_grouping_by_relation() {
     let panel = agents_panel(&c.state, &map, &threads::orchestrator()).unwrap();
     assert!(clusters(&panel, None).iter().all(|c| c.relation != Relation::SpawnedBy));
 }
+
+// ── D129: show only running ──────────────────────────────────────────────────────────────
+
+#[test]
+fn running_only_keeps_running_and_floated_threads() {
+    let (mut c, hub) = boot();
+    let only = Ordering { running_only: true, ..Ordering::default() };
+    // "api — devbox": CI integration is waiting on another agent (at work); billing-service is done.
+    assert_eq!(group_titles(&c, only, "api"), ["CI integration"]);
+    // "yaac — devbox": Fix frame decoder needs the user, so it stays while that float is on.
+    let yaac = |c: &yaac_core::client::Client, o| group_titles(c, o, "yaac");
+    assert_eq!(yaac(&c, only), ["Fix frame decoder"]);
+    if c.state.selected_thread().is_none_or(|k| k.thread.as_str() != "t-fix") {
+        assert!(yaac(&c, Ordering { needs_first: false, ..only }).is_empty(), "without the float it is hidden");
+    }
+    // An unseen finished thread is kept while its float is on, hidden when it is off.
+    unseen(&mut c, &threads::billing());
+    common::settle(&mut c, &hub);
+    assert_eq!(group_titles(&c, only, "api"), ["billing-service", "CI integration"]);
+    assert_eq!(group_titles(&c, Ordering { unseen_first: false, ..only }, "api"), ["CI integration"]);
+    // Off again: everything is back.
+    assert_eq!(group_titles(&c, Ordering::default(), "api").len(), 2);
+}

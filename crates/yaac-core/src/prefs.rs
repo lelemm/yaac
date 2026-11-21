@@ -113,6 +113,7 @@ impl UiPrefs {
                 },
                 "unseenFirst": self.ordering.unseen_first,
                 "needsFirst": self.ordering.needs_first,
+                "runningOnly": self.ordering.running_only,
             }),
             keys::AGENTS_DOCKED => json!(self.docked),
             keys::THEME => json!(match self.theme {
@@ -153,6 +154,7 @@ impl UiPrefs {
                 };
                 o.unseen_first = b("unseenFirst", o.unseen_first);
                 o.needs_first = b("needsFirst", o.needs_first);
+                o.running_only = b("runningOnly", o.running_only);
             }
             keys::AGENTS_DOCKED => self.docked = v.as_bool().unwrap_or(self.docked),
             keys::THEME => {

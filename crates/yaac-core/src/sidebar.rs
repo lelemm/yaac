@@ -79,12 +79,24 @@ pub struct Ordering {
     pub unseen_first: bool,
     /// Keep threads that need the user at the top of their group.
     pub needs_first: bool,
+    /// List only running threads (D129) — and, when the two choices above are on, the
+    /// threads they float. The open thread always stays listed.
+    pub running_only: bool,
 }
 
 impl Default for Ordering {
     fn default() -> Self {
-        Self { order: Order::LastMessage, unseen_first: true, needs_first: true }
+        Self { order: Order::LastMessage, unseen_first: true, needs_first: true, running_only: false }
     }
+}
+
+/// Under "Show only running" (D129): running threads (and those waiting on another agent,
+/// which are at work), plus whatever the float choices keep at the top.
+fn shown_when_running_only(state: &AppState, map: &AttentionMap, key: &ThreadKey, ordering: Ordering) -> bool {
+    let d = display(state, map, key);
+    matches!(d.mark, Mark::Running | Mark::Waiting)
+        || (ordering.needs_first && d.attention.is_some())
+        || (ordering.unseen_first && d.unseen)
 }
 
 /// Compares titles case-insensitively, runs of digits by their value ("t2" before "t10").
@@ -438,12 +450,15 @@ pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, orderi
     for (key, rec) in &state.threads {
         let s = &rec.summary;
         if s.archived {
-            if text_matches(s) {
+            if text_matches(s) && !ordering.running_only {
                 archived.push(key.clone());
             }
             continue;
         }
         if !matches(key, s) && !(map.of(key).is_some() && text_matches(s)) {
+            continue;
+        }
+        if ordering.running_only && selected != Some(key) && !shown_when_running_only(state, map, key, ordering) {
             continue;
         }
         // A blocked thread is never hidden: a muted (or dismissed) one that needs the user is
