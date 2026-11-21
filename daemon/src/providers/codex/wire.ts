@@ -31,6 +31,16 @@ export interface Model {
   defaultReasoningEffort?: string | null;
   /** `text`, `image`, `audio`, … — open. */
   inputModalities?: string[];
+  /** The service tiers this model can run on (`{ id, name, description }`), e.g. Fast. */
+  serviceTiers?: ModelServiceTier[];
+  /** Deprecated by Codex in favour of `serviceTiers`: the extra speed tiers' names. */
+  additionalSpeedTiers?: string[];
+}
+
+export interface ModelServiceTier {
+  id: string;
+  name?: string;
+  description?: string;
 }
 
 export interface Paged<T> {

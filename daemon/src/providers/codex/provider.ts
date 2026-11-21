@@ -44,7 +44,7 @@ import type {
   TurnOverrides,
 } from "../types.js";
 import { connectBackend, planEndpoint, realExec, type EndpointPlan, type Exec } from "./backend.js";
-import { mapItem, mapModel, mapServerRequest, planState, threadInfo, tokenUsage, turnStatus, usageDelta, type MappedRequest } from "./mapping.js";
+import { fastTier, mapItem, mapModel, mapServerRequest, planState, threadInfo, tokenUsage, turnStatus, usageDelta, type MappedRequest } from "./mapping.js";
 import { CodexConnection, CodexRpcError, type ServerRequest } from "./rpc.js";
 import {
   THREAD_SOURCE_KINDS,
@@ -227,6 +227,8 @@ export class CodexProvider implements HarnessProvider {
   private threads = new Map<NativeId, ThreadState>();
   private requests = new Map<string, LiveRequest>();
   private models: ModelInfo[] = [];
+  /** Each listed model's fast service tier id (D125), by model id. */
+  private fastTiers = new Map<string, string>();
   /** Sign-in mode at the last probe (lower case); undefined before the first probe. */
   private authMode: string | null | undefined = undefined;
   private sourceKinds: string[] = [...THREAD_SOURCE_KINDS];
@@ -608,6 +610,9 @@ export class CodexProvider implements HarnessProvider {
         if (seen.has(info.id)) continue;
         seen.add(info.id);
         out.push(info);
+        const tier = fastTier(m);
+        if (tier) this.fastTiers.set(info.id, tier);
+        else this.fastTiers.delete(info.id);
       }
       cursor = page.nextCursor ?? null;
       if (!cursor) return { models: out, complete: true };
@@ -729,7 +734,7 @@ export class CodexProvider implements HarnessProvider {
     st.mode = mode?.id ?? null;
     st.lastControl = JSON.stringify({ external: false });
     try {
-      const turn = await this.beginTurn(st, input, { model: null, effort: params.effort ?? null, mode: null });
+      const turn = await this.beginTurn(st, input, { model: null, effort: params.effort ?? null, mode: null, fast: params.fast ?? null });
       return { thread: native, turn };
     } catch (e) {
       // Nothing was sent: do not leave an empty conversation behind.
@@ -750,7 +755,7 @@ export class CodexProvider implements HarnessProvider {
       }
     }
     if (this.isActive(st.status)) throw new ThreadInUseError("the Codex thread is busy");
-    return this.beginTurn(st, input, { model: overrides.model ?? null, effort: overrides.effort ?? null, mode: findMode(overrides.mode) });
+    return this.beginTurn(st, input, { model: overrides.model ?? null, effort: overrides.effort ?? null, mode: findMode(overrides.mode), fast: overrides.fast ?? null });
   }
 
   private userInput(input: ProviderInput): UserInput[] {
@@ -760,10 +765,24 @@ export class CodexProvider implements HarnessProvider {
     return out;
   }
 
-  private async beginTurn(st: ThreadState, input: ProviderInput, o: { model: string | null; effort: string | null; mode: CodexMode | null }): Promise<TurnId> {
+  /**
+   * The `turn/start` service tier for fast mode (D125): the model's fast tier when on, and
+   * "default" (standard speed) when off, for this turn only (`serviceTierForTurn`), so the
+   * thread's own tier in Codex is never changed. Nothing is sent for a model with no fast tier.
+   */
+  serviceTierFor(model: string | null, fast: boolean | null): string | null {
+    if (fast === null) return null;
+    const id = model ?? this.models.find((m) => m.isDefault)?.id ?? null;
+    const tier = id ? this.fastTiers.get(id) : undefined;
+    if (!tier) return null;
+    return fast ? tier : "default";
+  }
+
+  private async beginTurn(st: ThreadState, input: ProviderInput, o: { model: string | null; effort: string | null; mode: CodexMode | null; fast?: boolean | null }): Promise<TurnId> {
     const conn = await this.ensure();
     const clientId = randomId("yaac-", 12);
     const effort = o.effort ?? st.pendingEffort;
+    const tier = this.serviceTierFor(o.model ?? st.model, o.fast ?? null);
     st.sentClientIds.add(clientId);
     st.starting = true;
     st.held = [];
@@ -776,6 +795,7 @@ export class CodexProvider implements HarnessProvider {
         clientUserMessageId: clientId,
         ...(o.model ? { model: o.model } : {}),
         ...(effort ? { effort } : {}),
+        ...(tier ? { serviceTierForTurn: tier } : {}),
         ...(o.mode ? { approvalPolicy: o.mode.approvalPolicy, sandboxPolicy: o.mode.sandboxPolicy } : {}),
       })) as { turn: Turn };
       turnId = r.turn.id;

@@ -127,7 +127,7 @@ class StubQuery implements SdkQuery {
 }
 
 const MODELS: SdkModelInfo[] = [
-  { value: "stub-alias", resolvedModel: "stub-default-resolved", displayName: "Stub Alias", description: "An invented model", supportsEffort: true, supportedEffortLevels: ["stub-lo" as never, "stub-mid" as never, "stub-hi" as never] },
+  { value: "stub-alias", resolvedModel: "stub-default-resolved", displayName: "Stub Alias", description: "An invented model", supportsEffort: true, supportedEffortLevels: ["stub-lo" as never, "stub-mid" as never, "stub-hi" as never], supportsFastMode: true },
   { value: "stub-plain", displayName: "Stub Plain", description: "No efforts" },
 ];
 
@@ -276,7 +276,12 @@ test("probe reports models and their efforts exactly as listed, and closes its q
     ],
   );
   assert.equal(p.models[0]!.defaultEffort, "stub-mid");
-  for (const m of p.models) assert.deepEqual(m.capabilities, [{ capability: "imageInput", support: "supported" }]);
+  // Image input for every model; fast mode as Claude Code reports it per model (D125): a
+  // model that says nothing is unknown, never "yes".
+  assert.deepEqual(p.models.map((m) => m.capabilities), [
+    [{ capability: "imageInput", support: "supported" }, { capability: "fastMode", support: "supported" }],
+    [{ capability: "imageInput", support: "supported" }, { capability: "fastMode", support: "unknown" }],
+  ]);
   assert.ok(p.capabilities.includes("approvals") && p.capabilities.includes("userQuestions") && p.capabilities.includes("reasoning"));
   assert.ok(p.modes.some((m) => m.id === "default" && m.isDefault));
   assert.ok(p.modes.some((m) => m.id === "bypassPermissions" && m.skipsApprovals && !m.isDefault));
@@ -885,4 +890,46 @@ test("a line diff keeps three lines of context and splits distant changes into h
   assert.equal(hunks.length, 2);
   assert.deepEqual([hunks[0]!.oldStart, hunks[0]!.oldLines, hunks[1]!.oldStart, hunks[1]!.oldLines], [1, 5, 15, 6]);
   assert.deepEqual(hunks[0]!.lines, [" l1", "-l2", "+L2", " l3", " l4", " l5"]);
+});
+
+test("fast mode is Claude Code's fastMode setting: at open, then applyFlagSettings on the live query (D125)", async () => {
+  const r = rig();
+  await r.provider.probe();
+  // Started in fast mode: the query opens with the flag setting (the SDK's opt-in too).
+  const started = await r.provider.startThread({ cwd: r.dir, model: "stub-alias", fast: true }, input("go fast"));
+  const q = r.sdk.queries.at(-1)!;
+  await q.nextUser();
+  assert.deepEqual(q.options.settings, { fastMode: true });
+  // Claude Code reports the turn did not get fast mode: a notice in the transcript says why.
+  q.push(result({ fast_mode_state: "off", fast_mode_disabled_reason: "extra_usage_disabled" }));
+  await until(() => of(r.events, "turnCompleted")[0], "first turn");
+  const notice = completedItems(r.events).find((i) => i.kind === "notice") as any;
+  assert.equal(notice?.text, "Claude Code did not run this turn in fast mode (extra_usage_disabled).");
+  // The same setting again: nothing to change.
+  await r.provider.startTurn(started.thread, input("still fast"), { fast: true });
+  assert.ok(!q.calls.some(([c]) => c === "applyFlagSettings"));
+  await q.nextUser();
+  q.push(result({ fast_mode_state: "on" }));
+  await until(() => of(r.events, "turnCompleted")[1], "second turn");
+  assert.equal(completedItems(r.events).filter((i) => i.kind === "notice").length, 1, "nothing to say when it ran fast");
+  // Off: the live query's flag layer changes; no re-open.
+  await r.provider.startTurn(started.thread, input("normal speed"), { fast: false });
+  assert.deepEqual(q.calls.filter(([c]) => c === "applyFlagSettings"), [["applyFlagSettings", { fastMode: false }]]);
+  assert.equal(r.sdk.queries.length, 2, "probe and the thread's query");
+  await q.nextUser();
+  q.push(result());
+  await until(() => of(r.events, "turnCompleted")[2], "third turn");
+  // A query opened later (here: after a refused change) opens without the setting.
+  q.failEffort = true;
+  await r.provider.startTurn(started.thread, input("fast again"), { fast: true });
+  const reopened = r.sdk.queries.at(-1)!;
+  assert.equal(reopened.options.resume, started.thread);
+  assert.deepEqual(reopened.options.settings, { fastMode: true });
+  // A thread that never asked for fast mode never sends the setting.
+  const plain = await r.provider.startThread({ cwd: r.dir }, input("plain"));
+  const pq = r.sdk.queries.at(-1)!;
+  await pq.nextUser();
+  assert.equal(pq.options.settings, undefined);
+  void plain;
+  await r.provider.dispose();
 });

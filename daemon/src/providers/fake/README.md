@@ -3,7 +3,9 @@
 Kind `fake`. A harness simulator: it streams, reasons, runs tools, asks for approvals and
 questions, stalls, fails, and pretends to be in use elsewhere — with no harness installed and no
 tokens spent. Its models (`fake-large`, `fake-small`, `fake-mystery`), efforts (`fake-low`,
-`fake-high`), and modes (`fake-ask`, `fake-auto`) are invented.
+`fake-high`), and modes (`fake-ask`, `fake-auto`) are invented. `fake-large` has fast mode (`fastMode`), `fake-small` has not, and
+`fake-mystery` says nothing; the input of every turn is recorded with the `fast` flag yaacd
+handed it (`received`).
 
 ## Enabling it
 
