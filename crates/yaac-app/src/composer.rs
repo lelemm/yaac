@@ -96,7 +96,7 @@ fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &st
     // text scrolls inside.
     let width = ui.available_width();
     let lines = if text.is_empty() { 1 } else { layout(ui, text, width - 8.0, p).rows.len() };
-    let (rows, scrolls) = compose::rows(lines);
+    let (rows, _) = compose::rows(lines);
     let row_h = ui.fonts_mut(|f| f.row_height(&theme::ui(size::PROSE - 0.5)));
     let te = egui::TextEdit::multiline(text)
         .id(id)
@@ -108,16 +108,16 @@ fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &st
         .return_key(newline)
         .interactive(enabled)
         .layouter(&mut layouter);
-    let r = if scrolls {
-        egui::ScrollArea::vertical()
-            .id_salt(("composer-scroll", id))
-            .max_height(row_h * compose::MAX_ROWS as f32 + 2.0)
-            .auto_shrink([false, true])
-            .show(ui, |ui| ui.add(te))
-            .inner
-    } else {
-        ui.add(te)
-    };
+    // Always inside the same scroll area (it shrinks to the text below five lines): the
+    // widget tree does not change when the sixth line arrives, so the text box's own "keep
+    // the caret in view" reaches it on that very frame (D102).
+    let out = egui::ScrollArea::vertical()
+        .id_salt(("composer-scroll", id))
+        .max_height(row_h * compose::MAX_ROWS as f32 + 2.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| ui.add(te));
+    ui.data_mut(|d| d.insert_temp(id.with("scroll-offset"), out.state.offset().y));
+    let r = out.inner;
     if *focus {
         r.request_focus();
         *focus = false;
@@ -563,6 +563,26 @@ mod tests {
         let (sent, _) = frame(&ctx, &mut text, vec![key(Key::Enter, Modifiers::NONE)], false);
         assert!(sent, "Enter sends");
         assert_eq!(text, "one\ntwo", "and adds no line break");
+    }
+
+    #[test]
+    fn past_five_lines_the_caret_stays_in_view() {
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        frame(&ctx, &mut text, vec![], false);
+        let id = egui::Id::unique("composer-test");
+        let offset = |ctx: &egui::Context| ctx.data(|d| d.get_temp::<f32>(id.with("scroll-offset"))).unwrap_or(0.0);
+        let mut last = 0.0;
+        for i in 1..=9 {
+            frame(&ctx, &mut text, vec![Event::Text(format!("line {i}"))], false);
+            frame(&ctx, &mut text, vec![key(Key::Enter, Modifiers::SHIFT)], false);
+            let o = offset(&ctx);
+            if i >= 5 {
+                assert!(o > last, "line {i}: the box scrolled to the caret ({o} after {last})");
+            }
+            last = o;
+        }
+        assert_eq!(text.lines().count(), 9);
     }
 
     #[test]
