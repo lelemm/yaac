@@ -7,6 +7,9 @@
 //! reports an older one ([`yaac_protocol::attach::DaemonSummary::older`]). This module only
 //! gathers those answers into one list: nothing here asks the network itself.
 
+use yaac_protocol::attach::DaemonUpdatePhase;
+use yaac_protocol::{TargetId, ThreadState};
+
 use crate::state::{AppState, HelloOutcome};
 use crate::update::{Offer, ReleaseCheck, offer};
 
@@ -53,15 +56,27 @@ pub fn components(state: &AppState, window_build: &str) -> Vec<Component> {
     out.push(hub);
     for t in state.targets.iter().filter(|t| t.entry.enabled) {
         let name = format!("yaacd on {}", t.entry.name);
-        let c = match &t.entry.state.daemon {
-            Some(d) if d.older => Component {
+        let update = t.entry.state.update.as_ref();
+        let c = match (&t.entry.state.daemon, update) {
+            // An update under way, or one that did not take: shown even while reconnecting.
+            (_, Some(u)) if u.phase == DaemonUpdatePhase::Updating => {
+                Component { name, build: Some(u.from.clone()), status: ComponentStatus::Outdated(format!("updating to {}…", u.to)) }
+            }
+            (_, Some(u)) if u.phase == DaemonUpdatePhase::Stuck => Component {
+                name,
+                build: Some(u.from.clone()),
+                status: ComponentStatus::Outdated(u.detail.clone().unwrap_or_else(|| format!("not updated to {}", u.to))),
+            },
+            (Some(d), _) if d.older => Component {
                 name,
                 build: Some(d.build.clone()),
-                status: ComponentStatus::Outdated("older build than this YAAC".into()),
+                status: ComponentStatus::Outdated(
+                    if d.can_update { "older build than this YAAC; it is updated when idle, or with Update now" } else { "older build than this YAAC" }.into(),
+                ),
             },
-            Some(d) => Component { name, build: Some(d.build.clone()), status: ComponentStatus::Current },
-            None if t.connected() => Component { name, build: None, status: ComponentStatus::Unknown("connected; its build is not reported yet".into()) },
-            None => Component { name, build: None, status: ComponentStatus::Unknown(format!("not connected ({})", t.entry.state.status.as_str())) },
+            (Some(d), _) => Component { name, build: Some(d.build.clone()), status: ComponentStatus::Current },
+            (None, _) if t.connected() => Component { name, build: None, status: ComponentStatus::Unknown("connected; its build is not reported yet".into()) },
+            (None, _) => Component { name, build: None, status: ComponentStatus::Unknown(format!("not connected ({})", t.entry.state.status.as_str())) },
         };
         out.push(c);
     }
@@ -87,6 +102,47 @@ pub fn release(check: &ReleaseCheck, window_build: &str) -> Component {
             Component { name, build: Some(label), status }
         }
     }
+}
+
+/// The turns **Update now** interrupts on a target: its threads with a turn in progress
+/// (running, waiting on another agent, or waiting for the user).
+pub fn turns_in_progress(state: &AppState, target: &TargetId) -> usize {
+    state
+        .threads
+        .keys()
+        .filter(|k| &k.target == target)
+        .filter_map(|k| state.summary(k))
+        .filter(|s| matches!(s.state, ThreadState::Running | ThreadState::Waiting | ThreadState::NeedsAttention))
+        .count()
+}
+
+/// **Update now**'s confirmation: needed only when turns would be interrupted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateNowDialog {
+    /// The target.
+    pub target: TargetId,
+    /// "Update yaacd on devbox now?"
+    pub title: String,
+    /// What it interrupts.
+    pub body: String,
+}
+
+/// The confirmation for **Update now** on `target`, or `None` when nothing is in progress
+/// there and it can go ahead at once (it is the user's explicit action).
+pub fn update_now_dialog(state: &AppState, target: &TargetId) -> Option<UpdateNowDialog> {
+    let n = turns_in_progress(state, target);
+    if n == 0 {
+        return None;
+    }
+    let name = state.target_name(target);
+    let turns = if n == 1 { "1 turn is".to_owned() } else { format!("{n} turns are") };
+    Some(UpdateNowDialog {
+        target: target.clone(),
+        title: format!("Update yaacd on {name} now?"),
+        body: format!(
+            "{turns} in progress on {name}. Updating now interrupts them; each is marked as interrupted by the update, and anything waiting for your answer in them is closed. To avoid that, let it update by itself once idle."
+        ),
+    })
 }
 
 /// How many components need updating.
@@ -131,6 +187,40 @@ mod tests {
         assert_eq!(c[3].build.as_deref(), Some("0.1.0+40"));
         assert!(matches!(c[4].status, S::Unknown(_)));
         assert_eq!(outdated(&s, "0.1.0+42"), 1);
+    }
+
+    #[test]
+    fn an_update_under_way_or_stuck_is_shown_even_while_reconnecting() {
+        let mut s = AppState::new();
+        s.hub.outcome = HelloOutcome::Attached;
+        let mut updating = target("devbox", true, None);
+        updating.state.update = Some(serde_json::from_value(json!({ "from": "0.1.0+40", "to": "0.1.0+42-ab", "phase": "updating" })).unwrap());
+        let mut stuck = target("gpu", true, Some(("0.1.0+40", true)));
+        stuck.state.update = Some(serde_json::from_value(json!({ "from": "0.1.0+40", "to": "0.1.0+42-ab", "phase": "stuck", "detail": "yaacd 0.1.0+40 started again" })).unwrap());
+        s.set_targets(vec![updating, stuck]);
+        let c = components(&s, "0.1.0+42");
+        assert_eq!(c[2].status, S::Outdated("updating to 0.1.0+42-ab…".into()));
+        assert_eq!(c[2].build.as_deref(), Some("0.1.0+40"));
+        assert_eq!(c[3].status, S::Outdated("yaacd 0.1.0+40 started again".into()));
+    }
+
+    #[test]
+    fn update_now_asks_first_only_when_turns_would_be_interrupted() {
+        let mut s = AppState::new();
+        s.set_targets(vec![target("devbox", true, Some(("0.1.0+40", true)))]);
+        let t = yaac_protocol::TargetId::new("devbox");
+        assert_eq!(super::update_now_dialog(&s, &t), None, "nothing running: no confirmation");
+        for (id, state) in [("a", "running"), ("b", "needsAttention"), ("c", "idle")] {
+            let summary: yaac_protocol::ThreadSummary = serde_json::from_value(json!({
+                "id": id, "instance": "fake", "title": id, "cwd": "/w", "state": state, "control": "mine", "originKind": "yaac",
+                "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"
+            }))
+            .unwrap();
+            s.upsert_summary(&t, summary);
+        }
+        let d = super::update_now_dialog(&s, &t).expect("two turns in progress");
+        assert_eq!(d.title, "Update yaacd on devbox now?");
+        assert!(d.body.starts_with("2 turns are in progress on devbox."), "{}", d.body);
     }
 
     #[test]

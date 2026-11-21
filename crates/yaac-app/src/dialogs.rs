@@ -499,6 +499,38 @@ pub(crate) fn archive(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<
     }
 }
 
+/// "Update yaacd on <target> now?" — shown by **Update now** only while turns there would be
+/// interrupted, with how many. Update now (Enter) or Cancel (Esc).
+pub(crate) fn update_now(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let Some(d) = app.ui.update_now.take() else { return };
+    scrim(ctx, &p, "update-now");
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        return;
+    }
+    let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    let mut keep = true;
+    window("update-now", &p, ctx).show(ctx, |ui| {
+        ui.set_width(420.0);
+        ui.label(RichText::new(&d.title).font(theme::bold(size::SECTION + 1.5)));
+        ui.add_space(10.0);
+        ui.label(widgets::secondary(d.body.clone(), &p));
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            if danger(ui, &p, "Update now").clicked() || enter {
+                actions.push(Action::ConfirmUpdateDaemon(d.target.clone()));
+                keep = false;
+            }
+            if widgets::plain(ui, &p, "Cancel", Some("Esc")).clicked() {
+                keep = false;
+            }
+        });
+    });
+    if keep {
+        app.ui.update_now = Some(d);
+    }
+}
+
 /// "Quit YAAC?" — Quit from the Commander or its key while the tray is not in use, so closing
 /// the window is not a slip of the keyboard. The hub keeps running either way.
 pub(crate) fn quit(ctx: &egui::Context, app: &mut YaacApp) {

@@ -118,6 +118,8 @@ pub(crate) struct UiState {
     pub delete: Option<yaac_core::thread_menu::DeleteDialog>,
     /// The Archive confirmation (D111).
     pub archive: Option<yaac_core::thread_menu::ArchiveDialog>,
+    /// **Update now**'s confirmation, while turns would be interrupted.
+    pub update_now: Option<yaac_core::components::UpdateNowDialog>,
     /// The `+N` list of a PR badge while it is open, and where it was drawn (D119).
     pub pr_more: Option<((ThreadKey, String), egui::Rect)>,
     /// The threads whose rows were drawn this frame (their pull requests are kept fresh).
@@ -210,6 +212,7 @@ impl UiState {
             needs_cycle: yaac_core::sidebar::NeedsCycle::default(),
             delete: None,
             archive: None,
+            update_now: None,
             pr_more: None,
             pr_visible: Vec::new(),
             pr_more_force: None,
@@ -368,6 +371,10 @@ pub(crate) enum Action {
     /// Fast mode on or off for a new-thread draft (D125).
     DraftFast(u64, bool),
     Retry(TargetId),
+    /// **Update now** on a target's older `yaacd`: asks first when turns would be interrupted.
+    UpdateDaemon(TargetId),
+    /// The confirmation's Update now.
+    ConfirmUpdateDaemon(TargetId),
     Panel(PanelInput),
     Settings(bool),
     SettingsPage(Page),
@@ -937,6 +944,14 @@ impl YaacApp {
                     self.client.draft_changed(&DraftRef::New(id));
                 }
                 Action::Retry(t) => self.client.retry_target(&t),
+                Action::UpdateDaemon(t) => match yaac_core::components::update_now_dialog(&self.client.state, &t) {
+                    Some(d) => self.ui.update_now = Some(d),
+                    None => self.client.update_daemon(&t),
+                },
+                Action::ConfirmUpdateDaemon(t) => {
+                    self.ui.update_now = None;
+                    self.client.update_daemon(&t);
+                }
                 Action::Panel(i) => {
                     self.ui.panel = self.ui.panel.next(i);
                     if self.ui.panel != PanelMode::Card {

@@ -116,6 +116,8 @@ enum Call {
     Find { query: String },
     Shutdown,
     TargetChanged,
+    /// **Update now** (`hub/targets/updateDaemon`) for this target.
+    UpdateDaemon(TargetId),
     /// `hub/upload/start` for one attempt of one chip.
     UploadStart { draft: DraftRef, id: u64, attempt: u32 },
     /// `hub/drafts/blob/begin`: the chunks wait here for the blob id.
@@ -469,7 +471,8 @@ impl Client {
                     self.state.apply_budget(b);
                 }
             }
-            Call::Respond { .. } | Call::Ignore => {}
+            // The update's progress arrives with the target's state.
+            Call::Respond { .. } | Call::Ignore | Call::UpdateDaemon(_) => {}
             Call::Ssh(id) => self.ssh_replies.push((id, Ok(result))),
             Call::SshRecords => self.on_ssh_records(&result),
             Call::WslDistros => self.on_wsl_distros(result),
@@ -536,6 +539,16 @@ impl Client {
 
     fn on_error(&mut self, call: Call, error: &ErrorObject) {
         match call {
+            Call::UpdateDaemon(target) => {
+                let name = self.state.target_name(&target);
+                // Never re-sent: the target's state shows how it went once it is back.
+                let text = if error.code == ErrorCode::OutcomeUnknown {
+                    format!("YAAC lost contact with {name} while asking yaacd to update. It may be updating; YAAC does not ask again.")
+                } else {
+                    format!("yaacd on {name} was not updated: {}", error.message)
+                };
+                self.error(None, text);
+            }
             Call::Respond { key, request_id } => {
                 let rev = self.state.next_stamp();
                 if let Some(t) = self.state.transcripts.get_mut(&key) {
@@ -842,6 +855,13 @@ impl Client {
     /// "Check latest status" on an outcome-unknown card. Sends nothing else.
     pub fn check_latest(&mut self, key: &ThreadKey) {
         self.subscribe(key);
+    }
+
+    /// **Update now**: ask the hub to have the target's older `yaacd` hand over at once
+    /// (running turns are interrupted, marked as interrupted by an update). Sent once; the
+    /// window asks first when turns are running ([`crate::components::update_now_dialog`]).
+    pub fn update_daemon(&mut self, target: &TargetId) {
+        self.request(attach::names::TARGETS_UPDATE_DAEMON, json!({ "id": target }), Call::UpdateDaemon(target.clone()));
     }
 
     /// Ask the hub to reconnect a target now.

@@ -1,6 +1,7 @@
 //! The thread header, its banners, and the composer's state.
 
-use yaac_protocol::{Capability, Control, ItemBody, ReceiptReason, Support, has_capability};
+use yaac_protocol::attach::{ConnectionState, ConnectionStatus, DaemonUpdatePhase};
+use yaac_protocol::{Capability, Control, ItemBody, ReceiptReason, Support, TargetId, has_capability};
 
 use crate::attention::{Attention, AttentionMap, Mark, ThreadDisplay, display};
 use crate::hints::RequestKindWord;
@@ -60,10 +61,14 @@ pub enum Banner {
         /// The sentence.
         text: String,
     },
-    /// The target's daemon is older; one action: update now.
+    /// The target's daemon is older, or being updated; one action, when the hub can update
+    /// it: **Update now**.
     OlderDaemon {
         /// The sentence.
         text: String,
+        /// The target **Update now** acts on; `None`: no button (nothing newer to install,
+        /// or the update is under way).
+        update_now: Option<TargetId>,
     },
 }
 
@@ -173,14 +178,35 @@ pub fn header(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Option<H
         };
         banners.push(Banner::InUseElsewhere { text });
     }
-    if let Some(daemon) = state.target(&key.target).and_then(|t| t.entry.state.daemon.as_ref())
-        && daemon.older
+    if let Some(t) = state.target(&key.target)
+        && let Some(b) = daemon_banner(&key.target, &t.entry.state, &target_name)
     {
-        banners.push(Banner::OlderDaemon {
-            text: format!("{target_name} is running an older YAAC daemon ({}). It will be updated when idle.", daemon.build),
-        });
+        banners.push(b);
     }
     Some(HeaderView { display: d, title: s.title.clone(), tag, breadcrumb, links, banners })
+}
+
+/// The banner about a target's `yaacd`: older (updated when idle, or **Update now**), being
+/// updated, or not updated after a hand-over (docs/02-architecture.md#one-serving-daemon-per-user).
+pub fn daemon_banner(target: &TargetId, state: &ConnectionState, name: &str) -> Option<Banner> {
+    let daemon = state.daemon.as_ref().filter(|_| state.status == ConnectionStatus::Connected);
+    let button = daemon.is_some_and(|d| d.can_update).then(|| target.clone());
+    match state.update.as_ref().map(|u| (u, &u.phase)) {
+        Some((_, DaemonUpdatePhase::Updating)) => Some(Banner::OlderDaemon { text: format!("Updating yaacd on {name}…"), update_now: None }),
+        Some((u, DaemonUpdatePhase::Stuck)) => Some(Banner::OlderDaemon {
+            text: u.detail.clone().unwrap_or_else(|| format!("yaacd on {name} was not updated: {} still serves.", u.from)),
+            update_now: button,
+        }),
+        _ => {
+            let d = daemon.filter(|d| d.older)?;
+            let text = if d.can_update {
+                format!("{name} is running an older YAAC daemon ({}). It will be updated when idle.", d.build)
+            } else {
+                format!("{name} is running an older YAAC daemon ({}).", d.build)
+            };
+            Some(Banner::OlderDaemon { text, update_now: button })
+        }
+    }
 }
 
 pub use crate::attachments::{ChipStatus, ChipView};
@@ -298,5 +324,48 @@ pub fn receipt_text(
             format!("Failed · {w} The message was not delivered.")
         }
         S::Unknown(s) => s.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use yaac_protocol::TargetId;
+    use yaac_protocol::attach::ConnectionState;
+
+    use super::{Banner, daemon_banner};
+
+    fn banner(state: serde_json::Value) -> Option<Banner> {
+        let state: ConnectionState = serde_json::from_value(state).unwrap();
+        daemon_banner(&TargetId::new("t1"), &state, "devbox")
+    }
+
+    #[test]
+    fn the_older_daemon_banner_offers_update_now_only_when_the_hub_can_update() {
+        let older = |can: bool| json!({ "status": "connected", "daemon": { "build": "0.1.0+40", "older": true, "schemaHashMatches": true, "canUpdate": can } });
+        assert_eq!(
+            banner(older(true)),
+            Some(Banner::OlderDaemon {
+                text: "devbox is running an older YAAC daemon (0.1.0+40). It will be updated when idle.".into(),
+                update_now: Some(TargetId::new("t1")),
+            })
+        );
+        assert_eq!(
+            banner(older(false)),
+            Some(Banner::OlderDaemon { text: "devbox is running an older YAAC daemon (0.1.0+40).".into(), update_now: None })
+        );
+        assert_eq!(banner(json!({ "status": "connected", "daemon": { "build": "0.1.0+42", "older": false, "schemaHashMatches": true } })), None);
+    }
+
+    #[test]
+    fn an_update_under_way_shows_while_offline_and_a_stuck_one_keeps_the_button() {
+        let updating = json!({ "status": "offline", "update": { "from": "0.1.0+40", "to": "0.1.0+42-ab", "phase": "updating" } });
+        assert_eq!(banner(updating), Some(Banner::OlderDaemon { text: "Updating yaacd on devbox…".into(), update_now: None }));
+        let stuck = json!({
+            "status": "connected",
+            "daemon": { "build": "0.1.0+40", "older": true, "schemaHashMatches": true, "canUpdate": true },
+            "update": { "from": "0.1.0+40", "to": "0.1.0+42-ab", "phase": "stuck", "detail": "yaacd 0.1.0+40 started again." }
+        });
+        assert_eq!(banner(stuck), Some(Banner::OlderDaemon { text: "yaacd 0.1.0+40 started again.".into(), update_now: Some(TargetId::new("t1")) }));
     }
 }

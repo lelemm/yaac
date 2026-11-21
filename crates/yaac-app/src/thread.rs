@@ -142,12 +142,16 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                         }
                     });
                 }
-                Banner::OlderDaemon { text } => {
+                Banner::OlderDaemon { text, update_now } => {
                     widgets::icon(ui, 16.0, |pa, c, d| icons::warning(pa, c, d, p.needs, p.faint));
                     ui.label(text);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        widgets::plain(ui, &p, "Update now", None);
-                    });
+                    if let Some(target) = update_now {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if widgets::plain(ui, &p, "Update now", None).clicked() {
+                                actions.push(Action::UpdateDaemon(target.clone()));
+                            }
+                        });
+                    }
                 }
             });
         });
