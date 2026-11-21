@@ -1024,15 +1024,24 @@ impl Client {
         self.update_thread(key, json!({ "agents": wire }), move |s| s.agents = w);
     }
 
-    /// Fork a thread into a destination on the same target, from its last completed turn,
-    /// with no first message yet (`thread/forkOnly`).
-    pub fn fork(&mut self, key: &ThreadKey, choice: &crate::fork::ForkChoice) {
+    /// Fork a thread into a destination on the same target, from its last completed turn.
+    /// A native fork opens idle, with no first message yet (`thread/forkOnly`). A handoff
+    /// creates the destination conversation with its first message (`thread/fork`): `message`
+    /// is that message, which `yaacd` sends after the preamble pointing at the transcript.
+    pub fn fork(&mut self, key: &ThreadKey, choice: &crate::fork::ForkChoice, message: Option<&str>) {
         let op = self.op_id();
         let mut params = json!({ "opId": op, "source": key.thread, "instance": choice.instance });
         if let Some(mdl) = &choice.model {
             params["model"] = json!(mdl);
         }
-        self.routed(&key.target, m::THREAD_FORK_ONLY, params, Call::Fork { target: key.target.clone() });
+        let method = match message.map(str::trim).filter(|t| !t.is_empty()) {
+            Some(text) => {
+                params["input"] = json!([{ "type": "text", "text": text }]);
+                m::THREAD_FORK
+            }
+            None => m::THREAD_FORK_ONLY,
+        };
+        self.routed(&key.target, method, params, Call::Fork { target: key.target.clone() });
     }
 
     /// Ask what a fork into `instance` would send and where (`thread/forkPreview`). Asked once

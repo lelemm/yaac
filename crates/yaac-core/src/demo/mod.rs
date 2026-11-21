@@ -954,21 +954,7 @@ impl Inner {
             src.summary.branch.clone().unwrap_or_else(|| "main".into()),
         );
         self.fleet.add(&key, &format!("{} (fork)", src.summary.title), instance.as_str(), &model, (&proj, &branch), ThreadState::Idle, 0);
-        let mut transcript = String::new();
-        for it in &src.items {
-            match &it.body {
-                ItemBody::UserMessage(u) => {
-                    for part in &u.parts {
-                        if let InputPart::Text(t) = part {
-                            transcript.push_str(&format!("**User:** {}\n\n", t.text));
-                        }
-                    }
-                }
-                ItemBody::AgentMessage(a) => transcript.push_str(&format!("**Agent:** {}\n\n", a.text)),
-                ItemBody::ToolCall(t) => transcript.push_str(&format!("- {}\n\n", t.title)),
-                _ => {}
-            }
-        }
+        let (transcript, cutoff) = demo_transcript(&src.summary.title, &src.items);
         if let Some(t) = self.fleet.threads.get_mut(&key) {
             t.summary.forked_from = Some(source.thread.clone());
             t.summary.cwd = src.summary.cwd.clone();
@@ -977,17 +963,25 @@ impl Inner {
             t.subscribed = false;
             t.context = Some(ContextUsage { used: Some(12_000), window: Some(200_000) });
         }
-        self.fleet.push(&key, done("handoff", "fork-0", ItemBody::Handoff(HandoffItem {
+        self.fleet.push(&key, done("handoff", "", ItemBody::Handoff(HandoffItem {
             forked_from: source.thread,
             fork_kind: if native { ForkKind::Native } else { ForkKind::Handoff },
-            cutoff_turn: Some(TurnId::new("12")),
-            transcript: Some(transcript),
-            transcript_path: Some(TargetPath::new("~/.yaac/forks/transcript.md")),
+            cutoff_turn: cutoff,
+            transcript: (!native).then_some(transcript),
+            transcript_path: (!native).then(|| TargetPath::new("/home/dev/.yaac/handoffs/3f9a1c/transcript.md")),
         })));
         let summary = self.fleet.threads[&key].summary.clone();
         self.ready.push_back(routed(target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
         let kind = if native { "native" } else { "handoff" };
-        self.ready.push_back(result(id, json!({ "threadId": thread_id, "turnId": "fork-0", "forkKind": kind })));
+        // `thread/fork` (a handoff) starts the new thread with its first message.
+        let input: Vec<InputPart> = serde_json::from_value(p.get("input").cloned().unwrap_or(Value::Null)).unwrap_or_default();
+        if input.is_empty() {
+            self.ready.push_back(result(id, json!({ "threadId": thread_id, "forkKind": kind })));
+        } else {
+            let turn = TurnId::new(self.next("turn"));
+            self.ready.push_back(result(id, json!({ "threadId": thread_id, "turnId": turn, "forkKind": kind })));
+            self.stream_turn(&key, &turn, input);
+        }
     }
 
     /// `project/updated`, and every summary on the target again (their projects moved).
@@ -1045,22 +1039,8 @@ impl Inner {
         let dest = providers.iter().find(|x| x.instance.as_str() == instance);
         let src_p = providers.iter().find(|x| x.instance == src.summary.instance);
         let native = matches!((dest, src_p), (Some(d), Some(s)) if crate::fork::is_native(s, d));
-        let mut preview = String::new();
-        for it in &src.items {
-            match &it.body {
-                ItemBody::UserMessage(u) => {
-                    for part in &u.parts {
-                        if let InputPart::Text(t) = part {
-                            preview.push_str(&format!("**User:** {}\n\n", t.text));
-                        }
-                    }
-                }
-                ItemBody::AgentMessage(a) => preview.push_str(&format!("**Agent:** {}\n\n", a.text)),
-                ItemBody::ToolCall(t) => preview.push_str(&format!("- {}\n", t.title)),
-                _ => {}
-            }
-        }
-        let mut res = json!({ "forkKind": if native { "native" } else { "handoff" }, "cutoffTurn": "12", "omittedAttachments": [] });
+        let (preview, cutoff) = demo_transcript(&src.summary.title, &src.items);
+        let mut res = json!({ "forkKind": if native { "native" } else { "handoff" }, "cutoffTurn": cutoff, "omittedAttachments": [] });
         if let Some(a) = dest.and_then(|d| d.store.account.clone()) {
             res["destinationAccount"] = json!(a);
         }
@@ -1314,3 +1294,59 @@ impl Inner {
 // Silence an unused-constant lint for keys used only by some scenes.
 const _: [(&str, &str); 5] = [BILLING, CI, HANDSHAKE, LINT, PARSER];
 const _: Seq = Seq(0);
+
+/// The transcript a handoff fork would carry, in `yaacd`'s format (docs/05-threads.md, Fork):
+/// messages in full, one line per tool call with its outcome, no reasoning. With the turn it
+/// cuts off at: the last one.
+fn demo_transcript(title: &str, items: &[Item]) -> (String, Option<TurnId>) {
+    let mut turns: Vec<&TurnId> = Vec::new();
+    for it in items {
+        if !it.turn_id.as_str().is_empty() && !turns.contains(&&it.turn_id) {
+            turns.push(&it.turn_id);
+        }
+    }
+    let mut blocks = vec![
+        "# Prior conversation".to_owned(),
+        format!("Forked from \"{title}\" (Codex on devbox), through turn {}.\nHidden reasoning and full tool output are not included.", turns.len()),
+    ];
+    let mut current: Option<&TurnId> = None;
+    for it in items {
+        if it.turn_id.as_str().is_empty() {
+            continue;
+        }
+        if current != Some(&it.turn_id) {
+            current = Some(&it.turn_id);
+            let n = turns.iter().position(|t| *t == &it.turn_id).unwrap_or(0) + 1;
+            blocks.push(format!("## Turn {n}"));
+        }
+        match &it.body {
+            ItemBody::UserMessage(u) => {
+                let text: Vec<&str> = u.parts.iter().filter_map(|p| if let InputPart::Text(t) = p { Some(t.text.as_str()) } else { None }).collect();
+                blocks.push("**User:**".to_owned());
+                blocks.push(text.join("\n\n"));
+            }
+            ItemBody::AgentMessage(a) => {
+                blocks.push("**Agent:**".to_owned());
+                blocks.push(a.text.clone());
+            }
+            ItemBody::ToolCall(t) => {
+                let outcome = match it.status {
+                    yaac_protocol::ItemStatus::Failed => "failed",
+                    yaac_protocol::ItemStatus::Declined => "declined",
+                    _ => "succeeded",
+                };
+                blocks.push(format!("- Tool ({}): `{}` — {outcome}", t.tool.as_str(), t.title.replace('`', "'")));
+            }
+            _ => {}
+        }
+    }
+    let mut out = String::new();
+    for (i, b) in blocks.iter().enumerate() {
+        if i > 0 {
+            out.push_str(if b.starts_with("- ") && blocks[i - 1].starts_with("- ") { "\n" } else { "\n\n" });
+        }
+        out.push_str(b);
+    }
+    out.push('\n');
+    (out, turns.last().map(|t| (*t).clone()))
+}

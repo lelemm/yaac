@@ -237,24 +237,70 @@ fn the_fork_result_follows_from_the_destination() {
     let v = view(&c.state, &fix, &own).expect("view");
     assert_eq!(v.result_word, "Native fork");
     assert!(v.notice.is_none());
+    // A native fork: plain "Fork", Enter works, no message asked, nothing to wait for.
+    assert!(!v.handoff);
+    assert_eq!(v.confirm, "Fork");
+    assert!(!v.confirm_waits);
+    assert!(v.size.is_none());
+    assert!(v.destinations.iter().any(|d| d.instance == own.instance && d.native));
+    assert!(v.destinations.iter().any(|d| d.instance.as_str() == "claude" && !d.native), "each choice is labelled native or handoff");
     let to_claude = ForkChoice { instance: InstanceId::new("claude"), model: None };
     let v = view(&c.state, &fix, &to_claude).expect("view");
     assert_eq!(v.result_word, "Handoff");
     assert_eq!(v.reason.as_deref(), Some("Native fork is only available within the same provider and store."));
     assert_eq!(v.notice.as_deref(), Some("This sends the conversation to Claude (work@example.com)."));
     assert!(v.preview_loading);
+    // A handoff is confirmed only once what crosses has been shown.
+    assert!(v.handoff);
+    assert_eq!(v.confirm, "Send and fork");
+    assert!(v.confirm_waits);
     c.fork_preview(&fix, &to_claude.instance);
     settle(&mut c, &hub);
     let v = view(&c.state, &fix, &to_claude).expect("view");
     assert!(!v.preview_loading);
-    assert_eq!(v.at, "at the last completed turn (turn 12)");
-    assert!(v.preview.as_deref().is_some_and(|p| p.contains("decode()")));
+    assert!(!v.confirm_waits);
+    // Named by position, not by the opaque turn id.
+    assert!(v.at.starts_with("at the last completed turn (turn "), "{}", v.at);
+    let preview = v.preview.as_deref().expect("preview");
+    assert!(preview.starts_with("# Prior conversation") && preview.contains("decode()"));
+    assert!(v.size.as_deref().is_some_and(|s| s.starts_with("Transcript: ") && (s.ends_with(" KB") || s.ends_with(" bytes"))), "{:?}", v.size);
     assert!(v.not_carried.as_deref().is_some_and(|n| n.contains("2 attachments no longer on the target")));
     assert!(v.carried.contains("turn"));
-    c.fork(&fix, &to_claude);
+    // The handoff goes with its first message (`thread/fork`), and the new thread opens with
+    // the inherited transcript above its first turn.
+    c.fork(&fix, &to_claude, Some("Carry on"));
     settle(&mut c, &hub);
     let opened = c.state.selected_thread().cloned().expect("the fork is open");
     assert!(c.state.summary(&opened).is_some_and(|s| s.title == "Fix frame decoder (fork)"));
+    let items = c.state.transcripts.get(&opened).map(|t| t.items().to_vec()).unwrap_or_default();
+    match items.first().map(|i| &i.body) {
+        Some(yaac_protocol::ItemBody::Handoff(h)) => {
+            assert_eq!(h.fork_kind, yaac_protocol::ForkKind::Handoff);
+            assert!(h.transcript.as_deref().is_some_and(|t| t.contains("## Turn 1")));
+        }
+        other => panic!("the handoff item comes first, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_native_fork_opens_idle_with_the_inherited_marker_and_no_transcript() {
+    let (mut c, hub) = boot();
+    let fix = threads::fix();
+    c.open(&fix);
+    settle(&mut c, &hub);
+    let own = default_choice(&c.state, &fix).expect("choice");
+    c.fork(&fix, &own, None);
+    settle(&mut c, &hub);
+    let opened = c.state.selected_thread().cloned().expect("the fork is open");
+    assert_ne!(opened, fix);
+    let items = c.state.transcripts.get(&opened).map(|t| t.items().to_vec()).unwrap_or_default();
+    match items.first().map(|i| &i.body) {
+        Some(yaac_protocol::ItemBody::Handoff(h)) => {
+            assert_eq!(h.fork_kind, yaac_protocol::ForkKind::Native);
+            assert!(h.transcript.is_none());
+        }
+        other => panic!("the handoff item comes first, got {other:?}"),
+    }
 }
 
 // ── first run and the project picker ───────────────────────────────────────────────────
