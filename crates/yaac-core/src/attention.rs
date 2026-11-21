@@ -18,23 +18,23 @@ use crate::state::AppState;
 /// The mark a thread or target shows: a distinct shape plus a word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Mark {
-    /// Play triangle in a circle.
+    /// Play triangle (the symbol alone, D122).
     Running,
-    /// Warning triangle.
+    /// Red exclamation.
     NeedsYou,
     /// Pause (an orchestration's budget ran out — it also needs the user).
     Paused,
-    /// Clock.
+    /// Hourglass.
     Waiting,
-    /// Check in a circle.
+    /// Check.
     Done,
-    /// Cross in a circle.
+    /// Cross.
     Failed,
-    /// Hollow circle.
+    /// Nothing drawn.
     Idle,
-    /// Dashed hollow circle: unreachable.
+    /// Nothing drawn: unreachable (the row is dimmed).
     Offline,
-    /// Dashed hollow circle: disabled.
+    /// Nothing drawn: disabled (the row is dimmed).
     Off,
 }
 

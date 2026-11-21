@@ -649,7 +649,7 @@ fn line_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, row: Row<'_>) ->
         (None, LineMark::Sent) => icons::arrow_out(pa, c, 12.0, color),
         (None, LineMark::Received) => icons::arrow_in(pa, c, 12.0, color),
         (None, LineMark::Workers) => icons::people(pa, c, 12.0, color),
-        (None, LineMark::Waiting) => icons::clock(pa, c, 11.0, color),
+        (None, LineMark::Waiting) => icons::hourglass(pa, c, 11.0, color),
         (None, LineMark::Notice) => icons::info(pa, c, 11.0, color),
         (None, _) if row.folded => icons::chevron(pa, c, 11.0, false, color),
         (None, _) => {

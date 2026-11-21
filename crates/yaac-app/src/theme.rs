@@ -111,13 +111,6 @@ impl Palette {
         user_bg: hex(0xF3F4F7),
     };
 
-    /// The ink drawn on a filled mark of colour `fill` (the background tone, which reads on
-    /// every mark colour).
-    pub(crate) fn on_primary_for(&self, fill: Color32) -> Color32 {
-        let _ = fill;
-        if self.dark { self.bg } else { Color32::WHITE }
-    }
-
     /// A mark's colour.
     pub(crate) fn mark(&self, mark: yaac_core::attention::Mark) -> Color32 {
         use yaac_core::attention::Mark as M;

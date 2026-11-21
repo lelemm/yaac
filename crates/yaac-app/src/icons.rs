@@ -17,55 +17,66 @@ pub(crate) fn mark(p: &Painter, c: Pos2, d: f32, m: Mark, pal: &Palette) {
     let col = pal.mark(m);
     let r = d * 0.45;
     let w = (d * 0.11).max(1.3);
+    // The symbol alone, in its colour — no circle around it (owner, D122). Idle, offline and
+    // off draw nothing: the row's dimming and its words carry those.
     match m {
         Mark::Running => {
-            p.circle_stroke(c, r, stroke(col, w));
-            let s = r * 0.5;
+            let s = r * 0.85;
             p.add(Shape::convex_polygon(
-                vec![pos2(c.x - s * 0.6, c.y - s), pos2(c.x + s, c.y), pos2(c.x - s * 0.6, c.y + s)],
+                vec![pos2(c.x - s * 0.6, c.y - s), pos2(c.x + s * 0.9, c.y), pos2(c.x - s * 0.6, c.y + s)],
                 col,
                 Stroke::NONE,
             ));
         }
-        Mark::NeedsYou => exclaim(p, c, d, col, pal.on_primary_for(col)),
+        Mark::NeedsYou => exclaim(p, c, d, col),
         Mark::Paused => {
-            p.circle_stroke(c, r, stroke(col, w));
-            let h = r * 0.5;
-            for dx in [-r * 0.22, r * 0.22] {
-                p.line_segment([pos2(c.x + dx, c.y - h), pos2(c.x + dx, c.y + h)], stroke(col, w * 1.1));
+            let h = r * 0.8;
+            for dx in [-r * 0.38, r * 0.38] {
+                p.rect_filled(Rect::from_center_size(pos2(c.x + dx, c.y), vec2(w * 2.0, h * 2.0)), w * 0.6, col);
             }
         }
-        Mark::Waiting => clock(p, c, d, col),
+        Mark::Waiting => hourglass(p, c, d, col),
         Mark::Done => {
-            p.circle_filled(c, r, col);
-            let s = r * 0.5;
-            p.line(vec![pos2(c.x - s, c.y), pos2(c.x - s * 0.2, c.y + s * 0.75), pos2(c.x + s, c.y - s * 0.6)], stroke(pal.bg, w * 1.2));
+            let s = r * 0.9;
+            p.line(vec![pos2(c.x - s, c.y + s * 0.05), pos2(c.x - s * 0.25, c.y + s * 0.75), pos2(c.x + s, c.y - s * 0.7)], stroke(col, w * 1.6));
         }
         Mark::Failed => {
-            p.circle_stroke(c, r, stroke(col, w));
-            let s = r * 0.42;
-            p.line_segment([pos2(c.x - s, c.y - s), pos2(c.x + s, c.y + s)], stroke(col, w));
-            p.line_segment([pos2(c.x - s, c.y + s), pos2(c.x + s, c.y - s)], stroke(col, w));
+            let s = r * 0.75;
+            p.line_segment([pos2(c.x - s, c.y - s), pos2(c.x + s, c.y + s)], stroke(col, w * 1.6));
+            p.line_segment([pos2(c.x - s, c.y + s), pos2(c.x + s, c.y - s)], stroke(col, w * 1.6));
         }
-        Mark::Idle => {
-            p.circle_stroke(c, r, stroke(col, w));
-        }
-        Mark::Offline | Mark::Off => dashed_circle(p, c, r, stroke(col, w)),
+        Mark::Idle | Mark::Offline | Mark::Off => {}
     }
 }
 
-/// The needs-you mark (D113): a filled disc in the failed colour with a rounded bar and a
-/// dot cut into it. `ink` is the colour of the exclamation.
-pub(crate) fn exclaim(p: &Painter, c: Pos2, d: f32, col: Color32, ink: Color32) {
-    let r = d * 0.47;
-    p.circle_filled(c, r, col);
-    let w = (d * 0.13).max(1.6);
-    let top = pos2(c.x, c.y - r * 0.52);
-    let bottom = pos2(c.x, c.y + r * 0.12);
-    p.line_segment([top, bottom], Stroke::new(w, ink));
-    p.circle_filled(top, w / 2.0, ink);
-    p.circle_filled(bottom, w / 2.0, ink);
-    p.circle_filled(pos2(c.x, c.y + r * 0.5), w * 0.62, ink);
+/// Waiting: an hourglass, the symbol alone.
+pub(crate) fn hourglass(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let r = d * 0.45;
+    let w = (d * 0.1).max(1.3);
+    let (x0, x1, y0, y1) = (c.x - r * 0.62, c.x + r * 0.62, c.y - r * 0.9, c.y + r * 0.9);
+    p.line_segment([pos2(x0 - w * 0.3, y0), pos2(x1 + w * 0.3, y0)], stroke(col, w * 1.2));
+    p.line_segment([pos2(x0 - w * 0.3, y1), pos2(x1 + w * 0.3, y1)], stroke(col, w * 1.2));
+    p.line(vec![pos2(x0, y0), pos2(c.x, c.y), pos2(x1, y1)], stroke(col, w));
+    p.line(vec![pos2(x1, y0), pos2(c.x, c.y), pos2(x0, y1)], stroke(col, w));
+    p.add(Shape::convex_polygon(vec![pos2(x0 + r * 0.15, y1 - w * 0.6), pos2(x1 - r * 0.15, y1 - w * 0.6), pos2(c.x, c.y + r * 0.35)], col, Stroke::NONE));
+}
+
+/// The needs-you mark (D113): the exclamation symbol alone, in `col` (the failed colour) —
+/// a bar tapering towards its foot, and a dot. No disc behind it.
+pub(crate) fn exclaim(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let h = d * 0.86;
+    let top = c.y - h / 2.0;
+    let wt = (d * 0.2).max(2.2);
+    let wb = wt * 0.6;
+    let bar_bottom = top + h * 0.62;
+    p.circle_filled(pos2(c.x, top + wt / 2.0), wt / 2.0, col);
+    p.add(egui::Shape::convex_polygon(
+        vec![pos2(c.x - wt / 2.0, top + wt / 2.0), pos2(c.x + wt / 2.0, top + wt / 2.0), pos2(c.x + wb / 2.0, bar_bottom), pos2(c.x - wb / 2.0, bar_bottom)],
+        col,
+        Stroke::NONE,
+    ));
+    p.circle_filled(pos2(c.x, bar_bottom), wb / 2.0, col);
+    p.circle_filled(pos2(c.x, top + h - wt * 0.55), wt * 0.55, col);
 }
 
 /// The ordering control (D116): three bars of falling length beside a down arrow.
@@ -128,13 +139,6 @@ pub(crate) fn dashed_circle(p: &Painter, c: Pos2, r: f32, s: Stroke) {
         }).collect();
         p.line(pts, s);
     }
-}
-
-pub(crate) fn clock(p: &Painter, c: Pos2, d: f32, col: Color32) {
-    let r = d * 0.45;
-    let w = (d * 0.1).max(1.2);
-    p.circle_stroke(c, r, stroke(col, w));
-    p.line(vec![pos2(c.x, c.y - r * 0.55), c, pos2(c.x + r * 0.45, c.y + r * 0.2)], stroke(col, w));
 }
 
 

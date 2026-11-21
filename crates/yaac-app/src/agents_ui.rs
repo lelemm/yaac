@@ -24,7 +24,7 @@ fn harness_icon(painter: &egui::Painter, c: egui::Pos2, d: f32, row: &AgentRow, 
     if row.display.attention.is_some() {
         let corner = c + vec2(d * 0.38, d * 0.32);
         painter.circle_filled(corner, d * 0.3, p.raised);
-        icons::exclaim(painter, corner, d * 0.5, p.failed, p.on_primary_for(p.failed));
+        icons::exclaim(painter, corner, d * 0.5, p.failed);
     }
 }
 

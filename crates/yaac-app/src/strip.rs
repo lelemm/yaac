@@ -121,7 +121,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
                         }
                         if *needs_you {
                             ui.painter().circle_filled(corner, 6.5, under);
-                            icons::exclaim(ui.painter(), corner, 11.5, p.failed, p.on_primary_for(p.failed));
+                            icons::exclaim(ui.painter(), corner, 11.5, p.failed);
                         } else {
                             ui.painter().circle_filled(corner, 5.5, under);
                             icons::mark(ui.painter(), corner, 9.5, *mark, &p);

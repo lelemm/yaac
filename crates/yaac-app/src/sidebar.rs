@@ -144,7 +144,7 @@ pub(crate) fn needs_button(ui: &mut egui::Ui, app: &YaacApp, map: &AttentionMap,
     if resp.hovered() || resp.has_focus() {
         ui.painter().rect_filled(r, 5.0, p.faint);
     }
-    icons::exclaim(ui.painter(), pos2(r.left() + 12.0, r.center().y), 16.0, p.failed, p.on_primary_for(p.failed));
+    icons::exclaim(ui.painter(), pos2(r.left() + 12.0, r.center().y), 16.0, p.failed);
     ui.painter().galley(pos2(r.left() + 22.0, r.center().y - count.size().y / 2.0), count, p.failed);
     if resp.on_hover_text(format!("{} (Ctrl+J)", NeedsCycle::tooltip(n))).clicked() {
         actions.push(Action::NeedsNext);
@@ -341,6 +341,8 @@ fn search_field(ui: &mut egui::Ui, app: &mut YaacApp, enabled: bool) {
             .interactive(enabled)
             .frame(egui::Frame::NONE)
             .hint_text("Search…")
+            .align(egui::Align2::LEFT_CENTER)
+            .min_size(vec2(0.0, 22.0))
             .desired_width(ui.available_width());
         let r = ui.add(te);
         if app.ui.focus_search {

@@ -116,13 +116,13 @@ These exist because the first round of mockups broke each of them.
 
 | State | Mark | Word |
 | --- | --- | --- |
-| Running | play triangle in a circle | running |
-| **Needs you** | a red disc with an exclamation (rounded bar and dot), in the failed colour (D113) | needs you |
-| Waiting on another agent | clock | waiting |
-| Done | check in a circle | done |
-| Failed | cross in a circle | failed |
-| Idle | hollow circle | — (a relative time instead) |
-| Offline / disabled | dashed hollow circle | offline, off |
+| Running | play triangle (the symbol alone — no mark has a circle, D122) | running |
+| **Needs you** | an exclamation mark in the failed colour (D113, D122) | needs you |
+| Waiting on another agent | hourglass | waiting |
+| Done | check | done |
+| Failed | cross | failed |
+| Idle | nothing | — (a relative time instead) |
+| Offline / disabled | nothing (the row is dimmed) | offline, off |
 
 Every mark must be recognisable in greyscale. In the sidebar list the shape alone carries the
 state, to keep rows to one calm line; wherever there is room — the thread header, cards, the
