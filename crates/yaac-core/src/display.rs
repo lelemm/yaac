@@ -104,10 +104,11 @@ impl Renderer {
         }
     }
 
-    /// What *Automatic* means in this build: glow, the lighter one (docs/02-architecture.md),
-    /// else wgpu's own pick among the hardware backends (shown as its backend once known).
+    /// What *Automatic* means in this build: OpenGL through wgpu — the lowest memory and
+    /// near-lowest CPU while things move, measured on Windows (owner, D132) — else glow.
     pub fn resolve(self, built: Built) -> Renderer {
         match self {
+            Renderer::Auto if built.wgpu => Renderer::WgpuGl,
             Renderer::Auto if built.glow => Renderer::Glow,
             other => other,
         }
@@ -280,15 +281,15 @@ mod tests {
     fn a_start_tries_the_choice_then_software() {
         let p = plan(Renderer::Direct3D12, Host::Windows, ALL, None);
         assert_eq!(p, Plan { first: Renderer::Direct3D12, fallback: Some(Renderer::Software), skipped: None });
-        // Automatic is glow in a build that has it.
-        assert_eq!(plan(Renderer::Auto, Host::Windows, ALL, None).first, Renderer::Glow);
-        assert_eq!(plan(Renderer::Auto, Host::Windows, Built { glow: false, wgpu: true }, None).first, Renderer::Auto);
+        // Automatic is OpenGL through wgpu in a build that has wgpu (D132), else glow.
+        assert_eq!(plan(Renderer::Auto, Host::Windows, ALL, None).first, Renderer::WgpuGl);
+        assert_eq!(plan(Renderer::Auto, Host::Windows, Built { glow: true, wgpu: false }, None).first, Renderer::Glow);
         // Software chosen: automatic is what is left to try.
-        assert_eq!(plan(Renderer::Software, Host::Windows, ALL, None).fallback, Some(Renderer::Glow));
+        assert_eq!(plan(Renderer::Software, Host::Windows, ALL, None).fallback, Some(Renderer::WgpuGl));
         // Without wgpu there is nothing to fall back to.
         assert_eq!(plan(Renderer::Glow, Host::Windows, Built { glow: true, wgpu: false }, None).fallback, None);
         // A choice this host cannot run (a file copied from Windows) is automatic.
-        assert_eq!(plan(Renderer::Direct3D12, Host::Unix, ALL, None).first, Renderer::Glow);
+        assert_eq!(plan(Renderer::Direct3D12, Host::Unix, ALL, None).first, Renderer::WgpuGl);
     }
 
     #[test]
@@ -299,8 +300,8 @@ mod tests {
         assert_eq!(p.skipped.as_deref(), Some("Vulkan did not finish starting last time"));
         // A crash of some other renderer does not matter.
         assert_eq!(plan(Renderer::Glow, Host::Windows, ALL, Some(Renderer::Vulkan)).first, Renderer::Glow);
-        // Automatic resolved to glow, and glow crashed.
-        assert_eq!(plan(Renderer::Auto, Host::Windows, ALL, Some(Renderer::Glow)).first, Renderer::Software);
+        // Automatic resolved to OpenGL through wgpu, and that crashed.
+        assert_eq!(plan(Renderer::Auto, Host::Windows, ALL, Some(Renderer::WgpuGl)).first, Renderer::Software);
     }
 
     #[test]

@@ -594,7 +594,7 @@ Design choices that serve the budget:
   else is rows in SQLite. See [07 UI](07-ui.md#rendering-and-memory).
 - **Renderer chosen by measurement, and by the user.** egui offers an OpenGL backend (`glow`)
   and a `wgpu` backend; both are GPU-accelerated. Both are built in, and the user picks one
-  ([the renderer](#the-renderer)); *Automatic* is `glow`, which uses less memory.
+  ([the renderer](#the-renderer)); *Automatic* is OpenGL through wgpu (D132): the lowest memory and near-lowest CPU while things move.
 
 ### The renderer
 

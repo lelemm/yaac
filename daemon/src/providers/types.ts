@@ -293,6 +293,9 @@ export type ProviderEvent =
   | { type: "requestExpired"; thread: NativeId; requestId: RequestId }
   | { type: "controlChanged"; thread: NativeId; control: ExternalControl }
   | { type: "settingsChanged"; thread: NativeId; applied: AppliedSettings }
+  /** The harness refused fast mode for this conversation (e.g. the account cannot have it):
+   *  `yaacd` turns the thread's fast setting off (owner, D133). */
+  | { type: "fastRefused"; thread: NativeId }
   | { type: "usageUpdated"; thread: NativeId; tokens?: TokenUsage | null; context?: ContextUsage | null }
   /** A conversation appeared or changed in the harness's listing (including outside YAAC). */
   | { type: "threadChanged"; info: NativeThreadInfo }

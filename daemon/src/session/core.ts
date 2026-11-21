@@ -2726,6 +2726,16 @@ export class Core {
       case "controlChanged":
         this.setExternal(rt, ev.control);
         return;
+      case "fastRefused": {
+        // The harness would not run it fast: the setting goes off, so the toggle shows off
+        // and the next turns are not asked for it again (D133). The notice says why.
+        if (rt.record.fast) {
+          delete rt.record.fast;
+          rt.saveRecord();
+          this.updateIndex(rt);
+        }
+        return;
+      }
       case "settingsChanged": {
         if (ev.applied.model) rt.record.model = ev.applied.model;
         void this.computeEffective(rt).then((effective) => {

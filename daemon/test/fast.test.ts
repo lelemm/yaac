@@ -180,3 +180,22 @@ test("codex: fast mode becomes serviceTierForTurn — the fast tier when on, def
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a harness that refuses fast mode turns the thread's setting off (D133)", async () => {
+  const home = tmpHome();
+  const daemon = await startDaemon(home);
+  const c = await client(daemon);
+  const { threadId, turnId } = await startThread(c, "/fake say quick", { model: "fake-large", fast: true });
+  await c.request("thread/subscribe", { threadId, epoch: 1, afterSeq: 0 });
+  await waitTurnDone(c, threadId, turnId);
+  assert.equal(summaryOf(daemon, threadId).fast, true);
+  const native = daemon.core.thread(threadId)!.record.native;
+  (fakeOf(daemon) as unknown as { emit(e: unknown): void }).emit({ type: "fastRefused", thread: native });
+  assert.equal(summaryOf(daemon, threadId).fast, undefined, "off after the refusal");
+  // The next turn is not asked for it.
+  const t2: any = await c.request("turn/start", { opId: opId(), threadId, input: text("/fake say again") });
+  assert.equal(fakeOf(daemon).received.at(-1)!.fast, false);
+  await waitTurnDone(c, threadId, t2.turnId);
+  await c.close();
+  await daemon.stop("test");
+});

@@ -780,9 +780,13 @@ export class ClaudeProvider implements HarnessProvider {
         const fms = (m as { fast_mode_state?: string; fast_mode_disabled_reason?: string });
         if (live.fast && typeof fms.fast_mode_state === "string" && fms.fast_mode_state !== "on") {
           const why = fms.fast_mode_disabled_reason ? ` (${fms.fast_mode_disabled_reason})` : fms.fast_mode_state === "cooldown" ? " (cooling down after a rate limit)" : "";
-          const item = { id: `notice:fast:${turn.turnId}`, turnId: turn.turnId, status: "completed", kind: "notice", noticeKind: "warning", text: `Claude Code did not run this turn in fast mode${why}.` } as const;
+          const item = { id: `notice:fast:${turn.turnId}`, turnId: turn.turnId, status: "completed", kind: "notice", noticeKind: "warning", text: `Claude Code did not run this turn in fast mode${why}.${fms.fast_mode_state === "cooldown" ? "" : " Fast mode is now off for this thread."}` } as const;
           this.emit({ type: "itemStarted", thread: live.native, item });
           this.emit({ type: "itemCompleted", thread: live.native, item });
+          // A refusal (not a cooldown, which passes): fast mode goes off for this thread.
+          // (`live.fast` stays as it is: the next turn, asked without fast mode, switches the
+          // query's setting off through `applyFlagSettings`.)
+          if (fms.fast_mode_state !== "cooldown") this.emit({ type: "fastRefused", thread: live.native });
         }
         if (m.subtype === "success" && !m.is_error) this.finishTurn(live, "completed", null, usage);
         else if (turn.interrupting) this.finishTurn(live, "interrupted", null, usage);

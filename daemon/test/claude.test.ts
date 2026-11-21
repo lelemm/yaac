@@ -904,7 +904,9 @@ test("fast mode is Claude Code's fastMode setting: at open, then applyFlagSettin
   q.push(result({ fast_mode_state: "off", fast_mode_disabled_reason: "extra_usage_disabled" }));
   await until(() => of(r.events, "turnCompleted")[0], "first turn");
   const notice = completedItems(r.events).find((i) => i.kind === "notice") as any;
-  assert.equal(notice?.text, "Claude Code did not run this turn in fast mode (extra_usage_disabled).");
+  assert.equal(notice?.text, "Claude Code did not run this turn in fast mode (extra_usage_disabled). Fast mode is now off for this thread.");
+  // A refusal turns the thread's fast setting off in yaacd (D133).
+  assert.equal(of(r.events, "fastRefused").length, 1);
   // The same setting again: nothing to change.
   await r.provider.startTurn(started.thread, input("still fast"), { fast: true });
   assert.ok(!q.calls.some(([c]) => c === "applyFlagSettings"));
