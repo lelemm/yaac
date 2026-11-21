@@ -57,5 +57,6 @@ pub mod strip;
 pub mod thread_menu;
 pub mod time;
 pub mod transcript;
+pub mod update;
 
 pub use key::ThreadKey;

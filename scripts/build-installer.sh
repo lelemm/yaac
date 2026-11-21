@@ -12,7 +12,6 @@
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-target=x86_64-pc-windows-gnu
 out="$root/dist/windows"
 build=1
 case "${1:-}" in
@@ -39,12 +38,10 @@ id=$(tr -cd '0-9' <"$out/build-id" 2>/dev/null || true)
 version="$version+$id"
 numeric="$numeric.$id"
 
-# The icon build.rs drew for the exe's resources (same drawing as the window's icon).
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}"
-case "$CARGO_TARGET_DIR" in /*) ;; *) CARGO_TARGET_DIR="$PWD/$CARGO_TARGET_DIR" ;; esac
-# (Cargo has laid build-script output out as build/yaac-app-<hash>/out and build/yaac-app/<hash>/out.)
-icon=$(find "$CARGO_TARGET_DIR/$target/release/build" -path '*yaac-app*' -name yaac.ico -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n 1 | cut -d' ' -f2-)
-[ -n "$icon" ] || { echo "no yaac.ico under $CARGO_TARGET_DIR/$target/release/build: build the exe first" >&2; exit 1; }
+# The icon build.rs drew for the exe's resources (same drawing as the window's icon), copied
+# beside the exe by scripts/build-windows.sh.
+icon="$out/yaac.ico"
+[ -f "$icon" ] || { echo "$icon is missing: rebuild with scripts/build-windows.sh" >&2; exit 1; }
 
 iscc=${ISCC:-}
 if [ -z "$iscc" ]; then
