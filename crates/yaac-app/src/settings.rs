@@ -48,7 +48,7 @@ impl SshPanel {
         };
         let conn = SshConn { name: name.clone(), host: host.clone(), port: 22, user: user.clone() };
         Self {
-            setup: SshSetup::new(conn, now),
+            setup: SshSetup::new(conn, now).in_zone(now, crate::app::host_zone()),
             name,
             host,
             port,
@@ -407,7 +407,7 @@ fn start_revoke(app: &mut YaacApp, id: &TargetId) {
     let Some(key) = app.client.state.ssh_records.get(id).and_then(|r| r.installed()).cloned() else { return };
     let conn = SshConn { name: t.entry.name.to_string(), host: s.host.clone(), port: s.port.unwrap_or(22), user: s.user.clone().unwrap_or_default() };
     let now = app.now();
-    let revoke = Revoke::start(conn, key, now, app.ssh.as_mut());
+    let revoke = Revoke::start(conn, key, now, app.ssh.as_mut()).in_zone(now, app.zone);
     app.ui.set.revoke = Some(RevokePanel { target: id.clone(), revoke });
     app.ui.set.ssh = None;
 }
@@ -503,7 +503,7 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                     let ready = form_ready(&panel.host, &panel.port);
                     if ready {
                         if widgets::primary(ui, &p, "Setup", Some("Enter")).clicked() || enter {
-                            panel.setup = SshSetup::new(panel.conn(), now);
+                            panel.setup = SshSetup::new(panel.conn(), now).in_zone(now, crate::app::host_zone());
                             panel.setup.start(app.ssh.as_mut());
                         }
                     } else {
@@ -632,7 +632,7 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                     if matches!(rec, SetupRecord::InstalledByYaac { .. }) && widgets::plain(ui, &p, "Revoke", None).clicked() {
                         let id = panel.existing.clone().unwrap_or_else(|| TargetId::new(name.clone()));
                         if let SetupRecord::InstalledByYaac { key, .. } = &rec {
-                            let revoke = Revoke::start(panel.setup.conn.clone(), key.clone(), now, app.ssh.as_mut());
+                            let revoke = Revoke::start(panel.setup.conn.clone(), key.clone(), now, app.ssh.as_mut()).in_zone(now, crate::app::host_zone());
                             app.ui.set.revoke = Some(RevokePanel { target: id, revoke });
                         }
                         keep = false;
