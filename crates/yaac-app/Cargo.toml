@@ -30,7 +30,9 @@ yaac-core = { path = "../yaac-core" }
 yaac-protocol = { path = "../yaac-protocol" }
 yaac-hub = { path = "../yaac-hub", optional = true }
 serde_json.workspace = true
-eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "accesskit", "wayland", "x11"] }
+# `clipboard`: the system clipboard for copy and plain-text paste (egui-winit's arboard and,
+# on Wayland, smithay-clipboard).
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "accesskit", "wayland", "x11", "clipboard"] }
 pulldown-cmark = { version = "0.13.0", default-features = false }
 png = "0.17"
 # The host's local UTC offset (D91: every time shown is in the local zone). Only the `clock`

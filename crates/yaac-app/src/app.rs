@@ -395,6 +395,10 @@ pub(crate) struct YaacApp {
     saved_prefs: UiPrefs,
     last_tick: f64,
     pub applied: Option<bool>,
+    /// Diagnostics: `YAAC_DEBUG_COPY=<text>` copies the text on the first frame through the
+    /// same path as Copy (egui's copy command, handed to the system clipboard by egui-winit),
+    /// so the clipboard can be checked from outside the window.
+    debug_copy: Option<String>,
     #[cfg_attr(not(feature = "hub"), allow(dead_code))]
     ctx: egui::Context,
 }
@@ -497,6 +501,7 @@ impl YaacApp {
             saved_prefs,
             last_tick: 0.0,
             applied: None,
+            debug_copy: std::env::var("YAAC_DEBUG_COPY").ok().filter(|t| !t.is_empty()),
             ctx: cc.egui_ctx,
         };
         if app.demo.is_some() {
@@ -1023,6 +1028,13 @@ impl eframe::App for YaacApp {
             }
         }
         self.p = p;
+        // A few frames in, once the window and its clipboard are up.
+        if ctx.cumulative_frame_nr() > 5
+            && let Some(text) = self.debug_copy.take()
+        {
+            eprintln!("YAAC_DEBUG_COPY: copying {} characters", text.chars().count());
+            ctx.copy_text(text);
+        }
         if let Some(mut shots) = self.shots.take() {
             let done = shots.step(self, &ctx);
             if done {
