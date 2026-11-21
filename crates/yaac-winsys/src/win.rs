@@ -22,7 +22,10 @@ use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole, 
 use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegDeleteTreeW, RegGetValueW, RegSetKeyValueW,
 };
-use windows_sys::Win32::System::Threading::{CreateEventW, GetCurrentProcess, INFINITE, OpenProcessToken, SetEvent, WaitForSingleObject};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, EVENT_MODIFY_STATE, GetCurrentProcess, INFINITE, OpenEventW, OpenProcessToken, SetEvent,
+    SYNCHRONIZATION_SYNCHRONIZE, WaitForSingleObject,
+};
 use windows_sys::Win32::UI::Shell::ShellExecuteW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow, SW_SHOWNORMAL};
 
@@ -303,3 +306,44 @@ impl WindowInstance {
 unsafe impl Send for WindowInstance {}
 // SAFETY: waiting on an event from several threads at once is allowed.
 unsafe impl Sync for WindowInstance {}
+
+/// Creates (or opens) the named auto-reset event `name` (`Local\\…`) for this process to wait
+/// on with [`WindowInstance::wait`]: the window's "quit" request from `yaac quit`.
+pub fn listen_named_event(name: &str) -> io::Result<WindowInstance> {
+    let w = wide(name);
+    // SAFETY: default security, auto-reset, not signalled, NUL-terminated name.
+    let raw = unsafe { CreateEventW(ptr::null(), 0, 0, w.as_ptr()) };
+    if raw.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(WindowInstance(Handle(raw)))
+}
+
+/// Signals the named event `name` if some process has created it. `Ok(false)`: nobody has
+/// (never creates it).
+pub fn signal_named_event(name: &str) -> io::Result<bool> {
+    let w = wide(name);
+    // SAFETY: NUL-terminated name; a null handle is checked below.
+    let raw = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, w.as_ptr()) };
+    if raw.is_null() {
+        let e = io::Error::last_os_error();
+        return if e.raw_os_error() == Some(ERROR_FILE_NOT_FOUND as i32) { Ok(false) } else { Err(e) };
+    }
+    let event = Handle(raw);
+    // SAFETY: an open event handle with EVENT_MODIFY_STATE, owned here.
+    check(unsafe { SetEvent(event.0) })?;
+    Ok(true)
+}
+
+/// Whether some process holds the named event `name` (never creates it).
+pub fn named_event_exists(name: &str) -> bool {
+    let w = wide(name);
+    // SAFETY: NUL-terminated name; a null handle is checked below.
+    let raw = unsafe { OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, 0, w.as_ptr()) };
+    if raw.is_null() {
+        return false;
+    }
+    drop(Handle(raw));
+    true
+}
+

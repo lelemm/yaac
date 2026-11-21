@@ -254,16 +254,24 @@ pub(crate) enum Claim {
     AlreadyOpen,
 }
 
-/// Claims the window for this user session and hub profile (the name follows the hub's pipe,
-/// so a test profile has its own). On Windows the first window keeps a thread blocked on the
-/// claim's event; each signal from a later `yaac` shows the window. Elsewhere it does nothing.
+/// The window's single-instance event name for this user session and hub profile (it follows
+/// the hub's pipe, so a test profile has its own); the quit event is this plus `-quit`.
+#[cfg(all(feature = "hub", windows))]
+pub(crate) fn instance_name(paths: &yaac_hub::HubPaths) -> String {
+    let pipe = paths.socket();
+    let tail = pipe.file_name().map_or_else(|| "yaac-hub".into(), |n| n.to_string_lossy().into_owned());
+    format!(r"Local\{}-window", tail.replace('\\', "-"))
+}
+
+/// Claims the window for this user session and hub profile. On Windows the first window keeps
+/// a thread blocked on the claim's event; each signal from a later `yaac` shows the window. A
+/// second event, `<name>-quit`, is signalled by `yaac quit` (the installer) and closes the
+/// window as the tray's *Quit* does. Elsewhere it does nothing.
 #[cfg(feature = "hub")]
 pub(crate) fn claim_instance(paths: &yaac_hub::HubPaths, shell: &Shell) -> Claim {
     #[cfg(windows)]
     {
-        let pipe = paths.socket();
-        let tail = pipe.file_name().map_or_else(|| "yaac-hub".into(), |n| n.to_string_lossy().into_owned());
-        let name = format!(r"Local\{}-window", tail.replace('\\', "-"));
+        let name = instance_name(paths);
         match yaac_winsys::claim_window_instance(&name) {
             Ok(yaac_winsys::InstanceClaim::Signalled) => return Claim::AlreadyOpen,
             Ok(yaac_winsys::InstanceClaim::First(event)) => {
@@ -273,6 +281,17 @@ pub(crate) fn claim_instance(paths: &yaac_hub::HubPaths, shell: &Shell) -> Claim
                         show(ShellCmd::Show);
                     }
                 });
+                match yaac_winsys::listen_named_event(&format!("{name}-quit")) {
+                    Ok(event) => {
+                        let quit = shell.remote();
+                        let _ = std::thread::Builder::new().name("yaac-quit-request".into()).spawn(move || {
+                            while event.wait() {
+                                quit(ShellCmd::Quit);
+                            }
+                        });
+                    }
+                    Err(e) => eprintln!("yaac: cannot listen for quit requests: {e}"),
+                }
             }
             Err(e) => eprintln!("yaac: cannot check for another window: {e}"),
         }

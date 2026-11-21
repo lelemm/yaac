@@ -3,6 +3,8 @@
 //! ```text
 //! yaac                       attach to the hub (starting it if needed) and open the window
 //! yaac hub                   run the headless hub (no window, GPU, or font code)
+//! yaac quit | autostart … | remove-data
+//!                            what the Windows installer runs (`install`, docs/install.md)
 //! yaac --demo [fleet|fresh]  the window on a scripted in-memory hub
 //!      [--theme dark|light|system] [--host windows|linux]
 //!      [--screenshots <dir> [--only 01,02]]
@@ -17,6 +19,8 @@
 pub mod attach;
 #[cfg(feature = "hub")]
 pub mod hubmode;
+#[cfg(feature = "hub")]
+pub mod install;
 #[cfg(feature = "hub")]
 mod ssh_hub;
 
@@ -80,6 +84,10 @@ pub fn run(args: &[String]) -> ExitCode {
     if let Some(code) = yaac_hub::ssh::askpass::client_main() {
         return code;
     }
+    #[cfg(feature = "hub")]
+    if let Some(code) = install::dispatch(args, BUILD) {
+        return code;
+    }
     if args.first().map(String::as_str) == Some("hub") {
         #[cfg(feature = "hub")]
         return hubmode::run(BUILD);
@@ -134,7 +142,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 i += 1;
             }
             "--help" | "-h" => {
-                println!("yaac [hub] | yaac --demo [fleet|fresh] [--theme dark|light|system] [--host windows|linux] [--screenshots <dir> [--only 01,02]] [--renderer auto|dx12|vulkan|wgpu-gl|glow|software]");
+                println!("yaac [hub] | yaac quit [--wait-for <exe>] | yaac autostart on|off|status|sync [--start] | yaac remove-data | yaac --demo [fleet|fresh] [--theme dark|light|system] [--host windows|linux] [--screenshots <dir> [--only 01,02]] [--renderer auto|dx12|vulkan|wgpu-gl|glow|software]");
                 return ExitCode::SUCCESS;
             }
             other => eprintln!("ignoring unknown argument {other}"),
