@@ -133,7 +133,10 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
     let nav = egui::Rect::from_min_max(full.min, pos2(full.left() + 220.0, full.bottom()));
     ui.painter().rect_filled(nav, 0.0, p.panel);
     ui.painter().vline(nav.right(), full.y_range(), egui::Stroke::new(1.0, p.border));
-    ui.scope_builder(egui::UiBuilder::new().max_rect(nav.shrink2(vec2(12.0, 12.0))).id_salt("settings-nav"), |ui| {
+    // Below the window's title strip (D104), which the columns' backgrounds run into.
+    let inset = crate::titlebar::HEIGHT;
+    let nav_content = egui::Rect::from_min_max(pos2(nav.left(), nav.top() + inset), nav.max);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(nav_content.shrink2(vec2(12.0, 12.0))).id_salt("settings-nav"), |ui| {
         let back = widgets::plain(ui, &p, "     Back to threads", Some("Esc"));
         icons::arrow_left(ui.painter(), pos2(back.rect.left() + 18.0, back.rect.center().y), 14.0, p.text);
         if back.clicked() {
@@ -155,7 +158,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
             }
         }
     });
-    let content = egui::Rect::from_min_max(pos2(nav.right() + 1.0, full.top()), full.max);
+    let content = egui::Rect::from_min_max(pos2(nav.right() + 1.0, full.top() + inset), full.max);
     ui.scope_builder(egui::UiBuilder::new().max_rect(content).id_salt("settings-content"), |ui| {
         egui::ScrollArea::vertical().id_salt(("settings-scroll", app.ui.settings_page as u8)).auto_shrink([false, false]).show(ui, |ui| {
             egui::Frame::NONE.inner_margin(Margin { left: 36, right: 36, top: 22, bottom: 30 }).show(ui, |ui| {

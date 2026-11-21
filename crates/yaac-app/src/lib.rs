@@ -35,6 +35,7 @@ mod shell;
 mod sidebar;
 mod theme;
 mod thread;
+mod titlebar;
 mod widgets;
 
 use std::process::ExitCode;
@@ -141,6 +142,9 @@ pub fn run(args: &[String]) -> ExitCode {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("YAAC")
+            // No system title bar: the window draws its own strip (D104, `titlebar`).
+            .with_decorations(false)
+            .with_resizable(true)
             .with_inner_size(size)
             .with_min_inner_size([960.0, 600.0])
             .with_icon(eframe::egui::IconData { rgba: app_icon::rgba(64), width: 64, height: 64 }),

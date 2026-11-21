@@ -292,8 +292,6 @@ pub(crate) enum Action {
     SettingsPage(Page),
     /// Back (negative) or forward through the history, that many places.
     Nav(isize),
-    /// Show a new-thread draft.
-    OpenDraft(u64),
     Theme(ThemeChoice),
     TargetEnabled(TargetId, bool),
     RemoveTarget(TargetId),
@@ -807,11 +805,6 @@ impl YaacApp {
                     self.ui.history.visit(Place::Settings(p), None);
                 }
                 Action::Nav(n) => self.nav(n),
-                Action::OpenDraft(id) => {
-                    self.client.state.selection = yaac_core::state::Selection::NewThread(id);
-                    self.ui.settings = false;
-                    self.ui.history.visit(Place::Draft(id), None);
-                }
                 Action::Theme(t) => {
                     self.ui.theme = t;
                     self.applied = None;
@@ -1054,13 +1047,23 @@ impl eframe::App for YaacApp {
         self.keyboard(&ctx, &mut actions);
         let map = AttentionMap::compute(&self.client.state);
         let now = self.now();
+        // The window's own title strip (D104): the strip's empty part drags the window; the
+        // content's widgets in it come later and win; the buttons are drawn last, on top.
+        let window = match self.ui.layout_size {
+            Some(sz) => egui::Rect::from_min_size(ui.max_rect().min, sz),
+            None => ui.max_rect(),
+        };
+        crate::titlebar::drag_area(ui, window);
         if let HelloOutcome::WindowOutdated { message } = &self.client.state.hub.outcome {
-            crate::first_run::update_needed(ui, &p, message);
+            let rest = egui::Rect::from_min_max(egui::pos2(window.left(), window.top() + crate::titlebar::HEIGHT), window.max);
+            ui.painter().rect_filled(window, 0.0, p.bg);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(rest), |ui| crate::first_run::update_needed(ui, &p, message));
         } else if self.ui.settings {
             crate::settings::show(ui, self, &mut actions);
         } else {
             crate::shell::show(ui, self, &map, now, &mut actions, frame);
         }
+        crate::titlebar::buttons(ui, window, &p);
         crate::dialogs::mode_confirm(ui.ctx(), self, &mut actions);
         crate::dialogs::mute(ui.ctx(), self, &mut actions);
         self.apply(actions);

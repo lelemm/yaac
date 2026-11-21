@@ -37,24 +37,27 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     let center = egui::Rect::from_min_max(egui::pos2(side.right(), full.top()), egui::pos2(if docked { right.left() } else { full.right() }, full.bottom()));
     let hair = egui::Stroke::new(1.0, p.border);
     ui.painter().rect_filled(side, 0.0, p.panel);
+    // Content sits below the window's title strip (D104); the columns' backgrounds and the
+    // hairlines run up into it.
+    let below = |r: egui::Rect| egui::Rect::from_min_max(egui::pos2(r.left(), r.top() + crate::titlebar::HEIGHT), r.max);
     let mut badge = None;
     app.ui.threads_overlay = false;
     if strip {
-        badge = Some(crate::strip::show(ui, app, map, now, side, actions));
+        badge = Some(crate::strip::show(ui, app, map, now, below(side), actions));
     } else {
-        ui.scope_builder(egui::UiBuilder::new().max_rect(side.shrink2(vec2(12.0, 10.0))).id_salt("sidebar"), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(below(side).shrink2(vec2(12.0, 10.0))).id_salt("sidebar"), |ui| {
             ui.set_clip_rect(side);
             crate::sidebar::show(ui, app, map, now, actions);
         });
     }
     if docked && let Some(panel) = &panel {
         ui.painter().rect_filled(right, 0.0, p.panel);
-        ui.scope_builder(egui::UiBuilder::new().max_rect(right.shrink2(vec2(14.0, 12.0))).id_salt("agents-docked"), |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(below(right).shrink2(vec2(14.0, 12.0))).id_salt("agents-docked"), |ui| {
             ui.set_clip_rect(right);
             crate::agents_ui::docked(ui, &p, panel, actions);
         });
     }
-    ui.scope_builder(egui::UiBuilder::new().max_rect(center).id_salt("center"), |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(below(center)).id_salt("center"), |ui| {
         ui.set_clip_rect(center);
         match app.client.state.selection.clone() {
             Selection::Thread(key) => crate::thread::show(ui, app, map, &key, now, actions),
