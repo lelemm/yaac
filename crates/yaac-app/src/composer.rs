@@ -133,7 +133,7 @@ fn chips(ui: &mut egui::Ui, p: &Palette, chips: &[ChipView]) {
         for c in chips {
             egui::Frame::NONE.fill(p.raised).corner_radius(5).inner_margin(Margin::symmetric(8, 5)).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let image = !matches!(c.route, ImageRoute::AsFile);
+                    let image = c.image;
                     widgets::icon(ui, 15.0, |pa, ce, d| if image { icons::image(pa, ce, d, p.text) } else { icons::file(pa, ce, d, p.text, false) });
                     match c.route {
                         ImageRoute::AsFileCannotSee => {
@@ -151,7 +151,7 @@ fn chips(ui: &mut egui::Ui, p: &Palette, chips: &[ChipView]) {
                             ui.label(&c.name);
                         }
                     }
-                    if let Some(pr) = c.progress {
+                    if let yaac_core::header::ChipStatus::Uploading { fraction: Some(pr), .. } = c.status {
                         let (r, _) = ui.allocate_exact_size(egui::vec2(90.0, 4.0), egui::Sense::hover());
                         ui.painter().rect_filled(r, 2.0, p.faint);
                         ui.painter().rect_filled(egui::Rect::from_min_size(r.min, egui::vec2(90.0 * pr, 4.0)), 2.0, p.text2);

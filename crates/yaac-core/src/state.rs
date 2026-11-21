@@ -7,7 +7,7 @@ use yaac_protocol::{
     Address, ClientId, Control, EffortId, InstanceId, ItemId, MeshBudgetResult, ModeId, ModelId,
     FsListResult, ProviderDescriptor, ProviderInstanceConfig, SyncToken,
     ThreadForkPreviewResult, TargetId, TargetPath, ThreadEventParams, ThreadSummary,
-    ThreadSyncResult, UploadId, ProjectKind,
+    ThreadSyncResult, ProjectKind,
 };
 
 use crate::hints::{HintChange, Hints, RequestKindWord};
@@ -88,22 +88,7 @@ pub enum SendAs {
     File,
 }
 
-/// One attachment in a composer.
-#[derive(Clone, Debug, PartialEq)]
-pub struct DraftAttachment {
-    /// Local id.
-    pub id: u64,
-    /// File name.
-    pub name: String,
-    /// Detected as an image (by content).
-    pub is_image: bool,
-    /// Upload progress 0..=1 while uploading; `None` when done.
-    pub progress: Option<f32>,
-    /// The user's choice when the model's image support is unknown.
-    pub choice: Option<SendAs>,
-    /// The upload, once begun.
-    pub upload: Option<UploadId>,
-}
+pub use crate::attachments::DraftAttachment;
 
 /// Unsent composer content.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -112,6 +97,13 @@ pub struct Draft {
     pub text: String,
     /// Attachments.
     pub attachments: Vec<DraftAttachment>,
+}
+
+impl Draft {
+    /// No text and no attachments: nothing to keep.
+    pub fn is_empty(&self) -> bool {
+        self.text.is_empty() && self.attachments.is_empty()
+    }
 }
 
 /// A thread that has not sent its first message: host-only.

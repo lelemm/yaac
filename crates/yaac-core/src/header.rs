@@ -4,7 +4,6 @@ use yaac_protocol::{Capability, Control, ItemBody, ReceiptReason, Support, has_c
 
 use crate::attention::{Attention, AttentionMap, Mark, ThreadDisplay, display};
 use crate::hints::RequestKindWord;
-use crate::images::{ImageRoute, route};
 use crate::key::ThreadKey;
 use crate::state::{AppState, Draft};
 
@@ -173,18 +172,7 @@ pub fn header(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Option<H
     Some(HeaderView { display: d, title: s.title.clone(), tag, breadcrumb, links, banners })
 }
 
-/// One attachment chip in the composer.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ChipView {
-    /// Local id.
-    pub id: u64,
-    /// File name.
-    pub name: String,
-    /// How it will be sent.
-    pub route: ImageRoute,
-    /// Upload progress.
-    pub progress: Option<f32>,
-}
+pub use crate::attachments::{ChipStatus, ChipView};
 
 /// What the composer shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -208,6 +196,8 @@ pub enum ComposerView {
         chips: Vec<ChipView>,
         /// Every chip is ready to send.
         ready: bool,
+        /// Why the message cannot be sent yet (the send button says it).
+        blocked: Option<String>,
     },
 }
 
@@ -219,16 +209,9 @@ pub fn short_provider(display_name: &str, instance_name: Option<&str>) -> String
     }
 }
 
-/// Chips routed by the image support of the model selected now.
-pub fn chips(draft: Option<&Draft>, support: &Support) -> Vec<ChipView> {
-    draft
-        .map(|d| {
-            d.attachments
-                .iter()
-                .map(|a| ChipView { id: a.id, name: a.name.clone(), route: route(a.is_image, support, a.choice), progress: a.progress })
-                .collect()
-        })
-        .unwrap_or_default()
+/// Chips routed by the image support of the model selected now, for a draft on `target`.
+pub fn chips(draft: Option<&Draft>, support: &Support, target: Option<&yaac_protocol::TargetId>) -> Vec<ChipView> {
+    draft.map(|d| crate::attachments::chips(&d.attachments, support, target)).unwrap_or_default()
 }
 
 /// The composer of a started thread.
@@ -249,9 +232,10 @@ pub fn composer(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Compos
         Some(Attention::Unspecified) => Some("Answer the request above to continue".to_owned()),
         _ => None,
     };
-    let support = effective.map_or(Support::Unknown, |e| e.image_input.clone());
-    let chips = chips(state.drafts.get(key), &support);
-    let ready = chips.iter().all(|c| c.route.ready() && c.progress.is_none());
+    let support = crate::attachments::thread_image_support(state, key);
+    let chips = chips(state.drafts.get(key), &support, Some(&key.target));
+    let blocked = crate::attachments::blocked(&chips);
+    let ready = blocked.is_none();
     ComposerView::Shown {
         placeholder: format!("Message {name}…"),
         dimmed_hint,
@@ -259,6 +243,7 @@ pub fn composer(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Compos
         steer: running && has_capability(caps, &Capability::Steer),
         chips,
         ready,
+        blocked,
     }
 }
 

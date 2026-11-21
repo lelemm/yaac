@@ -9,14 +9,14 @@ use yaac_protocol::attach::{self, HelloResult, RoutedNotification, RoutedRequest
 use yaac_protocol::methods::names as m;
 use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
 use yaac_protocol::{
-    Address, ClientId, Control, InputPart, InstanceId, ItemBody, MeshBudgetAction, MeshBudgetResult, NoticeKind,
+    Address, ClientId, Control, InstanceId, ItemBody, MeshBudgetAction, MeshBudgetResult, NoticeKind,
     OpId, ProviderListResult, ProviderUpdatedParams, RequestId, RequestResponse, RequestState, SubscribeMode,
     TargetId, ThreadEvent, ThreadEventParams, ThreadId, ThreadReadResult, ThreadRemovedParams, ThreadState,
     ThreadSubscribeResult, ThreadSummary, ThreadSyncResult, ThreadUpdatedParams, Timestamp, TurnId,
 };
 
 use crate::agents::root_of;
-use crate::images::{ImageRoute, route};
+use crate::attachments::DraftRef;
 use crate::key::ThreadKey;
 use crate::link::HubLink;
 use crate::mode_confirm::{ModePick, ModeTarget};
@@ -90,8 +90,22 @@ enum Call {
     Find { query: String },
     Shutdown,
     TargetChanged,
+    /// `hub/upload/start` for one attempt of one chip.
+    UploadStart { draft: DraftRef, id: u64, attempt: u32 },
+    /// `hub/drafts/blob/begin`: the chunks wait here for the blob id.
+    BlobBegin { draft: DraftRef, id: u64, chunks: Vec<String> },
+    /// `hub/drafts/blob/append` (only a failure matters).
+    BlobAppend { draft: DraftRef, id: u64 },
+    /// `hub/drafts/blob/end`.
+    BlobEnd { draft: DraftRef, id: u64 },
+    /// `hub/upload/list` after restoring drafts.
+    UploadList,
+    /// `hub/drafts/list` after attaching.
+    DraftsList,
     Ignore,
 }
+
+mod uploads;
 
 /// A problem to show the user (as a notice, never a dialog).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,6 +128,13 @@ pub struct Client {
     warm: Vec<ThreadKey>,
     /// Errors not yet shown.
     pub errors: Vec<ClientError>,
+    /// The last attachment id handed out.
+    attach_ids: u64,
+    /// Drafts changed since they were last stored in the hub.
+    dirty: std::collections::BTreeSet<DraftRef>,
+    /// Upload notifications for handles not known yet (their `hub/upload/start` answer has
+    /// not arrived), oldest first, bounded.
+    orphans: std::collections::VecDeque<(String, Value)>,
 }
 
 impl std::fmt::Debug for Client {
@@ -134,6 +155,9 @@ impl Client {
             build: build.into(),
             warm: Vec::new(),
             errors: Vec::new(),
+            attach_ids: 0,
+            dirty: std::collections::BTreeSet::new(),
+            orphans: std::collections::VecDeque::new(),
         };
         c.state.client_id = Some(client_id);
         let params = json!({ "build": c.build });
@@ -227,6 +251,7 @@ impl Client {
                 self.state.hub.build = Some(hello.build);
                 self.request(hub_names::SETTINGS_GET, json!({}), Call::HubSettings);
                 self.request(hub_names::VIEW_GET, json!({}), Call::View);
+                self.request(crate::attachments::names::DRAFTS_LIST, json!({}), Call::DraftsList);
                 let ids: Vec<(TargetId, bool)> =
                     hello.targets.iter().map(|t| (t.id.clone(), t.state.status == attach::ConnectionStatus::Connected)).collect();
                 self.state.set_targets(hello.targets);
@@ -376,7 +401,14 @@ impl Client {
                     self.state.apply_budget(b);
                 }
             }
-            Call::Respond { .. } | Call::TurnStart { .. } | Call::Ignore => {}
+            Call::Respond { .. } | Call::Ignore => {}
+            Call::TurnStart { key, draft } => self.sent(&DraftRef::Thread(key), &draft),
+            Call::UploadStart { draft, id, attempt } => self.on_upload_started(&draft, id, attempt, &result),
+            Call::BlobBegin { draft, id, chunks } => self.on_blob_begun(&draft, id, chunks, &result),
+            Call::BlobAppend { .. } => {}
+            Call::BlobEnd { draft, id } => self.on_blob_ended(&draft, id, &result),
+            Call::UploadList => self.on_upload_list(&result),
+            Call::DraftsList => self.on_drafts_list(&result),
             Call::ThreadStart { draft } => {
                 let Some(thread_id) = result.get("threadId").and_then(Value::as_str).map(ThreadId::new) else { return };
                 let key = ThreadKey::new(draft.target.clone(), thread_id.clone());
@@ -414,6 +446,7 @@ impl Client {
                     self.state.upsert_summary(&draft.target, summary);
                 }
                 self.state.new_threads.retain(|d| d.id != draft.id);
+                self.sent(&DraftRef::New(draft.id), &draft.draft);
                 if self.state.selection == Selection::NewThread(draft.id) {
                     self.open(&key);
                 }
@@ -449,16 +482,23 @@ impl Client {
             }
             Call::TurnStart { key, draft } => {
                 if error.code == ErrorCode::OutcomeUnknown {
+                    self.sent(&DraftRef::Thread(key.clone()), &draft);
                     self.error(Some(key), "YAAC lost contact while sending your message. It may or may not have arrived; it will not be sent again.");
                 } else {
-                    // Nothing was sent: give the text back.
+                    // Nothing was sent: give the text and the attachments back.
                     let slot = self.state.drafts.entry(key.clone()).or_default();
-                    if slot.text.is_empty() {
+                    if slot.is_empty() {
                         *slot = draft;
                     }
+                    self.dirty.insert(DraftRef::Thread(key.clone()));
                     self.error(Some(key), format!("Not sent: {}", error.message));
                 }
             }
+            Call::UploadStart { draft, id, attempt } => self.upload_failed(&draft, id, attempt, error),
+            Call::BlobBegin { draft, id, .. } | Call::BlobAppend { draft, id } | Call::BlobEnd { draft, id } => {
+                self.upload_failed(&draft, id, u32::MAX, error);
+            }
+            Call::UploadList | Call::DraftsList => {}
             Call::ThreadStart { draft } => {
                 if !self.state.new_threads.iter().any(|d| d.id == draft.id) {
                     self.state.new_threads.push(draft);
@@ -507,6 +547,7 @@ impl Client {
                 self.state.apply_target_state(p);
                 if now_connected && was == Some(false) {
                     self.load_target(&id);
+                    self.resume_offline_uploads(&id);
                 }
                 // The entry (enabled, transport) may have changed with the state: refresh it.
                 self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
@@ -536,6 +577,7 @@ impl Client {
                 let Ok(n) = serde_json::from_value::<RoutedNotification>(params) else { return };
                 self.on_routed(n);
             }
+            crate::attachments::names::UPLOAD_PROGRESS | crate::attachments::names::UPLOAD_DONE => self.on_upload_note(method, &params),
             _ => {}
         }
     }
@@ -696,27 +738,6 @@ impl Client {
         self.routed(&key.target, m::TURN_INTERRUPT, params, Call::Ignore);
     }
 
-    fn input_parts(draft: &Draft, support: &yaac_protocol::Support) -> Option<Vec<InputPart>> {
-        let mut parts = Vec::new();
-        if !draft.text.trim().is_empty() {
-            parts.push(InputPart::text(draft.text.clone()));
-        }
-        for a in &draft.attachments {
-            let upload = a.upload.clone()?;
-            if a.progress.is_some() {
-                return None;
-            }
-            match route(a.is_image, support, a.choice) {
-                ImageRoute::AsImage => parts.push(InputPart::Image(yaac_protocol::ImagePart { upload_id: upload, name: Some(a.name.clone()), media_type: None })),
-                ImageRoute::AsFile | ImageRoute::AsFileCannotSee => {
-                    parts.push(InputPart::File(yaac_protocol::FilePart { upload_id: upload, name: Some(a.name.clone()), media_type: None }));
-                }
-                ImageRoute::Ask => return None,
-            }
-        }
-        (!parts.is_empty()).then_some(parts)
-    }
-
     /// Send the composer's content: a new turn, or input added to the running turn under
     /// `steer`. Returns whether anything was sent.
     pub fn send(&mut self, key: &ThreadKey) -> bool {
@@ -724,10 +745,10 @@ impl Client {
             return false;
         }
         let Some(draft) = self.state.drafts.get(key).cloned() else { return false };
+        let support = crate::attachments::thread_image_support(&self.state, key);
+        let Some(input) = crate::attachments::input_parts(&draft.text, &draft.attachments, &support, Some(&key.target)) else { return false };
         let t = self.state.transcripts.get(key);
         let effective = t.and_then(|t| t.effective.as_ref());
-        let support = effective.map_or(yaac_protocol::Support::Unknown, |e| e.image_input.clone());
-        let Some(input) = Self::input_parts(&draft, &support) else { return false };
         let active: Option<TurnId> = t.and_then(|t| t.active_turn.clone());
         let can_steer = effective.is_some_and(|e| yaac_protocol::has_capability(&e.capabilities, &yaac_protocol::Capability::Steer));
         let op = self.op_id();
@@ -786,14 +807,10 @@ impl Client {
             target.providers.iter().find(|p| p.status == yaac_protocol::ProviderStatus::Ready).map(|p| p.instance.clone())
         });
         let Some(instance) = instance else { return false };
-        let support = target
-            .provider(&instance)
-            .and_then(|p| {
-                let model = draft.model.as_ref();
-                p.models.iter().find(|mm| Some(&mm.id) == model).or_else(|| p.models.iter().find(|mm| mm.is_default))
-            })
-            .map_or(yaac_protocol::Support::Unknown, crate::images::model_image_support);
-        let Some(input) = Self::input_parts(&draft.draft, &support) else { return false };
+        let mut chosen = draft.clone();
+        chosen.instance = Some(instance.clone());
+        let support = crate::attachments::draft_image_support(&self.state, &chosen);
+        let Some(input) = crate::attachments::input_parts(&draft.draft.text, &draft.draft.attachments, &support, Some(&draft.target)) else { return false };
         let Some(cwd) = draft.cwd.clone() else { return false };
         let op = self.op_id();
         let mut params = json!({ "opId": op, "instance": instance, "cwd": cwd, "input": input });
@@ -977,17 +994,24 @@ impl Client {
     /// Choose a draft's project: it starts in the project folder's root.
     pub fn set_draft_project(&mut self, draft: u64, project_id: &str) {
         let Some(p) = self.state.projects.iter().find(|p| p.id == project_id).cloned() else { return };
+        let mut retarget = false;
         if let Some(d) = self.state.new_threads.iter_mut().find(|d| d.id == draft) {
             if d.target != p.target {
                 d.instance = None;
                 d.model = None;
                 d.effort = None;
                 d.mode = None;
+                retarget = true;
             }
             d.target = p.target.clone();
             d.cwd = Some(p.folder.clone().into());
             d.project = Some(p.id);
         }
+        // An upload id is only meaningful on the target that issued it: the attachments follow.
+        if retarget {
+            self.retarget_uploads(&DraftRef::New(draft));
+        }
+        self.dirty.insert(DraftRef::New(draft));
     }
 
     /// Set a chat's agents policy (`thread/update`).

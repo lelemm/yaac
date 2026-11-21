@@ -6,7 +6,7 @@
 //!   hub's answers, through a [`link::HubLink`].
 //! * View models, each a pure function of the state: [`sidebar`] (tree and Needs you),
 //!   [`attention`], [`header`] (header, banners, composer), [`controls`] (the control row),
-//!   [`agents`] (the agents panel), [`requests`] (request cards), [`images`] (image routing),
+//!   [`agents`] (the agents panel), [`requests`] (request cards), [`images`] (image routing), [`attachments`] (composer chips and uploads),
 //!   [`permission`] (the agents permission prompt, a seam), [`activity`] (which items are
 //!   muted activity lines), [`markstyle`] (markdown styled in place).
 //! * [`ssh_setup`] (SSH setup and revoke: the step machine and its backend trait),
@@ -19,6 +19,7 @@
 
 pub mod activity;
 pub mod agents;
+pub mod attachments;
 pub mod attention;
 pub mod client;
 pub mod compose;

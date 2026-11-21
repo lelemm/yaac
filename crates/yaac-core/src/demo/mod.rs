@@ -33,7 +33,8 @@ use self::build::*;
 use self::fleet::{PARSER, BENCH, BILLING, CI, FIX, Fleet, HANDSHAKE, INDEX, LINT, NOTES, ORCH, SEARCH, USERS, V2PLAN, k};
 use crate::key::ThreadKey;
 use crate::link::HubLink;
-use crate::state::{AppState, DraftAttachment, SendAs};
+use crate::attachments::{DraftAttachment, Phase, Source, Upload};
+use crate::state::AppState;
 
 /// The client id the demo window uses, so "Answered by you" works.
 pub const DEMO_CLIENT: &str = "demo-window";
@@ -121,6 +122,8 @@ pub mod threads {
 enum Pending {
     Event(ThreadKey, ThreadEvent),
     State(ThreadKey, ThreadState),
+    /// A hub notification (upload progress), with the upload's handle.
+    Note(String, Message),
 }
 
 struct Inner {
@@ -129,6 +132,9 @@ struct Inner {
     ready: VecDeque<Message>,
     scheduled: VecDeque<(u32, Pending)>,
     counter: u64,
+    /// The draft store: drafts by key, and blobs (`DraftBlob`) by id.
+    drafts: std::collections::BTreeMap<String, Value>,
+    blobs: std::collections::BTreeMap<String, Value>,
 }
 
 /// The demo hub. Clone it to keep a handle for [`DemoHub::play`] and [`DemoHub::tick`] after
@@ -161,7 +167,7 @@ impl DemoHub {
             Scenario::Fleet => Fleet::standard(now),
             Scenario::Fresh => Fleet::fresh(now),
         };
-        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0 })) }
+        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default() })) }
     }
 
     /// Every thread of the scenario — the window's "recently used" set, so their hints are
@@ -211,18 +217,43 @@ impl DemoHub {
         (vec![k(SEARCH), k(USERS), k(INDEX)], vec![k(BENCH), k(V2PLAN)])
     }
 
-    /// Composer attachments for screen 19 (uploads are a later package; these are already
-    /// uploaded or uploading).
+    /// Composer attachments for screen 19: an image the model cannot see (uploaded) and a
+    /// file uploading at 62%.
     pub fn notice_attachments() -> Vec<DraftAttachment> {
-        vec![
-            DraftAttachment { id: 1, name: "diagram.png".into(), is_image: true, progress: None, choice: None, upload: Some("u3/diagram.png".into()) },
-            DraftAttachment { id: 2, name: "trace.log".into(), is_image: false, progress: Some(0.62), choice: None, upload: None },
-        ]
+        vec![Self::chip(1, "diagram.png", Some("image/png"), true), Self::uploading(2, "trace.log", 0.62)]
+    }
+
+    /// An uploaded chip (on devbox, the Fix frame decoder's target). `image` names a media
+    /// type the hub would have sniffed.
+    pub fn chip(id: u64, name: &str, media_type: Option<&str>, done: bool) -> DraftAttachment {
+        let mut a = DraftAttachment::new(id, name, Some(Source::Path { path: format!("/home/dev/Pictures/{name}") }), media_type.map(str::to_owned));
+        a.size = Some(48 * 1024);
+        if done {
+            a.upload = Upload::Done { target: TargetId::new("devbox"), upload_id: format!("u{id}/{name}").as_str().into() };
+        }
+        a
+    }
+
+    /// A chip whose upload is sending, `fraction` of the way.
+    pub fn uploading(id: u64, name: &str, fraction: f64) -> DraftAttachment {
+        let mut a = Self::chip(id, name, None, false);
+        let total = 3_400_000u64;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss, reason = "demo numbers")]
+        let sent = (total as f64 * fraction) as u64;
+        a.upload = Upload::Running { handle: format!("hu_demo_{id}"), phase: Phase::Sending, sent, total };
+        a
     }
 
     /// A chip whose image support is unknown, for the "send as image or file?" state.
     pub fn unknown_image() -> DraftAttachment {
-        DraftAttachment { id: 3, name: "sketch.png".into(), is_image: true, progress: None, choice: None::<SendAs>, upload: Some("u4/sketch.png".into()) }
+        Self::chip(3, "sketch.png", Some("image/png"), true)
+    }
+
+    /// A chip whose upload failed, with the hub's message.
+    pub fn failed(id: u64, name: &str, message: &str) -> DraftAttachment {
+        let mut a = Self::chip(id, name, None, false);
+        a.upload = Upload::Failed { message: message.into(), offline: false };
+        a
     }
 }
 
@@ -368,7 +399,97 @@ impl Inner {
                 };
                 self.routed_request(id, &req.target, &req.method, &req.params);
             }
+            _ if method.starts_with("hub/upload/") || method.starts_with("hub/drafts/") => self.uploads(id, &method, &params),
             _ => self.ready.push_back(error(id, ErrorCode::MethodNotFound, &method)),
+        }
+    }
+
+    /// The hub's uploads and draft store, played: an upload hashes, waits, sends in four
+    /// steps, and is verified, a tick at a time. The media type comes from the name (the real
+    /// hub sniffs the content).
+    fn uploads(&mut self, id: RpcId, method: &str, p: &Value) {
+        use crate::attachments::names as n;
+        let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or_default().to_owned();
+        match method {
+            n::DRAFTS_LIST => {
+                let drafts: Vec<Value> = self.drafts.values().cloned().collect();
+                self.ready.push_back(result(id, json!({ "drafts": drafts })));
+            }
+            n::DRAFTS_PUT => {
+                self.drafts.insert(s("key"), p.clone());
+                self.ready.push_back(result(id, p.clone()));
+            }
+            n::DRAFTS_DELETE => {
+                let key = s("key");
+                self.drafts.remove(&key);
+                self.blobs.retain(|_, b| b["draft"] != json!(key));
+                self.ready.push_back(result(id, json!({})));
+            }
+            n::BLOB_BEGIN => {
+                let blob = self.next("b");
+                let mut b = p.clone();
+                b["blobId"] = json!(blob);
+                b["sha256"] = json!("0".repeat(64));
+                self.blobs.insert(blob.clone(), b);
+                self.ready.push_back(result(id, json!({ "blobId": blob })));
+            }
+            n::BLOB_APPEND => self.ready.push_back(result(id, json!({ "received": p.get("offset").and_then(Value::as_u64).unwrap_or(0) }))),
+            n::BLOB_END => match self.blobs.get(&s("blobId")).cloned() {
+                Some(b) => self.ready.push_back(result(id, b)),
+                None => self.ready.push_back(error(id, ErrorCode::from_wire("blob_not_found"), "no stored attachment; attach it again")),
+            },
+            n::BLOB_DELETE => {
+                self.blobs.remove(&s("blobId"));
+                self.ready.push_back(result(id, json!({})));
+            }
+            n::UPLOAD_LIST => self.ready.push_back(result(id, json!({ "uploads": [] }))),
+            n::UPLOAD_CANCEL => {
+                let handle = s("handle");
+                let before = self.scheduled.len();
+                self.scheduled.retain(|(_, x)| !matches!(x, Pending::Note(h, _) if h == &handle));
+                self.ready.push_back(result(id, json!({})));
+                if self.scheduled.len() != before {
+                    let done = json!({ "handle": handle, "target": s("target"), "name": "", "size": 0,
+                        "error": { "code": n::UPLOAD_CANCELLED, "message": "the upload was cancelled" } });
+                    self.ready.push_back(Message::notification(n::UPLOAD_DONE, done));
+                }
+            }
+            n::UPLOAD_START => {
+                let handle = self.next("hu");
+                let name = Some(s("name")).filter(|x| !x.is_empty()).unwrap_or_else(|| s("path").rsplit('/').next().unwrap_or("file").to_owned());
+                let blob = self.blobs.get(&s("blobId")).cloned();
+                let size = blob.as_ref().and_then(|b| b.get("size").and_then(Value::as_u64)).unwrap_or(480 * 1024);
+                let media = p.get("mediaType").and_then(Value::as_str).map(str::to_owned).or_else(|| {
+                    let ext = name.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+                    match ext.as_str() {
+                        "png" => Some("image/png"),
+                        "jpg" | "jpeg" => Some("image/jpeg"),
+                        "gif" => Some("image/gif"),
+                        "webp" => Some("image/webp"),
+                        _ => None,
+                    }
+                    .map(str::to_owned)
+                });
+                self.ready.push_back(result(id, json!({ "handle": handle })));
+                let (target, draft) = (s("target"), p.get("draft").cloned().unwrap_or(Value::Null));
+                let note = |phase: &str, sent: u64| {
+                    Message::notification(n::UPLOAD_PROGRESS, json!({ "handle": handle, "target": target, "draft": draft, "phase": phase, "sent": sent, "total": size }))
+                };
+                let mut steps = vec![(2, note("hashing", 0)), (3, note("queued", 0))];
+                for q in 1..=4u64 {
+                    steps.push((4, note("sending", size * q / 4)));
+                }
+                steps.push((3, note("verifying", size)));
+                let upload_id = self.next("u");
+                steps.push((2, Message::notification(n::UPLOAD_DONE, json!({
+                    "handle": handle, "target": target, "draft": draft, "uploadId": upload_id, "name": name, "size": size,
+                    "mediaType": media, "skipped": false,
+                }))));
+                for (delay, m) in steps {
+                    self.schedule(delay, Pending::Note(handle.clone(), m));
+                }
+            }
+            _ => self.ready.push_back(error(id, ErrorCode::MethodNotFound, method)),
         }
     }
 
@@ -658,6 +779,7 @@ impl Inner {
         match p {
             Pending::Event(key, event) => self.emit_now(&key, event),
             Pending::State(key, state) => self.set_state_now(&key, state),
+            Pending::Note(_, msg) => self.ready.push_back(msg),
         }
         // Release everything due at the same moment.
         while self.scheduled.front().is_some_and(|(d, _)| *d == 0) {
@@ -665,7 +787,8 @@ impl Inner {
                 match p {
                     Pending::Event(key, event) => self.emit_now(&key, event),
                     Pending::State(key, state) => self.set_state_now(&key, state),
-                        }
+                    Pending::Note(_, msg) => self.ready.push_back(msg),
+                }
             }
         }
         true
