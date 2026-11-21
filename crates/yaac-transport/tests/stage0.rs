@@ -296,3 +296,25 @@ async fn a_failed_download_falls_back_to_the_host_and_reports_both_when_it_fails
     assert!(text.contains("could not download the runtime") && text.contains("the host could not download"), "{text}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// The real pinned Node.js from nodejs.org (about 50 MB): run by hand with
+/// `cargo test -p yaac-transport --test stage0 -- --ignored real_pinned`. `YAAC_TEST_HOST_FETCH=1`
+/// makes the host fetch it and send it in-band instead of the target downloading it.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "downloads the real runtime from nodejs.org"]
+async fn real_pinned_node_from_nodejs_org() {
+    let dir = temp_dir("rt-real");
+    let home = dir.join("home");
+    let mut source = yaac_transport::RuntimeSource::pinned(Some(dir.join("host-cache")));
+    let host = std::env::var("YAAC_TEST_HOST_FETCH").is_ok_and(|v| v == "1");
+    source.target_download = !host;
+    let started = std::time::Instant::now();
+    let mut done = run_private(&home, &source).await.expect("the pinned runtime installs");
+    eprintln!("installed {:?} in {:?}", done.runtime, started.elapsed());
+    echo_works(&mut done.reader, &mut done.writer).await;
+    let node = home.join(format!("runtime/node-{}/bin/node", yaac_transport::runtime::PINNED_NODE));
+    let v = std::process::Command::new(&node).arg("--version").output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&v.stdout).trim(), format!("v{}", yaac_transport::runtime::PINNED_NODE));
+    drop(done);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
