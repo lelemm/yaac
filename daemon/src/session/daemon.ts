@@ -27,6 +27,12 @@ import { serveBridge, sniffBridge } from "../mesh/mcp.js";
 export const STATE_FORMAT = 1;
 
 export const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * How long a connection that has not finished `initialize` may hold off an idle exit. A host
+ * initializes at once; a connection that never does (a liveness probe, a stuck client) is not
+ * a host, and must not keep the daemon up or restart its idle period.
+ */
+export const HANDSHAKE_GRACE_MS = 10_000;
 
 export interface DaemonConfig {
   home: string;
@@ -81,6 +87,10 @@ export class Daemon implements FrozenCoreHost {
   /** The socket file this daemon bound (device and inode), to remove only that one on stop. */
   private socketId: { dev: number; ino: number } | null = null;
   private connections = new Set<ServerConnection>();
+  /** The connections that finished `initialize`: the hosts, which alone hold off an idle exit. */
+  private hosts = new Set<ServerConnection>();
+  /** When each connection was accepted (for the handshake grace). */
+  private acceptedAt = new WeakMap<ServerConnection, number>();
   private connectionCount = 0;
   private idleTimer: NodeJS.Timeout | null = null;
   private handoverPending = false;
@@ -169,20 +179,26 @@ export class Daemon implements FrozenCoreHost {
   /** Attaches one host connection (a socket, or any duplex stream in tests). */
   attach(stream: Duplex): ServerConnection {
     const n = ++this.connectionCount;
-    const conn = new ServerConnection(
+    const conn: ServerConnection = new ServerConnection(
       stream,
       this,
-      (view) =>
-        new ClientSession(this.core, view, n, { diagnostics: () => this.diagnostics(), extraMethods: this.extraMethods, log: (l) => this.log(l) }, this.clientOptions),
+      (view) => {
+        // `initialize` succeeded: from now on this connection is a host.
+        if (!conn.isClosed) this.hosts.add(conn);
+        setImmediate(() => this.checkIdle());
+        return new ClientSession(this.core, view, n, { diagnostics: () => this.diagnostics(), extraMethods: this.extraMethods, log: (l) => this.log(l) }, this.clientOptions);
+      },
       (l) => this.log(`[conn ${n}] ${l}`),
     );
     this.connections.add(conn);
+    this.acceptedAt.set(conn, Date.now());
     conn.onClose(() => {
       this.connections.delete(conn);
-      this.checkIdle();
+      const wasHost = this.hosts.delete(conn);
+      // A connection that never initialized neither held the idle period nor ends it.
+      if (wasHost) this.checkIdle();
     });
     if (this.stopping) conn.close();
-    this.checkIdle();
     return conn;
   }
 
@@ -241,18 +257,32 @@ export class Daemon implements FrozenCoreHost {
       void this.stop("handover idle", false);
       return;
     }
-    const idle = workIdle && b.attachedClients === 0;
+    // Only hosts count: a connection that has not initialized (a probe, a client mid-handshake)
+    // neither holds the daemon nor restarts the idle period. Activity that is not a turn or a
+    // request (journal writes, uploads, mesh housekeeping) does not either.
+    const idle = workIdle && this.hosts.size === 0;
     if (idle && !this.idleTimer && this.config.idleTimeoutMs > 0) {
-      this.idleTimer = setTimeout(() => {
-        this.idleTimer = null;
-        const now = this.busy();
-        if (now.attachedClients === 0 && now.runningTurns === 0 && now.pendingRequests === 0) void this.stop("idle", false);
-      }, this.config.idleTimeoutMs);
-      this.idleTimer.unref?.();
+      this.armIdle(this.config.idleTimeoutMs);
     } else if (!idle && this.idleTimer) {
       clearTimeout(this.idleTimer);
       this.idleTimer = null;
     }
+  }
+
+  private armIdle(ms: number): void {
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.stopping) return;
+      const now = this.busy();
+      if (this.hosts.size > 0 || now.runningTurns > 0 || now.pendingRequests > 0) return;
+      // A connection still within its handshake grace may be a host about to initialize: give it
+      // the rest of its grace, never more.
+      const youngest = Math.max(0, ...[...this.connections].filter((c) => !this.hosts.has(c)).map((c) => this.acceptedAt.get(c) ?? 0));
+      const left = youngest + HANDSHAKE_GRACE_MS - Date.now();
+      if (left > 0) return this.armIdle(left);
+      void this.stop("idle", false);
+    }, ms);
+    this.idleTimer.unref?.();
   }
 
   /** Stops serving. `interrupt`: running turns are interrupted, marked as interrupted by an update. */

@@ -423,6 +423,21 @@ is [09 Compatibility](09-compatibility.md).
 - An idle runtime process on the target (target: under 60 MB resident). `yaacd` exits by itself
   after a configurable idle period, but **only** when no client is attached, no turn is running,
   and no request is pending. The journal is on disk, so exiting loses nothing.
+  - *Attached* means a connection that has finished `initialize`. A connection that has not (a
+    liveness probe, a client still in its handshake) neither holds the daemon nor restarts the
+    idle period; it gets a short grace to finish its handshake (10 s from when it was
+    accepted) and is closed by the exit after that.
+  - A *running turn* holds the daemon until the harness reports it ended, with or without a
+    host: the idle period starts when the last turn ends. A *pending request* holds it: an
+    approval or a question until it is answered, resolved elsewhere, or expires with its turn;
+    a mesh permission prompt, which outlives its turn, until the user answers it. YAAC never
+    times a request out to be able to exit.
+  - Nothing else counts as activity: journal writes, uploads (a dropped connection discards its
+    partial uploads), mail waiting in the outbox for the hub (on disk, sent when a hub returns),
+    and open provider connections (a Codex daemon is left running) do not hold the daemon.
+  - Stopping is bounded: journals are flushed and closed first; then it waits at most 2 s for
+    git status work in flight and 5 s for the providers to close, so an idle exit or a signal
+    always ends the process.
 - Idle SDK-backed threads are evicted: their harness process is closed after an idle timeout and
   transparently resumed on the next message.
 - Journals are compacted and trimmed, so disk use tracks what the host has not yet seen, not the
