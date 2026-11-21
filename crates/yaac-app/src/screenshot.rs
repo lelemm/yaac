@@ -138,6 +138,9 @@ impl Shots {
                 );
             }
             ctx.set_zoom_factor(1.25);
+            // Each screen starts from fresh widget memory (scroll positions from the screen
+            // before must not carry over).
+            ctx.data_mut(egui::util::IdTypeMap::clear);
             // Code blocks show their copy button as on hover.
             ctx.data_mut(|d| d.insert_temp(egui::Id::unique(crate::markdown::FORCE_COPY_BUTTONS), true));
             setup(app, id);
