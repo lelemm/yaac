@@ -48,6 +48,7 @@ pub mod permission;
 pub mod projects;
 pub mod state;
 pub mod strip;
+pub mod thread_menu;
 pub mod time;
 pub mod transcript;
 

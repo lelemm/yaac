@@ -307,6 +307,7 @@ impl Inner {
                         json!({
                             "target": k.target, "threadId": k.thread, "pinned": v.pinned, "muted": v.muted,
                             "mutedUntil": v.muted_until.map(crate::time::format_rfc3339), "dismissed": v.dismissed,
+                            "unseen": v.unseen,
                         })
                     })
                     .collect();
@@ -325,12 +326,16 @@ impl Inner {
                     if let Some(x) = params.get("dismissed").and_then(Value::as_bool) {
                         v.dismissed = x;
                     }
+                    if let Some(x) = params.get("unseen").and_then(Value::as_bool) {
+                        v.unseen = x;
+                    }
                     if let Some(u) = params.get("mutedUntil") {
                         v.muted_until = u.as_str().and_then(crate::time::parse_rfc3339);
                     }
                 }
                 self.ready.push_back(result(id, json!({})));
             }
+            crate::client::hub_names::VIEW_SHOWING => self.ready.push_back(result(id, json!({}))),
             crate::client::hub_names::THREADS_FIND => self.find(id, &params),
             crate::client::hub_names::SETTINGS_GET | crate::client::hub_names::SETTINGS_UPDATE => {
                 if let Some(a) = params.get("always").and_then(Value::as_bool) {
@@ -689,6 +694,16 @@ impl Inner {
                 let summary = t.summary.clone();
                 self.ready.push_back(result(id, json!({})));
                 self.ready.push_back(routed(target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
+            }
+            m::THREAD_DELETE => {
+                let Some(key) = thread(p, "threadId") else { return };
+                if self.fleet.threads.remove(&key).is_none() {
+                    self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
+                    return;
+                }
+                self.fleet.view.remove(&key);
+                self.ready.push_back(result(id, json!({})));
+                self.ready.push_back(routed(target, m::THREAD_REMOVED, json!({ "threadId": key.thread, "token": "tok-3" })));
             }
             m::THREAD_UPDATE => {
                 let Some(key) = thread(p, "threadId") else { return };

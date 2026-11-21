@@ -59,6 +59,13 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("39", "attach-unknown"),
     ("40", "attach-drop"),
     ("41", "context-menu"),
+    ("42", "delete-confirm"),
+    ("43", "archive-confirm"),
+    ("44", "unseen"),
+    ("45", "ordering-menu"),
+    ("46", "pill-relations"),
+    ("47", "pill-workers"),
+    ("48", "docked-narrow"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -184,7 +191,7 @@ fn setup(app: &mut YaacApp, id: &str) {
         }
         app.pump_demo();
     };
-    let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24");
+    let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24" | "44" | "48");
     app.ui.panel = if docked { PanelMode::Docked } else { PanelMode::Pill };
     match id {
         "01" | "10" => {
@@ -354,8 +361,6 @@ fn setup(app: &mut YaacApp, id: &str) {
         }
         "21" => {
             app.open(&threads::orchestrator(), None);
-            app.ui.needs_popup = true;
-            app.ui.needs_sel = 0;
         }
         "23" => {
             play(app, Scene::StagingReconnects);
@@ -403,6 +408,9 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.open(&threads::orchestrator(), None);
             app.ui.sidebar.collapsed = true;
             app.ui.strip_hover_key = Some((threads::billing(), egui::Rect::NOTHING));
+            // users-service finished unseen: the ring around its logo (D114).
+            app.client.set_view(&threads::users(), yaac_core::state::ViewPatch { unseen: Some(true), ..Default::default() });
+            app.pump_demo();
         }
         "37" | "38" | "39" | "40" => {
             // Attachments in the composer of billing-service (devbox).
@@ -445,11 +453,10 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.ui.focus_card = None;
         }
         "41" => {
-            // A sidebar row's right-click menu, its second row hovered.
+            // A sidebar row's right-click menu (D109); the row keeps its hover colour (D108).
             app.open(&threads::fix(), None);
             app.ui.focus_card = None;
-            app.ui.menu = Some(Menu::Context(threads::fix()));
-            app.ui.shot_pointer = Some(egui::pos2(320.0, 590.0));
+            app.ui.menu = Some(Menu::Context(threads::billing()));
         }
         "36" => {
             // The sidebar dragged wider.
@@ -475,13 +482,60 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.client.state.selection = yaac_core::state::Selection::Thread(key);
         }
         "33" => {
-            // Mute, with "For 2 hours" chosen: the moment it ends shows beneath, in local time.
+            // Mute, with "Until" chosen and its calendar dropdown open (D112).
             app.open(&threads::fix(), None);
             app.ui.focus_card = None;
             app.apply(vec![crate::app::Action::OpenMute(threads::billing(), false)]);
             if let Some(d) = &mut app.ui.mute {
-                d.choice = yaac_core::mute::MuteChoice::For;
+                d.choice = yaac_core::mute::MuteChoice::Until;
+                d.calendar_open = true;
             }
+        }
+        "42" => {
+            app.open(&threads::fix(), None);
+            app.ui.focus_card = None;
+            app.apply(vec![crate::app::Action::OpenDelete(threads::billing())]);
+        }
+        "43" => {
+            app.open(&threads::fix(), None);
+            app.ui.focus_card = None;
+            app.apply(vec![crate::app::Action::OpenArchive(threads::billing())]);
+        }
+        "44" | "46" => {
+            // Turns that ended while nobody looked (D114): billing-service and users-service
+            // carry the cornflower outline in the sidebar, the docked panel, and the pill.
+            app.open(&threads::orchestrator(), None);
+            for k in [threads::billing(), threads::users()] {
+                app.client.set_view(&k, yaac_core::state::ViewPatch { unseen: Some(true), ..Default::default() });
+            }
+            app.pump_demo();
+            if id == "46" {
+                // A parent too, so the pill shows all three relations (D118).
+                if let Some(r) = app.client.state.threads.get_mut(&threads::orchestrator()) {
+                    r.summary.spawned_by = Some(threads::notes().address());
+                }
+            }
+        }
+        "45" => {
+            // The ordering menu (D116) over a list whose groups float what needs the user
+            // and what finished unseen to the top.
+            app.open(&threads::orchestrator(), None);
+            app.client.set_view(&threads::billing(), yaac_core::state::ViewPatch { unseen: Some(true), ..Default::default() });
+            app.pump_demo();
+            app.ui.ordering.order = yaac_core::sidebar::Order::AToZ;
+            app.ui.menu = Some(Menu::Ordering);
+        }
+        "47" => {
+            // A thread started by the user with one worker: the pill has one cluster.
+            app.open(&threads::search(), None);
+            if let Some(r) = app.client.state.threads.get_mut(&threads::search()) {
+                r.summary.spawned_by = None;
+            }
+        }
+        "48" => {
+            // The docked panel at its narrowest: titles ellipsised, every mark kept (D115).
+            app.open(&threads::orchestrator(), None);
+            app.ui.agents_width = yaac_core::prefs::AGENTS_MIN_WIDTH;
         }
         "32" => {
             // The Add SSH server form with realistic long values: every field usable.

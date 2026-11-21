@@ -3,7 +3,7 @@
 
 use std::f32::consts::TAU;
 
-use eframe::egui::{Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
+use eframe::egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use yaac_core::attention::Mark;
 
 use crate::theme::Palette;
@@ -27,7 +27,7 @@ pub(crate) fn mark(p: &Painter, c: Pos2, d: f32, m: Mark, pal: &Palette) {
                 Stroke::NONE,
             ));
         }
-        Mark::NeedsYou => warning(p, c, d, col, pal.bg),
+        Mark::NeedsYou => exclaim(p, c, d, col, pal.on_primary_for(col)),
         Mark::Paused => {
             p.circle_stroke(c, r, stroke(col, w));
             let h = r * 0.5;
@@ -52,6 +52,57 @@ pub(crate) fn mark(p: &Painter, c: Pos2, d: f32, m: Mark, pal: &Palette) {
         }
         Mark::Offline | Mark::Off => dashed_circle(p, c, r, stroke(col, w)),
     }
+}
+
+/// The needs-you mark (D113): a filled disc in the failed colour with a rounded bar and a
+/// dot cut into it. `ink` is the colour of the exclamation.
+pub(crate) fn exclaim(p: &Painter, c: Pos2, d: f32, col: Color32, ink: Color32) {
+    let r = d * 0.47;
+    p.circle_filled(c, r, col);
+    let w = (d * 0.13).max(1.6);
+    let top = pos2(c.x, c.y - r * 0.52);
+    let bottom = pos2(c.x, c.y + r * 0.12);
+    p.line_segment([top, bottom], Stroke::new(w, ink));
+    p.circle_filled(top, w / 2.0, ink);
+    p.circle_filled(bottom, w / 2.0, ink);
+    p.circle_filled(pos2(c.x, c.y + r * 0.5), w * 0.62, ink);
+}
+
+/// The ordering control (D116): three bars of falling length beside a down arrow.
+pub(crate) fn order(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let s = Stroke::new(1.5, col);
+    let x0 = c.x - d * 0.42;
+    for (i, w) in [0.5_f32, 0.36, 0.22].iter().enumerate() {
+        let y = c.y - d * 0.26 + i as f32 * d * 0.26;
+        p.line_segment([pos2(x0, y), pos2(x0 + d * w, y)], s);
+    }
+    let ax = c.x + d * 0.3;
+    p.line_segment([pos2(ax, c.y - d * 0.32), pos2(ax, c.y + d * 0.3)], s);
+    p.line(vec![pos2(ax - d * 0.14, c.y + d * 0.15), pos2(ax, c.y + d * 0.3), pos2(ax + d * 0.14, c.y + d * 0.15)], s);
+}
+
+/// A calendar page: a rounded box, two rings at the top, a rule under the header.
+pub(crate) fn calendar(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let s = Stroke::new((d * 0.09).max(1.2), col);
+    let r = Rect::from_center_size(c + vec2(0.0, d * 0.04), vec2(d * 0.84, d * 0.74));
+    p.rect_stroke(r, d * 0.12, s, egui::StrokeKind::Middle);
+    p.hline(r.x_range(), r.top() + d * 0.22, s);
+    for dx in [-0.2, 0.2] {
+        let x = c.x + d * dx;
+        p.line_segment([pos2(x, r.top() - d * 0.1), pos2(x, r.top() + d * 0.08)], s);
+    }
+}
+
+/// Two opposed arrows (⇄): "in contact with" (D118).
+pub(crate) fn swap(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let s = Stroke::new((d * 0.1).max(1.2), col);
+    let (l, r) = (c.x - d * 0.4, c.x + d * 0.4);
+    let (y1, y2) = (c.y - d * 0.18, c.y + d * 0.18);
+    let h = d * 0.16;
+    p.line_segment([pos2(l, y1), pos2(r, y1)], s);
+    p.line(vec![pos2(r - h, y1 - h), pos2(r, y1), pos2(r - h, y1 + h)], s);
+    p.line_segment([pos2(l, y2), pos2(r, y2)], s);
+    p.line(vec![pos2(l + h, y2 - h), pos2(l, y2), pos2(l + h, y2 + h)], s);
 }
 
 /// The warning triangle with an exclamation mark.

@@ -292,24 +292,40 @@ pub(crate) fn mute(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
         }
         ui.horizontal(|ui| {
             radio(ui, &mut d, MuteChoice::Until, "Until");
-            let (y, m, day) = d.date;
-            let date = yaac_core::time::from_local(y, m, day, 12, 0, zone);
-            let label = yaac_core::time::moment_in(date, zone);
-            let label = label.split(',').next().unwrap_or("").to_owned();
-            ui.label(RichText::new(label).font(theme::ui(size::UI)));
+            // The date is a field with a calendar button (D112); the calendar is a dropdown,
+            // never part of the dialog's own layout.
+            let r = widgets::field(ui, &p, &mut d.date_text, "2026-11-21", 92.0, true);
+            if r.changed() {
+                d.date_typed();
+            } else if r.gained_focus() {
+                d.choice = MuteChoice::Until;
+            }
+            let cal = widgets::icon_button(ui, &p, 16.0, "Choose a date", icons::calendar);
+            if cal.clicked() {
+                d.calendar_open = !d.calendar_open;
+                d.choice = MuteChoice::Until;
+                d.month = (d.date.0, d.date.1);
+            }
+            ui.add_space(6.0);
             let r = widgets::field(ui, &p, &mut d.time, "14:30", 64.0, true);
             if r.gained_focus() || r.changed() {
                 d.choice = MuteChoice::Until;
             }
+            if d.calendar_open {
+                let mut open = true;
+                widgets::menu_popup(egui::Popup::from_response(&cal), &p)
+                    .kind(egui::PopupKind::Popup)
+                    .id(egui::Id::unique("mute-calendar"))
+                    .open_bool(&mut open)
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                    .show(|ui| month_grid(ui, &p, &mut d, now, zone));
+                if !open {
+                    d.calendar_open = false;
+                }
+            }
         });
-        if d.choice == MuteChoice::Until {
-            ui.horizontal(|ui| {
-                ui.add_space(26.0);
-                month_grid(ui, &p, &mut d, now, zone);
-            });
-        }
         ui.add_space(4.0);
-        ui.label(widgets::secondary("The agent keeps working. It will still appear under Needs you if it gets blocked.", &p));
+        ui.label(widgets::secondary("The agent keeps working. If it gets blocked it still comes to the top of its group.", &p));
         ui.add_space(10.0);
         ui.horizontal(|ui| match &outcome {
             MuteOutcome::Mute(until) => {
@@ -334,11 +350,12 @@ pub(crate) fn mute(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
     }
 }
 
-/// A small month grid in the calm style: the month and two arrows, weekday initials, the
-/// days; past days unavailable, the chosen day on the selected-row tint.
+/// The calendar dropdown in the calm style: the month and two arrows, weekday initials, six
+/// rows of days; past days unavailable, the chosen day on the selected-row tint.
 fn month_grid(ui: &mut egui::Ui, p: &Palette, d: &mut yaac_core::mute::MuteDialog, now: i64, zone: yaac_core::time::Zone) {
     use yaac_core::time;
     let cell = vec2(30.0, 24.0);
+    let cell_size = cell;
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 2.0);
         ui.horizontal(|ui| {
@@ -365,17 +382,12 @@ fn month_grid(ui: &mut egui::Ui, p: &Palette, d: &mut yaac_core::mute::MuteDialo
                 ui.add_sized(cell, egui::Label::new(widgets::secondary(w, p)));
             }
         });
-        let first = time::first_weekday(d.month.0, d.month.1);
-        let days = time::days_in_month(d.month.0, d.month.1);
-        let mut day = 1;
-        while day <= days {
+        // Always six week rows: the dropdown never changes size between months (D112).
+        for week in d.month_cells() {
             ui.horizontal(|ui| {
-                for col in 0..7 {
-                    let (r, resp) = ui.allocate_exact_size(cell, egui::Sense::click());
-                    let blank = (day == 1 && col < first) || day > days;
-                    if blank {
-                        continue;
-                    }
+                for cell in week {
+                    let (r, resp) = ui.allocate_exact_size(cell_size, egui::Sense::click());
+                    let Some(day) = cell else { continue };
                     let past = d.day_is_past(day, now, zone);
                     let chosen = d.date == (d.month.0, d.month.1, day);
                     if chosen {
@@ -386,12 +398,84 @@ fn month_grid(ui: &mut egui::Ui, p: &Palette, d: &mut yaac_core::mute::MuteDialo
                     let c = if past { p.unavailable } else { p.text };
                     ui.painter().text(r.center(), Align2::CENTER_CENTER, day.to_string(), theme::ui(size::SMALL + 0.5), c);
                     if resp.clicked() && !past {
-                        d.date = (d.month.0, d.month.1, day);
-                        d.choice = yaac_core::mute::MuteChoice::Until;
+                        d.pick_day(day);
                     }
-                    day += 1;
                 }
             });
         }
     });
+}
+
+/// D110: "Delete <title>?" with "Also delete the session from <harness>" (checked by
+/// default) when the harness can delete its own sessions. The confirming button is the one
+/// filled button, in the failed colour; Cancel is the focused default and Esc cancels.
+pub(crate) fn delete(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let Some(mut d) = app.ui.delete.take() else { return };
+    scrim(ctx, &p, "delete");
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        return;
+    }
+    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    let mut keep = true;
+    window("delete", &p, ctx).show(ctx, |ui| {
+        ui.set_width(440.0);
+        ui.label(RichText::new(&d.title).font(theme::bold(size::SECTION + 1.5)));
+        ui.add_space(10.0);
+        if let Some(label) = d.harness_label.clone() {
+            ui.checkbox(&mut d.also_in_harness, label);
+            ui.add_space(6.0);
+        }
+        ui.label(widgets::secondary(d.body(), &p));
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            let cancel = widgets::plain(ui, &p, "Cancel", Some("Esc"));
+            if cancel.clicked() {
+                keep = false;
+            }
+            ui.add_space(8.0);
+            let confirm = danger(ui, &p, "Delete");
+            if confirm.clicked() {
+                actions.push(Action::Delete(d.key.clone(), d.also_in_harness()));
+                keep = false;
+            }
+            if !confirm.has_focus() && !ui.ctx().memory(|m| m.focused().is_some()) {
+                cancel.request_focus();
+            }
+        });
+    });
+    if keep {
+        app.ui.delete = Some(d);
+    }
+}
+
+/// D111: "Archive <title>?" — Archive (Enter) or Cancel (Esc).
+pub(crate) fn archive(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let Some(d) = app.ui.archive.take() else { return };
+    scrim(ctx, &p, "archive");
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        return;
+    }
+    let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    let mut keep = true;
+    window("archive", &p, ctx).show(ctx, |ui| {
+        ui.set_width(420.0);
+        ui.label(RichText::new(&d.title).font(theme::bold(size::SECTION + 1.5)));
+        ui.add_space(10.0);
+        ui.label(widgets::secondary(d.body, &p));
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            if widgets::primary(ui, &p, "Archive", Some("Enter")).clicked() || enter {
+                actions.push(Action::Archive(d.key.clone()));
+                keep = false;
+            }
+            if widgets::plain(ui, &p, "Cancel", Some("Esc")).clicked() {
+                keep = false;
+            }
+        });
+    });
+    if keep {
+        app.ui.archive = Some(d);
+    }
 }

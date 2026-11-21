@@ -5,7 +5,7 @@ use common::{NOW, boot, render, render_open};
 use yaac_core::attention::{Attention, AttentionMap};
 use yaac_core::demo::{DemoHub, threads};
 use yaac_core::hints::RequestKindWord;
-use yaac_core::sidebar::{Grouping, Open, SectionKind, hub_footer, needs_you, sections};
+use yaac_core::sidebar::{Grouping, Open, Ordering, SectionKind, hub_footer, needs_you, sections};
 use yaac_core::time::Zone;
 
 fn g(machine: bool, project: bool, worktree: bool) -> Grouping {
@@ -16,14 +16,11 @@ fn g(machine: bool, project: bool, worktree: bool) -> Grouping {
 fn the_default_matches_the_brief() {
     let (c, _) = boot();
     let want = [
-        "# Needs you · 2",
-        "Fix frame decoder (needs you) devbox",
-        "index-rebuild (needs you) gpu-box",
         "# Pinned · 1",
         "Migrate auth module — orchestrator (running) now / main ~4 3w",
         "# search — gpu-box",
-        "search-service (running) now / auth/search ~3 1w",
         "index-rebuild (needs you) 41m / auth/search ~3",
+        "search-service (running) now / auth/search ~3 1w",
         "# api — devbox",
         "CI integration (waiting) 1m / main v2",
         "billing-service (done) 9m / auth/billing +2 ~6 -1 ^1",
@@ -50,7 +47,7 @@ fn every_combination_yields_flat_sections_holding_each_thread_once() {
         for project in [true, false] {
             for worktree in [true, false] {
                 let grouping = g(machine, project, worktree);
-                let secs = sections(&c.state, &map, grouping, "", Open { muted: true, archived: true }, NOW, Zone::UTC);
+                let secs = sections(&c.state, &map, grouping, Ordering::default(), "", Open { muted: true, archived: true }, NOW, Zone::UTC);
                 let groups: Vec<_> = secs.iter().filter(|s| s.kind == SectionKind::Group).collect();
                 let rows: usize = groups.iter().map(|s| s.rows.len()).sum();
                 let muted: usize = secs.iter().filter(|s| s.kind == SectionKind::Muted).map(|s| s.rows.len()).sum();
@@ -62,21 +59,22 @@ fn every_combination_yields_flat_sections_holding_each_thread_once() {
                 assert_eq!(muted, 4);
                 let any = machine || project || worktree;
                 assert!(groups.iter().all(|s| s.header.is_some() == any), "{grouping:?}");
-                // Needs-you and Muted rows are one line; others have a second line in git.
-                assert!(secs.iter().filter(|s| matches!(s.kind, SectionKind::NeedsYou | SectionKind::Muted)).all(|s| s.rows.iter().all(|r| r.line2.is_none())));
+                // Muted rows are one line; others have a second line in git.
+                assert!(secs.iter().filter(|s| matches!(s.kind, SectionKind::Muted)).all(|s| s.rows.iter().all(|r| r.line2.is_none())));
                 if !any {
                     assert_eq!(groups.len(), 1, "no headers: one list");
                 }
-                // Rows within a section and sections themselves are newest first.
+                // Rows within a section are newest first, after the ones that need the user.
                 for s in &groups {
                     let t: Vec<i64> = s
                         .rows
                         .iter()
+                        .filter(|r| r.display.attention.is_none())
                         .map(|r| yaac_core::time::secs(&c.state.summary(&r.key).unwrap().updated_at).unwrap())
                         .collect();
                     assert!(t.windows(2).all(|w| w[0] >= w[1]), "{grouping:?}");
                 }
-                assert_eq!(secs[0].kind, SectionKind::NeedsYou);
+                assert!(secs.iter().all(|s| s.kind != SectionKind::Muted || s.rows.iter().all(|r| r.display.attention.is_none())));
                 assert_eq!(secs[secs.len() - 2].kind, SectionKind::Muted);
                 assert_eq!(secs.last().unwrap().kind, SectionKind::Archived, "Archived is the last section");
             }
@@ -98,8 +96,10 @@ fn header_text_follows_the_ticks() {
     let r = render(&c, g(false, false, true));
     assert!(r.contains(&"# main".to_owned()) && r.contains(&"# feature/protocol".to_owned()));
     let flat = render(&c, g(false, false, false));
-    assert!(flat[5].starts_with("search-service (running) now"), "{flat:#?}");
-    assert!(!flat[5..].iter().any(|l| l.starts_with('#') && !l.starts_with("# Muted") && !l.starts_with("# Archived")));
+    // No headers: Pinned, then one list, the threads that need the user first.
+    assert!(flat[2].starts_with("Fix frame decoder (needs you)") && flat[3].starts_with("index-rebuild (needs you)"), "{flat:#?}");
+    assert!(flat[4].starts_with("search-service (running) now"), "{flat:#?}");
+    assert!(!flat[2..].iter().any(|l| l.starts_with('#') && !l.starts_with("# Muted") && !l.starts_with("# Archived")));
 }
 
 #[test]
@@ -113,8 +113,8 @@ fn muted_and_archived() {
         c.set_muted(k, false);
     }
     let r = render_open(&c, Grouping::default(), true);
-    // A muted, blocked thread stays under Needs you, marked "muted", and nowhere else.
-    assert!(r.contains(&"index-rebuild (needs you) gpu-box muted".to_owned()), "{r:#?}");
+    // A muted, blocked thread stays in its group (at the top) until answered, and nowhere else.
+    assert!(r.contains(&"index-rebuild (needs you) 41m / auth/search ~3".to_owned()), "{r:#?}");
     assert_eq!(r.iter().filter(|l| l.starts_with("index-rebuild")).count(), 1);
     let muted_at = r.iter().position(|l| l == "# Muted · 4").unwrap();
     let archived_at = r.iter().position(|l| l == "# Archived · 3").unwrap();
@@ -132,13 +132,13 @@ fn muted_and_archived() {
     c.archive(&users);
     assert!(!c.state.is_pinned(&users) && !c.state.is_muted(&users, NOW));
     let map = AttentionMap::compute(&c.state);
-    let secs = sections(&c.state, &map, Grouping::default(), "", Open { muted: true, archived: true }, NOW, Zone::UTC);
+    let secs = sections(&c.state, &map, Grouping::default(), Ordering::default(), "", Open { muted: true, archived: true }, NOW, Zone::UTC);
     let holding: Vec<_> = secs.iter().filter(|s| s.rows.iter().any(|r| r.key == users)).map(|s| s.kind.clone()).collect();
     assert_eq!(holding, [SectionKind::Archived]);
     c.unarchive(&users);
     assert!(!c.state.is_pinned(&users) && !c.state.is_muted(&users, NOW));
     // Collapsed: the header and its count only.
-    let secs = sections(&c.state, &map, Grouping::default(), "", Open::default(), NOW, Zone::UTC);
+    let secs = sections(&c.state, &map, Grouping::default(), Ordering::default(), "", Open::default(), NOW, Zone::UTC);
     let a = secs.last().unwrap();
     assert_eq!((a.kind.clone(), a.collapsed, a.rows.len(), a.count), (SectionKind::Archived, true, 0, 3), "users-service is back in its project");
 }
@@ -156,7 +156,7 @@ fn a_timed_mute_ends_by_itself_and_dismissed_threads_hide() {
     // Dismiss hides a thread in the window only; "Show dismissed" lists it.
     c.set_dismissed(&ci, true);
     let map = AttentionMap::compute(&c.state);
-    let has = |g: Grouping| sections(&c.state, &map, g, "", Open::default(), NOW, Zone::UTC).iter().flat_map(|x| x.rows.iter()).any(|r| r.key == ci);
+    let has = |g: Grouping| sections(&c.state, &map, g, Ordering::default(), "", Open::default(), NOW, Zone::UTC).iter().flat_map(|x| x.rows.iter()).any(|r| r.key == ci);
     assert!(!has(Grouping::default()));
     assert!(has(Grouping { show_dismissed: true, ..Grouping::default() }));
     // A blocked thread is never hidden from Needs you, dismissed or muted.
@@ -169,13 +169,13 @@ fn a_timed_mute_ends_by_itself_and_dismissed_threads_hide() {
 fn search_filters_title_and_preview() {
     let (c, _) = boot();
     let map = AttentionMap::compute(&c.state);
-    let found: Vec<_> = sections(&c.state, &map, Grouping::default(), "REBUILD", Open::default(), NOW, Zone::UTC)
+    let found: Vec<_> = sections(&c.state, &map, Grouping::default(), Ordering::default(), "REBUILD", Open::default(), NOW, Zone::UTC)
         .into_iter()
         .filter(|s| s.kind == SectionKind::Group)
         .flat_map(|s| s.rows)
         .map(|r| r.title)
         .collect();
-    assert_eq!(found, ["search-service", "index-rebuild"]);
+    assert_eq!(found, ["index-rebuild", "search-service"], "the one that needs the user first");
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn pinned_threads_leave_their_project_and_projects_take_new_threads() {
     c.set_pinned(&threads::fix(), true);
     let r = render(&c, Grouping::default());
     assert!(r.contains(&"# Pinned · 2".to_owned()));
-    assert_eq!(r.iter().filter(|l| l.starts_with("Fix frame decoder")).count(), 2, "Needs you and Pinned: {r:#?}");
+    assert_eq!(r.iter().filter(|l| l.starts_with("Fix frame decoder")).count(), 1, "only under Pinned: {r:#?}");
     // Creating a project from a temporary one moves its threads in.
     c.create_project(&"devbox".into(), "~/scratch/spike-7", "Parser spike", None);
     common::settle(&mut c, &hub);
@@ -210,7 +210,7 @@ fn pinned_threads_leave_their_project_and_projects_take_new_threads() {
 fn the_strip_follows_the_list() {
     let (c, _) = boot();
     let map = AttentionMap::compute(&c.state);
-    let secs = sections(&c.state, &map, Grouping::default(), "", Open::default(), NOW, Zone::UTC);
+    let secs = sections(&c.state, &map, Grouping::default(), Ordering::default(), "", Open::default(), NOW, Zone::UTC);
     let e = yaac_core::strip::entries(&secs);
     use yaac_core::strip::StripEntry as S;
     // No Needs-you section: each section's name and its threads, in the list's order, a
@@ -223,8 +223,8 @@ fn the_strip_follows_the_list() {
             panic!("no hairline between sections: {w:?}");
         }
     }
-    assert!(e.iter().any(|x| matches!(x, S::Thread { key, needs_you: true, .. } if *key == threads::fix())), "the triangle where it is listed");
-    let list_order: Vec<_> = secs.iter().filter(|s| s.kind != SectionKind::NeedsYou).flat_map(|s| s.rows.iter().map(|r| r.key.clone())).collect();
+    assert!(e.iter().any(|x| matches!(x, S::Thread { key, needs_you: true, .. } if *key == threads::fix())), "the exclamation where it is listed");
+    let list_order: Vec<_> = secs.iter().flat_map(|s| s.rows.iter().map(|r| r.key.clone())).collect();
     let strip_order: Vec<_> = e.iter().filter_map(|x| if let S::Thread { key, .. } = x { Some(key.clone()) } else { None }).collect();
     assert_eq!(strip_order, list_order);
     assert!(e.iter().any(|x| matches!(x, S::Label { text, collapsed: true, .. } if text == "Muted")));

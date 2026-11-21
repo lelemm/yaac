@@ -323,6 +323,8 @@ pub struct ViewPref {
     pub muted_until: Option<i64>,
     /// A discovered thread hidden in the window.
     pub dismissed: bool,
+    /// A turn ended while no window showed the thread (D114); opening it clears this.
+    pub unseen: bool,
 }
 
 /// A change to view preferences: only the fields given change.
@@ -336,6 +338,8 @@ pub struct ViewPatch {
     pub muted_until: Option<Option<i64>>,
     /// Dismiss or bring back.
     pub dismissed: Option<bool>,
+    /// Mark or clear "finished while nobody looked" (D114).
+    pub unseen: Option<bool>,
 }
 
 impl AppState {
@@ -587,6 +591,11 @@ impl AppState {
         self.view.get(key).is_some_and(|v| v.pinned)
     }
 
+    /// Whether a thread's last turn ended while no window showed it (D114).
+    pub fn is_unseen(&self, key: &ThreadKey) -> bool {
+        self.view.get(key).is_some_and(|v| v.unseen)
+    }
+
     /// Whether a discovered thread is hidden in the window.
     pub fn is_dismissed(&self, key: &ThreadKey) -> bool {
         self.view.get(key).is_some_and(|v| v.dismissed)
@@ -611,6 +620,9 @@ impl AppState {
             }
             if let Some(x) = b("dismissed") {
                 e.dismissed = x;
+            }
+            if let Some(x) = b("unseen") {
+                e.unseen = x;
             }
             if let Some(u) = t.get("mutedUntil") {
                 e.muted_until = u.as_str().and_then(crate::time::parse_rfc3339);

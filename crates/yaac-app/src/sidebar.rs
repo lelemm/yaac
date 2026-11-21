@@ -1,8 +1,9 @@
 //! The sidebar: a flat list under sticky headers (no tree), virtualised.
 
 use eframe::egui::{self, Margin, Rect, Sense, pos2, vec2};
-use yaac_core::attention::{AttentionMap, Mark};
-use yaac_core::sidebar::{RowRight, Section, SectionKind, hub_footer, sections};
+use yaac_core::attention::AttentionMap;
+use yaac_core::sidebar::{NeedsCycle, Order, RowRight, Section, SectionKind, hub_footer, needs_you, sections, title_width};
+use yaac_core::thread_menu::{MenuAction, MenuEntry, thread_menu};
 use yaac_core::state::Selection;
 
 use crate::app::{Action, Menu, YaacApp};
@@ -30,6 +31,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         if !fresh {
             ui.add_space(6.0);
             crate::nav::buttons(ui, app, actions, false);
+            needs_button(ui, app, map, now, actions);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Collapse to the strip (Ctrl+B).
                 let (r, resp) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::click());
@@ -62,7 +64,13 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         }
     }
     let open = yaac_core::sidebar::Open { muted: app.ui.muted_open, archived: app.ui.archived_open };
-    let secs = sections(&app.client.state, map, app.ui.grouping, &app.ui.search, open, now, app.zone);
+    let fresh = sections(&app.client.state, map, app.ui.grouping, app.ui.ordering, &app.ui.search, open, now, app.zone);
+    // Rows do not jump under the pointer (D116): while it is over the list, or a row's menu
+    // is open, a reorder waits until it leaves.
+    let pointer = ui.ctx().pointer_hover_pos();
+    let hold = app.shots.is_none()
+        && (matches!(app.ui.menu, Some(Menu::Context(_))) || pointer.is_some_and(|pt| app.ui.list_rect.is_some_and(|r| r.contains(pt))));
+    let secs = app.ui.steady.apply(fresh, hold);
     let mut lines: Vec<(f32, f32, Line<'_>)> = Vec::new();
     let mut y = 0.0;
     for (i, s) in secs.iter().enumerate() {
@@ -89,7 +97,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         app.ui.sidebar_to_end = app.shots.is_some();
         sa = sa.vertical_scroll_offset((total - list_h).max(0.0));
     }
-    sa.show_viewport(ui, |ui, view| {
+    let shown = sa.show_viewport(ui, |ui, view| {
         ui.set_height(total);
         let origin = ui.max_rect().top();
         let left = ui.max_rect().left();
@@ -102,7 +110,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             let rect = Rect::from_min_size(pos2(left, origin + ly), vec2(width, *h));
             match line {
                 Line::Head(s) => header(ui, app, s, rect, actions),
-                Line::Row(s, r) => row(ui, app, s, *r, rect, selected.as_ref(), actions),
+                Line::Row(s, r) => row(ui, app, s, *r, rect, selected.as_ref(), now, actions),
             }
         }
         // Sticky header: the section being read stays pinned until the next pushes it away.
@@ -118,8 +126,121 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             }
         }
     });
+    app.ui.list_rect = Some(shown.inner_rect);
 
     footer(ui, app, actions);
+}
+
+/// The Needs-you button (D117): the red exclamation beside the history buttons, with the
+/// count, shown only while some thread needs the user. Each press opens the next one.
+pub(crate) fn needs_button(ui: &mut egui::Ui, app: &YaacApp, map: &AttentionMap, now: i64, actions: &mut Vec<Action>) {
+    let n = needs_you(&app.client.state, map, now).len();
+    if n == 0 {
+        return;
+    }
+    let p = app.p;
+    let count = ui.fonts_mut(|f| f.layout_no_wrap(n.to_string(), theme::bold(size::SMALL), p.failed));
+    let (r, resp) = ui.allocate_exact_size(vec2(26.0 + count.size().x, 26.0), Sense::click());
+    if resp.hovered() || resp.has_focus() {
+        ui.painter().rect_filled(r, 5.0, p.faint);
+    }
+    icons::exclaim(ui.painter(), pos2(r.left() + 12.0, r.center().y), 16.0, p.failed, p.on_primary_for(p.failed));
+    ui.painter().galley(pos2(r.left() + 22.0, r.center().y - count.size().y / 2.0), count, p.failed);
+    if resp.on_hover_text(format!("{} (Ctrl+J)", NeedsCycle::tooltip(n))).clicked() {
+        actions.push(Action::NeedsNext);
+    }
+}
+
+/// The thread menu (D109) in the shared menu style; returns what was picked.
+pub(crate) fn menu_entries(ui: &mut egui::Ui, p: &crate::theme::Palette, entries: &[MenuEntry]) -> Option<MenuAction> {
+    let mut picked = None;
+    for e in entries {
+        match e {
+            MenuEntry::Separator => {
+                ui.separator();
+            }
+            MenuEntry::Item(i) => {
+                let kind = if !i.enabled {
+                    widgets::ItemKind::Disabled
+                } else if i.danger {
+                    widgets::ItemKind::Danger
+                } else {
+                    widgets::ItemKind::Normal
+                };
+                let mut r = widgets::menu_item(ui, p, i.label, None, kind);
+                if let Some(why) = i.reason {
+                    r = r.on_disabled_hover_text(why);
+                }
+                if r.clicked() {
+                    picked = Some(i.action);
+                }
+            }
+        }
+    }
+    picked
+}
+
+/// Does what a thread-menu entry says.
+pub(crate) fn run_menu_action(app: &mut YaacApp, ctx: &egui::Context, key: &yaac_core::ThreadKey, action: MenuAction, actions: &mut Vec<Action>) {
+    let k = key.clone();
+    match action {
+        MenuAction::CopyId => {
+            // The harness's own id (what a terminal shows), else YAAC's address.
+            let id = app.client.state.summary(key).and_then(|s| s.native_id.clone()).unwrap_or_else(|| key.address().to_string());
+            ctx.copy_text(id);
+        }
+        MenuAction::Rename => {
+            let title = app.client.state.summary(key).map(|s| s.title.clone()).unwrap_or_default();
+            app.ui.rename = Some((k, title));
+        }
+        MenuAction::Fork => actions.push(Action::OpenFork(k)),
+        MenuAction::Pin => actions.push(Action::SetPinned(k, true)),
+        MenuAction::Unpin => actions.push(Action::SetPinned(k, false)),
+        MenuAction::Mute => actions.push(Action::OpenMute(k, false)),
+        MenuAction::ChangeMute => actions.push(Action::OpenMute(k, true)),
+        MenuAction::Unmute => actions.push(Action::SetMuted(k, false)),
+        MenuAction::Dismiss => actions.push(Action::Dismiss(k, true)),
+        MenuAction::ShowAgain => actions.push(Action::Dismiss(k, false)),
+        MenuAction::Archive => actions.push(Action::OpenArchive(k)),
+        MenuAction::Unarchive => actions.push(Action::Unarchive(k)),
+        MenuAction::Delete => actions.push(Action::OpenDelete(k)),
+    }
+}
+
+/// A row's context menu, attached to `resp`: opened by a right-click, one at a time. Returns
+/// whether it is open (the row then keeps its hover colour, D108).
+pub(crate) fn row_menu(ui: &egui::Ui, app: &mut YaacApp, key: &yaac_core::ThreadKey, resp: &egui::Response, now: i64, actions: &mut Vec<Action>) -> bool {
+    if resp.secondary_clicked() {
+        app.ui.menu = Some(Menu::Context(key.clone()));
+    }
+    let mut open = app.ui.menu == Some(Menu::Context(key.clone()));
+    if !open {
+        return false;
+    }
+    let p = app.p;
+    let entries = thread_menu(&app.client.state, key, now);
+    let mut picked = None;
+    crate::widgets::menu_popup(egui::Popup::from_response(resp), &p)
+        .kind(egui::PopupKind::Menu)
+        .align(egui::RectAlign::RIGHT_START)
+        .open_bool(&mut open)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
+            ui.set_min_width(170.0);
+            picked = menu_entries(ui, &p, &entries);
+        });
+    if let Some(a) = picked {
+        run_menu_action(app, ui.ctx(), key, a, actions);
+    }
+    if !open && app.ui.menu == Some(Menu::Context(key.clone())) {
+        app.ui.menu = None;
+    }
+    open
+}
+
+/// The unseen outline (D114): a rounded cornflower border around a row.
+pub(crate) fn unseen_outline(ui: &egui::Ui, rect: Rect, p: &crate::theme::Palette) {
+    ui.painter().rect_stroke(rect.shrink(1.0), 6.0, egui::Stroke::new(1.5, p.unseen), egui::StrokeKind::Inside);
 }
 
 /// The hub's search results: one-line rows, then "More results" while there are pages left.
@@ -214,7 +335,7 @@ fn footer(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
 
 fn search_field(ui: &mut egui::Ui, app: &mut YaacApp, enabled: bool) {
     let p = app.p;
-    let frame = widgets::faint_frame(&p).inner_margin(Margin { left: 30, right: 32, top: 5, bottom: 5 });
+    let frame = widgets::faint_frame(&p).inner_margin(Margin { left: 30, right: 58, top: 5, bottom: 5 });
     let inner = frame.show(ui, |ui| {
         let te = egui::TextEdit::singleline(&mut app.ui.search)
             .interactive(enabled)
@@ -267,6 +388,37 @@ fn search_field(ui: &mut egui::Ui, app: &mut YaacApp, enabled: bool) {
     if !open && app.ui.menu == Some(Menu::Grouping) {
         app.ui.menu = None;
     }
+    // The ordering button beside it (D116).
+    let b = Rect::from_center_size(pos2(rect.right() - 42.0, rect.center().y), vec2(24.0, 22.0));
+    let resp = ui.interact(b, egui::Id::unique("ordering-button"), Sense::click()).on_hover_text("Order");
+    if resp.hovered() || app.ui.menu == Some(Menu::Ordering) {
+        ui.painter().rect_filled(b, 4.0, p.selected);
+    }
+    icons::order(ui.painter(), b.center(), 14.0, p.text2);
+    if resp.clicked() {
+        app.ui.toggle_menu(Menu::Ordering);
+    }
+    let mut open = app.ui.menu == Some(Menu::Ordering);
+    crate::widgets::menu_popup(egui::Popup::from_response(&resp), &p)
+        .kind(egui::PopupKind::Menu)
+        .open_bool(&mut open)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(290.0);
+            ui.label(widgets::secondary("Order", &p));
+            let o = &mut app.ui.ordering;
+            for choice in Order::ALL {
+                if ui.radio(o.order == choice, choice.label()).clicked() {
+                    o.order = choice;
+                }
+            }
+            ui.add_space(8.0);
+            ui.checkbox(&mut o.unseen_first, "Keep unseen finished threads at the top");
+            ui.checkbox(&mut o.needs_first, "Keep threads that need you at the top");
+        });
+    if !open && app.ui.menu == Some(Menu::Ordering) {
+        app.ui.menu = None;
+    }
 }
 
 fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions: &mut Vec<Action>) {
@@ -275,10 +427,6 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
     let font = theme::ui(size::SMALL);
     let y = rect.bottom() - 7.0;
     let mut x = rect.left() + 4.0;
-    if s.kind == SectionKind::NeedsYou {
-        icons::mark(ui.painter(), pos2(x + 6.0, y - 6.0), 12.0, Mark::NeedsYou, &p);
-        x += 18.0;
-    }
     if h.temporary {
         icons::dashed_circle(ui.painter(), pos2(x + 6.0, y - 6.0), 5.0, egui::Stroke::new(1.2, p.text2));
         x += 16.0;
@@ -362,9 +510,8 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
         icons::warning(ui.painter(), pos2(rx - 6.0, y - 6.0), 11.0, p.needs, p.panel);
         rx -= 16.0;
     }
-    let color = if s.kind == SectionKind::NeedsYou { p.text } else { p.text2 };
-    let left_font = if s.kind == SectionKind::NeedsYou { theme::bold(size::SMALL) } else { font };
-    let mut job = egui::text::LayoutJob::simple_singleline(h.left.clone(), left_font, color);
+    let color = p.text2;
+    let mut job = egui::text::LayoutJob::simple_singleline(h.left.clone(), font, color);
     if let Some(sec) = job.sections.first_mut() {
         sec.format.italics = h.temporary;
     }
@@ -395,17 +542,23 @@ pub(crate) fn create_project_for(app: &YaacApp, target: &yaac_protocol::TargetId
     }
 }
 
-pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, selected: Option<&yaac_core::ThreadKey>, actions: &mut Vec<Action>) {
+#[allow(clippy::too_many_arguments, reason = "a row is drawn from all of these")]
+pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, rect: Rect, selected: Option<&yaac_core::ThreadKey>, now: i64, actions: &mut Vec<Action>) {
     let p = app.p;
     let row = &s.rows[r];
     let id = egui::Id::unique(("row", s.id.as_str(), row.key.to_string()));
     let resp = ui.interact(rect, id, Sense::click());
     let is_sel = selected == Some(&row.key) && app.client.state.selection == Selection::Thread(row.key.clone());
     let fill_rect = rect.shrink2(vec2(0.0, 1.0));
+    // While its menu is open the row keeps its hover colour (D108).
+    let menu_open = app.ui.menu == Some(Menu::Context(row.key.clone()));
     if is_sel {
         ui.painter().rect_filled(fill_rect, 5.0, p.selected);
-    } else if resp.hovered() {
+    } else if resp.hovered() || menu_open {
         ui.painter().rect_filled(fill_rect, 5.0, p.faint);
+    }
+    if row.display.unseen && !is_sel {
+        unseen_outline(ui, fill_rect, &p);
     }
     let cy = rect.top() + 14.0;
     icons::mark(ui.painter(), pos2(rect.left() + 13.0, cy), 15.0, row.display.mark, &p);
@@ -425,8 +578,9 @@ pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, r
     let rx = rect.right() - 8.0 - g.size().x;
     ui.painter().galley(pos2(rx, cy - g.size().y / 2.0), g, p.text2);
     if let Some(l2) = &row.line2 {
-        // Line 2: branch, then file counts in git colours, then commits ahead and behind; the
-        // workers sit at the right edge, under the time. Every count only when non-zero.
+        // Line 2: the harness logo, the branch, then file counts in git colours, then commits
+        // ahead and behind; the workers sit at the right edge, under the time. Every count
+        // only when non-zero. Narrow, the branch is ellipsised and every mark stays (D115).
         let y2 = rect.top() + 32.0;
         let mut right = rect.right() - 8.0;
         if l2.workers > 0 {
@@ -438,112 +592,69 @@ pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, r
             right -= 6.0;
         }
         let small = theme::ui(size::SMALL - 0.5);
-        let count = |n: u32| ui.fonts_mut(|f| f.layout_no_wrap(n.to_string(), small.clone(), p.text2)).size().x;
-        let mut tail = 0.0;
-        for (n, w) in [(l2.added, 14.0), (l2.modified, 14.0), (l2.deleted, 14.0), (l2.ahead, 13.0), (l2.behind, 13.0)] {
-            if n > 0 {
-                tail += w + count(n) + 6.0;
-            }
-        }
-        let mut x = title_x;
-        // The harness logo starts the line (alone when the folder is not in git).
-        crate::agents_ui::harness_mark(ui.painter(), pos2(x + 6.0, y2), 13.0, l2.kind.as_deref(), None, false, &p);
-        x += 17.0;
-        if !l2.branch.is_empty() {
-            icons::branch(ui.painter(), pos2(x + 5.0, y2), 12.0, p.text2);
-            x += 13.0;
-            let g = widgets::elided(ui, &l2.branch, &small, p.text2, (right - x - tail - 6.0).max(30.0));
-            let gw = g.size().x;
-            ui.painter().galley(pos2(x, y2 - g.size().y / 2.0), g, p.text2);
-            x += gw + 8.0;
-        }
-        let parts: [(u32, egui::Color32, u8); 5] =
-            [(l2.added, p.git_added, b'+'), (l2.modified, p.git_modified, b'.'), (l2.deleted, p.git_deleted, b'-'), (l2.ahead, p.text2, b'u'), (l2.behind, p.text2, b'd')];
-        for (n, col, kind) in parts {
-            if n == 0 || x > right - 10.0 {
-                continue;
-            }
-            match kind {
-                b'u' => icons::arrow_vertical(ui.painter(), pos2(x + 5.0, y2), 11.0, col, true),
-                b'd' => icons::arrow_vertical(ui.painter(), pos2(x + 5.0, y2), 11.0, col, false),
-                k => icons::git_square(ui.painter(), pos2(x + 5.0, y2), 12.0, col, k as char),
-            }
-            x += 12.0;
-            let g = ui.fonts_mut(|f| f.layout_no_wrap(n.to_string(), small.clone(), col));
-            let gw = g.size().x;
-            ui.painter().galley(pos2(x, y2 - g.size().y / 2.0), g, col);
-            x += gw + 7.0;
-        }
+        git_marks(ui, &p, l2, title_x, y2, right, &small);
     }
     let color = if s.kind == SectionKind::Muted { p.text2 } else { p.text };
     let forked = app.client.state.summary(&row.key).is_some_and(|s| s.forked_from.is_some());
-    let tg = widgets::elided(ui, &row.title, &theme::ui(size::UI), color, rx - title_x - 8.0 - if forked { 18.0 } else { 0.0 });
+    let tw_room = title_width(rx - title_x, &[if forked { 18.0 } else { 0.0 }], 8.0);
+    let tg = widgets::elided(ui, &row.title, &theme::ui(size::UI), color, tw_room.max(1.0));
     let tw = tg.size().x;
     ui.painter().galley(pos2(title_x, cy - tg.size().y / 2.0), tg, color);
     if forked {
         icons::fork(ui.painter(), pos2(title_x + tw + 10.0, cy), 12.0, p.text2);
     }
     if resp.clicked() {
-        actions.push(if s.kind == SectionKind::NeedsYou { Action::OpenRequest(row.key.clone()) } else { Action::Open(row.key.clone()) });
+        let needs = row.display.attention.is_some();
+        actions.push(if needs { Action::OpenRequest(row.key.clone()) } else { Action::Open(row.key.clone()) });
     }
-    if resp.secondary_clicked() {
-        app.ui.menu = Some(Menu::Context(row.key.clone()));
-    }
-    let mut open = app.ui.menu == Some(Menu::Context(row.key.clone())) && s.kind != SectionKind::NeedsYou;
-    if open {
-        crate::widgets::menu_popup(egui::Popup::from_response(&resp), &p)
-            .kind(egui::PopupKind::Menu)
-            .align(egui::RectAlign::RIGHT_START)
-            .open_bool(&mut open)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
-            .show(|ui| {
-                ui.set_min_width(140.0);
-                if s.kind == SectionKind::Archived {
-                    // An archived thread has no pin or mute; it can only come back.
-                    if ui.button("Unarchive").clicked() {
-                        actions.push(Action::Unarchive(row.key.clone()));
-                    }
-                } else {
-                    let pinned = app.client.state.is_pinned(&row.key);
-                    if ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
-                        actions.push(Action::SetPinned(row.key.clone(), !pinned));
-                    }
-                    if row.muted {
-                        if ui.button("Unmute").clicked() {
-                            actions.push(Action::SetMuted(row.key.clone(), false));
-                        }
-                        if ui.button("Change…").clicked() {
-                            actions.push(Action::OpenMute(row.key.clone(), true));
-                        }
-                    } else if ui.button("Mute…").clicked() {
-                        actions.push(Action::OpenMute(row.key.clone(), false));
-                    }
-                    if row.dismissed {
-                        if ui.button("Show again").clicked() {
-                            actions.push(Action::Dismiss(row.key.clone(), false));
-                        }
-                    } else if app.client.state.project_of(&row.key).is_none() && ui.button("Dismiss").clicked() {
-                        actions.push(Action::Dismiss(row.key.clone(), true));
-                    }
-                    if ui.button("Archive").clicked() {
-                        actions.push(Action::Archive(row.key.clone()));
-                    }
-                }
-                if ui.button("Rename").clicked() {
-                    app.ui.rename = Some((row.key.clone(), row.title.clone()));
-                }
-                if ui.button("Fork").clicked() {
-                    actions.push(Action::OpenFork(row.key.clone()));
-                }
-                if ui.button("Copy ID").clicked() {
-                    // The harness's own id (what a terminal shows), else YAAC's address.
-                    let id = app.client.state.summary(&row.key).and_then(|s| s.native_id.clone()).unwrap_or_else(|| row.key.address().to_string());
-                    ui.ctx().copy_text(id);
-                }
-            });
-        if !open && app.ui.menu == Some(Menu::Context(row.key.clone())) {
-            app.ui.menu = None;
+    let key = row.key.clone();
+    row_menu(ui, app, &key, &resp, now, actions);
+}
+
+/// A row's git line from `x` to `right` (D115): the harness logo, the branch (ellipsised to
+/// the room left), then every non-zero count — which always keeps its place.
+pub(crate) fn git_marks(ui: &egui::Ui, p: &crate::theme::Palette, l2: &yaac_core::sidebar::Line2, x0: f32, y2: f32, right: f32, small: &egui::FontId) {
+    let count = |n: u32| ui.fonts_mut(|f| f.layout_no_wrap(n.to_string(), small.clone(), p.text2)).size().x;
+    let parts: [(u32, egui::Color32, u8, f32); 5] = [
+        (l2.added, p.git_added, b'+', 12.0),
+        (l2.modified, p.git_modified, b'.', 12.0),
+        (l2.deleted, p.git_deleted, b'-', 12.0),
+        (l2.ahead, p.text2, b'u', 12.0),
+        (l2.behind, p.text2, b'd', 12.0),
+    ];
+    let widths: Vec<f32> = parts.iter().filter(|q| q.0 > 0).map(|q| q.3 + count(q.0) + 7.0).collect();
+    let tail: f32 = widths.iter().sum();
+    let mut x = x0;
+    crate::agents_ui::harness_mark(ui.painter(), pos2(x + 6.0, y2), 13.0, l2.kind.as_deref(), None, false, p);
+    x += 17.0;
+    if !l2.branch.is_empty() {
+        let room = title_width(right - x, &[13.0, tail], 8.0);
+        if room > 12.0 {
+            icons::branch(ui.painter(), pos2(x + 5.0, y2), 12.0, p.text2);
+            x += 13.0;
+            let g = widgets::elided(ui, &l2.branch, small, p.text2, room);
+            let gw = g.size().x;
+            ui.painter().galley(pos2(x, y2 - g.size().y / 2.0), g, p.text2);
+            x += gw + 8.0;
         }
+    }
+    // The counts never give way: when the row is too narrow even for them, they keep the
+    // right end and the branch is what disappears.
+    x = x.min(right - tail).max(x0 + 17.0);
+    for (n, col, kind, w) in parts {
+        if n == 0 {
+            continue;
+        }
+        match kind {
+            b'u' => icons::arrow_vertical(ui.painter(), pos2(x + 5.0, y2), 11.0, col, true),
+            b'd' => icons::arrow_vertical(ui.painter(), pos2(x + 5.0, y2), 11.0, col, false),
+            k => icons::git_square(ui.painter(), pos2(x + 5.0, y2), 12.0, col, k as char),
+        }
+        x += w;
+        let g = ui.fonts_mut(|f| f.layout_no_wrap(n.to_string(), small.clone(), col));
+        let gw = g.size().x;
+        ui.painter().galley(pos2(x, y2 - g.size().y / 2.0), g, col);
+        x += gw + 7.0;
     }
 }
 

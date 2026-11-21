@@ -2,7 +2,8 @@
 //! the YAAC mark, expand, a new-thread button, back and forward side by side, then the list —
 //! each section's name written vertically (reading bottom to top; a pin icon for *Pinned*),
 //! one harness logo per thread with its state as a small badge on the logo's corner (the
-//! needs-you triangle in place of the badge when the thread needs the user), and a hairline
+//! red needs-you exclamation in place of the badge when the thread needs the user, a
+//! cornflower ring when its last turn ended unseen), and a hairline
 //! after each section's last thread — and Settings at the bottom. There is no *Needs you*
 //! section. The wheel scrolls it. Hovering a thread shows a card with everything its full row
 //! shows, with the agents card's no-flicker rule (`yaac_core::hover`).
@@ -20,8 +21,8 @@ use crate::theme::{self, size};
 const CELL: f32 = 32.0;
 const CARD_W: f32 = 300.0;
 
-/// Draw the strip in `side`. Returns the rectangle the Needs-you list (Ctrl+J) opens beside.
-pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, side: Rect, actions: &mut Vec<Action>) -> Rect {
+/// Draw the strip in `side`.
+pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, side: Rect, actions: &mut Vec<Action>) {
     let p = app.p;
     let cx = side.center().x;
     let button = |ui: &mut egui::Ui, y: f32, id: &str, tip: &str| {
@@ -52,14 +53,21 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(cx - 20.0, y), vec2(40.0, 24.0))).id_salt("strip-nav"), |ui| {
         crate::nav::buttons(ui, app, actions, true);
     });
-    y += 34.0;
+    y += 30.0;
+    // The Needs-you button (D117), under the history buttons, while some thread needs the user.
+    if !yaac_core::sidebar::needs_you(&app.client.state, map, now).is_empty() {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos2(cx - 20.0, y), vec2(44.0, 26.0))).id_salt("strip-needs"), |ui| {
+            ui.horizontal(|ui| crate::sidebar::needs_button(ui, app, map, now, actions));
+        });
+        y += 30.0;
+    }
+    y += 4.0;
     // The list, scrolled by the wheel.
     let footer = 40.0;
     let list = Rect::from_min_max(pos2(side.left(), y), pos2(side.right(), side.bottom() - footer));
     let open = Open { muted: app.ui.muted_open, archived: app.ui.archived_open };
-    let secs = sections(&app.client.state, map, app.ui.grouping, "", open, now, app.zone);
+    let secs = sections(&app.client.state, map, app.ui.grouping, app.ui.ordering, "", open, now, app.zone);
     let list_entries = entries(&secs);
-    let badge = Rect::from_center_size(pos2(cx, y + 14.0), vec2(CELL, 24.0));
     let mut hovered: Option<(yaac_core::ThreadKey, Rect)> = None;
     ui.scope_builder(egui::UiBuilder::new().max_rect(list).id_salt("strip-list"), |ui| {
         ui.set_clip_rect(list);
@@ -88,7 +96,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
                             app.ui.sidebar.toggle();
                         }
                     }
-                    StripEntry::Thread { key, mark, selected, needs_you } => {
+                    StripEntry::Thread { key, mark, selected, needs_you, unseen } => {
                         let (r, resp) = ui.allocate_exact_size(vec2(list.width(), CELL - 2.0), Sense::click());
                         let cell = Rect::from_center_size(r.center(), vec2(CELL, CELL - 4.0));
                         let under = if *selected {
@@ -107,8 +115,13 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
                         let c = cell.center() - vec2(1.5, 1.5);
                         crate::agents_ui::harness_mark(ui.painter(), c, 18.0, kind.as_deref(), name.as_deref(), false, &p);
                         let corner = c + vec2(7.5, 7.0);
+                        if *unseen {
+                            // The unseen ring around the logo (D114).
+                            ui.painter().circle_stroke(c, 12.0, egui::Stroke::new(1.5, p.unseen));
+                        }
                         if *needs_you {
-                            icons::warning(ui.painter(), corner, 11.0, p.needs, under);
+                            ui.painter().circle_filled(corner, 6.5, under);
+                            icons::exclaim(ui.painter(), corner, 11.5, p.failed, p.on_primary_for(p.failed));
                         } else {
                             ui.painter().circle_filled(corner, 5.5, under);
                             icons::mark(ui.painter(), corner, 9.5, *mark, &p);
@@ -135,8 +148,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     if resp.clicked() {
         actions.push(Action::Settings(true));
     }
-    hover_card(ui, app, &secs, hovered.as_ref(), actions);
-    badge
+    hover_card(ui, app, &secs, hovered.as_ref(), now, actions);
 }
 
 fn card_rect(icon: Rect) -> Rect {
@@ -145,7 +157,7 @@ fn card_rect(icon: Rect) -> Rect {
 
 /// The card beside a hovered icon: the thread's full row. Opens on the icon; stays while the
 /// pointer is over the card or the icon; closes a quarter of a second after leaving both.
-fn hover_card(ui: &mut egui::Ui, app: &mut YaacApp, secs: &[yaac_core::sidebar::Section], hovered: Option<&(yaac_core::ThreadKey, Rect)>, actions: &mut Vec<Action>) {
+fn hover_card(ui: &mut egui::Ui, app: &mut YaacApp, secs: &[yaac_core::sidebar::Section], hovered: Option<&(yaac_core::ThreadKey, Rect)>, now: i64, actions: &mut Vec<Action>) {
     let ctx = ui.ctx().clone();
     if let Some((k, r)) = hovered
         && app.ui.strip_hover_key.as_ref().is_none_or(|(hk, _)| hk != k)
@@ -179,7 +191,7 @@ fn hover_card(ui: &mut egui::Ui, app: &mut YaacApp, secs: &[yaac_core::sidebar::
             ui.set_width(CARD_W - 12.0);
             let h = if secs[si].rows[ri].line2.is_some() { 44.0 } else { 28.0 };
             let (r, _) = ui.allocate_exact_size(vec2(CARD_W - 12.0, h), Sense::hover());
-            crate::sidebar::row(ui, app, &secs[si], ri, r, None, actions);
+            crate::sidebar::row(ui, app, &secs[si], ri, r, None, now, actions);
         });
     });
 }

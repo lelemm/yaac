@@ -44,12 +44,92 @@ pub struct Open {
     pub archived: bool,
 }
 
+/// How rows are ordered inside each group (D116).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Order {
+    /// Most recent message first (the default).
+    #[default]
+    LastMessage,
+    /// By title, A to Z (case-insensitive, numbers in natural order).
+    AToZ,
+    /// By title, Z to A.
+    ZToA,
+}
+
+impl Order {
+    /// All, in menu order.
+    pub const ALL: [Order; 3] = [Order::LastMessage, Order::AToZ, Order::ZToA];
+
+    /// The menu label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Order::LastMessage => "Last message",
+            Order::AToZ => "A → Z",
+            Order::ZToA => "Z → A",
+        }
+    }
+}
+
+/// The ordering menu's choices (D116): a window preference, like the grouping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Ordering {
+    /// The order inside each group.
+    pub order: Order,
+    /// Keep unseen finished threads (D114) at the top of their group.
+    pub unseen_first: bool,
+    /// Keep threads that need the user at the top of their group.
+    pub needs_first: bool,
+}
+
+impl Default for Ordering {
+    fn default() -> Self {
+        Self { order: Order::LastMessage, unseen_first: true, needs_first: true }
+    }
+}
+
+/// Compares titles case-insensitively, runs of digits by their value ("t2" before "t10").
+pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering as O;
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return a.cmp(b),
+            (None, Some(_)) => return O::Less,
+            (Some(_), None) => return O::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let take = |it: &mut std::iter::Peekable<std::str::Chars<'_>>| {
+                    let mut n = String::new();
+                    while let Some(c) = it.peek().copied().filter(char::is_ascii_digit) {
+                        n.push(c);
+                        it.next();
+                    }
+                    n
+                };
+                let (m, n) = (take(&mut x), take(&mut y));
+                let (mt, nt) = (m.trim_start_matches('0'), n.trim_start_matches('0'));
+                let o = mt.len().cmp(&nt.len()).then_with(|| mt.cmp(nt));
+                if o != O::Equal {
+                    return o;
+                }
+            }
+            (Some(c), Some(d)) => {
+                let o = c.to_lowercase().cmp(d.to_lowercase());
+                if o != O::Equal {
+                    return o;
+                }
+                x.next();
+                y.next();
+            }
+        }
+    }
+}
+
 /// What the right end of a row shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RowRight {
     /// A relative time ("2h").
     Age(String),
-    /// The machine, in the Needs-you section; `muted` adds the word "muted".
+    /// The machine; `muted` adds the word "muted".
     Machine {
         /// Machine name.
         name: String,
@@ -111,8 +191,6 @@ pub struct ThreadRow {
 /// What a section is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SectionKind {
-    /// "Needs you · N", first.
-    NeedsYou,
     /// "Pinned · N", second.
     Pinned,
     /// A group of the chosen grouping.
@@ -233,6 +311,32 @@ fn branch_of(state: &AppState, key: &ThreadKey, s: &ThreadSummary) -> Option<Str
         .or_else(|| s.branch.clone())
 }
 
+/// A row's second line: the harness logo, then (in git) the branch and the counts.
+pub fn line2_of(state: &AppState, key: &ThreadKey) -> Option<Line2> {
+    let s = state.summary(key)?;
+    let kind = state.provider_of(key).map(|p| p.kind.to_string());
+    Some(match &s.git {
+        Some(g) => Line2 {
+            kind,
+            branch: g.branch.clone().or_else(|| s.branch.clone()).unwrap_or_default(),
+            added: g.added,
+            modified: g.modified,
+            deleted: g.deleted,
+            ahead: g.ahead,
+            behind: g.behind,
+            workers: s.children,
+        },
+        None => Line2 { kind, branch: String::new(), added: 0, modified: 0, deleted: 0, ahead: 0, behind: 0, workers: s.children },
+    })
+}
+
+/// D115: how a narrow row shares its width. Every mark keeps its room (`marks`, in points,
+/// plus `gaps`); the title — or the branch — gets what is left and is ellipsised, down to
+/// nothing.
+pub fn title_width(row_width: f32, marks: &[f32], gaps: f32) -> f32 {
+    (row_width - marks.iter().sum::<f32>() - gaps).max(0.0)
+}
+
 /// The section a thread is listed under, and its header.
 fn group_of(state: &AppState, key: &ThreadKey, s: &ThreadSummary, g: Grouping) -> (String, Option<Header>) {
     let mut id = String::from("g");
@@ -286,7 +390,8 @@ type Group = (Option<Header>, Vec<ThreadKey>);
 
 /// The whole list. `filter` matches title and preview, case-insensitively; `open` expands
 /// the Muted and Archived sections. Times are in the host's `zone`.
-pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, filter: &str, open: Open, now: i64, zone: time::Zone) -> Vec<Section> {
+#[allow(clippy::too_many_arguments, reason = "the sidebar is a function of all of these")]
+pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, ordering: Ordering, filter: &str, open: Open, now: i64, zone: time::Zone) -> Vec<Section> {
     let needle = filter.trim().to_lowercase();
     let selected = state.selected_thread();
     let text_matches = |s: &ThreadSummary| needle.is_empty() || s.title.to_lowercase().contains(&needle) || s.preview.to_lowercase().contains(&needle);
@@ -296,28 +401,9 @@ pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, filter
     };
     let row = |key: &ThreadKey, right: RowRight, two_lines: bool| -> ThreadRow {
         let s = state.summary(key);
-        // Every row outside Needs you, Muted and Archived has a second line: the harness logo,
-        // then (in git) the branch and the counts.
-        let line2 = if two_lines {
-            s.map(|s| {
-                let kind = state.provider_of(key).map(|p| p.kind.to_string());
-                match &s.git {
-                    Some(g) => Line2 {
-                        kind,
-                        branch: g.branch.clone().or_else(|| s.branch.clone()).unwrap_or_default(),
-                        added: g.added,
-                        modified: g.modified,
-                        deleted: g.deleted,
-                        ahead: g.ahead,
-                        behind: g.behind,
-                        workers: s.children,
-                    },
-                    None => Line2 { kind, branch: String::new(), added: 0, modified: 0, deleted: 0, ahead: 0, behind: 0, workers: s.children },
-                }
-            })
-        } else {
-            None
-        };
+        // Every row outside Muted and Archived has a second line: the harness logo, then (in
+        // git) the branch and the counts.
+        let line2 = if two_lines { line2_of(state, key) } else { None };
         ThreadRow {
             key: key.clone(),
             title: s.map(|s| s.title.clone()).unwrap_or_default(),
@@ -342,25 +428,9 @@ pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, filter
 
     let mut out = Vec::new();
 
-    // Needs you: one-line rows, the machine on the right.
-    let needs: Vec<NeedsYouEntry> =
-        needs_you(state, map, now).into_iter().filter(|e| state.summary(&e.key).is_some_and(&text_matches)).collect();
-    if !needs.is_empty() {
-        let rows: Vec<ThreadRow> = needs
-            .iter()
-            .map(|e| row(&e.key, RowRight::Machine { name: e.target_name.clone(), muted: e.muted }, false))
-            .collect();
-        out.push(Section {
-            id: "needs".into(),
-            kind: SectionKind::NeedsYou,
-            header: Some(simple_header(format!("Needs you · {}", rows.len()))),
-            collapsed: false,
-            count: rows.len(),
-            rows,
-        });
-    }
-
-    // Pinned, then groups, then muted.
+    // Pinned, then groups, then muted. There is no Needs-you section (D116): a thread that
+    // needs the user floats to the top of its own group, and the title row's button (D117)
+    // goes to it.
     let mut pinned: Vec<ThreadKey> = Vec::new();
     let mut groups: BTreeMap<String, Group> = BTreeMap::new();
     let mut muted: Vec<ThreadKey> = Vec::new();
@@ -373,14 +443,13 @@ pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, filter
             }
             continue;
         }
-        if !matches(key, s) {
+        if !matches(key, s) && !(map.of(key).is_some() && text_matches(s)) {
             continue;
         }
-        if state.is_muted(key, now) {
-            // A blocked muted thread is listed under Needs you only.
-            if map.of(key).is_none() {
-                muted.push(key.clone());
-            }
+        // A blocked thread is never hidden: a muted (or dismissed) one that needs the user is
+        // listed in its group until answered.
+        if state.is_muted(key, now) && map.of(key).is_none() {
+            muted.push(key.clone());
             continue;
         }
         if state.is_pinned(key) {
@@ -391,8 +460,30 @@ pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, filter
         groups.entry(id).or_insert_with(|| (header, Vec::new())).1.push(key.clone());
     }
     let newest_first = |v: &mut Vec<ThreadKey>| v.sort_by(|a, b| updated(state, b).cmp(&updated(state, a)).then_with(|| a.cmp(b)));
+    // The chosen order, with the floated threads on top: needs you, then unseen (D116).
+    let ordered = |v: &mut Vec<ThreadKey>| {
+        let title = |k: &ThreadKey| state.summary(k).map(|s| s.title.as_str()).unwrap_or("");
+        let float = |k: &ThreadKey| {
+            let d = display(state, map, k);
+            if ordering.needs_first && d.attention.is_some() {
+                0
+            } else if ordering.unseen_first && d.unseen {
+                1
+            } else {
+                2
+            }
+        };
+        v.sort_by(|a, b| {
+            float(a).cmp(&float(b)).then_with(|| match ordering.order {
+                Order::LastMessage => updated(state, b).cmp(&updated(state, a)),
+                Order::AToZ => natural_cmp(title(a), title(b)),
+                Order::ZToA => natural_cmp(title(b), title(a)),
+            })
+            .then_with(|| a.cmp(b))
+        });
+    };
     if !pinned.is_empty() {
-        newest_first(&mut pinned);
+        ordered(&mut pinned);
         let rows: Vec<ThreadRow> = pinned.iter().map(|k| row(k, age(k), true)).collect();
         out.push(Section {
             id: "pinned".into(),
@@ -404,15 +495,11 @@ pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, filter
         });
     }
     let mut groups: Vec<(String, Group)> = groups.into_iter().collect();
-    for (_, (_, keys)) in &mut groups {
-        newest_first(keys);
-    }
-    groups.sort_by(|a, b| {
-        let la = a.1.1.first().map_or(0, |k| updated(state, k));
-        let lb = b.1.1.first().map_or(0, |k| updated(state, k));
-        lb.cmp(&la).then_with(|| a.0.cmp(&b.0))
-    });
-    for (id, (header, keys)) in groups {
+    // Groups follow their most recent thread, whatever the order inside them.
+    let latest = |keys: &[ThreadKey]| keys.iter().map(|k| updated(state, k)).max().unwrap_or(0);
+    groups.sort_by(|a, b| latest(&b.1.1).cmp(&latest(&a.1.1)).then_with(|| a.0.cmp(&b.0)));
+    for (id, (header, mut keys)) in groups {
+        ordered(&mut keys);
         let rows: Vec<ThreadRow> = keys.iter().map(|k| row(k, age(k), true)).collect();
         out.push(Section { id, kind: SectionKind::Group, header, collapsed: false, count: rows.len(), rows });
     }
@@ -473,4 +560,57 @@ pub fn hub_footer(state: &AppState) -> HubFooter {
     let enabled = state.targets.iter().filter(|t| t.entry.enabled).count();
     let up = state.targets.iter().filter(|t| t.entry.enabled && t.connected()).count();
     HubFooter { reachable: state.hub.attached, up, down: enabled - up }
+}
+
+/// Rows must not jump under the pointer (D116): while the user is pointing into the list (or
+/// has a row's menu open), a reorder is held back — each section keeps the order it was last
+/// shown in, threads new to it go at its end, threads gone from it go — and the chosen order
+/// returns once the pointer leaves the list.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Steady {
+    shown: BTreeMap<String, Vec<ThreadKey>>,
+}
+
+impl Steady {
+    /// The sections to draw: `fresh` as computed, or, while `hold`, in the order last shown.
+    pub fn apply(&mut self, mut fresh: Vec<Section>, hold: bool) -> Vec<Section> {
+        if hold {
+            for s in &mut fresh {
+                let Some(before) = self.shown.get(&s.id) else { continue };
+                let rank = |k: &ThreadKey| before.iter().position(|b| b == k).unwrap_or(usize::MAX);
+                // A stable sort: new threads keep their fresh order among themselves, at the end.
+                s.rows.sort_by_key(|r| rank(&r.key));
+            }
+        }
+        self.shown = fresh.iter().map(|s| (s.id.clone(), s.rows.iter().map(|r| r.key.clone()).collect())).collect();
+        fresh
+    }
+}
+
+/// The Needs-you button (D117): each press opens the next thread that needs the user,
+/// cycling through those still unresolved, most recent first. A resolved thread leaves the
+/// cycle; with none left the button is not drawn.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NeedsCycle {
+    last: Option<ThreadKey>,
+}
+
+impl NeedsCycle {
+    /// The thread to open now, given the threads that need the user (as [`needs_you`] lists
+    /// them); `None` when there are none.
+    pub fn next(&mut self, waiting: &[NeedsYouEntry]) -> Option<ThreadKey> {
+        if waiting.is_empty() {
+            self.last = None;
+            return None;
+        }
+        let at = self.last.as_ref().and_then(|l| waiting.iter().position(|e| &e.key == l)).map_or(0, |i| (i + 1) % waiting.len());
+        let key = waiting[at].key.clone();
+        self.last = Some(key.clone());
+        Some(key)
+    }
+
+    /// The button's tooltip: "Next thread that needs you (N)".
+    pub fn tooltip(count: usize) -> String {
+        format!("Next thread that needs you ({count})")
+    }
 }

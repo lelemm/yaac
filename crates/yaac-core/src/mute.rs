@@ -71,7 +71,31 @@ pub struct MuteDialog {
     pub time: String,
     /// The month the date picker shows (year, month).
     pub month: (i64, u32),
+    /// "Until": the date as typed in its field ("2026-11-21"); the calendar writes it too.
+    pub date_text: String,
+    /// The calendar dropdown under the date field is open (D112).
+    pub calendar_open: bool,
 }
+
+/// A date as the field shows it.
+pub fn date_label((y, m, d): (i64, u32, u32)) -> String {
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// A typed date ("2026-11-21", also with `/` or `.`), if it is a real day.
+pub fn parse_date(text: &str) -> Option<(i64, u32, u32)> {
+    let mut it = text.trim().split(['-', '/', '.']).map(str::trim);
+    let y = it.next()?.parse::<i64>().ok()?;
+    let m = it.next()?.parse::<u32>().ok()?;
+    let d = it.next()?.parse::<u32>().ok()?;
+    if it.next().is_some() || !(1..=12).contains(&m) || d == 0 || d > time::days_in_month(y, m) {
+        return None;
+    }
+    Some((y, m, d))
+}
+
+/// The calendar always has this many week rows, so it never changes size (D112).
+pub const WEEKS: usize = 6;
 
 /// What the dialog would do, or why it cannot.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,6 +120,8 @@ impl MuteDialog {
             date: (later.year, later.month, later.day),
             time: format!("{:02}:00", later.hour),
             month: (later.year, later.month),
+            date_text: date_label((later.year, later.month, later.day)),
+            calendar_open: false,
         }
     }
 
@@ -108,8 +134,42 @@ impl MuteDialog {
             d.date = (l.year, l.month, l.day);
             d.time = format!("{:02}:{:02}", l.hour, l.minute);
             d.month = (l.year, l.month);
+            d.date_text = date_label(d.date);
         }
         d
+    }
+
+    /// The date field was edited: a real day becomes the date (and the calendar's month).
+    pub fn date_typed(&mut self) {
+        self.choice = MuteChoice::Until;
+        if let Some(date) = parse_date(&self.date_text) {
+            self.date = date;
+            self.month = (date.0, date.1);
+        }
+    }
+
+    /// A day picked in the calendar: it becomes the date, the field shows it, and the
+    /// dropdown closes.
+    pub fn pick_day(&mut self, day: u32) {
+        self.date = (self.month.0, self.month.1, day);
+        self.date_text = date_label(self.date);
+        self.choice = MuteChoice::Until;
+        self.calendar_open = false;
+    }
+
+    /// The calendar's cells: always [`WEEKS`] rows of seven (Monday first), `None` outside
+    /// the shown month.
+    pub fn month_cells(&self) -> [[Option<u32>; 7]; WEEKS] {
+        let first = time::first_weekday(self.month.0, self.month.1);
+        let days = time::days_in_month(self.month.0, self.month.1);
+        let mut out = [[None; 7]; WEEKS];
+        for (i, cell) in out.iter_mut().flatten().enumerate() {
+            let n = i64::try_from(i).unwrap_or(0) - i64::from(first) + 1;
+            if n >= 1 && n <= i64::from(days) {
+                *cell = u32::try_from(n).ok();
+            }
+        }
+        out
     }
 
     fn parse_time(&self) -> Option<(u32, u32)> {
@@ -127,6 +187,9 @@ impl MuteDialog {
                 _ => MuteOutcome::Unavailable("Enter a number above zero".into()),
             },
             MuteChoice::Until => {
+                if parse_date(&self.date_text) != Some(self.date) {
+                    return MuteOutcome::Unavailable("Enter a date like 2026-11-21".into());
+                }
                 let Some((h, m)) = self.parse_time() else {
                     return MuteOutcome::Unavailable("Enter a time like 14:30".into());
                 };
@@ -204,11 +267,13 @@ mod tests {
             ("until tomorrow 09:00", with(&|d| {
                 d.choice = MuteChoice::Until;
                 d.date = (2026, 11, 21);
+                d.date_text = "2026-11-21".into();
                 d.time = "09:00".into();
             })),
             ("until earlier today", with(&|d| {
                 d.choice = MuteChoice::Until;
                 d.date = (2026, 11, 20);
+                d.date_text = "2026-11-20".into();
                 d.time = "10:59".into();
             })),
             ("until a bad time", with(&|d| {
@@ -247,6 +312,36 @@ mod tests {
         // The same instant in UTC is another day and time.
         let utc = MuteDialog::prefill(key(), "x", Some(until), now, Zone::UTC);
         assert_eq!((utc.date, utc.time.as_str()), ((2026, 11, 21), "03:30"));
+    }
+
+    #[test]
+    fn the_calendar_always_has_six_rows_and_the_field_follows_it() {
+        let zone = Zone::UTC;
+        let now = time::from_local(2026, 11, 20, 12, 0, zone);
+        let mut d = MuteDialog::new(key(), "x", now, zone);
+        // Months that need four, five and six rows: always six, every day once.
+        for (y, m) in [(2027, 2), (2026, 11), (2026, 8), (2021, 2), (2026, 3)] {
+            d.month = (y, m);
+            let cells = d.month_cells();
+            assert_eq!(cells.len(), WEEKS);
+            let days: Vec<u32> = cells.iter().flatten().flatten().copied().collect();
+            assert_eq!(days, (1..=time::days_in_month(y, m)).collect::<Vec<_>>(), "{y}-{m}");
+        }
+        // February 2021 starts on a Monday and fits four rows: the last two are blank.
+        d.month = (2021, 2);
+        assert!(d.month_cells()[4].iter().chain(&d.month_cells()[5]).all(Option::is_none));
+        // Picking a day fills the field and closes the dropdown; typing a date moves it.
+        d.month = (2026, 12);
+        d.calendar_open = true;
+        d.pick_day(24);
+        assert_eq!((d.date, d.date_text.as_str(), d.calendar_open), ((2026, 12, 24), "2026-12-24", false));
+        d.date_text = "2027-01-05".into();
+        d.date_typed();
+        assert_eq!((d.date, d.month), ((2027, 1, 5), (2027, 1)));
+        d.date_text = "2027-02-30".into();
+        d.date_typed();
+        assert_eq!(d.outcome_in(now, zone), MuteOutcome::Unavailable("Enter a date like 2026-11-21".into()));
+        assert_eq!(parse_date("2026/11/21"), Some((2026, 11, 21)));
     }
 
     #[test]

@@ -40,10 +40,16 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     // The window's top row is its title bar (D104): the sidebar's and the thread's first rows
     // sit in it. Only the docked agents panel starts below it (the window buttons are above).
     let below = |r: egui::Rect| egui::Rect::from_min_max(egui::pos2(r.left(), r.top() + crate::titlebar::HEIGHT), r.max);
-    let mut badge = None;
     app.ui.threads_overlay = false;
+    // What this window shows, for the hub's unseen mark (D114): the open thread, while the
+    // thread view is on screen.
+    let showing: Vec<yaac_core::ThreadKey> = match &app.client.state.selection {
+        Selection::Thread(k) if !app.ui.settings => vec![k.clone()],
+        _ => Vec::new(),
+    };
+    app.client.set_showing(showing);
     if strip {
-        badge = Some(crate::strip::show(ui, app, map, now, side, actions));
+        crate::strip::show(ui, app, map, now, side, actions);
     } else {
         ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_max(side.min + vec2(12.0, 7.0), side.max - vec2(12.0, 10.0))).id_salt("sidebar"), |ui| {
             ui.set_clip_rect(side);
@@ -54,7 +60,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         ui.painter().rect_filled(right, 0.0, p.panel);
         ui.scope_builder(egui::UiBuilder::new().max_rect(below(right).shrink2(vec2(14.0, 12.0))).id_salt("agents-docked"), |ui| {
             ui.set_clip_rect(right);
-            crate::agents_ui::docked(ui, &p, panel, actions);
+            crate::agents_ui::docked(ui, app, panel, actions);
         });
     }
     ui.scope_builder(egui::UiBuilder::new().max_rect(center).id_salt("center"), |ui| {
@@ -93,13 +99,12 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         crate::agents_ui::floating(ui.ctx(), app, center, panel, actions);
     }
 
-    if app.ui.needs_popup {
-        needs_popup(ui.ctx(), app, map, badge, actions);
-    }
     wsl_notification(ui.ctx(), app, actions);
     rename_dialog(ui.ctx(), app, actions);
     create_project_dialog(ui.ctx(), app, actions);
     crate::dialogs::fork(ui.ctx(), app, actions);
+    crate::dialogs::delete(ui.ctx(), app, actions);
+    crate::dialogs::archive(ui.ctx(), app, actions);
 }
 
 
@@ -274,54 +279,6 @@ fn rename_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Actio
     if keep {
         app.ui.rename = Some((key, title));
     }
-}
-
-/// Ctrl+J: the Needs-you list from anywhere. ↑ ↓ to move, ⏎ to open (and focus the card).
-fn needs_popup(ctx: &egui::Context, app: &mut YaacApp, map: &AttentionMap, badge: Option<egui::Rect>, actions: &mut Vec<Action>) {
-    let p = app.p;
-    let list = yaac_core::sidebar::needs_you(&app.client.state, map, app.now());
-    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
-        app.ui.needs_sel = (app.ui.needs_sel + 1).min(list.len().saturating_sub(1));
-    }
-    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)) {
-        app.ui.needs_sel = app.ui.needs_sel.saturating_sub(1);
-    }
-    let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-    let area = egui::Area::new(egui::Id::unique("needs-popup")).order(egui::Order::Foreground);
-    // Attached to the rail's badge in a narrow window; centred near the top otherwise.
-    let area = match badge {
-        Some(b) => area.fixed_pos(egui::pos2(b.right() + 8.0, b.top())),
-        None => area.anchor(Align2::CENTER_TOP, vec2(0.0, 80.0)),
-    };
-    area.show(ctx, |ui| {
-        egui::Frame::popup(ui.style()).fill(p.raised).inner_margin(Margin::same(10)).show(ui, |ui| {
-            ui.set_width(380.0);
-            ui.label(egui::RichText::new(format!("Needs you · {}", list.len())).font(theme::bold(size::UI)));
-            ui.add_space(6.0);
-            if list.is_empty() {
-                ui.label(widgets::secondary("Nothing is waiting for you.", &p));
-            }
-            for (i, e) in list.iter().enumerate() {
-                let sel = i == app.ui.needs_sel;
-                let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), egui::Sense::click());
-                if sel || resp.hovered() {
-                    ui.painter().rect_filled(rect, 5.0, p.selected);
-                }
-                crate::icons::mark(ui.painter(), egui::pos2(rect.left() + 14.0, rect.center().y), 14.0, yaac_core::attention::Mark::NeedsYou, &p);
-                let g = ui.fonts_mut(|f| f.layout_no_wrap(e.title.clone(), theme::ui(size::UI), p.text));
-                ui.painter().galley(egui::pos2(rect.left() + 30.0, rect.center().y - g.size().y / 2.0), g, p.text);
-                let right = format!("{} · {}{}", e.attention.word(), e.target_name, if e.muted { " · muted" } else { "" });
-                let g = ui.fonts_mut(|f| f.layout_no_wrap(right, theme::ui(size::SMALL), p.text2));
-                ui.painter().galley(egui::pos2(rect.right() - 8.0 - g.size().x, rect.center().y - g.size().y / 2.0), g, p.text2);
-                if resp.clicked() || (sel && enter) {
-                    actions.push(Action::OpenRequest(e.key.clone()));
-                    app.ui.needs_popup = false;
-                }
-            }
-            ui.add_space(6.0);
-            ui.label(widgets::secondary("Up and Down to move · Enter to open · Ctrl+J", &p));
-        });
-    });
 }
 
 /// A WSL distro that stopped on its own raises a notification; YAAC does not start it.

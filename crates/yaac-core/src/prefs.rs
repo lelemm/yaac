@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 
-use crate::sidebar::Grouping;
+use crate::sidebar::{Grouping, Order, Ordering};
 
 /// Theme preference.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -34,6 +34,8 @@ pub enum SendKey {
 pub struct UiPrefs {
     /// The sidebar grouping checkboxes and "Show dismissed".
     pub grouping: Grouping,
+    /// The sidebar's ordering inside each group (D116).
+    pub ordering: Ordering,
     /// The agents panel is docked.
     pub docked: bool,
     /// Theme.
@@ -65,7 +67,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { grouping: Grouping::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH }
+        Self { grouping: Grouping::default(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH }
     }
 }
 
@@ -87,8 +89,10 @@ pub mod keys {
     pub const SIDEBAR: &str = "sidebar";
     /// The docked agents panel's width.
     pub const AGENTS_WIDTH: &str = "agentsPanelWidth";
+    /// The sidebar's ordering (D116).
+    pub const ORDERING: &str = "ordering";
     /// Every key.
-    pub const ALL: [&str; 8] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH];
+    pub const ALL: [&str; 9] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING];
 }
 
 impl UiPrefs {
@@ -100,6 +104,15 @@ impl UiPrefs {
                 "project": self.grouping.project,
                 "worktree": self.grouping.worktree,
                 "showDismissed": self.grouping.show_dismissed,
+            }),
+            keys::ORDERING => json!({
+                "order": match self.ordering.order {
+                    Order::LastMessage => "lastMessage",
+                    Order::AToZ => "aToZ",
+                    Order::ZToA => "zToA",
+                },
+                "unseenFirst": self.ordering.unseen_first,
+                "needsFirst": self.ordering.needs_first,
             }),
             keys::AGENTS_DOCKED => json!(self.docked),
             keys::THEME => json!(match self.theme {
@@ -129,6 +142,17 @@ impl UiPrefs {
                 g.project = b("project", g.project);
                 g.worktree = b("worktree", g.worktree);
                 g.show_dismissed = b("showDismissed", g.show_dismissed);
+            }
+            keys::ORDERING => {
+                let o = &mut self.ordering;
+                o.order = match v.get("order").and_then(Value::as_str) {
+                    Some("lastMessage") => Order::LastMessage,
+                    Some("aToZ") => Order::AToZ,
+                    Some("zToA") => Order::ZToA,
+                    _ => o.order,
+                };
+                o.unseen_first = b("unseenFirst", o.unseen_first);
+                o.needs_first = b("needsFirst", o.needs_first);
             }
             keys::AGENTS_DOCKED => self.docked = v.as_bool().unwrap_or(self.docked),
             keys::THEME => {

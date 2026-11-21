@@ -86,6 +86,66 @@ pub fn pill_icons(panel: &AgentsPanel) -> (Vec<&AgentRow>, usize) {
     }
 }
 
+/// How a related agent stands to the open thread (D118): the three groups every state of
+/// the panel shows, in this order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Relation {
+    /// The agent that started this thread.
+    SpawnedBy,
+    /// Workers this thread started (at any depth).
+    Workers,
+    /// Agents it is in contact with.
+    InContact,
+}
+
+impl Relation {
+    /// The heading in the card and the docked panel.
+    pub fn heading(self) -> &'static str {
+        match self {
+            Relation::SpawnedBy => "Spawned by",
+            Relation::Workers => "Workers",
+            Relation::InContact => "In contact with",
+        }
+    }
+}
+
+/// One relation's rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Cluster<'a> {
+    /// Which relation.
+    pub relation: Relation,
+    /// Its rows, in order.
+    pub rows: Vec<&'a AgentRow>,
+    /// Rows the pill had no room for (shown as "+N" after the cluster).
+    pub more: usize,
+}
+
+/// The panel's rows grouped by relation (D118) — the one grouping the card, the docked
+/// panel and the pill all draw. Empty groups are left out. With `cap`, at most that many
+/// icons are kept in all (the pill), each cluster keeping at least one.
+pub fn clusters(panel: &AgentsPanel, cap: Option<usize>) -> Vec<Cluster<'_>> {
+    let parent: Vec<&AgentRow> = match &panel.spawned_by {
+        SpawnedBy::Agent(p) => vec![&**p],
+        SpawnedBy::You => Vec::new(),
+    };
+    let mut out: Vec<Cluster<'_>> = [(Relation::SpawnedBy, parent), (Relation::Workers, panel.workers.iter().collect()), (Relation::InContact, panel.contacts.iter().collect())]
+        .into_iter()
+        .filter(|(_, rows)| !rows.is_empty())
+        .map(|(relation, rows)| Cluster { relation, rows, more: 0 })
+        .collect();
+    if let Some(cap) = cap {
+        // Each icon takes a slot, and so does a cluster's "+N". Trim the largest cluster
+        // first, never below one icon.
+        let slots = |out: &[Cluster<'_>]| out.iter().map(|c| c.rows.len() + usize::from(c.more > 0)).sum::<usize>();
+        while slots(&out) > cap {
+            let Some(c) = out.iter_mut().filter(|c| c.rows.len() > 1).max_by_key(|c| c.rows.len()) else { break };
+            c.rows.pop();
+            c.more += 1;
+        }
+    }
+    out
+}
+
 /// One row of the panel (always a link when `key` is known).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentRow {
@@ -115,6 +175,8 @@ pub struct AgentRow {
     pub activity: String,
     /// Tree depth (workers of workers).
     pub depth: u8,
+    /// Its git line (branch and counts), as in the sidebar.
+    pub git: Option<crate::sidebar::Line2>,
 }
 
 /// Who started the thread.
@@ -195,6 +257,7 @@ pub fn row_for(state: &AppState, map: &AttentionMap, key: &ThreadKey, depth: u8)
         display: d,
         activity,
         depth,
+        git: crate::sidebar::line2_of(state, key),
     })
 }
 
@@ -217,9 +280,10 @@ fn row_for_peer(state: &AppState, map: &AttentionMap, peer: &MeshPeer) -> AgentR
         provider: peer.provider.clone(),
         model: peer.model.as_ref().map(ToString::to_string),
         target,
-        display: ThreadDisplay { mark, attention: None, read_only: false },
+        display: ThreadDisplay { mark, attention: None, read_only: false, unseen: false },
         activity: mark.word().to_owned(),
         depth: 0,
+        git: None,
     }
 }
 

@@ -40,6 +40,8 @@ use crate::theme::{self, Palette, ThemeChoice};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Menu {
     Grouping,
+    /// The sidebar's ordering (D116).
+    Ordering,
     Context(ThreadKey),
     TempProject(String),
     Project,
@@ -96,8 +98,18 @@ pub(crate) struct UiState {
     /// The agents card's open/close rule.
     pub hover: yaac_core::hover::HoverCard,
     pub menu: Option<Menu>,
-    pub needs_popup: bool,
-    pub needs_sel: usize,
+    /// The sidebar's ordering (D116).
+    pub ordering: yaac_core::sidebar::Ordering,
+    /// Holds a reorder back while the pointer is over the list (D116).
+    pub steady: yaac_core::sidebar::Steady,
+    /// The sidebar list's rectangle last frame (for the hold).
+    pub list_rect: Option<egui::Rect>,
+    /// The Needs-you button's cycle (D117).
+    pub needs_cycle: yaac_core::sidebar::NeedsCycle,
+    /// The Delete confirmation (D110).
+    pub delete: Option<yaac_core::thread_menu::DeleteDialog>,
+    /// The Archive confirmation (D111).
+    pub archive: Option<yaac_core::thread_menu::ArchiveDialog>,
     /// Focus this request card's first button on the next frame.
     pub focus_card: Option<ItemId>,
     /// Scroll the transcript to this item on the next frame.
@@ -166,8 +178,12 @@ impl UiState {
             panel: PanelMode::Pill,
             hover: yaac_core::hover::HoverCard::default(),
             menu: None,
-            needs_popup: false,
-            needs_sel: 0,
+            ordering: yaac_core::sidebar::Ordering::default(),
+            steady: yaac_core::sidebar::Steady::default(),
+            list_rect: None,
+            needs_cycle: yaac_core::sidebar::NeedsCycle::default(),
+            delete: None,
+            archive: None,
             focus_card: None,
             scroll_to: None,
             scroll_end: false,
@@ -213,6 +229,7 @@ impl UiState {
     pub(crate) fn prefs(&self) -> UiPrefs {
         UiPrefs {
             grouping: self.grouping,
+            ordering: self.ordering,
             docked: self.panel == PanelMode::Docked,
             theme: match self.theme {
                 ThemeChoice::System => ThemePref::System,
@@ -230,6 +247,7 @@ impl UiState {
     #[cfg_attr(not(feature = "hub"), allow(dead_code))]
     fn load_prefs(&mut self, p: &UiPrefs) {
         self.grouping = p.grouping;
+        self.ordering = p.ordering;
         self.panel = if p.docked { PanelMode::Docked } else { PanelMode::Pill };
         self.theme = match p.theme {
             ThemePref::System => ThemeChoice::System,
@@ -279,6 +297,14 @@ pub(crate) enum Action {
     /// Open the Mute dialog (`true`: "Change…", prefilled with the current mute).
     OpenMute(ThreadKey, bool),
     Unarchive(ThreadKey),
+    /// Ask before archiving (D111).
+    OpenArchive(ThreadKey),
+    /// Ask before deleting (D110).
+    OpenDelete(ThreadKey),
+    /// Delete; `true`: the harness's session too.
+    Delete(ThreadKey, bool),
+    /// The Needs-you button or Ctrl+J (D117): open the next thread that needs the user.
+    NeedsNext,
     Dismiss(ThreadKey, bool),
     SetPinned(ThreadKey, bool),
     CreateProject(CreateProject),
@@ -760,6 +786,25 @@ impl YaacApp {
                     self.ui.menu = None;
                 }
                 Action::Unarchive(k) => self.client.unarchive(&k),
+                Action::OpenArchive(k) => {
+                    self.ui.archive = yaac_core::thread_menu::ArchiveDialog::new(&self.client.state, &k);
+                    self.ui.menu = None;
+                }
+                Action::OpenDelete(k) => {
+                    self.ui.delete = yaac_core::thread_menu::DeleteDialog::new(&self.client.state, &k);
+                    self.ui.menu = None;
+                }
+                Action::Delete(k, also) => {
+                    self.client.delete(&k, also);
+                    self.ui.delete = None;
+                }
+                Action::NeedsNext => {
+                    let map = yaac_core::attention::AttentionMap::compute(&self.client.state);
+                    let list = yaac_core::sidebar::needs_you(&self.client.state, &map, self.now());
+                    if let Some(k) = self.ui.needs_cycle.next(&list) {
+                        self.apply(vec![Action::OpenRequest(k)]);
+                    }
+                }
                 Action::Dismiss(k, d) => self.client.set_dismissed(&k, d),
                 Action::SetPinned(k, v) => self.client.set_pinned(&k, v),
                 Action::CreateProject(cp) => {
@@ -767,7 +812,10 @@ impl YaacApp {
                     self.client.create_project(&cp.target, &cp.folder, &cp.name, cp.for_draft);
                 }
                 Action::DraftProject(d, p) => self.client.set_draft_project(d, &p),
-                Action::Archive(k) => self.client.archive(&k),
+                Action::Archive(k) => {
+                    self.client.archive(&k);
+                    self.ui.archive = None;
+                }
                 Action::Rename(k, t) => self.client.rename(&k, &t),
                 Action::SetModel(k, m) => {
                     self.client.state.next_settings.entry(k).or_default().model = Some(m);
@@ -1053,8 +1101,7 @@ impl YaacApp {
     pub(crate) fn keyboard(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let ctrl = |k: Key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, k));
         if ctrl(Key::J) {
-            self.ui.needs_popup = !self.ui.needs_popup;
-            self.ui.needs_sel = 0;
+            actions.push(Action::NeedsNext);
         }
         if ctrl(Key::N) {
             actions.push(Action::NewThread);
@@ -1089,9 +1136,6 @@ impl YaacApp {
         }
         if alt_right || extra2 {
             actions.push(Action::Nav(1));
-        }
-        if self.ui.needs_popup && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            self.ui.needs_popup = false;
         }
         if self.ui.menu.is_some() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             self.ui.menu = None;

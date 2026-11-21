@@ -157,6 +157,10 @@ pub struct ThreadDisplay {
     pub attention: Option<Attention>,
     /// Held by another program or client: read-only here.
     pub read_only: bool,
+    /// Its last turn ended while nobody looked (D114): the cornflower outline. Not drawn
+    /// while the thread needs the user, is paused, failed, or running — those marks already
+    /// say more, and win where both would be drawn.
+    pub unseen: bool,
 }
 
 /// The display of a thread.
@@ -168,7 +172,14 @@ pub fn display(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> ThreadD
         Some(_) => Mark::NeedsYou,
         None => base_mark(state, key),
     };
-    ThreadDisplay { mark, attention, read_only }
+    let unseen = state.is_unseen(key) && unseen_shows(mark);
+    ThreadDisplay { mark, attention, read_only, unseen }
+}
+
+/// Whether the unseen outline is drawn beside this mark (D114's precedence): needs you,
+/// paused, failed and running take precedence.
+pub fn unseen_shows(mark: Mark) -> bool {
+    !matches!(mark, Mark::NeedsYou | Mark::Paused | Mark::Failed | Mark::Running)
 }
 
 /// The mark from the thread's own state, without attention.

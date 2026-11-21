@@ -8,8 +8,8 @@
 //! The strip's content comes from the same sidebar model as the full list, in the same order
 //! (D103): each section's name drawn vertically (a pin icon for *Pinned*), then one harness
 //! logo per thread with its state as a badge, and a hairline before the next section. The
-//! *Needs you* section is left out: a thread that needs the user carries the triangle where
-//! it is listed.
+//! sidebar has no *Needs you* section (D116): a thread that needs the user carries the red
+//! exclamation (D113) where it is listed.
 
 use crate::attention::Mark;
 use crate::key::ThreadKey;
@@ -87,19 +87,20 @@ pub enum StripEntry {
         mark: Mark,
         /// It is open (drawn on the selected-row tint).
         selected: bool,
-        /// It needs the user: the triangle replaces the state badge.
+        /// It needs the user: the red exclamation replaces the state badge.
         needs_you: bool,
+        /// Its last turn ended unseen (D114): a cornflower ring around the icon.
+        unseen: bool,
     },
     /// A hairline between one section's last thread and the next section.
     Separator,
 }
 
-/// The strip's entries from the sidebar's sections, in the same order as the full list. The
-/// *Needs you* section is not part of the strip (its threads show the triangle where they
-/// are listed).
+/// The strip's entries from the sidebar's sections, in the same order as the full list (a
+/// thread that needs the user carries the red exclamation where it is listed).
 pub fn entries(sections: &[Section]) -> Vec<StripEntry> {
     let mut out = Vec::new();
-    for s in sections.iter().filter(|s| s.kind != SectionKind::NeedsYou) {
+    for s in sections {
         if matches!(out.last(), Some(StripEntry::Thread { .. })) {
             out.push(StripEntry::Separator);
         }
@@ -111,7 +112,7 @@ pub fn entries(sections: &[Section]) -> Vec<StripEntry> {
             out.push(StripEntry::Label { text, collapsed: s.collapsed, pinned: s.kind == SectionKind::Pinned });
         }
         for r in &s.rows {
-            out.push(StripEntry::Thread { key: r.key.clone(), mark: r.display.mark, selected: r.selected, needs_you: r.display.mark == Mark::NeedsYou });
+            out.push(StripEntry::Thread { key: r.key.clone(), mark: r.display.mark, selected: r.selected, needs_you: r.display.mark == Mark::NeedsYou, unseen: r.display.unseen });
         }
     }
     out

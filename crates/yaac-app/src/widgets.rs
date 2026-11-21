@@ -452,9 +452,7 @@ pub(crate) fn menu_popup<'a>(popup: egui::Popup<'a>, p: &Palette) -> egui::Popup
 pub(crate) enum ItemKind {
     /// An ordinary action.
     Normal,
-    /// One that destroys or stops something (Delete, Stop…): the failed colour. No menu has
-    /// such an item yet.
-    #[allow(dead_code, reason = "the shared menu style offers it; no menu has a destructive item yet")]
+    /// One that destroys or stops something (Delete, Stop…): the failed colour.
     Danger,
     /// Not available now: the unavailable colour, no hover.
     Disabled,

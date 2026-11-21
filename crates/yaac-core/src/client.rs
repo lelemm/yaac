@@ -44,6 +44,9 @@ pub mod hub_names {
     pub const VIEW_SET: &str = "hub/view/set";
     /// View preferences changed (another window, or a timed mute the hub cleared).
     pub const VIEW_CHANGED: &str = "hub/view/changed";
+    /// Which threads this window shows (D114): the hub marks a thread unseen when its turn
+    /// ends and no window shows it.
+    pub const VIEW_SHOWING: &str = "hub/view/showing";
     /// SEAM: bringing an archived thread back. `yaac-protocol` has `thread/archive` but no
     /// way back yet; the name is the one the daemon package is expected to add.
     pub const THREAD_UNARCHIVE: &str = "thread/unarchive";
@@ -80,6 +83,8 @@ enum Call {
     TurnStart { key: ThreadKey, draft: Draft },
     ThreadStart { draft: NewThreadDraft },
     Fork { target: TargetId },
+    /// `thread/delete`.
+    Delete(ThreadKey),
     ForkPreview { key: ThreadKey, instance: InstanceId },
     InstanceList(TargetId),
     InstanceChanged(TargetId),
@@ -135,6 +140,9 @@ pub struct Client {
     /// Upload notifications for handles not known yet (their `hub/upload/start` answer has
     /// not arrived), oldest first, bounded.
     orphans: std::collections::VecDeque<(String, Value)>,
+    /// The threads last reported to the hub as shown (`hub/view/showing`, D114); `None`
+    /// until the first report after attaching.
+    showing: Option<Vec<ThreadKey>>,
 }
 
 impl std::fmt::Debug for Client {
@@ -158,6 +166,7 @@ impl Client {
             attach_ids: 0,
             dirty: std::collections::BTreeSet::new(),
             orphans: std::collections::VecDeque::new(),
+            showing: None,
         };
         c.state.client_id = Some(client_id);
         let params = json!({ "build": c.build });
@@ -251,6 +260,10 @@ impl Client {
                 self.state.hub.build = Some(hello.build);
                 self.request(hub_names::SETTINGS_GET, json!({}), Call::HubSettings);
                 self.request(hub_names::VIEW_GET, json!({}), Call::View);
+                // Tell the (new) hub what this window shows again.
+                if let Some(keys) = self.showing.take() {
+                    self.set_showing(keys);
+                }
                 self.request(crate::attachments::names::DRAFTS_LIST, json!({}), Call::DraftsList);
                 let ids: Vec<(TargetId, bool)> =
                     hello.targets.iter().map(|t| (t.id.clone(), t.state.status == attach::ConnectionStatus::Connected)).collect();
@@ -298,7 +311,10 @@ impl Client {
                 };
                 self.state.fs_listings.insert((target, path), state);
             }
-            Call::View => self.state.apply_view(&result),
+            Call::View => {
+                self.state.apply_view(&result);
+                self.clear_shown_unseen();
+            }
             Call::HubSettings => {
                 self.state.hub.always = result.get("settings").and_then(|s| s.get("always")).and_then(Value::as_bool);
             }
@@ -451,6 +467,7 @@ impl Client {
                     self.open(&key);
                 }
             }
+            Call::Delete(key) => self.deleted(&key),
             Call::Fork { target } => {
                 if let Some(thread_id) = result.get("threadId").and_then(Value::as_str) {
                     let key = ThreadKey::new(target, thread_id);
@@ -494,6 +511,13 @@ impl Client {
                     self.error(Some(key), format!("Not sent: {}", error.message));
                 }
             }
+            Call::Delete(key) => match error.code {
+                ErrorCode::OutcomeUnknown => {
+                    self.error(Some(key), "YAAC lost contact while deleting the thread. It may or may not be deleted; it will not be asked again. Check the list once the target answers.");
+                }
+                ErrorCode::ThreadNotFound => self.deleted(&key),
+                _ => self.error(Some(key), format!("Not deleted: {}", error.message)),
+            },
             Call::UploadStart { draft, id, attempt } => self.upload_failed(&draft, id, attempt, error),
             Call::BlobBegin { draft, id, .. } | Call::BlobAppend { draft, id } | Call::BlobEnd { draft, id } => {
                 self.upload_failed(&draft, id, u32::MAX, error);
@@ -562,7 +586,10 @@ impl Client {
                     self.routed(&t, m::PROJECT_LIST, json!({}), Call::Projects(t.clone()));
                 }
             }
-            hub_names::VIEW_CHANGED => self.state.apply_view(&params),
+            hub_names::VIEW_CHANGED => {
+                self.state.apply_view(&params);
+                self.clear_shown_unseen();
+            }
             hub_names::INDEX_CHANGED => {
                 if let Some(t) = params.get("target").and_then(Value::as_str).map(TargetId::new) {
                     self.sync(&t);
@@ -689,10 +716,56 @@ impl Client {
         self.routed(&target, m::MESH_BUDGET, params, Call::Budget);
     }
 
+    /// Which threads this window shows now (the open thread, when the thread view is on
+    /// screen). Reported to the hub when it changes (`hub/view/showing`), so a turn that ends
+    /// in a thread no window shows is marked unseen (D114); a shown thread's mark is cleared.
+    pub fn set_showing(&mut self, keys: Vec<ThreadKey>) {
+        if self.showing.as_ref() == Some(&keys) {
+            return;
+        }
+        let threads: Vec<Value> = keys.iter().map(|k| json!({ "target": k.target, "threadId": k.thread })).collect();
+        self.request(hub_names::VIEW_SHOWING, json!({ "threads": threads }), Call::Ignore);
+        self.showing = Some(keys);
+        self.clear_shown_unseen();
+    }
+
+    /// A thread on screen is seen: its unseen mark goes (here and in the hub).
+    fn clear_shown_unseen(&mut self) {
+        let shown: Vec<ThreadKey> = self.showing.iter().flatten().filter(|k| self.state.is_unseen(k)).cloned().collect();
+        for k in shown {
+            self.set_view(&k, crate::state::ViewPatch { unseen: Some(false), ..Default::default() });
+        }
+    }
+
+    /// Delete a thread (`thread/delete`, D110): YAAC's record always, the harness's session
+    /// too when `also_in_harness`. One operation id; an uncertain outcome is shown, never
+    /// re-sent. Once deleted, the thread leaves the list, the history, and the view
+    /// preferences.
+    pub fn delete(&mut self, key: &ThreadKey, also_in_harness: bool) {
+        let op = self.op_id();
+        let params = json!({ "opId": op, "threadId": key.thread, "alsoInHarness": also_in_harness });
+        self.routed(&key.target, m::THREAD_DELETE, params, Call::Delete(key.clone()));
+    }
+
+    fn deleted(&mut self, key: &ThreadKey) {
+        if self.state.view.get(key).is_some_and(|v| *v != crate::state::ViewPref::default()) {
+            let all_off = crate::state::ViewPatch { pinned: Some(false), muted: Some(false), muted_until: Some(None), dismissed: Some(false), unseen: Some(false) };
+            self.set_view(key, all_off);
+        }
+        self.state.view.remove(key);
+        if self.state.selection == Selection::Thread(key.clone()) {
+            self.state.selection = Selection::None;
+        }
+        self.state.remove_thread(key);
+    }
+
     /// Open a thread: select it, keep its transcript, subscribe if it is not loaded.
     pub fn open(&mut self, key: &ThreadKey) {
         self.state.selection = Selection::Thread(key.clone());
         self.state.clear_arrival(key);
+        if self.state.is_unseen(key) {
+            self.set_view(key, crate::state::ViewPatch { unseen: Some(false), ..Default::default() });
+        }
         let fresh = !self.state.transcripts.contains_key(key);
         if fresh {
             self.state.transcripts.insert(key.clone(), crate::transcript::Transcript::new());
@@ -869,6 +942,10 @@ impl Client {
         if let Some(d) = patch.dismissed {
             v.dismissed = d;
             params["dismissed"] = json!(d);
+        }
+        if let Some(u) = patch.unseen {
+            v.unseen = u;
+            params["unseen"] = json!(u);
         }
         self.request(hub_names::VIEW_SET, params, Call::Ignore);
     }

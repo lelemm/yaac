@@ -41,6 +41,9 @@ pub(crate) struct Palette {
     pub git_added: Color32,
     pub git_modified: Color32,
     pub git_deleted: Color32,
+    /// A finished turn nobody has looked at (D114): the one hue beside the failed red and
+    /// the git colours (an exception to D83). Drawn as an outline, never as text.
+    pub unseen: Color32,
     pub scrim: Color32,
     /// Fill of code blocks.
     pub code_bg: Color32,
@@ -75,6 +78,7 @@ impl Palette {
         git_added: hex(0x73C991),
         git_modified: hex(0xE2C08D),
         git_deleted: hex(0xF47C7C),
+        unseen: hex(0x6495ED),
         scrim: Color32::from_black_alpha(140),
         code_bg: hex(0x1E2128),
         user_bg: hex(0x1E2128),
@@ -101,17 +105,27 @@ impl Palette {
         git_added: hex(0x166F31),
         git_modified: hex(0x855D00),
         git_deleted: hex(0xC22E29),
+        unseen: hex(0x4A7FE0),
         scrim: Color32::from_black_alpha(89),
         code_bg: hex(0xF3F4F7),
         user_bg: hex(0xF3F4F7),
     };
+
+    /// The ink drawn on a filled mark of colour `fill` (the background tone, which reads on
+    /// every mark colour).
+    pub(crate) fn on_primary_for(&self, fill: Color32) -> Color32 {
+        let _ = fill;
+        if self.dark { self.bg } else { Color32::WHITE }
+    }
 
     /// A mark's colour.
     pub(crate) fn mark(&self, mark: yaac_core::attention::Mark) -> Color32 {
         use yaac_core::attention::Mark as M;
         match mark {
             M::Running => self.running,
-            M::NeedsYou | M::Paused => self.needs,
+            // The needs-you mark is the red exclamation (D113).
+            M::NeedsYou => self.failed,
+            M::Paused => self.needs,
             M::Failed => self.failed,
             M::Done => self.done,
             M::Waiting | M::Idle | M::Offline | M::Off => self.text2,
@@ -137,7 +151,7 @@ impl Palette {
         vec![
             self.bg, self.panel, self.raised, self.faint, self.border, self.text, self.text2, self.unavailable, self.primary,
             self.on_primary, self.selected, self.focus, self.running, self.needs, self.failed, self.done, self.git_added,
-            self.git_modified, self.git_deleted, self.code_bg, self.user_bg, self.text_selection(),
+            self.git_modified, self.git_deleted, self.unseen, self.code_bg, self.user_bg, self.text_selection(),
         ]
     }
 
@@ -342,6 +356,11 @@ mod tests {
             assert!(contrast(p.on_primary, p.primary) >= 4.5, "primary button label");
             assert!(contrast(p.on_primary, p.failed) >= 4.5 || contrast(Color32::WHITE, p.failed) >= 4.5, "danger button label");
             assert!(contrast(p.text, p.text_selection()) >= 4.5, "selected text");
+            // The unseen outline is a graphic, not text: 3:1 against every surface it is drawn on.
+            for (sname, s) in [("bg", p.bg), ("panel", p.panel), ("raised", p.raised), ("selected", p.selected), ("faint", p.faint)] {
+                let r = contrast(p.unseen, s);
+                assert!(r >= 3.0, "{} unseen on {sname}: {r:.2}", if p.dark { "dark" } else { "light" });
+            }
         }
     }
 
