@@ -92,7 +92,11 @@ Every text colour above measures **at least 4.5 : 1** against all three backgrou
 theme (window, panel, raised surface). The values were computed, not eyeballed; a token that
 drops below 4.5 : 1 is a bug. The **unseen** outline is a graphic, not text: it measures at
 least **3 : 1** against every surface it is drawn on (light `#4A7FE0`: 3.2 : 1 on the selected
-tint, 3.6 : 1 on the panel, 3.9 : 1 on white; dark `#6495ED`: 4.6 : 1 or more).
+tint, 3.6 : 1 on the panel, 3.9 : 1 on white; dark `#6495ED`: 4.6 : 1 or more). The **fast**
+yellow (D125: the fast-mode toggle when on, and the spinner of a turn running in fast mode) is
+a graphic too, measured at the 87% icon opacity it is drawn with: light `#9A7000` at least
+3.0 : 1 (3.0 on the selected tint, 3.3 on the panel, 3.55 on white; 3.65–4.5 at full opacity),
+dark `#F5C518` 6.7 : 1 or more.
 
 - **Anything the user must read is primary or secondary text** — including the *reason* a
   control is unavailable ("not signed in on local", "Native fork is only available within the
@@ -130,7 +134,12 @@ agents panel — the word is shown beside it.
 
 A finished turn nobody looked at (D114) is not a state: it is a **cornflower outline** around
 the row (sidebar, docked panel, the strip's hover card) and a **ring** around the agent's icon
-(pill, strip). It clears when the thread is opened. Needs you, paused, failed and running
+(pill, strip). It clears when the thread is opened.
+
+A turn running in **fast mode** (D125) keeps the running spinner, drawn in the **fast** yellow
+and turning once per 1.8 s instead of 2.5 s — in the sidebar, the strip, the agents panel, and
+the thread header. Whether a turn is fast comes from the thread's summary (`fast`), never from
+the window's own toggle. Needs you, paused, failed and running
 take precedence: while a thread shows one of those marks the outline is not drawn (the mark
 is kept and returns once the louder state has passed).
 
@@ -1197,3 +1206,12 @@ something that needs the user.*
 
 - The docked panel at 240 points: titles and branches are ellipsised; every state mark, the
   state word, the harness logo, the git counts and ahead / behind stay visible (D115).
+
+### 49 — Fast mode
+
+- The search-service worker (Claude · opus-5.5, a model that reports fast mode) is running in
+  fast mode (D125). Its spinner is yellow and a little quicker in the sidebar row and the
+  thread header; the orchestrator's spinner beside it keeps the neutral running colour.
+- Under the composer, after the effort selector, the lightning toggle is **on**: filled in the
+  fast yellow on the selected-row tint (an outline in the secondary colour when off), tooltip
+  "Fast mode". On a thread whose model has no fast mode the icon is not drawn at all.

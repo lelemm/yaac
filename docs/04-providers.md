@@ -214,6 +214,9 @@ pub enum Capability {
     Reasoning,           // the model has selectable effort levels
     ReasoningSummary,    // reasoning is visible to the user in some form
 
+    // ── Speed (model-level) ─────────────────────────────────────────────────
+    FastMode,            // the harness can run this model's turns in fast mode (D125)
+
     // ── Reporting ───────────────────────────────────────────────────────────
     TokenUsage,
     ContextUsage,        // how full the context window is
@@ -301,6 +304,29 @@ Things this gets right that a naive union of flags gets wrong:
 
 **The rule for UI code:** never branch on provider kind (`if kind == "codex"`). Branch on a
 capability. If a feature needs a distinction no capability expresses, add a capability.
+
+### Fast mode is a model capability
+
+**Decided (D125); the rules below are Proposed (P46–P48).** Fast mode runs a turn faster, at a
+higher cost. Whether a model has it is a **model-level capability**, `fastMode`, on its
+descriptor (`ModelInfo.capabilities`), as each provider reads it from its harness at runtime —
+never from a list in source. Unknown is not yes: a model whose harness says nothing is not
+offered fast mode. A thread's effective capabilities include `fastMode` while its model has it
+(`yaacd` adds it from the descriptor; providers only report it per model).
+
+Fast mode is a **setting of the thread**, kept by `yaacd` in the thread's record: `turn/start`
+and `thread/start` carry `fast` (absent: unchanged); it sticks for later turns, like `model`,
+and is reported as `ThreadSummary.fast` — which therefore also says the running turn was
+started in fast mode. `yaacd` resolves it for every turn it starts (a client's `fast`, else the
+thread's setting) and hands the provider `fast: true` only when the turn's model has
+`fastMode`; a turn on a model without it runs at standard speed and the setting goes off.
+`fast: true` for a model without it is refused (`invalid_params`). A queued message keeps its
+own `fast` and applies it when delivered.
+
+| Harness | What it reports per model | What `fast` becomes |
+| --- | --- | --- |
+| Codex | `Model.serviceTiers[]` (`{ id, name, description }`): the model has fast mode when a tier is named "Fast" (or has the id `fast` / `priority`); a listed but empty `serviceTiers` is `unsupported`; no field at all (older Codex) is `unknown` | `turn/start.serviceTierForTurn`: that tier's id when on, `"default"` when off — for the turn only, so the thread's own tier in Codex is never changed. Nothing is sent for a model without a fast tier. |
+| Claude Code | `supportsFastMode` on `supportedModels()` (absent: `unknown`) | Claude Code's `fastMode` setting in the query's flag layer: `settings: { fastMode: true }` when a query opens, `applyFlagSettings({ fastMode })` on a live query (re-opened with `resume` if refused). Setting it is also the Agent SDK's opt-in to fast mode. When the result reports `fast_mode_state` other than `on` for a turn asked to be fast, a notice in the transcript says so, with Claude Code's reason. |
 
 ## Models are never hardcoded
 

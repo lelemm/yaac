@@ -113,7 +113,7 @@ requests. They are items in the thread, answered with `request/respond`
 | Method / notification | Purpose |
 | --- | --- |
 | `thread/sync` | Incremental thread index ([below](#the-thread-index)). |
-| `thread/start` | Create a thread **and send its first message**, as one operation: instance, working directory, model, effort, mode, input. Returns the thread id and the first turn id. There is no separate "create empty thread" call: an abandoned draft should leave nothing behind, and one operation is one thing to make idempotent. |
+| `thread/start` | Create a thread **and send its first message**, as one operation: instance, working directory, model, effort, mode, `fast` (D125), input. Returns the thread id and the first turn id. There is no separate "create empty thread" call: an abandoned draft should leave nothing behind, and one operation is one thing to make idempotent. |
 | `thread/read` | A page of items, newest first, with the journal position the snapshot is valid at, and whether each attachment it mentions still exists on the target. |
 | `item/read` | A further byte range of one large item's output. |
 | `thread/forkPreview` | What a fork to a given destination would carry: mechanism, turn it cuts at, sizes, what is left out, and the destination account. For a handoff, the transcript's size and its first `maxPreviewBytes`, rendered from the harness's store exactly as the fork would; `unavailableReason` when it cannot fork (no completed turn yet, no history, destination not usable). Changes nothing. |
@@ -127,7 +127,7 @@ requests. They are items in the thread, answered with `request/respond`
 
 | Method | Purpose |
 | --- | --- |
-| `turn/start` | Send a user message to an existing thread: [input parts](#input-parts) plus optional overrides (`model`, `effort`, mode). Returns the turn id. Rejected with `thread_in_use` when the thread is being driven elsewhere. |
+| `turn/start` | Send a user message to an existing thread: [input parts](#input-parts) plus optional overrides (`model`, `effort`, mode, `fast`). `fast` (fast mode, D125, under the model's `fastMode`) sticks for later turns like `model`; `ThreadSummary.fast` reports the thread's setting, and so whether its running turn was started in fast mode ([04](04-providers.md#fast-mode-is-a-model-capability)). Returns the turn id. Rejected with `thread_in_use` when the thread is being driven elsewhere. |
 | `turn/interrupt` | Stop a turn. Takes the **turn id**, so a late Stop can never hit the next turn. |
 | `turn/steer` | Add input to the running turn. Takes the turn id it expects to be running. Gated by capability. |
 | `request/respond` | Answer a pending approval or question. |

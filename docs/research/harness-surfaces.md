@@ -328,3 +328,27 @@ source and its tests — they were not run by us. Spike S10 exists to confirm th
 | `turn/start` can take `input: []` with a `toolOutput` so that agent-originated input arrives in the tool role. | *Source.* `toolOutput` is present in the schema read here. |
 | `developerInstructions` persists in history once the first turn has run; it must be passed again on a cold resume, and is ignored when rejoining a loaded thread. `thread/inject_items` can add a developer message to an existing thread. | *Source.* `thread/inject_items` is in the method list read here. |
 | A thread with no subscribers can be unloaded once idle; a running turn survives an unsubscribe. | *Source* (upstream tests). |
+
+## Fast mode (checked 2026-11-21)
+
+Read from `codex app-server generate-ts` (CLI 0.170.0, against daemon 0.171.0) and the
+installed `@anthropic-ai/claude-agent-sdk` 0.3.329 (its bundled CLI and `claude` 2.1.330),
+then one real turn each (threads deleted afterwards).
+
+- **Codex.** `Model.serviceTiers[]` is `{ id, name, description }`; on this machine every listed
+  model has `{ id: "priority", name: "Fast", description: "1.5x speed…" / "2x speed, increased
+  usage" }`, one also `ultrafast` ("Ultrafast"). `additionalSpeedTiers` (`["fast"]`) is
+  deprecated in favour of `serviceTiers`; `defaultServiceTier` is the catalog default.
+  `turn/start` takes `serviceTier` ("this turn and subsequent turns") and `serviceTierForTurn`
+  ("only when this request starts a new turn. Use \"default\" for standard speed … Does not
+  change the thread's tier"); `thread/start` takes `serviceTier`; config has `service_tier`.
+  A real turn with `serviceTierForTurn: "priority"` on `gpt-6.2-sol` completed.
+- **Claude Code.** `ModelInfo.supportsFastMode?` from `supportedModels()` (here: `default`,
+  `opus`, `fable`, `claude-opus-5`, `claude-opus-4-8` say true; the others say nothing). The
+  switch is the settings key `fastMode` (flag layer: `Options.settings` or
+  `applyFlagSettings`). Without it in the flag layer the SDK reports
+  `fast_mode_disabled_reason: "sdk_opt_in_required"`. `system/init` and `result` carry
+  `fast_mode_state` (`off` / `cooldown` / `on`) and `fast_mode_disabled_reason`. A real turn
+  with `settings: { fastMode: true }` reported `on` at init but `off` /
+  `extra_usage_disabled` in its result: this account cannot be served fast mode, which the
+  per-model flag does not reveal.
