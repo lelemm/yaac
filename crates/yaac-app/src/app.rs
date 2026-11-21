@@ -82,6 +82,9 @@ pub(crate) struct UiState {
     pub sidebar_to_end: bool,
     /// The sidebar's width, or the strip (D94).
     pub sidebar: yaac_core::strip::SidebarSize,
+    /// The docked agents panel's width (D105), and its width when a drag of its edge began.
+    pub agents_width: f32,
+    pub agents_drag: Option<f32>,
     /// The edge's width when a drag of it began.
     pub sidebar_drag: Option<f32>,
     /// The strip's hover card: its open/close rule and the thread it shows.
@@ -149,6 +152,8 @@ impl UiState {
             mute: None,
             sidebar_to_end: false,
             sidebar: yaac_core::strip::SidebarSize::default(),
+            agents_width: yaac_core::prefs::AGENTS_DEFAULT_WIDTH,
+            agents_drag: None,
             sidebar_drag: None,
             strip_hover: yaac_core::hover::HoverCard::default(),
             strip_hover_key: None,
@@ -211,6 +216,7 @@ impl UiState {
             font_size: self.font_size,
             send_key: self.send_key,
             sidebar: self.sidebar,
+            agents_width: self.agents_width,
         }
     }
 
@@ -227,6 +233,7 @@ impl UiState {
         self.font_size = p.font_size;
         self.send_key = p.send_key;
         self.sidebar = p.sidebar;
+        self.agents_width = p.agents_width;
     }
 }
 

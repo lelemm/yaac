@@ -33,11 +33,10 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     let side_w = app.ui.sidebar.shown(narrow);
     let strip = side_w <= yaac_core::strip::STRIP_WIDTH;
     let side = egui::Rect::from_min_max(full.min, egui::pos2(full.left() + side_w, full.bottom()));
-    let right = if docked { egui::Rect::from_min_max(egui::pos2(full.right() - 300.0, full.top()), full.max) } else { egui::Rect::NOTHING };
+    let right = if docked { egui::Rect::from_min_max(egui::pos2(full.right() - app.ui.agents_width.min(full.width() * 0.4), full.top()), full.max) } else { egui::Rect::NOTHING };
     let center = egui::Rect::from_min_max(egui::pos2(side.right(), full.top()), egui::pos2(if docked { right.left() } else { full.right() }, full.bottom()));
     let hair = egui::Stroke::new(1.0, p.border);
     ui.painter().rect_filled(side, 0.0, p.panel);
-    ui.painter().vline(side.right(), full.y_range(), hair);
     let mut badge = None;
     app.ui.threads_overlay = false;
     if strip {
@@ -48,12 +47,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             crate::sidebar::show(ui, app, map, now, actions);
         });
     }
-    if !narrow {
-        resize_edge(ui, app, side);
-    }
     if docked && let Some(panel) = &panel {
         ui.painter().rect_filled(right, 0.0, p.panel);
-        ui.painter().vline(right.left(), full.y_range(), hair);
         ui.scope_builder(egui::UiBuilder::new().max_rect(right.shrink2(vec2(14.0, 12.0))).id_salt("agents-docked"), |ui| {
             ui.set_clip_rect(right);
             crate::agents_ui::docked(ui, &p, panel, actions);
@@ -77,6 +72,17 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             }
         }
     });
+    // The hairlines, painted after the thread view (whose panels fill their own background)
+    // and snapped to one pixel column, so each is one unbroken line the full height.
+    let snap = |x: f32| ui.painter().round_to_pixel_center(x);
+    ui.painter().vline(snap(side.right()), full.y_range(), hair);
+    if docked {
+        ui.painter().vline(snap(right.left()), full.y_range(), hair);
+        agents_edge(ui, app, right);
+    }
+    if !narrow {
+        resize_edge(ui, app, side);
+    }
     if let Some(panel) = &panel
         && !docked
     {
@@ -355,6 +361,27 @@ fn wsl_notification(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Ac
                 });
             });
         });
+    }
+}
+
+/// The hairline beside the docked agents panel resizes it (D105), between its minimum and
+/// maximum width; the width is remembered.
+fn agents_edge(ui: &mut egui::Ui, app: &mut YaacApp, right: egui::Rect) {
+    let edge = egui::Rect::from_min_max(egui::pos2(right.left() - 3.0, right.top()), egui::pos2(right.left() + 3.0, right.bottom()));
+    let resp = ui.interact(edge, egui::Id::unique("agents-edge"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+    if resp.drag_started() {
+        app.ui.agents_drag = Some(right.width());
+    }
+    if resp.dragged()
+        && let (Some(start), Some(origin), Some(now)) = (app.ui.agents_drag, ui.input(|i| i.pointer.press_origin()), ui.input(|i| i.pointer.interact_pos()))
+    {
+        app.ui.agents_width = yaac_core::prefs::agents_width(start - (now.x - origin.x));
+    }
+    if resp.drag_stopped() {
+        app.ui.agents_drag = None;
+    }
+    if resp.hovered() || resp.dragged() {
+        ui.painter().vline(right.left(), right.y_range(), egui::Stroke::new(2.0, app.p.focus));
     }
 }
 
