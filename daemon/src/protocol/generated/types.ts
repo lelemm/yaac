@@ -618,7 +618,7 @@ export interface ForgeAccess {
   /**
    * What can be done now. Empty with a `reason` when the CLI is missing or signed out.
    */
-  capabilities?: ForgeCapability[];
+  capabilities: ForgeCapability[];
   /**
    * Why nothing (or less) can be done, in words to show as they are ("gh is not logged in
    * on devbox — run `gh auth login` there").
@@ -711,11 +711,11 @@ export interface ForgePrGetResult {
   /**
    * The description.
    */
-  body?: string;
+  body: string;
   /**
    * Checks or policies.
    */
-  checks?: PrCheck[];
+  checks: PrCheck[];
   /**
    * The summary.
    */
@@ -723,7 +723,7 @@ export interface ForgePrGetResult {
   /**
    * Reviewers.
    */
-  reviewers?: PrReviewer[];
+  reviewers: PrReviewer[];
 }
 
 /**
@@ -747,7 +747,7 @@ export interface ForgePrepareResult {
   /**
    * The forge and what can be done.
    */
-  access?: ForgeAccess;
+  access: ForgeAccess;
   /**
    * The target branch the title and description were prefilled against.
    */
@@ -755,7 +755,7 @@ export interface ForgePrepareResult {
   /**
    * Prefilled description (from the branch's commits).
    */
-  body?: string;
+  body: string;
   /**
    * The branch the pull request would be from.
    */
@@ -763,7 +763,7 @@ export interface ForgePrepareResult {
   /**
    * Branches on the remote, for the target-branch dropdown (bounded).
    */
-  branches?: string[];
+  branches: string[];
   /**
    * The repository's default branch.
    */
@@ -771,11 +771,11 @@ export interface ForgePrepareResult {
   /**
    * Push state of the branch.
    */
-  push?: PushState;
+  push: PushState;
   /**
    * Prefilled title (from the branch's commits).
    */
-  title?: string;
+  title: string;
 }
 
 /**
@@ -800,7 +800,7 @@ export interface ForgePrsResult {
   /**
    * The forge and what can be done.
    */
-  access?: ForgeAccess;
+  access: ForgeAccess;
   /**
    * When the forge was last asked.
    */
@@ -816,11 +816,11 @@ export interface ForgePrsResult {
   /**
    * Pull requests from that branch: open ones first, then the most recently updated.
    */
-  prs?: PrSummary[];
+  prs: PrSummary[];
   /**
    * The checkout's root (the cache is per repository root and branch).
    */
-  root?: TargetPath;
+  root: TargetPath;
 }
 
 /**
@@ -2874,15 +2874,15 @@ export interface PushState {
   /**
    * Commits not pushed.
    */
-  ahead?: number;
+  ahead: number;
   /**
    * Files with uncommitted changes (untracked included): warned about, never pushed.
    */
-  uncommitted?: number;
+  uncommitted: number;
   /**
    * The branch has an upstream.
    */
-  upstream?: boolean;
+  upstream: boolean;
 }
 
 /**

@@ -107,7 +107,6 @@ pub struct ForgeAccess {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<ForgeRepo>,
     /// What can be done now. Empty with a `reason` when the CLI is missing or signed out.
-    #[serde(default)]
     pub capabilities: Vec<ForgeCapability>,
     /// Why nothing (or less) can be done, in words to show as they are ("gh is not logged in
     /// on devbox — run `gh auth login` there").
@@ -150,13 +149,10 @@ pub struct PrSummary {
 #[serde(rename_all = "camelCase")]
 pub struct PushState {
     /// The branch has an upstream.
-    #[serde(default)]
     pub upstream: bool,
     /// Commits not pushed.
-    #[serde(default)]
     pub ahead: u32,
     /// Files with uncommitted changes (untracked included): warned about, never pushed.
-    #[serde(default)]
     pub uncommitted: u32,
 }
 
@@ -177,16 +173,13 @@ pub struct ForgePrsParams {
 #[serde(rename_all = "camelCase")]
 pub struct ForgePrsResult {
     /// The checkout's root (the cache is per repository root and branch).
-    #[serde(default)]
     pub root: TargetPath,
     /// The branch asked about; absent on a detached head (then there are no pull requests).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     /// The forge and what can be done.
-    #[serde(default)]
     pub access: ForgeAccess,
     /// Pull requests from that branch: open ones first, then the most recently updated.
-    #[serde(default)]
     pub prs: Vec<PrSummary>,
     /// When the forge was last asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -212,7 +205,6 @@ pub struct ForgePrepareParams {
 #[serde(rename_all = "camelCase")]
 pub struct ForgePrepareResult {
     /// The forge and what can be done.
-    #[serde(default)]
     pub access: ForgeAccess,
     /// The branch the pull request would be from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,19 +213,15 @@ pub struct ForgePrepareResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_branch: Option<String>,
     /// Branches on the remote, for the target-branch dropdown (bounded).
-    #[serde(default)]
     pub branches: Vec<String>,
     /// The target branch the title and description were prefilled against.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
     /// Prefilled title (from the branch's commits).
-    #[serde(default)]
     pub title: String,
     /// Prefilled description (from the branch's commits).
-    #[serde(default)]
     pub body: String,
     /// Push state of the branch.
-    #[serde(default)]
     pub push: PushState,
 }
 
@@ -316,12 +304,9 @@ pub struct ForgePrGetResult {
     /// The summary.
     pub pr: PrSummary,
     /// The description.
-    #[serde(default)]
     pub body: String,
     /// Reviewers.
-    #[serde(default)]
     pub reviewers: Vec<PrReviewer>,
     /// Checks or policies.
-    #[serde(default)]
     pub checks: Vec<PrCheck>,
 }

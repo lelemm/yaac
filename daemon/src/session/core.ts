@@ -237,6 +237,8 @@ export class Core {
   readonly activity = new Emitter<void>();
   /** Fires with a thread id whenever a thread becomes held by yaacd and idle. */
   readonly heldAndIdle = new Emitter<string>();
+  /** Fires with a checkout root whenever its git status changed (a commit, a push; the forge refreshes on it). */
+  readonly gitChanged = new Emitter<string>();
   /** The agent mesh, when one is attached (WP7). */
   mesh: CoreMeshHooks | null = null;
   private threads = new Map<string, ThreadRuntime>();
@@ -770,6 +772,7 @@ export class Core {
   }
 
   private onGitChanged(root: string): void {
+    this.gitChanged.emit(root);
     for (const rt of this.threads.values()) if (!rt.deleted && rt.record.repo?.root === root) this.updateIndex(rt);
   }
 

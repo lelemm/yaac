@@ -6,6 +6,8 @@
 // with no hub (D73). Only work that involves another target goes through the hub, over the
 // one connection the hub holds to this target.
 
+import { PR_TOOL_NAMES } from "../forge/tools.js";
+import { PrToolError, type PrTools } from "../forge/pr-tools.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -494,6 +496,9 @@ export class Mesh implements CoreMeshHooks {
 
   // ── The tools ───────────────────────────────────────────────────────────────────
 
+  /** The pull-request tools (D121), when the forge is attached. */
+  prTools: PrTools | null = null;
+
   async callTool(rt: ThreadRuntime, call: MeshToolCall): Promise<MeshToolResult> {
     if (rt.deleted) return { text: "This thread no longer exists in YAAC.", isError: true };
     // Any next call confirms what the previous `wait` handed over.
@@ -539,6 +544,15 @@ export class Mesh implements CoreMeshHooks {
           text = await this.stopAllTool(rt);
           break;
         default:
+          // The pull-request tools (D121), served by the forge.
+          if (this.prTools && PR_TOOL_NAMES.has(call.tool)) {
+            try {
+              text = await this.prTools.call(rt, call.tool, a);
+            } catch (e) {
+              throw e instanceof PrToolError ? new ToolError(e.message) : e;
+            }
+            break;
+          }
           throw new ToolError(`There is no yaac tool named ${call.tool}.`);
       }
       this.store.save();

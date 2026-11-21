@@ -22,6 +22,8 @@ import { DEFAULT_JOURNAL_OPTIONS, type JournalOptions } from "./journal.js";
 import { listenExclusive, socketPathFor } from "./server.js";
 import { Mesh, type MeshOptions } from "../mesh/mesh.js";
 import { serveBridge, sniffBridge } from "../mesh/mcp.js";
+import { Forge, type ForgeOptions } from "../forge/forge.js";
+import { PrTools } from "../forge/pr-tools.js";
 
 /** The on-disk state format. Separate from the protocol version and the build. */
 export const STATE_FORMAT = 1;
@@ -54,6 +56,8 @@ export interface DaemonConfig {
   noSocket?: boolean;
   /** The agent mesh's options (tests shorten its waits). */
   mesh?: Partial<Omit<MeshOptions, "log" | "socketPath" | "home" | "env">>;
+  /** The forge's runners (tests stand in a fake `gh` / `az`). */
+  forge?: Partial<Pick<ForgeOptions, "runner" | "http" | "now" | "minAskMs" | "debounceMs">>;
 }
 
 interface StateFile {
@@ -80,6 +84,8 @@ export class Daemon implements FrozenCoreHost {
   readonly core: Core;
   /** The agent mesh (WP7). */
   readonly mesh: Mesh;
+  /** Pull requests (D119–D121). */
+  readonly forge: Forge;
   readonly socketPath: string;
   /** Extra request handlers by method name (for later packages, e.g. the mesh). */
   readonly extraMethods = new Map<string, MethodHandler>();
@@ -128,6 +134,10 @@ export class Daemon implements FrozenCoreHost {
     // The agent mesh (WP7): its tools, mailbox, and the daemon side of the hub's relay.
     this.mesh = new Mesh(this.core, { ...config.mesh, log: (l) => this.log(l), socketPath: this.socketPath, home: config.home, env: config.env });
     for (const [method, handler] of this.mesh.methods()) this.extraMethods.set(method, handler);
+    // Pull requests (D119–D121): the forge methods and the agents' PR tools.
+    this.forge = new Forge(this.core, { home: config.home, env: config.env, targetName: () => this.mesh.selfName(), log: (l) => this.log(l), ...config.forge });
+    for (const [method, handler] of this.forge.methods()) this.extraMethods.set(method, handler);
+    this.mesh.prTools = new PrTools(this.forge);
   }
 
   /** Starts a daemon: state, providers, the thread index, and (unless `noSocket`) the socket. */
@@ -308,6 +318,7 @@ export class Daemon implements FrozenCoreHost {
         ),
       );
       this.mesh.close();
+      this.forge.close();
       await this.core.close();
       // Only a socket this process still owns: a newer daemon may already have bound the path
       // (once this one stopped answering), and its socket and pid file must stay.
