@@ -58,6 +58,9 @@ pub mod names {
     /// Window → hub: change several at once, e.g. "Dismiss all" of a temporary project
     /// ([`ViewSetManyParams`] → [`ViewGetResult`] with the entries changed).
     pub const VIEW_SET_MANY: &str = "hub/view/setMany";
+    /// Window → hub: which threads this window shows now ([`ViewShowingParams`] → `{}`). The
+    /// hub marks a thread `unseen` when its turn ends while no window shows it (D114).
+    pub const VIEW_SHOWING: &str = "hub/view/showing";
     /// Hub → window notification: view preferences changed ([`ViewChangedParams`]), so every
     /// window agrees.
     pub const VIEW_CHANGED: &str = "hub/view/changed";
@@ -401,12 +404,16 @@ pub struct ThreadView {
     /// Dismissed: hidden by the window. The target keeps indexing it; search still finds it.
     #[serde(default)]
     pub dismissed: bool,
+    /// A turn ended while no window showed the thread (D114). Set by the hub; cleared by the
+    /// window that opens it.
+    #[serde(default)]
+    pub unseen: bool,
 }
 
 impl ThreadView {
     /// Whether the entry says anything (an empty one is removed).
     pub fn is_empty(&self) -> bool {
-        !self.pinned && !self.muted && !self.dismissed && self.muted_until.is_none()
+        !self.pinned && !self.muted && !self.dismissed && !self.unseen && self.muted_until.is_none()
     }
 
     /// Kept by the user: the target's discovery caps must not cut it (`thread/keep`).
@@ -443,6 +450,9 @@ pub struct ViewSetParams {
     /// Dismiss or restore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dismissed: Option<bool>,
+    /// Mark or clear "finished while nobody looked" (D114).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unseen: Option<bool>,
 }
 
 /// `hub/view/set` result.
@@ -459,6 +469,25 @@ pub struct ViewSetResult {
 pub struct ViewSetManyParams {
     /// The changes.
     pub entries: Vec<ViewSetParams>,
+}
+
+/// One thread a window shows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShownThread {
+    /// The target.
+    pub target: TargetId,
+    /// The thread.
+    pub thread_id: ThreadId,
+}
+
+/// `hub/view/showing` params: everything this window shows now (replaces the last report).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewShowingParams {
+    /// The threads on screen.
+    #[serde(default)]
+    pub threads: Vec<ShownThread>,
 }
 
 /// `hub/view/changed` params: the entries as they are now (an empty one was cleared).

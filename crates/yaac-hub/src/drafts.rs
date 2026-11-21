@@ -66,6 +66,10 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX draft_blobs_by_draft ON draft_blobs (draft_key);
     ",
+    // 4: a turn ended while no window showed the thread (D114).
+    r"
+    ALTER TABLE thread_view ADD COLUMN unseen INTEGER NOT NULL DEFAULT 0;
+    ",
 ];
 
 /// A draft-store error.
@@ -250,7 +254,7 @@ impl DraftStore {
 
     /// Every thread's view preferences.
     pub fn views(&self) -> Result<Vec<ThreadView>, DraftsError> {
-        let mut stmt = self.conn.prepare("SELECT target_id, thread_id, pinned, muted, muted_until, dismissed FROM thread_view ORDER BY target_id, thread_id")?;
+        let mut stmt = self.conn.prepare("SELECT target_id, thread_id, pinned, muted, muted_until, dismissed, unseen FROM thread_view ORDER BY target_id, thread_id")?;
         let rows = stmt.query_map([], view_row)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -259,7 +263,7 @@ impl DraftStore {
         let found = self
             .conn
             .query_row(
-                "SELECT target_id, thread_id, pinned, muted, muted_until, dismissed FROM thread_view WHERE target_id = ?1 AND thread_id = ?2",
+                "SELECT target_id, thread_id, pinned, muted, muted_until, dismissed, unseen FROM thread_view WHERE target_id = ?1 AND thread_id = ?2",
                 params![target.as_str(), thread.as_str()],
                 view_row,
             )
@@ -272,8 +276,8 @@ impl DraftStore {
             self.conn.execute("DELETE FROM thread_view WHERE target_id = ?1 AND thread_id = ?2", params![v.target.as_str(), v.thread_id.as_str()])?;
         } else {
             self.conn.execute(
-                "INSERT OR REPLACE INTO thread_view (target_id, thread_id, pinned, muted, muted_until, dismissed, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![v.target.as_str(), v.thread_id.as_str(), i64::from(v.pinned), i64::from(v.muted), v.muted_until, i64::from(v.dismissed), now_ms()],
+                "INSERT OR REPLACE INTO thread_view (target_id, thread_id, pinned, muted, muted_until, dismissed, unseen, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![v.target.as_str(), v.thread_id.as_str(), i64::from(v.pinned), i64::from(v.muted), v.muted_until, i64::from(v.dismissed), i64::from(v.unseen), now_ms()],
             )?;
         }
         Ok(())
@@ -291,6 +295,9 @@ impl DraftStore {
             if let Some(x) = p.dismissed {
                 v.dismissed = x;
             }
+            if let Some(x) = p.unseen {
+                v.unseen = x;
+            }
             if let Some(x) = p.muted {
                 v.muted = x;
                 if !x {
@@ -307,15 +314,16 @@ impl DraftStore {
         Ok(out)
     }
 
-    /// A thread is gone from its target: its pin and mute go. A dismissal stays — a thread
-    /// trimmed by the target's discovery caps may come back and must stay hidden.
+    /// A thread is gone from its target: its pin, mute, and unseen mark go. A dismissal stays
+    /// — a thread trimmed by the target's discovery caps may come back and must stay hidden.
     pub fn view_thread_removed(&mut self, target: &TargetId, thread: &ThreadId) -> Result<Option<ThreadView>, DraftsError> {
         let mut v = self.view(target, thread)?;
-        if v.is_empty() || !(v.pinned || v.muted) {
+        if v.is_empty() || !(v.pinned || v.muted || v.unseen) {
             return Ok(None);
         }
         v.pinned = false;
         v.muted = false;
+        v.unseen = false;
         v.muted_until = None;
         self.write_view(&v)?;
         Ok(Some(v))
@@ -506,5 +514,6 @@ fn view_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadView> {
         muted: r.get::<_, i64>(3)? != 0,
         muted_until: r.get(4)?,
         dismissed: r.get::<_, i64>(5)? != 0,
+        unseen: r.get::<_, i64>(6)? != 0,
     })
 }

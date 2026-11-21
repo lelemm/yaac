@@ -143,6 +143,8 @@ struct Client {
     tx: mpsc::UnboundedSender<Message>,
     hello: Hello,
     subs: HashSet<Key>,
+    /// What the window shows (`hub/view/showing`, D114).
+    showing: HashSet<Key>,
 }
 
 // ── Per-target state ──────────────────────────────────────────────────────────────────────
@@ -314,6 +316,8 @@ pub(crate) struct Core {
     steps: HashMap<TargetId, std::collections::VecDeque<ConnectionStep>>,
     /// Threads the user keeps (pinned or muted), per target: sent as `thread/keep`.
     kept: HashMap<TargetId, BTreeSet<ThreadId>>,
+    /// Threads marked unseen (D114), mirrored from the view store.
+    unseen: HashSet<Key>,
     /// Uploads in progress, by handle ([`uploads`]).
     uploads: HashMap<String, uploads::Upload>,
     upload_seq: u64,
@@ -365,6 +369,8 @@ pub(crate) struct Loaded {
     pub(crate) in_flight: u64,
     /// Threads the user keeps (pinned or muted in the view store), per target.
     pub(crate) kept: Vec<(TargetId, ThreadId)>,
+    /// Threads marked unseen in the view store.
+    pub(crate) unseen: Vec<(TargetId, ThreadId)>,
 }
 
 impl Core {
@@ -401,6 +407,7 @@ impl Core {
             next_lookup: 0,
             steps: HashMap::new(),
             kept: HashMap::new(),
+            unseen: loaded.unseen.into_iter().collect(),
             uploads: HashMap::new(),
             upload_seq: 0,
             pool,
@@ -439,7 +446,7 @@ impl Core {
     pub(crate) fn handle(&mut self, event: CoreEvent) {
         match event {
             CoreEvent::Attached { client, tx } => {
-                self.clients.insert(client, Client { tx, hello: Hello::None, subs: HashSet::new() });
+                self.clients.insert(client, Client { tx, hello: Hello::None, subs: HashSet::new(), showing: HashSet::new() });
             }
             CoreEvent::FromClient { client, message } => self.on_client(client, message),
             CoreEvent::Detached { client } => self.on_detached(client),
@@ -627,6 +634,15 @@ impl Core {
                 Ok(p) => {
                     self.set_views(vec![p], Some((client, id.clone(), true)));
                     None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            ext::names::VIEW_SHOWING => match parse::<ext::ViewShowingParams>(params) {
+                Ok(p) => {
+                    if let Some(c) = self.clients.get_mut(&client) {
+                        c.showing = p.threads.into_iter().map(|t| (t.target, t.thread_id)).collect();
+                    }
+                    Some(Ok(json!({})))
                 }
                 Err(e) => Some(Err(e)),
             },
@@ -927,6 +943,12 @@ impl Core {
         }
         let mut touched: BTreeSet<TargetId> = BTreeSet::new();
         for v in &views {
+            let key = (v.target.clone(), v.thread_id.clone());
+            if v.unseen {
+                self.unseen.insert(key);
+            } else {
+                self.unseen.remove(&key);
+            }
             let set = self.kept.entry(v.target.clone()).or_default();
             let changed = if v.keeps() { set.insert(v.thread_id.clone()) } else { set.remove(&v.thread_id) };
             if changed {
@@ -950,7 +972,7 @@ impl Core {
 
     /// A thread is gone from its target: its pin and mute go with it.
     fn view_thread_removed(&mut self, target: &TargetId, thread: &ThreadId) {
-        if !self.kept.get(target).is_some_and(|s| s.contains(thread)) {
+        if !self.kept.get(target).is_some_and(|s| s.contains(thread)) && !self.unseen.contains(&(target.clone(), thread.clone())) {
             return;
         }
         let (target, thread) = (target.clone(), thread.clone());
@@ -2443,7 +2465,10 @@ impl Core {
     /// attached raises a desktop notification (docs/10-agent-mesh.md#a-worker-that-is-blocked-must-be-seen).
     fn note_state(&mut self, target: &TargetId, summary: &yaac_protocol::ThreadSummary) {
         let key = (target.clone(), summary.id.clone());
-        let before = self.thread_states.insert(key, summary.state.clone());
+        let before = self.thread_states.insert(key.clone(), summary.state.clone());
+        if before.as_ref().is_some_and(turn_going) && !turn_going(&summary.state) {
+            self.turn_ended(key);
+        }
         if summary.state != ThreadState::NeedsAttention || before == Some(ThreadState::NeedsAttention) {
             return;
         }
@@ -2455,6 +2480,21 @@ impl Core {
             let place = self.targets.get(target).map_or_else(|| target.as_str().to_owned(), |t| t.def.name.as_str().to_owned());
             n.notify("YAAC: a thread needs you", &format!("\"{}\" on {place} is waiting for your answer.", summary.title));
         }
+    }
+
+    /// A thread's turn ended (D114): with no attached window showing it, it is marked unseen,
+    /// kept like pin and mute so every window and the next start agree.
+    fn turn_ended(&mut self, key: Key) {
+        if self.unseen.contains(&key) {
+            return;
+        }
+        let shown = self.clients.values().any(|c| c.hello == Hello::Attached && c.showing.contains(&key));
+        if shown {
+            return;
+        }
+        self.unseen.insert(key.clone());
+        let (target, thread_id) = key;
+        self.set_views(vec![ext::ViewSetParams { target, thread_id, unseen: Some(true), ..Default::default() }], None);
     }
 
     // ── Timers and lifecycle ─────────────────────────────────────────────────────────────
@@ -2556,6 +2596,12 @@ impl Core {
 }
 
 /// Answers a window's `thread/subscribe` relative to what the cache holds.
+/// A turn is under way in this state (running, blocked on the user, or waiting on another
+/// agent); its end is the move to any other state.
+fn turn_going(state: &ThreadState) -> bool {
+    matches!(state, ThreadState::Running | ThreadState::NeedsAttention | ThreadState::Waiting)
+}
+
 fn window_answer(
     subscribed: Option<&ThreadSubscribeResult>,
     position: Option<JournalPosition>,

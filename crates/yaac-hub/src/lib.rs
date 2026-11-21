@@ -139,6 +139,7 @@ pub fn run_hub(config: HubConfig) -> Result<HubExit, HubError> {
         states: cache.thread_states()?.into_iter().filter(|(t, _, _)| known.contains(t)).collect(),
         in_flight: relay.in_flight()?,
         kept: drafts.views()?.into_iter().filter(|v| known.contains(&v.target) && v.keeps()).map(|v| (v.target, v.thread_id)).collect(),
+        unseen: drafts.views()?.into_iter().filter(|v| known.contains(&v.target) && v.unseen).map(|v| (v.target, v.thread_id)).collect(),
     };
     let _ = cache.checkpoint();
 
