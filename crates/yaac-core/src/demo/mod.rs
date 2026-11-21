@@ -138,6 +138,8 @@ struct Inner {
     blobs: std::collections::BTreeMap<String, Value>,
     /// Pull requests created in the demo (D120), by thread.
     created: Vec<(ThreadKey, yaac_protocol::PrSummary)>,
+    /// The requests received, newest last (bounded): (target for a routed one, method, params).
+    log: VecDeque<(Option<TargetId>, String, Value)>,
     /// What `hub/wsl/distros` answers: the distros, or an error message.
     distros: Result<Value, String>,
 }
@@ -172,7 +174,7 @@ impl DemoHub {
             Scenario::Fleet => Fleet::standard(now),
             Scenario::Fresh => Fleet::fresh(now),
         };
-        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()) })) }
+        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new() })) }
     }
 
     /// Every thread of the scenario — the window's "recently used" set, so their hints are
@@ -204,6 +206,12 @@ impl DemoHub {
     /// Release everything scheduled.
     pub fn drain(&self) {
         while self.tick() {}
+    }
+
+    /// The requests received so far, oldest first (at most the last 512): the target of a
+    /// routed request (else `None`), the method, and its params. Tests read it.
+    pub fn requests(&self) -> Vec<(Option<TargetId>, String, Value)> {
+        self.inner.borrow().log.iter().cloned().collect()
     }
 
     /// What `hub/wsl/distros` answers from now on: `{ distros }`, or a failure's message.
@@ -297,6 +305,14 @@ impl Inner {
 
     fn handle(&mut self, msg: Message) {
         let Message::Request { id, method, params } = msg else { return };
+        let logged = match serde_json::from_value::<RoutedRequest>(params.clone()) {
+            Ok(r) if method == attach::names::REQUEST => (Some(r.target), r.method, r.params),
+            _ => (None, method.clone(), params.clone()),
+        };
+        if self.log.len() >= 512 {
+            self.log.pop_front();
+        }
+        self.log.push_back(logged);
         match method.as_str() {
             attach::names::HELLO => {
                 // The demo is always the window's own build.
@@ -337,26 +353,14 @@ impl Inner {
                 self.ready.push_back(result(id, json!({ "threads": threads })));
             }
             crate::client::hub_names::VIEW_SET => {
-                if let (Some(t), Some(th)) = (params.get("target").and_then(Value::as_str), params.get("threadId").and_then(Value::as_str)) {
-                    let key = ThreadKey::new(TargetId::new(t), yaac_protocol::ThreadId::new(th));
-                    let v = self.fleet.view.entry(key).or_default();
-                    if let Some(x) = params.get("pinned").and_then(Value::as_bool) {
-                        v.pinned = x;
-                    }
-                    if let Some(x) = params.get("muted").and_then(Value::as_bool) {
-                        v.muted = x;
-                    }
-                    if let Some(x) = params.get("dismissed").and_then(Value::as_bool) {
-                        v.dismissed = x;
-                    }
-                    if let Some(x) = params.get("unseen").and_then(Value::as_bool) {
-                        v.unseen = x;
-                    }
-                    if let Some(u) = params.get("mutedUntil") {
-                        v.muted_until = u.as_str().and_then(crate::time::parse_rfc3339);
-                    }
-                }
+                self.set_view(&params);
                 self.ready.push_back(result(id, json!({})));
+            }
+            crate::client::hub_names::VIEW_SET_MANY => {
+                for e in params.get("entries").and_then(Value::as_array).cloned().unwrap_or_default() {
+                    self.set_view(&e);
+                }
+                self.ready.push_back(result(id, json!({ "views": [] })));
             }
             crate::client::hub_names::VIEW_SHOWING => self.ready.push_back(result(id, json!({}))),
             crate::client::hub_names::THREADS_FIND => self.find(id, &params),
@@ -429,6 +433,29 @@ impl Inner {
             }
             _ if method.starts_with("hub/upload/") || method.starts_with("hub/drafts/") => self.uploads(id, &method, &params),
             _ => self.ready.push_back(error(id, ErrorCode::MethodNotFound, &method)),
+        }
+    }
+
+    /// One `hub/view/set` patch (also each entry of `hub/view/setMany`).
+    fn set_view(&mut self, params: &Value) {
+        if let (Some(t), Some(th)) = (params.get("target").and_then(Value::as_str), params.get("threadId").and_then(Value::as_str)) {
+            let key = ThreadKey::new(TargetId::new(t), yaac_protocol::ThreadId::new(th));
+            let v = self.fleet.view.entry(key).or_default();
+            if let Some(x) = params.get("pinned").and_then(Value::as_bool) {
+                v.pinned = x;
+            }
+            if let Some(x) = params.get("muted").and_then(Value::as_bool) {
+                v.muted = x;
+            }
+            if let Some(x) = params.get("dismissed").and_then(Value::as_bool) {
+                v.dismissed = x;
+            }
+            if let Some(x) = params.get("unseen").and_then(Value::as_bool) {
+                v.unseen = x;
+            }
+            if let Some(u) = params.get("mutedUntil") {
+                v.muted_until = u.as_str().and_then(crate::time::parse_rfc3339);
+            }
         }
     }
 

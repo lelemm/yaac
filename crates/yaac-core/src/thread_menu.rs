@@ -78,7 +78,7 @@ impl MenuEntry {
 
 /// Whether the thread can do `cap`: its effective capabilities when known (it is open), else
 /// its provider's.
-fn can(state: &AppState, key: &ThreadKey, cap: &Capability) -> bool {
+pub fn can(state: &AppState, key: &ThreadKey, cap: &Capability) -> bool {
     if let Some(e) = state.transcripts.get(key).and_then(|t| t.effective.as_ref()) {
         return has_capability(&e.capabilities, cap);
     }
