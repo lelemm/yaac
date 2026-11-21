@@ -359,6 +359,8 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                             if r.clicked() {
                                 actions.push(Action::Stop(key.clone()));
                             }
+                            // Attachments can be prepared while a turn runs.
+                            attach_button(ui, app, &d, actions);
                         } else if !dimmed {
                             let has = app.client.state.drafts.get(key).is_some_and(|x| !x.text.trim().is_empty() || !x.attachments.is_empty());
                             if send_button(ui, &p, has, blocked.as_deref()) {
