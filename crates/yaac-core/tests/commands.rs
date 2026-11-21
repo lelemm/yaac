@@ -34,6 +34,7 @@ fn ctx<'a>(state: &'a AppState, thread: Option<&'a ThreadKey>) -> Ctx<'a> {
         zoom: (13.5, 11.0, 18.0),
         host_windows: false,
         focused_card: None,
+        list_selected: 0,
     }
 }
 
@@ -64,6 +65,7 @@ const CATALOGUE: &[(&str, &[&str])] = &[
     ("Fork…", &["fork"]),
     ("Check for the latest", &["check-latest"]),
     ("Continue (budget)", &["continue-budget"]),
+    ("Archive selected… / Mute selected… / Clear selection", &["archive-selected", "mute-selected", "clear-selection"]),
     ("Focus the composer", &["focus-composer"]),
     ("Send / queue", &["send"]),
     ("Send now", &["send-now"]),

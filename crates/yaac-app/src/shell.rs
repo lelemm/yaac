@@ -105,6 +105,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     crate::dialogs::fork(ui.ctx(), app, actions);
     crate::dialogs::delete(ui.ctx(), app, actions);
     crate::dialogs::archive(ui.ctx(), app, actions);
+    crate::dialogs::bulk_archive(ui.ctx(), app, actions);
 }
 
 

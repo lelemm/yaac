@@ -69,8 +69,13 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     // is open, a reorder waits until it leaves.
     let pointer = ui.ctx().pointer_hover_pos();
     let hold = app.shots.is_none()
-        && (matches!(app.ui.menu, Some(Menu::Context(_))) || pointer.is_some_and(|pt| app.ui.list_rect.is_some_and(|r| r.contains(pt))));
+        && (matches!(app.ui.menu, Some(Menu::Context(_) | Menu::Selection(_) | Menu::Header(_))) || pointer.is_some_and(|pt| app.ui.list_rect.is_some_and(|r| r.contains(pt))));
     let secs = app.ui.steady.apply(fresh, hold);
+    // The multi-selection (D138) keeps only rows still listed, in the order they are shown.
+    let order: Vec<yaac_core::ThreadKey> = secs.iter().flat_map(|s| s.rows.iter().map(|r| r.key.clone())).collect();
+    app.ui.list_sel.retain_listed(&order);
+    list_keys(ui.ctx(), app, &order);
+    app.ui.list_order = order;
     let mut lines: Vec<(f32, f32, Line<'_>)> = Vec::new();
     let mut y = 0.0;
     for (i, s) in secs.iter().enumerate() {
@@ -89,7 +94,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     }
     let total = y;
     let footer_h = if app.demo.is_some() { 74.0 } else { 40.0 };
-    let list_h = ui.available_height() - footer_h;
+    let bar = bar_height(ui, app);
+    let list_h = ui.available_height() - footer_h - bar.unwrap_or(0.0);
     let selected = app.client.state.selected_thread().cloned();
     let mut sa = egui::ScrollArea::vertical().id_salt("sidebar-list").max_height(list_h).auto_shrink([false, false]);
     if app.ui.sidebar_to_end {
@@ -97,6 +103,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         app.ui.sidebar_to_end = app.shots.is_some();
         sa = sa.vertical_scroll_offset((total - list_h).max(0.0));
     }
+    app.ui.list_rows.clear();
+    app.ui.header_menu_drawn = false;
     let shown = sa.show_viewport(ui, |ui, view| {
         ui.set_height(total);
         let origin = ui.max_rect().top();
@@ -127,8 +135,145 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         }
     });
     app.ui.list_rect = Some(shown.inner_rect);
+    if let Some(h) = bar {
+        selection_bar(ui, app, h, actions);
+    }
 
     footer(ui, app, actions);
+}
+
+/// The bottom bar's height with one line.
+const BAR_H: f32 = 34.0;
+
+/// The bulk report's text, wrapped to the bar.
+fn report_galley(ui: &egui::Ui, app: &YaacApp, text: &str, width: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple(text.to_owned(), theme::ui(size::SMALL), app.p.text, (width - 62.0).max(40.0));
+    job.wrap.max_rows = 3;
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
+/// The bar under the list, if it shows: one line for a selection, up to three for a report.
+fn bar_height(ui: &egui::Ui, app: &YaacApp) -> Option<f32> {
+    if !app.ui.list_sel.is_empty() {
+        return Some(BAR_H);
+    }
+    let r = app.client.bulk_report.as_ref()?;
+    let g = report_galley(ui, app, &r.text, ui.available_width());
+    Some(BAR_H.max(g.size().y + 22.0))
+}
+
+/// A dialog or the Commander is open: the list's keys are not the list's then.
+fn modal_open(app: &YaacApp) -> bool {
+    let u = &app.ui;
+    u.commander.is_some()
+        || u.mute.is_some()
+        || u.archive.is_some()
+        || u.bulk_archive.is_some()
+        || u.delete.is_some()
+        || u.rename.is_some()
+        || u.fork.is_some()
+        || u.create_project.is_some()
+        || u.quit_confirm
+}
+
+/// The list's keys (D138), with focus in the list: Ctrl+A selects every listed row,
+/// Shift+Up/Down extend the selection, Esc clears it. A press elsewhere, or a text field
+/// taking the caret, moves focus out of the list.
+fn list_keys(ctx: &egui::Context, app: &mut YaacApp, order: &[yaac_core::ThreadKey]) {
+    if let Some(pt) = ctx.input(|i| if i.pointer.any_pressed() { i.pointer.interact_pos() } else { None }) {
+        app.ui.list_focus = app.ui.list_rect.is_some_and(|r| r.contains(pt));
+    }
+    if ctx.text_edit_focused() || app.ui.focus_card.is_some() {
+        app.ui.list_focus = false;
+    }
+    if !app.ui.list_focus || modal_open(app) {
+        return;
+    }
+    let esc_clears = app.ui.menu.is_none() && !app.ui.list_sel.is_empty();
+    let (all, up, down, esc) = ctx.input_mut(|i| {
+        (
+            i.consume_key(egui::Modifiers::COMMAND, egui::Key::A),
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowUp),
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::ArrowDown),
+            esc_clears && i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+        )
+    });
+    let open = app.client.state.selected_thread().cloned();
+    if all {
+        app.ui.list_sel.select_all(order);
+    }
+    if up {
+        app.ui.list_sel.extend(order, -1, open.as_ref());
+    }
+    if down {
+        app.ui.list_sel.extend(order, 1, open.as_ref());
+    }
+    if esc {
+        app.ui.list_sel.clear();
+    }
+}
+
+/// The bar under the list (D138): "3 selected · Archive · Mute ×" while rows are selected;
+/// otherwise the report of the last bulk Archive that did not simply succeed, until closed.
+fn selection_bar(ui: &mut egui::Ui, app: &mut YaacApp, height: f32, actions: &mut Vec<Action>) {
+    let p = app.p;
+    ui.add_space(2.0);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let inner = rect.shrink2(vec2(0.0, 3.0));
+    ui.painter().rect_filled(inner, 6.0, p.faint);
+    let cy = inner.top() + (BAR_H - 6.0) / 2.0;
+    let font = theme::ui(size::SMALL);
+    // The close cross at the right end.
+    let x_rect = Rect::from_center_size(pos2(inner.right() - 14.0, cy), vec2(22.0, 22.0));
+    let close = ui.interact(x_rect, egui::Id::unique("selection-bar-close"), Sense::click());
+    if close.hovered() {
+        ui.painter().rect_filled(x_rect, 4.0, p.selected);
+    }
+    icons::close(ui.painter(), x_rect.center(), 14.0, p.text2);
+    if app.ui.list_sel.is_empty() {
+        let Some(r) = app.client.bulk_report.clone() else { return };
+        icons::warning(ui.painter(), pos2(inner.left() + 14.0, cy), 13.0, p.needs, p.faint);
+        let g = report_galley(ui, app, &r.text, rect.width());
+        let row_h = ui.fonts_mut(|f| f.row_height(&font));
+        ui.painter().galley(pos2(inner.left() + 26.0, cy - row_h / 2.0), g, p.text);
+        ui.interact(Rect::from_min_max(inner.min, pos2(x_rect.left(), inner.bottom())), egui::Id::unique("selection-bar-report"), Sense::hover()).on_hover_text(r.detail.join("\n"));
+        if close.on_hover_text("Dismiss").clicked() {
+            app.client.bulk_report = None;
+        }
+        return;
+    }
+    let n = app.ui.list_sel.len();
+    let label = ui.fonts_mut(|f| f.layout_no_wrap(format!("{n} selected"), font.clone(), p.text2));
+    let mut x = inner.left() + 10.0;
+    let lw = label.size().x;
+    ui.painter().galley(pos2(x, cy - label.size().y / 2.0), label, p.text2);
+    x += lw + 12.0;
+    let keys = app.ui.list_sel.in_order(&app.ui.list_order);
+    for (word, id, archive) in [("Archive", "selection-bar-archive", true), ("Mute", "selection-bar-mute", false)] {
+        let g = ui.fonts_mut(|f| f.layout_no_wrap(word.to_owned(), theme::bold(size::SMALL), p.text));
+        let r = Rect::from_min_size(pos2(x - 6.0, cy - 11.0), vec2(g.size().x + 12.0, 22.0));
+        if r.right() > x_rect.left() - 2.0 {
+            break;
+        }
+        let resp = ui.interact(r, egui::Id::unique(id), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(r, 4.0, p.selected);
+        }
+        let gw = g.size().x;
+        ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, p.text);
+        let tip = if archive {
+            crate::commander::tip(app, "Archive the selected threads", yaac_core::commands::Cmd::ArchiveSelected)
+        } else {
+            crate::commander::tip(app, "Mute the selected threads", yaac_core::commands::Cmd::MuteSelected)
+        };
+        if resp.on_hover_text(tip).clicked() {
+            actions.push(if archive { Action::OpenBulkArchive(keys.clone()) } else { Action::OpenBulkMute(keys.clone()) });
+        }
+        x += gw + 16.0;
+    }
+    if close.on_hover_text("Clear the selection (Esc)").clicked() {
+        actions.push(Action::ClearSelection);
+    }
 }
 
 /// The Needs-you button (D117): the red exclamation beside the history buttons, with the
@@ -450,34 +595,33 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
     if h.temporary {
         icons::dashed_circle(ui.painter(), pos2(x + 6.0, y - 6.0), 5.0, egui::Stroke::new(1.2, p.text2));
         x += 16.0;
-        let resp = ui.interact(rect, egui::Id::unique(("temp-header", s.id.as_str(), rect.top().to_bits())), Sense::click());
+    }
+    // A group's header (and Pinned's) has a menu (D138): right-click it, or the dots shown
+    // while the pointer is on it. A temporary project's also offers Create project… (D-29).
+    let menu = Menu::Header(s.id.clone());
+    let has_menu = h.temporary || (matches!(s.kind, SectionKind::Group | SectionKind::Pinned) && !s.rows.is_empty());
+    let mut dots = None;
+    if has_menu {
+        let resp = ui.interact(rect, egui::Id::unique(("header", s.id.as_str(), rect.top().to_bits())), Sense::click());
+        let open = app.ui.menu == Some(menu.clone());
         if resp.secondary_clicked() {
-            app.ui.menu = Some(Menu::TempProject(s.id.clone()));
+            app.ui.menu = Some(menu.clone());
         }
-        let mut open = app.ui.menu == Some(Menu::TempProject(s.id.clone()));
-        if open {
-            crate::widgets::menu_popup(egui::Popup::from_response(&resp), &p)
-                .kind(egui::PopupKind::Menu)
-                .open_bool(&mut open)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
-                .show(|ui| {
-                    if ui.button("Create project…").clicked()
-                        && let Some((target, folder)) = &h.folder
-                    {
-                        app.ui.create_project = Some(create_project_for(app, target, folder));
-                    }
-                    // Hide every thread of this folder in the window ("Show dismissed" lists
-                    // them again).
-                    if ui.button("Dismiss all").clicked() {
-                        for r in &s.rows {
-                            actions.push(Action::Dismiss(r.key.clone(), true));
-                        }
-                    }
-                });
-            if !open && app.ui.menu == Some(Menu::TempProject(s.id.clone())) {
-                app.ui.menu = None;
+        let mut anchor = resp;
+        if ui.rect_contains_pointer(rect) || open {
+            let d = Rect::from_center_size(pos2(rect.right() - 13.0, y - 6.0), vec2(22.0, 18.0));
+            let dr = ui.interact(d, egui::Id::unique(("header-dots", s.id.as_str(), rect.top().to_bits())), Sense::click()).on_hover_text("More actions");
+            if dr.hovered() || open {
+                ui.painter().rect_filled(d, 4.0, p.selected);
             }
+            icons::dots(ui.painter(), d.center(), 14.0, p.text2);
+            if dr.clicked() {
+                app.ui.toggle_menu(menu);
+            }
+            dots = Some(d);
+            anchor = dr;
         }
+        header_menu(app, s, h, &anchor, actions);
     }
     if matches!(s.kind, SectionKind::Muted | SectionKind::Archived) {
         icons::chevron(ui.painter(), pos2(x + 5.0, y - 6.0), 12.0, !s.collapsed, p.text2);
@@ -491,7 +635,7 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
             }
         }
     }
-    let mut rx = rect.right() - 4.0;
+    let mut rx = dots.map_or(rect.right() - 4.0, |d| d.left() - 4.0);
     if h.retry {
         let g = ui.fonts_mut(|f| f.layout_no_wrap("Retry".to_owned(), font.clone(), p.text));
         let r = Rect::from_min_size(pos2(rx - g.size().x, y - g.size().y), g.size());
@@ -540,6 +684,58 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
     ui.painter().galley(pos2(x, y - g.size().y), g, color);
 }
 
+/// A section header's menu (D138): Archive all (N)…, Mute all… over the rows listed in the
+/// section now (filters and "Show only running" apply), with the same confirmation and
+/// skipping as a selection; a temporary project's starts with Create project… and Dismiss all.
+fn header_menu(app: &mut YaacApp, s: &Section, h: &yaac_core::sidebar::Header, resp: &egui::Response, actions: &mut Vec<Action>) {
+    let menu = Menu::Header(s.id.clone());
+    let mut open = app.ui.menu == Some(menu.clone());
+    if !open || app.ui.header_menu_drawn {
+        return;
+    }
+    app.ui.header_menu_drawn = true;
+    let p = app.p;
+    let keys: Vec<yaac_core::ThreadKey> = s.rows.iter().map(|r| r.key.clone()).collect();
+    let mut create = None;
+    crate::widgets::menu_popup(egui::Popup::from_response(resp), &p)
+        .kind(egui::PopupKind::Menu)
+        .align(egui::RectAlign::BOTTOM_END)
+        .open_bool(&mut open)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
+            ui.set_min_width(180.0);
+            if h.temporary {
+                if widgets::menu_item(ui, &p, "Create project…", None, widgets::ItemKind::Normal).clicked() {
+                    create = h.folder.clone();
+                }
+                // Hide every thread of this folder in the window ("Show dismissed" lists them
+                // again).
+                if widgets::menu_item(ui, &p, "Dismiss all", None, widgets::ItemKind::Normal).clicked() {
+                    for k in &keys {
+                        actions.push(Action::Dismiss(k.clone(), true));
+                    }
+                }
+                if !keys.is_empty() {
+                    ui.separator();
+                }
+            }
+            if !keys.is_empty() {
+                if widgets::menu_item(ui, &p, &format!("Archive all ({})…", keys.len()), None, widgets::ItemKind::Normal).clicked() {
+                    actions.push(Action::OpenBulkArchive(keys.clone()));
+                }
+                if widgets::menu_item(ui, &p, "Mute all…", None, widgets::ItemKind::Normal).clicked() {
+                    actions.push(Action::OpenBulkMute(keys.clone()));
+                }
+            }
+        });
+    if let Some((target, folder)) = create {
+        app.ui.create_project = Some(create_project_for(app, &target, &folder));
+    }
+    if !open && app.ui.menu == Some(menu) {
+        app.ui.menu = None;
+    }
+}
+
 /// The Create project dialog, prefilled from a temporary project's folder.
 pub(crate) fn create_project_for(app: &YaacApp, target: &yaac_protocol::TargetId, folder: &str) -> crate::app::CreateProject {
     // Suggest the repository root when a thread in this folder knows its repository.
@@ -569,15 +765,23 @@ pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, r
     let id = egui::Id::unique(("row", s.id.as_str(), row.key.to_string()));
     let resp = ui.interact(rect, id, Sense::click());
     let is_sel = selected == Some(&row.key) && app.client.state.selection == Selection::Thread(row.key.clone());
+    let multi = app.ui.list_sel.contains(&row.key);
+    app.ui.list_rows.push((row.key.clone(), rect));
     let fill_rect = rect.shrink2(vec2(0.0, 1.0));
     // While its menu is open the row keeps its hover colour (D108).
-    let menu_open = app.ui.menu == Some(Menu::Context(row.key.clone()));
-    if is_sel {
+    let menu_open = app.ui.menu == Some(Menu::Context(row.key.clone())) || app.ui.menu == Some(Menu::Selection(row.key.clone()));
+    if multi {
+        // In the multi-selection (D138): its own tint and a bar at the left edge, so it reads
+        // apart from the open thread and from hover.
+        ui.painter().rect_filled(fill_rect, 5.0, p.multi);
+        let bar = Rect::from_min_size(pos2(fill_rect.left() + 1.0, fill_rect.top() + 5.0), vec2(3.0, fill_rect.height() - 10.0));
+        ui.painter().rect_filled(bar, 1.5, p.text);
+    } else if is_sel {
         ui.painter().rect_filled(fill_rect, 5.0, p.selected);
     } else if resp.hovered() || menu_open {
         ui.painter().rect_filled(fill_rect, 5.0, p.faint);
     }
-    if row.display.unseen && !is_sel {
+    if row.display.unseen && !is_sel && !multi {
         unseen_outline(ui, fill_rect, &p);
     }
     let cy = rect.top() + 14.0;
@@ -630,11 +834,72 @@ pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, r
         icons::fork(ui.painter(), pos2(title_x + tw + 10.0, cy), 12.0, p.text2);
     }
     if resp.clicked() {
-        let needs = row.display.attention.is_some();
-        actions.push(if needs { Action::OpenRequest(row.key.clone()) } else { Action::Open(row.key.clone()) });
+        // Ctrl+click toggles the row in the selection, Shift+click selects the range from the
+        // anchor; a plain click opens the thread and clears the selection (D138).
+        let m = ui.input(|i| i.modifiers);
+        let click = if m.command || m.ctrl {
+            yaac_core::bulk::Click::Toggle
+        } else if m.shift {
+            yaac_core::bulk::Click::Range
+        } else {
+            yaac_core::bulk::Click::Plain
+        };
+        let order = std::mem::take(&mut app.ui.list_order);
+        let open = app.ui.list_sel.click(&order, &row.key, click, selected);
+        app.ui.list_order = order;
+        app.ui.list_focus = true;
+        if open {
+            let needs = row.display.attention.is_some();
+            actions.push(if needs { Action::OpenRequest(row.key.clone()) } else { Action::Open(row.key.clone()) });
+        }
     }
     let key = row.key.clone();
-    row_menu(ui, app, &key, &resp, now, actions);
+    // Right-clicking a row of a selection of two or more opens the selection's menu.
+    if app.ui.list_sel.len() >= 2 && app.ui.list_sel.contains(&key) {
+        selection_menu(app, &key, &resp, now, actions);
+    } else {
+        row_menu(ui, app, &key, &resp, now, actions);
+    }
+}
+
+/// The selection's menu (D138), opened by right-clicking one of its rows: Archive selected
+/// (N)…, Mute selected (N)…, Unmute selected when any is muted, Clear selection.
+fn selection_menu(app: &mut YaacApp, key: &yaac_core::ThreadKey, resp: &egui::Response, now: i64, actions: &mut Vec<Action>) {
+    if resp.secondary_clicked() {
+        app.ui.menu = Some(Menu::Selection(key.clone()));
+    }
+    let mut open = app.ui.menu == Some(Menu::Selection(key.clone()));
+    if !open {
+        return;
+    }
+    let p = app.p;
+    let keys = app.ui.list_sel.in_order(&app.ui.list_order);
+    let n = keys.len();
+    let any_muted = keys.iter().any(|k| app.client.state.is_muted(k, now));
+    crate::widgets::menu_popup(egui::Popup::from_response(resp), &p)
+        .kind(egui::PopupKind::Menu)
+        .align(egui::RectAlign::RIGHT_START)
+        .open_bool(&mut open)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
+            ui.set_min_width(190.0);
+            if widgets::menu_item(ui, &p, &format!("Archive selected ({n})…"), None, widgets::ItemKind::Normal).clicked() {
+                actions.push(Action::OpenBulkArchive(keys.clone()));
+            }
+            if widgets::menu_item(ui, &p, &format!("Mute selected ({n})…"), None, widgets::ItemKind::Normal).clicked() {
+                actions.push(Action::OpenBulkMute(keys.clone()));
+            }
+            if any_muted && widgets::menu_item(ui, &p, "Unmute selected", None, widgets::ItemKind::Normal).clicked() {
+                actions.push(Action::UnmuteMany(keys.clone()));
+            }
+            ui.separator();
+            if widgets::menu_item(ui, &p, "Clear selection", Some("Esc"), widgets::ItemKind::Normal).clicked() {
+                actions.push(Action::ClearSelection);
+            }
+        });
+    if !open && app.ui.menu == Some(Menu::Selection(key.clone())) {
+        app.ui.menu = None;
+    }
 }
 
 /// A row's git line from `x` to `right` (D115): the harness logo, the branch (ellipsised to

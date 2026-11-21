@@ -79,6 +79,11 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("66", "commander-model"),
     ("67", "settings-keyboard"),
     ("68", "settings-about"),
+    ("69", "rows-selected"),
+    ("70", "selection-menu"),
+    ("71", "bulk-archive-confirm"),
+    ("72", "group-header-menu"),
+    ("73", "bulk-archive-report"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -583,6 +588,45 @@ fn setup(app: &mut YaacApp, id: &str) {
                 }
                 _ => {}
             }
+        }
+        "69" | "70" => {
+            // Several rows selected (D138): users-service, billing-service and search-service
+            // (Ctrl+click, across three groups) with Fix frame decoder open; the bar under the
+            // list. 70: the selection's menu, right-clicked on billing-service.
+            use yaac_core::bulk::Click;
+            app.open(&threads::fix(), None);
+            let order = crate::commander::sidebar_order(app);
+            for k in [threads::users(), threads::billing(), threads::search()] {
+                app.ui.list_sel.click(&order, &k, Click::Toggle, None);
+            }
+            app.ui.list_order = order;
+            if id == "70" {
+                app.ui.menu = Some(Menu::Selection(threads::billing()));
+            }
+        }
+        "71" => {
+            // The bulk Archive confirmation (D111, D138): five chosen, two can be archived;
+            // two are running and one is in use in a terminal.
+            app.open(&threads::fix(), None);
+            let keys = [threads::users(), threads::billing(), threads::search(), threads::orchestrator(), threads::handshake()];
+            app.ui.bulk_archive = Some(yaac_core::bulk::BulkArchiveDialog::new(&app.client.state, &keys, STORY_NOW));
+        }
+        "72" => {
+            // A group header's menu (D138): "api · devbox", opened from its dots.
+            app.open(&threads::fix(), None);
+            if let Some(id) = yaac_core::sidebar::section_of(&app.client.state, app.ui.grouping, &threads::billing()) {
+                app.ui.menu = Some(Menu::Header(id));
+            }
+        }
+        "73" => {
+            // After a bulk Archive: one report of what did not simply succeed (D138).
+            use yaac_core::bulk::Outcome;
+            app.open(&threads::fix(), None);
+            app.client.bulk_report = yaac_core::bulk::archive_report(&[
+                ("users-service".into(), Outcome::Ok),
+                ("Release notes".into(), Outcome::Failed("staging is offline".into())),
+                ("billing-service".into(), Outcome::Uncertain),
+            ]);
         }
         "68" => {
             // Settings → About: version, build, links, components (D137).

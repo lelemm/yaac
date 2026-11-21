@@ -43,7 +43,11 @@ pub(crate) enum Menu {
     /// The sidebar's ordering (D116).
     Ordering,
     Context(ThreadKey),
-    TempProject(String),
+    /// The menu of the sidebar's selection (D138), opened on this selected row.
+    Selection(ThreadKey),
+    /// A section header's menu, by section id: Archive all, Mute all (D138); a temporary
+    /// project's also has Create project… and Dismiss all.
+    Header(String),
     Project,
     Model,
     Effort,
@@ -118,6 +122,19 @@ pub(crate) struct UiState {
     pub delete: Option<yaac_core::thread_menu::DeleteDialog>,
     /// The Archive confirmation (D111).
     pub archive: Option<yaac_core::thread_menu::ArchiveDialog>,
+    /// The bulk Archive confirmation (D138).
+    pub bulk_archive: Option<yaac_core::bulk::BulkArchiveDialog>,
+    /// The sidebar's multi-selection (D138), window-local.
+    pub list_sel: yaac_core::bulk::ListSelection,
+    /// Every listed sidebar row in display order, as last drawn.
+    pub list_order: Vec<ThreadKey>,
+    /// The sidebar rows drawn last frame and where (tests find rows by it).
+    pub list_rows: Vec<(ThreadKey, egui::Rect)>,
+    /// A header's menu was drawn this frame (a header can be drawn twice: in place and sticky).
+    pub header_menu_drawn: bool,
+    /// Keyboard focus is in the sidebar list (a row was clicked last): Esc, Ctrl+A and
+    /// Shift+↑/↓ act on the selection.
+    pub list_focus: bool,
     /// The `+N` list of a PR badge while it is open, and where it was drawn (D119).
     pub pr_more: Option<((ThreadKey, String), egui::Rect)>,
     /// The threads whose rows were drawn this frame (their pull requests are kept fresh).
@@ -210,6 +227,12 @@ impl UiState {
             needs_cycle: yaac_core::sidebar::NeedsCycle::default(),
             delete: None,
             archive: None,
+            bulk_archive: None,
+            list_sel: yaac_core::bulk::ListSelection::default(),
+            list_order: Vec::new(),
+            list_rows: Vec::new(),
+            header_menu_drawn: false,
+            list_focus: false,
             pr_more: None,
             pr_visible: Vec::new(),
             pr_more_force: None,
@@ -354,6 +377,18 @@ pub(crate) enum Action {
     CreateProject(CreateProject),
     DraftProject(u64, String),
     Archive(ThreadKey),
+    /// Ask once before archiving several threads (D138); they are in display order.
+    OpenBulkArchive(Vec<ThreadKey>),
+    /// Archive these (the confirmation's eligible threads).
+    BulkArchive(Vec<ThreadKey>),
+    /// Open the Mute dialog once for several threads (D138).
+    OpenBulkMute(Vec<ThreadKey>),
+    /// Mute several threads until a moment (`None`: no end), in one `hub/view/setMany`.
+    MuteMany(Vec<ThreadKey>, Option<i64>),
+    /// Unmute several threads, in one `hub/view/setMany`.
+    UnmuteMany(Vec<ThreadKey>),
+    /// Unselect every sidebar row.
+    ClearSelection,
     Rename(ThreadKey, String),
     SetModel(ThreadKey, yaac_protocol::ModelId),
     SetEffort(ThreadKey, yaac_protocol::EffortId),
@@ -917,6 +952,38 @@ impl YaacApp {
                 Action::Archive(k) => {
                     self.client.archive(&k);
                     self.ui.archive = None;
+                }
+                Action::OpenBulkArchive(keys) => {
+                    let now = self.now();
+                    self.ui.bulk_archive = Some(yaac_core::bulk::BulkArchiveDialog::new(&self.client.state, &keys, now));
+                    self.ui.menu = None;
+                }
+                Action::BulkArchive(keys) => {
+                    self.client.archive_many(&keys);
+                    self.ui.bulk_archive = None;
+                    self.ui.list_sel.clear();
+                }
+                Action::OpenBulkMute(keys) => {
+                    let now = self.now();
+                    let plan = yaac_core::bulk::plan(&self.client.state, &keys, yaac_core::bulk::BulkKind::Mute, now);
+                    self.ui.mute = yaac_core::mute::MuteDialog::many(plan.eligible, now, self.zone);
+                    self.ui.menu = None;
+                }
+                Action::MuteMany(keys, until) => {
+                    self.client.mute_many(&keys, until);
+                    self.ui.mute = None;
+                    self.ui.list_sel.clear();
+                }
+                Action::UnmuteMany(keys) => {
+                    let now = self.now();
+                    let plan = yaac_core::bulk::plan(&self.client.state, &keys, yaac_core::bulk::BulkKind::Unmute, now);
+                    self.client.unmute_many(&plan.eligible);
+                    self.ui.menu = None;
+                    self.ui.list_sel.clear();
+                }
+                Action::ClearSelection => {
+                    self.ui.list_sel.clear();
+                    self.ui.menu = None;
                 }
                 Action::Rename(k, t) => self.client.rename(&k, &t),
                 Action::SetModel(k, m) => self.client.set_next_model(&k, m),
@@ -1707,6 +1774,90 @@ mod tests {
         assert!(!ctx.text_edit_focused());
         keys(&ctx, &mut app, vec![press(Key::F2, Modifiers::NONE)]);
         assert!(app.ui.rename.is_some());
+    }
+
+    /// A click on a sidebar row (press and release on separate frames) with these modifiers.
+    fn click_row(ctx: &egui::Context, app: &mut YaacApp, key: &ThreadKey, button: egui::PointerButton, m: Modifiers) {
+        let rect = app.ui.list_rows.iter().find(|(k, _)| k == key).map(|(_, r)| *r).unwrap_or_else(|| panic!("{key:?} is drawn"));
+        click_at(ctx, app, rect.center(), button, m);
+    }
+
+    fn click_at(ctx: &egui::Context, app: &mut YaacApp, at: egui::Pos2, button: egui::PointerButton, m: Modifiers) {
+        let frame = |mut events: Vec<egui::Event>| {
+            events.insert(0, egui::Event::ModifiersChanged(m));
+            egui::RawInput { screen_rect: screen(), events, ..Default::default() }
+        };
+        window_frame(ctx, app, frame(vec![egui::Event::PointerMoved(at)]));
+        window_frame(ctx, app, frame(vec![egui::Event::PointerButton { pos: at, button, pressed: true, modifiers: m }]));
+        window_frame(ctx, app, frame(vec![egui::Event::PointerButton { pos: at, button, pressed: false, modifiers: m }]));
+    }
+
+    #[test]
+    fn ctrl_click_two_rows_and_archive_selected_sends_one_archive_each_with_its_own_op_id() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.apply(vec![Action::Open(threads::fix())]);
+        for _ in 0..3 {
+            keys(&ctx, &mut app, vec![]);
+        }
+        let (users, billing) = (threads::users(), threads::billing());
+        // Ctrl+click two rows: both selected, neither opened.
+        click_row(&ctx, &mut app, &users, egui::PointerButton::Primary, CTRL);
+        click_row(&ctx, &mut app, &billing, egui::PointerButton::Primary, CTRL);
+        assert_eq!(app.ui.list_sel.len(), 2);
+        assert_eq!(app.client.state.selected_thread(), Some(&threads::fix()), "Ctrl+click opens nothing");
+        // Right-click one of them: the selection's menu.
+        click_row(&ctx, &mut app, &billing, egui::PointerButton::Secondary, Modifiers::NONE);
+        assert_eq!(app.ui.menu, Some(Menu::Selection(billing.clone())));
+        // Its first entry, "Archive selected (2)…", opens one confirmation for both.
+        let item = app.ui.list_rows.iter().find(|(k, _)| *k == billing).map(|(_, r)| egui::pos2(r.right() + 60.0, r.top() + 16.0)).unwrap();
+        click_at(&ctx, &mut app, item, egui::PointerButton::Primary, Modifiers::NONE);
+        let d = app.ui.bulk_archive.clone().expect("the bulk confirmation");
+        assert_eq!(d.title, "Archive 2 threads?");
+        assert_eq!(d.skipped, None);
+        // Enter confirms: one `thread/archive` per thread, each with its own operation id.
+        let hub = app.demo.clone().unwrap();
+        let before = hub.requests().len();
+        keys(&ctx, &mut app, vec![press(Key::Enter, Modifiers::NONE)]);
+        assert!(app.ui.bulk_archive.is_none());
+        let archives: Vec<_> = hub.requests().into_iter().skip(before).filter(|(_, m, _)| m == "thread/archive").collect();
+        assert_eq!(archives.len(), 2, "{archives:?}");
+        let ops: BTreeSet<String> = archives.iter().map(|(_, _, p)| p["opId"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(ops.len(), 2, "distinct operation ids");
+        let ids: BTreeSet<String> = archives.iter().map(|(_, _, p)| p["threadId"].as_str().unwrap().to_owned()).collect();
+        assert_eq!(ids, BTreeSet::from([users.thread.to_string(), billing.thread.to_string()]));
+        // Both moved to Archived; the selection is gone; nothing is sent again.
+        app.pump_demo();
+        assert!(app.ui.list_sel.is_empty());
+        assert!(app.client.state.summary(&users).unwrap().archived && app.client.state.summary(&billing).unwrap().archived);
+        assert!(app.client.bulk_report.is_none(), "all succeeded: no report");
+        let n = hub.requests().len();
+        keys(&ctx, &mut app, vec![]);
+        assert!(hub.requests()[n..].iter().all(|(_, m, _)| m != "thread/archive"));
+    }
+
+    #[test]
+    fn shift_click_ranges_esc_clears_and_a_plain_click_opens() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.apply(vec![Action::Open(threads::search())]);
+        for _ in 0..3 {
+            keys(&ctx, &mut app, vec![]);
+        }
+        // From the open thread down to billing-service, across two groups.
+        click_row(&ctx, &mut app, &threads::billing(), egui::PointerButton::Primary, Modifiers::SHIFT);
+        assert_eq!(app.ui.list_sel.in_order(&app.ui.list_order), [threads::search(), threads::ci(), threads::billing()]);
+        // The bar under the list says so.
+        assert!(app.ui.list_focus);
+        keys(&ctx, &mut app, vec![press(Key::Escape, Modifiers::NONE)]);
+        assert!(app.ui.list_sel.is_empty(), "Esc clears it");
+        // Ctrl+A with focus in the list: every listed row.
+        keys(&ctx, &mut app, vec![press(Key::A, CTRL)]);
+        assert_eq!(app.ui.list_sel.len(), app.ui.list_order.len());
+        // A plain click opens the row and clears the selection.
+        click_row(&ctx, &mut app, &threads::users(), egui::PointerButton::Primary, Modifiers::NONE);
+        assert!(app.ui.list_sel.is_empty());
+        assert_eq!(app.client.state.selected_thread(), Some(&threads::users()));
     }
 
     #[test]

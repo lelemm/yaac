@@ -1127,11 +1127,12 @@ impl Client {
     /// One answer of a bulk Archive; the last one finishes it.
     fn archived_one(&mut self, batch: u64, key: &ThreadKey, outcome: crate::bulk::Outcome) {
         let Some(b) = self.batches.get_mut(&batch) else { return };
+        let refused = matches!(outcome, crate::bulk::Outcome::Failed(_));
         if let Some(slot) = b.outcomes.iter_mut().find(|(k, o)| k == key && o.is_none()) {
-            slot.1 = Some(outcome.clone());
+            slot.1 = Some(outcome);
         }
         // A refusal leaves the thread where it was.
-        if matches!(outcome, crate::bulk::Outcome::Failed(_))
+        if refused
             && let Some(r) = self.state.threads.get_mut(key)
         {
             r.summary.archived = false;

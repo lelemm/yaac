@@ -109,12 +109,13 @@ pub(crate) fn with_ctx<R>(app: &YaacApp, card: Option<&ItemId>, f: impl FnOnce(&
         zoom: (app.ui.font_size, ZOOM_MIN, ZOOM_MAX),
         host_windows: app.host_windows,
         focused_card: card,
+        list_selected: app.ui.list_sel.len(),
     };
     f(&ctx)
 }
 
 /// The threads in the sidebar's order, as listed now.
-fn sidebar_order(app: &YaacApp) -> Vec<yaac_core::ThreadKey> {
+pub(crate) fn sidebar_order(app: &YaacApp) -> Vec<yaac_core::ThreadKey> {
     let map = yaac_core::attention::AttentionMap::compute(&app.client.state);
     let open = yaac_core::sidebar::Open { muted: app.ui.muted_open, archived: app.ui.archived_open };
     yaac_core::sidebar::sections(&app.client.state, &map, app.ui.grouping, app.ui.ordering, &app.ui.search, open, app.now(), app.zone)
@@ -271,6 +272,9 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
                 actions.push(Action::OpenDelete(k));
             }
         }
+        Cmd::ArchiveSelected => actions.push(Action::OpenBulkArchive(app.ui.list_sel.in_order(&app.ui.list_order))),
+        Cmd::MuteSelected => actions.push(Action::OpenBulkMute(app.ui.list_sel.in_order(&app.ui.list_order))),
+        Cmd::ClearSelection => actions.push(Action::ClearSelection),
         Cmd::Dismiss => {
             if let Some(k) = thread {
                 let d = st.is_dismissed(&k);

@@ -31,6 +31,9 @@ pub(crate) struct Palette {
     pub on_primary: Color32,
     /// Selected row fill, and selected text: a neutral tint.
     pub selected: Color32,
+    /// A row in the sidebar's multi-selection (D138): a neutral tint at least as strong as
+    /// `selected`, with a bar in the primary text colour at its left edge.
+    pub multi: Color32,
     /// The 2 px focus ring.
     pub focus: Color32,
     /// Running: no hue, the primary text colour.
@@ -73,6 +76,7 @@ impl Palette {
         primary: hex(0xE6E8EC),
         on_primary: hex(0x16181D),
         selected: hex(0x2A2E37),
+        multi: hex(0x30353F),
         focus: hex(0xC9CED6),
         running: hex(0xE6E8EC),
         needs: hex(0xF2B24C),
@@ -101,6 +105,7 @@ impl Palette {
         primary: hex(0x1A1D23),
         on_primary: hex(0xFFFFFF),
         selected: hex(0xE6E8EC),
+        multi: hex(0xE6E8EC),
         focus: hex(0x3A4050),
         running: hex(0x1A1D23),
         needs: hex(0x8F5600),
@@ -148,7 +153,7 @@ impl Palette {
     fn all(&self) -> Vec<Color32> {
         vec![
             self.bg, self.panel, self.raised, self.faint, self.border, self.text, self.text2, self.unavailable, self.primary,
-            self.on_primary, self.selected, self.focus, self.running, self.needs, self.failed, self.done, self.git_added,
+            self.on_primary, self.selected, self.multi, self.focus, self.running, self.needs, self.failed, self.done, self.git_added,
             self.git_modified, self.git_deleted, self.unseen, self.fast, self.code_bg, self.user_bg, self.text_selection(),
         ]
     }
@@ -349,7 +354,7 @@ mod tests {
                 ("git_deleted", p.git_deleted),
             ];
             for (name, c) in texts {
-                for (sname, s) in [("bg", p.bg), ("panel", p.panel), ("raised", p.raised), ("selected", p.selected)] {
+                for (sname, s) in [("bg", p.bg), ("panel", p.panel), ("raised", p.raised), ("selected", p.selected), ("multi", p.multi)] {
                     let r = contrast(c, s);
                     assert!(r >= 4.5, "{} {name} on {sname}: {r:.2}", if p.dark { "dark" } else { "light" });
                 }
@@ -383,7 +388,7 @@ mod tests {
             assert_eq!(p.primary, p.text);
             let v = visuals(&p);
             assert_eq!(v.hyperlink_color, p.text);
-            for c in [p.selected, p.focus, p.primary, p.text_selection(), v.selection.bg_fill] {
+            for c in [p.selected, p.multi, p.focus, p.primary, p.text_selection(), v.selection.bg_fill] {
                 let spread = c.r().max(c.g()).max(c.b()) - c.r().min(c.g()).min(c.b());
                 assert!(spread <= 24, "{c:?} is not a neutral");
             }
