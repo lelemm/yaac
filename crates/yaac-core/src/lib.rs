@@ -25,6 +25,7 @@ pub mod attention;
 pub mod client;
 pub mod compose;
 pub mod commands;
+pub mod components;
 pub mod controls;
 pub mod demo;
 pub mod diff;

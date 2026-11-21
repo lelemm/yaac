@@ -485,6 +485,32 @@ and will be updated once idle, and offers a button to update it immediately.
 The full design — negotiation, the frozen core, how each side adapts without version checks —
 is [09 Compatibility](09-compatibility.md).
 
+### Build ids
+
+**Decided (D135):** every build carries one **build id**, an increasing number, appended to
+each component's own version: `<version>+<id>`. All artefacts of one build share it — the
+window and the hub (one `yaac.exe`), the `yaacd` bundle the hub installs on targets, and the
+installer (`YAAC-Setup-<version>+<id>.exe`, file version `<numeric version>.<id>`).
+
+- `scripts/build-id.sh` allocates the next number once per build (counter in `.build/counter`,
+  not committed); `scripts/build-windows.sh` passes it as `YAAC_BUILD_ID` to `npm run build`
+  (the daemon) and to `cargo build` (window and hub), and writes it beside the exe for
+  `scripts/build-installer.sh`.
+- A build made without the scripts — a plain `cargo build`, tests — is a **development build**:
+  `+dev.<hash of its sources>` for the window and hub, `+dev` for the daemon. Development
+  builds are told apart but have no order.
+- **Checked when YAAC starts, not when it is built.** The window compares itself with the hub
+  at `hub/hello`: a hub of an older build (or a different development build) is replaced by
+  this build's hub; a window older than the hub is told to update. The hub compares each
+  target's serving `yaacd` with its own build as it connects, and reports a daemon of a lower
+  build number as **older** (`DaemonSummary.older`, also set when the daemon only speaks an
+  older protocol). The window gathers these answers — window, hub, and `yaacd` on each enabled
+  target — into **Settings → Advanced → Components**, and the footer shows "N to update" while
+  any is older.
+- Detecting is all this does: updating an older daemon follows the rules above (at idle, or
+  **Update now**). Build ids are build identity, not the protocol version: no protocol
+  behaviour depends on them (CLAUDE.md, invariant 5).
+
 ### Staying small
 
 - An idle runtime process on the target (target: under 60 MB resident). `yaacd` exits by itself

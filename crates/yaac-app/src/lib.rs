@@ -57,8 +57,10 @@ use std::process::ExitCode;
 
 use yaac_core::demo::Scenario;
 
-/// This build, exchanged in `hub/hello`.
-pub const BUILD: &str = env!("CARGO_PKG_VERSION");
+/// This build, exchanged in `hub/hello`: the version plus a hash of what was built
+/// (`build.rs`), so two builds of one version are told apart and a window replaces an older
+/// hub instead of attaching to it as its own build.
+pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), "+", env!("YAAC_BUILD_ID"));
 
 /// How the window starts.
 #[derive(Debug)]

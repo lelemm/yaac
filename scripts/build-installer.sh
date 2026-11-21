@@ -32,6 +32,12 @@ if [ "$build" = 1 ]; then
   "$root/scripts/build-windows.sh"
 fi
 [ -f "$out/yaac.exe" ] || { echo "$out/yaac.exe is missing: run scripts/build-windows.sh" >&2; exit 1; }
+# The build id the exe was made with (scripts/build-windows.sh writes it beside the exe), so
+# the installer carries the same one: `<version>+<id>`, file version `<numeric>.<id>`.
+id=$(tr -cd '0-9' <"$out/build-id" 2>/dev/null || true)
+[ -n "$id" ] || { echo "$out/build-id is missing: rebuild with scripts/build-windows.sh" >&2; exit 1; }
+version="$version+$id"
+numeric="$numeric.$id"
 
 # The icon build.rs drew for the exe's resources (same drawing as the window's icon).
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}"

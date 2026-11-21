@@ -3,6 +3,7 @@
 
 use eframe::egui::{self, Margin, RichText, pos2, vec2};
 use yaac_core::attention::Mark;
+use yaac_core::components::ComponentStatus;
 use yaac_core::settings::{CHOOSE_DISTRO, DistroOption, DistroPhase, DistroPicker, LEGEND, Page, SshAction, diagnostics, distro_picker, kind_label, providers_view, targets_view};
 use yaac_core::ssh_setup::{Credential, Phase, Revoke, RevokePhase, Secret, SetupRecord, SignInMethod, SshConn, SshSetup, SshSetupBackend, StepLine, StepMark, form_ready};
 use yaac_protocol::attach::{SshTransport, TargetTransport, WslTransport};
@@ -1160,6 +1161,21 @@ fn advanced(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
             actions.push(Action::ClearCache);
         }
         ui.label(widgets::secondary("Thread lists and transcripts are read again from each target. Drafts are never touched.", &p));
+    });
+    // Every component against this window's build (D135): checked as YAAC starts — the hub at
+    // `hub/hello`, each target's yaacd when the hub connects to it.
+    widgets::heading(ui, "Components");
+    egui::Grid::new("components").num_columns(3).spacing(vec2(18.0, 6.0)).show(ui, |ui| {
+        for c in yaac_core::components::components(&app.client.state, crate::BUILD) {
+            ui.label(widgets::secondary(&c.name, &p));
+            ui.label(c.build.as_deref().unwrap_or("—"));
+            match &c.status {
+                ComponentStatus::Current => ui.label(widgets::secondary("up to date", &p)),
+                ComponentStatus::Outdated(why) => ui.label(RichText::new(format!("needs updating · {why}")).color(p.failed)),
+                ComponentStatus::Unknown(why) => ui.label(widgets::secondary(why, &p)),
+            };
+            ui.end_row();
+        }
     });
     widgets::heading(ui, "Diagnostics");
     let target = app.ui.set.diag_target.clone().filter(|t| app.client.state.target(t).is_some()).or_else(|| app.client.state.targets.first().map(|t| t.entry.id.clone()));

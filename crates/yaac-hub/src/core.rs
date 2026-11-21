@@ -264,9 +264,15 @@ fn parse<T: DeserializeOwned>(params: Value) -> Result<T, ErrorObject> {
     serde_json::from_value(params).map_err(|e| err(ErrorCode::InvalidParams, e.to_string()))
 }
 
-/// Compares builds: `Some(Ordering)` of window against hub by their leading
-/// `major.minor.patch`; equal numbers with a different suffix count as the window being newer
-/// (the window that was just built replaces the hub).
+/// A build's numbered id: the `<id>` of `<version>+<id>` when it is a number (a build made by
+/// the build scripts, `scripts/build-id.sh`); `None` for a development build (`+dev…`) or none.
+fn build_number(build: &str) -> Option<u64> {
+    build.split_once('+').and_then(|(_, id)| id.trim().parse().ok())
+}
+
+/// Compares builds, window against hub: by their leading `major.minor.patch`, then by their
+/// build numbers when both have one. Otherwise, equal numbers with a different suffix count as
+/// the window being newer (the window that was just built replaces the hub).
 fn compare_builds(window: &str, hub: &str) -> std::cmp::Ordering {
     use std::cmp::Ordering as O;
     if window == hub {
@@ -281,9 +287,19 @@ fn compare_builds(window: &str, hub: &str) -> std::cmp::Ordering {
             .collect()
     };
     match numbers(window).cmp(&numbers(hub)) {
-        O::Equal => O::Greater,
+        O::Equal => match (build_number(window), build_number(hub)) {
+            (Some(w), Some(h)) if w != h => w.cmp(&h),
+            _ => O::Greater,
+        },
         other => other,
     }
+}
+
+/// Whether a target's `yaacd` comes from an older build than this hub: both carry a build
+/// number (every artefact of one build shares it, whatever each one's own version) and the
+/// daemon's is lower. Development builds are never called older: they have no order.
+fn daemon_build_older(daemon: &str, hub: &str) -> bool {
+    matches!((build_number(daemon), build_number(hub)), (Some(d), Some(h)) if d < h)
 }
 
 // ── The core ──────────────────────────────────────────────────────────────────────────────
@@ -1419,7 +1435,8 @@ impl Core {
             detail: None,
             daemon: Some(DaemonSummary {
                 build: info.daemon.build.clone(),
-                older: info.daemon_is_older,
+                // Older by protocol, or by build: either way it needs updating.
+                older: info.daemon_is_older || daemon_build_older(&info.daemon.build, &self.cfg.build),
                 schema_hash_matches: info.schema_hash_matches,
             }),
         };
@@ -2695,4 +2712,36 @@ fn read_from_cache(cache: &mut crate::cache::Cache, target: &TargetId, p: &Threa
     let cursor = (next < newest_first.len()).then(|| PageCursor::new(format!("hubcache:{next}")));
     let context = if skip == 0 { cached.live.context.clone() } else { None };
     Ok(to_value(&ThreadReadResult { items, position: cached.position, cursor, uploads: vec![], context }))
+}
+
+#[cfg(test)]
+mod build_tests {
+    use std::cmp::Ordering as O;
+
+    use super::{compare_builds, daemon_build_older};
+
+    #[test]
+    fn numbered_builds_order_by_their_number() {
+        assert_eq!(compare_builds("0.1.0+42", "0.1.0+42"), O::Equal);
+        assert_eq!(compare_builds("0.1.0+43", "0.1.0+42"), O::Greater, "a newer window replaces the hub");
+        assert_eq!(compare_builds("0.1.0+41", "0.1.0+42"), O::Less, "an older window is refused");
+        // The version still comes first.
+        assert_eq!(compare_builds("0.2.0+1", "0.1.0+99"), O::Greater);
+        assert_eq!(compare_builds("0.1.0+99", "0.2.0+1"), O::Less);
+        // Development builds (and builds from before ids) have no order: the window wins.
+        assert_eq!(compare_builds("0.1.0+dev.ab12", "0.1.0+dev.cd34"), O::Greater);
+        assert_eq!(compare_builds("0.1.0+dev.ab12", "0.1.0+42"), O::Greater);
+        assert_eq!(compare_builds("0.1.0+42", "0.1.0"), O::Greater);
+    }
+
+    #[test]
+    fn a_daemon_is_older_only_by_a_lower_build_number() {
+        // The daemon's own version may differ from the app's; the build number is shared.
+        assert!(daemon_build_older("0.1.0+41", "0.1.0+42"));
+        assert!(daemon_build_older("0.3.0+41", "0.1.0+42"));
+        assert!(!daemon_build_older("0.1.0+42", "0.1.0+42"));
+        assert!(!daemon_build_older("0.1.0+43", "0.1.0+42"));
+        assert!(!daemon_build_older("0.1.0+dev", "0.1.0+42"), "a development daemon has no order");
+        assert!(!daemon_build_older("0.1.0+41", "0.1.0+dev.ab12"));
+    }
 }
