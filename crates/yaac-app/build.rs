@@ -13,6 +13,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/app_icon.rs");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=WINDRES");
+    build_id();
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     if os != "windows" {
@@ -25,6 +26,69 @@ fn main() {
     }
     if let Err(e) = embed(&out) {
         println!("cargo:warning=no icon resource embedded: {e}");
+    }
+}
+
+/// `YAAC_BUILD_ID` for the code: the build's number when the build scripts allocated one
+/// (`scripts/build-id.sh`, passed in `YAAC_BUILD_ID` — the same number the `yaacd` bundle
+/// carries), else `dev.<hash>` of everything that goes into this binary — every crate's
+/// sources and manifests, the lock file, and the embedded `yaacd` bundle. The window and the
+/// hub are the same executable and say `BUILD` in `hub/hello`; without an id, every build of
+/// one version said the same thing, so a window attached to an older hub of that version as
+/// if it were its own build (and found methods missing, e.g. `hub/wsl/distros`) instead of
+/// replacing it.
+fn build_id() {
+    println!("cargo:rerun-if-env-changed=YAAC_BUILD_ID");
+    if let Some(n) = std::env::var("YAAC_BUILD_ID").ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())) {
+        println!("cargo:rustc-env=YAAC_BUILD_ID={n}");
+        return;
+    }
+    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_default());
+    let root = manifest.join("..").join("..");
+    let mut inputs: Vec<PathBuf> = vec![root.join("Cargo.toml"), root.join("Cargo.lock"), root.join("daemon").join("dist").join("yaacd.mjs")];
+    if let Ok(crates) = std::fs::read_dir(root.join("crates")) {
+        let mut dirs: Vec<PathBuf> = crates.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        dirs.sort();
+        for dir in dirs {
+            for part in ["src", "assets", "Cargo.toml", "build.rs"] {
+                inputs.push(dir.join(part));
+            }
+        }
+    }
+    let mut files = Vec::new();
+    for input in &inputs {
+        println!("cargo:rerun-if-changed={}", input.display());
+        collect(input, &mut files);
+    }
+    files.sort();
+    // FNV-1a, 64 bits: stable across toolchains, unlike `DefaultHasher`.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    };
+    for f in &files {
+        let rel = f.strip_prefix(&root).unwrap_or(f);
+        eat(rel.to_string_lossy().replace('\\', "/").as_bytes());
+        eat(&[0]);
+        if let Ok(bytes) = std::fs::read(f) {
+            eat(&bytes);
+        }
+        eat(&[0]);
+    }
+    println!("cargo:rustc-env=YAAC_BUILD_ID=dev.{h:016x}");
+}
+
+/// Every file under `path` (or `path` itself), skipping what does not exist.
+fn collect(path: &Path, out: &mut Vec<PathBuf>) {
+    if path.is_file() {
+        out.push(path.to_path_buf());
+    } else if let Ok(entries) = std::fs::read_dir(path) {
+        for e in entries.filter_map(Result::ok) {
+            collect(&e.path(), out);
+        }
     }
 }
 

@@ -2,6 +2,8 @@
 /target/
 # Packaged builds (scripts/build-windows.sh)
 /dist/
+# The build-id counter (scripts/build-id.sh)
+/.build/
 **/*.rs.bk
 
 # Node / yaacd

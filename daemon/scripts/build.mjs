@@ -6,7 +6,10 @@ import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-const build_id = process.env.YAAC_BUILD_ID ?? `${pkg.version}+dev`;
+// `<version>+<build id>`: the id is the one number every artefact of a build shares
+// (scripts/build-id.sh, passed as YAAC_BUILD_ID); without it this is a development build.
+const id = (process.env.YAAC_BUILD_ID ?? "").trim();
+const build_id = `${pkg.version}+${/^[0-9]+$/.test(id) ? id : "dev"}`;
 
 await build({
   entryPoints: [join(root, "src/main.ts")],

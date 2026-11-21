@@ -16,13 +16,11 @@ struct DistrosWire {
 
 impl Client {
     /// Ask the hub for the installed distros (the Targets page opened, or the user asked
-    /// again). The dropdown says "Loading…" until it answers. A request already out is not
-    /// sent twice.
+    /// again). The dropdown says "Loading…" until it answers. Always sent: a request that was
+    /// never answered must not keep the dropdown on "Loading…" for good, and the refresh
+    /// button must always ask again. (An earlier answer arriving late carries the same list.)
     pub fn load_wsl_distros(&mut self) {
         self.state.wsl_distros.phase = DistroPhase::Loading;
-        if self.pending.values().any(|c| *c == Call::WslDistros) {
-            return;
-        }
         self.request(hub_names::WSL_DISTROS, json!({}), Call::WslDistros);
     }
 

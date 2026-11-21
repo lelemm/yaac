@@ -33,6 +33,11 @@ if ! rustup target list --installed | grep -qx "$target"; then
   rustup target add "$target"
 fi
 
+# One build id for everything this build makes (scripts/build-id.sh): the exe (window and
+# hub) and the daemon bundle it embeds. A caller that already allocated one passes it on.
+YAAC_BUILD_ID=${YAAC_BUILD_ID:-$("$root/scripts/build-id.sh")}
+export YAAC_BUILD_ID
+
 # The hub embeds the daemon bundle it installs on WSL targets.
 if [ -z "$features" ]; then
   (cd "$root/daemon" && { [ -d node_modules ] || npm ci; } && npm run --silent build)
@@ -44,6 +49,7 @@ cargo build --release --locked --target "$target" -p yaac-app $features
 
 mkdir -p "$out"
 cp "$CARGO_TARGET_DIR/$target/release/yaac.exe" "$out/yaac.exe"
+printf '%s\n' "$YAAC_BUILD_ID" >"$out/build-id"
 size=$(wc -c <"$out/yaac.exe")
-echo "built $out/yaac.exe ($size bytes)"
+echo "built $out/yaac.exe ($size bytes), build $YAAC_BUILD_ID"
 sha256sum "$out/yaac.exe"
