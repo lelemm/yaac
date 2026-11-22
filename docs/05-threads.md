@@ -134,6 +134,39 @@ their own.
 The [agents panel](07-ui.md#agents-in-the-thread-view) in the thread view shows the same
 relationships as a tree, from the point of view of the open thread.
 
+### Harness sub-agents
+
+**Decided (D151):** every subagent is visible in YAAC, the harnesses' own included. A
+sub-agent a harness runs inside its own process — Claude Code's `Agent` tool, its background
+and workflow agents; Codex's `spawn_agent` — is a thread of its own in YAAC, linked to the
+thread that started it. *Proposed* (P190–P194):
+
+- **What it is.** Its summary carries `subagent { agentId, agentType, status, readOnly }`, and
+  `spawnedBy` names its parent — the same relation a mesh worker has, always on the same target.
+  The parent counts it among its `children`. Instances that list them declare
+  `subagentThreads`. `subagent` is the flag the window branches on ("Claude subagent ·
+  Explore" against "YAAC worker"), never the provider kind.
+- **Where it shows.** Under its parent only: in the parent's agents pill, card and docked panel
+  (Workers), and in the parent's worker count in the sidebar. It is never a sidebar row of its
+  own while its parent is listed. It does not use up the discovery number cap: it is indexed
+  while its parent is and it is itself within the age cap, at most `maxThreads` per parent,
+  newest first; a running one is never cut.
+- **Live.** It appears as soon as the harness reports it (Claude Code: the `task_started` of
+  the parent's query; Codex: `thread/started`), runs a turn while it works, and its state
+  follows the harness (running, done, failed, stopped). Its transcript streams while YAAC runs
+  the parent (Claude Code forwards the subagent's own messages); otherwise it is read again
+  from the harness each time it is opened, like a thread in use elsewhere.
+- **What the user can do.** Open and read it, always. It is **read-only**: neither harness
+  offers a supported way to continue its sub-agent from outside without making a second
+  writer (invariant 9). It is held by "the agent that started it" with the harness's reason
+  (`takeOverBlocked`): no turns, no rename, archive, delete, move or fork, no **Take over**. Its
+  banner names the parent and offers **Open parent**, the agent to message instead.
+- **Its address** is an ordinary thread address, `<target id>/<thread id>`, where the thread
+  id is `yaacd`'s usual one for `(instance, native id)`. Native ids: Claude Code
+  `<sessionId>/agent-<agentId>`, Codex the sub-agent's thread id. An agent-call pill finds it
+  with `yaac_core::agentcall::resolve_subagent(caller, agentId)`: the thread beneath the caller
+  whose `subagent.agentId` (or native id) is the id the call names.
+
 ## Keeping the list small: pin, mute, and archive
 
 **Decided.** A fleet produces more threads than anyone can watch. Three actions, all in a

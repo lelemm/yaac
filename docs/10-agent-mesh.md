@@ -703,6 +703,12 @@ item kinds, no version bump.
   machines is what git and the user's own tooling are for.
 - **No broadcast.** Every message has one recipient.
 - **No answering on the user's behalf**, ever.
+- **No mesh around a harness's own sub-agents.** Claude Code's and Codex's own sub-agents are
+  threads in YAAC (D151, [05](05-threads.md#harness-sub-agents)) — listed under their parent,
+  readable, and a pill in the parent's agent calls opens them — but they are not mesh
+  workers: no budget, no inbox, read-only, and the mesh never messages one (its parent's own
+  tools do). Its `spawnedBy` is the same relation a mesh worker's is, so it sits in the
+  parent's Workers.
 
 ## Agent calls in the transcript
 

@@ -625,3 +625,63 @@ receiverThreadIds, prompt, model, reasoningEffort, agentsStates: {<thread id>: {
 rollouts is the code-mode exec wait, not an agent wait.) YAAC's tools arrive as
 `mcpToolCall` items with `server: "yaac"`.
 
+## Subagents (verified 2026-11-22)
+
+What each harness exposes of the sub-agents it runs itself (D151). Checked against Claude Code
+2.1.330 / Agent SDK 0.3.329 (`sdk.d.ts`, `sdk.mjs`, and read-only SDK calls on the owner's
+stored sessions — shapes and counts only) and codex-cli 0.170.0 (`app-server generate-ts`,
+`~/.codex/state_5.sqlite` opened read-only). No live session was touched.
+
+**Claude Code**
+
+- **Storage.** `~/.claude/projects/<dir>/<sessionId>/subagents/agent-<agentId>.jsonl`, one
+  per subagent, beside `agent-<agentId>.meta.json`. Workflow agents sit one folder down
+  (`subagents/workflows/<run>/`) with the run's `journal.jsonl` (`started`, `result`,
+  `failed` lines by `agentId`). The owner's store: ~1800 transcripts in 13 project folders,
+  ~270 direct (Agent tool) and the rest workflow agents. Agent ids are 17 hex digits after `a`.
+- **Lines** carry `isSidechain: true`, `agentId`, and `sessionId` = the parent session.
+- **Sidecar** keys: `agentType`, `description`, `model`, `effort`, `finished`, `stoppedByUser`,
+  `toolUseId` (the parent's Agent tool call), `requestShape` (`background`/`foreground`),
+  `spawnDepth`, `parentAgentId` (nested), `worktreePath`/`worktreeBranch`; workflow agents
+  have `workflowPhase` and no `toolUseId`. 27 of the direct ones have neither `finished` nor
+  `stoppedByUser` (their process went away). Not exposed by the SDK; its own
+  `importSessionToStore` carries it along.
+- **SDK.** `listSubagents(sessionId)` returns the agent ids (it walks `subagents/`
+  recursively, workflow agents included); `getSubagentMessages(sessionId, agentId)` returns
+  `SessionMessage`s whose `parent_tool_use_id` is the Agent tool call (a string) and
+  `parent_agent_id` null for a top-level subagent; with a wrong session it returns `[]`. The
+  transcript is appended while the subagent runs, so it is readable then.
+- **Parent transcript.** The Agent tool's `toolUseResult` has `agentId`, `status`
+  (`async_launched`, …), `description`, `prompt`, `resolvedModel`, `outputFile`,
+  `canContinueAgent`.
+- **Live stream.** `system/task_started` (`task_id`, `tool_use_id`, `description`,
+  `subagent_type`, `task_type: "local_agent"`, `prompt`, `parent_task_id`, `run_id`),
+  `task_progress`, `task_updated` (`patch.status`: `completed`, `failed`, `killed`, …),
+  `task_notification` (`status`: `completed`/`failed`/`stopped`, `summary`). Messages from
+  inside carry `parent_tool_use_id`, and (newer) `agent_id`, documented as "the `task_id` of
+  its task events": the task id is the agent id. By default only tool use/result blocks are
+  forwarded; `forwardSubagentText: true` forwards its text and thinking too.
+- **Continuing one.** Only from inside the parent: its `SendMessage` tool (`canContinueAgent`).
+  `SDKUserMessage` has no field that addresses a subagent ("subagent-addressed messages are out
+  of scope" in the interrupt receipt). So YAAC shows them read-only.
+- `claude agents --json` lists *sessions* (interactive and background), not subagents; those
+  are ordinary threads already.
+
+**Codex**
+
+- A sub-agent is a thread. `Thread.source` is `{ subAgent: { thread_spawn: { parent_thread_id,
+  depth, agent_path, agent_nickname, agent_role } } }` (other kinds: `review`, `compact`,
+  `memory_consolidation`, `other` — no parent). `Thread.agentNickname`, `agentRole` too.
+- `thread/list` returns them when `sourceKinds` includes `subAgentThreadSpawn` (yaacd always
+  sent every kind; until D151 they were listed as top-level programmatic threads). They read
+  with `thread/items/list` like any thread.
+- The owner's store: 125 sub-agent threads (`source` `{"subagent":{"thread_spawn":…}}`), 100
+  archived; `thread_spawn_edges(parent_thread_id, child_thread_id, status)` has 125 rows (not
+  exposed by the app-server).
+- Live: `thread/started` with the sub-agent's thread; the parent's
+  `collabAgentToolCall` items (`spawnAgent`, `sendInput`, `wait`, `closeAgent`, …) name it in
+  `receiverThreadIds` with `agentsStates`; `subAgentActivity` items (`started`, `interacted`,
+  `interrupted`, `completed`) also exist.
+- Continuing one from outside: `turn/start` on its thread id is not refused by the schema, but
+  the spawning agent drives it; YAAC does not send to one (a second writer). Not tried live.
+

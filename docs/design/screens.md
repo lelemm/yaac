@@ -1521,3 +1521,20 @@ D150. The orchestrator's second turn, as `yaacd` reads its `yaac` tool calls:
 - The resumed-subagent line opened: **To** and the pill, the message in full, and **Raw call**
   open — the input as indented JSON and the output as the harness returned it, each in a code
   block with its copy button. The raw form is there for debugging, never in the line.
+
+### 95 — A harness's own subagents under their parent (search-service)
+
+- D151. search-service (Claude Code on gpu-box) has one YAAC worker, index-rebuild, and two
+  subagents Claude Code started itself (demo scene *Claude Code's own subagents*). The docked
+  **Related agents** lists all three under **Workers (3)**: index-rebuild ("YAAC worker ·
+  Claude · opus-5.5 · gpu-box", needs you), *Check the index schema* (done, "Claude subagent ·
+  general-purpose") and *Map the reindex script* (running, "Claude subagent · Explore").
+- The sidebar has no row for either subagent; search-service's line counts 3 workers.
+
+### 96 — A subagent opened: read-only, with the reason and its parent
+
+- *Map the reindex script* open: the lock and **Read-only** tag, "Spawned by search-service ↗
+  on gpu-box", and the banner "Claude subagent · Explore, started by search-service. You can
+  read it, but not send to it." with Claude Code's reason under it ("Only the agent that
+  started a Claude Code subagent can continue it (its SendMessage tool)…") and **Open parent**.
+  No Take over, no Fork. Its own transcript: the task, the command it ran, its reply streaming.

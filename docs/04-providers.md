@@ -380,6 +380,21 @@ came). `yaacd` decides when to call it ([05](05-threads.md#folder-trust)); the i
 | Claude Code | no | Trust is `projects["<folder>"].hasTrustDialogAccepted` in `~/.claude.json`. The only programmatic way to set it is the Agent SDK's `workspaceTrust` option, which is not in the SDK's published types and is marked `@internal` in the CLI (2.1.330 / SDK 0.3.329) — not a supported interface, so it is not used. |
 | Fake | no | |
 
+### Listing a harness's own sub-agents is a capability
+
+**Decided (D151); Proposed (P190–P194).** A provider that reports **`subagentThreads`** lists
+the sub-agents its harness runs itself as conversations of their own: a `NativeThreadInfo` with
+`parent` (the parent's native id) and `subagent { agentId, agentType, status, readOnly }`, both
+in its listing (not counted towards the listing's `max`) and as `threadChanged` events while
+they start, run and end; `readThread` and `lookupThread` take their native ids. `yaacd` files
+them under the parent ([05](05-threads.md#harness-sub-agents)).
+
+| Harness | `subagentThreads` | How |
+| --- | --- | --- |
+| Claude Code | yes | `listSubagents` / `getSubagentMessages` (SDK), the `agent-<id>.meta.json` sidecar, the query's `task_*` events with `forwardSubagentText`. Native id `<sessionId>/agent-<agentId>`. Read-only. |
+| Codex | yes | Threads with `source.subAgent.thread_spawn.parent_thread_id`; `thread/started`, `thread/status/changed`, the parent's `collabAgentToolCall.agentsStates`. Read-only. |
+| Fake | yes | `/fake subagent` (README). Read-only. |
+
 ### Fast mode is a model capability
 
 **Decided (D125); the rules below are Proposed (P54–P56).** Fast mode runs a turn faster, at a
