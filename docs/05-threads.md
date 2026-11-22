@@ -236,6 +236,28 @@ How live the view is depends on what the harness offers (`FollowExternal`):
 A thread in use elsewhere can still be **forked** — that is the way to act on it without
 disturbing whoever has it.
 
+### Taking it over
+
+**Decided (D140):** the user can also **take over** a thread another program holds — usually
+the owner moving from one client to another. One click, no confirmation; the other program is
+not stopped and will not see what is sent from YAAC from then on. The thread is writable here
+at once.
+
+*Proposed (P110, P111):* `thread/takeOver` (an operation, under `threadTakeOver`) records on
+the thread record which holders it was taken from, and journals "Taken over from <where> · the
+other program is still open and will not see these messages". While the harness reports only
+those holders, the thread stays writable; a *different* holder makes it read-only again (with a
+notice); the holders going away simply ends the takeover. It survives a `yaacd` restart.
+
+| Harness | Holder named by | Refused when |
+| --- | --- | --- |
+| Codex (daemon) | The last turn another client started (Codex cannot name clients), so a new turn from another client is a new holder. | That client's turn is running: input would join it. A second client can rejoin a loaded thread and start turns in it; the other client, if subscribed, does receive them. |
+| Claude Code | The process of an interactive session; the id of a background one. | The holder is a **background** session: Claude Code refuses to resume it (`session_held_by_background`) until it is stopped there, which YAAC never does. Also while the interactive session is mid-turn. An idle interactive `claude` does not stop a resume and does not see what is sent. |
+
+After a takeover, approvals and questions the harness re-surfaces to `yaacd` (Codex re-sends a
+pending request to a client that subscribes) are answerable here; those that stayed with the
+other program are not.
+
 ## Discovery
 
 `yaacd` builds the thread index by scanning each instance's conversations (`ThreadList`).

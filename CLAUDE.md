@@ -36,8 +36,9 @@ harnesses and on different machines messaging, spawning, and waiting for each ot
    on disk. A question or approval from an agent is journaled before anything else happens to
    it and is never dropped, auto-answered, or timed out by YAAC.
 9. **One writer per thread.** A thread that is known to be in use elsewhere is shown live and
-   read-only. When it cannot be told whether a thread is in use, YAAC takes it over — only
-   positive evidence of another user makes a thread read-only.
+   read-only until the user takes it over (**Take over**, D140). When it cannot be told whether
+   a thread is in use, YAAC takes it over — only positive evidence of another user makes a
+   thread read-only.
 10. **No blind retries.** State-changing requests carry an operation id; an uncertain outcome
     is shown to the user, never re-sent automatically.
 11. **`yaacd` may start a Codex daemon, never stop, restart, or update one.** Codex is driven

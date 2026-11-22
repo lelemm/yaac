@@ -364,6 +364,40 @@ Learn reference pages (az `account`, `config`; Azure DevOps REST 7.1) and tested
   `{timelineId}`; the PR web URL `{repo webUrl}/pullrequest/{id}`; `context.buildId` in a policy
   evaluation (untyped in the schema); `$top` on the projects probe.
 
+## Take over (verified 2026-11-21)
+
+What happens when YAAC sends to a conversation another program holds (D140). Run with scratch
+sessions only, deleted afterwards; no existing session was touched.
+
+**Codex** — a private `codex app-server --listen unix://…` (CLI 0.170.0) with a scratch
+`CODEX_HOME`, two WebSocket clients A and B:
+
+- A starts a thread and runs a turn. B's `thread/read` shows it `idle`; B's `thread/resume`
+  of the thread A has loaded **succeeds**, and B's `turn/start` is **accepted** and runs.
+- A, still subscribed, **receives B's turn** (`turn/started`, `turn/completed`), and can start a
+  turn afterwards itself. Codex does not lock a thread to one client: "the other program will
+  not see these messages" is not literally true for a Codex client that stays subscribed — it
+  gets the events; whether it shows them is up to that client.
+- Codex cannot name which client started a turn; `yaacd` names the holder by that turn.
+  `turn/start` during another client's turn joins it (known), so a takeover is refused then.
+
+**Claude Code** — `claude` 2.1.330 and `@anthropic-ai/claude-agent-sdk` 0.3.329, a session
+created with `claude -p --session-id`:
+
+- Opened interactively (`claude --resume <id>` in tmux), `claude agents --json` lists it as
+  `{ pid, kind: "interactive", sessionId, status: "idle" }`. An SDK `query({ resume: <id> })`
+  then **runs normally** — same session id, a normal `result` — and the terminal does not show
+  that turn.
+- Run as a background session (`claude --bg --resume <id>`), the list shows
+  `{ pid, id, kind: "background", sessionId, status: "idle", state: "done" }` — the pid is the
+  shared background host's, so the id names it. An SDK resume is **refused at start-up**: stderr
+  "That session is running in the background (<id>). Run `claude attach <id>` to open it, or
+  `claude stop <id>` first to resume it here. Add --fork-session to branch off a copy instead.",
+  exit code 1; with `CLAUDE_CODE_STARTUP_FAILURE_RESULTS=1` also an `error_during_execution`
+  result with `startup_failure_reason: "session_held_by_background"`. Even `state: "done"`
+  holds it. YAAC therefore disables **Take over** for a background holder with that reason and
+  never stops the session itself.
+
 ## Fast mode (checked 2026-11-21)
 
 Read from `codex app-server generate-ts` (CLI 0.170.0, against daemon 0.171.0) and the
