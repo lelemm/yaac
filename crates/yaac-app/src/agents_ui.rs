@@ -166,7 +166,7 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), CARD_ROW), Sense::click());
                             if to_hidden && !pl.shows(row) {
                                 // Opened from "more": the first agent the pill hides at the top.
-                                ui.scroll_to_rect(r.expand2(vec2(0.0, CARD_HEAD)), Some(egui::Align::TOP));
+                                ui.scroll_to_rect(r.expand2(vec2(0.0, 6.0)), Some(egui::Align::TOP));
                                 to_hidden = false;
                             }
                             any_focus |= resp.has_focus();
@@ -443,7 +443,11 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
                     DockEntry::Fold { rows, word } => {
                         let i = c.relation as usize;
                         let open = app.ui.dock_folds_open[i];
-                        if fold_line(ui, &p, &format!("{} {word}", rows.len()), open).clicked() {
+                        let line = fold_line(ui, &p, &format!("{} {word}", rows.len()), open);
+                        if std::mem::take(&mut app.ui.dock_to_fold) {
+                            line.scroll_to_me(Some(egui::Align::BOTTOM));
+                        }
+                        if line.clicked() {
                             app.ui.dock_folds_open[i] = !open;
                         }
                         if open {

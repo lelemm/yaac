@@ -129,6 +129,8 @@ pub(crate) struct UiState {
     pub card_to_hidden: bool,
     /// The docked panel's "N finished" folds that are open, by relation (D168).
     pub dock_folds_open: [bool; 3],
+    /// Scroll the docked panel to its first fold once (screenshots).
+    pub dock_to_fold: bool,
     pub menu: Option<Menu>,
     /// The sidebar's ordering (D116).
     pub ordering: yaac_core::sidebar::Ordering,
@@ -271,6 +273,7 @@ impl UiState {
             pill_more: None,
             card_to_hidden: false,
             dock_folds_open: [false; 3],
+            dock_to_fold: false,
             menu: None,
             ordering: yaac_core::sidebar::Ordering::default(),
             steady: yaac_core::sidebar::Steady::default(),
