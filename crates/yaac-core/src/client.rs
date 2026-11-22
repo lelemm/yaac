@@ -1258,7 +1258,7 @@ impl Client {
                 });
                 let r = self.state.threads.get_mut(key).expect("listed");
                 r.summary.placement = Some(yaac_protocol::ThreadPlacement {
-                    project: yaac_protocol::ProjectId::new(p.wire_id.clone()),
+                    project: yaac_protocol::ProjectId::new(p.wire_id),
                     worktree: root.map(yaac_protocol::TargetPath::new),
                     worktree_name: name,
                 });

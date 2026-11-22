@@ -1371,3 +1371,50 @@ the list.*
   Release notes · uncertain: billing-service", wrapped to at most three lines, and a cross that
   dismisses it. Hovering it lists each thread with its reason ("Release notes: staging is
   offline"; for an uncertain one, that it may or may not be archived and is not asked again).
+
+### 74 — Moving a thread whose folder follows
+
+*Move… from a thread's menu (D139); its harness has `threadMoveWorkingDirectory`.*
+
+- **Fix frame decoder** (Codex) chosen; the shell dimmed by the scrim. A dialog "Move “Fix
+  frame decoder”": **Machine** "devbox · a thread stays on its machine" (shown, never chosen);
+  **Project**, a field-shaped dropdown on the faint fill with a chevron, preselected to the
+  first project the thread is not in (**api**); its menu lists the machine's projects, each
+  with its folder under it in mono. **Worktree · optional**, the same dropdown: the project's
+  own checkout first ("main · the project's own"), then the checkouts YAAC knows there; for a
+  project outside git it reads "None", disabled, with "This project is not in git." under it.
+- An information mark and the sentence: "The agent will work in /home/dev/api from its next
+  turn. A running turn finishes where it is." A filled **Move  ⏎** and **Cancel  Esc**.
+
+### 75 — Moving a thread whose folder stays
+
+- As 74 for **billing-service** (Claude Code: no `threadMoveWorkingDirectory`), preselected to
+  **yaac**: "Only where YAAC lists it changes; the agent keeps working in /home/dev/api." A
+  selection gets one sentence for both kinds ("1 agent will work in … from its next turn. For
+  1, only where YAAC lists it changes; it keeps its folder.") and a secondary line for those
+  left out ("1 of 3 cannot be moved (in use elsewhere); it stays where it is"). With nothing
+  movable — in use elsewhere, archived, machines mixed — it gives the reason and only **Close**.
+
+### 76 — Dragging a row onto another project
+
+- **billing-service** dragged over the **yaac · devbox** group: the whole group (header and
+  rows) outlined in the 2 px focus colour, with room between the outline and the header text;
+  beside the pointer a small raised card with a hairline: the thread's title in semibold and
+  "Move to yaac" in secondary text ("Move to api…" with an ellipsis when dropping will ask
+  first). Rows do not reorder while dragging (D116). Releasing moves it at once (78).
+
+### 77 — A drop that is refused
+
+- **search-service** (on gpu-box) dragged over devbox's **yaac** group: no outline, the
+  not-allowed cursor, and the card's second line in the failed red with a not-allowed mark: "A
+  thread cannot move to another machine". Other refusals read the same way: "This folder is
+  not a project yet; create a project for it first", "This group holds several projects; drop
+  on one of them", "This thread is in use elsewhere". Esc cancels a drag.
+
+### 78 — After a move: Undo
+
+- The bar under the list, on the faint fill: "Moved 2 threads to yaac", **Undo** in semibold
+  near the right end, and a cross that dismisses it. Shown after a move that needed no
+  confirmation (no working directory changed); Undo puts each thread back where it was
+  listed. A move that changed a folder was confirmed first and has no Undo; a refusal is
+  reported in this bar instead ("1 could not be moved: …").

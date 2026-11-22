@@ -865,7 +865,7 @@ pub fn step_items(kind: StepKind, ctx: &Ctx<'_>, history: &[(isize, String, Opti
                 for w in crate::moving::worktrees(st, p).into_iter().filter(|w| !w.own) {
                     let dest = crate::moving::Destination { project: p.wire_id.clone(), worktree: Some(w.root.clone()) };
                     let here = now.as_ref() == Some(&dest);
-                    out.push(item(format!("{} · {}", p.name, w.label), Some(w.root.clone()), StepValue::MoveTo(dest), here));
+                    out.push(item(format!("{} · {}", p.name, w.label), Some(w.root), StepValue::MoveTo(dest), here));
                 }
             }
             out

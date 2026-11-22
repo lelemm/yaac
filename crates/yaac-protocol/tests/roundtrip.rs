@@ -351,7 +351,7 @@ fn thread_move_round_trips_and_the_placement_is_optional() {
     assert_eq!(r.working_directory.as_ref().map(|p| p.as_str()), Some("/srv/wt/x/api"));
     let again: ThreadMoveResult = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
     assert_eq!(again, r);
-    let mut older = summary.clone();
+    let mut older = summary;
     older.as_object_mut().unwrap().remove("placement");
     let s: ThreadSummary = serde_json::from_value(older).unwrap();
     assert!(s.placement.is_none());

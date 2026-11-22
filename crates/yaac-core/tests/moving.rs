@@ -40,7 +40,7 @@ fn a_row_drops_on_another_project_of_its_machine_and_nowhere_else() {
     let yaac = group_of(st, BY_PROJECT, &fix);
     match drop_on(st, BY_PROJECT, &yaac, std::slice::from_ref(&billing)) {
         Drop::Move { keys, to, label, confirm } => {
-            assert_eq!(keys, [billing.clone()]);
+            assert_eq!(keys, std::slice::from_ref(&billing));
             assert_eq!(to, Destination { project: project_id(st, &fix), worktree: None });
             assert_eq!(label, "yaac");
             assert!(!confirm);
@@ -148,7 +148,7 @@ fn the_move_dialog_says_what_happens_to_the_working_directory() {
     assert_eq!(d.projects(st).iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["api", "yaac"], "its machine's projects only");
     assert_eq!(d.sentence(st), "Only where YAAC lists it changes; the agent keeps working in /home/dev/api.");
     assert!(d.can_move(st) && !d.changes_folder(st));
-    assert_eq!(d.worktree_label(st), "None · not in git");
+    assert_eq!(d.worktree_label(st), "None");
     // Codex: the folder follows, from the next turn; the running turn is said.
     let d = MoveDialog::new(st, &[threads::fix()]);
     assert_eq!(d.project_label(st), "api");
@@ -200,7 +200,7 @@ fn the_client_sends_one_thread_move_each_moves_the_row_at_once_and_puts_back_a_r
     let before = hub.requests().len();
     let notice = yaac_core::moving::notice(&c.state, &[billing.clone(), ci.clone()], "yaac");
     assert_eq!(notice.text, "Moved 2 threads to yaac");
-    c.move_threads(&[(billing.clone(), Some(to.clone())), (ci.clone(), Some(to.clone()))], Some(notice));
+    c.move_threads(&[(billing.clone(), Some(to.clone())), (ci.clone(), Some(to))], Some(notice));
     // Moved at once, before the answers.
     assert_eq!(project_id(&c.state, &billing), yaac);
     settle(&mut c, &hub);

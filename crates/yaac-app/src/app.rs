@@ -1951,7 +1951,7 @@ mod tests {
         assert!(params["opId"].as_str().is_some_and(|o| !o.is_empty()));
         assert!(app.ui.drag.is_none() && app.ui.move_dialog.is_none(), "no confirmation: the folder does not change");
         app.pump_demo();
-        assert_eq!(app.client.state.project_of(&billing).map(|p| p.wire_id.clone()), Some(yaac.clone()));
+        assert_eq!(app.client.state.project_of(&billing).map(|p| p.wire_id.clone()), Some(yaac));
         let notice = app.client.move_notice.clone().expect("the bar's notice");
         assert_eq!(notice.text, "Moved “billing-service” to yaac");
         // Undo puts it back: the placement is forgotten (it had none).

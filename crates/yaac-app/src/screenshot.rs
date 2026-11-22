@@ -84,6 +84,11 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("71", "bulk-archive-confirm"),
     ("72", "group-header-menu"),
     ("73", "bulk-archive-report"),
+    ("74", "move-dialog"),
+    ("75", "move-dialog-placement"),
+    ("76", "move-drag-valid"),
+    ("77", "move-drag-other-machine"),
+    ("78", "move-undo"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -627,6 +632,29 @@ fn setup(app: &mut YaacApp, id: &str) {
                 ("Release notes".into(), Outcome::Failed("staging is offline".into())),
                 ("billing-service".into(), Outcome::Uncertain),
             ]);
+        }
+        "74" | "75" => {
+            // The Move dialog (D139). 74: Fix frame decoder, whose harness (Codex) moves its
+            // folder too. 75: billing-service, whose harness (Claude Code) cannot: only where
+            // YAAC lists it changes.
+            app.open(&threads::fix(), None);
+            let key = if id == "74" { threads::fix() } else { threads::billing() };
+            app.ui.move_dialog = Some(yaac_core::moving::MoveDialog::new(&app.client.state, &[key]));
+        }
+        "76" | "77" => {
+            // A row dragged to another group (D139). 76: billing-service over "yaac" on its own
+            // machine (the group is outlined; "Move to yaac"). 77: search-service (gpu-box) over
+            // the same group: refused, "A thread cannot move to another machine".
+            app.open(&threads::fix(), None);
+            let key = if id == "76" { threads::billing() } else { threads::search() };
+            let over = yaac_core::sidebar::section_of(&app.client.state, app.ui.grouping, &threads::fix());
+            app.ui.drag = Some(crate::app::DragRows { keys: vec![key], force_over: over });
+        }
+        "78" => {
+            // After a move that needed no confirmation: the bar's notice with Undo (D139).
+            app.open(&threads::fix(), None);
+            let keys = [threads::billing(), threads::users()];
+            app.client.move_notice = Some(yaac_core::moving::notice(&app.client.state, &keys, "yaac"));
         }
         "68" => {
             // Settings → About: version, build, links, components (D137).

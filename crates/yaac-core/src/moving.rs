@@ -310,7 +310,7 @@ impl MoveDialog {
     pub fn worktree_label(&self, state: &AppState) -> String {
         let list = self.worktrees(state);
         if list.is_empty() {
-            return "None · not in git".to_owned();
+            return "None".to_owned();
         }
         match &self.worktree {
             None => list.iter().find(|w| w.own).map_or_else(|| "The project's own folder".to_owned(), |w| format!("{} · the project's own", w.label)),

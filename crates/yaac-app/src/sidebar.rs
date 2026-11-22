@@ -215,12 +215,12 @@ fn drag_overlay(ui: &egui::Ui, app: &mut YaacApp, secs: &[Section], actions: &mu
     };
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("sidebar-drag")));
     if let (yaac_core::moving::Drop::Move { .. }, Some(z)) = (&verdict, zone) {
-        painter.rect_stroke(z.shrink(1.0), 6.0, egui::Stroke::new(2.0, p.focus), egui::StrokeKind::Inside);
+        painter.rect_stroke(z.expand2(vec2(5.0, 3.0)), 7.0, egui::Stroke::new(2.0, p.focus), egui::StrokeKind::Inside);
     }
     ctx.set_cursor_icon(if refused { egui::CursorIcon::NotAllowed } else { egui::CursorIcon::Grabbing });
     // The label beside the pointer: what is dragged, and what dropping here does.
     let at = match (forced, pointer, zone) {
-        (true, _, Some(z)) => pos2(z.left() + 40.0, z.top() + 16.0),
+        (true, _, Some(z)) => pos2(z.left() + 150.0, z.top() + 40.0),
         (_, Some(pt), _) => pt + vec2(14.0, 12.0),
         _ => return,
     };
