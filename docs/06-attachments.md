@@ -82,6 +82,11 @@ message references them there.
 - **Content-addressed by the full digest.** The same bytes are stored once, however many
   threads use them. Pasting the same screenshot twice costs nothing.
 - **Original file name kept** (sanitised), so the agent sees `error-log.txt`, not a hash.
+- **A thread's folder exists before anything is attached.** `yaacd` creates `threads/<thread>`
+  for every turn's input and hands it to the provider (`uploadsDir`), so a harness that fixes
+  its readable folders when a conversation opens (Claude Code) can read it from the start: a
+  screenshot pasted later never forces the harness's process to be re-opened, which would kill
+  its background work (D160, P222).
 - **Local targets copy too.** On the local machine the file is still taken into the folder —
   linked rather than duplicated when the filesystem allows. A message must keep referring to
   the bytes that were attached, even if the original file is edited or deleted a minute later.

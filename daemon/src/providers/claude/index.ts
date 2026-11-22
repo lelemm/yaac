@@ -3,7 +3,8 @@
 //
 // One `query()` in streaming-input mode per live thread; the SDK runs Claude Code as a child of
 // yaacd. A thread's id is the Claude session id, chosen up front for a new thread. Idle queries
-// are closed and resumed on the next message, and only so many are kept open at once.
+// are closed and resumed on the next message, and only so many are kept open at once — but a
+// query whose process runs background work (subagents, shells) is never closed (D160).
 
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -80,9 +81,15 @@ const IMAGE_FORMATS = ["image/png", "image/jpeg", "image/gif", "image/webp"];
  *
  * `bypassPermissions` is offered, marked `skipsApprovals` (the only mode that never asks: the UI
  * confirms before switching to it). The SDK requires `allowDangerouslySkipPermissions` when the
- * query is created for that mode (sdk.d.ts, `Options.permissionMode`), so a query is opened with
- * that option only while its thread is in the mode, and is re-opened with `resume` to enter or
- * leave it. In it, `AskUserQuestion` still reaches the user as a question (see `askQuestion`).
+ * query is created for that mode to be reachable at all. Verified (Claude Code 2.1.330, SDK
+ * 0.3.329): with the option, a query opened in `default` still asks through `canUseTool`, and
+ * `setPermissionMode` moves it into and out of bypass on the live query; without it,
+ * `setPermissionMode("bypassPermissions")` is refused. So a query is opened with the option and
+ * a mode change never re-opens the process (D160) — a re-open would kill the background work
+ * running in it. The one exception: Claude Code exits at start-up when it runs as root outside a
+ * sandbox and is given the option, so as root it is given only to a query opened in bypass (as
+ * before; bypass is refused there anyway). In bypass, `AskUserQuestion` still reaches the user
+ * as a question (`askQuestion`).
  */
 export const BYPASS_MODE: PermissionMode = "bypassPermissions";
 // `autonomy` (D146) restates the SDK's own description of each mode (sdk.d.ts, `PermissionMode`)
@@ -131,6 +138,15 @@ interface ThreadSettings {
   stored?: boolean;
   /** Folders kept readable for the session's whole life (a handoff fork's transcript). */
   readable?: string[];
+  /** The thread's attachment folder: readable from the first open on, so attaching never re-opens. */
+  uploads?: string;
+}
+
+/** One background task running in a live query's process (`background_tasks_changed`). */
+interface BackgroundTask {
+  type: string;
+  description: string;
+  subagentType?: string;
 }
 
 interface Pending {
@@ -193,6 +209,16 @@ class Live {
   readonly asking = new Map<string, Promise<Record<string, unknown> | null>>();
   /** Whether the query was created with `allowDangerouslySkipPermissions`. */
   bypassAllowed = false;
+  /**
+   * Background work running in the process (subagents, shells, workflows), by task id: Claude
+   * Code's own level signal (`background_tasks_changed`, replace semantics), not paired edges.
+   * Ambient tasks (housekeeping watchers) are left out. The process must not be closed while
+   * any runs (D160): closing it kills them.
+   */
+  readonly background = new Map<string, BackgroundTask>();
+  /** A re-open wanted once the background work ends (why, for the log), and folders it adds. */
+  reopenWanted: string | null = null;
+  readonly wantedDirs = new Set<string>();
   lastUsed = Date.now();
   idleTimer: NodeJS.Timeout | null = null;
   closing = false;
@@ -233,7 +259,12 @@ class Live {
   }
 
   busy(): boolean {
-    return this.turn !== null || this.requests.size > 0;
+    return this.turn !== null || this.requests.size > 0 || this.background.size > 0;
+  }
+
+  /** Whether closing the process now would kill background work. */
+  hasBackground(): boolean {
+    return this.background.size > 0;
   }
 }
 
@@ -248,7 +279,7 @@ export interface ClaudeProviderOptions {
   env: NodeJS.ProcessEnv;
   /** Where the per-thread settings are kept. */
   stateDir: string;
-  /** Close a live query after this long without a turn or an open request. 0: never. */
+  /** Close a live query after this long without a turn, an open request, or background work. 0: never. */
   idleMs?: number;
   /** At most this many live queries; the least recently used idle one is closed first. */
   maxLive?: number;
@@ -697,25 +728,43 @@ export class ClaudeProvider implements HarnessProvider {
 
   // ── Live queries ───────────────────────────────────────────────────────────────────────
 
-  private attachmentDirs(input: ProviderInput, kept: string[] = []): string[] {
-    const dirs = new Set<string>([...kept, ...(input.readable ?? [])]);
-    for (const p of [...input.images.map((i) => i.path), ...input.files.map((f) => f.path)]) {
-      const dir = path.dirname(p);
+  /**
+   * The folders Claude Code must be able to read for this input. They are fixed when a query
+   * opens, so the thread's attachment folder (`uploadsDir`, created by yaacd) is among them from
+   * the first open on and is kept in the thread's settings: a later attachment then lies in a
+   * folder the query already has, and never forces a re-open (D160).
+   */
+  private attachmentDirs(native: NativeId, input: ProviderInput): string[] {
+    const s = this.settings[native];
+    const real = (dir: string) => {
       try {
-        dirs.add(fs.realpathSync(dir));
+        return fs.realpathSync(dir);
       } catch {
-        dirs.add(path.resolve(dir));
+        return path.resolve(dir);
+      }
+    };
+    if (s && input.uploadsDir) {
+      const up = real(input.uploadsDir);
+      if (s.uploads !== up) {
+        s.uploads = up;
+        this.save();
       }
     }
+    const dirs = new Set<string>([...(s?.readable ?? []), ...(s?.uploads ? [s.uploads] : []), ...(input.readable ?? [])]);
+    for (const p of [...input.images.map((i) => i.path), ...input.files.map((f) => f.path)]) dirs.add(real(path.dirname(p)));
     return [...dirs];
   }
 
-  /** Makes room under the cap: closes least recently used idle queries. */
+  /**
+   * Makes room under the cap: closes least recently used idle queries. One with a turn, an open
+   * request or background work is never a victim (D160); when all are, the cap is exceeded.
+   */
   private makeRoom(): void {
     while (this.live.size >= this.maxLive) {
       const victim = [...this.live.values()].filter((l) => !l.busy()).sort((a, b) => a.lastUsed - b.lastUsed)[0];
       if (!victim) {
-        this.log(`${this.live.size} Claude Code processes are busy; opening one more than the limit of ${this.maxLive}`);
+        const bg = [...this.live.values()].filter((l) => l.hasBackground()).length;
+        this.log(`${this.live.size} Claude Code processes are busy${bg > 0 ? ` (${bg} with background work)` : ""}; opening one more than the limit of ${this.maxLive}`);
         return;
       }
       this.closeLive(victim, "the limit of live Claude Code processes");
@@ -751,16 +800,26 @@ export class ClaudeProvider implements HarnessProvider {
     }
   }
 
-  /** The live query of a thread, opened (or re-opened with more readable folders) as needed. */
+  /**
+   * The live query of a thread, opened as needed. A query is re-opened (with `resume`) only while
+   * it is not busy — no turn, no open request, no background work (D160) — for a readable folder
+   * it lacks (rare: the attachment folder is there from the first open) or for a change that was
+   * deferred while background work ran. Otherwise the query is kept as it is.
+   */
   private async ensureLive(native: NativeId, dirs: string[]): Promise<Live> {
     const existing = this.live.get(native);
-    if (existing && dirs.every((d) => existing.dirs.has(d))) return existing;
-    const all = new Set(dirs);
-    if (existing) {
-      // Folders readable to Claude Code are fixed when a query opens: re-open it, invisibly.
-      for (const d of existing.dirs) all.add(d);
-      this.closeLive(existing, "a new attachment folder");
+    if (!existing) return this.openLive(native, new Set(dirs));
+    const missing = dirs.filter((d) => !existing.dirs.has(d));
+    if (missing.length === 0 && !existing.reopenWanted) return existing;
+    if (existing.busy()) {
+      if (missing.length > 0) {
+        for (const d of missing) existing.wantedDirs.add(d);
+        this.log(`not re-opening the query of ${native} for a new readable folder while it is busy (${existing.background.size} background task(s)); Claude Code asks before reading there`);
+      }
+      return existing;
     }
+    const all = new Set([...existing.dirs, ...existing.wantedDirs, ...dirs]);
+    this.closeLive(existing, missing.length > 0 ? "a new readable folder" : (existing.reopenWanted ?? "a deferred change"));
     return this.openLive(native, all);
   }
 
@@ -772,8 +831,10 @@ export class ClaudeProvider implements HarnessProvider {
     const live = new Live(native, s.cwd, dirs, s, (ev) => this.emit({ ...ev, thread: native } as ProviderEvent));
     const resumed = s.stored === true;
     const extras = (await this.extrasHook?.({ native, cwd: s.cwd, resumed })) ?? {};
-    const bypass = live.mode === BYPASS_MODE;
-    live.bypassAllowed = bypass;
+    // Allowed (never entered unless the thread's mode is bypass), so that switching to bypass
+    // later is `setPermissionMode` on the live query, not a re-open — except as root, where
+    // Claude Code refuses to start with it (see BYPASS_MODE).
+    live.bypassAllowed = live.mode === BYPASS_MODE || !runsAsRoot();
     const options: Options = {
       cwd: s.cwd,
       pathToClaudeCodeExecutable: exe,
@@ -788,7 +849,9 @@ export class ClaudeProvider implements HarnessProvider {
       // the Agent SDK's opt-in to fast mode.
       ...(live.fast ? { settings: { fastMode: true } } : {}),
       permissionMode: live.mode as PermissionMode,
-      ...(bypass ? { allowDangerouslySkipPermissions: true, hooks: { PreToolUse: [{ matcher: ASK_TOOL, hooks: [(h, id, o) => this.askHook(live, h, id, o.signal)] }] } } : {}),
+      ...(live.bypassAllowed ? { allowDangerouslySkipPermissions: true } : {}),
+      // Acts only while the query is in bypass mode (`askHook`); hooks are fixed at open.
+      hooks: { PreToolUse: [{ matcher: ASK_TOOL, hooks: [(h, id, o) => this.askHook(live, h, id, o.signal)] }] },
       additionalDirectories: [...dirs],
       systemPrompt: { type: "preset", preset: "claude_code", ...(extras.appendSystemPrompt ? { append: extras.appendSystemPrompt } : {}) },
       ...(extras.mcpServers && Object.keys(extras.mcpServers).length > 0 ? { mcpServers: extras.mcpServers } : {}),
@@ -833,6 +896,13 @@ export class ClaudeProvider implements HarnessProvider {
     for (const sub of live.subagents.values()) if (sub.running) this.endSubagent(live, sub, "stopped", "the Claude Code process ended");
     // The process is gone: nothing it asked can be answered any more.
     for (const p of [...live.requests.values()]) p.expire();
+    // So is any background work it ran: said in the thread, never lost silently (D160).
+    if (live.background.size > 0) {
+      const why = live.closing ? "was closed" : "ended";
+      this.log(`the Claude Code process of ${live.native} ${why} with ${live.background.size} background task(s) running`);
+      this.notice(live, "warning", `Claude Code's process ${why} while background work was running in it; this stopped: ${describeTasks([...live.background.values()])}.`);
+      live.background.clear();
+    }
     if (live.turn) {
       const detail = failure ?? (live.stderrTail.trim().split("\n").pop() || null);
       const why = live.closing ? "the Claude Code process was closed" : "the Claude Code process ended";
@@ -929,6 +999,8 @@ export class ClaudeProvider implements HarnessProvider {
           if (sys.permissionMode) applied.mode = sys.permissionMode;
           if (live.effort) applied.effort = live.effort;
           this.emit({ type: "settingsChanged", thread: live.native, applied });
+        } else if (sys.subtype === "background_tasks_changed") {
+          this.onBackgroundTasks(live, (m as { tasks?: unknown }).tasks);
         } else if (sys.subtype === "compact_boundary" && live.turn) {
           const item = { id: `compact:${sys.uuid ?? randomUUID()}`, turnId: live.turn.turnId, status: "completed", kind: "notice", noticeKind: "compaction", text: "The conversation was compacted." } as const;
           this.emit({ type: "itemStarted", thread: live.native, item });
@@ -1031,6 +1103,56 @@ export class ClaudeProvider implements HarnessProvider {
     this.emit({ type: "threadChanged", info });
   }
 
+  /**
+   * Claude Code's full set of live background tasks (replace semantics; verified: emitted on
+   * every start and end, for the main thread's and subagents' tasks alike, and empty once all
+   * end). While it is non-empty the query is busy: no idle timer runs and it is never chosen to
+   * make room. When it empties, the idle clock starts.
+   */
+  private onBackgroundTasks(live: Live, tasks: unknown): void {
+    const had = live.background.size > 0;
+    live.background.clear();
+    for (const t of Array.isArray(tasks) ? tasks : []) {
+      const r = (t ?? {}) as { task_id?: unknown; task_type?: unknown; description?: unknown; subagent_type?: unknown; ambient?: unknown };
+      if (typeof r.task_id !== "string" || r.ambient === true) continue;
+      live.background.set(r.task_id, {
+        type: typeof r.task_type === "string" ? r.task_type : "task",
+        description: typeof r.description === "string" ? r.description : "",
+        ...(typeof r.subagent_type === "string" ? { subagentType: r.subagent_type } : {}),
+      });
+    }
+    const has = live.background.size > 0;
+    if (has && live.idleTimer) {
+      clearTimeout(live.idleTimer);
+      live.idleTimer = null;
+    }
+    if (had && !has && !live.busy()) this.touch(live);
+  }
+
+  /** A notice item in the thread's transcript, in its running turn if there is one. */
+  private notice(live: Live, noticeKind: "warning" | "info", text: string): void {
+    const item = { id: `notice:${randomUUID()}`, turnId: live.turn?.turnId ?? "", status: "completed", kind: "notice", noticeKind, text } as const;
+    this.emit({ type: "itemStarted", thread: live.native, item });
+    this.emit({ type: "itemCompleted", thread: live.native, item });
+  }
+
+  /**
+   * A change that needs a re-open (with `resume`; the query opens with the thread's settings).
+   * While background work runs it is kept for the first turn after the work ends (`ensureLive`)
+   * and said in the transcript (D160); otherwise the query is re-opened now.
+   */
+  private async reopenFor(live: Live, why: string, deferredText: string): Promise<Live> {
+    if (live.hasBackground()) {
+      if (live.reopenWanted !== why) this.notice(live, "info", deferredText);
+      live.reopenWanted = why;
+      this.log(`deferring the re-open of ${live.native} (${why}): ${live.background.size} background task(s) run in it`);
+      return live;
+    }
+    const dirs = new Set([...live.dirs, ...live.wantedDirs]);
+    this.closeLive(live, why);
+    return this.openLive(live.native, dirs);
+  }
+
   // ── Requests ───────────────────────────────────────────────────────────────────────────
 
   private raise(live: Live, requestId: string, request: RaisedRequest, signal: AbortSignal, settle: (response: RequestResponse | null) => void): void {
@@ -1122,9 +1244,13 @@ export class ClaudeProvider implements HarnessProvider {
     return answer;
   }
 
-  /** The PreToolUse hook for `AskUserQuestion`, registered only on a query in bypass mode. */
+  /**
+   * The PreToolUse hook for `AskUserQuestion`. Registered on every query (hooks are fixed at
+   * open, and a query enters bypass with `setPermissionMode`); it acts only in bypass mode, where
+   * Claude Code may not consult `canUseTool`.
+   */
   private async askHook(live: Live, hook: HookInput, toolUseId: string | undefined, signal: AbortSignal): Promise<HookJSONOutput> {
-    if (hook.hook_event_name !== "PreToolUse" || hook.tool_name !== ASK_TOOL) return {};
+    if (hook.hook_event_name !== "PreToolUse" || hook.tool_name !== ASK_TOOL || live.mode !== BYPASS_MODE) return {};
     const input = (hook.tool_input && typeof hook.tool_input === "object" ? hook.tool_input : {}) as Record<string, unknown>;
     const answered = await this.askQuestion(live, toolUseId || hook.tool_use_id || randomUUID(), input, signal);
     if (!answered) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "The request was withdrawn before the user answered." } };
@@ -1196,7 +1322,7 @@ export class ClaudeProvider implements HarnessProvider {
       ...(input.readable && input.readable.length > 0 ? { readable: [...input.readable] } : {}),
     };
     this.save();
-    const live = await this.ensureLive(native, this.attachmentDirs(input));
+    const live = await this.ensureLive(native, this.attachmentDirs(native, input));
     const turn = await this.send(live, input);
     return { thread: native, turn };
   }
@@ -1210,7 +1336,7 @@ export class ClaudeProvider implements HarnessProvider {
     if (overrides.mode) s.mode = overrides.mode;
     if (typeof overrides.fast === "boolean") s.fast = overrides.fast;
     this.save();
-    let live = await this.ensureLive(thread, this.attachmentDirs(input, s.readable));
+    let live = await this.ensureLive(thread, this.attachmentDirs(thread, input));
     live = await this.applySettings(live, s);
     return this.send(live, input);
   }
@@ -1236,11 +1362,9 @@ export class ClaudeProvider implements HarnessProvider {
           live.effort = s.effort;
           changed = true;
         } catch (e) {
-          // Effort could not be set on the live query: re-open it with `resume`, invisibly.
+          // Effort could not be set on the live query: re-open it, unless background work runs.
           this.log(`effort change on a live query failed (${(e as Error).message}); re-opening it`);
-          const dirs = new Set(live.dirs);
-          this.closeLive(live, "an effort change");
-          return this.openLive(live.native, dirs);
+          return this.reopenFor(live, "an effort change", "The new effort applies once the background work in this thread finishes.");
         }
       } else if (!fits) {
         s.effort = null;
@@ -1253,28 +1377,35 @@ export class ClaudeProvider implements HarnessProvider {
         await live.query.applyFlagSettings({ fastMode: fast });
         live.fast = fast;
       } catch (e) {
-        // Fast mode could not be set on the live query: re-open it with `resume`, invisibly
-        // (it opens with the thread's settings, fast mode included).
+        // Fast mode could not be set on the live query: re-open it, unless background work runs.
         this.log(`fast mode change on a live query failed (${(e as Error).message}); re-opening it`);
-        const dirs = new Set(live.dirs);
-        this.closeLive(live, "a fast mode change");
-        return this.openLive(live.native, dirs);
+        return this.reopenFor(live, "a fast mode change", `Fast mode turns ${fast ? "on" : "off"} once the background work in this thread finishes.`);
       }
     }
     const mode = s.mode ?? "default";
-    if ((mode === BYPASS_MODE) !== live.bypassAllowed) {
-      // Entering or leaving bypass: the query's creation option changes, so re-open it with
-      // `resume`, invisibly (it opens with the thread's settings, mode included).
-      const dirs = new Set(live.dirs);
-      this.closeLive(live, mode === BYPASS_MODE ? "entering bypass mode" : "leaving bypass mode");
-      const reopened = await this.openLive(live.native, dirs);
-      this.emit({ type: "settingsChanged", thread: reopened.native, applied: await this.applied(reopened) });
-      return reopened;
-    }
     if (mode !== live.mode) {
-      await live.query.setPermissionMode(mode as PermissionMode);
-      live.mode = mode;
-      changed = true;
+      // Every mode, bypass included, is set on the live query. Only when that cannot be done
+      // (opened without `allowDangerouslySkipPermissions`, as root; or Claude Code refuses) is
+      // the query re-opened in the mode — and then only once its background work ends (D160).
+      let failure: string | null = mode === BYPASS_MODE && !live.bypassAllowed ? "the query was opened without allowDangerouslySkipPermissions" : null;
+      if (!failure) {
+        try {
+          await live.query.setPermissionMode(mode as PermissionMode);
+          live.mode = mode;
+          changed = true;
+        } catch (e) {
+          failure = (e as Error).message;
+        }
+      }
+      if (failure) {
+        this.log(`permission mode change to ${mode} on a live query failed (${failure}); re-opening it`);
+        const name = MODES.find((m) => m.id === mode)?.displayName ?? mode;
+        const reopened = await this.reopenFor(live, `a permission mode change to ${mode}`, `Switching to ${name} when the background work in this thread finishes.`);
+        if (reopened !== live) {
+          this.emit({ type: "settingsChanged", thread: reopened.native, applied: await this.applied(reopened) });
+          return reopened;
+        }
+      }
     }
     if (changed) this.emit({ type: "settingsChanged", thread: live.native, applied: await this.applied(live) });
     return live;
@@ -1501,6 +1632,22 @@ export class ClaudeProvider implements HarnessProvider {
     for (const live of [...this.live.values()]) this.closeLive(live, "yaacd is stopping");
     this.disposed = true;
   }
+}
+
+/** Background tasks as one readable list: `subagent "sleeper", shell "npm test"`. */
+function describeTasks(tasks: BackgroundTask[]): string {
+  const kind = (t: BackgroundTask) => (t.type === "local_agent" ? "subagent" : t.type === "local_bash" ? "shell" : t.type.replace(/^local_/, ""));
+  const shown = tasks.slice(0, 5).map((t) => `${kind(t)}${t.subagentType && t.subagentType !== "general-purpose" ? ` (${t.subagentType})` : ""}${t.description ? ` "${t.description}"` : ""}`);
+  return shown.join(", ") + (tasks.length > shown.length ? ` and ${tasks.length - shown.length} more` : "");
+}
+
+/** yaacd (and so Claude Code, its child) runs as root. Tests set the override. */
+let rootOverride: boolean | null = null;
+export function setRunsAsRootForTests(v: boolean | null): void {
+  rootOverride = v;
+}
+function runsAsRoot(): boolean {
+  return rootOverride ?? (typeof process.getuid === "function" && process.getuid() === 0);
 }
 
 // ── The factory ──────────────────────────────────────────────────────────────────────────
