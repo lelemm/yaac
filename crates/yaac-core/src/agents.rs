@@ -71,19 +71,147 @@ impl PanelMode {
     }
 }
 
-/// The pill shows at most this many icons; beyond it, the first seven and "+N".
-pub const PILL_MAX: usize = 8;
+/// The pill shows at most this many agent icons (D168); a short window shows fewer
+/// ([`pill_cap`]). Beyond it, only the agents that are alive (or finished unseen) are drawn and
+/// every other one is counted in one "more" item at the bottom.
+pub const PILL_MAX: usize = 7;
 
-/// The icons the pill shows, and how many are hidden behind "+N".
-pub fn pill_icons(panel: &AgentsPanel) -> (Vec<&AgentRow>, usize) {
-    let all: Vec<&AgentRow> = panel.all().collect();
-    if all.len() > PILL_MAX {
-        let shown = all[..PILL_MAX - 1].to_vec();
-        let hidden = all.len() - shown.len();
-        (shown, hidden)
-    } else {
-        (all, 0)
+/// The fewest icons the pill is ever cut to.
+pub const PILL_MIN: usize = 2;
+
+/// How many icons fit when the pill may be `room` points tall, given the points one icon
+/// takes and the points of everything else (cluster glyphs, hairlines, the "more" item,
+/// margins): from [`PILL_MIN`] to [`PILL_MAX`].
+pub fn pill_cap(room: f32, per_icon: f32, fixed: f32) -> usize {
+    let fit = ((room - fixed) / per_icon).floor();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss, reason = "clamped to a small range first")]
+    let fit = fit.clamp(PILL_MIN as f32, PILL_MAX as f32) as usize;
+    fit
+}
+
+/// How much an agent is doing now, most urgent first (D168): the pill, the card and the docked
+/// panel list a relation's agents in this order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Liveness {
+    /// Blocked on the user (an approval, a question, a budget).
+    NeedsYou,
+    /// A turn is running.
+    Running,
+    /// Waiting on another agent.
+    Waiting,
+    /// Its work is done, or its last turn failed.
+    Finished,
+    /// Nothing running (stopped agents included).
+    Idle,
+    /// Its machine is offline or switched off.
+    Stopped,
+}
+
+impl Liveness {
+    /// The liveness of a row, from its mark.
+    pub fn of(row: &AgentRow) -> Liveness {
+        if row.display.attention.is_some() {
+            return Liveness::NeedsYou;
+        }
+        match row.display.mark {
+            Mark::NeedsYou | Mark::Paused => Liveness::NeedsYou,
+            Mark::Running => Liveness::Running,
+            Mark::Waiting => Liveness::Waiting,
+            Mark::Done | Mark::Failed => Liveness::Finished,
+            Mark::Idle => Liveness::Idle,
+            Mark::Offline | Mark::Off => Liveness::Stopped,
+        }
     }
+
+    /// Needs you, running or waiting.
+    pub fn alive(self) -> bool {
+        self <= Liveness::Waiting
+    }
+}
+
+/// Whether a row is always worth an icon: alive, or finished while nobody looked (D114).
+pub fn prominent(row: &AgentRow) -> bool {
+    Liveness::of(row).alive() || row.display.unseen
+}
+
+/// The sort key of D168: liveness, then unseen before seen, then most recent first.
+fn order_key(row: &AgentRow) -> (Liveness, bool, std::cmp::Reverse<i64>) {
+    (Liveness::of(row), !row.display.unseen, std::cmp::Reverse(row.updated))
+}
+
+/// Rows in D168's order (stable: equal keys keep their place).
+pub fn by_liveness<'a>(rows: impl IntoIterator<Item = &'a AgentRow>) -> Vec<&'a AgentRow> {
+    let mut v: Vec<&AgentRow> = rows.into_iter().collect();
+    v.sort_by_key(|r| order_key(r));
+    v
+}
+
+/// What the pill's "more" item stands for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Overflow {
+    /// Agents without an icon.
+    pub hidden: usize,
+    /// Of them, alive (needs you, running, waiting): only when alive agents alone pass the cap.
+    pub alive: usize,
+    /// Of them, blocked on the user (the item then carries the needs-you mark).
+    pub needs_you: usize,
+}
+
+/// What the pill draws: its clusters (D118), each in D168's order, and the "more" item.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PillLayout<'a> {
+    /// The clusters with at least one icon.
+    pub clusters: Vec<Cluster<'a>>,
+    /// Everyone else.
+    pub more: Overflow,
+}
+
+impl PillLayout<'_> {
+    /// Icons drawn.
+    pub fn icons(&self) -> usize {
+        self.clusters.iter().map(|c| c.rows.len()).sum()
+    }
+
+    /// Whether a row has an icon.
+    pub fn shows(&self, row: &AgentRow) -> bool {
+        self.clusters.iter().any(|c| c.rows.iter().any(|r| std::ptr::eq(*r, row)))
+    }
+}
+
+/// The pill for at most `cap` icons (D168). When everyone fits, everyone is drawn. Otherwise
+/// the parent keeps its icon, then the prominent agents (alive, or finished unseen) in D168's
+/// order across all relations fill what is left; finished and idle agents are never drawn
+/// then, only counted in the "more" item.
+pub fn pill(panel: &AgentsPanel, cap: usize) -> PillLayout<'_> {
+    let all = clusters(panel);
+    let total: usize = all.iter().map(|c| c.rows.len()).sum();
+    if total <= cap {
+        return PillLayout { clusters: all, more: Overflow::default() };
+    }
+    let parent = all.iter().find(|c| c.relation == Relation::SpawnedBy).and_then(|c| c.rows.first().copied());
+    let mut keep: Vec<&AgentRow> = parent.into_iter().collect();
+    let rest = by_liveness(all.iter().filter(|c| c.relation != Relation::SpawnedBy).flat_map(|c| c.rows.iter().copied()).filter(|r| prominent(r)));
+    keep.extend(rest.into_iter().take(cap.saturating_sub(keep.len())));
+    let kept = |r: &AgentRow| keep.iter().any(|k| std::ptr::eq(*k, r));
+    let mut more = Overflow::default();
+    for r in all.iter().flat_map(|c| c.rows.iter()).filter(|r| !kept(r)) {
+        more.hidden += 1;
+        let l = Liveness::of(r);
+        more.alive += usize::from(l.alive());
+        more.needs_you += usize::from(l == Liveness::NeedsYou);
+    }
+    let clusters = all
+        .into_iter()
+        .map(|c| Cluster { relation: c.relation, rows: c.rows.into_iter().filter(|r| kept(r)).collect() })
+        .filter(|c| !c.rows.is_empty())
+        .collect();
+    PillLayout { clusters, more }
+}
+
+/// The text of the "more" item, in one line: "more (23)", or "more (23 · 4 alive)" when
+/// alive agents are among the hidden.
+pub fn more_label(more: &Overflow) -> String {
+    if more.alive > 0 { format!("more ({} · {} alive)", more.hidden, more.alive) } else { format!("more ({})", more.hidden) }
 }
 
 /// How a related agent stands to the open thread (D118): the three groups every state of
@@ -114,36 +242,86 @@ impl Relation {
 pub struct Cluster<'a> {
     /// Which relation.
     pub relation: Relation,
-    /// Its rows, in order.
+    /// Its rows, in D168's order.
     pub rows: Vec<&'a AgentRow>,
-    /// Rows the pill had no room for (shown as "+N" after the cluster).
-    pub more: usize,
 }
 
 /// The panel's rows grouped by relation (D118) — the one grouping the card, the docked
-/// panel and the pill all draw. Empty groups are left out. With `cap`, at most that many
-/// icons are kept in all (the pill), each cluster keeping at least one.
-pub fn clusters(panel: &AgentsPanel, cap: Option<usize>) -> Vec<Cluster<'_>> {
+/// panel and the pill all draw — each relation's rows in D168's order: needs you, running,
+/// waiting, then finished, idle and stopped; unseen first and then most recent first within
+/// each. Empty groups are left out.
+pub fn clusters(panel: &AgentsPanel) -> Vec<Cluster<'_>> {
     let parent: Vec<&AgentRow> = match &panel.spawned_by {
         SpawnedBy::Agent(p) => vec![&**p],
         SpawnedBy::You => Vec::new(),
     };
-    let mut out: Vec<Cluster<'_>> = [(Relation::SpawnedBy, parent), (Relation::Workers, panel.workers.iter().collect()), (Relation::InContact, panel.contacts.iter().collect())]
+    [(Relation::SpawnedBy, parent), (Relation::Workers, panel.workers.iter().collect()), (Relation::InContact, panel.contacts.iter().collect())]
         .into_iter()
         .filter(|(_, rows)| !rows.is_empty())
-        .map(|(relation, rows)| Cluster { relation, rows, more: 0 })
-        .collect();
-    if let Some(cap) = cap {
-        // Each icon takes a slot, and so does a cluster's "+N". Trim the largest cluster
-        // first, never below one icon.
-        let slots = |out: &[Cluster<'_>]| out.iter().map(|c| c.rows.len() + usize::from(c.more > 0)).sum::<usize>();
-        while slots(&out) > cap {
-            let Some(c) = out.iter_mut().filter(|c| c.rows.len() > 1).max_by_key(|c| c.rows.len()) else { break };
-            c.rows.pop();
-            c.more += 1;
-        }
+        .map(|(relation, rows)| Cluster { relation, rows: by_liveness(rows) })
+        .collect()
+}
+
+/// One entry of the docked panel's list under a heading.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DockEntry<'a> {
+    /// A row.
+    Row(&'a AgentRow),
+    /// The fold over the quiet rows: "12 finished" (or "12 inactive" when some are idle or
+    /// offline), listed under it when it is open.
+    Fold {
+        /// The rows it holds.
+        rows: Vec<&'a AgentRow>,
+        /// "finished" or "inactive".
+        word: &'static str,
+    },
+}
+
+/// The docked panel folds the quiet rows of a heading once there are at least this many.
+pub const DOCK_FOLD_MIN: usize = 4;
+
+/// A heading's entries in the docked panel (D168). Workers keep their tree: siblings are
+/// ordered by the most urgent agent in their subtree (D168's key), so alive work comes first
+/// without losing who started whom. Subtrees with nobody prominent (alive, or finished unseen)
+/// come last, and fold under one "N finished" entry once they hold [`DOCK_FOLD_MIN`] rows.
+pub fn docked_entries<'a>(cluster: &Cluster<'a>, panel: &'a AgentsPanel) -> Vec<DockEntry<'a>> {
+    let mut trees: Vec<Vec<&AgentRow>> = if cluster.relation == Relation::Workers {
+        subtrees(&panel.workers.iter().collect::<Vec<_>>())
+    } else {
+        cluster.rows.iter().map(|r| vec![*r]).collect()
+    };
+    trees.sort_by_key(|t| t.iter().map(|r| order_key(r)).min());
+    let (loud, quiet): (Vec<_>, Vec<_>) = trees.into_iter().partition(|t| t.iter().any(|r| prominent(r)));
+    let mut out: Vec<DockEntry<'a>> = loud.into_iter().flatten().map(DockEntry::Row).collect();
+    let quiet: Vec<&AgentRow> = quiet.into_iter().flatten().collect();
+    if quiet.len() >= DOCK_FOLD_MIN {
+        let word = if quiet.iter().all(|r| Liveness::of(r) == Liveness::Finished) { "finished" } else { "inactive" };
+        out.push(DockEntry::Fold { rows: quiet, word });
+    } else {
+        out.extend(quiet.into_iter().map(DockEntry::Row));
     }
     out
+}
+
+/// A flattened tree (depth-first, a depth per row) as its subtrees, each one's children
+/// ordered the same way, recursively.
+fn subtrees<'a>(rows: &[&'a AgentRow]) -> Vec<Vec<&'a AgentRow>> {
+    let Some(top) = rows.first().map(|r| r.depth) else { return Vec::new() };
+    let mut groups: Vec<(&AgentRow, Vec<&AgentRow>)> = Vec::new();
+    for r in rows {
+        match groups.last_mut() {
+            Some(g) if r.depth > top => g.1.push(r),
+            _ => groups.push((r, Vec::new())),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(head, below)| {
+            let mut kids = subtrees(&below);
+            kids.sort_by_key(|t| t.iter().map(|r| order_key(r)).min());
+            std::iter::once(head).chain(kids.into_iter().flatten()).collect()
+        })
+        .collect()
 }
 
 /// One row of the panel (always a link when `key` is known).
@@ -182,6 +360,9 @@ pub struct AgentRow {
     pub origin: Option<String>,
     /// One of the harness's own sub-agents (D151), not a YAAC worker.
     pub subagent: bool,
+    /// When it last changed (seconds since the epoch; 0 when unknown): most recent first
+    /// within a liveness (D168).
+    pub updated: i64,
 }
 
 /// "Claude subagent · Explore" for a harness's own sub-agent (D151), "YAAC worker" for one
@@ -283,6 +464,7 @@ pub fn row_for(state: &AppState, map: &AttentionMap, key: &ThreadKey, depth: u8)
         git: crate::sidebar::line2_of(state, key),
         origin: origin_label(state, key),
         subagent: s.subagent.is_some(),
+        updated: crate::time::secs(&s.updated_at).unwrap_or(0),
     })
 }
 
@@ -311,6 +493,7 @@ fn row_for_peer(state: &AppState, map: &AttentionMap, peer: &MeshPeer) -> AgentR
         git: None,
         origin: None,
         subagent: false,
+        updated: 0,
     }
 }
 

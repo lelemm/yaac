@@ -5,7 +5,7 @@
 //! and are static: an idle fleet costs no CPU.
 
 use eframe::egui::{self, Align2, Margin, Rect, Sense, Stroke, pos2, vec2};
-use yaac_core::agents::{AgentRow, AgentsPanel, Cluster, Flow, PILL_MAX, PanelInput, PanelMode, Relation, clusters};
+use yaac_core::agents::{AgentRow, AgentsPanel, Cluster, DockEntry, Flow, Overflow, PanelInput, PanelMode, PillLayout, Relation, clusters, docked_entries, pill, pill_cap};
 use yaac_core::attention::Mark;
 use yaac_core::hover::Region;
 
@@ -70,29 +70,71 @@ fn arrow(painter: &egui::Painter, c: egui::Pos2, flow: Flow, p: &Palette) {
     }
 }
 
-/// The pill's height for these clusters: icons, "+N" slots, a glyph per cluster, and a
-/// hairline between clusters.
-fn pill_height(cl: &[Cluster<'_>]) -> f32 {
-    let slots: usize = cl.iter().map(|c| c.rows.len() + usize::from(c.more > 0)).sum();
-    slots as f32 * PILL_ROW + cl.len() as f32 * GLYPH_H + cl.len().saturating_sub(1) as f32 * SEP_H + 12.0
+/// The pill's height: icons, a glyph per cluster, a hairline between clusters, and the
+/// "more" item under its own hairline (D168).
+fn pill_height(pl: &PillLayout<'_>) -> f32 {
+    let n = pl.clusters.len();
+    let more = if pl.more.hidden > 0 { more_height(&pl.more) + if n > 0 { SEP_H } else { 0.0 } } else { 0.0 };
+    pl.icons() as f32 * PILL_ROW + n as f32 * GLYPH_H + n.saturating_sub(1) as f32 * SEP_H + more + 12.0
 }
 
-/// The card's height: a heading per cluster and every row.
-fn card_height(cl: &[Cluster<'_>]) -> f32 {
+/// The "more" item: "more" over "(23)", and "4 alive" under them when alive agents are hidden.
+fn more_height(m: &Overflow) -> f32 {
+    if m.alive > 0 { MORE_H + MORE_LINE } else { MORE_H }
+}
+
+/// How many icons the pill may draw in a thread view this tall: at most `PILL_MAX`, fewer when
+/// the pill would take more than 60% of the height (D168).
+pub(crate) fn pill_cap_for(thread: Rect) -> usize {
+    pill_cap(thread.height() * 0.6, PILL_ROW, 3.0 * GLYPH_H + 3.0 * SEP_H + MORE_H + MORE_LINE + 12.0)
+}
+
+/// The card's height: a heading per cluster and every row, but never taller than the thread
+/// view less a margin (the list scrolls then).
+fn card_height(cl: &[Cluster<'_>], thread: Rect) -> f32 {
     let rows: usize = cl.iter().map(|c| c.rows.len()).sum();
-    rows as f32 * CARD_ROW + cl.len() as f32 * CARD_HEAD + 44.0 + 20.0
+    (rows as f32 * CARD_ROW + cl.len() as f32 * CARD_HEAD + CARD_CHROME).min((thread.height() - 2.0 * CARD_MARGIN).max(CARD_CHROME + CARD_ROW))
+}
+
+/// The pill and card regions for a panel in a thread view (what the hover rule uses).
+#[cfg(test)]
+pub(crate) fn regions_for(thread: Rect, panel: &AgentsPanel) -> (Rect, Rect) {
+    floating_regions(thread, pill_height(&pill(panel, pill_cap_for(thread))), card_height(&clusters(panel), thread))
+}
+
+/// The pill's "more" item (D168), in `r`.
+fn more_item(painter: &egui::Painter, r: Rect, m: &Overflow, p: &Palette) {
+    let cx = r.center().x;
+    let mut y = r.top() + 4.0;
+    let mut line = |text: String, font: egui::FontId, color: egui::Color32| {
+        let g = painter.layout_no_wrap(text, font, color);
+        painter.galley(pos2(cx - g.size().x / 2.0, y), g.clone(), color);
+        y += g.size().y;
+    };
+    line("more".to_owned(), theme::ui(size::SMALL - 1.0), p.text2);
+    line(format!("({})", m.hidden), theme::bold(size::SMALL), p.text);
+    if m.alive > 0 {
+        line(format!("{} alive", m.alive), theme::ui(size::SMALL - 2.0), p.text2);
+    }
+    if m.needs_you > 0 {
+        let corner = pos2(r.right() - 3.0, r.top() + 5.0);
+        painter.circle_filled(corner, 6.0, p.raised);
+        icons::exclaim(painter, corner, 10.0, p.failed);
+    }
 }
 
 /// The pill, or the card while hovered. Floats over the thread; takes no layout column.
 pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, panel: &AgentsPanel, actions: &mut Vec<Action>) {
     let p = app.p;
     let card = app.ui.panel == PanelMode::Card;
-    let pill = clusters(panel, Some(PILL_MAX));
-    let all = clusters(panel, None);
-    let (strip, card_rect) = floating_regions(thread, pill_height(&pill), card_height(&all));
+    let pl = pill(panel, pill_cap_for(thread));
+    let all = clusters(panel);
+    let (strip, card_rect) = floating_regions(thread, pill_height(&pl), card_height(&all, thread));
     let width = if card { CARD_W } else { PILL_W };
     let pos = if card { card_rect.min } else { strip.min };
     let mut any_focus = false;
+    let mut to_hidden = app.ui.card_to_hidden && card;
+    let mut more_rect = None;
     let resp = egui::Area::new(egui::Id::unique("agents-floating")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
         let radius = if card { 12 } else { 22 };
         egui::Frame::popup(ui.style()).fill(p.raised).corner_radius(radius).inner_margin(Margin::same(if card { 10 } else { 6 })).show(ui, |ui| {
@@ -100,6 +142,7 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
             ui.spacing_mut().item_spacing.y = 0.0;
             if card {
                 ui.set_min_height(card_rect.height() - 20.0);
+                ui.set_max_height(card_rect.height() - 20.0);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Related agents").font(theme::bold(size::UI)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -111,45 +154,36 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                     });
                 });
                 ui.add_space(4.0);
-                for c in &all {
-                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), CARD_HEAD), Sense::hover());
-                    let g = ui.fonts_mut(|f| f.layout_no_wrap(c.relation.heading().to_owned(), theme::bold(size::SMALL), p.text2));
-                    ui.painter().galley(pos2(r.left() + 4.0, r.bottom() - g.size().y - 3.0), g, p.text2);
-                    for row in &c.rows {
-                        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), CARD_ROW), Sense::click());
-                        any_focus |= resp.has_focus();
-                        if resp.hovered() || resp.has_focus() {
-                            ui.painter().rect_filled(r, 6.0, p.faint);
-                        }
-                        if row.display.unseen {
-                            crate::sidebar::unseen_outline(ui, r, &p);
-                        }
-                        harness_icon(ui.painter(), pos2(r.left() + 16.0, r.center().y), 20.0, row, &p);
-                        let text_w = r.width() - 60.0;
-                        let name_color = if row.finished { p.text2 } else { p.text };
-                        let g = widgets::elided(ui, &row.title, &theme::bold(size::UI), name_color, text_w);
-                        ui.painter().galley(pos2(r.left() + 34.0, r.top() + 5.0), g, name_color);
-                        let second = row.origin.as_ref().filter(|_| row.subagent).map_or_else(|| row.last_action.clone(), |o| format!("{o} · {}", row.last_action));
-                        let g = widgets::elided(ui, &second, &theme::ui(size::SMALL), p.text2, text_w);
-                        ui.painter().galley(pos2(r.left() + 34.0, r.top() + 24.0), g, p.text2);
-                        if let Some(f) = row.flow {
-                            arrow(ui.painter(), pos2(r.right() - 12.0, r.center().y), f, &p);
-                        }
-                        if resp.clicked()
-                            && let Some(k) = &row.key
-                        {
-                            actions.push(Action::Open(k.clone()));
+                // Everyone, in the pill's order; the list scrolls when it is taller than the
+                // card (D168).
+                let rest = (card_rect.bottom() - 10.0 - ui.cursor().top()).max(CARD_ROW);
+                egui::ScrollArea::vertical().id_salt("agents-card").max_height(rest).min_scrolled_height(rest).auto_shrink([false, true]).show(ui, |ui| {
+                    for c in &all {
+                        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), CARD_HEAD), Sense::hover());
+                        let g = ui.fonts_mut(|f| f.layout_no_wrap(c.relation.heading().to_owned(), theme::bold(size::SMALL), p.text2));
+                        ui.painter().galley(pos2(r.left() + 4.0, r.bottom() - g.size().y - 3.0), g, p.text2);
+                        for row in &c.rows {
+                            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), CARD_ROW), Sense::click());
+                            if to_hidden && !pl.shows(row) {
+                                // Opened from "more": the first agent the pill hides at the top.
+                                ui.scroll_to_rect(r.expand2(vec2(0.0, CARD_HEAD)), Some(egui::Align::TOP));
+                                to_hidden = false;
+                            }
+                            any_focus |= resp.has_focus();
+                            card_row(ui, r, &resp, row, &p);
+                            if resp.clicked()
+                                && let Some(k) = &row.key
+                            {
+                                actions.push(Action::Open(k.clone()));
+                            }
                         }
                     }
-                }
+                });
             } else {
                 ui.vertical_centered(|ui| {
-                    for (i, c) in pill.iter().enumerate() {
+                    for (i, c) in pl.clusters.iter().enumerate() {
                         if i > 0 {
-                            // A short hairline between relations.
-                            let (r, _) = ui.allocate_exact_size(vec2(32.0, SEP_H), Sense::hover());
-                            let y = ui.painter().round_to_pixel_center(r.center().y);
-                            ui.painter().hline((r.center().x - 10.0)..=(r.center().x + 10.0), y, Stroke::new(1.0, p.border));
+                            hairline(ui, &p);
                         }
                         let (r, resp) = ui.allocate_exact_size(vec2(32.0, GLYPH_H), Sense::hover());
                         relation_glyph(ui.painter(), r.center(), c.relation, &p);
@@ -167,38 +201,79 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                                 actions.push(Action::Open(k.clone()));
                             }
                         }
-                        if c.more > 0 {
-                            ui.add_sized(vec2(32.0, PILL_ROW), egui::Label::new(widgets::secondary(format!("+{}", c.more), &p)));
+                    }
+                    if pl.more.hidden > 0 {
+                        if !pl.clusters.is_empty() {
+                            hairline(ui, &p);
                         }
+                        let (r, _) = ui.allocate_exact_size(vec2(32.0, more_height(&pl.more)), Sense::hover());
+                        more_item(ui.painter(), r, &pl.more, &p);
+                        more_rect = Some(r);
                     }
                 });
             }
         });
     });
     let _ = resp;
+    app.ui.card_to_hidden = to_hidden;
+    if !card {
+        app.ui.pill_icons = pl.icons();
+        app.ui.pill_more = more_rect;
+    }
     if app.shots.is_some() {
         return;
     }
     // Open and close from fixed regions and a short delay (yaac_core::hover), never from the
     // area's own outline, which grows and shrinks with the state.
-    let pointer = ctx.pointer_hover_pos().map(|p| (p.x, p.y));
+    let pointer = ctx.pointer_hover_pos();
     let region = |r: Rect| Region::new((r.left(), r.top()), (r.right(), r.bottom()));
     let now = ctx.input(|i| i.time);
-    let step = app.ui.hover.step(pointer, region(strip), region(card_rect), any_focus, now);
+    let step = app.ui.hover.step(pointer.map(|p| (p.x, p.y)), region(strip), region(card_rect), any_focus, now);
     if let Some(s) = step.wake_in {
         // The pending close: one scheduled repaint, not a running loop.
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(s));
     }
     match (app.ui.panel, step.open) {
         (PanelMode::Pill, true) => {
+            // Reached from the "more" item: the card shows the hidden agents (D168).
+            app.ui.card_to_hidden = pointer.is_some_and(|q| app.ui.pill_more.is_some_and(|m| m.expand(2.0).contains(q)));
             actions.push(Action::Panel(PanelInput::Enter));
             ctx.request_repaint();
         }
         (PanelMode::Card, false) => {
+            app.ui.card_to_hidden = false;
             actions.push(Action::Panel(PanelInput::Leave));
             ctx.request_repaint();
         }
         _ => {}
+    }
+}
+
+/// A short hairline between the pill's clusters, and above its "more" item.
+fn hairline(ui: &mut egui::Ui, p: &Palette) {
+    let (r, _) = ui.allocate_exact_size(vec2(32.0, SEP_H), Sense::hover());
+    let y = ui.painter().round_to_pixel_center(r.center().y);
+    ui.painter().hline((r.center().x - 10.0)..=(r.center().x + 10.0), y, Stroke::new(1.0, p.border));
+}
+
+/// One row of the card: icon, name, and one line with the last thing it did.
+fn card_row(ui: &egui::Ui, r: Rect, resp: &egui::Response, row: &AgentRow, p: &Palette) {
+    if resp.hovered() || resp.has_focus() {
+        ui.painter().rect_filled(r, 6.0, p.faint);
+    }
+    if row.display.unseen {
+        crate::sidebar::unseen_outline(ui, r, p);
+    }
+    harness_icon(ui.painter(), pos2(r.left() + 16.0, r.center().y), 20.0, row, p);
+    let text_w = r.width() - 60.0;
+    let name_color = if row.finished { p.text2 } else { p.text };
+    let g = widgets::elided(ui, &row.title, &theme::bold(size::UI), name_color, text_w);
+    ui.painter().galley(pos2(r.left() + 34.0, r.top() + 5.0), g, name_color);
+    let second = row.origin.as_ref().filter(|_| row.subagent).map_or_else(|| row.last_action.clone(), |o| format!("{o} · {}", row.last_action));
+    let g = widgets::elided(ui, &second, &theme::ui(size::SMALL), p.text2, text_w);
+    ui.painter().galley(pos2(r.left() + 34.0, r.top() + 24.0), g, p.text2);
+    if let Some(f) = row.flow {
+        arrow(ui.painter(), pos2(r.right() - 12.0, r.center().y), f, p);
     }
 }
 
@@ -208,10 +283,17 @@ const PILL_ROW: f32 = 32.0;
 const GLYPH_H: f32 = 16.0;
 /// The hairline between clusters.
 const SEP_H: f32 = 9.0;
+/// The "more" item's two lines, and its third.
+const MORE_H: f32 = 36.0;
+const MORE_LINE: f32 = 12.0;
 const CARD_W: f32 = 300.0;
 const CARD_ROW: f32 = 44.0;
 /// A relation's heading in the card.
 const CARD_HEAD: f32 = 24.0;
+/// The card's title line and margins.
+const CARD_CHROME: f32 = 64.0;
+/// The card keeps this far from the thread view's top and bottom.
+const CARD_MARGIN: f32 = 12.0;
 
 /// The pill's strip and the card's region, from the layout alone: both share the thread's
 /// right edge (less a 12 pt margin) and are centred on the same line.
@@ -331,7 +413,7 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
         });
     }
     ui.add_space(14.0);
-    let groups = clusters(panel, None);
+    let groups = clusters(panel);
     egui::ScrollArea::vertical().id_salt("agents-docked").auto_shrink([false, false]).show(ui, |ui| {
         // "Spawned by" is always there: started by the user when no agent started it.
         if !groups.iter().any(|c| c.relation == Relation::SpawnedBy) {
@@ -354,12 +436,39 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
             {
                 ui.label(widgets::secondary(format!("root: {title}"), &p));
             }
-            for row in &c.rows {
-                docked_row(ui, app, row, now, actions);
+            // Alive first, the tree kept; the quiet rest folded once it is long (D168).
+            for e in docked_entries(c, panel) {
+                match e {
+                    DockEntry::Row(row) => docked_row(ui, app, row, now, actions),
+                    DockEntry::Fold { rows, word } => {
+                        let i = c.relation as usize;
+                        let open = app.ui.dock_folds_open[i];
+                        if fold_line(ui, &p, &format!("{} {word}", rows.len()), open).clicked() {
+                            app.ui.dock_folds_open[i] = !open;
+                        }
+                        if open {
+                            for row in rows {
+                                docked_row(ui, app, row, now, actions);
+                            }
+                        }
+                    }
+                }
             }
             ui.add_space(10.0);
         }
     });
+}
+
+/// The docked panel's fold line: a chevron and "12 finished", quiet, clickable.
+fn fold_line(ui: &mut egui::Ui, p: &Palette, text: &str, open: bool) -> egui::Response {
+    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), DOCK_LINE + 8.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(r, 5.0, p.faint);
+    }
+    icons::chevron(ui.painter(), pos2(r.left() + 15.0, r.center().y), 14.0, open, p.text2);
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), theme::ui(size::SMALL), p.text2));
+    ui.painter().galley(pos2(r.left() + 28.0, r.center().y - g.size().y / 2.0), g, p.text2);
+    resp.on_hover_text(if open { "Fold them" } else { "Show them" })
 }
 
 fn heading(ui: &mut egui::Ui, p: &Palette, text: &str, n: Option<usize>) {
@@ -430,7 +539,7 @@ mod tests {
             let map = AttentionMap::compute(&app.client.state);
             agents_panel(&app.client.state, &map, app.client.state.selected_thread().unwrap()).unwrap()
         };
-        let (strip, card) = floating_regions(thread, pill_height(&clusters(&panel, Some(PILL_MAX))), card_height(&clusters(&panel, None)));
+        let (strip, card) = regions_for(thread, &panel);
         // Idle, pointer far away: the pill, and (once egui's first-frame layout passes are
         // done) nothing keeps the window awake.
         for i in 0..10 {
