@@ -37,6 +37,9 @@ pub enum Cmd {
     NextUnseen,
     /// Scroll the open thread to its newest message (D142).
     JumpToBottom,
+    /// Scroll the open thread to the prompt before / after the view (D153).
+    PrevMessage,
+    NextMessage,
     NextThread,
     PrevThread,
     Back,
@@ -253,6 +256,8 @@ pub static COMMANDS: &[CommandDef] = &[
     step(def(Cmd::FindThread, "find-thread", "Find a thread…", "Find any thread by title or id across every target, and open it.", &["go to", "open", "jump", "switch"], G::GoTo, &["Ctrl+P"]), StepKind::Thread),
     def(Cmd::NeedsNext, "needs-next", "Next thread that needs you", "Open the next thread waiting on you, at its request.", &["approval", "question", "attention", "waiting"], G::GoTo, &["Ctrl+J"]),
     def(Cmd::JumpToBottom, "jump-to-bottom", "Jump to the bottom", "Scroll the open thread to its newest message.", &["latest", "end", "new messages", "scroll"], G::GoTo, &["Ctrl+End"]),
+    def(Cmd::PrevMessage, "prev-message", "Go to previous message", "Scroll the open thread to the message you sent before the one in view.", &["timeline", "prompt", "up", "earlier"], G::GoTo, &["Alt+PageUp"]),
+    def(Cmd::NextMessage, "next-message", "Go to next message", "Scroll the open thread to the next message you sent.", &["timeline", "prompt", "down", "later"], G::GoTo, &["Alt+PageDown"]),
     def(Cmd::NextUnseen, "next-unseen", "Next unseen finished thread", "Open the next thread whose finished turn you have not seen.", &["unread", "done"], G::GoTo, &["Ctrl+U"]),
     def(Cmd::NextThread, "next-thread", "Next thread in the list", "Move the selection down the sidebar.", &["down"], G::GoTo, &["Ctrl+Down"]),
     def(Cmd::PrevThread, "prev-thread", "Previous thread in the list", "Move the selection up the sidebar.", &["up"], G::GoTo, &["Ctrl+Up"]),
@@ -482,6 +487,8 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
     let need_thread = matches!(
         cmd,
         Cmd::JumpToBottom
+            | Cmd::PrevMessage
+            | Cmd::NextMessage
             | Cmd::NewInProject
             | Cmd::Rename
             | Cmd::CopyId
@@ -520,6 +527,10 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
     let row = || control_row(ctx);
     match cmd {
         Cmd::JumpToBottom => Avail::Enabled,
+        Cmd::PrevMessage | Cmd::NextMessage => when(
+            key.as_ref().and_then(|k| st.transcripts.get(k)).is_some_and(|t| t.items().iter().filter(|i| matches!(i.body, ItemBody::UserMessage(_) | ItemBody::MeshReceived(_))).count() >= crate::timeline::MIN_ENTRIES),
+            "This thread has fewer than two messages",
+        ),
         Cmd::NeedsNext => {
             let map = AttentionMap::compute(st);
             when(!crate::sidebar::needs_you(st, &map, ctx.now).is_empty(), "Nothing needs you")
