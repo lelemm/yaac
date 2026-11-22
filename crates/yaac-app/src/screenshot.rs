@@ -84,8 +84,8 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("71", "bulk-archive-confirm"),
     ("72", "group-header-menu"),
     ("73", "bulk-archive-report"),
-    ("74", "message-markup"),
-    ("75", "message-markup-open"),
+    ("76", "message-markup"),
+    ("77", "message-markup-open"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -606,14 +606,14 @@ fn setup(app: &mut YaacApp, id: &str) {
                 app.ui.menu = Some(Menu::Selection(threads::billing()));
             }
         }
-        "74" | "75" => {
+        "76" | "77" => {
             // Claude Code's markup made readable (D141): a pasted log (collapsed), a slash
             // command chip, a reminder behind "Context", notices for a subagent's report and
             // background tasks. 75: the paste and the context opened, one notice expanded.
             play(app, Scene::HarnessMarkup);
             let k = threads::users();
             app.open(&k, None);
-            if id == "75" {
+            if id == "77" {
                 app.ui.expansion.toggle_pasted(&k, &"um1".into(), 1);
                 app.ui.expansion.toggle_context(&k, &"um1".into());
                 app.ui.expansion.toggle_line(&k, &"um6".into());

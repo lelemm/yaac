@@ -1072,7 +1072,7 @@ mod tests {
     use super::*;
     use yaac_core::demo::{Scene, threads};
 
-    /// The users-service transcript of screens 74–75, drawn once; returns each user block's
+    /// The users-service transcript of screens 76–77, drawn once; returns each user block's
     /// measured height by item id.
     fn draw(app: &mut YaacApp, ctx: &egui::Context) -> std::collections::HashMap<String, f32> {
         let key = threads::users();

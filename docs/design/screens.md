@@ -1372,7 +1372,7 @@ the list.*
   dismisses it. Hovering it lists each thread with its reason ("Release notes: staging is
   offline"; for an uncertain one, that it may or may not be archived and is not asked again).
 
-### 74 — A pasted log, a command, and notices from Claude Code
+### 76 — A pasted log, a command, and notices from Claude Code
 
 *The harness's markup is never shown as the user's text (D141, P121–P123).*
 
@@ -1387,7 +1387,7 @@ the list.*
   -p users" completed (exit code 0)", "2 background shell commands didn't finish before the
   previous session ended" — no tags, no line breaks drawn as boxes.
 
-### 75 — The same, opened
+### 77 — The same, opened
 
 - As 74, with the paste opened (the log as plain proportional text, no line numbers, its own
   copy button on hover), **⌄ Context** opened to "System reminder" (semibold, secondary) and
