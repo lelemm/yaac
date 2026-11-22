@@ -1672,6 +1672,17 @@ pub(crate) mod tests {
         assert!(!h.banners.iter().any(|b| matches!(b, yaac_core::header::Banner::InUseElsewhere { .. })), "the banner goes away");
     }
 
+    /// One frame as eframe runs it while the window is shown: `logic` (the hub's messages,
+    /// the demo's streaming ticks), then `ui`, in every pass.
+    fn live_frame(ctx: &egui::Context, app: &mut YaacApp, input: egui::RawInput) {
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(input, |ui| {
+            eframe::App::logic(app, ui.ctx(), &mut frame);
+            eframe::App::ui(app, ui, &mut frame);
+        });
+        out.textures_delta.clear();
+    }
+
     /// D152: while a reply streams into a thread read at its bottom, the view only ever moves
     /// forward: one frame per delta, the content never shrinks, the offset never goes back,
     /// the newest line stays in view, and a block once measured is never drawn at a guess.
@@ -1679,16 +1690,16 @@ pub(crate) mod tests {
     fn a_streaming_reply_never_moves_the_view_backwards() {
         let ctx = egui::Context::default();
         let mut app = demo_app(&ctx);
-        let fix = threads::fix();
-        app.apply(vec![Action::Open(fix.clone())]);
+        let billing = threads::billing();
+        app.apply(vec![Action::Open(billing.clone())]);
         let clock = std::cell::Cell::new(0.0_f64);
         // 40 ms apart: the demo hub releases one scheduled event per frame.
         let screen = || {
             clock.set(clock.get() + 0.04);
-            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 600.0))), time: Some(clock.get()), ..Default::default() }
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 420.0))), time: Some(clock.get()), ..Default::default() }
         };
         for _ in 0..6 {
-            window_frame(&ctx, &mut app, screen());
+            live_frame(&ctx, &mut app, screen());
         }
         assert!(app.ui.away_from_end.is_none(), "opened at its bottom");
         app.apply(vec![Action::StreamReply]);
@@ -1697,7 +1708,7 @@ pub(crate) mod tests {
         let mut passes = 0;
         for _ in 0..400 {
             app.ui.geom.clear();
-            window_frame(&ctx, &mut app, screen());
+            live_frame(&ctx, &mut app, screen());
             passes += app.ui.geom.len();
             shown.push(app.ui.geom.last().cloned().expect("the transcript was drawn"));
             if !app.demo.as_ref().unwrap().busy() && shown.len() > 3 {
@@ -1707,7 +1718,7 @@ pub(crate) mod tests {
         // Settled: nothing left to measure, so a few more frames change nothing.
         for _ in 0..3 {
             app.ui.geom.clear();
-            window_frame(&ctx, &mut app, screen());
+            live_frame(&ctx, &mut app, screen());
             shown.push(app.ui.geom.last().cloned().expect("drawn"));
         }
         let text: Vec<String> = shown
@@ -1717,7 +1728,7 @@ pub(crate) mod tests {
             .collect();
         eprintln!("{} frames, {passes} passes\n{}", shown.len(), text.join("\n"));
         let mut problems = Vec::new();
-        let mut measured = std::collections::BTreeSet::new();
+        let mut measured: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
         for (n, w) in shown.windows(2).enumerate() {
             let (a, b) = (&w[0], &w[1]);
             if b.content < a.content - 0.5 {

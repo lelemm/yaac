@@ -490,7 +490,7 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
     let at_end = out.state.clamped_offset().y + out.inner_rect.height() >= out.content_size.y - 8.0;
     #[cfg(test)]
     {
-        geom.offset = out.state.offset.y;
+        geom.offset = out.state.unclamped_offset().y;
         geom.content = out.content_size.y;
         geom.view = out.inner_rect.height();
         app.ui.geom.push(geom);
