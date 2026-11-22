@@ -1465,3 +1465,10 @@ the list.*
   markdown table drawn as a grid — the header **Check · Result** in bold with a hairline under
   it, then one row per line; a long cell wraps within its column. No boxes, no stripes. Each
   cell is selectable and copied as its own part.
+
+### 84 — An open tool call
+
+- **users-service**, the "Ran cargo test -p users · 14 passed" line open (D158): the line keeps a
+  faint fill and a down chevron where the dot was; under it, the output and "exit 0", with a thin
+  guide down the left of the body that closes it when clicked (it thickens under the pointer,
+  tooltip "Collapse"). The title is not repeated inside.

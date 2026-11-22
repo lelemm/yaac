@@ -654,7 +654,7 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
             }
         }
         Block::Folded { first, text, failed, .. } => {
-            let resp = line_row(ui, &mut v.sel(unit), &p, Row { state_mark: if *failed { Some(Mark::Failed) } else { None }, mark: LineMark::Other, text, failed: *failed, highlighted: false, folded: true, counts: None, trailer: None });
+            let resp = line_row(ui, &mut v.sel(unit), &p, Row { state_mark: if *failed { Some(Mark::Failed) } else { None }, mark: LineMark::Other, text, failed: *failed, highlighted: false, folded: true, counts: None, trailer: None, open: None });
             if resp.clicked() {
                 v.ui.expansion.toggle_run(key, first);
             }
@@ -673,6 +673,7 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
                     folded: true,
                     counts: Some((totals.added, totals.removed)),
                     trailer: Some(if *expanded { "hide all" } else { "show all" }),
+                    open: None,
                 },
             );
             if resp.clicked() {
@@ -841,6 +842,9 @@ struct Row<'a> {
     counts: Option<(u32, u32)>,
     /// A quiet word at the end ("show all").
     trailer: Option<&'a str>,
+    /// The line opens to show more: `Some(true)` while it is open (D158). An open line shows
+    /// a down chevron and a faint fill, so it is clear where to click to close it.
+    open: Option<bool>,
 }
 
 /// An activity line: one muted row. Its text is selectable (a drag selects; a click still
@@ -850,7 +854,7 @@ fn line_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, row: Row<'_>) ->
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 22.0), Sense::click());
     if row.highlighted {
         ui.painter().rect_filled(rect, 4.0, p.selected);
-    } else if resp.hovered() {
+    } else if resp.hovered() || row.open == Some(true) {
         ui.painter().rect_filled(rect, 4.0, p.faint);
     }
     let color = if row.failed { p.failed } else { p.text2 };
@@ -864,6 +868,9 @@ fn line_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, row: Row<'_>) ->
         (None, LineMark::Waiting) => icons::hourglass(pa, c, 11.0, color),
         (None, LineMark::Notice) => icons::info(pa, c, 11.0, color),
         (None, _) if row.folded => icons::chevron(pa, c, 11.0, false, color),
+        // Open: a down chevron. Closed: the quiet dot, a right chevron under the pointer.
+        (None, _) if row.open == Some(true) => icons::chevron(pa, c, 11.0, true, color),
+        (None, _) if row.open == Some(false) && resp.hovered() => icons::chevron(pa, c, 11.0, false, color),
         (None, _) => {
             pa.circle_filled(c, 2.0, color);
         }
@@ -904,7 +911,17 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
         ui,
         &mut v.sel(unit),
         &p,
-        Row { state_mark, mark: l.mark, text: &l.text, failed: l.failed, highlighted: l.highlighted, folded: false, counts: l.diff.map(|d| (d.added, d.removed)), trailer: None },
+        Row {
+            state_mark,
+            mark: l.mark,
+            text: &l.text,
+            failed: l.failed,
+            highlighted: l.highlighted,
+            folded: false,
+            counts: l.diff.map(|d| (d.added, d.removed)),
+            trailer: None,
+            open: Some(l.expanded),
+        },
     );
     if resp.clicked() {
         match l.diff {
@@ -930,7 +947,7 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
         return;
     }
     let fill = if l.highlighted { p.selected } else { egui::Color32::TRANSPARENT };
-    egui::Frame::NONE.fill(fill).corner_radius(4).inner_margin(Margin { left: 22, right: 8, top: 2, bottom: 8 }).show(ui, |ui| {
+    let body = egui::Frame::NONE.fill(fill).corner_radius(4).inner_margin(Margin { left: 22, right: 8, top: 2, bottom: 8 }).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 3.0;
         let small = theme::ui(size::SMALL + 0.5);
@@ -940,7 +957,10 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
                 sc.text(ui, &r.reasoning, small.clone(), p.text2);
             }
             ItemBody::ToolCall(tc) => {
-                sc.job(ui, markdown::inline_job(&tc.title, &small, p.text2, &p, ui.available_width()), p.text2);
+                // The line above already says it; repeat the title only when it says more.
+                if tc.title.replace('`', "").trim() != l.text.replace('`', "").trim() {
+                    sc.job(ui, markdown::inline_job(&tc.title, &small, p.text2, &p, ui.available_width()), p.text2);
+                }
                 if let Some(cwd) = &tc.cwd {
                     sc.text(ui, cwd.as_str(), small.clone(), p.text2);
                 }
@@ -1040,6 +1060,17 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
             _ => {}
         }
     });
+    // A guide down the open body, under the line's chevron: clicking it (or the line) closes
+    // it, so the way back is in reach however long the output is (D158).
+    let r = body.response.rect;
+    let x = r.left() + 9.0;
+    let guide = egui::Rect::from_min_max(pos2(r.left(), r.top()), pos2(r.left() + 18.0, r.bottom() - 4.0));
+    let g = ui.interact(guide, ui.scope_id().with(("collapse-guide", &l.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Collapse");
+    let stroke = egui::Stroke::new(if g.hovered() { 2.0 } else { 1.0 }, if g.hovered() { p.text2 } else { p.border });
+    ui.painter().vline(x, (r.top() + 2.0)..=(r.bottom() - 6.0), stroke);
+    if g.clicked() {
+        v.ui.expansion.toggle_line(key, &l.id);
+    }
 }
 
 /// One file's unified diff, expanded in place: removed lines on a faint red ground, added on a

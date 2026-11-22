@@ -94,6 +94,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("81", "move-drag-other-machine"),
     ("82", "move-undo"),
     ("83", "markdown-table"),
+    ("84", "tool-open"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -240,6 +241,15 @@ fn setup(app: &mut YaacApp, id: &str) {
             if id == "28" {
                 app.ui.panel = PanelMode::Card;
             }
+        }
+        "84" => {
+            // An open tool call (D158): the down chevron and faint fill on its line, the guide
+            // down its body that closes it.
+            let k = threads::users();
+            app.open(&k, None);
+            app.ui.expansion.toggle_line(&k, &"u4".into());
+            app.ui.scroll_to = Some("u4".into());
+            app.ui.scroll_end = false;
         }
         "83" => {
             // A markdown table in an agent's message: a grid with a bold header, not the cells
