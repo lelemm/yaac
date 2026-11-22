@@ -414,6 +414,49 @@ created with `claude -p --session-id`:
   holds it. YAAC therefore disables **Take over** for a background holder with that reason and
   never stops the session itself.
 
+## Folder trust (verified 2026-11-22)
+
+Whether YAAC can mark a folder trusted for a harness (D147). Every check ran against throwaway
+homes under `/tmp`; the owner's `~/.codex` and `~/.claude*` were not touched.
+
+**Codex** — `codex app-server` (stdio) of codex-cli 0.170.0 with a scratch `CODEX_HOME`, and
+`codex app-server generate-ts`:
+
+- Trust is `[projects."<abs path>"] trust_level = "trusted"` (or `"untrusted"`) in the user's
+  `config.toml`. The app-server has `config/read { includeLayers?, cwd? }` →
+  `{ config, origins, layers }` (`config.projects` is the effective map; each layer has a
+  `version`, `sha256:…`), `config/value/write { keyPath, value, mergeStrategy, filePath?,
+  expectedVersion? }` and `config/batchWrite { edits, … }`. `MergeStrategy` is
+  `"replace" | "upsert"`; `upsert` merges tables deeply (other keys of the folder's table and
+  other folders are kept). The reply is `{ status: "ok" | "okOverridden", version, filePath }`.
+- `keyPath` is split at dots: `projects./tmp/a.b/c` wrote `[projects."/tmp/a"."b/c"]`. A quoted
+  segment (`projects."/tmp/a.b/c".trust_level`) is parsed correctly, but the robust form is
+  `keyPath: "projects"` with the folder as a key of the value, `{ "<folder>": { trust_level:
+  "trusted" } }`, `upsert` — it round-trips spaces, dots, backslashes and quotes
+  (`C:\Users\a "q".b` was written as a literal key). That is what `yaacd` sends.
+- A stale `expectedVersion` is refused: JSON-RPC error `-32600`, `data.config_write_error_code:
+  "configVersionConflict"`, "Configuration was modified since last read." The user layer has
+  a version even when `config.toml` does not exist yet.
+- Which entry Codex consults (seen through the `disabledReason` of project config layers with
+  `config/read { cwd, includeLayers: true }`): an entry for the working directory itself, or
+  for the root of its git repository — for a linked worktree, the **main** checkout's root
+  ("add /…/repo as a trusted project"). An entry for a mere ancestor folder does not count;
+  an exact `untrusted` entry for a subfolder overrides a trusted repository root.
+
+**Claude Code** — `claude` 2.1.330 and `@anthropic-ai/claude-agent-sdk` 0.3.329, with `HOME`
+and `CLAUDE_CONFIG_DIR` set to scratch folders:
+
+- Trust is `projects["<abs path>"].hasTrustDialogAccepted: true` in `.claude.json`
+  (`$CLAUDE_CONFIG_DIR/.claude.json`; `~/.claude.json` by default). An ordinary SDK session
+  records nothing (the trust dialog is skipped in non-interactive use, per `claude --help`).
+- The CLI has no command that sets it (`claude --help` lists none; there is no `config`
+  subcommand). The SDK's `query()` passes an option `workspaceTrust: { accepted: true,
+  directory }` to the CLI's `initialize`, and with it the CLI wrote the flag and answered
+  `workspace_trust_recorded: true`. But the option is **not in the SDK's published types**
+  (`sdk.d.ts` has no `workspaceTrust`), and the CLI's schema marks it `@internal`: "the host's
+  attestation that the user accepted a trust dialog". YAAC does not use it, and does not edit
+  `.claude.json`; Claude Code does not report `folderTrust`.
+
 ## Fast mode (checked 2026-11-21)
 
 Read from `codex app-server generate-ts` (CLI 0.170.0, against daemon 0.171.0) and the
