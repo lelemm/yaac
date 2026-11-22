@@ -284,6 +284,70 @@ fn demo_distros() -> Value {
     ] })
 }
 
+impl Inner {
+    /// `thread/move` (D139) as a target answers it: the placement always; the folder too where
+    /// the thread's provider has `threadMoveWorkingDirectory` (the demo's Codex instances).
+    fn move_thread(&mut self, id: RpcId, key: &ThreadKey, p: &Value) {
+        let project = p.get("project").and_then(Value::as_str).map(str::to_owned);
+        let worktree = p.get("worktree").and_then(Value::as_str).map(str::to_owned);
+        let found = project.as_ref().and_then(|pid| self.fleet.projects.get(&key.target).and_then(|ps| ps.iter().find(|x| x.id.as_str() == pid)).cloned());
+        let caps = self.fleet.threads.get(key).map(|t| t.effective.capabilities.clone()).unwrap_or_default();
+        let Some(t) = self.fleet.threads.get_mut(key) else {
+            self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
+            return;
+        };
+        if t.summary.archived {
+            self.ready.push_back(error(id, ErrorCode::InvalidParams, "an archived thread cannot be moved; unarchive it first"));
+            return;
+        }
+        if !t.control.may_act() {
+            self.ready.push_back(error(id, ErrorCode::ThreadInUse, "this thread is in use elsewhere; it can only be watched"));
+            return;
+        }
+        let mut working = None;
+        match (project, found) {
+            (None, _) => {
+                // Forgotten: its folder decides again.
+                t.summary.placement = None;
+                self.fleet.resolve_projects(&key.target);
+            }
+            (Some(_), None) => {
+                self.ready.push_back(error(id, ErrorCode::InvalidParams, "no such project on this target"));
+                return;
+            }
+            (Some(_), Some(pr)) => {
+                t.summary.project = Some(yaac_protocol::ProjectRef {
+                    path: pr.folder.clone(),
+                    display_name: pr.name.clone(),
+                    cross_target_key: None,
+                    kind: Some(yaac_protocol::ProjectKind::User),
+                    id: Some(pr.id.clone()),
+                    repo: pr.repo.clone(),
+                });
+                t.summary.placement = Some(yaac_protocol::ThreadPlacement {
+                    project: pr.id.clone(),
+                    worktree: worktree.clone().map(yaac_protocol::TargetPath::new),
+                    worktree_name: worktree.as_deref().map(|w| w.rsplit('/').next().unwrap_or(w).to_owned()),
+                });
+                if caps.contains(&yaac_protocol::Capability::ThreadMoveWorkingDirectory) {
+                    let folder = worktree.unwrap_or_else(|| pr.folder.to_string());
+                    if t.summary.cwd.as_str() != folder {
+                        t.summary.cwd = yaac_protocol::TargetPath::new(folder.clone());
+                        working = Some(folder);
+                    }
+                }
+            }
+        }
+        let Some(summary) = self.fleet.threads.get(key).map(|t| t.summary.clone()) else { return };
+        let mut out = json!({ "thread": summary });
+        if let Some(w) = working {
+            out["workingDirectory"] = json!(w);
+        }
+        self.ready.push_back(result(id, out));
+        self.ready.push_back(routed(&key.target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
+    }
+}
+
 fn result(id: RpcId, value: Value) -> Message {
     Message::Response { id, result: value }
 }
@@ -750,6 +814,10 @@ impl Inner {
                 let summary = t.summary.clone();
                 self.ready.push_back(result(id, json!({})));
                 self.ready.push_back(routed(target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
+            }
+            m::THREAD_MOVE => {
+                let Some(key) = thread(p, "threadId") else { return };
+                self.move_thread(id, &key, p);
             }
             m::THREAD_DELETE => {
                 let Some(key) = thread(p, "threadId") else { return };

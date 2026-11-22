@@ -43,6 +43,7 @@ pub mod keys;
 pub mod link;
 pub mod markstyle;
 pub mod mode_confirm;
+pub mod moving;
 pub mod mute;
 pub mod pr;
 pub mod prefs;

@@ -63,6 +63,19 @@ pub(crate) enum Menu {
     Demo,
     /// A row's PR badge menu (D119): Create a new PR, Copy link.
     PrBadge(ThreadKey),
+    /// The Move dialog's Project dropdown (D139).
+    MoveProject,
+    /// The Move dialog's Worktree dropdown (D139).
+    MoveWorktree,
+}
+
+/// Sidebar rows being dragged to another group (D139).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DragRows {
+    /// The threads: the selection when the dragged row is in one of two or more, else the row.
+    pub keys: Vec<ThreadKey>,
+    /// Screenshots only: draw the drag as if the pointer were over this section.
+    pub force_over: Option<String>,
 }
 
 /// The user's in-progress answers to a question card. UI memory only: never written to the
@@ -126,6 +139,15 @@ pub(crate) struct UiState {
     pub update_now: Option<yaac_core::components::UpdateNowDialog>,
     /// The bulk Archive confirmation (D138).
     pub bulk_archive: Option<yaac_core::bulk::BulkArchiveDialog>,
+    /// The Move dialog (D139).
+    pub move_dialog: Option<yaac_core::moving::MoveDialog>,
+    /// Rows being dragged to another group (D139).
+    pub drag: Option<DragRows>,
+    /// Each section of the sidebar drawn last frame and the area it covers (header and rows),
+    /// for dropping dragged rows on it.
+    pub drop_zones: Vec<(String, egui::Rect)>,
+    /// Section headers drawn last frame (tests find a group's header by it).
+    pub list_heads: Vec<(String, egui::Rect)>,
     /// The sidebar's multi-selection (D138), window-local.
     pub list_sel: yaac_core::bulk::ListSelection,
     /// Every listed sidebar row in display order, as last drawn.
@@ -231,6 +253,10 @@ impl UiState {
             archive: None,
             update_now: None,
             bulk_archive: None,
+            move_dialog: None,
+            drag: None,
+            drop_zones: Vec::new(),
+            list_heads: Vec::new(),
             list_sel: yaac_core::bulk::ListSelection::default(),
             list_order: Vec::new(),
             list_rows: Vec::new(),
@@ -392,6 +418,15 @@ pub(crate) enum Action {
     UnmuteMany(Vec<ThreadKey>),
     /// Unselect every sidebar row.
     ClearSelection,
+    /// Open the Move dialog for these threads (D139), with a destination already chosen (a
+    /// Commander choice, or a drop that changes a working directory).
+    OpenMove(Vec<ThreadKey>, Option<yaac_core::moving::Destination>),
+    /// Move these threads; with a notice, the bar shows it with Undo.
+    Move(Vec<(ThreadKey, yaac_core::moving::Destination)>, Option<yaac_core::moving::MoveNotice>),
+    /// The bar's Undo after a move.
+    UndoMove,
+    /// Close the bar's move notice.
+    DismissMoveNotice,
     Rename(ThreadKey, String),
     SetModel(ThreadKey, yaac_protocol::ModelId),
     SetEffort(ThreadKey, yaac_protocol::EffortId),
@@ -992,6 +1027,25 @@ impl YaacApp {
                     self.ui.list_sel.clear();
                     self.ui.menu = None;
                 }
+                Action::OpenMove(keys, dest) => {
+                    let mut d = yaac_core::moving::MoveDialog::new(&self.client.state, &keys);
+                    if let Some(to) = dest
+                        && d.blocked.is_none()
+                    {
+                        d.set_project(&to.project);
+                        d.worktree = to.worktree;
+                    }
+                    self.ui.move_dialog = Some(d);
+                    self.ui.menu = None;
+                }
+                Action::Move(moves, notice) => {
+                    let moves: Vec<_> = moves.into_iter().map(|(k, d)| (k, Some(d))).collect();
+                    self.client.move_threads(&moves, notice);
+                    self.ui.move_dialog = None;
+                    self.ui.list_sel.clear();
+                }
+                Action::UndoMove => self.client.undo_move(),
+                Action::DismissMoveNotice => self.client.move_notice = None,
                 Action::Rename(k, t) => self.client.rename(&k, &t),
                 Action::SetModel(k, m) => self.client.set_next_model(&k, m),
                 Action::SetFast(k, on) => self.client.set_fast(&k, on),
@@ -1849,6 +1903,83 @@ mod tests {
         let n = hub.requests().len();
         keys(&ctx, &mut app, vec![]);
         assert!(hub.requests()[n..].iter().all(|(_, m, _)| m != "thread/archive"));
+    }
+
+    /// Press on `from`, move in steps to `to`, release there: one frame per event.
+    fn drag(ctx: &egui::Context, app: &mut YaacApp, from: egui::Pos2, to: egui::Pos2) {
+        let frame = |events: Vec<egui::Event>| egui::RawInput { screen_rect: screen(), events, ..Default::default() };
+        window_frame(ctx, app, frame(vec![egui::Event::PointerMoved(from)]));
+        window_frame(ctx, app, frame(vec![egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }]));
+        for i in 1..=6 {
+            let at = from + (to - from) * (i as f32 / 6.0);
+            window_frame(ctx, app, frame(vec![egui::Event::PointerMoved(at)]));
+        }
+        window_frame(ctx, app, frame(vec![egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }]));
+        window_frame(ctx, app, frame(vec![]));
+    }
+
+    fn head_of(app: &YaacApp, of: &ThreadKey) -> egui::Pos2 {
+        let id = yaac_core::sidebar::section_of(&app.client.state, app.ui.grouping, of).expect("its section");
+        app.ui.list_heads.iter().find(|(s, _)| *s == id).map(|(_, r)| r.center()).unwrap_or_else(|| panic!("the header of {id} is drawn"))
+    }
+
+    fn row_of(app: &YaacApp, key: &ThreadKey) -> egui::Pos2 {
+        app.ui.list_rows.iter().find(|(k, _)| k == key).map(|(_, r)| r.center()).unwrap_or_else(|| panic!("{key:?} is drawn"))
+    }
+
+    #[test]
+    fn dragging_a_row_onto_another_projects_header_sends_thread_move_with_an_undo() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.apply(vec![Action::Open(threads::fix())]);
+        for _ in 0..3 {
+            keys(&ctx, &mut app, vec![]);
+        }
+        let hub = app.demo.clone().unwrap();
+        let billing = threads::billing();
+        let yaac = app.client.state.project_of(&threads::fix()).map(|p| p.wire_id.clone()).expect("yaac on devbox");
+        // billing-service (Claude: no folder change) onto "yaac" on the same machine: moved at
+        // once, one `thread/move` with its own operation id, and an Undo in the bar.
+        let before = hub.requests().len();
+        let (from, to) = (row_of(&app, &billing), head_of(&app, &threads::fix()));
+        drag(&ctx, &mut app, from, to);
+        let moves: Vec<_> = hub.requests().into_iter().skip(before).filter(|(_, m, _)| m == "thread/move").collect();
+        assert_eq!(moves.len(), 1, "{moves:?}");
+        let (_, _, params) = &moves[0];
+        assert_eq!(params["threadId"], billing.thread.as_str());
+        assert_eq!(params["project"], yaac.as_str());
+        assert!(params["opId"].as_str().is_some_and(|o| !o.is_empty()));
+        assert!(app.ui.drag.is_none() && app.ui.move_dialog.is_none(), "no confirmation: the folder does not change");
+        app.pump_demo();
+        assert_eq!(app.client.state.project_of(&billing).map(|p| p.wire_id.clone()), Some(yaac.clone()));
+        let notice = app.client.move_notice.clone().expect("the bar's notice");
+        assert_eq!(notice.text, "Moved “billing-service” to yaac");
+        // Undo puts it back: the placement is forgotten (it had none).
+        app.apply(vec![Action::UndoMove]);
+        let undo: Vec<_> = hub.requests().into_iter().filter(|(_, m, _)| m == "thread/move").collect();
+        assert_eq!(undo.len(), 2);
+        assert!(undo[1].2.get("project").is_none(), "{:?}", undo[1].2);
+        app.pump_demo();
+        for _ in 0..2 {
+            keys(&ctx, &mut app, vec![]);
+        }
+
+        // search-service is on gpu-box: dropping it on devbox's group is refused, nothing sent.
+        let n = hub.requests().len();
+        let (from, to) = (row_of(&app, &threads::search()), head_of(&app, &threads::fix()));
+        drag(&ctx, &mut app, from, to);
+        assert!(hub.requests()[n..].iter().all(|(_, m, _)| m != "thread/move"), "another machine: refused");
+
+        // Fix frame decoder (Codex: its folder follows) onto "api" on devbox: asks first.
+        let (from, to) = (row_of(&app, &threads::fix()), head_of(&app, &billing));
+        drag(&ctx, &mut app, from, to);
+        let d = app.ui.move_dialog.clone().expect("the confirmation");
+        assert!(d.sentence(&app.client.state).starts_with("The agent will work in /home/dev/api from its next turn"), "{}", d.sentence(&app.client.state));
+        assert!(hub.requests()[n..].iter().all(|(_, m, _)| m != "thread/move"), "nothing sent before Move");
+        keys(&ctx, &mut app, vec![press(Key::Enter, Modifiers::NONE)]);
+        assert!(app.ui.move_dialog.is_none());
+        assert_eq!(hub.requests()[n..].iter().filter(|(_, m, _)| m == "thread/move").count(), 1);
+        assert!(app.client.move_notice.is_none(), "no Undo when a folder changed");
     }
 
     #[test]

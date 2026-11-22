@@ -372,6 +372,12 @@ pub struct BulkReport {
 
 /// The report for a bulk Archive's outcomes (title, outcome); `None` when every one succeeded.
 pub fn archive_report(outcomes: &[(String, Outcome)]) -> Option<BulkReport> {
+    report("archived", outcomes)
+}
+
+/// The report of several requests of one kind (`verb`: "archived", "moved"), by (title,
+/// outcome); `None` when every one succeeded.
+pub fn report(verb: &str, outcomes: &[(String, Outcome)]) -> Option<BulkReport> {
     let failed: Vec<&(String, Outcome)> = outcomes.iter().filter(|(_, o)| matches!(o, Outcome::Failed(_))).collect();
     let uncertain: Vec<&String> = outcomes.iter().filter(|(_, o)| *o == Outcome::Uncertain).map(|(t, _)| t).collect();
     if failed.is_empty() && uncertain.is_empty() {
@@ -380,7 +386,7 @@ pub fn archive_report(outcomes: &[(String, Outcome)]) -> Option<BulkReport> {
     let mut parts = Vec::new();
     if !failed.is_empty() {
         let names: Vec<&str> = failed.iter().map(|(t, _)| t.as_str()).collect();
-        parts.push(format!("{} could not be archived: {}", failed.len(), names.join(", ")));
+        parts.push(format!("{} could not be {verb}: {}", failed.len(), names.join(", ")));
     }
     if !uncertain.is_empty() {
         let names: Vec<&str> = uncertain.iter().map(|t| t.as_str()).collect();
@@ -390,7 +396,7 @@ pub fn archive_report(outcomes: &[(String, Outcome)]) -> Option<BulkReport> {
     for (t, o) in outcomes {
         match o {
             Outcome::Failed(why) => detail.push(format!("{t}: {why}")),
-            Outcome::Uncertain => detail.push(format!("{t}: YAAC lost contact; it may or may not be archived and is not asked again. Check the list once the target answers.")),
+            Outcome::Uncertain => detail.push(format!("{t}: YAAC lost contact; it may or may not be {verb} and is not asked again. Check the list once the target answers.")),
             Outcome::Ok => {}
         }
     }

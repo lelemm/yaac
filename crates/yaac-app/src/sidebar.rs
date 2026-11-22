@@ -68,8 +68,10 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     // Rows do not jump under the pointer (D116): while it is over the list, or a row's menu
     // is open, a reorder waits until it leaves.
     let pointer = ui.ctx().pointer_hover_pos();
-    let hold = app.shots.is_none()
-        && (matches!(app.ui.menu, Some(Menu::Context(_) | Menu::Selection(_) | Menu::Header(_))) || pointer.is_some_and(|pt| app.ui.list_rect.is_some_and(|r| r.contains(pt))));
+    // A drag of rows to another group (D139) holds it too, wherever the pointer is.
+    let hold = app.ui.drag.is_some()
+        || (app.shots.is_none()
+            && (matches!(app.ui.menu, Some(Menu::Context(_) | Menu::Selection(_) | Menu::Header(_))) || pointer.is_some_and(|pt| app.ui.list_rect.is_some_and(|r| r.contains(pt)))));
     let secs = app.ui.steady.apply(fresh, hold);
     // The multi-selection (D138) keeps only rows still listed, in the order they are shown.
     let order: Vec<yaac_core::ThreadKey> = secs.iter().flat_map(|s| s.rows.iter().map(|r| r.key.clone())).collect();
@@ -104,6 +106,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         sa = sa.vertical_scroll_offset((total - list_h).max(0.0));
     }
     app.ui.list_rows.clear();
+    app.ui.list_heads.clear();
+    app.ui.drop_zones.clear();
     app.ui.header_menu_drawn = false;
     let shown = sa.show_viewport(ui, |ui, view| {
         ui.set_height(total);
@@ -116,8 +120,19 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
                 continue;
             }
             let rect = Rect::from_min_size(pos2(left, origin + ly), vec2(width, *h));
+            let id = match line {
+                Line::Head(s) | Line::Row(s, _) => &s.id,
+            };
+            // Where each section is, for dropping dragged rows on it (D139).
+            match app.ui.drop_zones.last_mut() {
+                Some((last, zone)) if last == id => *zone = zone.union(rect),
+                _ => app.ui.drop_zones.push((id.clone(), rect)),
+            }
             match line {
-                Line::Head(s) => header(ui, app, s, rect, actions),
+                Line::Head(s) => {
+                    app.ui.list_heads.push((s.id.clone(), rect));
+                    header(ui, app, s, rect, actions);
+                }
                 Line::Row(s, r) => row(ui, app, s, *r, rect, selected.as_ref(), now, actions),
             }
         }
@@ -135,6 +150,11 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         }
     });
     app.ui.list_rect = Some(shown.inner_rect);
+    // Keep the zones inside the list's visible area.
+    for (_, z) in &mut app.ui.drop_zones {
+        *z = z.intersect(shown.inner_rect);
+    }
+    drag_overlay(ui, app, &secs, actions);
     if let Some(h) = bar {
         selection_bar(ui, app, h, actions);
     }
@@ -157,9 +177,85 @@ fn bar_height(ui: &egui::Ui, app: &YaacApp) -> Option<f32> {
     if !app.ui.list_sel.is_empty() {
         return Some(BAR_H);
     }
-    let r = app.client.bulk_report.as_ref()?;
+    let Some(r) = app.client.bulk_report.as_ref() else {
+        // After a move that needed no confirmation: "Moved 2 threads to api · Undo" (D139).
+        return app.client.move_notice.as_ref().map(|_| BAR_H);
+    };
     let g = report_galley(ui, app, &r.text, ui.available_width());
     Some(BAR_H.max(g.size().y + 22.0))
+}
+
+/// Rows being dragged to another group (D139): the group under the pointer is outlined when
+/// the rows can move there, and a small label beside the pointer says what dropping does —
+/// "Move to api" — or why not, with the not-allowed cursor ("A thread cannot move to another
+/// machine"). Releasing moves them: at once with an Undo in the bar, or through the Move
+/// dialog when a working directory would change. Esc cancels.
+fn drag_overlay(ui: &egui::Ui, app: &mut YaacApp, secs: &[Section], actions: &mut Vec<Action>) {
+    let Some(drag) = app.ui.drag.clone() else { return };
+    let ctx = ui.ctx().clone();
+    let p = app.p;
+    let forced = drag.force_over.is_some();
+    if !forced && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        app.ui.drag = None;
+        return;
+    }
+    let pointer = ctx.input(|i| i.pointer.latest_pos());
+    let over = drag.force_over.clone().or_else(|| pointer.and_then(|pt| app.ui.drop_zones.iter().find(|(_, r)| r.contains(pt)).map(|(id, _)| id.clone())));
+    let zone = over.as_ref().and_then(|id| app.ui.drop_zones.iter().find(|(z, _)| z == id).map(|(_, r)| *r));
+    let st = &app.client.state;
+    let verdict = over.as_ref().and_then(|id| secs.iter().find(|s| &s.id == id)).map_or(yaac_core::moving::Drop::Nothing, |s| yaac_core::moving::drop_on(st, app.ui.grouping, s, &drag.keys));
+    let what = match drag.keys.as_slice() {
+        [one] => st.summary(one).map_or_else(|| "1 thread".to_owned(), |s| s.title.clone()),
+        many => format!("{} threads", many.len()),
+    };
+    let (hint, refused) = match &verdict {
+        yaac_core::moving::Drop::Move { label, confirm, .. } => (Some(if *confirm { format!("Move to {label}…") } else { format!("Move to {label}") }), false),
+        yaac_core::moving::Drop::Refused(why) => (Some(why.clone()), true),
+        yaac_core::moving::Drop::Nothing => (None, false),
+    };
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("sidebar-drag")));
+    if let (yaac_core::moving::Drop::Move { .. }, Some(z)) = (&verdict, zone) {
+        painter.rect_stroke(z.shrink(1.0), 6.0, egui::Stroke::new(2.0, p.focus), egui::StrokeKind::Inside);
+    }
+    ctx.set_cursor_icon(if refused { egui::CursorIcon::NotAllowed } else { egui::CursorIcon::Grabbing });
+    // The label beside the pointer: what is dragged, and what dropping here does.
+    let at = match (forced, pointer, zone) {
+        (true, _, Some(z)) => pos2(z.left() + 40.0, z.top() + 16.0),
+        (_, Some(pt), _) => pt + vec2(14.0, 12.0),
+        _ => return,
+    };
+    let title = ui.fonts_mut(|f| f.layout_no_wrap(what, theme::bold(size::SMALL), p.text));
+    let hint_g = hint.map(|h| ui.fonts_mut(|f| f.layout_no_wrap(h, theme::ui(size::SMALL), if refused { p.failed } else { p.text2 })));
+    let w = title.size().x.max(hint_g.as_ref().map_or(0.0, |g| g.size().x + if refused { 18.0 } else { 0.0 })).min(320.0) + 20.0;
+    let h = 10.0 + title.size().y + hint_g.as_ref().map_or(0.0, |g| g.size().y + 3.0) + 8.0;
+    let card = Rect::from_min_size(at, vec2(w, h));
+    painter.rect_filled(card, 6.0, p.raised);
+    painter.rect_stroke(card, 6.0, egui::Stroke::new(1.0, p.border), egui::StrokeKind::Inside);
+    let ty = card.top() + 8.0;
+    let th = title.size().y;
+    painter.galley(pos2(card.left() + 10.0, ty), title, p.text);
+    if let Some(g) = hint_g {
+        let mut x = card.left() + 10.0;
+        if refused {
+            icons::blocked(&painter, pos2(x + 6.0, ty + th + 3.0 + g.size().y / 2.0), 12.0, p.failed);
+            x += 18.0;
+        }
+        painter.galley(pos2(x, ty + th + 3.0), g, p.text2);
+    }
+    if forced {
+        return;
+    }
+    if ctx.input(|i| !i.pointer.any_down()) {
+        app.ui.drag = None;
+        if let yaac_core::moving::Drop::Move { keys, to, label, confirm } = verdict {
+            if confirm {
+                actions.push(Action::OpenMove(keys, Some(to)));
+            } else {
+                let notice = yaac_core::moving::notice(&app.client.state, &keys, &label);
+                actions.push(Action::Move(keys.into_iter().map(|k| (k, to.clone())).collect(), Some(notice)));
+            }
+        }
+    }
 }
 
 /// A dialog or the Commander is open: the list's keys are not the list's then.
@@ -169,6 +265,7 @@ fn modal_open(app: &YaacApp) -> bool {
         || u.mute.is_some()
         || u.archive.is_some()
         || u.bulk_archive.is_some()
+        || u.move_dialog.is_some()
         || u.delete.is_some()
         || u.rename.is_some()
         || u.fork.is_some()
@@ -230,6 +327,27 @@ fn selection_bar(ui: &mut egui::Ui, app: &mut YaacApp, height: f32, actions: &mu
         ui.painter().rect_filled(x_rect, 4.0, p.selected);
     }
     icons::close(ui.painter(), x_rect.center(), 14.0, p.text2);
+    if app.ui.list_sel.is_empty() && app.client.bulk_report.is_none() {
+        // "Moved 2 threads to api · Undo" (D139).
+        let Some(n) = app.client.move_notice.clone() else { return };
+        let undo = ui.fonts_mut(|f| f.layout_no_wrap("Undo".to_owned(), theme::bold(size::SMALL), p.text));
+        let ur = Rect::from_min_size(pos2(x_rect.left() - 10.0 - undo.size().x - 12.0, cy - 11.0), vec2(undo.size().x + 12.0, 22.0));
+        let text = widgets::elided(ui, &n.text, &font, p.text, (ur.left() - inner.left() - 18.0).max(10.0));
+        ui.painter().galley(pos2(inner.left() + 10.0, cy - text.size().y / 2.0), text, p.text);
+        let ub = ui.interact(ur, egui::Id::unique("move-notice-undo"), Sense::click());
+        if ub.hovered() {
+            ui.painter().rect_filled(ur, 4.0, p.selected);
+        }
+        let uh = undo.size().y;
+        ui.painter().galley(pos2(ur.left() + 6.0, cy - uh / 2.0), undo, p.text);
+        if ub.on_hover_text("Put them back where they were").clicked() {
+            actions.push(Action::UndoMove);
+        }
+        if close.on_hover_text("Dismiss").clicked() {
+            actions.push(Action::DismissMoveNotice);
+        }
+        return;
+    }
     if app.ui.list_sel.is_empty() {
         let Some(r) = app.client.bulk_report.clone() else { return };
         icons::warning(ui.painter(), pos2(inner.left() + 14.0, cy), 13.0, p.needs, p.faint);
@@ -339,6 +457,7 @@ pub(crate) fn run_menu_action(app: &mut YaacApp, ctx: &egui::Context, key: &yaac
             app.ui.rename = Some((k, title));
         }
         MenuAction::Fork => actions.push(Action::OpenFork(k)),
+        MenuAction::Move => actions.push(Action::OpenMove(vec![k], None)),
         MenuAction::Pin => actions.push(Action::SetPinned(k, true)),
         MenuAction::Unpin => actions.push(Action::SetPinned(k, false)),
         MenuAction::Mute => actions.push(Action::OpenMute(k, false)),
@@ -763,7 +882,15 @@ pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, r
     let p = app.p;
     let row = &s.rows[r];
     let id = egui::Id::unique(("row", s.id.as_str(), row.key.to_string()));
-    let resp = ui.interact(rect, id, Sense::click());
+    // A row can be dragged to another group (D139) while the grouping has a project or
+    // worktree level; an archived one cannot move.
+    let draggable = yaac_core::moving::can_drag(app.ui.grouping) && !row.archived;
+    let resp = ui.interact(rect, id, if draggable { Sense::click_and_drag() } else { Sense::click() });
+    if draggable && resp.drag_started() {
+        let keys = if app.ui.list_sel.len() >= 2 && app.ui.list_sel.contains(&row.key) { app.ui.list_sel.in_order(&app.ui.list_order) } else { vec![row.key.clone()] };
+        app.ui.drag = Some(crate::app::DragRows { keys, force_over: None });
+        app.ui.menu = None;
+    }
     let is_sel = selected == Some(&row.key) && app.client.state.selection == Selection::Thread(row.key.clone());
     let multi = app.ui.list_sel.contains(&row.key);
     app.ui.list_rows.push((row.key.clone(), rect));
@@ -891,6 +1018,9 @@ fn selection_menu(app: &mut YaacApp, key: &yaac_core::ThreadKey, resp: &egui::Re
             }
             if any_muted && widgets::menu_item(ui, &p, "Unmute selected", None, widgets::ItemKind::Normal).clicked() {
                 actions.push(Action::UnmuteMany(keys.clone()));
+            }
+            if widgets::menu_item(ui, &p, &format!("Move selected ({n})…"), None, widgets::ItemKind::Normal).clicked() {
+                actions.push(Action::OpenMove(keys.clone(), None));
             }
             ui.separator();
             if widgets::menu_item(ui, &p, "Clear selection", Some("Esc"), widgets::ItemKind::Normal).clicked() {
