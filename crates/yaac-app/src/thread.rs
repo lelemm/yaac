@@ -3,7 +3,7 @@
 use std::hash::{Hash, Hasher};
 
 use eframe::egui::{self, Margin, Panel, Rect, Sense, UiBuilder, pos2, vec2};
-use yaac_core::activity::{ActivityLine, Block, Expansion, LineMark, blocks};
+use yaac_core::activity::{ActivityLine, Block, LineMark, blocks};
 use yaac_core::diff::{FileDiff, LineKind};
 use yaac_core::selection::Unit;
 use yaac_core::attention::{AttentionMap, Mark};
@@ -207,55 +207,6 @@ pub(crate) fn link_part(ui: &mut egui::Ui, p: &Palette, title: &str, key: Option
     }
 }
 
-fn block_hash(b: &Block, t: &Transcript, key: &ThreadKey, e: &Expansion, width: f32, dark: bool) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    std::mem::discriminant(b).hash(&mut h);
-    width.to_bits().hash(&mut h);
-    dark.hash(&mut h);
-    let idx = |i: usize, h: &mut std::collections::hash_map::DefaultHasher| {
-        i.hash(h);
-        t.item_rev(i).hash(h);
-    };
-    match b {
-        Block::User { index } => {
-            idx(*index, &mut h);
-            // Its pasted blocks and its context open and close in place.
-            if let Some(item) = t.items().get(*index) {
-                e.context.contains(&(key.clone(), item.id.clone())).hash(&mut h);
-                for (k, id, part) in e.pasted.range((key.clone(), item.id.clone(), 0)..=(key.clone(), item.id.clone(), usize::MAX)) {
-                    (k, id, part).hash(&mut h);
-                }
-            }
-        }
-        Block::Task { index } | Block::Prose { index } | Block::Card { index } | Block::Handoff { index } => idx(*index, &mut h),
-        Block::Run { lines } => {
-            for l in lines {
-                idx(l.index, &mut h);
-                l.expanded.hash(&mut h);
-                l.highlighted.hash(&mut h);
-                l.text.hash(&mut h);
-                if let Some(d) = l.diff {
-                    d.file.hash(&mut h);
-                    e.rest.contains(&(key.clone(), l.id.clone(), d.file)).hash(&mut h);
-                }
-            }
-        }
-        Block::Folded { first, count, text, .. } => {
-            first.hash(&mut h);
-            count.hash(&mut h);
-            text.hash(&mut h);
-        }
-        Block::TurnChanges { turn, totals, expanded, .. } => {
-            turn.hash(&mut h);
-            totals.files.hash(&mut h);
-            totals.added.hash(&mut h);
-            totals.removed.hash(&mut h);
-            expanded.hash(&mut h);
-        }
-    }
-    h.finish()
-}
-
 /// Which block this is, whatever it says now: its kind and the item it starts at. A block
 /// keeps this while its item streams, so its last measured height places it until it is
 /// measured again (D152).
@@ -275,13 +226,6 @@ fn block_ident(b: &Block, t: &Transcript) -> u64 {
         Block::TurnChanges { turn, .. } => turn.hash(&mut h),
     }
     h.finish()
-}
-
-/// A block's height as last drawn, and the content (`block_hash`) it was drawn with.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Measured {
-    pub content: u64,
-    pub height: f32,
 }
 
 fn block_items(b: &Block) -> Vec<usize> {
@@ -402,7 +346,6 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
     // Positions from measured heights. A block whose content changed since (a streaming
     // reply) keeps its last height until it is drawn and measured again, never a guess (D152);
     // only a block never drawn is guessed at.
-    let hashes: Vec<u64> = bl.iter().map(|b| block_hash(b, t, key, &app.ui.expansion, width, p.dark)).collect();
     let idents: Vec<u64> = bl.iter().map(|b| block_ident(b, t)).collect();
     let mut heights = Vec::with_capacity(bl.len());
     let mut tops = Vec::with_capacity(bl.len());
@@ -414,7 +357,7 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
             Block::Folded { .. } | Block::TurnChanges { .. } => 22.0,
             _ => 60.0,
         };
-        let h = app.ui.heights.get(&idents[i]).map_or(est, |m| m.height);
+        let h = app.ui.heights.get(&idents[i]).copied().unwrap_or(est);
         heights.push(h);
         y += h + GAP;
     }
@@ -512,9 +455,9 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
                 }
             }
             // Under half a point is the same height: no new layout for it.
-            let moved = app.ui.heights.get(&idents[i]).is_none_or(|m| (m.height - h).abs() > 0.5);
-            if moved || app.ui.heights.get(&idents[i]).is_some_and(|m| m.content != hashes[i]) {
-                app.ui.heights.insert(idents[i], Measured { content: hashes[i], height: if moved { h } else { heights[i] } });
+            let moved = app.ui.heights.get(&idents[i]).is_none_or(|old| (old - h).abs() > 0.5);
+            if moved {
+                app.ui.heights.insert(idents[i], h);
             }
             changed |= moved;
         }
@@ -1251,7 +1194,7 @@ mod tests {
             .filter_map(|b| match b {
                 Block::User { index } => {
                     let h = block_ident(b, t);
-                    app.ui.heights.get(&h).map(|v| (t.items()[*index].id.to_string(), v.height))
+                    app.ui.heights.get(&h).map(|v| (t.items()[*index].id.to_string(), *v))
                 }
                 _ => None,
             })

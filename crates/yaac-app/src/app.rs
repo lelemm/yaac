@@ -205,8 +205,8 @@ pub(crate) struct UiState {
     pub layout_size: Option<egui::Vec2>,
     /// The settings pages' own state.
     pub set: crate::settings::SettingsUi,
-    /// Transcript block heights as last drawn, keyed by block identity (D152, P200).
-    pub heights: HashMap<u64, crate::thread::Measured>,
+    /// Transcript block heights as last drawn, keyed by block identity, not content (D152, P200).
+    pub heights: HashMap<u64, f32>,
     /// Tests only: the transcript's geometry, one entry per pass.
     #[cfg(test)]
     pub geom: Vec<crate::thread::Geom>,
