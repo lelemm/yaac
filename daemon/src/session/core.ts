@@ -2817,7 +2817,8 @@ export class Core {
   private handleProviderEvent(instanceId: string, ev: ProviderEvent): void {
     const instance = this.registry.get(instanceId);
     if (!instance) return;
-    if (ev.type === "descriptorChanged") return;
+    // Not about a thread: the registry's listeners (re-probe; rate limits, session/ratelimits.ts) take these.
+    if (ev.type === "descriptorChanged" || ev.type === "rateLimitsChanged") return;
     if (ev.type === "threadChanged") {
       if (this.pendingStarts.has(instanceId) && !this.byNative.has(this.nativeKey(instanceId, ev.info.native))) {
         this.bufferEvent(instanceId, ev);

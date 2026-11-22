@@ -60,6 +60,11 @@ import { ASK_TOOL, answeredInput, approvalRequest, approvalResult, normaliseQues
 import { EXECUTABLE_VAR, findExecutable, loadRealSdk, realCli, type AgentEntry, type ClaudeCli, type ClaudeSdk, type SdkQuery } from "./sdk.js";
 import { flagsOf, historyItems, isToolResultMessage, LiveTranslator, type ItemEvent } from "./translate.js";
 import { previewText } from "./markup.js";
+import { ClaudeRateLimits, readWithOwnQuery } from "./ratelimits.js";
+import type { RateLimitReport } from "../ratelimits.js";
+
+/** A refresh of the rate limits starts a query only after this long without news (D161). */
+const CLAUDE_LIMITS_QUIET_MS = 15 * 60 * 1000;
 
 export const CLAUDE_KIND = "claude";
 
@@ -292,6 +297,8 @@ export class ClaudeProvider implements HarnessProvider {
   private agentsCache: { at: number; entries: Promise<AgentEntry[]> } | null = null;
   private scanSnapshot: { id: string; threads: NativeThreadInfo[] } | null = null;
   private disposed = false;
+  /** The account and its rate-limit windows (D161). */
+  private readonly limits = new ClaudeRateLimits((report) => this.emit({ type: "rateLimitsChanged", report }));
 
   constructor(readonly options: ClaudeProviderOptions) {
     this.cli = options.cli ?? (options.executable ? realCli(options.executable, options.env) : null);
@@ -402,6 +409,8 @@ export class ClaudeProvider implements HarnessProvider {
       "plan",
       "subagents",
       "webSearch",
+      // accountInfo(), the usage report, and the stream's rate_limit_event (D161).
+      "rateLimits",
     ];
   }
 
@@ -463,6 +472,7 @@ export class ClaudeProvider implements HarnessProvider {
       const init = await Promise.race([q.initializationResult(), timeout]).catch(() => null);
       if (typeof init?.claude_code_version === "string") harnessVersion = init.claude_code_version;
       if (typeof q.getSettings === "function") applied = (await Promise.race([q.getSettings(), timeout]).catch(() => null))?.applied ?? null;
+      await this.limits.readFrom(q, 15000, this.log);
     } catch (e) {
       return this.result("unreachable", `Claude Code did not report its models: ${(e as Error).message}`, { harnessVersion: version, store });
     } finally {
@@ -507,6 +517,18 @@ export class ClaudeProvider implements HarnessProvider {
       modes,
     });
     return this.lastProbe;
+  }
+
+  /**
+   * The last account and windows. A refresh reads them with a short query of its own, but
+   * only when Claude Code said nothing for 15 minutes: a turn's events keep them current.
+   */
+  async rateLimits(opts: { refresh: boolean }): Promise<RateLimitReport | null> {
+    const exe = this.options.executable;
+    if (opts.refresh && exe && Date.now() - this.limits.lastSeen >= CLAUDE_LIMITS_QUIET_MS && this.lastProbe?.status === "ready") {
+      await readWithOwnQuery(await this.sdk(), { cwd: this.options.stateDir, pathToClaudeCodeExecutable: exe, env: this.options.env }, this.limits, this.log);
+    }
+    return this.limits.report();
   }
 
   // ── Thread index and history ───────────────────────────────────────────────────────────
@@ -756,6 +778,7 @@ export class ClaudeProvider implements HarnessProvider {
   }
 
   private onMessage(live: Live, m: SDKMessage): void {
+    if (m.type === "rate_limit_event") return this.limits.applyEvent(m.rate_limit_info);
     const msg = m as SDKMessage & { parent_tool_use_id?: string | null; uuid?: string };
     if (msg.parent_tool_use_id) return; // inside a subagent: the subagent's tool call stands for it
     switch (m.type) {
