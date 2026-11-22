@@ -219,7 +219,7 @@ into these item kinds:
 | `userMessage` | The input parts as sent. |
 | `agentMessage` | Markdown text. |
 | `reasoning` | Reasoning text or summary, when the provider exposes it. |
-| `toolCall` | A tool invocation: `command`, `fileChange`, `mcp`, `webSearch`, `subagent`, or `other`; with title, input, output, and exit status. |
+| `toolCall` | A tool invocation: `command`, `fileChange`, `mcp`, `webSearch`, `subagent`, or `other`; with title, input, output, and exit status — and, for communication with another agent, an `agentCall` ([10](10-agent-mesh.md#agent-calls-in-the-transcript)). |
 | `plan` | The agent's task list and each step's state. |
 | `request` | Something awaiting the user: an approval or a question. |
 | `notice` | Out-of-band information: errors, context compaction, model rerouting, rate-limit warnings. |
