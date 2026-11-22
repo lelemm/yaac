@@ -161,6 +161,15 @@ thread that started it. *Proposed* (P190–P194):
   writer (invariant 9). It is held by "the agent that started it" with the harness's reason
   (`takeOverBlocked`): no turns, no rename, archive, delete, move or fork, no **Take over**. Its
   banner names the parent and offers **Open parent**, the agent to message instead.
+- **What it asks is the user's** (D162; Proposed P240–P242). An approval or question a
+  sub-agent asks for is raised on **its own thread**, in its running turn — never on the
+  parent, and it never opens or holds a turn there: an orchestrator whose background workers
+  wait for approval still takes the user's next message. It shows in the sub-agent's
+  transcript, in **Needs you**, and as the needs-you mark on that worker in the parent's agents
+  pill, and it is answered there: the read-only hold does not cover answers, which follow the
+  parent's writer (a parent in use elsewhere is answered there). It ends when the harness
+  withdraws it or the sub-agent's run ends, not with a parent turn. A request whose asker
+  cannot be told stays on the parent, bound to no turn, and the composer stays usable.
 - **Its address** is an ordinary thread address, `<target id>/<thread id>`, where the thread
   id is `yaacd`'s usual one for `(instance, native id)`. Native ids: Claude Code
   `<sessionId>/agent-<agentId>`, Codex the sub-agent's thread id. An agent-call pill finds it

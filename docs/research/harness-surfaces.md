@@ -729,3 +729,24 @@ deleted afterwards) against Claude Code 2.1.330 through the Agent SDK 0.3.329, f
   was closed for idleness 8 s after the subagent's own closing turn. Killing the process while
   the subagent ran gave the notice "Claude Code's process ended while background work was
   running in it; this stopped: subagent "sleeper"."
+
+## A subagent's requests (verified 2026-11-22)
+
+Observed for D162 with one throwaway session (a temporary folder, Haiku) against Claude Code
+2.1.330 through the Agent SDK 0.3.329, the parent launching one background `general-purpose`
+subagent that runs a `Bash` command, `canUseTool` holding the prompt open:
+
+- The parent's turn ends (`result`) right after the `Agent` call; the subagent's `Bash`
+  prompt reaches `canUseTool` about half a second later, while **no parent turn is running**.
+- **`canUseTool`'s `agentID` is the subagent's `task_id`** — the same id as its
+  `task_started`, `background_tasks_changed` entry and its messages' `agent_id`. `toolUseID`
+  is the subagent's own `tool_use` id (not the parent's `Agent` call). The types say the same
+  (`agentID`: "If running within the context of a sub-agent, the sub-agent's ID"); the hook
+  input's `agent_id` is documented as present only inside a subagent (read from sdk.d.ts, not
+  run).
+- **A user message sent while that prompt is pending is answered at once**: a new
+  `system/init`, the reply, a `result`. The prompt stays open (its signal is not aborted) and
+  answering it afterwards lets the subagent go on (`tool_result`, then `task_updated`
+  `completed`, `task_notification`).
+- After the subagent's `task_notification`, Claude Code starts a parent turn by itself to
+  report it (the `external` turn of D160) — that one is real work and is shown as a turn.

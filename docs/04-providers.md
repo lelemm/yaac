@@ -544,7 +544,7 @@ One `query()` in streaming-input mode per active thread; the SDK runs the Claude
 | native fork | `forkSession(sessionId, { upToMessageId?, title?, dir? })` → `{ sessionId }` (`upToMessageId` inclusive; omitted = full copy); verified against SDK 0.3.329 |
 | turn | push an `SDKUserMessage` into the input stream; `interrupt()` |
 | streaming | `includePartialMessages` stream events → deltas; assistant and tool-result messages → items |
-| approvals | `canUseTool` callback → approval `request` items |
+| approvals | `canUseTool` callback → approval `request` items; its `agentID` (the subagent's task id, verified on 2.1.330) says which subagent asks (D162) |
 | questions | the `AskUserQuestion` tool arriving through `canUseTool` → question `request` items; `onUserDialog` for other dialog kinds |
 | model / effort / mode switch | `setModel()`, `applyFlagSettings({ effortLevel })`, `setPermissionMode()` — bypass included: every query is opened with `allowDangerouslySkipPermissions` (not as root) |
 | background work | the `background_tasks_changed` system message: the full set of background subagents, shells and workflows in the process |
@@ -572,6 +572,19 @@ Notes:
   re-open still needed (a setting Claude Code refuses live) waits until the work ends, and the
   transcript says so (P223). A process that ends with background work running — a crash, a
   forced stop — leaves a warning notice naming the work that stopped.
+- **A subagent's request never opens a turn on its parent** (D162). A background subagent
+  asks while its parent is idle; before, that opened an external turn on the parent which
+  stayed open until Claude Code's next result, and the user's next message to the
+  orchestrator was refused. A request carrying `canUseTool`'s `agentID` (the hook's
+  `agent_id`) of a subagent YAAC shows is raised on **that subagent's thread**, in its running
+  turn (P240); it ends only when the subagent's run ends or Claude Code withdraws it, never
+  with a parent turn. Any other request — no `agentID` while no turn runs, a subagent YAAC
+  does not show, an MCP form — stays on the parent **bound to no turn** (`turnId` empty,
+  P241): no turn is opened for it, the composer stays usable, and a message the user sends
+  goes into the live query as a new turn while the request stays pending (verified on 2.1.330:
+  Claude Code answers a new message while a subagent's permission prompt is pending, and the
+  prompt stays open). The answer goes back through the original `canUseTool` callback;
+  nothing is answered for the user.
 - The modes offered are the SDK's permission modes, **including the one that bypasses all
   permission checks**. That one is reported with `skipsApprovals` set, so the UI asks for
   confirmation before switching to it ([07 UI](07-ui.md#the-control-row-under-the-composer)).
