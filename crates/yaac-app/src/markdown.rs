@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use eframe::egui::{self, Color32, FontId, text::LayoutJob};
+use eframe::egui::{self, Color32, FontId, text::LayoutJob, vec2};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use yaac_protocol::ItemId;
 
@@ -32,7 +32,13 @@ pub(crate) enum Block {
     Item { depth: u8, marker: String, spans: Vec<Span> },
     Quote(Vec<Span>),
     Rule,
+    /// A table: the header cells, then each row's cells. Each cell is drawn (and selected)
+    /// as its own part, header first, then row by row.
+    Table { head: Vec<Vec<Span>>, rows: Vec<Vec<Vec<Span>>> },
 }
+
+/// A table row: its cells' spans.
+type Row = Vec<Vec<Span>>;
 
 /// Parse markdown into blocks.
 pub(crate) fn parse(text: &str) -> Vec<Block> {
@@ -44,6 +50,8 @@ pub(crate) fn parse(text: &str) -> Vec<Block> {
     let mut item_marker: Option<(u8, String)> = None;
     let mut heading: Option<u8> = None;
     let mut quote = 0u32;
+    // A table being read: (header cells, rows, the row being read).
+    let mut table: Option<(Row, Vec<Row>, Row)> = None;
     let flush = |spans: &mut Vec<Span>, out: &mut Vec<Block>, heading: Option<u8>, item: &mut Option<(u8, String)>, quote: u32| {
         if spans.is_empty() {
             return;
@@ -136,6 +144,32 @@ pub(crate) fn parse(text: &str) -> Vec<Block> {
                     last.text.truncate(trimmed);
                 }
                 flush(&mut spans, &mut out, heading, &mut item_marker, quote);
+            }
+            // Tables: before, the cells' text ran together into one paragraph.
+            Event::Start(Tag::Table(_)) => {
+                flush(&mut spans, &mut out, heading, &mut item_marker, quote);
+                table = Some((Vec::new(), Vec::new(), Vec::new()));
+            }
+            Event::Start(Tag::TableCell) => spans.clear(),
+            Event::End(TagEnd::TableCell) => {
+                if let Some((_, _, row)) = &mut table {
+                    row.push(std::mem::take(&mut spans));
+                }
+            }
+            Event::End(TagEnd::TableHead) => {
+                if let Some((head, _, row)) = &mut table {
+                    *head = std::mem::take(row);
+                }
+            }
+            Event::End(TagEnd::TableRow) => {
+                if let Some((_, rows, row)) = &mut table {
+                    rows.push(std::mem::take(row));
+                }
+            }
+            Event::End(TagEnd::Table) => {
+                if let Some((head, rows, _)) = table.take() {
+                    out.push(Block::Table { head, rows });
+                }
             }
             Event::SoftBreak => push(&mut spans, " ", false, 0, 0, 0),
             Event::HardBreak => push(&mut spans, "\n", false, 0, 0, 0),
@@ -267,6 +301,16 @@ pub(crate) fn inline_job(text: &str, font: &FontId, color: Color32, p: &Palette,
             Block::Para(s) | Block::Heading(_, s) | Block::Quote(s) | Block::Item { spans: s, .. } => s,
             Block::Code { text, .. } => vec![Span { text, bold: false, italic: false, code: true, link: false }],
             Block::Rule => vec![],
+            Block::Table { head, rows } => {
+                let mut out = Vec::new();
+                for cell in head.into_iter().chain(rows.into_iter().flatten()) {
+                    if !out.is_empty() {
+                        out.push(Span { text: " · ".into(), bold: false, italic: false, code: false, link: false });
+                    }
+                    out.extend(cell);
+                }
+                out
+            }
         })
         .collect();
     job_for(&spans, font, color, p, wrap)
@@ -338,11 +382,13 @@ fn spans_text(spans: &[Span]) -> String {
 pub(crate) fn plain_parts(blocks: &[&Block]) -> Vec<String> {
     blocks
         .iter()
-        .filter_map(|b| match b {
-            Block::Para(s) | Block::Heading(_, s) | Block::Quote(s) => Some(spans_text(s)),
-            Block::Item { marker, spans, .. } => Some(format!("{marker} {}", spans_text(spans))),
-            Block::Code { text, .. } => Some(text.clone()),
-            Block::Rule => None,
+        .flat_map(|b| match b {
+            Block::Para(s) | Block::Heading(_, s) | Block::Quote(s) => vec![spans_text(s)],
+            Block::Item { marker, spans, .. } => vec![format!("{marker} {}", spans_text(spans))],
+            Block::Code { text, .. } => vec![text.clone()],
+            Block::Rule => vec![],
+            // One part per cell, header first, as `show` draws them.
+            Block::Table { head, rows } => head.iter().chain(rows.iter().flatten()).map(|c| spans_text(c)).collect(),
         })
         .collect()
 }
@@ -402,7 +448,48 @@ pub(crate) fn show(ui: &mut egui::Ui, sc: &mut SelCx<'_>, blocks: &[&Block], p: 
                 ui.add_space(4.0);
             }
             Block::Code { text, .. } => code_block(ui, sc, text, p),
+            Block::Table { head, rows } => table(ui, sc, head, rows, p, color, &font, width, n),
         }
+    }
+}
+
+/// A markdown table: a grid with a bold header row and a hairline under it, no other rules
+/// (the visual direction: no boxes). Columns share the width; a long cell wraps within its
+/// column. Every cell is its own selectable part (see [`plain_parts`]).
+#[allow(clippy::too_many_arguments, reason = "the drawing context of one block")]
+fn table(ui: &mut egui::Ui, sc: &mut SelCx<'_>, head: &[Vec<Span>], rows: &[Vec<Vec<Span>>], p: &Palette, color: Color32, font: &FontId, width: f32, n: usize) {
+    let cols = head.len().max(rows.iter().map(Vec::len).max().unwrap_or(0)).max(1);
+    const GAP: f32 = 18.0;
+    #[allow(clippy::cast_precision_loss, reason = "a handful of columns")]
+    let col_w = ((width - GAP * (cols - 1) as f32) / cols as f32).max(60.0);
+    let bold = theme::bold(font.size);
+    let header_rect = std::cell::Cell::new(None::<egui::Rect>);
+    egui::Grid::new(ui.scope_id().with(("md-table", n))).num_columns(cols).spacing(vec2(GAP, 6.0)).max_col_width(col_w).show(ui, |ui| {
+        if !head.is_empty() {
+            for c in 0..cols {
+                let cell = head.get(c).map_or(&[][..], Vec::as_slice);
+                let mut job = job_for(cell, &bold, color, p, col_w);
+                for sec in &mut job.sections {
+                    if !sec.format.font_id.family.eq(&egui::FontFamily::Monospace) {
+                        sec.format.font_id = bold.clone();
+                    }
+                }
+                let r = sc.job(ui, job, color);
+                header_rect.set(Some(header_rect.get().map_or(r.rect, |h| h.union(r.rect))));
+            }
+            ui.end_row();
+        }
+        for row in rows {
+            for c in 0..cols {
+                let cell = row.get(c).map_or(&[][..], Vec::as_slice);
+                sc.job(ui, job_for(cell, font, color, p, col_w), color);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(h) = header_rect.get() {
+        let y = h.bottom() + 3.0;
+        ui.painter().hline(h.left()..=(h.left() + width).min(ui.max_rect().right()), y, egui::Stroke::new(1.0, p.border));
     }
 }
 
@@ -492,6 +579,25 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, p: &Palette, block: egui::Rect, tex
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_table_is_a_table_not_its_cells_run_together() {
+        // The shape of the message that showed as one run-on paragraph.
+        let md = "**Checked:**\n\n| Item | Status |\n|---|---|\n| Host C: | **40 GB free**. The compaction worked |\n| Git | healthy, origin at `df88f4aa31` |\n\nAfter the table.";
+        let b = parse(md);
+        assert!(matches!(&b[0], Block::Para(_)));
+        let Block::Table { head, rows } = &b[1] else { panic!("a table, got {:?}", b[1]) };
+        assert_eq!(head.iter().map(|c| spans_text(c)).collect::<Vec<_>>(), ["Item", "Status"]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(spans_text(&rows[0][0]), "Host C:");
+        assert_eq!(spans_text(&rows[0][1]), "40 GB free. The compaction worked");
+        assert!(rows[0][1][0].bold, "inline formatting kept inside a cell");
+        assert!(rows[1][1].iter().any(|s| s.code && s.text == "df88f4aa31"));
+        assert!(matches!(&b[2], Block::Para(s) if spans_text(s) == "After the table."), "text after the table is its own paragraph");
+        // One part per cell, header first, in reading order.
+        let parts = plain_parts(&b.iter().collect::<Vec<_>>());
+        assert_eq!(parts[1..7], ["Item", "Status", "Host C:", "40 GB free. The compaction worked", "Git", "healthy, origin at df88f4aa31"]);
+    }
 
     #[test]
     fn parses_blocks() {

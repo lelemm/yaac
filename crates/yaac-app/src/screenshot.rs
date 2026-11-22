@@ -93,6 +93,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("80", "move-drag-valid"),
     ("81", "move-drag-other-machine"),
     ("82", "move-undo"),
+    ("83", "markdown-table"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -239,6 +240,14 @@ fn setup(app: &mut YaacApp, id: &str) {
             if id == "28" {
                 app.ui.panel = PanelMode::Card;
             }
+        }
+        "83" => {
+            // A markdown table in an agent's message: a grid with a bold header, not the cells
+            // run together (the bug the owner saw).
+            let k = threads::users();
+            app.open(&k, None);
+            app.ui.scroll_to = Some("u5".into());
+            app.ui.scroll_end = false;
         }
         "03" => {
             // A file change: one diff expanded in place, the others collapsed, and the turn's

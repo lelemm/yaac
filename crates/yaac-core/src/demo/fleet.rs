@@ -563,7 +563,7 @@ impl Fleet {
         f.push(&users, done("u2", "u-t1", reasoning("Plan the users-service migration.")));
         f.push(&users, done("u3", "u-t1", tool(ToolKind::FileChange, "Edited 3 files", None, super::diffs::USERS)));
         f.push(&users, done("u4", "u-t1", tool(ToolKind::Command, "Ran `cargo test -p users` · 14 passed", Some(0), "test result: ok. 14 passed")));
-        f.push(&users, done("u5", "u-t1", agent("Merged to main. All 14 tests pass.")));
+        f.push(&users, done("u5", "u-t1", agent("Merged to main. All 14 tests pass.\n\n| Check | Result |\n|---|---|\n| Tests | **14 passed**, 0 failed |\n| Clippy | clean |\n| Migration | `0007_users_tokens` applied on staging and rolled back cleanly |")));
         f.push(&users, done("u6", "u-t1", sent(
             message("m-users-result", &users.address(), &orch.address(), MeshMessageKind::Result, "Migration merged. 14 tests pass.", f.ts(-2400)),
             p_orch.clone(),

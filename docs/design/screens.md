@@ -1458,3 +1458,10 @@ the list.*
   confirmation (no working directory changed); Undo puts each thread back where it was
   listed. A move that changed a folder was confirmed first and has no Undo; a refusal is
   reported in this bar instead ("1 could not be moved: …").
+
+### 83 — A table in an agent's message
+
+- **users-service** open at its result: "Merged to main. All 14 tests pass." followed by a
+  markdown table drawn as a grid — the header **Check · Result** in bold with a hairline under
+  it, then one row per line; a long cell wraps within its column. No boxes, no stripes. Each
+  cell is selectable and copied as its own part.
