@@ -1105,8 +1105,9 @@ stopping anything.*
   docked**: the thread uses the full width.
 - Floating over the right edge of the transcript, vertically centred: the **pill**, in two
   clusters (D118): a branch glyph over the workers' Claude icons, a hairline, then a ⇄ glyph
-  over the two contacts' Codex icons. The first two Claude icons are dimmed (finished). The third has a small **down
-  arrow** beside it (receiving from search-service). The first Codex icon has a small **up
+  over the two contacts' Codex icons. Alive agents come first (D168): index-rebuild with the red
+  exclamation, then search-service with a small **arrow** beside it, then the two dimmed
+  (finished) ones. The first Codex icon has a small **up
   arrow** (sending to CI integration). The last Codex icon has the offline dashed mark.
 - Nothing else is different. No names, no labels on the pill.
 
@@ -1119,9 +1120,10 @@ stopping anything.*
   top right.
 - The rows under the headings **Workers** and **In contact with** (D118), each: harness icon,
   name, and one line of secondary text beneath, ellipsised:
-  - users-service — "Merged to main. 14 tests pass."
-  - billing-service — "Merged to main. One flaky test skipped…"
-  - search-service — "Rebuilding the search index (68%)…" — down arrow at the right
+  - index-rebuild — "Waiting for your approval"
+  - search-service — "Rebuilding the search index (68%)…" — an arrow at the right
+  - billing-service, then users-service — "merged, 14 tests pass" (alive first, then the most
+    recent, D168)
   - CI integration — "Resuming the integration tests…" — up arrow at the right
   - Release notes — "Offline — message queued"
 - One row, search-service, is highlighted as the row under the pointer.
@@ -1618,3 +1620,37 @@ account (Pro) used on three targets.
 - Above Settings, one logo per account with a thin five-segment bar under it for that
   account's most used window (Claude's 5h, in the failed colour; Codex's weekly in blue).
   Hovering shows that window and the account's tooltip.
+
+### 130 — Thirty agents: the pill
+
+D168. The orchestrator with 30 related agents (demo scene *An orchestrator with 30 agents*): the
+fleet's six, 18 Codex subagents of its own and 6 Claude Code subagents of users-service. Seven
+are alive.
+
+- The pill is no taller than in 27: a branch glyph over six icons — index-rebuild with the red
+  exclamation first, then search-service (up arrow), two running Codex subagents and the
+  running and the waiting Claude subagents — a hairline, a ⇄ glyph over CI integration
+  (waiting).
+- No finished agent has an icon. Under a last hairline, "more" over **(23)**.
+
+### 131 — Thirty agents: the card, opened from "more"
+
+- The card over the right of the thread, as tall as the view less a margin, its list scrolled
+  so that the first agent the pill hides — *Audit token refresh*, a finished Codex subagent —
+  is at its top. Below it the other finished ones, most recent first, billing-service and
+  users-service among them, each with its "Codex subagent · worker" or last-action line.
+
+### 132 — Thirty agents, docked
+
+- **Workers (21)**: search-service (running) with index-rebuild (needs you) under it, the two
+  running Codex subagents, then users-service (done) with its Claude subagents under it —
+  running and waiting before done. The list is scrolled to its end: under the last of them,
+  a quiet chevron line **"› 17 inactive"** (billing-service and 16 Codex subagents, one of them
+  stopped), folded.
+
+### 133 — Thirty agents, more alive than the pill has room for
+
+- As 130 with two more Codex subagents running: nine alive agents. The pill keeps seven —
+  index-rebuild, search-service and four running Codex subagents (the most recent first), then
+  the running Claude subagent; the In contact cluster has no icon left and is not drawn.
+- The item reads "more", **(23)**, and "2 alive" (CI integration and the waiting Claude subagent).
