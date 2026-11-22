@@ -407,6 +407,75 @@ test("budget exhaustion stores messages without dispatching; Continue grants mor
   }
 });
 
+test("a person's input resets the root's wall clock: queued, sent now, steered, answered (D164)", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const root = await idleThread(d, c);
+    const addr = addressOf(d, root);
+    await c.request("mesh/budget", { action: "status", opId: opId(), root: addr });
+    const rs = () => d.mesh.store.state.roots[addr]!;
+    const age = () => {
+      rs().lastHumanAt = Date.now() - 13 * 3600_000;
+    };
+    const fresh = (what: string) => assert.ok(Date.now() - rs().lastHumanAt < 60_000, `${what} resets the clock`);
+    const { turnId } = await c.request("turn/start", { opId: opId(), threadId: root, input: text("/fake sleep 3000\n/fake say slept") });
+    await until(() => d.core.thread(root)!.activeTurn === turnId, "the turn runs");
+    age();
+    const st: any = await c.request("mesh/budget", { action: "status", opId: opId(), root: addr });
+    assert.equal(st.exhausted, true, "13 hours since a person acted");
+    assert.equal(st.held, 0, "nothing is held back");
+    await c.request("turn/start", { opId: opId(), threadId: root, input: text("/fake say queued"), delivery: "queue" });
+    fresh("a queued message");
+    age();
+    await c.request("turn/steer", { opId: opId(), threadId: root, turnId, input: text("steered") });
+    fresh("a steer");
+    age();
+    await c.request("turn/start", { opId: opId(), threadId: root, input: text("now"), delivery: "now" });
+    fresh("a message sent now");
+    await untilIdle(d, root);
+    // An answer to its request.
+    const asked = await c.request("turn/start", { opId: opId(), threadId: root, input: text("/fake approve make it") });
+    const req = await until(() => [...d.core.thread(root)!.requests.values()].find((r) => r.state === "pending"), "the approval");
+    age();
+    await c.request("request/respond", { opId: opId(), threadId: root, requestId: req.requestId, response: { requestKind: "approval", decision: "allow" } });
+    fresh("an answer");
+    assert.ok(asked.turnId);
+    await untilIdle(d, root);
+  } finally {
+    await done();
+  }
+});
+
+test("a budget's exhaustion and its freeing are both notified (mesh/budget/changed, D164)", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const { threadId: root } = await startThread(c, "/fake say root ready");
+    await untilIdle(d, root);
+    const peer = await idleThread(d, c);
+    const addr = addressOf(d, root);
+    const p = call(d, root, "send_message", { to: addressOf(d, peer), text: `/fake mesh-send ${addr} | back to you` });
+    const req = await until(() => [...d.core.thread(root)!.requests.values()].find((r) => r.requestKind === "meshPermission" && r.state === "pending"), "the prompt");
+    await c.request("request/respond", { opId: opId(), threadId: root, requestId: req.requestId, response: { requestKind: "meshPermission", decision: "allow", budget: { agentTurns: 1, threadsSpawned: 5, wallClockSecs: 3600 } } });
+    assert.equal((await p).isError, false);
+    const changes = () => c.notifications.filter((n) => n.method === "mesh/budget/changed" && n.params.root === addr).map((n) => n.params);
+    const held = await until(() => changes().find((b) => b.exhausted && b.held === 1), "exhausted, one message held back");
+    assert.equal(held.used.agentTurns, 1);
+    // A person writes to the root: its own turn runs; the budget of agent turns stays used up.
+    const before = changes().length;
+    const { turnId } = await c.request("turn/start", { opId: opId(), threadId: root, input: text("/fake say mine") });
+    assert.ok(turnId);
+    await untilIdle(d, root);
+    assert.ok(changes().slice(before).every((b) => b.exhausted), "a person's turn does not free a budget of agent turns");
+    // Continue frees it: said, and the held message is dispatched.
+    await c.request("mesh/budget", { action: "continue", opId: opId(), root: addr });
+    await until(() => changes().at(-1)?.exhausted === false, "freed");
+    assert.equal(changes().at(-1)!.held, 0);
+    await until(() => inboxOf(d, root).every((r) => r.inState !== "pending"), "the held message dispatched");
+  } finally {
+    await done();
+  }
+});
+
 test("each local limit trips with a readable reason and a visible notice", async () => {
   const { d, c, done } = await setup();
   try {

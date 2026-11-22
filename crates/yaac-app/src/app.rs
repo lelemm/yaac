@@ -947,8 +947,9 @@ impl YaacApp {
             yaac_protocol::ItemBody::Notice(n)
                 if n.notice_kind == yaac_protocol::NoticeKind::BudgetExhausted
                     && yaac_core::agents::root_of(&self.client.state, key)
-                        .and_then(|r| self.client.state.budgets.get(&r))
-                        .is_some_and(|b| b.exhausted) =>
+                        .and_then(|r| self.client.state.key_of(&r))
+                        // Only while it holds the thread back (D164): a running thread keeps Enter.
+                        .is_some_and(|k| yaac_core::attention::budget_mark(&self.client.state, &k) == Some(yaac_core::attention::BudgetMark::Paused)) =>
             {
                 Some(i.id.clone())
             }

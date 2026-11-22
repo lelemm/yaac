@@ -135,3 +135,34 @@ fn an_expanded_call_shows_the_full_text_the_result_and_the_raw_call() {
     assert_eq!(d.heading, "To");
     assert!(d.status.unwrap().starts_with("Delivered"));
 }
+
+/// D164: a running `Agent` call is named by its description, and once Claude Code says which
+/// subagent it started, opens that subagent's conversation under its title.
+#[test]
+fn a_running_agent_call_is_named_by_its_description_and_then_by_its_subagent() {
+    let (mut c, _) = scene();
+    let users = threads::users();
+    let map = AttentionMap::compute(&c.state);
+    let item: yaac_protocol::Item = serde_json::from_value(serde_json::json!({
+        "id": "toolu_a", "turnId": "t", "status": "inProgress", "kind": "toolCall", "tool": "subagent", "title": "Subagent Fix false Paused",
+        "input": { "name": "Agent", "description": "Fix false Paused", "subagent_type": "general-purpose", "model": "opus", "effort": "medium", "prompt": "Fix it." },
+        "agentCall": { "kind": "spawn", "title": "Fix false Paused", "text": "Fix it.", "model": "opus", "effort": "medium", "peers": [{ "name": "Fix false Paused" }] }
+    }))
+    .unwrap();
+    let ItemBody::ToolCall(tc) = &item.body else { panic!("a tool call") };
+    let l = agentcall::line(&c.state, &map, &users, None, &item, tc.agent_call.as_ref().unwrap());
+    assert_eq!(l.plain(), "Subagent Fix false Paused · opus · medium · running…");
+
+    // Linked to its subagent (task_started): the pill opens it, under its title.
+    let child = threads::billing();
+    if let Some(rec) = c.state.threads.get_mut(&child) {
+        rec.summary.spawned_by = Some(users.address());
+        rec.summary.native_id = Some("a5b6c7d8e9f0a1b2c".into());
+    }
+    let mut linked = tc.agent_call.clone().unwrap();
+    linked.peers[0].agent_id = Some("a5b6c7d8e9f0a1b2c".into());
+    let l = agentcall::line(&c.state, &AttentionMap::compute(&c.state), &users, None, &item, &linked);
+    assert_eq!(l.pills[0].key.as_ref(), Some(&child));
+    assert_eq!(l.pills[0].label, "billing-service");
+    assert!(l.plain().ends_with("running…"), "{}", l.plain());
+}

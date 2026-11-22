@@ -15,6 +15,7 @@ import type {
   Address,
   Item,
   MeshBudget,
+  MeshBudgetResult,
   MeshBudgetUsage,
   MeshMessage,
   MeshPeer,
@@ -182,6 +183,8 @@ export class Mesh implements CoreMeshHooks {
   readonly store: MeshStore;
   private hub: ClientSession | null = null;
   private readonly waiters = new Map<string, Waiter>();
+  /** What each local root last said of its budget (`exhausted:held`), D164. */
+  private readonly budgetReported = new Map<string, string>();
   private readonly dispatches = new Map<string, DispatchHandle>();
   private readonly kickScheduled = new Set<string>();
   private readonly pairLog = new Map<string, number[]>();
@@ -1035,7 +1038,63 @@ export class Mesh implements CoreMeshHooks {
     if (rs.exhaustedNoticed) return;
     rs.exhaustedNoticed = true;
     this.store.save();
+    this.budgetChanged(root);
     this.noticeItem(rt, "budgetExhausted", `The agents working for this chat have used their budget (${reason}). Nothing was cancelled: turns in progress finish, and messages between the agents are kept but not delivered until you choose Continue.`);
+  }
+
+  /** Messages of a root stored but held back because its budget is used up (D164). */
+  private heldFor(root: Address): number {
+    const key = this.normalise(root);
+    let n = 0;
+    for (const r of this.store.all()) {
+      if (r.inbox && r.inState === "pending" && r.receipt?.reason === "budgetExhausted" && r.message.root && this.normalise(r.message.root) === key) n++;
+    }
+    return n;
+  }
+
+  /** `mesh/budget`'s status of a local root. */
+  private budgetStatus(root: Address): MeshBudgetResult {
+    const key = this.normalise(root);
+    const rs = this.rootState(key);
+    const exhausted = !!this.exhaustedReason(key);
+    return { root: key, allowance: rs.allowance, used: this.usedOf(rs), exhausted, held: exhausted ? this.heldFor(key) : 0 };
+  }
+
+  /**
+   * Tells every window when a local root's budget runs out, is freed, or starts or stops
+   * holding messages back (`mesh/budget/changed`, D164). Freed: its notice can show again on
+   * the next exhaustion, and what it held back is dispatched.
+   */
+  private budgetChanged(root: Address | null | undefined): void {
+    if (!root) return;
+    const key = this.normalise(root);
+    if (!this.isLocalAddress(key) || !this.store.state.roots[key] || !this.localOf(key)) return;
+    const status = this.budgetStatus(key);
+    const sig = `${status.exhausted}:${status.held}`;
+    const before = this.budgetReported.get(key);
+    if (before === sig) return;
+    this.budgetReported.set(key, sig);
+    const rs = this.rootState(key);
+    if (!status.exhausted && rs.exhaustedNoticed) {
+      rs.exhaustedNoticed = false;
+      this.store.save();
+    }
+    // Every window that asked may hold an older answer: always said once, then on change.
+    this.core.broadcast("mesh/budget/changed", status);
+    if (before?.startsWith("true") && !status.exhausted) for (const id of this.threadsWithMail()) this.kick(id);
+  }
+
+  /**
+   * A person gave a thread input (a message started, queued, sent now or steered, or an
+   * answer to one of its requests, D164): its root's wall clock starts again.
+   */
+  humanInput(rt: ThreadRuntime): void {
+    const root = this.rootOf(rt);
+    const rs = this.isLocalAddress(root) ? this.store.state.roots[root] : undefined;
+    if (!rs) return;
+    rs.lastHumanAt = Date.now();
+    this.store.save();
+    this.budgetChanged(root);
   }
 
   private countTurn(root: Address): void {
@@ -1045,6 +1104,7 @@ export class Mesh implements CoreMeshHooks {
       rs.agentTurns++;
       const why = this.exhaustedReason(key);
       if (why) this.budgetNotice(key, why);
+      this.budgetChanged(key);
     } else {
       const r = (this.store.state.remoteRoots[key] ??= { agentTurns: 0, threadsSpawned: 0, paused: false });
       r.agentTurns++;
@@ -1057,6 +1117,7 @@ export class Mesh implements CoreMeshHooks {
     const key = this.normalise(root);
     if (this.isLocalAddress(key)) {
       this.rootState(key).threadsSpawned++;
+      this.budgetChanged(key);
     } else {
       const r = (this.store.state.remoteRoots[key] ??= { agentTurns: 0, threadsSpawned: 0, paused: false });
       r.threadsSpawned++;
@@ -1178,6 +1239,7 @@ export class Mesh implements CoreMeshHooks {
       this.notice(this.addressOf(rt.id), this.addressOf(rt.id), r.decision === "allow" ? "The user allowed this chat's agent to work with other agents. You can now try again what you asked for." : "The user did not allow this chat's agent to work with other agents.", root);
     }
     this.core.updateIndex(rt);
+    this.budgetChanged(root);
     for (const id of this.threadsWithMail()) this.kick(id);
   }
 
@@ -1571,6 +1633,7 @@ export class Mesh implements CoreMeshHooks {
     }
     if (p.fromRt && p.sentItem) (rec as MessageRecord & { sentTurn?: string }).sentTurn = p.fromRt.activeTurn ?? "";
     this.store.put(rec);
+    if (rec.receipt?.reason === "budgetExhausted") this.budgetChanged(message.root);
     if (p.kind === "message") this.relate(from, to);
     if (p.fromRt && p.sentItem) this.sentItem(p.fromRt, rec, "itemStarted");
     if (recipient) {
@@ -1611,7 +1674,9 @@ export class Mesh implements CoreMeshHooks {
   private updateReceipt(rec: MessageRecord, receipt: Receipt): void {
     const before = JSON.stringify(rec.receipt ?? null);
     if (before === JSON.stringify(receipt)) return;
+    const held = rec.receipt?.reason === "budgetExhausted" || receipt.reason === "budgetExhausted";
     this.store.update(rec.message.id, { receipt });
+    if (held && rec.inbox) this.budgetChanged(rec.message.root);
     const sender = rec.sender ? this.core.thread(rec.sender) : undefined;
     if (sender && !sender.deleted && (rec as MessageRecord & { sentTurn?: string }).sentTurn !== undefined) this.sentItem(sender, rec, "itemUpdated");
   }
@@ -2200,6 +2265,7 @@ export class Mesh implements CoreMeshHooks {
       rs.lastHumanAt = Date.now();
       if (rs.denied) rs.denied = false;
       this.store.save();
+      this.budgetChanged(self);
     }
   }
 
@@ -2383,6 +2449,7 @@ export class Mesh implements CoreMeshHooks {
     const receipt = this.receiptFor(rt, message);
     // Stored (deduplicated in the same step) before the hub is answered.
     this.store.put({ message: { ...message, to: this.addressOf(rt.id) }, inbox: true, outbox: false, inState: "pending", recipient: rt.id, receipt, storedAt: Date.now() });
+    if (receipt.reason === "budgetExhausted") this.budgetChanged(message.root);
     if (message.kind === "message") this.relate(message.from, message.to);
     // A worker on another target finished: its parent's live spawn item says so.
     if (message.kind === "result") this.updateSpawnItems(message.from, /\(Its turn failed/.test(message.text) ? "failed" : "done", undefined, true);
@@ -2489,6 +2556,7 @@ export class Mesh implements CoreMeshHooks {
     const why = this.exhaustedReason(root);
     if (why) this.budgetNotice(root, why);
     this.store.save();
+    this.budgetChanged(root);
     return { exhausted: !!why, used: this.usedOf(rs) };
   }
 
@@ -2519,10 +2587,7 @@ export class Mesh implements CoreMeshHooks {
     const root = typeof p.root === "string" ? this.normalise(p.root) : null;
     if (!root) throw new RpcError("invalid_params", "root is required");
     if (!this.localOf(root)) throw new RpcError("thread_not_found", "the root is not a thread on this target");
-    const status = () => {
-      const rs = this.rootState(root);
-      return { root, allowance: rs.allowance, used: this.usedOf(rs), exhausted: !!this.exhaustedReason(root) };
-    };
+    const status = () => this.budgetStatus(root);
     if (p.action !== "continue") return status();
     if (typeof p.opId !== "string") throw new RpcError("invalid_params", "opId is required");
     return this.core.ops.run("mesh/budget", p.opId, async () => {
@@ -2534,6 +2599,7 @@ export class Mesh implements CoreMeshHooks {
       rs.lastHumanAt = Date.now();
       rs.exhaustedNoticed = false;
       this.store.save();
+      this.budgetChanged(root);
       for (const id of this.threadsWithMail()) this.kick(id);
       return status();
     });

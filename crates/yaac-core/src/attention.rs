@@ -2,7 +2,8 @@
 //!
 //! Needing the user outranks every other state. A thread's own attention comes from the
 //! requests still open on it (its hints, when they are fresher than its summary; otherwise
-//! the summary's `needsAttention`) or from its orchestration's budget having run out. It then
+//! the summary's `needsAttention`) or from its orchestration's budget holding back an
+//! agent-started turn while the thread is idle ([`budget_mark`], D164). It then
 //! climbs: every ancestor (through `spawnedBy`, across targets) counts the descendants that
 //! need the user.
 
@@ -116,11 +117,31 @@ pub fn own_attention(state: &AppState, key: &ThreadKey) -> Option<Attention> {
     if from_requests.is_some() {
         return from_requests;
     }
-    let address = key.address();
-    if state.budgets.get(&address).is_some_and(|b| b.exhausted) {
+    if budget_mark(state, key) == Some(BudgetMark::Paused) {
         return Some(Attention::BudgetReached);
     }
     None
+}
+
+/// What a root thread shows of its orchestration's used-up budget (D164).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BudgetMark {
+    /// The quiet note — "Agent budget reached" and **Continue** — beside the thread's real
+    /// state: its own turn runs, or nothing an agent started is held back.
+    Reached,
+    /// ❚❚ "Paused · budget reached": the thread is idle and an agent-started turn is held back.
+    Paused,
+}
+
+/// Whether the orchestration rooted at this thread has used up its budget, and how loudly to
+/// say it. A budget only stops mesh actions (agent-started turns, spawns); it never hides what
+/// the thread itself is doing, so a running thread keeps its spinner and gets the quiet note.
+pub fn budget_mark(state: &AppState, key: &ThreadKey) -> Option<BudgetMark> {
+    let b = state.budgets.get(&key.address()).filter(|b| b.exhausted)?;
+    // An older target does not say what it holds back: then the budget alone says it.
+    let held = b.held.is_none_or(|n| n > 0);
+    let busy = matches!(base_mark(state, key), Mark::Running | Mark::Waiting);
+    Some(if held && !busy { BudgetMark::Paused } else { BudgetMark::Reached })
 }
 
 /// Attention for every thread at once.

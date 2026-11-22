@@ -1077,7 +1077,11 @@ export class ClaudeProvider implements HarnessProvider {
         if (str(t.prompt)) known.prompt = str(t.prompt);
       }
       live.subagents.set(taskId, sub);
-      if (sub.toolUseId) live.subagentByToolUse.set(sub.toolUseId, taskId);
+      if (sub.toolUseId) {
+        live.subagentByToolUse.set(sub.toolUseId, taskId);
+        // The Agent call that started it names it, and opens its conversation (D164).
+        live.translator.subagentStarted(sub.toolUseId, taskId, str(t.description), sub.agentType);
+      }
       sub.running = true;
       this.emitSubagent(live, sub);
       sub.translator.begin(sub.turnId);

@@ -815,7 +815,7 @@ pub struct MeshBudgetUsage {
     pub wall_clock_secs: u64,
 }
 
-/// `mesh/budget` result.
+/// `mesh/budget` result, and `mesh/budget/changed` (D164).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MeshBudgetResult {
@@ -827,6 +827,10 @@ pub struct MeshBudgetResult {
     pub used: MeshBudgetUsage,
     /// Whether it has run out (messages are stored but not dispatched).
     pub exhausted: bool,
+    /// Messages of this root stored but held back by the budget: the agent-started turns
+    /// waiting for **Continue**. Absent from an older target (then `exhausted` alone says it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<u32>,
 }
 
 /// `mesh/usage` (target → hub → the root's target): what this target has spent against an

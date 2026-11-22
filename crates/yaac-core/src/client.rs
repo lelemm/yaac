@@ -851,6 +851,12 @@ impl Client {
                 }
             }
             m::FORGE_PRS_CHANGED => self.on_forge_changed(&target, n.params),
+            // Exhausted or freed (D164): what the window shows of a budget is always current.
+            m::MESH_BUDGET_CHANGED => {
+                if let Ok(b) = serde_json::from_value::<MeshBudgetResult>(n.params) {
+                    self.state.apply_budget(b);
+                }
+            }
             m::PROVIDER_UPDATED => {
                 if let Ok(p) = serde_json::from_value::<ProviderUpdatedParams>(n.params) {
                     self.state.apply_providers(&target, vec![p.provider], false);

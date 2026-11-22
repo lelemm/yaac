@@ -397,8 +397,10 @@ pub enum SpawnedBy {
 pub struct BudgetLine {
     /// "14 of 100 agent turns · 4 of 20 threads".
     pub text: String,
-    /// The budget ran out.
+    /// The budget ran out: "Agent budget reached" and **Continue** (D164).
     pub exhausted: bool,
+    /// The orchestration's root, which **Continue** acts on.
+    pub root: yaac_protocol::Address,
 }
 
 /// The collapsed rail: the relationship count, nothing else.
@@ -655,6 +657,7 @@ pub fn agents_panel(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Op
             b.used.agent_turns, b.allowance.agent_turns, b.used.threads_spawned, b.allowance.threads_spawned
         ),
         exhausted: b.exhausted,
+        root: b.root.clone(),
     });
     let root = root_addr.filter(|r| r != &me && Some(r) != s.spawned_by.as_ref()).map(|r| {
         let k = state.key_of(&r);
