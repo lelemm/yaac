@@ -111,6 +111,9 @@ fn a_codex_thread_steers_and_says_send_now() {
     // Start a turn, then send now while it streams.
     type_in(&mut c, &k, "Draft the release notes.");
     assert!(c.send(&k));
+    // The demo answers a started turn a tick later (the echo shows "Sending…" meanwhile, D165).
+    c.pump();
+    hub.tick();
     c.pump();
     let map = AttentionMap::compute(&c.state);
     let ComposerView::Shown { send_now, .. } = composer(&c.state, &map, &k) else { panic!() };

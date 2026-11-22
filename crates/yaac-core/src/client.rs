@@ -9,7 +9,7 @@ use yaac_protocol::attach::{self, HelloResult, RoutedNotification, RoutedRequest
 use yaac_protocol::methods::names as m;
 use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
 use yaac_protocol::{
-    Address, ClientId, Control, InstanceId, ItemBody, MeshBudgetAction, MeshBudgetResult, NoticeKind,
+    Address, ClientId, Control, InstanceId, ItemBody, ItemId, MeshBudgetAction, MeshBudgetResult, NoticeKind,
     OpId, ProviderListResult, ProviderUpdatedParams, RequestId, RequestResponse, RequestState, SubscribeMode,
     TargetId, ThreadEvent, ThreadEventParams, ThreadId, ThreadReadResult, ThreadRemovedParams, ThreadState,
     ThreadSubscribeResult, ThreadSummary, ThreadSyncResult, ThreadUpdatedParams, Timestamp,
@@ -103,7 +103,8 @@ enum Call {
     Read(ThreadKey),
     Budget,
     Respond { key: ThreadKey, request_id: RequestId },
-    TurnStart { key: ThreadKey, draft: Draft },
+    /// `turn/start` or `turn/steer` of the composer's message; `op` is its echo (D165).
+    TurnStart { key: ThreadKey, draft: Draft, op: OpId },
     ThreadStart { draft: NewThreadDraft },
     Fork { target: TargetId },
     /// `thread/delete`.
@@ -529,9 +530,10 @@ impl Client {
             Call::Ssh(id) => self.ssh_replies.push((id, Ok(result))),
             Call::SshRecords => self.on_ssh_records(&result),
             Call::WslDistros => self.on_wsl_distros(result),
-            // A queued message shows in the strip from the `queueChanged` event `yaacd`
-            // journals before it answers.
-            Call::TurnStart { key, draft } => self.sent(&DraftRef::Thread(key), &draft),
+            Call::TurnStart { key, draft, op } => {
+                self.echo_answered(&key, &op, &result);
+                self.sent(&DraftRef::Thread(key), &draft);
+            }
             Call::Queue { key, queue_id, .. } => self.on_queue_result(&key, &queue_id),
             Call::UploadStart { draft, id, attempt } => self.on_upload_started(&draft, id, attempt, &result),
             Call::BlobBegin { draft, id, chunks } => self.on_blob_begun(&draft, id, chunks, &result),
@@ -653,17 +655,24 @@ impl Client {
                 }
             }
             Call::Queue { key, queue_id, op } => self.on_queue_error(key, &queue_id, op, error),
-            Call::TurnStart { key, draft } => {
-                if error.code == ErrorCode::OutcomeUnknown {
+            Call::TurnStart { key, draft, op } => {
+                // Said on the message's own bubble (D165), which offers Edit and, when nothing
+                // was sent, Retry. Never re-sent on its own (invariant 10).
+                let rev = self.state.next_stamp();
+                let unknown = error.code == ErrorCode::OutcomeUnknown;
+                let shown = self.state.transcripts.get_mut(&key).is_some_and(|t| {
+                    t.update_pending(&op, rev, |p| {
+                        p.state = if unknown { crate::sending::SendState::Unknown } else { crate::sending::SendState::Failed(error.message.clone()) };
+                    })
+                });
+                if unknown {
                     self.sent(&DraftRef::Thread(key.clone()), &draft);
-                    self.error(Some(key), "YAAC lost contact while sending your message. It may or may not have arrived; it will not be sent again.");
-                } else {
-                    // Nothing was sent: give the text and the attachments back.
-                    let slot = self.state.drafts.entry(key.clone()).or_default();
-                    if slot.is_empty() {
-                        *slot = draft;
+                    if !shown {
+                        self.error(Some(key), "YAAC lost contact while sending your message. It may or may not have arrived; it will not be sent again.");
                     }
-                    self.dirty.insert(DraftRef::Thread(key.clone()));
+                } else if !shown {
+                    // No bubble to say it on: give the text and the attachments back.
+                    self.give_back(&key, draft);
                     self.error(Some(key), format!("Not sent: {}", error.message));
                 }
             }
@@ -1019,6 +1028,92 @@ impl Client {
         let Some(turn) = self.state.transcripts.get(key).and_then(|t| t.active_turn.clone()) else { return };
         let params = json!({ "threadId": key.thread, "turnId": turn });
         self.routed(&key.target, m::TURN_INTERRUPT, params, Call::Ignore);
+    }
+
+    // ── The echo of a sent message (D165) ────────────────────────────────────────────────
+
+    /// The message appears at once, at the end of the transcript, "Sending…".
+    fn echo(&mut self, key: &ThreadKey, op: &OpId, input: Vec<yaac_protocol::InputPart>, draft: &Draft, method: &str, params: &Value) {
+        let rev = self.state.next_stamp();
+        let mut pending = crate::sending::Pending::new(op.clone(), input, draft.clone(), method, params.clone());
+        // Steered: the turn it goes into is known now.
+        pending.turn = params.get("turnId").and_then(Value::as_str).map(yaac_protocol::TurnId::new);
+        self.state.transcripts.entry(key.clone()).or_default().add_pending(pending, rev);
+    }
+
+    /// `yaacd` answered the send: queued, it leaves the transcript (the queue shows it);
+    /// otherwise it waits for its own item, which replaces it.
+    fn echo_answered(&mut self, key: &ThreadKey, op: &OpId, result: &Value) {
+        let rev = self.state.next_stamp();
+        let Some(t) = self.state.transcripts.get_mut(key) else { return };
+        if result.get("outcome").and_then(Value::as_str) == Some("queued") {
+            t.remove_pending(op, rev);
+            return;
+        }
+        let turn = result.get("turnId").and_then(Value::as_str).filter(|s| !s.is_empty()).map(yaac_protocol::TurnId::new);
+        t.update_pending(op, rev, |p| {
+            p.state = crate::sending::SendState::Sent;
+            if turn.is_some() {
+                p.turn = turn;
+            }
+        });
+        t.settle_pending(op, rev);
+    }
+
+    /// Text and attachments back in the composer: in place of an empty draft, else after it.
+    fn give_back(&mut self, key: &ThreadKey, draft: Draft) {
+        let slot = self.state.drafts.entry(key.clone()).or_default();
+        if slot.is_empty() {
+            *slot = draft;
+        } else {
+            if !draft.text.is_empty() {
+                slot.text = format!("{}\n\n{}", slot.text, draft.text);
+            }
+            slot.attachments.extend(draft.attachments);
+        }
+        self.dirty.insert(DraftRef::Thread(key.clone()));
+    }
+
+    /// **Edit** on a message that was not sent (or may not have been): it leaves the
+    /// transcript and its text and attachments go back to the composer.
+    pub fn edit_send(&mut self, key: &ThreadKey, item: &ItemId) -> bool {
+        let rev = self.state.next_stamp();
+        let Some(t) = self.state.transcripts.get_mut(key) else { return false };
+        let Some(op) = t.pending_of(item).filter(|p| p.settled()).map(|p| p.op.clone()) else { return false };
+        let Some(p) = t.remove_pending(&op, rev) else { return false };
+        self.give_back(key, p.draft);
+        true
+    }
+
+    /// **Dismiss** on a message whose outcome is unknown: the bubble goes; nothing is sent.
+    pub fn dismiss_send(&mut self, key: &ThreadKey, item: &ItemId) -> bool {
+        let rev = self.state.next_stamp();
+        let Some(t) = self.state.transcripts.get_mut(key) else { return false };
+        let Some(op) = t.pending_of(item).filter(|p| p.state == crate::sending::SendState::Unknown).map(|p| p.op.clone()) else { return false };
+        t.remove_pending(&op, rev).is_some()
+    }
+
+    /// **Retry** a message that was not sent: the same request under a new operation id. Only
+    /// ever on the user's click, and never for an outcome that is unknown (invariant 10).
+    pub fn retry_send(&mut self, key: &ThreadKey, item: &ItemId) -> bool {
+        if !self.state.may_act(key) {
+            return false;
+        }
+        let Some(old) = self.state.transcripts.get(key).and_then(|t| t.pending_of(item)).filter(|p| p.can_retry()).cloned() else { return false };
+        let op = self.op_id();
+        let rev = self.state.next_stamp();
+        let mut params = old.params.clone();
+        params["opId"] = json!(op);
+        if let Some(t) = self.state.transcripts.get_mut(key) {
+            t.update_pending(&old.op, rev, |p| {
+                p.op = op.clone();
+                p.params = params.clone();
+                p.state = crate::sending::SendState::Sending;
+            });
+        }
+        let call = Call::TurnStart { key: key.clone(), draft: old.draft, op };
+        self.routed(&key.target, &old.method, params, call);
+        true
     }
 
     /// Start a new-thread draft on a target and select it.

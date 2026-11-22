@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    Address, ForkKind, InputPart, ItemId, MeshMessage, MessageId, ModelId, Receipt, RequestBody, RequestId,
+    Address, ForkKind, InputPart, ItemId, MeshMessage, MessageId, ModelId, OpId, Receipt, RequestBody, RequestId,
     RequestResolution, RequestState, TargetPath, ThreadId, ThreadState, Timestamp, TurnId,
 };
 use crate::macros::{open_enum, open_union};
@@ -31,6 +31,12 @@ open_enum! {
 pub struct UserMessageItem {
     /// The parts. For a message sent from outside YAAC, the text as the harness stored it.
     pub parts: Vec<InputPart>,
+    /// The operation id of the `thread/start` or `turn/start` that sent it (a queued message
+    /// keeps the `turn/start` that queued it), when a client sent it through `yaacd`: the
+    /// window replaces its "Sending…" echo of that operation with this item, in place (D165).
+    /// Absent for anything else, and from an older `yaacd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub op_id: Option<OpId>,
 }
 
 /// `agentMessage`: markdown text.
@@ -303,6 +309,9 @@ open_enum! {
         Moved = "moved",
         /// `yaacd` marked the thread's folder as trusted in the harness, or could not (D147).
         FolderTrust = "folderTrust",
+        /// The harness's own record that the turn was stopped part-way (Claude Code's
+        /// `[Request interrupted by user]`, Codex's `<turn_aborted>`), D167. A quiet line.
+        Interrupted = "interrupted",
     }
 }
 

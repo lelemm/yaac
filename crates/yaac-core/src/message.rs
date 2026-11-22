@@ -131,7 +131,7 @@ mod tests {
     use super::*;
 
     fn msg(parts: Vec<InputPart>) -> UserMessageItem {
-        UserMessageItem { parts }
+        UserMessageItem { parts, op_id: None }
     }
 
     #[test]

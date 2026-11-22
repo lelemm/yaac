@@ -664,3 +664,9 @@ pub(crate) fn download(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.line(vec![pos2(c.x - s * 0.6, c.y - s * 0.1), pos2(c.x, c.y + s * 0.5), pos2(c.x + s * 0.6, c.y - s * 0.1)], stroke(col, w));
     p.line(vec![pos2(c.x - s * 1.1, c.y + s * 0.4), pos2(c.x - s * 1.1, c.y + s * 1.05), pos2(c.x + s * 1.1, c.y + s * 1.05), pos2(c.x + s * 1.1, c.y + s * 0.4)], stroke(col, w));
 }
+
+/// A small filled square: a stopped turn (D167).
+pub(crate) fn stop_square(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    p.rect_filled(Rect::from_center_size(c, Vec2::splat(d * 0.5)), 2.0, col);
+}

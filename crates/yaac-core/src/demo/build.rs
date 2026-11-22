@@ -22,7 +22,7 @@ pub(crate) fn user(text: &str, files: &[&str], images: &[&str]) -> ItemBody {
     let mut parts = vec![InputPart::text(text)];
     parts.extend(files.iter().map(|f| InputPart::File(FilePart { upload_id: UploadId::new(*f), name: None, media_type: None })));
     parts.extend(images.iter().map(|f| InputPart::Image(ImagePart { upload_id: UploadId::new(*f), name: None, media_type: None })));
-    ItemBody::UserMessage(UserMessageItem { parts })
+    ItemBody::UserMessage(UserMessageItem { parts, op_id: None })
 }
 
 pub(crate) fn agent(text: &str) -> ItemBody {

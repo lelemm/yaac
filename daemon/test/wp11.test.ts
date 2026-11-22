@@ -675,6 +675,40 @@ test("now from the composer: steered where the harness can steer, interrupt-and-
   }
 });
 
+test("the user message of a send carries its op id: started, steered, interrupted-and-started, and queued then delivered (D165)", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const nosteer = await addFake(c, "nosteer", { FAKE_STEER: "0" });
+    const { threadId } = await startThread(c, "/fake say hi");
+    await untilIdle(d, threadId);
+    const opOf = async (t: string, said: string) => ((await itemsOf(c, t)).find((i: any) => i.kind === "userMessage" && i.parts?.[0]?.text === said) as any)?.opId;
+    const started = opId();
+    await c.request("turn/start", { opId: started, threadId, input: text("/fake sleep 900\n/fake say started") });
+    await until(() => d.core.thread(threadId)!.activeTurn, "running");
+    assert.equal(await opOf(threadId, "/fake sleep 900\n/fake say started"), started);
+    const steered = opId();
+    const r: any = await c.request("turn/start", { opId: steered, threadId, input: text("and the docs"), delivery: "now" });
+    assert.equal(r.outcome, "steered");
+    assert.equal(await opOf(threadId, "and the docs"), steered);
+    const queued = opId();
+    await c.request("turn/start", { opId: queued, threadId, input: text("/fake say later"), delivery: "queue" });
+    await until(() => d.core.thread(threadId)!.userQueue.length === 0 && !d.core.thread(threadId)!.activeTurn, "the queue delivered", 15000);
+    assert.equal(await opOf(threadId, "/fake say later"), queued, "a queued message keeps the op id that queued it");
+    const sub: any = await c.request("thread/subscribe", { threadId });
+    assert.ok((sub.queued ?? []).every((q: any) => q.opId === undefined), "the op id is not part of the queue's public entry");
+    const s2 = await startThread(c, "/fake stall", { instance: nosteer });
+    await until(() => d.core.thread(s2.threadId)!.activeTurn, "running");
+    const now = opId();
+    const r2: any = await c.request("turn/start", { opId: now, threadId: s2.threadId, input: text("/fake say instead"), delivery: "now" });
+    assert.equal(r2.outcome, "interruptedAndStarted");
+    assert.equal(await opOf(s2.threadId, "/fake say instead"), now);
+    // The first message, sent with `thread/start`, carries that operation's id.
+    assert.equal(typeof (await opOf(threadId, "/fake say hi")), "string");
+  } finally {
+    await done();
+  }
+});
+
 test("Send now on a queued message promotes it with the now mechanics and leaves the others queued, in order", async () => {
   const { d, c, done } = await setup();
   try {

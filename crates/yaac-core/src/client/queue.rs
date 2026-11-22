@@ -63,6 +63,7 @@ impl Client {
         self.state.drafts.remove(key);
         // `delivery` always goes: should a turn start just before this arrives (a queued
         // message delivered), the message waits or goes in as asked instead of being refused.
+        let parts = input.clone();
         let mut params = json!({ "opId": op, "threadId": key.thread, "input": input, "delivery": delivery });
         if let Some(mdl) = next.model {
             params["model"] = json!(mdl);
@@ -79,7 +80,9 @@ impl Client {
         if let Some(n) = self.state.next_settings.get_mut(key) {
             n.fast_note = None;
         }
-        self.routed(&key.target, m::TURN_START, params, Call::TurnStart { key: key.clone(), draft });
+        // The message shows at once, "Sending…" (D165); queued, it moves to the strip instead.
+        self.echo(key, &op, parts, &draft, m::TURN_START, &params);
+        self.routed(&key.target, m::TURN_START, params, Call::TurnStart { key: key.clone(), draft, op });
         true
     }
 

@@ -2426,7 +2426,7 @@ export interface NoticeItem {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered" | "stopped" | "takenOver" | "moved" | "folderTrust";
+export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered" | "stopped" | "takenOver" | "moved" | "folderTrust" | "interrupted";
 
 /**
  * A client-generated operation id. Every state-changing request carries one; re-sending
@@ -5404,6 +5404,13 @@ export interface UsageUpdatedEvent {
  * `userMessage`: the input parts as sent.
  */
 export interface UserMessageItem {
+  /**
+   * The operation id of the `thread/start` or `turn/start` that sent it (a queued message
+   * keeps the `turn/start` that queued it), when a client sent it through `yaacd`: the
+   * window replaces its "Sending…" echo of that operation with this item, in place (D165).
+   * Absent for anything else, and from an older `yaacd`.
+   */
+  opId?: OpId | null;
   /**
    * The parts. For a message sent from outside YAAC, the text as the harness stored it.
    */

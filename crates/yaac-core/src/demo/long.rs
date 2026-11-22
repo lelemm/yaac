@@ -65,7 +65,7 @@ pub(super) fn events(base: i64) -> Vec<ThreadEvent> {
         let turn = TurnId::new(format!("p-long-{i}"));
         let worked = 8 + (k * 37) % 230;
         out.push(ThreadEvent::TurnStarted(TurnStartedEvent { turn_id: turn.clone(), origin: TurnOrigin::User, at: Some(timestamp(start)) }));
-        let user = ItemBody::UserMessage(UserMessageItem { parts: vec![InputPart::text(*ask)] });
+        let user = ItemBody::UserMessage(UserMessageItem { parts: vec![InputPart::text(*ask)], op_id: None });
         out.push(at(&format!("pl{i}-u"), &turn, ItemStatus::Completed, user, start, start));
         out.push(at(&format!("pl{i}-r"), &turn, ItemStatus::Completed, reasoning("Look at the lexer and the samples first."), start + 1, start + 4));
         out.push(at(&format!("pl{i}-t1"), &turn, ItemStatus::Completed, tool(ToolKind::Command, "Ran `cargo test -p toml-next`", Some(0), "test result: ok. 312 passed"), start + 5, start + worked / 2));

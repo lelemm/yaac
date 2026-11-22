@@ -811,20 +811,23 @@ impl Inner {
                     self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
                     return;
                 }
+                let op = p.get("opId").and_then(Value::as_str).map(yaac_protocol::OpId::new);
                 let input: Vec<InputPart> = serde_json::from_value(p.get("input").cloned().unwrap_or(Value::Null)).unwrap_or_default();
                 if let Some(running) = self.fleet.threads.get(&key).and_then(|t| t.active_turn.clone()) {
                     self.deliver_while_running(id, &key, &running, p, input);
                     return;
                 }
                 let turn = TurnId::new(self.next("turn"));
-                self.ready.push_back(result(id, json!({ "turnId": turn, "outcome": "started" })));
+                // Answered a tick later, as a real target would be: the window shows its echo
+                // of the message until then (D165).
+                self.schedule(0, Pending::Note("turn".into(), result(id, json!({ "turnId": turn, "outcome": "started" }))));
                 if let Some(mdl) = p.get("model").and_then(Value::as_str) {
                     let mdl = yaac_protocol::ModelId::new(mdl);
                     self.summary_now(&key, |s| s.model = Some(mdl));
                 }
                 let fast = p.get("fast").and_then(Value::as_bool);
                 self.set_fast(&key, fast);
-                self.stream_turn(&key, &turn, input);
+                self.stream_turn_after(&key, &turn, input, op);
             }
             m::TURN_QUEUE_EDIT | m::TURN_QUEUE_CANCEL | m::TURN_QUEUE_PROMOTE => {
                 let Some(key) = thread(p, "threadId") else { return };
@@ -1223,7 +1226,7 @@ impl Inner {
         let steer = self.fleet.threads.get(key).is_some_and(|t| yaac_protocol::has_capability(&t.effective.capabilities, &yaac_protocol::Capability::Steer));
         if steer {
             let item_id = format!("{running}-steer-{}", self.next("s"));
-            self.emit_now(key, ThreadEvent::ItemCompleted(ItemEvent { item: done(&item_id, running.as_str(), ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts: input })) }));
+            self.emit_now(key, ThreadEvent::ItemCompleted(ItemEvent { item: done(&item_id, running.as_str(), ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts: input, op_id: None })) }));
             self.ready.push_back(result(id, json!({ "turnId": running, "outcome": "steered" })));
             return;
         }
@@ -1271,6 +1274,16 @@ impl Inner {
     }
 
     fn stream_turn(&mut self, key: &ThreadKey, turn: &TurnId, input: Vec<InputPart>) {
+        self.stream(key, turn, input, None, false);
+    }
+
+    /// A turn whose start is released with the answer scheduled before it; its user message
+    /// carries the send's op id, as `yaacd` stamps it.
+    fn stream_turn_after(&mut self, key: &ThreadKey, turn: &TurnId, input: Vec<InputPart>, op: Option<yaac_protocol::OpId>) {
+        self.stream(key, turn, input, op, true);
+    }
+
+    fn stream(&mut self, key: &ThreadKey, turn: &TurnId, input: Vec<InputPart>, op: Option<yaac_protocol::OpId>, later: bool) {
         let text: String = input
             .iter()
             .filter_map(|p| match p {
@@ -1288,9 +1301,17 @@ impl Inner {
                 ThreadEvent::ItemCompleted(ItemEvent { item })
             }
         };
-        self.emit_now(key, item_ev(done(&id("user"), turn.as_str(), ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts: input }))));
-        self.emit_now(key, ThreadEvent::TurnStarted(TurnStartedEvent { turn_id: turn.clone(), origin: TurnOrigin::User, at: None }));
-        self.set_state_now(key, ThreadState::Running);
+        let user = item_ev(done(&id("user"), turn.as_str(), ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts: input, op_id: op })));
+        let started = ThreadEvent::TurnStarted(TurnStartedEvent { turn_id: turn.clone(), origin: TurnOrigin::User, at: None });
+        if later {
+            self.schedule(0, ev(user));
+            self.schedule(0, ev(started));
+            self.schedule(0, Pending::State(key.clone(), ThreadState::Running));
+        } else {
+            self.emit_now(key, user);
+            self.emit_now(key, started);
+            self.set_state_now(key, ThreadState::Running);
+        }
         self.schedule(2, ev(item_ev(item(&id("think"), turn.as_str(), ItemStatus::InProgress, reasoning("")))));
         self.schedule(6, ev(ThreadEvent::ItemDelta(yaac_protocol::ItemDeltaEvent { item_id: id("think").into(), field: yaac_protocol::DeltaField::Reasoning, delta: "Look at how the reader computes the end of a frame.".into() })));
         self.schedule(6, ev(item_ev(done(&id("think"), turn.as_str(), reasoning("Look at how the reader computes the end of a frame.")))));
@@ -1709,13 +1730,14 @@ impl Inner {
                 let t2 = "u-t2";
                 let t3 = "u-t3";
                 let items = vec![
-                    done("um1", t2, ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts })),
+                    done("um1", t2, ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts, op_id: None })),
                     done("um2", t2, agent("The retry reads the cursor **before** batch 4 rolls back, so it starts at 10000 and finds nothing left. Read the cursor after the rollback.")),
                     done("um3", t3, ItemBody::UserMessage(yaac_protocol::UserMessageItem {
                         parts: vec![
                             InputPart::text_as("/model opus-5.5", TextRole::Command, None),
                             InputPart::text_as("Set model to opus-5.5", TextRole::Context, Some("Command output")),
                         ],
+                        op_id: None,
                     })),
                     done("um4", t3, notice_body(NoticeKind::Info, "Subagent schema-check reported back", "Checked all 41 tables against users_v2. Only users_email_idx differs: it is unique in v2 and was not in v1, which is what deadlocks batch 4.")),
                     done("um5", t3, notice_body(NoticeKind::Info, "Background command \"cargo test -p users\" completed (exit code 0)", "Background command \"cargo test -p users\" completed (exit code 0)\n\nOutput: /tmp/tasks/b7k2.output")),
@@ -1731,7 +1753,7 @@ impl Inner {
                 let turn = TurnId::new("b-run");
                 let t = turn.as_str();
                 let msg = "Add a retry with backoff around the invoice webhook, and cover it with a test.";
-                self.emit_now(&billing, ThreadEvent::ItemCompleted(ItemEvent { item: done("bq-user", t, ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts: vec![InputPart::text(msg)] })) }));
+                self.emit_now(&billing, ThreadEvent::ItemCompleted(ItemEvent { item: done("bq-user", t, ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts: vec![InputPart::text(msg)], op_id: None })) }));
                 self.emit_now(&billing, ThreadEvent::TurnStarted(TurnStartedEvent { turn_id: turn.clone(), origin: TurnOrigin::User, at: Some(crate::time::timestamp(base - 50)) }));
                 self.emit_now(&billing, ThreadEvent::ItemCompleted(ItemEvent { item: done("bq-read", t, tool(ToolKind::Other, "Read `src/webhooks/invoice.rs`", None, "")) }));
                 self.emit_now(&billing, ThreadEvent::ItemCompleted(ItemEvent { item: done("bq-say", t, agent("The webhook handler posts once and gives up on any error. I will wrap the call in a retry with exponential backoff, capped at five attempts, and keep the idempotency key the same across attempts.")) }));

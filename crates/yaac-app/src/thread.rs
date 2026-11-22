@@ -231,7 +231,12 @@ pub(crate) fn link_part(ui: &mut egui::Ui, p: &Palette, title: &str, key: Option
 fn block_ident(b: &Block, t: &Transcript) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     std::mem::discriminant(b).hash(&mut h);
-    let id = |i: usize, h: &mut std::collections::hash_map::DefaultHasher| t.items().get(i).map(|x| &x.id).hash(h);
+    // A sent message is known by its op id, so its own item takes over the echo's measured
+    // height when it replaces it (D165).
+    let id = |i: usize, h: &mut std::collections::hash_map::DefaultHasher| match t.items().get(i).map(|x| (&x.id, &x.body)) {
+        Some((_, ItemBody::UserMessage(yaac_protocol::UserMessageItem { op_id: Some(op), .. }))) => ("op", op.as_str()).hash(h),
+        other => other.map(|(id, _)| id).hash(h),
+    };
     match b {
         Block::User { index } | Block::Task { index } | Block::Prose { index } | Block::Card { index } | Block::Handoff { index } => id(*index, &mut h),
         Block::Run { lines } => {
@@ -802,6 +807,9 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
                     }
                 }
             });
+            if let Some(pending) = t.pending_of(&item.id) {
+                send_state(ui, &p, key, pending, actions);
+            }
         }
         Block::Task { index } => {
             let item = &t.items()[*index];
@@ -904,6 +912,38 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
             }
         }
     }
+}
+
+/// Under the echo of a sent message (D165): "Sending…" quietly in the line kept free under it
+/// (nothing moves when it goes); a failed send's error with **Edit** and **Retry**; an unknown
+/// outcome's sentence with **Edit** and **Dismiss** — never a Retry.
+fn send_state(ui: &mut egui::Ui, p: &Palette, key: &ThreadKey, pending: &yaac_core::sending::Pending, actions: &mut Vec<Action>) {
+    let Some(note) = pending.note() else { return };
+    if !pending.settled() {
+        let drawn = ui.min_rect();
+        let g = ui.fonts_mut(|f| f.layout_no_wrap(note, theme::ui(size::SMALL - 0.5), p.text2));
+        let at = pos2(drawn.right() - g.size().x - 2.0, drawn.bottom() + (crate::messages::STAMP_LINE - g.size().y) / 2.0);
+        ui.painter().galley(at, g, p.text2);
+        return;
+    }
+    let color = if pending.can_retry() { p.failed } else { p.text2 };
+    ui.add_space(4.0);
+    ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+        ui.label(egui::RichText::new(note).font(theme::ui(size::SMALL + 0.5)).color(color));
+        ui.add_space(2.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if pending.can_retry() {
+                if widgets::plain(ui, p, "Retry", None).clicked() {
+                    actions.push(Action::RetrySend(key.clone(), pending.item.clone()));
+                }
+            } else if widgets::plain(ui, p, "Dismiss", None).clicked() {
+                actions.push(Action::DismissSend(key.clone(), pending.item.clone()));
+            }
+            if widgets::plain(ui, p, "Edit", None).clicked() {
+                actions.push(Action::EditSend(key.clone(), pending.item.clone()));
+            }
+        });
+    });
 }
 
 fn upload_name(id: &str) -> String {
@@ -1090,6 +1130,7 @@ fn line_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, row: Row<'_>) ->
         (None, LineMark::Workers) => icons::people(pa, c, 12.0, color),
         (None, LineMark::Waiting) => icons::hourglass(pa, c, 11.0, color),
         (None, LineMark::Notice) => icons::info(pa, c, 11.0, color),
+        (None, LineMark::Interrupted) => icons::stop_square(pa, c, 14.0, color),
         (None, _) if row.folded => icons::chevron(pa, c, 11.0, false, color),
         // Open: a down chevron. Closed: the quiet dot, a right chevron under the pointer.
         (None, _) if row.open == Some(true) => icons::chevron(pa, c, 11.0, true, color),

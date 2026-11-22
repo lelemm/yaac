@@ -8,7 +8,7 @@
 // older Codex, or a path that does not filter — never shows its tags.
 
 import type { InputPart } from "../../protocol/generated/types.js";
-import { findElement, textPart, trimBlock, type MarkupTable, type TagRule } from "../markup.js";
+import { findElement, textPart, trimBlock, type MarkerNotice, type MarkupTable, type TagRule } from "../markup.js";
 
 const context = (tag: string, label: string, whole = false): TagRule => ({ tag, what: { as: "context", label }, ...(whole ? { whole } : {}) });
 
@@ -42,7 +42,19 @@ function special(rest: string): { parts: InputPart[]; length: number } | null {
   return { parts, length: el.end };
 }
 
-export const CODEX_MARKUP: MarkupTable = { rules: CODEX_RULES, special, specialStart: /<user_shell_command>/ };
+/**
+ * A message that is wholly `<turn_aborted>…</turn_aborted>`: the same quiet notice as Claude
+ * Code's interrupted marker (D167). Codex normally keeps it out of `userMessage` items; a turn
+ * it stopped says so by its status ("Worked for … · interrupted").
+ */
+function marker(text: string): MarkerNotice | null {
+  const t = text.trim();
+  const el = findElement(t, "turn_aborted");
+  if (!el || el.start !== 0 || el.end !== t.length) return null;
+  return { noticeKind: "interrupted", text: "Interrupted", details: { during: "turn" } };
+}
+
+export const CODEX_MARKUP: MarkupTable = { rules: CODEX_RULES, special, specialStart: /<user_shell_command>/, marker };
 
 /** A placeholder the Codex composer puts where a long paste is (`[Pasted Content 1234 chars]`). */
 const PASTE_PLACEHOLDER = /^\[Pasted Content\b/;

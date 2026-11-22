@@ -133,6 +133,8 @@ pub enum LineMark {
     Resumed,
     /// A notice.
     Notice,
+    /// The turn was stopped part-way (D167): a quiet stop mark.
+    Interrupted,
     /// The plan.
     Plan,
     /// Something this build does not know.
@@ -385,6 +387,7 @@ fn line_of(state: &AppState, map: &AttentionMap, key: &ThreadKey, index: usize, 
             let text = if in_progress { format!("Waiting for {what}…") } else { format!("Waited for {what}") };
             (LineMark::Waiting, text, false)
         }
+        ItemBody::Notice(n) if n.notice_kind == NoticeKind::Interrupted => (LineMark::Interrupted, crate::message::one_line(&n.text), false),
         ItemBody::Notice(n) if n.notice_kind != NoticeKind::BudgetExhausted => {
             (LineMark::Notice, crate::message::one_line(&n.text), n.notice_kind == NoticeKind::Error)
         }
