@@ -73,7 +73,7 @@ fn budget(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, text: &str, item
 #[allow(clippy::too_many_arguments)]
 fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript, item: &yaac_protocol::Item, r: &RequestItem, now: i64, actions: &mut Vec<Action>) {
     let p = v.p;
-    let may_act = v.state.may_act(key);
+    let may_act = v.state.may_answer(key);
     let local = t.local_answers.get(&r.request_id).map(|l| l.summary.as_str());
     let target = v.state.target_name(&key.target);
     let st = card_state(r, may_act, v.state.client_id.as_ref(), local, &target, now);
