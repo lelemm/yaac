@@ -5405,10 +5405,10 @@ export interface UsageUpdatedEvent {
  */
 export interface UserMessageItem {
   /**
-   * The operation id of the `turn/start` (or `turn/steer`, `turn/queuePromote`) that sent
-   * it, when a client sent it through `yaacd`: the window replaces its "Sending…" echo of
-   * that operation with this item, in place (D165). Absent for anything else, and from an
-   * older `yaacd`.
+   * The operation id of the `thread/start` or `turn/start` that sent it (a queued message
+   * keeps the `turn/start` that queued it), when a client sent it through `yaacd`: the
+   * window replaces its "Sending…" echo of that operation with this item, in place (D165).
+   * Absent for anything else, and from an older `yaacd`.
    */
   opId?: OpId | null;
   /**

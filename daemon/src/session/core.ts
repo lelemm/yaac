@@ -1867,7 +1867,7 @@ export class Core {
         true,
       );
       const driver: Driver = { key: client.key, host: client.host };
-      this.turnBegan(rt, started.turn, "user", parts, driver);
+      this.turnBegan(rt, started.turn, "user", parts, driver, undefined, p.opId);
       this.trustNotice(rt, trusted);
       this.finishPendingStart(key);
       return { threadId: rt.id, turnId: started.turn };
@@ -1884,7 +1884,7 @@ export class Core {
   }
 
   /** Journals the start of a turn yaacd asked for: `turnStarted`, then the user's message. */
-  private turnBegan(rt: ThreadRuntime, turnId: TurnId, origin: TurnOrigin, parts: InputPart[], driver: Driver | null, items?: Item[]): void {
+  private turnBegan(rt: ThreadRuntime, turnId: TurnId, origin: TurnOrigin, parts: InputPart[], driver: Driver | null, items?: Item[], opId?: string): void {
     if (rt.activeTurn === turnId) return;
     rt.expectTurn = null;
     rt.activeTurn = turnId;
@@ -1902,7 +1902,8 @@ export class Core {
         this.append(rt, { type: "itemCompleted", item });
       }
     } else {
-      const user: Item = { id: `user:${turnId}`, turnId, status: "completed", kind: "userMessage", parts, startedAt: at, completedAt: at };
+      // The op id lets the window put this in place of its "Sending…" echo (D165).
+      const user: Item = { id: `user:${turnId}`, turnId, status: "completed", kind: "userMessage", parts, ...(opId ? { opId } : {}), startedAt: at, completedAt: at };
       this.append(rt, { type: "itemStarted", item: user });
       this.append(rt, { type: "itemCompleted", item: user });
     }
@@ -1944,25 +1945,25 @@ export class Core {
         // The user sending a message is what starts a stopped thread again.
         if (rt.record.hold) this.releaseHold(rt, false);
         rt.queuePaused = false;
-        const turnId = await this.submit(rt, { origin: "user", parts, overrides, driver }, "now");
+        const turnId = await this.submit(rt, { origin: "user", parts, overrides, driver, opId: p.opId }, "now");
         return { turnId, outcome: "started" as TurnStartOutcome };
       }
       if (delivery === null) {
         throw notActed("turn_in_progress", "a turn is already running in this thread", rt.activeTurn ? { activeTurn: rt.activeTurn } : undefined);
       }
       if (delivery === "queue") {
-        const entry = this.enqueueUser(rt, parts, overrides, driver);
+        const entry = this.enqueueUser(rt, parts, overrides, driver, p.opId);
         return { turnId: "", outcome: "queued" as TurnStartOutcome, queueId: entry.queueId };
       }
       if (rt.pendingRequestCount() > 0) throw notActed("awaiting_user", NOW_WHILE_ASKING);
-      return this.deliverNow(rt, parts, overrides, driver, "user");
+      return this.deliverNow(rt, parts, overrides, driver, "user", { opId: p.opId });
     });
   }
 
   // ── Queued user messages, and `now` ────────────────────────────────────────────────────
 
   private publicEntry(e: QueuedEntry): QueuedMessage {
-    const { driver: _d, dispatching: _x, ...pub } = e;
+    const { driver: _d, dispatching: _x, opId: _o, ...pub } = e;
     return clone(pub) as QueuedMessage;
   }
 
@@ -1972,7 +1973,7 @@ export class Core {
   }
 
   /** Queues a user message durably, ahead of queued agent input. */
-  private enqueueUser(rt: ThreadRuntime, parts: InputPart[], overrides: TurnOverrides, driver: Driver | null): QueuedEntry {
+  private enqueueUser(rt: ThreadRuntime, parts: InputPart[], overrides: TurnOverrides, driver: Driver | null, opId?: string): QueuedEntry {
     const entry: QueuedEntry = {
       queueId: randomId("q_", 10),
       input: parts,
@@ -1982,6 +1983,7 @@ export class Core {
       ...(overrides.mode ? { mode: overrides.mode } : {}),
       ...(typeof overrides.fast === "boolean" ? { fast: overrides.fast } : {}),
       driver,
+      ...(opId ? { opId } : {}),
     };
     rt.userQueue.push(entry);
     rt.saveQueue();
@@ -2050,10 +2052,10 @@ export class Core {
       const overrides = { model: e.model ?? null, effort: e.effort ?? null, mode: e.mode ?? null, fast: e.fast ?? null };
       const driver: Driver = { key: client.key, host: client.host };
       if (!rt.activeTurn && !rt.dispatching && !rt.claimed) {
-        const turnId = await this.submit(rt, { origin: "user", parts: e.input, overrides, driver }, "now");
+        const turnId = await this.submit(rt, { origin: "user", parts: e.input, overrides, driver, ...(e.opId ? { opId: e.opId } : {}) }, "now");
         return { turnId, outcome: "started" as TurnStartOutcome };
       }
-      return this.deliverNow(rt, e.input, overrides, driver, "user");
+      return this.deliverNow(rt, e.input, overrides, driver, "user", e.opId ? { opId: e.opId } : {});
     });
   }
 
@@ -2075,7 +2077,7 @@ export class Core {
     overrides: TurnOverrides,
     driver: Driver | null,
     origin: TurnOrigin,
-    extra: { journalItems?: Item[]; mesh?: MeshInputMessage[]; onStarted?: (turnId: TurnId) => void | Promise<void>; beforeStart?: () => void | Promise<void> } = {},
+    extra: { journalItems?: Item[]; mesh?: MeshInputMessage[]; onStarted?: (turnId: TurnId) => void | Promise<void>; beforeStart?: () => void | Promise<void>; opId?: string } = {},
   ): Promise<TurnStartResult> {
     const provider = this.provider(rt);
     const turn = rt.activeTurn;
@@ -2090,7 +2092,7 @@ export class Core {
       }
       // What was added is in the transcript, as what it is.
       const at = nowIso();
-      const items: Item[] = extra.journalItems ?? [{ id: `user:steer:${randomId("", 8)}`, turnId: turn, status: "completed", kind: "userMessage", parts } as Item];
+      const items: Item[] = extra.journalItems ?? [{ id: `user:steer:${randomId("", 8)}`, turnId: turn, status: "completed", kind: "userMessage", parts, ...(extra.opId ? { opId: extra.opId } : {}) } as Item];
       for (const raw of items) {
         const item = { ...raw, turnId: turn, startedAt: raw.startedAt ?? at, completedAt: raw.completedAt ?? at } as Item;
         this.append(rt, { type: "itemStarted", item });
@@ -2118,7 +2120,7 @@ export class Core {
         throw rpc("turn_in_progress", "the running turn was asked to stop and has not stopped yet; the message was not sent");
       }
     }
-    const turnId = await this.submit(rt, { origin, parts, overrides, driver, ...(extra.journalItems ? { journalItems: extra.journalItems } : {}), ...(extra.mesh ? { mesh: extra.mesh } : {}), ...(extra.onStarted ? { onStarted: extra.onStarted } : {}), ...(extra.beforeStart ? { beforeStart: extra.beforeStart } : {}) }, "now");
+    const turnId = await this.submit(rt, { origin, parts, overrides, driver, ...(extra.opId ? { opId: extra.opId } : {}), ...(extra.journalItems ? { journalItems: extra.journalItems } : {}), ...(extra.mesh ? { mesh: extra.mesh } : {}), ...(extra.onStarted ? { onStarted: extra.onStarted } : {}), ...(extra.beforeStart ? { beforeStart: extra.beforeStart } : {}) }, "now");
     return { turnId, outcome: (interrupted ? "interruptedAndStarted" : "started") as TurnStartOutcome };
   }
 
@@ -2136,6 +2138,7 @@ export class Core {
       parts: entry.input,
       overrides: { model: entry.model ?? null, effort: entry.effort ?? null, mode: entry.mode ?? null, fast: entry.fast ?? null },
       driver: entry.driver ?? null,
+      ...(entry.opId ? { opId: entry.opId } : {}),
       onStarted: (turnId) => {
         rt.userQueue = rt.userQueue.filter((q) => q !== entry);
         rt.saveQueue();
@@ -2284,7 +2287,7 @@ export class Core {
       await work.beforeStart?.();
       const input = this.buildInput(rt.uploadsKey, work.parts, work.origin);
       if (work.mesh) input.mesh = work.mesh;
-      rt.expectTurn = { origin: work.origin, parts: work.parts, driver: work.driver, ...(work.journalItems ? { items: work.journalItems } : {}) };
+      rt.expectTurn = { origin: work.origin, parts: work.parts, driver: work.driver, ...(work.journalItems ? { items: work.journalItems } : {}), ...(work.opId ? { opId: work.opId } : {}) };
       // Fast mode for this turn (D125): asked for, else the thread's setting — and only while
       // the model the turn runs on has it.
       const descriptor = this.registry.get(rt.record.instance)?.descriptor;
@@ -2307,7 +2310,7 @@ export class Core {
         if (fast) rt.record.fast = true;
         else delete rt.record.fast;
       }
-      this.turnBegan(rt, turnId, work.origin, work.parts, work.driver, work.journalItems);
+      this.turnBegan(rt, turnId, work.origin, work.parts, work.driver, work.journalItems, work.opId);
       rt.dispatching = false;
       try {
         await work.onStarted?.(turnId);
@@ -2854,7 +2857,7 @@ export class Core {
     };
     this.append(rt, { type: "itemStarted", item: handoff });
     this.append(rt, { type: "itemCompleted", item: handoff });
-    this.turnBegan(rt, started.turn, "user", parts, { key: client.key, host: client.host });
+    this.turnBegan(rt, started.turn, "user", parts, { key: client.key, host: client.host }, undefined, p.opId);
     this.trustNotice(rt, trusted);
     this.finishPendingStart(key);
     if (typeof provider.rename === "function" && (dest.descriptor.capabilities ?? []).includes("threadRename")) {
@@ -3022,7 +3025,7 @@ export class Core {
         if (rt.activeTurn === ev.turnId) return;
         if (rt.expectTurn) {
           const x = rt.expectTurn;
-          this.turnBegan(rt, ev.turnId, x.origin, x.parts, x.driver, x.items);
+          this.turnBegan(rt, ev.turnId, x.origin, x.parts, x.driver, x.items, x.opId);
           return;
         }
         rt.activeTurn = ev.turnId;

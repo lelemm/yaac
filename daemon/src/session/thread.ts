@@ -132,6 +132,8 @@ export interface TakenOver {
 /** A user message waiting for the running turn to end (`queue.json`). */
 export interface QueuedEntry extends QueuedMessage {
   driver: Driver | null;
+  /** The `turn/start` that queued it: stamped on the user message when it is delivered (D165). */
+  opId?: string;
   /** Set (durably) just before it is handed to the harness. */
   dispatching?: boolean;
 }
@@ -177,6 +179,8 @@ export interface Work {
   journalItems?: Item[];
   /** Mesh (WP7): the agent messages the turn carries, sender and body apart. */
   mesh?: MeshInputMessage[];
+  /** The client's operation that sent it, stamped on the user message (D165). */
+  opId?: string;
   resolve: (turnId: TurnId) => void;
   reject: (error: Error) => void;
 }
@@ -205,7 +209,7 @@ export class ThreadRuntime {
   queue: Work[] = [];
   dispatching = false;
   /** Set while yaacd waits for the harness to start a turn it asked for. */
-  expectTurn: { origin: TurnOrigin; parts: InputPart[]; driver: Driver | null; items?: Item[] } | null = null;
+  expectTurn: { origin: TurnOrigin; parts: InputPart[]; driver: Driver | null; items?: Item[]; opId?: string } | null = null;
   pendingDeltas = new Map<string, { itemId: string; field: "text" | "reasoning" | "output"; delta: string }>();
   pendingDeltaBytes = 0;
   flushTimer: NodeJS.Timeout | null = null;
