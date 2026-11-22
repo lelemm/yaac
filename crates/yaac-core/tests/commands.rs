@@ -71,7 +71,7 @@ const CATALOGUE: &[(&str, &[&str])] = &[
     ("Continue (budget)", &["continue-budget"]),
     ("Archive selected… / Mute selected… / Clear selection", &["archive-selected", "mute-selected", "clear-selection"]),
     ("Focus the composer", &["focus-composer"]),
-    ("Send / queue", &["send"]),
+    ("Send / Queue message", &["send"]),
     ("Send now", &["send-now"]),
     ("New line", &["new-line"]),
     ("Stop the turn", &["stop"]),

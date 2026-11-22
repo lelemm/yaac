@@ -424,12 +424,6 @@ pub(crate) fn search(p: &Painter, c: Pos2, d: f32, col: Color32) {
 }
 
 
-pub(crate) fn stop_square(p: &Painter, c: Pos2, d: f32, col: Color32) {
-    let p = &soft(p);
-    p.rect_filled(Rect::from_center_size(c, Vec2::splat(d * 0.5)), 2.0, col);
-}
-
-
 
 
 

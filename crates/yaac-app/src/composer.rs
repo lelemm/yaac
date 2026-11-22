@@ -61,10 +61,21 @@ fn track_ime(ui: &egui::Ui, composing: &mut bool) {
     });
 }
 
-/// The text box. Returns true when Enter (not Shift+Enter, never during an input-method
-/// composition) asked to send.
+/// What the keyboard asked of the text box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Submit {
+    /// Nothing.
+    None,
+    /// Send; while a turn runs, queue (Enter, or Ctrl+Enter with that send key).
+    Send,
+    /// Send now (Ctrl+Enter, or Ctrl+Shift+Enter with the Ctrl+Enter send key) — D166.
+    SendNow,
+}
+
+/// The text box. Returns what Enter (not Shift+Enter, never during an input-method
+/// composition) asked.
 #[allow(clippy::too_many_arguments, reason = "one call site per composer; a struct would only rename the arguments")]
-fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &str, p: &Palette, composing: &mut bool, enabled: bool, focus: &mut bool, send_key: SendKey) -> bool {
+fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &str, p: &Palette, composing: &mut bool, enabled: bool, focus: &mut bool, send_key: SendKey) -> Submit {
     track_ime(ui, composing);
     let focused = ui.memory(|m| m.has_focus(id));
     let newline = match send_key {
@@ -74,7 +85,7 @@ fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &st
     // Enter is decided here with exact modifiers (egui's shortcut matching ignores an extra
     // Shift, which made Shift+Enter send). A press that sends, or that does nothing, is taken
     // out of the input so the text box does not also break the line.
-    let mut send = false;
+    let mut send = Submit::None;
     if focused {
         ui.input_mut(|i| {
             let comp = *composing;
@@ -82,7 +93,15 @@ fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &st
                 egui::Event::Key { key: Key::Enter, pressed: true, modifiers, .. } => {
                     match compose::enter(send_key, modifiers.shift, modifiers.command || modifiers.ctrl, comp) {
                         EnterAction::Send => {
-                            send |= enabled;
+                            if enabled {
+                                send = Submit::Send;
+                            }
+                            false
+                        }
+                        EnterAction::SendNow => {
+                            if enabled {
+                                send = Submit::SendNow;
+                            }
                             false
                         }
                         EnterAction::Newline => true,
@@ -325,61 +344,114 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                 });
             });
         }
-        ComposerView::Shown { placeholder, dimmed_hint, stop, chips: chip_views, blocked, .. } => {
-            let dimmed = dimmed_hint.is_some();
+        ComposerView::Shown { placeholder, dimmed_hint, stop, chips: chip_views, blocked, running, send_now, editing, .. } => {
+            // A request waiting on the user dims the composer only when no turn runs; while one
+            // runs, a message can still be queued behind the answer (D166).
+            let dimmed = dimmed_hint.is_some() && !running;
+            queue_strip(ui, app, key, send_now, actions);
             let d = DraftRef::Thread(key.clone());
             let id = composer_id(&d);
-            let mut send = false;
+            let mut submit = Submit::None;
+            let (queue_key, now_key) = match app.ui.send_key {
+                SendKey::Enter => ("Enter", "Ctrl+Enter"),
+                SendKey::CtrlEnter => ("Ctrl+Enter", "Ctrl+Shift+Enter"),
+            };
             let inner = widgets::faint_frame(&p).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if dimmed {
                     ui.multiply_opacity(0.6);
                 }
-                chips(ui, app, &d, &chip_views, actions);
-                ui.horizontal(|ui| {
-                    let btn_w = 130.0;
-                    ui.vertical(|ui| {
-                        ui.set_width(ui.available_width() - btn_w);
-                        let draft = app.client.state.drafts.entry(key.clone()).or_default();
-                        let had = draft.text.clone();
-                        send = text_box(ui, &mut draft.text, id, &placeholder, &p, &mut app.ui.ime_composing, !dimmed, &mut app.ui.focus_composer, app.ui.send_key);
-                        if draft.text != had {
-                            actions.push(Action::DraftEdited(d.clone()));
-                        }
-                        if let Some(h) = &dimmed_hint {
-                            ui.label(widgets::secondary(h, &p));
-                        } else if let Some(why) = blocked.as_ref().filter(|_| !chip_views.is_empty()) {
-                            ui.label(widgets::secondary(why, &p));
-                        }
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if stop && !dimmed {
-                            let r = widgets::plain_colored(ui, &p, "Stop", p.failed);
-                            icons::stop_square(ui.painter(), egui::pos2(r.rect.left() + 2.0, r.rect.center().y), 0.0, p.failed);
-                            if r.clicked() {
-                                actions.push(Action::Stop(key.clone()));
-                            }
+                if !editing {
+                    chips(ui, app, &d, &chip_views, actions);
+                }
+                if running || editing {
+                    // While a turn runs the text keeps the full width and the buttons sit in a
+                    // row under it: Queue, Send now and Stop do not fit beside it.
+                    submit = text_column(ui, app, key, &d, id, &placeholder, false, editing, actions);
+                    if let Some(h) = &dimmed_hint {
+                        ui.label(widgets::secondary(h, &p));
+                    } else if let Some(why) = blocked.as_ref().filter(|_| !chip_views.is_empty() && !editing) {
+                        ui.label(widgets::secondary(why, &p));
+                    }
+                    ui.horizontal(|ui| {
+                        if editing {
+                            ui.label(widgets::secondary("Editing a queued message", &p));
+                        } else {
                             // Attachments can be prepared while a turn runs.
                             attach_button(ui, app, &d, actions);
-                        } else if !dimmed {
-                            let has = app.client.state.drafts.get(key).is_some_and(|x| !x.text.trim().is_empty() || !x.attachments.is_empty());
-                            if send_button(ui, &p, has, blocked.as_deref()) {
-                                send = true;
-                            }
-                            attach_button(ui, app, &d, actions);
                         }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if editing {
+                                let can = app.client.state.queue_edits.get(key).is_some_and(|e| e.input().is_some());
+                                let save = if can { widgets::primary(ui, &p, "Save", Some(queue_key)) } else { widgets::plain(ui, &p, "Save", Some(queue_key)) };
+                                if save.clicked() && can {
+                                    actions.push(Action::Send(key.clone()));
+                                }
+                                if widgets::plain(ui, &p, "Cancel edit", Some("Esc")).clicked() {
+                                    actions.push(Action::QueueEditEnd(key.clone()));
+                                }
+                                return;
+                            }
+                            if stop && widgets::plain(ui, &p, "Stop", Some("Esc")).on_hover_text("Stop the running turn; nothing is sent").clicked() {
+                                actions.push(Action::Stop(key.clone()));
+                            }
+                            let has = app.client.state.drafts.get(key).is_some_and(|x| !x.text.trim().is_empty() || !x.attachments.is_empty());
+                            if let Some(label) = send_now {
+                                let tip = if label == yaac_core::queue::SEND_NOW { "Add it to the running turn" } else { "Stop the running turn and start a new one with this message" };
+                                let r = widgets::plain(ui, &p, label, Some(now_key)).on_hover_text(tip);
+                                if r.clicked() && has && blocked.is_none() {
+                                    submit = Submit::SendNow;
+                                }
+                            }
+                            let tip = "Delivered when the running turn ends";
+                            let r = match blocked.as_deref() {
+                                Some(why) if has => widgets::plain(ui, &p, "Queue", Some(queue_key)).on_hover_text(why),
+                                _ if has => widgets::primary(ui, &p, "Queue", Some(queue_key)).on_hover_text(tip),
+                                _ => widgets::plain(ui, &p, "Queue", Some(queue_key)).on_hover_text(tip),
+                            };
+                            if r.clicked() && has && blocked.is_none() {
+                                submit = Submit::Send;
+                            }
+                        });
                     });
-                });
+                } else {
+                    ui.horizontal(|ui| {
+                        let btn_w = 130.0;
+                        ui.vertical(|ui| {
+                            ui.set_width(ui.available_width() - btn_w);
+                            submit = text_column(ui, app, key, &d, id, &placeholder, dimmed, false, actions);
+                            if let Some(h) = &dimmed_hint {
+                                ui.label(widgets::secondary(h, &p));
+                            } else if let Some(why) = blocked.as_ref().filter(|_| !chip_views.is_empty()) {
+                                ui.label(widgets::secondary(why, &p));
+                            }
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if !dimmed {
+                                let has = app.client.state.drafts.get(key).is_some_and(|x| !x.text.trim().is_empty() || !x.attachments.is_empty());
+                                if send_button(ui, &p, has, blocked.as_deref()) {
+                                    submit = Submit::Send;
+                                }
+                                attach_button(ui, app, &d, actions);
+                            }
+                        });
+                    });
+                }
             });
             if ui.memory(|m| m.has_focus(id)) {
                 widgets::focus_ring(ui, inner.response.rect, &p);
             }
-            if send && !stop {
-                actions.push(Action::Send(key.clone()));
+            match submit {
+                Submit::None => {}
+                // Saving an edit, sending, or (while a turn runs) queueing.
+                Submit::Send => actions.push(Action::Send(key.clone())),
+                Submit::SendNow if running && !editing && send_now.is_some() => actions.push(Action::SendNow(key.clone())),
+                // Not offered (no turn, or a request waits): an ordinary send, or a queue.
+                Submit::SendNow => actions.push(Action::Send(key.clone())),
             }
-            // Esc stops the running turn from the composer.
-            if stop && ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-                actions.push(Action::Stop(key.clone()));
+            // Esc leaves an edit; otherwise it stops the running turn from the composer.
+            if (editing || stop) && ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                actions.push(if editing { Action::QueueEditEnd(key.clone()) } else { Action::Stop(key.clone()) });
             }
         }
     }
@@ -404,6 +476,100 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
     if let ControlRowView::Row(row) = view {
         control_row(ui, app, &row, &Target::Thread(key.clone()), actions);
     }
+}
+
+/// The text box of a started thread's composer, on its draft — or, while a queued message is
+/// being edited, on that edit (D166).
+#[allow(clippy::too_many_arguments, reason = "the two layouts of one composer share it")]
+fn text_column(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, d: &DraftRef, id: egui::Id, placeholder: &str, dimmed: bool, editing: bool, actions: &mut Vec<Action>) -> Submit {
+    let p = app.p;
+    if editing && let Some(e) = app.client.state.queue_edits.get_mut(key) {
+        return text_box(ui, &mut e.text, id, "The queued message…", &p, &mut app.ui.ime_composing, true, &mut app.ui.focus_composer, app.ui.send_key);
+    }
+    let draft = app.client.state.drafts.entry(key.clone()).or_default();
+    let had = draft.text.clone();
+    let submit = text_box(ui, &mut draft.text, id, placeholder, &p, &mut app.ui.ime_composing, !dimmed, &mut app.ui.focus_composer, app.ui.send_key);
+    if draft.text != had {
+        actions.push(Action::DraftEdited(d.clone()));
+    }
+    submit
+}
+
+/// The id of a queue strip button (`what`: "now", "edit", "cancel"), for tests.
+pub(crate) fn strip_button_id(what: &str, queue_id: &str) -> egui::Id {
+    egui::Id::unique(("queue-strip", what, queue_id))
+}
+
+/// A small text button of the queue strip.
+fn strip_button(ui: &mut egui::Ui, p: &Palette, label: &str, id: egui::Id, enabled: bool) -> egui::Response {
+    let ink = if enabled { p.text } else { p.unavailable };
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), theme::ui(size::SMALL), ink));
+    let (_, rect) = ui.allocate_space(egui::vec2(g.size().x + 12.0, 22.0));
+    let r = ui.interact(rect, id, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+    if enabled && r.hovered() {
+        ui.painter().rect_filled(rect, 4.0, p.faint);
+    }
+    ui.painter().galley(egui::pos2(rect.left() + 6.0, rect.center().y - g.size().y / 2.0), g, ink);
+    if enabled { r.on_hover_cursor(egui::CursorIcon::PointingHand) } else { r }
+}
+
+/// The queued messages above the composer (D166), in delivery order: a one-line preview,
+/// **Send now**, **Edit** and ✕ each. Gone when nothing waits.
+fn queue_strip(ui: &mut egui::Ui, app: &YaacApp, key: &ThreadKey, send_now: Option<&'static str>, actions: &mut Vec<Action>) {
+    let rows = yaac_core::queue::strip(&app.client.state, key);
+    if rows.is_empty() {
+        return;
+    }
+    let p = app.p;
+    let may = app.client.state.may_act(key);
+    let when = if yaac_core::queue::running(&app.client.state, key) { "sent when the turn ends" } else { "sent in order" };
+    egui::Frame::NONE.inner_margin(Margin { left: 14, right: 6, top: 0, bottom: 4 }).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(widgets::secondary(format!("Queued · {} · {when}", rows.len()), &p));
+        for r in &rows {
+            ui.horizontal(|ui| {
+                ui.set_height(24.0);
+                ui.spacing_mut().item_spacing.x = 4.0;
+                if r.busy {
+                    ui.multiply_opacity(0.5);
+                }
+                let free = !r.busy && may;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (_, rect) = ui.allocate_space(egui::vec2(22.0, 22.0));
+                    let cancel = ui.interact(rect, strip_button_id("cancel", &r.queue_id), if free { egui::Sense::click() } else { egui::Sense::hover() });
+                    if cancel.hovered() && free {
+                        ui.painter().rect_filled(rect, 4.0, p.faint);
+                    }
+                    icons::close(ui.painter(), rect.center(), 12.0, if cancel.hovered() { p.text } else { p.text2 });
+                    if cancel.on_hover_text("Cancel: it will not be sent").clicked() && free {
+                        actions.push(Action::QueueCancel(key.clone(), r.queue_id.clone()));
+                    }
+                    if r.editing {
+                        ui.label(widgets::secondary("editing below", &p));
+                    } else if strip_button(ui, &p, "Edit", strip_button_id("edit", &r.queue_id), free).clicked() && free {
+                        actions.push(Action::QueueEdit(key.clone(), r.queue_id.clone()));
+                    }
+                    if let Some(label) = send_now
+                        && strip_button(ui, &p, label, strip_button_id("now", &r.queue_id), free).clicked()
+                        && free
+                    {
+                        actions.push(Action::QueuePromote(key.clone(), r.queue_id.clone()));
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        // The text gives way to the attachment count beside it.
+                        let extra_w = r.extra.as_ref().map_or(0.0, |x| ui.fonts_mut(|f| f.layout_no_wrap(x.clone(), theme::ui(size::SMALL), p.text2).size().x) + 8.0);
+                        ui.scope(|ui| {
+                            ui.set_max_width((ui.available_width() - extra_w).max(40.0));
+                            ui.add(egui::Label::new(egui::RichText::new(&r.preview).font(theme::ui(size::UI)).color(p.text)).truncate());
+                        });
+                        if let Some(x) = &r.extra {
+                            ui.label(widgets::secondary(x, &p));
+                        }
+                    });
+                });
+            });
+        }
+    });
 }
 
 fn article(word: &str) -> &'static str {
@@ -644,7 +810,7 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
             .and_then(|i| providers.iter().find(|p| &p.instance == i))
             .or_else(|| providers.iter().find(|p| p.status == yaac_protocol::ProviderStatus::Ready))
             .map_or("the agent".to_owned(), |p| short_provider(&p.display_name, p.name.as_deref()));
-        let mut send = false;
+        let mut send = Submit::None;
         let dref = DraftRef::New(id);
         let eid = composer_id(&dref);
         let support = yaac_core::attachments::draft_image_support(&app.client.state, &d);
@@ -670,7 +836,7 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if send_button(ui, &p, has, blocked.as_deref()) {
-                        send = true;
+                        send = Submit::Send;
                     }
                     attach_button(ui, app, &dref, actions);
                 });
@@ -679,7 +845,8 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
         if ui.memory(|m| m.has_focus(eid)) {
             widgets::focus_ring(ui, inner.response.rect, &p);
         }
-        if send {
+        // A new thread runs nothing yet: Send now is an ordinary send.
+        if send != Submit::None {
             actions.push(Action::StartDraft(id));
         }
         ui.add_space(6.0);
@@ -703,14 +870,14 @@ mod tests {
     }
 
     /// One frame of the text box (focused) with `events`; returns (sent, text, height).
-    fn frame(ctx: &egui::Context, text: &mut String, events: Vec<Event>, composing: bool) -> (bool, f32) {
+    fn frame(ctx: &egui::Context, text: &mut String, events: Vec<Event>, composing: bool) -> (Submit, f32) {
         let input = RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))),
             events,
             ..Default::default()
         };
         let id = egui::Id::unique("composer-test");
-        let mut sent = false;
+        let mut sent = Submit::None;
         let mut h = 0.0;
         let mut out = ctx.run_ui(input, |ui| {
             ui.memory_mut(|m| m.request_focus(id));
@@ -731,15 +898,18 @@ mod tests {
         frame(&ctx, &mut text, vec![], false);
         frame(&ctx, &mut text, vec![Event::Text("one".into())], false);
         let (sent, _) = frame(&ctx, &mut text, vec![key(Key::Enter, Modifiers::SHIFT)], false);
-        assert!(!sent, "Shift+Enter must not send");
+        assert_eq!(sent, Submit::None, "Shift+Enter must not send");
         frame(&ctx, &mut text, vec![Event::Text("two".into())], false);
         assert_eq!(text, "one\ntwo");
         // Enter while an input method composes belongs to the input method.
         let (sent, _) = frame(&ctx, &mut text, vec![key(Key::Enter, Modifiers::NONE)], true);
-        assert!(!sent);
+        assert_eq!(sent, Submit::None);
         let (sent, _) = frame(&ctx, &mut text, vec![key(Key::Enter, Modifiers::NONE)], false);
-        assert!(sent, "Enter sends");
+        assert_eq!(sent, Submit::Send, "Enter sends");
         assert_eq!(text, "one\ntwo", "and adds no line break");
+        let (sent, _) = frame(&ctx, &mut text, vec![key(Key::Enter, Modifiers::COMMAND)], false);
+        assert_eq!(sent, Submit::SendNow, "Ctrl+Enter sends now");
+        assert_eq!(text, "one\ntwo");
     }
 
     #[test]

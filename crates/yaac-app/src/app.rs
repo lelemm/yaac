@@ -403,6 +403,16 @@ pub(crate) enum Action {
     OpenRequest(ThreadKey),
     Respond { key: ThreadKey, request: RequestId, response: RequestResponse, summary: String },
     Send(ThreadKey),
+    /// Send now while a turn runs: steered or interrupting (D166).
+    SendNow(ThreadKey),
+    /// Open a queued message in the composer for editing.
+    QueueEdit(ThreadKey, String),
+    /// Leave the edit without saving.
+    QueueEditEnd(ThreadKey),
+    /// Cancel a queued message.
+    QueueCancel(ThreadKey, String),
+    /// Send a queued message now.
+    QueuePromote(ThreadKey, String),
     Stop(ThreadKey),
     StartDraft(u64),
     NewThread,
@@ -995,6 +1005,24 @@ impl YaacApp {
                     if self.client.send(&k) {
                         self.ui.scroll_end = true;
                     }
+                }
+                Action::SendNow(k) => {
+                    if self.client.send_now(&k) {
+                        self.ui.scroll_end = true;
+                    }
+                }
+                Action::QueueEdit(k, q) => {
+                    self.client.begin_queue_edit(&k, &q);
+                    self.ui.focus_composer = true;
+                }
+                Action::QueueEditEnd(k) => {
+                    self.client.end_queue_edit(&k);
+                    self.ui.focus_composer = true;
+                }
+                Action::QueueCancel(k, q) => self.client.queue_cancel(&k, &q),
+                Action::QueuePromote(k, q) => {
+                    self.client.queue_promote(&k, &q);
+                    self.ui.scroll_end = true;
                 }
                 Action::Stop(k) => self.client.interrupt(&k),
                 Action::StartDraft(id) => {

@@ -331,6 +331,7 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
         }
         Cmd::FocusComposer => app.ui.focus_composer = true,
         Cmd::Send | Cmd::SendNow => match (&thread, &st.selection) {
+            (Some(k), _) if cmd == Cmd::SendNow => actions.push(Action::SendNow(k.clone())),
             (Some(k), _) => actions.push(Action::Send(k.clone())),
             (None, Selection::NewThread(id)) => actions.push(Action::StartDraft(*id)),
             _ => {}

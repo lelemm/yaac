@@ -75,8 +75,8 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 | Command | Does | Key |
 | --- | --- | --- |
 | Focus the composer | Put the caret in the message box. | Ctrl+L **new** |
-| Send / queue | Send; while a turn runs, queue. | Enter |
-| Send now | Steer or interrupt the running turn. | Ctrl+Enter |
+| Send / Queue message | Send; while a turn runs, queue it for the turn's end (D166). Reads "Queue message" while a turn runs. | Enter (Ctrl+Enter when the send key is Ctrl+Enter) |
+| Send now | While a turn runs: steer it, or interrupt it and start again with the message — "Send now — interrupts" where the thread cannot steer (D166). Enabled only while a turn runs and no approval or question waits. | Ctrl+Enter (Ctrl+Shift+Enter when the send key is Ctrl+Enter) |
 | New line | — | Shift+Enter |
 | Stop the turn | Stop the running turn. | Esc |
 | Attach files… | Open the file picker (D95). | Ctrl+Shift+A **new** |
