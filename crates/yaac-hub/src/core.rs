@@ -2067,6 +2067,7 @@ impl Core {
                 ThreadEvent::ControlChanged(c) => {
                     subscribed.control = c.control.clone();
                     subscribed.control_holder = c.holder.clone();
+                    subscribed.take_over_blocked = c.take_over_blocked.clone();
                     subscribed.active_turn = c.active_turn.clone();
                 }
                 ThreadEvent::SettingsChanged(s) => subscribed.effective = Some(s.effective.clone()),
@@ -2186,6 +2187,7 @@ impl Core {
                     // Last known; the target is offline, so the window cannot act on it anyway.
                     control: live.control.unwrap_or(Control::Free),
                     control_holder: live.control_holder,
+                    take_over_blocked: None,
                     active_turn: live.active_turn,
                     effective: live.effective,
                     context: live.context,
@@ -2862,6 +2864,7 @@ fn window_answer(
         mode,
         control: subscribed.map_or(Control::Free, |s| s.control.clone()),
         control_holder: subscribed.and_then(|s| s.control_holder.clone()),
+        take_over_blocked: subscribed.and_then(|s| s.take_over_blocked.clone()),
         active_turn: subscribed.and_then(|s| s.active_turn.clone()),
         effective: subscribed.and_then(|s| s.effective.clone()),
         context: subscribed.and_then(|s| s.context.clone()),

@@ -303,6 +303,10 @@ catalogue! {
         /// Delete a thread (under `threadDelete`).
         ThreadDelete = "thread/delete" as THREAD_DELETE:
             t::ThreadDeleteParams => t::Empty, HostToDaemon, request Control, response Control, op;
+        /// Continue here a thread another program holds (under `threadTakeOver`, D140): the
+        /// holder's evidence no longer makes it read-only, until a different holder appears.
+        ThreadTakeOver = "thread/takeOver" as THREAD_TAKE_OVER:
+            t::ThreadTakeOverParams => t::Empty, HostToDaemon, request Control, response Control, op;
         /// Set YAAC's own settings of a thread (the agents policy, a hold). A patch.
         ThreadUpdate = "thread/update" as THREAD_UPDATE:
             t::ThreadUpdateParams => t::ThreadUpdateResult, HostToDaemon, request Control, response Control, op;

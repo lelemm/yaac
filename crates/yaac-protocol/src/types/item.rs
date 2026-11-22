@@ -178,6 +178,8 @@ open_enum! {
         Undelivered = "undelivered",
         /// The thread was stopped and is held ("Stopped by …").
         Stopped = "stopped",
+        /// The thread was taken over from another program (D140).
+        TakenOver = "takenOver",
     }
 }
 

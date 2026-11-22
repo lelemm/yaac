@@ -533,6 +533,7 @@ impl FakeDaemon {
                     mode,
                     control: Control::Free,
                     control_holder: None,
+                    take_over_blocked: None,
                     active_turn: None,
                     effective: None,
                     context: None,

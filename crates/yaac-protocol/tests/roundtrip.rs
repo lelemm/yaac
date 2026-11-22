@@ -323,3 +323,24 @@ fn thread_delete_carries_also_in_harness_and_defaults_to_the_record_only() {
     // The bool is always written (no skip): a reader never has to guess.
     assert_eq!(serde_json::to_value(&old).unwrap()["alsoInHarness"], false);
 }
+
+/// D140: `thread/takeOver` is an operation under `threadTakeOver`; the reason a holder will not
+/// let go travels on the control event and the subscribe result, and an older peer that does
+/// not send it means "can be taken over".
+#[test]
+fn take_over_round_trips_and_its_blocked_reason_is_optional() {
+    use yaac_protocol::types::{ControlChangedEvent, ThreadTakeOverParams};
+    use yaac_protocol::{Capability, Control, NoticeKind};
+    let info = yaac_protocol::methods::request_info("thread/takeOver").expect("a known method");
+    assert!(info.state_changing, "carries an operation id");
+    let p: ThreadTakeOverParams = serde_json::from_value(json!({ "opId": "op-1", "threadId": "t1" })).unwrap();
+    assert_eq!(serde_json::to_value(&p).unwrap(), json!({ "opId": "op-1", "threadId": "t1" }));
+    let e: ControlChangedEvent = serde_json::from_value(json!({ "control": "external", "holder": "a background session", "takeOverBlocked": "stop it there first" })).unwrap();
+    assert_eq!(e.control, Control::External);
+    assert_eq!(e.take_over_blocked.as_deref(), Some("stop it there first"));
+    let old: ControlChangedEvent = serde_json::from_value(json!({ "control": "external" })).unwrap();
+    assert_eq!(old.take_over_blocked, None);
+    assert!(serde_json::to_value(&old).unwrap().get("takeOverBlocked").is_none());
+    assert_eq!(serde_json::from_value::<Capability>(json!("threadTakeOver")).unwrap(), Capability::ThreadTakeOver);
+    assert_eq!(serde_json::from_value::<NoticeKind>(json!("takenOver")).unwrap(), NoticeKind::TakenOver);
+}
