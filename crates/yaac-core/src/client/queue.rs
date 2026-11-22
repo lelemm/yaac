@@ -36,7 +36,7 @@ impl Client {
         if self.state.queue_edits.contains_key(key) {
             return self.save_queue_edit(key);
         }
-        self.send_with(key, Delivery::Queue)
+        self.send_with(key, &Delivery::Queue)
     }
 
     /// **Send now** (Ctrl+Enter): with a turn running, the message reaches it at once —
@@ -48,10 +48,10 @@ impl Client {
             return self.save_queue_edit(key);
         }
         let delivery = if crate::queue::awaiting_user(&self.state, key) { Delivery::Queue } else { Delivery::Now };
-        self.send_with(key, delivery)
+        self.send_with(key, &delivery)
     }
 
-    fn send_with(&mut self, key: &ThreadKey, delivery: Delivery) -> bool {
+    fn send_with(&mut self, key: &ThreadKey, delivery: &Delivery) -> bool {
         if !self.state.may_act(key) {
             return false;
         }

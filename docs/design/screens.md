@@ -1627,7 +1627,7 @@ Two messages wait; a third is being typed.
 - Above the composer, "Queued · 2 · sent when the turn ends", then the two messages in order,
   each one line with **Send now — interrupts**, **Edit** and ✕ on the right. No frame: text on
   the panel, like the rest of the transcript's quiet lines.
-- The composer keeps its full width for the text. Under it, the paperclip on the left; on the
-  right **Queue ↵** filled (the primary), **Send now — interrupts  Ctrl+Enter** and
-  **Stop  Esc**, plain and monochrome. Claude Code cannot steer, so Send now says it
+- The composer keeps its idle height: beside the text, the paperclip, **Queue ↵** filled
+  (the primary), then **Send now — interrupts** and **Stop**, plain and monochrome (their
+  keys, Ctrl+Enter and Esc, in their tooltips). Claude Code cannot steer, so Send now says it
   interrupts; on a Codex thread it reads "Send now".

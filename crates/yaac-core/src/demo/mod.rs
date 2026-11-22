@@ -1177,8 +1177,9 @@ impl Inner {
     /// A streamed turn's last step: the thread's state, then — as `yaacd` does when a turn
     /// ends — the first queued message is delivered and starts the next turn (D166).
     fn turn_settled(&mut self, key: &ThreadKey, state: ThreadState) {
-        self.set_state_now(key, state.clone());
-        if state == ThreadState::Idle {
+        let idle = state == ThreadState::Idle;
+        self.set_state_now(key, state);
+        if idle {
             self.deliver_queued(key);
         }
     }

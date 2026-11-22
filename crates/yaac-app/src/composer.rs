@@ -364,79 +364,78 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                 if !editing {
                     chips(ui, app, &d, &chip_views, actions);
                 }
-                if running || editing {
-                    // While a turn runs the text keeps the full width and the buttons sit in a
-                    // row under it: Queue, Send now and Stop do not fit beside it.
-                    submit = text_column(ui, app, key, &d, id, &placeholder, false, editing, actions);
-                    if let Some(h) = &dimmed_hint {
-                        ui.label(widgets::secondary(h, &p));
-                    } else if let Some(why) = blocked.as_ref().filter(|_| !chip_views.is_empty() && !editing) {
-                        ui.label(widgets::secondary(why, &p));
-                    }
-                    ui.horizontal(|ui| {
+                // One row whatever runs: the text, and the buttons beside it, so the composer
+                // keeps its height when a turn starts or ends (the transcript keeps its place).
+                // Send now and Stop name their keys in their tooltips, to leave the text room.
+                let label_w = |ui: &egui::Ui, s: &str, bold: bool| {
+                    let font = if bold { theme::bold(size::UI) } else { theme::ui(size::UI) };
+                    ui.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font, p.text).size().x) + 24.0
+                };
+                let btn_w = if editing {
+                    label_w(ui, "Save", true) + 24.0 + label_w(ui, "Cancel edit", false) + 12.0
+                } else if running {
+                    32.0 + label_w(ui, "Queue", true) + 24.0 + send_now.map_or(0.0, |l| label_w(ui, l, false)) + if stop { label_w(ui, "Stop", false) } else { 0.0 } + 16.0
+                } else {
+                    130.0
+                };
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(ui.available_width() - btn_w);
+                        submit = text_column(ui, app, key, &d, id, &placeholder, dimmed, editing, actions);
                         if editing {
                             ui.label(widgets::secondary("Editing a queued message", &p));
-                        } else {
-                            // Attachments can be prepared while a turn runs.
-                            attach_button(ui, app, &d, actions);
+                        } else if let Some(h) = &dimmed_hint {
+                            ui.label(widgets::secondary(h, &p));
+                        } else if let Some(why) = blocked.as_ref().filter(|_| !chip_views.is_empty()) {
+                            ui.label(widgets::secondary(why, &p));
                         }
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if editing {
-                                let can = app.client.state.queue_edits.get(key).is_some_and(|e| e.input().is_some());
-                                let save = if can { widgets::primary(ui, &p, "Save", Some(queue_key)) } else { widgets::plain(ui, &p, "Save", Some(queue_key)) };
-                                if save.clicked() && can {
-                                    actions.push(Action::Send(key.clone()));
-                                }
-                                if widgets::plain(ui, &p, "Cancel edit", Some("Esc")).clicked() {
-                                    actions.push(Action::QueueEditEnd(key.clone()));
-                                }
-                                return;
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if dimmed {
+                            return;
+                        }
+                        if editing {
+                            let can = app.client.state.queue_edits.get(key).is_some_and(|e| e.input().is_some());
+                            let save = if can { widgets::primary(ui, &p, "Save", Some(queue_key)) } else { widgets::plain(ui, &p, "Save", Some(queue_key)) };
+                            if save.clicked() && can {
+                                actions.push(Action::Send(key.clone()));
                             }
-                            if stop && widgets::plain(ui, &p, "Stop", Some("Esc")).on_hover_text("Stop the running turn; nothing is sent").clicked() {
-                                actions.push(Action::Stop(key.clone()));
+                            if widgets::plain(ui, &p, "Cancel edit", None).on_hover_text("Leave it as it was (Esc)").clicked() {
+                                actions.push(Action::QueueEditEnd(key.clone()));
                             }
-                            let has = app.client.state.drafts.get(key).is_some_and(|x| !x.text.trim().is_empty() || !x.attachments.is_empty());
-                            if let Some(label) = send_now {
-                                let tip = if label == yaac_core::queue::SEND_NOW { "Add it to the running turn" } else { "Stop the running turn and start a new one with this message" };
-                                let r = widgets::plain(ui, &p, label, Some(now_key)).on_hover_text(tip);
-                                if r.clicked() && has && blocked.is_none() {
-                                    submit = Submit::SendNow;
-                                }
-                            }
-                            let tip = "Delivered when the running turn ends";
-                            let r = match blocked.as_deref() {
-                                Some(why) if has => widgets::plain(ui, &p, "Queue", Some(queue_key)).on_hover_text(why),
-                                _ if has => widgets::primary(ui, &p, "Queue", Some(queue_key)).on_hover_text(tip),
-                                _ => widgets::plain(ui, &p, "Queue", Some(queue_key)).on_hover_text(tip),
-                            };
-                            if r.clicked() && has && blocked.is_none() {
+                            return;
+                        }
+                        let has = app.client.state.drafts.get(key).is_some_and(|x| !x.text.trim().is_empty() || !x.attachments.is_empty());
+                        if !running {
+                            if send_button(ui, &p, has, blocked.as_deref()) {
                                 submit = Submit::Send;
                             }
-                        });
-                    });
-                } else {
-                    ui.horizontal(|ui| {
-                        let btn_w = 130.0;
-                        ui.vertical(|ui| {
-                            ui.set_width(ui.available_width() - btn_w);
-                            submit = text_column(ui, app, key, &d, id, &placeholder, dimmed, false, actions);
-                            if let Some(h) = &dimmed_hint {
-                                ui.label(widgets::secondary(h, &p));
-                            } else if let Some(why) = blocked.as_ref().filter(|_| !chip_views.is_empty()) {
-                                ui.label(widgets::secondary(why, &p));
+                            attach_button(ui, app, &d, actions);
+                            return;
+                        }
+                        if stop && widgets::plain(ui, &p, "Stop", None).on_hover_text("Stop the running turn; nothing is sent (Esc)").clicked() {
+                            actions.push(Action::Stop(key.clone()));
+                        }
+                        if let Some(label) = send_now {
+                            let what = if label == yaac_core::queue::SEND_NOW { "Add it to the running turn" } else { "Stop the running turn and start a new one with this message" };
+                            let r = widgets::plain(ui, &p, label, None).on_hover_text(format!("{what} ({now_key})"));
+                            if r.clicked() && has && blocked.is_none() {
+                                submit = Submit::SendNow;
                             }
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if !dimmed {
-                                let has = app.client.state.drafts.get(key).is_some_and(|x| !x.text.trim().is_empty() || !x.attachments.is_empty());
-                                if send_button(ui, &p, has, blocked.as_deref()) {
-                                    submit = Submit::Send;
-                                }
-                                attach_button(ui, app, &d, actions);
-                            }
-                        });
+                        }
+                        let tip = "Delivered when the running turn ends";
+                        let r = match blocked.as_deref() {
+                            Some(why) if has => widgets::plain(ui, &p, "Queue", Some(queue_key)).on_hover_text(why),
+                            _ if has => widgets::primary(ui, &p, "Queue", Some(queue_key)).on_hover_text(tip),
+                            _ => widgets::plain(ui, &p, "Queue", Some(queue_key)).on_hover_text(tip),
+                        };
+                        if r.clicked() && has && blocked.is_none() {
+                            submit = Submit::Send;
+                        }
+                        // Attachments can be prepared while a turn runs.
+                        attach_button(ui, app, &d, actions);
                     });
-                }
+                });
             });
             if ui.memory(|m| m.has_focus(id)) {
                 widgets::focus_ring(ui, inner.response.rect, &p);
