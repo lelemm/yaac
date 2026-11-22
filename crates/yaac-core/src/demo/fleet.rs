@@ -53,6 +53,8 @@ pub(crate) struct Fleet {
     pub projects: BTreeMap<TargetId, Vec<Project>>,
     /// The hub's view preferences (pin, mute, dismiss), by thread (D92).
     pub view: BTreeMap<ThreadKey, crate::state::ViewPref>,
+    /// Instances whose "Trust folders YAAC works in" switch is off (D147), by target.
+    pub trust_off: BTreeMap<TargetId, Vec<String>>,
 }
 
 pub(crate) const ORCH: (&str, &str) = ("local", "t-orch");
@@ -168,8 +170,9 @@ pub(crate) fn codex(instance: &str, name: Option<&str>, status: ProviderStatus) 
         store: StoreIdentity { key: Some(format!("store-{instance}")), home: None, account: None },
         status,
         status_message: None,
-        // The demo's Codex can change a conversation's folder (D144); its Claude cannot.
-        capabilities: [caps(), vec![Capability::ThreadMoveWorkingDirectory]].concat(),
+        // The demo's Codex can change a conversation's folder (D144) and mark folders trusted
+        // (D147); its Claude cannot.
+        capabilities: [caps(), vec![Capability::ThreadMoveWorkingDirectory, Capability::FolderTrust]].concat(),
         models: vec![
             model("gpt-6.2-sol", true, Support::Supported),
             model("gpt-6.2-astra", false, Support::Supported),
@@ -427,6 +430,7 @@ impl Fleet {
             budgets: BTreeMap::new(),
             projects: BTreeMap::new(),
             view: BTreeMap::new(),
+            trust_off: BTreeMap::new(),
         };
         f.providers.insert(TargetId::new("local"), vec![codex("codex", None, ProviderStatus::Ready), claude(ProviderStatus::Ready)]);
         f.providers.insert(
@@ -806,6 +810,7 @@ impl Fleet {
             budgets: BTreeMap::new(),
             projects: BTreeMap::new(),
             view: BTreeMap::new(),
+            trust_off: BTreeMap::new(),
         };
         let mut c = claude(ProviderStatus::NeedsAuth);
         c.status_message = Some(SIGN_IN_HINT.into());

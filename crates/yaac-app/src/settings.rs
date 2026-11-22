@@ -1032,6 +1032,16 @@ fn instance_row(ui: &mut egui::Ui, app: &mut YaacApp, target: &TargetId, row: &y
         ui.label("Offer YAAC tools to sessions started outside YAAC");
         ui.label(widgets::secondary("· edits this harness's own configuration", &p));
     });
+    if let Some(on) = row.trust_folders {
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            if widgets::switch(ui, &p, on).clicked() {
+                actions.push(Action::TrustFolders(target.clone(), row.instance.clone(), !on));
+            }
+            ui.label("Trust folders YAAC works in");
+            ui.label(widgets::secondary("· marks a project's folder trusted in this harness when YAAC starts a thread there", &p));
+        });
+    }
 }
 
 // ── Appearance and Advanced ─────────────────────────────────────────────────────────────

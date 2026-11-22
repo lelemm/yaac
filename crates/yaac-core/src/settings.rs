@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use yaac_protocol::attach::{ConnectionStatus, TargetTransport};
-use yaac_protocol::{BackendKind, InstanceId, ProviderKind, ProviderStatus, TargetId};
+use yaac_protocol::{BackendKind, Capability, InstanceId, ProviderKind, ProviderStatus, TargetId};
 
 use crate::attention::Mark;
 use crate::ssh_setup::SetupRecord;
@@ -356,6 +356,9 @@ pub struct InstanceRow {
     pub enabled: bool,
     /// The "Offer YAAC tools to sessions started outside YAAC" switch.
     pub outside_tools: bool,
+    /// The "Trust folders YAAC works in" switch (D147): shown only when the instance reports
+    /// `folderTrust`; on unless its stored configuration turns it off.
+    pub trust_folders: Option<bool>,
 }
 
 /// The Providers page for one target.
@@ -434,6 +437,7 @@ pub fn providers_view(state: &AppState, target: &TargetId) -> Option<ProvidersVi
                 editable: config.is_some_and(|c| !c.implicit),
                 enabled: config.is_none_or(|c| c.enabled),
                 outside_tools: state.outside_tools.contains(&(target.clone(), p.instance.clone())),
+                trust_folders: p.capabilities.contains(&Capability::FolderTrust).then(|| config.is_none_or(|c| c.trust_folders != Some(false))),
             }
         })
         .collect();

@@ -470,6 +470,7 @@ pub(crate) enum Action {
     InstanceEnabled(TargetId, InstanceId, bool),
     RemoveInstance(TargetId, InstanceId),
     OutsideTools(TargetId, InstanceId, bool),
+    TrustFolders(TargetId, InstanceId, bool),
     SetAlways(bool),
     ClearCache,
     FsList(TargetId, String),
@@ -1146,6 +1147,7 @@ impl YaacApp {
                 Action::InstanceEnabled(t, i, e) => self.client.update_instance(&t, &i, None, None, Some(e)),
                 Action::RemoveInstance(t, i) => self.client.remove_instance(&t, &i),
                 Action::OutsideTools(t, i, on) => self.client.set_outside_tools(&t, &i, on),
+                Action::TrustFolders(t, i, on) => self.client.set_trust_folders(&t, &i, on),
                 Action::SetAlways(on) => {
                     self.client.set_always(on);
                     #[cfg(feature = "hub")]
