@@ -17,6 +17,8 @@ pub struct RepoLocation {
     pub relative: String,
     /// The checkout's name, when it is not the main one ("feature-x").
     pub checkout: Option<String>,
+    /// The checkout's root (its top-level directory), on that machine.
+    pub root: String,
 }
 
 /// A project the user created.
@@ -39,7 +41,7 @@ pub struct Project {
 impl RepoLocation {
     /// From the wire.
     pub fn from_wire(r: &yaac_protocol::RepoLocation) -> Self {
-        Self { repo: r.repo.to_string(), relative: r.relative.clone(), checkout: r.worktree_name.clone() }
+        Self { repo: r.repo.to_string(), relative: r.relative.clone(), checkout: r.worktree_name.clone(), root: r.root.to_string() }
     }
 }
 
@@ -118,7 +120,7 @@ mod tests {
             name: name.to_owned(),
             target: TargetId::new("m"),
             folder: folder.to_owned(),
-            repo: repo.map(|(r, rel)| RepoLocation { repo: r.to_owned(), relative: rel.to_owned(), checkout: None }),
+            repo: repo.map(|(r, rel)| RepoLocation { repo: r.to_owned(), relative: rel.to_owned(), checkout: None, root: String::new() }),
         }
     }
 
@@ -126,7 +128,7 @@ mod tests {
         Location {
             target: TargetId::new("m"),
             folder: folder.to_owned(),
-            repo: repo.map(|(r, rel)| RepoLocation { repo: r.to_owned(), relative: rel.to_owned(), checkout: Some("wt".into()) }),
+            repo: repo.map(|(r, rel)| RepoLocation { repo: r.to_owned(), relative: rel.to_owned(), checkout: Some("wt".into()), root: String::new() }),
         }
     }
 

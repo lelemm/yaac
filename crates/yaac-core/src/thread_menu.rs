@@ -1,8 +1,9 @@
 //! A thread's context menu (D109) and the two confirmations it opens: Delete (D110) and
 //! Archive (D111). The menu's order is fixed by the owner:
 //!
-//! **Copy thread ID, Rename** — separator — **Fork, Pin/Unpin, Mute…, Archive** — separator —
-//! **Delete** (in the destructive colour). A thread another program holds has **Take over**
+//! **Copy thread ID, Rename** — separator — **Fork, Move…, Pin/Unpin, Mute…, Archive** —
+//! separator — **Delete** (in the destructive colour). Move… (D144) sits after Fork, the other
+//! entry that takes the thread somewhere else. A thread another program holds has **Take over**
 //! after Fork (D140), where its harness allows it. An archived thread has **Unarchive** where Archive
 //! was and no pin or mute (it is only ever under *Archived*, D93). Whether an entry can be used
 //! comes from capabilities, never from the provider's kind.
@@ -24,6 +25,8 @@ pub enum MenuAction {
     Fork,
     /// Take over a thread another program holds (D140).
     TakeOver,
+    /// Open the Move dialog (D144): another project or worktree on the same machine.
+    Move,
     /// Pin.
     Pin,
     /// Unpin.
@@ -154,6 +157,8 @@ pub fn thread_menu(state: &AppState, key: &ThreadKey, now: i64) -> Vec<MenuEntry
     if s.archived {
         out.push(item(MenuAction::Unarchive, "Unarchive", can(state, key, &Capability::ThreadArchive), "This harness cannot archive threads"));
     } else {
+        let why = crate::moving::blocked(state, key);
+        out.push(item(MenuAction::Move, "Move…", why.is_none(), why.unwrap_or("")));
         if state.is_pinned(key) {
             out.push(item(MenuAction::Unpin, "Unpin", true, ""));
         } else {

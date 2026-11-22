@@ -112,6 +112,8 @@ enum Call {
     TakeOver(ThreadKey),
     /// One `thread/archive` of a bulk Archive (D138).
     BulkArchive { batch: u64, key: ThreadKey },
+    /// One `thread/move` (D144); `before`: the summary to put back if it is refused.
+    Move { batch: u64, key: ThreadKey, before: Box<ThreadSummary> },
     ForkPreview { key: ThreadKey, instance: InstanceId },
     InstanceList(TargetId),
     InstanceChanged(TargetId),
@@ -200,6 +202,11 @@ pub struct Client {
     next_batch: u64,
     /// The report of the last bulk Archive that did not simply succeed, until dismissed.
     pub bulk_report: Option<crate::bulk::BulkReport>,
+    /// Moves still waiting for answers (D144), by batch: each thread's outcome.
+    moves: HashMap<u64, Vec<(ThreadKey, Option<crate::bulk::Outcome>)>>,
+    /// The bottom bar's notice after a move that needed no confirmation, with its Undo
+    /// (D144), until dismissed or replaced.
+    pub move_notice: Option<crate::moving::MoveNotice>,
 }
 
 /// A bulk Archive in flight: each thread's outcome, in the order asked; `None` while waiting.
@@ -236,6 +243,8 @@ impl Client {
             batches: HashMap::new(),
             next_batch: 0,
             bulk_report: None,
+            moves: HashMap::new(),
+            move_notice: None,
         };
         c.state.client_id = Some(client_id);
         let params = json!({ "build": c.build });
@@ -538,6 +547,7 @@ impl Client {
                         native_id: None,
                         hold: None,
                         fast: draft.fast,
+                        placement: None,
                     };
                     self.state.upsert_summary(&draft.target, summary);
                 }
@@ -567,6 +577,13 @@ impl Client {
                 }
             }
             Call::BulkArchive { batch, key } => self.archived_one(batch, &key, crate::bulk::Outcome::Ok),
+            Call::Move { batch, key, .. } => {
+                // The target's summary after the move (placement, project, and folder).
+                if let Some(s) = result.get("thread").and_then(|t| serde_json::from_value::<ThreadSummary>(t.clone()).ok()) {
+                    self.state.upsert_summary(&key.target, s);
+                }
+                self.moved_one(batch, &key, crate::bulk::Outcome::Ok);
+            }
             c @ (Call::ForgePrs(_) | Call::ForgePrepare(_) | Call::ForgeCreate(_) | Call::ForgeAsk(_)) => self.on_forge_result(c, result),
             Call::Fork { target } => {
                 if let Some(thread_id) = result.get("threadId").and_then(Value::as_str) {
@@ -643,6 +660,16 @@ impl Client {
             Call::BulkArchive { batch, key } => {
                 let outcome = if error.code == ErrorCode::OutcomeUnknown { crate::bulk::Outcome::Uncertain } else { crate::bulk::Outcome::Failed(error.message.clone()) };
                 self.archived_one(batch, &key, outcome);
+            }
+            Call::Move { batch, key, before } => {
+                let outcome = if error.code == ErrorCode::OutcomeUnknown {
+                    crate::bulk::Outcome::Uncertain
+                } else {
+                    // Refused: the row goes back where it was.
+                    self.state.upsert_summary(&key.target, *before);
+                    crate::bulk::Outcome::Failed(error.message.clone())
+                };
+                self.moved_one(batch, &key, outcome);
             }
             Call::UploadStart { draft, id, attempt } => self.upload_failed(&draft, id, attempt, error),
             Call::BlobBegin { draft, id, .. } | Call::BlobAppend { draft, id } | Call::BlobEnd { draft, id } => {
@@ -1228,6 +1255,92 @@ impl Client {
     /// Bulk Archives still waiting for an answer.
     pub fn archives_in_flight(&self) -> usize {
         self.batches.len()
+    }
+
+    /// Move threads (D144): one `thread/move` per thread, each with its own operation id,
+    /// never re-sent. Each row moves at once (the target's answer replaces it; a refusal puts
+    /// it back), and anything refused or uncertain is reported once in the bar under the list.
+    /// `None` for a destination forgets the placement (Undo of a thread that had none).
+    /// `notice`: the bar's "Moved … · Undo" for a move that needed no confirmation.
+    pub fn move_threads(&mut self, moves: &[(ThreadKey, Option<crate::moving::Destination>)], notice: Option<crate::moving::MoveNotice>) {
+        if moves.is_empty() {
+            return;
+        }
+        self.next_batch += 1;
+        let batch = self.next_batch;
+        self.moves.insert(batch, moves.iter().map(|(k, _)| (k.clone(), None)).collect());
+        self.bulk_report = None;
+        self.move_notice = notice;
+        for (key, dest) in moves {
+            let Some(before) = self.state.summary(key).cloned() else { continue };
+            let op = self.op_id();
+            let mut params = json!({ "opId": op, "threadId": key.thread });
+            if let Some(d) = dest {
+                params["project"] = json!(d.project);
+                if let Some(w) = &d.worktree {
+                    params["worktree"] = json!(w);
+                }
+            }
+            self.routed(&key.target, m::THREAD_MOVE, params, Call::Move { batch, key: key.clone(), before: Box::new(before) });
+            self.place(key, dest.as_ref());
+        }
+    }
+
+    /// The row moves at once: its project (and checkout) as the target will report them.
+    fn place(&mut self, key: &ThreadKey, dest: Option<&crate::moving::Destination>) {
+        let project = dest.and_then(|d| self.state.projects.iter().find(|p| p.target == key.target && p.wire_id == d.project).cloned());
+        let Some(r) = self.state.threads.get_mut(key) else { return };
+        match (dest, project) {
+            (Some(d), Some(p)) => {
+                r.summary.project = Some(yaac_protocol::ProjectRef {
+                    path: yaac_protocol::TargetPath::new(p.folder.clone()),
+                    display_name: p.name.clone(),
+                    cross_target_key: None,
+                    kind: Some(yaac_protocol::ProjectKind::User),
+                    id: Some(yaac_protocol::ProjectId::new(p.wire_id.clone())),
+                    repo: None,
+                });
+                let root = d.worktree.clone().or_else(|| p.repo.as_ref().map(|x| x.root.clone()));
+                let name = root.as_ref().and_then(|w| {
+                    crate::moving::worktrees(&self.state, &p).into_iter().find(|c| &c.root == w).map(|c| c.label)
+                });
+                let r = self.state.threads.get_mut(key).expect("listed");
+                r.summary.placement = Some(yaac_protocol::ThreadPlacement {
+                    project: yaac_protocol::ProjectId::new(p.wire_id),
+                    worktree: root.map(yaac_protocol::TargetPath::new),
+                    worktree_name: name,
+                });
+            }
+            // Forgotten: the folder decides again (the target says which project).
+            _ => r.summary.placement = None,
+        }
+    }
+
+    /// One answer of a move; the last one of its batch reports what did not succeed.
+    fn moved_one(&mut self, batch: u64, key: &ThreadKey, outcome: crate::bulk::Outcome) {
+        let Some(b) = self.moves.get_mut(&batch) else { return };
+        if let Some(slot) = b.iter_mut().find(|(k, o)| k == key && o.is_none()) {
+            slot.1 = Some(outcome);
+        }
+        if b.iter().any(|(_, o)| o.is_none()) {
+            return;
+        }
+        let Some(b) = self.moves.remove(&batch) else { return };
+        let titled: Vec<(String, crate::bulk::Outcome)> = b
+            .into_iter()
+            .map(|(k, o)| (self.state.summary(&k).map_or_else(|| k.thread.to_string(), |s| s.title.clone()), o.unwrap_or(crate::bulk::Outcome::Uncertain)))
+            .collect();
+        if let Some(r) = crate::bulk::report("moved", &titled) {
+            // Something did not move: Undo would not undo what the user sees.
+            self.move_notice = None;
+            self.bulk_report = Some(r);
+        }
+    }
+
+    /// Undo the last move (the bar's Undo): each thread back where it was.
+    pub fn undo_move(&mut self) {
+        let Some(n) = self.move_notice.take() else { return };
+        self.move_threads(&n.undo, None);
     }
 
     /// Unarchive a thread (`thread/unarchive`).

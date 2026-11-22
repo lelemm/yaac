@@ -599,6 +599,16 @@ pub(crate) fn close(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.line_segment([pos2(c.x - s, c.y + s), pos2(c.x + s, c.y - s)], stroke(col, w));
 }
 
+/// Not allowed: a ring with a diagonal bar (a drop that is refused, D144).
+pub(crate) fn blocked(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let w = (d * 0.1).max(1.3);
+    let r = d * 0.38;
+    p.circle_stroke(c, r, stroke(col, w));
+    let s = r * std::f32::consts::FRAC_1_SQRT_2;
+    p.line_segment([pos2(c.x - s, c.y - s), pos2(c.x + s, c.y + s)], stroke(col, w));
+}
+
 /// A connection: two nodes joined by a link; crossed out when there is none (the hub cannot
 /// be reached).
 pub(crate) fn connection(p: &Painter, c: Pos2, d: f32, col: Color32, crossed: bool) {

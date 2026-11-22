@@ -275,6 +275,12 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
         }
         Cmd::ArchiveSelected => actions.push(Action::OpenBulkArchive(app.ui.list_sel.in_order(&app.ui.list_order))),
         Cmd::MuteSelected => actions.push(Action::OpenBulkMute(app.ui.list_sel.in_order(&app.ui.list_order))),
+        Cmd::MoveSelected => actions.push(Action::OpenMove(app.ui.list_sel.in_order(&app.ui.list_order), None)),
+        Cmd::MoveThread => {
+            if let Some(k) = thread {
+                actions.push(Action::OpenMove(vec![k], None));
+            }
+        }
         Cmd::ClearSelection => actions.push(Action::ClearSelection),
         Cmd::Dismiss => {
             if let Some(k) = thread {
@@ -492,6 +498,11 @@ fn run_step(app: &mut YaacApp, cmd: Cmd, value: StepValue, actions: &mut Vec<Act
             if let Some(k) = thread {
                 let until = secs.map(|s| app.now() + s);
                 actions.push(Action::MuteUntil(k, until));
+            }
+        }
+        StepValue::MoveTo(dest) => {
+            if let Some(k) = thread {
+                actions.push(Action::OpenMove(vec![k], Some(dest)));
             }
         }
         StepValue::MuteDate => {

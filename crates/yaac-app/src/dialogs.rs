@@ -636,3 +636,169 @@ pub(crate) fn bulk_archive(ctx: &egui::Context, app: &mut YaacApp, actions: &mut
         app.ui.bulk_archive = Some(d);
     }
 }
+
+/// A field-shaped dropdown: the value on a faint fill, a chevron at the right end. Disabled,
+/// it is drawn in secondary text with no chevron.
+fn dropdown(ui: &mut egui::Ui, p: &Palette, label: &str, enabled: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+    let fill = if enabled && (resp.hovered() || resp.has_focus()) { p.selected } else { p.faint };
+    ui.painter().rect_filled(rect, 5.0, fill);
+    let color = if enabled { p.text } else { p.text2 };
+    let g = widgets::elided(ui, label, &theme::ui(size::UI), color, rect.width() - 36.0);
+    ui.painter().galley(egui::pos2(rect.left() + 9.0, rect.center().y - g.size().y / 2.0), g, color);
+    if enabled {
+        icons::chevron(ui.painter(), egui::pos2(rect.right() - 14.0, rect.center().y + 1.0), 12.0, true, p.text2);
+    }
+    if resp.has_focus() {
+        widgets::focus_ring(ui, rect, p);
+    }
+    resp
+}
+
+/// A dropdown row: a label and, under it, a secondary line (a folder).
+fn dropdown_row(ui: &mut egui::Ui, p: &Palette, label: &str, detail: &str, selected: bool) -> egui::Response {
+    let h = 40.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), egui::Sense::click());
+    let fill = if resp.is_pointer_button_down_on() || selected { Some(p.selected) } else if resp.hovered() { Some(p.faint) } else { None };
+    if let Some(f) = fill {
+        ui.painter().rect_filled(rect, 4.0, f);
+    }
+    let w = rect.width() - 16.0;
+    let g = widgets::elided(ui, label, &theme::ui(size::UI), p.text, w);
+    ui.painter().galley(egui::pos2(rect.left() + 8.0, rect.top() + 4.0), g, p.text);
+    let d = widgets::elided(ui, detail, &theme::mono(size::SMALL), p.text2, w);
+    ui.painter().galley(egui::pos2(rect.left() + 8.0, rect.top() + 22.0), d, p.text2);
+    resp
+}
+
+/// D144: Move — Project (the machine's projects), Worktree (optional: the project's known
+/// checkouts), and the one sentence saying what happens to the working directory: "The agent
+/// will work in <path> from its next turn" where its harness can change it, otherwise "Only
+/// where YAAC lists it changes; the agent keeps working in <old path>". The machine is shown,
+/// never chosen. Move (Enter) or Cancel (Esc); with nothing movable only Close.
+pub(crate) fn move_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let Some(mut d) = app.ui.move_dialog.take() else { return };
+    scrim(ctx, &p, "move");
+    let dropdown_open = matches!(app.ui.menu, Some(Menu::MoveProject | Menu::MoveWorktree));
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if dropdown_open {
+            app.ui.menu = None;
+            app.ui.move_dialog = Some(d);
+        }
+        return;
+    }
+    let enter = !dropdown_open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    let st = &app.client.state;
+    let machine = st.target_name(&d.target);
+    let projects = d.projects(st);
+    let worktrees = d.worktrees(st);
+    let project_label = d.project_label(st);
+    let worktree_label = d.worktree_label(st);
+    let sentence = d.sentence(st);
+    let can_move = d.can_move(st);
+    let moves = d.moves(st);
+    let changes = d.changes_folder(st);
+    let label = d.destination().map(|to| yaac_core::moving::label(st, &d.target, &to)).unwrap_or_default();
+    let notice = (!changes).then(|| yaac_core::moving::notice(st, &moves.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(), &label));
+    let mut keep = true;
+    let mut picked_project: Option<String> = None;
+    let mut picked_worktree: Option<Option<String>> = None;
+    window("move", &p, ctx).show(ctx, |ui| {
+        ui.set_width(460.0);
+        ui.label(RichText::new(&d.title).font(theme::bold(size::SECTION + 1.5)));
+        ui.add_space(12.0);
+        let caption = |ui: &mut egui::Ui, text: &str| {
+            ui.add_space(4.0);
+            ui.label(widgets::secondary(text, &p));
+            ui.add_space(2.0);
+        };
+        caption(ui, "Machine");
+        ui.horizontal(|ui| {
+            ui.label(&machine);
+            ui.label(widgets::secondary("· a thread stays on its machine", &p));
+        });
+        if d.blocked.is_none() {
+            ui.add_space(6.0);
+            caption(ui, "Project");
+            let r = dropdown(ui, &p, &project_label, true);
+            if r.clicked() {
+                app.ui.toggle_menu(Menu::MoveProject);
+            }
+            let mut open = app.ui.menu == Some(Menu::MoveProject);
+            crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+                ui.set_width(r.rect.width());
+                for c in &projects {
+                    if dropdown_row(ui, &p, &c.name, &c.folder, d.project.as_deref() == Some(c.id.as_str())).clicked() {
+                        picked_project = Some(c.id.clone());
+                    }
+                }
+            });
+            if !open && app.ui.menu == Some(Menu::MoveProject) {
+                app.ui.menu = None;
+            }
+            ui.add_space(6.0);
+            caption(ui, "Worktree · optional");
+            let r = dropdown(ui, &p, &worktree_label, worktrees.len() > 1);
+            if r.clicked() && worktrees.len() > 1 {
+                app.ui.toggle_menu(Menu::MoveWorktree);
+            }
+            let mut open = app.ui.menu == Some(Menu::MoveWorktree);
+            crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+                ui.set_width(r.rect.width());
+                for w in &worktrees {
+                    let chosen = if w.own { d.worktree.is_none() } else { d.worktree.as_deref() == Some(w.root.as_str()) };
+                    let text = if w.own { format!("{} · the project's own", w.label) } else { w.label.clone() };
+                    if dropdown_row(ui, &p, &text, &w.root, chosen).clicked() {
+                        picked_worktree = Some((!w.own).then(|| w.root.clone()));
+                    }
+                }
+            });
+            if !open && app.ui.menu == Some(Menu::MoveWorktree) {
+                app.ui.menu = None;
+            }
+            if worktrees.len() <= 1 {
+                ui.label(widgets::secondary(if worktrees.is_empty() { "This project is not in git." } else { "YAAC knows no other checkout of this project here." }, &p));
+            }
+        }
+        ui.add_space(12.0);
+        ui.horizontal_wrapped(|ui| {
+            crate::widgets::icon(ui, 14.0, |pa, c, dd| crate::icons::info(pa, c, dd, p.text2));
+            ui.add(egui::Label::new(RichText::new(&sentence).font(theme::ui(size::UI)).color(p.text)).wrap());
+        });
+        if let Some(why) = &d.skipped {
+            ui.add_space(4.0);
+            ui.label(widgets::secondary(format!("{why}."), &p));
+        }
+        ui.add_space(16.0);
+        ui.horizontal(|ui| {
+            if d.blocked.is_some() {
+                if widgets::primary(ui, &p, "Close", Some("Esc")).clicked() || enter {
+                    keep = false;
+                }
+                return;
+            }
+            let go = ui.add_enabled_ui(can_move, |ui| widgets::primary(ui, &p, "Move", Some("Enter"))).inner;
+            if can_move && (go.clicked() || enter) {
+                actions.push(Action::Move(moves.clone(), notice.clone()));
+                keep = false;
+            }
+            if widgets::plain(ui, &p, "Cancel", Some("Esc")).clicked() {
+                keep = false;
+            }
+        });
+    });
+    if let Some(id) = picked_project {
+        d.set_project(&id);
+        app.ui.menu = None;
+    }
+    if let Some(w) = picked_worktree {
+        d.set_worktree(&app.client.state, w.as_deref());
+        app.ui.menu = None;
+    }
+    if keep {
+        app.ui.move_dialog = Some(d);
+    } else if dropdown_open {
+        app.ui.menu = None;
+    }
+}

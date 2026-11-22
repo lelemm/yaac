@@ -92,6 +92,13 @@ is right.
 - Notification `forge/prs/changed` (a `ForgePrsResult`).
 - Open enums `ForgeKind`, `ForgeCapability`, `PrState`, `ChecksState`, `CheckState`.
 
+## Moving threads (D144)
+
+- `thread/move { opId, threadId, project?, worktree? }` → `{ thread, workingDirectory? }`.
+- `ThreadSummary.placement { project, worktree?, worktreeName? }`.
+- Capabilities `threadMove` (yaacd's own) and `threadMoveWorkingDirectory` (per provider);
+  notice kind `moved`.
+
 ## Not on the wire yet
 
 - Unarchive (`thread/update` does not take `archived`).

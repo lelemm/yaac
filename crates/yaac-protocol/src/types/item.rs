@@ -180,6 +180,8 @@ open_enum! {
         Stopped = "stopped",
         /// The thread was taken over from another program (D140).
         TakenOver = "takenOver",
+        /// The thread was moved to another project or worktree (`thread/move`, D144).
+        Moved = "moved",
     }
 }
 

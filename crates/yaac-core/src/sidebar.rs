@@ -314,6 +314,12 @@ fn connection(state: &AppState, target: &TargetId) -> (Option<(Mark, String)>, b
 
 fn branch_of(state: &AppState, key: &ThreadKey, s: &ThreadSummary) -> Option<String> {
     let _ = (state, key);
+    // Where the user moved it (D144): the checkout it was placed in.
+    if let Some(pl) = &s.placement
+        && let Some(root) = &pl.worktree
+    {
+        return pl.worktree_name.clone().or_else(|| root.as_str().trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().map(str::to_owned));
+    }
     // A linked worktree is named by its checkout; the main checkout by its branch.
     s.repo
         .as_ref()

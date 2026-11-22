@@ -59,6 +59,8 @@ pub enum Cmd {
     DismissAllTemp,
     Fork,
     TakeOver,
+    MoveThread,
+    MoveSelected,
     CheckLatest,
     ContinueBudget,
     ArchiveSelected,
@@ -202,6 +204,8 @@ pub enum StepKind {
     TargetEnable,
     /// A target whose providers to read again.
     RefreshProviders,
+    /// A project (or a worktree of one) of the open thread's machine, to move it to (D144).
+    MoveTo,
 }
 
 /// One row of the table.
@@ -272,6 +276,8 @@ pub static COMMANDS: &[CommandDef] = &[
     def(Cmd::DismissAllTemp, "dismiss-all-temp", "Dismiss all in this temporary project", "Hide every thread of this folder in the window.", &["hide"], G::Threads, &[]),
     def(Cmd::Fork, "fork", "Fork…", "Open the fork dialog (native or handoff).", &["branch", "copy", "handoff", "switch provider"], G::Threads, &["Ctrl+Shift+F"]),
     def(Cmd::TakeOver, "take-over", "Take over", "Continue here a thread another program holds; that program is not stopped.", &["continue here", "unlock", "read-only", "in use", "steal"], G::Threads, &[]),
+    step(def(Cmd::MoveThread, "move", "Move to project…", "List this thread under another project or worktree of its machine; its harness may move its folder too.", &["relocate", "project", "worktree", "regroup"], G::Threads, &[]), StepKind::MoveTo),
+    def(Cmd::MoveSelected, "move-selected", "Move selected…", "Move the rows selected in the sidebar to another project or worktree of their machine.", &["bulk", "many", "multiple", "relocate", "project"], G::Threads, &[]),
     def(Cmd::CheckLatest, "check-latest", "Check for the latest", "Read this thread again from its target.", &["refresh", "reload", "status"], G::Threads, &[]),
     def(Cmd::ContinueBudget, "continue-budget", "Continue (budget)", "Resume an orchestration paused on its budget.", &["resume", "allowance"], G::Threads, &[]),
     def(Cmd::ArchiveSelected, "archive-selected", "Archive selected…", "Archive the rows selected in the sidebar, with one confirmation.", &["bulk", "many", "multiple", "hide"], G::Threads, &[]),
@@ -487,6 +493,7 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
             | Cmd::DismissAllTemp
             | Cmd::Fork
             | Cmd::TakeOver
+            | Cmd::MoveThread
             | Cmd::CheckLatest
             | Cmd::ContinueBudget
             | Cmd::Parent
@@ -550,6 +557,7 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
             a => a,
         }),
         Cmd::DismissAllTemp => when(key.as_ref().is_some_and(|k| st.project_of(k).is_none()), "This thread is in a project"),
+        Cmd::MoveThread => key.map_or(Avail::Hidden, |k| menu_avail(ctx, &k, &[MenuAction::Move])),
         Cmd::Fork => when(key.as_ref().is_some_and(|k| crate::fork::default_choice(st, k).is_some()), "No harness here can fork this thread"),
         Cmd::TakeOver => key.map_or(Avail::Hidden, |k| match menu_avail(ctx, &k, &[MenuAction::TakeOver]) {
             Avail::Hidden => off("Only for a thread another program holds, whose harness can hand it over"),
@@ -637,7 +645,7 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
         Cmd::TargetEnable => when(!st.targets.is_empty(), "No targets yet"),
         Cmd::RefreshProviders => when(st.targets.iter().any(|t| t.connected()), "No target is connected"),
         Cmd::HideToTray => when(ctx.has_tray, "There is no tray icon on this system"),
-        Cmd::ArchiveSelected | Cmd::MuteSelected | Cmd::ClearSelection => when(ctx.list_selected > 0, "Nothing is selected in the sidebar (Ctrl+click rows)"),
+        Cmd::ArchiveSelected | Cmd::MuteSelected | Cmd::MoveSelected | Cmd::ClearSelection => when(ctx.list_selected > 0, "Nothing is selected in the sidebar (Ctrl+click rows)"),
         Cmd::Commander
         | Cmd::SearchThreads
         | Cmd::Settings
@@ -671,6 +679,7 @@ pub fn title(cmd: Cmd, ctx: &Ctx<'_>) -> String {
         Cmd::Dismiss => k.map_or_else(|| d.name.to_owned(), |k| pick(st.is_dismissed(k), "Show again", "Dismiss")),
         Cmd::ArchiveSelected if ctx.list_selected > 0 => format!("Archive selected ({})…", ctx.list_selected),
         Cmd::MuteSelected if ctx.list_selected > 0 => format!("Mute selected ({})…", ctx.list_selected),
+        Cmd::MoveSelected if ctx.list_selected > 0 => format!("Move selected ({})…", ctx.list_selected),
         Cmd::Dock => pick(ctx.docked, "Undock the agents panel", "Dock the agents panel"),
         Cmd::Fast => match control_row(ctx).and_then(|r| r.fast) {
             Some(f) => pick(f.on, "Fast mode off", "Fast mode on"),
@@ -726,6 +735,8 @@ pub enum StepValue {
     MuteFor(Option<i64>),
     /// "Until a date…": the Mute dialog.
     MuteDate,
+    /// Move the open thread here (D144): the Move dialog opens with it chosen.
+    MoveTo(crate::moving::Destination),
     /// This order.
     Order(Order),
     /// Toggle this grouping.
@@ -855,6 +866,22 @@ pub fn step_items(kind: StepKind, ctx: &Ctx<'_>, history: &[(isize, String, Opti
             .and_then(|r| r.agents)
             .map(|c| c.options.iter().map(|(id, l, _)| item(l.clone(), None, StepValue::Agents(*id), c.current.as_ref() == Some(id))).collect())
             .unwrap_or_default(),
+        StepKind::MoveTo => {
+            let Some(k) = ctx.thread else { return Vec::new() };
+            let now = crate::moving::current(st, k);
+            let mut out = Vec::new();
+            for p in crate::moving::projects_on(st, &k.target) {
+                let own = crate::moving::Destination { project: p.wire_id.clone(), worktree: None };
+                let here = now.as_ref().is_some_and(|n| n.project == p.wire_id && n.worktree.as_ref().is_none_or(|w| p.repo.as_ref().is_some_and(|r| &r.root == w)));
+                out.push(item(p.name.clone(), Some(p.folder.clone()), StepValue::MoveTo(own), here));
+                for w in crate::moving::worktrees(st, p).into_iter().filter(|w| !w.own) {
+                    let dest = crate::moving::Destination { project: p.wire_id.clone(), worktree: Some(w.root.clone()) };
+                    let here = now.as_ref() == Some(&dest);
+                    out.push(item(format!("{} · {}", p.name, w.label), Some(w.root), StepValue::MoveTo(dest), here));
+                }
+            }
+            out
+        }
         StepKind::Mute => {
             let mut out: Vec<StepItem> = MUTE_DURATIONS.iter().map(|(l, s)| item(*l, None, StepValue::MuteFor(*s), false)).collect();
             out.push(item("Until a date…", Some("Opens the Mute dialog".into()), StepValue::MuteDate, false));

@@ -188,6 +188,8 @@ pub enum Capability {
     ThreadRename,
     ThreadArchive,
     ThreadDelete,        // the harness can delete its own sessions (`thread/delete { alsoInHarness }`, D110)
+    ThreadMove,          // yaacd can list the thread under another project (`thread/move`, D144); yaacd's own
+    ThreadMoveWorkingDirectory, // the harness can change a conversation's folder from its next turn (D144)
     FollowExternal,      // can show live updates of a thread someone else is driving
 
     // ── Turn control ────────────────────────────────────────────────────────
@@ -308,6 +310,22 @@ Things this gets right that a naive union of flags gets wrong:
 
 **The rule for UI code:** never branch on provider kind (`if kind == "codex"`). Branch on a
 capability. If a feature needs a distinction no capability expresses, add a capability.
+
+### Moving a thread is a capability
+
+**Decided (D144); Proposed (P101).** Where YAAC lists a thread is YAAC's own placement
+([05](05-threads.md#moving-a-thread-to-another-project)); `threadMove` says the target's
+`yaacd` can keep one, and `yaacd` adds it to every instance itself — an older `yaacd` lacks
+it, and Move is then offered disabled. Whether the *agent* moves too is the provider's
+**`threadMoveWorkingDirectory`**, reported at runtime: with it, `yaacd` sets `cwd` in
+`TurnOverrides` on every turn after a move, and the provider applies it, also when it resumes
+the conversation.
+
+| Harness | `threadMoveWorkingDirectory` | How |
+| --- | --- | --- |
+| Codex | yes | `turn/start.cwd` ("override the working directory for this turn and subsequent turns") and `thread/resume.cwd`; verified on codex-cli 0.170.0. Codex's own `threadSection/*` are labels, not folders, and are not used. |
+| Claude Code | no | The Agent SDK (0.3.329) has no way to change a session's folder; sessions are stored per project folder and `forkSession` takes no target folder. A move is YAAC's placement only. |
+| Fake | yes, unless `FAKE_MOVE_CWD=0` | Records the folder it was handed (`received[].cwd`). |
 
 ### Fast mode is a model capability
 

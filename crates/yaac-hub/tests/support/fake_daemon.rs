@@ -129,6 +129,7 @@ pub fn summary(id: &str) -> ThreadSummary {
         agents: yaac_protocol::AgentsPolicy::Ask,
         hold: None,
         fast: false,
+        placement: None,
     }
 }
 

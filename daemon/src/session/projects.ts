@@ -62,6 +62,11 @@ export function matchProject<P extends { folder: string; repo?: RepoLocation | n
 export function projectRefFor(projects: readonly Project[], loc: Location): ProjectRef {
   const p = matchProject(projects, loc);
   if (!p) return { kind: "temporary", path: loc.folder, displayName: loc.folder };
+  return userProjectRef(p);
+}
+
+/** The `ProjectRef` of one user project. */
+export function userProjectRef(p: Project): ProjectRef {
   const ref: ProjectRef = { kind: "user", id: p.id, path: p.folder, displayName: p.name };
   if (p.repo) ref.repo = p.repo;
   if (p.crossTargetKey) ref.crossTargetKey = p.crossTargetKey;

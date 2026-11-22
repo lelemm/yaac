@@ -344,3 +344,41 @@ fn take_over_round_trips_and_its_blocked_reason_is_optional() {
     assert_eq!(serde_json::from_value::<Capability>(json!("threadTakeOver")).unwrap(), Capability::ThreadTakeOver);
     assert_eq!(serde_json::from_value::<NoticeKind>(json!("takenOver")).unwrap(), NoticeKind::TakenOver);
 }
+
+/// D144: `thread/move` is a state-changing request (an operation id); its params name a
+/// project (absent: forget the placement) and optionally a checkout; the result says whether
+/// the working directory follows. A summary carries the placement, and a summary without one
+/// (an older daemon) reads as "where its folder puts it".
+#[test]
+fn thread_move_round_trips_and_the_placement_is_optional() {
+    use yaac_protocol::types::{ThreadMoveParams, ThreadMoveResult, ThreadSummary};
+    let info = yaac_protocol::methods::request_info("thread/move").expect("thread/move is a request");
+    assert!(info.state_changing, "it carries an operation id");
+    let p: ThreadMoveParams = serde_json::from_value(json!({ "opId": "op-1", "threadId": "t1", "project": "pj_2", "worktree": "/srv/wt/x" })).unwrap();
+    assert_eq!(p.project.as_ref().map(|p| p.as_str()), Some("pj_2"));
+    let back = serde_json::to_value(&p).unwrap();
+    assert_eq!(back, json!({ "opId": "op-1", "threadId": "t1", "project": "pj_2", "worktree": "/srv/wt/x" }));
+    let clear: ThreadMoveParams = serde_json::from_value(json!({ "opId": "op-2", "threadId": "t1" })).unwrap();
+    assert!(clear.project.is_none() && clear.worktree.is_none());
+    assert_eq!(serde_json::to_value(&clear).unwrap(), json!({ "opId": "op-2", "threadId": "t1" }));
+    let summary = json!({
+        "id": "t1", "instance": "pi_1", "title": "x", "cwd": "/srv/api", "state": "idle", "control": "free",
+        "originKind": "yaac", "createdAt": "2026-11-21T00:00:00Z", "updatedAt": "2026-11-21T00:00:00Z",
+        "placement": { "project": "pj_2", "worktree": "/srv/wt/x", "worktreeName": "x" }
+    });
+    let r: ThreadMoveResult = serde_json::from_value(json!({ "thread": summary, "workingDirectory": "/srv/wt/x/api" })).unwrap();
+    let placed = r.thread.placement.clone().expect("placement");
+    assert_eq!(placed.worktree_name.as_deref(), Some("x"));
+    assert_eq!(r.working_directory.as_ref().map(|p| p.as_str()), Some("/srv/wt/x/api"));
+    let again: ThreadMoveResult = serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap();
+    assert_eq!(again, r);
+    let mut older = summary;
+    older.as_object_mut().unwrap().remove("placement");
+    let s: ThreadSummary = serde_json::from_value(older).unwrap();
+    assert!(s.placement.is_none());
+    assert!(serde_json::to_value(&s).unwrap().get("placement").is_none(), "absent stays absent");
+    for cap in ["threadMove", "threadMoveWorkingDirectory"] {
+        let c: yaac_protocol::Capability = serde_json::from_value(json!(cap)).unwrap();
+        assert!(!matches!(c, yaac_protocol::Capability::Unknown(_)), "{cap} is known");
+    }
+}

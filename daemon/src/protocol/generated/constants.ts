@@ -69,6 +69,8 @@ import type {
   ThreadKeepParams,
   ThreadLookupParams,
   ThreadLookupResult,
+  ThreadMoveParams,
+  ThreadMoveResult,
   ThreadOlderParams,
   ThreadOlderResult,
   ThreadReadParams,
@@ -146,6 +148,7 @@ export const METHODS = {
   THREAD_ARCHIVE: "thread/archive",
   THREAD_DELETE: "thread/delete",
   THREAD_TAKE_OVER: "thread/takeOver",
+  THREAD_MOVE: "thread/move",
   THREAD_UPDATE: "thread/update",
   THREAD_FORK_ONLY: "thread/forkOnly",
   ITEM_READ: "item/read",
@@ -289,6 +292,8 @@ export interface RequestMap {
   "thread/delete": { params: ThreadDeleteParams; result: Empty };
   /** Continue here a thread another program holds (under `threadTakeOver`, D140): the */
   "thread/takeOver": { params: ThreadTakeOverParams; result: Empty };
+  /** List a thread under another project or worktree on the same target (D144); with */
+  "thread/move": { params: ThreadMoveParams; result: ThreadMoveResult };
   /** Set YAAC's own settings of a thread (the agents policy, a hold). A patch. */
   "thread/update": { params: ThreadUpdateParams; result: ThreadUpdateResult };
   /** Create a new thread from an existing one without a first message. */
@@ -426,6 +431,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "thread/archive": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/delete": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/takeOver": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "thread/move": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/update": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/forkOnly": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "item/read": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },

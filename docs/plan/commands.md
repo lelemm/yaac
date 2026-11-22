@@ -63,6 +63,8 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 | Dismiss all in this temporary project | As the header's action. | — |
 | Fork… | Open the fork dialog (native or handoff). | Ctrl+Shift+F **new** |
 | Take over | Continue here a thread another program holds (D140); that program is not stopped. Enabled only when its harness can hand it over. | —  |
+
+| Move to project… / Move selected… | List the thread (or the selected rows) under another project or worktree **of the same machine** (D144). *Move to project…* continues with the machine's projects and their known worktrees, then opens the Move dialog with that choice; it says whether the agent's folder follows (`threadMoveWorkingDirectory`) or only where YAAC lists it changes. Disabled with the reason when the thread is archived, in use elsewhere, or its machine is not connected. | — / — |
 | Check for the latest | Re-read a thread used elsewhere. | — |
 | Continue (budget) | Resume an orchestration paused on its budget. | — |
 | Archive selected… / Mute selected… / Clear selection | The rows selected in the sidebar (D138): Archive asks once for all and says which are skipped and why; Mute opens the Mute dialog once and applies it to all. Enabled only with a selection. | — / — / Esc in the list |

@@ -155,6 +155,8 @@ export interface FakeOptions {
   steer: boolean;
   /** Offer `forceStop` (FAKE_FORCE_STOP=0: a shared harness process yaacd cannot end). */
   forceStop: boolean;
+  /** Offer `threadMoveWorkingDirectory` (FAKE_MOVE_CWD=0: a harness that cannot change a conversation's folder). */
+  moveCwd?: boolean;
 }
 
 export class FakeProvider implements HarnessProvider {
@@ -172,7 +174,7 @@ export class FakeProvider implements HarnessProvider {
   // ── Test controls ──────────────────────────────────────────────────────────────────────
   /** Every input handed to the harness, in order (tests read secrets back from here). */
   /** Every input handed to it; `fast`: the fast-mode flag the turn was started with (D125). */
-  readonly received: Array<{ thread: NativeId; input: ProviderInput; fast?: boolean | null }> = [];
+  readonly received: Array<{ thread: NativeId; input: ProviderInput; fast?: boolean | null; cwd?: string | null }> = [];
   /** Every answer handed to the harness, in full (including secrets). */
   readonly answers: Array<{ thread: NativeId; requestId: string; response: RequestResponse }> = [];
   /** The next scan fails (the instance becomes stale; no thread is removed). */
@@ -291,6 +293,7 @@ export class FakeProvider implements HarnessProvider {
     ];
     if (this.options.nativeFork) caps.push("threadFork");
     if (this.options.steer) caps.push("steer");
+    if (this.options.moveCwd !== false) caps.push("threadMoveWorkingDirectory");
     if (this.meshHooks) caps.push("meshTools");
     return {
       displayName: "Fake",
@@ -387,11 +390,16 @@ export class FakeProvider implements HarnessProvider {
     if (overrides.model) t.settings.model = overrides.model;
     if (overrides.effort) t.settings.effort = overrides.effort;
     if (overrides.mode) t.settings.mode = overrides.mode;
+    // A moved thread (D144): the folder applies to this turn and later ones.
+    if (overrides.cwd) {
+      if (this.options.moveCwd === false) throw new Error("fake: this harness cannot change a conversation's working directory");
+      t.info.cwd = overrides.cwd;
+    }
     if (!this.attachments.has(thread)) this.attachMeshTo(thread, t.info.cwd, "resume");
-    return this.beginTurn(thread, input, input.origin, overrides.fast ?? null);
+    return this.beginTurn(thread, input, input.origin, overrides.fast ?? null, overrides.cwd ?? null);
   }
 
-  private async beginTurn(native: NativeId, input: ProviderInput, origin: TurnOrigin, fast: boolean | null): Promise<TurnId> {
+  private async beginTurn(native: NativeId, input: ProviderInput, origin: TurnOrigin, fast: boolean | null, cwd: string | null = null): Promise<TurnId> {
     const t = this.thread(native);
     t.turns += 1;
     const turnId = `turn-${t.turns}`;
@@ -399,7 +407,7 @@ export class FakeProvider implements HarnessProvider {
     t.items.push({ id: `user:${turnId}`, turnId, status: "completed", kind: "userMessage", parts: input.parts });
     t.info.updatedAt = nowIso();
     this.save();
-    this.received.push({ thread: native, input, fast });
+    this.received.push({ thread: native, input, fast, ...(cwd ? { cwd } : {}) });
     const lastFrom = [...(input.mesh ?? [])].reverse().find((m) => m.kind !== "notice")?.from;
     if (lastFrom) this.vars(native).from = lastFrom;
     const script = parseScript(input.text);
@@ -1075,6 +1083,7 @@ export const fakeProviderFactory: ProviderFactory = {
       storeDir: env.FAKE_STORE ? path.resolve(env.FAKE_STORE) : path.join(ctx.stateDir, "store"),
       steer: env.FAKE_STEER !== "0",
       forceStop: env.FAKE_FORCE_STOP !== "0",
+      moveCwd: env.FAKE_MOVE_CWD !== "0",
     });
   },
 };

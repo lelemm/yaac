@@ -462,6 +462,41 @@ Name     abc                                  ← prefilled from the last folder
 Once created, every thread whose folder falls inside it moves under the new project at once —
 including the ones that were sitting in other temporary projects beneath that folder.
 
+#### Moving a thread to another project
+
+**Decided (D144); the details are Proposed (P100–P105).** A thread can be listed under another
+project — and, optionally, one of that project's worktrees — **on the same machine**. This is
+YAAC's own **placement**, kept by `yaacd` in the thread's record on the target (so every host
+sees it) and apart from the harness's working directory:
+
+- `thread/move { opId, threadId, project?, worktree? }` sets it; without `project` it is
+  forgotten and the folder rules above decide again. While it is set, the summary's `project`
+  and `worktree` follow it (`ThreadSummary.placement`), whatever the folder rules would say.
+  Deleting the project forgets it. An archived thread, and one in use elsewhere, cannot be
+  moved; a running one can, and the change applies from its next turn.
+- When the thread's provider has **`threadMoveWorkingDirectory`**, the move also changes where
+  the agent works: the project's folder, or the same place in the chosen checkout (the
+  checkout's root plus the project's path inside its repository). It must exist. `yaacd` hands
+  that folder to every later turn (Codex: `cwd` on `turn/start` and on `thread/resume`), and the
+  first turn after the move begins with a short fixed note, seen only by the harness:
+
+  ```text
+  [YAAC] Your working directory is now /home/dev/web. It was /home/dev/api; paths earlier in this conversation refer to that folder.
+
+  ---
+
+  <the turn's input>
+  ```
+
+  Without the capability (Claude Code: its sessions are stored per project folder and it has
+  no way to change one's folder) only the placement changes.
+- Each move is recorded in the transcript as a notice: "Moved to web · working directory now
+  /home/dev/web" or "Moved to web in YAAC · working directory unchanged".
+- The worktrees offered are the project's own checkout and the other checkouts of its
+  repository that YAAC already knows on that machine — those its threads are in or were moved
+  to. A placement in a project in git always names a checkout (the project's own when none was
+  chosen), so the worktree level of the sidebar can group it.
+
 #### Worktrees
 
 The worktree level of the grouping is the git worktree a thread's folder is in — its branch

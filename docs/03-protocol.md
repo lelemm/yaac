@@ -121,6 +121,7 @@ requests. They are items in the thread, answered with `request/respond`
 | `thread/fork` | Create a new thread from an existing one, on any instance and model, with its first message ([05 Threads](05-threads.md#fork)). The result's `forkKind` says which mechanism was used. A handoff can only be made this way; `thread/forkOnly` (no first message) is native only. |
 | `thread/rename` · `archive` | Gated by capability. |
 | `thread/delete` | `{ opId, threadId, alsoInHarness }` (D110). Always removes YAAC's record and journal; `alsoInHarness: true` (only under `threadDelete`) first deletes the harness's session too, and nothing is removed if that fails. Absent means `false`. Without it, discovery leaves the session out until it is looked up by id. Followed by `thread/removed`. |
+| `thread/move` | `{ opId, threadId, project?, worktree? }` → `{ thread, workingDirectory? }` (D144). Lists the thread under another project of the **same target** (and optionally a checkout of its repository, by root); without `project` the placement is forgotten. `ThreadSummary.placement` carries it. Under the provider's `threadMoveWorkingDirectory` the agent's folder follows from its next turn, and `workingDirectory` names it; otherwise only the placement changes. Refused for an archived thread and one in use elsewhere (`thread_in_use`). Offered under `threadMove`. Followed by `thread/updated`. |
 | → `thread/updated` · `thread/removed` | Index changes pushed while connected, including for threads created outside YAAC. |
 
 ### Turns

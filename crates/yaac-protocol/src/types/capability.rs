@@ -30,6 +30,14 @@ open_enum! {
         /// A thread another program holds can be taken over (`thread/takeOver`, D140): YAAC
         /// continues it here without stopping the other program.
         ThreadTakeOver = "threadTakeOver",
+        /// `yaacd` can list this instance's threads under another project or worktree on the
+        /// same target (`thread/move`, D144). YAAC's own placement; says nothing about the
+        /// harness.
+        ThreadMove = "threadMove",
+        /// The harness can change a conversation's working directory from its next turn: a
+        /// `thread/move` then also moves where the agent works (Codex: `cwd` on `turn/start`
+        /// and `thread/resume`). Without it a move changes only where YAAC lists the thread.
+        ThreadMoveWorkingDirectory = "threadMoveWorkingDirectory",
         /// Can show live updates of a thread someone else is driving.
         FollowExternal = "followExternal",
         // Turn control

@@ -42,6 +42,9 @@ import type {
   ThreadForkOnlyResult,
   ThreadUpdateParams,
   ThreadUpdateResult,
+  ThreadMoveParams,
+  ThreadMoveResult,
+  ThreadPlacement,
   DiscoveryCaps,
   DiscoveryCapsParams,
   DiscoveryCapsResult,
@@ -64,12 +67,12 @@ import { OUTPUT_HEAD_BYTES, Projection, applyDelta, clone, utf8Head } from "./it
 import { lastSeqOf, type JournalEntry, type JournalOptions } from "./journal.js";
 import { NotActed, OpLog } from "./ops.js";
 import { ThreadIndex, type Holder } from "./thread-index.js";
-import { ThreadRuntime, threadDirName, type Driver, type QueuedEntry, type RequestRecord, type ThreadRecord, type Work } from "./thread.js";
+import { ThreadRuntime, threadDirName, type Driver, type PlacementRecord, type QueuedEntry, type RequestRecord, type ThreadRecord, type Work } from "./thread.js";
 import { UploadStore } from "./uploads.js";
 import { HANDOFF_ITEM_BYTES, boundTranscript, cutoffTurn, itemsThrough, preamble, previewOf, renderTranscript, type AttachmentLookup, type RenderedTranscript } from "./handoff.js";
 import { normaliseRemote } from "./fsinfo.js";
 import { GitStatusStore, gitRunner, resolveRepo, type GitRunner } from "./git.js";
-import { ProjectStore, projectRefFor } from "./projects.js";
+import { ProjectStore, projectRefFor, userProjectRef } from "./projects.js";
 import { Limiter } from "../util/exec.js";
 
 export const PAGE_MAX_BYTES = 64 * 1024;
@@ -210,6 +213,14 @@ const NOW_WHILE_ASKING = "the agent is waiting for an answer to its question or 
 
 function sleepMs(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * The fixed note at the start of the first turn after a `thread/move` changed the working
+ * directory (D144). Only the harness receives it; the transcript shows the message as sent.
+ */
+export function movedNote(from: string, to: string): string {
+  return `[YAAC] Your working directory is now ${to}. It was ${from}; paths earlier in this conversation refer to that folder.\n\n---\n\n`;
 }
 
 export function threadIdFor(kind: string, storeKey: string | null, instance: string, native: string): string {
@@ -773,7 +784,7 @@ export class Core {
 
   private onGitChanged(root: string): void {
     this.gitChanged.emit(root);
-    for (const rt of this.threads.values()) if (!rt.deleted && rt.record.repo?.root === root) this.updateIndex(rt);
+    for (const rt of this.threads.values()) if (!rt.deleted && (rt.record.repo?.root === root || rt.record.placement?.worktree === root)) this.updateIndex(rt);
   }
 
   /** The slow timer: only checkouts of threads some client is subscribed to, never the whole index. */
@@ -845,6 +856,12 @@ export class Core {
     await this.ops.run("project/delete", p.opId, async () => {
       if (!this.projects.get(p.projectId)) throw notActed("invalid_params", `no project ${String(p.projectId)} on this target`);
       this.projects.delete(p.projectId);
+      // Threads moved into it (D144) go back to where their folders put them.
+      for (const rt of this.threads.values()) {
+        if (rt.record.placement?.projectId !== p.projectId) continue;
+        delete rt.record.placement;
+        rt.saveRecord();
+      }
       this.projectsChanged();
       return {};
     });
@@ -863,6 +880,94 @@ export class Core {
       rt.saveRecord();
       this.updateIndex(rt);
       return { thread: this.renderSummary(this.summaryOf(rt), this.holderOf(rt), client.key) };
+    });
+  }
+
+  /**
+   * `thread/move` (D144): where YAAC lists a thread — a project on this target and, when it is
+   * in git, one checkout of its repository — and, under the provider's
+   * `threadMoveWorkingDirectory`, the folder the agent works in from its next turn: the
+   * project's folder, or the same place in the chosen checkout. Without the capability only
+   * the placement changes. A running thread may be moved; its turn goes on where it is.
+   */
+  async threadMove(client: ClientLink, p: ThreadMoveParams): Promise<ThreadMoveResult> {
+    return this.ops.run("thread/move", p.opId, async () => {
+      const rt = this.findThread(p.threadId);
+      if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
+      if (rt.record.archived) throw notActed("invalid_params", "an archived thread cannot be moved; unarchive it first");
+      if (p.project !== undefined && p.project !== null && typeof p.project !== "string") throw notActed("invalid_params", "project must be a project id");
+      if (p.worktree !== undefined && p.worktree !== null && (typeof p.worktree !== "string" || !path.isAbsolute(p.worktree))) {
+        throw notActed("invalid_params", "worktree must be an absolute path on this target");
+      }
+      await this.refreshExternal(rt);
+      this.checkWriter(rt, client, true);
+      if (p.project === undefined || p.project === null) {
+        if (p.worktree) throw notActed("invalid_params", "a worktree needs a project");
+        if (rt.record.placement) {
+          delete rt.record.placement;
+          rt.saveRecord();
+          this.updateIndex(rt);
+          const back = this.summaryOf(rt).project?.displayName ?? rt.record.cwd;
+          this.noticeItem(rt, "moved", `Moved back to ${back} in YAAC · working directory unchanged`);
+        }
+        return { thread: this.renderSummary(this.summaryOf(rt), this.holderOf(rt), client.key) };
+      }
+      const project = this.projects.get(p.project);
+      if (!project) throw notActed("invalid_params", `no project ${String(p.project)} on this target`);
+      // The checkout: the one asked for, else the project's own (when it is in git).
+      const placement: PlacementRecord = { projectId: project.id };
+      let cwd = project.folder;
+      if (p.worktree) {
+        if (!project.repo) throw notActed("invalid_params", `${project.name} is not in a git repository, so it has no worktrees`);
+        const loc = await this.repoOf(path.resolve(p.worktree), true);
+        if (!loc || loc.repo !== project.repo.repo) throw notActed("invalid_params", `${p.worktree} is not a checkout of ${project.name}'s repository on this target`);
+        placement.worktree = loc.root;
+        if (loc.worktreeName) placement.worktreeName = loc.worktreeName;
+        cwd = project.repo.relative === "." ? loc.root : path.join(loc.root, ...project.repo.relative.split("/"));
+      } else if (project.repo) {
+        placement.worktree = project.repo.root;
+        if (project.repo.worktreeName) placement.worktreeName = project.repo.worktreeName;
+      }
+      if (placement.worktree && !placement.worktreeName) {
+        const head = await this.git(placement.worktree, ["rev-parse", "--abbrev-ref", "HEAD"]);
+        const branch = head.ok ? head.out.trim() : "";
+        if (branch && branch !== "HEAD") placement.branch = branch;
+        if (!this.gitStatus.has(placement.worktree)) void this.gitStatus.refresh(placement.worktree, true);
+      }
+      const eff = await this.computeEffective(rt);
+      const moveCwd = (eff.capabilities ?? []).includes("threadMoveWorkingDirectory");
+      let workingDirectory: string | null = null;
+      if (moveCwd && path.resolve(cwd) !== path.resolve(rt.record.cwd)) {
+        let isDir = false;
+        try {
+          isDir = fs.statSync(cwd).isDirectory();
+        } catch {
+          isDir = false;
+        }
+        if (!isDir) throw notActed("invalid_params", `the folder ${cwd} does not exist on this target`);
+        // Two moves before a turn: the note still names where the agent last worked.
+        const from = rt.record.cwdNote?.from ?? rt.record.cwd;
+        rt.record.cwd = cwd;
+        rt.record.cwdMoved = true;
+        if (path.resolve(from) === path.resolve(cwd)) delete rt.record.cwdNote;
+        else rt.record.cwdNote = { from, to: cwd };
+        rt.record.repo = null;
+        rt.record.repoResolved = false;
+        workingDirectory = cwd;
+      }
+      rt.record.placement = placement;
+      rt.saveRecord();
+      if (workingDirectory) await this.resolveProject(rt, true);
+      this.updateIndex(rt);
+      const where = placement.worktree && p.worktree ? `${project.name} · ${placement.worktreeName ?? placement.branch ?? placement.worktree}` : project.name;
+      const running = rt.activeTurn ? " (from its next turn; the running turn goes on where it is)" : "";
+      this.noticeItem(
+        rt,
+        "moved",
+        workingDirectory ? `Moved to ${where} · working directory now ${workingDirectory}${running}` : `Moved to ${where} in YAAC · working directory unchanged`,
+      );
+      const thread = this.renderSummary(this.summaryOf(rt), this.holderOf(rt), client.key);
+      return workingDirectory ? { thread, workingDirectory } : { thread };
     });
   }
 
@@ -941,12 +1046,26 @@ export class Core {
     if (r.forkedFrom) s.forkedFrom = r.forkedFrom;
     if (r.spawnedBy) s.spawnedBy = r.spawnedBy;
     this.mesh?.decorate(rt, s);
-    s.project = projectRefFor(this.projects.list(), { folder: r.cwd, repo: r.repo ?? null });
+    // Where the user moved it (D144) wins over the folder rule, while its project exists.
+    const placed = r.placement ? this.projects.get(r.placement.projectId) : undefined;
+    s.project = placed ? userProjectRef(placed) : projectRefFor(this.projects.list(), { folder: r.cwd, repo: r.repo ?? null });
+    if (placed && r.placement) {
+      const pl: ThreadPlacement = { project: placed.id };
+      const root = r.placement.worktree;
+      if (root) {
+        const branch = this.gitStatus.get(root)?.branch ?? r.placement.branch ?? null;
+        pl.worktree = root;
+        const name = r.placement.worktreeName ?? branch;
+        if (name) pl.worktreeName = name;
+        s.worktree = { path: root, ...(branch ? { branch } : {}) };
+      }
+      s.placement = pl;
+    }
     if (r.repo) {
       s.repo = r.repo;
       const git = this.gitStatus.get(r.repo.root);
       if (git) s.git = git;
-      s.worktree = { path: r.repo.root, ...(git?.branch ? { branch: git.branch } : {}) };
+      if (!s.placement?.worktree) s.worktree = { path: r.repo.root, ...(git?.branch ? { branch: git.branch } : {}) };
       if (git?.branch) s.branch = git.branch;
     }
     return s;
@@ -1312,6 +1431,8 @@ export class Core {
       const method = needs[c];
       return !method || typeof provider[method] === "function";
     });
+    // `threadMove` is yaacd's own (D144): any thread can be placed under another project.
+    if (!eff.capabilities.includes("threadMove")) eff.capabilities.push("threadMove");
     // Fast mode (D125) is a model-level capability: present when the thread's model has it.
     eff.capabilities = eff.capabilities.filter((c) => c !== "fastMode");
     if (this.modelHasFast(inst.descriptor, eff.applied?.model ?? this.modelOf(rt))) eff.capabilities.push("fastMode");
@@ -1974,13 +2095,20 @@ export class Core {
       // the model the turn runs on has it.
       const descriptor = this.registry.get(rt.record.instance)?.descriptor;
       const fast = (work.overrides.fast ?? rt.record.fast ?? false) === true && !!descriptor && this.modelHasFast(descriptor, work.overrides.model ?? this.modelOf(rt));
+      // A thread a `thread/move` moved (D144): every turn names its folder, and the first one
+      // after the move begins with a short fixed note saying so. Only the harness sees it.
+      const overrides: TurnOverrides = { ...work.overrides, fast };
+      if (rt.record.cwdMoved) overrides.cwd = rt.record.cwd;
+      const note = rt.record.cwdNote;
+      if (note) input.text = movedNote(note.from, note.to) + input.text;
       let turnId: TurnId;
       try {
-        turnId = await provider.startTurn(rt.record.native, input, { ...work.overrides, fast });
+        turnId = await provider.startTurn(rt.record.native, input, overrides);
       } catch (e) {
         rt.expectTurn = null;
         throw rpc("provider_unavailable", `the harness did not start the turn: ${(e as Error).message}`);
       }
+      if (note) delete rt.record.cwdNote;
       if ((rt.record.fast ?? false) !== fast) {
         if (fast) rt.record.fast = true;
         else delete rt.record.fast;

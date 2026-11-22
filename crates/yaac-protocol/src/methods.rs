@@ -307,6 +307,10 @@ catalogue! {
         /// holder's evidence no longer makes it read-only, until a different holder appears.
         ThreadTakeOver = "thread/takeOver" as THREAD_TAKE_OVER:
             t::ThreadTakeOverParams => t::Empty, HostToDaemon, request Control, response Control, op;
+        /// List a thread under another project or worktree on the same target (D144); with
+        /// `threadMoveWorkingDirectory`, its working directory follows from the next turn.
+        ThreadMove = "thread/move" as THREAD_MOVE:
+            t::ThreadMoveParams => t::ThreadMoveResult, HostToDaemon, request Control, response Control, op;
         /// Set YAAC's own settings of a thread (the agents policy, a hold). A patch.
         ThreadUpdate = "thread/update" as THREAD_UPDATE:
             t::ThreadUpdateParams => t::ThreadUpdateResult, HostToDaemon, request Control, response Control, op;

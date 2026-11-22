@@ -88,6 +88,11 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("75", "taken-over"),
     ("76", "message-markup"),
     ("77", "message-markup-open"),
+    ("78", "move-dialog"),
+    ("79", "move-dialog-placement"),
+    ("80", "move-drag-valid"),
+    ("81", "move-drag-other-machine"),
+    ("82", "move-undo"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -661,6 +666,29 @@ fn setup(app: &mut YaacApp, id: &str) {
                 }
             }
             app.pump_demo();
+        }
+        "78" | "79" => {
+            // The Move dialog (D144). 78: Fix frame decoder, whose harness (Codex) moves its
+            // folder too. 79: billing-service, whose harness (Claude Code) cannot: only where
+            // YAAC lists it changes.
+            app.open(&threads::fix(), None);
+            let key = if id == "78" { threads::fix() } else { threads::billing() };
+            app.ui.move_dialog = Some(yaac_core::moving::MoveDialog::new(&app.client.state, &[key]));
+        }
+        "80" | "81" => {
+            // A row dragged to another group (D144). 76: billing-service over "yaac" on its own
+            // machine (the group is outlined; "Move to yaac"). 77: search-service (gpu-box) over
+            // the same group: refused, "A thread cannot move to another machine".
+            app.open(&threads::fix(), None);
+            let key = if id == "80" { threads::billing() } else { threads::search() };
+            let over = yaac_core::sidebar::section_of(&app.client.state, app.ui.grouping, &threads::fix());
+            app.ui.drag = Some(crate::app::DragRows { keys: vec![key], force_over: over });
+        }
+        "82" => {
+            // After a move that needed no confirmation: the bar's notice with Undo (D144).
+            app.open(&threads::fix(), None);
+            let keys = [threads::billing(), threads::users()];
+            app.client.move_notice = Some(yaac_core::moving::notice(&app.client.state, &keys, "yaac"));
         }
         "68" => {
             // Settings → About: version, build, links, components (D137).

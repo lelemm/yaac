@@ -85,6 +85,32 @@ export interface ThreadRecord {
    * `turn/start` changes it. Only ever true while the model has `fastMode`.
    */
   fast?: boolean;
+  /**
+   * Where the user moved the thread in YAAC (`thread/move`, D144): its project and, when the
+   * project is in git, the checkout. Apart from `cwd`; absent: the folder rule decides.
+   */
+  placement?: PlacementRecord | null;
+  /**
+   * A `thread/move` changed the working directory (`threadMoveWorkingDirectory`): every turn
+   * from then on hands the harness `cwd` explicitly.
+   */
+  cwdMoved?: boolean;
+  /**
+   * The working directory changed since the last turn started: the next turn's input begins
+   * with a short fixed note saying so (`from` is where the agent last worked).
+   */
+  cwdNote?: { from: string; to: string } | null;
+}
+
+/** A thread's placement as `thread.json` keeps it. */
+export interface PlacementRecord {
+  projectId: string;
+  /** The checkout's root, when the project is in git. */
+  worktree?: string | null;
+  /** A linked worktree's name (absent for the main checkout, which is named by its branch). */
+  worktreeName?: string | null;
+  /** The checkout's branch when the move was made (for the main checkout's label until git status is known). */
+  branch?: string | null;
 }
 
 /** A takeover (D140), kept with the thread record so it survives a yaacd restart. */
