@@ -1371,3 +1371,24 @@ the list.*
   Release notes · uncertain: billing-service", wrapped to at most three lines, and a cross that
   dismisses it. Hovering it lists each thread with its reason ("Release notes: staging is
   offline"; for an uncertain one, that it may or may not be archived and is not asked again).
+
+### 74 — A pasted log, a command, and notices from Claude Code
+
+*The harness's markup is never shown as the user's text (D141, P121–P123).*
+
+- **users-service** (Claude) open. The user's bubble: "The migration drops the last batch. Here
+  is the log:", then an inset block on the page background, a chevron and **Pasted text · 12
+  lines** in the secondary colour, then "Why does the retry skip it?", and under it a quiet
+  **› Context** (a system reminder the harness added).
+- The agent's answer as prose.
+- The next bubble holds only a chip in monospace on the raised fill, **/model opus-5.5**, and
+  **› Context** (the command's output).
+- Three notice lines: "Subagent schema-check reported back", "Background command "cargo test
+  -p users" completed (exit code 0)", "2 background shell commands didn't finish before the
+  previous session ended" — no tags, no line breaks drawn as boxes.
+
+### 75 — The same, opened
+
+- As 74, with the paste opened (the log as plain proportional text, no line numbers, its own
+  copy button on hover), **⌄ Context** opened to "System reminder" (semibold, secondary) and
+  its text, and the last notice expanded to its summary and note as plain text.
