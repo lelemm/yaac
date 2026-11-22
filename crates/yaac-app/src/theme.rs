@@ -53,7 +53,8 @@ pub(crate) struct Palette {
     pub scrim: Color32,
     /// Fill of code blocks.
     pub code_bg: Color32,
-    /// The user's message bubble.
+    /// The user's message bubble (D155): a cool neutral clearly stronger than `faint`, so the
+    /// user's messages stand out among long agent output.
     pub user_bg: Color32,
 }
 
@@ -89,7 +90,7 @@ impl Palette {
         fast: hex(0xF5C518),
         scrim: Color32::from_black_alpha(140),
         code_bg: hex(0x1E2128),
-        user_bg: hex(0x1E2128),
+        user_bg: hex(0x2D333E),
     };
 
     pub(crate) const LIGHT: Palette = Palette {
@@ -118,7 +119,7 @@ impl Palette {
         fast: hex(0x9A7000),
         scrim: Color32::from_black_alpha(89),
         code_bg: hex(0xF3F4F7),
-        user_bg: hex(0xF3F4F7),
+        user_bg: hex(0xE3E7EE),
     };
 
     /// A mark's colour.
@@ -138,7 +139,7 @@ impl Palette {
     /// Selected text's background: the neutral selected-row tint, a step stronger so a
     /// selection over a faint fill (a user message, code) still reads.
     pub(crate) fn text_selection(&self) -> Color32 {
-        if self.dark { hex(0x343945) } else { hex(0xD5D9E0) }
+        if self.dark { hex(0x3D4451) } else { hex(0xCBD0D9) }
     }
 
     /// A faint ground for an added (green) or removed (red) diff line.
@@ -378,6 +379,30 @@ mod tests {
                 let r = contrast(soft, s);
                 assert!(r >= 3.0, "{} fast on {sname}: {r:.2}", if p.dark { "dark" } else { "light" });
             }
+        }
+    }
+
+    #[test]
+    fn the_users_bubble_stands_out_and_its_text_reads() {
+        for p in [Palette::DARK, Palette::LIGHT] {
+            let theme = if p.dark { "dark" } else { "light" };
+            // Everything drawn inside the bubble: its text, the secondary "Pasted text" and
+            // "Context" rows, a failed chip.
+            for (name, c) in [("text", p.text), ("text2", p.text2), ("failed", p.failed)] {
+                let r = contrast(c, p.user_bg);
+                assert!(r >= 4.5, "{theme} {name} on user_bg: {r:.2}");
+            }
+            // Clearly set apart from the window, and more than the faint fill (D155).
+            let bubble = contrast(p.user_bg, p.bg);
+            assert!(bubble >= 1.2, "{theme} user_bg on bg: {bubble:.2}");
+            assert!(bubble >= contrast(p.faint, p.bg) + 0.08, "{theme}: user_bg is not stronger than faint");
+            // A selection inside the bubble still shows.
+            let sel = contrast(p.text_selection(), p.user_bg);
+            assert!(sel >= 1.15, "{theme} selection on user_bg: {sel:.2}");
+            // Still monochrome-calm: a tinted neutral, not a hue.
+            let c = p.user_bg;
+            let spread = c.r().max(c.g()).max(c.b()) - c.r().min(c.g()).min(c.b());
+            assert!(spread <= 24, "{c:?} is not a neutral");
         }
     }
 
