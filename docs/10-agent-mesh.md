@@ -127,7 +127,7 @@ One MCP server, named `yaac`. Few tools, each doing one thing.
 | --- | --- |
 | `whoami` | The caller's own address, title, provider, model, working directory, who spawned it, and its children. |
 | `list_targets` | The machines in this mesh: name, whether each is reachable, and how many threads are active there. Names and counts only — never the threads themselves. |
-| `list_models` | For a target: the provider instances there and the models each offers — the same live data as the model picker. Nothing is hardcoded, so "spawn it on Opus" is resolved against what actually exists. |
+| `list_models` | For a target: the provider instances there, the models each offers, and each instance's permission modes (the never-ask one marked) — the same live data as the model picker. Nothing is hardcoded, so "spawn it on Opus" is resolved against what actually exists. |
 | `list_threads` | A **small, scoped** list of threads — by default only the caller's own orchestration. See [listing is scoped and bounded](#listing-is-scoped-and-bounded). |
 | `find_thread` | Find a specific thread **across all targets**, either by **id** or by a **fuzzy match on its title**. Needs a query; ten matches per page. |
 | `read_thread` | The recent messages, or just the last answer, of another thread — to check on a worker without interrupting it. |
@@ -240,8 +240,8 @@ says the tools exist. It never lists the fleet.
 ### Spawning
 
 `spawn_thread` takes: the target (default: the caller's own), the provider instance and model
-(as returned by `list_models`), an optional effort, a working directory, a title, and the first
-message.
+(as returned by `list_models`), an optional effort, an optional permission mode, a working
+directory, a title, and the first message.
 
 - **The working directory must exist where the worker will run.** On the caller's own target
   it defaults to the caller's directory. On another target a path from here means nothing, so
@@ -254,10 +254,49 @@ message.
   opened, steered, and continued by the user, and outlives its parent.
 - It records `spawned_by`; the parent records it as a child. That relationship is what the
   sub-thread sidebar draws.
-- It starts in the **harness's default permission mode on its own target** — a parent cannot
-  grant a child more freedom than the user configured there.
+- It runs in **the mode that corresponds to its parent's** ([below](#the-workers-permission-mode)),
+  never in a more permissive one.
 - By default the parent is told when the child finishes: the child's final answer comes back as
   a message ([delivery](#delivery)). `spawn_thread { detached: true }` turns that off.
+
+### The worker's permission mode
+
+**Decided (D146); the rules below are Proposed (P150–P155).** A worker inherits the
+permissions of the session that spawned it: a parent running with bypass permissions spawns
+workers that run with bypass permissions too, so they do not stop at the first approval. YAAC
+answers nothing on anyone's behalf (invariant 8) — it picks the mode the worker's harness runs
+in, and every approval that mode still asks for goes to the user as usual.
+
+- **Which mode the parent is in** is its *effective* mode at the moment it spawns: the mode its
+  harness reports it is using (`ThreadEffective.applied.mode`), with that provider's
+  description of it.
+- **Same provider instance: the same mode id.** A parent following its harness's own default
+  (no mode chosen) gets a worker that follows it too.
+- **Another provider: mapped by what the modes mean,** never by id or provider kind. Each
+  provider reports, per mode, `skipsApprovals` and an `autonomy` level
+  ([04](04-providers.md#modes-and-how-permissive-they-are)); `skipsApprovals` counts as the top
+  level. The worker gets the most permissive of its provider's modes that is **no more
+  permissive than the parent's** — on a tie, the one with the parent's id, then the harness
+  default, then the first listed. Bypass on Claude Code becomes Full access on Codex, and the
+  reverse; Codex Auto (`workspace`) becomes Claude Code's Accept edits, since Claude Code's Auto
+  (`judged`) may approve more.
+- **Never escalate.** A mode whose provider gives no level is never chosen across providers.
+  When the parent's mode cannot be compared, or the worker's provider has nothing as
+  restrictive, no mode is sent: the worker runs in its harness's default mode, and the note
+  says so.
+- **An explicit `mode`** (an id or name from `list_models`) is allowed only up to the parent's
+  level (or the parent's own mode on the same instance); anything more permissive, or not
+  comparable, is refused with the modes that are allowed. Nothing is started.
+- **Visible.** The spawn result has one line saying which mode the worker runs in and why
+  ("Runs in Bypass permissions, as its parent."), and the worker's transcript starts with the
+  same as an `info` notice. The window marks a worker in a never-ask mode exactly as it marks
+  any thread in one.
+- **On another target** the caller's `yaacd` sends the parent's mode descriptor
+  (`SpawnThreadQuery.parentMode`) and the asked-for `mode`; the destination maps them and
+  answers with `modeNote`. A destination too old to know them starts the worker in its default
+  mode, and the result says its mode was not reported.
+- **Running workers keep their mode.** A parent that changes mode later does not change the
+  workers it already has; the user can change a worker's mode like any thread's.
 
 ### Stopping workers
 
@@ -643,6 +682,7 @@ item kinds, no version bump.
 | Addition | Purpose |
 | --- | --- |
 | Capability `MeshTools` | This provider instance can be given the `yaac` tools. |
+| `toolCall.agentCall` | A tool call that is communication with another agent, read by `yaacd` ([below](#agent-calls-in-the-transcript)). |
 | Item kinds `meshSent`, `meshReceived`, `meshSpawn`, `meshWait` | What agents did with the mesh, in the transcript ([07 UI](07-ui.md#agents-in-the-thread-view)). |
 | `ThreadSummary.spawned_by`, `children`, `peers` | Relationships, for the sub-thread sidebar. |
 | `mesh/relay` (target → hub), `mesh/deliver` (hub → target), each acknowledged | Cross-target delivery. These are the one place where a **target** originates a request — see [03](03-protocol.md#messages). |
@@ -663,3 +703,35 @@ item kinds, no version bump.
   machines is what git and the user's own tooling are for.
 - **No broadcast.** Every message has one recipient.
 - **No answering on the user's behalf**, ever.
+
+## Agent calls in the transcript
+
+D150, P180–P184. Agents talk to agents through tools: YAAC's own (above), and the harnesses'
+own sub-agent tools. `yaacd`'s provider translators recognise every such call and attach a
+structured `agentCall` to the `toolCall` item; the window draws it as one line with the other
+agent as a pill ([07 UI](07-ui.md#agent-messages-in-the-transcript)).
+
+| Family | Calls | Read from |
+| --- | --- | --- |
+| YAAC mesh (`yaac` MCP server, either harness) | `spawn_thread` → spawn; `send_message` → message; `wait`; `read_thread` → read; `stop_thread`, `stop_all` → stop; `notify_when_done` → notify; `list_threads`, `find_thread` → list | The arguments (addresses), and the result text `yaacd` itself wrote: "Delivered to …" / "Queued for … — why" / "Failed: … — why" and "Message id: …"; "Started …" and "Address: …"; a wait's "--- result from L (address A, id M):" blocks, "… (A) is done.", "Nothing yet after N seconds". |
+| Claude Code | `Agent` (formerly `Task`) → spawn; `SendMessage` → message (or resume); `TaskStop` of an agent → stop; `SubagentHandback` → message to its parent | The input; the JSON result (`success`, `message`, `resumedAgentId`, `pin`); the SDK's `tool_use_result` (`status`, `agentId`, `content`). |
+| Codex | `collabAgentToolCall` items: `spawnAgent` → spawn; `sendInput`, `sendMessage`, `followupTask` → message; `resumeAgent` → resume; `wait`; `closeAgent`, `interruptAgent` → stop; `listAgents` → list | `receiverThreadIds`, `prompt`, `model`, `reasoningEffort`, and `agentsStates` (status and message per agent). |
+
+The peers are a YAAC address, a harness's own agent id (Claude Code's `agentId`, Codex's
+receiver thread id), a name the call gave, or "its parent" (`SendMessage` to `main`,
+`SubagentHandback`). The window resolves each to a thread in one place
+(`yaac_core::agentcall::resolve`); a harness's sub-agent resolves to the thread beneath the
+caller whose harness id is that agent id (D151), and until one exists the pill is not
+clickable.
+
+The outcome comes from the result and nothing else: delivered, queued (and why), failed (and
+why), started, completed (with the answer), resumed, stopped, not running, returned (with what
+came back), nothing yet, registered. A result that does not parse leaves it unset. The raw
+input and output stay on the item.
+
+A mesh call also leaves mesh items. Those that echo it — the `meshSent` of its message and the
+`meshReceived` items a `wait` handed over (by message id), a `meshSpawn` whose workers it names,
+a `meshWait` in the same turn — are folded into the call's line; the line reads the live
+receipt from the `meshSent`. Invariant 13 holds: every message is still in both transcripts,
+attributed.
+

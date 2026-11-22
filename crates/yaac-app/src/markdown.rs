@@ -42,6 +42,16 @@ type Row = Vec<Vec<Span>>;
 
 /// Parse markdown into blocks.
 pub(crate) fn parse(text: &str) -> Vec<Block> {
+    parse_with(text, false)
+}
+
+/// Parse markdown the way a person typed it (D157): every single line break is kept as a line
+/// break, not joined into the paragraph as markdown does. For the user's own messages.
+pub(crate) fn parse_typed(text: &str) -> Vec<Block> {
+    parse_with(text, true)
+}
+
+fn parse_with(text: &str, typed: bool) -> Vec<Block> {
     let mut out = Vec::new();
     let mut spans: Vec<Span> = Vec::new();
     let (mut bold, mut italic, mut link) = (0u32, 0u32, 0u32);
@@ -171,7 +181,7 @@ pub(crate) fn parse(text: &str) -> Vec<Block> {
                     out.push(Block::Table { head, rows });
                 }
             }
-            Event::SoftBreak => push(&mut spans, " ", false, 0, 0, 0),
+            Event::SoftBreak => push(&mut spans, if typed { "\n" } else { " " }, false, 0, 0, 0),
             Event::HardBreak => push(&mut spans, "\n", false, 0, 0, 0),
             Event::Rule => out.push(Block::Rule),
             _ => {}
@@ -258,6 +268,15 @@ impl Cache {
     pub(crate) fn get(&mut self, id: &ItemId, text: &str, complete: bool) -> &Parsed {
         let p = self.items.entry(id.clone()).or_default();
         p.update(text, complete);
+        p
+    }
+
+    /// Text the user typed (D157): parsed once with every line break kept.
+    pub(crate) fn get_typed(&mut self, id: &ItemId, text: &str) -> &Parsed {
+        let p = self.items.entry(id.clone()).or_default();
+        if !p.exact || p.len != text.len() {
+            *p = Parsed { len: text.len(), stable_end: text.len(), stable: parse_typed(text), tail: Vec::new(), exact: true };
+        }
         p
     }
 
@@ -605,6 +624,18 @@ pub(crate) fn natural_width(ui: &egui::Ui, blocks: &[&Block], p: &Palette, font_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_the_user_typed_keeps_its_line_breaks() {
+        // One Enter is a line break in a user's message (D157); markdown would join the lines.
+        let text = "first line\nsecond line\n\nnew paragraph\n- a\n- b";
+        let typed = parse_typed(text);
+        assert!(matches!(&typed[0], Block::Para(s) if spans_text(s) == "first line\nsecond line"));
+        assert!(matches!(&typed[1], Block::Para(s) if spans_text(s) == "new paragraph"));
+        assert!(matches!(&typed[2], Block::Item { .. }), "lists still work");
+        // An agent's markdown still joins soft breaks into the paragraph.
+        assert!(matches!(&parse(text)[0], Block::Para(s) if spans_text(s) == "first line second line"));
+    }
 
     #[test]
     fn a_table_is_a_table_not_its_cells_run_together() {

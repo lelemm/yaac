@@ -1,6 +1,7 @@
 // A fake Codex app-server for tests: a WebSocket server on a Unix socket, like the real
 // daemon's control socket. Replays recorded steps and answers other requests from handlers.
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
@@ -36,6 +37,15 @@ export function fixture<T = any>(name: string): T {
   throw new Error(`fixture ${name} not found`);
 }
 
+/** A deep merge of plain objects, as Codex's `upsert` does. */
+function merge(into: unknown, value: unknown): unknown {
+  const plain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  if (!plain(into) || !plain(value)) return structuredClone(value);
+  const out: Record<string, unknown> = { ...into };
+  for (const [k, v] of Object.entries(value)) out[k] = merge(out[k], v);
+  return out;
+}
+
 export function rpcError(code: number, message: string): { __error: { code: number; message: string } } {
   return { __error: { code, message } };
 }
@@ -46,6 +56,10 @@ export class FakeCodex {
   /** Replies the client sent to server requests, by id. */
   readonly replies = new Map<number | string, unknown>();
   connections = 0;
+  /** The user's Codex configuration (`config/read`, `config/value/write`). */
+  userConfig: Record<string, any> = {};
+  /** Successful `config/value/write` calls. */
+  configWrites = 0;
   /** While a script runs, unhandled requests wait for it; otherwise they get "method not found". */
   private scripted = 0;
   private sockets = new Set<WebSocket>();
@@ -70,6 +84,27 @@ export class FakeCodex {
     const wss = new WebSocketServer({ server });
     const fake = new FakeCodex(socket, server, wss);
     fake.handlers.set("initialize", () => init ?? { userAgent: "yaacd/0.171.0 (redacted)", codexHome: "/home/user/.codex", platformFamily: "unix", platformOs: "linux" });
+    // The user's config.toml, as codex-cli 0.170.0 answers for it: `config/read` gives the
+    // effective config and, with `includeLayers`, the user layer's version; `config/value/write`
+    // upserts (deep merge) or replaces at a dotted key path and refuses a stale
+    // `expectedVersion` with `configVersionConflict`.
+    fake.handlers.set("config/read", (p) => ({
+      config: { model: null, projects: Object.keys(fake.userConfig.projects ?? {}).length > 0 ? structuredClone(fake.userConfig.projects) : null },
+      origins: {},
+      layers: p?.includeLayers ? [{ name: { type: "user", file: "/home/user/.codex/config.toml", profile: null }, version: fake.configVersion(), config: structuredClone(fake.userConfig), disabledReason: null }] : null,
+    }));
+    fake.handlers.set("config/value/write", (p) => {
+      if (p.expectedVersion && p.expectedVersion !== fake.configVersion()) {
+        return { __error: { code: -32600, message: "Configuration was modified since last read. Fetch latest version and retry.", data: { config_write_error_code: "configVersionConflict" } } };
+      }
+      const keys = String(p.keyPath).split(".");
+      let at: any = fake.userConfig;
+      for (const k of keys.slice(0, -1)) at = at[k] ??= {};
+      const last = keys.at(-1)!;
+      at[last] = p.mergeStrategy === "upsert" ? merge(at[last], p.value) : p.value;
+      fake.configWrites += 1;
+      return { status: "ok", version: fake.configVersion(), filePath: "/home/user/.codex/config.toml", overriddenMetadata: null };
+    });
     wss.on("connection", (ws) => fake.onConnection(ws));
     await new Promise<void>((resolve) => server.listen(socket, resolve));
     return fake;
@@ -114,6 +149,11 @@ export class FakeCodex {
 
   private sendTo(ws: WebSocket, msg: Msg): void {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+  }
+
+  /** A version of the user config that changes whenever its content does. */
+  configVersion(): string {
+    return `sha256:${createHash("sha256").update(JSON.stringify(this.userConfig)).digest("hex")}`;
   }
 
   push(msg: Msg): void {

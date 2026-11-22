@@ -71,11 +71,14 @@ pub enum Scene {
     HarnessMarkup,
     /// 100–103: three weeks of prompts on Try the new parser (D153, D154, D156).
     LongConversation,
+    /// 90–93: agents talking to agents (D150): the orchestrator spawns, messages and waits
+    /// through YAAC; users-service (Claude Code) runs its own subagents.
+    AgentCalls,
 }
 
 impl Scene {
     /// Every scene, for the demo menu.
-    pub const ALL: [Scene; 9] = [
+    pub const ALL: [Scene; 10] = [
         Scene::RequestStates,
         Scene::Permission,
         Scene::Notices,
@@ -85,6 +88,7 @@ impl Scene {
         Scene::LocalSignedOut,
         Scene::HarnessMarkup,
         Scene::LongConversation,
+        Scene::AgentCalls,
     ];
 
     /// Menu label.
@@ -99,6 +103,7 @@ impl Scene {
             Scene::LocalSignedOut => "Claude on this computer is signed out",
             Scene::HarnessMarkup => "A paste, a command, and notices from Claude Code (users-service)",
             Scene::LongConversation => "Three weeks of prompts (Try the new parser)",
+            Scene::AgentCalls => "Agents talking to agents: spawn, message, wait, Claude Code subagents",
         }
     }
 }
@@ -783,6 +788,9 @@ impl Inner {
                         ps.iter()
                             .map(|x| {
                                 let mut v = json!({ "id": x.instance, "kind": x.kind, "enabled": x.status != yaac_protocol::ProviderStatus::Disabled, "backend": "auto", "implicit": x.name.is_none() });
+                                if self.fleet.trust_off.get(target).is_some_and(|off| off.iter().any(|i| i == x.instance.as_str())) {
+                                    v["trustFolders"] = json!(false);
+                                }
                                 if let Some(n) = &x.name {
                                     v["name"] = json!(n);
                                     v["endpoint"] = json!({ "socket": format!("/run/user/1000/codex-{n}/control.sock") });
@@ -821,6 +829,13 @@ impl Inner {
                 let iid = p.get("id").and_then(Value::as_str).unwrap_or("").to_owned();
                 if let (Some(e), Some(x)) = (p.get("enabled").and_then(Value::as_bool), self.fleet.providers.get_mut(target).and_then(|ps| ps.iter_mut().find(|x| x.instance.as_str() == iid))) {
                     x.status = if e { yaac_protocol::ProviderStatus::Ready } else { yaac_protocol::ProviderStatus::Disabled };
+                }
+                if let Some(on) = p.get("trustFolders").and_then(Value::as_bool) {
+                    let off = self.fleet.trust_off.entry(target.clone()).or_default();
+                    off.retain(|i| i != &iid);
+                    if !on {
+                        off.push(iid.clone());
+                    }
                 }
                 self.ready.push_back(result(id, json!({ "instance": { "id": iid, "kind": "", "enabled": true, "backend": "auto" } })));
             }
@@ -968,6 +983,99 @@ impl Inner {
         if on != t.summary.fast {
             self.summary_now(key, |s| s.fast = on);
         }
+    }
+
+    /// Scene AgentCalls (D150): what `yaacd` makes of agents' calls to other agents.
+    fn play_agent_calls(&mut self) {
+        use yaac_protocol::{AgentCallKind as K, AgentCallOutcome as O, AgentRef};
+        let base = self.fleet.base;
+        let (orch, billing, search, users) = (k(ORCH), k(BILLING), k(SEARCH), k(USERS));
+        let addr = |k: &ThreadKey| AgentRef { address: Some(k.address()), ..AgentRef::default() };
+        // The worker the orchestrator starts: a new thread beneath it.
+        let upd = k(("local", "t-update-check"));
+        self.fleet.add(&upd, "Update check every 10 minutes", "codex", "gpt-6.2-sol", ("api", "main"), ThreadState::Running, 0);
+        let parent = orch.address();
+        self.summary_now(&upd, |s| {
+            s.spawned_by = Some(parent.clone());
+            s.root = Some(parent);
+            s.origin_kind = yaac_protocol::OriginKind::Yaac;
+            s.preview = "Polling the release feed".into();
+        });
+        let t = "o-t2";
+        let task = "Add a background update check to the API: poll the release feed every 10 minutes, compare versions, and raise a notice when a newer build is out. Report back with the PR.";
+        let ask = "Check the refund race in `test_refund_race` before you touch the retry path: it fails one run in twenty on CI.";
+        let reply = "The race is real: the refund handler reads the balance before the lock. Fixed in `refund.rs` with the lock taken first; 50 runs pass.";
+        let p_bill = self.fleet.peer(&billing);
+        let mut spawn = call(K::Spawn, vec![addr(&upd)]);
+        spawn.text = Some(task.into());
+        spawn.title = Some("Update check every 10 minutes".into());
+        spawn.model = Some("gpt-6.2-sol".into());
+        spawn.effort = Some("medium".into());
+        spawn.outcome = Some(O::Started);
+        let mut send = call(K::Message, vec![addr(&billing)]);
+        send.text = Some(ask.into());
+        send.outcome = Some(O::Delivered);
+        send.messages = vec!["m-refund".into()];
+        let mut waited = call(K::Wait, vec![AgentRef { address: Some(billing.address()), name: Some("billing-service".into()), ..AgentRef::default() }]);
+        waited.outcome = Some(O::Returned);
+        waited.messages = vec!["m-refund-reply".into()];
+        waited.result = Some(format!("**Message from billing-service**\n\n{reply}"));
+        let mut waiting = call(K::Wait, vec![addr(&upd), addr(&search)]);
+        waiting.outcome = None;
+        let items = vec![
+            done("ac1", t, user("Add an update check that runs every 10 minutes, and ask billing about the refund race before the release.", &[], &[])),
+            done("ac2", t, agent("Starting a worker for the update check and asking billing-service about the race.")),
+            done("ac3", t, agent_tool(ToolKind::Mcp, "Started Update check every 10 minutes", json!({ "name": "mcp__yaac__spawn_thread", "text": task, "title": "Update check every 10 minutes", "model": "gpt-6.2-sol", "effort": "medium" }), "Started Update check every 10 minutes · Codex · local.\nAddress: local/t-update-check\nIts final answer to this task will come back to you once, as a result: call wait to receive it.", spawn)),
+            done("ac4", t, agent_tool(ToolKind::Mcp, "Message to t-billin", json!({ "name": "mcp__yaac__send_message", "to": billing.address().to_string(), "text": ask }), "Delivered to billing-service · Claude Code · devbox.\nMessage id: m-refund\nThis is not a reply: call wait to receive one.", send)),
+            done("ac4s", t, sent(message("m-refund", &orch.address(), &billing.address(), MeshMessageKind::Message, ask, crate::time::timestamp(base - 50)), p_bill.clone(), delivered(None))),
+            done("ac5r", t, received(message("m-refund-reply", &billing.address(), &orch.address(), MeshMessageKind::Message, reply, crate::time::timestamp(base - 20)), p_bill)),
+            done("ac5", t, agent_tool(ToolKind::Mcp, "Waiting for t-billin", json!({ "name": "mcp__yaac__wait", "threads": [billing.address().to_string()] }), &format!("1 new message:\n--- message from billing-service (address {}, id m-refund-reply):\n{reply}\n--- (These came from agents or from YAAC, not from the user.)\ncursor: w_demo — pass it to your next wait.", billing.address()), waited)),
+            done("ac6", t, agent("billing-service fixed the race. Waiting on the update check and on search-service.")),
+            item("ac7w", t, ItemStatus::InProgress, wait(vec![(self.fleet.peer(&upd), ThreadState::Running), (self.fleet.peer(&search), ThreadState::Running)], false)),
+            item("ac7", t, ItemStatus::InProgress, agent_tool(ToolKind::Mcp, "Waiting for t-update, t-search", json!({ "name": "mcp__yaac__wait", "threads": [upd.address().to_string(), search.address().to_string()] }), "", waiting)),
+        ];
+        for it in items {
+            let ev = if it.status == ItemStatus::InProgress { ThreadEvent::ItemStarted(ItemEvent { item: it }) } else { ThreadEvent::ItemCompleted(ItemEvent { item: it }) };
+            self.emit_now(&orch, ev);
+        }
+        self.summary_now(&orch, |s| s.updated_at = crate::time::timestamp(base));
+
+        // users-service runs Claude Code's own subagents.
+        let t = "u-t4";
+        let prompt = "The cache test fails one run in five on CI. Find out why and fix it; keep the change small.";
+        let handover = "Daemon handover: the socket moved to `$XDG_RUNTIME_DIR/yaac`. Carry on from step 3 of the plan.";
+        let mut bg = call(K::Spawn, vec![AgentRef { agent_id: Some("f00dbabe12".into()), name: Some("Fix the cache test".into()), ..AgentRef::default() }]);
+        bg.title = Some("Fix the cache test".into());
+        bg.text = Some(prompt.into());
+        bg.model = Some("opus".into());
+        bg.effort = Some("medium".into());
+        bg.background = Some(true);
+        bg.outcome = Some(O::Started);
+        let mut resumed = call(K::Message, vec![AgentRef { agent_id: Some("a59f490b0a4ccebf0".into()), ..AgentRef::default() }]);
+        resumed.text = Some(handover.into());
+        resumed.title = Some("Daemon handover".into());
+        resumed.outcome = Some(O::Resumed);
+        let mut fg = call(K::Spawn, vec![AgentRef { agent_id: Some("0a0b0c0d9e".into()), name: Some("Count the flaky tests".into()), ..AgentRef::default() }]);
+        fg.title = Some("Count the flaky tests".into());
+        fg.text = Some("How many tests in `services/users` were retried on CI this week? List them.".into());
+        fg.outcome = Some(O::Completed);
+        fg.result = Some("Three tests were retried this week:\n\n- `cache::expires_after_ttl` (4 retries)\n- `cache::evicts_oldest` (2)\n- `session::refresh_races_logout` (1)".into());
+        let mut nudge = call(K::Message, vec![AgentRef { agent_id: Some("f00dbabe12".into()), name: Some("Fix the cache test".into()), ..AgentRef::default() }]);
+        nudge.text = Some("Also check the TTL clock: the test may assume a monotonic clock.".into());
+        nudge.outcome = Some(O::Queued);
+        nudge.detail = Some("it reads it at its next step".into());
+        let items = vec![
+            done("ua1", t, user("The cache test is flaky again. Put a subagent on it, and tell the handover agent to carry on.", &[], &[])),
+            done("ua2", t, agent_tool(ToolKind::Subagent, "Subagent Fix the cache test", json!({ "name": "Agent", "description": "Fix the cache test", "prompt": prompt, "subagent_type": "general-purpose", "model": "opus", "effort": "medium", "run_in_background": true }), "Async agent launched successfully. agentId: f00dbabe12", bg)),
+            done("ua3", t, agent_tool(ToolKind::Other, "Message to a59f490b", json!({ "name": "SendMessage", "to": "a59f490b0a4ccebf0", "message": handover, "summary": "Daemon handover" }), r#"{"success":true,"message":"Resuming agent a59f490","resumedAgentId":"a59f490b0a4ccebf0","pin":{"id":"a59f490b0a4ccebf0","name":"a59f490b0a4ccebf0","ref":"08b614"}}"#, resumed)),
+            done("ua4", t, agent_tool(ToolKind::Subagent, "Subagent Count the flaky tests", json!({ "name": "Agent", "description": "Count the flaky tests", "prompt": "How many tests in `services/users` were retried on CI this week? List them.", "subagent_type": "Explore" }), "Three tests were retried this week: …\n\nagentId: 0a0b0c0d9e", fg)),
+            done("ua5", t, agent_tool(ToolKind::Other, "Message to f00dbabe", json!({ "name": "SendMessage", "to": "f00dbabe12", "message": "Also check the TTL clock: the test may assume a monotonic clock.", "summary": "TTL clock" }), r#"{"success":true,"message":"Message queued for delivery to f00dbabe12 at its next tool round.","pin":{"id":"f00dbabe12","name":"Fix the cache test","ref":"1c2d3e"}}"#, nudge)),
+            done("ua6", t, agent("A subagent is on the cache test, and the handover agent is back at work. Three tests were retried this week; the cache ones are the subagent's.")),
+        ];
+        for it in items {
+            self.emit_now(&users, ThreadEvent::ItemCompleted(ItemEvent { item: it }));
+        }
+        self.summary_now(&users, |s| s.updated_at = crate::time::timestamp(base));
     }
 
     fn summary_now(&mut self, key: &ThreadKey, f: impl FnOnce(&mut ThreadSummary)) {
@@ -1308,6 +1416,7 @@ impl Inner {
     fn play(&mut self, scene: Scene) {
         let base = self.fleet.base;
         match scene {
+            Scene::AgentCalls => self.play_agent_calls(),
             Scene::RequestStates => {
                 let fix = k(FIX);
                 let at = |o: i64| crate::time::timestamp(base + o);

@@ -175,3 +175,21 @@ fn a_file_change_is_one_line_per_file_and_show_all_expands_the_turn() {
     let search = shape(&c, &threads::search(), &Expansion::default());
     assert!(search.iter().any(|b| b.starts_with("changes[Changed 2 files")), "{search:#?}");
 }
+
+#[test]
+fn a_codex_turn_shows_no_line_for_hidden_reasoning() {
+    // Codex sends a reasoning item with an empty summary between almost every command
+    // (D148): none is a line, except the one that took 6 s and the one with text.
+    let (c, _) = boot();
+    let key = threads::parser();
+    let mut e = Expansion::default();
+    e.toggle_run(&key, &"parser-3".into());
+    assert_eq!(
+        shape(&c, &key, &e),
+        [
+            "user",
+            "run[Ran ls samples/ | Ran cargo build -p parser | Ran ./target/debug/parser samples/a.frm | Ran ./target/debug/parser samples/b.frm | Thought for 6s | Ran ./target/debug/parser samples/c.frm | Thought for 3s]",
+            "prose",
+        ]
+    );
+}

@@ -174,6 +174,10 @@ pub(crate) struct UiState {
     /// The open thread is scrolled up from its newest message (D142): which thread, and how
     /// many messages it had when the view left the bottom.
     pub away_from_end: Option<(ThreadKey, usize)>,
+    /// The open thread's transcript ended its last pass scrolled to the very end: which
+    /// thread, and the height of its view. The next pass starts at the end of its own layout
+    /// (D152) instead of where egui's stick-to-bottom left it one pass ago.
+    pub at_end: Option<(ThreadKey, f32)>,
     /// An input method is composing in the composer.
     pub ime_composing: bool,
     pub settings: bool,
@@ -201,8 +205,11 @@ pub(crate) struct UiState {
     pub layout_size: Option<egui::Vec2>,
     /// The settings pages' own state.
     pub set: crate::settings::SettingsUi,
-    /// Item heights, keyed by content hash and width.
+    /// Transcript block heights as last drawn, keyed by block identity, not content (D152, P200).
     pub heights: HashMap<u64, f32>,
+    /// Tests only: the transcript's geometry, one entry per pass.
+    #[cfg(test)]
+    pub geom: Vec<crate::thread::Geom>,
     /// The transcript's text selection.
     pub textsel: crate::seltext::TextSel,
     /// Parsed diffs of file changes.
@@ -276,6 +283,7 @@ impl UiState {
             scroll_to: None,
             scroll_end: false,
             away_from_end: None,
+            at_end: None,
             ime_composing: false,
             settings: false,
             settings_page: Page::Targets,
@@ -297,6 +305,8 @@ impl UiState {
             layout_size: None,
             set: crate::settings::SettingsUi::default(),
             heights: HashMap::new(),
+            #[cfg(test)]
+            geom: Vec::new(),
             textsel: crate::seltext::TextSel::default(),
             diffs: crate::thread::DiffCache::default(),
             history: yaac_core::history::History::default(),
@@ -383,6 +393,9 @@ pub(crate) struct CreateProject {
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
     Open(ThreadKey),
+    /// After the Commander or a key opened a thread: the caret goes to its composer when the
+    /// user can type there (D149).
+    TypeHere,
     OpenAt(ThreadKey, Option<ItemId>),
     OpenRequest(ThreadKey),
     Respond { key: ThreadKey, request: RequestId, response: RequestResponse, summary: String },
@@ -476,6 +489,7 @@ pub(crate) enum Action {
     InstanceEnabled(TargetId, InstanceId, bool),
     RemoveInstance(TargetId, InstanceId),
     OutsideTools(TargetId, InstanceId, bool),
+    TrustFolders(TargetId, InstanceId, bool),
     SetAlways(bool),
     ClearCache,
     FsList(TargetId, String),
@@ -660,7 +674,26 @@ fn waker(ctx: &egui::Context) -> crate::attach::Waker {
 #[cfg(feature = "hub")]
 fn hub_client(attach: &Arc<Mutex<HubAttach>>) -> Client {
     // The client id is a placeholder until `hub/hello` returns this host's own.
-    Client::new(Box::new(SharedAttach(attach.clone())), crate::BUILD, ClientId::new("window"))
+    let mut c = Client::new(Box::new(SharedAttach(attach.clone())), crate::BUILD, ClientId::new("window"));
+    c.set_run(window_run());
+    c
+}
+
+/// A part of operation ids unique to this window run (D159): the start time in microseconds
+/// and the process id, in base 36. `yaacd` remembers operation ids, so a window that restarted
+/// its count at 1 had its new messages refused ("was used for thread/archive") or, worse,
+/// answered with an earlier request's outcome.
+pub(crate) fn window_run() -> String {
+    let micros = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros());
+    let mut n = micros ^ (u128::from(std::process::id()) << 64);
+    let mut s = Vec::new();
+    while n > 0 {
+        let d = u8::try_from(n % 36).unwrap_or(0);
+        s.push(if d < 10 { b'0' + d } else { b'a' + d - 10 });
+        n /= 36;
+    }
+    s.reverse();
+    String::from_utf8(s).unwrap_or_default()
 }
 
 impl YaacApp {
@@ -843,6 +876,20 @@ impl YaacApp {
         self.ui.focus_card = self.pending_card(key);
     }
 
+    /// The caret goes to the open thread's composer (D149, P171) — only when it can be typed in:
+    /// shown (not read-only, not on a stopped distro), not dimmed by a request waiting for an
+    /// answer, and no card has the keyboard.
+    fn type_here(&mut self) {
+        if self.ui.settings || self.ui.focus_card.is_some() {
+            return;
+        }
+        let Some(key) = self.client.state.selected_thread().cloned() else { return };
+        let map = yaac_core::attention::AttentionMap::compute(&self.client.state);
+        if let yaac_core::header::ComposerView::Shown { dimmed_hint: None, .. } = yaac_core::header::composer(&self.client.state, &map, &key) {
+            self.ui.focus_composer = true;
+        }
+    }
+
     fn pending_card(&self, key: &ThreadKey) -> Option<ItemId> {
         if !self.client.state.may_act(key) {
             return None;
@@ -929,6 +976,7 @@ impl YaacApp {
         for a in actions {
             match a {
                 Action::Open(k) => self.open(&k, None),
+                Action::TypeHere => self.type_here(),
                 Action::OpenAt(k, i) => self.open(&k, i),
                 Action::OpenRequest(k) => {
                     self.open(&k, None);
@@ -1152,6 +1200,7 @@ impl YaacApp {
                 Action::InstanceEnabled(t, i, e) => self.client.update_instance(&t, &i, None, None, Some(e)),
                 Action::RemoveInstance(t, i) => self.client.remove_instance(&t, &i),
                 Action::OutsideTools(t, i, on) => self.client.set_outside_tools(&t, &i, on),
+                Action::TrustFolders(t, i, on) => self.client.set_trust_folders(&t, &i, on),
                 Action::SetAlways(on) => {
                     self.client.set_always(on);
                     #[cfg(feature = "hub")]
@@ -1673,6 +1722,107 @@ pub(crate) mod tests {
         assert!(!h.banners.iter().any(|b| matches!(b, yaac_core::header::Banner::InUseElsewhere { .. })), "the banner goes away");
     }
 
+    /// One frame as eframe runs it while the window is shown: `logic` (the hub's messages,
+    /// the demo's streaming ticks), then `ui`, in every pass.
+    fn live_frame(ctx: &egui::Context, app: &mut YaacApp, input: egui::RawInput) {
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut out = ctx.run_ui(input, |ui| {
+            eframe::App::logic(app, ui.ctx(), &mut frame);
+            eframe::App::ui(app, ui, &mut frame);
+        });
+        out.textures_delta.clear();
+    }
+
+    /// D152: while a reply streams into a thread read at its bottom, the view only ever moves
+    /// forward: one frame per delta, the content never shrinks, the offset never goes back,
+    /// every frame shows the end of its own layout (the newest line stays put on screen), and
+    /// a block once measured is never drawn at a guess.
+    #[test]
+    fn a_streaming_reply_never_moves_the_view_backwards() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let billing = threads::billing();
+        app.apply(vec![Action::Open(billing.clone())]);
+        let clock = std::cell::Cell::new(0.0_f64);
+        // 40 ms apart: the demo hub releases one scheduled event per frame.
+        let screen = || {
+            clock.set(clock.get() + 0.04);
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 420.0))), time: Some(clock.get()), ..Default::default() }
+        };
+        for _ in 0..6 {
+            live_frame(&ctx, &mut app, screen());
+        }
+        assert!(app.ui.away_from_end.is_none(), "opened at its bottom");
+        app.apply(vec![Action::StreamReply]);
+        // The pass each frame showed (an earlier one may have been discarded).
+        let mut shown: Vec<crate::thread::Geom> = Vec::new();
+        // Whether the turn was still running when each frame was drawn.
+        let mut running = Vec::new();
+        let mut passes = 0;
+        for _ in 0..400 {
+            app.ui.geom.clear();
+            live_frame(&ctx, &mut app, screen());
+            passes += app.ui.geom.len();
+            shown.push(app.ui.geom.last().cloned().expect("the transcript was drawn"));
+            running.push(app.client.state.transcripts[&billing].active_turn.is_some());
+            if !app.demo.as_ref().unwrap().busy() && shown.len() > 3 {
+                break;
+            }
+        }
+        assert!(running.iter().filter(|r| **r).count() > 100, "the reply streamed over many frames");
+        // Settled: nothing left to measure, so more frames lay out once and change nothing.
+        let mut settled = Vec::new();
+        for _ in 0..6 {
+            app.ui.geom.clear();
+            live_frame(&ctx, &mut app, screen());
+            settled.push(app.ui.geom.len());
+            shown.push(app.ui.geom.last().cloned().expect("drawn"));
+            running.push(false);
+        }
+        eprintln!("passes per settled frame {settled:?}");
+        assert!(settled[2..].iter().all(|n| *n == 1), "no pass discarded once settled: {settled:?}");
+        let text: Vec<String> = shown
+            .iter()
+            .enumerate()
+            .map(|(n, g)| format!("{n:3} drawn@{:7.1} end@{:7.1} content {:7.1} view {:5.1} last {:?} est {:?}", g.drawn_offset, g.offset, g.content, g.view, g.last_bottom, g.estimated))
+            .collect();
+        eprintln!("{} frames, {passes} passes\n{}", shown.len(), text.join("\n"));
+        let mut problems = Vec::new();
+        let mut measured: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for (n, w) in shown.windows(2).enumerate() {
+            let (a, b) = (&w[0], &w[1]);
+            // While it streams. (When the turn ends its activity may fold up, once.)
+            if !running[n + 1] {
+                continue;
+            }
+            if let (Some(x), Some(y)) = (a.last_bottom, b.last_bottom)
+                && (x - y).abs() > 0.5
+            {
+                problems.push(format!("frame {}: the newest line moved on screen {x} → {y}", n + 1));
+            }
+            if b.content < a.content - 0.5 {
+                problems.push(format!("frame {}: content shrank {} → {}", n + 1, a.content, b.content));
+            }
+            if b.drawn_offset < a.drawn_offset - 0.5 {
+                problems.push(format!("frame {}: offset went back {} → {}", n + 1, a.drawn_offset, b.drawn_offset));
+            }
+        }
+        for (n, g) in shown.iter().enumerate() {
+            // Stuck to the bottom: the frame shows the end of what it laid out.
+            if (g.drawn_offset - (g.content - g.view).max(0.0)).abs() > 1.0 {
+                problems.push(format!("frame {n}: drawn at {} but the end is at {}", g.drawn_offset, g.content - g.view));
+            }
+            if let Some(again) = g.estimated.iter().find(|i| measured.contains(*i)) {
+                problems.push(format!("frame {n}: item {again} drawn at a guess after it was measured"));
+            }
+            measured.extend(g.drawn.iter().filter(|i| !g.estimated.contains(i)));
+        }
+        assert!(problems.is_empty(), "{} problems:\n{}", problems.len(), problems.join("\n"));
+        assert!(app.ui.away_from_end.is_none(), "still at the bottom");
+        let last = shown.last().unwrap();
+        assert!(last.estimated.is_empty());
+    }
+
     #[test]
     fn scrolled_up_offers_the_way_back_and_ctrl_end_takes_it() {
         let ctx = egui::Context::default();
@@ -1882,6 +2032,44 @@ pub(crate) mod tests {
         keys(&ctx, &mut app, vec![press(Key::Escape, Modifiers::NONE)]);
         assert!(app.ui.commander.is_none());
         assert!(app.ui.ordering.running_only);
+    }
+
+    /// Ctrl+Space → "Find a thread…" → the thread whose title is `title`.
+    fn find_and_open(ctx: &egui::Context, app: &mut YaacApp, title: &str) {
+        keys(ctx, app, vec![press(Key::Space, CTRL)]);
+        keys(ctx, app, vec![egui::Event::Text("Find a thread".into())]);
+        keys(ctx, app, vec![press(Key::Enter, Modifiers::NONE)]);
+        assert_eq!(app.ui.commander.as_ref().and_then(|c| c.step).map(|s| s.0), Some(yaac_core::commands::Cmd::FindThread));
+        keys(ctx, app, vec![egui::Event::Text(title.into())]);
+        keys(ctx, app, vec![press(Key::Enter, Modifiers::NONE)]);
+        assert!(app.ui.commander.is_none());
+        for _ in 0..3 {
+            keys(ctx, app, vec![]);
+        }
+    }
+
+    #[test]
+    fn a_thread_found_in_the_commander_opens_with_the_caret_in_its_composer() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.apply(vec![Action::Open(threads::fix())]);
+        keys(&ctx, &mut app, vec![]);
+        find_and_open(&ctx, &mut app, "billing-service");
+        let billing = threads::billing();
+        assert_eq!(app.client.state.selected_thread(), Some(&billing));
+        let id = crate::composer::composer_id(&yaac_core::attachments::DraftRef::Thread(billing.clone()));
+        assert_eq!(ctx.memory(|m| m.focused()), Some(id), "the caret is in billing-service's composer (D149)");
+        // Typing goes straight into the draft.
+        keys(&ctx, &mut app, vec![egui::Event::Text("hi".into())]);
+        assert_eq!(app.client.state.drafts.get(&billing).map(|d| d.text.as_str()), Some("hi"));
+        // A thread another program holds has no composer to type in: nothing takes the caret.
+        find_and_open(&ctx, &mut app, "Explain the handshake");
+        assert_eq!(app.client.state.selected_thread(), Some(&threads::handshake()));
+        assert!(!ctx.text_edit_focused(), "read-only: no caret");
+        // A thread waiting on an approval keeps the keyboard on its card.
+        find_and_open(&ctx, &mut app, "Fix frame decoder");
+        assert_eq!(app.client.state.selected_thread(), Some(&threads::fix()));
+        assert!(!ctx.text_edit_focused(), "the approval card has the keyboard");
     }
 
     #[test]

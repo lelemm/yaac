@@ -19,6 +19,7 @@
 //! No I/O, no clock, no UI toolkit. Nothing here branches on provider kind.
 
 pub mod activity;
+pub mod agentcall;
 pub mod agents;
 pub mod attachments;
 pub mod attention;

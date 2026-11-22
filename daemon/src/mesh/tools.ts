@@ -50,7 +50,7 @@ const MESH_TOOLS: ToolDef[] = [
   },
   {
     name: "list_models",
-    description: "For one machine (default: yours): the provider instances there (Codex, Claude Code, …) and the models each offers, with their efforts — live data, nothing hardcoded. Use it before `spawn_thread` to turn \"spawn it on Opus\" into an instance id and a model id that really exist.",
+    description: "For one machine (default: yours): the provider instances there (Codex, Claude Code, …) and the models each offers, with their efforts and the instance's permission modes — live data, nothing hardcoded. Use it before `spawn_thread` to turn \"spawn it on Opus\" into an instance id and a model id that really exist.",
     inputSchema: { type: "object", properties: { target: str("A machine's name, as `list_targets` shows it. Default: your own.") }, additionalProperties: false },
   },
   {
@@ -103,7 +103,7 @@ const MESH_TOOLS: ToolDef[] = [
   },
   {
     name: "spawn_thread",
-    description: "Start a new thread (a worker) on any machine, provider instance, and model, with a first message describing its task. Get `instance` and `model` from `list_models`. The worker is your child: by default its final answer to this first task comes back to you once, as a result you receive with `wait` (or as a new message if you are idle). It starts in its harness's default permission mode on its own machine. Returns its address. Spawn one thread per call.",
+    description: "Start a new thread (a worker) on any machine, provider instance, and model, with a first message describing its task. Get `instance` and `model` from `list_models`. The worker is your child: by default its final answer to this first task comes back to you once, as a result you receive with `wait` (or as a new message if you are idle). It runs in the permission mode that corresponds to yours — the same mode on your own provider instance; on another provider the equivalent one (bypass maps to that provider's never-ask mode), and never anything more permissive than yours; if that provider has nothing as restrictive, its default mode. The result says which mode it got. It keeps that mode even if yours changes later. Returns its address. Spawn one thread per call.",
     inputSchema: {
       type: "object",
       properties: {
@@ -111,6 +111,7 @@ const MESH_TOOLS: ToolDef[] = [
         instance: str("Provider instance id (or its name) from `list_models`. Default: your own provider instance."),
         model: str("Model id (or its display name) from `list_models`. Default: that instance's default model."),
         effort: str("Effort, as `list_models` lists it for that model."),
+        mode: str("Permission mode id from `list_models` for that instance, to run the worker with less freedom than yours. Refused if it is more permissive than your own mode. Default: inherit yours."),
         target: str("Machine name from `list_targets`. Default: your own."),
         cwd: str("Working directory on that machine. Default: yours on your own machine; on another machine, the same project's checkout if exactly one is known there."),
         title: str("A short title for the worker."),

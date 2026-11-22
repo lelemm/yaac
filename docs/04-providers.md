@@ -109,7 +109,8 @@ pub struct ProviderDescriptor {
     pub status: ProviderStatus,             // Ready | NotInstalled | TooOld | NeedsAuth | Unreachable | …
     pub capabilities: Vec<Capability>,      // what this instance can do, on this backend
     pub models: Vec<ModelInfo>,             // fetched from the harness — never hardcoded
-    pub modes: Vec<ModeInfo>,               // permission / approval / sandbox modes on offer
+    pub modes: Vec<ModeInfo>,               // permission / approval / sandbox modes on offer,
+                                            // each with skips_approvals and autonomy
     pub revision: u64,                      // bumps whenever anything above changes
 }
 
@@ -190,6 +191,7 @@ pub enum Capability {
     ThreadDelete,        // the harness can delete its own sessions (`thread/delete { alsoInHarness }`, D110)
     ThreadMove,          // yaacd can list the thread under another project (`thread/move`, D144); yaacd's own
     ThreadMoveWorkingDirectory, // the harness can change a conversation's folder from its next turn (D144)
+    FolderTrust,         // the harness can be told a folder is trusted, through a supported interface (D147)
     FollowExternal,      // can show live updates of a thread someone else is driving
 
     // ── Turn control ────────────────────────────────────────────────────────
@@ -311,6 +313,41 @@ Things this gets right that a naive union of flags gets wrong:
 **The rule for UI code:** never branch on provider kind (`if kind == "codex"`). Branch on a
 capability. If a feature needs a distinction no capability expresses, add a capability.
 
+### Modes and how permissive they are
+
+**Proposed (P150, P151), for D146.** A mode is reported by its provider at runtime, never
+listed in UI code. Besides its id, label and `isDefault`, a `ModeInfo` carries two flags about
+what it lets the agent do without asking:
+
+- `skipsApprovals` — it never asks. The UI confirms before switching a thread to it and keeps
+  it visibly marked while it is active.
+- `autonomy` — where it sits on one scale every provider shares, least first: `readOnly`
+  (changes nothing), `ask` (anything that changes something asks, beyond the user's own
+  rules), `edits` (file edits proceed), `workspace` (edits and commands confined to the
+  working directory proceed), `judged` (the harness approves or denies each action itself and
+  asks only when unsure), `full` (everything proceeds). Optional and open: absent, or a value
+  this build does not know, is *unknown* and is never compared. A mode with `skipsApprovals`
+  counts as `full`.
+
+The agent mesh compares modes on these two flags to start a worker in the mode that matches
+its parent's ([10](10-agent-mesh.md#the-workers-permission-mode)). Each provider fills them in
+from what its harness documents for the mode:
+
+| Harness | Mode → `autonomy` | Source |
+| --- | --- | --- |
+| Claude Code | `plan` → `readOnly`; `default`, `dontAsk` → `ask`; `acceptEdits` → `edits`; `auto` → `judged`; `bypassPermissions` → `full` (and `skipsApprovals`) | `PermissionMode` in the Agent SDK's `sdk.d.ts` (0.3.329). `dontAsk` acts on exactly what the user's rules allow, as `default` does unasked. |
+| Codex | Read only → `ask`; Auto → `workspace`; Full access → `full` (and `skipsApprovals`) | The presets' approval policy and sandbox (`on-request` + `read-only` / `workspace-write`; `never` + `danger-full-access`). |
+| Fake | `fake-ask` → `ask`; `fake-auto` → `workspace`; or whatever `FAKE_MODES` says | — |
+
+**Codex reports the mode a thread is really in (P152).** `thread/start`, `thread/resume` and
+`thread/fork` answer with the thread's `approvalPolicy`, `approvalsReviewer` and `sandbox`
+(verified with `codex app-server generate-ts`, codex-cli 0.170.0). A thread YAAC started with
+no mode follows the user's own Codex configuration; when those settings are exactly a preset's
+(reviewer `user`, same policy, same sandbox type and network access), `applied.mode` is that
+preset — so a thread on a full-access configuration is marked as one. Anything else (a
+reviewer other than the user, `untrusted` or granular approval, network the preset lacks) is
+no preset: `applied.mode` stays empty, and the mesh treats the thread's mode as unknown.
+
 ### Moving a thread is a capability
 
 **Decided (D144); Proposed (P101).** Where YAAC lists a thread is YAAC's own placement
@@ -326,6 +363,22 @@ the conversation.
 | Codex | yes | `turn/start.cwd` ("override the working directory for this turn and subsequent turns") and `thread/resume.cwd`; verified on codex-cli 0.170.0. Codex's own `threadSection/*` are labels, not folders, and are not used. |
 | Claude Code | no | The Agent SDK (0.3.329) has no way to change a session's folder; sessions are stored per project folder and `forkSession` takes no target folder. A move is YAAC's placement only. |
 | Fake | yes, unless `FAKE_MOVE_CWD=0` | Records the folder it was handed (`received[].cwd`). |
+
+### Trusting a folder is a capability
+
+**Decided (D147); Proposed (P160–P162).** A provider reports **`folderTrust`** at runtime when
+its harness can be told, through an interface the harness supports, that a folder is trusted;
+it then implements `trustFolder(folder)`: read the harness's configuration first, write only
+when it has no word on the folder, never downgrade or remove, and report `marked`, `trusted`,
+`declined` (the user set something else there) or `failed` (with `uncertain` when no answer
+came). `yaacd` decides when to call it ([05](05-threads.md#folder-trust)); the instance's
+`trustFolders` switch (absent = on) turns it off. A harness's files are never edited by hand.
+
+| Harness | `folderTrust` | How |
+| --- | --- | --- |
+| Codex | yes | `config/read { includeLayers: true }` → `config.projects["<folder>"].trust_level`; if absent, `config/value/write { keyPath: "projects", value: { "<folder>": { trust_level: "trusted" } }, mergeStrategy: "upsert", expectedVersion: <user layer's version> }` over the connection `yaacd` already has. Verified on codex-cli 0.170.0. |
+| Claude Code | no | Trust is `projects["<folder>"].hasTrustDialogAccepted` in `~/.claude.json`. The only programmatic way to set it is the Agent SDK's `workspaceTrust` option, which is not in the SDK's published types and is marked `@internal` in the CLI (2.1.330 / SDK 0.3.329) — not a supported interface, so it is not used. |
+| Fake | no | |
 
 ### Fast mode is a model capability
 
@@ -495,6 +548,7 @@ Notes:
 - The modes offered are the SDK's permission modes, **including the one that bypasses all
   permission checks**. That one is reported with `skipsApprovals` set, so the UI asks for
   confirmation before switching to it ([07 UI](07-ui.md#the-control-row-under-the-composer)).
+  Each carries its `autonomy` ([above](#modes-and-how-permissive-they-are)).
 - The Claude process is a child of `yaacd`. If `yaacd` dies, so does a turn in progress, and
   any request it was waiting on becomes `expired` — still visible, with its full text.
 - `supportedModels()` reports effort levels per model but has no image-input flag. The Claude

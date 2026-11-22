@@ -72,7 +72,8 @@ import { UploadStore } from "./uploads.js";
 import { HANDOFF_ITEM_BYTES, boundTranscript, cutoffTurn, itemsThrough, preamble, previewOf, renderTranscript, type AttachmentLookup, type RenderedTranscript } from "./handoff.js";
 import { normaliseRemote } from "./fsinfo.js";
 import { GitStatusStore, gitRunner, resolveRepo, type GitRunner } from "./git.js";
-import { ProjectStore, projectRefFor, userProjectRef } from "./projects.js";
+import { ProjectStore, matchProject, projectRefFor, userProjectRef } from "./projects.js";
+import { FolderTrust } from "./trust.js";
 import { Limiter } from "../util/exec.js";
 
 export const PAGE_MAX_BYTES = 64 * 1024;
@@ -243,6 +244,8 @@ export class Core {
   readonly uploads: UploadStore;
   readonly projects: ProjectStore;
   readonly gitStatus: GitStatusStore;
+  /** Folder trust in the harnesses (D147). */
+  readonly folderTrust: FolderTrust;
   readonly clients = new Set<ClientLink>();
   /** Fires when running turns or pending requests change (idle tracking, hand-over). */
   readonly activity = new Emitter<void>();
@@ -282,6 +285,7 @@ export class Core {
     this.ops = new OpLog(path.join(opts.home, "ops.jsonl"));
     this.uploads = new UploadStore(opts.tempDir);
     this.projects = new ProjectStore(path.join(opts.home, "projects.json"));
+    this.folderTrust = new FolderTrust(path.join(opts.home, "folder-trust.json"), opts.log);
     this.git = gitRunner(opts.env);
     this.gitLimiter = new Limiter(Math.max(1, opts.gitConcurrency ?? 2));
     this.gitStatus = new GitStatusStore(path.join(opts.home, "git-status.json"), this.git, this.gitLimiter, (root) => this.onGitChanged(root));
@@ -966,6 +970,9 @@ export class Core {
         "moved",
         workingDirectory ? `Moved to ${where} · working directory now ${workingDirectory}${running}` : `Moved to ${where} in YAAC · working directory unchanged`,
       );
+      // The agent works in a project's folder from its next turn: that folder, like a new thread's.
+      const inst = this.registry.get(rt.record.instance);
+      if (workingDirectory && inst) this.trustNotice(rt, await this.trustProjectFolder(inst, workingDirectory));
       const thread = this.renderSummary(this.summaryOf(rt), this.holderOf(rt), client.key);
       return workingDirectory ? { thread, workingDirectory } : { thread };
     });
@@ -1671,6 +1678,7 @@ export class Core {
       // folder is keyed by this operation, for the thread's whole life.
       const uploadsKey = `start:${p.opId}`;
       const input = this.buildInput(uploadsKey, parts, "user");
+      const trusted = await this.trustProjectFolder(instance, cwd);
       const key = instance.config.id;
       this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
       let started: { thread: NativeId; turn: TurnId };
@@ -1698,6 +1706,7 @@ export class Core {
       );
       const driver: Driver = { key: client.key, host: client.host };
       this.turnBegan(rt, started.turn, "user", parts, driver);
+      this.trustNotice(rt, trusted);
       this.finishPendingStart(key);
       return { threadId: rt.id, turnId: started.turn };
     });
@@ -1984,6 +1993,29 @@ export class Core {
     void this.execute(rt, work);
   }
 
+  /**
+   * Folder trust (D147): before YAAC starts a conversation in `cwd`, marks that folder trusted
+   * in the instance's harness — only when the folder belongs to a project the user created (by
+   * the same rule that lists threads under projects), and once per folder (`FolderTrust`).
+   * Resolves to the notice for the new thread, or null. Never throws: the thread starts anyway.
+   */
+  private async trustProjectFolder(instance: Instance, cwd: string): Promise<string | null> {
+    if (!FolderTrust.applies(instance)) return null;
+    try {
+      const folder = path.resolve(cwd);
+      if (!matchProject(this.projects.list(), { folder, repo: await this.repoOf(folder, true) })) return null;
+      return await this.folderTrust.ensure(instance, folder);
+    } catch (e) {
+      this.opts.log(`folder trust skipped: ${(e as Error).message}`);
+      return null;
+    }
+  }
+
+  private trustNotice(rt: ThreadRuntime, text: string | null): void {
+    if (!text) return;
+    this.noticeItem(rt, text.startsWith("Marked ") ? "folderTrust" : "warning", text);
+  }
+
   /** A notice item in a thread's transcript (out of band). */
   noticeItem(rt: ThreadRuntime, kind: string, text: string): void {
     if (rt.deleted) return;
@@ -2221,13 +2253,16 @@ export class Core {
 
   /**
    * Starts a thread for an agent (`spawn_thread`): no client drives it, its first turn has
-   * origin `mesh`, and it starts in the harness's default mode (no mode is sent).
+   * origin `mesh`, and it starts in the mode the mesh chose from its parent's (D146), or in the
+   * harness's default mode when none is given (no mode is sent).
    */
   async startThreadForAgent(p: {
     instance: string;
     cwd: string;
     model?: string | null;
     effort?: string | null;
+    /** The mode to start in (D146: the mesh's choice); null: the harness's default. */
+    mode?: string | null;
     title: string;
     parts: InputPart[];
     journalItems: Item[];
@@ -2241,11 +2276,13 @@ export class Core {
     const uploadsKey = `spawn:${randomId("s", 12)}`;
     const input = this.buildInput(uploadsKey, p.parts, "mesh");
     input.mesh = p.mesh;
+    // Only a folder of a user's project: an agent's arbitrary path keeps the harness's behaviour.
+    const trusted = await this.trustProjectFolder(instance, p.cwd);
     const key = instance.config.id;
     this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
     let started: { thread: NativeId; turn: TurnId };
     try {
-      started = await provider.startThread({ cwd: p.cwd, model: p.model ?? null, effort: p.effort ?? null, mode: null }, input);
+      started = await provider.startThread({ cwd: p.cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null }, input);
     } catch (e) {
       this.finishPendingStart(key);
       throw rpc("provider_unavailable", `${instance.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
@@ -2266,6 +2303,7 @@ export class Core {
       true,
     );
     this.turnBegan(rt, started.turn, "mesh", p.parts, null, p.journalItems);
+    this.trustNotice(rt, trusted);
     this.finishPendingStart(key);
     return { threadId: rt.id, turnId: started.turn };
   }
@@ -2546,6 +2584,7 @@ export class Core {
     }
     this.checkModel(plan.dest.descriptor, p.model);
     const parts = withInput ? this.validateParts(p.input, this.modelImageSupport(plan.dest.descriptor, p.model)) : null;
+    const trusted = await this.trustProjectFolder(plan.dest, src.record.cwd);
     let native: NativeId;
     try {
       native = await srcInst.provider!.forkThread!(src.record.native, {
@@ -2574,6 +2613,7 @@ export class Core {
     const handoff: Item = { id: `fork:${src.id}`, turnId: cutoff ?? "", status: "completed", kind: "handoff", forkKind: "native", forkedFrom: src.id, cutoffTurn: cutoff, startedAt: nowIso(), completedAt: nowIso() };
     this.append(rt, { type: "itemStarted", item: handoff });
     this.append(rt, { type: "itemCompleted", item: handoff });
+    this.trustNotice(rt, trusted);
     return { rt, parts };
   }
 
@@ -2600,6 +2640,7 @@ export class Core {
     const input = this.buildInput(uploadsKey, parts, "user");
     input.text = preamble(file, { target: where?.target ?? "this machine", threadId: src.id, address: where?.address ?? null }, meshTools) + input.text;
     input.readable = [path.dirname(file), ...readable];
+    const trusted = await this.trustProjectFolder(dest, src.record.cwd);
     const key = dest.config.id;
     this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
     let started: { thread: NativeId; turn: TurnId };
@@ -2646,6 +2687,7 @@ export class Core {
     this.append(rt, { type: "itemStarted", item: handoff });
     this.append(rt, { type: "itemCompleted", item: handoff });
     this.turnBegan(rt, started.turn, "user", parts, { key: client.key, host: client.host });
+    this.trustNotice(rt, trusted);
     this.finishPendingStart(key);
     if (typeof provider.rename === "function" && (dest.descriptor.capabilities ?? []).includes("threadRename")) {
       void provider.rename(started.thread, title).catch((e: Error) => this.opts.log(`naming the fork ${rt.id} failed: ${e.message}`));

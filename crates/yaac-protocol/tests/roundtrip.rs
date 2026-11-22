@@ -382,3 +382,57 @@ fn thread_move_round_trips_and_the_placement_is_optional() {
         assert!(!matches!(c, yaac_protocol::Capability::Unknown(_)), "{cap} is known");
     }
 }
+
+/// D146: a mode's `autonomy` is optional (absent: unknown) and open; the spawn query carries
+/// the parent's mode and an asked-for mode, and the reply a note — all absent from an older
+/// peer, and absent stays absent.
+#[test]
+fn mode_autonomy_and_the_spawn_mode_fields_round_trip_and_are_optional() {
+    use yaac_protocol::types::{ModeAutonomy, ModeInfo, SpawnThreadQuery, SpawnThreadReply};
+    let m: ModeInfo = serde_json::from_value(json!({ "id": "bypass", "displayName": "Bypass", "skipsApprovals": true, "autonomy": "full" })).unwrap();
+    assert_eq!(m.autonomy, Some(ModeAutonomy::Full));
+    assert_eq!(serde_json::to_value(&m).unwrap()["autonomy"], json!("full"));
+    let old: ModeInfo = serde_json::from_value(json!({ "id": "ask", "displayName": "Ask" })).unwrap();
+    assert_eq!(old.autonomy, None);
+    assert!(serde_json::to_value(&old).unwrap().get("autonomy").is_none());
+    let future: ModeInfo = serde_json::from_value(json!({ "id": "x", "displayName": "X", "autonomy": "galaxyBrain" })).unwrap();
+    assert_eq!(future.autonomy.as_ref().and_then(ModeAutonomy::rank), None, "an unknown level is never compared");
+    assert_eq!(serde_json::to_value(&future).unwrap()["autonomy"], json!("galaxyBrain"));
+    let ranks: Vec<Option<u8>> = ModeAutonomy::KNOWN.iter().map(ModeAutonomy::rank).collect();
+    assert_eq!(ranks, (0..6).map(Some).collect::<Vec<_>>(), "declared least first");
+    let q: SpawnThreadQuery = serde_json::from_value(json!({
+        "instance": "pi_1", "text": "go", "mode": "auto",
+        "parentMode": { "id": "bypass", "displayName": "Bypass", "skipsApprovals": true, "autonomy": "full" }
+    }))
+    .unwrap();
+    assert_eq!(q.mode.as_ref().map(|m| m.as_str()), Some("auto"));
+    assert_eq!(q.parent_mode.as_ref().map(|m| m.skips_approvals), Some(true));
+    let plain: SpawnThreadQuery = serde_json::from_value(json!({ "instance": "pi_1", "text": "go" })).unwrap();
+    let v = serde_json::to_value(&plain).unwrap();
+    assert!(v.get("mode").is_none() && v.get("parentMode").is_none());
+    let peer = json!({ "address": "tg_1/th_1", "title": "w" });
+    let r: SpawnThreadReply = serde_json::from_value(json!({ "thread": peer, "turnId": "u1", "modeNote": "Runs in Bypass, as its parent." })).unwrap();
+    assert_eq!(r.mode_note.as_deref(), Some("Runs in Bypass, as its parent."));
+    let older: SpawnThreadReply = serde_json::from_value(json!({ "thread": peer, "turnId": "u1" })).unwrap();
+    assert!(serde_json::to_value(&older).unwrap().get("modeNote").is_none());
+}
+
+#[test]
+fn folder_trust_round_trips_and_the_switch_is_optional() {
+    use yaac_protocol::{Capability, NoticeKind, ProviderInstanceConfig, ProviderInstanceUpdateParams};
+    let c: Capability = serde_json::from_value(json!("folderTrust")).unwrap();
+    assert_eq!(c, Capability::FolderTrust);
+    let k: NoticeKind = serde_json::from_value(json!("folderTrust")).unwrap();
+    assert_eq!(k, NoticeKind::FolderTrust);
+    // An older yaacd's configuration has no switch: absent stays absent (the switch is on).
+    let older = json!({ "id": "pi_codex", "kind": "codex", "enabled": true, "backend": "auto", "implicit": true });
+    let cfg: ProviderInstanceConfig = serde_json::from_value(older).unwrap();
+    assert_eq!(cfg.trust_folders, None);
+    assert!(serde_json::to_value(&cfg).unwrap().get("trustFolders").is_none());
+    let off: ProviderInstanceConfig = serde_json::from_value(json!({ "id": "pi_codex", "kind": "codex", "enabled": true, "backend": "auto", "trustFolders": false })).unwrap();
+    assert_eq!(off.trust_folders, Some(false));
+    assert_eq!(serde_json::from_value::<ProviderInstanceConfig>(serde_json::to_value(&off).unwrap()).unwrap(), off);
+    let patch: ProviderInstanceUpdateParams = serde_json::from_value(json!({ "opId": "op_1", "id": "pi_codex", "trustFolders": false })).unwrap();
+    assert_eq!(patch.trust_folders, Some(false));
+    assert!(patch.enabled.is_none() && patch.name.is_none(), "a patch changes only what it names");
+}

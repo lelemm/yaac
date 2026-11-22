@@ -123,6 +123,51 @@ pub struct ModeInfo {
     /// must keep it visibly marked while it is active.
     #[serde(default)]
     pub skips_approvals: bool,
+    /// How much this mode lets the agent do without the user's approval, on a scale shared by
+    /// every provider. Filled in by each provider from what its harness documents for the
+    /// mode; absent when it cannot say. The agent mesh compares modes on it, so that a worker
+    /// is never started in a mode more permissive than its parent's (D146). Absent is unknown,
+    /// never "least" — and a mode with `skipsApprovals` counts as `full` whatever this says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub autonomy: Option<ModeAutonomy>,
+}
+
+open_enum! {
+    /// What a mode lets the agent do without asking the user, least first. The order is the
+    /// order of the variants: each level allows at least what the one before it allows. A
+    /// value this build does not know is treated as unknown — never compared.
+    pub enum ModeAutonomy fallback Other {
+        /// It changes nothing (it plans, reads, and answers).
+        ReadOnly = "readOnly",
+        /// It reads freely; anything that changes something asks first (apart from what the
+        /// user's own rules already allow).
+        Ask = "ask",
+        /// File edits proceed without asking; other changes ask.
+        Edits = "edits",
+        /// Edits and commands confined to the working directory proceed; anything beyond it
+        /// asks.
+        Workspace = "workspace",
+        /// The harness itself approves or denies each action (a classifier or reviewer), and
+        /// asks the user only when unsure.
+        Judged = "judged",
+        /// Everything proceeds; it never asks.
+        Full = "full",
+    }
+}
+
+impl ModeAutonomy {
+    /// Position on the scale, least first; `None` for a value this build does not know.
+    pub fn rank(&self) -> Option<u8> {
+        Some(match self {
+            ModeAutonomy::ReadOnly => 0,
+            ModeAutonomy::Ask => 1,
+            ModeAutonomy::Edits => 2,
+            ModeAutonomy::Workspace => 3,
+            ModeAutonomy::Judged => 4,
+            ModeAutonomy::Full => 5,
+            ModeAutonomy::Other(_) => return None,
+        })
+    }
 }
 
 /// A model, exactly as the harness listed it. Never hardcoded.
@@ -239,6 +284,11 @@ pub struct ProviderInstanceConfig {
     /// Whether this is an implicit default instance (exists without configuration).
     #[serde(default)]
     pub implicit: bool,
+    /// "Trust folders YAAC works in" (D147): under the `folderTrust` capability, mark the
+    /// folder of a thread YAAC starts in a user's project as trusted in the harness. Absent:
+    /// on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_folders: Option<bool>,
 }
 
 /// `provider/list` — no parameters.
@@ -337,6 +387,9 @@ pub struct ProviderInstanceUpdateParams {
     /// New environment, replacing the old one entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<BTreeMap<String, String>>,
+    /// New "Trust folders YAAC works in" switch (D147).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_folders: Option<bool>,
 }
 
 /// `providerInstance/remove`.

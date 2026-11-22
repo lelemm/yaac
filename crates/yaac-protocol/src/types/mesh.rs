@@ -8,7 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Address, EffortId, InstanceId, MeshPeer, MessageId, ModelId, OpId, ProjectRef, ProviderDescriptor,
+    Address, EffortId, InstanceId, MeshPeer, MessageId, ModeId, ModeInfo, ModelId, OpId, ProjectRef, ProviderDescriptor,
     Delivery, TargetId, TargetName, TargetPath, ThreadState, Timestamp, TurnId,
 };
 use crate::macros::{open_enum, open_union};
@@ -270,6 +270,16 @@ pub struct SpawnThreadQuery {
     /// destination can tell later who is beneath whom.
     #[serde(default)]
     pub ancestors: Vec<Address>,
+    /// The mode the worker is asked to run in (`spawn_thread`'s `mode`), as `listModels`
+    /// lists it for that instance. Still capped at `parentMode` (D146).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ModeId>,
+    /// The caller's effective mode when it spawned, as its own provider describes it. The
+    /// destination maps it onto the worker's provider by `skipsApprovals` and `autonomy`, never
+    /// to anything more permissive (D146). Absent: the caller's mode is not known, and the
+    /// worker starts in its harness's default mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_mode: Option<Box<ModeInfo>>,
 }
 
 /// `findThreads`: find threads across every target by id or fuzzy title. Answered by the hub
@@ -502,6 +512,10 @@ pub struct SpawnThreadReply {
     pub thread: MeshPeer,
     /// Its first turn.
     pub turn_id: TurnId,
+    /// One sentence saying which mode it runs in and why ("Runs in Bypass permissions, as its
+    /// parent."), for the spawn result. Absent from an older `yaacd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_note: Option<String>,
 }
 
 /// `stopThread` reply.

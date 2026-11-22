@@ -23,6 +23,7 @@ import type {
   MeshQueryParams,
   MeshThreadFilter,
   MeshThreadInfo,
+  ModeInfo,
   ProviderDescriptor,
   Receipt,
   ReceiptReason,
@@ -47,6 +48,7 @@ import { nowIso, randomId } from "../util/fsx.js";
 import { clip, frameMessages } from "./format.js";
 import { createMeshServer, readable } from "./mcp.js";
 import { MeshStore, type MessageRecord, type RootState } from "./store.js";
+import { chooseWorkerMode, ModeRefused, type ParentMode } from "./modes.js";
 import { identityBlock, TOOL_TIMEOUT_SECS, WAIT_MAX_SECS } from "./tools.js";
 
 /** The target part of addresses before the hub has told this target its id. */
@@ -627,9 +629,11 @@ export class Mesh implements CoreMeshHooks {
         const efforts = (m.efforts ?? []).map((e) => e.id).join(", ");
         lines.push(`  - model ${m.id} "${m.displayName}"${m.isDefault ? " (default)" : ""}${efforts ? ` — efforts: ${efforts}` : ""}`);
       }
+      const modes = (d.modes ?? []).map((m) => `${m.id} "${m.displayName}"${m.isDefault ? " (default)" : ""}${m.skipsApprovals ? " (never asks for approval)" : ""}`);
+      if (modes.length > 0) lines.push(`  - modes (for every model of this instance): ${modes.join(", ")}`);
     }
     if (providers.length === 0) lines.push("(no provider instances)");
-    lines.push("Pass an instance id and a model id to spawn_thread.");
+    lines.push("Pass an instance id and a model id to spawn_thread, and a mode id only to run the worker in a mode less permissive than your own (it inherits yours by default).");
     return lines.join("\n");
   }
 
@@ -1301,6 +1305,8 @@ export class Mesh implements CoreMeshHooks {
     const instanceIn = typeof a.instance === "string" && a.instance.trim() ? a.instance.trim() : null;
     const modelIn = typeof a.model === "string" && a.model.trim() ? a.model.trim() : null;
     const title = (typeof a.title === "string" && a.title.trim() ? a.title.trim() : text.split("\n").find((l) => l.trim() && !l.trim().startsWith("/fake"))?.trim() ?? "Worker").slice(0, 80);
+    const modeIn = typeof a.mode === "string" && a.mode.trim() ? a.mode.trim() : null;
+    const parentMode = await this.parentModeOf(rt);
     await this.ensurePermission(rt, {
       action: "startThreads",
       summary: `Start a thread on ${local ? this.selfName() : this.targetNameOf(targetId!)}${instanceIn ? ` (${instanceIn}${modelIn ? `, ${modelIn}` : ""})` : ""}: "${title}"`,
@@ -1326,8 +1332,10 @@ export class Mesh implements CoreMeshHooks {
         root,
         depth: tm.depth + 1,
         ancestors: [caller, ...this.ancestorsOf(rt)],
+        mode: modeIn,
+        parentMode,
       });
-      return `Started ${this.labelOf(reply.thread.address)}.\nAddress: ${reply.thread.address}\n${a.detached === true ? "It is detached: its answer will not come back to you." : "Its final answer to this task will come back to you once, as a result: call wait to receive it."}`;
+      return `Started ${this.labelOf(reply.thread.address)}.\nAddress: ${reply.thread.address}\n${reply.modeNote}\n${a.detached === true ? "It is detached: its answer will not come back to you." : "Its final answer to this task will come back to you once, as a result: call wait to receive it."}`;
     }
     const projectKey = typeof a.cwd === "string" && a.cwd.trim() ? null : await this.projectKeyOf(rt);
     const r = (await this.hubQuery(caller, targetId!, {
@@ -1343,13 +1351,16 @@ export class Mesh implements CoreMeshHooks {
       root,
       depth: tm.depth + 1,
       ancestors: [caller, ...this.ancestorsOf(rt)],
-    })) as { thread: MeshPeer; turnId: TurnId };
+      ...(modeIn ? { mode: modeIn } : {}),
+      ...(parentMode.info ? { parentMode: parentMode.info } : {}),
+    })) as { thread: MeshPeer; turnId: TurnId; modeNote?: string };
     this.remember(r.thread, "running");
     tm.children.push(r.thread.address);
     this.spawnItem(rt, rt.activeTurn, { peer: r.thread, state: "running" });
     // The first message is part of what agents said: record it, consumed by the child's first turn.
     this.store.save();
-    return `Started ${this.labelOf(r.thread.address)}.\nAddress: ${r.thread.address}\n${a.detached === true ? "It is detached: its answer will not come back to you." : "Its final answer to this task will come back to you once, as a result: call wait to receive it."}`;
+    const modeNote = r.modeNote ?? "Its mode was not reported (the yaacd there is older): it runs in its harness's default mode there.";
+    return `Started ${this.labelOf(r.thread.address)}.\nAddress: ${r.thread.address}\n${modeNote}\n${a.detached === true ? "It is detached: its answer will not come back to you." : "Its final answer to this task will come back to you once, as a result: call wait to receive it."}`;
   }
 
   /** Starts a worker on this target (for a local caller, or one on another target via `mesh/query`). */
@@ -1368,7 +1379,11 @@ export class Mesh implements CoreMeshHooks {
     depth: number;
     /** Every thread above the new one, nearest first. */
     ancestors?: Address[];
-  }): Promise<{ thread: MeshPeer; turnId: TurnId }> {
+    /** `spawn_thread`'s `mode`. */
+    mode?: string | null;
+    /** The caller's effective mode (D146). */
+    parentMode: ParentMode;
+  }): Promise<{ thread: MeshPeer; turnId: TurnId; modeNote: string }> {
     const limits = this.store.state.policy.limits;
     if (p.depth > limits.spawnDepth) throw new RpcError("limit_exceeded", `Limit reached: workers can be nested at most ${limits.spawnDepth} deep.`);
     if (this.core.runningCount() >= limits.runningThreads) {
@@ -1400,17 +1415,27 @@ export class Mesh implements CoreMeshHooks {
         throw new RpcError("invalid_params", `${m.displayName} has no effort "${p.effort}". Its efforts: ${(m.efforts ?? []).map((e) => e.id).join(", ")}.`);
       }
     }
+    let choice;
+    try {
+      choice = chooseWorkerMode(p.parentMode, { instance: d.instance, displayName: d.displayName, modes: d.modes ?? [] }, p.mode ?? null);
+    } catch (e) {
+      if (e instanceof ModeRefused) throw new ToolError(e.message);
+      throw e;
+    }
     const message: MeshMessage = { id: randomId("m_", 12), from: this.normalise(p.caller), to: "", kind: "message", text: p.text, sentAt: nowIso(), seq: 1, root: this.normalise(p.root) };
     const input: MeshInputMessage = { id: message.id, kind: "message", from: message.from, fromLabel: this.labelOf(message.from), text: p.text, task: true };
     const received = { id: `recv:${message.id}`, turnId: "", status: "completed", kind: "meshReceived", from: this.peerFor(message.from), message } as unknown as Item;
+    // Which mode it runs in, and why, is in its own transcript too (D146).
+    const modeNotice = { id: `notice:mode:${message.id}`, turnId: "", status: "completed", kind: "notice", noticeKind: "info", text: `This worker ${choice.note.charAt(0).toLowerCase()}${choice.note.slice(1)}` } as unknown as Item;
     const started = await this.core.startThreadForAgent({
       instance: d.instance,
       cwd,
       model,
       effort: p.effort,
+      mode: choice.mode,
       title: p.title,
       parts: [{ type: "text", text: frameMessages([input]) }],
-      journalItems: [received],
+      journalItems: [received, modeNotice],
       mesh: [input],
       spawnedBy: message.from,
     });
@@ -1437,7 +1462,16 @@ export class Mesh implements CoreMeshHooks {
     this.store.save();
     this.core.updateIndex(child);
     if (p.callerRt) this.core.updateIndex(p.callerRt);
-    return { thread: this.peerOf(child), turnId: started.turnId };
+    return { thread: this.peerOf(child), turnId: started.turnId, modeNote: choice.note };
+  }
+
+  /** A thread's effective mode as its harness reports it, with its provider's description (D146). */
+  private async parentModeOf(rt: ThreadRuntime): Promise<ParentMode> {
+    const eff = await this.core.computeEffective(rt);
+    const id = eff.applied?.mode ?? null;
+    const descriptor = this.core.registry.get(rt.record.instance)?.descriptor;
+    const modes: ModeInfo[] = [...(eff.modes ?? []), ...(descriptor?.modes ?? [])];
+    return { instance: rt.record.instance, id, info: id ? (modes.find((m) => m.id === id) ?? null) : null };
   }
 
   // ── Messages ───────────────────────────────────────────────────────────────────────
@@ -2425,6 +2459,12 @@ export class Mesh implements CoreMeshHooks {
           root: typeof q.root === "string" ? q.root : caller,
           depth: typeof q.depth === "number" ? q.depth : 1,
           ancestors: Array.isArray(q.ancestors) && q.ancestors.length > 0 ? (q.ancestors as Address[]) : [caller],
+          mode: typeof q.mode === "string" && q.mode ? q.mode : null,
+          // Another target's instance is never this one's: modes are mapped by what they mean.
+          parentMode: (() => {
+            const info = q.parentMode && typeof q.parentMode === "object" ? (q.parentMode as ModeInfo) : null;
+            return { instance: null, id: info?.id ?? null, info };
+          })(),
         }).catch((e) => {
           if (e instanceof ToolError) throw new RpcError("invalid_params", e.message);
           throw e;

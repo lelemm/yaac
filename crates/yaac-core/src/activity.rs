@@ -21,6 +21,10 @@ use crate::state::AppState;
 /// Runs longer than this fold into one summary line.
 pub const FOLD_AFTER: usize = 6;
 
+/// Reasoning with no text is shown ("Thought for 3s") only when it took at least this many
+/// seconds; a shorter one is not shown at all (D148).
+pub const SILENT_THOUGHT_SHOWN_AFTER: i64 = 2;
+
 /// Which lines and runs the user opened, per thread.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Expansion {
@@ -38,6 +42,8 @@ pub struct Expansion {
     pub pasted: BTreeSet<(ThreadKey, ItemId, usize)>,
     /// A user message's "Context" disclosure opened.
     pub context: BTreeSet<(ThreadKey, ItemId)>,
+    /// An agent call's "Raw call" disclosure opened (D150).
+    pub raw: BTreeSet<(ThreadKey, ItemId)>,
 }
 
 impl Expansion {
@@ -54,6 +60,14 @@ impl Expansion {
         let k = (key.clone(), id.clone());
         if !self.context.remove(&k) {
             self.context.insert(k);
+        }
+    }
+
+    /// Toggle an agent call's raw input and output.
+    pub fn toggle_raw(&mut self, key: &ThreadKey, id: &ItemId) {
+        let k = (key.clone(), id.clone());
+        if !self.raw.remove(&k) {
+            self.raw.insert(k);
         }
     }
 
@@ -113,6 +127,10 @@ pub enum LineMark {
     Workers,
     /// Waiting on other agents.
     Waiting,
+    /// Another agent started by this one (an agent call, D150).
+    Spawn,
+    /// A stopped agent resumed with a message (an agent call).
+    Resumed,
     /// A notice.
     Notice,
     /// The plan.
@@ -143,6 +161,8 @@ pub struct ActivityLine {
     /// A file of a file change: its index in the item's diff and its counts. The line reads
     /// "Edited src/frame.rs" followed by `+12 −3`.
     pub diff: Option<DiffPart>,
+    /// An agent call (D150): the line drawn with pills. `text` is its plain form.
+    pub call: Option<crate::agentcall::CallLine>,
 }
 
 /// One file of a file-change item.
@@ -287,20 +307,41 @@ pub fn short_receipt(sent: &yaac_protocol::MeshSentItem) -> String {
 }
 
 /// The activity line an item becomes, or `None` when it is not activity.
-fn line_of(state: &AppState, map: &AttentionMap, index: usize, item: &Item) -> Option<ActivityLine> {
+fn line_of(state: &AppState, map: &AttentionMap, key: &ThreadKey, index: usize, item: &Item) -> Option<ActivityLine> {
     let in_progress = item.status == ItemStatus::InProgress;
+    if let Some((_, call)) = crate::agentcall::of(item) {
+        use yaac_protocol::{AgentCallKind as K, AgentCallOutcome as O};
+        let line = crate::agentcall::line(state, map, key, state.transcripts.get(key), item, call);
+        let failed = item.status == ItemStatus::Failed || call.outcome == Some(O::Failed);
+        let mark = match (&call.kind, &call.outcome) {
+            (K::Message, Some(O::Resumed)) | (K::Resume, _) => LineMark::Resumed,
+            (K::Message, _) => LineMark::Sent,
+            (K::Spawn, _) => LineMark::Spawn,
+            (K::Wait, Some(O::Returned)) if !in_progress => LineMark::Received,
+            (K::Wait, _) => LineMark::Waiting,
+            _ => LineMark::Tool,
+        };
+        let text = line.plain();
+        return Some(ActivityLine { index, id: item.id.clone(), mark, text, failed, in_progress, expanded: false, highlighted: false, diff: None, call: Some(line) });
+    }
     let (mark, text, failed) = match &item.body {
-        ItemBody::Reasoning(_) => {
+        ItemBody::Reasoning(r) => {
             let took = item
                 .started_at
                 .as_ref()
                 .zip(item.completed_at.as_ref())
                 .and_then(|(a, b)| Some(crate::time::secs(b)? - crate::time::secs(a)?))
                 .filter(|s| *s >= 0);
+            // Reasoning with nothing to read (Codex's hidden reasoning has an empty summary;
+            // a thinking block can be empty) is not a line of its own unless it took long
+            // enough to explain a pause (D148). Under way, it has no duration yet: it shows
+            // only once it has text.
+            let has_text = !r.reasoning.trim().is_empty();
             let text = match (in_progress, took) {
-                (true, _) => "Thinking…".to_owned(),
-                (false, Some(s)) => format!("Thought for {}", crate::time::duration(s)),
-                (false, None) => "Thought".to_owned(),
+                (true, _) if has_text => "Thinking…".to_owned(),
+                (false, Some(s)) if has_text || s >= SILENT_THOUGHT_SHOWN_AFTER => format!("Thought for {}", crate::time::duration(s)),
+                (false, None) if has_text => "Thought".to_owned(),
+                _ => return None,
             };
             (LineMark::Thought, text, false)
         }
@@ -354,7 +395,7 @@ fn line_of(state: &AppState, map: &AttentionMap, index: usize, item: &Item) -> O
         ItemBody::Unknown(u) => (LineMark::Other, format!("{} (not shown by this version)", u.tag("kind")), false),
         _ => return None,
     };
-    Some(ActivityLine { index, id: item.id.clone(), mark, text, failed, in_progress, expanded: false, highlighted: false, diff: None })
+    Some(ActivityLine { index, id: item.id.clone(), mark, text, failed, in_progress, expanded: false, highlighted: false, diff: None, call: None })
 }
 
 /// The files of a file-change item whose output is a diff.
@@ -370,8 +411,8 @@ pub fn file_stats(item: &Item) -> Option<Vec<FileStat>> {
 pub const TURN_SUMMARY_FILES: usize = 2;
 
 fn fold_summary(lines: &[ActivityLine]) -> String {
-    let commands = lines.iter().filter(|l| l.mark == LineMark::Tool).count();
-    let messages = lines.iter().filter(|l| matches!(l.mark, LineMark::Sent | LineMark::Received)).count();
+    let commands = lines.iter().filter(|l| l.mark == LineMark::Tool && l.call.is_none()).count();
+    let messages = lines.iter().filter(|l| l.call.is_some() || matches!(l.mark, LineMark::Sent | LineMark::Received)).count();
     let mut parts = Vec::new();
     if commands > 0 {
         parts.push(format!("{commands} {}", if commands == 1 { "command" } else { "commands" }));
@@ -413,6 +454,8 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
         }
     };
     let mut seen_prompt = false;
+    // Mesh items that only echo an agent call's line.
+    let echoes = crate::agentcall::Echoes::of(t.items());
     // The turn being read, with the files it changed so far.
     let mut turn: Option<(TurnId, TurnTotals, Vec<ItemId>)> = None;
     let end_turn = |turn: &mut Option<(TurnId, TurnTotals, Vec<ItemId>)>, run: &mut Vec<ActivityLine>, out: &mut Vec<Block>| {
@@ -425,6 +468,9 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
         }
     };
     for (index, item) in t.items().iter().enumerate() {
+        if echoes.hides(item) {
+            continue;
+        }
         if turn.as_ref().is_none_or(|(id, _, _)| *id != item.turn_id) {
             end_turn(&mut turn, &mut run, &mut out);
             // A run never spans two turns, so a finished turn can fold on its own (D156).
@@ -474,9 +520,10 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
                             expanded,
                             highlighted,
                             diff: Some(DiffPart { file: n, added: f.added, removed: f.removed }),
+                            call: None,
                         });
                     }
-                } else if let Some(mut line) = line_of(state, map, index, item) {
+                } else if let Some(mut line) = line_of(state, map, key, index, item) {
                     line.highlighted = focus == Some(&item.id);
                     line.expanded = line.highlighted || expansion.lines.contains(&(key.clone(), item.id.clone()));
                     run.push(line);
@@ -514,4 +561,64 @@ pub fn collapse_all(key: &ThreadKey, expansion: &mut Expansion) {
     expansion.files.retain(|(k, _, _)| k != key);
     expansion.rest.retain(|(k, _, _)| k != key);
     expansion.turns.retain(|(k, _)| k != key);
+    expansion.raw.retain(|(k, _)| k != key);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yaac_protocol::{ReasoningItem, TargetId, ThreadId};
+
+    /// The lines one reasoning item becomes, alone in a transcript.
+    fn lines_of(text: &str, status: ItemStatus, took: Option<i64>) -> Vec<String> {
+        let key = ThreadKey::new(TargetId::new("local"), ThreadId::new("t"));
+        let item = Item {
+            id: ItemId::new("r1"),
+            turn_id: TurnId::new("t1"),
+            status,
+            body: ItemBody::Reasoning(ReasoningItem { reasoning: text.to_owned(), summary: true }),
+            started_at: Some(crate::time::timestamp(1_000)),
+            completed_at: took.map(|s| crate::time::timestamp(1_000 + s)),
+        };
+        let mut t = crate::transcript::Transcript::new();
+        t.upsert(item, 1);
+        let mut state = AppState::default();
+        state.transcripts.insert(key.clone(), t);
+        let map = AttentionMap::compute(&state);
+        blocks(&state, &map, &key, &Expansion::default())
+            .into_iter()
+            .flat_map(|b| match b {
+                Block::Run { lines } => lines.into_iter().map(|l| l.text).collect(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn empty_reasoning_is_not_a_line() {
+        assert!(lines_of("", ItemStatus::Completed, Some(0)).is_empty());
+        assert!(lines_of("  \n\n ", ItemStatus::Completed, Some(1)).is_empty());
+        assert!(lines_of("", ItemStatus::Completed, None).is_empty());
+    }
+
+    #[test]
+    fn empty_reasoning_that_took_a_while_reads_as_a_pause() {
+        assert_eq!(lines_of("", ItemStatus::Completed, Some(SILENT_THOUGHT_SHOWN_AFTER)), ["Thought for 2s"]);
+        assert_eq!(lines_of(" ", ItemStatus::Completed, Some(75)), ["Thought for 1m"]);
+    }
+
+    #[test]
+    fn reasoning_with_text_keeps_its_line() {
+        assert_eq!(lines_of("Check the prefix.", ItemStatus::Completed, Some(0)), ["Thought for 0s"]);
+        assert_eq!(lines_of("Check the prefix.", ItemStatus::Completed, Some(4)), ["Thought for 4s"]);
+        assert_eq!(lines_of("Check the prefix.", ItemStatus::Completed, None), ["Thought"]);
+    }
+
+    #[test]
+    fn reasoning_under_way_has_no_duration() {
+        assert_eq!(lines_of("Check the", ItemStatus::InProgress, None), ["Thinking…"]);
+        // Nothing to read yet: no line, and never "Thought for 0s".
+        assert!(lines_of("", ItemStatus::InProgress, None).is_empty());
+        assert!(lines_of("", ItemStatus::InProgress, Some(0)).is_empty());
+    }
 }

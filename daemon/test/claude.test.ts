@@ -285,6 +285,14 @@ test("probe reports models and their efforts exactly as listed, and closes its q
   assert.ok(p.capabilities.includes("approvals") && p.capabilities.includes("userQuestions") && p.capabilities.includes("reasoning"));
   assert.ok(p.modes.some((m) => m.id === "default" && m.isDefault));
   assert.ok(p.modes.some((m) => m.id === "bypassPermissions" && m.skipsApprovals && !m.isDefault));
+  // What the agent mesh maps modes by (D146): every mode says how much it allows unasked.
+  const autonomy = Object.fromEntries(p.modes.map((m) => [m.id, m.autonomy]));
+  assert.equal(autonomy.plan, "readOnly");
+  assert.equal(autonomy.default, "ask");
+  assert.equal(autonomy.dontAsk, "ask");
+  assert.equal(autonomy.acceptEdits, "edits");
+  assert.equal(autonomy.bypassPermissions, "full");
+  if ("auto" in autonomy) assert.equal(autonomy.auto, "judged");
   assert.equal(p.store.account, "someone@example.invalid");
   assert.ok(p.store.key?.startsWith("claude:"));
   const probeQuery = r.sdk.queries[0]!;
@@ -489,6 +497,14 @@ test("Claude Code never reports threadMoveWorkingDirectory: a move is YAAC's pla
   assert.ok(!((await r.provider.effective(thread)).capabilities ?? []).includes("threadMoveWorkingDirectory"), "not on a thread");
   q.push(result());
   await until(() => of(r.events, "turnCompleted")[0], "first turn");
+  await r.provider.dispose();
+});
+
+test("Claude Code never reports folderTrust: its SDK has no supported way to record folder trust (D147)", async () => {
+  const r = rig();
+  const p = await r.provider.probe();
+  assert.ok(!p.capabilities.includes("folderTrust"));
+  assert.equal(typeof (r.provider as { trustFolder?: unknown }).trustFolder, "undefined");
   await r.provider.dispose();
 });
 

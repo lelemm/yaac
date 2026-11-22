@@ -53,6 +53,8 @@ pub(crate) struct Fleet {
     pub projects: BTreeMap<TargetId, Vec<Project>>,
     /// The hub's view preferences (pin, mute, dismiss), by thread (D92).
     pub view: BTreeMap<ThreadKey, crate::state::ViewPref>,
+    /// Instances whose "Trust folders YAAC works in" switch is off (D147), by target.
+    pub trust_off: BTreeMap<TargetId, Vec<String>>,
 }
 
 pub(crate) const ORCH: (&str, &str) = ("local", "t-orch");
@@ -122,9 +124,9 @@ pub(super) fn has_fast(m: &ModelInfo) -> bool {
 
 fn modes() -> Vec<ModeInfo> {
     vec![
-        ModeInfo { id: ModeId::new("ask"), display_name: "ask".into(), description: None, is_default: true, skips_approvals: false },
-        ModeInfo { id: ModeId::new("auto"), display_name: "auto".into(), description: None, is_default: false, skips_approvals: false },
-        ModeInfo { id: ModeId::new("bypass"), display_name: "bypass permissions".into(), description: None, is_default: false, skips_approvals: true },
+        ModeInfo { id: ModeId::new("ask"), display_name: "ask".into(), description: None, is_default: true, skips_approvals: false, autonomy: None },
+        ModeInfo { id: ModeId::new("auto"), display_name: "auto".into(), description: None, is_default: false, skips_approvals: false, autonomy: None },
+        ModeInfo { id: ModeId::new("bypass"), display_name: "bypass permissions".into(), description: None, is_default: false, skips_approvals: true, autonomy: None },
     ]
 }
 
@@ -168,8 +170,9 @@ pub(crate) fn codex(instance: &str, name: Option<&str>, status: ProviderStatus) 
         store: StoreIdentity { key: Some(format!("store-{instance}")), home: None, account: None },
         status,
         status_message: None,
-        // The demo's Codex can change a conversation's folder (D144); its Claude cannot.
-        capabilities: [caps(), vec![Capability::ThreadMoveWorkingDirectory]].concat(),
+        // The demo's Codex can change a conversation's folder (D144) and mark folders trusted
+        // (D147); its Claude cannot.
+        capabilities: [caps(), vec![Capability::ThreadMoveWorkingDirectory, Capability::FolderTrust]].concat(),
         models: vec![
             model("gpt-6.2-sol", true, Support::Supported),
             model("gpt-6.2-astra", false, Support::Supported),
@@ -427,6 +430,7 @@ impl Fleet {
             budgets: BTreeMap::new(),
             projects: BTreeMap::new(),
             view: BTreeMap::new(),
+            trust_off: BTreeMap::new(),
         };
         f.providers.insert(TargetId::new("local"), vec![codex("codex", None, ProviderStatus::Ready), claude(ProviderStatus::Ready)]);
         f.providers.insert(
@@ -648,6 +652,25 @@ impl Fleet {
             s.origin_kind = OriginKind::Interactive;
         });
         f.push(&parser, done("parser-1", "p-t1", user("Try the new parser on the sample files.", &[], &[])));
+        // A Codex turn as Codex sends it: hidden reasoning (an empty summary) between almost
+        // every command. Only the long silent one and the one with text are lines (D148).
+        let ran = |cmd: &str, out: &str| tool(ToolKind::Command, &format!("Ran `{cmd}`"), Some(0), out);
+        for (id, body, (start, end)) in [
+            ("parser-2", reasoning(""), (-86_390, -86_390)),
+            ("parser-3", ran("ls samples/", "a.frm\nb.frm\nc.frm"), (-86_389, -86_388)),
+            ("parser-4", ran("cargo build -p parser", "Finished `dev` profile"), (-86_388, -86_380)),
+            ("parser-5", reasoning(""), (-86_380, -86_380)),
+            ("parser-6", ran("./target/debug/parser samples/a.frm", "3 frames"), (-86_380, -86_379)),
+            ("parser-7", reasoning("  "), (-86_379, -86_379)),
+            ("parser-8", ran("./target/debug/parser samples/b.frm", "error: truncated frame at byte 412"), (-86_379, -86_378)),
+            ("parser-9", reasoning(""), (-86_378, -86_372)),
+            ("parser-10", ran("./target/debug/parser samples/c.frm", "5 frames"), (-86_372, -86_371)),
+            ("parser-11", reasoning("b.frm ends mid-frame; check whether the sample itself is cut short."), (-86_371, -86_368)),
+            ("parser-12", agent("Two of the three samples parse. `b.frm` ends in the middle of a frame at byte 412, so the file looks truncated rather than the parser being wrong."), (-86_368, -86_368)),
+        ] {
+            f.push(&parser, done(id, "p-t1", body));
+            f.time_item(&parser, id, start, end);
+        }
         let lint = k(LINT);
         f.set(&lint, |s| s.root = Some(root.clone()));
 
@@ -806,6 +829,7 @@ impl Fleet {
             budgets: BTreeMap::new(),
             projects: BTreeMap::new(),
             view: BTreeMap::new(),
+            trust_off: BTreeMap::new(),
         };
         let mut c = claude(ProviderStatus::NeedsAuth);
         c.status_message = Some(SIGN_IN_HINT.into());

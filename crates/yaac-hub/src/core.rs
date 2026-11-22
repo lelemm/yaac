@@ -413,7 +413,7 @@ enum LookupFor {
     /// `hub/threads/find`, whose index search found nothing for an id.
     Find { client: ClientKey, id: RpcId, params: FindParams },
     /// An agent's `findThreads`, likewise.
-    Mesh { source: TargetId, generation: u64, peer_id: RpcId, query: yaac_protocol::MeshQuery, labels: Vec<(TargetId, crate::mesh::TargetLabels)> },
+    Mesh { source: TargetId, generation: u64, peer_id: RpcId, query: Box<yaac_protocol::MeshQuery>, labels: Vec<(TargetId, crate::mesh::TargetLabels)> },
 }
 
 #[derive(Debug)]
@@ -2566,7 +2566,7 @@ impl Core {
             {
                 let targets = self.lookup_targets(params.target.as_ref());
                 if !targets.is_empty() {
-                    let answer = LookupFor::Mesh { source: source.clone(), generation, peer_id, query: query.clone(), labels: labels.to_vec() };
+                    let answer = LookupFor::Mesh { source: source.clone(), generation, peer_id, query: Box::new(query.clone()), labels: labels.to_vec() };
                     self.start_lookup(params.query.trim(), &targets, answer);
                     return;
                 }
@@ -2684,7 +2684,7 @@ impl Core {
                 self.reply(client, id, outcome);
             }
             LookupFor::Mesh { source, generation, peer_id, query, labels } => {
-                let yaac_protocol::MeshQuery::FindThreads(q) = &query else { return };
+                let yaac_protocol::MeshQuery::FindThreads(q) = query.as_ref() else { return };
                 let outcome = self
                     .finder
                     .page(&state.found, &crate::mesh::find_params(q), Instant::now())

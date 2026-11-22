@@ -414,6 +414,49 @@ created with `claude -p --session-id`:
   holds it. YAAC therefore disables **Take over** for a background holder with that reason and
   never stops the session itself.
 
+## Folder trust (verified 2026-11-22)
+
+Whether YAAC can mark a folder trusted for a harness (D147). Every check ran against throwaway
+homes under `/tmp`; the owner's `~/.codex` and `~/.claude*` were not touched.
+
+**Codex** — `codex app-server` (stdio) of codex-cli 0.170.0 with a scratch `CODEX_HOME`, and
+`codex app-server generate-ts`:
+
+- Trust is `[projects."<abs path>"] trust_level = "trusted"` (or `"untrusted"`) in the user's
+  `config.toml`. The app-server has `config/read { includeLayers?, cwd? }` →
+  `{ config, origins, layers }` (`config.projects` is the effective map; each layer has a
+  `version`, `sha256:…`), `config/value/write { keyPath, value, mergeStrategy, filePath?,
+  expectedVersion? }` and `config/batchWrite { edits, … }`. `MergeStrategy` is
+  `"replace" | "upsert"`; `upsert` merges tables deeply (other keys of the folder's table and
+  other folders are kept). The reply is `{ status: "ok" | "okOverridden", version, filePath }`.
+- `keyPath` is split at dots: `projects./tmp/a.b/c` wrote `[projects."/tmp/a"."b/c"]`. A quoted
+  segment (`projects."/tmp/a.b/c".trust_level`) is parsed correctly, but the robust form is
+  `keyPath: "projects"` with the folder as a key of the value, `{ "<folder>": { trust_level:
+  "trusted" } }`, `upsert` — it round-trips spaces, dots, backslashes and quotes
+  (`C:\Users\a "q".b` was written as a literal key). That is what `yaacd` sends.
+- A stale `expectedVersion` is refused: JSON-RPC error `-32600`, `data.config_write_error_code:
+  "configVersionConflict"`, "Configuration was modified since last read." The user layer has
+  a version even when `config.toml` does not exist yet.
+- Which entry Codex consults (seen through the `disabledReason` of project config layers with
+  `config/read { cwd, includeLayers: true }`): an entry for the working directory itself, or
+  for the root of its git repository — for a linked worktree, the **main** checkout's root
+  ("add /…/repo as a trusted project"). An entry for a mere ancestor folder does not count;
+  an exact `untrusted` entry for a subfolder overrides a trusted repository root.
+
+**Claude Code** — `claude` 2.1.330 and `@anthropic-ai/claude-agent-sdk` 0.3.329, with `HOME`
+and `CLAUDE_CONFIG_DIR` set to scratch folders:
+
+- Trust is `projects["<abs path>"].hasTrustDialogAccepted: true` in `.claude.json`
+  (`$CLAUDE_CONFIG_DIR/.claude.json`; `~/.claude.json` by default). An ordinary SDK session
+  records nothing (the trust dialog is skipped in non-interactive use, per `claude --help`).
+- The CLI has no command that sets it (`claude --help` lists none; there is no `config`
+  subcommand). The SDK's `query()` passes an option `workspaceTrust: { accepted: true,
+  directory }` to the CLI's `initialize`, and with it the CLI wrote the flag and answered
+  `workspace_trust_recorded: true`. But the option is **not in the SDK's published types**
+  (`sdk.d.ts` has no `workspaceTrust`), and the CLI's schema marks it `@internal`: "the host's
+  attestation that the user accepted a trust dialog". YAAC does not use it, and does not edit
+  `.claude.json`; Claude Code does not report `folderTrust`.
+
 ## Fast mode (checked 2026-11-21)
 
 Read from `codex app-server generate-ts` (CLI 0.170.0, against daemon 0.171.0) and the
@@ -538,3 +581,47 @@ never reach a `userMessage` and are not listed.
 
 The fork's handoff transcript (`renderTranscript`) carries typed text, pastes and commands, never
 `context` parts.
+
+## Agent calls (verified 2026-11-22)
+
+What the harnesses' own agent tools look like, for D150. Shapes only — counted over the stored
+transcripts on the development machine (`~/.claude/projects/**/*.jsonl`, 1,985 files;
+`~/.codex/sessions/**`, 155 files) and read from the installed types (Claude Code 2.1.330,
+Agent SDK 0.3.329 `sdk-tools.d.ts`; Codex 0.170.0 `app-server generate-ts`). No content was
+copied.
+
+**Claude Code** (built-in tool names in the SDK's `BUILTIN_TOOL_NAMES` include `Agent`,
+`SendMessage`, `SubagentHandback`, `TaskStop`, `ListAgents`):
+
+- `Agent` input: `description`, `prompt`, `subagent_type?`, `model?` (`sonnet`, `opus`,
+  `haiku`, `fable`), `effort?`, `run_in_background?` (stored as a boolean or the string
+  `"true"`), `name?`, `isolation?`. Result text: a background launch starts "Async agent
+  launched successfully." and contains `agentId: <id>`; a foreground one is the answer.
+  `tool_use_result`: `{status: "async_launched", agentId, description, prompt, outputFile,
+  resolvedModel, …}` or `{status: "completed", agentId, content: [{type: "text", text}],
+  totalToolUseCount, usage, …}` (`AgentOutput`).
+- `SendMessage` input: `{to, message, summary?}`; older transcripts also carry
+  `{type: "message", recipient, recipient_kind: "agent" | "main" | "name" | "session",
+  content}`. `to: "main"` is a subagent writing to the conversation that started it. Result
+  text is JSON: `{success, message, pin?: {id, name, ref}, resumedAgentId?, msg_id?}` with
+  `message` one of "Message queued for delivery to <id> at its next tool round. …",
+  "Resuming agent <short id>", "Message queued for the main conversation's next turn.".
+- `TaskStop` input `{task_id}`; result JSON `{message, task_id, task_type, command}` with
+  `task_type` `local_agent` (an agent), `local_bash` or `local_workflow`. Only `local_agent`
+  is communication.
+- `SubagentHandback` input `{message}`; result `{success, message: "Report delivered to your
+  caller."}`. It runs inside the subagent's own transcript.
+- YAAC's tools arrive as `mcp__yaac__<tool>`; their results are text YAAC wrote.
+
+**Codex**: the model calls `collaboration/spawn_agent` (`{message, task_name, model?,
+reasoning_effort?, fork_turns?}`), `send_message` and `followup_task` (`{target, message}`),
+`wait_agent`, `interrupt_agent`, `list_agents`. The app-server presents each as a
+`collabAgentToolCall` thread item: `{tool: "spawnAgent" | "sendInput" | "resumeAgent" |
+"wait" | "closeAgent" | "sendMessage" | "followupTask" | "interruptAgent" | "listAgents",
+status: "inProgress" | "completed" | "failed" | "interrupted", senderThreadId,
+receiverThreadIds, prompt, model, reasoningEffort, agentsStates: {<thread id>: {status:
+"pendingInit" | "running" | "interrupted" | "completed" | "errored" | "shutdown" |
+"notFound", message}}}`. The receiver ids are Codex thread ids. (`wait` with `cell_id` in
+rollouts is the code-mode exec wait, not an agent wait.) YAAC's tools arrive as
+`mcpToolCall` items with `server: "yaac"`.
+

@@ -211,6 +211,28 @@ fn providers_page_lists_instances_with_their_facts() {
 }
 
 #[test]
+fn trust_folders_is_offered_only_under_folder_trust_and_stored_on_the_target() {
+    let (mut c, hub) = boot();
+    let devbox = "devbox".into();
+    c.list_instances(&devbox);
+    settle(&mut c, &hub);
+    let v = providers_view(&c.state, &devbox).expect("devbox");
+    // The demo's Codex reports `folderTrust`; its Claude does not, and has no switch.
+    let work = v.rows.iter().find(|r| r.name == "Codex · work").expect("work");
+    assert_eq!(work.trust_folders, Some(true), "on by default");
+    let claude = v.rows.iter().find(|r| r.facts.iter().any(|f| f.starts_with("account:"))).expect("claude");
+    assert_eq!(claude.trust_folders, None);
+    let id = work.instance.clone();
+    c.set_trust_folders(&devbox, &id, false);
+    settle(&mut c, &hub);
+    let row = |c: &Client| providers_view(&c.state, &devbox).unwrap().rows.into_iter().find(|r| r.instance == id).unwrap();
+    assert_eq!(row(&c).trust_folders, Some(false), "read back from the target's configuration");
+    c.set_trust_folders(&devbox, &id, true);
+    settle(&mut c, &hub);
+    assert_eq!(row(&c).trust_folders, Some(true));
+}
+
+#[test]
 fn adding_and_removing_an_instance_goes_to_the_target() {
     let (mut c, hub) = boot();
     let devbox = "devbox".into();

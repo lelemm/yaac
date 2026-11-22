@@ -273,10 +273,18 @@ export class ProviderRegistry {
       else config.endpoint = params.endpoint;
     }
     if (params.env !== undefined && params.env !== null) config.env = params.env;
+    // "Trust folders YAAC works in" (D147): absent in the stored configuration means on.
+    if (params.trustFolders === true) delete config.trustFolders;
+    else if (params.trustFolders === false) config.trustFolders = false;
     const idx = this.stored.findIndex((c) => c.id === config.id);
     if (idx >= 0) this.stored[idx] = config;
     else this.stored.push(config);
     this.save();
+    // Only yaacd's own switch changed: the provider and its connection are kept.
+    if (params.trustFolders !== undefined && params.trustFolders !== null && canonical({ ...config, trustFolders: null }) === canonical({ ...instance.config, trustFolders: null })) {
+      instance.config = config;
+      return config;
+    }
     instance.off?.();
     await instance.provider?.dispose().catch(() => {});
     const next = this.materialise(config);

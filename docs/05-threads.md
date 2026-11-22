@@ -124,7 +124,9 @@ gives threads a second kind of relationship besides fork lineage:
 | peers | Have exchanged messages, with neither having spawned the other. | Both, derived from the messages. |
 
 A spawned thread is a full thread: it has its own row in the sidebar, under its own origin and
-project, and the user can open, steer, or continue it. In the sidebar it carries a small
+project, and the user can open, steer, or continue it. It runs in the permission mode that
+corresponds to its parent's, never a more permissive one, and keeps it when the parent's mode
+changes later ([D146](10-agent-mesh.md#the-workers-permission-mode)). In the sidebar it carries a small
 "spawned by" mark, and a parent's row shows how many direct workers it has. A worker that is
 blocked on the user is found through the **Needs you** list; parents carry no warning mark of
 their own.
@@ -496,6 +498,36 @@ sees it) and apart from the harness's working directory:
   repository that YAAC already knows on that machine — those its threads are in or were moved
   to. A placement in a project in git always names a checkout (the project's own when none was
   chosen), so the worktree level of the sidebar can group it.
+
+#### Folder trust
+
+**Decided (D147); the details are Proposed (P160–P165).** A harness's own interface asks
+before it works in a folder it has not been told to trust (Codex: "Do you trust the files in
+this folder?"). YAAC starts conversations through interfaces that do not ask, so a folder YAAC
+worked in would still be asked about the first time the user opens it in the harness. `yaacd`
+therefore tells the harness, where the provider has **`folderTrust`**
+([04](04-providers.md#trusting-a-folder-is-a-capability)) and the instance's **"Trust folders
+YAAC works in"** switch is on (the default):
+
+- **When.** Before YAAC creates a conversation in a folder — a new thread, a fork (native or
+  handoff), a worker an agent spawns — and when a move changes the folder the agent works in.
+  Asked first, so the conversation itself already runs as it would after the user said yes.
+- **Which folders.** Only a folder that belongs to a project the user created, by the rule
+  that puts threads under projects ([above](#which-project-a-thread-belongs-to)) — never the
+  folder of a thread YAAC discovered and did not start, and never an arbitrary path an agent
+  passes to `spawn_thread` outside the user's projects; those keep the harness's own
+  behaviour. The folder marked is the conversation's working directory itself.
+- **Read first; never downgrade.** A folder the harness already trusts is left alone and
+  nothing is said. A folder the harness already has another word on (the user marked it
+  untrusted there) is left alone too. YAAC never removes or lowers trust.
+- **Once per folder.** `yaacd` records the outcome per instance and harness store in
+  `folder-trust.json` in its home, and a folder with an outcome is not asked about again — so a
+  folder the user later untrusts in the harness stays untrusted.
+- **Visible.** The first thread that marks a folder gets a notice (`folderTrust`): "Marked
+  /home/dev/api as trusted in Codex". A refusal (the configuration file is locked, it changed
+  between the read and the write, the harness is too old for the method) or no answer within
+  10 s is one warning notice in that thread, saying YAAC will not try again; it is never
+  retried (invariant 10). The thread starts either way.
 
 #### Worktrees
 

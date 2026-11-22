@@ -94,6 +94,12 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("81", "move-drag-other-machine"),
     ("82", "move-undo"),
     ("83", "markdown-table"),
+    ("84", "tool-open"),
+    ("85", "silent-reasoning"),
+    ("90", "agent-calls"),
+    ("91", "agent-calls-open"),
+    ("92", "subagents"),
+    ("93", "subagents-open"),
     ("100", "timeline"),
     ("101", "worked-collapsed"),
     ("102", "worked-expanded"),
@@ -272,6 +278,17 @@ fn setup(app: &mut YaacApp, id: &str) {
                 app.ui.scroll_end = false;
             }
         }
+        "84" => {
+            // An open tool call (D158): the down chevron and faint fill on its line, the guide
+            // down its body that closes it.
+            let k = threads::users();
+            app.open(&k, None);
+            app.ui.expansion.toggle_line(&k, &"u4".into());
+            // Its finished turn opened again (D156), so the line shows.
+            app.ui.worked.toggle(&k, &"u-t1".into());
+            app.ui.scroll_to = Some("u4".into());
+            app.ui.scroll_end = false;
+        }
         "83" => {
             // A markdown table in an agent's message: a grid with a bold header, not the cells
             // run together (the bug the owner saw).
@@ -279,6 +296,15 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.open(&k, None);
             app.ui.scroll_to = Some("u5".into());
             app.ui.scroll_end = false;
+        }
+        "85" => {
+            // A Codex turn whose hidden reasoning (empty summaries) sat between the commands:
+            // no "Thought for 0s" lines, only the long pause and the reasoning with text (D148).
+            let k = threads::parser();
+            app.open(&k, None);
+            app.ui.expansion.toggle_run(&k, &"parser-3".into());
+            // The finished turn opened again (D156), so its run shows.
+            app.ui.worked.toggle(&k, &"p-t1".into());
         }
         "03" => {
             // A file change: one diff expanded in place, the others collapsed, and the turn's
@@ -654,6 +680,33 @@ fn setup(app: &mut YaacApp, id: &str) {
             if id == "70" {
                 app.ui.menu = Some(Menu::Selection(threads::billing()));
             }
+        }
+        "90" | "91" | "92" | "93" => {
+            // Agents talking to agents (D150). 90: the orchestrator starts a worker, messages
+            // billing-service, hears back, and waits — each a line with the other agent as a
+            // pill. 91: the message and the reply opened. 92: users-service (Claude Code) and
+            // its own subagents. 93: the SendMessage that resumed a subagent opened, with its
+            // raw call (the JSON the owner saw) behind "Raw call".
+            play(app, Scene::AgentCalls);
+            let (k, first) = if matches!(id, "90" | "91") { (threads::orchestrator(), "ac1") } else { (threads::users(), "ua1") };
+            app.open(&k, None);
+            // users-service's turn is finished: opened again (D156) so its calls show.
+            if matches!(id, "92" | "93") {
+                app.ui.worked.toggle(&k, &"u-t4".into());
+            }
+            match id {
+                "91" => {
+                    app.ui.expansion.toggle_line(&k, &"ac4".into());
+                    app.ui.expansion.toggle_line(&k, &"ac5".into());
+                }
+                "93" => {
+                    app.ui.expansion.toggle_line(&k, &"ua3".into());
+                    app.ui.expansion.toggle_raw(&k, &"ua3".into());
+                }
+                _ => {}
+            }
+            app.ui.scroll_to = Some(if id == "93" { "ua3" } else { first }.into());
+            app.ui.scroll_end = false;
         }
         "76" | "77" => {
             // Claude Code's markup made readable (D141): a pasted log (collapsed), a slash

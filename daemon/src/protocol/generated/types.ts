@@ -16,6 +16,76 @@
 export type Address = string;
 
 /**
+ * Communication with another agent, read from a tool call (D150).
+ */
+export interface AgentCall {
+  /**
+   * The spawned agent runs in the background (the caller does not block on it).
+   */
+  background?: boolean | null;
+  /**
+   * Why, in a few words (for queued and failed).
+   */
+  detail?: string | null;
+  /**
+   * The effort asked for, as the call named it.
+   */
+  effort?: string | null;
+  /**
+   * What it does.
+   */
+  kind: AgentCallKind;
+  /**
+   * Mesh messages this call sent or handed over (`send_message`'s message, the messages a
+   * `wait` returned): the matching `meshSent` / `meshReceived` items are this call's own.
+   */
+  messages?: MessageId[];
+  /**
+   * The model asked for, as the call named it.
+   */
+  model?: string | null;
+  /**
+   * How it went, once the result is in.
+   */
+  outcome?: AgentCallOutcome | null;
+  /**
+   * The other agents, in the call's order.
+   */
+  peers?: AgentRef[];
+  /**
+   * What came back that is worth reading: a sub-agent's answer, what a wait returned, a
+   * read transcript (markdown). The raw result stays in the tool call's `output`.
+   */
+  result?: string | null;
+  /**
+   * The machine asked for, by name, for a spawn elsewhere.
+   */
+  target?: string | null;
+  /**
+   * The message, prompt, or task, in full (markdown).
+   */
+  text?: string | null;
+  /**
+   * A short title the call gave the work (a spawn's title, a sub-agent's description).
+   */
+  title?: string | null;
+}
+
+/**
+ * What an agent call does.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type AgentCallKind = "spawn" | "message" | "resume" | "wait" | "read" | "stop" | "notify" | "list";
+
+/**
+ * How an agent call went, as its result says.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type AgentCallOutcome = "delivered" | "queued" | "failed" | "started" | "completed" | "resumed" | "stopped" | "notRunning" | "returned" | "nothingYet" | "registered";
+
+/**
  * `agentMessage`: markdown text.
  */
 export interface AgentMessageItem {
@@ -23,6 +93,31 @@ export interface AgentMessageItem {
    * Markdown. `itemDelta` with field `text` appends here.
    */
   text: string;
+}
+
+/**
+ * The other side of an agent call. At least one of `address`, `agentId`, `name`, or
+ * `parent` is set.
+ */
+export interface AgentRef {
+  /**
+   * A YAAC address (a mesh peer). Opaque.
+   */
+  address?: Address | null;
+  /**
+   * The harness's own id for one of its sub-agents (Claude Code's `agentId`, Codex's
+   * receiver thread id). Resolved by the window against the calling thread's children.
+   */
+  agentId?: string | null;
+  /**
+   * A name the call gave it (a sub-agent's description or name, a task name).
+   */
+  name?: string | null;
+  /**
+   * It is the calling agent's own parent (a sub-agent writing to the conversation that
+   * started it).
+   */
+  parent?: boolean;
 }
 
 /**
@@ -183,7 +278,7 @@ export type BackendPreference = "auto" | "daemon" | "sdk";
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
+export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -2131,6 +2226,15 @@ export interface MeshWaitItem {
 export type MessageId = string;
 
 /**
+ * What a mode lets the agent do without asking the user, least first. The order is the
+ * order of the variants: each level allows at least what the one before it allows. A
+ * value this build does not know is treated as unknown — never compared.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type ModeAutonomy = "readOnly" | "ask" | "edits" | "workspace" | "judged" | "full";
+
+/**
  * A permission / approval / sandbox mode, as the harness names it.
  */
 export type ModeId = string;
@@ -2139,6 +2243,14 @@ export type ModeId = string;
  * A permission / approval / sandbox mode on offer.
  */
 export interface ModeInfo {
+  /**
+   * How much this mode lets the agent do without the user's approval, on a scale shared by
+   * every provider. Filled in by each provider from what its harness documents for the
+   * mode; absent when it cannot say. The agent mesh compares modes on it, so that a worker
+   * is never started in a mode more permissive than its parent's (D146). Absent is unknown,
+   * never "least" — and a mode with `skipsApprovals` counts as `full` whatever this says.
+   */
+  autonomy?: ModeAutonomy | null;
   /**
    * Longer description, when the harness gives one.
    */
@@ -2257,7 +2369,7 @@ export interface NoticeItem {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered" | "stopped" | "takenOver" | "moved";
+export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered" | "stopped" | "takenOver" | "moved" | "folderTrust";
 
 /**
  * A client-generated operation id. Every state-changing request carries one; re-sending
@@ -2768,6 +2880,12 @@ export interface ProviderInstanceConfig {
    * Optional user-given name.
    */
   name?: string | null;
+  /**
+   * "Trust folders YAAC works in" (D147): under the `folderTrust` capability, mark the
+   * folder of a thread YAAC starts in a user's project as trusted in the harness. Absent:
+   * on.
+   */
+  trustFolders?: boolean | null;
 }
 
 /**
@@ -2837,6 +2955,10 @@ export interface ProviderInstanceUpdateParams {
    * Operation id.
    */
   opId: OpId;
+  /**
+   * New "Trust folders YAAC works in" switch (D147).
+   */
+  trustFolders?: boolean | null;
 }
 
 /**
@@ -3403,9 +3525,21 @@ export interface SpawnThreadQuery {
    */
   instance: InstanceId;
   /**
+   * The mode the worker is asked to run in (`spawn_thread`'s `mode`), as `listModels`
+   * lists it for that instance. Still capped at `parentMode` (D146).
+   */
+  mode?: ModeId | null;
+  /**
    * Model, as returned by `listModels`.
    */
   model?: ModelId | null;
+  /**
+   * The caller's effective mode when it spawned, as its own provider describes it. The
+   * destination maps it onto the worker's provider by `skipsApprovals` and `autonomy`, never
+   * to anything more permissive (D146). Absent: the caller's mode is not known, and the
+   * worker starts in its harness's default mode.
+   */
+  parentMode?: ModeInfo | null;
   /**
    * The caller's project cross-target key (normalised remote URL).
    */
@@ -3428,6 +3562,11 @@ export interface SpawnThreadQuery {
  * `spawnThread` reply.
  */
 export interface SpawnThreadReply {
+  /**
+   * One sentence saying which mode it runs in and why ("Runs in Bypass permissions, as its
+   * parent."), for the spawn result. Absent from an older `yaacd`.
+   */
+  modeNote?: string | null;
   /**
    * The new thread.
    */
@@ -4678,6 +4817,12 @@ export interface TokenUsage {
  * `toolCall`: a tool invocation.
  */
 export interface ToolCallItem {
+  /**
+   * The call is communication with another agent (D150): what it did, to whom, and how it
+   * went, read from the call by `yaacd`. Absent for every other tool. A window that does
+   * not know this field shows the tool call as an ordinary one, under its readable title.
+   */
+  agentCall?: AgentCall | null;
   /**
    * Working directory, for a command.
    */
