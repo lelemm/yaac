@@ -72,7 +72,7 @@ fn a_deleted_recipient_is_not_a_contact() {
 
 #[test]
 fn the_panel_state_machine_and_the_pill() {
-    use yaac_core::agents::{Flow, PanelInput as I, PanelMode as M, Role, pill_icons};
+    use yaac_core::agents::{Flow, PILL_MAX, PanelInput as I, PanelMode as M, Role, pill};
     assert_eq!(M::default(), M::Pill);
     assert_eq!(M::Pill.next(I::Enter), M::Card);
     assert_eq!(M::Card.next(I::Leave), M::Pill);
@@ -85,22 +85,24 @@ fn the_panel_state_machine_and_the_pill() {
     let (c, _) = boot();
     let map = AttentionMap::compute(&c.state);
     let p = agents_panel(&c.state, &map, &threads::orchestrator()).unwrap();
-    let (icons, more) = pill_icons(&p);
-    assert_eq!(more, 0);
+    let pl = pill(&p, PILL_MAX);
+    assert_eq!(pl.more.hidden, 0);
+    let icons: Vec<_> = pl.clusters.iter().flat_map(|c| c.rows.iter().copied()).collect();
     let summary: Vec<_> = icons.iter().map(|r| (r.title.as_str(), r.role, r.flow, r.finished, r.kind.as_deref())).collect();
     assert_eq!(
         summary,
         [
-            ("users-service", Role::Worker, None, true, Some("claude")),
-            ("billing-service", Role::Worker, None, true, Some("claude")),
-            ("search-service", Role::Worker, Some(Flow::Sending), false, Some("claude")),
+            // Alive first (D168): needs you, running, then the finished, most recent first.
             ("index-rebuild", Role::Worker, None, false, Some("claude")),
+            ("search-service", Role::Worker, Some(Flow::Sending), false, Some("claude")),
+            ("billing-service", Role::Worker, None, true, Some("claude")),
+            ("users-service", Role::Worker, None, true, Some("claude")),
             ("CI integration", Role::Contact, None, false, Some("codex")),
             ("Release notes", Role::Contact, None, false, Some("codex")),
         ]
     );
-    assert_eq!(icons[3].last_action, "Waiting for your approval");
-    assert_eq!(icons[1].last_action, "merged, 14 tests pass");
+    assert_eq!(icons[0].last_action, "Waiting for your approval");
+    assert_eq!(icons[2].last_action, "merged, 14 tests pass");
     assert!(p.in_flight());
     // From the other end, the same message is coming in.
     let p = agents_panel(&c.state, &map, &threads::search()).unwrap();
