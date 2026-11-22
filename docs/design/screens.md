@@ -1618,3 +1618,16 @@ account (Pro) used on three targets.
 - Above Settings, one logo per account with a thin five-segment bar under it for that
   account's most used window (Claude's 5h, in the failed colour; Codex's weekly in blue).
   Hovering shows that window and the account's tooltip.
+
+### 120 — Queue or send now while a turn runs
+
+D166. billing-service (Claude Code) is working: its answer so far and a running test command.
+Two messages wait; a third is being typed.
+
+- Above the composer, "Queued · 2 · sent when the turn ends", then the two messages in order,
+  each one line with **Send now — interrupts**, **Edit** and ✕ on the right. No frame: text on
+  the panel, like the rest of the transcript's quiet lines.
+- The composer keeps its full width for the text. Under it, the paperclip on the left; on the
+  right **Queue ↵** filled (the primary), **Send now — interrupts  Ctrl+Enter** and
+  **Stop  Esc**, plain and monochrome. Claude Code cannot steer, so Send now says it
+  interrupts; on a Codex thread it reads "Send now".

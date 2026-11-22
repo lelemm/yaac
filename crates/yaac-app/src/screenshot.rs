@@ -110,6 +110,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("110", "rate-limits"),
     ("111", "rate-limits-tooltip"),
     ("112", "rate-limits-strip"),
+    ("120", "running-queue"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -282,6 +283,15 @@ fn setup(app: &mut YaacApp, id: &str) {
             if id != "101" && id != "102" && id != "103" {
                 app.ui.scroll_end = false;
             }
+        }
+        "120" => {
+            // Queue or send now (D166): billing-service (Claude Code) is working; two messages
+            // wait in the strip above the composer, and a third is being typed. Queue is the
+            // primary; Send now says it interrupts, since this harness cannot steer.
+            play(app, Scene::QueueWhileRunning);
+            let k = threads::billing();
+            app.open(&k, None);
+            app.client.state.drafts.entry(k).or_default().text = "And bump the crate's patch version.".into();
         }
         "84" => {
             // An open tool call (D158): the down chevron and faint fill on its line, the guide
