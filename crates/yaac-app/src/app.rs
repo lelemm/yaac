@@ -377,6 +377,9 @@ pub(crate) struct CreateProject {
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
     Open(ThreadKey),
+    /// After the Commander or a key opened a thread: the caret goes to its composer when the
+    /// user can type there (D149).
+    TypeHere,
     OpenAt(ThreadKey, Option<ItemId>),
     OpenRequest(ThreadKey),
     Respond { key: ThreadKey, request: RequestId, response: RequestResponse, summary: String },
@@ -837,6 +840,20 @@ impl YaacApp {
         self.ui.focus_card = self.pending_card(key);
     }
 
+    /// The caret goes to the open thread's composer (D149, P171) — only when it can be typed in:
+    /// shown (not read-only, not on a stopped distro), not dimmed by a request waiting for an
+    /// answer, and no card has the keyboard.
+    fn type_here(&mut self) {
+        if self.ui.settings || self.ui.focus_card.is_some() {
+            return;
+        }
+        let Some(key) = self.client.state.selected_thread().cloned() else { return };
+        let map = yaac_core::attention::AttentionMap::compute(&self.client.state);
+        if let yaac_core::header::ComposerView::Shown { dimmed_hint: None, .. } = yaac_core::header::composer(&self.client.state, &map, &key) {
+            self.ui.focus_composer = true;
+        }
+    }
+
     fn pending_card(&self, key: &ThreadKey) -> Option<ItemId> {
         if !self.client.state.may_act(key) {
             return None;
@@ -923,6 +940,7 @@ impl YaacApp {
         for a in actions {
             match a {
                 Action::Open(k) => self.open(&k, None),
+                Action::TypeHere => self.type_here(),
                 Action::OpenAt(k, i) => self.open(&k, i),
                 Action::OpenRequest(k) => {
                     self.open(&k, None);
@@ -1876,6 +1894,44 @@ pub(crate) mod tests {
         keys(&ctx, &mut app, vec![press(Key::Escape, Modifiers::NONE)]);
         assert!(app.ui.commander.is_none());
         assert!(app.ui.ordering.running_only);
+    }
+
+    /// Ctrl+Space → "Find a thread…" → the thread whose title is `title`.
+    fn find_and_open(ctx: &egui::Context, app: &mut YaacApp, title: &str) {
+        keys(ctx, app, vec![press(Key::Space, CTRL)]);
+        keys(ctx, app, vec![egui::Event::Text("Find a thread".into())]);
+        keys(ctx, app, vec![press(Key::Enter, Modifiers::NONE)]);
+        assert_eq!(app.ui.commander.as_ref().and_then(|c| c.step).map(|s| s.0), Some(yaac_core::commands::Cmd::FindThread));
+        keys(ctx, app, vec![egui::Event::Text(title.into())]);
+        keys(ctx, app, vec![press(Key::Enter, Modifiers::NONE)]);
+        assert!(app.ui.commander.is_none());
+        for _ in 0..3 {
+            keys(ctx, app, vec![]);
+        }
+    }
+
+    #[test]
+    fn a_thread_found_in_the_commander_opens_with_the_caret_in_its_composer() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        app.apply(vec![Action::Open(threads::fix())]);
+        keys(&ctx, &mut app, vec![]);
+        find_and_open(&ctx, &mut app, "billing-service");
+        let billing = threads::billing();
+        assert_eq!(app.client.state.selected_thread(), Some(&billing));
+        let id = crate::composer::composer_id(&yaac_core::attachments::DraftRef::Thread(billing.clone()));
+        assert_eq!(ctx.memory(|m| m.focused()), Some(id), "the caret is in billing-service's composer (D149)");
+        // Typing goes straight into the draft.
+        keys(&ctx, &mut app, vec![egui::Event::Text("hi".into())]);
+        assert_eq!(app.client.state.drafts.get(&billing).map(|d| d.text.as_str()), Some("hi"));
+        // A thread another program holds has no composer to type in: nothing takes the caret.
+        find_and_open(&ctx, &mut app, "Explain the handshake");
+        assert_eq!(app.client.state.selected_thread(), Some(&threads::handshake()));
+        assert!(!ctx.text_edit_focused(), "read-only: no caret");
+        // A thread waiting on an approval keeps the keyboard on its card.
+        find_and_open(&ctx, &mut app, "Fix frame decoder");
+        assert_eq!(app.client.state.selected_thread(), Some(&threads::fix()));
+        assert!(!ctx.text_edit_focused(), "the approval card has the keyboard");
     }
 
     #[test]
