@@ -123,6 +123,7 @@ export const CODEX_MODES: readonly CodexMode[] = [
     id: "codex:read-only",
     displayName: "Read only",
     description: "Codex can read files; it asks before editing, running commands that need more, or using the network.",
+    autonomy: "ask",
     approvalPolicy: "on-request",
     sandbox: "read-only",
     sandboxPolicy: { type: "readOnly", networkAccess: false },
@@ -131,6 +132,7 @@ export const CODEX_MODES: readonly CodexMode[] = [
     id: "codex:auto",
     displayName: "Auto",
     description: "Codex can read and edit files in the working directory and run commands there; it asks before going beyond it.",
+    autonomy: "workspace",
     approvalPolicy: "on-request",
     sandbox: "workspace-write",
     sandboxPolicy: { type: "workspaceWrite", writableRoots: [], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false },
@@ -140,6 +142,7 @@ export const CODEX_MODES: readonly CodexMode[] = [
     displayName: "Full access",
     description: "Codex edits files, runs commands, and uses the network anywhere, and never asks.",
     skipsApprovals: true,
+    autonomy: "full",
     approvalPolicy: "never",
     sandbox: "danger-full-access",
     sandboxPolicy: { type: "dangerFullAccess" },
@@ -159,6 +162,34 @@ function findMode(id: string | null | undefined): CodexMode | null {
   const m = CODEX_MODES.find((x) => x.id === id);
   if (!m) throw new Error(`"${id}" is not a Codex mode`);
   return m;
+}
+
+/** What `thread/start`, `thread/resume` and `thread/fork` report about a thread's settings. */
+interface ReportedSettings {
+  approvalPolicy?: unknown;
+  approvalsReviewer?: unknown;
+  sandbox?: unknown;
+}
+
+/**
+ * The preset a thread is really in, from the settings Codex reports for it (`approvalPolicy`,
+ * `approvalsReviewer`, `sandbox` on the `thread/start`, `thread/resume` and `thread/fork`
+ * responses; verified against codex-cli 0.170.0 `generate-ts`). This is how a thread that
+ * follows the user's own Codex configuration shows the mode it is in (D146). `undefined`: Codex
+ * reported nothing (an older Codex); `null`: settings no preset describes — a reviewer other
+ * than the user, a granular or `untrusted` policy, a network setting the preset lacks.
+ */
+export function reportedMode(r: ReportedSettings): string | null | undefined {
+  if (r.approvalPolicy === undefined || r.sandbox === undefined) return undefined;
+  if (r.approvalsReviewer !== undefined && r.approvalsReviewer !== null && r.approvalsReviewer !== "user") return null;
+  const sb = r.sandbox as Record<string, unknown> | null;
+  if (!sb || typeof sb !== "object") return null;
+  for (const m of CODEX_MODES) {
+    if (m.approvalPolicy !== r.approvalPolicy || m.sandboxPolicy.type !== sb.type) continue;
+    if ("networkAccess" in m.sandboxPolicy && sb.networkAccess !== m.sandboxPolicy.networkAccess) continue;
+    return m.id;
+  }
+  return null;
 }
 
 const CLIENT_NAME = "yaacd";
@@ -515,8 +546,10 @@ export class CodexProvider implements HarnessProvider {
       thread: Thread;
       model?: string;
       reasoningEffort?: string | null;
-    };
+    } & ReportedSettings;
     st.subscribed = true;
+    const reported = reportedMode(r);
+    if (reported !== undefined) st.mode = reported;
     if (r.thread.status) st.status = r.thread.status;
     st.model = r.model ?? r.thread.model ?? st.model;
     st.effort = r.reasoningEffort ?? r.thread.reasoningEffort ?? st.effort;
@@ -736,7 +769,7 @@ export class CodexProvider implements HarnessProvider {
       thread: Thread;
       model?: string;
       reasoningEffort?: string | null;
-    };
+    } & ReportedSettings;
     const native = r.thread.id;
     // The mesh's ticket is bound to the thread before its first turn runs.
     bind?.(native);
@@ -745,7 +778,7 @@ export class CodexProvider implements HarnessProvider {
     st.status = r.thread.status ?? { type: "idle" };
     st.model = r.model ?? r.thread.model ?? null;
     st.effort = r.reasoningEffort ?? null;
-    st.mode = mode?.id ?? null;
+    st.mode = reportedMode(r) ?? mode?.id ?? null;
     st.lastControl = JSON.stringify({ external: false });
     try {
       const turn = await this.beginTurn(st, input, { model: null, effort: params.effort ?? null, mode: null, fast: params.fast ?? null });
@@ -1040,7 +1073,7 @@ export class CodexProvider implements HarnessProvider {
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
       ...(mode ? { approvalPolicy: mode.approvalPolicy, sandbox: mode.sandbox } : {}),
       ...extras,
-    })) as { thread: Thread; model?: string; reasoningEffort?: string | null };
+    })) as { thread: Thread; model?: string; reasoningEffort?: string | null } & ReportedSettings;
     bind?.(r.thread.id);
     const st = this.state(r.thread.id);
     st.subscribed = true;
@@ -1048,7 +1081,7 @@ export class CodexProvider implements HarnessProvider {
     st.model = r.model ?? r.thread.model ?? null;
     st.effort = opts.effort ?? r.reasoningEffort ?? null;
     st.pendingEffort = opts.effort ?? null;
-    st.mode = mode?.id ?? null;
+    st.mode = reportedMode(r) ?? mode?.id ?? null;
     st.lastControl = JSON.stringify({ external: false });
     return r.thread.id;
   }

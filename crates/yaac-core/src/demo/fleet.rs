@@ -122,9 +122,9 @@ pub(super) fn has_fast(m: &ModelInfo) -> bool {
 
 fn modes() -> Vec<ModeInfo> {
     vec![
-        ModeInfo { id: ModeId::new("ask"), display_name: "ask".into(), description: None, is_default: true, skips_approvals: false },
-        ModeInfo { id: ModeId::new("auto"), display_name: "auto".into(), description: None, is_default: false, skips_approvals: false },
-        ModeInfo { id: ModeId::new("bypass"), display_name: "bypass permissions".into(), description: None, is_default: false, skips_approvals: true },
+        ModeInfo { id: ModeId::new("ask"), display_name: "ask".into(), description: None, is_default: true, skips_approvals: false, autonomy: None },
+        ModeInfo { id: ModeId::new("auto"), display_name: "auto".into(), description: None, is_default: false, skips_approvals: false, autonomy: None },
+        ModeInfo { id: ModeId::new("bypass"), display_name: "bypass permissions".into(), description: None, is_default: false, skips_approvals: true, autonomy: None },
     ]
 }
 

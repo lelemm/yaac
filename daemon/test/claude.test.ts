@@ -285,6 +285,14 @@ test("probe reports models and their efforts exactly as listed, and closes its q
   assert.ok(p.capabilities.includes("approvals") && p.capabilities.includes("userQuestions") && p.capabilities.includes("reasoning"));
   assert.ok(p.modes.some((m) => m.id === "default" && m.isDefault));
   assert.ok(p.modes.some((m) => m.id === "bypassPermissions" && m.skipsApprovals && !m.isDefault));
+  // What the agent mesh maps modes by (D146): every mode says how much it allows unasked.
+  const autonomy = Object.fromEntries(p.modes.map((m) => [m.id, m.autonomy]));
+  assert.equal(autonomy.plan, "readOnly");
+  assert.equal(autonomy.default, "ask");
+  assert.equal(autonomy.dontAsk, "ask");
+  assert.equal(autonomy.acceptEdits, "edits");
+  assert.equal(autonomy.bypassPermissions, "full");
+  if ("auto" in autonomy) assert.equal(autonomy.auto, "judged");
   assert.equal(p.store.account, "someone@example.invalid");
   assert.ok(p.store.key?.startsWith("claude:"));
   const probeQuery = r.sdk.queries[0]!;

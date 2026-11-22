@@ -896,3 +896,33 @@ test("codex modes: offered, only never-ask-with-full-access skips approvals, nev
     await r.done();
   }
 });
+
+test("codex modes: each says how much it allows unasked, and a thread shows the preset Codex reports it in (D146)", async () => {
+  const { CODEX_MODES, reportedMode } = await import("../src/providers/codex/provider.js");
+  const r = await rig();
+  try {
+    const probe = await r.provider.probe();
+    const autonomy = Object.fromEntries(probe.modes.map((m) => [m.id, m.autonomy]));
+    for (const m of CODEX_MODES) {
+      const expected = m.sandbox === "read-only" ? "ask" : m.sandbox === "workspace-write" ? "workspace" : "full";
+      assert.equal(autonomy[m.id], expected, m.id);
+    }
+    // The settings Codex reports on thread/start (the user's own configuration, no mode sent).
+    const full = { approvalPolicy: "never", approvalsReviewer: "user", sandbox: { type: "dangerFullAccess" } };
+    idleThread(r.fake, THREAD_ID);
+    r.fake.handlers.set("thread/start", () => ({ thread: { id: THREAD_ID, status: { type: "idle" } }, model: "model-1", ...full }));
+    r.fake.handlers.set("turn/start", () => ({ turn: { id: TURN_ID, status: "inProgress" } }));
+    await r.provider.startThread({ cwd: "/w" }, input("go"));
+    assert.equal(r.fake.requests("thread/start")[0]!.params.approvalPolicy, undefined, "still nothing sent");
+    const bypass = CODEX_MODES.find((m) => m.skipsApprovals)!;
+    assert.equal((await r.provider.effective(THREAD_ID)).applied!.mode, bypass.id);
+    // What no preset describes is unknown; an older Codex that reports nothing changes nothing.
+    assert.equal(reportedMode({ ...full, approvalsReviewer: "auto_review" }), null);
+    assert.equal(reportedMode({ approvalPolicy: "untrusted", sandbox: { type: "workspaceWrite", networkAccess: false } }), null);
+    assert.equal(reportedMode({ approvalPolicy: "on-request", sandbox: { type: "workspaceWrite", networkAccess: true } }), null);
+    assert.equal(reportedMode({ approvalPolicy: "on-request", sandbox: { type: "readOnly", networkAccess: false } }), CODEX_MODES.find((m) => m.sandbox === "read-only")!.id);
+    assert.equal(reportedMode({}), undefined);
+  } finally {
+    await r.done();
+  }
+});

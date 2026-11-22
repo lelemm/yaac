@@ -19,7 +19,10 @@ default 5), `FAKE_STATUS=<providerStatus>` (e.g. `needsAuth`, to test status han
 `FAKE_STEER=0` (no `steer`: a harness that cannot steer), `FAKE_FORCE_STOP=0` (no `forceStop`:
 a shared harness process yaacd cannot end), `FAKE_MOVE_CWD=0` (no `threadMoveWorkingDirectory`: a
 harness that cannot change a conversation's folder, so a `thread/move` changes only where YAAC lists it;
-with it, the folder `yaacd` hands a turn is recorded in `received` as `cwd`).
+with it, the folder `yaacd` hands a turn is recorded in `received` as `cwd`), `FAKE_MODES=<json>`
+(the modes on offer, a JSON array of `ModeInfo` — `id`, `displayName`, `isDefault`,
+`skipsApprovals`, `autonomy` — instead of `fake-ask` (`ask`, the default) and `fake-auto`
+(`workspace`); a thread started with no mode is in the one marked `isDefault`, or in none).
 
 A new store is seeded with two conversations "created outside YAAC": one `interactive`
 ("Refactor the parser (started in a terminal)") and one `programmatic` ("Nightly lint
