@@ -37,6 +37,7 @@ mod files;
 mod first_run;
 mod icons;
 mod keyboard;
+mod limits_ui;
 mod logos;
 mod markdown;
 mod nav;

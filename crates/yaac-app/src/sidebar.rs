@@ -97,7 +97,9 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     let total = y;
     let footer_h = if app.demo.is_some() { 74.0 } else { 40.0 };
     let bar = bar_height(ui, app);
-    let list_h = ui.available_height() - footer_h - bar.unwrap_or(0.0);
+    // The rate-limit panel (D161) docks above the footer.
+    let limits_h = crate::limits_ui::height(ui, app, now, ui.available_width());
+    let list_h = ui.available_height() - footer_h - limits_h - bar.unwrap_or(0.0);
     let selected = app.client.state.selected_thread().cloned();
     let mut sa = egui::ScrollArea::vertical().id_salt("sidebar-list").max_height(list_h).auto_shrink([false, false]);
     if app.ui.sidebar_to_end {
@@ -158,7 +160,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     if let Some(h) = bar {
         selection_bar(ui, app, h, actions);
     }
-
+    crate::limits_ui::show(ui, app, now);
     footer(ui, app, actions);
 }
 

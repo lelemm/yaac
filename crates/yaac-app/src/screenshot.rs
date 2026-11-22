@@ -100,6 +100,9 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("91", "agent-calls-open"),
     ("92", "subagents"),
     ("93", "subagents-open"),
+    ("110", "rate-limits"),
+    ("111", "rate-limits-tooltip"),
+    ("112", "rate-limits-strip"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -530,6 +533,17 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.open(&threads::fix(), None);
             app.ui.focus_card = None;
             app.ui.menu = Some(Menu::Context(threads::billing()));
+        }
+        "110" | "111" | "112" => {
+            // The rate-limit panel (D161): one Claude account used on local and devbox (5h
+            // used up, weekly at 55%) and one Codex account at 55% of its week. 111: the
+            // Claude account's tooltip. 112: the collapsed strip's tiny form.
+            app.open(&threads::orchestrator(), None);
+            match id {
+                "111" => app.ui.limits_tip_force = Some("claude:demo0001".into()),
+                "112" => app.ui.sidebar.collapsed = true,
+                _ => {}
+            }
         }
         "36" => {
             // The sidebar dragged wider.
