@@ -3,7 +3,8 @@
 //
 // One `query()` in streaming-input mode per live thread; the SDK runs Claude Code as a child of
 // yaacd. A thread's id is the Claude session id, chosen up front for a new thread. Idle queries
-// are closed and resumed on the next message, and only so many are kept open at once.
+// are closed and resumed on the next message, and only so many are kept open at once — but a
+// query whose process runs background work (subagents, shells) is never closed (D160).
 
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
