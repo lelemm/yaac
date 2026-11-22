@@ -44,6 +44,7 @@ const CATALOGUE: &[(&str, &[&str])] = &[
     ("Search threads", &["search-threads"]),
     ("Find a thread…", &["find-thread"]),
     ("Next thread that needs you", &["needs-next"]),
+    ("Jump to the bottom", &["jump-to-bottom"]),
     ("Next unseen finished thread", &["next-unseen"]),
     ("Next / previous thread in the list", &["next-thread", "prev-thread"]),
     ("Back / forward", &["back", "forward"]),

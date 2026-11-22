@@ -35,6 +35,8 @@ pub enum Cmd {
     FindThread,
     NeedsNext,
     NextUnseen,
+    /// Scroll the open thread to its newest message (D142).
+    JumpToBottom,
     NextThread,
     PrevThread,
     Back,
@@ -245,6 +247,7 @@ pub static COMMANDS: &[CommandDef] = &[
     def(Cmd::SearchThreads, "search-threads", "Search threads", "Focus the sidebar's search field.", &["filter"], G::GoTo, &["Ctrl+K"]),
     step(def(Cmd::FindThread, "find-thread", "Find a thread…", "Find any thread by title or id across every target, and open it.", &["go to", "open", "jump", "switch"], G::GoTo, &["Ctrl+P"]), StepKind::Thread),
     def(Cmd::NeedsNext, "needs-next", "Next thread that needs you", "Open the next thread waiting on you, at its request.", &["approval", "question", "attention", "waiting"], G::GoTo, &["Ctrl+J"]),
+    def(Cmd::JumpToBottom, "jump-to-bottom", "Jump to the bottom", "Scroll the open thread to its newest message.", &["latest", "end", "new messages", "scroll"], G::GoTo, &["Ctrl+End"]),
     def(Cmd::NextUnseen, "next-unseen", "Next unseen finished thread", "Open the next thread whose finished turn you have not seen.", &["unread", "done"], G::GoTo, &["Ctrl+U"]),
     def(Cmd::NextThread, "next-thread", "Next thread in the list", "Move the selection down the sidebar.", &["down"], G::GoTo, &["Ctrl+Down"]),
     def(Cmd::PrevThread, "prev-thread", "Previous thread in the list", "Move the selection up the sidebar.", &["up"], G::GoTo, &["Ctrl+Up"]),
@@ -470,7 +473,8 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
     // Thread commands are hidden while no thread is open.
     let need_thread = matches!(
         cmd,
-        Cmd::NewInProject
+        Cmd::JumpToBottom
+            | Cmd::NewInProject
             | Cmd::Rename
             | Cmd::CopyId
             | Cmd::Pin
@@ -505,6 +509,7 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
     let summary = key.as_ref().and_then(|k| st.summary(k));
     let row = || control_row(ctx);
     match cmd {
+        Cmd::JumpToBottom => Avail::Enabled,
         Cmd::NeedsNext => {
             let map = AttentionMap::compute(st);
             when(!crate::sidebar::needs_you(st, &map, ctx.now).is_empty(), "Nothing needs you")

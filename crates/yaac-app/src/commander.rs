@@ -219,6 +219,7 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
             }
         }
         Cmd::NeedsNext => actions.push(Action::NeedsNext),
+        Cmd::JumpToBottom => app.ui.scroll_end = true,
         Cmd::NextUnseen => {
             if let Some(k) = cmds::next_unseen(st, &sidebar_order(app), thread.as_ref()) {
                 actions.push(Action::Open(k));

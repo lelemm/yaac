@@ -37,6 +37,7 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 | Search threads | Focus the sidebar's search field. | Ctrl+K |
 | Find a thread… | Fuzzy-find any thread by title or id across every target (hub search), and open it. | Ctrl+P **new** |
 | Next thread that needs you | Open the next thread waiting on you, at its request (D117). | Ctrl+J |
+| Jump to the bottom | Scroll the open thread to its newest message; with the view scrolled up, the button above the composer says how many messages arrived since (D142). | Ctrl+End |
 | Next unseen finished thread | Open the next thread whose finished turn you have not seen (D114). | Ctrl+U **new** |
 | Next / previous thread in the list | Move the selection down / up the sidebar. | Ctrl+↓ / Ctrl+↑ |
 | Back / forward | Through visited threads (D87). | Alt+← / Alt+→, mouse buttons |

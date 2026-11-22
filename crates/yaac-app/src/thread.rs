@@ -406,7 +406,41 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
     if matches!(app.ui.history.current().map(|e| &e.place), Some(yaac_core::history::Place::Thread(k)) if k == key) && reading.is_some() {
         app.ui.history.set_anchor(reading);
     }
-    let _ = out;
+    // Away from the newest message (D142): remember how many messages there were when the
+    // view left the bottom, and offer a way back above the composer.
+    let at_end = out.state.clamped_offset().y + out.inner_rect.height() >= out.content_size.y - 8.0;
+    if std::env::var_os("YAAC_DEBUG_LAYOUT").is_some() {
+        eprintln!("transcript offset {} view {} content {}", out.state.clamped_offset().y, out.inner_rect.height(), out.content_size.y);
+    }
+    let messages = t.items().iter().filter(|i| matches!(i.body, ItemBody::UserMessage(_) | ItemBody::AgentMessage(_))).count();
+    if at_end {
+        app.ui.away_from_end = None;
+    } else if !app.ui.away_from_end.as_ref().is_some_and(|(k, _)| k == key) {
+        app.ui.away_from_end = Some((key.clone(), messages));
+    }
+    if let Some((_, seen)) = app.ui.away_from_end.as_ref().filter(|(k, _)| k == key) {
+        let fresh = messages.saturating_sub(*seen);
+        let text = match fresh {
+            0 => "Jump to bottom".to_owned(),
+            1 => "1 new message".to_owned(),
+            n => format!("{n} new messages"),
+        };
+        // "3 new messages (Ctrl+End)", with the key as bound now (D131).
+        let label = crate::commander::tip(app, &text, yaac_core::commands::Cmd::JumpToBottom);
+        let font = theme::ui(size::SMALL);
+        let g = ui.fonts_mut(|f| f.layout_no_wrap(label, font, p.text));
+        let size = g.size() + vec2(28.0, 12.0);
+        let r = Rect::from_center_size(pos2(area.center().x, area.bottom() - 14.0 - size.y / 2.0), size);
+        let resp = ui.interact(r, ui.scope_id().with(("jump-to-bottom", key.to_string())), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let fill = if resp.hovered() { p.selected } else { p.raised };
+        ui.painter().rect_filled(r.expand(1.0), size.y / 2.0, p.bg.gamma_multiply(0.3));
+        ui.painter().rect_filled(r, size.y / 2.0, fill);
+        ui.painter().galley(r.center() - g.size() / 2.0, g, p.text);
+        if resp.clicked() {
+            app.ui.scroll_end = true;
+            ui.ctx().request_repaint();
+        }
+    }
     if app.ui.textsel.end(ui, area, |n| item_units(&bl, t, n)) {
         ui.ctx().request_repaint();
     }

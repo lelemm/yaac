@@ -157,7 +157,9 @@ impl Chord {
     /// the list or the thread view.
     pub fn works_in_text(&self) -> bool {
         let ChordKey::Key(k) = &self.key else { return true };
-        if matches!(k.as_str(), "Delete" | "Backspace" | "Home" | "End") {
+        // Ctrl+End is "jump to the bottom" of the thread (D142), wanted while typing too; the
+        // other editing keys stay with the field.
+        if matches!(k.as_str(), "Delete" | "Backspace" | "Home" | "End") && !(self.ctrl && !self.alt && !self.shift && k == "End") {
             return false;
         }
         if self.ctrl && !self.alt && matches!(k.as_str(), "Left" | "Right") {
@@ -262,6 +264,11 @@ mod tests {
         // Text editing keeps its own keys: Ctrl+Delete deletes a word, Ctrl+A selects all.
         assert!(Chord::parse("Ctrl+Delete").is_some_and(|c| !c.works_in_text()));
         assert!(Chord::parse("Ctrl+A").is_some_and(|c| !c.works_in_text()));
+        // Jump to the bottom (D142) works while typing; Home, End and Ctrl+Home stay with the field.
+        assert!(Chord::parse("Ctrl+End").is_some_and(|c| c.works_in_text()));
+        assert!(Chord::parse("End").is_some_and(|c| !c.works_in_text()));
+        assert!(Chord::parse("Ctrl+Home").is_some_and(|c| !c.works_in_text()));
+        assert!(Chord::parse("Ctrl+Shift+End").is_some_and(|c| !c.works_in_text()));
         assert!(Chord::parse("Ctrl+Shift+A").is_some_and(|c| c.works_in_text()));
         assert!(Chord::parse("Alt+←").is_some_and(|c| c.works_in_text()));
         assert!(Chord::parse("Mouse back").is_some_and(|c| c.works_in_text()));

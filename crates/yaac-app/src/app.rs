@@ -149,6 +149,9 @@ pub(crate) struct UiState {
     pub scroll_to: Option<ItemId>,
     /// Scroll the transcript to the end on the next frame.
     pub scroll_end: bool,
+    /// The open thread is scrolled up from its newest message (D142): which thread, and how
+    /// many messages it had when the view left the bottom.
+    pub away_from_end: Option<(ThreadKey, usize)>,
     /// An input method is composing in the composer.
     pub ime_composing: bool,
     pub settings: bool,
@@ -242,6 +245,7 @@ impl UiState {
             focus_card: None,
             scroll_to: None,
             scroll_end: false,
+            away_from_end: None,
             ime_composing: false,
             settings: false,
             settings_page: Page::Targets,
@@ -1567,6 +1571,50 @@ mod tests {
         let mut frame = eframe::Frame::_new_kittest();
         let mut out = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn scrolled_up_offers_the_way_back_and_ctrl_end_takes_it() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let orch = threads::orchestrator();
+        app.apply(vec![Action::Open(orch.clone())]);
+        // Frames 100 ms apart, as a real window draws them (smooth scrolling settles).
+        let clock = std::cell::Cell::new(0.0_f64);
+        let screen = || {
+            clock.set(clock.get() + 0.1);
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 300.0))), time: Some(clock.get()), ..Default::default() }
+        };
+        // Settle the layout at the bottom.
+        for _ in 0..4 {
+            window_frame(&ctx, &mut app, screen());
+        }
+        assert!(app.ui.away_from_end.is_none(), "at the newest message: no button");
+        // The mouse wheel over the transcript scrolls it up, away from the end.
+        let mut wheel = screen();
+        wheel.events.push(egui::Event::PointerMoved(egui::pos2(800.0, 120.0)));
+        wheel.events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, 3.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: Modifiers::NONE,
+        });
+        window_frame(&ctx, &mut app, wheel);
+        for _ in 0..20 {
+            window_frame(&ctx, &mut app, screen());
+        }
+        assert!(matches!(&app.ui.away_from_end, Some((k, _)) if k == &orch), "scrolled up: the button is offered");
+        // Ctrl+End jumps back, even with the caret in the composer.
+        app.ui.focus_composer = true;
+        window_frame(&ctx, &mut app, screen());
+        let mut input = screen();
+        input.events.push(egui::Event::Key { key: Key::End, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::CTRL });
+        window_frame(&ctx, &mut app, input);
+        for _ in 0..3 {
+            window_frame(&ctx, &mut app, screen());
+        }
+        assert!(app.ui.away_from_end.is_none(), "back at the newest message");
     }
 
     #[test]
