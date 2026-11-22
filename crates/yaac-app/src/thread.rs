@@ -3,7 +3,7 @@
 use std::hash::{Hash, Hasher};
 
 use eframe::egui::{self, Margin, Panel, Rect, Sense, UiBuilder, pos2, vec2};
-use yaac_core::activity::{ActivityLine, Block, Expansion, LineMark, blocks};
+use yaac_core::activity::{ActivityLine, Block, LineMark, blocks};
 use yaac_core::diff::{FileDiff, LineKind};
 use yaac_core::selection::Unit;
 use yaac_core::attention::{AttentionMap, Mark};
@@ -207,51 +207,23 @@ pub(crate) fn link_part(ui: &mut egui::Ui, p: &Palette, title: &str, key: Option
     }
 }
 
-fn block_hash(b: &Block, t: &Transcript, key: &ThreadKey, e: &Expansion, width: f32, dark: bool) -> u64 {
+/// Which block this is, whatever it says now: its kind and the item it starts at. A block
+/// keeps this while its item streams, so its last measured height places it until it is
+/// measured again (D152).
+fn block_ident(b: &Block, t: &Transcript) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     std::mem::discriminant(b).hash(&mut h);
-    width.to_bits().hash(&mut h);
-    dark.hash(&mut h);
-    let idx = |i: usize, h: &mut std::collections::hash_map::DefaultHasher| {
-        i.hash(h);
-        t.item_rev(i).hash(h);
-    };
+    let id = |i: usize, h: &mut std::collections::hash_map::DefaultHasher| t.items().get(i).map(|x| &x.id).hash(h);
     match b {
-        Block::User { index } => {
-            idx(*index, &mut h);
-            // Its pasted blocks and its context open and close in place.
-            if let Some(item) = t.items().get(*index) {
-                e.context.contains(&(key.clone(), item.id.clone())).hash(&mut h);
-                for (k, id, part) in e.pasted.range((key.clone(), item.id.clone(), 0)..=(key.clone(), item.id.clone(), usize::MAX)) {
-                    (k, id, part).hash(&mut h);
-                }
-            }
-        }
-        Block::Task { index } | Block::Prose { index } | Block::Card { index } | Block::Handoff { index } => idx(*index, &mut h),
+        Block::User { index } | Block::Task { index } | Block::Prose { index } | Block::Card { index } | Block::Handoff { index } => id(*index, &mut h),
         Block::Run { lines } => {
-            for l in lines {
-                idx(l.index, &mut h);
-                l.expanded.hash(&mut h);
-                l.highlighted.hash(&mut h);
-                l.text.hash(&mut h);
-                if let Some(d) = l.diff {
-                    d.file.hash(&mut h);
-                    e.rest.contains(&(key.clone(), l.id.clone(), d.file)).hash(&mut h);
-                }
+            if let Some(l) = lines.first() {
+                l.id.hash(&mut h);
+                l.diff.map(|d| d.file).hash(&mut h);
             }
         }
-        Block::Folded { first, count, text, .. } => {
-            first.hash(&mut h);
-            count.hash(&mut h);
-            text.hash(&mut h);
-        }
-        Block::TurnChanges { turn, totals, expanded, .. } => {
-            turn.hash(&mut h);
-            totals.files.hash(&mut h);
-            totals.added.hash(&mut h);
-            totals.removed.hash(&mut h);
-            expanded.hash(&mut h);
-        }
+        Block::Folded { first, .. } => first.hash(&mut h),
+        Block::TurnChanges { turn, .. } => turn.hash(&mut h),
     }
     h.finish()
 }
@@ -342,6 +314,23 @@ fn item_units(blocks: &[Block], t: &Transcript, index: usize) -> Vec<(Unit, Vec<
     out
 }
 
+/// Tests only: how one pass laid the transcript out.
+#[cfg(test)]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Geom {
+    /// The scroll offset the pass drew with, and the one it ended with.
+    pub drawn_offset: f32,
+    pub offset: f32,
+    pub content: f32,
+    pub view: f32,
+    /// The bottom of the last block on screen.
+    pub last_bottom: Option<f32>,
+    /// Items whose block was drawn, and those placed at a guessed height (not measured as
+    /// they are now).
+    pub drawn: Vec<usize>,
+    pub estimated: Vec<usize>,
+}
+
 fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
     let p = app.p;
     let state = &app.client.state;
@@ -359,8 +348,11 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
     let width = (avail - 56.0).clamp(200.0, COLUMN);
     let x0 = ui.max_rect().left() + ((avail - width) / 2.0).max(28.0);
     const GAP: f32 = 14.0;
-    // Positions from measured (or estimated) heights.
-    let hashes: Vec<u64> = bl.iter().map(|b| block_hash(b, t, key, &app.ui.expansion, width, p.dark)).collect();
+    // Positions from measured heights. A block whose content changed since (a streaming
+    // reply) keeps its last height until it is drawn and measured again, never a guess (D152);
+    // only a block never drawn is guessed at.
+    let idents: Vec<u64> = bl.iter().map(|b| block_ident(b, t)).collect();
+    let mut heights = Vec::with_capacity(bl.len());
     let mut tops = Vec::with_capacity(bl.len());
     let mut y = 12.0;
     for (i, b) in bl.iter().enumerate() {
@@ -370,7 +362,9 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
             Block::Folded { .. } | Block::TurnChanges { .. } => 22.0,
             _ => 60.0,
         };
-        y += app.ui.heights.get(&hashes[i]).copied().unwrap_or(est) + GAP;
+        let h = app.ui.heights.get(&idents[i]).copied().unwrap_or(est);
+        heights.push(h);
+        y += h + GAP;
     }
     let total = y + 20.0;
     let mut sa = egui::ScrollArea::vertical().id_salt(("transcript", key.to_string())).auto_shrink([false, false]).stick_to_bottom(true);
@@ -389,22 +383,33 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
         {
             sa = sa.vertical_scroll_offset((tops[bi] - 80.0).max(0.0));
         }
-    } else if app.ui.scroll_end {
-        app.ui.scroll_end = false;
-        sa = sa.vertical_scroll_offset(total);
+    } else {
+        // At the end, the pass starts at the end of this layout (D152): egui's stick-to-bottom
+        // only moves the offset when a pass ends, so content that grew would be drawn one pass
+        // late, below the view. A jump to the end goes to the end itself, not past it.
+        let view = app.ui.at_end.as_ref().filter(|(k, _)| k == key).map(|(_, v)| *v);
+        if std::mem::take(&mut app.ui.scroll_end) || view.is_some() {
+            sa = sa.vertical_scroll_offset((total - view.unwrap_or_else(|| ui.available_height())).max(0.0));
+        }
     }
     let mut changed = false;
     let mut actions_local = Vec::new();
     app.ui.textsel.begin(key);
     let mut area = ui.max_rect();
     let mut reading = None;
+    #[cfg(test)]
+    let mut geom = Geom::default();
     let out = sa.show_viewport(ui, |ui, view| {
+        #[cfg(test)]
+        {
+            geom.drawn_offset = view.top();
+        }
         ui.set_height(total);
         area = ui.clip_rect();
         let origin = ui.max_rect().top();
         for (i, b) in bl.iter().enumerate() {
             let top = tops[i];
-            let est = app.ui.heights.get(&hashes[i]).copied().unwrap_or(60.0);
+            let est = heights[i];
             if top + est < view.top() - 300.0 || top > view.bottom() + 300.0 {
                 continue;
             }
@@ -416,7 +421,7 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
                 _ => None,
             };
             if let Some(index) = menu {
-                let bg = ui.interact(rect, ui.scope_id().with(("message-menu", hashes[i])), Sense::click());
+                let bg = ui.interact(rect, ui.scope_id().with(("message-menu", idents[i])), Sense::click());
                 let has_sel = app.ui.textsel.selection().is_some();
                 let mut copy_sel = false;
                 crate::widgets::menu_popup(egui::Popup::context_menu(&bg), &p).show(|ui| {
@@ -437,19 +442,33 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
                 }
             }
             let unit = block_unit(b, t);
-            let r = ui.scope_builder(UiBuilder::new().max_rect(rect).id_salt(("block", hashes[i])), |ui| {
+            // Ids by identity, so a streaming block's widgets (an open menu, a hovered link)
+            // live on through its updates.
+            let r = ui.scope_builder(UiBuilder::new().max_rect(rect).id_salt(("block", idents[i])), |ui| {
                 ui.set_width(width);
                 render_block(ui, View { p, state: &app.client.state, ui: &mut app.ui, md: &mut app.md }, key, t, b, unit, now, &mut actions_local);
             });
             let h = r.response.rect.height();
-            if (app.ui.heights.get(&hashes[i]).copied().unwrap_or(-1.0) - h).abs() > 0.5 {
-                app.ui.heights.insert(hashes[i], h);
-                changed = true;
+            #[cfg(test)]
+            {
+                geom.drawn.push(unit.item);
+                if !app.ui.heights.contains_key(&idents[i]) {
+                    geom.estimated.push(unit.item);
+                }
+                if i + 1 == bl.len() {
+                    geom.last_bottom = Some(r.response.rect.bottom());
+                }
             }
+            // Under half a point is the same height: no new layout for it.
+            let moved = app.ui.heights.get(&idents[i]).is_none_or(|old| (old - h).abs() > 0.5);
+            if moved {
+                app.ui.heights.insert(idents[i], h);
+            }
+            changed |= moved;
         }
         app.ui.textsel.autoscroll(ui, ui.clip_rect());
         // Where the user is reading: the first block reaching into the view.
-        reading = bl.iter().enumerate().find(|(i, _)| tops[*i] + app.ui.heights.get(&hashes[*i]).copied().unwrap_or(22.0) > view.top()).and_then(|(i, b)| {
+        reading = bl.iter().enumerate().find(|(i, _)| tops[*i] + heights[*i] > view.top()).and_then(|(i, b)| {
             let item = t.items().get(block_unit(b, t).item)?.id.clone();
             Some(yaac_core::history::Anchor { item, offset: view.top() - tops[i] })
         });
@@ -460,6 +479,16 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
     // Away from the newest message (D142): remember how many messages there were when the
     // view left the bottom, and offer a way back above the composer.
     let at_end = out.state.clamped_offset().y + out.inner_rect.height() >= out.content_size.y - 8.0;
+    // Exactly at the end: egui's own test for sticking to it.
+    let stuck = out.state.unclamped_offset().y + out.inner_rect.height() >= out.content_size.y - 0.5;
+    app.ui.at_end = stuck.then(|| (key.clone(), out.inner_rect.height()));
+    #[cfg(test)]
+    {
+        geom.offset = out.state.unclamped_offset().y;
+        geom.content = out.content_size.y;
+        geom.view = out.inner_rect.height();
+        app.ui.geom.push(geom);
+    }
     if std::env::var_os("YAAC_DEBUG_LAYOUT").is_some() {
         eprintln!("transcript offset {} view {} content {}", out.state.clamped_offset().y, out.inner_rect.height(), out.content_size.y);
     }
@@ -496,8 +525,14 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
         ui.ctx().request_repaint();
     }
     actions.extend(actions_local);
+    // A block drew taller or shorter than it was placed: what follows it, the content height
+    // and the stuck-to-bottom offset were laid out wrong. Lay the frame out again before it is
+    // shown (D152), not on the next one, or the view jumps once per streamed delta.
     if changed {
-        ui.ctx().request_repaint();
+        ui.ctx().request_discard("a transcript block changed height");
+        if !ui.ctx().will_discard() {
+            ui.ctx().request_repaint();
+        }
     }
 }
 
@@ -1192,11 +1227,10 @@ mod tests {
         out.textures_delta.clear();
         let t = &app.client.state.transcripts[&key];
         let bl = blocks(&app.client.state, &AttentionMap::compute(&app.client.state), &key, &app.ui.expansion);
-        let width = (1000.0f32 - 56.0).clamp(200.0, COLUMN);
         bl.iter()
             .filter_map(|b| match b {
                 Block::User { index } => {
-                    let h = block_hash(b, t, &key, &app.ui.expansion, width, app.p.dark);
+                    let h = block_ident(b, t);
                     app.ui.heights.get(&h).map(|v| (t.items()[*index].id.to_string(), *v))
                 }
                 _ => None,
