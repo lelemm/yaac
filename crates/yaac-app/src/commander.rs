@@ -151,7 +151,10 @@ pub(crate) fn dispatch(app: &mut YaacApp, ctx: &egui::Context, actions: &mut Vec
     }
     let commander_open = app.ui.commander.is_some();
     let bindings = &app.ui.bindings;
-    let mut hits: Vec<Cmd> = Vec::new();
+    // Each command pressed, and whether its chord still works with the caret in a text field
+    // (only then may it put the caret in the composer: a plain key pressed again must reach
+    // the command, not the draft).
+    let mut hits: Vec<(Cmd, bool)> = Vec::new();
     ctx.input_mut(|i| {
         i.events.retain(|e| {
             let (chord, repeat) = match e {
@@ -173,11 +176,11 @@ pub(crate) fn dispatch(app: &mut YaacApp, ctx: &egui::Context, actions: &mut Vec
             if repeat && !matches!(cmd, Cmd::NextThread | Cmd::PrevThread | Cmd::ZoomIn | Cmd::ZoomOut) {
                 return false;
             }
-            hits.push(cmd);
+            hits.push((cmd, chord.works_in_text()));
             false
         });
     });
-    for cmd in hits {
+    for (cmd, type_after) in hits {
         if cmd == Cmd::Commander && app.ui.commander.is_some() {
             app.ui.commander = None;
             continue;
@@ -185,7 +188,7 @@ pub(crate) fn dispatch(app: &mut YaacApp, ctx: &egui::Context, actions: &mut Vec
         let card = card.clone();
         let avail = with_ctx(app, card.as_ref(), |c| cmds::availability(cmd, c));
         if avail.enabled() {
-            run(app, ctx, cmd, card, actions);
+            run(app, ctx, cmd, card, type_after, actions);
         }
     }
     if app.ui.menu.is_some() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
@@ -194,7 +197,9 @@ pub(crate) fn dispatch(app: &mut YaacApp, ctx: &egui::Context, actions: &mut Vec
 }
 
 /// Run a command (it is enabled). A command with a choice opens the Commander at it.
-pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option<ItemId>, actions: &mut Vec<Action>) {
+/// `type_after`: a command that opens a thread may put the caret in its composer.
+pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option<ItemId>, type_after: bool, actions: &mut Vec<Action>) {
+    let before = actions.len();
     let d = cmds::def_of(cmd);
     let thread = app.client.state.selected_thread().cloned().filter(|_| !app.ui.settings);
     // Unmute needs no choice; every other step opens in the Commander.
@@ -460,6 +465,11 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
         | Cmd::TargetEnable
         | Cmd::RefreshProviders => {}
     }
+    // A command that went to a thread leaves the caret in its composer (D149).
+    let navigates = matches!(cmd, Cmd::NeedsNext | Cmd::NextUnseen | Cmd::NextThread | Cmd::PrevThread | Cmd::Back | Cmd::Forward | Cmd::Parent);
+    if navigates && type_after && actions.len() > before {
+        actions.push(Action::TypeHere);
+    }
 }
 
 /// What choosing a step's row does.
@@ -471,8 +481,9 @@ fn run_step(app: &mut YaacApp, cmd: Cmd, value: StepValue, actions: &mut Vec<Act
         _ => None,
     };
     match value {
-        StepValue::Thread(k) => actions.push(Action::Open(k)),
-        StepValue::Nav(n) => actions.push(Action::Nav(n)),
+        // A thread picked here is opened to be typed in (D149).
+        StepValue::Thread(k) => actions.extend([Action::Open(k), Action::TypeHere]),
+        StepValue::Nav(n) => actions.extend([Action::Nav(n), Action::TypeHere]),
         StepValue::Page(p) => actions.push(Action::SettingsPage(p)),
         StepValue::Model(inst, model) => match (thread, draft) {
             (Some(k), _) => actions.push(Action::SetModel(k, model)),
@@ -683,7 +694,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
                 cmds::note_recent(&mut app.ui.recent, cmds::def_of(cmd).id);
                 let card = c.card.clone();
                 // Runs with the Commander closed; a command with a step opens it again there.
-                run(app, ctx, cmd, card, actions);
+                run(app, ctx, cmd, card, true, actions);
                 return;
             }
             Row::Step(s) => {

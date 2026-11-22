@@ -929,7 +929,8 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
             None => v.ui.expansion.toggle_line(key, &l.id),
         }
     }
-    if !l.expanded {
+    // Silent reasoning ("Thought for 5s" with no text, D148) has nothing to open.
+    if !l.expanded || matches!(&item.body, ItemBody::Reasoning(r) if r.reasoning.trim().is_empty()) {
         return;
     }
     if let Some(d) = l.diff

@@ -1472,3 +1472,10 @@ the list.*
   faint fill and a down chevron where the dot was; under it, the output and "exit 0", with a thin
   guide down the left of the body that closes it when clicked (it thickens under the pointer,
   tooltip "Collapse"). The title is not repeated inside.
+
+### 85 — Hidden reasoning between commands
+
+- **Try the new parser** (a Codex thread) open at its turn, the run opened: five commands,
+  "Thought for 6s" before the last one, and "Thought for 3s" (reasoning with text) at the end.
+  Codex also sent four reasoning items with nothing to read (empty summaries) between the
+  commands; none of them is a line, so there is no "Thought for 0s" anywhere (D148).
