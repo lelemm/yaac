@@ -629,13 +629,14 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     // Exactly at the end: egui's own test for sticking to it.
     let stuck = out.state.unclamped_offset().y + out.inner_rect.height() >= out.content_size.y - 0.5;
     app.ui.at_end = stuck.then(|| (key.clone(), out.inner_rect.height()));
-    // What the next pass keeps in place (D163): the first block starting in the view (one
-    // already measured, as the 300 points around the view are), else the one reaching into it.
+    // What the next pass keeps in place (D163): the block reaching into the top of the view,
+    // as a browser's scroll anchoring does. Its own growth (a reply streaming into it) is
+    // below its top, so it does not move what is read either.
     let top = out.state.clamped_offset().y;
     app.ui.scroll_anchor = if stuck {
         None
     } else {
-        (0..bl.len()).find(|&i| tops[i] >= top).or_else(|| (0..bl.len()).rev().find(|&i| tops[i] < top)).map(|i| (key.clone(), idents[i], top - tops[i]))
+        (0..bl.len()).find(|&i| tops[i] + heights[i] > top).map(|i| (key.clone(), idents[i], top - tops[i]))
     };
     #[cfg(test)]
     {
