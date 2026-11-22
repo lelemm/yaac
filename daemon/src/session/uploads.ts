@@ -258,14 +258,20 @@ export class UploadStore {
   }
 
   /** Links an upload into a thread's folder under its own name; returns the path the agent sees. */
-  linkForThread(threadKey: string, uploadId: string): { path: string; meta: UploadMeta } {
+  /** A thread's attachment folder, created (empty until something is attached). */
+  threadDir(threadKey: string): string {
     this.prepare();
+    const dir = path.join(this.root, "threads", sha256Hex(threadKey).slice(0, 24));
+    ensurePrivateDir(dir);
+    return dir;
+  }
+
+  linkForThread(threadKey: string, uploadId: string): { path: string; meta: UploadMeta } {
+    const dir = this.threadDir(threadKey);
     const m = this.meta(uploadId);
     if (!m) throw new RpcError("upload_not_found", `no upload ${uploadId} on this target`);
     const blob = this.blobPath(m.sha256);
     if (!fs.existsSync(blob)) throw new RpcError("upload_not_found", `${m.name} is no longer on the target; attach it again`);
-    const dir = path.join(this.root, "threads", sha256Hex(threadKey).slice(0, 24));
-    ensurePrivateDir(dir);
     const existing = fs.readdirSync(dir);
     const same = existing.find((f) => f.endsWith(`-${m.name}`) && fs.statSync(path.join(dir, f)).ino === fs.statSync(blob).ino);
     if (same) return { path: path.join(dir, same), meta: m };

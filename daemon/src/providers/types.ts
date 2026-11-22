@@ -162,6 +162,13 @@ export interface ProviderInput {
    * for the conversation's whole life.
    */
   readable?: string[];
+  /**
+   * The thread's attachment folder on the target (created, possibly empty): every image and file
+   * of this thread, now and later, lies in it. A provider that confines reads and fixes its
+   * readable folders when it opens a conversation (Claude Code) makes it readable from the start,
+   * so a later attachment needs no re-open (D160).
+   */
+  uploadsDir?: string;
   /** Who this input comes from; `mesh` input must never be presented as the user speaking. */
   origin: TurnOrigin;
   /**

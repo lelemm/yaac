@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ModelInfo as SdkModelInfo, Options, PermissionResult, PermissionUpdate, SDKMessage, SDKSessionInfo, SDKUserMessage, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
-import { ClaudeProvider, claudeProviderFactory, type ClaudeProviderOptions } from "../src/providers/claude/index.js";
+import { ClaudeProvider, claudeProviderFactory, setRunsAsRootForTests, type ClaudeProviderOptions } from "../src/providers/claude/index.js";
 import type { AgentEntry, ClaudeCli, ClaudeSdk, SdkQuery } from "../src/providers/claude/sdk.js";
 import { historyItems } from "../src/providers/claude/translate.js";
 import type { ProviderEvent, ProviderInput } from "../src/providers/types.js";
@@ -32,6 +32,7 @@ class StubQuery implements SdkQuery {
   private failure: Error | null = null;
   closed = false;
   failEffort = false;
+  failMode = false;
   model: string | null;
   effort: string | null;
   readonly pid = nextPid++;
@@ -101,6 +102,7 @@ class StubQuery implements SdkQuery {
   }
   async setPermissionMode(mode: string) {
     this.calls.push(["setPermissionMode", mode]);
+    if (this.failMode) throw new Error("Cannot set permission mode");
   }
   async applyFlagSettings(settings: Record<string, unknown>) {
     this.calls.push(["applyFlagSettings", settings]);
@@ -251,6 +253,9 @@ const result = (extra: Record<string, unknown> = {}) => ({
 function signal(): AbortSignal {
   return new AbortController().signal;
 }
+
+const bgTasks = (tasks: Array<Record<string, unknown>>) => ({ type: "system", subtype: "background_tasks_changed", tasks, uuid: "bg", session_id: "s" });
+const agentTask = (id: string, description: string) => ({ task_id: id, task_type: "local_agent", subagent_type: "general-purpose", description });
 
 async function startedThread(r: Rig, text = "hello") {
   const started = await r.provider.startThread({ cwd: r.dir }, input(text));
@@ -549,16 +554,17 @@ test("bypass mode is offered, marked skipsApprovals, and is the only mode so mar
   const marked = p.modes.filter((m) => m.skipsApprovals);
   assert.deepEqual(marked.map((m) => m.id), ["bypassPermissions"]);
   assert.deepEqual(p.modes.filter((m) => m.isDefault).map((m) => m.id), ["default"]);
-  // A new thread does not start in it, and its query is opened without the dangerous option.
+  // A new thread does not start in it. Its query is opened with the option that makes bypass
+  // reachable later through setPermissionMode (verified: the query still asks in `default`).
   const { thread, q } = await startedThread(r);
   assert.equal(q.options.permissionMode, "default");
-  assert.equal(q.options.allowDangerouslySkipPermissions, undefined);
-  assert.equal(q.options.hooks, undefined);
+  assert.equal(q.options.allowDangerouslySkipPermissions, true);
+  assert.equal(q.options.hooks?.PreToolUse?.[0]?.matcher, "AskUserQuestion");
   assert.equal((await r.provider.effective(thread)).applied?.mode, "default");
   await r.provider.dispose();
 });
 
-test("switching into bypass re-opens the query with allowDangerouslySkipPermissions; leaving drops it", async () => {
+test("switching into and out of bypass is setPermissionMode on the live query: no re-open (D160)", async () => {
   const r = rig();
   await r.provider.probe();
   const { thread, q } = await startedThread(r);
@@ -566,39 +572,31 @@ test("switching into bypass re-opens the query with allowDangerouslySkipPermissi
   await until(() => of(r.events, "turnCompleted")[0], "first turn");
 
   await r.provider.startTurn(thread, input("go"), { mode: "bypassPermissions" });
-  assert.equal(q.closed, true);
-  assert.ok(!q.calls.some(([c]) => c === "setPermissionMode"), "bypass is not entered with setPermissionMode");
-  const qb = r.sdk.queries.at(-1)!;
-  assert.notEqual(qb, q);
-  assert.equal(qb.options.resume, thread);
-  assert.equal(qb.options.permissionMode, "bypassPermissions");
-  assert.equal(qb.options.allowDangerouslySkipPermissions, true);
-  assert.equal((await qb.nextUser()).message.content, "go");
+  assert.equal(q.closed, false);
+  assert.equal(r.sdk.queries.at(-1), q);
+  assert.deepEqual(q.calls.filter(([c]) => c === "setPermissionMode"), [["setPermissionMode", "bypassPermissions"]]);
+  assert.equal((await q.nextUser(2)).message.content, "go");
   assert.equal(of(r.events, "settingsChanged").at(-1)!.applied.mode, "bypassPermissions");
   assert.equal((await r.provider.effective(thread)).applied?.mode, "bypassPermissions");
-  qb.push(result());
+  q.push(result());
   await until(() => of(r.events, "turnCompleted")[1], "bypass turn");
 
   // A turn with no mode override stays in bypass on the same query.
   await r.provider.startTurn(thread, input("more"), {});
-  assert.equal(r.sdk.queries.at(-1), qb);
-  qb.push(result());
+  assert.equal(r.sdk.queries.at(-1), q);
+  q.push(result());
   await until(() => of(r.events, "turnCompleted")[2], "third turn");
 
   await r.provider.startTurn(thread, input("careful now"), { mode: "acceptEdits" });
-  assert.equal(qb.closed, true);
-  const qa = r.sdk.queries.at(-1)!;
-  assert.notEqual(qa, qb);
-  assert.equal(qa.options.resume, thread);
-  assert.equal(qa.options.permissionMode, "acceptEdits");
-  assert.equal(qa.options.allowDangerouslySkipPermissions, undefined);
-  assert.equal(qa.options.hooks, undefined);
-  assert.equal((await qa.nextUser()).message.content, "careful now");
+  assert.equal(q.closed, false);
+  assert.equal(r.sdk.queries.at(-1), q);
+  assert.deepEqual(q.calls.filter(([c]) => c === "setPermissionMode").at(-1), ["setPermissionMode", "acceptEdits"]);
 
-  // A resume after idle eviction keeps the thread's mode, and the option goes with it.
+  // A resume after idle eviction keeps the thread's mode.
   const r2 = rig({ idleMs: 30 });
   const t2 = await r2.provider.startThread({ cwd: r2.dir, mode: "bypassPermissions" }, input("start in bypass, as asked"));
   const q2 = r2.sdk.queries.at(-1)!;
+  assert.equal(q2.options.permissionMode, "bypassPermissions");
   assert.equal(q2.options.allowDangerouslySkipPermissions, true);
   q2.push(result());
   await until(() => q2.closed, "idle close");
@@ -609,6 +607,62 @@ test("switching into bypass re-opens the query with allowDangerouslySkipPermissi
   assert.equal(q3.options.allowDangerouslySkipPermissions, true);
   await r.provider.dispose();
   await r2.provider.dispose();
+});
+
+test("as root bypass needs a re-open, which waits for the background work to end and says so (D160)", async () => {
+  setRunsAsRootForTests(true);
+  try {
+    const r = rig();
+    await r.provider.probe();
+    const { thread, q } = await startedThread(r);
+    // Claude Code refuses to start as root with the option: it is left out outside bypass.
+    assert.equal(q.options.allowDangerouslySkipPermissions, undefined);
+    q.push(bgTasks([agentTask("w1", "sleeper")]), result());
+    await until(() => of(r.events, "turnCompleted")[0], "first turn");
+
+    // Background work runs: the switch is deferred, the turn runs on the same query, and the
+    // transcript says why the mode has not changed yet.
+    await r.provider.startTurn(thread, input("go"), { mode: "bypassPermissions" });
+    assert.equal(q.closed, false);
+    assert.equal(r.sdk.queries.at(-1), q);
+    assert.equal((await q.nextUser(2)).message.content, "go");
+    const notice = completedItems(r.events).find((i) => i.kind === "notice" && /Switching to Bypass permissions when the background work/.test((i as { text: string }).text));
+    assert.ok(notice, "the deferred switch is said in the transcript");
+    assert.equal((await r.provider.effective(thread)).applied?.mode, "default");
+    q.push(result());
+    await until(() => of(r.events, "turnCompleted")[1], "second turn");
+
+    // Still running: the next turn keeps the query too.
+    await r.provider.startTurn(thread, input("still"), {});
+    assert.equal(r.sdk.queries.at(-1), q);
+    q.push(result());
+    await until(() => of(r.events, "turnCompleted")[2], "third turn");
+
+    // The work ends: the next turn re-opens the query in bypass, with the option.
+    q.push(bgTasks([]));
+    await tick();
+    await r.provider.startTurn(thread, input("now"), {});
+    assert.equal(q.closed, true);
+    const qb = r.sdk.queries.at(-1)!;
+    assert.notEqual(qb, q);
+    assert.equal(qb.options.resume, thread);
+    assert.equal(qb.options.permissionMode, "bypassPermissions");
+    assert.equal(qb.options.allowDangerouslySkipPermissions, true);
+    assert.equal((await qb.nextUser()).message.content, "now");
+    await r.provider.dispose();
+
+    // Without background work, the re-open happens at once (as before).
+    const r2 = rig();
+    const s2 = await startedThread(r2);
+    s2.q.push(result());
+    await until(() => of(r2.events, "turnCompleted")[0], "turn");
+    await r2.provider.startTurn(s2.thread, input("go"), { mode: "bypassPermissions" });
+    assert.equal(s2.q.closed, true);
+    assert.equal(r2.sdk.queries.at(-1)!.options.permissionMode, "bypassPermissions");
+    await r2.provider.dispose();
+  } finally {
+    setRunsAsRootForTests(null);
+  }
 });
 
 test("in bypass mode AskUserQuestion still reaches the user, once, through the hook or canUseTool", async () => {
@@ -644,7 +698,15 @@ test("in bypass mode AskUserQuestion still reaches the user, once, through the h
 
   // Other tools pass the hook untouched.
   assert.deepEqual(await hook({ ...(hookInput as object), tool_name: "Bash" } as never, "toolu_b", { signal: signal() }), {});
+
+  // Outside bypass the hook (registered on every query) leaves AskUserQuestion to canUseTool.
+  const r2 = rig();
+  const s2 = await startedThread(r2);
+  const hook2 = s2.q.options.hooks!.PreToolUse![0]!.hooks[0]!;
+  assert.deepEqual(await hook2({ ...(hookInput as object), session_id: s2.thread } as never, "toolu_x", { signal: signal() }), {});
+  assert.equal(of(r2.events, "requestRaised").length, 0);
   await r.provider.dispose();
+  await r2.provider.dispose();
 });
 
 test("an idle query is closed and the thread resumes transparently on the next message", async () => {
@@ -797,12 +859,103 @@ test("images become image content blocks; the thread's attachment folder is read
   ]);
   q.push(result());
   await until(() => of(r.events, "turnCompleted")[0], "turn");
-  // A file from another folder: the query is re-opened with both folders.
+  // A file from another folder: the query is re-opened with both folders (it is idle).
   const other = tmp("yaac-claude-up2-");
   await r.provider.startTurn(thread, input("read it", { files: [{ uploadId: "u2", path: path.join(other, "1-a.txt"), name: "a.txt" }] }), {});
   const q2 = r.sdk.queries.at(-1)!;
   assert.notEqual(q2, q);
   assert.deepEqual(new Set(q2.options.additionalDirectories), new Set([uploads, other]));
+  await r.provider.dispose();
+});
+
+test("the thread's attachment folder is readable from the first open: a later attachment never re-opens (D160)", async () => {
+  const r = rig({ idleMs: 40 });
+  const uploads = tmp("yaac-claude-up-");
+  // The first message has no attachment; yaacd hands over the (empty) folder all the same.
+  const started = await r.provider.startThread({ cwd: r.dir }, input("hello", { uploadsDir: uploads }));
+  const q = r.sdk.queries.at(-1)!;
+  await q.nextUser();
+  assert.deepEqual(q.options.additionalDirectories, [uploads]);
+  q.push(bgTasks([agentTask("w1", "sleeper")]), result());
+  await until(() => of(r.events, "turnCompleted")[0], "turn");
+  // A screenshot pasted later, while a background subagent runs: same query, nothing closed.
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("rest")]);
+  fs.writeFileSync(path.join(uploads, "1-shot.png"), png);
+  await r.provider.startTurn(started.thread, input("look", { uploadsDir: uploads, images: [{ uploadId: "u1", path: path.join(uploads, "1-shot.png"), mediaType: null }] }), {});
+  assert.equal(r.sdk.queries.at(-1), q);
+  assert.equal(q.closed, false);
+  q.push(result());
+  await until(() => of(r.events, "turnCompleted")[1], "second turn");
+  // A folder outside it, while the subagent still runs: kept as it is (Claude Code asks before
+  // reading there), rather than killing the subagent.
+  const other = tmp("yaac-claude-up2-");
+  await r.provider.startTurn(started.thread, input("read it", { uploadsDir: uploads, files: [{ uploadId: "u2", path: path.join(other, "1-a.txt"), name: "a.txt" }] }), {});
+  assert.equal(r.sdk.queries.at(-1), q);
+  assert.equal(q.closed, false);
+  q.push(result());
+  await until(() => of(r.events, "turnCompleted")[2], "third turn");
+  // On a resume (after the work ends and the query is closed) the folder is there again,
+  // kept in the thread's settings.
+  q.push(bgTasks([]));
+  await until(() => q.closed, "idle close after the work ended");
+  await r.provider.startTurn(started.thread, input("again"), {});
+  const q2 = r.sdk.queries.at(-1)!;
+  assert.notEqual(q2, q);
+  assert.deepEqual(q2.options.additionalDirectories, [uploads]);
+  await r.provider.dispose();
+});
+
+test("a query with background work is never closed for being idle; it is once the work ends and idles (D160)", async () => {
+  const r = rig({ idleMs: 40 });
+  const { q } = await startedThread(r);
+  // The turn launches a background subagent and ends; the subagent runs on.
+  q.push(bgTasks([agentTask("w1", "sleeper")]), result());
+  await until(() => of(r.events, "turnCompleted")[0], "turn");
+  await new Promise((res) => setTimeout(res, 150));
+  assert.equal(q.closed, false, "kept while the subagent runs");
+  // A subagent's own background shell keeps it too, after the subagent itself is done.
+  q.push(bgTasks([{ task_id: "b1", task_type: "local_bash", description: "sleep 45", parent_task_id: "w1" }]));
+  await new Promise((res) => setTimeout(res, 100));
+  assert.equal(q.closed, false);
+  // Ambient (housekeeping) tasks do not count as work.
+  q.push(bgTasks([{ task_id: "m1", task_type: "monitor", description: "watch", ambient: true }]));
+  await until(() => q.closed, "idle close after the work ended");
+  assert.ok(!completedItems(r.events).some((i) => i.kind === "notice" && /stopped/.test((i as { text: string }).text)), "nothing was lost, so no notice");
+  await r.provider.dispose();
+});
+
+test("makeRoom never closes a query with background work: it picks another, or exceeds the cap (D160)", async () => {
+  const logs: string[] = [];
+  const r = rig({ maxLive: 2, log: (l) => logs.push(l) });
+  const a = await startedThread(r, "a");
+  a.q.push(bgTasks([agentTask("w1", "sleeper")]), result());
+  await until(() => of(r.events, "turnCompleted").length === 1, "a idle, with a subagent");
+  const b = await startedThread(r, "b");
+  b.q.push(result());
+  await until(() => of(r.events, "turnCompleted").length === 2, "b idle");
+  // a is the least recently used, but its subagent runs: b goes instead.
+  const c = await startedThread(r, "c");
+  assert.equal(a.q.closed, false);
+  assert.equal(b.q.closed, true);
+  // a (background work) and c (a turn) are both busy: d exceeds the cap, with a log line.
+  const d = await startedThread(r, "d");
+  assert.equal(a.q.closed, false);
+  assert.equal(c.q.closed, false);
+  assert.equal(d.q.closed, false);
+  assert.ok(logs.some((l) => /busy \(1 with background work\); opening one more than the limit of 2/.test(l)), logs.join("\n"));
+  await r.provider.dispose();
+});
+
+test("a process that ends with background work running says in the thread which work stopped (D160)", async () => {
+  const r = rig();
+  const { q } = await startedThread(r);
+  q.push(bgTasks([agentTask("w1", "sleeper"), { task_id: "b1", task_type: "local_bash", description: "npm test" }]), result());
+  await until(() => of(r.events, "turnCompleted")[0], "turn");
+  q.crash("Claude Code process exited with code 1");
+  const notice = await until(() => completedItems(r.events).find((i) => i.kind === "notice"), "notice");
+  assert.equal((notice as { noticeKind: string }).noticeKind, "warning");
+  assert.equal((notice as { text: string }).text, `Claude Code's process ended while background work was running in it; this stopped: subagent "sleeper", shell "npm test".`);
+  assert.deepEqual(r.provider.liveThreads(), []);
   await r.provider.dispose();
 });
 

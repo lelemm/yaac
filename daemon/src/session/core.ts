@@ -1642,7 +1642,7 @@ export class Core {
     if (files.length > 0) {
       text += `${text ? "\n\n" : ""}Attached files (on this machine):\n${files.map((f) => `- ${f.path}`).join("\n")}`;
     }
-    return { parts, text, images, files, origin };
+    return { parts, text, images, files, origin, uploadsDir: this.uploads.threadDir(threadKey) };
   }
 
   // ── Starting work: thread/start and the per-thread dispatcher ─────────────────────────
