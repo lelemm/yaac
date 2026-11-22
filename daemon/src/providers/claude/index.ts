@@ -208,6 +208,16 @@ class Live {
   readonly subagents = new Map<string, LiveSubagent>();
   readonly subagentByToolUse = new Map<string, string>();
 
+  /**
+   * How many of this query's subagents are running now (from its task events, D151): a
+   * process with any is not idle. The one place that answers it, for the lifecycle code too.
+   */
+  runningSubagents(): number {
+    let n = 0;
+    for (const s of this.subagents.values()) if (s.running) n++;
+    return n;
+  }
+
   constructor(
     readonly native: NativeId,
     readonly cwd: string,
