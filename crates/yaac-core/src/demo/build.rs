@@ -43,6 +43,7 @@ pub(crate) fn tool(kind: ToolKind, title: &str, exit: Option<i32>, output: &str)
         output_bytes: None,
         exit_code: exit,
         cwd: None,
+        agent_call: None,
     })
 }
 

@@ -43,6 +43,7 @@ import type {
   TurnOverrides,
 } from "../types.js";
 import { chunks, parseScript, type Step } from "./script.js";
+import { meshAgentCall } from "../agentcalls.js";
 
 export const FAKE_KIND = "fake";
 
@@ -973,7 +974,8 @@ export class FakeProvider implements HarnessProvider {
       if (!start.input || Object.keys(args).length === 0) this.emit({ type: "itemStarted", thread: native, item: start });
     }
     if (signal.aborted) throw new Aborted();
-    const done: Item = { ...start, status: failed ? "failed" : "completed", output } as Item;
+    const call = meshAgentCall(step.tool, args, output, failed);
+    const done: Item = { ...start, status: failed ? "failed" : "completed", output, ...(call ? { agentCall: call } : {}) } as Item;
     this.record(native, done);
     this.emit({ type: "itemCompleted", thread: native, item: done });
   }

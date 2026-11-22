@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    Address, ForkKind, InputPart, ItemId, MeshMessage, ModelId, Receipt, RequestBody, RequestId,
+    Address, ForkKind, InputPart, ItemId, MeshMessage, MessageId, ModelId, Receipt, RequestBody, RequestId,
     RequestResolution, RequestState, TargetPath, ThreadId, ThreadState, Timestamp, TurnId,
 };
 use crate::macros::{open_enum, open_union};
@@ -97,6 +97,125 @@ pub struct ToolCallItem {
     /// Working directory, for a command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<TargetPath>,
+    /// The call is communication with another agent (D150): what it did, to whom, and how it
+    /// went, read from the call by `yaacd`. Absent for every other tool. A window that does
+    /// not know this field shows the tool call as an ordinary one, under its readable title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_call: Option<AgentCall>,
+}
+
+open_enum! {
+    /// What an agent call does.
+    pub enum AgentCallKind fallback Unknown {
+        /// Starts another agent (a YAAC worker, or a sub-agent of the harness's own).
+        Spawn = "spawn",
+        /// Sends a message (or a follow-up task) to another agent.
+        Message = "message",
+        /// Resumes another agent that had stopped.
+        Resume = "resume",
+        /// Waits for other agents, or for messages.
+        Wait = "wait",
+        /// Reads another agent's transcript without interrupting it.
+        Read = "read",
+        /// Stops (or interrupts, or closes) other agents.
+        Stop = "stop",
+        /// Registers that another agent hears when this turn ends.
+        Notify = "notify",
+        /// Lists or finds agents.
+        List = "list",
+    }
+}
+
+open_enum! {
+    /// How an agent call went, as its result says.
+    pub enum AgentCallOutcome fallback Unknown {
+        /// The message reached the recipient.
+        Delivered = "delivered",
+        /// The message is stored and will be delivered later (`detail` says why).
+        Queued = "queued",
+        /// The call failed (`detail` says why).
+        Failed = "failed",
+        /// The agent was started (and runs on its own).
+        Started = "started",
+        /// The agent was started, ran, and its answer is `result`.
+        Completed = "completed",
+        /// A stopped agent was resumed to take the message.
+        Resumed = "resumed",
+        /// The agents were stopped.
+        Stopped = "stopped",
+        /// The agent was not running.
+        NotRunning = "notRunning",
+        /// A wait returned something: messages, results, or finished agents (`result`).
+        Returned = "returned",
+        /// A wait ran out without anything happening.
+        NothingYet = "nothingYet",
+        /// `notify_when_done` was registered.
+        Registered = "registered",
+    }
+}
+
+/// The other side of an agent call. At least one of `address`, `agentId`, `name`, or
+/// `parent` is set.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRef {
+    /// A YAAC address (a mesh peer). Opaque.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<Address>,
+    /// The harness's own id for one of its sub-agents (Claude Code's `agentId`, Codex's
+    /// receiver thread id). Resolved by the window against the calling thread's children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// A name the call gave it (a sub-agent's description or name, a task name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// It is the calling agent's own parent (a sub-agent writing to the conversation that
+    /// started it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub parent: bool,
+}
+
+/// Communication with another agent, read from a tool call (D150).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCall {
+    /// What it does.
+    pub kind: AgentCallKind,
+    /// The other agents, in the call's order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<AgentRef>,
+    /// The message, prompt, or task, in full (markdown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// A short title the call gave the work (a spawn's title, a sub-agent's description).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// The model asked for, as the call named it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The effort asked for, as the call named it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// The spawned agent runs in the background (the caller does not block on it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<bool>,
+    /// The machine asked for, by name, for a spawn elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// How it went, once the result is in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<AgentCallOutcome>,
+    /// Why, in a few words (for queued and failed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// What came back that is worth reading: a sub-agent's answer, what a wait returned, a
+    /// read transcript (markdown). The raw result stays in the tool call's `output`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+    /// Mesh messages this call sent or handed over (`send_message`'s message, the messages a
+    /// `wait` returned): the matching `meshSent` / `meshReceived` items are this call's own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<MessageId>,
 }
 
 open_enum! {

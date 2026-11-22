@@ -7,6 +7,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { client, fakeOf, opId, sleep, startDaemon, startThread, text, tmpHome, until, type TestClient } from "./helpers.js";
+import { meshAgentCall } from "../src/providers/agentcalls.js";
 import { addressOf, childOf, itemsOf, kinds, startAllowed, stateOf, toolOutputs, untilIdle, untilTool } from "./mesh-helpers.js";
 import type { Daemon } from "../src/session/daemon.js";
 
@@ -88,6 +89,18 @@ test("a worker spawned on this target returns its result to its parent exactly o
     const received = await kinds(c, parent, "meshReceived");
     assert.equal(received.length, 1);
     assert.equal(received[0]!.message.kind, "result");
+    // The calls read as agent calls (D150), from yaacd's real result texts.
+    const spawnCall = (await untilTool(c, parent, "spawn_thread"))[0]!.agentCall;
+    assert.equal(spawnCall.kind, "spawn");
+    assert.equal(spawnCall.outcome, "started");
+    assert.equal(spawnCall.title, "Worker");
+    assert.equal(spawnCall.peers[0].address, addressOf(d, child));
+    const waitCall = waits[0]!.agentCall;
+    assert.equal(waitCall.kind, "wait");
+    assert.equal(waitCall.outcome, "returned");
+    assert.deepEqual(waitCall.messages, [received[0]!.message.id], "the wait names the message it handed over");
+    assert.equal(waitCall.peers[0].address, addressOf(d, child), "the peer is the one that reported back");
+    assert.match(waitCall.result, /worker answer 42/);
     const sent = await kinds(c, child, "meshSent");
     assert.equal(sent[0]!.message.kind, "result");
     assert.equal(sent[0]!.to.address, addressOf(d, parent));
@@ -157,6 +170,7 @@ test("a wait that times out consumes nothing", async () => {
     const { threadId: w } = await startAllowed(c, "/fake mesh-wait timeoutSecs=1");
     const out = await untilTool(c, w, "wait");
     assert.match(out[0]!.output, /Nothing yet/);
+    assert.equal(out[0]!.agentCall.outcome, "nothingYet");
     assert.equal(inboxOf(d, w).length, 0);
   } finally {
     await done();
@@ -175,6 +189,10 @@ test("a message to a busy thread is queued and dispatched when its turn ends", a
     await untilIdle(d, busy);
     const sent = await kinds(c, sender, "meshSent");
     assert.equal(sent[0]!.receipt.status, "delivered", "the receipt is updated in place");
+    const read = meshAgentCall("send_message", { to: addressOf(d, busy), text: "x" }, r.text)!;
+    assert.equal(read.outcome, "queued");
+    assert.match(read.detail ?? "", /running a turn/);
+    assert.deepEqual(read.messages, [sent[0]!.message.id], "the call names its meshSent item's message");
   } finally {
     await done();
   }
