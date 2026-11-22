@@ -193,6 +193,21 @@ The UI chooses between `image` and `file` from the thread's effective capabiliti
 re-checks and rejects an `image` part the model cannot read. The reasoning is in
 [06 Attachments](06-attachments.md).
 
+A text part `yaacd` read from a harness (history or the live stream) may carry a **role** — what
+the text is when it is not what the user typed — and a **label** (D141, P120). The provider has
+already taken the harness's markup off ([harness surfaces](research/harness-surfaces.md#markup-inside-messages)):
+
+```jsonc
+{ "type": "text", "text": "INFO batch 1/4 …", "role": "pasted" }                 // the user pasted it
+{ "type": "text", "text": "/model opus", "role": "command" }                     // a command they ran
+{ "type": "text", "text": "Keep answers short.", "role": "context", "label": "System reminder" }
+```
+
+`context` is what the harness added for the model; a window shows it only on request and never
+copies it as the user's text. A role a window does not know is shown as ordinary text. A client
+never sends a role. A `notice` item may carry a `body`: the plain text behind its one line,
+shown when it is expanded.
+
 ## The item model
 
 A thread is a list of turns; a turn is a list of items. Every provider's output is normalised

@@ -189,8 +189,12 @@ open_enum! {
 pub struct NoticeItem {
     /// What it is about.
     pub notice_kind: NoticeKind,
-    /// Text to show as-is.
+    /// Text to show as-is: one line.
     pub text: String,
+    /// The longer text behind it, shown when the notice is expanded (plain text). Absent: the
+    /// one line is all there is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
     /// The thread it concerns, when it is about another agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about: Option<Address>,

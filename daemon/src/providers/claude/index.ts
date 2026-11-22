@@ -58,7 +58,8 @@ import type {
 } from "../types.js";
 import { ASK_TOOL, answeredInput, approvalRequest, approvalResult, normaliseQuestions, type ToolPermissionContext } from "./questions.js";
 import { EXECUTABLE_VAR, findExecutable, loadRealSdk, realCli, type AgentEntry, type ClaudeCli, type ClaudeSdk, type SdkQuery } from "./sdk.js";
-import { historyItems, isToolResultMessage, LiveTranslator, type ItemEvent } from "./translate.js";
+import { flagsOf, historyItems, isToolResultMessage, LiveTranslator, type ItemEvent } from "./translate.js";
+import { previewText } from "./markup.js";
 
 export const CLAUDE_KIND = "claude";
 
@@ -529,7 +530,7 @@ export class ClaudeProvider implements HarnessProvider {
         threads: all.map((s) => ({
           native: s.sessionId,
           title: s.customTitle ?? s.summary ?? null,
-          preview: s.firstPrompt ?? null,
+          preview: previewText(s.firstPrompt),
           cwd: s.cwd ?? this.settings[s.sessionId]?.cwd ?? "",
           model: this.settings[s.sessionId]?.model ?? null,
           createdAt: iso(s.createdAt ?? s.lastModified),
@@ -566,7 +567,7 @@ export class ClaudeProvider implements HarnessProvider {
         info: {
           native,
           title: info.customTitle ?? info.summary ?? null,
-          preview: info.firstPrompt ?? null,
+          preview: previewText(info.firstPrompt),
           cwd: info.cwd ?? s?.cwd ?? "",
           model: s?.model ?? null,
           createdAt: iso(info.createdAt ?? info.lastModified),
@@ -769,7 +770,7 @@ export class ClaudeProvider implements HarnessProvider {
         if (uuid && live.ours.has(uuid)) return;
         if ((m as { isReplay?: boolean }).isReplay) return;
         this.ensureTurn(live, uuid ?? undefined);
-        live.translator.user(content, uuid, (m as { origin?: unknown }).origin, (m as { tool_use_result?: unknown }).tool_use_result);
+        live.translator.user(content, uuid, (m as { origin?: unknown }).origin, (m as { tool_use_result?: unknown }).tool_use_result, flagsOf(m));
         return;
       }
       case "result": {
@@ -1190,7 +1191,7 @@ export class ClaudeProvider implements HarnessProvider {
       const messages = (await sdk.getSessionMessages(thread)).filter((m) => !m.parent_tool_use_id);
       const starts = messages
         .map((m, i) => ({ m, i }))
-        .filter(({ m }) => m.type === "user" && !isToolResultMessage((m.message as { content?: unknown } | null)?.content));
+        .filter(({ m }) => m.type === "user" && !flagsOf(m).meta && !isToolResultMessage((m.message as { content?: unknown } | null)?.content));
       const target = cut ?? live?.turn?.turnId;
       const at = starts.findIndex(({ m }) => m.uuid === target);
       if (cut) {
@@ -1237,7 +1238,7 @@ export class ClaudeProvider implements HarnessProvider {
     return {
       native,
       title: info.customTitle ?? info.summary ?? null,
-      preview: info.firstPrompt ?? null,
+      preview: previewText(info.firstPrompt),
       cwd: info.cwd ?? s?.cwd ?? "",
       model: s?.model ?? null,
       createdAt: iso(info.createdAt ?? info.lastModified),

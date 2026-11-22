@@ -1390,3 +1390,24 @@ the list.*
   the transcript the notice "Taken over from a terminal session · the other program is still
   open and will not see these messages" (D140, P110). The approval the harness re-surfaces to
   `yaacd` is answerable here now.
+
+### 76 — A pasted log, a command, and notices from Claude Code
+
+*The harness's markup is never shown as the user's text (D141, P121–P123).*
+
+- **users-service** (Claude) open. The user's bubble: "The migration drops the last batch. Here
+  is the log:", then an inset block on the page background, a chevron and **Pasted text · 12
+  lines** in the secondary colour, then "Why does the retry skip it?", and under it a quiet
+  **› Context** (a system reminder the harness added).
+- The agent's answer as prose.
+- The next bubble holds only a chip in monospace on the raised fill, **/model opus-5.5**, and
+  **› Context** (the command's output).
+- Three notice lines: "Subagent schema-check reported back", "Background command "cargo test
+  -p users" completed (exit code 0)", "2 background shell commands didn't finish before the
+  previous session ended" — no tags, no line breaks drawn as boxes.
+
+### 77 — The same, opened
+
+- As 76, with the paste opened (the log as plain proportional text, no line numbers, its own
+  copy button on hover), **⌄ Context** opened to "System reminder" (semibold, secondary) and
+  its text, and the last notice expanded to its summary and note as plain text.

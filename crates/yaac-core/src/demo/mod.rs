@@ -66,11 +66,13 @@ pub enum Scene {
     WslConnections,
     /// 17: Claude on this computer is signed out.
     LocalSignedOut,
+    /// 74/75: Claude Code markup made readable: a paste, a command, notices (D141).
+    HarnessMarkup,
 }
 
 impl Scene {
     /// Every scene, for the demo menu.
-    pub const ALL: [Scene; 7] = [
+    pub const ALL: [Scene; 8] = [
         Scene::RequestStates,
         Scene::Permission,
         Scene::Notices,
@@ -78,6 +80,7 @@ impl Scene {
         Scene::StagingReconnects,
         Scene::WslConnections,
         Scene::LocalSignedOut,
+        Scene::HarnessMarkup,
     ];
 
     /// Menu label.
@@ -90,6 +93,7 @@ impl Scene {
             Scene::StagingReconnects => "staging reconnects; the queued message arrives",
             Scene::WslConnections => "WSL connections on this PC",
             Scene::LocalSignedOut => "Claude on this computer is signed out",
+            Scene::HarnessMarkup => "A paste, a command, and notices from Claude Code (users-service)",
         }
     }
 }
@@ -1350,6 +1354,39 @@ impl Inner {
                 self.fleet.targets.push(fleet::wsl_target("wsl-ubuntu-deploy", "Ubuntu", Some("deploy"), true));
                 self.fleet.targets.push(fleet::wsl_target("wsl-debian", "Debian", None, false));
                 self.targets_changed();
+            }
+            Scene::HarnessMarkup => {
+                // What yaacd makes of Claude Code's markup (D141): a pasted log and a slash
+                // command in the user's messages, a reminder kept as context, and notices for a
+                // subagent's report and background tasks.
+                use yaac_protocol::TextRole;
+                let users = k(USERS);
+                let log = "INFO  migrate: batch 1/4 committed (2500 rows)\nINFO  migrate: batch 2/4 committed (2500 rows)\nINFO  migrate: batch 3/4 committed (2500 rows)\nWARN  migrate: batch 4/4 lock wait 30s on users_email_idx\nERROR migrate: batch 4/4 aborted: deadlock detected\nINFO  retry: attempt 1 from cursor 7500\nINFO  retry: batch 4/4 skipped (cursor already at 10000)\nINFO  migrate: done · 7500 of 10000 rows\nWARN  verify: 2500 rows missing in users_v2\nERROR verify: count mismatch (7500 != 10000)\nINFO  cleanup: dropped temp table users_tmp\nINFO  cleanup: released advisory lock 42";
+                let parts = vec![
+                    InputPart::text("The migration drops the last batch. Here is the log:"),
+                    InputPart::text_as(log, TextRole::Pasted, None),
+                    InputPart::text("Why does the retry skip it?"),
+                    InputPart::text_as("The user is reviewing on a phone; keep answers short.", TextRole::Context, Some("System reminder")),
+                ];
+                let t2 = "u-t2";
+                let t3 = "u-t3";
+                let items = vec![
+                    done("um1", t2, ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts })),
+                    done("um2", t2, agent("The retry reads the cursor **before** batch 4 rolls back, so it starts at 10000 and finds nothing left. Read the cursor after the rollback.")),
+                    done("um3", t3, ItemBody::UserMessage(yaac_protocol::UserMessageItem {
+                        parts: vec![
+                            InputPart::text_as("/model opus-5.5", TextRole::Command, None),
+                            InputPart::text_as("Set model to opus-5.5", TextRole::Context, Some("Command output")),
+                        ],
+                    })),
+                    done("um4", t3, notice_body(NoticeKind::Info, "Subagent schema-check reported back", "Checked all 41 tables against users_v2. Only users_email_idx differs: it is unique in v2 and was not in v1, which is what deadlocks batch 4.")),
+                    done("um5", t3, notice_body(NoticeKind::Info, "Background command \"cargo test -p users\" completed (exit code 0)", "Background command \"cargo test -p users\" completed (exit code 0)\n\nOutput: /tmp/tasks/b7k2.output")),
+                    done("um6", t3, notice_body(NoticeKind::Info, "2 background shell commands didn't finish before the previous session ended", "2 background shell commands didn't finish before the previous session ended.\n\nThey were stopped. Run them again if you still need them.")),
+                ];
+                for it in items {
+                    self.emit_now(&users, ThreadEvent::ItemCompleted(ItemEvent { item: it }));
+                }
+                self.summary_now(&users, |s| s.updated_at = crate::time::timestamp(base));
             }
             Scene::LocalSignedOut => {
                 let local = TargetId::new("local");

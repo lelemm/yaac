@@ -99,7 +99,9 @@ function renderUser(parts: InputPart[], supplement: InputPart[], look: Attachmen
   };
   const own = parts.filter((p) => p.type !== "text");
   for (const p of parts) {
-    if (p.type !== "text") continue;
+    // Context the harness added for the model (a reminder, an earlier handoff note) is not
+    // the user's: the transcript carries what they wrote, pasted, and ran.
+    if (p.type !== "text" || p.role === "context") continue;
     lines.push(
       p.text.replace(IMAGE_MARKER, (_m, raw: string) => {
         const where = raw.trim();

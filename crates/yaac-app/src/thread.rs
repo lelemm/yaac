@@ -217,7 +217,17 @@ fn block_hash(b: &Block, t: &Transcript, key: &ThreadKey, e: &Expansion, width: 
         t.item_rev(i).hash(h);
     };
     match b {
-        Block::User { index } | Block::Task { index } | Block::Prose { index } | Block::Card { index } | Block::Handoff { index } => idx(*index, &mut h),
+        Block::User { index } => {
+            idx(*index, &mut h);
+            // Its pasted blocks and its context open and close in place.
+            if let Some(item) = t.items().get(*index) {
+                e.context.contains(&(key.clone(), item.id.clone())).hash(&mut h);
+                for (k, id, part) in e.pasted.range((key.clone(), item.id.clone(), 0)..=(key.clone(), item.id.clone(), usize::MAX)) {
+                    (k, id, part).hash(&mut h);
+                }
+            }
+        }
+        Block::Task { index } | Block::Prose { index } | Block::Card { index } | Block::Handoff { index } => idx(*index, &mut h),
         Block::Run { lines } => {
             for l in lines {
                 idx(l.index, &mut h);
@@ -267,7 +277,7 @@ fn block_unit(b: &Block, t: &Transcript) -> Unit {
 /// The raw text of a message item ("Copy message"), or `None` for other items.
 fn message_text(item: &yaac_protocol::Item) -> Option<String> {
     match &item.body {
-        ItemBody::UserMessage(u) => Some(u.parts.iter().filter_map(|x| if let InputPart::Text(t) = x { Some(t.text.as_str()) } else { None }).collect::<Vec<_>>().join("\n")),
+        ItemBody::UserMessage(u) => Some(yaac_core::message::copy_text(u)),
         ItemBody::AgentMessage(a) => Some(a.text.clone()),
         ItemBody::MeshReceived(r) => Some(r.message.text.clone()),
         ItemBody::MeshSent(s) => Some(s.message.text.clone()),
@@ -508,13 +518,44 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
         Block::User { index } => {
             let item = &t.items()[*index];
             let ItemBody::UserMessage(u) = &item.body else { return };
+            let context = yaac_core::message::context(u);
+            let context_open = v.ui.expansion.context.contains(&(key.clone(), item.id.clone()));
+            if yaac_core::message::context_only(u) {
+                // Only what the harness added for the model: a quiet line, no bubble.
+                if context_disclosure(ui, &p, &context, context_open, true) {
+                    v.ui.expansion.toggle_context(key, &item.id);
+                }
+                if context_open {
+                    context_body(ui, &mut v.sel(unit), &p, &context);
+                }
+                return;
+            }
             widgets::faint_frame(&p).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                let text = message_text(item).unwrap_or_default();
-                if !text.is_empty() {
-                    let parsed = v.md.get(&item.id, &text, true).clone();
-                    let refs: Vec<&markdown::Block> = parsed.blocks().collect();
-                    markdown::show(ui, &mut v.sel(unit), &refs, &p, p.text, size::PROSE);
+                let pieces = yaac_core::message::pieces(u);
+                let mut first = true;
+                for (n, piece) in pieces.iter().enumerate() {
+                    if !first {
+                        ui.add_space(6.0);
+                    }
+                    first = false;
+                    match piece {
+                        yaac_core::message::Piece::Typed(text) => {
+                            // Each typed part has its own parse; a message with one part keeps
+                            // the item's own cache entry.
+                            let id = if n == 0 { item.id.clone() } else { yaac_protocol::ItemId::new(format!("{}#{n}", item.id)) };
+                            let parsed = v.md.get(&id, text, true).clone();
+                            let refs: Vec<&markdown::Block> = parsed.blocks().collect();
+                            markdown::show(ui, &mut v.sel(unit), &refs, &p, p.text, size::PROSE);
+                        }
+                        yaac_core::message::Piece::Command(text) => command_chip(ui, &mut v.sel(unit), &p, text),
+                        yaac_core::message::Piece::Pasted { part, text, lines, code } => {
+                            let open = v.ui.expansion.pasted.contains(&(key.clone(), item.id.clone(), *part));
+                            if pasted_block(ui, &mut v, unit, &item.id, *part, text, *lines, *code, open) {
+                                v.ui.expansion.toggle_pasted(key, &item.id, *part);
+                            }
+                        }
+                    }
                 }
                 let files: Vec<(&yaac_protocol::UploadId, Option<&String>, bool)> = u
                     .parts
@@ -535,6 +576,15 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
                             chip(ui, &p, &name, image, gone);
                         }
                     });
+                }
+                if !context.is_empty() {
+                    ui.add_space(4.0);
+                    if context_disclosure(ui, &p, &context, context_open, false) {
+                        v.ui.expansion.toggle_context(key, &item.id);
+                    }
+                    if context_open {
+                        context_body(ui, &mut v.sel(unit), &p, &context);
+                    }
                 }
             });
         }
@@ -641,6 +691,88 @@ fn chip(ui: &mut egui::Ui, p: &Palette, name: &str, image: bool, gone: bool) {
                 ui.label(widgets::secondary("· no longer on the target", p));
             }
         });
+    });
+}
+
+/// A command the user ran ("/model opus", "!ls"): a compact monochrome chip, its text
+/// selectable.
+fn command_chip(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, text: &str) {
+    ui.horizontal(|ui| {
+        egui::Frame::NONE.fill(p.raised).corner_radius(5).inner_margin(Margin::symmetric(8, 3)).show(ui, |ui| {
+            let font = theme::mono(size::MONO);
+            let g = ui.fonts_mut(|f| f.layout(text.to_owned(), font, p.text, (ui.available_width() - 16.0).max(40.0)));
+            sc.label(ui, g, p.text);
+        });
+    });
+}
+
+/// A row with a chevron and a quiet label that opens and closes what is under it. Returns
+/// true when clicked.
+fn disclosure_row(ui: &mut egui::Ui, p: &Palette, label: &str, open: bool, id: egui::Id) -> bool {
+    let font = theme::ui(size::SMALL);
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font, p.text2));
+    let w = g.size().x + 22.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
+    let resp = ui.interact(rect, id, Sense::click());
+    if resp.hovered() || resp.has_focus() {
+        ui.painter().rect_filled(rect.expand2(vec2(3.0, 0.0)), 4.0, p.faint);
+    }
+    icons::chevron(ui.painter(), pos2(rect.left() + 6.0, rect.center().y), 9.0, open, p.text2);
+    ui.painter().galley(pos2(rect.left() + 16.0, rect.center().y - g.size().y / 2.0), g, p.text2);
+    if resp.has_focus() {
+        widgets::focus_ring(ui, rect, p);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// Pasted text in a user message: "Pasted text · N lines", collapsed; opened, the text as it
+/// was pasted — plain text, or code when the paste is a fenced block. Returns true when its
+/// header was clicked.
+#[allow(clippy::too_many_arguments)]
+fn pasted_block(ui: &mut egui::Ui, v: &mut View<'_>, unit: Unit, item: &yaac_protocol::ItemId, part: usize, text: &str, lines: usize, code: bool, open: bool) -> bool {
+    let p = v.p;
+    let mut clicked = false;
+    let fr = egui::Frame::NONE.fill(p.bg).corner_radius(5).inner_margin(Margin::symmetric(8, 4)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        clicked = disclosure_row(ui, &p, &yaac_core::message::pasted_label(lines), open, ui.scope_id().with(("pasted", item, part)));
+        if open {
+            ui.add_space(2.0);
+            if code {
+                let id = yaac_protocol::ItemId::new(format!("{item}#paste{part}"));
+                let parsed = v.md.get(&id, text, true).clone();
+                let refs: Vec<&markdown::Block> = parsed.blocks().collect();
+                markdown::show(ui, &mut v.sel(unit), &refs, &p, p.text, size::PROSE);
+            } else {
+                v.sel(unit).text(ui, &bounded(text), theme::ui(size::PROSE - 1.0), p.text);
+            }
+        }
+    });
+    if open && !code {
+        markdown::copy_button(ui, &p, fr.response.rect, text, ui.scope_id().with(("pasted-copy", item, part)));
+    }
+    clicked
+}
+
+/// The "Context" disclosure of a user message (or, for a message that is only context, its
+/// one quiet line). Returns true when clicked.
+fn context_disclosure(ui: &mut egui::Ui, p: &Palette, ctx: &[yaac_core::message::Context<'_>], open: bool, standalone: bool) -> bool {
+    let label = if standalone && ctx.len() == 1 { ctx[0].label.to_owned() } else { yaac_core::message::context_label(ctx.len()) };
+    let id = ui.scope_id().with(("context", ctx.len(), ctx.first().map(|c| c.text.len())));
+    ui.horizontal(|ui| disclosure_row(ui, p, &label, open, id)).inner
+}
+
+/// What the harness added for the model, each part under its name, as plain text.
+fn context_body(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, ctx: &[yaac_core::message::Context<'_>]) {
+    egui::Frame::NONE.inner_margin(Margin { left: 16, right: 0, top: 2, bottom: 4 }).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 3.0;
+        for (n, c) in ctx.iter().enumerate() {
+            if n > 0 {
+                ui.add_space(4.0);
+            }
+            sc.text(ui, c.label, theme::bold(size::SMALL), p.text2);
+            sc.text(ui, &bounded(c.text), theme::ui(size::SMALL + 0.5), p.text2);
+        }
     });
 }
 
@@ -889,7 +1021,7 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
                 });
             }
             ItemBody::Notice(n) => {
-                sc.text(ui, &n.text, small.clone(), p.text2);
+                sc.text(ui, &bounded(n.body.as_deref().unwrap_or(&n.text)), small.clone(), p.text2);
             }
             ItemBody::Plan(pl) => {
                 for s in &pl.steps {
@@ -1003,4 +1135,69 @@ fn bounded(s: &str) -> String {
         t += 1;
     }
     format!("{}\n… {} bytes not shown …\n{}", &s[..h], t - h, &s[t..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yaac_core::demo::{Scene, threads};
+
+    /// The users-service transcript of screens 76–77, drawn once; returns each user block's
+    /// measured height by item id.
+    fn draw(app: &mut YaacApp, ctx: &egui::Context) -> std::collections::HashMap<String, f32> {
+        let key = threads::users();
+        let mut actions = Vec::new();
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 4000.0))), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            let map = AttentionMap::compute(&app.client.state);
+            transcript(ui, app, &map, &key, 0, &mut actions);
+        });
+        out.textures_delta.clear();
+        let t = &app.client.state.transcripts[&key];
+        let bl = blocks(&app.client.state, &AttentionMap::compute(&app.client.state), &key, &app.ui.expansion);
+        let width = (1000.0f32 - 56.0).clamp(200.0, COLUMN);
+        bl.iter()
+            .filter_map(|b| match b {
+                Block::User { index } => {
+                    let h = block_hash(b, t, &key, &app.ui.expansion, width, app.p.dark);
+                    app.ui.heights.get(&h).map(|v| (t.items()[*index].id.to_string(), *v))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_paste_opens_in_place_context_is_hidden_and_copy_leaves_it_out() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        if let Some(h) = &app.demo {
+            h.play(Scene::HarnessMarkup);
+            h.drain();
+        }
+        app.pump_demo();
+        let key = threads::users();
+        app.open(&key, None);
+        let t = &app.client.state.transcripts[&key];
+        let um1 = t.items().iter().find(|i| i.id.as_str() == "um1").expect("um1").clone();
+        let um3 = t.items().iter().find(|i| i.id.as_str() == "um3").expect("um3").clone();
+        // Copy message: typed text and the paste, never the reminder; a command copies as typed.
+        let copied = message_text(&um1).expect("text");
+        assert!(copied.starts_with("The migration drops the last batch. Here is the log:\n\nINFO  migrate: batch 1/4"));
+        assert!(copied.ends_with("Why does the retry skip it?"));
+        assert!(!copied.contains("phone"), "context is not copied");
+        assert_eq!(message_text(&um3).as_deref(), Some("/model opus-5.5"));
+        // Collapsed, the 12-line paste is one row; opened, it is taller by its lines; the
+        // context opens under it too.
+        let closed = draw(&mut app, &ctx)["um1"];
+        app.ui.expansion.toggle_pasted(&key, &"um1".into(), 1);
+        let pasted = draw(&mut app, &ctx)["um1"];
+        assert!(pasted > closed + 150.0, "{closed} → {pasted}");
+        app.ui.expansion.toggle_context(&key, &"um1".into());
+        let both = draw(&mut app, &ctx)["um1"];
+        assert!(both > pasted + 20.0, "{pasted} → {both}");
+        app.ui.expansion.toggle_pasted(&key, &"um1".into(), 1);
+        app.ui.expansion.toggle_context(&key, &"um1".into());
+        assert!((draw(&mut app, &ctx)["um1"] - closed).abs() < 0.5);
+    }
 }

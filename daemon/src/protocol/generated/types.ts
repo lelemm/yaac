@@ -2234,6 +2234,11 @@ export interface NoticeItem {
    */
   about?: Address | null;
   /**
+   * The longer text behind it, shown when the notice is expanded (plain text). Absent: the
+   * one line is all there is.
+   */
+  body?: string | null;
+  /**
    * Structured detail.
    */
   details?: unknown;
@@ -2242,7 +2247,7 @@ export interface NoticeItem {
    */
   noticeKind: NoticeKind;
   /**
-   * Text to show as-is.
+   * Text to show as-is: one line.
    */
   text: string;
 }
@@ -3664,10 +3669,27 @@ export type TargetPath = string;
  */
 export interface TextPart {
   /**
-   * The text.
+   * A short name for what it is ("System reminder", "IDE selection"), for `context`.
+   */
+  label?: string | null;
+  /**
+   * What the text is. Absent: text the user typed.
+   */
+  role?: TextRole | null;
+  /**
+   * The text, with the harness's markup taken off.
    */
   text: string;
 }
+
+/**
+ * What a text part of a message is, when it is not text the user typed. Set by `yaacd`
+ * when it splits a stored or streamed message along the harness's own markup
+ * (docs/03-protocol.md#input-parts); a client never sends it.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type TextRole = "pasted" | "command" | "context";
 
 /**
  * `thread/ack`: how far this client has durably got. Sent periodically while attached.

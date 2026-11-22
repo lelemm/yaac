@@ -210,7 +210,10 @@ pub(crate) fn unavailable(ui: &mut Ui, p: &Palette, label: &str, reason: &str) {
 
 /// Truncate one line to fit `width`, with an ellipsis.
 pub(crate) fn elided(ui: &Ui, text: &str, font: &egui::FontId, color: Color32, width: f32) -> std::sync::Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font.clone(), color);
+    // One line: a line break or other control character in the text would draw as a missing
+    // glyph, so they become spaces here, for every single-line row.
+    let text = if text.chars().any(char::is_control) { yaac_core::message::one_line(text) } else { text.to_owned() };
+    let mut job = egui::text::LayoutJob::simple_singleline(text, font.clone(), color);
     job.wrap = egui::text::TextWrapping { max_width: width.max(10.0), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
     ui.fonts_mut(|f| f.layout_job(job))
 }

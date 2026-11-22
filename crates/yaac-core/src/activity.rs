@@ -34,9 +34,29 @@ pub struct Expansion {
     pub rest: BTreeSet<(ThreadKey, ItemId, usize)>,
     /// A turn's "show all": every diff of that turn expanded.
     pub turns: BTreeSet<(ThreadKey, TurnId)>,
+    /// A pasted block of a user message opened (item, part index).
+    pub pasted: BTreeSet<(ThreadKey, ItemId, usize)>,
+    /// A user message's "Context" disclosure opened.
+    pub context: BTreeSet<(ThreadKey, ItemId)>,
 }
 
 impl Expansion {
+    /// Toggle one pasted block of a user message.
+    pub fn toggle_pasted(&mut self, key: &ThreadKey, id: &ItemId, part: usize) {
+        let k = (key.clone(), id.clone(), part);
+        if !self.pasted.remove(&k) {
+            self.pasted.insert(k);
+        }
+    }
+
+    /// Toggle a user message's context disclosure.
+    pub fn toggle_context(&mut self, key: &ThreadKey, id: &ItemId) {
+        let k = (key.clone(), id.clone());
+        if !self.context.remove(&k) {
+            self.context.insert(k);
+        }
+    }
+
     /// Toggle one activity line.
     pub fn toggle_line(&mut self, key: &ThreadKey, id: &ItemId) {
         let k = (key.clone(), id.clone());
@@ -311,7 +331,7 @@ fn line_of(state: &AppState, map: &AttentionMap, index: usize, item: &Item) -> O
             (LineMark::Waiting, text, false)
         }
         ItemBody::Notice(n) if n.notice_kind != NoticeKind::BudgetExhausted => {
-            (LineMark::Notice, n.text.clone(), n.notice_kind == NoticeKind::Error)
+            (LineMark::Notice, crate::message::one_line(&n.text), n.notice_kind == NoticeKind::Error)
         }
         ItemBody::Plan(p) => {
             let done = p.steps.iter().filter(|s| s.state == yaac_protocol::PlanStepState::Completed).count();

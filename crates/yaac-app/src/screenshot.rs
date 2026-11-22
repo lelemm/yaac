@@ -86,6 +86,8 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("73", "bulk-archive-report"),
     ("74", "take-over-blocked"),
     ("75", "taken-over"),
+    ("76", "message-markup"),
+    ("77", "message-markup-open"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -605,6 +607,21 @@ fn setup(app: &mut YaacApp, id: &str) {
             if id == "70" {
                 app.ui.menu = Some(Menu::Selection(threads::billing()));
             }
+        }
+        "76" | "77" => {
+            // Claude Code's markup made readable (D141): a pasted log (collapsed), a slash
+            // command chip, a reminder behind "Context", notices for a subagent's report and
+            // background tasks. 75: the paste and the context opened, one notice expanded.
+            play(app, Scene::HarnessMarkup);
+            let k = threads::users();
+            app.open(&k, None);
+            if id == "77" {
+                app.ui.expansion.toggle_pasted(&k, &"um1".into(), 1);
+                app.ui.expansion.toggle_context(&k, &"um1".into());
+                app.ui.expansion.toggle_line(&k, &"um6".into());
+            }
+            app.ui.scroll_to = Some("um1".into());
+            app.ui.scroll_end = false;
         }
         "71" => {
             // The bulk Archive confirmation (D111, D138): five chosen, two can be archived;
