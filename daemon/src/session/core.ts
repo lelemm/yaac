@@ -174,6 +174,42 @@ export interface CoreMeshHooks {
   holdReleased?(rt: ThreadRuntime): void;
   /** How the mesh names the thread's machine and the thread itself (a handoff's preamble). */
   whereIs?(rt: ThreadRuntime): { target: string; address: string };
+  /** The mesh address of a thread on this target (a harness sub-agent's `spawnedBy`, D151). */
+  addressOf?(threadId: string): string;
+}
+
+/**
+ * Capabilities a harness's own sub-agent (D151) never has in YAAC while it is read-only:
+ * everything that would make YAAC a second writer, or change it in the harness.
+ */
+const SUBAGENT_WRITES: ReadonlySet<Capability> = new Set<Capability>([
+  "threadResume",
+  "threadFork",
+  "threadForkAtTurn",
+  "threadRename",
+  "threadArchive",
+  "threadDelete",
+  "threadTakeOver",
+  "threadMove",
+  "threadMoveWorkingDirectory",
+  "interrupt",
+  "steer",
+  "compact",
+  "rewindConversation",
+  "rewindFiles",
+  "modes",
+  "modelSwitch",
+  "effortSwitch",
+  "fastMode",
+  "meshTools",
+]);
+
+/** The thread state a sub-agent's harness status stands for while YAAC runs no turn of it. */
+function subagentState(status: string | undefined): ThreadSummary["state"] | null {
+  if (status === "running") return "running";
+  if (status === "completed") return "done";
+  if (status === "failed") return "failed";
+  return null;
 }
 
 /** Agent-originated input for the dispatcher (the mesh's entry point). */
@@ -257,6 +293,8 @@ export class Core {
   mesh: CoreMeshHooks | null = null;
   private threads = new Map<string, ThreadRuntime>();
   private byNative = new Map<string, string>();
+  /** Harness sub-agents (D151) of each parent, by `nativeKey(instance, parent native)`: thread ids. */
+  private subagentKids = new Map<string, Set<string>>();
   private snapshots = new Map<string, Snapshot>();
   private pendingStarts = new Map<string, number>();
   private buffered = new Map<string, ProviderEvent[]>();
@@ -357,7 +395,63 @@ export class Core {
       }
       this.threads.set(record.id, rt);
       this.byNative.set(`${record.instance}\u0000${record.native}`, record.id);
+      this.linkSubagent(rt);
     }
+  }
+
+  // ── Harness sub-agents (D151) ──────────────────────────────────────────────────────────
+
+  /** Files a harness sub-agent under its parent conversation. */
+  private linkSubagent(rt: ThreadRuntime): void {
+    const parent = rt.record.nativeParent;
+    if (!parent) return;
+    const key = this.nativeKey(rt.record.instance, parent);
+    let kids = this.subagentKids.get(key);
+    if (!kids) this.subagentKids.set(key, (kids = new Set()));
+    kids.add(rt.id);
+    // Read-only from the start: listed as held by its parent, not only once it is opened.
+    const readOnly = rt.record.subagent?.readOnly;
+    if (readOnly) rt.external = { external: true, holder: "the agent that started it", takeOverBlocked: readOnly };
+  }
+
+  /** The parent conversation of a harness sub-agent, when YAAC knows it. */
+  private subagentParent(rt: ThreadRuntime): ThreadRuntime | undefined {
+    const parent = rt.record.nativeParent;
+    if (!parent) return undefined;
+    const p = this.threadByNative(rt.record.instance, parent);
+    return p && !p.deleted ? p : undefined;
+  }
+
+  /** How many listed harness sub-agents a thread has. */
+  private subagentCount(rt: ThreadRuntime): number {
+    const kids = this.subagentKids.get(this.nativeKey(rt.record.instance, rt.record.native));
+    if (!kids) return 0;
+    let n = 0;
+    for (const id of kids) {
+      const k = this.threads.get(id);
+      if (k && !k.deleted && this.index.get(id)) n++;
+    }
+    return n;
+  }
+
+  /**
+   * The read-only reason of a harness sub-agent, as the provider stated it. Every sub-agent
+   * is read-only unless its provider says it can be continued from YAAC (no harness can yet).
+   */
+  private subagentReadOnly(rt: ThreadRuntime): string | null {
+    const sub = rt.record.subagent;
+    if (!sub) return null;
+    return sub.readOnly ?? null;
+  }
+
+  /** The mesh address of a thread here; without a mesh, the local form. */
+  private addressHere(threadId: string): string {
+    return this.mesh?.addressOf?.(threadId) ?? `local/${threadId}`;
+  }
+
+  /** Re-publishes every harness sub-agent's summary (the target's mesh address changed). */
+  refreshSubagents(): void {
+    for (const rt of this.threads.values()) if (!rt.deleted && rt.record.nativeParent) this.updateIndex(rt);
   }
 
   /** Turns and requests that were live when the previous daemon stopped. */
@@ -442,11 +536,32 @@ export class Core {
       const rt = this.threadByNative(id, info.native);
       return !!rt && this.neverCut(rt);
     };
+    // A harness's own sub-agents (D151) do not use up the number cap: each is listed when its
+    // parent is (within the caps or kept) and it is itself recent enough — at most `numCap`
+    // of them per parent, newest first.
+    const newestFirst = (a: NativeThreadInfo, b: NativeThreadInfo) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0);
     const candidates = seen
+      .filter((info) => !info.parent)
       .filter((info) => !keptNow(info))
       .filter((info) => !ageCap || info.updatedAt >= ageCap)
-      .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0));
+      .sort(newestFirst);
     const within = new Set((numCap ? candidates.slice(0, numCap) : candidates).map((i) => i.native));
+    const parentListed = (native: NativeId) => {
+      if (within.has(native)) return true;
+      const p = this.threadByNative(id, native);
+      return !!p && !p.deleted && (this.neverCut(p) || this.listed(p));
+    };
+    const perParent = new Map<string, number>();
+    for (const info of seen.filter((i) => !!i.parent && !keptNow(i)).sort(newestFirst)) {
+      if (!parentListed(info.parent!)) continue;
+      if (ageCap && info.updatedAt < ageCap) continue;
+      const n = perParent.get(info.parent!) ?? 0;
+      if (numCap && n >= numCap) continue;
+      perParent.set(info.parent!, n + 1);
+      within.add(info.native);
+    }
+    // Parents first, so that a sub-agent's parent is known when it is filed.
+    seen.sort((a, b) => Number(!!a.parent) - Number(!!b.parent));
     for (const info of seen) {
       if (this.isForgotten(id, info.native)) continue;
       if (keptNow(info) || within.has(info.native)) {
@@ -500,6 +615,7 @@ export class Core {
       rt.waiting.size > 0 ||
       rt.queue.length > 0 ||
       rt.userQueue.length > 0 ||
+      r.subagent?.status === "running" ||
       !!this.mesh?.keeps?.(rt)
     );
   }
@@ -1011,7 +1127,27 @@ export class Core {
       if (info.updatedAt > r.updatedAt) r.updatedAt = info.updatedAt;
       rt.saveRecord();
     }
+    // A harness sub-agent (D151): filed under its parent, which now counts it.
+    if (info.parent && info.subagent) {
+      const r = rt.record;
+      const changed = r.nativeParent !== info.parent || canonical(r.subagent ?? null) !== canonical(info.subagent);
+      if (changed) {
+        r.nativeParent = info.parent;
+        r.subagent = { ...info.subagent };
+        rt.saveRecord();
+        this.linkSubagent(rt);
+      }
+      this.updateIndex(rt);
+      const parent = this.subagentParent(rt);
+      if (parent) this.updateIndex(parent);
+      return rt;
+    }
     this.updateIndex(rt);
+    // Sub-agents filed before their parent was known name it now.
+    if (!known) for (const kid of this.subagentKids.get(this.nativeKey(instance.config.id, info.native)) ?? []) {
+      const k = this.threads.get(kid);
+      if (k && !k.deleted) this.updateIndex(k);
+    }
     return rt;
   }
 
@@ -1029,9 +1165,8 @@ export class Core {
             ? "running"
             : rt.lastStatus === "failed"
               ? "failed"
-              : rt.lastStatus === "completed" && r.spawnedBy
-                ? "done"
-                : "idle";
+              : (r.subagent ? subagentState(r.subagent.status) : null) ??
+                (rt.lastStatus === "completed" && (r.spawnedBy || r.subagent) ? "done" : "idle");
     const s: ThreadSummary = {
       id: r.id,
       instance: r.instance,
@@ -1053,6 +1188,15 @@ export class Core {
     if (r.forkedFrom) s.forkedFrom = r.forkedFrom;
     if (r.spawnedBy) s.spawnedBy = r.spawnedBy;
     this.mesh?.decorate(rt, s);
+    // A harness's own sub-agent (D151) is listed under its parent like a worker; a parent
+    // counts its sub-agents among its children.
+    if (r.subagent) {
+      s.subagent = { ...r.subagent };
+      const parent = this.subagentParent(rt);
+      if (parent && !s.spawnedBy) s.spawnedBy = this.addressHere(parent.id);
+    }
+    const subagents = this.subagentCount(rt);
+    if (subagents > 0) s.children = (s.children ?? 0) + subagents;
     // Where the user moved it (D144) wins over the folder rule, while its project exists.
     const placed = r.placement ? this.projects.get(r.placement.projectId) : undefined;
     s.project = placed ? userProjectRef(placed) : projectRefFor(this.projects.list(), { folder: r.cwd, repo: r.repo ?? null });
@@ -1100,7 +1244,12 @@ export class Core {
       rt.saveRecord();
     }
     if (!this.listed(rt)) {
-      if (this.index.remove(rt.id)) this.broadcast("thread/removed", { threadId: rt.id, token: this.index.token });
+      if (this.index.remove(rt.id)) {
+        this.broadcast("thread/removed", { threadId: rt.id, token: this.index.token });
+        // Its parent counts one sub-agent fewer (D151).
+        const parent = this.subagentParent(rt);
+        if (parent) this.updateIndex(parent);
+      }
       return;
     }
     const summary = this.summaryOf(rt);
@@ -1443,12 +1592,22 @@ export class Core {
     // Fast mode (D125) is a model-level capability: present when the thread's model has it.
     eff.capabilities = eff.capabilities.filter((c) => c !== "fastMode");
     if (this.modelHasFast(inst.descriptor, eff.applied?.model ?? this.modelOf(rt))) eff.capabilities.push("fastMode");
+    // A read-only harness sub-agent (D151) can be read and watched, nothing more.
+    if (this.subagentReadOnly(rt)) eff.capabilities = eff.capabilities.filter((c) => !SUBAGENT_WRITES.has(c));
     rt.effective = eff;
     return eff;
   }
 
   /** Asks the provider who holds the thread. Only a positive `external` makes it read-only. */
   async refreshExternal(rt: ThreadRuntime): Promise<ExternalControl> {
+    // A read-only harness sub-agent (D151) is held by the agent that started it: positive
+    // evidence of another writer, and nothing YAAC can take over.
+    const readOnly = this.subagentReadOnly(rt);
+    if (readOnly) {
+      const sub: ExternalControl = { external: true, holder: "the agent that started it", takeOverBlocked: readOnly };
+      this.setExternal(rt, sub);
+      return sub;
+    }
     const provider = this.registry.get(rt.record.instance)?.provider;
     if (!provider) return rt.external;
     let ext: ExternalControl;
@@ -2698,6 +2857,8 @@ export class Core {
   // ── Rename, archive, delete ────────────────────────────────────────────────────────────
 
   private async gated(rt: ThreadRuntime, cap: Capability, method: "rename" | "archive" | "remove"): Promise<HarnessProvider> {
+    const readOnly = this.subagentReadOnly(rt);
+    if (readOnly) throw notActed("thread_in_use", readOnly);
     const inst = this.registry.get(rt.record.instance);
     const provider = inst?.provider;
     if (!provider || typeof provider[method] !== "function" || !(inst!.descriptor.capabilities ?? []).includes(cap)) {

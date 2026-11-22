@@ -2349,6 +2349,8 @@ export class Mesh implements CoreMeshHooks {
     this.store.state.roster = Array.isArray(p.targets) ? (p.targets as StateFileRoster) : [];
     this.store.state.rosterAt = nowIso();
     this.store.save();
+    // A harness sub-agent's `spawnedBy` is built from this target's id (D151).
+    if (prev?.id !== selfId) this.core.refreshSubagents();
     if (this.hub !== client) {
       this.hub = client;
       client.onClosed(() => {

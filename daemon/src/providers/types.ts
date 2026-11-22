@@ -10,6 +10,7 @@ import type {
   BackendOrigin,
   Capability,
   ContextUsage,
+  HarnessSubagent,
   DeltaField,
   EffortId,
   InputPart,
@@ -79,6 +80,13 @@ export interface NativeThreadInfo {
   archived?: boolean;
   /** Native id of the conversation it was natively forked from, when the harness says. */
   forkedFrom?: NativeId | null;
+  /**
+   * Set when this conversation is one of the harness's **own** sub-agents (D151): the native
+   * id of the conversation whose agent started it. yaacd lists it under that parent.
+   */
+  parent?: NativeId | null;
+  /** What the harness says of it as a sub-agent; present exactly when `parent` is. */
+  subagent?: HarnessSubagent | null;
 }
 
 export interface ThreadPage {

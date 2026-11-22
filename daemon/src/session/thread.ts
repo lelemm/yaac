@@ -4,6 +4,7 @@ import * as path from "node:path";
 import type {
   AgentsPolicy,
   ContextUsage,
+  HarnessSubagent,
   InputPart,
   Item,
   RepoLocation,
@@ -60,6 +61,12 @@ export interface ThreadRecord {
   repoResolved?: boolean;
   /** The agent that started this thread (set by the mesh). */
   spawnedBy?: string | null;
+  /**
+   * One of the harness's own sub-agents (D151): the native id of its parent conversation on
+   * the same instance, and what the harness last said of it. Never a mesh relation.
+   */
+  nativeParent?: NativeId | null;
+  subagent?: HarnessSubagent | null;
   /**
    * The key of the thread's attachment folder, fixed for its whole life. A thread started
    * with `thread/start` links its first message's attachments before its id exists, so its
