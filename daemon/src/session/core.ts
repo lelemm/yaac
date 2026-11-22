@@ -2221,13 +2221,16 @@ export class Core {
 
   /**
    * Starts a thread for an agent (`spawn_thread`): no client drives it, its first turn has
-   * origin `mesh`, and it starts in the harness's default mode (no mode is sent).
+   * origin `mesh`, and it starts in the mode the mesh chose from its parent's (D146), or in the
+   * harness's default mode when none is given (no mode is sent).
    */
   async startThreadForAgent(p: {
     instance: string;
     cwd: string;
     model?: string | null;
     effort?: string | null;
+    /** The mode to start in (D146: the mesh's choice); null: the harness's default. */
+    mode?: string | null;
     title: string;
     parts: InputPart[];
     journalItems: Item[];
@@ -2245,7 +2248,7 @@ export class Core {
     this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
     let started: { thread: NativeId; turn: TurnId };
     try {
-      started = await provider.startThread({ cwd: p.cwd, model: p.model ?? null, effort: p.effort ?? null, mode: null }, input);
+      started = await provider.startThread({ cwd: p.cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null }, input);
     } catch (e) {
       this.finishPendingStart(key);
       throw rpc("provider_unavailable", `${instance.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
