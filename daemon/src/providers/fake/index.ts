@@ -272,6 +272,7 @@ export class FakeProvider implements HarnessProvider {
       "threadRename",
       "threadArchive",
       "threadDelete",
+      "threadTakeOver",
       "followExternal",
       "streamText",
       "streamReasoning",
@@ -380,7 +381,9 @@ export class FakeProvider implements HarnessProvider {
     const t = this.thread(thread);
     if (this.live.has(thread)) throw new Error("fake: a turn is already running");
     const ext = this.external.get(thread);
-    if (ext?.external) throw new Error("fake: the conversation is open elsewhere");
+    // Like Claude Code and Codex: another holder does not stop a send, unless it will not let go
+    // (a Claude Code background session refuses a resume).
+    if (ext?.external && ext.takeOverBlocked) throw new Error(`fake: ${ext.takeOverBlocked}`);
     if (overrides.model) t.settings.model = overrides.model;
     if (overrides.effort) t.settings.effort = overrides.effort;
     if (overrides.mode) t.settings.mode = overrides.mode;

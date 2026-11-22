@@ -1019,6 +1019,7 @@ export class Core {
     if (rt.activeTurn) ev.activeTurn = rt.activeTurn;
     const holder = rt.external.external ? rt.external.holder ?? "another program" : rt.driver?.host ?? null;
     if (holder) ev.holder = holder;
+    if (rt.external.external && rt.external.takeOverBlocked) ev.takeOverBlocked = rt.external.takeOverBlocked;
     this.append(rt, ev, { driver: rt.driver?.key ?? null, external: rt.external.external });
   }
 
@@ -1251,6 +1252,7 @@ export class Core {
     const common = {
       control: c.control,
       ...(c.controlHolder ? { controlHolder: c.controlHolder } : {}),
+      ...(c.control === "external" && rt.external.takeOverBlocked ? { takeOverBlocked: rt.external.takeOverBlocked } : {}),
       ...(rt.activeTurn ? { activeTurn: rt.activeTurn } : {}),
       effective,
       ...(rt.context ? { context: rt.context } : {}),
@@ -1331,9 +1333,78 @@ export class Core {
     return ext;
   }
 
-  private setExternal(rt: ThreadRuntime, ext: ExternalControl): void {
+  /**
+   * What the provider reports, with a takeover (D140) applied: the holders the thread was
+   * taken from no longer make it read-only. A holder it was not taken from ends the takeover
+   * (and says so in the transcript); so does a harness that positively reports nobody else.
+   * "Unsure" keeps it.
+   */
+  private applyTakeOver(rt: ThreadRuntime, ext: ExternalControl): ExternalControl {
+    const t = rt.record.takenOver;
+    if (!t) return ext;
+    if (!ext.external) {
+      if (!ext.uncertain) this.endTakeOver(rt, null);
+      return ext;
+    }
+    const fresh = (ext.holderIds ?? []).some((id) => !t.holderIds.includes(id));
+    if (fresh) {
+      this.endTakeOver(rt, `${ext.holder ?? "Another program"} opened this thread after it was taken over; it is read-only here again.`);
+      return ext;
+    }
+    return { external: false };
+  }
+
+  private endTakeOver(rt: ThreadRuntime, notice: string | null): void {
+    if (!rt.record.takenOver) return;
+    rt.record.takenOver = null;
+    rt.saveRecord();
+    if (notice) this.noticeItem(rt, "info", notice);
+  }
+
+  /**
+   * `thread/takeOver` (D140): continue here a thread another program holds, without stopping
+   * that program. Refused when the harness will not let go (`takeOverBlocked`).
+   */
+  async threadTakeOver(p: { opId: string; threadId: string }): Promise<Record<string, never>> {
+    return this.ops.run("thread/takeOver", p.opId, async () => {
+      const rt = this.findThread(p.threadId);
+      if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)}`);
+      const eff = await this.computeEffective(rt);
+      if (!(eff.capabilities ?? []).includes("threadTakeOver")) throw notActed("capability_missing", "this thread's harness cannot hand over a thread another program holds");
+      const provider = this.provider(rt);
+      let raw: ExternalControl;
+      try {
+        raw = await provider.control(rt.record.native);
+      } catch (e) {
+        throw notActed("provider_unavailable", `the harness did not say who holds the thread: ${(e as Error).message}`);
+      }
+      if (!raw.external) {
+        // Nobody else holds it: there is nothing to take.
+        this.setExternal(rt, raw);
+        return {};
+      }
+      if (raw.takeOverBlocked) {
+        this.setExternal(rt, raw);
+        throw notActed("thread_in_use", raw.takeOverBlocked);
+      }
+      const from = raw.holder ?? "another program";
+      rt.record.takenOver = { from, holderIds: [...(raw.holderIds ?? [])], at: nowIso() };
+      rt.saveRecord();
+      this.noticeItem(rt, "takenOver", `Taken over from ${from} · the other program is still open and will not see these messages`);
+      this.setExternal(rt, raw);
+      return {};
+    });
+  }
+
+  private setExternal(rt: ThreadRuntime, raw: ExternalControl): void {
+    const ext = this.applyTakeOver(rt, raw);
     const before = canonical(rt.external);
-    rt.external = { external: !!ext.external, ...(ext.uncertain ? { uncertain: true } : {}), ...(ext.holder ? { holder: ext.holder } : {}) };
+    rt.external = {
+      external: !!ext.external,
+      ...(ext.uncertain ? { uncertain: true } : {}),
+      ...(ext.holder ? { holder: ext.holder } : {}),
+      ...(ext.external && ext.takeOverBlocked ? { takeOverBlocked: ext.takeOverBlocked } : {}),
+    };
     if (canonical(rt.external) === before) return;
     this.appendControl(rt);
     this.updateIndex(rt);
@@ -1886,10 +1957,11 @@ export class Core {
       const provider = this.provider(rt);
       // Ownership must be shown, not assumed: ask the harness right before handing input over.
       // Only positive evidence of another holder stops it; "unsure" is free.
-      const ext = await provider.control(rt.record.native).catch((): ExternalControl => ({ external: false, uncertain: true }));
+      const raw = await provider.control(rt.record.native).catch((): ExternalControl => ({ external: false, uncertain: true }));
+      const ext = this.applyTakeOver(rt, raw);
       if (ext.external) {
         rt.dispatching = false;
-        this.setExternal(rt, ext);
+        this.setExternal(rt, raw);
         if (work.origin === "user") work.reject(notActed("thread_in_use", `this thread is in use in ${ext.holder ?? "another program"}; it can only be watched`));
         else rt.queue.unshift(work);
         return;

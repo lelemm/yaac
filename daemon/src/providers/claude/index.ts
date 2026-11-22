@@ -382,6 +382,7 @@ export class ClaudeProvider implements HarnessProvider {
       "threadRename",
       "threadArchive",
       "threadDelete",
+      "threadTakeOver",
       "streamText",
       "streamReasoning",
       "interrupt",
@@ -1160,8 +1161,18 @@ export class ClaudeProvider implements HarnessProvider {
       holders.push(e);
     }
     if (holders.length > 0) {
-      const bg = holders.some((h) => h.kind === "background");
-      return { external: true, holder: bg ? "a Claude Code background session" : "another Claude Code session" };
+      const bg = holders.find((h) => h.kind === "background");
+      const holderIds = holders.map(holderId);
+      // Verified (Claude Code 2.1.330): resuming a session a background session holds is
+      // refused at start-up (`session_held_by_background`); one an interactive `claude` holds
+      // resumes, and that terminal does not see what is sent. A terminal mid-turn is not
+      // interrupted by YAAC: it can be taken over once its turn ends.
+      const takeOverBlocked = bg
+        ? `Claude Code runs it as a background session; it cannot be continued elsewhere until that session is stopped there${typeof bg.id === "string" ? ` (claude stop ${bg.id})` : ""}`
+        : holders.some((h) => h.status === "busy")
+          ? "the other Claude Code session is running a turn; it can be taken over when that turn ends"
+          : null;
+      return { external: true, holder: bg ? "a Claude Code background session" : "another Claude Code session", holderIds, ...(takeOverBlocked ? { takeOverBlocked } : {}) };
     }
     return uncertain ? { external: false, uncertain: true } : { external: false };
   }
@@ -1278,6 +1289,17 @@ function childEnv(base: NodeJS.ProcessEnv, extra: Record<string, string> | undef
 function intVar(v: string | undefined, fallback: number): number {
   const n = v === undefined ? Number.NaN : Number.parseInt(v, 10);
   return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/**
+ * Names the holder of a session for a takeover (D140): a background session by its id (its
+ * pid is the shared background host's), an interactive one by its process.
+ */
+function holderId(e: AgentEntry): string {
+  if (e.kind === "background" && typeof e.id === "string") return `bg:${e.id}`;
+  if (typeof e.pid === "number") return `pid:${e.pid}`;
+  if (typeof e.id === "string") return `id:${e.id}`;
+  return `session:${String(e.sessionId)}`;
 }
 
 /**
