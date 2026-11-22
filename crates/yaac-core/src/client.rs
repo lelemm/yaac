@@ -535,6 +535,7 @@ impl Client {
                         native_id: None,
                         hold: None,
                         fast: draft.fast,
+                        placement: None,
                     };
                     self.state.upsert_summary(&draft.target, summary);
                 }

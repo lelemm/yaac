@@ -220,6 +220,24 @@ pub struct WorktreeRef {
     pub branch: Option<String>,
 }
 
+/// Where YAAC lists a thread that the user moved (D139): a project on the same target and,
+/// optionally, one checkout of that project's repository. YAAC's own record, kept by `yaacd`
+/// so every host sees it, and apart from the harness's working directory (`cwd`). While it is
+/// set, `ThreadSummary.project` and `worktree` follow it rather than the folder rule.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadPlacement {
+    /// The project.
+    pub project: ProjectId,
+    /// The checkout's root (its top-level directory), when a worktree was chosen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<TargetPath>,
+    /// What the worktree level of the sidebar calls that checkout: a linked worktree's name,
+    /// or the main checkout's branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_name: Option<String>,
+}
+
 /// What the sidebar needs, and what the host cache stores, per thread.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -304,6 +322,10 @@ pub struct ThreadSummary {
     /// otherwise. Only ever true while the thread's model has `fastMode`. Absent: off.
     #[serde(default)]
     pub fast: bool,
+    /// Where the user moved the thread in YAAC (`thread/move`, D139). Absent: it is listed
+    /// where its folder puts it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<ThreadPlacement>,
 }
 
 /// The model / effort / mode the harness reports it is **actually** using.
@@ -643,6 +665,41 @@ pub struct ThreadDeleteParams {
     /// YAAC's record goes, the harness keeps its session.
     #[serde(default)]
     pub also_in_harness: bool,
+}
+
+/// `thread/move` (D139): list the thread under another project (and optionally one of that
+/// project's checkouts) **on the same target**. YAAC's own placement always changes; where the
+/// thread's provider has `threadMoveWorkingDirectory`, the agent also works in that project's
+/// folder (or the same place in the chosen checkout) from its next turn. A running thread may
+/// be moved; the change applies from its next turn. Refused for an archived thread and for one
+/// in use elsewhere.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadMoveParams {
+    /// Operation id.
+    pub op_id: OpId,
+    /// The thread.
+    pub thread_id: ThreadId,
+    /// The project to list it under. Absent: forget the placement; the thread goes back to
+    /// where its folder puts it, and its working directory is left as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<ProjectId>,
+    /// A checkout of the project's repository (its root), for the worktree level. Absent: the
+    /// project's own folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<TargetPath>,
+}
+
+/// `thread/move` result.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadMoveResult {
+    /// The summary after the move.
+    pub thread: ThreadSummary,
+    /// The folder the agent works in from its next turn, when the move changed it. Absent:
+    /// the working directory is unchanged (only where YAAC lists the thread moved).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<TargetPath>,
 }
 
 // ── turns ─────────────────────────────────────────────────────────────────────────────────

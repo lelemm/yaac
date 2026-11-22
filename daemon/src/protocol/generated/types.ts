@@ -183,7 +183,7 @@ export type BackendPreference = "auto" | "daemon" | "sdk";
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "followExternal" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
+export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -2246,7 +2246,7 @@ export interface NoticeItem {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered" | "stopped";
+export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered" | "stopped" | "moved";
 
 /**
  * A client-generated operation id. Every state-changing request carries one; re-sending
@@ -4026,6 +4026,50 @@ export interface ThreadLookupResult {
 }
 
 /**
+ * `thread/move` (D139): list the thread under another project (and optionally one of that
+ * project's checkouts) **on the same target**. YAAC's own placement always changes; where the
+ * thread's provider has `threadMoveWorkingDirectory`, the agent also works in that project's
+ * folder (or the same place in the chosen checkout) from its next turn. A running thread may
+ * be moved; the change applies from its next turn. Refused for an archived thread and for one
+ * in use elsewhere.
+ */
+export interface ThreadMoveParams {
+  /**
+   * Operation id.
+   */
+  opId: OpId;
+  /**
+   * The project to list it under. Absent: forget the placement; the thread goes back to
+   * where its folder puts it, and its working directory is left as it is.
+   */
+  project?: ProjectId | null;
+  /**
+   * The thread.
+   */
+  threadId: ThreadId;
+  /**
+   * A checkout of the project's repository (its root), for the worktree level. Absent: the
+   * project's own folder.
+   */
+  worktree?: TargetPath | null;
+}
+
+/**
+ * `thread/move` result.
+ */
+export interface ThreadMoveResult {
+  /**
+   * The summary after the move.
+   */
+  thread: ThreadSummary;
+  /**
+   * The folder the agent works in from its next turn, when the move changed it. Absent:
+   * the working directory is unchanged (only where YAAC lists the thread moved).
+   */
+  workingDirectory?: TargetPath | null;
+}
+
+/**
  * `thread/older`: conversations beyond the discovery caps, newest first, a page at a time
  * ("Show older", "Search older threads on …"). Not indexed unless opened, pinned, or active.
  */
@@ -4064,6 +4108,28 @@ export interface ThreadOlderResult {
    * Summaries, newest first. Their ids work with every thread method.
    */
   threads?: ThreadSummary[];
+}
+
+/**
+ * Where YAAC lists a thread that the user moved (D139): a project on the same target and,
+ * optionally, one checkout of that project's repository. YAAC's own record, kept by `yaacd`
+ * so every host sees it, and apart from the harness's working directory (`cwd`). While it is
+ * set, `ThreadSummary.project` and `worktree` follow it rather than the folder rule.
+ */
+export interface ThreadPlacement {
+  /**
+   * The project.
+   */
+  project: ProjectId;
+  /**
+   * The checkout's root (its top-level directory), when a worktree was chosen.
+   */
+  worktree?: TargetPath | null;
+  /**
+   * What the worktree level of the sidebar calls that checkout: a linked worktree's name,
+   * or the main checkout's branch.
+   */
+  worktreeName?: string | null;
 }
 
 /**
@@ -4376,6 +4442,11 @@ export interface ThreadSummary {
    * other.
    */
   peers?: number;
+  /**
+   * Where the user moved the thread in YAAC (`thread/move`, D139). Absent: it is listed
+   * where its folder puts it.
+   */
+  placement?: ThreadPlacement | null;
   /**
    * Short excerpt.
    */
