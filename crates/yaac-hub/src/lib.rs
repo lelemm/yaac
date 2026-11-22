@@ -33,6 +33,7 @@ mod conn;
 mod core;
 pub mod drafts;
 pub mod find;
+mod limits;
 mod lock;
 pub mod mesh;
 mod migrate;
@@ -142,6 +143,7 @@ pub fn run_hub(config: HubConfig) -> Result<HubExit, HubError> {
         in_flight: relay.in_flight()?,
         kept: drafts.views()?.into_iter().filter(|v| known.contains(&v.target) && v.keeps()).map(|v| (v.target, v.thread_id)).collect(),
         unseen: drafts.views()?.into_iter().filter(|v| known.contains(&v.target) && v.unseen).map(|v| (v.target, v.thread_id)).collect(),
+        rate_limits: limits::RateLimitBook::from_stored(cache.ui_state(limits::STORE_KEY).ok().flatten()).only(&known),
     };
     let _ = cache.checkpoint();
 
