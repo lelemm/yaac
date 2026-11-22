@@ -3,7 +3,7 @@
 use yaac_protocol::attach::{ConnectionState, ConnectionStatus, DaemonUpdatePhase};
 use yaac_protocol::{Capability, Control, ItemBody, ReceiptReason, Support, TargetId, has_capability};
 
-use crate::attention::{Attention, AttentionMap, Mark, ThreadDisplay, display};
+use crate::attention::{Attention, AttentionMap, BudgetMark, Mark, ThreadDisplay, budget_mark, display};
 use crate::hints::RequestKindWord;
 use crate::key::ThreadKey;
 use crate::state::{AppState, Draft};
@@ -100,6 +100,10 @@ pub struct HeaderView {
     pub links: LinkLine,
     /// Banners.
     pub banners: Vec<Banner>,
+    /// The quiet "Agent budget reached" note beside the tag, with **Continue** for this root
+    /// (D164): its budget is used up while its own turn runs or nothing is held back. `None`
+    /// when there is nothing to say, or when the tag already says "Paused · budget reached".
+    pub budget: Option<yaac_protocol::Address>,
 }
 
 /// The header of a thread.
@@ -209,7 +213,8 @@ pub fn header(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Option<H
     {
         banners.push(b);
     }
-    Some(HeaderView { display: d, title: s.title.clone(), tag, breadcrumb, links, banners })
+    let budget = (!d.read_only && budget_mark(state, key) == Some(BudgetMark::Reached)).then(|| key.address());
+    Some(HeaderView { display: d, title: s.title.clone(), tag, breadcrumb, links, banners, budget })
 }
 
 /// The banner about a target's `yaacd`: older (updated when idle, or **Update now**), being

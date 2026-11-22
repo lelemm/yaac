@@ -469,6 +469,10 @@ catalogue! {
         /// An instance's account or rate-limit windows changed (D161).
         ProviderRateLimitsUpdated = "provider/rateLimits/updated" as PROVIDER_RATE_LIMITS_UPDATED:
             t::InstanceRateLimits, DaemonToHost, Control;
+        /// A root's budget ran out, was freed, or started or stopped holding messages back
+        /// (D164). The hub relays it to every window.
+        MeshBudgetChanged = "mesh/budget/changed" as MESH_BUDGET_CHANGED:
+            t::MeshBudgetResult, DaemonToHost, Control;
     }
 }
 

@@ -70,7 +70,7 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
         }
         ui.add_space(2.0);
         // The tag, and the update item when the title row shows one (D136).
-        let tag_w = if h.tag.is_some() { 230.0 } else { 0.0 } + app.updater.title_width();
+        let tag_w = if h.tag.is_some() { 230.0 } else { 0.0 } + if h.budget.is_some() { 190.0 } else { 0.0 } + app.updater.title_width();
         ui.scope(|ui| {
             ui.set_max_width((ui.available_width() - tag_w).max(80.0));
             // Not selectable: the title is part of the title row, which drags the window.
@@ -82,6 +82,15 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
             egui::Frame::NONE.fill(p.wash(c)).corner_radius(4).inner_margin(Margin::symmetric(7, 2)).show(ui, |ui| {
                 ui.add(egui::Label::new(egui::RichText::new(tag).font(theme::ui(size::SMALL)).color(c)).selectable(false));
             });
+        }
+        // The budget never hides what the thread does (D164): a quiet note beside its state.
+        if let Some(root) = &h.budget {
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(widgets::secondary("Agent budget reached", &p)).selectable(false))
+                .on_hover_text("Agents working for this chat have used their budget: what they start is held back until you choose Continue. Your own turns are not affected.");
+            if widgets::link(ui, &p, "Continue", theme::ui(size::SMALL)).clicked() {
+                actions.push(Action::ContinueBudget(root.clone()));
+            }
         }
     });
     ui.add_space(2.0);

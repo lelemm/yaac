@@ -5,7 +5,7 @@
 //! and are static: an idle fleet costs no CPU.
 
 use eframe::egui::{self, Align2, Margin, Rect, Sense, Stroke, pos2, vec2};
-use yaac_core::agents::{AgentRow, AgentsPanel, Cluster, Flow, PILL_MAX, PanelInput, PanelMode, Relation, clusters};
+use yaac_core::agents::{AgentRow, AgentsPanel, BudgetLine, Cluster, Flow, PILL_MAX, PanelInput, PanelMode, Relation, clusters};
 use yaac_core::attention::Mark;
 use yaac_core::hover::Region;
 
@@ -89,7 +89,9 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
     let card = app.ui.panel == PanelMode::Card;
     let pill = clusters(panel, Some(PILL_MAX));
     let all = clusters(panel, None);
-    let (strip, card_rect) = floating_regions(thread, pill_height(&pill), card_height(&all));
+    let spent = panel.budget.as_ref().is_some_and(|b| b.exhausted);
+    let (pill_extra, card_extra) = if spent { (BUDGET_H, BUDGET_H + 4.0) } else { (0.0, 0.0) };
+    let (strip, card_rect) = floating_regions(thread, pill_height(&pill) + pill_extra, card_height(&all) + card_extra);
     let width = if card { CARD_W } else { PILL_W };
     let pos = if card { card_rect.min } else { strip.min };
     let mut any_focus = false;
@@ -111,6 +113,10 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                     });
                 });
                 ui.add_space(4.0);
+                if let Some(b) = panel.budget.as_ref().filter(|b| b.exhausted) {
+                    budget_continue(ui, &p, b, actions);
+                    ui.add_space(4.0);
+                }
                 for c in &all {
                     let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), CARD_HEAD), Sense::hover());
                     let g = ui.fonts_mut(|f| f.layout_no_wrap(c.relation.heading().to_owned(), theme::bold(size::SMALL), p.text2));
@@ -144,6 +150,10 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                 }
             } else {
                 ui.vertical_centered(|ui| {
+                    if spent {
+                        // The budget, on the pill too (D164): its card has Continue.
+                        widgets::mark(ui, &p, Mark::Paused, BUDGET_H).on_hover_text("Agent budget reached · Continue in this card");
+                    }
                     for (i, c) in pill.iter().enumerate() {
                         if i > 0 {
                             // A short hairline between relations.
@@ -203,6 +213,8 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
 }
 
 const PILL_W: f32 = 44.0;
+/// The budget's row: the paused mark in the pill, "Agent budget reached · Continue" in the card.
+const BUDGET_H: f32 = 18.0;
 const PILL_ROW: f32 = 32.0;
 /// A cluster's glyph row in the pill.
 const GLYPH_H: f32 = 16.0;
@@ -302,6 +314,19 @@ fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, ac
     }
 }
 
+/// "Agent budget reached · Continue" (D164), under the budget in the card and the docked panel.
+fn budget_continue(ui: &mut egui::Ui, p: &Palette, b: &BudgetLine, actions: &mut Vec<Action>) {
+    if !b.exhausted {
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.label(widgets::secondary("Agent budget reached", p));
+        if widgets::link(ui, p, "Continue", theme::ui(size::SMALL)).clicked() {
+            actions.push(Action::ContinueBudget(b.root.clone()));
+        }
+    });
+}
+
 /// Docked: "Related agents" (D115), the rows under the three quiet headings (D118); no
 /// boxes, no rules.
 pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, actions: &mut Vec<Action>) {
@@ -329,6 +354,7 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
             // Wrapped, so a narrow panel never grows past its edge (D115).
             ui.add(egui::Label::new(egui::RichText::new(&b.text).font(theme::ui(size::SMALL)).color(c)).wrap());
         });
+        budget_continue(ui, &p, b, actions);
     }
     ui.add_space(14.0);
     let groups = clusters(panel, None);

@@ -246,6 +246,19 @@ impl DemoHub {
         inner.emit_now(key, ThreadEvent::ControlChanged(ev));
     }
 
+    /// The root's target frees its budget on its own — a person acted on it, or another
+    /// window chose Continue — and says so (`mesh/budget/changed`, D164). Tests read it.
+    pub fn free_budget(&self, root: &yaac_protocol::Address) {
+        let mut inner = self.inner.borrow_mut();
+        let Some(b) = inner.fleet.budgets.get_mut(root) else { return };
+        b.exhausted = false;
+        b.held = Some(0);
+        b.used.wall_clock_secs = 0;
+        let b = b.clone();
+        let Some(target) = root.target() else { return };
+        inner.ready.push_back(routed(&target, m::MESH_BUDGET_CHANGED, json!(b)));
+    }
+
     /// What `hub/wsl/distros` answers from now on: `{ distros }`, or a failure's message.
     pub fn set_wsl_distros(&self, answer: Result<Value, String>) {
         self.inner.borrow_mut().distros = answer;
@@ -754,6 +767,7 @@ impl Inner {
                 if action == "continue" {
                     b.allowance.agent_turns += 100;
                     b.exhausted = false;
+                    b.held = Some(0);
                 }
                 let b = b.clone();
                 self.ready.push_back(result(id, json!(b)));
@@ -1528,6 +1542,7 @@ impl Inner {
                     b.used.agent_turns = b.allowance.agent_turns;
                     b.used.threads_spawned = 7;
                     b.exhausted = true;
+                    b.held = Some(2);
                 }
                 self.emit_now(&orch, ThreadEvent::ItemCompleted(ItemEvent {
                     item: done("o-budget", "o-t1", notice(
@@ -1536,7 +1551,11 @@ impl Inner {
                         Some(budget_details(2)),
                     )),
                 }));
-                self.summary_now(&orch, |s| s.updated_at = crate::time::timestamp(base));
+                // Its own turn ended and the workers' replies wait: paused, not running (D164).
+                self.summary_now(&orch, |s| {
+                    s.updated_at = crate::time::timestamp(base);
+                    s.state = ThreadState::Idle;
+                });
             }
             Scene::WslConnections => {
                 if let Some(t) = self.fleet.targets.iter_mut().find(|t| t.id.as_str() == "wsl-ubuntu") {

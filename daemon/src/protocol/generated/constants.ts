@@ -203,6 +203,7 @@ export const NOTIFICATIONS = {
   STREAM_CREDIT: "stream/credit",
   FORGE_PRS_CHANGED: "forge/prs/changed",
   PROVIDER_RATE_LIMITS_UPDATED: "provider/rateLimits/updated",
+  MESH_BUDGET_CHANGED: "mesh/budget/changed",
 } as const;
 
 /** A request method name. */
@@ -397,6 +398,8 @@ export interface NotificationMap {
   "forge/prs/changed": ForgePrsResult;
   /** An instance's account or rate-limit windows changed (D161). */
   "provider/rateLimits/updated": InstanceRateLimits;
+  /** A root's budget ran out, was freed, or started or stopped holding messages back */
+  "mesh/budget/changed": MeshBudgetResult;
 }
 
 /** Who sends a method. */
@@ -498,4 +501,5 @@ export const NOTIFICATION_INFO: { readonly [N in keyof NotificationMap]: Notific
   "stream/credit": { direction: "both", class: "control" },
   "forge/prs/changed": { direction: "daemonToHost", class: "control" },
   "provider/rateLimits/updated": { direction: "daemonToHost", class: "control" },
+  "mesh/budget/changed": { direction: "daemonToHost", class: "control" },
 };

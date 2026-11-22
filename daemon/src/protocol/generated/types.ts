@@ -1606,7 +1606,7 @@ export interface MeshBudgetPatch {
 }
 
 /**
- * `mesh/budget` result.
+ * `mesh/budget` result, and `mesh/budget/changed` (D164).
  */
 export interface MeshBudgetResult {
   /**
@@ -1617,6 +1617,11 @@ export interface MeshBudgetResult {
    * Whether it has run out (messages are stored but not dispatched).
    */
   exhausted: boolean;
+  /**
+   * Messages of this root stored but held back by the budget: the agent-started turns
+   * waiting for **Continue**. Absent from an older target (then `exhausted` alone says it).
+   */
+  held?: number | null;
   /**
    * The root.
    */

@@ -2,12 +2,12 @@
 mod common;
 
 use common::{boot, settle};
-use yaac_core::attention::{Attention, AttentionMap, Mark, display};
+use yaac_core::attention::{Attention, AttentionMap, BudgetMark, Mark, budget_mark, display};
 use yaac_core::demo::{Scene, threads};
 use yaac_core::header::{ComposerView, Tone, composer, header};
 use yaac_core::hints::RequestKindWord;
 use yaac_core::sidebar::needs_you;
-use yaac_protocol::{ApprovalAnswer, RequestId, RequestResponse};
+use yaac_protocol::{ApprovalAnswer, RequestId, RequestResponse, ThreadState};
 
 #[test]
 fn a_pending_request_is_the_threads_own_needs_you_and_parents_carry_nothing() {
@@ -80,6 +80,47 @@ fn budget_reached_pauses_the_root_and_a_request_still_outranks_it() {
     s.budgets.insert(fix.address(), s.budgets.values().next().unwrap().clone());
     let map = AttentionMap::compute(&s);
     assert_eq!(map.of(&fix), Some(Attention::Request(RequestKindWord::Approval)));
+}
+
+/// D164: a budget only stops mesh actions; it never hides what the thread itself does.
+#[test]
+fn a_used_up_budget_never_hides_a_running_turn_and_its_freeing_clears_it() {
+    let (mut c, hub) = boot();
+    hub.play(Scene::BudgetReached);
+    settle(&mut c, &hub);
+    let orch = threads::orchestrator();
+    assert_eq!(budget_mark(&c.state, &orch), Some(BudgetMark::Paused), "idle, with agent turns held back");
+    assert!(header(&c.state, &AttentionMap::compute(&c.state), &orch).unwrap().budget.is_none(), "the tag says it already");
+
+    // The thread's own turn runs: its spinner and "Running", with the quiet note and Continue.
+    let mut s = c.state.clone();
+    s.threads.get_mut(&orch).unwrap().summary.state = ThreadState::Running;
+    let map = AttentionMap::compute(&s);
+    assert_eq!(map.of(&orch), None);
+    assert_eq!(display(&s, &map, &orch).mark, Mark::Running);
+    assert_eq!(budget_mark(&s, &orch), Some(BudgetMark::Reached));
+    let h = header(&s, &map, &orch).unwrap();
+    assert_eq!(h.tag, Some(("Running".to_owned(), Tone::Running)));
+    assert_eq!(h.budget, Some(orch.address()), "Agent budget reached · Continue");
+    assert!(!needs_you(&s, &map, common::NOW).iter().any(|e| e.attention == Attention::BudgetReached));
+
+    // Idle, but nothing an agent started is held back: the quiet note, not ❚❚.
+    let mut s = c.state.clone();
+    s.budgets.get_mut(&orch.address()).unwrap().held = Some(0);
+    let map = AttentionMap::compute(&s);
+    assert_eq!(map.of(&orch), None);
+    assert_eq!(budget_mark(&s, &orch), Some(BudgetMark::Reached));
+    // An older target does not say what it holds: the budget alone pauses an idle root.
+    s.budgets.get_mut(&orch.address()).unwrap().held = None;
+    assert_eq!(AttentionMap::compute(&s).of(&orch), Some(Attention::BudgetReached));
+
+    // Freed (`mesh/budget/changed`, relayed by the hub): cleared everywhere.
+    hub.free_budget(&orch.address());
+    settle(&mut c, &hub);
+    let map = AttentionMap::compute(&c.state);
+    assert_eq!(map.of(&orch), None);
+    assert_eq!(budget_mark(&c.state, &orch), None);
+    assert!(header(&c.state, &map, &orch).unwrap().budget.is_none());
 }
 
 #[test]

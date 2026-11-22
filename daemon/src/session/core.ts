@@ -154,6 +154,11 @@ interface Snapshot {
 export interface CoreMeshHooks {
   /** A turn began (journaled already). */
   turnStarted(rt: ThreadRuntime, turnId: TurnId, origin: TurnOrigin): void;
+  /**
+   * A person gave the thread input — a message (started, queued, sent now, steered) or an
+   * answer to one of its requests — before it is acted on (D164).
+   */
+  humanInput?(rt: ThreadRuntime): void;
   /** A turn ended (journaled already), before queued work is dispatched. */
   turnCompleted(rt: ThreadRuntime, turnId: TurnId, status: string, error: string | null): void;
   /** An item reached its final state. */
@@ -1940,6 +1945,7 @@ export class Core {
       const overrides = { model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null, fast: p.fast ?? null };
       const driver: Driver = { key: client.key, host: client.host };
       const busy = !!rt.activeTurn || rt.dispatching || rt.claimed;
+      if (!busy || delivery !== null) this.mesh?.humanInput?.(rt);
       if (!busy) {
         // The user sending a message is what starts a stopped thread again.
         if (rt.record.hold) this.releaseHold(rt, false);
@@ -2042,6 +2048,7 @@ export class Core {
       this.checkWriter(rt, client, true);
       const e = this.queuedEntry(rt, p.queueId);
       if (rt.pendingRequestCount() > 0) throw notActed("awaiting_user", NOW_WHILE_ASKING);
+      this.mesh?.humanInput?.(rt);
       rt.userQueue = rt.userQueue.filter((q) => q !== e);
       rt.saveQueue();
       this.queueEvent(rt, "removed", e);
@@ -2520,6 +2527,7 @@ export class Core {
         throw notActed("turn_mismatch", `turn ${String(p.turnId)} is not the running turn`, rt.activeTurn ? { activeTurn: rt.activeTurn } : undefined);
       }
       const parts = this.validateParts(p.input, eff.imageInput);
+      this.mesh?.humanInput?.(rt);
       await provider.steer(rt.record.native, p.turnId, this.buildInput(rt.uploadsKey, parts, "user"));
       return {};
     });
@@ -2564,6 +2572,8 @@ export class Core {
       if (!p.response || p.response.requestKind !== rec.requestKind) {
         throw notActed("invalid_params", `the answer must be a ${rec.requestKind} answer`);
       }
+      // A sub-agent's answer is its parent's orchestration acted on.
+      this.mesh?.humanInput?.(writer ?? rt);
       if (rec.requestKind === "meshPermission") {
         // yaacd's own request: answered by the mesh, never by the harness.
         if (!this.mesh) throw notActed("capability_missing", "the agent mesh is not available");
