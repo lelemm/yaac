@@ -13,11 +13,11 @@ export async function itemsOf(c: TestClient, threadId: string): Promise<Item[]> 
 export type AnyItem = Item & Record<string, any>;
 
 /** The outputs of a thread's `yaac.<tool>` calls (fake provider), oldest first. */
-export async function toolOutputs(c: TestClient, threadId: string, tool?: string): Promise<Array<{ tool: string; output: string; failed: boolean; input: any }>> {
+export async function toolOutputs(c: TestClient, threadId: string, tool?: string): Promise<Array<{ tool: string; output: string; failed: boolean; input: any; agentCall: any }>> {
   return (await itemsOf(c, threadId))
     .map((i) => i as AnyItem)
     .filter((i) => i.kind === "toolCall" && typeof i.title === "string" && i.title.startsWith("yaac.") && (!tool || i.title === `yaac.${tool}`) && i.status !== "inProgress")
-    .map((i) => ({ tool: i.title.slice(5), output: String(i.output ?? ""), failed: i.status === "failed", input: i.input }));
+    .map((i) => ({ tool: i.title.slice(5), output: String(i.output ?? ""), failed: i.status === "failed", input: i.input, agentCall: i.agentCall }));
 }
 
 export async function kinds(c: TestClient, threadId: string, kind: string): Promise<AnyItem[]> {

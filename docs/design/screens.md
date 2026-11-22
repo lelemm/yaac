@@ -1479,3 +1479,45 @@ the list.*
   "Thought for 6s" before the last one, and "Thought for 3s" (reasoning with text) at the end.
   Codex also sent four reasoning items with nothing to read (empty summaries) between the
   commands; none of them is a line, so there is no "Thought for 0s" anywhere (D148).
+
+### 90 — Agents talking to agents (the orchestrator)
+
+D150. The orchestrator's second turn, as `yaacd` reads its `yaac` tool calls:
+
+- `⑂ Started [◎ Update check every 10 minutes] · gpt-6.2-sol · medium · running` — the worker
+  as a **pill**: the harness logo, the thread's title; its state word is the worker's own,
+  live. The pill opens the worker.
+- `↗ [✳ billing-service · devbox] "Check the refund race in test_refund_race…" · delivered` —
+  a message: the recipient's pill (machine shown because it is not this one), the message
+  ellipsised in quotes, the receipt at the end (it moves on with the message: queued →
+  delivered).
+- `↙ [✳ billing-service · devbox] reported back` — a `wait` that returned a message.
+- `⧗ Waiting for [◎ Update check every 10 minutes] [✳ search-service · gpu-box] …` — a wait
+  in progress.
+- The `meshSent`, `meshReceived` and `meshWait` items these calls caused are not shown a second
+  time: the call's line is the record.
+- Never the tool's name, never JSON.
+
+### 91 — An agent call opened
+
+- The message line opened: **To** and the pill, the message in full (markdown), the receipt
+  ("Delivered · stored in its mailbox"), and a closed **Raw call** disclosure.
+- The wait line opened: **Waited for** and the pill, **Result** — what came back, attributed
+  ("Message from billing-service") — and **Raw call**.
+
+### 92 — Claude Code's own subagents (users-service)
+
+- `⑂ Subagent [✳ Fix the cache test] · opus · medium · background` — Claude Code's `Agent`
+  tool: the pill is the subagent's description with the harness logo; not clickable until
+  YAAC keeps a thread for that subagent (D151), then it opens it.
+- `↻ Resumed subagent [✳ a59f490b] "Daemon handover: the socket moved to…"` — the
+  `SendMessage` call the owner saw as raw JSON: a subagent with no name shows its short id.
+- `⑂ Subagent [✳ Count the flaky tests] · finished` — a foreground subagent whose answer came
+  back.
+- `↗ [✳ Fix the cache test] "Also check the TTL clock…" · queued · it reads it at its next step`.
+
+### 93 — A subagent call opened, with its raw call
+
+- The resumed-subagent line opened: **To** and the pill, the message in full, and **Raw call**
+  open — the input as indented JSON and the output as the harness returned it, each in a code
+  block with its copy button. The raw form is there for debugging, never in the line.

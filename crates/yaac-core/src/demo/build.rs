@@ -43,7 +43,41 @@ pub(crate) fn tool(kind: ToolKind, title: &str, exit: Option<i32>, output: &str)
         output_bytes: None,
         exit_code: exit,
         cwd: None,
+        agent_call: None,
     })
+}
+
+/// A tool call that is communication with another agent (D150), as `yaacd` reads it.
+pub(crate) fn agent_tool(kind: ToolKind, title: &str, input: serde_json::Value, output: &str, call: yaac_protocol::AgentCall) -> ItemBody {
+    ItemBody::ToolCall(ToolCallItem {
+        tool: kind,
+        title: title.to_owned(),
+        input: Some(input),
+        output: output.to_owned(),
+        output_truncated: false,
+        output_bytes: None,
+        exit_code: None,
+        cwd: None,
+        agent_call: Some(call),
+    })
+}
+
+/// An agent call's skeleton: everything optional unset.
+pub(crate) fn call(kind: yaac_protocol::AgentCallKind, peers: Vec<yaac_protocol::AgentRef>) -> yaac_protocol::AgentCall {
+    yaac_protocol::AgentCall {
+        kind,
+        peers,
+        text: None,
+        title: None,
+        model: None,
+        effort: None,
+        background: None,
+        target: None,
+        outcome: None,
+        detail: None,
+        result: None,
+        messages: Vec::new(),
+    }
 }
 
 pub(crate) fn message(id: &str, from: &Address, to: &Address, kind: MeshMessageKind, text: &str, at: Timestamp) -> MeshMessage {

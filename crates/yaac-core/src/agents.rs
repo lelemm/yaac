@@ -223,7 +223,7 @@ pub struct AgentsPanel {
     pub rail: Rail,
 }
 
-fn model_label(state: &AppState, key: &ThreadKey) -> Option<String> {
+pub(crate) fn model_label(state: &AppState, key: &ThreadKey) -> Option<String> {
     let s = state.summary(key)?;
     let m = s.model.as_ref()?;
     Some(state.provider_of(key).and_then(|p| p.models.iter().find(|x| &x.id == m)).map_or_else(|| m.to_string(), |x| x.display_name.clone()))

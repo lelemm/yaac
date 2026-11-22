@@ -581,3 +581,47 @@ never reach a `userMessage` and are not listed.
 
 The fork's handoff transcript (`renderTranscript`) carries typed text, pastes and commands, never
 `context` parts.
+
+## Agent calls (verified 2026-11-22)
+
+What the harnesses' own agent tools look like, for D150. Shapes only — counted over the stored
+transcripts on the development machine (`~/.claude/projects/**/*.jsonl`, 1,985 files;
+`~/.codex/sessions/**`, 155 files) and read from the installed types (Claude Code 2.1.330,
+Agent SDK 0.3.329 `sdk-tools.d.ts`; Codex 0.170.0 `app-server generate-ts`). No content was
+copied.
+
+**Claude Code** (built-in tool names in the SDK's `BUILTIN_TOOL_NAMES` include `Agent`,
+`SendMessage`, `SubagentHandback`, `TaskStop`, `ListAgents`):
+
+- `Agent` input: `description`, `prompt`, `subagent_type?`, `model?` (`sonnet`, `opus`,
+  `haiku`, `fable`), `effort?`, `run_in_background?` (stored as a boolean or the string
+  `"true"`), `name?`, `isolation?`. Result text: a background launch starts "Async agent
+  launched successfully." and contains `agentId: <id>`; a foreground one is the answer.
+  `tool_use_result`: `{status: "async_launched", agentId, description, prompt, outputFile,
+  resolvedModel, …}` or `{status: "completed", agentId, content: [{type: "text", text}],
+  totalToolUseCount, usage, …}` (`AgentOutput`).
+- `SendMessage` input: `{to, message, summary?}`; older transcripts also carry
+  `{type: "message", recipient, recipient_kind: "agent" | "main" | "name" | "session",
+  content}`. `to: "main"` is a subagent writing to the conversation that started it. Result
+  text is JSON: `{success, message, pin?: {id, name, ref}, resumedAgentId?, msg_id?}` with
+  `message` one of "Message queued for delivery to <id> at its next tool round. …",
+  "Resuming agent <short id>", "Message queued for the main conversation's next turn.".
+- `TaskStop` input `{task_id}`; result JSON `{message, task_id, task_type, command}` with
+  `task_type` `local_agent` (an agent), `local_bash` or `local_workflow`. Only `local_agent`
+  is communication.
+- `SubagentHandback` input `{message}`; result `{success, message: "Report delivered to your
+  caller."}`. It runs inside the subagent's own transcript.
+- YAAC's tools arrive as `mcp__yaac__<tool>`; their results are text YAAC wrote.
+
+**Codex**: the model calls `collaboration/spawn_agent` (`{message, task_name, model?,
+reasoning_effort?, fork_turns?}`), `send_message` and `followup_task` (`{target, message}`),
+`wait_agent`, `interrupt_agent`, `list_agents`. The app-server presents each as a
+`collabAgentToolCall` thread item: `{tool: "spawnAgent" | "sendInput" | "resumeAgent" |
+"wait" | "closeAgent" | "sendMessage" | "followupTask" | "interruptAgent" | "listAgents",
+status: "inProgress" | "completed" | "failed" | "interrupted", senderThreadId,
+receiverThreadIds, prompt, model, reasoningEffort, agentsStates: {<thread id>: {status:
+"pendingInit" | "running" | "interrupted" | "completed" | "errored" | "shutdown" |
+"notFound", message}}}`. The receiver ids are Codex thread ids. (`wait` with `cell_id` in
+rollouts is the code-mode exec wait, not an agent wait.) YAAC's tools arrive as
+`mcpToolCall` items with `server: "yaac"`.
+

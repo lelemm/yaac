@@ -42,6 +42,8 @@ pub struct Expansion {
     pub pasted: BTreeSet<(ThreadKey, ItemId, usize)>,
     /// A user message's "Context" disclosure opened.
     pub context: BTreeSet<(ThreadKey, ItemId)>,
+    /// An agent call's "Raw call" disclosure opened (D150).
+    pub raw: BTreeSet<(ThreadKey, ItemId)>,
 }
 
 impl Expansion {
@@ -58,6 +60,14 @@ impl Expansion {
         let k = (key.clone(), id.clone());
         if !self.context.remove(&k) {
             self.context.insert(k);
+        }
+    }
+
+    /// Toggle an agent call's raw input and output.
+    pub fn toggle_raw(&mut self, key: &ThreadKey, id: &ItemId) {
+        let k = (key.clone(), id.clone());
+        if !self.raw.remove(&k) {
+            self.raw.insert(k);
         }
     }
 
@@ -117,6 +127,10 @@ pub enum LineMark {
     Workers,
     /// Waiting on other agents.
     Waiting,
+    /// Another agent started by this one (an agent call, D150).
+    Spawn,
+    /// A stopped agent resumed with a message (an agent call).
+    Resumed,
     /// A notice.
     Notice,
     /// The plan.
@@ -147,6 +161,8 @@ pub struct ActivityLine {
     /// A file of a file change: its index in the item's diff and its counts. The line reads
     /// "Edited src/frame.rs" followed by `+12 −3`.
     pub diff: Option<DiffPart>,
+    /// An agent call (D150): the line drawn with pills. `text` is its plain form.
+    pub call: Option<crate::agentcall::CallLine>,
 }
 
 /// One file of a file-change item.
@@ -277,8 +293,23 @@ pub fn short_receipt(sent: &yaac_protocol::MeshSentItem) -> String {
 }
 
 /// The activity line an item becomes, or `None` when it is not activity.
-fn line_of(state: &AppState, map: &AttentionMap, index: usize, item: &Item) -> Option<ActivityLine> {
+fn line_of(state: &AppState, map: &AttentionMap, key: &ThreadKey, index: usize, item: &Item) -> Option<ActivityLine> {
     let in_progress = item.status == ItemStatus::InProgress;
+    if let Some((_, call)) = crate::agentcall::of(item) {
+        use yaac_protocol::{AgentCallKind as K, AgentCallOutcome as O};
+        let line = crate::agentcall::line(state, map, key, state.transcripts.get(key), item, call);
+        let failed = item.status == ItemStatus::Failed || call.outcome == Some(O::Failed);
+        let mark = match (&call.kind, &call.outcome) {
+            (K::Message, Some(O::Resumed)) | (K::Resume, _) => LineMark::Resumed,
+            (K::Message, _) => LineMark::Sent,
+            (K::Spawn, _) => LineMark::Spawn,
+            (K::Wait, Some(O::Returned)) if !in_progress => LineMark::Received,
+            (K::Wait, _) => LineMark::Waiting,
+            _ => LineMark::Tool,
+        };
+        let text = line.plain();
+        return Some(ActivityLine { index, id: item.id.clone(), mark, text, failed, in_progress, expanded: false, highlighted: false, diff: None, call: Some(line) });
+    }
     let (mark, text, failed) = match &item.body {
         ItemBody::Reasoning(r) => {
             let took = item
@@ -350,7 +381,7 @@ fn line_of(state: &AppState, map: &AttentionMap, index: usize, item: &Item) -> O
         ItemBody::Unknown(u) => (LineMark::Other, format!("{} (not shown by this version)", u.tag("kind")), false),
         _ => return None,
     };
-    Some(ActivityLine { index, id: item.id.clone(), mark, text, failed, in_progress, expanded: false, highlighted: false, diff: None })
+    Some(ActivityLine { index, id: item.id.clone(), mark, text, failed, in_progress, expanded: false, highlighted: false, diff: None, call: None })
 }
 
 /// The files of a file-change item whose output is a diff.
@@ -366,8 +397,8 @@ pub fn file_stats(item: &Item) -> Option<Vec<FileStat>> {
 pub const TURN_SUMMARY_FILES: usize = 2;
 
 fn fold_summary(lines: &[ActivityLine]) -> String {
-    let commands = lines.iter().filter(|l| l.mark == LineMark::Tool).count();
-    let messages = lines.iter().filter(|l| matches!(l.mark, LineMark::Sent | LineMark::Received)).count();
+    let commands = lines.iter().filter(|l| l.mark == LineMark::Tool && l.call.is_none()).count();
+    let messages = lines.iter().filter(|l| l.call.is_some() || matches!(l.mark, LineMark::Sent | LineMark::Received)).count();
     let mut parts = Vec::new();
     if commands > 0 {
         parts.push(format!("{commands} {}", if commands == 1 { "command" } else { "commands" }));
@@ -409,6 +440,8 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
         }
     };
     let mut seen_prompt = false;
+    // Mesh items that only echo an agent call's line.
+    let echoes = crate::agentcall::Echoes::of(t.items());
     // The turn being read, with the files it changed so far.
     let mut turn: Option<(TurnId, TurnTotals, Vec<ItemId>)> = None;
     let end_turn = |turn: &mut Option<(TurnId, TurnTotals, Vec<ItemId>)>, run: &mut Vec<ActivityLine>, out: &mut Vec<Block>| {
@@ -421,6 +454,9 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
         }
     };
     for (index, item) in t.items().iter().enumerate() {
+        if echoes.hides(item) {
+            continue;
+        }
         if turn.as_ref().is_none_or(|(id, _, _)| *id != item.turn_id) {
             end_turn(&mut turn, &mut run, &mut out);
             turn = Some((item.turn_id.clone(), TurnTotals::default(), Vec::new()));
@@ -468,9 +504,10 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
                             expanded,
                             highlighted,
                             diff: Some(DiffPart { file: n, added: f.added, removed: f.removed }),
+                            call: None,
                         });
                     }
-                } else if let Some(mut line) = line_of(state, map, index, item) {
+                } else if let Some(mut line) = line_of(state, map, key, index, item) {
                     line.highlighted = focus == Some(&item.id);
                     line.expanded = line.highlighted || expansion.lines.contains(&(key.clone(), item.id.clone()));
                     run.push(line);
@@ -508,6 +545,7 @@ pub fn collapse_all(key: &ThreadKey, expansion: &mut Expansion) {
     expansion.files.retain(|(k, _, _)| k != key);
     expansion.rest.retain(|(k, _, _)| k != key);
     expansion.turns.retain(|(k, _)| k != key);
+    expansion.raw.retain(|(k, _)| k != key);
 }
 
 #[cfg(test)]

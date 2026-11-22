@@ -682,6 +682,7 @@ item kinds, no version bump.
 | Addition | Purpose |
 | --- | --- |
 | Capability `MeshTools` | This provider instance can be given the `yaac` tools. |
+| `toolCall.agentCall` | A tool call that is communication with another agent, read by `yaacd` ([below](#agent-calls-in-the-transcript)). |
 | Item kinds `meshSent`, `meshReceived`, `meshSpawn`, `meshWait` | What agents did with the mesh, in the transcript ([07 UI](07-ui.md#agents-in-the-thread-view)). |
 | `ThreadSummary.spawned_by`, `children`, `peers` | Relationships, for the sub-thread sidebar. |
 | `mesh/relay` (target → hub), `mesh/deliver` (hub → target), each acknowledged | Cross-target delivery. These are the one place where a **target** originates a request — see [03](03-protocol.md#messages). |
@@ -702,3 +703,35 @@ item kinds, no version bump.
   machines is what git and the user's own tooling are for.
 - **No broadcast.** Every message has one recipient.
 - **No answering on the user's behalf**, ever.
+
+## Agent calls in the transcript
+
+D150, P180–P184. Agents talk to agents through tools: YAAC's own (above), and the harnesses'
+own sub-agent tools. `yaacd`'s provider translators recognise every such call and attach a
+structured `agentCall` to the `toolCall` item; the window draws it as one line with the other
+agent as a pill ([07 UI](07-ui.md#agent-messages-in-the-transcript)).
+
+| Family | Calls | Read from |
+| --- | --- | --- |
+| YAAC mesh (`yaac` MCP server, either harness) | `spawn_thread` → spawn; `send_message` → message; `wait`; `read_thread` → read; `stop_thread`, `stop_all` → stop; `notify_when_done` → notify; `list_threads`, `find_thread` → list | The arguments (addresses), and the result text `yaacd` itself wrote: "Delivered to …" / "Queued for … — why" / "Failed: … — why" and "Message id: …"; "Started …" and "Address: …"; a wait's "--- result from L (address A, id M):" blocks, "… (A) is done.", "Nothing yet after N seconds". |
+| Claude Code | `Agent` (formerly `Task`) → spawn; `SendMessage` → message (or resume); `TaskStop` of an agent → stop; `SubagentHandback` → message to its parent | The input; the JSON result (`success`, `message`, `resumedAgentId`, `pin`); the SDK's `tool_use_result` (`status`, `agentId`, `content`). |
+| Codex | `collabAgentToolCall` items: `spawnAgent` → spawn; `sendInput`, `sendMessage`, `followupTask` → message; `resumeAgent` → resume; `wait`; `closeAgent`, `interruptAgent` → stop; `listAgents` → list | `receiverThreadIds`, `prompt`, `model`, `reasoningEffort`, and `agentsStates` (status and message per agent). |
+
+The peers are a YAAC address, a harness's own agent id (Claude Code's `agentId`, Codex's
+receiver thread id), a name the call gave, or "its parent" (`SendMessage` to `main`,
+`SubagentHandback`). The window resolves each to a thread in one place
+(`yaac_core::agentcall::resolve`); a harness's sub-agent resolves to the thread beneath the
+caller whose harness id is that agent id (D151), and until one exists the pill is not
+clickable.
+
+The outcome comes from the result and nothing else: delivered, queued (and why), failed (and
+why), started, completed (with the answer), resumed, stopped, not running, returned (with what
+came back), nothing yet, registered. A result that does not parse leaves it unset. The raw
+input and output stay on the item.
+
+A mesh call also leaves mesh items. Those that echo it — the `meshSent` of its message and the
+`meshReceived` items a `wait` handed over (by message id), a `meshSpawn` whose workers it names,
+a `meshWait` in the same turn — are folded into the call's line; the line reads the live
+receipt from the `meshSent`. Invariant 13 holds: every message is still in both transcripts,
+attributed.
+

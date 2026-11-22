@@ -96,6 +96,10 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("83", "markdown-table"),
     ("84", "tool-open"),
     ("85", "silent-reasoning"),
+    ("90", "agent-calls"),
+    ("91", "agent-calls-open"),
+    ("92", "subagents"),
+    ("93", "subagents-open"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -639,6 +643,29 @@ fn setup(app: &mut YaacApp, id: &str) {
             if id == "70" {
                 app.ui.menu = Some(Menu::Selection(threads::billing()));
             }
+        }
+        "90" | "91" | "92" | "93" => {
+            // Agents talking to agents (D150). 90: the orchestrator starts a worker, messages
+            // billing-service, hears back, and waits — each a line with the other agent as a
+            // pill. 91: the message and the reply opened. 92: users-service (Claude Code) and
+            // its own subagents. 93: the SendMessage that resumed a subagent opened, with its
+            // raw call (the JSON the owner saw) behind "Raw call".
+            play(app, Scene::AgentCalls);
+            let (k, first) = if matches!(id, "90" | "91") { (threads::orchestrator(), "ac1") } else { (threads::users(), "ua1") };
+            app.open(&k, None);
+            match id {
+                "91" => {
+                    app.ui.expansion.toggle_line(&k, &"ac4".into());
+                    app.ui.expansion.toggle_line(&k, &"ac5".into());
+                }
+                "93" => {
+                    app.ui.expansion.toggle_line(&k, &"ua3".into());
+                    app.ui.expansion.toggle_raw(&k, &"ua3".into());
+                }
+                _ => {}
+            }
+            app.ui.scroll_to = Some(if id == "93" { "ua3" } else { first }.into());
+            app.ui.scroll_end = false;
         }
         "76" | "77" => {
             // Claude Code's markup made readable (D141): a pasted log (collapsed), a slash

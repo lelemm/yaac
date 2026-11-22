@@ -21,6 +21,7 @@ import type {
 import type { NativeThreadInfo, RaisedRequest } from "../types.js";
 import { userItem } from "../markup.js";
 import { CODEX_MARKUP, textWithElements } from "./markup.js";
+import { agentCallTitle, codexAgentCall, meshAgentCall, MESH_SERVER } from "../agentcalls.js";
 import { INTERACTIVE_SOURCES, type Model, type Thread, type ThreadItem, type ThreadTokenUsage, type TokenUsageBreakdown } from "./wire.js";
 
 // ── Small helpers ──────────────────────────────────────────────────────────────────────────
@@ -219,30 +220,43 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus): Ite
         output: changes.map((c) => c.diff ?? "").filter(Boolean).join("\n"),
       };
     }
-    case "mcpToolCall":
-      return {
+    case "mcpToolCall": {
+      const status = itemStatus(it.status, final);
+      const output = mcpOutput(it.result, it.error);
+      const item = {
         ...base,
-        status: itemStatus(it.status, final),
+        status,
         kind: "toolCall",
         tool: "mcp",
         title: `${str(it.server) ?? "mcp"}.${str(it.tool) ?? "tool"}`,
         input: { server: it.server, tool: it.tool, arguments: it.arguments ?? null },
-        output: mcpOutput(it.result, it.error),
-      };
+        output,
+      } as Item;
+      // YAAC's own mesh tools (D150): read as communication with another agent.
+      if (str(it.server) === MESH_SERVER) {
+        const done = status !== "inProgress";
+        const call = meshAgentCall(str(it.tool) ?? "", obj(it.arguments), done ? output : null, status === "failed" || obj(it.result).isError === true);
+        if (call) return { ...item, agentCall: call, title: agentCallTitle(call, false) } as Item;
+      }
+      return item;
+    }
     case "webSearch": {
       const action = obj(it.action);
       const query = str(it.query) ?? str(action.query) ?? str(action.url) ?? "";
       return { ...base, status: final, kind: "toolCall", tool: "webSearch", title: query ? `Search: ${query}` : "Web search", input: { query: it.query ?? null, action: it.action ?? null } };
     }
-    case "collabAgentToolCall":
+    case "collabAgentToolCall": {
+      const call = codexAgentCall(it);
       return {
         ...base,
         status: itemStatus(it.status, final),
         kind: "toolCall",
         tool: "subagent",
-        title: `Agent: ${String(it.tool ?? "collab")}`,
-        input: { tool: it.tool, prompt: it.prompt ?? null, receiverThreadIds: it.receiverThreadIds ?? [], model: it.model ?? null },
-      };
+        title: call ? agentCallTitle(call, true) : `Agent: ${String(it.tool ?? "collab")}`,
+        input: { tool: it.tool, prompt: it.prompt ?? null, receiverThreadIds: it.receiverThreadIds ?? [], model: it.model ?? null, agentsStates: it.agentsStates ?? null },
+        ...(call ? { agentCall: call } : {}),
+      } as Item;
+    }
     case "subAgentActivity":
       return { ...base, status: final, kind: "toolCall", tool: "subagent", title: `Sub-agent ${String(it.kind ?? "activity")}`, input: { agentThreadId: it.agentThreadId ?? null, agentPath: it.agentPath ?? null } };
     case "contextCompaction":

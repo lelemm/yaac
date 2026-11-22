@@ -16,6 +16,76 @@
 export type Address = string;
 
 /**
+ * Communication with another agent, read from a tool call (D150).
+ */
+export interface AgentCall {
+  /**
+   * The spawned agent runs in the background (the caller does not block on it).
+   */
+  background?: boolean | null;
+  /**
+   * Why, in a few words (for queued and failed).
+   */
+  detail?: string | null;
+  /**
+   * The effort asked for, as the call named it.
+   */
+  effort?: string | null;
+  /**
+   * What it does.
+   */
+  kind: AgentCallKind;
+  /**
+   * Mesh messages this call sent or handed over (`send_message`'s message, the messages a
+   * `wait` returned): the matching `meshSent` / `meshReceived` items are this call's own.
+   */
+  messages?: MessageId[];
+  /**
+   * The model asked for, as the call named it.
+   */
+  model?: string | null;
+  /**
+   * How it went, once the result is in.
+   */
+  outcome?: AgentCallOutcome | null;
+  /**
+   * The other agents, in the call's order.
+   */
+  peers?: AgentRef[];
+  /**
+   * What came back that is worth reading: a sub-agent's answer, what a wait returned, a
+   * read transcript (markdown). The raw result stays in the tool call's `output`.
+   */
+  result?: string | null;
+  /**
+   * The machine asked for, by name, for a spawn elsewhere.
+   */
+  target?: string | null;
+  /**
+   * The message, prompt, or task, in full (markdown).
+   */
+  text?: string | null;
+  /**
+   * A short title the call gave the work (a spawn's title, a sub-agent's description).
+   */
+  title?: string | null;
+}
+
+/**
+ * What an agent call does.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type AgentCallKind = "spawn" | "message" | "resume" | "wait" | "read" | "stop" | "notify" | "list";
+
+/**
+ * How an agent call went, as its result says.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type AgentCallOutcome = "delivered" | "queued" | "failed" | "started" | "completed" | "resumed" | "stopped" | "notRunning" | "returned" | "nothingYet" | "registered";
+
+/**
  * `agentMessage`: markdown text.
  */
 export interface AgentMessageItem {
@@ -23,6 +93,31 @@ export interface AgentMessageItem {
    * Markdown. `itemDelta` with field `text` appends here.
    */
   text: string;
+}
+
+/**
+ * The other side of an agent call. At least one of `address`, `agentId`, `name`, or
+ * `parent` is set.
+ */
+export interface AgentRef {
+  /**
+   * A YAAC address (a mesh peer). Opaque.
+   */
+  address?: Address | null;
+  /**
+   * The harness's own id for one of its sub-agents (Claude Code's `agentId`, Codex's
+   * receiver thread id). Resolved by the window against the calling thread's children.
+   */
+  agentId?: string | null;
+  /**
+   * A name the call gave it (a sub-agent's description or name, a task name).
+   */
+  name?: string | null;
+  /**
+   * It is the calling agent's own parent (a sub-agent writing to the conversation that
+   * started it).
+   */
+  parent?: boolean;
 }
 
 /**
@@ -4722,6 +4817,12 @@ export interface TokenUsage {
  * `toolCall`: a tool invocation.
  */
 export interface ToolCallItem {
+  /**
+   * The call is communication with another agent (D150): what it did, to whom, and how it
+   * went, read from the call by `yaacd`. Absent for every other tool. A window that does
+   * not know this field shows the tool call as an ordinary one, under its readable title.
+   */
+  agentCall?: AgentCall | null;
   /**
    * Working directory, for a command.
    */

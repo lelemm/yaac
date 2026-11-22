@@ -16,6 +16,7 @@ import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ASK_TOOL, normaliseQuestions } from "./questions.js";
 import { editDiff, editedPath } from "./diff.js";
 import { cleanToolOutput, promptItem, unwrapToolError, type PromptFlags } from "./markup.js";
+import { agentCallTitle, claudeAgentCall, meshToolOf } from "../agentcalls.js";
 
 export { promptItem };
 
@@ -82,7 +83,19 @@ function rawResultText(content: unknown): string {
 
 export function toolCallItem(id: string, turnId: TurnId, name: string, input: Json, cwd: string | null): Item {
   const d = describeTool(name, input);
-  return { id, turnId, status: "inProgress", kind: "toolCall", tool: d.tool, title: d.title, input: { name, ...input }, ...(cwd && d.tool === "command" ? { cwd } : {}) } as Item;
+  const item = { id, turnId, status: "inProgress", kind: "toolCall", tool: d.tool, title: d.title, input: { name, ...input }, ...(cwd && d.tool === "command" ? { cwd } : {}) } as Item;
+  return withAgentCall(item, name, input, null);
+}
+
+/** Communication with another agent (D150): the call read as an `agentCall`, and a readable title. */
+function withAgentCall(item: Item, name: string, input: Json, result: string | null, structured?: unknown, failed = false): Item {
+  const call = claudeAgentCall(name, input, result, structured, failed);
+  const it = item as Item & { agentCall?: unknown; title?: string };
+  if (!call) {
+    delete it.agentCall;
+    return item;
+  }
+  return { ...item, agentCall: call, title: agentCallTitle(call, !meshToolOf(name)) } as Item;
 }
 
 export function planItem(id: string, turnId: TurnId, input: Json): Item {
@@ -100,7 +113,11 @@ export function otherBlockItem(id: string, turnId: TurnId, block: Block): Item {
  */
 export function withResult(item: Item, result: Block, structured?: unknown): Item {
   const failed = result.is_error === true;
-  const done = { ...item, status: failed ? "failed" : "completed", output: resultText(result.content) } as Item & { tool?: string; input?: Json; title?: string; output?: string };
+  let done = { ...item, status: failed ? "failed" : "completed", output: resultText(result.content) } as Item & { tool?: string; input?: Json; title?: string; output?: string; agentCall?: unknown };
+  if (done.input && (done.agentCall || str(done.input.name) === "TaskStop")) {
+    const { name, ...input } = done.input;
+    done = withAgentCall(done, str(name) ?? "", input, done.output ?? "", structured, failed) as typeof done;
+  }
   if (!failed && done.tool === "fileChange" && done.input) {
     const name = str(done.input.name) ?? "";
     const diff = editDiff(name, done.input, structured);
@@ -162,6 +179,10 @@ export function historyItems(messages: SessionMessage[], cwd: string | null): It
     const content = message.content;
     if (m.type === "user") {
       if (isToolResultMessage(content)) {
+        // The structured result of a lone tool result, when the stored message kept it.
+        const results = (content as Block[]).filter((b) => b.type === "tool_result");
+        const raw = m as unknown as { toolUseResult?: unknown; tool_use_result?: unknown };
+        const structured = results.length === 1 ? (raw.toolUseResult ?? raw.tool_use_result) : undefined;
         for (const b of content as Block[]) {
           if (b.type !== "tool_result") continue;
           const id = str(b.tool_use_id) ?? "";
@@ -171,7 +192,7 @@ export function historyItems(messages: SessionMessage[], cwd: string | null): It
             continue;
           }
           const at = byId.get(id);
-          if (at !== undefined && items[at]!.kind === "toolCall") items[at] = withResult(items[at]!, b);
+          if (at !== undefined && items[at]!.kind === "toolCall") items[at] = withResult(items[at]!, b, structured);
         }
         continue;
       }
