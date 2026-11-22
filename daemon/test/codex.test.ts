@@ -682,9 +682,11 @@ test("codex: reconnects when the socket drops and rejoins the threads it held", 
 
 // ── Backend selection ──────────────────────────────────────────────────────────────────────
 
-function scriptedExec(answers: Record<string, Awaited<ReturnType<Exec>>>, log: Array<{ args: string[]; env: NodeJS.ProcessEnv }>, onStart?: () => Promise<void>): Exec {
-  return async (_file, args, env) => {
-    log.push({ args, env });
+type ExecLog = Array<{ file?: string; args: string[]; env: NodeJS.ProcessEnv }>;
+
+function scriptedExec(answers: Record<string, Awaited<ReturnType<Exec>>>, log: ExecLog, onStart?: () => Promise<void>): Exec {
+  return async (file, args, env) => {
+    log.push({ file, args, env });
     const key = args.join(" ");
     if (key === "app-server daemon start" && onStart) await onStart();
     const a = answers[key];
@@ -693,15 +695,64 @@ function scriptedExec(answers: Record<string, Awaited<ReturnType<Exec>>>, log: A
   };
 }
 
-function homeProvider(dir: string, exec: Exec, socket?: string): CodexProvider {
+function homeProvider(dir: string, exec: Exec, socket?: string, env: Record<string, string> = {}): CodexProvider {
   return new CodexProvider(
     { config: { id: "pi_x", kind: "codex", enabled: true, backend: "auto" }, stateDir: path.join(dir, "state"), home: dir, env: process.env, log: () => {} },
-    { exec, env: { CODEX_HOME: path.join(dir, "ch") }, baseEnv: { PATH: "/nonexistent", HOME: dir }, ...(socket ? { socket } : {}), reconnectMinMs: 10_000 },
+    { exec, env: { CODEX_HOME: path.join(dir, "ch"), ...env }, baseEnv: { PATH: "/nonexistent", HOME: dir }, ...(socket ? { socket } : {}), reconnectMinMs: 10_000 },
   );
 }
 
+/** A stand-in `codex` program (never run: the tests' Exec answers instead). */
+function fakeCodexBin(dir: string): string {
+  fs.mkdirSync(dir, { recursive: true });
+  const bin = path.join(dir, "codex");
+  fs.writeFileSync(bin, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  return bin;
+}
+
+test("codex backend: codex is found off PATH, in ~/.local/bin, as a non-login wsl.exe or ssh shell leaves it (P130)", async () => {
+  const dir = tmp();
+  const ok = { code: 0, stdout: "codex-cli 9.9.9\n", stderr: "" };
+  const tooOld = { code: 2, stdout: "", stderr: "unrecognized subcommand" };
+  try {
+    // Nowhere: not installed, and nothing is run.
+    const p0 = homeProvider(dir, failExec);
+    assert.equal((await p0.probe()).status, "notInstalled");
+    await p0.dispose();
+
+    // Only in ~/.local/bin (PATH is /nonexistent): found, run by its path, its folder added to PATH.
+    const local = fakeCodexBin(path.join(dir, ".local", "bin"));
+    const log: ExecLog = [];
+    const p1 = homeProvider(dir, scriptedExec({ "--version": ok, "app-server daemon --help": ok, "app-server daemon start": { code: 1, stdout: "", stderr: "no" } }, log));
+    assert.equal((await p1.probe()).status, "startFailed");
+    await p1.dispose();
+    assert.ok(log.length === 3 && log.every((l) => l.file === local));
+    assert.deepEqual(log[2]!.env.PATH!.split(path.delimiter), ["/nonexistent", path.dirname(local)]);
+    fs.rmSync(local);
+
+    // Codex's standalone package under CODEX_HOME.
+    const standalone = fakeCodexBin(path.join(dir, "ch", "packages", "standalone", "current", "bin"));
+    const log2: ExecLog = [];
+    const p2 = homeProvider(dir, scriptedExec({ "--version": ok, "app-server daemon --help": tooOld }, log2));
+    assert.equal((await p2.probe()).status, "tooOld");
+    await p2.dispose();
+    assert.equal(log2[0]!.file, standalone);
+
+    // An explicit program in the instance's environment wins.
+    const explicit = fakeCodexBin(path.join(dir, "elsewhere"));
+    const log3: ExecLog = [];
+    const p3 = homeProvider(dir, scriptedExec({ "--version": ok, "app-server daemon --help": tooOld }, log3), undefined, { YAAC_CODEX_EXECUTABLE: explicit });
+    await p3.probe();
+    await p3.dispose();
+    assert.equal(log3[0]!.file, explicit);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("codex backend: an explicit socket is connect-only; distinct failure reasons; start only when absent", async () => {
   const dir = tmp();
+  fakeCodexBin(path.join(dir, ".local", "bin"));
   const ok = { code: 0, stdout: "codex-cli 9.9.9\n", stderr: "" };
   try {
     // Explicit socket, nothing listening: unreachable, and codex is never run.
