@@ -382,3 +382,23 @@ fn thread_move_round_trips_and_the_placement_is_optional() {
         assert!(!matches!(c, yaac_protocol::Capability::Unknown(_)), "{cap} is known");
     }
 }
+
+#[test]
+fn folder_trust_round_trips_and_the_switch_is_optional() {
+    use yaac_protocol::{Capability, NoticeKind, ProviderInstanceConfig, ProviderInstanceUpdateParams};
+    let c: Capability = serde_json::from_value(json!("folderTrust")).unwrap();
+    assert_eq!(c, Capability::FolderTrust);
+    let k: NoticeKind = serde_json::from_value(json!("folderTrust")).unwrap();
+    assert_eq!(k, NoticeKind::FolderTrust);
+    // An older yaacd's configuration has no switch: absent stays absent (the switch is on).
+    let older = json!({ "id": "pi_codex", "kind": "codex", "enabled": true, "backend": "auto", "implicit": true });
+    let cfg: ProviderInstanceConfig = serde_json::from_value(older).unwrap();
+    assert_eq!(cfg.trust_folders, None);
+    assert!(serde_json::to_value(&cfg).unwrap().get("trustFolders").is_none());
+    let off: ProviderInstanceConfig = serde_json::from_value(json!({ "id": "pi_codex", "kind": "codex", "enabled": true, "backend": "auto", "trustFolders": false })).unwrap();
+    assert_eq!(off.trust_folders, Some(false));
+    assert_eq!(serde_json::from_value::<ProviderInstanceConfig>(serde_json::to_value(&off).unwrap()).unwrap(), off);
+    let patch: ProviderInstanceUpdateParams = serde_json::from_value(json!({ "opId": "op_1", "id": "pi_codex", "trustFolders": false })).unwrap();
+    assert_eq!(patch.trust_folders, Some(false));
+    assert!(patch.enabled.is_none() && patch.name.is_none(), "a patch changes only what it names");
+}

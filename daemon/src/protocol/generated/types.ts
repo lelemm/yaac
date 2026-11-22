@@ -183,7 +183,7 @@ export type BackendPreference = "auto" | "daemon" | "sdk";
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
+export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -2257,7 +2257,7 @@ export interface NoticeItem {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered" | "stopped" | "takenOver" | "moved";
+export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered" | "stopped" | "takenOver" | "moved" | "folderTrust";
 
 /**
  * A client-generated operation id. Every state-changing request carries one; re-sending
@@ -2768,6 +2768,12 @@ export interface ProviderInstanceConfig {
    * Optional user-given name.
    */
   name?: string | null;
+  /**
+   * "Trust folders YAAC works in" (D147): under the `folderTrust` capability, mark the
+   * folder of a thread YAAC starts in a user's project as trusted in the harness. Absent:
+   * on.
+   */
+  trustFolders?: boolean | null;
 }
 
 /**
@@ -2837,6 +2843,10 @@ export interface ProviderInstanceUpdateParams {
    * Operation id.
    */
   opId: OpId;
+  /**
+   * New "Trust folders YAAC works in" switch (D147).
+   */
+  trustFolders?: boolean | null;
 }
 
 /**
