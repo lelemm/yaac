@@ -22,7 +22,8 @@ a per-chat agents toggle with a permission prompt are added.
   nothing. Things are told apart by **space** first, then by a **faint fill**, and by a line
   only where two regions genuinely meet. Concretely:
   - **Text and prose have no box.** Agent prose sits directly on the window background. A user
-    message is set apart by a faint fill and space — no outline.
+    message is set apart by its own fill (a cool neutral, stronger than the faint fill — D155),
+    by sitting at the right of the column, and by space — no outline.
   - **Collapsed reasoning and tool lines are plain lines of text** with a small mark, not
     boxed rows.
   - **Selectors are text with a chevron** — `gpt-6.2-sol ▾` — with no outline and no fill until
@@ -66,7 +67,9 @@ a per-chat agents toggle with a permission prompt are added.
 | Window background | `#16181D` | `#FFFFFF` |
 | Sidebar / panel background | `#1B1E24` | `#F5F6F8` |
 | Raised surface (request cards, menus, dialogs) | `#22262E` | `#F7F8FA` |
-| Faint fill (user message, input, code, hover) | `#1E2128` | `#F3F4F7` |
+| Faint fill (input, code, hover, a spawned thread's task) | `#1E2128` | `#F3F4F7` |
+| **User's message bubble** (D155) | `#2D333E` | `#E3E7EE` |
+| Selected text (a step stronger, so it shows on the bubble) | `#3D4451` | `#CBD0D9` |
 | Hairline between regions (the only border) | `#2E333D` | `#DADDE3` |
 | Primary text | `#E6E8EC` | `#1A1D23` |
 | Secondary text | `#9AA2AF` | `#5B6472` |
@@ -97,7 +100,10 @@ tint, 3.6 : 1 on the panel, 3.9 : 1 on white; dark `#6495ED`: 4.6 : 1 or more). 
 yellow (D125: the fast-mode toggle when on, and the spinner of a turn running in fast mode) is
 a graphic too, measured at the 87% icon opacity it is drawn with: light `#9A7000` at least
 3.0 : 1 (3.0 on the selected tint, 3.3 on the panel, 3.55 on white; 3.65–4.5 at full opacity),
-dark `#F5C518` 6.7 : 1 or more.
+dark `#F5C518` 6.7 : 1 or more. The **user's bubble** is a fill, not text: 1.40 : 1 (dark) and
+1.24 : 1 (light) against the window, where the faint fill is 1.10; primary text on it measures
+10.4 and 13.6 : 1, secondary text 4.93 and 4.82 : 1, and selected text still stands apart from
+it (1.30 and 1.25 : 1).
 
 - **Anything the user must read is primary or secondary text** — including the *reason* a
   control is unavailable ("not signed in on local", "Native fork is only available within the
@@ -347,6 +353,16 @@ and activity is quiet.**
 - **In a thread an agent started**, the message that set its task is that thread's prompt, and
   is shown in full where a user message would be — labelled *From* the agent that sent it —
   because it is what this agent is answering. Everything after it follows the rules above.
+
+- **A finished turn folds** (D156): once the agent's turn ends, its work becomes one quiet line
+  — `Worked for 26s ›`, `· interrupted`, `· failed` in the failed colour with the error under
+  it — and the final message is shown in full beneath. The line opens the work again; nothing
+  waiting on the user is ever behind it, and the changed-files line stays under the answer.
+- **Times on hover** (D154): a message's time appears under it, small and secondary, in a line
+  that is always kept free — the user's at the right under the bubble, the agent's at the left.
+- **The timeline** (D153): at the transcript's left edge a column of short muted dashes, one per
+  prompt; those in view are longer and in the primary text colour. A dash's card names the
+  prompt and its time; clicking goes there.
 
 Who is working with whom, and how each worker is doing, is the job of the agents panel, not of
 the transcript.
@@ -654,8 +670,9 @@ everyone is, without opening five windows.*
   1. The task that started this thread, **in full**, where a user message would be, labelled
      "From **Migrate auth module — orchestrator** · Codex · local": "Migrate the billing
      service to the new auth module. Report back when it is merged."
-  2. A tight run of muted activity lines: `Thought for 9s`, `Edited 6 files`,
-     `Ran cargo test -p billing — 14 passed`.
+  2. The finished turn opened again (D156): "Worked for … ⌄", then a tight run of muted
+     activity lines: `Thought for 9s`, `Edited 6 files`, `Ran cargo test -p billing — 14 passed`.
+     Folded, only that line, the answer (3) and the changed-files line show.
   3. Agent prose, full size: "Merged to main. One flaky test was skipped."
   4. One muted activity line: `→ Migrate auth module — orchestrator · delivered`
 - Composer enabled: "Message Claude…" — the user can continue a worker by hand.
@@ -1402,7 +1419,8 @@ the list.*
 - The agent's answer as prose.
 - The next bubble holds only a chip in monospace on the raised fill, **/model opus-5.5**, and
   **› Context** (the command's output).
-- Three notice lines: "Subagent schema-check reported back", "Background command "cargo test
+- Under "Worked ⌄" (that finished turn opened again, D156), three notice lines: "Subagent
+  schema-check reported back", "Background command "cargo test
   -p users" completed (exit code 0)", "2 background shell commands didn't finish before the
   previous session ended" — no tags, no line breaks drawn as boxes.
 
@@ -1465,3 +1483,38 @@ the list.*
   markdown table drawn as a grid — the header **Check · Result** in bold with a hairline under
   it, then one row per line; a long cell wraps within its column. No boxes, no stripes. Each
   cell is selectable and copied as its own part.
+
+### 100 — The timeline beside a long thread
+
+- **Try the new parser**: three weeks of prompts about a TOML parser, scrolled to the middle.
+  At the transcript's left edge, a column of ~33 short muted dashes; the four or five standing
+  for the prompts in view are longer and in the primary text colour. One dash is hovered: a
+  small raised card beside it reads "Actually, revert that rename." with "4 Nov, 21:00" under
+  it in secondary text. In view, finished turns folded into "Worked for 3m 34s ›" lines, one
+  "Worked for 21s · interrupted ›" with no answer under it, and the user's messages in their
+  right-aligned bubbles. "Jump to bottom (Ctrl+End)" floats above the composer.
+
+### 101 — Finished turns, folded
+
+- The same thread at its end: each prompt, a quiet "Worked for 2m 41s ›" line under it, and the
+  agent's final answer in full. The reasoning, the commands and the interim messages of each
+  turn are behind its line. The newest dashes of the timeline are lit.
+
+### 102 — A finished turn opened again
+
+- As 101 with "Check the benchmark again after the rebase." opened: the line reads "Worked for
+  3m 18s" with its chevron turned down, and under it the turn's work as it was while it ran —
+  "Thought for 3s", "Ran cargo test -p toml-next", the interim "Tests pass; checking the
+  samples next.", "Ran ./scripts/samples.sh" — then the final answer.
+
+### 103 — A message's time, on hover
+
+- As 101 with the pointer on "Check the benchmark again after the rebase.": "14:46" appears in
+  small secondary text under the bubble's right edge, in the line kept free for it; nothing
+  else moves. An agent message's time appears the same way at its left.
+
+### 104 — A turn that failed
+
+- Scrolled to "Run clippy on the whole crate.": under it "Worked for 3m 5s · failed ›" in the
+  failed colour, and the error "The model is overloaded. Try again in a moment." beneath it,
+  visible without opening the turn. No answer follows; the next prompt does.
