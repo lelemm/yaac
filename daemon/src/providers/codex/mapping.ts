@@ -119,6 +119,7 @@ export function threadInfo(t: Thread, archived: boolean, status?: SubagentStatus
   if (spawn) {
     info.parent = spawn.parent;
     info.subagent = {
+      agentId: t.id,
       ...(spawn.role ?? t.agentRole ? { agentType: (spawn.role ?? t.agentRole)! } : {}),
       status: status ?? subagentStatusOf(t.status),
       readOnly: CODEX_SUBAGENT_READ_ONLY,

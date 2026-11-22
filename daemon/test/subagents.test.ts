@@ -33,6 +33,7 @@ test("sub-agents: one started in a turn appears at once under its parent, runnin
   const first = await until(() => updates().find((s: any) => s.subagent && s.title === "Map the parser" && s.subagent.status === "running"), "the running sub-agent");
   assert.match(first.spawnedBy, new RegExp(`/${threadId}$`), "its parent is spawnedBy");
   assert.equal(first.subagent.agentType, "Explore");
+  assert.equal(first.subagent.agentId, first.nativeId.split(":").pop());
   assert.equal(first.subagent.readOnly, SUBAGENT_READ_ONLY);
   assert.equal(first.control, "external", "held by the agent that started it");
   assert.equal(first.state, "running");

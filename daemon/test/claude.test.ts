@@ -1029,6 +1029,7 @@ test("subagents: listed under their session from listSubagents and the sidecar; 
     ],
   );
   assert.match(kids[0]!.subagent!.readOnly!, /SendMessage/);
+  assert.deepEqual(kids.map((k) => k.subagent!.agentId), fx.agents, "the agent id the Agent tool reports");
   assert.equal(kids[0]!.model, "stub-plain");
   assert.ok(r.provider.options && (await r.provider.probe()).capabilities.includes("subagentThreads"));
 

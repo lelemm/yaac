@@ -960,6 +960,7 @@ test("codex: sub-agent threads are listed with their parent, outside the max", a
     assert.equal(kid.parent, PARENT_ID);
     assert.equal(kid.title, "Kepler", "the nickname, when it has no name");
     assert.equal(kid.subagent!.agentType, "explorer");
+    assert.equal(kid.subagent!.agentId, CHILD_ID, "what the parent's collab calls name it by");
     assert.equal(kid.subagent!.status, "completed");
     assert.match(kid.subagent!.readOnly!, /only writer/);
     assert.equal(top.parent, undefined);

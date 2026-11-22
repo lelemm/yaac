@@ -421,9 +421,9 @@ impl Fleet {
         let (explore, schema) = (k(SUB_EXPLORE), k(SUB_SCHEMA));
         self.add(&explore, "Map the reindex script", "claude", "opus-5.5", ("search", "main"), ThreadState::Running, -15);
         self.add(&schema, "Check the index schema", "claude", "opus-5.5", ("search", "main"), ThreadState::Done, -4 * 60);
-        for (key, agent_type, status, preview) in [
-            (&explore, "Explore", SubagentStatus::Running, "reading scripts/reindex.sh"),
-            (&schema, "general-purpose", SubagentStatus::Completed, "The v2 schema matches; one index is new."),
+        for (key, agent_id, agent_type, status, preview) in [
+            (&explore, "a7e1c0de5b2f4a913", "Explore", SubagentStatus::Running, "reading scripts/reindex.sh"),
+            (&schema, "a3d9b8c7e6f5a4b21", "general-purpose", SubagentStatus::Completed, "The v2 schema matches; one index is new."),
         ] {
             let parent = parent.clone();
             self.set(key, |s| {
@@ -432,7 +432,7 @@ impl Fleet {
                 s.control = Control::External;
                 s.control_holder = Some("the agent that started it".into());
                 s.preview = preview.into();
-                s.subagent = Some(HarnessSubagent { agent_type: Some(agent_type.into()), status, read_only: Some(SUBAGENT_READ_ONLY.into()) });
+                s.subagent = Some(HarnessSubagent { agent_id: Some(agent_id.into()), agent_type: Some(agent_type.into()), status, read_only: Some(SUBAGENT_READ_ONLY.into()) });
             });
             if let Some(t) = self.threads.get_mut(key) {
                 t.control = Control::External;

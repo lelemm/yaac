@@ -1166,6 +1166,11 @@ export type HandoverWhen = "idle" | "now";
  */
 export interface HarnessSubagent {
   /**
+   * The harness's own id for this agent, as its parent's tools name it (`AgentRef.agentId`):
+   * Claude Code's agent id, the Codex sub-agent's thread id. Opaque; for matching only.
+   */
+  agentId?: string | null;
+  /**
    * The agent type or role the harness gave it ("general-purpose", "explorer"). Display
    * only, never branched on.
    */

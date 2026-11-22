@@ -647,7 +647,7 @@ export class ClaudeProvider implements HarnessProvider {
       originKind: "programmatic",
       archived: parent.archived ?? false,
       parent: parent.native,
-      subagent: { ...(agentType ? { agentType } : {}), status, readOnly: CLAUDE_SUBAGENT_READ_ONLY },
+      subagent: { agentId, ...(agentType ? { agentType } : {}), status, readOnly: CLAUDE_SUBAGENT_READ_ONLY },
     };
   }
 

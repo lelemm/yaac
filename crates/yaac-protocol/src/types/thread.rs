@@ -189,6 +189,10 @@ open_enum! {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessSubagent {
+    /// The harness's own id for this agent, as its parent's tools name it (`AgentRef.agentId`):
+    /// Claude Code's agent id, the Codex sub-agent's thread id. Opaque; for matching only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     /// The agent type or role the harness gave it ("general-purpose", "explorer"). Display
     /// only, never branched on.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -448,11 +448,12 @@ fn a_harness_subagent_round_trips_and_is_optional() {
         "id": "t2", "instance": "pi_1", "title": "Explore the parser", "cwd": "/srv/api", "state": "running",
         "control": "external", "originKind": "programmatic", "createdAt": "2026-11-22T00:00:00Z",
         "updatedAt": "2026-11-22T00:00:00Z", "spawnedBy": "tg_1/t1",
-        "subagent": { "agentType": "Explore", "status": "running", "readOnly": "Only the agent that started it can continue it." }
+        "subagent": { "agentId": "a1f0c2d3e4b5a6978", "agentType": "Explore", "status": "running", "readOnly": "Only the agent that started it can continue it." }
     });
     let s: ThreadSummary = serde_json::from_value(summary.clone()).unwrap();
     let sub = s.subagent.clone().expect("subagent");
     assert_eq!(sub.agent_type.as_deref(), Some("Explore"));
+    assert_eq!(sub.agent_id.as_deref(), Some("a1f0c2d3e4b5a6978"));
     assert_eq!(sub.status, SubagentStatus::Running);
     assert!(sub.read_only.is_some());
     assert_eq!(serde_json::from_value::<ThreadSummary>(serde_json::to_value(&s).unwrap()).unwrap(), s);

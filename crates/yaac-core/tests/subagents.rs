@@ -45,6 +45,15 @@ fn subagents_are_workers_of_their_parent_beside_its_yaac_worker() {
 }
 
 #[test]
+fn an_agent_call_pill_finds_the_subagent_by_its_harness_agent_id() {
+    let c = with_subagents();
+    let found = yaac_core::agentcall::resolve_subagent(&c.state, &threads::search(), "a7e1c0de5b2f4a913");
+    assert_eq!(found, Some(threads::subagent_explore()));
+    // Only beneath its own parent.
+    assert_eq!(yaac_core::agentcall::resolve_subagent(&c.state, &threads::orchestrator(), "a7e1c0de5b2f4a913"), None);
+}
+
+#[test]
 fn subagents_are_not_sidebar_rows_while_their_parent_is_listed() {
     let c = with_subagents();
     let map = AttentionMap::compute(&c.state);

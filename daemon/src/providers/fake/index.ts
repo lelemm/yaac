@@ -1086,7 +1086,7 @@ export class FakeProvider implements HarnessProvider {
     const at = new Date(Date.now() - (opts.daysOld ?? 0) * 86_400_000).toISOString();
     const title = opts.title ?? "A stored sub-agent";
     this.store.threads[native] = {
-      info: { native, title, preview: title, cwd: this.thread(parent).info.cwd, createdAt: at, updatedAt: at, originKind: "programmatic", parent, subagent: this.subagentInfo(opts.agentType ?? "general-purpose", opts.status ?? "completed") },
+      info: { native, title, preview: title, cwd: this.thread(parent).info.cwd, createdAt: at, updatedAt: at, originKind: "programmatic", parent, subagent: this.subagentInfo(native, opts.agentType ?? "general-purpose", opts.status ?? "completed") },
       items: [
         { id: `${native}-u1`, turnId: "sub-t1", status: "completed", kind: "userMessage", parts: [{ type: "text", text: title }] },
         { id: `${native}-a1`, turnId: "sub-t1", status: "completed", kind: "agentMessage", text: opts.reply ?? "Done." },
@@ -1099,8 +1099,10 @@ export class FakeProvider implements HarnessProvider {
     return native;
   }
 
-  private subagentInfo(agentType: string, status: SubagentStatus): HarnessSubagent {
-    return { agentType, status, readOnly: SUBAGENT_READ_ONLY };
+  /** A fake sub-agent's description; its agent id is the part of its native id after the parent's (`agent-N`). */
+  private subagentInfo(native: NativeId, agentType: string, status: SubagentStatus): HarnessSubagent {
+    return { agentId: native.slice(native.lastIndexOf(":") + 1), agentType, status, readOnly: SUBAGENT_READ_ONLY };
+
   }
 
   /**
@@ -1120,7 +1122,7 @@ export class FakeProvider implements HarnessProvider {
       updatedAt: now,
       originKind: "programmatic",
       parent,
-      subagent: this.subagentInfo(step.agentType, "running"),
+      subagent: this.subagentInfo(native, step.agentType, "running"),
     };
     this.store.threads[native] = { info, items: [], turns: 1, settings: { model: "fake-small" }, turnLog: ["sub-t1"] };
     this.save();
@@ -1139,7 +1141,7 @@ export class FakeProvider implements HarnessProvider {
     } finally {
       const end = this.store.threads[native];
       if (end) {
-        end.info.subagent = this.subagentInfo(step.agentType, status === "completed" ? "completed" : status === "failed" ? "failed" : "stopped");
+        end.info.subagent = this.subagentInfo(native, step.agentType, status === "completed" ? "completed" : status === "failed" ? "failed" : "stopped");
         end.info.updatedAt = nowIso();
         this.save();
         this.emit({ type: "turnCompleted", thread: native, turnId, status, ...(step.fail ? { error: "the sub-agent failed" } : {}), at: nowIso() });

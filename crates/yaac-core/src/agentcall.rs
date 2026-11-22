@@ -114,7 +114,11 @@ pub fn resolve_subagent(state: &AppState, caller: &ThreadKey, agent_id: &str) ->
     state.threads.iter().find_map(|(k, rec)| {
         let s = &rec.summary;
         let beneath = s.spawned_by.as_ref() == Some(&parent);
-        let same = s.native_id.as_deref() == Some(agent_id) || k.thread.as_str() == agent_id;
+        // The harness's id for the agent as yaacd reports it (`subagent.agentId`), else its
+        // conversation id (a Codex sub-agent's thread id is both).
+        let same = s.subagent.as_ref().and_then(|sub| sub.agent_id.as_deref()) == Some(agent_id)
+            || s.native_id.as_deref() == Some(agent_id)
+            || k.thread.as_str() == agent_id;
         (beneath && same).then(|| k.clone())
     })
 }
