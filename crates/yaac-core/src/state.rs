@@ -324,6 +324,8 @@ pub struct AppState {
     pub prs: crate::pr::PrStore,
     /// The Create PR modal (D120), while open.
     pub create_pr: Option<crate::pr::CreatePr>,
+    /// Plan rate limits of every account on any target (D161), from the hub.
+    pub rate_limits: crate::limits::Accounts,
     stamp: u64,
 }
 

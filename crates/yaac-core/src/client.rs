@@ -138,6 +138,8 @@ enum Call {
     UploadList,
     /// `hub/drafts/list` after attaching.
     DraftsList,
+    /// `hub/rateLimits/get` (D161).
+    RateLimits,
     /// A `hub/ssh/*` step: the answer goes to the setup backend under this id.
     Ssh(RpcId),
     /// `hub/ssh/records`.
@@ -156,6 +158,7 @@ enum Call {
 }
 
 mod forge;
+mod limits;
 mod ssh;
 mod uploads;
 mod wsl;
@@ -362,6 +365,7 @@ impl Client {
                     self.set_showing(keys);
                 }
                 self.request(crate::attachments::names::DRAFTS_LIST, json!({}), Call::DraftsList);
+                self.load_rate_limits();
                 self.load_ssh_records();
                 let ids: Vec<(TargetId, bool)> =
                     hello.targets.iter().map(|t| (t.id.clone(), t.state.status == attach::ConnectionStatus::Connected)).collect();
@@ -528,6 +532,7 @@ impl Client {
             Call::BlobEnd { draft, id } => self.on_blob_ended(&draft, id, &result),
             Call::UploadList => self.on_upload_list(&result),
             Call::DraftsList => self.on_drafts_list(&result),
+            Call::RateLimits => self.on_rate_limits(result),
             Call::ThreadStart { draft } => {
                 let Some(thread_id) = result.get("threadId").and_then(Value::as_str).map(ThreadId::new) else { return };
                 let key = ThreadKey::new(draft.target.clone(), thread_id.clone());
@@ -749,6 +754,7 @@ impl Client {
                 self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
             }
             hub_names::SSH_CHANGED => self.load_ssh_records(),
+            attach::names::RATE_LIMITS_CHANGED => self.on_rate_limits(params),
             hub_names::TARGETS_CHANGED => {
                 if let Ok(r) = serde_json::from_value::<attach::TargetsListResult>(params) {
                     self.state.set_targets(r.targets);

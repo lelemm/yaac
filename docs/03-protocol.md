@@ -175,6 +175,25 @@ badge.
 
 The forge kind is data for display; the window branches only on the capabilities.
 
+### Rate limits
+
+D161: the plan rate limits of the account each provider instance runs as, for the panel at the
+bottom of the sidebar. Reported by instances with the `rateLimits` capability, from the
+harness's own account surface ([04](04-providers.md#rate-limits)). Additive: the hub asks only
+targets whose provider list has the capability.
+
+| Method / notification | Purpose |
+| --- | --- |
+| `provider/rateLimits` | `{ refresh? }` → `{ instances: [{ instance, kind, account?, windows, at }] }`. `account` is `{ key, label?, email? }`: `key` is opaque and the same for the same account on every target (a digest, never the harness's identifiers); `label` is the plan as the harness names it; `email` is for the tooltip only. A window is `{ id, label, scope?, usedPercent, resetsAt?, windowMinutes? }` — `usedPercent` in whole percent (0–100), `scope` the model or surface a scoped window counts. Answered from each instance's last report; `refresh` reads the harnesses again, at most every five minutes per instance. |
+| → `provider/rateLimits/updated` | One instance's report changed (a harness notification or stream event, or a refresh); one entry of the result above. |
+
+The window gets them from the hub, grouped by account (invariant 14): `hub/rateLimits/get
+{ refresh? }` → `{ accounts: [{ key, kind, label?, email?, windows, at, targets, stale }] }`,
+and `hub/rateLimits/changed` with the same shape. The same account on two targets is one entry
+with the newest report's windows; `targets` lists every target that reported it; `stale` means
+no connected target reports it now (the values are the last known, kept across hub restarts).
+`refresh` asks each connected target again, at most every five minutes per target.
+
 ### Filesystem (read-only, for pickers)
 
 | Method | Purpose |

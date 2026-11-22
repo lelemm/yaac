@@ -62,8 +62,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         y += 30.0;
     }
     y += 4.0;
-    // The list, scrolled by the wheel.
-    let footer = 40.0;
+    // The rate limits' tiny form (D161), above Settings.
+    let footer = 40.0 + crate::limits_ui::strip(ui, app, now, cx, side.bottom() - 40.0);
     let list = Rect::from_min_max(pos2(side.left(), y), pos2(side.right(), side.bottom() - footer));
     let open = Open { muted: app.ui.muted_open, archived: app.ui.archived_open };
     let secs = sections(&app.client.state, map, app.ui.grouping, app.ui.ordering, "", open, now, app.zone);

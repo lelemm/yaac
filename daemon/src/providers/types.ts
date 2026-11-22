@@ -38,6 +38,7 @@ import type {
   MeshPermissionRequest,
 } from "../protocol/generated/types.js";
 import type { EventSource } from "../util/emitter.js";
+import type { RateLimitReport } from "./ratelimits.js";
 
 /** Whatever the harness uses to resume that exact conversation (Codex: `Thread.id`). */
 export type NativeId = string;
@@ -344,7 +345,9 @@ export type ProviderEvent =
   /** The harness positively reports a conversation gone. */
   | { type: "threadRemoved"; thread: NativeId }
   /** Anything in the descriptor changed (models, sign-in, …): yaacd re-probes. */
-  | { type: "descriptorChanged" };
+  | { type: "descriptorChanged" }
+  /** The account or its rate-limit windows changed (`rateLimits`, D161). */
+  | { type: "rateLimitsChanged"; report: RateLimitReport };
 
 /** What a provider implements inside yaacd. */
 export interface HarnessProvider {
@@ -403,6 +406,12 @@ export interface HarnessProvider {
    * implements it declares the `meshTools` capability once attached.
    */
   attachMesh?(hooks: MeshHooks | null): void;
+  /**
+   * The account this instance runs as and its rate-limit windows (`rateLimits`, D161), as last
+   * reported by the harness; null before anything was. `refresh`: read the harness again when
+   * the provider's own interval allows (yaacd already holds five minutes between asks).
+   */
+  rateLimits?(opts: { refresh: boolean }): Promise<RateLimitReport | null>;
 
   readonly events: EventSource<ProviderEvent>;
   dispose(): Promise<void>;

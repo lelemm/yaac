@@ -48,6 +48,8 @@ import type {
 import { connectBackend, planEndpoint, realExec, type EndpointPlan, type Exec } from "./backend.js";
 import { collabStatus, fastTier, subagentStatusOf, mapItem, mapModel, mapServerRequest, planState, threadInfo, tokenUsage, turnStatus, usageDelta, type MappedRequest } from "./mapping.js";
 import { CodexConnection, CodexRpcError, type ServerRequest } from "./rpc.js";
+import { CodexRateLimits, type CodexAccountResponse, type CodexRateLimitSnapshot, type CodexRateLimitsResponse } from "./ratelimits.js";
+import type { RateLimitReport } from "../ratelimits.js";
 import {
   THREAD_SOURCE_KINDS,
   type GetAccountResponse,
@@ -281,6 +283,8 @@ export class CodexProvider implements HarnessProvider {
   private disposed = false;
   private readonly stateFile: string;
   private persisted: PersistedState;
+  /** The account and its rate-limit windows (D161). */
+  private readonly limits = new CodexRateLimits((report) => this.emit({ type: "rateLimitsChanged", report }));
 
   constructor(
     private readonly ctx: ProviderContext,
@@ -579,6 +583,8 @@ export class CodexProvider implements HarnessProvider {
     let statusMessage: string | null = null;
     try {
       const acc = (await conn.request("account/read", {})) as GetAccountResponse;
+      this.limits.setAccount(acc as CodexAccountResponse);
+      if (acc.account) void this.readRateLimits(conn);
       if (acc.account) {
         const a = acc.account as { type: string; email?: string | null };
         account = a.email ?? a.type;
@@ -627,6 +633,8 @@ export class CodexProvider implements HarnessProvider {
       "threadMoveWorkingDirectory",
       // `config/read` and `config/value/write` keep `projects."<folder>".trust_level` (D147, codex-cli 0.170.0).
       "folderTrust",
+      // `account/rateLimits/read` and `account/rateLimits/updated` (D161, codex-cli 0.170.0).
+      "rateLimits",
     ];
     if (models.some((m) => m.capabilities?.some((c) => c.capability === "imageInput" && c.support !== "unsupported"))) caps.push("imageInput");
     if (this.meshAttached) caps.push("meshTools");
@@ -643,6 +651,20 @@ export class CodexProvider implements HarnessProvider {
       modes: CODEX_MODES.map(modeInfo),
       ...(this.backendOrigin ? { backendOrigin: this.backendOrigin } : {}),
     };
+  }
+
+  /** Reads the rate limits once (a background read: no reset-credit details). Failures are logged and dropped. */
+  private async readRateLimits(conn: CodexConnection): Promise<void> {
+    try {
+      this.limits.applyRead((await conn.request("account/rateLimits/read", { excludeResetCreditDetails: true }, 30_000)) as CodexRateLimitsResponse);
+    } catch (e) {
+      this.ctx.log(`could not read the Codex rate limits: ${(e as Error).message}`);
+    }
+  }
+
+  async rateLimits(opts: { refresh: boolean }): Promise<RateLimitReport | null> {
+    if (opts.refresh && this.conn?.isOpen && this.authMode) await this.readRateLimits(this.conn);
+    return this.limits.report();
   }
 
   private failed(status: ProbeResult["status"], message: string): ProbeResult {
@@ -1287,6 +1309,9 @@ export class CodexProvider implements HarnessProvider {
         }
         return;
       }
+      case "account/rateLimits/updated":
+        this.limits.applyUpdate(p as { rateLimits?: CodexRateLimitSnapshot | null });
+        return;
       case "account/updated": {
         // Sign-in changed since the last probe: yaacd re-probes.
         const mode = typeof p.authMode === "string" ? p.authMode.toLowerCase() : null;

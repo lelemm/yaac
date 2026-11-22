@@ -434,6 +434,12 @@ catalogue! {
         /// One pull request in full: description, reviewers, checks.
         ForgePrGet = "forge/pr/get" as FORGE_PR_GET:
             t::ForgePrGetParams => t::ForgePrGetResult, HostToDaemon, request Control, response Control;
+
+        // ── Rate limits (D161) ─────────────────────────────────────────────────────────
+        /// Each `rateLimits` instance's account and usage windows, as last reported; `refresh`
+        /// reads the harness again (at most every five minutes per instance).
+        ProviderRateLimits = "provider/rateLimits" as PROVIDER_RATE_LIMITS:
+            t::ProviderRateLimitsParams => t::ProviderRateLimitsResult, HostToDaemon, request Control, response Control;
     }
     notifications {
         /// An instance's descriptor changed.
@@ -460,6 +466,9 @@ catalogue! {
         /// A branch's pull requests changed (or were asked again after a push or commit).
         ForgePrsChanged = "forge/prs/changed" as FORGE_PRS_CHANGED:
             t::ForgePrsResult, DaemonToHost, Control;
+        /// An instance's account or rate-limit windows changed (D161).
+        ProviderRateLimitsUpdated = "provider/rateLimits/updated" as PROVIDER_RATE_LIMITS_UPDATED:
+            t::InstanceRateLimits, DaemonToHost, Control;
     }
 }
 

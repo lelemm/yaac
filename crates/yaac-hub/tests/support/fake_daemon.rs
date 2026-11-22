@@ -85,6 +85,11 @@ struct State {
     lookups: Vec<String>,
     caps: Option<yaac_protocol::DiscoveryCaps>,
     keeps: Vec<Vec<ThreadId>>,
+    /// `provider/list`'s providers (default: none).
+    providers: Vec<Value>,
+    /// `provider/rateLimits`'s instances, and the `refresh` of each ask.
+    rate_limits: Vec<Value>,
+    rate_limit_asks: Vec<bool>,
 }
 
 /// A fake daemon. Cheap to clone; clones share state.
@@ -299,6 +304,21 @@ impl FakeDaemon {
         self.lock().projects = projects;
     }
 
+    /// What `provider/list` answers.
+    pub fn set_providers(&self, providers: Vec<Value>) {
+        self.lock().providers = providers;
+    }
+
+    /// What `provider/rateLimits` answers.
+    pub fn set_rate_limits(&self, instances: Vec<Value>) {
+        self.lock().rate_limits = instances;
+    }
+
+    /// The `refresh` flag of each `provider/rateLimits` asked.
+    pub fn rate_limit_asks(&self) -> Vec<bool> {
+        self.lock().rate_limit_asks.clone()
+    }
+
     /// Sends `project/updated` on every connection.
     pub fn originate_projects_updated(&self) {
         let s = self.lock();
@@ -501,7 +521,11 @@ impl FakeDaemon {
                 Ok(serde_json::to_value(result).unwrap())
             }
             names::PING => Ok(json!({})),
-            names::PROVIDER_LIST => Ok(json!({ "providers": [] })),
+            names::PROVIDER_LIST => Ok(json!({ "providers": s.providers })),
+            names::PROVIDER_RATE_LIMITS => {
+                s.rate_limit_asks.push(params["refresh"].as_bool().unwrap_or(false));
+                Ok(json!({ "instances": s.rate_limits }))
+            }
             names::THREAD_SYNC => {
                 let changed: Vec<ThreadSummary> = s.threads.values().map(|t| t.summary.clone()).collect();
                 let result = ThreadSyncResult {

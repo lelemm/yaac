@@ -2,6 +2,7 @@
 //! window, and the routing between them. Everything that can block runs on the store worker;
 //! the core never waits for it — finished jobs come back as [`CoreEvent`]s.
 
+mod limits;
 mod ssh;
 mod uploads;
 
@@ -173,6 +174,8 @@ enum Pending {
     UploadCancel { handle: String },
     /// `daemon/handover`; **Update now** answers the window that asked.
     Handover { reply: Option<(ClientKey, RpcId)> },
+    /// `provider/rateLimits` (D161).
+    RateLimits,
     Ignore,
 }
 
@@ -402,6 +405,8 @@ pub(crate) struct Core {
     ssh: ssh::SshState,
     /// Hand-overs asked of older daemons, per target ([`Handover`]).
     handovers: HashMap<TargetId, Handover>,
+    /// Rate limits of every account on every target (D161).
+    limits: limits::LimitsState,
     pub(crate) exit: Option<ExitReason>,
 }
 
@@ -448,6 +453,8 @@ pub(crate) struct Loaded {
     pub(crate) kept: Vec<(TargetId, ThreadId)>,
     /// Threads marked unseen in the view store.
     pub(crate) unseen: Vec<(TargetId, ThreadId)>,
+    /// The last rate limits of every account (D161).
+    pub(crate) rate_limits: crate::limits::RateLimitBook,
 }
 
 impl Core {
@@ -491,6 +498,7 @@ impl Core {
             starts: HashMap::new(),
             ssh: ssh::SshState::default(),
             handovers: HashMap::new(),
+            limits: limits::LimitsState::new(loaded.rate_limits),
             exit: None,
         };
         for (target, thread) in loaded.kept {
@@ -671,6 +679,7 @@ impl Core {
         }
         match method {
             attach::names::TARGETS_LIST => Some(Ok(to_value(&TargetsListResult { targets: self.entries() }))),
+            attach::names::RATE_LIMITS_GET => Some(parse(params).and_then(|p| self.limits_get(&p))),
             attach::names::TARGETS_ADD => Some(parse(params).and_then(|p| self.targets_add(p))),
             attach::names::TARGETS_UPDATE => Some(parse(params).and_then(|p| self.targets_update(p))),
             attach::names::TARGETS_REMOVE => Some(parse(params).and_then(|p| self.targets_remove(&p))),
@@ -1001,6 +1010,7 @@ impl Core {
         let Some(t) = self.targets.get(id) else { return };
         let params = to_value(&TargetStateParams { id: id.clone(), state: new.clone(), enabled: t.def.enabled });
         self.notify_all(attach::names::TARGET_STATE, params);
+        self.limits_presence(id);
         let target = id.clone();
         self.worker.submit(move |stores| stores.cache.put_target(&target, None, &new).err().map(|e| CoreEvent::StoreError(e.to_string())));
     }
@@ -1288,6 +1298,7 @@ impl Core {
         self.tokens.remove(&id);
         self.steps.remove(&id);
         self.kept.remove(&id);
+        self.limits_forget(&id);
         self.worker.submit(move |stores| {
             if let Err(e) = stores.cache.remove_target(&id) {
                 return Some(CoreEvent::StoreError(e.to_string()));
@@ -1705,6 +1716,7 @@ impl Core {
                         conn.session.fold_capabilities(&mut p.capabilities);
                     }
                 }
+                self.limits_providers(id, &providers);
                 let target = id.clone();
                 self.worker.submit(move |s| match s.cache.replace_providers(&target, &providers) {
                     Ok(()) => Some(CoreEvent::Broadcast(Message::notification(ext::names::PROVIDERS_CHANGED, json!({ "target": target })))),
@@ -1740,6 +1752,7 @@ impl Core {
                 self.lookup_answered(lookup, id, found);
             }
             Pending::Handover { reply } => self.on_handover_answer(id, reply, outcome),
+            Pending::RateLimits => self.limits_answered(id, outcome),
             Pending::Deliver { message_id } => self.on_delivered(id, message_id, outcome),
             Pending::UploadBegin { handle } => self.on_upload_begun(id, &handle, outcome),
             Pending::UploadEnd { handle } => self.on_upload_ended(id, &handle, outcome),
@@ -1840,6 +1853,7 @@ impl Core {
                 });
             }
             Inbound::StreamCredit(_) => {}
+            Inbound::Other { method, params } if method == names::PROVIDER_RATE_LIMITS_UPDATED => self.limits_updated(id, params),
             Inbound::Other { method, params } if method == names::DISCOVERY_UPDATED => {
                 if let Ok(p) = serde_json::from_value::<yaac_protocol::DiscoveryCapsResult>(params.clone()) {
                     self.store_discovery(id, p.caps);

@@ -24,6 +24,7 @@ import { Mesh, type MeshOptions } from "../mesh/mesh.js";
 import { serveBridge, sniffBridge } from "../mesh/mcp.js";
 import { Forge, type ForgeOptions } from "../forge/forge.js";
 import { PrTools } from "../forge/pr-tools.js";
+import { RateLimits } from "./ratelimits.js";
 
 /** The on-disk state format. Separate from the protocol version and the build. */
 export const STATE_FORMAT = 1;
@@ -86,6 +87,7 @@ export class Daemon implements FrozenCoreHost {
   readonly mesh: Mesh;
   /** Pull requests (D119–D121). */
   readonly forge: Forge;
+  readonly rateLimits: RateLimits;
   readonly socketPath: string;
   /** Extra request handlers by method name (for later packages, e.g. the mesh). */
   readonly extraMethods = new Map<string, MethodHandler>();
@@ -138,6 +140,9 @@ export class Daemon implements FrozenCoreHost {
     this.forge = new Forge(this.core, { home: config.home, env: config.env, targetName: () => this.mesh.selfName(), log: (l) => this.log(l), ...config.forge });
     for (const [method, handler] of this.forge.methods()) this.extraMethods.set(method, handler);
     this.mesh.prTools = new PrTools(this.forge);
+    // Rate limits (D161): each instance's account and usage windows.
+    this.rateLimits = new RateLimits(this.core.registry, { broadcast: (m, p) => this.core.broadcast(m, p), log: (l) => this.log(l) });
+    for (const [method, handler] of this.rateLimits.methods()) this.extraMethods.set(method, handler);
   }
 
   /** Starts a daemon: state, providers, the thread index, and (unless `noSocket`) the socket. */
@@ -319,6 +324,7 @@ export class Daemon implements FrozenCoreHost {
       );
       this.mesh.close();
       this.forge.close();
+      this.rateLimits.close();
       await this.core.close();
       // Only a socket this process still owns: a newer daemon may already have bound the path
       // (once this one stopped answering), and its socket and pid file must stay.

@@ -165,6 +165,8 @@ pub(crate) struct UiState {
     pub pr_visible: Vec<ThreadKey>,
     /// Screenshots only: show this sidebar row's `+N` list as if hovered.
     pub pr_more_force: Option<ThreadKey>,
+    /// Screenshots only: show this account's rate-limit tooltip as if hovered (D161).
+    pub limits_tip_force: Option<String>,
     /// Focus this request card's first button on the next frame.
     pub focus_card: Option<ItemId>,
     /// Scroll the transcript to this item on the next frame.
@@ -279,6 +281,7 @@ impl UiState {
             pr_more: None,
             pr_visible: Vec::new(),
             pr_more_force: None,
+            limits_tip_force: None,
             focus_card: None,
             scroll_to: None,
             scroll_end: false,
