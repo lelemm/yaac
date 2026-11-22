@@ -31,11 +31,6 @@ pub(crate) fn plain(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>) ->
     button(ui, p, label, key, false, None)
 }
 
-/// A plain-text button in a colour.
-pub(crate) fn plain_colored(ui: &mut Ui, p: &Palette, label: &str, color: Color32) -> Response {
-    button(ui, p, label, None, false, Some(color))
-}
-
 fn button(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>, filled: bool, color: Option<Color32>) -> Response {
     button_with(ui, p, label, key, filled, color, None)
 }

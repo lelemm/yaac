@@ -290,8 +290,8 @@ pub static COMMANDS: &[CommandDef] = &[
     local(def(Cmd::ClearSelection, "clear-selection", "Clear selection", "Unselect the rows selected in the sidebar.", &["deselect", "unselect", "bulk"], G::Threads, &["Escape"]), "in the sidebar list"),
     // ── Composer and turns
     def(Cmd::FocusComposer, "focus-composer", "Focus the composer", "Put the caret in the message box.", &["type", "message", "input"], G::Composer, &["Ctrl+L"]),
-    local(def(Cmd::Send, "send", "Send / queue", "Send; while a turn runs, queue.", &["submit"], G::Composer, &["Enter"]), "in the message box"),
-    local(def(Cmd::SendNow, "send-now", "Send now", "Steer or interrupt the running turn.", &["steer", "interrupt"], G::Composer, &["Ctrl+Enter"]), "in the message box"),
+    local(def(Cmd::Send, "send", "Send / Queue message", "Send; while a turn runs, queue it for the turn's end.", &["submit", "queue"], G::Composer, &["Enter"]), "in the message box"),
+    local(def(Cmd::SendNow, "send-now", "Send now", "While a turn runs: steer it, or interrupt it and start again with the message.", &["steer", "interrupt"], G::Composer, &["Ctrl+Enter"]), "in the message box"),
     local(def(Cmd::NewLine, "new-line", "New line", "Start a new line in the message.", &["newline", "break"], G::Composer, &["Shift+Enter"]), "in the message box"),
     local(def(Cmd::Stop, "stop", "Stop the turn", "Stop the running turn.", &["interrupt", "cancel", "abort"], G::Composer, &["Escape"]), "in the message box"),
     def(Cmd::Attach, "attach", "Attach files…", "Open the file picker.", &["upload", "file", "image"], G::Composer, &["Ctrl+Shift+A"]),
@@ -587,7 +587,19 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
         Cmd::FocusComposer | Cmd::Attach | Cmd::Send | Cmd::NewLine | Cmd::Paste => {
             if thread.is_some() && !may_act { off(in_use) } else { Avail::Enabled }
         }
-        Cmd::Stop | Cmd::SendNow => {
+        Cmd::SendNow => {
+            let k = key.as_ref();
+            if !may_act {
+                off(in_use)
+            } else if !k.is_some_and(|k| crate::queue::running(st, k)) {
+                off("No turn is running")
+            } else if k.is_some_and(|k| crate::queue::awaiting_user(st, k)) {
+                off("The agent waits for your answer: a message can only be queued")
+            } else {
+                when(k.is_some_and(|k| crate::queue::send_now(st, k).is_some()), "This harness can neither steer nor stop a turn")
+            }
+        }
+        Cmd::Stop => {
             if !may_act {
                 off(in_use)
             } else {
@@ -692,6 +704,15 @@ pub fn title(cmd: Cmd, ctx: &Ctx<'_>) -> String {
         Cmd::MuteSelected if ctx.list_selected > 0 => format!("Mute selected ({})…", ctx.list_selected),
         Cmd::MoveSelected if ctx.list_selected > 0 => format!("Move selected ({})…", ctx.list_selected),
         Cmd::Dock => pick(ctx.docked, "Undock the agents panel", "Dock the agents panel"),
+        Cmd::Send => match k {
+            Some(k) if crate::queue::running(st, k) => "Queue message".to_owned(),
+            Some(_) => "Send".to_owned(),
+            None => d.name.to_owned(),
+        },
+        Cmd::SendNow => match k.and_then(|k| crate::queue::send_now(st, k)) {
+            Some(label) => label.to_owned(),
+            None => d.name.to_owned(),
+        },
         Cmd::Fast => match control_row(ctx).and_then(|r| r.fast) {
             Some(f) => pick(f.on, "Fast mode off", "Fast mode on"),
             None => d.name.to_owned(),

@@ -20,16 +20,19 @@ pub fn rows(lines: usize) -> (usize, bool) {
 /// What Enter does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnterAction {
-    /// Send the message.
+    /// Send the message; while a turn runs, queue it (D166).
     Send,
+    /// Send it now: while a turn runs, steered into it or interrupting it (D166).
+    SendNow,
     /// Insert a line break.
     Newline,
     /// Nothing (an input method is composing: Enter belongs to it).
     None,
 }
 
-/// Enter with these modifiers. With [`SendKey::Enter`], Enter sends and Shift+Enter breaks the
-/// line; with [`SendKey::CtrlEnter`], Ctrl+Enter sends and Enter breaks the line. Never sends
+/// Enter with these modifiers. With [`SendKey::Enter`], Enter sends (queues while a turn
+/// runs), Ctrl+Enter sends now and Shift+Enter breaks the line; with [`SendKey::CtrlEnter`],
+/// Ctrl+Enter sends, Ctrl+Shift+Enter sends now and Enter breaks the line (D166). Never sends
 /// while an input method is composing.
 pub fn enter(send_key: SendKey, shift: bool, command: bool, composing: bool) -> EnterAction {
     if composing {
@@ -37,9 +40,10 @@ pub fn enter(send_key: SendKey, shift: bool, command: bool, composing: bool) -> 
     }
     match send_key {
         SendKey::Enter if shift => EnterAction::Newline,
-        SendKey::Enter if command => EnterAction::None,
+        SendKey::Enter if command => EnterAction::SendNow,
         SendKey::Enter => EnterAction::Send,
-        SendKey::CtrlEnter if command && !shift => EnterAction::Send,
+        SendKey::CtrlEnter if command && shift => EnterAction::SendNow,
+        SendKey::CtrlEnter if command => EnterAction::Send,
         SendKey::CtrlEnter => EnterAction::Newline,
     }
 }
@@ -64,9 +68,10 @@ mod tests {
             (Enter, true, false, false, Newline),
             (Enter, false, false, true, None),
             (Enter, true, false, true, None),
-            (Enter, false, true, false, None),
+            (Enter, false, true, false, SendNow),
             (CtrlEnter, false, false, false, Newline),
             (CtrlEnter, false, true, false, Send),
+            (CtrlEnter, true, true, false, SendNow),
             (CtrlEnter, true, false, false, Newline),
             (CtrlEnter, false, true, true, None),
         ];

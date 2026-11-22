@@ -282,6 +282,8 @@ pub struct AppState {
     pub new_threads: Vec<NewThreadDraft>,
     /// Next-message settings per thread.
     pub next_settings: BTreeMap<ThreadKey, NextSettings>,
+    /// A queued message being edited in a thread's composer (D166), by thread.
+    pub queue_edits: BTreeMap<ThreadKey, crate::queue::QueueEdit>,
     /// The centre.
     pub selection: Selection,
     /// This window's client id, to recognise "answered by you".
@@ -435,6 +437,11 @@ impl AppState {
             return t.control_holder.clone();
         }
         self.summary(key).and_then(|s| s.control_holder.clone())
+    }
+
+    /// Whether an edit, cancel or Send now of this window is in flight for a queued message.
+    pub fn queue_busy(&self, key: &ThreadKey, queue_id: &str) -> bool {
+        self.transcripts.get(key).is_some_and(|t| t.queue_busy.contains(queue_id))
     }
 
     /// Whether this window may send, steer, and answer on a thread.

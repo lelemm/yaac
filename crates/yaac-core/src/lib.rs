@@ -57,6 +57,7 @@ pub mod selection;
 pub mod sidebar;
 pub mod permission;
 pub mod projects;
+pub mod queue;
 pub mod state;
 pub mod strip;
 pub mod thread_menu;

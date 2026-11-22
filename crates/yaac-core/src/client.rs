@@ -12,7 +12,7 @@ use yaac_protocol::{
     Address, ClientId, Control, InstanceId, ItemBody, MeshBudgetAction, MeshBudgetResult, NoticeKind,
     OpId, ProviderListResult, ProviderUpdatedParams, RequestId, RequestResponse, RequestState, SubscribeMode,
     TargetId, ThreadEvent, ThreadEventParams, ThreadId, ThreadReadResult, ThreadRemovedParams, ThreadState,
-    ThreadSubscribeResult, ThreadSummary, ThreadSyncResult, ThreadUpdatedParams, Timestamp, TurnId,
+    ThreadSubscribeResult, ThreadSummary, ThreadSyncResult, ThreadUpdatedParams, Timestamp,
 };
 
 use crate::agents::root_of;
@@ -154,11 +154,14 @@ enum Call {
     ForgeCreate(ThreadKey),
     /// The `turn/start` of "Ask the agent to write it".
     ForgeAsk(ThreadKey),
+    /// `turn/queueEdit`, `turn/queueCancel` or `turn/queuePromote` on a queued message (D166).
+    Queue { key: ThreadKey, queue_id: String, op: queue::QueueOp },
     Ignore,
 }
 
 mod forge;
 mod limits;
+mod queue;
 mod ssh;
 mod uploads;
 mod wsl;
@@ -465,6 +468,7 @@ impl Client {
                 t.control_holder = r.control_holder;
                 t.take_over_blocked = r.take_over_blocked;
                 t.active_turn = r.active_turn;
+                t.set_queue(r.queued, t.revision + 1);
                 if r.effective.is_some() {
                     t.effective = r.effective;
                 }
@@ -525,7 +529,10 @@ impl Client {
             Call::Ssh(id) => self.ssh_replies.push((id, Ok(result))),
             Call::SshRecords => self.on_ssh_records(&result),
             Call::WslDistros => self.on_wsl_distros(result),
+            // A queued message shows in the strip from the `queueChanged` event `yaacd`
+            // journals before it answers.
             Call::TurnStart { key, draft } => self.sent(&DraftRef::Thread(key), &draft),
+            Call::Queue { key, queue_id, .. } => self.on_queue_result(&key, &queue_id),
             Call::UploadStart { draft, id, attempt } => self.on_upload_started(&draft, id, attempt, &result),
             Call::BlobBegin { draft, id, chunks } => self.on_blob_begun(&draft, id, chunks, &result),
             Call::BlobAppend { .. } => {}
@@ -645,6 +652,7 @@ impl Client {
                     }
                 }
             }
+            Call::Queue { key, queue_id, op } => self.on_queue_error(key, &queue_id, op, error),
             Call::TurnStart { key, draft } => {
                 if error.code == ErrorCode::OutcomeUnknown {
                     self.sent(&DraftRef::Thread(key.clone()), &draft);
@@ -1011,54 +1019,6 @@ impl Client {
         let Some(turn) = self.state.transcripts.get(key).and_then(|t| t.active_turn.clone()) else { return };
         let params = json!({ "threadId": key.thread, "turnId": turn });
         self.routed(&key.target, m::TURN_INTERRUPT, params, Call::Ignore);
-    }
-
-    /// Send the composer's content: a new turn, or input added to the running turn under
-    /// `steer`. Returns whether anything was sent.
-    pub fn send(&mut self, key: &ThreadKey) -> bool {
-        if !self.state.may_act(key) {
-            return false;
-        }
-        let Some(draft) = self.state.drafts.get(key).cloned() else { return false };
-        let support = crate::attachments::thread_image_support(&self.state, key);
-        let Some(input) = crate::attachments::input_parts(&draft.text, &draft.attachments, &support, Some(&key.target)) else { return false };
-        let t = self.state.transcripts.get(key);
-        let effective = t.and_then(|t| t.effective.as_ref());
-        let active: Option<TurnId> = t.and_then(|t| t.active_turn.clone());
-        let can_steer = effective.is_some_and(|e| yaac_protocol::has_capability(&e.capabilities, &yaac_protocol::Capability::Steer));
-        let op = self.op_id();
-        let next = self.state.next_settings.get(key).cloned().unwrap_or_default();
-        self.state.drafts.remove(key);
-        match active {
-            Some(turn) if can_steer => {
-                let params = json!({ "opId": op, "threadId": key.thread, "turnId": turn, "input": input });
-                self.routed(&key.target, m::TURN_STEER, params, Call::TurnStart { key: key.clone(), draft });
-            }
-            Some(_) => {
-                self.state.drafts.insert(key.clone(), draft);
-                return false;
-            }
-            None => {
-                let mut params = json!({ "opId": op, "threadId": key.thread, "input": input });
-                if let Some(mdl) = next.model {
-                    params["model"] = json!(mdl);
-                }
-                if let Some(e) = next.effort {
-                    params["effort"] = json!(e);
-                }
-                if let Some(md) = next.mode {
-                    params["mode"] = json!(md);
-                }
-                if let Some(f) = next.fast {
-                    params["fast"] = json!(f);
-                }
-                if let Some(n) = self.state.next_settings.get_mut(key) {
-                    n.fast_note = None;
-                }
-                self.routed(&key.target, m::TURN_START, params, Call::TurnStart { key: key.clone(), draft });
-            }
-        }
-        true
     }
 
     /// Start a new-thread draft on a target and select it.

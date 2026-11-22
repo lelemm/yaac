@@ -33,6 +33,8 @@ pub(crate) struct DemoThread {
     pub context: Option<ContextUsage>,
     pub missing: Vec<UploadId>,
     pub subscribed: bool,
+    /// User messages queued behind the running turn (D166), as `yaacd` keeps them.
+    pub queue: Vec<yaac_protocol::QueuedMessage>,
 }
 
 impl DemoThread {
@@ -177,7 +179,8 @@ pub(crate) fn codex(instance: &str, name: Option<&str>, status: ProviderStatus) 
         status_message: None,
         // The demo's Codex can change a conversation's folder (D144) and mark folders trusted
         // (D147); its Claude cannot.
-        capabilities: [caps(), vec![Capability::ThreadMoveWorkingDirectory, Capability::FolderTrust]].concat(),
+        // Codex can add input to a running turn (`turn/steer`); Claude Code cannot (D166).
+        capabilities: [caps(), vec![Capability::ThreadMoveWorkingDirectory, Capability::FolderTrust, Capability::Steer]].concat(),
         models: vec![
             model("gpt-6.2-sol", true, Support::Supported),
             model("gpt-6.2-astra", false, Support::Supported),
@@ -347,6 +350,7 @@ impl Fleet {
                 context: Some(ContextUsage { used: Some(76_000), window: Some(200_000) }),
                 missing: Vec::new(),
                 subscribed: false,
+                queue: Vec::new(),
             },
         );
     }
@@ -389,7 +393,16 @@ impl Fleet {
                     t.context = e.context.clone();
                 }
             }
-            ThreadEvent::QueueChanged(_) | ThreadEvent::HoldChanged(_) | ThreadEvent::Unknown(_) => {}
+            ThreadEvent::QueueChanged(e) => {
+                use yaac_protocol::QueueChange as C;
+                match &e.change {
+                    C::Added => t.queue.push(e.entry.clone()),
+                    C::Updated => t.queue.iter_mut().filter(|q| q.queue_id == e.entry.queue_id).for_each(|q| *q = e.entry.clone()),
+                    C::Removed | C::Delivered => t.queue.retain(|q| q.queue_id != e.entry.queue_id),
+                    C::Unknown(_) => {}
+                }
+            }
+            ThreadEvent::HoldChanged(_) | ThreadEvent::Unknown(_) => {}
         }
         let params = ThreadEventParams { thread_id: key.thread.clone(), epoch: t.epoch, seq: Seq(t.journal.len() as u64 + 1), event };
         t.journal.push(params.clone());

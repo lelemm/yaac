@@ -26,7 +26,7 @@ use yaac_protocol::methods::names as m;
 use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
 use yaac_protocol::{
     AnsweredBy, ClientId, ContextUsage, Control, ForkKind, HandoffItem, InputPart, InstanceId, Item, ItemBody, ItemEvent,
-    ItemStatus, ItemUpdatedEvent, MeshMessageKind, MeshPeer, NoticeKind, ReceiptReason, RequestChangedEvent,
+    ItemStatus, ItemUpdatedEvent, MeshMessageKind, QueueChange, QueueChangedEvent, MeshPeer, NoticeKind, ReceiptReason, RequestChangedEvent,
     RequestResolution, RequestResponse, RequestState, Seq, SettingsChangedEvent, Support, TargetId, TargetPath,
     ThreadEvent, ThreadEventParams, ThreadId, ThreadState, ThreadSummary, ToolKind, TurnCompletedEvent, TurnId,
     TurnOrigin, TurnStartedEvent, TurnStatus, UsageUpdatedEvent,
@@ -77,11 +77,14 @@ pub enum Scene {
     AgentCalls,
     /// 95/96: Claude Code's own subagents (D151), listed under search-service beside its YAAC worker.
     HarnessSubagents,
+    /// 120: billing-service (Claude Code) is working, and two messages wait in its queue (D166).
+    /// The turn runs until it is stopped, sent to now, or [`DemoHub::finish_turn`].
+    QueueWhileRunning,
 }
 
 impl Scene {
     /// Every scene, for the demo menu.
-    pub const ALL: [Scene; 11] = [
+    pub const ALL: [Scene; 12] = [
         Scene::RequestStates,
         Scene::Permission,
         Scene::Notices,
@@ -93,6 +96,7 @@ impl Scene {
         Scene::LongConversation,
         Scene::AgentCalls,
         Scene::HarnessSubagents,
+        Scene::QueueWhileRunning,
     ];
 
     /// Menu label.
@@ -109,6 +113,7 @@ impl Scene {
             Scene::LongConversation => "Three weeks of prompts (Try the new parser)",
             Scene::AgentCalls => "Agents talking to agents: spawn, message, wait, Claude Code subagents",
             Scene::HarnessSubagents => "Claude Code's own subagents under search-service",
+            Scene::QueueWhileRunning => "billing-service is working; two messages wait in its queue",
         }
     }
 }
@@ -165,6 +170,8 @@ struct Inner {
     log: VecDeque<(Option<TargetId>, String, Value)>,
     /// What `hub/wsl/distros` answers: the distros, or an error message.
     distros: Result<Value, String>,
+    /// The next routed request is lost on the way: answered `outcome_unknown`, not acted on.
+    lose_next: bool,
 }
 
 /// The demo hub. Clone it to keep a handle for [`DemoHub::play`] and [`DemoHub::tick`] after
@@ -197,7 +204,7 @@ impl DemoHub {
             Scenario::Fleet => Fleet::standard(now),
             Scenario::Fresh => Fleet::fresh(now),
         };
-        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new() })) }
+        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new(), lose_next: false })) }
     }
 
     /// Every thread of the scenario — the window's "recently used" set, so their hints are
@@ -224,6 +231,33 @@ impl DemoHub {
     /// Something is scheduled.
     pub fn busy(&self) -> bool {
         !self.inner.borrow().scheduled.is_empty()
+    }
+
+    /// The running turn of `key` finishes (its answer, then the turn's end); as `yaacd` does,
+    /// the first queued message is then delivered and starts the next turn (D166).
+    pub fn finish_turn(&self, key: &ThreadKey) {
+        let mut inner = self.inner.borrow_mut();
+        let Some(turn) = inner.fleet.threads.get(key).and_then(|t| t.active_turn.clone()) else { return };
+        inner.scheduled.retain(|(_, pend)| !matches!(pend, Pending::Event(k, _) | Pending::State(k, _) if k == key));
+        let answer = format!("{turn}-done");
+        inner.emit_now(key, ThreadEvent::ItemCompleted(ItemEvent { item: done(&answer, turn.as_str(), agent("Done: the retry is in and the tests pass.")) }));
+        inner.emit_now(key, ThreadEvent::TurnCompleted(TurnCompletedEvent { turn_id: turn, status: TurnStatus::Completed, usage: None, error: None, at: None }));
+        inner.turn_settled(key, ThreadState::Idle);
+    }
+
+    /// The next routed request is lost on the way (`outcome_unknown`), for tests of
+    /// invariant 10.
+    pub fn lose_next_answer(&self) {
+        self.inner.borrow_mut().lose_next = true;
+    }
+
+    /// The running turn of `key` asks to run a command: an approval waits for the user.
+    pub fn ask_approval(&self, key: &ThreadKey) {
+        let mut inner = self.inner.borrow_mut();
+        let Some(turn) = inner.fleet.threads.get(key).and_then(|t| t.active_turn.clone()) else { return };
+        let body = approval(&format!("r-{turn}"), "cargo publish --dry-run", "/home/dev/billing", vec![]);
+        inner.emit_now(key, ThreadEvent::ItemStarted(ItemEvent { item: item(&format!("{turn}-ask"), turn.as_str(), ItemStatus::InProgress, body) }));
+        inner.set_state_now(key, ThreadState::NeedsAttention);
     }
 
     /// Release everything scheduled.
@@ -409,6 +443,11 @@ impl Inner {
             self.log.pop_front();
         }
         self.log.push_back(logged);
+        if self.lose_next && method == attach::names::REQUEST {
+            self.lose_next = false;
+            self.ready.push_back(error(id, ErrorCode::OutcomeUnknown, "the connection to the target was lost before it answered"));
+            return;
+        }
         match method.as_str() {
             attach::names::HELLO => {
                 // The demo is always the window's own build.
@@ -696,6 +735,9 @@ impl Inner {
                     res["activeTurn"] = json!(turn);
                 }
                 res["effective"] = json!(t.effective);
+                if !t.queue.is_empty() {
+                    res["queued"] = json!(t.queue);
+                }
                 let context = t.context.clone();
                 let replaying = !replay.is_empty() || matches!((epoch, after), (Some(_), Some(_)));
                 self.ready.push_back(result(id, res));
@@ -765,9 +807,13 @@ impl Inner {
                     self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
                     return;
                 }
-                let turn = TurnId::new(self.next("turn"));
-                self.ready.push_back(result(id, json!({ "turnId": turn })));
                 let input: Vec<InputPart> = serde_json::from_value(p.get("input").cloned().unwrap_or(Value::Null)).unwrap_or_default();
+                if let Some(running) = self.fleet.threads.get(&key).and_then(|t| t.active_turn.clone()) {
+                    self.deliver_while_running(id, &key, &running, p, input);
+                    return;
+                }
+                let turn = TurnId::new(self.next("turn"));
+                self.ready.push_back(result(id, json!({ "turnId": turn, "outcome": "started" })));
                 if let Some(mdl) = p.get("model").and_then(Value::as_str) {
                     let mdl = yaac_protocol::ModelId::new(mdl);
                     self.summary_now(&key, |s| s.model = Some(mdl));
@@ -775,6 +821,10 @@ impl Inner {
                 let fast = p.get("fast").and_then(Value::as_bool);
                 self.set_fast(&key, fast);
                 self.stream_turn(&key, &turn, input);
+            }
+            m::TURN_QUEUE_EDIT | m::TURN_QUEUE_CANCEL | m::TURN_QUEUE_PROMOTE => {
+                let Some(key) = thread(p, "threadId") else { return };
+                self.queue_op(id, &key, method, p);
             }
             m::TURN_INTERRUPT => {
                 let Some(key) = thread(p, "threadId") else { return };
@@ -1108,7 +1158,7 @@ impl Inner {
         let Some((_, p)) = self.scheduled.pop_front() else { return false };
         match p {
             Pending::Event(key, event) => self.emit_now(&key, event),
-            Pending::State(key, state) => self.set_state_now(&key, state),
+            Pending::State(key, state) => self.turn_settled(&key, state),
             Pending::Note(_, msg) => self.ready.push_back(msg),
         }
         // Release everything due at the same moment.
@@ -1116,12 +1166,104 @@ impl Inner {
             if let Some((_, p)) = self.scheduled.pop_front() {
                 match p {
                     Pending::Event(key, event) => self.emit_now(&key, event),
-                    Pending::State(key, state) => self.set_state_now(&key, state),
+                    Pending::State(key, state) => self.turn_settled(&key, state),
                     Pending::Note(_, msg) => self.ready.push_back(msg),
                 }
             }
         }
         true
+    }
+
+    /// A streamed turn's last step: the thread's state, then — as `yaacd` does when a turn
+    /// ends — the first queued message is delivered and starts the next turn (D166).
+    fn turn_settled(&mut self, key: &ThreadKey, state: ThreadState) {
+        let idle = state == ThreadState::Idle;
+        self.set_state_now(key, state);
+        if idle {
+            self.deliver_queued(key);
+        }
+    }
+
+    fn deliver_queued(&mut self, key: &ThreadKey) {
+        let Some(entry) = self.fleet.threads.get(key).and_then(|t| t.queue.first().cloned()) else { return };
+        let turn = TurnId::new(self.next("turn"));
+        self.emit_now(key, ThreadEvent::QueueChanged(QueueChangedEvent { change: QueueChange::Delivered, entry: entry.clone(), turn_id: Some(turn.clone()) }));
+        self.stream_turn(key, &turn, entry.input);
+    }
+
+    /// Whether a request on the thread waits for the user.
+    fn awaiting_user(&self, key: &ThreadKey) -> bool {
+        self.fleet.threads.get(key).is_some_and(|t| t.items.iter().any(|i| matches!(&i.body, ItemBody::Request(r) if crate::hints::request_is_open(&r.state))))
+    }
+
+    /// `turn/start` while a turn runs, as `yaacd` answers it (D166): refused without
+    /// `delivery`; `queue` keeps it in order for the turn's end; `now` is steered into the
+    /// running turn under `steer`, else the turn is interrupted and a new one starts with it.
+    fn deliver_while_running(&mut self, id: RpcId, key: &ThreadKey, running: &TurnId, p: &Value, input: Vec<InputPart>) {
+        match p.get("delivery").and_then(Value::as_str) {
+            Some("queue") => {
+                let entry = yaac_protocol::QueuedMessage { queue_id: self.next("q"), input, queued_at: crate::time::timestamp(self.fleet.base), model: None, effort: None, mode: None, fast: None };
+                self.emit_now(key, ThreadEvent::QueueChanged(QueueChangedEvent { change: QueueChange::Added, entry: entry.clone(), turn_id: None }));
+                self.ready.push_back(result(id, json!({ "turnId": "", "outcome": "queued", "queueId": entry.queue_id })));
+            }
+            Some("now") => self.deliver_now(id, key, running, input),
+            _ => self.ready.push_back(error(id, ErrorCode::TurnInProgress, "a turn is already running in this thread")),
+        }
+    }
+
+    fn deliver_now(&mut self, id: RpcId, key: &ThreadKey, running: &TurnId, input: Vec<InputPart>) {
+        if self.awaiting_user(key) {
+            self.ready.push_back(error(id, ErrorCode::from("awaiting_user"), "the agent is waiting for an answer to its question or approval; a message can only be queued now"));
+            return;
+        }
+        let steer = self.fleet.threads.get(key).is_some_and(|t| yaac_protocol::has_capability(&t.effective.capabilities, &yaac_protocol::Capability::Steer));
+        if steer {
+            let item_id = format!("{running}-steer-{}", self.next("s"));
+            self.emit_now(key, ThreadEvent::ItemCompleted(ItemEvent { item: done(&item_id, running.as_str(), ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts: input })) }));
+            self.ready.push_back(result(id, json!({ "turnId": running, "outcome": "steered" })));
+            return;
+        }
+        self.scheduled.retain(|(_, pend)| !matches!(pend, Pending::Event(k, _) | Pending::State(k, _) if k == key));
+        self.emit_now(key, ThreadEvent::TurnCompleted(TurnCompletedEvent { turn_id: running.clone(), status: TurnStatus::Interrupted, usage: None, error: None, at: None }));
+        let turn = TurnId::new(self.next("turn"));
+        self.ready.push_back(result(id, json!({ "turnId": turn, "outcome": "interruptedAndStarted" })));
+        self.stream_turn(key, &turn, input);
+    }
+
+    /// `turn/queueEdit`, `turn/queueCancel`, `turn/queuePromote`.
+    fn queue_op(&mut self, id: RpcId, key: &ThreadKey, method: &str, p: &Value) {
+        let qid = p.get("queueId").and_then(Value::as_str).unwrap_or("");
+        let Some(entry) = self.fleet.threads.get(key).and_then(|t| t.queue.iter().find(|q| q.queue_id == qid).cloned()) else {
+            self.ready.push_back(error(id, ErrorCode::from("queue_entry_not_found"), "no such queued message in this thread (it may have been delivered)"));
+            return;
+        };
+        match method {
+            m::TURN_QUEUE_EDIT => {
+                let input: Vec<InputPart> = serde_json::from_value(p.get("input").cloned().unwrap_or(Value::Null)).unwrap_or_default();
+                let entry = yaac_protocol::QueuedMessage { input, ..entry };
+                self.emit_now(key, ThreadEvent::QueueChanged(QueueChangedEvent { change: QueueChange::Updated, entry, turn_id: None }));
+                self.ready.push_back(result(id, json!({})));
+            }
+            m::TURN_QUEUE_CANCEL => {
+                self.emit_now(key, ThreadEvent::QueueChanged(QueueChangedEvent { change: QueueChange::Removed, entry, turn_id: None }));
+                self.ready.push_back(result(id, json!({})));
+            }
+            _ => {
+                if self.awaiting_user(key) {
+                    self.ready.push_back(error(id, ErrorCode::from("awaiting_user"), "the agent is waiting for an answer to its question or approval; a message can only be queued now"));
+                    return;
+                }
+                self.emit_now(key, ThreadEvent::QueueChanged(QueueChangedEvent { change: QueueChange::Removed, entry: entry.clone(), turn_id: None }));
+                match self.fleet.threads.get(key).and_then(|t| t.active_turn.clone()) {
+                    Some(running) => self.deliver_now(id, key, &running, entry.input),
+                    None => {
+                        let turn = TurnId::new(self.next("turn"));
+                        self.ready.push_back(result(id, json!({ "turnId": turn, "outcome": "started" })));
+                        self.stream_turn(key, &turn, entry.input);
+                    }
+                }
+            }
+        }
     }
 
     fn stream_turn(&mut self, key: &ThreadKey, turn: &TurnId, input: Vec<InputPart>) {
@@ -1579,6 +1721,22 @@ impl Inner {
                     self.emit_now(&users, ThreadEvent::ItemCompleted(ItemEvent { item: it }));
                 }
                 self.summary_now(&users, |s| s.updated_at = crate::time::timestamp(base));
+            }
+            Scene::QueueWhileRunning => {
+                let billing = k(BILLING);
+                let turn = TurnId::new("b-run");
+                let t = turn.as_str();
+                let msg = "Add a retry with backoff around the invoice webhook, and cover it with a test.";
+                self.emit_now(&billing, ThreadEvent::ItemCompleted(ItemEvent { item: done("bq-user", t, ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts: vec![InputPart::text(msg)] })) }));
+                self.emit_now(&billing, ThreadEvent::TurnStarted(TurnStartedEvent { turn_id: turn.clone(), origin: TurnOrigin::User, at: Some(crate::time::timestamp(base - 50)) }));
+                self.emit_now(&billing, ThreadEvent::ItemCompleted(ItemEvent { item: done("bq-read", t, tool(ToolKind::Other, "Read `src/webhooks/invoice.rs`", None, "")) }));
+                self.emit_now(&billing, ThreadEvent::ItemCompleted(ItemEvent { item: done("bq-say", t, agent("The webhook handler posts once and gives up on any error. I will wrap the call in a retry with exponential backoff, capped at five attempts, and keep the idempotency key the same across attempts.")) }));
+                self.emit_now(&billing, ThreadEvent::ItemStarted(ItemEvent { item: item("bq-test", t, ItemStatus::InProgress, tool(ToolKind::Command, "cargo test -p billing webhook", None, "running 12 tests\n")) }));
+                self.set_state_now(&billing, ThreadState::Running);
+                for (i, text) in ["Also log each retry at debug level, with the attempt number.", "When the tests pass, open a draft PR against main."].iter().enumerate() {
+                    let entry = yaac_protocol::QueuedMessage { queue_id: format!("bq-{}", i + 1), input: vec![InputPart::text(*text)], queued_at: crate::time::timestamp(base - 20 + i as i64 * 10), model: None, effort: None, mode: None, fast: None };
+                    self.emit_now(&billing, ThreadEvent::QueueChanged(QueueChangedEvent { change: QueueChange::Added, entry, turn_id: None }));
+                }
             }
             Scene::HarnessSubagents => {
                 // Claude Code's own subagents (D151) appear under their parent as the harness

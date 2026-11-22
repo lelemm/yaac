@@ -418,6 +418,16 @@ pub(crate) enum Action {
     OpenRequest(ThreadKey),
     Respond { key: ThreadKey, request: RequestId, response: RequestResponse, summary: String },
     Send(ThreadKey),
+    /// Send now while a turn runs: steered or interrupting (D166).
+    SendNow(ThreadKey),
+    /// Open a queued message in the composer for editing.
+    QueueEdit(ThreadKey, String),
+    /// Leave the edit without saving.
+    QueueEditEnd(ThreadKey),
+    /// Cancel a queued message.
+    QueueCancel(ThreadKey, String),
+    /// Send a queued message now.
+    QueuePromote(ThreadKey, String),
     Stop(ThreadKey),
     StartDraft(u64),
     NewThread,
@@ -1010,6 +1020,24 @@ impl YaacApp {
                     if self.client.send(&k) {
                         self.ui.scroll_end = true;
                     }
+                }
+                Action::SendNow(k) => {
+                    if self.client.send_now(&k) {
+                        self.ui.scroll_end = true;
+                    }
+                }
+                Action::QueueEdit(k, q) => {
+                    self.client.begin_queue_edit(&k, &q);
+                    self.ui.focus_composer = true;
+                }
+                Action::QueueEditEnd(k) => {
+                    self.client.end_queue_edit(&k);
+                    self.ui.focus_composer = true;
+                }
+                Action::QueueCancel(k, q) => self.client.queue_cancel(&k, &q),
+                Action::QueuePromote(k, q) => {
+                    self.client.queue_promote(&k, &q);
+                    self.ui.scroll_end = true;
                 }
                 Action::Stop(k) => self.client.interrupt(&k),
                 Action::StartDraft(id) => {
@@ -2467,5 +2495,57 @@ pub(crate) mod tests {
         keys(&ctx, &mut app, vec![press(Key::Escape, Modifiers::NONE)]);
         assert!(app.ui.set.keys.recording.is_none() && app.ui.settings);
         assert_eq!(app.ui.bindings.label(Cmd::Rename), "F2");
+    }
+
+    /// D166 (the owner's report: "the Send button turns into STOP; I can only send again once
+    /// I hit Stop"): while a turn runs, Enter queues, Ctrl+Enter sends now, and the strip's ✕
+    /// cancels a queued message — each a request to `yaacd`, never a send that is dropped.
+    #[test]
+    fn while_a_turn_runs_enter_queues_ctrl_enter_sends_now_and_the_strip_cancels() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let billing = threads::billing();
+        app.apply(vec![Action::Open(billing.clone())]);
+        app.pump_demo();
+        let hub = app.demo.clone().unwrap();
+        hub.play(yaac_core::demo::Scene::QueueWhileRunning);
+        app.pump_demo();
+        assert!(yaac_core::queue::running(&app.client.state, &billing));
+        app.ui.focus_composer = true;
+        for _ in 0..3 {
+            keys(&ctx, &mut app, vec![]);
+        }
+        let starts = |hub: &DemoHub| hub.requests().into_iter().filter(|(_, m, _)| m == "turn/start").map(|(_, _, p)| p).collect::<Vec<_>>();
+        // Type and press Enter: queued, the composer clears, the strip shows it third.
+        keys(&ctx, &mut app, vec![egui::Event::Text("Bump the crate version too.".into())]);
+        keys(&ctx, &mut app, vec![press(Key::Enter, Modifiers::NONE)]);
+        let sent = starts(&hub);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0]["delivery"], "queue");
+        app.pump_demo();
+        keys(&ctx, &mut app, vec![]);
+        assert!(app.client.state.drafts.get(&billing).is_none_or(|d| d.text.is_empty()), "the composer clears");
+        let strip: Vec<String> = yaac_core::queue::strip(&app.client.state, &billing).into_iter().map(|r| r.preview).collect();
+        assert_eq!(strip.last().map(String::as_str), Some("Bump the crate version too."), "{strip:?}");
+        assert_eq!(strip.len(), 3);
+        // Ctrl+Enter sends now (this thread cannot steer: it interrupts).
+        keys(&ctx, &mut app, vec![egui::Event::Text("Use the shared retry helper.".into())]);
+        keys(&ctx, &mut app, vec![press(Key::Enter, CTRL)]);
+        let sent = starts(&hub);
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1]["delivery"], "now");
+        app.pump_demo();
+        for _ in 0..2 {
+            keys(&ctx, &mut app, vec![]);
+        }
+        // The strip's ✕ on the first queued message: turn/queueCancel for it.
+        let first = app.client.state.transcripts[&billing].queued[0].queue_id.clone();
+        let cancel = ctx.read_response(crate::composer::strip_button_id("cancel", &first)).expect("the strip shows its ✕");
+        click_at(&ctx, &mut app, cancel.rect.center(), egui::PointerButton::Primary, Modifiers::NONE);
+        let cancels: Vec<_> = hub.requests().into_iter().filter(|(_, m, _)| m == "turn/queueCancel").map(|(_, _, p)| p).collect();
+        assert_eq!(cancels.len(), 1, "{cancels:?}");
+        assert_eq!(cancels[0]["queueId"], first.as_str());
+        app.pump_demo();
+        assert!(app.client.state.transcripts[&billing].queued.iter().all(|q| q.queue_id != first));
     }
 }
