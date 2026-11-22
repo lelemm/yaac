@@ -375,7 +375,9 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
         // A message keeps a line under it for its time (D154).
         y += h + GAP + crate::messages::stamp_space(b);
     }
-    let total = y + 20.0;
+    // The same room under the last block whatever it is, so the newest line does not move
+    // when a message (with its time line, D154) gives way to an activity line.
+    let total = y + 20.0 + bl.last().map_or(0.0, |b| crate::messages::STAMP_LINE - crate::messages::stamp_space(b));
     let mut sa = egui::ScrollArea::vertical().id_salt(("transcript", key.to_string())).auto_shrink([false, false]).stick_to_bottom(true);
     if let Some(a) = app.ui.restore.take() {
         // Back or forward: the same lines the user was reading, even if items arrived since.
