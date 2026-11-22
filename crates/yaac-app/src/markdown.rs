@@ -125,6 +125,18 @@ pub(crate) fn parse(text: &str) -> Vec<Block> {
             Event::End(TagEnd::Link) => link = link.saturating_sub(1),
             Event::Text(t) => push(&mut spans, &t, false, bold, italic, link),
             Event::Code(t) => push(&mut spans, &t, true, bold, italic, link),
+            // HTML is not rendered: it is text the author wrote (`<details>`, `Vec<T>`, a tag a
+            // harness left), shown as written rather than dropped.
+            Event::InlineHtml(t) => push(&mut spans, &t, false, bold, italic, link),
+            Event::Start(Tag::HtmlBlock) => flush(&mut spans, &mut out, heading, &mut item_marker, quote),
+            Event::Html(t) => push(&mut spans, &t, false, 0, 0, 0),
+            Event::End(TagEnd::HtmlBlock) => {
+                if let Some(last) = spans.last_mut() {
+                    let trimmed = last.text.trim_end_matches('\n').len();
+                    last.text.truncate(trimmed);
+                }
+                flush(&mut spans, &mut out, heading, &mut item_marker, quote);
+            }
             Event::SoftBreak => push(&mut spans, " ", false, 0, 0, 0),
             Event::HardBreak => push(&mut spans, "\n", false, 0, 0, 0),
             Event::Rule => out.push(Block::Rule),
@@ -489,6 +501,28 @@ mod tests {
         assert!(matches!(&b[2], Block::Item { marker, .. } if marker == "1."));
         assert!(matches!(&b[3], Block::Item { marker, .. } if marker == "2."));
         assert!(matches!(&b[4], Block::Code { lang, text } if lang == "rust" && text == "let a = 1;"));
+    }
+
+    fn text_of(b: &[Block]) -> Vec<String> {
+        b.iter()
+            .map(|x| match x {
+                Block::Para(s) => s.iter().map(|s| s.text.as_str()).collect::<String>(),
+                Block::Code { text, .. } => format!("code:{text}"),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn text_with_angle_brackets_is_text_never_code_and_never_dropped() {
+        // An HTML-like block (a harness tag left in a message) was dropped before; a paste
+        // wrapper is not a code block.
+        let b = parse("<task-notification>\n<task-id>x</task-id>\n</task-notification>\n\nafter");
+        assert_eq!(text_of(&b), vec!["<task-notification>\n<task-id>x</task-id>\n</task-notification>".to_owned(), "after".to_owned()]);
+        let b = parse("is a < b? use Vec<String> and <T> here");
+        assert_eq!(text_of(&b), vec!["is a < b? use Vec<String> and <T> here".to_owned()]);
+        let b = parse("<pasted_content id=\"6de6\">\nalpha\n</pasted_content id=\"6de6\">\n\nMy sentence");
+        assert!(b.iter().all(|x| matches!(x, Block::Para(_))));
     }
 
     #[test]

@@ -98,6 +98,11 @@ pub(crate) fn notice(kind: NoticeKind, text: &str, details: Option<serde_json::V
     ItemBody::Notice(NoticeItem { notice_kind: kind, text: text.to_owned(), body: None, about: None, details })
 }
 
+/// A notice with the longer text it opens to.
+pub(crate) fn notice_body(kind: NoticeKind, text: &str, body: &str) -> ItemBody {
+    ItemBody::Notice(NoticeItem { notice_kind: kind, text: text.to_owned(), body: Some(body.to_owned()), about: None, details: None })
+}
+
 pub(crate) fn decision(id: &str, label: &str, kind: DecisionKind) -> ApprovalDecision {
     ApprovalDecision { id: id.to_owned(), label: label.to_owned(), kind, description: None, accepts_reason: false }
 }

@@ -1471,7 +1471,7 @@ impl eframe::App for YaacApp {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use yaac_core::demo::threads;
     use yaac_core::history::{Anchor, Place};
 
