@@ -1079,7 +1079,9 @@ impl Client {
     /// The message appears at once, at the end of the transcript, "Sending…".
     fn echo(&mut self, key: &ThreadKey, op: &OpId, input: Vec<yaac_protocol::InputPart>, draft: &Draft, method: &str, params: &Value) {
         let rev = self.state.next_stamp();
-        let pending = crate::sending::Pending::new(op.clone(), input, draft.clone(), method, params.clone());
+        let mut pending = crate::sending::Pending::new(op.clone(), input, draft.clone(), method, params.clone());
+        // Steered: the turn it goes into is known now.
+        pending.turn = params.get("turnId").and_then(Value::as_str).map(TurnId::new);
         self.state.transcripts.entry(key.clone()).or_default().add_pending(pending, rev);
     }
 
@@ -1095,8 +1097,11 @@ impl Client {
         let turn = result.get("turnId").and_then(Value::as_str).filter(|s| !s.is_empty()).map(TurnId::new);
         t.update_pending(op, rev, |p| {
             p.state = crate::sending::SendState::Sent;
-            p.turn = turn;
+            if turn.is_some() {
+                p.turn = turn;
+            }
         });
+        t.settle_pending(op, rev);
     }
 
     /// Text and attachments back in the composer: in place of an empty draft, else after it.

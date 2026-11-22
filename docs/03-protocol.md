@@ -235,13 +235,13 @@ into these item kinds:
 
 | Kind | Content |
 | --- | --- |
-| `userMessage` | The input parts as sent. |
+| `userMessage` | The input parts as sent; `opId`, the operation of the `thread/start` or `turn/start` that sent it (a queued message keeps the one that queued it), so the window can replace its echo of the message in place (D165). |
 | `agentMessage` | Markdown text. |
 | `reasoning` | Reasoning text or summary, when the provider exposes it. |
 | `toolCall` | A tool invocation: `command`, `fileChange`, `mcp`, `webSearch`, `subagent`, or `other`; with title, input, output, and exit status — and, for communication with another agent, an `agentCall` ([10](10-agent-mesh.md#agent-calls-in-the-transcript)). |
 | `plan` | The agent's task list and each step's state. |
 | `request` | Something awaiting the user: an approval or a question. |
-| `notice` | Out-of-band information: errors, context compaction, model rerouting, rate-limit warnings. |
+| `notice` | Out-of-band information: errors, context compaction, model rerouting, rate-limit warnings, a turn the harness recorded as stopped (`interrupted`, D167). |
 | `handoff` | Marks history a forked thread inherited from its parent: the source, the mechanism, the cut-off turn and — for a handoff — the frozen transcript (bounded; its end) and the file's path. The first item of a forked thread, before its first turn. |
 | `meshSent` · `meshReceived` | A message this agent sent to, or received from, another agent — with the other side's address and a delivery receipt. |
 | `meshSpawn` · `meshWait` | Threads this agent started, and a wait on other agents, with their live states. |

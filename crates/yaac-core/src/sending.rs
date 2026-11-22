@@ -80,7 +80,8 @@ impl Pending {
     }
 
     /// Whether `item` is this send's own message: by op id, or — from a `yaacd` that does not
-    /// stamp one — by the same parts, once `yaacd` has taken it.
+    /// stamp one, or a message the harness reports itself — by the same parts in the turn the
+    /// send went to, once that turn is known.
     pub fn matches(&self, item: &Item) -> bool {
         let ItemBody::UserMessage(u) = &item.body else { return false };
         if is_echo(&item.id) {
@@ -88,7 +89,9 @@ impl Pending {
         }
         match &u.op_id {
             Some(op) => *op == self.op,
-            None => matches!(self.state, SendState::Sent | SendState::Sending) && u.parts == self.parts,
+            None => {
+                matches!(self.state, SendState::Sent | SendState::Sending) && self.turn.as_ref() == Some(&item.turn_id) && u.parts == self.parts
+            }
         }
     }
 

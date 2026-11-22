@@ -403,6 +403,11 @@ pub(crate) enum Action {
     OpenRequest(ThreadKey),
     Respond { key: ThreadKey, request: RequestId, response: RequestResponse, summary: String },
     Send(ThreadKey),
+    /// A message that was not sent (D165): its text back in the composer, or sent again under
+    /// a new op id, or (an unknown outcome) its bubble dismissed.
+    EditSend(ThreadKey, ItemId),
+    RetrySend(ThreadKey, ItemId),
+    DismissSend(ThreadKey, ItemId),
     Stop(ThreadKey),
     StartDraft(u64),
     NewThread,
@@ -995,6 +1000,17 @@ impl YaacApp {
                     if self.client.send(&k) {
                         self.ui.scroll_end = true;
                     }
+                }
+                Action::EditSend(k, item) => {
+                    if self.client.edit_send(&k, &item) {
+                        self.ui.focus_composer = true;
+                    }
+                }
+                Action::RetrySend(k, item) => {
+                    self.client.retry_send(&k, &item);
+                }
+                Action::DismissSend(k, item) => {
+                    self.client.dismiss_send(&k, &item);
                 }
                 Action::Stop(k) => self.client.interrupt(&k),
                 Action::StartDraft(id) => {
@@ -2049,6 +2065,56 @@ pub(crate) mod tests {
         for _ in 0..3 {
             keys(ctx, app, vec![]);
         }
+    }
+
+    /// D165: Enter shows the message at once as the user's bubble, "Sending…", before the hub
+    /// answers; the hub's later answer replaces it in the same place, measured as it was.
+    #[test]
+    fn a_sent_message_is_on_screen_before_the_hub_answers_and_its_item_replaces_it() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let billing = threads::billing();
+        app.apply(vec![Action::Open(billing.clone()), Action::TypeHere]);
+        for _ in 0..3 {
+            keys(&ctx, &mut app, vec![]);
+        }
+        keys(&ctx, &mut app, vec![egui::Event::Text("Add a test for the refund race.".into())]);
+        keys(&ctx, &mut app, vec![press(Key::Enter, Modifiers::NONE)]);
+        assert!(app.client.state.drafts.get(&billing).is_none_or(|d| d.text.is_empty()), "the composer cleared");
+        let bubble = |app: &YaacApp| {
+            let t = &app.client.state.transcripts[&billing];
+            let shown: Vec<(usize, ItemId)> = t
+                .items()
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| matches!(&i.body, yaac_protocol::ItemBody::UserMessage(u) if yaac_core::message::copy_text(u) == "Add a test for the refund race."))
+                .map(|(n, i)| (n, i.id.clone()))
+                .collect();
+            assert_eq!(shown.len(), 1, "one bubble, never two");
+            shown[0].clone()
+        };
+        app.ui.geom.clear();
+        keys(&ctx, &mut app, vec![]);
+        let (at, echo) = bubble(&app);
+        assert!(yaac_core::sending::is_echo(&echo), "nothing has come back from the hub yet");
+        assert!(app.ui.geom.iter().any(|g| g.drawn.contains(&at)), "the bubble is drawn");
+        assert_eq!(app.client.state.transcripts[&billing].pending_of(&echo).and_then(|p| p.note()).as_deref(), Some("Sending…"));
+        // The hub answers: the message's own item takes the echo's place.
+        // (The demo hub releases it after what other threads already scheduled.)
+        for _ in 0..10_000 {
+            assert!(app.demo.as_ref().is_some_and(|h| h.tick()), "the answer is scheduled");
+            app.pump_demo();
+            if !yaac_core::sending::is_echo(&bubble(&app).1) {
+                break;
+            }
+        }
+        app.ui.geom.clear();
+        keys(&ctx, &mut app, vec![]);
+        let (now_at, real) = bubble(&app);
+        assert_eq!(now_at, at, "in place");
+        assert!(!yaac_core::sending::is_echo(&real));
+        assert!(app.ui.geom.iter().any(|g| g.drawn.contains(&at)));
+        assert!(app.ui.geom.iter().all(|g| !g.estimated.contains(&at)), "it keeps the echo's measured height: nothing jumps");
     }
 
     #[test]

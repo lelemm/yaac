@@ -185,6 +185,15 @@ impl Transcript {
         true
     }
 
+    /// Once a send's turn is known: when its message is already here (it came before the
+    /// answer, without an op id), the echo goes.
+    pub fn settle_pending(&mut self, op: &yaac_protocol::OpId, rev: u64) {
+        let here = self.pending_op(op).is_some_and(|p| self.items.iter().any(|i| p.matches(i)));
+        if here {
+            self.remove_pending(op, rev);
+        }
+    }
+
     /// Take a send and its echo out of the transcript (Edit, Dismiss, or a message that went
     /// to the queue instead).
     pub fn remove_pending(&mut self, op: &yaac_protocol::OpId, rev: u64) -> Option<crate::sending::Pending> {

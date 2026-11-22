@@ -175,6 +175,44 @@ fn an_unknown_outcome_says_so_and_is_never_sent_again() {
 }
 
 #[test]
+fn from_a_yaacd_without_op_ids_the_same_message_in_the_sends_turn_replaces_the_echo() {
+    use yaac_core::sending::Pending;
+    use yaac_protocol::{InputPart, Item, ItemStatus, TurnId, UserMessageItem};
+    let user = |id: &str, turn: &str| Item {
+        id: ItemId::new(id),
+        turn_id: TurnId::new(turn),
+        status: ItemStatus::Completed,
+        body: ItemBody::UserMessage(UserMessageItem { parts: vec![InputPart::text("continue")], op_id: None }),
+        started_at: None,
+        completed_at: None,
+    };
+    let mut t = Transcript::new();
+    t.replace_all(vec![user("u-old", "t0")], 1);
+    let op = OpId::new("op-1");
+    t.add_pending(Pending::new(op.clone(), vec![InputPart::text("continue")], Default::default(), "turn/start", serde_json::json!({})), 2);
+    // An older message with the same words is not this send's.
+    t.replace_all(vec![user("u-old", "t0")], 3);
+    assert_eq!(t.pending().len(), 1);
+    // The answer names the turn; the message in that turn takes the echo's place.
+    t.update_pending(&op, 4, |p| {
+        p.state = SendState::Sent;
+        p.turn = Some(TurnId::new("t1"));
+    });
+    t.upsert(user("user:t1", "t1"), 5);
+    assert!(t.pending().is_empty());
+    assert_eq!(t.items().iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["u-old", "user:t1"]);
+    // It came before the answer: the echo goes once the turn is known.
+    let op2 = OpId::new("op-2");
+    t.add_pending(Pending::new(op2.clone(), vec![InputPart::text("continue")], Default::default(), "turn/start", serde_json::json!({})), 6);
+    t.upsert(user("user:t2", "t2"), 7);
+    assert_eq!(t.pending().len(), 1, "turn not known yet: kept");
+    t.update_pending(&op2, 8, |p| p.turn = Some(TurnId::new("t2")));
+    t.settle_pending(&op2, 9);
+    assert!(t.pending().is_empty());
+    assert_eq!(t.items().len(), 3, "no duplicate");
+}
+
+#[test]
 fn an_echo_survives_a_snapshot_and_a_queued_message_leaves_the_transcript() {
     let Rig { mut c, hub, .. } = rig();
     type_and_send(&mut c, "Still here?");
