@@ -279,7 +279,7 @@ pub struct SpawnThreadQuery {
     /// to anything more permissive (D146). Absent: the caller's mode is not known, and the
     /// worker starts in its harness's default mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_mode: Option<ModeInfo>,
+    pub parent_mode: Option<Box<ModeInfo>>,
 }
 
 /// `findThreads`: find threads across every target by id or fuzzy title. Answered by the hub
