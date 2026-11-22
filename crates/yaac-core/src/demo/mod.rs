@@ -12,6 +12,7 @@ mod build;
 mod diffs;
 mod fleet;
 mod forge;
+mod limits;
 pub mod ssh;
 
 use std::cell::RefCell;
@@ -414,6 +415,7 @@ impl Inner {
                 }
             }
             crate::client::hub_names::CACHE_CLEAR => self.ready.push_back(result(id, json!({}))),
+            attach::names::RATE_LIMITS_GET => self.ready.push_back(result(id, limits::accounts(&self.fleet))),
             crate::client::hub_names::WSL_DISTROS => match self.distros.clone() {
                 Ok(v) => self.ready.push_back(result(id, v)),
                 Err(m) => self.ready.push_back(error(id, ErrorCode::from_wire("wsl_failed"), &m)),
