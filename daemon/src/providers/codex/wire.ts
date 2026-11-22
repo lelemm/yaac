@@ -80,6 +80,9 @@ export interface Thread {
   cwd?: string;
   originator?: string | null;
   source?: SessionSource;
+  /** A sub-agent's nickname and role (`spawn_agent`, D151; 0.170.0). */
+  agentNickname?: string | null;
+  agentRole?: string | null;
   name?: string | null;
   turns?: Turn[];
 }

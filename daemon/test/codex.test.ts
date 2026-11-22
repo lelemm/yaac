@@ -926,3 +926,83 @@ test("codex modes: each says how much it allows unasked, and a thread shows the 
     await r.done();
   }
 });
+
+// ── Sub-agents (D151) ────────────────────────────────────────────────────────────────────
+
+const PARENT_ID = "01a1fa3e-0100-7000-8000-000000000001";
+const CHILD_ID = "01a1fa3e-0100-7000-8000-000000000002";
+
+/** A sub-agent thread as codex-cli 0.170.0 reports it (`SessionSource.subAgent.thread_spawn`). */
+function subAgentThread(status: unknown = { type: "idle" }): Record<string, unknown> {
+  return {
+    id: CHILD_ID,
+    preview: "Look at the parser",
+    createdAt: 1763700000,
+    updatedAt: 1763700100,
+    status,
+    cwd: "/work/fixture",
+    source: { subAgent: { thread_spawn: { parent_thread_id: PARENT_ID, depth: 1, agent_path: null, agent_nickname: "Kepler", agent_role: "explorer" } } },
+    agentNickname: "Kepler",
+    agentRole: "explorer",
+    name: null,
+  };
+}
+
+test("codex: sub-agent threads are listed with their parent, outside the max", async () => {
+  const r = await rig();
+  try {
+    const parent = { id: PARENT_ID, preview: "Orchestrate", createdAt: 1763700000, updatedAt: 1763700050, status: { type: "idle" }, cwd: "/work/fixture", source: "vscode", name: "Orchestrate" };
+    r.fake.handlers.set("thread/list", (p) => (p.archived ? { data: [], nextCursor: null } : { data: [subAgentThread(), parent], nextCursor: null }));
+    const page = await r.provider.scanThreads({ cursor: null, max: 1 });
+    const kid = page.threads.find((t) => t.native === CHILD_ID)!;
+    const top = page.threads.find((t) => t.native === PARENT_ID)!;
+    assert.ok(kid && top, "the sub-agent does not use up max: its parent is still listed");
+    assert.equal(kid.parent, PARENT_ID);
+    assert.equal(kid.title, "Kepler", "the nickname, when it has no name");
+    assert.equal(kid.subagent!.agentType, "explorer");
+    assert.equal(kid.subagent!.status, "completed");
+    assert.match(kid.subagent!.readOnly!, /only writer/);
+    assert.equal(top.parent, undefined);
+    assert.equal(top.subagent, undefined);
+    assert.ok((r.fake.requests("thread/list")[0]!.params.sourceKinds as string[]).includes("subAgentThreadSpawn"));
+  } finally {
+    await r.done();
+  }
+});
+
+test("codex: a sub-agent appears when it starts, and its parent's collab calls update its state", async () => {
+  const r = await rig();
+  try {
+    let status: unknown = { type: "active", activeFlags: [] };
+    r.fake.handlers.set("thread/read", () => ({ thread: subAgentThread(status) }));
+    await r.provider.probe().catch(() => {});
+    r.fake.push({ method: "thread/started", params: { thread: subAgentThread(status) } });
+    const isKid = (e: ProviderEvent) => e.type === "threadChanged" && e.info.native === CHILD_ID;
+    await until(() => r.events.some(isKid));
+    const started = r.events.find(isKid) as any;
+    assert.equal(started.info.parent, PARENT_ID);
+    assert.equal(started.info.subagent.status, "running");
+
+    // The parent waits on it; the call reports it completed.
+    status = { type: "idle" };
+    const mark = r.events.length;
+    r.fake.push({
+      method: "item/completed",
+      params: {
+        threadId: PARENT_ID,
+        turnId: "turn-p",
+        item: { type: "collabAgentToolCall", id: "call-1", tool: "wait", status: "completed", senderThreadId: PARENT_ID, receiverThreadIds: [CHILD_ID], prompt: null, model: null, reasoningEffort: null, agentsStates: { [CHILD_ID]: { status: "completed", message: "done" } } },
+      },
+    });
+    await until(() => r.events.slice(mark).some(isKid));
+    assert.equal((r.events.slice(mark).find(isKid) as any).info.subagent.status, "completed");
+
+    // A status change of a known sub-agent is reported too: an error is a failure.
+    const mark2 = r.events.length;
+    r.fake.push({ method: "thread/status/changed", params: { threadId: CHILD_ID, status: { type: "systemError" } } });
+    await until(() => r.events.slice(mark2).some(isKid));
+    assert.equal((r.events.slice(mark2).find(isKid) as any).info.subagent.status, "failed");
+  } finally {
+    await r.done();
+  }
+});

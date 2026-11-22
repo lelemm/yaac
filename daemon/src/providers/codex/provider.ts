@@ -22,6 +22,7 @@ import type {
   ThreadEffective,
   TurnId,
   TurnOrigin,
+  SubagentStatus,
 } from "../../protocol/generated/types.js";
 import { Emitter } from "../../util/emitter.js";
 import { randomId, readJson, sha256Hex, writeJsonAtomic } from "../../util/fsx.js";
@@ -45,7 +46,7 @@ import type {
   TurnOverrides,
 } from "../types.js";
 import { connectBackend, planEndpoint, realExec, type EndpointPlan, type Exec } from "./backend.js";
-import { fastTier, mapItem, mapModel, mapServerRequest, planState, threadInfo, tokenUsage, turnStatus, usageDelta, type MappedRequest } from "./mapping.js";
+import { collabStatus, fastTier, subagentStatusOf, mapItem, mapModel, mapServerRequest, planState, threadInfo, tokenUsage, turnStatus, usageDelta, type MappedRequest } from "./mapping.js";
 import { CodexConnection, CodexRpcError, type ServerRequest } from "./rpc.js";
 import {
   THREAD_SOURCE_KINDS,
@@ -268,6 +269,10 @@ export class CodexProvider implements HarnessProvider {
   /** Sign-in mode at the last probe (lower case); undefined before the first probe. */
   private authMode: string | null | undefined = undefined;
   private sourceKinds: string[] = [...THREAD_SOURCE_KINDS];
+  /** Threads known to be sub-agents spawned by another thread (D151). */
+  private readonly subagentIds = new Set<NativeId>();
+  /** A sub-agent's last state as its parent's collab tool calls reported it (`agentsStates`). */
+  private readonly subagentStatus = new Map<NativeId, SubagentStatus>();
   private setupHook: CodexThreadSetupHook | null = null;
   /** The agent mesh is attached (the `meshTools` capability). */
   private meshAttached = false;
@@ -614,6 +619,8 @@ export class CodexProvider implements HarnessProvider {
       "contextUsage",
       "modelList",
       "plan",
+      "subagents",
+      "subagentThreads",
       "webSearch",
       "modes",
       // `turn/start` and `thread/resume` take `cwd` (D144, verified on codex-cli 0.170.0).
@@ -700,9 +707,12 @@ export class CodexProvider implements HarnessProvider {
     let threads = (res.data ?? []).map((t) => {
       const st = this.state(t.id);
       if (t.status && !st.subscribed) st.status = t.status;
-      return threadInfo(t, state.archived);
+      const info = threadInfo(t, state.archived, this.subagentStatus.get(t.id) ?? null);
+      if (info.parent) this.subagentIds.add(t.id);
+      return info;
     });
     // The discovery caps: this listing ends at the first conversation too old, or at `max`.
+    // Sub-agents (D151) do not count towards `max`: yaacd lists them with their parent.
     let ended = false;
     if (page.activeSince) {
       const i = threads.findIndex((t) => t.updatedAt < page.activeSince!);
@@ -711,11 +721,21 @@ export class CodexProvider implements HarnessProvider {
         ended = true;
       }
     }
-    const count = (state.count ?? 0) + threads.length;
-    if (page.max && count >= page.max) {
-      threads = threads.slice(0, Math.max(0, page.max - (state.count ?? 0)));
-      ended = true;
-    }
+    let count = state.count ?? 0;
+    if (page.max) {
+      let cut = threads.length;
+      for (let i = 0; i < threads.length; i++) {
+        if (threads[i]!.parent) continue;
+        if (count >= page.max) {
+          cut = i;
+          ended = true;
+          break;
+        }
+        count++;
+      }
+      threads = threads.slice(0, cut);
+      if (count >= page.max) ended = true;
+    } else count += threads.filter((t) => !t.parent).length;
     let next: string | null = null;
     if (res.nextCursor && !ended) next = encodeCursor({ archived: state.archived, cursor: res.nextCursor, count });
     else if (!state.archived) next = encodeCursor({ archived: true, cursor: null, count: 0 });
@@ -1163,6 +1183,33 @@ export class CodexProvider implements HarnessProvider {
 
   // ── Notifications ────────────────────────────────────────────────────────────────────────
 
+  /**
+   * A parent's collab tool call (`spawn_agent`, `wait`, `close_agent`, …) names sub-agents
+   * and their last known state (D151): each one named is (re)reported, a spawned one as soon
+   * as the call starts.
+   */
+  private onCollab(item: Record<string, unknown>): void {
+    const receivers = Array.isArray(item.receiverThreadIds) ? (item.receiverThreadIds as unknown[]).filter((x): x is string => typeof x === "string") : [];
+    const states = (item.agentsStates && typeof item.agentsStates === "object" ? item.agentsStates : {}) as Record<string, { status?: unknown } | undefined>;
+    for (const id of receivers) {
+      const s = collabStatus(states[id]?.status);
+      if (s) this.subagentStatus.set(id, s);
+      this.subagentIds.add(id);
+      this.refreshSubagent(id);
+    }
+  }
+
+  /** Re-reads a sub-agent's thread and reports it with its current status. */
+  private refreshSubagent(id: NativeId): void {
+    void this.readThreadMeta(id)
+      .then((t) => {
+        const info = threadInfo(t, false, this.subagentStatus.get(id) ?? null);
+        delete info.archived;
+        if (info.parent) this.emit({ type: "threadChanged", info });
+      })
+      .catch(() => {});
+  }
+
   private onNotification(method: string, raw: unknown): void {
     try {
       this.handleNotification(method, raw);
@@ -1179,7 +1226,9 @@ export class CodexProvider implements HarnessProvider {
         if (!t?.id) return;
         const st = this.state(t.id);
         if (t.status && !st.status) st.status = t.status;
-        this.emit({ type: "threadChanged", info: threadInfo(t, false) });
+        const info = threadInfo(t, false, this.subagentStatus.get(t.id) ?? null);
+        if (info.parent) this.subagentIds.add(t.id);
+        this.emit({ type: "threadChanged", info });
         return;
       }
       case "thread/status/changed": {
@@ -1187,6 +1236,11 @@ export class CodexProvider implements HarnessProvider {
         if (!id) return;
         const st = this.state(id);
         st.status = (p.status as ThreadStatus) ?? null;
+        // A sub-agent's status is its state in YAAC (D151): running while active.
+        if (this.subagentIds.has(id)) {
+          this.subagentStatus.set(id, subagentStatusOf(st.status));
+          this.refreshSubagent(id);
+        }
         if (st.status?.type === "notLoaded") {
           st.foreignSeen = false;
           st.subscribed = false;
@@ -1292,6 +1346,7 @@ export class CodexProvider implements HarnessProvider {
         if (item.type === "userMessage" && this.isOwnInput(st, item, turnId, method === "item/completed")) return;
         const mapped = mapItem(item, turnId, method === "item/started" ? "inProgress" : "completed");
         this.emit({ type: method === "item/started" ? "itemStarted" : "itemCompleted", thread: native, item: mapped });
+        if (item.type === "collabAgentToolCall") this.onCollab(item as unknown as Record<string, unknown>);
         return;
       }
       case "item/agentMessage/delta":

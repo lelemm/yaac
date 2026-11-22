@@ -15,6 +15,7 @@ import type {
   PlanStepState,
   Question,
   RequestResponse,
+  SubagentStatus,
   TokenUsage,
   TurnStatus,
 } from "../../protocol/generated/types.js";
@@ -101,7 +102,7 @@ export function originKindOf(source: unknown): "interactive" | "programmatic" {
   return INTERACTIVE_SOURCES.has(sourceKind(source)) ? "interactive" : "programmatic";
 }
 
-export function threadInfo(t: Thread, archived: boolean): NativeThreadInfo {
+export function threadInfo(t: Thread, archived: boolean, status?: SubagentStatus | null): NativeThreadInfo {
   const info: NativeThreadInfo = {
     native: t.id,
     title: t.name ?? null,
@@ -114,7 +115,58 @@ export function threadInfo(t: Thread, archived: boolean): NativeThreadInfo {
     archived,
   };
   if (t.forkedFromId) info.forkedFrom = t.forkedFromId;
+  const spawn = spawnSource(t.source);
+  if (spawn) {
+    info.parent = spawn.parent;
+    info.subagent = {
+      ...(spawn.role ?? t.agentRole ? { agentType: (spawn.role ?? t.agentRole)! } : {}),
+      status: status ?? subagentStatusOf(t.status),
+      readOnly: CODEX_SUBAGENT_READ_ONLY,
+    };
+    if (!info.title) info.title = spawn.nickname ?? t.agentNickname ?? null;
+  }
   return info;
+}
+
+/** Why YAAC does not send to a Codex sub-agent (D151, P192). */
+export const CODEX_SUBAGENT_READ_ONLY = "YAAC does not send to a Codex sub-agent: the agent that spawned it is its only writer. Message that agent instead.";
+
+/**
+ * A sub-agent spawned by another thread (`source.subAgent.thread_spawn`, codex-cli 0.170.0):
+ * its parent thread, nickname and role. Review and compaction sub-agents name no parent.
+ */
+export function spawnSource(source: unknown): { parent: string; nickname: string | null; role: string | null } | null {
+  const sub = obj(obj(source).subAgent);
+  const spawn = obj(sub.thread_spawn);
+  const parent = str(spawn.parent_thread_id);
+  if (!parent) return null;
+  return { parent, nickname: str(spawn.agent_nickname) ?? null, role: str(spawn.agent_role) ?? null };
+}
+
+/** A sub-agent's status from its thread status: working while active, else finished. */
+export function subagentStatusOf(status: unknown): SubagentStatus {
+  const type = obj(status).type;
+  if (type === "active") return "running";
+  if (type === "systemError") return "failed";
+  return "completed";
+}
+
+/** A collab tool call's last known state of an agent (`agentsStates`), as a sub-agent status. */
+export function collabStatus(status: unknown): SubagentStatus | null {
+  switch (status) {
+    case "pendingInit":
+    case "running":
+      return "running";
+    case "completed":
+      return "completed";
+    case "errored":
+      return "failed";
+    case "interrupted":
+    case "shutdown":
+      return "stopped";
+    default:
+      return null;
+  }
 }
 
 // ── Items ──────────────────────────────────────────────────────────────────────────────────
