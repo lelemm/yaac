@@ -531,9 +531,10 @@ One `query()` in streaming-input mode per active thread; the SDK runs the Claude
 | streaming | `includePartialMessages` stream events → deltas; assistant and tool-result messages → items |
 | approvals | `canUseTool` callback → approval `request` items |
 | questions | the `AskUserQuestion` tool arriving through `canUseTool` → question `request` items; `onUserDialog` for other dialog kinds |
-| model / effort / mode switch | `setModel()`, `applyFlagSettings({ effortLevel })`, `setPermissionMode()` |
+| model / effort / mode switch | `setModel()`, `applyFlagSettings({ effortLevel })`, `setPermissionMode()` — bypass included: every query is opened with `allowDangerouslySkipPermissions` (not as root) |
+| background work | the `background_tasks_changed` system message: the full set of background subagents, shells and workflows in the process |
 | images | image content blocks in the user message (`yaacd` reads the uploaded file) |
-| attachments readable | the upload store is passed in `additionalDirectories`; so is a handoff fork's transcript folder (`ProviderInput.readable`), kept for the session's whole life |
+| attachments readable | the thread's attachment folder (`ProviderInput.uploadsDir`, created before the first open) is passed in `additionalDirectories` from the first open on, with a handoff fork's transcript folder (`ProviderInput.readable`); both are kept for the session's whole life, so a later attachment never re-opens the query |
 | in use elsewhere | `claude agents --json` lists live sessions with their session ids |
 | rename / archive / delete | `renameSession()`, `archiveSession()`, `deleteSession(sessionId, { dir? })` (verified in the installed Agent SDK 0.3.329) |
 | usage | result messages, `getContextUsage()` |
@@ -543,8 +544,19 @@ Notes:
 - Each active Claude thread is a live process on the target, and a measured one is not small:
   **about 229 MB while idle**. `yaacd` closes a thread's process after five idle minutes and
   resumes it on demand, and keeps at most four alive at once (least recently used closed
-  first, never one with a running turn or an open request). Both limits are configurable.
-  This eviction is central to the target-side memory budget.
+  first). Both limits are configurable. This eviction is central to the target-side memory
+  budget.
+- **A process with background work is never closed** (D160). Claude Code's background
+  subagents (`Agent` with `run_in_background`), background shells and teammates run inside the
+  thread's process and die with it. A process is *busy* while it runs a turn, has an open
+  request, or has background work — the set from `background_tasks_changed`, ambient tasks
+  left out (P220) — and only an idle one is closed: for idleness, five minutes after the last
+  of these ends, or to make room (when every process is busy, the cap is exceeded and a line is
+  logged). The query is not re-opened for a change either: modes, bypass included, are set on
+  the live query (P221), and the attachment folder is readable from the first open (P222). A
+  re-open still needed (a setting Claude Code refuses live) waits until the work ends, and the
+  transcript says so (P223). A process that ends with background work running — a crash, a
+  forced stop — leaves a warning notice naming the work that stopped.
 - The modes offered are the SDK's permission modes, **including the one that bypasses all
   permission checks**. That one is reported with `skipsApprovals` set, so the UI asks for
   confirmation before switching to it ([07 UI](07-ui.md#the-control-row-under-the-composer)).
@@ -555,7 +567,8 @@ Notes:
   provider reports image input as `Supported` at the provider level. That is a statement about
   the harness, not a model table, and it is the only place such a default exists.
 - **Verify (spike S6):** that `applyFlagSettings({ effortLevel })` takes effect on a live query
-  and is not overridden by policy; otherwise effort changes re-open the query with `resume`.
+  and is not overridden by policy; otherwise effort changes re-open the query with `resume`
+  (once its background work has ended).
 
 ### Daemon backend (reserved)
 

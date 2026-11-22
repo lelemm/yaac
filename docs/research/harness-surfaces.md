@@ -625,3 +625,46 @@ receiverThreadIds, prompt, model, reasoningEffort, agentsStates: {<thread id>: {
 rollouts is the code-mode exec wait, not an agent wait.) YAAC's tools arrive as
 `mcpToolCall` items with `server: "yaac"`.
 
+## Background work and re-opens (verified 2026-11-22)
+
+Observed with throwaway sessions (temporary project folders, `persistSession: false` or
+deleted afterwards) against Claude Code 2.1.330 through the Agent SDK 0.3.329, for D160:
+
+- **`background_tasks_changed` is the signal for "background work is running".** A `system`
+  message carrying the full set of live background tasks (`task_id`, `run_id`, `task_type`
+  such as `local_agent` or `local_bash`, `subagent_type`, `description`, `parent_task_id`,
+  `ambient`), sent whenever the set changes. Seen for an `Agent` call with
+  `run_in_background: true` (`local_agent`), a background `Bash` (`local_bash`), and a
+  subagent's own background shell (with `parent_task_id`); the set was `[]` once all had
+  ended. The types say to replace the set with each payload and to start from empty for each
+  process (nothing is sent at start-up). The SDK has no call that returns the set; the
+  `background_tasks` lists exist only on the `Stop`/`SubagentStop` hook inputs.
+- The edges come too: `task_started` (`is_backgrounded: true`, `tool_use_id`), `task_progress`,
+  `task_updated` (`patch.status`), `task_notification` (`status`, `summary`, `output_file`).
+  The `Agent` tool result says "Async agent launched successfully … agentId: …" at once; the
+  parent's turn then ends (`result`) while the subagent runs.
+- **When a background task ends, Claude Code starts a turn by itself** (a fresh `system/init`,
+  assistant messages, a `result`) with no user message — the provider's `external` turn. A
+  subagent whose own background shell is still running can be "completed" and later resumed
+  as a new run of the same `task_id` (the set briefly goes `[]` and back).
+- **A background subagent's permission request reaches `canUseTool`** (with `agentID`) while
+  the parent has no turn running.
+- **Bypass on a live query.** With `allowDangerouslySkipPermissions: true` and
+  `permissionMode: "default"`, a `Bash` call still reached `canUseTool`;
+  `setPermissionMode("bypassPermissions")` succeeded and the next `Bash` call did not ask;
+  `setPermissionMode("default")` made it ask again. Without the option,
+  `setPermissionMode("bypassPermissions")` is refused: "Cannot set permission mode to
+  bypassPermissions because the session was not launched with --dangerously-skip-permissions".
+- **As root, the option stops Claude Code from starting.** The CLI checks
+  `permissionMode === "bypassPermissions" || allowDangerouslySkipPermissions` at start-up and
+  exits with "--dangerously-skip-permissions cannot be used with root/sudo privileges" when
+  the user id is 0, unless `IS_SANDBOX=1` (read from the installed binary, not run as root).
+- `additionalDirectories` is fixed at open. The SDK's other ways to add a folder do not fit:
+  `register_repo_root` takes only a subfolder of the cwd or of a folder given at launch, and
+  `addDirectories` is a permission update returned from `canUseTool`.
+- End to end through the provider (idle timeout 8 s, Haiku): a background subagent running
+  ~50 s kept its process through 12 s of parent idleness, a pasted image, a switch to
+  `default` and back to bypass (no new process, no approval in the bypass turn); the process
+  was closed for idleness 8 s after the subagent's own closing turn. Killing the process while
+  the subagent ran gave the notice "Claude Code's process ended while background work was
+  running in it; this stopped: subagent "sleeper"."
