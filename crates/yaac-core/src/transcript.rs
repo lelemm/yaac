@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use yaac_protocol::{
-    ContextUsage, Control, DeltaField, Item, ItemBody, ItemId, JournalPosition, RequestId, RequestState,
-    ThreadEffective, ThreadEvent, ThreadEventParams, TurnId, TurnOrigin, UploadId,
+    ContextUsage, Control, DeltaField, Item, ItemBody, ItemId, JournalPosition, QueueChange, QueuedMessage, RequestId,
+    RequestState, ThreadEffective, ThreadEvent, ThreadEventParams, TurnId, TurnOrigin, UploadId,
 };
 
 /// What this window answered, kept so the card can say "You chose …" before the harness
@@ -71,6 +71,11 @@ pub struct Transcript {
     pub loading: Option<ResetLoad>,
     /// Answers this window gave.
     pub local_answers: BTreeMap<RequestId, LocalAnswer>,
+    /// User messages queued behind the running turn, in delivery order (D166): from the
+    /// subscription's snapshot, then its `queueChanged` events.
+    pub queued: Vec<QueuedMessage>,
+    /// Queued messages with an edit, cancel or Send now of this window in flight.
+    pub queue_busy: BTreeSet<String>,
     /// Bumped on every change, for UI caches.
     pub revision: u64,
 }
@@ -200,8 +205,32 @@ impl Transcript {
                     self.context = e.context.clone();
                 }
             }
-            // SEAM (window package): the queue strip and the stopped state.
-            ThreadEvent::QueueChanged(_) | ThreadEvent::HoldChanged(_) | ThreadEvent::Unknown(_) => {}
+            ThreadEvent::QueueChanged(e) => self.apply_queue(&e.change, &e.entry),
+            // SEAM (window package): the stopped state.
+            ThreadEvent::HoldChanged(_) | ThreadEvent::Unknown(_) => {}
+        }
+    }
+
+    /// The queue as the subscription reported it (absent: empty).
+    pub fn set_queue(&mut self, queued: Option<Vec<QueuedMessage>>, rev: u64) {
+        self.queued = queued.unwrap_or_default();
+        self.queue_busy.retain(|id| self.queued.iter().any(|q| &q.queue_id == id));
+        self.revision = rev;
+    }
+
+    /// One change to the queue. Idempotent, so a replay that overlaps the snapshot ends in the
+    /// same queue: an entry is replaced in place by its id, or added at the end.
+    fn apply_queue(&mut self, change: &QueueChange, entry: &QueuedMessage) {
+        match change {
+            QueueChange::Added | QueueChange::Updated => match self.queued.iter_mut().find(|q| q.queue_id == entry.queue_id) {
+                Some(q) => *q = entry.clone(),
+                None => self.queued.push(entry.clone()),
+            },
+            QueueChange::Removed | QueueChange::Delivered => {
+                self.queued.retain(|q| q.queue_id != entry.queue_id);
+                self.queue_busy.remove(&entry.queue_id);
+            }
+            QueueChange::Unknown(_) => {}
         }
     }
 

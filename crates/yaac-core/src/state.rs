@@ -282,6 +282,8 @@ pub struct AppState {
     pub new_threads: Vec<NewThreadDraft>,
     /// Next-message settings per thread.
     pub next_settings: BTreeMap<ThreadKey, NextSettings>,
+    /// A queued message being edited in a thread's composer (D166), by thread.
+    pub queue_edits: BTreeMap<ThreadKey, crate::queue::QueueEdit>,
     /// The centre.
     pub selection: Selection,
     /// This window's client id, to recognise "answered by you".

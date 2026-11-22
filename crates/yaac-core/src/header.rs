@@ -251,10 +251,17 @@ pub enum ComposerView {
         placeholder: String,
         /// Dimmed with this hint while a request on this thread waits for the user.
         dimmed_hint: Option<String>,
-        /// A turn is running and can be stopped: Send becomes Stop.
+        /// A turn is running and can be stopped: Stop shows beside the send buttons.
         stop: bool,
         /// Input can be added to the running turn.
         steer: bool,
+        /// A turn is running: the primary button queues (D166).
+        running: bool,
+        /// The Send now button's label ("Send now" or "Send now — interrupts"), when offered:
+        /// a turn runs and the thread does not wait on the user.
+        send_now: Option<&'static str>,
+        /// A queued message is open for editing: the primary button saves it.
+        editing: bool,
         /// Attachment chips.
         chips: Vec<ChipView>,
         /// Every chip is ready to send.
@@ -289,12 +296,16 @@ pub fn composer(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Compos
     let effective = transcript.and_then(|t| t.effective.as_ref());
     let caps = effective.map_or(&[][..], |e| e.capabilities.as_slice());
     let running = transcript.is_some_and(|t| t.active_turn.is_some());
-    let dimmed_hint = match map.of(key) {
+    let mut dimmed_hint = match map.of(key) {
         Some(Attention::Request(RequestKindWord::Permission)) => Some("Answer above to continue".to_owned()),
         Some(Attention::Request(kind)) => Some(format!("Answer the {} above to continue", kind.word())),
         Some(Attention::Unspecified) => Some("Answer the request above to continue".to_owned()),
         _ => None,
     };
+    // While a turn runs, a message can still be queued behind the answer (D166).
+    if running && let Some(h) = &mut dimmed_hint {
+        h.push_str(" · a message sent now waits in the queue");
+    }
     let support = crate::attachments::thread_image_support(state, key);
     let chips = chips(state.drafts.get(key), &support, Some(&key.target));
     let blocked = crate::attachments::blocked(&chips);
@@ -304,6 +315,9 @@ pub fn composer(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Compos
         dimmed_hint,
         stop: running && has_capability(caps, &Capability::Interrupt),
         steer: running && has_capability(caps, &Capability::Steer),
+        running,
+        send_now: crate::queue::send_now(state, key),
+        editing: state.queue_edits.contains_key(key),
         chips,
         ready,
         blocked,
