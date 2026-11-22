@@ -19,6 +19,8 @@ import type {
   TurnId,
   TurnOrigin,
   TurnStatus,
+  HarnessSubagent,
+  SubagentStatus,
 } from "../../protocol/generated/types.js";
 import { Emitter } from "../../util/emitter.js";
 import { nowIso, readJson, sha256Hex, writeJsonAtomic } from "../../util/fsx.js";
@@ -47,6 +49,9 @@ import { chunks, parseScript, type Step } from "./script.js";
 import { meshAgentCall } from "../agentcalls.js";
 
 export const FAKE_KIND = "fake";
+
+/** Why a fake sub-agent (D151) is read-only, as a harness provider states it. */
+export const SUBAGENT_READ_ONLY = "Only the fake agent that started this sub-agent can continue it.";
 
 const MODELS: ModelInfo[] = [
   {
@@ -313,6 +318,8 @@ export class FakeProvider implements HarnessProvider {
       "contextUsage",
       "modelList",
       "plan",
+      "subagents",
+      "subagentThreads",
     ];
     if (this.options.nativeFork) caps.push("threadFork");
     if (this.options.steer) caps.push("steer");
@@ -338,8 +345,13 @@ export class FakeProvider implements HarnessProvider {
       throw new Error("fake: the listing failed");
     }
     // Newest first by last activity, as both real harnesses can list.
+    // Sub-agents (D151) are listed after their parent, outside the parents' paging and caps.
+    const kids = Object.values(this.store.threads)
+      .map((t) => t.info)
+      .filter((i) => !!i.parent);
     let all = Object.values(this.store.threads)
       .map((t) => t.info)
+      .filter((i) => !i.parent)
       .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : a.native < b.native ? -1 : 1));
     if (page.search) all = all.filter((t) => (t.title ?? "").toLowerCase().includes(page.search!.toLowerCase()));
     const start = Number.parseInt(page.cursor ?? "0", 10) || 0;
@@ -359,7 +371,9 @@ export class FakeProvider implements HarnessProvider {
       more = false;
     }
     this.scannedCount += slice.length;
-    return { threads: structuredClone(slice), cursor: more ? String(start + size) : null, complete: true };
+    const parents = new Set(slice.map((t) => t.native));
+    const withKids = [...slice, ...kids.filter((k) => parents.has(k.parent!))];
+    return { threads: structuredClone(withKids), cursor: more ? String(start + size) : null, complete: true };
   }
 
   async lookupThread(native: NativeId): Promise<NativeThreadInfo | null> {
@@ -607,6 +621,9 @@ export class FakeProvider implements HarnessProvider {
             break;
           case "outsideThread":
             this.addOutsideThread(step.title);
+            break;
+          case "subagent":
+            await this.runSubagent(native, step, pace, signal);
             break;
           case "usage":
             this.emit({ type: "usageUpdated", thread: native, tokens: { input: 100, output: 50, total: 150 }, context: { used: 150, window: 100000 } });
@@ -1058,6 +1075,77 @@ export class FakeProvider implements HarnessProvider {
     this.save();
     this.emit({ type: "threadChanged", info });
     return native;
+  }
+
+  /**
+   * One of the harness's own sub-agents (D151), stored under `parent`, with no event: as a
+   * harness keeps a finished one on disk. `daysOld` sets its last activity.
+   */
+  addStoredSubagent(parent: NativeId, opts: { agentType?: string; title?: string; status?: SubagentStatus; daysOld?: number; reply?: string } = {}): NativeId {
+    const native = `${parent}:${this.next("agent-")}`;
+    const at = new Date(Date.now() - (opts.daysOld ?? 0) * 86_400_000).toISOString();
+    const title = opts.title ?? "A stored sub-agent";
+    this.store.threads[native] = {
+      info: { native, title, preview: title, cwd: this.thread(parent).info.cwd, createdAt: at, updatedAt: at, originKind: "programmatic", parent, subagent: this.subagentInfo(opts.agentType ?? "general-purpose", opts.status ?? "completed") },
+      items: [
+        { id: `${native}-u1`, turnId: "sub-t1", status: "completed", kind: "userMessage", parts: [{ type: "text", text: title }] },
+        { id: `${native}-a1`, turnId: "sub-t1", status: "completed", kind: "agentMessage", text: opts.reply ?? "Done." },
+      ],
+      turns: 1,
+      settings: { model: "fake-small" },
+      turnLog: ["sub-t1"],
+    };
+    this.save();
+    return native;
+  }
+
+  private subagentInfo(agentType: string, status: SubagentStatus): HarnessSubagent {
+    return { agentType, status, readOnly: SUBAGENT_READ_ONLY };
+  }
+
+  /**
+   * A sub-agent of the harness's own (D151) runs inside the parent's turn: it appears as soon
+   * as it starts, streams its own turn, and is reported finished (or failed).
+   */
+  private async runSubagent(parent: NativeId, step: Extract<Step, { k: "subagent" }>, pace: number, signal: AbortSignal): Promise<void> {
+    const native = `${parent}:${this.next("agent-")}`;
+    const now = nowIso();
+    const info: NativeThreadInfo = {
+      native,
+      title: step.description,
+      preview: step.description,
+      cwd: this.thread(parent).info.cwd,
+      model: "fake-small",
+      createdAt: now,
+      updatedAt: now,
+      originKind: "programmatic",
+      parent,
+      subagent: this.subagentInfo(step.agentType, "running"),
+    };
+    this.store.threads[native] = { info, items: [], turns: 1, settings: { model: "fake-small" }, turnLog: ["sub-t1"] };
+    this.save();
+    this.emit({ type: "threadChanged", info: structuredClone(info) });
+    const turnId = "sub-t1";
+    this.emit({ type: "turnStarted", thread: native, turnId, origin: "external", at: now });
+    const user: Item = { id: `${native}-u1`, turnId, status: "completed", kind: "userMessage", parts: [{ type: "text", text: step.description }] };
+    this.record(native, user);
+    this.emit({ type: "itemCompleted", thread: native, item: user });
+    let status: TurnStatus = step.fail ? "failed" : "completed";
+    try {
+      await this.stream(native, turnId, `${native}-a1`, "agentMessage", step.reply, pace, signal);
+    } catch (e) {
+      status = "interrupted";
+      throw e;
+    } finally {
+      const end = this.store.threads[native];
+      if (end) {
+        end.info.subagent = this.subagentInfo(step.agentType, status === "completed" ? "completed" : status === "failed" ? "failed" : "stopped");
+        end.info.updatedAt = nowIso();
+        this.save();
+        this.emit({ type: "turnCompleted", thread: native, turnId, status, ...(step.fail ? { error: "the sub-agent failed" } : {}), at: nowIso() });
+        this.emit({ type: "threadChanged", info: structuredClone(end.info) });
+      }
+    }
   }
 
   /**

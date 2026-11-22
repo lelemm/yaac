@@ -18,6 +18,8 @@ export type Step =
   | { k: "inUse"; holder: string; ms: number | null }
   | { k: "externalTurn"; ms: number; text: string }
   | { k: "outsideThread"; title: string }
+  /** One of the harness's own sub-agents (D151), run inside this turn. */
+  | { k: "subagent"; agentType: string; description: string; reply: string; fail: boolean }
   | { k: "usage" }
   | { k: "crash" }
   | { k: "crashOnAnswer" }
@@ -122,6 +124,17 @@ export function parseScript(text: string): Script {
       case "outside-thread":
         steps.push({ k: "outsideThread", title: rest || "A conversation started in a terminal" });
         break;
+      case "subagent": {
+        const [agentType, description, reply, outcome] = rest.split("|").map((s) => s.trim());
+        steps.push({
+          k: "subagent",
+          agentType: agentType || "general-purpose",
+          description: description || "A sub-agent",
+          reply: reply || "Sub-agent done.",
+          fail: outcome === "fail",
+        });
+        break;
+      }
       case "usage":
         steps.push({ k: "usage" });
         break;

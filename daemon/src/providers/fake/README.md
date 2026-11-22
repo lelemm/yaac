@@ -61,6 +61,7 @@ Steps run in order.
 | `/fake in-use [holder] [ms]` | After the turn, the thread is held by another program (`external`), released after `ms` if given. |
 | `/fake external-turn [ms] [text]` | After the turn, another program takes the thread, runs a turn (origin `external`) that says `text`, and lets go `ms` later (default 2000). |
 | `/fake outside-thread <title>` | A new conversation "created outside YAAC" appears in the listing. |
+| `/fake subagent <type> \| <description> \| <reply> [\| fail]` | One of the harness's own sub-agents (D151) runs inside the turn: a conversation `<parent>:agent-N` appears at once (`parent`, `subagent { agentType, status: running, readOnly }`), runs its own turn (origin `external`) that says `<reply>`, and is reported `completed` (or `failed`). Read-only: "Only the fake agent that started this sub-agent can continue it." Tests can also store finished ones without an event (`addStoredSubagent`). |
 
 `turn/steer` input is answered at the next step boundary as `Steered: <text>`.
 
