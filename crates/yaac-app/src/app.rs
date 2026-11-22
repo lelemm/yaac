@@ -180,6 +180,11 @@ pub(crate) struct UiState {
     /// thread, and the height of its view. The next pass starts at the end of its own layout
     /// (D152) instead of where egui's stick-to-bottom left it one pass ago.
     pub at_end: Option<(ThreadKey, f32)>,
+    /// The open thread's transcript ended its last pass scrolled up: which thread, the block
+    /// at the top of its view (by identity) and the view's top relative to that block's. The
+    /// next pass keeps that block where it was on screen, whatever was measured above it
+    /// (D163, P250).
+    pub scroll_anchor: Option<(ThreadKey, u64, f32)>,
     /// An input method is composing in the composer.
     pub ime_composing: bool,
     pub settings: bool,
@@ -209,9 +214,15 @@ pub(crate) struct UiState {
     pub set: crate::settings::SettingsUi,
     /// Transcript block heights as last drawn, keyed by block identity, not content (D152, P200).
     pub heights: HashMap<u64, f32>,
+    /// Guessed heights of transcript blocks not drawn yet, by block identity: the item's
+    /// revision and the width each was guessed for (D163, P251).
+    pub guesses: HashMap<u64, (u64, f32, f32)>,
     /// Tests only: the transcript's geometry, one entry per pass.
     #[cfg(test)]
     pub geom: Vec<crate::thread::Geom>,
+    /// Tests only: guess every unmeasured message block at a flat 60 points, as before D163.
+    #[cfg(test)]
+    pub flat_guesses: bool,
     /// The transcript's text selection.
     pub textsel: crate::seltext::TextSel,
     /// Parsed diffs of file changes.
@@ -287,6 +298,7 @@ impl UiState {
             scroll_end: false,
             away_from_end: None,
             at_end: None,
+            scroll_anchor: None,
             ime_composing: false,
             settings: false,
             settings_page: Page::Targets,
@@ -308,8 +320,11 @@ impl UiState {
             layout_size: None,
             set: crate::settings::SettingsUi::default(),
             heights: HashMap::new(),
+            guesses: HashMap::new(),
             #[cfg(test)]
             geom: Vec::new(),
+            #[cfg(test)]
+            flat_guesses: false,
             textsel: crate::seltext::TextSel::default(),
             diffs: crate::thread::DiffCache::default(),
             history: yaac_core::history::History::default(),
@@ -1901,14 +1916,12 @@ pub(crate) mod tests {
         (app, key)
     }
 
-    /// D163: one wheel notch moves the transcript's content on screen by the same amount
-    /// wherever the view is, scrolling up from the bottom or down from the top, however good
-    /// the guess at a block's height was before it was measured; and no frame moves it the
-    /// other way.
-    #[test]
-    fn identical_wheel_notches_move_the_transcript_by_the_same_amount() {
+    /// Wheel notches up the long conversation from its bottom, then down from its top: what
+    /// went wrong, and each block's guessed height against the one drawn.
+    fn wheel_notches(flat_guesses: bool) -> (Vec<String>, Vec<(f32, f32)>) {
         let ctx = egui::Context::default();
         let (mut app, _key) = long_varied_app(&ctx);
+        app.ui.flat_guesses = flat_guesses;
         let clock = std::cell::Cell::new(0.0_f64);
         let screen = || {
             clock.set(clock.get() + 1.0 / 60.0);
@@ -1937,6 +1950,7 @@ pub(crate) mod tests {
         // screen, and whether it ended at either end.
         let mut notches: Vec<(f32, f32, f32, bool)> = Vec::new();
         let mut problems = Vec::new();
+        let mut guessed: Vec<(f32, f32)> = Vec::new();
         for dir in [1.0_f32, -1.0] {
             for _ in 0..200 {
                 let before = g.clone();
@@ -1955,7 +1969,7 @@ pub(crate) mod tests {
                 });
                 let mut prev = before.clone();
                 g = frame(&mut app, input);
-                for n in 0..40 {
+                for n in 0..20 {
                     if let Some(m) = moved(&prev, &g)
                         && m * dir > 0.5
                     {
@@ -1963,6 +1977,7 @@ pub(crate) mod tests {
                     }
                     prev = g.clone();
                     g = frame(&mut app, screen());
+                    guessed.extend(app.ui.geom.iter().flat_map(|x| x.guessed.iter().copied()));
                 }
                 let clamped = g.offset <= 0.5 || g.offset >= (g.content - g.view).max(0.0) - 0.5;
                 let m = moved(&before, &g).unwrap_or(f32::NAN);
@@ -1975,6 +1990,7 @@ pub(crate) mod tests {
             .map(|(n, (d, off, m, c))| format!("{n:3} {} offset {off:+7.1} content {m:+7.1}{}", if *d > 0.0 { "up  " } else { "down" }, if *c { " (at an end)" } else { "" }))
             .collect();
         eprintln!("{}", text.join("\n"));
+        eprintln!("guessed → drawn ({}): {:?}", if flat_guesses { "flat" } else { "from the content" }, guessed.iter().map(|(a, b)| format!("{a:.0}→{b:.0}")).collect::<Vec<_>>());
         let ups = notches.iter().filter(|n| n.0 > 0.0).count();
         assert!(ups > 20 && notches.len() - ups > 20, "a long way both ways: {ups} up, {} down", notches.len() - ups);
         for (n, (d, _, m, at_end)) in notches.iter().enumerate() {
@@ -1982,7 +1998,22 @@ pub(crate) mod tests {
                 problems.push(format!("notch {n}: the content moved {m:.1}, not {:.1}", -d * LINE_SCROLL_SPEED));
             }
         }
-        assert!(problems.is_empty(), "{} problems:\n{}", problems.len(), problems.join("\n"));
+        (problems, guessed)
+    }
+
+    /// D163: one wheel notch moves the transcript's content on screen by the same amount
+    /// wherever the view is, scrolling up from the bottom or down from the top, however wrong
+    /// the guess at a block's height was before it was measured; and no frame moves it the
+    /// other way. Guesses from the content are near the drawn heights.
+    #[test]
+    fn identical_wheel_notches_move_the_transcript_by_the_same_amount() {
+        let (problems, _) = wheel_notches(true);
+        assert!(problems.is_empty(), "flat guesses: {} problems:\n{}", problems.len(), problems.join("\n"));
+        let (problems, guessed) = wheel_notches(false);
+        assert!(problems.is_empty(), "guesses from the content: {} problems:\n{}", problems.len(), problems.join("\n"));
+        let off: f32 = guessed.iter().map(|(g, d)| (g - d).abs()).sum();
+        let drawn: f32 = guessed.iter().map(|(_, d)| d).sum();
+        assert!(guessed.len() > 30 && off < drawn * 0.1, "guesses {off} off over {drawn} drawn");
     }
 
     #[test]

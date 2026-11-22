@@ -335,6 +335,63 @@ fn item_units(blocks: &[Block], t: &Transcript, index: usize) -> Vec<(Unit, Vec<
     out
 }
 
+/// What a guess at a block's height needs from this pass's layout.
+struct Metrics {
+    width: f32,
+    /// Points per character of prose, on average.
+    char_w: f32,
+    gap: f32,
+}
+
+impl Metrics {
+    fn of(ui: &egui::Ui, width: f32) -> Self {
+        const SAMPLE: &str = "The quick brown fox jumps over the lazy dog, then reads the file again.";
+        let w = ui.fonts_mut(|f| f.layout_no_wrap(SAMPLE.to_owned(), theme::ui(size::PROSE), egui::Color32::WHITE).size().x);
+        #[allow(clippy::cast_precision_loss, reason = "a short sample")]
+        let char_w = w / SAMPLE.len() as f32;
+        Self { width, char_w, gap: ui.spacing().item_spacing.y }
+    }
+}
+
+/// A block's height before it is first drawn (D163, P251): from what it holds, at the
+/// column's width, so the content's height and the scroll bar are near the truth. Kept per
+/// block until its item or the width changes, so a long thread is not read again each frame.
+fn guess(cache: &mut std::collections::HashMap<u64, (u64, f32, f32)>, ident: u64, b: &Block, t: &Transcript, m: &Metrics, flat: bool) -> f32 {
+    #[allow(clippy::cast_precision_loss, reason = "a block's line count")]
+    let lines = |n: usize| n as f32;
+    let index = match b {
+        Block::Run { lines: l } => return lines(l.len()) * 22.0,
+        Block::Folded { .. } | Block::TurnChanges { .. } => return 22.0,
+        Block::Worked { .. } => return crate::messages::WORKED_LINE,
+        Block::Card { .. } => return 60.0,
+        _ if flat => return 60.0,
+        Block::User { index } | Block::Task { index } | Block::Prose { index } | Block::Handoff { index } => *index,
+    };
+    let rev = t.item_rev(index);
+    if let Some((r, w, h)) = cache.get(&ident)
+        && *r == rev
+        && (*w - m.width).abs() < 0.5
+    {
+        return *h;
+    }
+    let Some(item) = t.items().get(index) else { return 60.0 };
+    let text = |w: f32, s: &str| markdown::guess_height(s, w, m.char_w, size::PROSE, m.gap);
+    let h = match (b, &item.body) {
+        (Block::User { .. }, _) => {
+            // In its bubble (D155): its share of the column, less the bubble's margins.
+            let margin = crate::messages::BUBBLE_MARGIN;
+            let max = (m.width * crate::messages::BUBBLE_SHARE).max(m.width.min(240.0));
+            text(max - f32::from(margin.left + margin.right), &message_text(item).unwrap_or_default()) + f32::from(margin.top + margin.bottom)
+        }
+        // "From …" above a frame.
+        (Block::Task { .. }, _) => 24.0 + 20.0 + text(m.width - 28.0, &message_text(item).unwrap_or_default()),
+        (Block::Handoff { .. }, ItemBody::Handoff(h)) => text(m.width, h.transcript.as_deref().unwrap_or("")) + 34.0,
+        _ => text(m.width, &message_text(item).unwrap_or_default()),
+    };
+    cache.insert(ident, (rev, m.width, h));
+    h
+}
+
 /// Tests only: how one pass laid the transcript out.
 #[cfg(test)]
 #[derive(Clone, Debug, Default)]
@@ -352,6 +409,8 @@ pub(crate) struct Geom {
     pub estimated: Vec<usize>,
     /// Each drawn block's identity and its top relative to the top of the view.
     pub placed: Vec<(u64, f32)>,
+    /// Blocks measured for the first time: the height guessed for each, and the one drawn.
+    pub guessed: Vec<(f32, f32)>,
 }
 
 pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
@@ -381,15 +440,21 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     let mut heights = Vec::with_capacity(bl.len());
     let mut tops = Vec::with_capacity(bl.len());
     let mut y = 12.0;
+    let metrics = Metrics::of(ui, width);
     for (i, b) in bl.iter().enumerate() {
         tops.push(y);
-        let est = match b {
-            Block::Run { lines } => lines.len() as f32 * 22.0,
-            Block::Folded { .. } | Block::TurnChanges { .. } => 22.0,
-            Block::Worked { .. } => crate::messages::WORKED_LINE,
-            _ => 60.0,
+        let h = match app.ui.heights.get(&idents[i]) {
+            Some(h) => *h,
+            None => {
+                // Tests only: the flat guesses of before (D163), to see that the view holds
+                // still however wrong a guess is.
+                #[cfg(test)]
+                let flat = app.ui.flat_guesses;
+                #[cfg(not(test))]
+                let flat = false;
+                guess(&mut app.ui.guesses, idents[i], b, t, &metrics, flat)
+            }
         };
-        let h = app.ui.heights.get(&idents[i]).copied().unwrap_or(est);
         heights.push(h);
         // A message keeps a line under it for its time (D154).
         y += h + GAP + crate::messages::stamp_space(b);
@@ -434,6 +499,14 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
         let view = app.ui.at_end.as_ref().filter(|(k, _)| k == key).map(|(_, v)| *v);
         if std::mem::take(&mut app.ui.scroll_end) || view.is_some() {
             sa = sa.vertical_scroll_offset((total - view.unwrap_or_else(|| ui.available_height())).max(0.0));
+        } else if let Some((_, id, off)) = app.ui.scroll_anchor.as_ref().filter(|(k, ..)| k == key)
+            && let Some(i) = idents.iter().position(|x| x == id)
+        {
+            // Scrolled up: the block that was at the top of the view stays where it was on
+            // screen (D163). Blocks above it measured since moved it in this layout; the
+            // offset moves by as much, so the content does not jump under a still offset and
+            // a wheel notch moves it by a notch, however wrong a guessed height was.
+            sa = sa.vertical_scroll_offset((tops[i] + off).max(0.0));
         }
     }
     let mut changed = false;
@@ -512,6 +585,7 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
                 geom.placed.push((idents[i], r.response.rect.top() - ui.clip_rect().top()));
                 if !app.ui.heights.contains_key(&idents[i]) {
                     geom.estimated.push(unit.item);
+                    geom.guessed.push((heights[i], h));
                 }
                 if i + 1 == bl.len() {
                     geom.last_bottom = Some(r.response.rect.bottom());
@@ -555,6 +629,14 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     // Exactly at the end: egui's own test for sticking to it.
     let stuck = out.state.unclamped_offset().y + out.inner_rect.height() >= out.content_size.y - 0.5;
     app.ui.at_end = stuck.then(|| (key.clone(), out.inner_rect.height()));
+    // What the next pass keeps in place (D163): the first block starting in the view (one
+    // already measured, as the 300 points around the view are), else the one reaching into it.
+    let top = out.state.clamped_offset().y;
+    app.ui.scroll_anchor = if stuck {
+        None
+    } else {
+        (0..bl.len()).find(|&i| tops[i] >= top).or_else(|| (0..bl.len()).rev().find(|&i| tops[i] < top)).map(|i| (key.clone(), idents[i], top - tops[i]))
+    };
     #[cfg(test)]
     {
         geom.offset = out.state.unclamped_offset().y;

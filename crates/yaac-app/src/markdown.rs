@@ -412,6 +412,47 @@ pub(crate) fn plain_parts(blocks: &[&Block]) -> Vec<String> {
         .collect()
 }
 
+/// A guess at the height [`show`] gives `text` at `width`, from the text alone (D163, P251):
+/// its lines wrapped at `char_w` points a character, code lines unwrapped, the space between
+/// blocks. For a transcript block not drawn yet, so the scroll bar and the content's height
+/// are near the truth before it is measured. Cheap: one pass over the text, no parse.
+pub(crate) fn guess_height(text: &str, width: f32, char_w: f32, font_size: f32, gap: f32) -> f32 {
+    let line = font_size * 1.45;
+    let code_line = size::MONO * 1.55;
+    let per = (width / char_w.max(1.0)).max(8.0);
+    let (mut h, mut blocks, mut code, mut para) = (0.0_f32, 0_u16, false, false);
+    for l in text.split('\n') {
+        let s = l.trim();
+        if s.starts_with("```") || s.starts_with("~~~") {
+            // The code frame's margins, once per block.
+            if !code {
+                blocks = blocks.saturating_add(1);
+                h += 16.0;
+            }
+            code = !code;
+            para = false;
+            continue;
+        }
+        if code {
+            h += code_line;
+            continue;
+        }
+        if s.is_empty() {
+            para = false;
+            continue;
+        }
+        let item = s.starts_with("- ") || s.starts_with("* ") || s.starts_with('#') || s.split_once(". ").is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        if !para || item {
+            blocks = blocks.saturating_add(1);
+        }
+        para = true;
+        #[allow(clippy::cast_precision_loss, reason = "a line's length")]
+        let rows = (l.chars().count() as f32 / per).ceil().max(1.0);
+        h += rows * line;
+    }
+    h + f32::from(blocks.saturating_sub(1)) * (6.0 + gap)
+}
+
 /// Draw blocks. `color` is the prose colour (primary, or secondary for inherited history).
 /// Text is drawn through `sc`, so it can be selected across items.
 pub(crate) fn show(ui: &mut egui::Ui, sc: &mut SelCx<'_>, blocks: &[&Block], p: &Palette, color: Color32, font_size: f32) {
