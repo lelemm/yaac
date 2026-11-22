@@ -225,7 +225,7 @@ fn always_shown(b: &Block, t: &Transcript) -> bool {
 /// Fold every finished turn of a transcript's blocks into its "Worked for" line and its final
 /// message. A turn stays open when the user opened it, when its files' "show all" is open, or
 /// when the item just navigated to (`focus`) is inside its work.
-pub fn collapse(t: &Transcript, key: &ThreadKey, blocks: Vec<Block>, opened: &Opened, expansion: &Expansion, focus: Option<&ItemId>) -> Vec<Block> {
+pub fn collapse(t: &Transcript, key: &ThreadKey, blocks: &[Block], opened: &Opened, expansion: &Expansion, focus: Option<&ItemId>) -> Vec<Block> {
     let mut out = Vec::with_capacity(blocks.len());
     let mut cache: BTreeMap<TurnId, Option<Finished>> = BTreeMap::new();
     let mut i = 0;
@@ -260,7 +260,7 @@ pub fn collapse(t: &Transcript, key: &ThreadKey, blocks: Vec<Block>, opened: &Op
             || expansion.turns.contains(&(key.clone(), turn.clone()))
             || focus.is_some_and(|f| work.iter().any(|&n| block_ids(&group[n], t).contains(&f)));
         out.extend(group[..lead].iter().cloned());
-        out.push(Block::Worked { text: worked_text(&fin), failed: fin.outcome == Outcome::Failed, error: fin.error.clone(), expanded: open, turn: turn.clone() });
+        out.push(Block::Worked { text: worked_text(&fin), failed: fin.outcome == Outcome::Failed, error: fin.error.clone(), expanded: open, turn });
         for (n, b) in group.iter().enumerate().skip(lead) {
             if open || !work.contains(&n) {
                 out.push(b.clone());
@@ -319,7 +319,7 @@ mod tests {
         let state = state_with(t);
         let map = crate::attention::AttentionMap::compute(&state);
         let bl = crate::activity::blocks(&state, &map, &key(), &Expansion::default());
-        collapse(t, &key(), bl, opened, &Expansion::default(), None)
+        collapse(t, &key(), &bl, opened, &Expansion::default(), None)
     }
 
     fn state_with(t: &Transcript) -> crate::state::AppState {
@@ -481,7 +481,7 @@ mod tests {
         let map = crate::attention::AttentionMap::compute(&state);
         let bl = crate::activity::blocks(&state, &map, &key(), &Expansion::default());
         let focus = ItemId::new("c2");
-        let b = collapse(&t, &key(), bl, &Opened::default(), &Expansion::default(), Some(&focus));
+        let b = collapse(&t, &key(), &bl, &Opened::default(), &Expansion::default(), Some(&focus));
         assert_eq!(kinds(&b)[1], "Worked for 26s (open)");
     }
 }

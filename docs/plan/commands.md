@@ -38,6 +38,7 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 | Find a thread… | Fuzzy-find any thread by title or id across every target (hub search), and open it. | Ctrl+P **new** |
 | Next thread that needs you | Open the next thread waiting on you, at its request (D117). | Ctrl+J |
 | Jump to the bottom | Scroll the open thread to its newest message; with the view scrolled up, the button above the composer says how many messages arrived since (D142). | Ctrl+End |
+| Go to previous / next message | Scroll the open thread to the prompt before / after the one in view — what the timeline's dashes stand for (D153, P212). Disabled below two prompts. | Alt+PageUp / Alt+PageDown **new** |
 | Next unseen finished thread | Open the next thread whose finished turn you have not seen (D114). | Ctrl+U **new** |
 | Next / previous thread in the list | Move the selection down / up the sidebar. | Ctrl+↓ / Ctrl+↑ |
 | Back / forward | Through visited threads (D87). | Alt+← / Alt+→, mouse buttons |
@@ -115,7 +116,7 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 | Show dismissed / Show archived | — | — |
 | Theme: system / light / dark | — | — |
 | Zoom in / out / reset | Interface scale (the Appearance font size, 11–18 pt, persisted). | Ctrl+= (or Ctrl++) / Ctrl+- / Ctrl+0 **new** |
-| Expand / collapse all tool lines | In the open thread. | — |
+| Expand / collapse all tool lines | In the open thread, including the work of finished turns folded into "Worked for …" (D156). | — |
 | Copy the selection / Copy message | D84. | Ctrl+C / — |
 
 ### Targets and providers

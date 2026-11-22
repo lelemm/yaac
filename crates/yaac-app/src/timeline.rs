@@ -23,12 +23,15 @@ const PAD: f32 = 28.0;
 const DASH: f32 = 7.0;
 const DASH_LIT: f32 = 12.0;
 
+/// The thread, each prompt with its top in the transcript, and the view's top, as last drawn.
+pub(crate) type Drawn = (ThreadKey, Vec<(ItemId, f32)>, f32);
+
 /// The timeline's view state.
 #[derive(Debug, Default)]
 pub(crate) struct TimelineUi {
     /// As last drawn: the thread, each prompt with its top in the transcript, and the view's
     /// top — what "Go to previous / next message" works from.
-    pub last: Option<(ThreadKey, Vec<(ItemId, f32)>, f32)>,
+    pub last: Option<Drawn>,
     /// Scroll the transcript to this prompt on the next frame.
     pub go_to: Option<ItemId>,
     /// The prompt last gone to, and how many more frames to aim at it while heights settle.

@@ -33,6 +33,7 @@ fn shape(c: &yaac_core::client::Client, key: &ThreadKey, e: &Expansion) -> Vec<S
             Block::TurnChanges { totals, expanded, .. } => {
                 format!("changes[{} +{} −{}{}]", totals.text(), totals.added, totals.removed, if expanded { " open" } else { "" })
             }
+            Block::Worked { text, .. } => format!("worked[{text}]"),
         })
         .collect()
 }

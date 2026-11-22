@@ -357,7 +357,7 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     let bl = blocks(state, map, key, &app.ui.expansion);
     // Finished turns fold into "Worked for …" and their final message (D156).
     let focus = state.focus_item.as_ref().filter(|(k, _)| k == key).map(|(_, id)| id);
-    let bl = yaac_core::turns::collapse(t, key, bl, &app.ui.worked, &app.ui.expansion, focus);
+    let bl = yaac_core::turns::collapse(t, key, &bl, &app.ui.worked, &app.ui.expansion, focus);
     let avail = ui.available_width();
     if std::env::var_os("YAAC_DEBUG_LAYOUT").is_some() {
         eprintln!("transcript rect {:?} avail {avail}", ui.max_rect());
