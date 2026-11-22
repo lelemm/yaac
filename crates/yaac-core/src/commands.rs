@@ -56,6 +56,7 @@ pub enum Cmd {
     Dismiss,
     DismissAllTemp,
     Fork,
+    TakeOver,
     CheckLatest,
     ContinueBudget,
     ArchiveSelected,
@@ -267,6 +268,7 @@ pub static COMMANDS: &[CommandDef] = &[
     def(Cmd::Dismiss, "dismiss", "Dismiss / Show again", "Hide a discovered thread in the window.", &["hide"], G::Threads, &[]),
     def(Cmd::DismissAllTemp, "dismiss-all-temp", "Dismiss all in this temporary project", "Hide every thread of this folder in the window.", &["hide"], G::Threads, &[]),
     def(Cmd::Fork, "fork", "Fork…", "Open the fork dialog (native or handoff).", &["branch", "copy", "handoff", "switch provider"], G::Threads, &["Ctrl+Shift+F"]),
+    def(Cmd::TakeOver, "take-over", "Take over", "Continue here a thread another program holds; that program is not stopped.", &["continue here", "unlock", "read-only", "in use", "steal"], G::Threads, &[]),
     def(Cmd::CheckLatest, "check-latest", "Check for the latest", "Read this thread again from its target.", &["refresh", "reload", "status"], G::Threads, &[]),
     def(Cmd::ContinueBudget, "continue-budget", "Continue (budget)", "Resume an orchestration paused on its budget.", &["resume", "allowance"], G::Threads, &[]),
     def(Cmd::ArchiveSelected, "archive-selected", "Archive selected…", "Archive the rows selected in the sidebar, with one confirmation.", &["bulk", "many", "multiple", "hide"], G::Threads, &[]),
@@ -480,6 +482,7 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
             | Cmd::Dismiss
             | Cmd::DismissAllTemp
             | Cmd::Fork
+            | Cmd::TakeOver
             | Cmd::CheckLatest
             | Cmd::ContinueBudget
             | Cmd::Parent
@@ -543,6 +546,10 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
         }),
         Cmd::DismissAllTemp => when(key.as_ref().is_some_and(|k| st.project_of(k).is_none()), "This thread is in a project"),
         Cmd::Fork => when(key.as_ref().is_some_and(|k| crate::fork::default_choice(st, k).is_some()), "No harness here can fork this thread"),
+        Cmd::TakeOver => key.map_or(Avail::Hidden, |k| match menu_avail(ctx, &k, &[MenuAction::TakeOver]) {
+            Avail::Hidden => off("Only for a thread another program holds, whose harness can hand it over"),
+            a => a,
+        }),
         Cmd::CheckLatest => {
             let unknown = key.as_ref().and_then(|k| st.transcripts.get(k)).is_some_and(|t| {
                 t.items().iter().any(|i| matches!(&i.body, ItemBody::Request(r) if r.state == RequestState::Unknown))

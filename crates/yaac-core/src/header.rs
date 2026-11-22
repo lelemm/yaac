@@ -56,10 +56,13 @@ pub enum LinkLine {
 /// A banner under the header.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Banner {
-    /// The thread is held elsewhere; one action: fork to continue here.
+    /// The thread is held elsewhere: fork to continue here, and — for a program on the target
+    /// whose harness allows it — **Take over** (D140).
     InUseElsewhere {
         /// The sentence.
         text: String,
+        /// **Take over**, when offered.
+        take_over: Option<crate::thread_menu::TakeOver>,
     },
     /// The target's daemon is older, or being updated; one action, when the hub can update
     /// it: **Update now**.
@@ -176,7 +179,7 @@ pub fn header(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Option<H
             ),
             _ => format!("This thread is open in another program on {target_name}. You can watch, but not send."),
         };
-        banners.push(Banner::InUseElsewhere { text });
+        banners.push(Banner::InUseElsewhere { text, take_over: crate::thread_menu::take_over(state, key) });
     }
     if let Some(t) = state.target(&key.target)
         && let Some(b) = daemon_banner(&key.target, &t.entry.state, &target_name)

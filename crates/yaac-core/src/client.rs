@@ -108,6 +108,8 @@ enum Call {
     Fork { target: TargetId },
     /// `thread/delete`.
     Delete(ThreadKey),
+    /// `thread/takeOver` (D140).
+    TakeOver(ThreadKey),
     /// One `thread/archive` of a bulk Archive (D138).
     BulkArchive { batch: u64, key: ThreadKey },
     ForkPreview { key: ThreadKey, instance: InstanceId },
@@ -433,6 +435,7 @@ impl Client {
                 let Some(t) = self.state.transcripts.get_mut(&key) else { return };
                 t.control = Some(r.control);
                 t.control_holder = r.control_holder;
+                t.take_over_blocked = r.take_over_blocked;
                 t.active_turn = r.active_turn;
                 if r.effective.is_some() {
                     t.effective = r.effective;
@@ -545,6 +548,24 @@ impl Client {
                 }
             }
             Call::Delete(key) => self.deleted(&key),
+            Call::TakeOver(key) => {
+                if let Some(t) = self.state.transcripts.get_mut(&key) {
+                    t.take_over = None;
+                    // The control event may still be on its way: the thread is this window's now.
+                    if t.control == Some(Control::External) {
+                        t.control = Some(Control::Free);
+                        t.control_holder = None;
+                        t.take_over_blocked = None;
+                    }
+                    t.revision += 1;
+                }
+                if let Some(r) = self.state.threads.get_mut(&key)
+                    && r.summary.control == Control::External
+                {
+                    r.summary.control = Control::Free;
+                    r.summary.control_holder = None;
+                }
+            }
             Call::BulkArchive { batch, key } => self.archived_one(batch, &key, crate::bulk::Outcome::Ok),
             c @ (Call::ForgePrs(_) | Call::ForgePrepare(_) | Call::ForgeCreate(_) | Call::ForgeAsk(_)) => self.on_forge_result(c, result),
             Call::Fork { target } => {
@@ -598,6 +619,18 @@ impl Client {
                     }
                     self.dirty.insert(DraftRef::Thread(key.clone()));
                     self.error(Some(key), format!("Not sent: {}", error.message));
+                }
+            }
+            Call::TakeOver(key) => {
+                // Shown on the banner, never retried on its own.
+                let why = if error.code == ErrorCode::OutcomeUnknown {
+                    "YAAC lost contact while taking the thread over. It may or may not be yours now; it will not be asked again.".to_owned()
+                } else {
+                    error.message.clone()
+                };
+                if let Some(t) = self.state.transcripts.get_mut(&key) {
+                    t.take_over = Some(crate::transcript::TakeOverRequest::Failed(why));
+                    t.revision += 1;
                 }
             }
             Call::Delete(key) => match error.code {
@@ -843,6 +876,21 @@ impl Client {
         let op = self.op_id();
         let params = json!({ "opId": op, "threadId": key.thread, "alsoInHarness": also_in_harness });
         self.routed(&key.target, m::THREAD_DELETE, params, Call::Delete(key.clone()));
+    }
+
+    /// **Take over** a thread another program holds (`thread/takeOver`, D140): one click, no
+    /// confirmation. The banner shows it in flight, then goes away, or shows the reason.
+    pub fn take_over(&mut self, key: &ThreadKey) {
+        if self.state.transcripts.get(key).is_some_and(|t| t.take_over == Some(crate::transcript::TakeOverRequest::InFlight)) {
+            return;
+        }
+        let op = self.op_id();
+        let params = json!({ "opId": op, "threadId": key.thread });
+        self.routed(&key.target, m::THREAD_TAKE_OVER, params, Call::TakeOver(key.clone()));
+        if let Some(t) = self.state.transcripts.get_mut(key) {
+            t.take_over = Some(crate::transcript::TakeOverRequest::InFlight);
+            t.revision += 1;
+        }
     }
 
     fn deleted(&mut self, key: &ThreadKey) {

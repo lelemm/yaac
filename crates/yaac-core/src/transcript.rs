@@ -17,6 +17,16 @@ pub struct LocalAnswer {
     pub verb: Option<String>,
 }
 
+/// This window's `thread/takeOver` (D140): in flight, or refused with the target's reason.
+/// Never re-sent on its own; a success clears it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TakeOverRequest {
+    /// Sent; no answer yet.
+    InFlight,
+    /// Not taken over, and why.
+    Failed(String),
+}
+
 /// A reset in progress: `thread/read` pages being collected, and live events held back until
 /// the snapshot is complete (they are strictly after its position).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -41,6 +51,10 @@ pub struct Transcript {
     pub control: Option<Control>,
     /// Where it is in use, for the read-only states.
     pub control_holder: Option<String>,
+    /// Why the program holding it will not let YAAC take it over now (D140).
+    pub take_over_blocked: Option<String>,
+    /// This window's **Take over** request, while it is in flight or after it failed.
+    pub take_over: Option<TakeOverRequest>,
     /// The running turn, for Stop.
     pub active_turn: Option<TurnId>,
     /// Effective capabilities and applied settings.
@@ -172,6 +186,7 @@ impl Transcript {
             ThreadEvent::ControlChanged(e) => {
                 self.control = Some(e.control.clone());
                 self.control_holder = e.holder.clone();
+                self.take_over_blocked = e.take_over_blocked.clone();
                 self.active_turn = e.active_turn.clone();
             }
             ThreadEvent::SettingsChanged(e) => self.effective = Some(e.effective.clone()),

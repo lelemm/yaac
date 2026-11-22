@@ -133,13 +133,46 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
         egui::Frame::NONE.fill(p.faint).corner_radius(6).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| match b {
-                Banner::InUseElsewhere { text } => {
+                Banner::InUseElsewhere { text, take_over } => {
                     widgets::icon(ui, 16.0, |pa, c, d| icons::info(pa, c, d, p.text2));
-                    ui.label(text);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if widgets::primary(ui, &p, "Fork to continue here", None).clicked() {
-                            actions.push(Action::OpenFork(key.clone()));
+                        // Take over is the primary action when offered (D140); Fork stays.
+                        match take_over {
+                            Some(t) => {
+                                if t.busy {
+                                    // In flight: progress, and nothing to click twice.
+                                    let _ = widgets::primary(ui, &p, "Taking over…", None).on_hover_text(&t.tooltip);
+                                    ui.add(egui::Spinner::new().size(14.0).color(p.text2));
+                                } else if t.enabled {
+                                    if widgets::primary_with_id(ui, &p, "Take over", egui::Id::unique(TAKE_OVER_BUTTON)).on_hover_text(&t.tooltip).clicked() {
+                                        actions.push(Action::TakeOver(key.clone()));
+                                    }
+                                } else {
+                                    // The reason is the line under the sentence.
+                                    widgets::unavailable(ui, &p, "Take over", "");
+                                }
+                                if widgets::plain(ui, &p, "Fork to continue here", None).clicked() {
+                                    actions.push(Action::OpenFork(key.clone()));
+                                }
+                            }
+                            None => {
+                                if widgets::primary(ui, &p, "Fork to continue here", None).clicked() {
+                                    actions.push(Action::OpenFork(key.clone()));
+                                }
+                            }
                         }
+                        // The sentence takes what the buttons leave, wrapped.
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.add(egui::Label::new(text.as_str()).wrap());
+                            // Why Take over cannot be used, or why the last attempt failed.
+                            if let Some(t) = take_over {
+                                if let Some(why) = &t.failure {
+                                    ui.add(egui::Label::new(egui::RichText::new(format!("Not taken over: {why}")).font(theme::ui(size::SMALL)).color(p.failed)).wrap());
+                                } else if !t.enabled && !t.busy {
+                                    ui.add(egui::Label::new(widgets::secondary(t.tooltip.clone(), &p)).wrap());
+                                }
+                            }
+                        });
                     });
                 }
                 Banner::OlderDaemon { text, update_now } => {
@@ -157,6 +190,9 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
         });
     }
 }
+
+/// The banner's **Take over** button (D140), by a stable id.
+pub(crate) const TAKE_OVER_BUTTON: &str = "thread-take-over";
 
 pub(crate) fn link_part(ui: &mut egui::Ui, p: &Palette, title: &str, key: Option<&ThreadKey>, actions: &mut Vec<Action>) {
     match key {

@@ -297,6 +297,11 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
                 actions.push(Action::OpenFork(k));
             }
         }
+        Cmd::TakeOver => {
+            if let Some(k) = thread {
+                actions.push(Action::TakeOver(k));
+            }
+        }
         Cmd::CheckLatest => {
             if let Some(k) = thread {
                 actions.push(Action::CheckLatest(k));

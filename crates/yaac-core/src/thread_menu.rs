@@ -2,14 +2,16 @@
 //! Archive (D111). The menu's order is fixed by the owner:
 //!
 //! **Copy thread ID, Rename** — separator — **Fork, Pin/Unpin, Mute…, Archive** — separator —
-//! **Delete** (in the destructive colour). An archived thread has **Unarchive** where Archive
+//! **Delete** (in the destructive colour). A thread another program holds has **Take over**
+//! after Fork (D140), where its harness allows it. An archived thread has **Unarchive** where Archive
 //! was and no pin or mute (it is only ever under *Archived*, D93). Whether an entry can be used
 //! comes from capabilities, never from the provider's kind.
 
-use yaac_protocol::{Capability, ThreadState, has_capability};
+use yaac_protocol::{Capability, Control, ThreadState, has_capability};
 
 use crate::key::ThreadKey;
 use crate::state::AppState;
+use crate::transcript::TakeOverRequest;
 
 /// What an entry does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +22,8 @@ pub enum MenuAction {
     Rename,
     /// Fork.
     Fork,
+    /// Take over a thread another program holds (D140).
+    TakeOver,
     /// Pin.
     Pin,
     /// Unpin.
@@ -85,6 +89,47 @@ pub fn can(state: &AppState, key: &ThreadKey, cap: &Capability) -> bool {
     state.provider_of(key).is_some_and(|p| has_capability(&p.capabilities, cap))
 }
 
+/// **Take over** (D140) for a thread: offered only while another program holds it and its
+/// harness can hand it over (`threadTakeOver`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TakeOver {
+    /// It can be clicked now.
+    pub enabled: bool,
+    /// The request is in flight.
+    pub busy: bool,
+    /// What clicking does, or why it cannot be used.
+    pub tooltip: String,
+    /// Why the last attempt failed (shown on the banner; never retried on its own).
+    pub failure: Option<String>,
+}
+
+/// What a successful takeover means, shown on the button (the owner's words, D140).
+pub const TAKE_OVER_TIP: &str = "Continue here. The other program is not stopped and will not see what you send from now on.";
+
+/// Whether, and how, **Take over** is offered for a thread.
+pub fn take_over(state: &AppState, key: &ThreadKey) -> Option<TakeOver> {
+    if state.control(key) != Control::External || !can(state, key, &Capability::ThreadTakeOver) {
+        return None;
+    }
+    let t = state.transcripts.get(key);
+    if t.is_some_and(|t| t.take_over == Some(TakeOverRequest::InFlight)) {
+        return Some(TakeOver { enabled: false, busy: true, tooltip: "Taking over…".to_owned(), failure: None });
+    }
+    let failure = t.and_then(|t| match &t.take_over {
+        Some(TakeOverRequest::Failed(why)) => Some(why.clone()),
+        _ => None,
+    });
+    if let Some(why) = t.and_then(|t| t.take_over_blocked.clone()) {
+        return Some(TakeOver { enabled: false, busy: false, tooltip: capitalised(&why), failure });
+    }
+    Some(TakeOver { enabled: true, busy: false, tooltip: TAKE_OVER_TIP.to_owned(), failure })
+}
+
+fn capitalised(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+}
+
 fn item(action: MenuAction, label: &'static str, enabled: bool, reason: &'static str) -> MenuEntry {
     MenuEntry::Item(MenuItem { action, label, enabled, danger: false, reason: (!enabled).then_some(reason) })
 }
@@ -100,6 +145,10 @@ pub fn thread_menu(state: &AppState, key: &ThreadKey, now: i64) -> Vec<MenuEntry
         MenuEntry::Separator,
         item(MenuAction::Fork, "Fork", true, ""),
     ];
+    if let Some(t) = take_over(state, key) {
+        let reason = if t.busy { "Taking over…" } else { "The other program will not hand this thread over now" };
+        out.push(item(MenuAction::TakeOver, "Take over", t.enabled, reason));
+    }
     if s.archived {
         out.push(item(MenuAction::Unarchive, "Unarchive", can(state, key, &Capability::ThreadArchive), "This harness cannot archive threads"));
     } else {
