@@ -94,6 +94,11 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("81", "move-drag-other-machine"),
     ("82", "move-undo"),
     ("83", "markdown-table"),
+    ("100", "timeline"),
+    ("101", "worked-collapsed"),
+    ("102", "worked-expanded"),
+    ("103", "message-time"),
+    ("104", "worked-failed-interrupted"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -210,6 +215,8 @@ impl Shots {
 fn setup(app: &mut YaacApp, id: &str) {
     let scenario = if matches!(id, "07" | "08" | "09") { Scenario::Fresh } else { Scenario::Fleet };
     app.reset_demo(scenario);
+    app.ui.timeline = crate::timeline::TimelineUi::default();
+    app.ui.worked = yaac_core::turns::Opened::default();
     app.host_windows = false;
     let hub = app.demo.clone();
     let play = |app: &mut YaacApp, s: Scene| {
@@ -241,6 +248,30 @@ fn setup(app: &mut YaacApp, id: &str) {
                 app.ui.panel = PanelMode::Card;
             }
         }
+        "100" | "101" | "102" | "103" | "104" => {
+            // Three weeks of prompts on Try the new parser (D153–D156).
+            play(app, Scene::LongConversation);
+            let k = threads::parser();
+            app.open(&k, None);
+            match id {
+                // The timeline beside the thread, scrolled to the middle, a dash hovered.
+                "100" => {
+                    app.ui.timeline.go_to = Some("pl17-u".into());
+                    app.ui.timeline.force_hover = Some(9);
+                }
+                // The newest turns, each folded into "Worked for …" and its answer.
+                "101" => {}
+                // One of them opened again.
+                "102" => app.ui.worked.toggle(&k, &"p-long-30".into()),
+                // A message hovered: its time under it.
+                "103" => app.ui.timeline.force_stamp = Some("pl30-u".into()),
+                // A failed turn and one interrupted by an update.
+                _ => app.ui.timeline.go_to = Some("pl11-u".into()),
+            }
+            if id != "101" && id != "102" && id != "103" {
+                app.ui.scroll_end = false;
+            }
+        }
         "83" => {
             // A markdown table in an agent's message: a grid with a bold header, not the cells
             // run together (the bug the owner saw).
@@ -255,6 +286,8 @@ fn setup(app: &mut YaacApp, id: &str) {
             let k = threads::billing();
             app.open(&k, None);
             app.ui.expansion.toggle_file(&k, &"b3".into(), 0);
+            // The finished turn opened again (D156), so its work shows.
+            app.ui.worked.toggle(&k, &"b-t1".into());
             app.ui.scroll_to = Some("b3".into());
             app.ui.scroll_end = false;
         }
@@ -629,6 +662,8 @@ fn setup(app: &mut YaacApp, id: &str) {
             play(app, Scene::HarnessMarkup);
             let k = threads::users();
             app.open(&k, None);
+            // The notices are in a finished turn: opened again (D156) so they show.
+            app.ui.worked.toggle(&k, &"u-t3".into());
             if id == "77" {
                 app.ui.expansion.toggle_pasted(&k, &"um1".into(), 1);
                 app.ui.expansion.toggle_context(&k, &"um1".into());

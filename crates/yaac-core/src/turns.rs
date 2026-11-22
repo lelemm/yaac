@@ -250,7 +250,9 @@ pub fn collapse(t: &Transcript, key: &ThreadKey, blocks: Vec<Block>, opened: &Op
         let last_prose = group.iter().rposition(|b| matches!(b, Block::Prose { .. }));
         let lead = group.iter().take_while(|b| matches!(b, Block::User { .. } | Block::Task { .. })).count();
         let work: Vec<usize> = (lead..group.len()).filter(|&n| Some(n) != last_prose && !always_shown(&group[n], t)).collect();
-        if work.is_empty() && fin.outcome == Outcome::Completed {
+        // A turn with no prompt of its own (another agent's message started it) is not
+        // folded: the message that started it must stay in view.
+        if lead == 0 || (work.is_empty() && fin.outcome == Outcome::Completed) {
             out.extend(group.iter().cloned());
             continue;
         }
@@ -454,6 +456,16 @@ mod tests {
         t.active_turn = Some(TurnId::new("t2"));
         assert!(finished(&t, &TurnId::new("t1")).is_some());
         assert!(finished(&t, &TurnId::new("t2")).is_none());
+    }
+
+    #[test]
+    fn a_turn_another_agent_started_is_not_folded() {
+        // No prompt in this turn: it began with a message from another agent, which must stay
+        // in view (it is activity, not a user message).
+        let items: Vec<Item> = worked_turn().into_iter().skip(1).collect();
+        let t = transcript(items);
+        assert!(finished(&t, &TurnId::new("t1")).is_some());
+        assert!(!kinds(&shown(&t, &Opened::default())).iter().any(|k| k.starts_with("Worked")));
     }
 
     #[test]

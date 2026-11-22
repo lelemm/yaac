@@ -12,6 +12,7 @@ pub(crate) mod build;
 mod diffs;
 mod fleet;
 mod forge;
+mod long;
 pub mod ssh;
 
 use std::cell::RefCell;
@@ -68,11 +69,13 @@ pub enum Scene {
     LocalSignedOut,
     /// 74/75: Claude Code markup made readable: a paste, a command, notices (D141).
     HarnessMarkup,
+    /// 100–103: three weeks of prompts on Try the new parser (D153, D154, D156).
+    LongConversation,
 }
 
 impl Scene {
     /// Every scene, for the demo menu.
-    pub const ALL: [Scene; 8] = [
+    pub const ALL: [Scene; 9] = [
         Scene::RequestStates,
         Scene::Permission,
         Scene::Notices,
@@ -81,6 +84,7 @@ impl Scene {
         Scene::WslConnections,
         Scene::LocalSignedOut,
         Scene::HarnessMarkup,
+        Scene::LongConversation,
     ];
 
     /// Menu label.
@@ -94,6 +98,7 @@ impl Scene {
             Scene::WslConnections => "WSL connections on this PC",
             Scene::LocalSignedOut => "Claude on this computer is signed out",
             Scene::HarnessMarkup => "A paste, a command, and notices from Claude Code (users-service)",
+            Scene::LongConversation => "Three weeks of prompts (Try the new parser)",
         }
     }
 }
@@ -1455,6 +1460,13 @@ impl Inner {
                     self.emit_now(&users, ThreadEvent::ItemCompleted(ItemEvent { item: it }));
                 }
                 self.summary_now(&users, |s| s.updated_at = crate::time::timestamp(base));
+            }
+            Scene::LongConversation => {
+                let parser = k(PARSER);
+                for ev in long::events(base) {
+                    self.emit_now(&parser, ev);
+                }
+                self.summary_now(&parser, |s| s.updated_at = crate::time::timestamp(base - 60));
             }
             Scene::LocalSignedOut => {
                 let local = TargetId::new("local");
