@@ -185,9 +185,37 @@ fn hint_of(p: &PrSummary) -> Option<BadgeHint> {
     }
 }
 
-/// The badge of a thread's row; `None` (no badge) outside git, when the remote is not on a
-/// supported forge, and until the target has answered.
+/// The badge of a thread's row: only when the branch has at least one real pull request (D143
+/// — no placeholder badge; creating one is in the thread's menu, [`create_entry`]). `None`
+/// outside git, when the remote is not on a supported forge, until the target has answered,
+/// and when the branch has no pull request.
 pub fn badge_of(state: &AppState, key: &ThreadKey) -> Option<PrBadge> {
+    forge_badge(state, key).filter(|b| b.primary.is_some())
+}
+
+/// Whether the thread's menu offers **Create pull request…** (D143), and if not usable, why.
+/// `None`: not offered (outside git, not a supported forge, not answered yet).
+pub fn create_entry(state: &AppState, key: &ThreadKey) -> Option<Result<(), &'static str>> {
+    let s = state.summary(key)?;
+    if s.git.is_none() && s.repo.is_none() {
+        return None;
+    }
+    let r = state.prs.of(key)?;
+    r.access.repo.as_ref()?;
+    let caps = &r.access.capabilities;
+    Some(if caps.is_empty() {
+        Err("The forge's command-line tool on this target is missing or not signed in")
+    } else if !caps.contains(&ForgeCapability::PrCreate) {
+        Err("Pull requests cannot be created from this target")
+    } else if r.branch.is_some() && r.branch == r.default_branch {
+        Err("This is the repository's default branch")
+    } else {
+        Ok(())
+    })
+}
+
+/// The badge model with or without a pull request (the create placeholder before D143).
+fn forge_badge(state: &AppState, key: &ThreadKey) -> Option<PrBadge> {
     let s = state.summary(key)?;
     if s.git.is_none() && s.repo.is_none() {
         return None;

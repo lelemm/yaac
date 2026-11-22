@@ -40,6 +40,8 @@ pub enum MenuAction {
     Unarchive,
     /// Ask to delete (D110).
     Delete,
+    /// Open the Create PR modal for the thread's branch (D143).
+    CreatePr,
 }
 
 /// One row of the menu.
@@ -120,6 +122,18 @@ pub fn thread_menu(state: &AppState, key: &ThreadKey, now: i64) -> Vec<MenuEntry
             out.push(item(MenuAction::Dismiss, "Dismiss", true, ""));
         }
         out.push(item(MenuAction::Archive, "Archive…", can(state, key, &Capability::ThreadArchive), "This harness cannot archive threads"));
+    }
+    // Pull requests (D143): offered on a branch of a supported forge; the badge shows only
+    // once a real one exists.
+    if let Some(ok) = crate::pr::create_entry(state, key) {
+        out.push(MenuEntry::Separator);
+        out.push(MenuEntry::Item(MenuItem {
+            action: MenuAction::CreatePr,
+            label: "Create pull request…",
+            enabled: ok.is_ok(),
+            danger: false,
+            reason: ok.err(),
+        }));
     }
     out.push(MenuEntry::Separator);
     let (enabled, reason) = if running {

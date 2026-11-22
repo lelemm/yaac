@@ -1229,9 +1229,9 @@ the list.*
 - The orchestrator open, agents docked. Line 1 of each row ends with the PR badge before the
   time (D119): index-rebuild and search-service `[ PR# 33290 ]` with a merge mark (merged);
   billing-service `[ PR# 33343 +1 ]` with a dashed outline (draft) and a dotted ring (checks
-  running); Fix frame decoder `[ PR#      ]` (create); CI integration's badge shows a lock — `az`
-  is signed out on devbox, and the reason is the tooltip. The orchestrator, on `main` with no
-  pull request, has none. The docked rows carry the same badges (users-service with a cross:
+  running). Fix frame decoder (no pull request yet) and CI integration (`az` signed out) have no
+  badge (D143); creating one is in the row's menu. The orchestrator, on `main` with no pull
+  request, has none. The docked rows carry the same badges (users-service with a cross:
   checks failing). Titles ellipsize; badges and times never do.
 
 ### 61 — The `+1` list

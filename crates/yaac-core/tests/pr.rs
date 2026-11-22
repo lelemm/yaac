@@ -4,7 +4,7 @@ mod common;
 
 use common::{NOW, boot, settle};
 use yaac_core::demo::threads;
-use yaac_core::pr::{self, AgentDraft, BadgeAction, BadgeClick, BadgeHint, badge_menu, badge_of, click, parse_agent_draft};
+use yaac_core::pr::{self, AgentDraft, BadgeClick, BadgeHint, badge_menu, badge_of, click, parse_agent_draft};
 use yaac_protocol::{ChecksState, ForgeAccess, ForgePrsResult, PrState};
 
 fn all_visible(c: &mut yaac_core::client::Client, hub: &yaac_core::demo::DemoHub) {
@@ -40,17 +40,15 @@ fn badges_open_draft_more_merged_create_disabled_and_absent() {
     assert_eq!(search.hint, Some(BadgeHint::Merged));
     assert_eq!(search.checks, None);
 
-    // No pull request yet: the create badge.
-    let fix = badge_of(&c.state, &threads::fix()).unwrap();
-    assert_eq!(fix.number_text(), "");
-    assert_eq!(click(&fix), BadgeClick::Create);
-    assert_eq!(fix.tooltip(), "Create a pull request for this branch");
+    // No pull request yet: no badge (D143); creating one is in the thread's menu.
+    assert_eq!(badge_of(&c.state, &threads::fix()), None);
+    assert_eq!(pr::create_entry(&c.state, &threads::fix()), Some(Ok(())));
+    let menu = yaac_core::thread_menu::thread_menu(&c.state, &threads::fix(), 0);
+    assert!(menu.iter().any(|e| matches!(e, yaac_core::thread_menu::MenuEntry::Item(i) if i.action == yaac_core::thread_menu::MenuAction::CreatePr && i.enabled)));
 
-    // gh signed out on that machine: disabled, with the reason.
-    let notes = badge_of(&c.state, &threads::ci()).unwrap();
-    assert!(!notes.enabled);
-    assert_eq!(click(&notes), BadgeClick::Nothing);
-    assert_eq!(notes.tooltip(), "az is not logged in on devbox · run `az login` there");
+    // az signed out on that machine: no badge either; the menu entry says why.
+    assert_eq!(badge_of(&c.state, &threads::ci()), None);
+    assert_eq!(pr::create_entry(&c.state, &threads::ci()), Some(Err("The forge's command-line tool on this target is missing or not signed in")));
 
     // On the default branch with no pull request: no badge.
     assert_eq!(badge_of(&c.state, &threads::orchestrator()), None);
@@ -63,15 +61,8 @@ fn badge_menu_create_and_copy_link() {
     let users = badge_of(&c.state, &threads::users()).unwrap();
     let menu = badge_menu(&users);
     assert_eq!(menu.iter().map(|i| (i.label, i.enabled)).collect::<Vec<_>>(), [("Create a new PR", true), ("Copy link", true)]);
-    let fix = badge_of(&c.state, &threads::fix()).unwrap();
-    let menu = badge_menu(&fix);
-    assert_eq!(menu[1].action, BadgeAction::CopyLink);
-    assert!(!menu[1].enabled);
-    assert_eq!(menu[1].reason.as_deref(), Some("This branch has no pull request yet"));
-    let notes = badge_of(&c.state, &threads::ci()).unwrap();
-    let menu = badge_menu(&notes);
-    assert!(!menu[0].enabled);
-    assert!(menu[0].reason.as_deref().unwrap().starts_with("az is not logged in"));
+    // The default branch: offered, but not usable.
+    assert_eq!(pr::create_entry(&c.state, &threads::orchestrator()), Some(Err("This is the repository's default branch")));
 }
 
 #[test]

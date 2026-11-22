@@ -349,6 +349,7 @@ pub(crate) fn run_menu_action(app: &mut YaacApp, ctx: &egui::Context, key: &yaac
         MenuAction::Archive => actions.push(Action::OpenArchive(k)),
         MenuAction::Unarchive => actions.push(Action::Unarchive(k)),
         MenuAction::Delete => actions.push(Action::OpenDelete(k)),
+        MenuAction::CreatePr => actions.push(Action::OpenCreatePr(k)),
     }
 }
 
