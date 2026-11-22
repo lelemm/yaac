@@ -258,7 +258,7 @@ mod tests {
             done("task", "t0", received(message("m", &a, &b, MeshMessageKind::Message, "Migrate users.\nThen report.", crate::time::timestamp(5)), peer)),
             done("u1", "t1", user("## Why does decode() drop\nthe last frame?", &[], &[])),
             done("a1", "t1", agent("Because.")),
-            done("ctx", "t2", yaac_protocol::ItemBody::UserMessage(UserMessageItem { parts: vec![InputPart::text_as("reminder", TextRole::Context, None)] })),
+            done("ctx", "t2", yaac_protocol::ItemBody::UserMessage(UserMessageItem { parts: vec![InputPart::text_as("reminder", TextRole::Context, None)], op_id: None })),
             done("u2", "t3", user(&long, &[], &[])),
         ];
         t.replace_all(items, 1);

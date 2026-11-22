@@ -469,3 +469,18 @@ fn a_harness_subagent_round_trips_and_is_optional() {
     let c: yaac_protocol::Capability = serde_json::from_value(json!("subagentThreads")).unwrap();
     assert_eq!(c, yaac_protocol::Capability::SubagentThreads);
 }
+
+/// D165: a user message carries the op id of the send that made it, so the window replaces its
+/// echo in place; an older yaacd's has none, and absent stays absent. D167: `interrupted`.
+#[test]
+fn a_user_message_may_carry_its_op_id_and_interrupted_is_a_notice_kind() {
+    use yaac_protocol::{Item, ItemBody, NoticeKind};
+    let sent: Item = serde_json::from_value(json!({ "id": "user:t1", "turnId": "t1", "status": "completed", "kind": "userMessage", "parts": [{ "type": "text", "text": "hi" }], "opId": "op-1" })).unwrap();
+    let ItemBody::UserMessage(u) = &sent.body else { panic!("{sent:?}") };
+    assert_eq!(u.op_id, Some(yaac_protocol::OpId::new("op-1")));
+    assert_eq!(serde_json::from_value::<Item>(serde_json::to_value(&sent).unwrap()).unwrap(), sent);
+    let older: Item = serde_json::from_value(json!({ "id": "user:t1", "turnId": "t1", "status": "completed", "kind": "userMessage", "parts": [] })).unwrap();
+    assert!(serde_json::to_value(&older).unwrap().get("opId").is_none());
+    let k: NoticeKind = serde_json::from_value(json!("interrupted")).unwrap();
+    assert_eq!(k, NoticeKind::Interrupted);
+}

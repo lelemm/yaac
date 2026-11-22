@@ -3,7 +3,7 @@
 // (its bundled tag constants) and stored transcripts; see the research doc for how.
 
 import type { InputPart, Item } from "../../protocol/generated/types.js";
-import { attr, findElement, oneLine, plainOf, splitText, textPart, trimBlock, unescapeXml, userItem, type MarkupTable, type TagRule } from "../markup.js";
+import { attr, findElement, oneLine, plainOf, splitText, textPart, trimBlock, unescapeXml, userItem, type MarkerNotice, type MarkupTable, type TagRule } from "../markup.js";
 
 const context = (tag: string, label: string, whole = false): TagRule => ({ tag, what: { as: "context", label }, ...(whole ? { whole } : {}) });
 
@@ -64,7 +64,32 @@ function special(rest: string): { parts: InputPart[]; length: number } | null {
   return { parts: [textPart(shown, "command")], length: pos };
 }
 
-export const CLAUDE_MARKUP: MarkupTable = { rules: CLAUDE_RULES, special, specialStart: /<(?:command-name|command-message|command-args|bash-input)>/ };
+// ── The turn was stopped (D167) ──────────────────────────────────────────────────────────
+
+/**
+ * The user-role messages Claude Code writes when a turn is stopped part-way: always a lone text
+ * block, exactly one of these (Claude Code 2.1.330's constants; the only two shapes in the
+ * stored transcripts). The binary's other "[Request interrupted: …]" and "[Tool call …]" texts
+ * are tool or sub-agent results, never prompts.
+ */
+export const INTERRUPTED_MARKERS: Record<string, { text: string; during: "turn" | "toolUse" }> = {
+  "[Request interrupted by user]": { text: "Interrupted", during: "turn" },
+  "[Request interrupted by user for tool use]": { text: "Interrupted during a tool call", during: "toolUse" },
+};
+
+/** The notice for a message that is wholly Claude Code's interrupted marker, or null. */
+export function interruptedMarker(text: string): MarkerNotice | null {
+  const m = INTERRUPTED_MARKERS[text.trim()];
+  return m ? { noticeKind: "interrupted", text: m.text, details: { during: m.during } } : null;
+}
+
+export const CLAUDE_MARKUP: MarkupTable = { rules: CLAUDE_RULES, special, specialStart: /<(?:command-name|command-message|command-args|bash-input)>/, marker: interruptedMarker };
+
+/** Whether a stored prompt is only the interrupted marker (it does not begin a turn). */
+export function isInterruptedMarker(content: unknown): boolean {
+  const parts = texts(content);
+  return parts.length === 1 && interruptedMarker((parts[0] as { text: string }).text) !== null;
+}
 
 /** The text of a Claude Code content value (a string, or text and image blocks). */
 function texts(content: unknown): InputPart[] {

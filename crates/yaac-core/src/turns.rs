@@ -157,7 +157,8 @@ pub fn finished(t: &Transcript, turn: &TurnId) -> Option<Finished> {
         ItemBody::Notice(n) if n.notice_kind == NoticeKind::Error => Some(crate::message::one_line(&n.text)),
         _ => None,
     });
-    let interrupted_notice = items.iter().any(|i| matches!(&i.body, ItemBody::Notice(n) if n.notice_kind == NoticeKind::InterruptedByUpdate));
+    // The harness's own record of a stop (D167) says it too, for a turn read from history.
+    let interrupted_notice = items.iter().any(|i| matches!(&i.body, ItemBody::Notice(n) if matches!(n.notice_kind, NoticeKind::InterruptedByUpdate | NoticeKind::Interrupted)));
     let outcome = match end.map(|e| &e.status) {
         Some(TurnStatus::Completed) => Outcome::Completed,
         Some(TurnStatus::Interrupted | TurnStatus::InterruptedByUpdate) => Outcome::Interrupted,
@@ -293,7 +294,7 @@ mod tests {
     }
 
     fn user(id: &str, turn: &str, at: i64) -> Item {
-        item(id, turn, ItemStatus::Completed, ItemBody::UserMessage(UserMessageItem { parts: vec![InputPart::text("Fix it")] }), Some((at, at)))
+        item(id, turn, ItemStatus::Completed, ItemBody::UserMessage(UserMessageItem { parts: vec![InputPart::text("Fix it")], op_id: None }), Some((at, at)))
     }
 
     fn agent(id: &str, turn: &str, at: i64) -> Item {
@@ -429,6 +430,24 @@ mod tests {
         let f = finished(&transcript(items), &TurnId::new("t1")).unwrap();
         assert_eq!(f.outcome, Outcome::Failed);
         assert_eq!(f.error.as_deref(), Some("Rate limited"));
+    }
+
+    #[test]
+    fn the_harness_record_of_a_stop_marks_a_turn_from_history_interrupted() {
+        // D167: Claude Code's "[Request interrupted by user]" arrives as an `interrupted` notice
+        // in the turn it stopped; a turn read from history has no live end.
+        let mut items = vec![user("u", "t1", 1000), thought("r", "t1", 1001, 1004), command("c", "t1", ItemStatus::Failed)];
+        items.push(item("x", "t1", ItemStatus::Completed, notice(NoticeKind::Interrupted, "Interrupted during a tool call", None), None));
+        let t = transcript(items);
+        assert_eq!(finished(&t, &TurnId::new("t1")).unwrap().outcome, Outcome::Interrupted);
+        assert_eq!(kinds(&shown(&t, &Opened::default())), ["user", "Worked for 4s · interrupted"]);
+        // Opened, it is a quiet line of its own with the stop mark, never a user bubble.
+        let mut o = Opened::default();
+        o.toggle(&key(), &TurnId::new("t1"));
+        let b = shown(&t, &o);
+        let Some(Block::Run { lines }) = b.last() else { panic!("{b:?}") };
+        let last = lines.last().unwrap();
+        assert_eq!((last.mark, last.text.as_str(), last.failed), (crate::activity::LineMark::Interrupted, "Interrupted during a tool call", false));
     }
 
     #[test]

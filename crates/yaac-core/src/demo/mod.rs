@@ -1142,7 +1142,7 @@ impl Inner {
                 ThreadEvent::ItemCompleted(ItemEvent { item })
             }
         };
-        self.emit_now(key, item_ev(done(&id("user"), turn.as_str(), ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts: input }))));
+        self.emit_now(key, item_ev(done(&id("user"), turn.as_str(), ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts: input, op_id: None }))));
         self.emit_now(key, ThreadEvent::TurnStarted(TurnStartedEvent { turn_id: turn.clone(), origin: TurnOrigin::User, at: None }));
         self.set_state_now(key, ThreadState::Running);
         self.schedule(2, ev(item_ev(item(&id("think"), turn.as_str(), ItemStatus::InProgress, reasoning("")))));
@@ -1563,13 +1563,14 @@ impl Inner {
                 let t2 = "u-t2";
                 let t3 = "u-t3";
                 let items = vec![
-                    done("um1", t2, ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts })),
+                    done("um1", t2, ItemBody::UserMessage(yaac_protocol::UserMessageItem { parts, op_id: None })),
                     done("um2", t2, agent("The retry reads the cursor **before** batch 4 rolls back, so it starts at 10000 and finds nothing left. Read the cursor after the rollback.")),
                     done("um3", t3, ItemBody::UserMessage(yaac_protocol::UserMessageItem {
                         parts: vec![
                             InputPart::text_as("/model opus-5.5", TextRole::Command, None),
                             InputPart::text_as("Set model to opus-5.5", TextRole::Context, Some("Command output")),
                         ],
+                        op_id: None,
                     })),
                     done("um4", t3, notice_body(NoticeKind::Info, "Subagent schema-check reported back", "Checked all 41 tables against users_v2. Only users_email_idx differs: it is unique in v2 and was not in v1, which is what deadlocks batch 4.")),
                     done("um5", t3, notice_body(NoticeKind::Info, "Background command \"cargo test -p users\" completed (exit code 0)", "Background command \"cargo test -p users\" completed (exit code 0)\n\nOutput: /tmp/tasks/b7k2.output")),

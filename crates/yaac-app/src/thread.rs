@@ -1004,6 +1004,7 @@ fn line_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, row: Row<'_>) ->
         (None, LineMark::Workers) => icons::people(pa, c, 12.0, color),
         (None, LineMark::Waiting) => icons::hourglass(pa, c, 11.0, color),
         (None, LineMark::Notice) => icons::info(pa, c, 11.0, color),
+        (None, LineMark::Interrupted) => icons::stop_square(pa, c, 14.0, color),
         (None, _) if row.folded => icons::chevron(pa, c, 11.0, false, color),
         // Open: a down chevron. Closed: the quiet dot, a right chevron under the pointer.
         (None, _) if row.open == Some(true) => icons::chevron(pa, c, 11.0, true, color),

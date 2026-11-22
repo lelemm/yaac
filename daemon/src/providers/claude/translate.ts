@@ -15,7 +15,7 @@ import type { Item, PlanStep, ToolKind, TurnId } from "../../protocol/generated/
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ASK_TOOL, normaliseQuestions } from "./questions.js";
 import { editDiff, editedPath } from "./diff.js";
-import { cleanToolOutput, promptItem, unwrapToolError, type PromptFlags } from "./markup.js";
+import { cleanToolOutput, isInterruptedMarker, promptItem, unwrapToolError, type PromptFlags } from "./markup.js";
 import { agentCallTitle, claudeAgentCall, meshToolOf } from "../agentcalls.js";
 
 export { promptItem };
@@ -199,8 +199,9 @@ export function historyItems(messages: SessionMessage[], cwd: string | null, opt
         continue;
       }
       const flags = flagsOf(m);
-      // A message the harness wrote (a reminder, a caveat) does not begin a turn.
-      if (!flags.meta) turnId = m.uuid;
+      // A message the harness wrote (a reminder, a caveat, the marker of a stopped turn) does
+      // not begin a turn.
+      if (!flags.meta && !isInterruptedMarker(content)) turnId = m.uuid;
       put(promptItem(m.uuid, turnId, content, (m as { origin?: unknown }).origin, flags));
       continue;
     }

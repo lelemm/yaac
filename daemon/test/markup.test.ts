@@ -163,6 +163,42 @@ test("claude: the live stream splits a prompt the same way", () => {
   ]);
 });
 
+// ── A stopped turn (D167) ────────────────────────────────────────────────────────────────
+
+const interrupted: Array<[string, string, string]> = [
+  ["[Request interrupted by user]", "Interrupted", "turn"],
+  ["[Request interrupted by user for tool use]", "Interrupted during a tool call", "toolUse"],
+];
+
+for (const [marker, line, during] of interrupted) {
+  test(`claude: ${marker} is a quiet interrupted notice, as a string or a text block, live and in history`, () => {
+    for (const content of [marker, [T(marker)]]) {
+      const item = promptItem("i1", "t1", content, null) as { kind: string; noticeKind?: string; text?: string; details?: unknown };
+      assert.deepEqual([item.kind, item.noticeKind, item.text, item.details], ["notice", "interrupted", line, { during }]);
+    }
+    const events: Array<{ type: string; item?: Item }> = [];
+    const tr = new LiveTranslator((e) => events.push(e as never), null);
+    tr.begin("turn-1");
+    tr.user([T(marker)], "u1", null);
+    const done = events.filter((e) => e.type === "itemCompleted").map((e) => e.item!) as Array<{ id: string; turnId: string; noticeKind?: string; text?: string }>;
+    assert.deepEqual(done.map((i) => [i.id, i.turnId, i.noticeKind, i.text]), [["user:u1", "turn-1", "interrupted", line]]);
+    // In history it stays in the turn it stopped: it does not begin one.
+    const msg = (uuid: string, content: unknown) =>
+      ({ type: "user", uuid, session_id: "s", message: { role: "user", content }, parent_tool_use_id: null, parent_agent_id: null }) as unknown as SessionMessage;
+    const items = historyItems([msg("t1", "hello"), msg("x1", [T(marker)]), msg("t2", "again")], null);
+    assert.deepEqual(items.map((i) => [i.id, i.turnId, i.kind]), [["user:t1", "t1", "userMessage"], ["user:x1", "t1", "notice"], ["user:t2", "t2", "userMessage"]]);
+  });
+}
+
+test("claude: text that only mentions the marker, or carries more, is still the user's message", () => {
+  for (const text of ["`[Request interrupted by user]` should have its own style", "[Request interrupted by user]\n\nand then this", "[Request interrupted: the session ended before this agent finished. Nobody asked it to stop.]"]) {
+    const item = promptItem("u1", "u1", text, { kind: "human" });
+    assert.equal(item.kind, "userMessage", text);
+  }
+  // A marker beside an image is not the marker alone.
+  assert.equal(promptItem("u2", "u2", [T("[Request interrupted by user]"), { type: "image" }], null).kind, "userMessage");
+});
+
 // ── Codex ────────────────────────────────────────────────────────────────────────────────
 
 const codexTable: Array<[string, string, unknown[]]> = [
@@ -194,6 +230,9 @@ test("codex: a userMessage item is split, and a paste placeholder's range is a p
   assert.deepEqual(textWithElements("see [Image #1]", [{ byteRange: { start: 4, end: 14 }, placeholder: "[Image #1]" }]), [T("see [Image #1]")]);
   const item = mapItem({ type: "userMessage", id: "i1", content: [{ type: "text", text: "<turn_aborted>\nx\n</turn_aborted>\nagain", text_elements: [] }] } as never, "t1", "completed");
   assert.deepEqual((item as { parts: unknown }).parts, [X("x", "Turn interrupted"), T("again")]);
+  // A message that is only `<turn_aborted>`: the same notice as Claude Code's marker (D167).
+  const aborted = mapItem({ type: "userMessage", id: "i2", content: [{ type: "text", text: "<turn_aborted>\nThe user interrupted.\n</turn_aborted>", text_elements: [] }] } as never, "t1", "completed") as { kind: string; noticeKind?: string; text?: string };
+  assert.deepEqual([aborted.kind, aborted.noticeKind, aborted.text], ["notice", "interrupted", "Interrupted"]);
 });
 
 // ── YAAC's own wrappers ──────────────────────────────────────────────────────────────────

@@ -43,6 +43,18 @@ export interface MarkupTable {
   special?: (rest: string) => { parts: InputPart[]; length: number } | null;
   /** Where `special` may match: the start positions of candidate constructs. */
   specialStart?: RegExp;
+  /**
+   * A message that is wholly one of the harness's own markers (an interrupted turn, D167):
+   * the notice it becomes instead of a user message, or null.
+   */
+  marker?: (text: string) => MarkerNotice | null;
+}
+
+/** What a harness marker becomes: a notice of this kind and line. */
+export interface MarkerNotice {
+  noticeKind: string;
+  text: string;
+  details?: Record<string, unknown>;
 }
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -264,6 +276,10 @@ export function handoffPreamble(text: string): { preamble: string; rest: string 
  */
 export function userItem(base: { id: string; turnId: string; status?: string }, parts: InputPart[], table: MarkupTable): Item {
   const first = parts.find((p) => p.type === "text") as { text: string } | undefined;
+  if (first && parts.length === 1 && table.marker) {
+    const m = table.marker(first.text);
+    if (m) return { id: base.id, turnId: base.turnId, status: "completed", kind: "notice", noticeKind: m.noticeKind, text: m.text, ...(m.details ? { details: m.details } : {}) } as Item;
+  }
   if (first) {
     const framed = meshFrames(first.text);
     if (framed && parts.every((p) => p === first || p.type !== "text")) {
