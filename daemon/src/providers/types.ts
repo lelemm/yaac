@@ -252,6 +252,19 @@ export interface ExternalControl {
   takeOverBlocked?: string | null;
 }
 
+/**
+ * What became of `trustFolder` (D147). `marked`: the harness now has the folder trusted.
+ * `trusted`: it already had. `declined`: the harness's configuration already says something
+ * else about the folder (the user marked it untrusted there) — left as it is. `failed`: the
+ * harness refused or could not be asked; `uncertain` when the write may have happened anyway
+ * (no reply). yaacd never retries it.
+ */
+export type FolderTrustOutcome =
+  | { outcome: "marked" }
+  | { outcome: "trusted" }
+  | { outcome: "declined"; level: string }
+  | { outcome: "failed"; reason: string; uncertain?: boolean };
+
 /** A request the harness raised: an approval, a question, or a form. */
 export type RaisedRequest =
   | ({ requestKind: "approval" } & ApprovalRequest)
@@ -364,6 +377,12 @@ export interface HarnessProvider {
    */
   forceStop?(thread: NativeId): Promise<void>;
   remove?(thread: NativeId): Promise<void>;
+  /**
+   * Marks a folder trusted in the harness's own configuration, through an interface the
+   * harness supports (`folderTrust`, D147): read first, written only when the harness has no
+   * word on the folder yet, never downgraded or removed. Bounded by `timeoutMs`.
+   */
+  trustFolder?(folder: string, opts: { timeoutMs: number }): Promise<FolderTrustOutcome>;
   /**
    * The agent mesh: offer the `yaac` tools to this instance's threads. A provider that
    * implements it declares the `meshTools` capability once attached.

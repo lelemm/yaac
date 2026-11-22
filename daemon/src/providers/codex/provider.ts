@@ -27,6 +27,7 @@ import { Emitter } from "../../util/emitter.js";
 import { randomId, readJson, sha256Hex, writeJsonAtomic } from "../../util/fsx.js";
 import type {
   ExternalControl,
+  FolderTrustOutcome,
   ForkOptions,
   HarnessProvider,
   ItemPage,
@@ -584,6 +585,8 @@ export class CodexProvider implements HarnessProvider {
       "modes",
       // `turn/start` and `thread/resume` take `cwd` (D144, verified on codex-cli 0.170.0).
       "threadMoveWorkingDirectory",
+      // `config/read` and `config/value/write` keep `projects."<folder>".trust_level` (D147, codex-cli 0.170.0).
+      "folderTrust",
     ];
     if (models.some((m) => m.capabilities?.some((c) => c.capability === "imageInput" && c.support !== "unsupported"))) caps.push("imageInput");
     if (this.meshAttached) caps.push("meshTools");
@@ -1071,6 +1074,49 @@ export class CodexProvider implements HarnessProvider {
   async remove(thread: NativeId): Promise<void> {
     const conn = await this.ensure();
     await conn.request("thread/delete", { threadId: thread });
+  }
+
+  /**
+   * Folder trust (D147), through the app-server's own configuration methods — never by editing
+   * `config.toml`. Codex keeps it as `[projects."<folder>"] trust_level`. Read first
+   * (`config/read` with its layers, for the user file's version); a folder Codex already has a
+   * word on is left alone. The write is an `upsert` of `projects` with the folder as a key of
+   * the value — a dotted `keyPath` would split a path at its dots — and carries the version
+   * read, so a file changed in between is refused (`configVersionConflict`), not overwritten.
+   * Verified on codex-cli 0.170.0.
+   */
+  async trustFolder(folder: string, opts: { timeoutMs: number }): Promise<FolderTrustOutcome> {
+    let conn: CodexConnection;
+    try {
+      conn = await this.ensure();
+    } catch (e) {
+      return { outcome: "failed", reason: `Codex could not be reached (${(e as Error).message})` };
+    }
+    let read: { config?: { projects?: Record<string, { trust_level?: unknown } | null> | null }; layers?: Array<{ name?: { type?: string }; version?: string }> | null };
+    try {
+      read = ((await conn.request("config/read", { includeLayers: true }, opts.timeoutMs)) ?? {}) as typeof read;
+    } catch (e) {
+      return { outcome: "failed", reason: `Codex did not give its configuration (${(e as Error).message})` };
+    }
+    const level = read.config?.projects?.[folder]?.trust_level;
+    if (level === "trusted") return { outcome: "trusted" };
+    if (typeof level === "string") return { outcome: "declined", level };
+    const version = read.layers?.find((l) => l?.name?.type === "user")?.version;
+    try {
+      await conn.request(
+        "config/value/write",
+        { keyPath: "projects", value: { [folder]: { trust_level: "trusted" } }, mergeStrategy: "upsert", ...(typeof version === "string" ? { expectedVersion: version } : {}) },
+        opts.timeoutMs,
+      );
+      return { outcome: "marked" };
+    } catch (e) {
+      const err = e as CodexRpcError;
+      // An error reply is a refusal; no reply (timeout, a dropped connection) is not knowing.
+      const refused = err instanceof CodexRpcError && err.code !== undefined;
+      const code = (err.data as { config_write_error_code?: unknown } | undefined)?.config_write_error_code;
+      const reason = code === "configVersionConflict" ? "its configuration changed while YAAC was writing" : err.message;
+      return refused ? { outcome: "failed", reason } : { outcome: "failed", reason, uncertain: true };
+    }
   }
 
   async dispose(): Promise<void> {
