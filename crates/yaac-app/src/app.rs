@@ -668,7 +668,26 @@ fn waker(ctx: &egui::Context) -> crate::attach::Waker {
 #[cfg(feature = "hub")]
 fn hub_client(attach: &Arc<Mutex<HubAttach>>) -> Client {
     // The client id is a placeholder until `hub/hello` returns this host's own.
-    Client::new(Box::new(SharedAttach(attach.clone())), crate::BUILD, ClientId::new("window"))
+    let mut c = Client::new(Box::new(SharedAttach(attach.clone())), crate::BUILD, ClientId::new("window"));
+    c.set_run(window_run());
+    c
+}
+
+/// A part of operation ids unique to this window run (D159): the start time in microseconds
+/// and the process id, in base 36. `yaacd` remembers operation ids, so a window that restarted
+/// its count at 1 had its new messages refused ("was used for thread/archive") or, worse,
+/// answered with an earlier request's outcome.
+pub(crate) fn window_run() -> String {
+    let micros = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_micros());
+    let mut n = micros ^ (u128::from(std::process::id()) << 64);
+    let mut s = Vec::new();
+    while n > 0 {
+        let d = u8::try_from(n % 36).unwrap_or(0);
+        s.push(if d < 10 { b'0' + d } else { b'a' + d - 10 });
+        n /= 36;
+    }
+    s.reverse();
+    String::from_utf8(s).unwrap_or_default()
 }
 
 impl YaacApp {

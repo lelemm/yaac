@@ -177,6 +177,9 @@ pub struct Client {
     next_id: i64,
     pending: HashMap<RpcId, Call>,
     ops: u64,
+    /// This window run's own part of every operation id (D159): ids must never repeat across
+    /// runs, because `yaacd` remembers them and answers a repeated id with the old outcome.
+    run: String,
     build: String,
     warm: Vec<ThreadKey>,
     /// Errors not yet shown.
@@ -230,6 +233,7 @@ impl Client {
             next_id: 1,
             pending: HashMap::new(),
             ops: 0,
+            run: String::new(),
             build: build.into(),
             warm: Vec::new(),
             errors: Vec::new(),
@@ -287,11 +291,22 @@ impl Client {
         self.request(attach::names::REQUEST, value, call);
     }
 
-    /// A fresh operation id.
+    /// A fresh operation id: this host, this window run, a counter (D159).
     pub fn op_id(&mut self) -> OpId {
         self.ops += 1;
         let me = self.state.client_id.clone().unwrap_or_default();
-        OpId::new(format!("op-{me}-{}", self.ops))
+        if self.run.is_empty() {
+            OpId::new(format!("op-{me}-{}", self.ops))
+        } else {
+            OpId::new(format!("op-{me}-{}-{}", self.run, self.ops))
+        }
+    }
+
+    /// Sets this window run's unique part of operation ids (the window picks it at start from
+    /// the clock and the process; `yaac-core` has no clock). Without it — tests, the demo — the
+    /// ids are only unique within one run.
+    pub fn set_run(&mut self, run: impl Into<String>) {
+        self.run = run.into();
     }
 
     fn error(&mut self, key: Option<ThreadKey>, text: impl Into<String>) {
