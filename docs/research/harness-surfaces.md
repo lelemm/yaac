@@ -625,3 +625,60 @@ receiverThreadIds, prompt, model, reasoningEffort, agentsStates: {<thread id>: {
 rollouts is the code-mode exec wait, not an agent wait.) YAAC's tools arrive as
 `mcpToolCall` items with `server: "yaac"`.
 
+
+## Rate limits and accounts (verified 2026-11-22)
+
+What each harness says about the account it runs as and its plan limits (D161). Read from
+`codex app-server generate-ts` (codex-cli 0.170.0) and the Agent SDK's `sdk.d.ts` (0.3.329),
+then observed with read-only calls against the owner's sign-ins in a throwaway folder: a private
+`codex app-server --listen stdio://` (`account/read`, `account/rateLimits/read`), and a Claude
+Code 2.1.330 query with no prompt (`accountInfo()`, the usage report) plus one one-word turn with
+no tools and `persistSession: false` (for `rate_limit_event`). No live session was touched.
+Values below are as shaped, not as observed.
+
+**Codex**
+
+- `account/read { refreshToken? }` → `{ account, userId, requiresOpenaiAuth }`. `account` is
+  `{ type: "chatgpt", email, planType, workspaceName }` | `{ type: "apiKey" }` |
+  `{ type: "amazonBedrock", … }` | `{ type: "gcp" }`. `PlanType` is an open list (`free`, `plus`,
+  `pro`, `team`, `business`, `enterprise`, … `unknown`). The live answer also carried a
+  `workspaceRouting` object that the generated bindings do not declare; YAAC does not read it.
+- `account/rateLimits/read { supportsLunaReserve?, excludeResetCreditDetails? }` →
+  `{ ordinaryUsageAllowed, rateLimits: RateLimitSnapshot, rateLimitsByLimitId: { [limitId]:
+  RateLimitSnapshot } | null, rateLimitResetCredits, accountId, rateLimitUpsell }`.
+  `excludeResetCreditDetails: true` is documented for background polls.
+- `RateLimitSnapshot` = `{ limitId, limitName, normalModelSlug, primary: RateLimitWindow | null,
+  secondary: RateLimitWindow | null, credits, individualLimit, spendControlReached, planType,
+  rateLimitReachedType }`; `RateLimitWindow` = `{ usedPercent, windowDurationMins, resetsAt }`.
+  Observed: `usedPercent` an integer 0–100, `windowDurationMins` 10080 (a week) for a Pro
+  account whose snapshot had only `primary`, `resetsAt` in **Unix seconds**, `limitId` `"codex"`,
+  the same snapshot repeated under `rateLimitsByLimitId.codex`, `accountId` a UUID.
+- `account/rateLimits/updated { rateLimits: RateLimitSnapshot }` — documented as a **sparse
+  rolling update**: merge into the last read; nullable values do not clear what was seen.
+- `account/updated { authMode, planType }` arrives right after `initialize` and on sign-in
+  changes.
+
+**Claude Code / Agent SDK**
+
+- `Query.accountInfo()` → `AccountInfo { email?, organization?, subscriptionType?, tokenSource?,
+  apiKeySource?, apiProvider? }` (`apiProvider`: `firstParty`, `bedrock`, `vertex`, `foundry`,
+  …, `gateway`). Observed `subscriptionType: "Claude Ultra"`, `apiProvider: "firstParty"`.
+- `Query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors? })` →
+  `SDKControlGetUsageResponse { session, subscription_type, rate_limits_available, rate_limits:
+  { five_hour?, seven_day?, seven_day_opus?, seven_day_sonnet?, …: { utilization (0–100),
+  resets_at (ISO 8601) } | null, model_scoped?, extra_usage?, limits?: [{ kind, group, percent
+  (0–100), resets_at, scope?: { model?: { display_name }, surface?: { display_name } },
+  severity, is_active }] } | null, behaviors }`. Declared experimental and unstable. Answers on
+  a query **without a turn**. Observed: `subscription_type: "max"` (differs from
+  `accountInfo().subscriptionType`), `five_hour: null` while no five-hour window was running,
+  `limits` rows `weekly_all` and `weekly_scoped` (scope `model.display_name`), and many
+  undeclared keys alongside, all null.
+- The stream's `SDKRateLimitEvent { type: "rate_limit_event", rate_limit_info: SDKRateLimitInfo,
+  uuid, session_id }`, with `SDKRateLimitInfo { status: "allowed" | "allowed_warning" |
+  "rejected", resetsAt?, rateLimitType?: "five_hour" | "seven_day" | "seven_day_opus" |
+  "seven_day_sonnet" | "seven_day_overage_included" | "overage", utilization?, overage…,
+  surpassedThreshold?, … }`. Observed during a one-word turn, after the assistant message:
+  `rateLimitType: "seven_day"`, `utilization` a **fraction** (0.87 where the usage report said
+  88), `resetsAt` in **Unix seconds**; also an undeclared `unifiedWindows` map, not used.
+- Where they come from: plan limits only apply to a first-party claude.ai sign-in; the usage
+  report says `rate_limits_available: false` for API keys and cloud providers.

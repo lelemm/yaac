@@ -228,7 +228,7 @@ pub enum Capability {
     // ── Reporting ───────────────────────────────────────────────────────────
     TokenUsage,
     ContextUsage,        // how full the context window is
-    RateLimits,
+    RateLimits,          // reports its account and plan rate limits (D161)
     ModelList,           // can enumerate models
 
     // ── Working with other agents ───────────────────────────────────────────
@@ -379,6 +379,32 @@ came). `yaacd` decides when to call it ([05](05-threads.md#folder-trust)); the i
 | Codex | yes | `config/read { includeLayers: true }` → `config.projects["<folder>"].trust_level`; if absent, `config/value/write { keyPath: "projects", value: { "<folder>": { trust_level: "trusted" } }, mergeStrategy: "upsert", expectedVersion: <user layer's version> }` over the connection `yaacd` already has. Verified on codex-cli 0.170.0. |
 | Claude Code | no | Trust is `projects["<folder>"].hasTrustDialogAccepted` in `~/.claude.json`. The only programmatic way to set it is the Agent SDK's `workspaceTrust` option, which is not in the SDK's published types and is marked `@internal` in the CLI (2.1.330 / SDK 0.3.329) — not a supported interface, so it is not used. |
 | Fake | no | |
+
+### Rate limits
+
+**Decided (D161); Proposed (P230–P233).** A provider reports **`rateLimits`** when its harness
+says which account it runs as and how much of that account's plan limits is used. It then
+implements `rateLimits({ refresh })`, returning its last report — `{ account, windows, at }` —
+and emits `rateLimitsChanged` whenever the harness reports new values. `yaacd` serves
+`provider/rateLimits` and `provider/rateLimits/updated` from these
+([03](03-protocol.md#rate-limits)); the hub groups them by account across targets and the window
+shows them at the bottom of the sidebar ([07](07-ui.md#the-rate-limit-panel)).
+
+The **account key** is `<kind>:` and the first 16 hex digits of a SHA-256 over the kind and the
+harness's own account identifiers, so the same account is one key on every target and the
+identifiers never leave in clear. The email travels to the window for the tooltip only and is
+never logged. A window is `{ id, label, scope?, usedPercent, resetsAt?, windowMinutes? }`, in
+whole percent; nothing names a model except a scope the harness labels itself.
+
+| Harness | Account | Windows | When read |
+| --- | --- | --- | --- |
+| Codex | `account/read` → `account.email`, `account.planType`, `userId`; the key is over the rate-limit read's `accountId` (the ChatGPT account) and `userId` (else the email). Label: the plan, capitalised ("Pro"). | `account/rateLimits/read { excludeResetCreditDetails: true }` → `rateLimits.primary` / `secondary` (`usedPercent` 0–100, `windowDurationMins`, `resetsAt` in Unix seconds), labelled from the length (`5h`, `weekly`); any other bucket in `rateLimitsByLimitId` is a scoped window named by its `limitName`. `account/rateLimits/updated` is a sparse update, merged into the last read (nulls clear nothing). | At each probe (connect, sign-in change), on every update notification, and on a refresh. |
+| Claude Code | `accountInfo()` → `email`, `organization`, `subscriptionType` (the label, e.g. "Claude Ultra"); keyed over email and organization. A sign-in other than `apiProvider: "firstParty"` (Bedrock, Vertex, …) has no plan limits and no account. | The SDK's usage report, `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true })`: the server's `rate_limits.limits[]` rows (`kind` `session` → `5h`, `weekly_all` → `weekly`, `weekly_scoped` with its `scope` display name; `percent` 0–100; `resets_at` ISO 8601), else the named buckets (`five_hour`, `seven_day`, …). During turns, the stream's `rate_limit_event` (`rateLimitType`, `utilization` as a 0–1 fraction, `resetsAt` in Unix seconds) updates the window it names. The usage call is experimental by the SDK's own word: it is optional, and without it the stream alone keeps the windows. | On the probe's query (no prompt is sent), from every turn's stream, and on a refresh — then with a short read-only query of its own, only after 15 minutes without news. |
+| Fake | — | — | — |
+
+No polling: `yaacd` reads a harness again only when asked to refresh, and at most every five
+minutes per instance; the window asks only while it shows the panel
+([07](07-ui.md#the-rate-limit-panel)).
 
 ### Fast mode is a model capability
 

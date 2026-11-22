@@ -1521,3 +1521,30 @@ D150. The orchestrator's second turn, as `yaacd` reads its `yaac` tool calls:
 - The resumed-subagent line opened: **To** and the pill, the message in full, and **Raw call**
   open — the input as indented JSON and the output as the harness returned it, each in a code
   block with its copy button. The raw form is there for debugging, never in the line.
+
+### 110 — Rate limits at the bottom of the sidebar
+
+D161. The demo: one Claude account (Max) used on this computer and on devbox, one Codex
+account (Pro) used on three targets.
+
+- Above Settings and the hub status, one group per **account**, not per target: the Claude
+  sign-in used on two machines is one group.
+- Claude: the Claude logo, then two stacked segmented bars — `5h` used up (five full segments)
+  with **"100% · 53m"** in the failed colour (at or above 90%), and `weekly` with two full
+  segments, a dimmer third, and **"55% · 2d"** in Claude's orange.
+- Codex: the Codex logo, one bar, **"55% · 4d"** in Codex's blue.
+- The Claude account's scoped weekly window (Fable, 31%) is not drawn: a scoped window gets a
+  bar only near its limit.
+- No line separates it from the list: space alone.
+
+### 111 — The account's tooltip
+
+- Hovering the Claude group: "Max · dev@example.com", each window with its exact share and its
+  reset in local time ("5h: 100% used · resets Fri 20 Nov, 15:53"), the scoped window too, and
+  "Used on local, devbox".
+
+### 112 — Rate limits in the collapsed strip
+
+- Above Settings, one logo per account with a thin five-segment bar under it for that
+  account's most used window (Claude's 5h, in the failed colour; Codex's weekly in blue).
+  Hovering shows that window and the account's tooltip.

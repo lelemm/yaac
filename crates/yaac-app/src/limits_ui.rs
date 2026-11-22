@@ -21,13 +21,13 @@ use crate::theme::{self, Palette, size};
 /// the secondary text colour.
 const COLOURS: &[(&str, Color32)] = &[("claude", Color32::from_rgb(0xD9, 0x77, 0x57)), ("codex", Color32::from_rgb(0x34, 0x78, 0xF6))];
 
-const SEG_W: f32 = 7.0;
+const SEG_W: f32 = 5.0;
 const SEG_H: f32 = 4.0;
-const SEG_GAP: f32 = 2.0;
+const SEG_GAP: f32 = 1.5;
 const BAR_W: f32 = SEG_W * 5.0 + SEG_GAP * 4.0;
 const LINE: f32 = 14.0;
-const LOGO: f32 = 16.0;
-const GROUP_GAP: f32 = 14.0;
+const LOGO: f32 = 14.0;
+const GROUP_GAP: f32 = 8.0;
 const PAD: f32 = 6.0;
 
 fn colour(kind: &str, p: &Palette) -> Color32 {
@@ -56,16 +56,25 @@ fn text_width(ui: &egui::Ui, text: &str) -> f32 {
 fn group_size(ui: &egui::Ui, g: &Group) -> egui::Vec2 {
     let text = g.bars.iter().map(|b| text_width(ui, &b.text)).fold(0.0, f32::max);
     let lines = g.bars.len().max(1) as f32;
-    vec2(LOGO + 6.0 + BAR_W + 6.0 + text, (lines * LINE).max(LOGO))
+    vec2(LOGO + 4.0 + BAR_W + 4.0 + text, (lines * LINE).max(LOGO))
 }
 
 /// Where each group goes in a panel `width` wide, and the panel's height.
 fn layout(ui: &egui::Ui, panel: &Panel, width: f32) -> (Vec<Rect>, f32) {
     let (mut x, mut y, mut row_h) = (0.0_f32, 0.0_f32, 0.0_f32);
-    let mut rects = Vec::new();
+    let mut rects: Vec<Rect> = Vec::new();
+    let mut row_start = 0;
+    // Each group is centred on its row's height.
+    let centre = |rects: &mut [Rect], row_h: f32| {
+        for r in rects {
+            *r = r.translate(vec2(0.0, (row_h - r.height()) / 2.0));
+        }
+    };
     for g in &panel.groups {
         let s = group_size(ui, g);
         if x > 0.0 && x + s.x > width {
+            centre(&mut rects[row_start..], row_h);
+            row_start = rects.len();
             y += row_h + PAD;
             x = 0.0;
             row_h = 0.0;
@@ -74,6 +83,7 @@ fn layout(ui: &egui::Ui, panel: &Panel, width: f32) -> (Vec<Rect>, f32) {
         x += s.x + GROUP_GAP;
         row_h = row_h.max(s.y);
     }
+    centre(&mut rects[row_start..], row_h);
     (rects, y + row_h + PAD * 2.0)
 }
 
@@ -102,13 +112,13 @@ fn draw_group(ui: &egui::Ui, g: &Group, rect: Rect, p: &Palette, force_tip: bool
     crate::agents_ui::harness_mark(painter, pos2(rect.left() + LOGO / 2.0, rect.center().y), LOGO, Some(g.kind.as_str()), None, g.stale, p);
     let block = g.bars.len() as f32 * LINE;
     let top = rect.center().y - block / 2.0;
-    let left = rect.left() + LOGO + 6.0;
+    let left = rect.left() + LOGO + 4.0;
     for (i, b) in g.bars.iter().enumerate() {
         let cy = top + LINE * (i as f32 + 0.5);
         segments(painter, left, cy, &b.segments, tone, p);
         let colour = if b.near { dim(p.failed) } else { tone };
         let galley = ui.fonts_mut(|f| f.layout_no_wrap(b.text.clone(), theme::ui(size::SMALL), colour));
-        painter.galley(pos2(left + BAR_W + 6.0, cy - galley.size().y / 2.0), galley, colour);
+        painter.galley(pos2(left + BAR_W + 4.0, cy - galley.size().y / 2.0), galley, colour);
     }
     let resp = ui.interact(rect, egui::Id::unique(("rate-limits", &g.key)), Sense::hover());
     if force_tip {
@@ -128,7 +138,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, now: i64) {
     // Set apart from the list by space alone (no rules inside the sidebar).
     for (g, r) in panel.groups.iter().zip(rects) {
         let force = app.ui.limits_tip_force.as_deref() == Some(g.key.as_str());
-        draw_group(ui, g, r.translate(area.min.to_vec2() + vec2(4.0, PAD)), &p, force);
+        draw_group(ui, g, r.translate(area.min.to_vec2() + vec2(2.0, PAD)), &p, force);
     }
 }
 
