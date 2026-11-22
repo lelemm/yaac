@@ -174,6 +174,10 @@ pub(crate) struct UiState {
     /// The open thread is scrolled up from its newest message (D142): which thread, and how
     /// many messages it had when the view left the bottom.
     pub away_from_end: Option<(ThreadKey, usize)>,
+    /// The open thread's transcript ended its last pass scrolled to the very end: which
+    /// thread, and the height of its view. The next pass starts at the end of its own layout
+    /// (D152) instead of where egui's stick-to-bottom left it one pass ago.
+    pub at_end: Option<(ThreadKey, f32)>,
     /// An input method is composing in the composer.
     pub ime_composing: bool,
     pub settings: bool,
@@ -201,8 +205,8 @@ pub(crate) struct UiState {
     pub layout_size: Option<egui::Vec2>,
     /// The settings pages' own state.
     pub set: crate::settings::SettingsUi,
-    /// Item heights, keyed by content hash and width.
-    pub heights: HashMap<u64, f32>,
+    /// Transcript block heights as last drawn, keyed by block identity (D152, P200).
+    pub heights: HashMap<u64, crate::thread::Measured>,
     /// Tests only: the transcript's geometry, one entry per pass.
     #[cfg(test)]
     pub geom: Vec<crate::thread::Geom>,
@@ -275,6 +279,7 @@ impl UiState {
             scroll_to: None,
             scroll_end: false,
             away_from_end: None,
+            at_end: None,
             ime_composing: false,
             settings: false,
             settings_page: Page::Targets,
@@ -1685,7 +1690,8 @@ pub(crate) mod tests {
 
     /// D152: while a reply streams into a thread read at its bottom, the view only ever moves
     /// forward: one frame per delta, the content never shrinks, the offset never goes back,
-    /// the newest line stays in view, and a block once measured is never drawn at a guess.
+    /// every frame shows the end of its own layout (the newest line stays put on screen), and
+    /// a block once measured is never drawn at a guess.
     #[test]
     fn a_streaming_reply_never_moves_the_view_backwards() {
         let ctx = egui::Context::default();
@@ -1705,22 +1711,31 @@ pub(crate) mod tests {
         app.apply(vec![Action::StreamReply]);
         // The pass each frame showed (an earlier one may have been discarded).
         let mut shown: Vec<crate::thread::Geom> = Vec::new();
+        // Whether the turn was still running when each frame was drawn.
+        let mut running = Vec::new();
         let mut passes = 0;
         for _ in 0..400 {
             app.ui.geom.clear();
             live_frame(&ctx, &mut app, screen());
             passes += app.ui.geom.len();
             shown.push(app.ui.geom.last().cloned().expect("the transcript was drawn"));
+            running.push(app.client.state.transcripts[&billing].active_turn.is_some());
             if !app.demo.as_ref().unwrap().busy() && shown.len() > 3 {
                 break;
             }
         }
-        // Settled: nothing left to measure, so a few more frames change nothing.
-        for _ in 0..3 {
+        assert!(running.iter().filter(|r| **r).count() > 100, "the reply streamed over many frames");
+        // Settled: nothing left to measure, so more frames lay out once and change nothing.
+        let mut settled = Vec::new();
+        for _ in 0..6 {
             app.ui.geom.clear();
             live_frame(&ctx, &mut app, screen());
+            settled.push(app.ui.geom.len());
             shown.push(app.ui.geom.last().cloned().expect("drawn"));
+            running.push(false);
         }
+        eprintln!("passes per settled frame {settled:?}");
+        assert!(settled[2..].iter().all(|n| *n == 1), "no pass discarded once settled: {settled:?}");
         let text: Vec<String> = shown
             .iter()
             .enumerate()
@@ -1731,6 +1746,15 @@ pub(crate) mod tests {
         let mut measured: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
         for (n, w) in shown.windows(2).enumerate() {
             let (a, b) = (&w[0], &w[1]);
+            // While it streams. (When the turn ends its activity may fold up, once.)
+            if !running[n + 1] {
+                continue;
+            }
+            if let (Some(x), Some(y)) = (a.last_bottom, b.last_bottom)
+                && (x - y).abs() > 0.5
+            {
+                problems.push(format!("frame {}: the newest line moved on screen {x} → {y}", n + 1));
+            }
             if b.content < a.content - 0.5 {
                 problems.push(format!("frame {}: content shrank {} → {}", n + 1, a.content, b.content));
             }
