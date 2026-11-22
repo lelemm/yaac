@@ -1870,6 +1870,121 @@ pub(crate) mod tests {
         assert!(app.ui.away_from_end.is_none(), "back at the newest message");
     }
 
+    /// The long conversation (D153) with answers of very different lengths: one line, a few
+    /// paragraphs, a list, a code block.
+    fn long_varied_app(ctx: &egui::Context) -> (YaacApp, ThreadKey) {
+        let mut app = demo_app(ctx);
+        if let Some(h) = &app.demo {
+            h.play(yaac_core::demo::Scene::LongConversation);
+            h.drain();
+        }
+        app.pump_demo();
+        let key = threads::parser();
+        app.open(&key, None);
+        for _ in 0..20 {
+            app.pump_demo();
+        }
+        let t = app.client.state.transcripts.get_mut(&key).expect("the parser thread");
+        let rev = t.revision + 1;
+        let answers: Vec<yaac_protocol::Item> = t.items().iter().filter(|i| i.id.as_str().ends_with("-a")).cloned().collect();
+        let para = "The lexer now reads the input through a small buffer and hands the parser one token at a time, so a large file never has to be held in memory at once. ";
+        for (n, mut item) in answers.into_iter().enumerate() {
+            let text = match n % 4 {
+                0 => continue,
+                1 => format!("{}\n\n{}\n\n{para}", para.repeat(3), para.repeat(2)),
+                2 => format!("Here is the change:\n\n```rust\n{}```\n\nAll tests pass.", "fn lex(input: &mut impl BufRead) -> Result<Token> {\n    next(input)\n}\n".repeat(6)),
+                _ => format!("- {para}\n- {para}\n- {para}\n\n{}", para.repeat(4)),
+            };
+            item.body = yaac_protocol::ItemBody::AgentMessage(yaac_protocol::AgentMessageItem { text });
+            t.upsert(item, rev);
+        }
+        (app, key)
+    }
+
+    /// D163: one wheel notch moves the transcript's content on screen by the same amount
+    /// wherever the view is, scrolling up from the bottom or down from the top, however good
+    /// the guess at a block's height was before it was measured; and no frame moves it the
+    /// other way.
+    #[test]
+    fn identical_wheel_notches_move_the_transcript_by_the_same_amount() {
+        let ctx = egui::Context::default();
+        let (mut app, _key) = long_varied_app(&ctx);
+        let clock = std::cell::Cell::new(0.0_f64);
+        let screen = || {
+            clock.set(clock.get() + 1.0 / 60.0);
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 800.0))), time: Some(clock.get()), ..Default::default() }
+        };
+        let frame = |app: &mut YaacApp, input: egui::RawInput| {
+            app.ui.geom.clear();
+            window_frame(&ctx, app, input);
+            app.ui.geom.last().cloned().expect("the transcript was drawn")
+        };
+        let mut g = frame(&mut app, screen());
+        for _ in 0..10 {
+            g = frame(&mut app, screen());
+        }
+        assert!(app.ui.away_from_end.is_none(), "opened at its bottom");
+        // Where each block on screen is, by identity.
+        let visible = |g: &crate::thread::Geom| -> std::collections::HashMap<u64, f32> { g.placed.iter().filter(|(_, y)| *y >= 0.0 && *y < g.view).copied().collect() };
+        // How far the content moved on screen from `a` to `b` (positive: up, scrolling down).
+        #[allow(clippy::cast_precision_loss, reason = "a few blocks")]
+        let moved = |a: &crate::thread::Geom, b: &crate::thread::Geom| -> Option<f32> {
+            let (va, vb) = (visible(a), visible(b));
+            let d: Vec<f32> = va.iter().filter_map(|(id, ya)| vb.get(id).map(|yb| ya - yb)).collect();
+            (!d.is_empty()).then(|| d.iter().sum::<f32>() / d.len() as f32)
+        };
+        // Per notch: its direction (+1 up), the offset's change, the content's movement on
+        // screen, and whether it ended at either end.
+        let mut notches: Vec<(f32, f32, f32, bool)> = Vec::new();
+        let mut problems = Vec::new();
+        for dir in [1.0_f32, -1.0] {
+            for _ in 0..200 {
+                let before = g.clone();
+                let max_offset = (before.content - before.view).max(0.0);
+                if (dir > 0.0 && before.offset <= 0.5) || (dir < 0.0 && before.offset >= max_offset - 0.5) {
+                    break;
+                }
+                let mut input = screen();
+                input.events.push(egui::Event::PointerMoved(egui::pos2(900.0, 300.0)));
+                input.events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, dir),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                    modifiers: Modifiers::NONE,
+                });
+                let mut prev = before.clone();
+                g = frame(&mut app, input);
+                for n in 0..40 {
+                    if let Some(m) = moved(&prev, &g)
+                        && m * dir > 0.5
+                    {
+                        problems.push(format!("notch {} frame {n}: the content moved {m:.1} against the wheel", notches.len()));
+                    }
+                    prev = g.clone();
+                    g = frame(&mut app, screen());
+                }
+                let clamped = g.offset <= 0.5 || g.offset >= (g.content - g.view).max(0.0) - 0.5;
+                let m = moved(&before, &g).unwrap_or(f32::NAN);
+                notches.push((dir, g.offset - before.offset, m, clamped));
+            }
+        }
+        let text: Vec<String> = notches
+            .iter()
+            .enumerate()
+            .map(|(n, (d, off, m, c))| format!("{n:3} {} offset {off:+7.1} content {m:+7.1}{}", if *d > 0.0 { "up  " } else { "down" }, if *c { " (at an end)" } else { "" }))
+            .collect();
+        eprintln!("{}", text.join("\n"));
+        let ups = notches.iter().filter(|n| n.0 > 0.0).count();
+        assert!(ups > 20 && notches.len() - ups > 20, "a long way both ways: {ups} up, {} down", notches.len() - ups);
+        for (n, (d, _, m, at_end)) in notches.iter().enumerate() {
+            if !at_end && (m.is_nan() || (m + d * LINE_SCROLL_SPEED).abs() > 2.0) {
+                problems.push(format!("notch {n}: the content moved {m:.1}, not {:.1}", -d * LINE_SCROLL_SPEED));
+            }
+        }
+        assert!(problems.is_empty(), "{} problems:\n{}", problems.len(), problems.join("\n"));
+    }
+
     #[test]
     fn dropping_a_file_on_the_thread_view_starts_its_upload() {
         let ctx = egui::Context::default();

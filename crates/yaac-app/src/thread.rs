@@ -350,6 +350,8 @@ pub(crate) struct Geom {
     /// they are now).
     pub drawn: Vec<usize>,
     pub estimated: Vec<usize>,
+    /// Each drawn block's identity and its top relative to the top of the view.
+    pub placed: Vec<(u64, f32)>,
 }
 
 pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
@@ -507,6 +509,7 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
             #[cfg(test)]
             {
                 geom.drawn.push(unit.item);
+                geom.placed.push((idents[i], r.response.rect.top() - ui.clip_rect().top()));
                 if !app.ui.heights.contains_key(&idents[i]) {
                     geom.estimated.push(unit.item);
                 }
