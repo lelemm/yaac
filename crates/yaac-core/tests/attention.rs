@@ -106,6 +106,7 @@ fn a_permission_prompt_needs_you() {
     let orch = threads::orchestrator();
     assert_eq!(map.of(&orch), Some(Attention::Request(RequestKindWord::Permission)));
     assert_eq!(header(&c.state, &map, &orch).unwrap().tag.unwrap().0, "Needs you · permission");
-    assert!(matches!(composer(&c.state, &map, &orch), ComposerView::Shown { dimmed_hint: Some(ref h), .. } if h == "Answer above to continue"));
+    assert!(matches!(composer(&c.state, &map, &orch), ComposerView::Shown { dimmed_hint: Some(ref h), .. } if h == "Answer above to continue · a message sent now waits in the queue"),
+        "its turn runs, so a message can still be queued behind the answer (D166)");
     assert_eq!(needs_you(&c.state, &map, common::NOW).len(), 3);
 }

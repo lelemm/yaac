@@ -170,6 +170,8 @@ struct Inner {
     log: VecDeque<(Option<TargetId>, String, Value)>,
     /// What `hub/wsl/distros` answers: the distros, or an error message.
     distros: Result<Value, String>,
+    /// The next routed request is lost on the way: answered `outcome_unknown`, not acted on.
+    lose_next: bool,
 }
 
 /// The demo hub. Clone it to keep a handle for [`DemoHub::play`] and [`DemoHub::tick`] after
@@ -202,7 +204,7 @@ impl DemoHub {
             Scenario::Fleet => Fleet::standard(now),
             Scenario::Fresh => Fleet::fresh(now),
         };
-        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new() })) }
+        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new(), lose_next: false })) }
     }
 
     /// Every thread of the scenario — the window's "recently used" set, so their hints are
@@ -241,6 +243,21 @@ impl DemoHub {
         inner.emit_now(key, ThreadEvent::ItemCompleted(ItemEvent { item: done(&answer, turn.as_str(), agent("Done: the retry is in and the tests pass.")) }));
         inner.emit_now(key, ThreadEvent::TurnCompleted(TurnCompletedEvent { turn_id: turn, status: TurnStatus::Completed, usage: None, error: None, at: None }));
         inner.turn_settled(key, ThreadState::Idle);
+    }
+
+    /// The next routed request is lost on the way (`outcome_unknown`), for tests of
+    /// invariant 10.
+    pub fn lose_next_answer(&self) {
+        self.inner.borrow_mut().lose_next = true;
+    }
+
+    /// The running turn of `key` asks to run a command: an approval waits for the user.
+    pub fn ask_approval(&self, key: &ThreadKey) {
+        let mut inner = self.inner.borrow_mut();
+        let Some(turn) = inner.fleet.threads.get(key).and_then(|t| t.active_turn.clone()) else { return };
+        let body = approval(&format!("r-{turn}"), "cargo publish --dry-run", "/home/dev/billing", vec![]);
+        inner.emit_now(key, ThreadEvent::ItemStarted(ItemEvent { item: item(&format!("{turn}-ask"), turn.as_str(), ItemStatus::InProgress, body) }));
+        inner.set_state_now(key, ThreadState::NeedsAttention);
     }
 
     /// Release everything scheduled.
@@ -426,6 +443,11 @@ impl Inner {
             self.log.pop_front();
         }
         self.log.push_back(logged);
+        if self.lose_next && method == attach::names::REQUEST {
+            self.lose_next = false;
+            self.ready.push_back(error(id, ErrorCode::OutcomeUnknown, "the connection to the target was lost before it answered"));
+            return;
+        }
         match method.as_str() {
             attach::names::HELLO => {
                 // The demo is always the window's own build.

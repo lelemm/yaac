@@ -439,6 +439,11 @@ impl AppState {
         self.summary(key).and_then(|s| s.control_holder.clone())
     }
 
+    /// Whether an edit, cancel or Send now of this window is in flight for a queued message.
+    pub fn queue_busy(&self, key: &ThreadKey, queue_id: &str) -> bool {
+        self.transcripts.get(key).is_some_and(|t| t.queue_busy.contains(queue_id))
+    }
+
     /// Whether this window may send, steer, and answer on a thread.
     pub fn may_act(&self, key: &ThreadKey) -> bool {
         self.control(key).may_act() && self.stopped_distro(&key.target).is_none()

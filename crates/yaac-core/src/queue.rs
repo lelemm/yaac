@@ -136,12 +136,12 @@ pub fn strip(state: &AppState, key: &ThreadKey) -> Vec<QueuedView> {
 
 #[cfg(test)]
 mod tests {
-    use yaac_protocol::{FilePart, TextRole, Timestamp};
+    use yaac_protocol::{FilePart, TextRole};
 
     use super::*;
 
     fn entry(id: &str, input: Vec<InputPart>) -> QueuedMessage {
-        QueuedMessage { queue_id: id.into(), input, queued_at: Timestamp::from("2026-11-22T10:00:00Z"), model: None, effort: None, mode: None, fast: None }
+        QueuedMessage { queue_id: id.into(), input, queued_at: crate::time::timestamp(1_800_000_000), model: None, effort: None, mode: None, fast: None }
     }
 
     fn file(name: &str) -> InputPart {
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn an_edit_changes_the_text_and_keeps_what_the_text_box_cannot_show() {
-        let paste = InputPart::text_with_role("big paste", TextRole::new("paste"), Some("Pasted text"));
+        let paste = InputPart::text_as("big paste", TextRole::Pasted, Some("Pasted text"));
         let e = entry("q1", vec![InputPart::text("first"), paste.clone(), file("a.log")]);
         let mut edit = QueueEdit::of(&e);
         assert_eq!(edit.text, "first");
