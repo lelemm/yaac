@@ -1240,3 +1240,82 @@ test("subagents: a live Agent tool call starts one at once; its messages stream 
   assert.ok(stopped);
   await r.provider.dispose();
 });
+
+// ── A subagent's requests (D162) ──────────────────────────────────────────────────────────
+
+/** A thread whose first turn launched a background subagent and ended: the parent is idle. */
+async function idleWithBackgroundAgent(r: Rig, agentId: string) {
+  const s = await startedThread(r, "orchestrate");
+  s.q.push(
+    { type: "system", subtype: "task_started", task_id: agentId, tool_use_id: "toolu_bg", description: "Build it", subagent_type: "general-purpose", task_type: "local_agent", prompt: "npm run build", uuid: "ts", session_id: s.thread },
+    bgTasks([agentTask(agentId, "Build it")]),
+    result(),
+  );
+  await until(() => of(r.events, "turnCompleted").find((e) => e.thread === s.thread && e.turnId === s.turn), "the parent's turn");
+  return { ...s, native: `${s.thread}/agent-${agentId}` };
+}
+
+test("a background subagent's approval is raised on its own thread; the idle parent opens no turn and takes a message (D162)", async () => {
+  const r = rig();
+  const agentId = "aa1fff87cba12eae1";
+  const { thread, q, native } = await idleWithBackgroundAgent(r, agentId);
+  const subTurn = of(r.events, "turnStarted").find((e) => e.thread === native)!.turnId;
+  const parentTurns = () => of(r.events, "turnStarted").filter((e) => e.thread === thread).length;
+  const before = parentTurns();
+
+  // As Claude Code 2.1.330 asks: `agentID` is the subagent's task id.
+  const pending = q.canUseTool("Bash", { command: "npm run build" }, { signal: signal(), toolUseID: "toolu_sub", requestId: "c1", agentID: agentId });
+  const raised = await until(() => of(r.events, "requestRaised")[0], "requestRaised");
+  assert.equal(raised.thread, native, "on the subagent's thread");
+  assert.equal(raised.turnId, subTurn, "in the subagent's running turn");
+  await tick();
+  assert.equal(parentTurns(), before, "no turn opened on the parent");
+
+  // The user talks to the orchestrator meanwhile: a new turn, a new user message to the query.
+  const next = await r.provider.startTurn(thread, input("how is it going?"), {});
+  assert.equal((await q.nextUser(2)).message.content, "how is it going?");
+  q.push({ type: "assistant", message: { id: "m2", content: [{ type: "text", text: "Building." }] }, parent_tool_use_id: null, uuid: "a2", session_id: thread }, result());
+  await until(() => of(r.events, "turnCompleted").find((e) => e.turnId === next), "the parent's new turn");
+  assert.equal(of(r.events, "requestExpired").length, 0, "the parent's turn ending leaves the subagent's request alone");
+
+  // Answered from the subagent's thread: back through the original callback.
+  await assert.rejects(r.provider.respond(thread, "toolu_sub", { requestKind: "approval", decision: "allow" }), /not pending/);
+  await r.provider.respond(native, "toolu_sub", { requestKind: "approval", decision: "allow" });
+  assert.deepEqual(await pending, { behavior: "allow", updatedInput: { command: "npm run build" } });
+  assert.equal(of(r.events, "requestResolved").at(-1)!.thread, native);
+  await r.provider.dispose();
+});
+
+test("a request whose asker is not known stays on the parent, bound to no turn: the composer stays usable (D162)", async () => {
+  const r = rig();
+  const { thread, q } = await idleWithBackgroundAgent(r, "a1");
+  const before = of(r.events, "turnStarted").filter((e) => e.thread === thread).length;
+  // A subagent YAAC does not show (no task_started seen for it).
+  const pending = q.canUseTool("Bash", { command: "ls" }, { signal: signal(), toolUseID: "toolu_x", requestId: "c1", agentID: "unknown-agent" });
+  const raised = await until(() => of(r.events, "requestRaised")[0], "requestRaised");
+  assert.equal(raised.thread, thread);
+  assert.equal(raised.turnId, "", "bound to no turn");
+  await tick();
+  assert.equal(of(r.events, "turnStarted").filter((e) => e.thread === thread).length, before, "no turn opened");
+
+  // Not refused with "a turn is already running".
+  const next = await r.provider.startTurn(thread, input("still there?"), {});
+  q.push(result());
+  await until(() => of(r.events, "turnCompleted").find((e) => e.turnId === next), "that turn");
+  assert.equal(of(r.events, "requestExpired").length, 0, "still pending after the turn");
+  await r.provider.respond(thread, "toolu_x", { requestKind: "approval", decision: "deny", reason: "no" });
+  assert.deepEqual(await pending, { behavior: "deny", message: "no" });
+  await r.provider.dispose();
+});
+
+test("a subagent's open request ends with its run (D162)", async () => {
+  const r = rig();
+  const { q, native } = await idleWithBackgroundAgent(r, "a2");
+  const pending = q.canUseTool("Bash", { command: "ls" }, { signal: signal(), toolUseID: "toolu_y", requestId: "c1", agentID: "a2" });
+  await until(() => of(r.events, "requestRaised")[0], "requestRaised");
+  q.push({ type: "system", subtype: "task_notification", task_id: "a2", tool_use_id: "toolu_bg", status: "stopped", output_file: "/tmp/x", summary: "stopped", uuid: "tn", session_id: "s" });
+  const expired = await until(() => of(r.events, "requestExpired")[0], "requestExpired");
+  assert.equal(expired.thread, native);
+  assert.equal((await pending)?.behavior, "deny");
+  await r.provider.dispose();
+});

@@ -151,6 +151,9 @@ interface BackgroundTask {
 
 interface Pending {
   requestId: string;
+  /** The thread it was raised on: the session's own, or one of its subagents' (D162). */
+  thread: NativeId;
+  /** The turn it belongs to; "" for one bound to no turn (it outlives turns, D162). */
   turnId: TurnId;
   request: RaisedRequest;
   answer(response: RequestResponse): void;
@@ -1089,6 +1092,8 @@ export class ClaudeProvider implements HarnessProvider {
   private endSubagent(live: Live, sub: LiveSubagent, status: SubagentStatus, error: string | null): void {
     if (!sub.running) return;
     sub.running = false;
+    // Its run is over: nothing waits on what it asked any more (D162).
+    for (const p of [...live.requests.values()]) if (p.thread === sub.native && p.turnId === sub.turnId) p.expire();
     sub.translator.finish(status === "completed");
     const turnStatus: TurnStatus = status === "completed" ? "completed" : status === "failed" ? "failed" : "interrupted";
     this.emit({ type: "turnCompleted", thread: sub.native, turnId: sub.turnId, status: turnStatus, error, usage: null, at: new Date().toISOString() });
@@ -1155,8 +1160,26 @@ export class ClaudeProvider implements HarnessProvider {
 
   // ── Requests ───────────────────────────────────────────────────────────────────────────
 
-  private raise(live: Live, requestId: string, request: RaisedRequest, signal: AbortSignal, settle: (response: RequestResponse | null) => void): void {
-    const turn = this.ensureTurn(live);
+  /**
+   * Where a request is raised (D162). One a subagent makes (`canUseTool`'s `agentID`, the
+   * hook's `agent_id`: the subagent's task id, verified on 2.1.330) goes to that subagent's own
+   * thread, in its running turn: the parent's turn is never opened or held for it. One from the
+   * session's own conversation goes to its running turn. Any other — a subagent YAAC does not
+   * show, or a request while no turn runs — stays on the parent bound to no turn: no turn is
+   * opened for it, so the composer stays usable (Claude Code takes a new message while a
+   * permission prompt is pending), and no turn's end withdraws it.
+   */
+  private requestHome(live: Live, agentId: string | undefined): { thread: NativeId; turnId: TurnId } {
+    if (agentId) {
+      const sub = live.subagents.get(agentId);
+      if (sub?.running) return { thread: sub.native, turnId: sub.turnId };
+      return { thread: live.native, turnId: "" };
+    }
+    return { thread: live.native, turnId: live.turn?.turnId ?? "" };
+  }
+
+  private raise(live: Live, agentId: string | undefined, requestId: string, request: RaisedRequest, signal: AbortSignal, settle: (response: RequestResponse | null) => void): void {
+    const home = this.requestHome(live, agentId);
     let open = true;
     const close = () => {
       open = false;
@@ -1166,7 +1189,8 @@ export class ClaudeProvider implements HarnessProvider {
     };
     const pending: Pending = {
       requestId,
-      turnId: turn.turnId,
+      thread: home.thread,
+      turnId: home.turnId,
       request,
       answer: (response) => {
         if (!open) return;
@@ -1176,7 +1200,7 @@ export class ClaudeProvider implements HarnessProvider {
       expire: () => {
         if (!open) return;
         close();
-        this.emit({ type: "requestExpired", thread: live.native, requestId });
+        this.emit({ type: "requestExpired", thread: home.thread, requestId });
         settle(null);
       },
     };
@@ -1186,7 +1210,7 @@ export class ClaudeProvider implements HarnessProvider {
     live.idleTimer = null;
     signal.addEventListener("abort", onAbort, { once: true });
     // Raised at once; it stays pending for as long as the user takes. yaacd never answers it.
-    this.emit({ type: "requestRaised", thread: live.native, turnId: turn.turnId, requestId, request, blocking: true });
+    this.emit({ type: "requestRaised", thread: home.thread, turnId: home.turnId, requestId, request, blocking: true });
     if (signal.aborted) pending.expire();
   }
 
@@ -1213,13 +1237,13 @@ export class ClaudeProvider implements HarnessProvider {
     // The tool_use id, so that the request item has the same id in history.
     const requestId = opts.toolUseID || opts.requestId || randomUUID();
     if (toolName === ASK_TOOL) {
-      return this.askQuestion(live, requestId, input, opts.signal).then((answered) =>
+      return this.askQuestion(live, opts.agentID, requestId, input, opts.signal).then((answered) =>
         answered ? { behavior: "allow", updatedInput: answered } : { behavior: "deny", message: "The request was withdrawn before the user answered." },
       );
     }
     const request = approvalRequest(ctx);
     return new Promise<PermissionResult>((resolve) => {
-      this.raise(live, requestId, request, opts.signal, (response) => {
+      this.raise(live, opts.agentID, requestId, request, opts.signal, (response) => {
         if (!response) resolve({ behavior: "deny", message: "The request was withdrawn before the user answered." });
         else resolve(approvalResult(ctx, response));
       });
@@ -1232,11 +1256,11 @@ export class ClaudeProvider implements HarnessProvider {
    * Claude Code may not consult `canUseTool`, so a PreToolUse hook asks too; whichever comes
    * first raises the question and the other waits for the same answer.
    */
-  private askQuestion(live: Live, requestId: string, input: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, unknown> | null> {
+  private askQuestion(live: Live, agentId: string | undefined, requestId: string, input: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, unknown> | null> {
     const inFlight = live.asking.get(requestId);
     if (inFlight) return inFlight;
     const answer = new Promise<Record<string, unknown> | null>((resolve) => {
-      this.raise(live, requestId, { requestKind: "question", questions: normaliseQuestions(input) }, signal, (response) => {
+      this.raise(live, agentId, requestId, { requestKind: "question", questions: normaliseQuestions(input) }, signal, (response) => {
         resolve(response ? answeredInput(input, response) : null);
       });
     });
@@ -1252,7 +1276,7 @@ export class ClaudeProvider implements HarnessProvider {
   private async askHook(live: Live, hook: HookInput, toolUseId: string | undefined, signal: AbortSignal): Promise<HookJSONOutput> {
     if (hook.hook_event_name !== "PreToolUse" || hook.tool_name !== ASK_TOOL || live.mode !== BYPASS_MODE) return {};
     const input = (hook.tool_input && typeof hook.tool_input === "object" ? hook.tool_input : {}) as Record<string, unknown>;
-    const answered = await this.askQuestion(live, toolUseId || hook.tool_use_id || randomUUID(), input, signal);
+    const answered = await this.askQuestion(live, hook.agent_id, toolUseId || hook.tool_use_id || randomUUID(), input, signal);
     if (!answered) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "The request was withdrawn before the user answered." } };
     return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: answered } };
   }
@@ -1265,7 +1289,8 @@ export class ClaudeProvider implements HarnessProvider {
       schema: request.mode === "url" ? { url: request.url ?? null } : (request.requestedSchema ?? null),
     };
     return new Promise((resolve) => {
-      this.raise(live, `elicit-${randomUUID()}`, raised, signal, (response) => {
+      // An MCP server's form does not say which agent asked: the session's own (D162).
+      this.raise(live, undefined, `elicit-${randomUUID()}`, raised, signal, (response) => {
         if (!response) resolve({ action: "cancel" });
         else if (response.requestKind === "form") resolve({ action: "accept", content: response.values as NonNullable<ElicitationResult["content"]> });
         else resolve({ action: "decline" });
@@ -1274,9 +1299,10 @@ export class ClaudeProvider implements HarnessProvider {
   }
 
   async respond(thread: NativeId, requestId: string, response: RequestResponse): Promise<void> {
-    const live = this.live.get(thread);
+    // A subagent's request is held by its session's query (D162).
+    const live = this.live.get(thread) ?? this.live.get(parseSubagentNative(thread)?.sessionId ?? "");
     const pending = live?.requests.get(requestId);
-    if (!live || !pending) throw new Error(`request ${requestId} is not pending in Claude Code`);
+    if (!live || !pending || pending.thread !== thread) throw new Error(`request ${requestId} is not pending in Claude Code`);
     if (response.requestKind !== pending.request.requestKind) {
       throw new Error(`request ${requestId} is a ${pending.request.requestKind}, not a ${response.requestKind}`);
     }

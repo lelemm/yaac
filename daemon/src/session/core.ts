@@ -2552,8 +2552,14 @@ export class Core {
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
       const rec = rt.requests.get(p.requestId);
       if (!rec) throw notActed("request_not_found", `no request ${String(p.requestId)} in this thread`);
-      await this.refreshExternal(rt);
-      this.checkWriter(rt, client, true);
+      // A read-only harness sub-agent's request (D162) is answered by whoever may write to its
+      // parent: the sub-agent is held by the agent that started it, which is not the one asking
+      // for its approval — the user is.
+      const writer = this.subagentReadOnly(rt) ? this.subagentParent(rt) : rt;
+      if (writer) {
+        await this.refreshExternal(writer);
+        this.checkWriter(writer, client, true);
+      }
       if (rec.state !== "pending") throw notActed("request_not_pending", `the request is ${rec.state}`, { state: rec.state });
       if (!p.response || p.response.requestKind !== rec.requestKind) {
         throw notActed("invalid_params", `the answer must be a ${rec.requestKind} answer`);

@@ -513,19 +513,7 @@ export class FakeProvider implements HarnessProvider {
             break;
           }
           case "approve": {
-            const request: RaisedRequest = {
-              requestKind: "approval",
-              approvalKind: "command",
-              title: `Run \`${step.command}\``,
-              command: step.command,
-              cwd: this.thread(native).info.cwd,
-              reason: "The fake agent wants to run a command.",
-              decisions: [
-                { id: "allow", label: "Allow once", kind: "allow" },
-                { id: "allowSession", label: "Allow for this session", kind: "allowSession" },
-                { id: "deny", label: "Deny", kind: "deny", acceptsReason: true },
-              ],
-            };
+            const request = this.commandApproval(native, step.command);
             const answer = await this.ask(native, turnId, request, mods, signal);
             mods = { crashOnAnswer: false, elsewhereMs: null, expireMs: null };
             const decision = answer?.requestKind === "approval" ? answer.decision : null;
@@ -745,6 +733,22 @@ export class FakeProvider implements HarnessProvider {
     // The harness's own store keeps the output; a 2 MB string in the fake's JSON store is fine.
     this.record(native, done);
     this.emit({ type: "itemCompleted", thread: native, item: done });
+  }
+
+  private commandApproval(native: NativeId, command: string): RaisedRequest {
+    return {
+      requestKind: "approval",
+      approvalKind: "command",
+      title: `Run \`${command}\``,
+      command,
+      cwd: this.thread(native).info.cwd,
+      reason: "The fake agent wants to run a command.",
+      decisions: [
+        { id: "allow", label: "Allow once", kind: "allow" },
+        { id: "allowSession", label: "Allow for this session", kind: "allowSession" },
+        { id: "deny", label: "Deny", kind: "deny", acceptsReason: true },
+      ],
+    };
   }
 
   private ask(
@@ -1134,6 +1138,12 @@ export class FakeProvider implements HarnessProvider {
     this.emit({ type: "itemCompleted", thread: native, item: user });
     let status: TurnStatus = step.fail ? "failed" : "completed";
     try {
+      if (step.approve) {
+        // A sub-agent's approval is raised on its own thread (D162), not on its parent's.
+        const answer = await this.ask(native, turnId, this.commandApproval(parent, step.approve), { crashOnAnswer: false, elsewhereMs: null, expireMs: null }, signal);
+        const ok = answer?.requestKind === "approval" && (answer.decision === "allow" || answer.decision === "allowSession");
+        if (ok) await this.tool(native, turnId, `${native}-c1`, step.approve, `ran ${step.approve}`, 0, pace, signal);
+      }
       await this.stream(native, turnId, `${native}-a1`, "agentMessage", step.reply, pace, signal);
     } catch (e) {
       status = "interrupted";
