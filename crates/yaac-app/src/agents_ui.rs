@@ -591,4 +591,59 @@ mod tests {
         }
         assert!(delay > std::time::Duration::from_secs(60), "{delay:?}");
     }
+
+    /// D168: an orchestrator with 30 related agents draws at most `PILL_MAX` icons and one
+    /// "more (23)" item, and hovering that item opens the card scrolled to the hidden ones.
+    #[test]
+    fn thirty_agents_draw_at_most_the_cap_and_more_opens_the_card_at_the_hidden_ones() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        if let Some(h) = app.demo.clone() {
+            h.play(yaac_core::demo::Scene::ManyAgents);
+            h.drain();
+        }
+        app.pump_demo();
+        app.open(&yaac_core::demo::threads::orchestrator(), None);
+        let thread = Rect::from_min_max(pos2(280.0, 0.0), pos2(1600.0, 1000.0));
+        let mut more_text = false;
+        for i in 0..4 {
+            let input = RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))),
+                events: vec![Event::PointerMoved(pos2(600.0, 500.0))],
+                time: Some(f64::from(i) * 0.1),
+                ..Default::default()
+            };
+            let mut actions = Vec::new();
+            let mut out = ctx.run_ui(input, |ui| {
+                let map = AttentionMap::compute(&app.client.state);
+                let key = app.client.state.selected_thread().cloned().unwrap();
+                let panel = agents_panel(&app.client.state, &map, &key).unwrap();
+                assert_eq!(panel.all().count(), 30);
+                floating(ui.ctx(), &mut app, thread, &panel, &mut actions);
+            });
+            out.textures_delta.clear();
+            more_text = out.shapes.iter().any(|c| matches!(&c.shape, egui::Shape::Text(t) if t.galley.text() == "(23)"));
+            app.apply(actions);
+        }
+        assert_eq!(app.ui.panel, PanelMode::Pill);
+        assert_eq!(app.ui.pill_icons, yaac_core::agents::PILL_MAX);
+        assert!(more_text, "the more item says (23)");
+        let more = app.ui.pill_more.expect("the more item");
+        // The pill fits the view, and the card does too (it scrolls).
+        let panel = {
+            let map = AttentionMap::compute(&app.client.state);
+            agents_panel(&app.client.state, &map, app.client.state.selected_thread().unwrap()).unwrap()
+        };
+        let (strip, card) = regions_for(thread, &panel);
+        assert!(strip.height() < thread.height() * 0.6 && strip.contains(more.center()));
+        assert!(card.top() >= thread.top() && card.bottom() <= thread.bottom());
+        // Onto "more": the card opens, asked to show the hidden agents, and does on its next
+        // frame.
+        let (mode, _) = frame(&ctx, &mut app, thread, Some(more.center()), 1.0);
+        assert_eq!(mode, PanelMode::Card);
+        assert!(app.ui.card_to_hidden);
+        let (mode, _) = frame(&ctx, &mut app, thread, Some(more.center()), 1.05);
+        assert_eq!(mode, PanelMode::Card);
+        assert!(!app.ui.card_to_hidden, "scrolled to the first hidden agent");
+    }
 }
