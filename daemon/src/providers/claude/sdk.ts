@@ -4,7 +4,11 @@
 //
 // Only SDK functions and options that are declared in the SDK's own type definitions
 // (`@anthropic-ai/claude-agent-sdk/sdk.d.ts`, 0.3.329) are used, with one guarded exception:
-// `getSettings()` on a running query (see `SdkQuery.getSettings`).
+// `getSettings()` on a running query (see `SdkQuery.getSettings`). Subagents (D151) are listed
+// and read through the SDK (`listSubagents`, `getSubagentMessages`); what the SDK does not
+// expose of one — its type, description and whether it finished — is read from the sidecar
+// Claude Code writes beside its transcript (`agent-<id>.meta.json`, which the SDK's own
+// `importSessionToStore` carries along), best effort: see `subagentFiles`.
 
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
@@ -15,6 +19,8 @@ import type {
   ForkSessionResult,
   GetSessionInfoOptions,
   GetSessionMessagesOptions,
+  GetSubagentMessagesOptions,
+  ListSubagentsOptions,
   ListSessionsOptions,
   ModelInfo as SdkModelInfo,
   Options,
@@ -47,6 +53,10 @@ export interface SdkQuery extends AsyncIterable<SDKMessage> {
 export interface ClaudeSdk {
   query(params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }): SdkQuery;
   listSessions(options?: ListSessionsOptions): Promise<SDKSessionInfo[]>;
+  /** A session's subagent ids (D151): `~/.claude/projects/<dir>/<sessionId>/subagents/…/agent-<id>.jsonl`. */
+  listSubagents(sessionId: string, options?: ListSubagentsOptions): Promise<string[]>;
+  /** One subagent's stored transcript; each message carries the Agent tool call it runs under. */
+  getSubagentMessages(sessionId: string, agentId: string, options?: GetSubagentMessagesOptions): Promise<SessionMessage[]>;
   getSessionInfo(sessionId: string, options?: GetSessionInfoOptions): Promise<SDKSessionInfo | undefined>;
   getSessionMessages(sessionId: string, options?: GetSessionMessagesOptions): Promise<SessionMessage[]>;
   forkSession(sessionId: string, options?: ForkSessionOptions): Promise<ForkSessionResult>;
@@ -62,6 +72,8 @@ export async function loadRealSdk(): Promise<ClaudeSdk> {
   return {
     query: (params) => sdk.query(params) as unknown as SdkQuery,
     listSessions: (o) => sdk.listSessions(o),
+    listSubagents: (id, o) => sdk.listSubagents(id, o),
+    getSubagentMessages: (id, agent, o) => sdk.getSubagentMessages(id, agent, o),
     getSessionInfo: (id, o) => sdk.getSessionInfo(id, o),
     getSessionMessages: (id, o) => sdk.getSessionMessages(id, o),
     forkSession: (id, o) => sdk.forkSession(id, o),
@@ -70,6 +82,104 @@ export async function loadRealSdk(): Promise<ClaudeSdk> {
     unarchiveSession: (id, o) => sdk.unarchiveSession(id, o),
     deleteSession: (id, o) => sdk.deleteSession(id, o),
   };
+}
+
+// ── Subagent files (D151) ────────────────────────────────────────────────────────────────
+
+/** The fields of Claude Code's `agent-<id>.meta.json` sidecar yaacd uses (2.1.330). */
+export interface SubagentSidecar {
+  agentType?: string;
+  description?: string;
+  model?: string;
+  /** The subagent handed its result back. */
+  finished?: boolean;
+  /** The user (or its parent) stopped it. */
+  stoppedByUser?: boolean;
+  /** The Agent tool call that started it, in the parent's transcript. */
+  toolUseId?: string;
+}
+
+/** One subagent's files on disk. */
+export interface SubagentFile {
+  transcript: string;
+  meta: SubagentSidecar | null;
+  /** A workflow's journal says it ended: `completed` or `failed`. */
+  outcome?: "completed" | "failed";
+  createdMs: number;
+  modifiedMs: number;
+}
+
+function readJsonFile(p: string): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The files of a session's subagents, by agent id: every `agent-<id>.jsonl` under
+ * `<configDir>/projects/<any>/<sessionId>/subagents/` (workflow agents sit one folder down,
+ * beside the workflow's `journal.jsonl`), with its sidecar and times. Read only; missing or
+ * unreadable files are left out.
+ */
+export function subagentFiles(configDir: string, sessionId: string): Map<string, SubagentFile> {
+  const out = new Map<string, SubagentFile>();
+  const projects = path.join(configDir, "projects");
+  let dirs: string[];
+  try {
+    dirs = fs.readdirSync(projects);
+  } catch {
+    return out;
+  }
+  const walk = (dir: string, depth: number) => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    const outcomes = new Map<string, "completed" | "failed">();
+    const journal = entries.find((e) => e.isFile() && e.name === "journal.jsonl");
+    if (journal) {
+      try {
+        for (const line of fs.readFileSync(path.join(dir, journal.name), "utf8").split("\n")) {
+          if (!line.trim()) continue;
+          const e = JSON.parse(line) as { type?: unknown; agentId?: unknown };
+          if (typeof e.agentId === "string" && (e.type === "result" || e.type === "failed")) outcomes.set(e.agentId, e.type === "result" ? "completed" : "failed");
+        }
+      } catch {
+        /* a journal being written: what was read stands */
+      }
+    }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory() && depth < 4) walk(p, depth + 1);
+      else if (e.isFile() && e.name.startsWith("agent-") && e.name.endsWith(".jsonl")) {
+        const id = e.name.slice(6, -6);
+        let st: fs.Stats;
+        try {
+          st = fs.statSync(p);
+        } catch {
+          continue;
+        }
+        const meta = readJsonFile(p.replace(/\.jsonl$/, ".meta.json"));
+        const outcome = outcomes.get(id);
+        out.set(id, {
+          transcript: p,
+          meta: meta && typeof meta === "object" ? (meta as SubagentSidecar) : null,
+          ...(outcome ? { outcome } : {}),
+          createdMs: st.birthtimeMs > 0 ? st.birthtimeMs : st.mtimeMs,
+          modifiedMs: st.mtimeMs,
+        });
+      }
+    }
+  };
+  for (const d of dirs) {
+    const sub = path.join(projects, d, sessionId, "subagents");
+    if (fs.existsSync(sub)) walk(sub, 0);
+  }
+  return out;
 }
 
 // ── The `claude` executable ──────────────────────────────────────────────────────────────

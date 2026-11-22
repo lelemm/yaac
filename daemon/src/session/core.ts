@@ -1518,6 +1518,9 @@ export class Core {
   async subscribe(client: ClientLink, p: { threadId: string; epoch?: number | null; afterSeq?: number | null }, register: (cursor: number, mode: "replay" | "reset") => void): Promise<ThreadSubscribeResult> {
     const rt = this.requireThread(p.threadId);
     await this.refreshExternal(rt);
+    // A harness sub-agent (D151) YAAC is not streaming is read again from the harness when it
+    // is opened, as its parent may have moved it on since (a session in a terminal).
+    if (rt.record.subagent && !rt.activeTurn && !rt.projectionLoading) rt.projection = null;
     const effective = await this.computeEffective(rt);
     this.flushDeltas(rt);
     const journal = this.journalOf(rt);

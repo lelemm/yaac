@@ -151,6 +151,15 @@ class StubSdk implements ClaudeSdk {
   async getSessionMessages(id: string) {
     return this.messages[id] ?? [];
   }
+  /** Subagent ids by session, and their transcripts by `<session>/<agent>` (D151). */
+  subagents: Record<string, string[]> = {};
+  subagentMessages: Record<string, SessionMessage[]> = {};
+  async listSubagents(id: string) {
+    return this.subagents[id] ?? [];
+  }
+  async getSubagentMessages(id: string, agent: string) {
+    return this.subagentMessages[`${id}/${agent}`] ?? [];
+  }
   async forkSession(id: string, o?: unknown) {
     this.calls.push(["forkSession", [id, o]]);
     return { sessionId: "forked-session" };
@@ -975,5 +984,105 @@ test("fast mode is Claude Code's fastMode setting: at open, then applyFlagSettin
   await pq.nextUser();
   assert.equal(pq.options.settings, undefined);
   void plain;
+  await r.provider.dispose();
+});
+
+// ── Subagents (D151) ─────────────────────────────────────────────────────────────────────
+
+interface SubagentFixture {
+  session: string;
+  agents: string[];
+  meta: Record<string, Record<string, unknown>>;
+  messages: Record<string, SessionMessage[]>;
+}
+
+/** A Claude Code config folder holding the fixture's subagent files, as 2.1.330 lays them out. */
+function subagentStore(fx: SubagentFixture): string {
+  const config = tmp("yaac-claude-config-");
+  const dir = path.join(config, "projects", "-work-repo", fx.session, "subagents");
+  fs.mkdirSync(dir, { recursive: true });
+  for (const id of fx.agents) {
+    fs.writeFileSync(path.join(dir, `agent-${id}.jsonl`), (fx.messages[id] ?? []).map((m) => JSON.stringify(m)).join("\n"));
+    fs.writeFileSync(path.join(dir, `agent-${id}.meta.json`), JSON.stringify(fx.meta[id]));
+  }
+  // An hour old: neither is still being written.
+  const old = new Date(Date.now() - 3_600_000);
+  for (const f of fs.readdirSync(dir)) fs.utimesSync(path.join(dir, f), old, old);
+  return config;
+}
+
+test("subagents: listed under their session from listSubagents and the sidecar; readable through getSubagentMessages", async () => {
+  const fx = JSON.parse(fs.readFileSync(path.join(FIXTURES, "subagents.json"), "utf8")) as SubagentFixture;
+  const config = subagentStore(fx);
+  const r = rig({ env: { CLAUDE_CONFIG_DIR: config } });
+  r.sdk.sessions = [{ sessionId: fx.session, summary: "Orchestrate", lastModified: Date.now(), cwd: "/work/repo" }];
+  r.sdk.subagents[fx.session] = fx.agents;
+  for (const id of fx.agents) r.sdk.subagentMessages[`${fx.session}/${id}`] = fx.messages[id] ?? [];
+  const page = await r.provider.scanThreads({ cursor: null, limit: 100 });
+  const kids = page.threads.filter((t) => t.parent);
+  assert.equal(page.threads.filter((t) => !t.parent).length, 1);
+  assert.deepEqual(
+    kids.map((k) => [k.native, k.parent, k.title, k.subagent!.agentType, k.subagent!.status, k.cwd]),
+    [
+      [`${fx.session}/agent-${fx.agents[0]}`, fx.session, "Map the parser", "Explore", "completed", "/work/repo"],
+      [`${fx.session}/agent-${fx.agents[1]}`, fx.session, "Try the fix", "general-purpose", "stopped", "/work/repo"],
+    ],
+  );
+  assert.match(kids[0]!.subagent!.readOnly!, /SendMessage/);
+  assert.equal(kids[0]!.model, "stub-plain");
+  assert.ok(r.provider.options && (await r.provider.probe()).capabilities.includes("subagentThreads"));
+
+  // Its own transcript: the subagent's messages, not skipped for running under a tool call.
+  const read = await r.provider.readThread(kids[0]!.native, { cursor: null });
+  const kinds = read.items.map((i) => i.kind);
+  assert.ok(kinds.includes("toolCall"));
+  assert.ok(read.items.some((i) => i.kind === "agentMessage" && (i as { text: string }).text === "Three stages: lexer, grammar, emit."));
+  // The parent's history still leaves them out.
+  r.sdk.messages[fx.session] = fx.messages[fx.agents[0]!]!;
+  assert.equal((await r.provider.readThread(fx.session, { cursor: null })).items.length, 0);
+
+  // Looked up by its native id.
+  const found = await r.provider.lookupThread(kids[1]!.native);
+  assert.equal(found?.parent, fx.session);
+  assert.equal(await r.provider.lookupThread(`${fx.session}/agent-anotherone`), null);
+  await r.provider.dispose();
+});
+
+test("subagents: a live Agent tool call starts one at once; its messages stream into it; its end is reported", async () => {
+  const r = rig();
+  const { thread, turn, q } = await startedThread(r, "look around");
+  assert.equal(q.options.forwardSubagentText, true, "the subagents' own text is forwarded");
+  const agentId = "a3c4d5e6f708192a3";
+  const native = `${thread}/agent-${agentId}`;
+  q.push(
+    { type: "assistant", message: { id: "msg_P", content: [{ type: "tool_use", id: "toolu_agent", name: "Agent", input: { description: "Map the parser", subagent_type: "Explore", prompt: "Which stages?" } }] }, parent_tool_use_id: null, uuid: "p1", session_id: thread },
+    { type: "system", subtype: "task_started", task_id: agentId, tool_use_id: "toolu_agent", description: "Map the parser", subagent_type: "Explore", task_type: "local_agent", prompt: "Which stages?", uuid: "ts1", session_id: thread },
+    { type: "assistant", message: { id: "msg_S", content: [{ type: "text", text: "Three stages." }] }, parent_tool_use_id: "toolu_agent", agent_id: agentId, uuid: "s1", session_id: thread },
+  );
+  const started = await until(() => of(r.events, "threadChanged").find((e) => e.info.native === native), "the subagent");
+  assert.equal(started.info.parent, thread);
+  assert.equal(started.info.subagent!.status, "running");
+  assert.equal(started.info.subagent!.agentType, "Explore");
+  assert.equal(started.info.title, "Map the parser");
+  const subTurn = await until(() => of(r.events, "turnStarted").find((e) => e.thread === native), "its turn");
+  assert.equal(subTurn.origin, "external");
+  const said = await until(() => of(r.events, "itemCompleted").find((e) => e.thread === native && e.item.kind === "agentMessage"), "its message");
+  assert.equal((said.item as { text: string }).text, "Three stages.");
+  assert.ok(!of(r.events, "itemCompleted").some((e) => e.thread === thread && JSON.stringify(e.item).includes("Three stages.")), "not in the parent");
+
+  q.push({ type: "system", subtype: "task_notification", task_id: agentId, tool_use_id: "toolu_agent", status: "completed", output_file: "/tmp/x", summary: "done", uuid: "tn1", session_id: thread }, result());
+  const ended = await until(() => of(r.events, "turnCompleted").find((e) => e.thread === native), "its end");
+  assert.equal(ended.status, "completed");
+  const after = await until(() => of(r.events, "threadChanged").filter((e) => e.info.native === native).find((e) => e.info.subagent!.status === "completed"), "completed");
+  assert.ok(after);
+  await until(() => of(r.events, "turnCompleted").find((e) => e.thread === thread && e.turnId === turn), "the parent's turn");
+
+  // One that is running when the process ends is stopped.
+  const { thread: t2, q: q2 } = await startedThread(r, "again");
+  q2.push({ type: "system", subtype: "task_started", task_id: "a99", tool_use_id: "toolu_b", description: "Slow one", task_type: "local_agent", uuid: "ts2", session_id: t2 });
+  await until(() => of(r.events, "threadChanged").find((e) => e.info.native === `${t2}/agent-a99`), "the second subagent");
+  q2.crash("gone");
+  const stopped = await until(() => of(r.events, "threadChanged").find((e) => e.info.native === `${t2}/agent-a99` && e.info.subagent!.status === "stopped"), "stopped");
+  assert.ok(stopped);
   await r.provider.dispose();
 });

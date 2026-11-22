@@ -160,7 +160,7 @@ export function questionHistoryItem(toolUseId: string, turnId: TurnId, input: Js
 // ── Stored history ───────────────────────────────────────────────────────────────────────
 
 /** Maps a stored session, oldest first, to items. */
-export function historyItems(messages: SessionMessage[], cwd: string | null): Item[] {
+export function historyItems(messages: SessionMessage[], cwd: string | null, opts: { subagent?: boolean } = {}): Item[] {
   const items: Item[] = [];
   const byId = new Map<string, number>();
   const put = (item: Item) => {
@@ -174,7 +174,9 @@ export function historyItems(messages: SessionMessage[], cwd: string | null): It
   const asks = new Map<string, { turnId: TurnId; input: Json }>();
   let turnId: TurnId = "h:start";
   for (const m of messages) {
-    if (m.parent_tool_use_id) continue; // a subagent's own transcript
+    // A subagent's own messages carry the Agent tool call they run under: kept only when reading
+    // that subagent's transcript (D151).
+    if (m.parent_tool_use_id && !opts.subagent) continue;
     const message = obj(m.message);
     const content = message.content;
     if (m.type === "user") {

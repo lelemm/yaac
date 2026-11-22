@@ -28,6 +28,7 @@ import type {
   ModeInfo,
   ModelInfo,
   RequestResponse,
+  SubagentStatus,
   ThreadEffective,
   TokenUsage,
   TurnId,
@@ -57,7 +58,7 @@ import type {
   TurnOverrides,
 } from "../types.js";
 import { ASK_TOOL, answeredInput, approvalRequest, approvalResult, normaliseQuestions, type ToolPermissionContext } from "./questions.js";
-import { EXECUTABLE_VAR, findExecutable, loadRealSdk, realCli, type AgentEntry, type ClaudeCli, type ClaudeSdk, type SdkQuery } from "./sdk.js";
+import { EXECUTABLE_VAR, findExecutable, loadRealSdk, realCli, subagentFiles, type AgentEntry, type ClaudeCli, type ClaudeSdk, type SdkQuery, type SubagentFile } from "./sdk.js";
 import { flagsOf, historyItems, isToolResultMessage, LiveTranslator, type ItemEvent } from "./translate.js";
 import { previewText } from "./markup.js";
 
@@ -203,6 +204,9 @@ class Live {
   mode: string;
   /** Fast mode as last given to the query (its `fastMode` flag setting). */
   fast: boolean;
+  /** Subagents this query ran (D151), by agent id (= their task id), and by the Agent tool call. */
+  readonly subagents = new Map<string, LiveSubagent>();
+  readonly subagentByToolUse = new Map<string, string>();
 
   constructor(
     readonly native: NativeId,
@@ -240,10 +244,49 @@ export interface ClaudeProviderOptions {
   maxLive?: number;
   /** How long one `claude agents --json` answer is reused. */
   controlCacheMs?: number;
+  /** A session's subagent files (D151). Tests pass a stub; default: read from the config folder. */
+  subagentFiles?: (configDir: string, sessionId: string) => Map<string, SubagentFile>;
   log?: (line: string) => void;
 }
 
 const iso = (ms: number | undefined | null): string => new Date(typeof ms === "number" && Number.isFinite(ms) ? ms : Date.now()).toISOString();
+
+// ── Subagents (D151) ─────────────────────────────────────────────────────────────────────
+
+/** Why YAAC does not send to a Claude Code subagent (verified on 2.1.330, P192). */
+export const CLAUDE_SUBAGENT_READ_ONLY =
+  "Only the agent that started a Claude Code subagent can continue it (its SendMessage tool); Claude Code offers no way to message one from outside. Message that agent instead.";
+
+/** A subagent stored without an ending is taken as still running while its transcript changed this recently. */
+export const SUBAGENT_LIVE_MS = 2 * 60 * 1000;
+
+/**
+ * A subagent's native id: its parent session and its agent id, as Claude Code stores it
+ * (`<sessionId>/subagents/agent-<agentId>.jsonl`). Stable for its whole life.
+ */
+export function subagentNative(sessionId: string, agentId: string): NativeId {
+  return `${sessionId}/agent-${agentId}`;
+}
+
+/** The parts of a subagent's native id; null for a session. */
+export function parseSubagentNative(native: NativeId): { sessionId: string; agentId: string } | null {
+  const m = /^([^/]+)\/agent-([^/]+)$/.exec(native);
+  return m ? { sessionId: m[1]!, agentId: m[2]! } : null;
+}
+
+/** What one live subagent of a running query is (from its task events). */
+interface LiveSubagent {
+  native: NativeId;
+  agentId: string;
+  toolUseId: string | null;
+  agentType: string | null;
+  description: string;
+  prompt: string | null;
+  turnId: TurnId;
+  createdAt: string;
+  translator: LiveTranslator;
+  running: boolean;
+}
 
 /** Claude Code's per-model `supportsFastMode` as a three-valued support (absent: unknown). */
 export function fastSupport(v: boolean | undefined): "supported" | "unsupported" | "unknown" {
@@ -292,6 +335,8 @@ export class ClaudeProvider implements HarnessProvider {
   private agentsCache: { at: number; entries: Promise<AgentEntry[]> } | null = null;
   private scanSnapshot: { id: string; threads: NativeThreadInfo[] } | null = null;
   private disposed = false;
+  /** Claude Code's configuration folder (where `projects/` is), as the last probe found it. */
+  private configDir: string;
 
   constructor(readonly options: ClaudeProviderOptions) {
     this.cli = options.cli ?? (options.executable ? realCli(options.executable, options.env) : null);
@@ -302,6 +347,7 @@ export class ClaudeProvider implements HarnessProvider {
     fs.mkdirSync(options.stateDir, { recursive: true, mode: 0o700 });
     this.stateFile = path.join(options.stateDir, "threads.json");
     this.settings = readJson<Record<NativeId, ThreadSettings>>(this.stateFile) ?? {};
+    this.configDir = options.env.CLAUDE_CONFIG_DIR ?? path.join(options.env.HOME ?? os.homedir(), ".claude");
   }
 
   // ── Hooks and test controls ────────────────────────────────────────────────────────────
@@ -401,6 +447,7 @@ export class ClaudeProvider implements HarnessProvider {
       "modelList",
       "plan",
       "subagents",
+      "subagentThreads",
       "webSearch",
     ];
   }
@@ -428,6 +475,7 @@ export class ClaudeProvider implements HarnessProvider {
     if (!version) return this.result("unreachable", `Claude Code at ${exe} could not be run`);
     const auth = await this.cli.authStatus();
     const configDir = auth?.configDirectory ?? this.options.env.CLAUDE_CONFIG_DIR ?? path.join(this.options.env.HOME ?? os.homedir(), ".claude");
+    this.configDir = configDir;
     const store = { key: `claude:${sha256Hex(path.resolve(configDir)).slice(0, 16)}`, home: configDir };
     if (auth && !auth.loggedIn) {
       return this.result("needsAuth", "Claude Code is not signed in on this target; run `claude auth login` there", { harnessVersion: version, store });
@@ -544,6 +592,13 @@ export class ClaudeProvider implements HarnessProvider {
       };
       if (page.activeSince) snap.threads = snap.threads.filter((t) => t.updatedAt >= page.activeSince!);
       if (page.search) snap.threads = snap.threads.filter((t) => (t.title ?? "").toLowerCase().includes(page.search!.toLowerCase()));
+      // Each listed session's subagents (D151), after the sessions: yaacd files them under
+      // their parent and caps them by its own rules.
+      if (!page.search) {
+        const kids: NativeThreadInfo[] = [];
+        for (const parent of snap.threads) kids.push(...(await this.storedSubagents(sdk, parent)));
+        snap.threads.push(...kids);
+      }
       this.scanSnapshot = snap;
     }
     const threads = snap.threads.slice(offset, offset + size);
@@ -551,10 +606,56 @@ export class ClaudeProvider implements HarnessProvider {
     return { threads, cursor: next, complete: true };
   }
 
+  /** A session's stored subagents (D151), as conversations of their own under it. */
+  private async storedSubagents(sdk: ClaudeSdk, parent: NativeThreadInfo): Promise<NativeThreadInfo[]> {
+    if (typeof sdk.listSubagents !== "function") return [];
+    let ids: string[];
+    try {
+      ids = await sdk.listSubagents(parent.native);
+    } catch (e) {
+      this.log(`listing the subagents of ${parent.native} failed: ${(e as Error).message}`);
+      return [];
+    }
+    if (ids.length === 0) return [];
+    const files = (this.options.subagentFiles ?? subagentFiles)(this.configDir, parent.native);
+    return ids.map((agentId) => this.subagentInfo(parent, agentId, files.get(agentId) ?? null));
+  }
+
+  /** What is known of one subagent: its live task when this query runs it, else its files. */
+  private subagentInfo(parent: Pick<NativeThreadInfo, "native" | "cwd" | "updatedAt" | "archived">, agentId: string, file: SubagentFile | null): NativeThreadInfo {
+    const native = subagentNative(parent.native, agentId);
+    const live = this.live.get(parent.native)?.subagents.get(agentId);
+    const meta = file?.meta ?? null;
+    let status: SubagentStatus;
+    if (live) status = live.running ? "running" : "completed";
+    else if (meta?.finished || file?.outcome === "completed") status = "completed";
+    else if (file?.outcome === "failed") status = "failed";
+    else if (meta?.stoppedByUser) status = "stopped";
+    // No ending stored: running while its transcript is still being written (a session in a
+    // terminal), else it ended without saying (its process went away).
+    else status = file && Date.now() - file.modifiedMs < SUBAGENT_LIVE_MS ? "running" : "stopped";
+    const agentType = live?.agentType ?? meta?.agentType ?? null;
+    const title = live?.description ?? meta?.description ?? agentType ?? "Subagent";
+    return {
+      native,
+      title,
+      preview: live?.prompt ? previewText(live.prompt) : title,
+      cwd: parent.cwd,
+      model: meta?.model ?? null,
+      createdAt: live?.createdAt ?? (file ? iso(file.createdMs) : parent.updatedAt),
+      updatedAt: file ? iso(file.modifiedMs) : live ? new Date().toISOString() : parent.updatedAt,
+      originKind: "programmatic",
+      archived: parent.archived ?? false,
+      parent: parent.native,
+      subagent: { ...(agentType ? { agentType } : {}), status, readOnly: CLAUDE_SUBAGENT_READ_ONLY },
+    };
+  }
+
   async readThread(thread: NativeId, page: PageRequest): Promise<ItemPage> {
     const sdk = await this.sdk();
-    const messages = await sdk.getSessionMessages(thread);
-    const items = historyItems(messages, this.settings[thread]?.cwd ?? null);
+    const sub = parseSubagentNative(thread);
+    const messages = sub ? await sdk.getSubagentMessages(sub.sessionId, sub.agentId) : await sdk.getSessionMessages(thread);
+    const items = historyItems(messages, this.settings[sub?.sessionId ?? thread]?.cwd ?? null, { subagent: !!sub });
     const start = Number.parseInt(page.cursor ?? "0", 10) || 0;
     const size = Math.max(1, page.limit ?? 200);
     return { items: items.slice(start, start + size), cursor: start + size < items.length ? String(start + size) : null };
@@ -668,6 +769,8 @@ export class ClaudeProvider implements HarnessProvider {
       pathToClaudeCodeExecutable: exe,
       env: this.options.env,
       includePartialMessages: true,
+      // Subagents' own text and thinking too, so that each one's transcript streams (D151).
+      forwardSubagentText: true,
       ...(resumed ? { resume: native } : { sessionId: native }),
       ...(live.model ? { model: live.model } : {}),
       ...(live.effort ? { effort: live.effort as NonNullable<Options["effort"]> } : {}),
@@ -716,6 +819,8 @@ export class ClaudeProvider implements HarnessProvider {
     const wasLive = this.live.get(live.native) === live;
     if (wasLive) this.live.delete(live.native);
     if (live.idleTimer) clearTimeout(live.idleTimer);
+    // Its subagents end with it (D151).
+    for (const sub of live.subagents.values()) if (sub.running) this.endSubagent(live, sub, "stopped", "the Claude Code process ended");
     // The process is gone: nothing it asked can be answered any more.
     for (const p of [...live.requests.values()]) p.expire();
     if (live.turn) {
@@ -757,7 +862,11 @@ export class ClaudeProvider implements HarnessProvider {
 
   private onMessage(live: Live, m: SDKMessage): void {
     const msg = m as SDKMessage & { parent_tool_use_id?: string | null; uuid?: string };
-    if (msg.parent_tool_use_id) return; // inside a subagent: the subagent's tool call stands for it
+    // Inside a subagent (D151): its own transcript, not this one's (the Agent tool call stands for it here).
+    if (msg.parent_tool_use_id || (m as { agent_id?: unknown }).agent_id) {
+      this.onSubagentMessage(live, m);
+      return;
+    }
     switch (m.type) {
       case "stream_event":
         this.ensureTurn(live);
@@ -814,12 +923,102 @@ export class ClaudeProvider implements HarnessProvider {
           const item = { id: `compact:${sys.uuid ?? randomUUID()}`, turnId: live.turn.turnId, status: "completed", kind: "notice", noticeKind: "compaction", text: "The conversation was compacted." } as const;
           this.emit({ type: "itemStarted", thread: live.native, item });
           this.emit({ type: "itemCompleted", thread: live.native, item });
+        } else if (sys.subtype === "task_started" || sys.subtype === "task_updated" || sys.subtype === "task_notification") {
+          this.onTask(live, m as unknown as Record<string, unknown>);
         }
         return;
       }
       default:
         return;
     }
+  }
+
+  // ── Live subagents (D151) ──────────────────────────────────────────────────────────────
+
+  /**
+   * A task event of the running query. A subagent task (`local_agent`, or one that names a
+   * subagent type) is one of Claude Code's own subagents: it becomes a conversation of its
+   * own under this one the moment it starts, runs a turn there while it works, and ends with
+   * the harness's status. Its task id is its agent id (sdk.d.ts: `agent_id` is "the
+   * `task_id` of its task events").
+   */
+  private onTask(live: Live, t: Record<string, unknown>): void {
+    const taskId = typeof t.task_id === "string" ? t.task_id : null;
+    if (!taskId) return;
+    const str = (v: unknown) => (typeof v === "string" && v ? v : null);
+    if (t.subtype === "task_started") {
+      const isAgent = t.task_type === "local_agent" || typeof t.subagent_type === "string";
+      if (!isAgent || t.skip_transcript === true) return;
+      const known = live.subagents.get(taskId);
+      const native = subagentNative(live.native, taskId);
+      const sub: LiveSubagent = known ?? {
+        native,
+        agentId: taskId,
+        toolUseId: str(t.tool_use_id),
+        agentType: str(t.subagent_type),
+        description: str(t.description) ?? str(t.subagent_type) ?? "Subagent",
+        prompt: str(t.prompt),
+        turnId: `task:${str(t.run_id) ?? taskId}`,
+        createdAt: new Date().toISOString(),
+        translator: new LiveTranslator((ev) => this.emit({ ...ev, thread: native } as ProviderEvent), live.cwd),
+        running: false,
+      };
+      if (known) {
+        // A resumed subagent: a new run, the same conversation.
+        known.turnId = `task:${str(t.run_id) ?? `${taskId}:${randomUUID().slice(0, 8)}`}`;
+        if (str(t.prompt)) known.prompt = str(t.prompt);
+      }
+      live.subagents.set(taskId, sub);
+      if (sub.toolUseId) live.subagentByToolUse.set(sub.toolUseId, taskId);
+      sub.running = true;
+      this.emitSubagent(live, sub);
+      sub.translator.begin(sub.turnId);
+      this.emit({ type: "turnStarted", thread: native, turnId: sub.turnId, origin: "external", at: new Date().toISOString() });
+      return;
+    }
+    const sub = live.subagents.get(taskId);
+    if (!sub) return;
+    if (t.subtype === "task_updated") {
+      const status = (t.patch && typeof t.patch === "object" ? (t.patch as { status?: unknown }).status : undefined) ?? null;
+      if (status === "completed") this.endSubagent(live, sub, "completed", null);
+      else if (status === "failed") this.endSubagent(live, sub, "failed", str((t.patch as { error?: unknown }).error));
+      else if (status === "killed") this.endSubagent(live, sub, "stopped", null);
+      return;
+    }
+    // task_notification: the run settled.
+    const status = t.status === "completed" ? "completed" : t.status === "failed" ? "failed" : "stopped";
+    this.endSubagent(live, sub, status, status === "failed" ? str(t.summary) : null);
+  }
+
+  /** A message a subagent produced: into its own conversation. */
+  private onSubagentMessage(live: Live, m: SDKMessage): void {
+    const msg = m as SDKMessage & { parent_tool_use_id?: string | null; agent_id?: string; uuid?: string };
+    const agentId = msg.agent_id ?? (msg.parent_tool_use_id ? live.subagentByToolUse.get(msg.parent_tool_use_id) : undefined);
+    const sub = agentId ? live.subagents.get(agentId) : undefined;
+    if (!sub || !sub.running) return; // not one shown as its own conversation, or already over
+    if (m.type === "assistant") sub.translator.assistant(m.message as unknown as Record<string, unknown>, m.uuid, m.error ?? null);
+    else if (m.type === "user") {
+      const content = (m.message as { content?: unknown }).content;
+      sub.translator.user(content, typeof msg.uuid === "string" ? msg.uuid : null, (m as { origin?: unknown }).origin, (m as { tool_use_result?: unknown }).tool_use_result, flagsOf(m));
+    }
+  }
+
+  /** A subagent's run ended (or its process went away): its turn ends with that status. */
+  private endSubagent(live: Live, sub: LiveSubagent, status: SubagentStatus, error: string | null): void {
+    if (!sub.running) return;
+    sub.running = false;
+    sub.translator.finish(status === "completed");
+    const turnStatus: TurnStatus = status === "completed" ? "completed" : status === "failed" ? "failed" : "interrupted";
+    this.emit({ type: "turnCompleted", thread: sub.native, turnId: sub.turnId, status: turnStatus, error, usage: null, at: new Date().toISOString() });
+    this.emitSubagent(live, sub, status);
+  }
+
+  private emitSubagent(live: Live, sub: LiveSubagent, status?: SubagentStatus): void {
+    const s = this.settings[live.native];
+    const info = this.subagentInfo({ native: live.native, cwd: live.cwd ?? s?.cwd ?? "", updatedAt: new Date().toISOString(), archived: false }, sub.agentId, null);
+    info.subagent = { ...info.subagent!, status: status ?? (sub.running ? "running" : "completed") };
+    info.updatedAt = new Date().toISOString();
+    this.emit({ type: "threadChanged", info });
   }
 
   // ── Requests ───────────────────────────────────────────────────────────────────────────
@@ -1235,6 +1434,19 @@ export class ClaudeProvider implements HarnessProvider {
   }
 
   async lookupThread(native: NativeId): Promise<NativeThreadInfo | null> {
+    const sub = parseSubagentNative(native);
+    if (sub) {
+      // A subagent (D151): known when its session lists it.
+      const sdk = await this.sdk();
+      const parent = await sdk.getSessionInfo(sub.sessionId);
+      if (!parent || typeof sdk.listSubagents !== "function" || !(await sdk.listSubagents(sub.sessionId)).includes(sub.agentId)) return null;
+      const files = (this.options.subagentFiles ?? subagentFiles)(this.configDir, sub.sessionId);
+      return this.subagentInfo(
+        { native: sub.sessionId, cwd: parent.cwd ?? this.settings[sub.sessionId]?.cwd ?? "", updatedAt: iso(parent.lastModified), archived: parent.archived === true },
+        sub.agentId,
+        files.get(sub.agentId) ?? null,
+      );
+    }
     const info = await (await this.sdk()).getSessionInfo(native);
     if (!info) return null;
     const s = this.settings[native];
