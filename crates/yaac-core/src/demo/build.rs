@@ -95,7 +95,7 @@ pub(crate) fn wait(targets: Vec<(MeshPeer, ThreadState)>, for_messages: bool) ->
 }
 
 pub(crate) fn notice(kind: NoticeKind, text: &str, details: Option<serde_json::Value>) -> ItemBody {
-    ItemBody::Notice(NoticeItem { notice_kind: kind, text: text.to_owned(), about: None, details })
+    ItemBody::Notice(NoticeItem { notice_kind: kind, text: text.to_owned(), body: None, about: None, details })
 }
 
 pub(crate) fn decision(id: &str, label: &str, kind: DecisionKind) -> ApprovalDecision {
