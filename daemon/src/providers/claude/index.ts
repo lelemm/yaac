@@ -84,13 +84,16 @@ const IMAGE_FORMATS = ["image/png", "image/jpeg", "image/gif", "image/webp"];
  * leave it. In it, `AskUserQuestion` still reaches the user as a question (see `askQuestion`).
  */
 export const BYPASS_MODE: PermissionMode = "bypassPermissions";
+// `autonomy` (D146) restates the SDK's own description of each mode (sdk.d.ts, `PermissionMode`)
+// on the scale every provider shares; the agent mesh compares modes on it. `dontAsk` acts on
+// exactly what the user's rules allow, as `default` does without asking, so it is `ask` too.
 const MODES: Array<ModeInfo & { id: PermissionMode; needsAutoMode?: boolean }> = [
-  { id: "default", displayName: "Ask before acting", isDefault: true },
-  { id: "acceptEdits", displayName: "Accept edits", description: "File edits are accepted; other actions still ask." },
-  { id: "plan", displayName: "Plan only", description: "Claude plans and does not change anything." },
-  { id: "dontAsk", displayName: "Don't ask", description: "Anything not already allowed by a rule is denied without asking." },
-  { id: "auto", displayName: "Auto", description: "A classifier approves or denies each action and asks when unsure.", needsAutoMode: true },
-  { id: BYPASS_MODE, displayName: "Bypass permissions", description: "Claude acts without asking for any approval.", skipsApprovals: true },
+  { id: "default", displayName: "Ask before acting", isDefault: true, autonomy: "ask" },
+  { id: "acceptEdits", displayName: "Accept edits", description: "File edits are accepted; other actions still ask.", autonomy: "edits" },
+  { id: "plan", displayName: "Plan only", description: "Claude plans and does not change anything.", autonomy: "readOnly" },
+  { id: "dontAsk", displayName: "Don't ask", description: "Anything not already allowed by a rule is denied without asking.", autonomy: "ask" },
+  { id: "auto", displayName: "Auto", description: "A classifier approves or denies each action and asks when unsure.", needsAutoMode: true, autonomy: "judged" },
+  { id: BYPASS_MODE, displayName: "Bypass permissions", description: "Claude acts without asking for any approval.", skipsApprovals: true, autonomy: "full" },
 ];
 
 // ── The mesh hook ────────────────────────────────────────────────────────────────────────

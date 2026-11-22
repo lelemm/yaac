@@ -11,6 +11,7 @@ import type {
   AppliedSettings,
   Capability,
   Item,
+  ModeInfo,
   ModelInfo,
   QuestionAnswers,
   RequestResponse,
@@ -82,10 +83,20 @@ const MODELS: ModelInfo[] = [
   },
 ];
 
-const MODES = [
-  { id: "fake-ask", displayName: "Fake: ask first", isDefault: true },
-  { id: "fake-auto", displayName: "Fake: auto" },
+const MODES: ModeInfo[] = [
+  { id: "fake-ask", displayName: "Fake: ask first", isDefault: true, autonomy: "ask" },
+  { id: "fake-auto", displayName: "Fake: auto", autonomy: "workspace" },
 ];
+
+/** `FAKE_MODES`: a JSON array of modes this instance offers instead of the two above. */
+function modesFrom(raw: string | undefined): ModeInfo[] {
+  if (!raw) return MODES;
+  const v = JSON.parse(raw) as unknown;
+  if (!Array.isArray(v) || v.some((m) => !m || typeof m.id !== "string" || typeof m.displayName !== "string")) {
+    throw new Error("FAKE_MODES must be a JSON array of { id, displayName, … } modes");
+  }
+  return v as ModeInfo[];
+}
 
 interface StoredThread {
   info: NativeThreadInfo;
@@ -157,9 +168,20 @@ export interface FakeOptions {
   forceStop: boolean;
   /** Offer `threadMoveWorkingDirectory` (FAKE_MOVE_CWD=0: a harness that cannot change a conversation's folder). */
   moveCwd?: boolean;
+  /** The modes on offer (FAKE_MODES, JSON). */
+  modes?: ModeInfo[];
 }
 
 export class FakeProvider implements HarnessProvider {
+  private get modes(): ModeInfo[] {
+    return this.options.modes ?? MODES;
+  }
+
+  /** The mode a thread is in when none was chosen: the harness default, or none. */
+  private get defaultMode(): string | null {
+    return this.modes.find((m) => m.isDefault)?.id ?? null;
+  }
+
   readonly events = new Emitter<ProviderEvent>();
   private store: StoreFile;
   private readonly storeFile: string;
@@ -305,7 +327,7 @@ export class FakeProvider implements HarnessProvider {
       capabilities: caps,
       models: MODELS,
       modelsComplete: true,
-      modes: MODES,
+      modes: this.modes,
     };
   }
 
@@ -372,7 +394,7 @@ export class FakeProvider implements HarnessProvider {
       },
       items: [],
       turns: 0,
-      settings: { model: params.model ?? "fake-large", effort: params.effort ?? null, mode: params.mode ?? "fake-ask" },
+      settings: { model: params.model ?? "fake-large", effort: params.effort ?? null, mode: params.mode ?? this.defaultMode },
       turnLog: [],
     };
     this.attachMeshTo(native, params.cwd, "start");
@@ -793,8 +815,8 @@ export class FakeProvider implements HarnessProvider {
       imageInput: image,
       imageFormats: image === "supported" ? ["image/png", "image/jpeg", "image/gif", "image/webp"] : [],
       efforts: model.efforts ?? [],
-      modes: MODES,
-      applied: { model: t.settings.model ?? model.id, effort: t.settings.effort ?? model.defaultEffort ?? null, mode: t.settings.mode ?? "fake-ask" },
+      modes: this.modes,
+      applied: { model: t.settings.model ?? model.id, effort: t.settings.effort ?? model.defaultEffort ?? null, mode: t.settings.mode ?? this.defaultMode },
     };
   }
 
@@ -1084,6 +1106,7 @@ export const fakeProviderFactory: ProviderFactory = {
       steer: env.FAKE_STEER !== "0",
       forceStop: env.FAKE_FORCE_STOP !== "0",
       moveCwd: env.FAKE_MOVE_CWD !== "0",
+      modes: modesFrom(env.FAKE_MODES),
     });
   },
 };
