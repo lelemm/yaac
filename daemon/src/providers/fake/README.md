@@ -17,7 +17,9 @@ store share conversations and allow native fork), `FAKE_SEED=0` (no pre-existing
 threads), `FAKE_NATIVE_FORK=0` (no `threadFork`), `FAKE_PACE_MS=<n>` (delay between deltas,
 default 5), `FAKE_STATUS=<providerStatus>` (e.g. `needsAuth`, to test status handling),
 `FAKE_STEER=0` (no `steer`: a harness that cannot steer), `FAKE_FORCE_STOP=0` (no `forceStop`:
-a shared harness process yaacd cannot end).
+a shared harness process yaacd cannot end), `FAKE_MOVE_CWD=0` (no `threadMoveWorkingDirectory`: a
+harness that cannot change a conversation's folder, so a `thread/move` changes only where YAAC lists it;
+with it, the folder `yaacd` hands a turn is recorded in `received` as `cwd`).
 
 A new store is seeded with two conversations "created outside YAAC": one `interactive`
 ("Refactor the parser (started in a terminal)") and one `programmatic` ("Nightly lint

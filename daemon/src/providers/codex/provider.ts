@@ -191,6 +191,8 @@ interface ThreadState {
   mode: string | null;
   /** Effort chosen at fork time, applied on the next turn (fork takes no effort). */
   pendingEffort: string | null;
+  /** The working directory yaacd moved this thread to (D139): sent on `thread/resume` and `turn/start`. */
+  cwd: string | null;
   usageAtStart: ThreadTokenUsage | undefined;
   lastUsage: ThreadTokenUsage | undefined;
   plan: Item | null;
@@ -431,6 +433,7 @@ export class CodexProvider implements HarnessProvider {
         effort: null,
         mode: null,
         pendingEffort: null,
+        cwd: null,
         usageAtStart: undefined,
         lastUsage: undefined,
         plan: null,
@@ -499,8 +502,9 @@ export class CodexProvider implements HarnessProvider {
   private async resume(native: NativeId, model: string | null): Promise<Thread> {
     const conn = await this.ensure();
     const st = this.state(native);
-    const extras = await this.setup({ phase: "resume", thread: native, cwd: null });
-    const r = (await conn.request("thread/resume", { threadId: native, excludeTurns: true, ...(model ? { model } : {}), ...extras })) as {
+    const extras = await this.setup({ phase: "resume", thread: native, cwd: st.cwd });
+    // A moved thread (D139) is resumed in its new folder (`ThreadResumeParams.cwd`).
+    const r = (await conn.request("thread/resume", { threadId: native, excludeTurns: true, ...(model ? { model } : {}), ...(st.cwd ? { cwd: st.cwd } : {}), ...extras })) as {
       thread: Thread;
       model?: string;
       reasoningEffort?: string | null;
@@ -570,6 +574,8 @@ export class CodexProvider implements HarnessProvider {
       "plan",
       "webSearch",
       "modes",
+      // `turn/start` and `thread/resume` take `cwd` (D139, verified on codex-cli 0.170.0).
+      "threadMoveWorkingDirectory",
     ];
     if (models.some((m) => m.capabilities?.some((c) => c.capability === "imageInput" && c.support !== "unsupported"))) caps.push("imageInput");
     if (this.meshAttached) caps.push("meshTools");
@@ -746,6 +752,9 @@ export class CodexProvider implements HarnessProvider {
   async startTurn(thread: NativeId, input: ProviderInput, overrides: TurnOverrides): Promise<TurnId> {
     const st = this.state(thread);
     if (st.ownTurn || st.foreignTurn || st.starting) throw new Error("a turn is already running in this Codex thread");
+    // The folder yaacd moved the thread to (D139): `turn/start.cwd` overrides it "for this turn
+    // and subsequent turns"; a resume needed first uses it too.
+    if (overrides.cwd) st.cwd = overrides.cwd;
     if (!st.subscribed) {
       const t = await this.resume(thread, null);
       if (this.isActive(t.status ?? null)) {
@@ -755,7 +764,7 @@ export class CodexProvider implements HarnessProvider {
       }
     }
     if (this.isActive(st.status)) throw new ThreadInUseError("the Codex thread is busy");
-    return this.beginTurn(st, input, { model: overrides.model ?? null, effort: overrides.effort ?? null, mode: findMode(overrides.mode), fast: overrides.fast ?? null });
+    return this.beginTurn(st, input, { model: overrides.model ?? null, effort: overrides.effort ?? null, mode: findMode(overrides.mode), fast: overrides.fast ?? null, cwd: overrides.cwd ?? null });
   }
 
   private userInput(input: ProviderInput): UserInput[] {
@@ -778,7 +787,7 @@ export class CodexProvider implements HarnessProvider {
     return fast ? tier : "default";
   }
 
-  private async beginTurn(st: ThreadState, input: ProviderInput, o: { model: string | null; effort: string | null; mode: CodexMode | null; fast?: boolean | null }): Promise<TurnId> {
+  private async beginTurn(st: ThreadState, input: ProviderInput, o: { model: string | null; effort: string | null; mode: CodexMode | null; fast?: boolean | null; cwd?: string | null }): Promise<TurnId> {
     const conn = await this.ensure();
     const clientId = randomId("yaac-", 12);
     const effort = o.effort ?? st.pendingEffort;
@@ -796,6 +805,7 @@ export class CodexProvider implements HarnessProvider {
         ...(o.model ? { model: o.model } : {}),
         ...(effort ? { effort } : {}),
         ...(tier ? { serviceTierForTurn: tier } : {}),
+        ...(o.cwd ? { cwd: o.cwd } : {}),
         ...(o.mode ? { approvalPolicy: o.mode.approvalPolicy, sandboxPolicy: o.mode.sandboxPolicy } : {}),
       })) as { turn: Turn };
       turnId = r.turn.id;
@@ -965,6 +975,7 @@ export class CodexProvider implements HarnessProvider {
       "webSearch",
       "reasoningSummary",
       "modes",
+      "threadMoveWorkingDirectory",
     ];
     if (efforts.length > 0) base.push("effortSwitch", "reasoning");
     if (image === "supported") base.push("imageInput");

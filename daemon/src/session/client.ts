@@ -145,6 +145,8 @@ export class ClientSession implements SessionHandler, ClientLink {
         return core.threadForkOnly(p as never);
       case METHODS.THREAD_UPDATE:
         return core.threadUpdate(this, p as never);
+      case METHODS.THREAD_MOVE:
+        return core.threadMove(this, p as never);
       case METHODS.ITEM_READ:
         return core.itemRead({ threadId: str(p, "threadId"), itemId: str(p, "itemId"), offset: typeof p.offset === "number" ? p.offset : 0, maxBytes: p.maxBytes as number });
       case METHODS.PROJECT_LIST:

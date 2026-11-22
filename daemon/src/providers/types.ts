@@ -138,6 +138,12 @@ export interface TurnOverrides {
    * `true` or `false`, `true` only when the model has `fastMode`.
    */
   fast?: boolean | null;
+  /**
+   * The working directory for this and later turns (D139). Set by yaacd only for a thread a
+   * `thread/move` moved, and only under `threadMoveWorkingDirectory`; a provider that declares
+   * that capability applies it (and uses it when it resumes the conversation).
+   */
+  cwd?: string | null;
 }
 
 /**
