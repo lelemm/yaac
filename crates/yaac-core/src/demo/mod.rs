@@ -285,7 +285,7 @@ fn demo_distros() -> Value {
 }
 
 impl Inner {
-    /// `thread/move` (D139) as a target answers it: the placement always; the folder too where
+    /// `thread/move` (D144) as a target answers it: the placement always; the folder too where
     /// the thread's provider has `threadMoveWorkingDirectory` (the demo's Codex instances).
     fn move_thread(&mut self, id: RpcId, key: &ThreadKey, p: &Value) {
         let project = p.get("project").and_then(Value::as_str).map(str::to_owned);

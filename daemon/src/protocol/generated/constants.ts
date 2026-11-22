@@ -288,7 +288,7 @@ export interface RequestMap {
   "thread/archive": { params: ThreadArchiveParams; result: Empty };
   /** Delete a thread (under `threadDelete`). */
   "thread/delete": { params: ThreadDeleteParams; result: Empty };
-  /** List a thread under another project or worktree on the same target (D139); with */
+  /** List a thread under another project or worktree on the same target (D144); with */
   "thread/move": { params: ThreadMoveParams; result: ThreadMoveResult };
   /** Set YAAC's own settings of a thread (the agents policy, a hold). A patch. */
   "thread/update": { params: ThreadUpdateParams; result: ThreadUpdateResult };

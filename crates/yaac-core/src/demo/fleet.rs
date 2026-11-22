@@ -145,7 +145,7 @@ fn caps() -> Vec<Capability> {
         Capability::ContextUsage,
         Capability::ModelList,
         Capability::MeshTools,
-        // yaacd's own (D139): any thread can be moved to another project.
+        // yaacd's own (D144): any thread can be moved to another project.
         Capability::ThreadMove,
     ]
 }
@@ -165,7 +165,7 @@ pub(crate) fn codex(instance: &str, name: Option<&str>, status: ProviderStatus) 
         store: StoreIdentity { key: Some(format!("store-{instance}")), home: None, account: None },
         status,
         status_message: None,
-        // The demo's Codex can change a conversation's folder (D139); its Claude cannot.
+        // The demo's Codex can change a conversation's folder (D144); its Claude cannot.
         capabilities: [caps(), vec![Capability::ThreadMoveWorkingDirectory]].concat(),
         models: vec![
             model("gpt-6.2-sol", true, Support::Supported),
@@ -765,7 +765,7 @@ impl Fleet {
     pub(super) fn resolve_projects(&mut self, target: &TargetId) {
         let projects: Vec<crate::projects::Project> =
             self.projects.get(target).cloned().unwrap_or_default().into_iter().map(|p| crate::projects::Project::from_wire(target, p)).collect();
-        // A thread the user moved (D139) stays where it was put.
+        // A thread the user moved (D144) stays where it was put.
         for (key, t) in self.threads.iter_mut().filter(|(k, t)| &k.target == target && t.summary.placement.is_none()) {
             let loc = crate::projects::Location { target: key.target.clone(), folder: t.summary.cwd.to_string(), repo: None };
             let found = crate::projects::project_for(&projects, &loc);

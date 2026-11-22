@@ -428,7 +428,7 @@ including the ones that were sitting in other temporary projects beneath that fo
 
 #### Moving a thread to another project
 
-**Decided (D139); the details are Proposed (P100–P105).** A thread can be listed under another
+**Decided (D144); the details are Proposed (P100–P105).** A thread can be listed under another
 project — and, optionally, one of that project's worktrees — **on the same machine**. This is
 YAAC's own **placement**, kept by `yaacd` in the thread's record on the target (so every host
 sees it) and apart from the harness's working directory:

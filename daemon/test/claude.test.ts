@@ -481,7 +481,7 @@ test("AskUserQuestion: multi-select, previews, and a free-text answer round trip
   await r.provider.dispose();
 });
 
-test("Claude Code never reports threadMoveWorkingDirectory: a move is YAAC's placement only (D139)", async () => {
+test("Claude Code never reports threadMoveWorkingDirectory: a move is YAAC's placement only (D144)", async () => {
   const r = rig();
   const p = await r.provider.probe();
   assert.ok(!p.capabilities.includes("threadMoveWorkingDirectory"), "not on the descriptor");

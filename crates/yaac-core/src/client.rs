@@ -110,7 +110,7 @@ enum Call {
     Delete(ThreadKey),
     /// One `thread/archive` of a bulk Archive (D138).
     BulkArchive { batch: u64, key: ThreadKey },
-    /// One `thread/move` (D139); `before`: the summary to put back if it is refused.
+    /// One `thread/move` (D144); `before`: the summary to put back if it is refused.
     Move { batch: u64, key: ThreadKey, before: Box<ThreadSummary> },
     ForkPreview { key: ThreadKey, instance: InstanceId },
     InstanceList(TargetId),
@@ -200,10 +200,10 @@ pub struct Client {
     next_batch: u64,
     /// The report of the last bulk Archive that did not simply succeed, until dismissed.
     pub bulk_report: Option<crate::bulk::BulkReport>,
-    /// Moves still waiting for answers (D139), by batch: each thread's outcome.
+    /// Moves still waiting for answers (D144), by batch: each thread's outcome.
     moves: HashMap<u64, Vec<(ThreadKey, Option<crate::bulk::Outcome>)>>,
     /// The bottom bar's notice after a move that needed no confirmation, with its Undo
-    /// (D139), until dismissed or replaced.
+    /// (D144), until dismissed or replaced.
     pub move_notice: Option<crate::moving::MoveNotice>,
 }
 
@@ -1209,7 +1209,7 @@ impl Client {
         self.batches.len()
     }
 
-    /// Move threads (D139): one `thread/move` per thread, each with its own operation id,
+    /// Move threads (D144): one `thread/move` per thread, each with its own operation id,
     /// never re-sent. Each row moves at once (the target's answer replaces it; a refusal puts
     /// it back), and anything refused or uncertain is reported once in the bar under the list.
     /// `None` for a destination forgets the placement (Undo of a thread that had none).

@@ -92,7 +92,7 @@ is right.
 - Notification `forge/prs/changed` (a `ForgePrsResult`).
 - Open enums `ForgeKind`, `ForgeCapability`, `PrState`, `ChecksState`, `CheckState`.
 
-## Moving threads (D139)
+## Moving threads (D144)
 
 - `thread/move { opId, threadId, project?, worktree? }` → `{ thread, workingDirectory? }`.
 - `ThreadSummary.placement { project, worktree?, worktreeName? }`.

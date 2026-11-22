@@ -324,7 +324,7 @@ fn thread_delete_carries_also_in_harness_and_defaults_to_the_record_only() {
     assert_eq!(serde_json::to_value(&old).unwrap()["alsoInHarness"], false);
 }
 
-/// D139: `thread/move` is a state-changing request (an operation id); its params name a
+/// D144: `thread/move` is a state-changing request (an operation id); its params name a
 /// project (absent: forget the placement) and optionally a checkout; the result says whether
 /// the working directory follows. A summary carries the placement, and a summary without one
 /// (an older daemon) reads as "where its folder puts it".

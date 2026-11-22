@@ -63,13 +63,13 @@ pub(crate) enum Menu {
     Demo,
     /// A row's PR badge menu (D119): Create a new PR, Copy link.
     PrBadge(ThreadKey),
-    /// The Move dialog's Project dropdown (D139).
+    /// The Move dialog's Project dropdown (D144).
     MoveProject,
-    /// The Move dialog's Worktree dropdown (D139).
+    /// The Move dialog's Worktree dropdown (D144).
     MoveWorktree,
 }
 
-/// Sidebar rows being dragged to another group (D139).
+/// Sidebar rows being dragged to another group (D144).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DragRows {
     /// The threads: the selection when the dragged row is in one of two or more, else the row.
@@ -139,9 +139,9 @@ pub(crate) struct UiState {
     pub update_now: Option<yaac_core::components::UpdateNowDialog>,
     /// The bulk Archive confirmation (D138).
     pub bulk_archive: Option<yaac_core::bulk::BulkArchiveDialog>,
-    /// The Move dialog (D139).
+    /// The Move dialog (D144).
     pub move_dialog: Option<yaac_core::moving::MoveDialog>,
-    /// Rows being dragged to another group (D139).
+    /// Rows being dragged to another group (D144).
     pub drag: Option<DragRows>,
     /// Each section of the sidebar drawn last frame and the area it covers (header and rows),
     /// for dropping dragged rows on it.
@@ -418,7 +418,7 @@ pub(crate) enum Action {
     UnmuteMany(Vec<ThreadKey>),
     /// Unselect every sidebar row.
     ClearSelection,
-    /// Open the Move dialog for these threads (D139), with a destination already chosen (a
+    /// Open the Move dialog for these threads (D144), with a destination already chosen (a
     /// Commander choice, or a drop that changes a working directory).
     OpenMove(Vec<ThreadKey>, Option<yaac_core::moving::Destination>),
     /// Move these threads; with a notice, the bar shows it with Undo.

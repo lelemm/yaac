@@ -201,7 +201,7 @@ pub enum StepKind {
     TargetEnable,
     /// A target whose providers to read again.
     RefreshProviders,
-    /// A project (or a worktree of one) of the open thread's machine, to move it to (D139).
+    /// A project (or a worktree of one) of the open thread's machine, to move it to (D144).
     MoveTo,
 }
 
@@ -723,7 +723,7 @@ pub enum StepValue {
     MuteFor(Option<i64>),
     /// "Until a date…": the Mute dialog.
     MuteDate,
-    /// Move the open thread here (D139): the Move dialog opens with it chosen.
+    /// Move the open thread here (D144): the Move dialog opens with it chosen.
     MoveTo(crate::moving::Destination),
     /// This order.
     Order(Order),

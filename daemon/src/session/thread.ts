@@ -80,7 +80,7 @@ export interface ThreadRecord {
    */
   fast?: boolean;
   /**
-   * Where the user moved the thread in YAAC (`thread/move`, D139): its project and, when the
+   * Where the user moved the thread in YAAC (`thread/move`, D144): its project and, when the
    * project is in git, the checkout. Apart from `cwd`; absent: the folder rule decides.
    */
   placement?: PlacementRecord | null;

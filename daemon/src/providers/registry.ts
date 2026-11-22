@@ -214,7 +214,7 @@ export class ProviderRegistry {
       store: result.store,
       status: result.status,
       statusMessage: result.statusMessage ?? null,
-      // `threadMove` is yaacd's own (D139): it can place any instance's threads.
+      // `threadMove` is yaacd's own (D144): it can place any instance's threads.
       capabilities: result.capabilities.includes("threadMove") ? result.capabilities : [...result.capabilities, "threadMove"],
       models: result.models,
       modelsComplete: result.modelsComplete,

@@ -220,7 +220,7 @@ pub struct WorktreeRef {
     pub branch: Option<String>,
 }
 
-/// Where YAAC lists a thread that the user moved (D139): a project on the same target and,
+/// Where YAAC lists a thread that the user moved (D144): a project on the same target and,
 /// optionally, one checkout of that project's repository. YAAC's own record, kept by `yaacd`
 /// so every host sees it, and apart from the harness's working directory (`cwd`). While it is
 /// set, `ThreadSummary.project` and `worktree` follow it rather than the folder rule.
@@ -322,7 +322,7 @@ pub struct ThreadSummary {
     /// otherwise. Only ever true while the thread's model has `fastMode`. Absent: off.
     #[serde(default)]
     pub fast: bool,
-    /// Where the user moved the thread in YAAC (`thread/move`, D139). Absent: it is listed
+    /// Where the user moved the thread in YAAC (`thread/move`, D144). Absent: it is listed
     /// where its folder puts it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<ThreadPlacement>,
@@ -667,7 +667,7 @@ pub struct ThreadDeleteParams {
     pub also_in_harness: bool,
 }
 
-/// `thread/move` (D139): list the thread under another project (and optionally one of that
+/// `thread/move` (D144): list the thread under another project (and optionally one of that
 /// project's checkouts) **on the same target**. YAAC's own placement always changes; where the
 /// thread's provider has `threadMoveWorkingDirectory`, the agent also works in that project's
 /// folder (or the same place in the chosen checkout) from its next turn. A running thread may

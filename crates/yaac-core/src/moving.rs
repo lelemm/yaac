@@ -1,4 +1,4 @@
-//! Moving threads to another project or worktree (D139) — **on the same machine**.
+//! Moving threads to another project or worktree (D144) — **on the same machine**.
 //!
 //! Where a thread is listed is YAAC's own placement, kept by `yaacd` on the target
 //! (`thread/move`), apart from the harness's working directory. Where the thread's provider

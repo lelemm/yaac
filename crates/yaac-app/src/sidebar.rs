@@ -68,7 +68,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     // Rows do not jump under the pointer (D116): while it is over the list, or a row's menu
     // is open, a reorder waits until it leaves.
     let pointer = ui.ctx().pointer_hover_pos();
-    // A drag of rows to another group (D139) holds it too, wherever the pointer is.
+    // A drag of rows to another group (D144) holds it too, wherever the pointer is.
     let hold = app.ui.drag.is_some()
         || (app.shots.is_none()
             && (matches!(app.ui.menu, Some(Menu::Context(_) | Menu::Selection(_) | Menu::Header(_))) || pointer.is_some_and(|pt| app.ui.list_rect.is_some_and(|r| r.contains(pt)))));
@@ -123,7 +123,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             let id = match line {
                 Line::Head(s) | Line::Row(s, _) => &s.id,
             };
-            // Where each section is, for dropping dragged rows on it (D139).
+            // Where each section is, for dropping dragged rows on it (D144).
             match app.ui.drop_zones.last_mut() {
                 Some((last, zone)) if last == id => *zone = zone.union(rect),
                 _ => app.ui.drop_zones.push((id.clone(), rect)),
@@ -178,14 +178,14 @@ fn bar_height(ui: &egui::Ui, app: &YaacApp) -> Option<f32> {
         return Some(BAR_H);
     }
     let Some(r) = app.client.bulk_report.as_ref() else {
-        // After a move that needed no confirmation: "Moved 2 threads to api · Undo" (D139).
+        // After a move that needed no confirmation: "Moved 2 threads to api · Undo" (D144).
         return app.client.move_notice.as_ref().map(|_| BAR_H);
     };
     let g = report_galley(ui, app, &r.text, ui.available_width());
     Some(BAR_H.max(g.size().y + 22.0))
 }
 
-/// Rows being dragged to another group (D139): the group under the pointer is outlined when
+/// Rows being dragged to another group (D144): the group under the pointer is outlined when
 /// the rows can move there, and a small label beside the pointer says what dropping does —
 /// "Move to api" — or why not, with the not-allowed cursor ("A thread cannot move to another
 /// machine"). Releasing moves them: at once with an Undo in the bar, or through the Move
@@ -328,7 +328,7 @@ fn selection_bar(ui: &mut egui::Ui, app: &mut YaacApp, height: f32, actions: &mu
     }
     icons::close(ui.painter(), x_rect.center(), 14.0, p.text2);
     if app.ui.list_sel.is_empty() && app.client.bulk_report.is_none() {
-        // "Moved 2 threads to api · Undo" (D139).
+        // "Moved 2 threads to api · Undo" (D144).
         let Some(n) = app.client.move_notice.clone() else { return };
         let undo = ui.fonts_mut(|f| f.layout_no_wrap("Undo".to_owned(), theme::bold(size::SMALL), p.text));
         let ur = Rect::from_min_size(pos2(x_rect.left() - 10.0 - undo.size().x - 12.0, cy - 11.0), vec2(undo.size().x + 12.0, 22.0));
@@ -882,7 +882,7 @@ pub(crate) fn row(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, r: usize, r
     let p = app.p;
     let row = &s.rows[r];
     let id = egui::Id::unique(("row", s.id.as_str(), row.key.to_string()));
-    // A row can be dragged to another group (D139) while the grouping has a project or
+    // A row can be dragged to another group (D144) while the grouping has a project or
     // worktree level; an archived one cannot move.
     let draggable = yaac_core::moving::can_drag(app.ui.grouping) && !row.archived;
     let resp = ui.interact(rect, id, if draggable { Sense::click_and_drag() } else { Sense::click() });

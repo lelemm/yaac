@@ -387,7 +387,7 @@ export class FakeProvider implements HarnessProvider {
     if (overrides.model) t.settings.model = overrides.model;
     if (overrides.effort) t.settings.effort = overrides.effort;
     if (overrides.mode) t.settings.mode = overrides.mode;
-    // A moved thread (D139): the folder applies to this turn and later ones.
+    // A moved thread (D144): the folder applies to this turn and later ones.
     if (overrides.cwd) {
       if (this.options.moveCwd === false) throw new Error("fake: this harness cannot change a conversation's working directory");
       t.info.cwd = overrides.cwd;

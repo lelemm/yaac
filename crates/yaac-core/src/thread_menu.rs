@@ -2,7 +2,7 @@
 //! Archive (D111). The menu's order is fixed by the owner:
 //!
 //! **Copy thread ID, Rename** — separator — **Fork, Move…, Pin/Unpin, Mute…, Archive** —
-//! separator — **Delete** (in the destructive colour). Move… (D139) sits after Fork, the other
+//! separator — **Delete** (in the destructive colour). Move… (D144) sits after Fork, the other
 //! entry that takes the thread somewhere else. An archived thread has **Unarchive** where Archive
 //! was and no pin or mute (it is only ever under *Archived*, D93). Whether an entry can be used
 //! comes from capabilities, never from the provider's kind.
@@ -21,7 +21,7 @@ pub enum MenuAction {
     Rename,
     /// Fork.
     Fork,
-    /// Open the Move dialog (D139): another project or worktree on the same machine.
+    /// Open the Move dialog (D144): another project or worktree on the same machine.
     Move,
     /// Pin.
     Pin,

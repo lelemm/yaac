@@ -191,7 +191,7 @@ interface ThreadState {
   mode: string | null;
   /** Effort chosen at fork time, applied on the next turn (fork takes no effort). */
   pendingEffort: string | null;
-  /** The working directory yaacd moved this thread to (D139): sent on `thread/resume` and `turn/start`. */
+  /** The working directory yaacd moved this thread to (D144): sent on `thread/resume` and `turn/start`. */
   cwd: string | null;
   usageAtStart: ThreadTokenUsage | undefined;
   lastUsage: ThreadTokenUsage | undefined;
@@ -503,7 +503,7 @@ export class CodexProvider implements HarnessProvider {
     const conn = await this.ensure();
     const st = this.state(native);
     const extras = await this.setup({ phase: "resume", thread: native, cwd: st.cwd });
-    // A moved thread (D139) is resumed in its new folder (`ThreadResumeParams.cwd`).
+    // A moved thread (D144) is resumed in its new folder (`ThreadResumeParams.cwd`).
     const r = (await conn.request("thread/resume", { threadId: native, excludeTurns: true, ...(model ? { model } : {}), ...(st.cwd ? { cwd: st.cwd } : {}), ...extras })) as {
       thread: Thread;
       model?: string;
@@ -574,7 +574,7 @@ export class CodexProvider implements HarnessProvider {
       "plan",
       "webSearch",
       "modes",
-      // `turn/start` and `thread/resume` take `cwd` (D139, verified on codex-cli 0.170.0).
+      // `turn/start` and `thread/resume` take `cwd` (D144, verified on codex-cli 0.170.0).
       "threadMoveWorkingDirectory",
     ];
     if (models.some((m) => m.capabilities?.some((c) => c.capability === "imageInput" && c.support !== "unsupported"))) caps.push("imageInput");
@@ -752,7 +752,7 @@ export class CodexProvider implements HarnessProvider {
   async startTurn(thread: NativeId, input: ProviderInput, overrides: TurnOverrides): Promise<TurnId> {
     const st = this.state(thread);
     if (st.ownTurn || st.foreignTurn || st.starting) throw new Error("a turn is already running in this Codex thread");
-    // The folder yaacd moved the thread to (D139): `turn/start.cwd` overrides it "for this turn
+    // The folder yaacd moved the thread to (D144): `turn/start.cwd` overrides it "for this turn
     // and subsequent turns"; a resume needed first uses it too.
     if (overrides.cwd) st.cwd = overrides.cwd;
     if (!st.subscribed) {

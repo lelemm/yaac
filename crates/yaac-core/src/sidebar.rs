@@ -314,7 +314,7 @@ fn connection(state: &AppState, target: &TargetId) -> (Option<(Mark, String)>, b
 
 fn branch_of(state: &AppState, key: &ThreadKey, s: &ThreadSummary) -> Option<String> {
     let _ = (state, key);
-    // Where the user moved it (D139): the checkout it was placed in.
+    // Where the user moved it (D144): the checkout it was placed in.
     if let Some(pl) = &s.placement
         && let Some(root) = &pl.worktree
     {

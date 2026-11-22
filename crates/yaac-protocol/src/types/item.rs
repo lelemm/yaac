@@ -178,7 +178,7 @@ open_enum! {
         Undelivered = "undelivered",
         /// The thread was stopped and is held ("Stopped by …").
         Stopped = "stopped",
-        /// The thread was moved to another project or worktree (`thread/move`, D139).
+        /// The thread was moved to another project or worktree (`thread/move`, D144).
         Moved = "moved",
     }
 }

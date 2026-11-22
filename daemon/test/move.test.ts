@@ -1,4 +1,4 @@
-// Moving a thread to another project or worktree (D139): a placement yaacd keeps on the
+// Moving a thread to another project or worktree (D144): a placement yaacd keeps on the
 // target, and — only under the provider's `threadMoveWorkingDirectory` — the folder the agent
 // works in from its next turn, with a short fixed note at the start of that turn. Against the
 // fake provider (with and without the capability), and the Codex provider against a fake

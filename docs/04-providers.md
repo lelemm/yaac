@@ -184,8 +184,8 @@ pub enum Capability {
     ThreadRename,
     ThreadArchive,
     ThreadDelete,        // the harness can delete its own sessions (`thread/delete { alsoInHarness }`, D110)
-    ThreadMove,          // yaacd can list the thread under another project (`thread/move`, D139); yaacd's own
-    ThreadMoveWorkingDirectory, // the harness can change a conversation's folder from its next turn (D139)
+    ThreadMove,          // yaacd can list the thread under another project (`thread/move`, D144); yaacd's own
+    ThreadMoveWorkingDirectory, // the harness can change a conversation's folder from its next turn (D144)
     FollowExternal,      // can show live updates of a thread someone else is driving
 
     // ── Turn control ────────────────────────────────────────────────────────
@@ -309,7 +309,7 @@ capability. If a feature needs a distinction no capability expresses, add a capa
 
 ### Moving a thread is a capability
 
-**Decided (D139); Proposed (P101).** Where YAAC lists a thread is YAAC's own placement
+**Decided (D144); Proposed (P101).** Where YAAC lists a thread is YAAC's own placement
 ([05](05-threads.md#moving-a-thread-to-another-project)); `threadMove` says the target's
 `yaacd` can keep one, and `yaacd` adds it to every instance itself — an older `yaacd` lacks
 it, and Move is then offered disabled. Whether the *agent* moves too is the provider's

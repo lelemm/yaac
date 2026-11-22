@@ -217,7 +217,7 @@ function sleepMs(ms: number): Promise<void> {
 
 /**
  * The fixed note at the start of the first turn after a `thread/move` changed the working
- * directory (D139). Only the harness receives it; the transcript shows the message as sent.
+ * directory (D144). Only the harness receives it; the transcript shows the message as sent.
  */
 export function movedNote(from: string, to: string): string {
   return `[YAAC] Your working directory is now ${to}. It was ${from}; paths earlier in this conversation refer to that folder.\n\n---\n\n`;
@@ -856,7 +856,7 @@ export class Core {
     await this.ops.run("project/delete", p.opId, async () => {
       if (!this.projects.get(p.projectId)) throw notActed("invalid_params", `no project ${String(p.projectId)} on this target`);
       this.projects.delete(p.projectId);
-      // Threads moved into it (D139) go back to where their folders put them.
+      // Threads moved into it (D144) go back to where their folders put them.
       for (const rt of this.threads.values()) {
         if (rt.record.placement?.projectId !== p.projectId) continue;
         delete rt.record.placement;
@@ -884,7 +884,7 @@ export class Core {
   }
 
   /**
-   * `thread/move` (D139): where YAAC lists a thread — a project on this target and, when it is
+   * `thread/move` (D144): where YAAC lists a thread — a project on this target and, when it is
    * in git, one checkout of its repository — and, under the provider's
    * `threadMoveWorkingDirectory`, the folder the agent works in from its next turn: the
    * project's folder, or the same place in the chosen checkout. Without the capability only
@@ -1046,7 +1046,7 @@ export class Core {
     if (r.forkedFrom) s.forkedFrom = r.forkedFrom;
     if (r.spawnedBy) s.spawnedBy = r.spawnedBy;
     this.mesh?.decorate(rt, s);
-    // Where the user moved it (D139) wins over the folder rule, while its project exists.
+    // Where the user moved it (D144) wins over the folder rule, while its project exists.
     const placed = r.placement ? this.projects.get(r.placement.projectId) : undefined;
     s.project = placed ? userProjectRef(placed) : projectRefFor(this.projects.list(), { folder: r.cwd, repo: r.repo ?? null });
     if (placed && r.placement) {
@@ -1429,7 +1429,7 @@ export class Core {
       const method = needs[c];
       return !method || typeof provider[method] === "function";
     });
-    // `threadMove` is yaacd's own (D139): any thread can be placed under another project.
+    // `threadMove` is yaacd's own (D144): any thread can be placed under another project.
     if (!eff.capabilities.includes("threadMove")) eff.capabilities.push("threadMove");
     // Fast mode (D125) is a model-level capability: present when the thread's model has it.
     eff.capabilities = eff.capabilities.filter((c) => c !== "fastMode");
@@ -2023,7 +2023,7 @@ export class Core {
       // the model the turn runs on has it.
       const descriptor = this.registry.get(rt.record.instance)?.descriptor;
       const fast = (work.overrides.fast ?? rt.record.fast ?? false) === true && !!descriptor && this.modelHasFast(descriptor, work.overrides.model ?? this.modelOf(rt));
-      // A thread a `thread/move` moved (D139): every turn names its folder, and the first one
+      // A thread a `thread/move` moved (D144): every turn names its folder, and the first one
       // after the move begins with a short fixed note saying so. Only the harness sees it.
       const overrides: TurnOverrides = { ...work.overrides, fast };
       if (rt.record.cwdMoved) overrides.cwd = rt.record.cwd;

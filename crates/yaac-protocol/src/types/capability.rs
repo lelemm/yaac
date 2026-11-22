@@ -28,7 +28,7 @@ open_enum! {
         /// session there too (`alsoInHarness`, D110). Without it YAAC removes only its record.
         ThreadDelete = "threadDelete",
         /// `yaacd` can list this instance's threads under another project or worktree on the
-        /// same target (`thread/move`, D139). YAAC's own placement; says nothing about the
+        /// same target (`thread/move`, D144). YAAC's own placement; says nothing about the
         /// harness.
         ThreadMove = "threadMove",
         /// The harness can change a conversation's working directory from its next turn: a

@@ -671,7 +671,7 @@ fn dropdown_row(ui: &mut egui::Ui, p: &Palette, label: &str, detail: &str, selec
     resp
 }
 
-/// D139: Move — Project (the machine's projects), Worktree (optional: the project's known
+/// D144: Move — Project (the machine's projects), Worktree (optional: the project's known
 /// checkouts), and the one sentence saying what happens to the working directory: "The agent
 /// will work in <path> from its next turn" where its harness can change it, otherwise "Only
 /// where YAAC lists it changes; the agent keeps working in <old path>". The machine is shown,

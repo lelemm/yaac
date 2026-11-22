@@ -1,4 +1,4 @@
-//! Moving threads to another project or worktree (D139): which groups a row can be dropped
+//! Moving threads to another project or worktree (D144): which groups a row can be dropped
 //! on under each grouping and why not, the same-machine rule, the Move dialog's model and
 //! texts, a multi-selection, and what the client sends.
 mod common;
