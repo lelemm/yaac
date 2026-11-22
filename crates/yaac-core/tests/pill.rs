@@ -189,3 +189,31 @@ fn the_docked_panel_keeps_the_tree_alive_first_and_folds_the_finished() {
     let e = docked_entries(&cl[0], &q);
     assert!(matches!(&e[..], [DockEntry::Row(a), DockEntry::Row(b)] if a.title == "y-run" && b.title == "x-done"));
 }
+
+mod common;
+
+#[test]
+fn the_demo_orchestrator_with_thirty_agents() {
+    use yaac_core::agents::agents_panel;
+    use yaac_core::attention::AttentionMap;
+    use yaac_core::demo::{Scene, threads};
+    let (mut c, hub) = common::boot();
+    hub.play(Scene::ManyAgents);
+    common::settle(&mut c, &hub);
+    let map = AttentionMap::compute(&c.state);
+    let p = agents_panel(&c.state, &map, &threads::orchestrator()).unwrap();
+    assert_eq!(p.all().count(), 30);
+    let pl = pill(&p, PILL_MAX);
+    // Seven alive agents fill the cap; the 23 others are "more".
+    assert_eq!((pl.icons(), pl.more.hidden, pl.more.alive), (7, 23, 0));
+    assert!(pl.clusters.iter().flat_map(|c| c.rows.iter()).all(|r| Liveness::of(r).alive()));
+    assert_eq!(pl.clusters[0].rows[0].title, "index-rebuild", "needs you first");
+    // The docked Workers heading folds its finished subtrees.
+    let cl = clusters(&p);
+    let w = cl.iter().find(|c| c.relation == Relation::Workers).unwrap();
+    let fold = docked_entries(w, &p).into_iter().find_map(|e| match e {
+        DockEntry::Fold { rows, word } => Some((rows.len(), word)),
+        DockEntry::Row(_) => None,
+    });
+    assert_eq!(fold, Some((17, "inactive")), "billing-service and 16 Codex subagents; one is stopped");
+}

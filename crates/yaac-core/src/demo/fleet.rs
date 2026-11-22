@@ -450,6 +450,81 @@ impl Fleet {
         [explore, schema]
     }
 
+    /// The many agents of `Scene::ManyAgents` (D168): the orchestrator's own Codex subagents
+    /// and users-service's Claude Code subagents, 24 in all, three running and one waiting.
+    /// With the fleet's six that is 30 related agents, 7 of them alive.
+    pub(super) fn add_many_agents(&mut self) -> Vec<ThreadKey> {
+        let (orch, users) = (k(ORCH), k(USERS));
+        let codex: [(&str, SubagentStatus, ThreadState, &str); 18] = [
+            ("Port the session store", SubagentStatus::Running, ThreadState::Running, "moving SessionStore to the new trait"),
+            ("Audit token refresh", SubagentStatus::Completed, ThreadState::Done, "two call sites refresh twice; patched"),
+            ("Map the login handlers", SubagentStatus::Completed, ThreadState::Done, "11 handlers, 3 still on the old guard"),
+            ("Rewrite the OAuth callback", SubagentStatus::Running, ThreadState::Running, "cargo test -p auth oauth::"),
+            ("Check password hashing", SubagentStatus::Completed, ThreadState::Done, "argon2 parameters match the policy"),
+            ("Find uses of the legacy guard", SubagentStatus::Completed, ThreadState::Done, "23 uses in 9 files"),
+            ("Draft the migration notes", SubagentStatus::Completed, ThreadState::Done, "notes in docs/auth-migration.md"),
+            ("Review the API keys table", SubagentStatus::Completed, ThreadState::Done, "the index on owner_id is missing"),
+            ("Update the rate limiter", SubagentStatus::Failed, ThreadState::Failed, "the build failed: tower 0.5 needed"),
+            ("Trace the cookie flags", SubagentStatus::Completed, ThreadState::Done, "SameSite=Lax everywhere but /sso"),
+            ("Split the auth crate", SubagentStatus::Stopped, ThreadState::Idle, "stopped by the orchestrator"),
+            ("Bench the token cache", SubagentStatus::Completed, ThreadState::Done, "p99 4.1 ms, was 9.8 ms"),
+            ("Port the admin sessions", SubagentStatus::Completed, ThreadState::Done, "merged into the session store"),
+            ("Check the SSO metadata", SubagentStatus::Completed, ThreadState::Done, "the IdP certificate expires in March"),
+            ("List the auth feature flags", SubagentStatus::Completed, ThreadState::Done, "7 flags, 2 can go"),
+            ("Fix the CSRF test", SubagentStatus::Completed, ThreadState::Done, "the fixture's clock was frozen"),
+            ("Summarise the auth RFCs", SubagentStatus::Completed, ThreadState::Done, "RFC 6749 and 7636 apply"),
+            ("Verify the logout flow", SubagentStatus::Completed, ThreadState::Done, "the refresh token is revoked too"),
+        ];
+        let claude: [(&str, &str, SubagentStatus, ThreadState, &str); 6] = [
+            ("Read the users schema", "Explore", SubagentStatus::Completed, ThreadState::Done, "users has 14 columns; email is unique"),
+            ("Write the users fixtures", "general-purpose", SubagentStatus::Running, ThreadState::Running, "writing tests/fixtures/users.sql"),
+            ("Find the user lookups", "Explore", SubagentStatus::Completed, ThreadState::Done, "lookups in 6 handlers"),
+            ("Wait for the review", "general-purpose", SubagentStatus::Running, ThreadState::Waiting, "waiting for billing-service"),
+            ("Check the email index", "Explore", SubagentStatus::Completed, ThreadState::Done, "the index is used by 3 queries"),
+            ("Port the profile endpoint", "general-purpose", SubagentStatus::Completed, ThreadState::Done, "GET /me returns the new shape"),
+        ];
+        let mut out = Vec::new();
+        let mut minutes = 1;
+        for (i, (title, status, state, preview)) in codex.into_iter().enumerate() {
+            let key = ThreadKey::new("local", format!("t-many-cx{i:02}").as_str());
+            self.add(&key, title, "codex", "gpt-6.2-sol", ("api", "main"), state, -60 * minutes);
+            minutes += 3;
+            let parent = orch.address();
+            self.set(&key, |s| {
+                s.spawned_by = Some(parent.clone());
+                s.root = Some(parent);
+                s.origin_kind = OriginKind::Programmatic;
+                s.preview = preview.into();
+                s.subagent = Some(HarnessSubagent { agent_id: Some(format!("cx-{i:02}")), agent_type: Some("worker".into()), status, read_only: None });
+            });
+            out.push(key);
+        }
+        for (i, (title, agent_type, status, state, preview)) in claude.into_iter().enumerate() {
+            let key = ThreadKey::new("local", format!("t-many-cl{i:02}").as_str());
+            self.add(&key, title, "claude", "opus-5.5", ("api", "main"), state, -60 * minutes - 30);
+            minutes += 4;
+            let (parent, root) = (users.address(), orch.address());
+            self.set(&key, |s| {
+                s.spawned_by = Some(parent);
+                s.root = Some(root);
+                s.origin_kind = OriginKind::Programmatic;
+                s.control = Control::External;
+                s.control_holder = Some("the agent that started it".into());
+                s.preview = preview.into();
+                s.subagent = Some(HarnessSubagent { agent_id: Some(format!("a{i:02}c1aude")), agent_type: Some(agent_type.into()), status, read_only: Some(SUBAGENT_READ_ONLY.into()) });
+            });
+            if let Some(t) = self.threads.get_mut(&key) {
+                t.control = Control::External;
+                t.holder = Some("the agent that started it".into());
+                t.take_over_blocked = Some(SUBAGENT_READ_ONLY.into());
+            }
+            out.push(key);
+        }
+        self.set(&orch, |s| s.children += 18);
+        self.set(&users, |s| s.children += 6);
+        out
+    }
+
     /// The standard fleet.
     pub(super) fn standard(base: i64) -> Self {
         let mut f = Fleet {
