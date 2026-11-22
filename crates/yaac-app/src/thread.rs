@@ -297,7 +297,12 @@ fn item_units(blocks: &[Block], t: &Transcript, index: usize) -> Vec<(Unit, Vec<
     let mut out = Vec::new();
     for b in blocks {
         match b {
-            Block::User { index: i } | Block::Prose { index: i } | Block::Task { index: i } if *i == index => {
+            // What the user typed keeps its line breaks (D157), as it is drawn.
+            Block::User { index: i } if *i == index => {
+                let parsed = markdown::parse_typed(&message_text(item).unwrap_or_default());
+                out.push((Unit::new(index, 0), markdown::plain_parts(&parsed.iter().collect::<Vec<_>>())));
+            }
+            Block::Prose { index: i } | Block::Task { index: i } if *i == index => {
                 out.push((Unit::new(index, 0), md(&message_text(item).unwrap_or_default())));
             }
             Block::Handoff { index: i } if *i == index => {
@@ -544,7 +549,7 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
                             // Each typed part has its own parse; a message with one part keeps
                             // the item's own cache entry.
                             let id = if n == 0 { item.id.clone() } else { yaac_protocol::ItemId::new(format!("{}#{n}", item.id)) };
-                            let parsed = v.md.get(&id, text, true).clone();
+                            let parsed = v.md.get_typed(&id, text).clone();
                             let refs: Vec<&markdown::Block> = parsed.blocks().collect();
                             markdown::show(ui, &mut v.sel(unit), &refs, &p, p.text, size::PROSE);
                         }
