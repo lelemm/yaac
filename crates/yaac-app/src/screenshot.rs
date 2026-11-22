@@ -98,7 +98,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("101", "worked-collapsed"),
     ("102", "worked-expanded"),
     ("103", "message-time"),
-    ("104", "worked-failed-interrupted"),
+    ("104", "worked-failed"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -265,7 +265,7 @@ fn setup(app: &mut YaacApp, id: &str) {
                 "102" => app.ui.worked.toggle(&k, &"p-long-30".into()),
                 // A message hovered: its time under it.
                 "103" => app.ui.timeline.force_stamp = Some("pl30-u".into()),
-                // A failed turn and one interrupted by an update.
+                // A failed turn: its error stays under the line.
                 _ => app.ui.timeline.go_to = Some("pl11-u".into()),
             }
             if id != "101" && id != "102" && id != "103" {

@@ -345,7 +345,7 @@ fn item_units(blocks: &[Block], t: &Transcript, index: usize) -> Vec<(Unit, Vec<
     out
 }
 
-fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
+pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
     let p = app.p;
     let state = &app.client.state;
     let Some(t) = app.client.state.transcripts.get(key) else { return };
@@ -397,7 +397,13 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
             && let Some(bi) = bl.iter().position(|b| block_items(b).contains(&i))
         {
             app.ui.scroll_end = false;
-            sa = sa.vertical_scroll_offset(yaac_core::timeline::scroll_target(tops[bi]));
+            // Not stuck to the bottom this frame, or the view would be pulled back there.
+            sa = sa.vertical_scroll_offset(yaac_core::timeline::scroll_target(tops[bi])).stick_to_bottom(false);
+            // Heights measured around it may still move it: aim again for a few frames.
+            app.ui.timeline.settle = Some((item.clone(), app.ui.timeline.settle.as_ref().filter(|(s, _)| *s == item).map_or(4, |(_, n)| *n)));
+        } else if !t.is_loaded() {
+            // Older history is still arriving: go there once it has.
+            app.ui.timeline.go_to = Some(item);
         }
     } else if let Some(item) = app.ui.scroll_to.take() {
         if let Some(i) = t.index_of(&item)
@@ -464,7 +470,8 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
                 let drawn = r.response.rect;
                 let reach = Rect::from_min_max(drawn.min, pos2(drawn.right(), drawn.bottom() + space));
                 let forced = block_items(b).first().and_then(|&n| t.items().get(n)).is_some_and(|it| app.ui.timeline.force_stamp.as_ref() == Some(&it.id));
-                if (forced || ui.rect_contains_pointer(reach))
+                // Screenshots show a time only where asked, not wherever the pointer rests.
+                if (forced || (app.shots.is_none() && ui.rect_contains_pointer(reach)))
                     && let Some(at) = crate::messages::message_time(b, t)
                 {
                     crate::messages::stamp(ui, &p, drawn, at, now, app.zone, matches!(b, Block::User { .. }));
@@ -539,6 +546,15 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
         ui.ctx().request_repaint();
     }
     actions.extend(actions_local);
+    // A prompt just gone to (D153): while heights around it are still being measured, aim
+    // again, a few frames at most.
+    match app.ui.timeline.settle.take() {
+        Some((item, n)) if changed && n > 0 => {
+            app.ui.timeline.settle = Some((item.clone(), n - 1));
+            app.ui.timeline.go_to = Some(item);
+        }
+        _ => {}
+    }
     if changed {
         ui.ctx().request_repaint();
     }

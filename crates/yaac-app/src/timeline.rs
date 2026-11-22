@@ -31,6 +31,8 @@ pub(crate) struct TimelineUi {
     pub last: Option<(ThreadKey, Vec<(ItemId, f32)>, f32)>,
     /// Scroll the transcript to this prompt on the next frame.
     pub go_to: Option<ItemId>,
+    /// The prompt last gone to, and how many more frames to aim at it while heights settle.
+    pub settle: Option<(ItemId, u8)>,
     /// Screenshots: show this dash's card as if it were hovered.
     pub force_hover: Option<usize>,
     /// Screenshots and tests: show this message's time as if it were hovered.
@@ -113,4 +115,133 @@ fn card(ui: &egui::Ui, p: &Palette, at: egui::Pos2, e: &Entry, more: usize, now:
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::{self, Event, PointerButton, Pos2, Rect, pos2, vec2};
+    use yaac_core::attention::AttentionMap;
+    use yaac_core::demo::{Scene, threads};
+
+    use crate::app::YaacApp;
+
+    const NOW: i64 = crate::app::STORY_NOW;
+
+    /// The long conversation of screens 100–104, open.
+    fn app(ctx: &egui::Context) -> YaacApp {
+        let mut app = crate::app::tests::demo_app(ctx);
+        if let Some(h) = &app.demo {
+            h.play(Scene::LongConversation);
+            h.drain();
+        }
+        app.pump_demo();
+        app.open(&threads::parser(), None);
+        for _ in 0..20 {
+            app.pump_demo();
+        }
+        app
+    }
+
+    /// One frame of the transcript in a 1000 × 800 window; returns every text drawn, with
+    /// where.
+    fn frame(app: &mut YaacApp, ctx: &egui::Context, events: Vec<Event>) -> Vec<(String, Rect)> {
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 800.0))), events, ..Default::default() };
+        let key = threads::parser();
+        let mut actions = Vec::new();
+        let mut out = ctx.run_ui(input, |ui| {
+            let map = AttentionMap::compute(&app.client.state);
+            crate::thread::transcript(ui, app, &map, &key, NOW, &mut actions);
+        });
+        out.textures_delta.clear();
+        let mut texts = Vec::new();
+        for c in std::mem::take(&mut out.shapes) {
+            if let egui::epaint::Shape::Text(t) = c.shape {
+                texts.push((t.galley.text().to_owned(), t.visual_bounding_rect()));
+            }
+        }
+        texts
+    }
+
+    fn settle(app: &mut YaacApp, ctx: &egui::Context) -> Vec<(String, Rect)> {
+        let mut last = Vec::new();
+        for _ in 0..8 {
+            last = frame(app, ctx, vec![]);
+        }
+        last
+    }
+
+    fn click(app: &mut YaacApp, ctx: &egui::Context, at: Pos2) {
+        let press = |pressed| Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(app, ctx, vec![Event::PointerMoved(at)]);
+        frame(app, ctx, vec![press(true)]);
+        frame(app, ctx, vec![press(false)]);
+    }
+
+    /// Each prompt's top relative to the view, as last drawn.
+    fn view_tops(app: &YaacApp) -> Vec<f32> {
+        let (_, entries, view_top) = app.ui.timeline.last.as_ref().expect("drawn");
+        entries.iter().map(|(_, t)| t - view_top).collect()
+    }
+
+    #[test]
+    fn clicking_a_dash_scrolls_to_its_prompt() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        settle(&mut app, &ctx);
+        let dashes = app.ui.timeline.dashes.clone();
+        assert!(dashes.len() > 30, "one dash per prompt: {}", dashes.len());
+        // The view starts at the end: the last dash is lit, the tenth is not in view.
+        let before = view_tops(&app);
+        assert!(before[10] < 0.0);
+        click(&mut app, &ctx, dashes[10].center());
+        settle(&mut app, &ctx);
+        let after = view_tops(&app);
+        assert!((after[10] - yaac_core::timeline::MARGIN).abs() < 2.0, "prompt 10 at the top of the view: {}", after[10]);
+        // Go to next message: the eleventh.
+        crate::timeline::go(&mut app, &threads::parser(), true);
+        settle(&mut app, &ctx);
+        assert!((view_tops(&app)[11] - yaac_core::timeline::MARGIN).abs() < 2.0);
+        crate::timeline::go(&mut app, &threads::parser(), false);
+        settle(&mut app, &ctx);
+        assert!((view_tops(&app)[10] - yaac_core::timeline::MARGIN).abs() < 2.0);
+    }
+
+    #[test]
+    fn hovering_a_message_shows_its_time_without_moving_anything() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        let texts = settle(&mut app, &ctx);
+        let tops = view_tops(&app);
+        let (_, bubble) = texts.iter().find(|(s, _)| s == "Merge it when CI is green.").expect("the last prompt").clone();
+        // Away from it: no time under it.
+        let away = frame(&mut app, &ctx, vec![Event::PointerMoved(pos2(500.0, 5.0))]);
+        let time = yaac_core::time::message_time(NOW, NOW - 7 * 60, app.zone);
+        assert!(!away.iter().any(|(s, _)| *s == time), "{time} shown without hover");
+        let over = frame(&mut app, &ctx, vec![Event::PointerMoved(bubble.center())]);
+        let shown = frame(&mut app, &ctx, vec![Event::PointerMoved(bubble.center())]);
+        let stamp = shown.iter().chain(&over).find(|(s, _)| *s == time).map(|(_, r)| *r).expect("the time under the hovered message");
+        assert!(stamp.top() >= bubble.bottom(), "under the message");
+        assert!((stamp.right() - bubble.right()).abs() < 24.0, "under the bubble's right edge");
+        // The same text, in the same places.
+        assert_eq!(view_tops(&app), tops);
+        let (_, again) = shown.iter().find(|(s, _)| s == "Merge it when CI is green.").expect("still there");
+        assert_eq!(*again, bubble);
+    }
+
+    #[test]
+    fn a_finished_turn_shows_worked_for_and_opens_on_click() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        let texts = settle(&mut app, &ctx);
+        // The newest turn: one line and its answer; its commands are hidden.
+        let (_, line) = texts.iter().rev().find(|(s, _)| s.starts_with("Worked for")).expect("a Worked for line").clone();
+        assert!(texts.iter().any(|(s, _)| s == "Merged #128."));
+        let commands = |t: &[(String, Rect)]| t.iter().filter(|(s, _)| s.starts_with("Ran cargo test")).count();
+        assert_eq!(commands(&texts), 0, "the work is folded");
+        click(&mut app, &ctx, line.center());
+        let opened = settle(&mut app, &ctx);
+        assert!(app.ui.worked.is_open(&threads::parser(), &"p-long-31".into()));
+        assert!(commands(&opened) >= 1, "the work shows again");
+        assert!(opened.iter().any(|(s, _)| s == "Merged #128."), "the answer is still there");
+    }
 }
