@@ -102,6 +102,11 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("93", "subagents-open"),
     ("95", "harness-subagents"),
     ("96", "subagent-open"),
+    ("100", "timeline"),
+    ("101", "worked-collapsed"),
+    ("102", "worked-expanded"),
+    ("103", "message-time"),
+    ("104", "worked-failed"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -218,6 +223,8 @@ impl Shots {
 fn setup(app: &mut YaacApp, id: &str) {
     let scenario = if matches!(id, "07" | "08" | "09") { Scenario::Fresh } else { Scenario::Fleet };
     app.reset_demo(scenario);
+    app.ui.timeline = crate::timeline::TimelineUi::default();
+    app.ui.worked = yaac_core::turns::Opened::default();
     app.host_windows = false;
     let hub = app.demo.clone();
     let play = |app: &mut YaacApp, s: Scene| {
@@ -249,12 +256,38 @@ fn setup(app: &mut YaacApp, id: &str) {
                 app.ui.panel = PanelMode::Card;
             }
         }
+        "100" | "101" | "102" | "103" | "104" => {
+            // Three weeks of prompts on Try the new parser (D153–D156).
+            play(app, Scene::LongConversation);
+            let k = threads::parser();
+            app.open(&k, None);
+            match id {
+                // The timeline beside the thread, scrolled to the middle, a dash hovered.
+                "100" => {
+                    app.ui.timeline.go_to = Some("pl17-u".into());
+                    app.ui.timeline.force_hover = Some(9);
+                }
+                // The newest turns, each folded into "Worked for …" and its answer.
+                "101" => {}
+                // One of them opened again.
+                "102" => app.ui.worked.toggle(&k, &"p-long-30".into()),
+                // A message hovered: its time under it.
+                "103" => app.ui.timeline.force_stamp = Some("pl30-u".into()),
+                // A failed turn: its error stays under the line.
+                _ => app.ui.timeline.go_to = Some("pl11-u".into()),
+            }
+            if id != "101" && id != "102" && id != "103" {
+                app.ui.scroll_end = false;
+            }
+        }
         "84" => {
             // An open tool call (D158): the down chevron and faint fill on its line, the guide
             // down its body that closes it.
             let k = threads::users();
             app.open(&k, None);
             app.ui.expansion.toggle_line(&k, &"u4".into());
+            // Its finished turn opened again (D156), so the line shows.
+            app.ui.worked.toggle(&k, &"u-t1".into());
             app.ui.scroll_to = Some("u4".into());
             app.ui.scroll_end = false;
         }
@@ -272,6 +305,8 @@ fn setup(app: &mut YaacApp, id: &str) {
             let k = threads::parser();
             app.open(&k, None);
             app.ui.expansion.toggle_run(&k, &"parser-3".into());
+            // The finished turn opened again (D156), so its run shows.
+            app.ui.worked.toggle(&k, &"p-t1".into());
         }
         "03" => {
             // A file change: one diff expanded in place, the others collapsed, and the turn's
@@ -279,6 +314,8 @@ fn setup(app: &mut YaacApp, id: &str) {
             let k = threads::billing();
             app.open(&k, None);
             app.ui.expansion.toggle_file(&k, &"b3".into(), 0);
+            // The finished turn opened again (D156), so its work shows.
+            app.ui.worked.toggle(&k, &"b-t1".into());
             app.ui.scroll_to = Some("b3".into());
             app.ui.scroll_end = false;
         }
@@ -670,6 +707,10 @@ fn setup(app: &mut YaacApp, id: &str) {
             play(app, Scene::AgentCalls);
             let (k, first) = if matches!(id, "90" | "91") { (threads::orchestrator(), "ac1") } else { (threads::users(), "ua1") };
             app.open(&k, None);
+            // users-service's turn is finished: opened again (D156) so its calls show.
+            if matches!(id, "92" | "93") {
+                app.ui.worked.toggle(&k, &"u-t4".into());
+            }
             match id {
                 "91" => {
                     app.ui.expansion.toggle_line(&k, &"ac4".into());
@@ -691,6 +732,8 @@ fn setup(app: &mut YaacApp, id: &str) {
             play(app, Scene::HarnessMarkup);
             let k = threads::users();
             app.open(&k, None);
+            // The notices are in a finished turn: opened again (D156) so they show.
+            app.ui.worked.toggle(&k, &"u-t3".into());
             if id == "77" {
                 app.ui.expansion.toggle_pasted(&k, &"um1".into(), 1);
                 app.ui.expansion.toggle_context(&k, &"um1".into());

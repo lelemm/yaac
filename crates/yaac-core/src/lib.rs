@@ -60,7 +60,9 @@ pub mod state;
 pub mod strip;
 pub mod thread_menu;
 pub mod time;
+pub mod timeline;
 pub mod transcript;
+pub mod turns;
 pub mod update;
 
 pub use key::ThreadKey;

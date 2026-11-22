@@ -65,6 +65,8 @@ pub struct Transcript {
     pub missing_uploads: BTreeSet<UploadId>,
     /// Who started each turn, when seen live.
     pub turn_origins: BTreeMap<TurnId, TurnOrigin>,
+    /// When each turn started and how it ended, when seen live (D156).
+    pub turns: BTreeMap<TurnId, crate::turns::TurnTimes>,
     /// A reset being loaded.
     pub loading: Option<ResetLoad>,
     /// Answers this window gave.
@@ -158,8 +160,11 @@ impl Transcript {
             ThreadEvent::TurnStarted(e) => {
                 self.active_turn = Some(e.turn_id.clone());
                 self.turn_origins.insert(e.turn_id.clone(), e.origin.clone());
+                self.turns.entry(e.turn_id.clone()).or_default().started = e.at.clone();
             }
             ThreadEvent::TurnCompleted(e) => {
+                self.turns.entry(e.turn_id.clone()).or_default().ended =
+                    Some(crate::turns::TurnEnd { status: e.status.clone(), at: e.at.clone(), error: e.error.clone() });
                 if self.active_turn.as_ref() == Some(&e.turn_id) {
                     self.active_turn = None;
                 }

@@ -595,6 +595,32 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, p: &Palette, block: egui::Rect, tex
     }
 }
 
+/// The width paragraphs and headings take laid out on one line each, as [`show`] would draw
+/// them; `None` when the blocks hold something drawn to the full width (code, a table, a list,
+/// a quote). A user's bubble hugs a short message with it (D155).
+pub(crate) fn natural_width(ui: &egui::Ui, blocks: &[&Block], p: &Palette, font_size: f32) -> Option<f32> {
+    let font = theme::ui(font_size);
+    let mut w: f32 = 0.0;
+    for b in blocks {
+        let job = match b {
+            Block::Para(s) => job_for(s, &font, p.text, p, f32::INFINITY),
+            Block::Heading(level, s) => {
+                let size = match level {
+                    1 => font_size + 5.0,
+                    2 => font_size + 3.0,
+                    _ => font_size + 1.0,
+                };
+                job_for(s, &theme::bold(size), p.text, p, f32::INFINITY)
+            }
+            Block::Rule => continue,
+            _ => return None,
+        };
+        let g = ui.fonts_mut(|f| f.layout_job(job));
+        w = w.max(g.size().x);
+    }
+    Some(w)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

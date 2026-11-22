@@ -225,6 +225,11 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
         }
         Cmd::NeedsNext => actions.push(Action::NeedsNext),
         Cmd::JumpToBottom => app.ui.scroll_end = true,
+        Cmd::PrevMessage | Cmd::NextMessage => {
+            if let Some(k) = &thread {
+                crate::timeline::go(app, k, cmd == Cmd::NextMessage);
+            }
+        }
         Cmd::NextUnseen => {
             if let Some(k) = cmds::next_unseen(st, &sidebar_order(app), thread.as_ref()) {
                 actions.push(Action::Open(k));
@@ -419,11 +424,15 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
             if let Some(k) = thread {
                 let map = yaac_core::attention::AttentionMap::compute(&app.client.state);
                 yaac_core::activity::expand_all(&app.client.state, &map, &k, &mut app.ui.expansion);
+                if let Some(t) = app.client.state.transcripts.get(&k) {
+                    app.ui.worked.open_all(&k, t);
+                }
             }
         }
         Cmd::CollapseAll => {
             if let Some(k) = thread {
                 yaac_core::activity::collapse_all(&k, &mut app.ui.expansion);
+                app.ui.worked.close_all(&k);
             }
         }
         Cmd::CopySelection => ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy),

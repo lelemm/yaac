@@ -232,6 +232,20 @@ pub enum Block {
         /// How many lines it holds.
         count: usize,
     },
+    /// A finished turn's work folded into one line (D156): "Worked for 26s ›". Made by
+    /// [`crate::turns::collapse`], never by [`blocks`].
+    Worked {
+        /// The turn.
+        turn: TurnId,
+        /// "Worked for 26s · interrupted".
+        text: String,
+        /// The turn failed: the line keeps the failed mark and colour.
+        failed: bool,
+        /// A failed turn's error, shown under the line even while collapsed.
+        error: Option<String>,
+        /// The work is shown under it.
+        expanded: bool,
+    },
 }
 
 fn peer_title(p: &MeshPeer) -> String {
@@ -459,6 +473,8 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
         }
         if turn.as_ref().is_none_or(|(id, _, _)| *id != item.turn_id) {
             end_turn(&mut turn, &mut run, &mut out);
+            // A run never spans two turns, so a finished turn can fold on its own (D156).
+            flush(&mut run, &mut out);
             turn = Some((item.turn_id.clone(), TurnTotals::default(), Vec::new()));
         }
         let block = match &item.body {

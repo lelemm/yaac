@@ -242,6 +242,7 @@ fn block_ident(b: &Block, t: &Transcript) -> u64 {
         }
         Block::Folded { first, .. } => first.hash(&mut h),
         Block::TurnChanges { turn, .. } => turn.hash(&mut h),
+        Block::Worked { turn, .. } => turn.hash(&mut h),
     }
     h.finish()
 }
@@ -250,7 +251,7 @@ fn block_items(b: &Block) -> Vec<usize> {
     match b {
         Block::User { index } | Block::Task { index } | Block::Prose { index } | Block::Card { index } | Block::Handoff { index } => vec![*index],
         Block::Run { lines } => lines.iter().map(|l| l.index).collect(),
-        Block::Folded { .. } | Block::TurnChanges { .. } => vec![],
+        Block::Folded { .. } | Block::TurnChanges { .. } | Block::Worked { .. } => vec![],
     }
 }
 
@@ -261,6 +262,8 @@ fn block_unit(b: &Block, t: &Transcript) -> Unit {
         Block::Run { lines } => lines.first().map_or(Unit::new(0, 0), |l| Unit::new(l.index, l.diff.map_or(0, |d| d.file))),
         Block::Folded { first, .. } => Unit::new(t.index_of(first).unwrap_or(0), 0),
         Block::TurnChanges { turn, .. } => Unit::new(t.items().iter().rposition(|i| &i.turn_id == turn).unwrap_or(0), Unit::END_OF_TURN),
+        // Right after the turn's prompt; the line itself is not selectable text.
+        Block::Worked { turn, .. } => Unit::new(t.items().iter().position(|i| &i.turn_id == turn).unwrap_or(0), Unit::END_OF_TURN - 1),
     }
 }
 
@@ -349,7 +352,7 @@ pub(crate) struct Geom {
     pub estimated: Vec<usize>,
 }
 
-fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
+pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
     let p = app.p;
     let state = &app.client.state;
     let Some(t) = app.client.state.transcripts.get(key) else { return };
@@ -359,6 +362,9 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
         return;
     }
     let bl = blocks(state, map, key, &app.ui.expansion);
+    // Finished turns fold into "Worked for …" and their final message (D156).
+    let focus = state.focus_item.as_ref().filter(|(k, _)| k == key).map(|(_, id)| id);
+    let bl = yaac_core::turns::collapse(t, key, &bl, &app.ui.worked, &app.ui.expansion, focus);
     let avail = ui.available_width();
     if std::env::var_os("YAAC_DEBUG_LAYOUT").is_some() {
         eprintln!("transcript rect {:?} avail {avail}", ui.max_rect());
@@ -378,13 +384,17 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
         let est = match b {
             Block::Run { lines } => lines.len() as f32 * 22.0,
             Block::Folded { .. } | Block::TurnChanges { .. } => 22.0,
+            Block::Worked { .. } => crate::messages::WORKED_LINE,
             _ => 60.0,
         };
         let h = app.ui.heights.get(&idents[i]).copied().unwrap_or(est);
         heights.push(h);
-        y += h + GAP;
+        // A message keeps a line under it for its time (D154).
+        y += h + GAP + crate::messages::stamp_space(b);
     }
-    let total = y + 20.0;
+    // The same room under the last block whatever it is, so the newest line does not move
+    // when a message (with its time line, D154) gives way to an activity line.
+    let total = y + 20.0 + bl.last().map_or(0.0, |b| crate::messages::STAMP_LINE - crate::messages::stamp_space(b));
     let mut sa = egui::ScrollArea::vertical().id_salt(("transcript", key.to_string())).auto_shrink([false, false]).stick_to_bottom(true);
     if let Some(a) = app.ui.restore.take() {
         // Back or forward: the same lines the user was reading, even if items arrived since.
@@ -394,6 +404,20 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
             && let Some(bi) = bl.iter().position(|b| block_unit(b, t).item >= i)
         {
             sa = sa.vertical_scroll_offset((tops[bi] + a.offset).max(0.0));
+        }
+    } else if let Some(item) = app.ui.timeline.go_to.take() {
+        // A dash of the timeline, or Go to previous / next message (D153).
+        if let Some(i) = t.index_of(&item)
+            && let Some(bi) = bl.iter().position(|b| block_items(b).contains(&i))
+        {
+            app.ui.scroll_end = false;
+            // Not stuck to the bottom this frame, or the view would be pulled back there.
+            sa = sa.vertical_scroll_offset(yaac_core::timeline::scroll_target(tops[bi])).stick_to_bottom(false);
+            // Heights measured around it may still move it: aim again for a few frames.
+            app.ui.timeline.settle = Some((item.clone(), app.ui.timeline.settle.as_ref().filter(|(s, _)| *s == item).map_or(4, |(_, n)| *n)));
+        } else if !t.is_loaded() {
+            // Older history is still arriving: go there once it has.
+            app.ui.timeline.go_to = Some(item);
         }
     } else if let Some(item) = app.ui.scroll_to.take() {
         if let Some(i) = t.index_of(&item)
@@ -467,6 +491,19 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
                 render_block(ui, View { p, state: &app.client.state, ui: &mut app.ui, md: &mut app.md }, key, t, b, unit, now, &mut actions_local);
             });
             let h = r.response.rect.height();
+            // Its time, while it is hovered, in the line kept free under it (D154).
+            let space = crate::messages::stamp_space(b);
+            if space > 0.0 {
+                let drawn = r.response.rect;
+                let reach = Rect::from_min_max(drawn.min, pos2(drawn.right(), drawn.bottom() + space));
+                let forced = block_items(b).first().and_then(|&n| t.items().get(n)).is_some_and(|it| app.ui.timeline.force_stamp.as_ref() == Some(&it.id));
+                // Screenshots show a time only where asked, not wherever the pointer rests.
+                if (forced || (app.shots.is_none() && ui.rect_contains_pointer(reach)))
+                    && let Some(at) = crate::messages::message_time(b, t)
+                {
+                    crate::messages::stamp(ui, &p, drawn, at, now, app.zone, matches!(b, Block::User { .. }));
+                }
+            }
             #[cfg(test)]
             {
                 geom.drawn.push(unit.item);
@@ -491,6 +528,21 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
             Some(yaac_core::history::Anchor { item, offset: view.top() - tops[i] })
         });
     });
+    // The timeline at the left edge (D153): one dash per prompt, those in view lit.
+    {
+        let entries = yaac_core::timeline::entries(t, &bl);
+        let etops: Vec<f32> = entries
+            .iter()
+            .map(|e| bl.iter().position(|b| matches!(b, Block::User { index } | Block::Task { index } if *index == e.index)).map_or(0.0, |bi| tops[bi]))
+            .collect();
+        let view_top = out.state.clamped_offset().y;
+        let view = (view_top, view_top + out.inner_rect.height());
+        if let Some(item) = crate::timeline::show(ui, &mut app.ui.timeline, &p, area, &entries, &etops, view, now, app.zone) {
+            app.ui.timeline.go_to = Some(item);
+            ui.ctx().request_repaint();
+        }
+        app.ui.timeline.last = Some((key.clone(), entries.into_iter().map(|e| e.item).zip(etops).collect(), view_top));
+    }
     if matches!(app.ui.history.current().map(|e| &e.place), Some(yaac_core::history::Place::Thread(k)) if k == key) && reading.is_some() {
         app.ui.history.set_anchor(reading);
     }
@@ -543,6 +595,15 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
         ui.ctx().request_repaint();
     }
     actions.extend(actions_local);
+    // A prompt just gone to (D153): while heights around it are still being measured, aim
+    // again, a few frames at most.
+    match app.ui.timeline.settle.take() {
+        Some((item, n)) if changed && n > 0 => {
+            app.ui.timeline.settle = Some((item.clone(), n - 1));
+            app.ui.timeline.go_to = Some(item);
+        }
+        _ => {}
+    }
     // A block drew taller or shorter than it was placed: what follows it, the content height
     // and the stuck-to-bottom offset were laid out wrong. Lay the frame out again before it is
     // shown (D152), not on the next one, or the view jumps once per streamed delta.
@@ -588,9 +649,19 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
                 }
                 return;
             }
-            widgets::faint_frame(&p).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let pieces = yaac_core::message::pieces(u);
+            // The bubble hugs a message that is only short typed text; anything else takes
+            // the bubble's full width (D155).
+            let pieces = yaac_core::message::pieces(u);
+            let plain = context.is_empty() && pieces.len() == 1 && !u.parts.iter().any(|x| matches!(x, InputPart::File(_) | InputPart::Image(_)));
+            let natural = match pieces.first() {
+                Some(yaac_core::message::Piece::Typed(text)) if plain => {
+                    let parsed = v.md.get(&item.id, text, true).clone();
+                    let refs: Vec<&markdown::Block> = parsed.blocks().collect();
+                    markdown::natural_width(ui, &refs, &p, size::PROSE)
+                }
+                _ => None,
+            };
+            crate::messages::bubble(ui, &p, natural, |ui| {
                 let mut first = true;
                 for (n, piece) in pieces.iter().enumerate() {
                     if !first {
@@ -731,6 +802,19 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
             );
             if resp.clicked() {
                 v.ui.expansion.toggle_turn(key, turn, items);
+            }
+        }
+        Block::Worked { turn, text, failed, error, expanded } => {
+            if crate::messages::worked_line(ui, &p, text, *failed, error.as_deref(), *expanded).clicked() {
+                v.ui.worked.toggle(key, turn);
+                // Closing a turn whose "show all" is open closes that too, or it would stay open.
+                if *expanded && v.ui.expansion.turns.contains(&(key.clone(), turn.clone())) {
+                    let items: Vec<yaac_protocol::ItemId> = t.items().iter().filter(|i| &i.turn_id == turn).map(|i| i.id.clone()).collect();
+                    v.ui.expansion.toggle_turn(key, turn, &items);
+                    if v.ui.worked.is_open(key, turn) {
+                        v.ui.worked.toggle(key, turn);
+                    }
+                }
             }
         }
     }

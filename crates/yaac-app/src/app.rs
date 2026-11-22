@@ -234,6 +234,10 @@ pub(crate) struct UiState {
     pub card_focus: Option<ItemId>,
     /// "Quit YAAC?" is asked (Quit with the tray off).
     pub quit_confirm: bool,
+    /// Finished turns whose work the user opened again (D156).
+    pub worked: yaac_core::turns::Opened,
+    /// The timeline beside the transcript (D153).
+    pub timeline: crate::timeline::TimelineUi,
 }
 
 impl UiState {
@@ -315,6 +319,8 @@ impl UiState {
             recent: Vec::new(),
             card_focus: None,
             quit_confirm: false,
+            worked: yaac_core::turns::Opened::default(),
+            timeline: crate::timeline::TimelineUi::default(),
         }
     }
 

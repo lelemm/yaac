@@ -326,11 +326,11 @@ fn update_now_interrupts_a_running_turn_marked_by_the_update_and_hands_over() {
     assert_eq!(r["state"], "exiting");
     wait_serving(&c, &target, NEW);
     wait_until("the older daemon exited", || !rig.serving_alive());
+    // The notice reaches the hub's cache from the new daemon's journal a moment after it serves.
+    let marked = |all: &[Value]| all.iter().any(|i| i["kind"] == "notice" && i["noticeKind"] == "interruptedByUpdate");
+    wait_until("the update's notice in the cache", || marked(&items(&c, &target, &thread)));
     let all = items(&c, &target, &thread);
-    assert!(
-        all.iter().any(|i| i["kind"] == "notice" && i["noticeKind"] == "interruptedByUpdate"),
-        "the turn is marked as interrupted by the update: {all:#?}"
-    );
+    assert!(marked(&all), "the turn is marked as interrupted by the update: {all:#?}");
     assert!(!running(&c, &target, &thread));
     let log = steps(&c, &target);
     assert!(log.iter().any(|s| s.contains(&format!("asked yaacd {OLD} to hand over now, to {NEW}"))), "{log:#?}");
