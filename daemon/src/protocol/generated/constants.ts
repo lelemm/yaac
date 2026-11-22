@@ -23,6 +23,7 @@ import type {
   FsListResult,
   InitializeParams,
   InitializeResult,
+  InstanceRateLimits,
   ItemReadParams,
   ItemReadResult,
   MeshBudgetParams,
@@ -52,6 +53,8 @@ import type {
   ProviderInstanceResult,
   ProviderInstanceUpdateParams,
   ProviderListResult,
+  ProviderRateLimitsParams,
+  ProviderRateLimitsResult,
   ProviderRefreshParams,
   ProviderUpdatedParams,
   RequestRespondParams,
@@ -186,6 +189,7 @@ export const METHODS = {
   FORGE_PREPARE: "forge/prepare",
   FORGE_PR_CREATE: "forge/pr/create",
   FORGE_PR_GET: "forge/pr/get",
+  PROVIDER_RATE_LIMITS: "provider/rateLimits",
 } as const;
 
 /** Every notification method name. */
@@ -198,6 +202,7 @@ export const NOTIFICATIONS = {
   DISCOVERY_UPDATED: "discovery/updated",
   STREAM_CREDIT: "stream/credit",
   FORGE_PRS_CHANGED: "forge/prs/changed",
+  PROVIDER_RATE_LIMITS_UPDATED: "provider/rateLimits/updated",
 } as const;
 
 /** A request method name. */
@@ -368,6 +373,8 @@ export interface RequestMap {
   "forge/pr/create": { params: ForgePrCreateParams; result: ForgePrCreateResult };
   /** One pull request in full: description, reviewers, checks. */
   "forge/pr/get": { params: ForgePrGetParams; result: ForgePrGetResult };
+  /** Each `rateLimits` instance's account and usage windows, as last reported; `refresh` */
+  "provider/rateLimits": { params: ProviderRateLimitsParams; result: ProviderRateLimitsResult };
 }
 
 /** Params type of every notification. */
@@ -388,6 +395,8 @@ export interface NotificationMap {
   "stream/credit": StreamCreditParams;
   /** A branch's pull requests changed (or were asked again after a push or commit). */
   "forge/prs/changed": ForgePrsResult;
+  /** An instance's account or rate-limit windows changed (D161). */
+  "provider/rateLimits/updated": InstanceRateLimits;
 }
 
 /** Who sends a method. */
@@ -469,6 +478,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "forge/prepare": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "forge/pr/create": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "forge/pr/get": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "provider/rateLimits": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
 };
 
 /** Static facts about a notification. */
@@ -487,4 +497,5 @@ export const NOTIFICATION_INFO: { readonly [N in keyof NotificationMap]: Notific
   "discovery/updated": { direction: "daemonToHost", class: "control" },
   "stream/credit": { direction: "both", class: "control" },
   "forge/prs/changed": { direction: "daemonToHost", class: "control" },
+  "provider/rateLimits/updated": { direction: "daemonToHost", class: "control" },
 };

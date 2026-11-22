@@ -46,6 +46,11 @@ pub mod names {
     pub const REQUEST: &str = "hub/request";
     /// Either way: carry a YAAC notification to or from a target.
     pub const NOTIFICATION: &str = "hub/notification";
+    /// Window → hub: the plan rate limits of every account used on any target, one entry per
+    /// account (D161) ([`RateLimitsGetParams`] → [`RateLimitsResult`]).
+    pub const RATE_LIMITS_GET: &str = "hub/rateLimits/get";
+    /// Hub → window notification: those accounts changed ([`RateLimitsResult`]).
+    pub const RATE_LIMITS_CHANGED: &str = "hub/rateLimits/changed";
 }
 
 /// `hub/hello` params.
@@ -340,4 +345,48 @@ pub struct RoutedNotification {
     pub method: String,
     /// Its params, in current shape.
     pub params: Value,
+}
+
+/// `hub/rateLimits/get` params.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitsGetParams {
+    /// The window shows the panel and wants fresh values: the hub asks each connected target
+    /// to read its harnesses again — at most every five minutes per target — and what they
+    /// answer comes as `hub/rateLimits/changed`.
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// One account's rate limits, gathered from every target that uses it (D161).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRateLimits {
+    /// The account key ([`crate::RateLimitAccount::key`]); unique per provider kind.
+    pub key: String,
+    /// The provider kind (for the logo and colour only).
+    pub kind: crate::ProviderKind,
+    /// The plan as the harness names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The sign-in's email, for the tooltip only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// The windows of the most recent report about this account.
+    pub windows: Vec<crate::RateLimitWindow>,
+    /// When that report was made.
+    pub at: crate::Timestamp,
+    /// Every target that reported this account.
+    pub targets: Vec<TargetId>,
+    /// No connected target reports this account now: the values are the last known.
+    #[serde(default)]
+    pub stale: bool,
+}
+
+/// `hub/rateLimits/get` result and `hub/rateLimits/changed` params.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RateLimitsResult {
+    /// One entry per account that reports at least one window.
+    pub accounts: Vec<AccountRateLimits>,
 }

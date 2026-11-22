@@ -1244,6 +1244,35 @@ export type InputPart = ({
 export type InstanceId = string;
 
 /**
+ * What one instance reports: `provider/rateLimits` lists these, and
+ * `provider/rateLimits/updated` carries one.
+ */
+export interface InstanceRateLimits {
+  /**
+   * The account, once known. Without one the hub cannot group the report and keeps it out
+   * of the panel.
+   */
+  account?: RateLimitAccount | null;
+  /**
+   * When the harness last reported any of this.
+   */
+  at: Timestamp;
+  /**
+   * The instance.
+   */
+  instance: InstanceId;
+  /**
+   * Its provider kind (display and grouping only: an account key is per kind).
+   */
+  kind: ProviderKind;
+  /**
+   * The windows, in the harness's order. Empty: the harness reported none (an API key, a
+   * cloud provider, or nothing read yet).
+   */
+  windows?: RateLimitWindow[];
+}
+
+/**
  * One item of a turn: common fields plus the kind-specific body (flattened, so `kind` sits
  * next to `id` on the wire).
  *
@@ -2978,6 +3007,27 @@ export interface ProviderListResult {
 }
 
 /**
+ * `provider/rateLimits` params.
+ */
+export interface ProviderRateLimitsParams {
+  /**
+   * Read the harness again instead of answering with the last report. `yaacd` still holds
+   * at least five minutes between reads of one instance.
+   */
+  refresh?: boolean;
+}
+
+/**
+ * `provider/rateLimits` result.
+ */
+export interface ProviderRateLimitsResult {
+  /**
+   * One entry per instance with the `rateLimits` capability that has reported anything.
+   */
+  instances: InstanceRateLimits[];
+}
+
+/**
  * `provider/refresh`: re-probe one instance, or all when `instance` is absent.
  */
 export interface ProviderRefreshParams {
@@ -3176,6 +3226,59 @@ export interface QueuedMessage {
    * When it was queued.
    */
   queuedAt: Timestamp;
+}
+
+/**
+ * The account an instance runs as.
+ */
+export interface RateLimitAccount {
+  /**
+   * The sign-in's email, when the harness reports one. Shown only in the panel's tooltip on
+   * the user's own computer; never logged.
+   */
+  email?: string | null;
+  /**
+   * Stable across targets for the same account of the same provider kind, and opaque: a
+   * digest of the harness's account identifiers, never the identifiers themselves. The hub
+   * shows one group per key.
+   */
+  key: string;
+  /**
+   * The plan as the harness names it ("Claude Ultra", "Pro"), for display.
+   */
+  label?: string | null;
+}
+
+/**
+ * One usage window of an account.
+ */
+export interface RateLimitWindow {
+  /**
+   * Stable within the account, for merging updates (`session`, `weekly`, `weekly:Fable`).
+   */
+  id: string;
+  /**
+   * Short display label: `5h`, `weekly`.
+   */
+  label: string;
+  /**
+   * When the window resets.
+   */
+  resetsAt?: Timestamp | null;
+  /**
+   * What a scoped window counts (a model or a surface, as the harness labels it). Absent:
+   * the window counts everything on the account.
+   */
+  scope?: string | null;
+  /**
+   * Share of the window used, in whole percent (0–100; a harness reporting a fraction is
+   * rounded).
+   */
+  usedPercent: number;
+  /**
+   * The window's length in minutes, when known.
+   */
+  windowMinutes?: number | null;
 }
 
 /**
