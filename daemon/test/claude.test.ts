@@ -1202,6 +1202,31 @@ test("subagents: listed under their session from listSubagents and the sidecar; 
   await r.provider.dispose();
 });
 
+test("a running Agent call is named and linked to its subagent, whatever order the stream comes in (D164)", async () => {
+  const r = rig();
+  const { thread, turn, q } = await startedThread(r, "spawn one");
+  const agentId = "a5b6c7d8e9f0a1b2c";
+  const input = { description: "Fix false Paused", subagent_type: "general-purpose", model: "opus", effort: "medium", prompt: "Fix it." };
+  const se = (event: unknown) => ({ type: "stream_event", event, parent_tool_use_id: null, uuid: "u", session_id: thread });
+  q.push(
+    se({ type: "message_start", message: { id: "msg_A" } }),
+    // The complete message before the block's stream events; then a stop with nothing read.
+    { type: "assistant", message: { id: "msg_A", content: [{ type: "tool_use", id: "toolu_a", name: "Agent", input }] }, parent_tool_use_id: null, uuid: "a1", session_id: thread },
+    se({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_a", name: "Agent", input: {} } }),
+    se({ type: "content_block_stop", index: 0 }),
+    { type: "system", subtype: "task_started", task_id: agentId, tool_use_id: "toolu_a", description: "Fix false Paused", subagent_type: "general-purpose", task_type: "local_agent", prompt: "Fix it.", uuid: "ts1", session_id: thread },
+  );
+  const linked = await until(() => r.events.filter((e) => e.type !== "threadChanged" && (e as { thread?: string }).thread === thread && (e as { item?: { id?: string } }).item?.id === "toolu_a").map((e) => (e as { item: any }).item).find((i) => i.agentCall?.peers?.[0]?.agentId === agentId), "the call linked to its subagent");
+  assert.equal(linked.agentCall.title, "Fix false Paused");
+  assert.deepEqual(linked.agentCall.peers, [{ name: "Fix false Paused", agentId }]);
+  assert.equal(linked.status, "inProgress");
+  const all = r.events.filter((e) => (e as { thread?: string }).thread === thread && (e as { item?: { id?: string } }).item?.id === "toolu_a").map((e) => (e as { item: any }).item);
+  assert.ok(all.slice(1).every((i) => i.agentCall?.title === "Fix false Paused"), "never back to an unnamed call");
+  q.push(result());
+  await until(() => of(r.events, "turnCompleted").find((e) => e.thread === thread && e.turnId === turn), "the turn");
+  await r.provider.dispose();
+});
+
 test("subagents: a live Agent tool call starts one at once; its messages stream into it; its end is reported", async () => {
   const r = rig();
   const { thread, turn, q } = await startedThread(r, "look around");

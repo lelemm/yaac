@@ -11,7 +11,7 @@
 // Anything that does not map becomes a `toolCall` of type `other`, or a `notice`; nothing is
 // dropped.
 
-import type { Item, PlanStep, ToolKind, TurnId } from "../../protocol/generated/types.js";
+import type { AgentCall, AgentRef, Item, PlanStep, ToolKind, TurnId } from "../../protocol/generated/types.js";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ASK_TOOL, normaliseQuestions } from "./questions.js";
 import { editDiff, editedPath } from "./diff.js";
@@ -268,6 +268,8 @@ interface OpenBlock {
   name?: string;
   text: string;
   json: string;
+  /** The input the block started with, when it carried one. */
+  input?: Json;
 }
 
 /**
@@ -324,9 +326,12 @@ export class LiveTranslator {
       const ob: OpenBlock = { id, type, text: "", json: "" };
       if (type === "tool_use" || type === "server_tool_use") {
         ob.name = str(block.name) ?? "tool";
+        // The block may carry its input already (no deltas follow then).
+        ob.input = obj(block.input);
         if (ob.name === ASK_TOOL || ob.name === TODO_TOOL) this.skipTools.add(id);
-        else {
-          const item = toolCallItem(id, this.turnId, ob.name, {}, this.cwd);
+        else if (!this.started.has(id)) {
+          // Never over what is known: its complete message may have come first.
+          const item = toolCallItem(id, this.turnId, ob.name, ob.input, this.cwd);
           this.tools.set(id, item);
           this.start(item);
         }
@@ -362,13 +367,17 @@ export class LiveTranslator {
       if (ob.type === "text") this.complete({ id: ob.id, turnId: this.turnId, status: "completed", kind: "agentMessage", text: ob.text });
       else if (ob.type === "thinking") this.complete({ id: ob.id, turnId: this.turnId, status: "completed", kind: "reasoning", reasoning: ob.text });
       else if (ob.name) {
-        let input: Json = {};
-        try {
-          input = obj(JSON.parse(ob.json || "{}"));
-        } catch {
-          /* the complete message carries the input */
+        let input: Json | null = ob.input && Object.keys(ob.input).length > 0 ? ob.input : null;
+        if (ob.json) {
+          try {
+            input = obj(JSON.parse(ob.json));
+          } catch {
+            /* the complete message carries the input */
+          }
         }
-        this.toolInput(ob.id, ob.name, input);
+        // Nothing read: the complete message carries the input. Never clear a call's input
+        // (an Agent call's name for its subagent, D164).
+        if (input) this.toolInput(ob.id, ob.name, input);
       }
     }
   }
@@ -436,6 +445,25 @@ export class LiveTranslator {
       this.start(item);
       this.complete(item);
     }
+  }
+
+  /**
+   * Claude Code started the subagent of a running `Agent` call (`task_started`, D151): the
+   * call's pill names it from now on — by the subagent's own id, so the window resolves it to
+   * the subagent's conversation (its title), and by the task's description where the call's
+   * input did not give one (D164).
+   */
+  subagentStarted(toolUseId: string, agentId: string, description: string | null, agentType: string | null): void {
+    const item = this.tools.get(toolUseId) as (Item & { agentCall?: AgentCall }) | undefined;
+    const call = item?.agentCall;
+    if (!item || !call || call.kind !== "spawn") return;
+    const peer: AgentRef = { ...(call.peers?.[0] ?? {}), agentId };
+    const name = call.title ?? peer.name ?? description ?? agentType;
+    if (name && !peer.name) peer.name = name;
+    const next: AgentCall = { ...call, peers: [peer], ...(name && !call.title ? { title: name } : {}) };
+    const updated = { ...item, agentCall: next, title: agentCallTitle(next, true) } as Item;
+    this.tools.set(toolUseId, updated);
+    if (this.started.has(toolUseId)) this.emit({ type: "itemUpdated", item: updated });
   }
 
   private result(b: Block, structured?: unknown): void {
