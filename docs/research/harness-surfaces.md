@@ -117,6 +117,19 @@ State on disk under `~/.codex/`: `app-server-control/`, `app-server-daemon/`, `s
 - `ModelListParams`: `cursor`, `limit`, `includeHidden`, `modelProvider` — the listing is paged.
 - `ThreadListParams.sourceKinds`: "when omitted or empty, defaults to interactive sources";
   `archived` true returns only archived threads, false or null only non-archived.
+  Re-checked 2026-11-21 (CLI 0.170.0 `generate-ts`, daemon package 0.171.0): unchanged, so the
+  full index needs two listings, active then archived. Also `cwd` (string or list),
+  `useStateDbOnly`, `sectionId`, `excludedThreadIds`. `thread/unarchive` and the
+  `thread/archived` / `thread/unarchived` notifications are present. On disk, the archived flag
+  and `archived_at` are columns of the `threads` table in `$CODEX_HOME/state_<n>.sqlite`;
+  `archived_sessions/` can be empty while threads are archived, so count archived threads
+  through `thread/list`, not the folder.
+- **Where `codex` lives**: the standalone installer puts a launcher at `~/.local/bin/codex`
+  pointing into `$CODEX_HOME/packages/standalone/current/bin/codex`. `wsl.exe <cmd>` and
+  `ssh host <cmd>` run a non-login shell whose `PATH` does not include `~/.local/bin`, so a
+  daemon started that way does not find `codex` on `PATH` (seen 2026-11-21: a WSL target whose
+  Codex instance was *not installed* until P130). After a reboot the Codex daemon is not
+  running and its control-socket symlink dangles, so `yaacd` has to start it.
 - `ToolRequestUserInputParams` (marked experimental): `threadId`, `turnId`, `itemId`,
   `isBlocking`, `questions[]` each with `id`, `header`, `question`, optional `options[]`
   (`label`, `description`), `isOther`, `isSecret`. The response maps question id to
@@ -204,6 +217,9 @@ A live Claude→Claude fork kept the conversation.
   `firstPrompt?`, `gitBranch?`, `cwd?`, `tag?`, `archived?`.
 - `ListSessionsOptions`: `dir?` (omit for all projects), `limit`, `offset`, `includeWorktrees`
   (default true), `includeProgrammatic` (default true; covers SDK and daemon-worker sessions).
+  There is no archived filter: `archiveSession()` "stays on disk, and `listSessions` still
+  returns it, with `archived: true`"; `unarchiveSession()` makes it list with `archived: false`;
+  a prompt sent in an archived session unarchives it (re-checked 2026-11-21, SDK 0.3.329).
 
 Images are sent as image content blocks inside the user message, not as paths.
 

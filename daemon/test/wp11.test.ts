@@ -276,6 +276,37 @@ test("unarchive uses the harness's own unarchive", async () => {
   }
 });
 
+test("a discovered thread archived from YAAC or in the harness stays listed, archived, across rescans and a restart; Unarchive brings it back (P131)", async () => {
+  const home = tmpHome("y11-");
+  let s = await setup({}, home);
+  try {
+    const fake = fakeOf(s.d);
+    const fromYaac = fake.addOutsideThread("Archived from YAAC");
+    const inHarness = fake.addOutsideThread("Archived in the harness");
+    await rescan(s.c);
+    const idOf = (rows: any[], n: string) => rows.find((t) => t.nativeId === n);
+    let rows = await sync(s.c);
+    await s.c.request("thread/archive", { opId: opId(), threadId: idOf(rows, fromYaac).id });
+    await fake.archive(inHarness);
+    await rescan(s.c);
+    await s.done(true);
+    s = await setup({}, home);
+    await rescan(s.c);
+    rows = await sync(s.c);
+    for (const n of [fromYaac, inHarness]) {
+      const row = idOf(rows, n);
+      assert.ok(row, "still listed: the Archived section shows it");
+      assert.equal(row.archived, true);
+    }
+    await s.c.request("thread/unarchive", { opId: opId(), threadId: idOf(rows, inHarness).id });
+    assert.equal((await fakeOf(s.d).lookupThread(inHarness))!.archived, false, "the harness unarchived it");
+    await rescan(s.c);
+    assert.equal(idOf(await sync(s.c), inHarness).archived, false);
+  } finally {
+    await s.done();
+  }
+});
+
 // ── The socket ─────────────────────────────────────────────────────────────────────────────
 
 test("a stopping daemon removes only a socket it still owns", async () => {

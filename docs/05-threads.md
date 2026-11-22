@@ -256,6 +256,20 @@ Each summary carries an `origin_kind`, so the filter is a view over the cached i
 The index is synchronised incrementally ([protocol](03-protocol.md#the-thread-index)): a
 reconnect after a week costs one small exchange, not a full listing.
 
+**Archived conversations are discovered too, marked archived** (P131). The scan lists what the
+harness has archived as well as what it has not — Codex: a second `thread/list` with
+`archived: true` after the active listing; Claude Code: `listSessions()` returns archived
+sessions with `archived: true` — so a conversation archived from YAAC, or in the harness itself,
+stays in the index and shows in the sidebar's **Archived** section, where **Unarchive** calls the
+harness's own unarchive (`thread/unarchive`, `unarchiveSession()`). One archived from YAAC is
+never cut by the caps below; one archived elsewhere is subject to them like any other.
+
+**An instance that cannot list lists nothing.** Discovery runs only for an instance that is
+`ready` with `ThreadList`; one that is *not installed*, *unreachable* or *could not start* shows
+no conversations, and its status says why. `yaacd` is often started by a non-login shell
+(`wsl.exe`, `ssh host cmd`) whose `PATH` leaves out `~/.local/bin`, so it looks for `codex`
+there and in Codex's own package folder as well as on `PATH`, as it does for `claude` (P130).
+
 ### Discovery is capped by age and by number
 
 **Decided.** A harness that has been used for months holds hundreds of old conversations.

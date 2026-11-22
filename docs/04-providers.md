@@ -77,7 +77,11 @@ Rules:
   is too old for YAAC — update Codex on this target*, with the version found.
 - **Decided — if no Codex daemon is running, `yaacd` starts it** with
   `codex app-server daemon start` (under the instance's `CODEX_HOME` when it has one), so other
-  Codex clients on that machine share it too. `yaacd` **starts** the daemon; it never stops,
+  Codex clients on that machine share it too. The `codex` it runs is `YAAC_CODEX_EXECUTABLE`
+  when the instance or process sets it, else the first found on `PATH`, in `~/.local/bin`, or
+  in `$CODEX_HOME/packages/standalone/current/bin` — where Codex's installer puts it, and which
+  a non-login `PATH` leaves out; a folder found off `PATH` is added to the end of the `PATH` it
+  runs with (P130). `yaacd` **starts** the daemon; it never stops,
   restarts, or updates it — those can interrupt work that is not YAAC's.
 - An instance defined by an **explicit socket** is connect-only. If nothing is listening there
   and the instance has no home to start a daemon from, it is unavailable, and says so. It does
