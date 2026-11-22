@@ -71,6 +71,9 @@ pub struct Transcript {
     pub loading: Option<ResetLoad>,
     /// Answers this window gave.
     pub local_answers: BTreeMap<RequestId, LocalAnswer>,
+    /// Messages this window sent whose own item has not arrived, oldest first (D165). Each
+    /// has its echo among the items.
+    pending: Vec<crate::sending::Pending>,
     /// Bumped on every change, for UI caches.
     pub revision: u64,
 }
@@ -106,8 +109,20 @@ impl Transcript {
         self.position.is_some() && self.loading.is_none()
     }
 
-    /// Insert or replace an item.
+    /// Insert or replace an item. A sent message's own item takes the place of its echo
+    /// (D165).
     pub fn upsert(&mut self, item: Item, rev: u64) {
+        let echo = if self.index.contains_key(&item.id) { None } else { self.pending.iter().position(|p| p.matches(&item)) };
+        if let Some(n) = echo {
+            let p = self.pending.remove(n);
+            if let Some(i) = self.index.remove(&p.item) {
+                self.index.insert(item.id.clone(), i);
+                self.items[i] = item;
+                self.revs[i] = rev;
+                self.revision = rev;
+                return;
+            }
+        }
         match self.index.get(&item.id) {
             Some(&i) => {
                 self.items[i] = item;
@@ -122,12 +137,70 @@ impl Transcript {
         self.revision = rev;
     }
 
-    /// Replace every item (a snapshot), oldest first.
-    pub fn replace_all(&mut self, items: Vec<Item>, rev: u64) {
+    /// Replace every item (a snapshot), oldest first. The echoes of sends still in flight stay
+    /// at the end, unless the snapshot already holds their message.
+    pub fn replace_all(&mut self, mut items: Vec<Item>, rev: u64) {
+        self.pending.retain(|p| !items.iter().any(|i| p.matches(i)));
+        items.extend(self.pending.iter().map(crate::sending::Pending::item));
         self.index = items.iter().enumerate().map(|(i, item)| (item.id.clone(), i)).collect();
         self.revs = vec![rev; items.len()];
         self.items = items;
         self.revision = rev;
+    }
+
+    // ── Sent messages before their own item (D165) ───────────────────────────────────────
+
+    /// Show a message being sent: its echo at the end of the transcript, in the same frame.
+    pub fn add_pending(&mut self, pending: crate::sending::Pending, rev: u64) {
+        let item = pending.item();
+        self.pending.push(pending);
+        self.upsert(item, rev);
+    }
+
+    /// The sends whose item has not arrived, oldest first.
+    pub fn pending(&self) -> &[crate::sending::Pending] {
+        &self.pending
+    }
+
+    /// The send an echo stands for.
+    pub fn pending_of(&self, item: &ItemId) -> Option<&crate::sending::Pending> {
+        self.pending.iter().find(|p| &p.item == item)
+    }
+
+    /// The send in flight under this op id.
+    pub fn pending_op(&self, op: &yaac_protocol::OpId) -> Option<&crate::sending::Pending> {
+        self.pending.iter().find(|p| &p.op == op)
+    }
+
+    /// Change a send (its state, its op id for a Retry); its echo follows.
+    pub fn update_pending(&mut self, op: &yaac_protocol::OpId, rev: u64, f: impl FnOnce(&mut crate::sending::Pending)) -> bool {
+        let Some(p) = self.pending.iter_mut().find(|p| &p.op == op) else { return false };
+        f(p);
+        let item = p.item();
+        if let Some(&i) = self.index.get(&item.id) {
+            self.items[i] = item;
+            self.revs[i] = rev;
+        }
+        self.revision = rev;
+        true
+    }
+
+    /// Take a send and its echo out of the transcript (Edit, Dismiss, or a message that went
+    /// to the queue instead).
+    pub fn remove_pending(&mut self, op: &yaac_protocol::OpId, rev: u64) -> Option<crate::sending::Pending> {
+        let n = self.pending.iter().position(|p| &p.op == op)?;
+        let p = self.pending.remove(n);
+        if let Some(i) = self.index.remove(&p.item) {
+            self.items.remove(i);
+            self.revs.remove(i);
+            for v in self.index.values_mut() {
+                if *v > i {
+                    *v -= 1;
+                }
+            }
+        }
+        self.revision = rev;
+        Some(p)
     }
 
     /// Whether an event at this position is new for this transcript.
