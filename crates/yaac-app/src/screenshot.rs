@@ -100,6 +100,8 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("91", "agent-calls-open"),
     ("92", "subagents"),
     ("93", "subagents-open"),
+    ("95", "harness-subagents"),
+    ("96", "subagent-open"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -225,7 +227,7 @@ fn setup(app: &mut YaacApp, id: &str) {
         }
         app.pump_demo();
     };
-    let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24" | "44" | "48" | "50" | "60");
+    let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24" | "44" | "48" | "50" | "60" | "95");
     app.ui.panel = if docked { PanelMode::Docked } else { PanelMode::Pill };
     match id {
         "01" | "10" => {
@@ -597,6 +599,21 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.pump_demo();
             app.ui.ordering.order = yaac_core::sidebar::Order::AToZ;
             app.ui.menu = Some(Menu::Ordering);
+        }
+        "95" | "96" => {
+            // Claude Code's own subagents (D151): search-service, started by the user here,
+            // has one YAAC worker (index-rebuild) and two subagents of its own. 95: its docked
+            // panel lists all three as Workers; 96: one subagent opened, read-only.
+            play(app, Scene::HarnessSubagents);
+            if let Some(r) = app.client.state.threads.get_mut(&threads::search()) {
+                r.summary.spawned_by = None;
+            }
+            if id == "95" {
+                app.open(&threads::search(), None);
+            } else {
+                app.open(&threads::search(), None);
+                app.open(&threads::subagent_explore(), None);
+            }
         }
         "47" => {
             // A thread started by the user with one worker: the pill has one cluster.

@@ -116,6 +116,10 @@ pub fn take_over(state: &AppState, key: &ThreadKey) -> Option<TakeOver> {
     if state.control(key) != Control::External || !can(state, key, &Capability::ThreadTakeOver) {
         return None;
     }
+    // A harness's own sub-agent (D151) is held by its parent; there is nothing to take over.
+    if state.summary(key).is_some_and(|s| s.subagent.as_ref().is_some_and(|sub| sub.read_only.is_some())) {
+        return None;
+    }
     let t = state.transcripts.get(key);
     if t.is_some_and(|t| t.take_over == Some(TakeOverRequest::InFlight)) {
         return Some(TakeOver { enabled: false, busy: true, tooltip: "Taking over…".to_owned(), failure: None });

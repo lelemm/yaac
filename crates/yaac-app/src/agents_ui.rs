@@ -129,7 +129,8 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                         let name_color = if row.finished { p.text2 } else { p.text };
                         let g = widgets::elided(ui, &row.title, &theme::bold(size::UI), name_color, text_w);
                         ui.painter().galley(pos2(r.left() + 34.0, r.top() + 5.0), g, name_color);
-                        let g = widgets::elided(ui, &row.last_action, &theme::ui(size::SMALL), p.text2, text_w);
+                        let second = row.origin.as_ref().filter(|_| row.subagent).map_or_else(|| row.last_action.clone(), |o| format!("{o} · {}", row.last_action));
+                        let g = widgets::elided(ui, &second, &theme::ui(size::SMALL), p.text2, text_w);
                         ui.painter().galley(pos2(r.left() + 34.0, r.top() + 24.0), g, p.text2);
                         if let Some(f) = row.flow {
                             arrow(ui.painter(), pos2(r.right() - 12.0, r.center().y), f, &p);
@@ -280,7 +281,9 @@ fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, ac
     }
     // Then provider · model · target, and the latest activity.
     let mut parts: Vec<String> = Vec::new();
-    parts.extend(row.provider.clone());
+    // A harness's own sub-agent says so ("Claude subagent · Explore"), a mesh worker too (D151).
+    parts.extend(row.origin.clone());
+    parts.extend(row.provider.clone().filter(|_| !row.subagent));
     parts.extend(row.model.clone());
     parts.push(row.target.clone());
     y += DOCK_LINE;

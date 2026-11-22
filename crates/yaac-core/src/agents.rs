@@ -177,6 +177,29 @@ pub struct AgentRow {
     pub depth: u8,
     /// Its git line (branch and counts), as in the sidebar.
     pub git: Option<crate::sidebar::Line2>,
+    /// What kind of agent it is, when it was started by another (D151): "Claude subagent ·
+    /// Explore" for one of the harness's own, "YAAC worker" for one the mesh started.
+    pub origin: Option<String>,
+    /// One of the harness's own sub-agents (D151), not a YAAC worker.
+    pub subagent: bool,
+}
+
+/// "Claude subagent · Explore" for a harness's own sub-agent (D151), "YAAC worker" for one
+/// the mesh started, nothing for a thread nobody spawned. From the summary, never the kind.
+pub fn origin_label(state: &AppState, key: &ThreadKey) -> Option<String> {
+    let s = state.summary(key)?;
+    match &s.subagent {
+        Some(sub) => {
+            let provider = state.provider_of(key).map_or_else(|| "Harness".to_owned(), |p| p.display_name.clone());
+            let mut label = format!("{provider} subagent");
+            if let Some(t) = sub.agent_type.as_deref().filter(|t| !t.is_empty()) {
+                label.push_str(" · ");
+                label.push_str(t);
+            }
+            Some(label)
+        }
+        None => s.spawned_by.is_some().then(|| "YAAC worker".to_owned()),
+    }
 }
 
 /// Who started the thread.
@@ -258,6 +281,8 @@ pub fn row_for(state: &AppState, map: &AttentionMap, key: &ThreadKey, depth: u8)
         activity,
         depth,
         git: crate::sidebar::line2_of(state, key),
+        origin: origin_label(state, key),
+        subagent: s.subagent.is_some(),
     })
 }
 
@@ -284,6 +309,8 @@ fn row_for_peer(state: &AppState, map: &AttentionMap, peer: &MeshPeer) -> AgentR
         activity: mark.word().to_owned(),
         depth: 0,
         git: None,
+        origin: None,
+        subagent: false,
     }
 }
 

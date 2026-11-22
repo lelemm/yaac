@@ -64,6 +64,16 @@ pub enum Banner {
         /// **Take over**, when offered.
         take_over: Option<crate::thread_menu::TakeOver>,
     },
+    /// One of the harness's own sub-agents (D151): read-only, with the harness's reason, and a
+    /// way to the agent that started it (the one to message instead).
+    Subagent {
+        /// "A Claude subagent (Explore), started by ‹parent›."
+        text: String,
+        /// Why YAAC cannot send to it.
+        reason: Option<String>,
+        /// The parent, when it is in the index.
+        parent: Option<LinkPart>,
+    },
     /// The target's daemon is older, or being updated; one action, when the hub can update
     /// it: **Update now**.
     OlderDaemon {
@@ -171,7 +181,20 @@ pub fn header(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Option<H
 
     let mut banners = Vec::new();
     let target_name = state.target_name(&key.target);
-    if d.read_only {
+    if let Some(sub) = s.subagent.as_ref().filter(|sub| sub.read_only.is_some()) {
+        // A harness sub-agent (D151) is not "open in another program": its parent drives it.
+        let kind = crate::agents::origin_label(state, key).unwrap_or_else(|| "A subagent".to_owned());
+        let parent = s.spawned_by.as_ref().map(|a| {
+            let k = state.key_of(a);
+            let title = k.as_ref().and_then(|k| state.summary(k)).map_or_else(|| a.to_string(), |p| p.title.clone());
+            LinkPart { title, key: k }
+        });
+        let text = match &parent {
+            Some(p) => format!("{kind}, started by {}. You can read it, but not send to it.", p.title),
+            None => format!("{kind}. You can read it, but not send to it."),
+        };
+        banners.push(Banner::Subagent { text, reason: sub.read_only.clone(), parent });
+    } else if d.read_only {
         let text = match state.control(key) {
             Control::OtherClient => format!(
                 "This thread is in use in YAAC on {}. You can watch, but not send.",

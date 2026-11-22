@@ -71,11 +71,13 @@ pub enum Scene {
     /// 90–93: agents talking to agents (D150): the orchestrator spawns, messages and waits
     /// through YAAC; users-service (Claude Code) runs its own subagents.
     AgentCalls,
+    /// 95/96: Claude Code's own subagents (D151), listed under search-service beside its YAAC worker.
+    HarnessSubagents,
 }
 
 impl Scene {
     /// Every scene, for the demo menu.
-    pub const ALL: [Scene; 9] = [
+    pub const ALL: [Scene; 10] = [
         Scene::RequestStates,
         Scene::Permission,
         Scene::Notices,
@@ -85,6 +87,7 @@ impl Scene {
         Scene::LocalSignedOut,
         Scene::HarnessMarkup,
         Scene::AgentCalls,
+        Scene::HarnessSubagents,
     ];
 
     /// Menu label.
@@ -99,6 +102,7 @@ impl Scene {
             Scene::LocalSignedOut => "Claude on this computer is signed out",
             Scene::HarnessMarkup => "A paste, a command, and notices from Claude Code (users-service)",
             Scene::AgentCalls => "Agents talking to agents: spawn, message, wait, Claude Code subagents",
+            Scene::HarnessSubagents => "Claude Code's own subagents under search-service",
         }
     }
 }
@@ -126,6 +130,10 @@ pub mod threads {
     pub fn handshake() -> ThreadKey { fleet::k(fleet::HANDSHAKE) }
     /// Try the new parser (a temporary project).
     pub fn parser() -> ThreadKey { fleet::k(fleet::PARSER) }
+    /// Claude Code's Explore subagent of search-service, running (after `Scene::HarnessSubagents`, D151).
+    pub fn subagent_explore() -> ThreadKey { fleet::k(fleet::SUB_EXPLORE) }
+    /// Its general-purpose subagent, done.
+    pub fn subagent_schema() -> ThreadKey { fleet::k(fleet::SUB_SCHEMA) }
 }
 
 #[allow(clippy::large_enum_variant, reason = "demo only; a handful are queued at a time")]
@@ -1564,6 +1572,14 @@ impl Inner {
                     self.emit_now(&users, ThreadEvent::ItemCompleted(ItemEvent { item: it }));
                 }
                 self.summary_now(&users, |s| s.updated_at = crate::time::timestamp(base));
+            }
+            Scene::HarnessSubagents => {
+                // Claude Code's own subagents (D151) appear under their parent as the harness
+                // reports them: listed, linked, and the parent counting them.
+                let kids = self.fleet.add_harness_subagents();
+                for key in kids.iter().chain(std::iter::once(&k(SEARCH))) {
+                    self.summary_now(key, |_| {});
+                }
             }
             Scene::LocalSignedOut => {
                 let local = TargetId::new("local");

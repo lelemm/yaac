@@ -10,7 +10,7 @@ use yaac_protocol::{
     ModeInfo, ModelCapability, ModelId, ModelInfo, OriginKind, ProjectRef, ProviderDescriptor, ProviderKind,
     ProviderStatus, ReceiptReason, Seq, StoreIdentity, Support, TargetId, TargetName, TargetPath, ThreadEffective,
     ThreadEvent, ThreadEventParams, ThreadId, ThreadState, ThreadSummary, Timestamp, ToolKind, TurnId, UploadId,
-    WorktreeRef, ItemEvent, GitStatus, Project, ProjectId, ProjectKind,
+    WorktreeRef, ItemEvent, GitStatus, Project, ProjectId, ProjectKind, HarnessSubagent, SubagentStatus,
 };
 
 use super::build::*;
@@ -71,6 +71,11 @@ pub(crate) const LINT: (&str, &str) = ("devbox", "t-lint");
 pub(crate) const BENCH: (&str, &str) = ("gpu-box", "t-bench");
 pub(crate) const V2PLAN: (&str, &str) = ("local", "t-v2plan");
 pub(crate) const PARSER: (&str, &str) = ("devbox", "t-parser");
+/// Claude Code's own subagents of search-service (D151), present after `Scene::HarnessSubagents`.
+pub(crate) const SUB_EXPLORE: (&str, &str) = ("gpu-box", "t-sub-explore");
+pub(crate) const SUB_SCHEMA: (&str, &str) = ("gpu-box", "t-sub-schema");
+/// Why a demo Claude Code subagent is read-only (the provider's sentence, D151).
+pub(crate) const SUBAGENT_READ_ONLY: &str = "Only the agent that started a Claude Code subagent can continue it (its SendMessage tool); Claude Code offers no way to message one from outside. Message that agent instead.";
 
 /// What the demo's signed-out instance reports as its status message.
 pub(crate) const SIGN_IN_HINT: &str = "Run `claude` in a terminal to sign in";
@@ -405,6 +410,44 @@ impl Fleet {
         if let Some(t) = self.threads.get_mut(key) {
             f(&mut t.summary);
         }
+    }
+
+    /// Two of Claude Code's own subagents under search-service (D151), which also has one
+    /// YAAC worker (index-rebuild): one still running, one done. Read-only, held by their
+    /// parent. Returns their keys.
+    pub(super) fn add_harness_subagents(&mut self) -> [ThreadKey; 2] {
+        let search = k(SEARCH);
+        let parent = search.address();
+        let (explore, schema) = (k(SUB_EXPLORE), k(SUB_SCHEMA));
+        self.add(&explore, "Map the reindex script", "claude", "opus-5.5", ("search", "main"), ThreadState::Running, -15);
+        self.add(&schema, "Check the index schema", "claude", "opus-5.5", ("search", "main"), ThreadState::Done, -4 * 60);
+        for (key, agent_type, status, preview) in [
+            (&explore, "Explore", SubagentStatus::Running, "reading scripts/reindex.sh"),
+            (&schema, "general-purpose", SubagentStatus::Completed, "The v2 schema matches; one index is new."),
+        ] {
+            let parent = parent.clone();
+            self.set(key, |s| {
+                s.spawned_by = Some(parent);
+                s.origin_kind = OriginKind::Programmatic;
+                s.control = Control::External;
+                s.control_holder = Some("the agent that started it".into());
+                s.preview = preview.into();
+                s.subagent = Some(HarnessSubagent { agent_type: Some(agent_type.into()), status, read_only: Some(SUBAGENT_READ_ONLY.into()) });
+            });
+            if let Some(t) = self.threads.get_mut(key) {
+                t.control = Control::External;
+                t.holder = Some("the agent that started it".into());
+                t.take_over_blocked = Some(SUBAGENT_READ_ONLY.into());
+                t.effective.capabilities.retain(|c| matches!(c, Capability::ThreadRead | Capability::StreamText | Capability::StreamReasoning | Capability::FollowExternal));
+            }
+        }
+        self.set(&search, |s| s.children += 2);
+        self.push(&explore, done("se1", "se-t1", user("Map scripts/reindex.sh: what does --drop-old remove, and in what order?", &[], &[])));
+        self.push(&explore, done("se2", "se-t1", tool(ToolKind::Command, "rg -n drop scripts/reindex.sh", Some(0), "14:  drop_old_shards \"$INDEX\"\n31:  # --drop-old: remove shards older than the live alias")));
+        self.push(&explore, item("se3", "se-t1", ItemStatus::InProgress, agent("It drops the shards that are no longer behind the live alias, after the new ones")));
+        self.push(&schema, done("sc1", "sc-t1", user("Compare the index schema in v1 and v2 and list what differs.", &[], &[])));
+        self.push(&schema, done("sc2", "sc-t1", agent("The v2 schema matches v1 except for one new index, `users_email_idx`, which is unique in v2.")));
+        [explore, schema]
     }
 
     /// The standard fleet.

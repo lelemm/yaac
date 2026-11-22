@@ -176,6 +176,23 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                         });
                     });
                 }
+                Banner::Subagent { text, reason, parent } => {
+                    widgets::icon(ui, 16.0, |pa, c, d| icons::info(pa, c, d, p.text2));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // The one to message instead (D151).
+                        if let Some(k) = parent.as_ref().and_then(|p| p.key.clone())
+                            && widgets::plain(ui, &p, "Open parent", None).clicked()
+                        {
+                            actions.push(Action::Open(k));
+                        }
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.add(egui::Label::new(text.as_str()).wrap());
+                            if let Some(why) = reason {
+                                ui.add(egui::Label::new(widgets::secondary(why.clone(), &p)).wrap());
+                            }
+                        });
+                    });
+                }
                 Banner::OlderDaemon { text, update_now } => {
                     widgets::icon(ui, 16.0, |pa, c, d| icons::warning(pa, c, d, p.needs, p.faint));
                     ui.label(text);
