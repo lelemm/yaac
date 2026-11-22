@@ -135,15 +135,17 @@ the same build id.
 
 ## Updating
 
-**Decided** (D136); the details are P87–P90. Windows only: a build for another system has the
-code but never starts it, and a development build (`+dev…`) never updates itself.
+**Decided** (D136, D145). The details are P87–P90 and P140–P141. A Windows build
+with a numeric build id checks for updates. Development builds leave the updater off.
 
-1. **As the window starts** (not `yaac hub`, not the commands, not the demo), on a worker
-   thread: one `GET https://api.github.com/repos/lelemm/yaac/releases/latest` with the
-   generic `User-Agent: yaac-updater` and nothing else, then that release's `manifest.json`.
-   10 s timeouts; offline, a timeout, an HTTP error, or GitHub's rate limit (403 with
-   `x-ratelimit-remaining: 0`, or 429) is silent — the title row shows nothing, Settings →
-   About → Components says why — and is not retried until the next start.
+1. **At window startup and every 10 minutes while the window runs**, including in the
+   tray, a worker sends a `GET` to `https://api.github.com/repos/lelemm/yaac/releases/latest`
+   with the generic `User-Agent: yaac-updater`, then fetches that release's `manifest.json`.
+   The worker uses the same 10 s timeouts for every check and sleeps between checks. Offline
+   and HTTP failures are shown only in Settings → About → Components. A failed check keeps
+   any existing update offer. After a rate limit the worker waits for the latest of the
+   regular 10-minute interval, GitHub's reset time, and its `Retry-After` delay, when supplied.
+   The hub, command-line commands, and demo never make these checks.
 2. **A newer build** (`build` above this one's) puts an **update icon** in the title row,
    left of the window buttons: *"YAAC <version>+<id> is available · Download"*.
 3. **Download** (a click): on a worker, into `%LOCALAPPDATA%\yaac\updates\` (YAAC's own
@@ -151,7 +153,10 @@ code but never starts it, and a development build (`+dev…`) never updates itse
    bar**, repainted only when it moves a visible step and at most ten times a second. The
    size and SHA-256 are checked against the manifest as the bytes arrive; a mismatch deletes
    the file. Only a verified installer gets **`pending.json`** (`build`, `version`, `path`,
-   `sha256`, `size`, `attempted`). A failed download leaves the icon, which tries again.
+   `sha256`, `size`, `attempted`). A failed download leaves the icon and periodic checks
+   resume. Checks pause while downloading, waiting for restart, or installing. A verified
+   installer stays selected even if another release is published while it waits. The
+   restarted window checks for newer releases again.
 4. **"Restart to update"** (a click): `pending.json` is marked `attempted`, the installer is
    started with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /RELAUNCH
    /LOG=<updates>\install.log`, and the window quits. The installer closes anything left and
@@ -172,7 +177,8 @@ code but never starts it, and a development build (`+dev…`) never updates itse
    An update can therefore be tried once; it never loops.
 
 Settings → **About** → Components has a row **YAAC (latest release)**: the latest
-release's build and whether this YAAC is behind it, or why it was not checked.
+release's build and whether this YAAC is behind it, or why the latest check is unavailable.
+It also shows when the last check finished in local time, including after a failed check.
 
 ### How targets get the new daemon
 

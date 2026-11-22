@@ -4,9 +4,9 @@
 //! - **At start**, before the window exists: a verified pending update for a newer build is
 //!   installed instead of starting ([`at_start`]); the decision table is
 //!   [`yaac_core::update::decide_start`].
-//! - **As the window opens**, on a worker thread: one `GET` of the repository's latest release
-//!   on GitHub, then its `manifest.json` ([`check`]). Offline, a timeout, or GitHub's rate
-//!   limit is silent: the title row simply shows nothing.
+//! - **As the window opens and every ten minutes while it runs**, on a worker thread:
+//!   one `GET` of the repository's latest GitHub release, then its `manifest.json` ([`check`]).
+//!   Network failures are silent. Checks pause while downloading or waiting for restart.
 //! - **On request**, on a worker thread: the installer is downloaded into the updates folder,
 //!   its size and SHA-256 checked against the manifest, and only then `pending.json` written
 //!   ([`download`]).
@@ -21,11 +21,11 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 use sha2::{Digest, Sha256};
-use yaac_core::update::{Manifest, Offer, Pending, PendingRead, Release, ReleaseCheck, StartDecision, Throttle, decide_start, offer};
+use yaac_core::update::{CheckSchedule, Manifest, Offer, Pending, PendingRead, Release, ReleaseCheck, StartDecision, Throttle, decide_start, next_check, offer};
 
 /// Whether this build offers updates at all.
 pub(crate) const ENABLED: bool = cfg!(windows);
@@ -84,22 +84,47 @@ fn describe(e: &ureq::Error) -> String {
     }
 }
 
+#[derive(Debug)]
+struct CheckError {
+    message: String,
+    reset_at: Option<SystemTime>,
+    retry_after: Duration,
+}
+
+impl From<String> for CheckError {
+    fn from(message: String) -> Self {
+        Self { message, reset_at: None, retry_after: Duration::ZERO }
+    }
+}
+
+impl CheckError {
+    fn rate_limit_delay(&self, checked_at: SystemTime) -> Duration {
+        let until_reset = self.reset_at.and_then(|at| at.duration_since(checked_at).ok()).unwrap_or_default();
+        until_reset.max(self.retry_after)
+    }
+}
+
 /// The text of a small JSON answer, or why there is none.
-fn get_text(agent: &ureq::Agent, url: &str, accept: &str) -> Result<String, String> {
+fn get_text(agent: &ureq::Agent, url: &str, accept: &str) -> Result<String, CheckError> {
     let mut resp = agent.get(url).header("Accept", accept).call().map_err(|e| describe(&e))?;
     let status = resp.status().as_u16();
-    let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
-    if status == 429 || (status == 403 && header("x-ratelimit-remaining").as_deref() == Some("0")) {
-        // Honoured by not asking again: the next check is at the next start.
-        return Err("GitHub's rate limit was reached; checked again at the next start".into());
+    let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok());
+    let seconds = |name| header(name).and_then(|s| s.trim().parse().ok()).map(Duration::from_secs);
+    let retry_after = seconds("retry-after");
+    if status == 429 || (status == 403 && (header("x-ratelimit-remaining") == Some("0") || retry_after.is_some())) {
+        return Err(CheckError {
+            message: "GitHub's rate limit was reached".into(),
+            reset_at: seconds("x-ratelimit-reset").and_then(|s| SystemTime::UNIX_EPOCH.checked_add(s)),
+            retry_after: retry_after.unwrap_or_default(),
+        });
     }
     if status == 404 {
-        return Err("no release has been published yet".into());
+        return Err("no release has been published yet".to_owned().into());
     }
     if status != 200 {
-        return Err(format!("GitHub answered HTTP {status}"));
+        return Err(format!("GitHub answered HTTP {status}").into());
     }
-    resp.body_mut().with_config().limit(1 << 20).read_to_string().map_err(|e| describe(&e))
+    resp.body_mut().with_config().limit(1 << 20).read_to_string().map_err(|e| describe(&e).into())
 }
 
 /// What the check found: the latest release's manifest, and the installer's download URL
@@ -111,12 +136,12 @@ pub(crate) struct Found {
 }
 
 /// The latest release and its manifest. Blocking: run it on a worker.
-pub(crate) fn check(cfg: &Config) -> Result<Found, String> {
+fn check(cfg: &Config) -> Result<Found, CheckError> {
     let agent = agent(cfg, Some(cfg.timeout * 2));
     let release = Release::parse(&get_text(&agent, &cfg.latest_url, "application/vnd.github+json")?)?;
     let url = release.asset_url(yaac_core::update::MANIFEST_NAME).ok_or_else(|| format!("release {} has no manifest", release.tag_name))?;
     let manifest = Manifest::parse(&get_text(&agent, url, "application/json")?)?;
-    let installer = manifest.installer().ok_or("the release has no installer")?;
+    let installer = manifest.installer().ok_or_else(|| "the release has no installer".to_owned())?;
     let installer_url = release.asset_url(&installer.name).unwrap_or(&installer.url).to_owned();
     Ok(Found { manifest, installer_url })
 }
@@ -320,7 +345,7 @@ pub(crate) enum Phase {
 }
 
 enum Msg {
-    Checked(Result<Found, String>, Option<Pending>),
+    Checked(Result<Found, CheckError>, Option<Pending>, SystemTime),
     Progress(u64, u64),
     Downloaded(Result<Pending, String>),
 }
@@ -329,12 +354,14 @@ enum Msg {
 pub(crate) struct Updater {
     cfg: Option<Config>,
     pub check: ReleaseCheck,
+    pub last_checked: Option<SystemTime>,
     pub phase: Phase,
     /// An update that did not install, shown once in a dialog.
     pub notice: Option<String>,
     build: &'static str,
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
+    downloads: Option<mpsc::Sender<Found>>,
 }
 
 impl std::fmt::Debug for Updater {
@@ -347,7 +374,7 @@ impl Updater {
     /// An updater that never checks, and why (shown in Components).
     pub(crate) fn off(why: &str) -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { cfg: None, check: ReleaseCheck::Off(why.to_owned()), phase: Phase::Idle, notice: None, build: crate::BUILD, tx, rx }
+        Self { cfg: None, check: ReleaseCheck::Off(why.to_owned()), last_checked: None, phase: Phase::Idle, notice: None, build: crate::BUILD, tx, rx, downloads: None }
     }
 
     /// An updater for this build that will check `cfg` once the window is up ([`Self::start`]).
@@ -364,36 +391,50 @@ impl Updater {
         u
     }
 
-    /// Starts the release check on a worker; the window repaints once when it answers.
+    /// Starts the updater worker. It waits until a check is due or a download is requested.
     pub(crate) fn start(&mut self, ctx: &egui::Context) {
+        self.start_with_clock(ctx, Instant::now);
+    }
+
+    fn start_with_clock(&mut self, ctx: &egui::Context, now: impl FnMut() -> Instant + Send + 'static) {
         let Some(cfg) = self.cfg.clone() else { return };
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         let build = self.build;
-        let _ = std::thread::Builder::new().name("yaac-update-check".into()).spawn(move || {
-            let found = check(&cfg);
-            let ready = match &found {
-                Ok(f) if offer(build, f.manifest.build) == Offer::Newer => already_downloaded(&cfg.dir, &f.manifest),
-                _ => None,
-            };
-            let _ = tx.send(Msg::Checked(found, ready));
-            ctx.request_repaint();
-        });
+        let (downloads, requests) = mpsc::channel();
+        match std::thread::Builder::new().name("yaac-updater".into()).spawn(move || {
+            run_worker(&cfg, build, &requests, now, |msg| {
+                if tx.send(msg).is_ok() {
+                    ctx.request_repaint();
+                }
+            });
+        }) {
+            Ok(_) => self.downloads = Some(downloads),
+            Err(e) => self.check = ReleaseCheck::Unavailable(format!("could not start the update worker: {e}")),
+        }
     }
 
-    /// Takes what the workers sent. Called every frame; costs nothing when there is nothing.
+    /// Takes the worker's results, including while the window is in the tray.
     pub(crate) fn poll(&mut self) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                Msg::Checked(Ok(found), ready) => {
-                    self.check = ReleaseCheck::Latest { version: found.manifest.version.clone(), build: found.manifest.build };
-                    self.phase = match ready {
-                        Some(p) => Phase::Ready(p),
-                        None if offer(self.build, found.manifest.build) == Offer::Newer => Phase::Available(found),
-                        None => Phase::Idle,
-                    };
+                Msg::Checked(result, ready, checked_at) => {
+                    self.last_checked = Some(checked_at);
+                    match result {
+                        Ok(found) => {
+                            self.check = ReleaseCheck::Latest { version: found.manifest.version.clone(), build: found.manifest.build };
+                            // A click during the check queues the installer the user chose.
+                            if !matches!(self.phase, Phase::Downloading { .. }) {
+                                self.phase = match ready {
+                                    Some(p) => Phase::Ready(p),
+                                    None if offer(self.build, found.manifest.build) == Offer::Newer => Phase::Available(found),
+                                    None => Phase::Idle,
+                                };
+                            }
+                        }
+                        Err(error) => self.check = ReleaseCheck::Unavailable(error.message),
+                    }
                 }
-                Msg::Checked(Err(why), _) => self.check = ReleaseCheck::Unavailable(why),
                 Msg::Progress(d, t) => {
                     if let Phase::Downloading { done, total, .. } = &mut self.phase {
                         (*done, *total) = (d, t);
@@ -409,27 +450,16 @@ impl Updater {
         }
     }
 
-    /// Downloads the offered installer on a worker, with throttled progress repaints.
-    pub(crate) fn download(&mut self, ctx: &egui::Context) {
-        let (Some(cfg), Phase::Available(found) | Phase::Failed { found, .. }) = (self.cfg.clone(), &self.phase) else { return };
+    /// Queues the offered installer on the updater worker.
+    pub(crate) fn download(&mut self) {
+        let (Some(downloads), Phase::Available(found) | Phase::Failed { found, .. }) = (&self.downloads, &self.phase) else { return };
         let found = found.clone();
         let total = found.manifest.installer().map_or(0, |i| i.size);
-        self.phase = Phase::Downloading { found: found.clone(), done: 0, total };
-        let tx = self.tx.clone();
-        let ctx = ctx.clone();
-        let _ = std::thread::Builder::new().name("yaac-update-download".into()).spawn(move || {
-            let started = Instant::now();
-            let mut throttle = Throttle::default();
-            let mut progress = |done: u64, total: u64| {
-                if throttle.should_show(done, total, started.elapsed().as_secs_f64()) {
-                    let _ = tx.send(Msg::Progress(done, total));
-                    ctx.request_repaint();
-                }
-            };
-            let result = download(&cfg, &found, &mut progress);
-            let _ = tx.send(Msg::Downloaded(result));
-            ctx.request_repaint();
-        });
+        if downloads.send(found.clone()).is_ok() {
+            self.phase = Phase::Downloading { found, done: 0, total };
+        } else {
+            self.phase = Phase::Failed { found, message: "the update worker has stopped".into() };
+        }
     }
 
     /// Runs the downloaded installer; the caller then quits the window.
@@ -441,6 +471,57 @@ impl Updater {
     /// The width the title row gives the update item (0 when there is none).
     pub(crate) fn title_width(&self) -> f32 {
         if matches!(self.phase, Phase::Idle) { 0.0 } else { TITLE_W }
+    }
+}
+
+/// Runs both network operations in order. While a verified installer is pending the worker
+/// waits for the window to exit. A download requested during a check runs after it finishes.
+fn run_worker(
+    cfg: &Config,
+    build: &str,
+    requests: &mpsc::Receiver<Found>,
+    mut now: impl FnMut() -> Instant,
+    notify: impl Fn(Msg),
+) {
+    use mpsc::RecvTimeoutError::{Disconnected, Timeout};
+
+    let mut last_check = None;
+    let mut rate_limit = Duration::ZERO;
+    let mut pending = false;
+    loop {
+        let schedule = next_check(build, now(), last_check, pending, rate_limit);
+        let request = match schedule {
+            CheckSchedule::Paused => requests.recv().map_err(|_| Disconnected),
+            CheckSchedule::Wait(remaining) => requests.recv_timeout(remaining),
+            CheckSchedule::Due => requests.recv_timeout(Duration::ZERO),
+        };
+        match request {
+            Ok(found) => {
+                let started = Instant::now();
+                let mut throttle = Throttle::default();
+                let result = download(cfg, &found, &mut |done, total| {
+                    if throttle.should_show(done, total, started.elapsed().as_secs_f64()) {
+                        notify(Msg::Progress(done, total));
+                    }
+                });
+                pending = result.is_ok();
+                notify(Msg::Downloaded(result));
+            }
+            Err(Timeout) if schedule == CheckSchedule::Due => {
+                let found = check(cfg);
+                let ready = match &found {
+                    Ok(f) if offer(build, f.manifest.build) == Offer::Newer => already_downloaded(&cfg.dir, &f.manifest),
+                    _ => None,
+                };
+                pending = ready.is_some();
+                let checked_at = SystemTime::now();
+                last_check = Some(now());
+                rate_limit = found.as_ref().err().map_or(Duration::ZERO, |e| e.rate_limit_delay(checked_at));
+                notify(Msg::Checked(found, ready, checked_at));
+            }
+            Err(Timeout) => {}
+            Err(Disconnected) => break,
+        }
     }
 }
 
@@ -465,12 +546,18 @@ mod tests {
     struct Server {
         base: String,
         log: Log,
+        routes: Arc<Mutex<Routes>>,
     }
 
     fn serve(routes: impl FnOnce(&str) -> Routes) -> Server {
+        serve_with_headers(routes, "")
+    }
+
+    fn serve_with_headers(routes: impl FnOnce(&str) -> Routes, headers: &'static str) -> Server {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        let routes = routes(&base);
+        let routes = Arc::new(Mutex::new(routes(&base)));
+        let active_routes = routes.clone();
         let log: Log = Arc::new(Mutex::new(Vec::new()));
         let seen = log.clone();
         std::thread::spawn(move || {
@@ -495,13 +582,13 @@ mod tests {
                     }
                 }
                 seen.lock().unwrap().push((path.clone(), agent));
-                let (status, body) = routes.iter().find(|(p, _, _)| *p == path).map_or((404, b"not found".to_vec()), |(_, s, b)| (*s, b.clone()));
-                let head = format!("HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let (status, body) = active_routes.lock().unwrap().iter().find(|(p, _, _)| *p == path).map_or((404, b"not found".to_vec()), |(_, s, b)| (*s, b.clone()));
+                let head = format!("HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n", body.len());
                 let _ = stream.write_all(head.as_bytes());
                 let _ = stream.write_all(&body);
             }
         });
-        Server { base, log }
+        Server { base, log, routes }
     }
 
     const LATEST: &str = "/repos/lelemm/yaac/releases/latest";
@@ -613,9 +700,17 @@ mod tests {
     fn no_release_offline_and_rate_limits_are_reasons_not_errors_to_show() {
         let t = tempfile::tempdir().unwrap();
         let none = serve(|_| Vec::new());
-        assert!(check(&config(&none, t.path())).unwrap_err().contains("no release"));
+        assert!(check(&config(&none, t.path())).unwrap_err().message.contains("no release"));
         let limited = serve(|_| vec![(LATEST.to_owned(), 429, b"{}".to_vec())]);
-        assert!(check(&config(&limited, t.path())).unwrap_err().contains("rate limit"));
+        assert!(check(&config(&limited, t.path())).unwrap_err().message.contains("rate limit"));
+        let limited = serve_with_headers(
+            |_| vec![(LATEST.to_owned(), 403, b"{}".to_vec())],
+            "x-ratelimit-remaining: 0\r\nx-ratelimit-reset: 1900\r\nretry-after: 700\r\n",
+        );
+        let error = check(&config(&limited, t.path())).unwrap_err();
+        let checked_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        assert_eq!(error.rate_limit_delay(checked_at), Duration::from_secs(900));
+        assert_eq!(error.rate_limit_delay(checked_at + Duration::from_secs(300)), Duration::from_secs(700));
         // Nothing listening.
         let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let cfg = Config { latest_url: format!("http://127.0.0.1:{port}{LATEST}"), dir: t.path().into(), https_only: false, timeout: Duration::from_secs(2) };
@@ -691,15 +786,28 @@ mod tests {
     }
 
     #[test]
-    fn the_window_side_goes_from_offer_to_download_to_ready() {
+    fn the_window_picks_up_a_new_release_on_schedule_and_downloads_it() {
         let t = tempfile::tempdir().unwrap();
         let dir = t.path().join("updates");
         let server = fake_host(BYTES, None);
         let ctx = egui::Context::default();
-        let mut u = Updater::new(config(&server, &dir), "0.1.0+6", None);
+        let mut u = Updater::new(config(&server, &dir), "0.1.0+7", None);
         assert_eq!(u.check, ReleaseCheck::Checking);
         assert!(u.title_width() < 1.0);
-        u.start(&ctx);
+        let initial_time = Instant::now();
+        let (advance, advance_clock) = mpsc::channel();
+        let mut reads = 0;
+        u.start_with_clock(&ctx, move || {
+            reads += 1;
+            match reads {
+                // The startup check is due immediately and completes at the initial time.
+                1 | 2 => initial_time,
+                // Hold the worker before it computes the next deadline until the new
+                // release has been published and ten minutes have passed on the test clock.
+                3 => advance_clock.recv_timeout(Duration::from_secs(10)).unwrap() - Duration::from_millis(1),
+                _ => initial_time + yaac_core::update::CHECK_INTERVAL,
+            }
+        });
         let wait = |u: &mut Updater, done: &dyn Fn(&Updater) -> bool| {
             let deadline = Instant::now() + Duration::from_secs(10);
             while !done(u) {
@@ -710,24 +818,43 @@ mod tests {
         };
         wait(&mut u, &|u| !matches!(u.check, ReleaseCheck::Checking));
         assert_eq!(u.check, ReleaseCheck::Latest { version: "0.1.0".into(), build: 7 });
-        assert!(matches!(u.phase, Phase::Available(_)));
+        assert_eq!(u.phase, Phase::Idle);
+        let first_checked = u.last_checked.expect("startup check completion");
+        {
+            let mut routes = server.routes.lock().unwrap();
+            let (_, _, body) = routes.iter_mut().find(|(path, _, _)| path == "/download/manifest.json").unwrap();
+            *body = manifest(&server.base, 8, BYTES.len(), &sha(BYTES)).into_bytes();
+        }
+        advance.send(initial_time + yaac_core::update::CHECK_INTERVAL).unwrap();
+        wait(&mut u, &|u| matches!(u.check, ReleaseCheck::Latest { build: 8, .. }));
+        assert!(matches!(&u.phase, Phase::Available(f) if f.manifest.build == 8));
         assert!(u.title_width() > 0.0);
-        u.download(&ctx);
+        assert!(u.last_checked.is_some_and(|at| at >= first_checked));
+        {
+            let log = server.log.lock().unwrap();
+            assert_eq!(log.iter().map(|(path, _)| path.as_str()).collect::<Vec<_>>(), [LATEST, "/download/manifest.json", LATEST, "/download/manifest.json"]);
+            assert!(log.iter().all(|(_, agent)| agent.as_deref() == Some(USER_AGENT)));
+        }
+        u.download();
         assert!(matches!(u.phase, Phase::Downloading { .. }));
         wait(&mut u, &|u| !matches!(u.phase, Phase::Downloading { .. }));
         let Phase::Ready(p) = &u.phase else { panic!("ready: {u:?}") };
+        assert_eq!(p.build, 8);
         assert!(verify(p));
         // The next window start finds it downloaded already.
-        let mut again = Updater::new(config(&server, &dir), "0.1.0+6", None);
+        let mut again = Updater::new(config(&server, &dir), "0.1.0+7", None);
         again.start(&ctx);
         wait(&mut again, &|u| !matches!(u.check, ReleaseCheck::Checking));
         assert!(matches!(again.phase, Phase::Ready(_)));
         // The same build, or a development build: nothing offered.
-        let mut same = Updater::new(config(&server, &dir), "0.1.0+7", None);
+        let mut same = Updater::new(config(&server, &dir), "0.1.0+8", None);
         same.start(&ctx);
         wait(&mut same, &|u| !matches!(u.check, ReleaseCheck::Checking));
         assert_eq!(same.phase, Phase::Idle);
-        let dev = Updater::new(config(&server, &dir), "0.1.0+dev.ab", None);
+        let mut dev = Updater::new(config(&server, &dir), "0.1.0+dev.ab", None);
+        dev.start(&ctx);
         assert!(matches!(dev.check, ReleaseCheck::Off(_)));
+        assert!(dev.downloads.is_none());
+        assert!(dev.last_checked.is_none());
     }
 }

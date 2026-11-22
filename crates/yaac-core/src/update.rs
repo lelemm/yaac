@@ -1,9 +1,10 @@
-//! The in-app updater's decisions (D136, docs/install.md#updating): what a release's manifest
-//! says, whether it is newer than this build, what to do with a downloaded update at start,
-//! and how often a download's progress is shown. Pure: the window does the network and file
-//! work (`yaac-app`'s `updater`), on worker threads.
+//! The in-app updater's decisions (D136, D145, docs/install.md#updating): what a manifest
+//! says, whether a release is newer, what to do with a downloaded update at start, when to
+//! check again, and how often to show download progress. The window's updater handles
+//! network and file work.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -121,6 +122,38 @@ impl Release {
 /// development build (`+dev…`), which has no order and never updates itself.
 pub fn build_number(build: &str) -> Option<u64> {
     build.split_once('+').and_then(|(_, id)| id.trim().parse().ok())
+}
+
+/// Time between release checks while the window runs (D145).
+pub const CHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckSchedule {
+    Paused,
+    Due,
+    Wait(Duration),
+}
+
+/// Schedules the next check using elapsed time. A download, a verified installer waiting
+/// for restart, or installation pauses checks. Rate-limit delays are relative to the last
+/// check's completion, like the regular interval.
+pub fn next_check(
+    running: &str,
+    now: Instant,
+    last_check: Option<Instant>,
+    update_in_progress: bool,
+    rate_limit: Duration,
+) -> CheckSchedule {
+    if update_in_progress || build_number(running).is_none() {
+        return CheckSchedule::Paused;
+    }
+    let Some(last_check) = last_check else { return CheckSchedule::Due };
+    let remaining = CHECK_INTERVAL.max(rate_limit).saturating_sub(now.saturating_duration_since(last_check));
+    if remaining.is_zero() {
+        CheckSchedule::Due
+    } else {
+        CheckSchedule::Wait(remaining)
+    }
 }
 
 /// The latest release against the running build.
@@ -312,6 +345,38 @@ mod tests {
         assert_eq!(offer("0.2.0+1006", 1005), Offer::Ahead);
         assert_eq!(offer("0.1.0+dev.ab12", 1005), Offer::Dev);
         assert_eq!(offer("0.1.0+dev", 1), Offer::Dev);
+    }
+
+    #[test]
+    fn checks_immediately_then_ten_minutes_after_completion() {
+        let build = "0.1.0+1005";
+        let last = Instant::now();
+        let second = Duration::from_secs(1);
+        assert_eq!(next_check(build, last, None, false, Duration::ZERO), CheckSchedule::Due);
+        assert_eq!(next_check(build, last, Some(last), false, Duration::ZERO), CheckSchedule::Wait(CHECK_INTERVAL));
+        assert_eq!(next_check(build, last + CHECK_INTERVAL - second, Some(last), false, Duration::ZERO), CheckSchedule::Wait(second));
+        assert_eq!(next_check(build, last + CHECK_INTERVAL, Some(last), false, Duration::ZERO), CheckSchedule::Due);
+    }
+
+    #[test]
+    fn checks_pause_for_a_download_pending_installation_or_development_build() {
+        let last = Instant::now();
+        let due = last + CHECK_INTERVAL;
+        let build = "0.1.0+1005";
+        // The worker treats downloading, waiting for restart, and installing as in progress.
+        assert_eq!(next_check(build, due, Some(last), true, Duration::ZERO), CheckSchedule::Paused);
+        assert_eq!(next_check(build, due, Some(last), false, Duration::ZERO), CheckSchedule::Due);
+        assert_eq!(next_check("0.1.0+dev.ab", due, None, false, Duration::ZERO), CheckSchedule::Paused);
+    }
+
+    #[test]
+    fn rate_limits_extend_the_wait_without_shortening_the_interval() {
+        let last = Instant::now();
+        let reset = 2 * CHECK_INTERVAL;
+        let build = "0.1.0+1005";
+        assert_eq!(next_check(build, last, Some(last), false, CHECK_INTERVAL / 2), CheckSchedule::Wait(CHECK_INTERVAL));
+        assert_eq!(next_check(build, last + CHECK_INTERVAL, Some(last), false, reset), CheckSchedule::Wait(CHECK_INTERVAL));
+        assert_eq!(next_check(build, last + reset, Some(last), false, reset), CheckSchedule::Due);
     }
 
     fn pending(build: u64, attempted: bool) -> Pending {

@@ -1393,6 +1393,7 @@ impl eframe::App for YaacApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply everything that arrived since the last frame: a burst of events becomes one
         // repaint. Arrivals from a real hub wake the window through the link's waker.
+        self.updater.poll();
         let arrived = self.pump_demo();
         #[cfg(feature = "hub")]
         self.hub_upkeep();
@@ -1499,9 +1500,8 @@ impl eframe::App for YaacApp {
             crate::shell::show(ui, self, &map, now, &mut actions, frame);
         }
         crate::titlebar::buttons(ui, window, &p);
-        self.updater.poll();
         match crate::titlebar::update(ui, window, &p, &self.updater) {
-            Some(crate::titlebar::UpdateClick::Download) => self.updater.download(&ctx),
+            Some(crate::titlebar::UpdateClick::Download) => self.updater.download(),
             // The installer closes the window and the hub itself (`yaac quit`), so quitting
             // here only saves it the wait; it starts YAAC again when done (`/RELAUNCH`).
             Some(crate::titlebar::UpdateClick::Install) => match self.updater.install() {

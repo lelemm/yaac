@@ -1229,15 +1229,20 @@ fn about(ui: &mut egui::Ui, app: &mut YaacApp) {
             };
             ui.end_row();
         }
-        // The latest release on GitHub, checked as the window started (D136).
         let c = yaac_core::components::release(&app.updater.check, crate::BUILD);
         ui.label(widgets::secondary(&c.name, &p));
         ui.label(c.build.as_deref().unwrap_or("—"));
-        match &c.status {
-            ComponentStatus::Current => ui.label(widgets::secondary("this YAAC is up to date", &p)),
-            ComponentStatus::Outdated(why) => ui.label(RichText::new(why).color(p.failed)),
-            ComponentStatus::Unknown(why) => ui.label(widgets::secondary(why, &p)),
-        };
+        ui.vertical(|ui| {
+            match &c.status {
+                ComponentStatus::Current => ui.label(widgets::secondary("this YAAC is up to date", &p)),
+                ComponentStatus::Outdated(why) => ui.label(RichText::new(why).color(p.failed)),
+                ComponentStatus::Unknown(why) => ui.label(widgets::secondary(why, &p)),
+            };
+            if let Some(checked_at) = app.updater.last_checked {
+                let local = chrono::DateTime::<chrono::Local>::from(checked_at);
+                ui.label(widgets::secondary(format!("Last checked {}", local.format("%Y-%m-%d %H:%M")), &p));
+            }
+        });
         ui.end_row();
     });
 }

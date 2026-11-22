@@ -558,30 +558,31 @@ installer (`YAAC-Setup-<version>+<id>.exe`, file version `<numeric version>.<id>
 
 ### The updater
 
-**Decided (D136):** on Windows the window updates YAAC from the repository's GitHub releases
-([install](install.md#updating)). The flow lives in `yaac-app/src/updater.rs` (network and
-files, worker threads only), its decisions in `yaac-core/src/update.rs` (manifest, build
-comparison, the start-up decision table, progress throttling), the title-row item in
-`yaac-app/src/titlebar.rs`, and the start-up step in `yaac_app::run` before the window is
-created.
+**Decided (D136, D145):** on Windows the window updates YAAC from the repository's GitHub releases
+([install](install.md#updating)). The flow lives in `yaac-app/src/updater.rs`, with decisions
+in `yaac-core/src/update.rs` (manifest, build comparison, the start-up decision table, check
+scheduling, progress throttling). The title-row item lives in `yaac-app/src/titlebar.rs`.
+The start-up step runs in `yaac_app::run` before the window is created.
 
-- **Network use at start:** the window, as it opens, makes one HTTPS request to
-  `api.github.com` for the latest release and one for its `manifest.json` (from GitHub's
-  release download host), on a worker thread with 10 s timeouts. Nothing else of YAAC's host
-  side talks to the internet except the runtime fetch below. The request carries a generic
-  `User-Agent: yaac-updater` and no personal data; failures are silent and not retried until
-  the next start. The hub never makes these requests, and nothing is sent to or asked of a
-  target (invariant #1): targets get the new `yaacd` from the updated hub, in-band
-  ([install](install.md#how-targets-get-the-new-daemon)).
+- **Network use while running:** the window checks `api.github.com` for the latest release at
+  startup and 10 minutes after each check finishes, including while in the tray. The same
+  worker fetches the release's `manifest.json` from GitHub's download host with the existing
+  10 s timeouts. Requests carry a generic `User-Agent: yaac-updater` and no personal data.
+  Failures are silent, and rate limits postpone the next check until GitHub's reset time or
+  retry delay if either is later than the normal interval. The hub never makes these
+  requests. Targets get the new `yaacd` from the updated hub over their existing connection
+  (invariant #1, [install](install.md#how-targets-get-the-new-daemon)).
 - **Downloading** the installer happens only on a click, on a worker; progress repaints are
   throttled (a visible step, at most ten a second). The installer is verified (size,
   SHA-256 from the manifest) before `pending.json` is written.
 - **Installing** never happens behind the user's back: on *Restart to update*, or at the next
   start when a verified update is waiting. Each update is tried once (`attempted`); a failed
   one starts the old build and says so once.
-- **The UI thread never blocks on it** (invariant #7): the check and the download are
-  workers, the window only polls a channel each frame. The one synchronous step, re-hashing a
-  waiting installer, runs at start before any window exists.
+- **The worker sleeps between checks** and requests one repaint when a check finishes. The
+  window takes the result without blocking (invariant #7), including when hidden. The worker
+  serializes checks and downloads and suspends checks while a verified installer is waiting
+  or installing. At startup, verification of a waiting installer runs before the window
+  exists.
 
 ### Staying small
 
