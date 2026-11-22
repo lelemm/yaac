@@ -605,7 +605,24 @@ that root's id. The root has a **budget**, counted across all targets:
 
 When a budget runs out, nothing is cancelled: turns in progress finish, further messages are
 stored but not dispatched, and the root thread shows a notice with one button — **Continue** —
-which grants another allowance. A person acting on the root resets the clock.
+which grants another allowance. A budget only stops mesh actions — turns an agent would start,
+and spawns; the people using the threads are never held back by it.
+
+**A person acting resets the clock** (D164): any input a person gives a thread of the
+orchestration — a message that starts a turn, is queued, is sent now or steers the running
+turn; an answer to one of its approvals or questions (a sub-agent's counts for its parent's
+root); the permission prompt; **Continue**. Editing or cancelling a queued message does not.
+
+**The window always knows** (D164). The root's target says when its budget runs out *and*
+when it is freed — by **Continue**, or by a person acting — with `mesh/budget/changed`, which
+the hub relays to every window; a `mesh/budget` result also says how many of the root's
+messages the budget holds back (`held`). Freed, what was held back is dispatched at once, and
+the notice can show again the next time the budget runs out.
+
+**A budget never hides what the thread does** (D164). While the root's own turn runs it shows
+its spinner and "Running", with a quieter **Agent budget reached · Continue** beside it (and on
+the agents pill). Only when the root is idle and a turn an agent would start is held back does
+it show ❚❚ **Paused · budget reached** and count as needing the user.
 
 The budget is set where permission is given: in the
 [permission prompt](#permission-a-toggle-in-the-chat), or from defaults when the chat is set to
@@ -692,7 +709,8 @@ item kinds, no version bump.
 | `mesh/usage` (target → hub → the root's target) | Agent-started turns and spawns counted against a root, reported from wherever they happened. |
 | A `meshPermission` request, and a per-thread `agents` setting (`ask` / `allow`) | The permission prompt and the composer toggle. |
 | `mesh/policy` | Read and change limits and default budgets. |
-| `mesh/budget` (and a notice item) | An orchestration's budget ran out; **Continue** grants more. |
+| `mesh/budget` (and a notice item) | An orchestration's budget ran out; **Continue** grants more. The result says what is used and how many messages are held back. |
+| `mesh/budget/changed` (target → host, relayed to every window) | A root's budget ran out, was freed, or started or stopped holding messages back (D164). |
 | `hub/*` | The UI ⇄ hub attach protocol: targets, connections, settings, and a routing envelope that carries ordinary YAAC protocol traffic to a named target. |
 
 ## What is deliberately not here
