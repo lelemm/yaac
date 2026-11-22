@@ -8,7 +8,7 @@
 //! reset / read all behave, and can play *scenes* — the later moments of the story (screens 05,
 //! 06, 19, 20, 23) — and stream replies tick by tick.
 
-mod build;
+pub(crate) mod build;
 mod diffs;
 mod fleet;
 mod forge;

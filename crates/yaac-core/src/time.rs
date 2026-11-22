@@ -268,6 +268,45 @@ pub fn until_label(now: i64, until: i64, zone: Zone) -> String {
     }
 }
 
+/// A message's time, shown under it on hover (D154): "22:15" today, "25 Oct, 22:15" this
+/// year, "25 Oct 2025, 22:15" before — in local time, the way the rest of the window writes
+/// dates (24-hour clock, day before month).
+pub fn message_time(now: i64, at: i64, zone: Zone) -> String {
+    let (n, a) = (local(now, zone), local(at, zone));
+    let day = |s: i64| zone.local(s).div_euclid(86_400);
+    let month = MONTHS[(a.month.clamp(1, 12) - 1) as usize];
+    if day(at) == day(now) {
+        format!("{:02}:{:02}", a.hour, a.minute)
+    } else if a.year == n.year {
+        format!("{} {month}, {:02}:{:02}", a.day, a.hour, a.minute)
+    } else {
+        format!("{} {month} {}, {:02}:{:02}", a.day, a.year, a.hour, a.minute)
+    }
+}
+
+#[cfg(test)]
+mod message_time_tests {
+    use super::*;
+
+    #[test]
+    fn today_this_year_and_older() {
+        let utc = Zone::UTC;
+        let now = parse_rfc3339("2026-11-22T15:00:00Z").unwrap();
+        assert_eq!(message_time(now, parse_rfc3339("2026-11-22T08:05:00Z").unwrap(), utc), "08:05");
+        assert_eq!(message_time(now, parse_rfc3339("2026-10-25T22:15:00Z").unwrap(), utc), "25 Oct, 22:15");
+        assert_eq!(message_time(now, parse_rfc3339("2025-10-25T22:15:00Z").unwrap(), utc), "25 Oct 2025, 22:15");
+        // "Today" is the host's day: 01:30 UTC on the 23rd is still the 22nd in São Paulo.
+        let sp = Zone::new(-3 * 3600);
+        let late = parse_rfc3339("2026-11-23T01:30:00Z").unwrap();
+        assert_eq!(message_time(late, parse_rfc3339("2026-11-22T12:00:00Z").unwrap(), sp), "09:00");
+        assert_eq!(message_time(late, parse_rfc3339("2026-11-22T12:00:00Z").unwrap(), utc), "22 Nov, 12:00");
+        // The new year in Tokyo comes first.
+        let tokyo = Zone::new(9 * 3600);
+        let ny = parse_rfc3339("2026-12-31T16:00:00Z").unwrap();
+        assert_eq!(message_time(ny, parse_rfc3339("2026-12-31T10:00:00Z").unwrap(), tokyo), "31 Dec 2026, 19:00");
+    }
+}
+
 #[cfg(test)]
 mod zone_tests {
     use super::*;
