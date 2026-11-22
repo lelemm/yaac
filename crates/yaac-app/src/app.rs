@@ -585,6 +585,10 @@ pub(crate) fn host_zone() -> yaac_core::time::Zone {
 /// The story's present for the demo: 2026-11-20 14:00 UTC.
 pub(crate) const STORY_NOW: i64 = 1_795_197_600;
 
+/// Points one mouse-wheel line scrolls (egui's default is 40): about five lines of transcript
+/// text per notch (D139).
+pub(crate) const LINE_SCROLL_SPEED: f32 = 100.0;
+
 pub(crate) fn demo_client(scenario: Scenario) -> (Client, DemoHub) {
     let hub = DemoHub::new(scenario, STORY_NOW);
     let mut client = Client::new(Box::new(hub.clone()), crate::BUILD, ClientId::new(DEMO_CLIENT));
@@ -623,6 +627,9 @@ impl YaacApp {
         theme::install_fonts(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx, &Palette::DARK);
         theme::apply(&cc.egui_ctx, &Palette::LIGHT);
+        // One wheel notch moves 40 points by egui's default, too little for a transcript or a
+        // long thread list (owner, D139). Touchpads report pixels and are not affected.
+        cc.egui_ctx.options_mut(|o| o.input_options.line_scroll_speed = LINE_SCROLL_SPEED);
         #[cfg(feature = "hub")]
         let mut hub = None;
         let (client, demo, scenario, clock, ssh): (Client, Option<DemoHub>, Scenario, Clock, Box<dyn SshSetupBackend>) = match launch.demo {
