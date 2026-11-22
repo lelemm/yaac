@@ -2131,6 +2131,15 @@ export interface MeshWaitItem {
 export type MessageId = string;
 
 /**
+ * What a mode lets the agent do without asking the user, least first. The order is the
+ * order of the variants: each level allows at least what the one before it allows. A
+ * value this build does not know is treated as unknown — never compared.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type ModeAutonomy = "readOnly" | "ask" | "edits" | "workspace" | "judged" | "full";
+
+/**
  * A permission / approval / sandbox mode, as the harness names it.
  */
 export type ModeId = string;
@@ -2139,6 +2148,14 @@ export type ModeId = string;
  * A permission / approval / sandbox mode on offer.
  */
 export interface ModeInfo {
+  /**
+   * How much this mode lets the agent do without the user's approval, on a scale shared by
+   * every provider. Filled in by each provider from what its harness documents for the
+   * mode; absent when it cannot say. The agent mesh compares modes on it, so that a worker
+   * is never started in a mode more permissive than its parent's (D146). Absent is unknown,
+   * never "least" — and a mode with `skipsApprovals` counts as `full` whatever this says.
+   */
+  autonomy?: ModeAutonomy | null;
   /**
    * Longer description, when the harness gives one.
    */
@@ -3403,9 +3420,21 @@ export interface SpawnThreadQuery {
    */
   instance: InstanceId;
   /**
+   * The mode the worker is asked to run in (`spawn_thread`'s `mode`), as `listModels`
+   * lists it for that instance. Still capped at `parentMode` (D146).
+   */
+  mode?: ModeId | null;
+  /**
    * Model, as returned by `listModels`.
    */
   model?: ModelId | null;
+  /**
+   * The caller's effective mode when it spawned, as its own provider describes it. The
+   * destination maps it onto the worker's provider by `skipsApprovals` and `autonomy`, never
+   * to anything more permissive (D146). Absent: the caller's mode is not known, and the
+   * worker starts in its harness's default mode.
+   */
+  parentMode?: ModeInfo | null;
   /**
    * The caller's project cross-target key (normalised remote URL).
    */
@@ -3428,6 +3457,11 @@ export interface SpawnThreadQuery {
  * `spawnThread` reply.
  */
 export interface SpawnThreadReply {
+  /**
+   * One sentence saying which mode it runs in and why ("Runs in Bypass permissions, as its
+   * parent."), for the spawn result. Absent from an older `yaacd`.
+   */
+  modeNote?: string | null;
   /**
    * The new thread.
    */
