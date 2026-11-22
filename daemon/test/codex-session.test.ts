@@ -65,3 +65,67 @@ test("codex + session layer: a recorded turn with an approval, journaled and ans
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("codex + session layer: threads archived in Codex are listed and marked archived; archive and unarchive go to Codex and nothing leaves the index (P131)", async () => {
+  const home = tmpHome("yaac-cxa-");
+  const fake = await FakeCodex.start(path.join(home, "codex.sock"));
+  const now = Math.floor(Date.now() / 1000);
+  // Codex's own store: one active conversation, one archived in Codex before YAAC saw it.
+  const store = new Map<string, { thread: any; archived: boolean }>([
+    ["cx-active", { thread: { id: "cx-active", name: "Active", preview: "a", cwd: home, createdAt: now - 60, updatedAt: now - 60, source: "vscode", status: { type: "notLoaded" } }, archived: false }],
+    ["cx-archived", { thread: { id: "cx-archived", name: "Archived", preview: "b", cwd: home, createdAt: now - 120, updatedAt: now - 120, source: "cli", status: { type: "notLoaded" } }, archived: true }],
+  ]);
+  fake.handlers.set("account/read", () => ({ account: { type: "apiKey" }, requiresOpenaiAuth: true }));
+  fake.handlers.set("model/list", () => ({ data: [], nextCursor: null }));
+  fake.handlers.set("thread/list", (p) => ({ data: [...store.values()].filter((e) => e.archived === (p.archived === true)).map((e) => e.thread), nextCursor: null }));
+  fake.handlers.set("thread/read", (p) => ({ thread: store.get(p.threadId)!.thread }));
+  fake.handlers.set("thread/archive", (p) => {
+    store.get(p.threadId)!.archived = true;
+    return {};
+  });
+  fake.handlers.set("thread/unarchive", (p) => {
+    store.get(p.threadId)!.archived = false;
+    return { thread: store.get(p.threadId)!.thread };
+  });
+  const daemon = await startDaemon(home, { factories: [codexProviderFactory], env: { YAAC_FAKE_PROVIDER: "0", YAAC_CODEX_PROVIDER: "0" } });
+  try {
+    const c = await client(daemon);
+    const added: any = await c.request("providerInstance/add", { opId: opId(), kind: "codex", endpoint: { socket: fake.socket } });
+    const instance = added.instance.id;
+    const rows = async (): Promise<any[]> => {
+      await c.request("provider/refresh", { instance });
+      const out: any[] = [];
+      let token = "";
+      for (;;) {
+        const r: any = await c.request("thread/sync", { token });
+        out.push(...r.changed);
+        token = r.token;
+        if (!r.more) return out.filter((t) => t.instance === instance);
+      }
+    };
+    const row = (all: any[], n: string) => all.find((t) => t.nativeId === n);
+
+    let all = await rows();
+    assert.equal(row(all, "cx-active")?.archived, false);
+    assert.equal(row(all, "cx-archived")?.archived, true, "archived in Codex: listed, in YAAC's Archived section");
+    assert.ok(fake.requests("thread/list").some((q) => q.params.archived === true), "the archived listing is asked for");
+
+    // Archive from YAAC: Codex's own archive; a rescan keeps it, archived.
+    await c.request("thread/archive", { opId: opId(), threadId: row(all, "cx-active").id });
+    assert.equal(fake.requests("thread/archive").length, 1);
+    all = await rows();
+    assert.equal(row(all, "cx-active")?.archived, true);
+
+    // Unarchive from YAAC: Codex's own unarchive, for both.
+    for (const n of ["cx-active", "cx-archived"]) await c.request("thread/unarchive", { opId: opId(), threadId: row(all, n).id });
+    assert.deepEqual(fake.requests("thread/unarchive").map((q) => q.params.threadId), ["cx-active", "cx-archived"]);
+    all = await rows();
+    assert.equal(row(all, "cx-active")?.archived, false);
+    assert.equal(row(all, "cx-archived")?.archived, false);
+    await c.close();
+  } finally {
+    await daemon.stop("test");
+    await fake.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
