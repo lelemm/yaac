@@ -94,7 +94,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("81", "move-drag-other-machine"),
     ("82", "move-undo"),
     ("83", "markdown-table"),
-    ("84", "silent-reasoning"),
+    ("85", "silent-reasoning"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -250,7 +250,7 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.ui.scroll_to = Some("u5".into());
             app.ui.scroll_end = false;
         }
-        "84" => {
+        "85" => {
             // A Codex turn whose hidden reasoning (empty summaries) sat between the commands:
             // no "Thought for 0s" lines, only the long pause and the reasoning with text (D148).
             let k = threads::parser();
