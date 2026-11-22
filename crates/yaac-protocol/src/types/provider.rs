@@ -284,6 +284,11 @@ pub struct ProviderInstanceConfig {
     /// Whether this is an implicit default instance (exists without configuration).
     #[serde(default)]
     pub implicit: bool,
+    /// "Trust folders YAAC works in" (D147): under the `folderTrust` capability, mark the
+    /// folder of a thread YAAC starts in a user's project as trusted in the harness. Absent:
+    /// on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_folders: Option<bool>,
 }
 
 /// `provider/list` — no parameters.
@@ -382,6 +387,9 @@ pub struct ProviderInstanceUpdateParams {
     /// New environment, replacing the old one entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<BTreeMap<String, String>>,
+    /// New "Trust folders YAAC works in" switch (D147).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_folders: Option<bool>,
 }
 
 /// `providerInstance/remove`.

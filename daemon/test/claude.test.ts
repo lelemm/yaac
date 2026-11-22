@@ -500,6 +500,14 @@ test("Claude Code never reports threadMoveWorkingDirectory: a move is YAAC's pla
   await r.provider.dispose();
 });
 
+test("Claude Code never reports folderTrust: its SDK has no supported way to record folder trust (D147)", async () => {
+  const r = rig();
+  const p = await r.provider.probe();
+  assert.ok(!p.capabilities.includes("folderTrust"));
+  assert.equal(typeof (r.provider as { trustFolder?: unknown }).trustFolder, "undefined");
+  await r.provider.dispose();
+});
+
 test("a model switch uses setModel, effort uses applyFlagSettings, and the applied settings are reported", async () => {
   const r = rig();
   await r.provider.probe();

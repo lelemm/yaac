@@ -182,6 +182,8 @@ open_enum! {
         TakenOver = "takenOver",
         /// The thread was moved to another project or worktree (`thread/move`, D144).
         Moved = "moved",
+        /// `yaacd` marked the thread's folder as trusted in the harness, or could not (D147).
+        FolderTrust = "folderTrust",
     }
 }
 

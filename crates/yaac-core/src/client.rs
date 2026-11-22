@@ -1673,6 +1673,17 @@ impl Client {
         self.routed(target, m::PROVIDER_INSTANCE_UPDATE, params, Call::InstanceChanged(target.clone()));
     }
 
+    /// The per-instance switch "Trust folders YAAC works in" (D147), stored in the instance's
+    /// configuration on the target.
+    pub fn set_trust_folders(&mut self, target: &TargetId, id: &InstanceId, on: bool) {
+        let op = self.op_id();
+        if let Some(c) = self.state.targets.iter_mut().find(|t| &t.entry.id == target).and_then(|t| t.instance_configs.as_mut()).and_then(|cs| cs.iter_mut().find(|c| &c.id == id)) {
+            // Shown at once; the reply replaces it with what the target stored.
+            c.trust_folders = if on { None } else { Some(false) };
+        }
+        self.routed(target, m::PROVIDER_INSTANCE_UPDATE, json!({ "opId": op, "id": id, "trustFolders": on }), Call::InstanceChanged(target.clone()));
+    }
+
     /// Remove an instance.
     pub fn remove_instance(&mut self, target: &TargetId, id: &InstanceId) {
         let op = self.op_id();

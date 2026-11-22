@@ -191,6 +191,7 @@ pub enum Capability {
     ThreadDelete,        // the harness can delete its own sessions (`thread/delete { alsoInHarness }`, D110)
     ThreadMove,          // yaacd can list the thread under another project (`thread/move`, D144); yaacd's own
     ThreadMoveWorkingDirectory, // the harness can change a conversation's folder from its next turn (D144)
+    FolderTrust,         // the harness can be told a folder is trusted, through a supported interface (D147)
     FollowExternal,      // can show live updates of a thread someone else is driving
 
     // ── Turn control ────────────────────────────────────────────────────────
@@ -362,6 +363,22 @@ the conversation.
 | Codex | yes | `turn/start.cwd` ("override the working directory for this turn and subsequent turns") and `thread/resume.cwd`; verified on codex-cli 0.170.0. Codex's own `threadSection/*` are labels, not folders, and are not used. |
 | Claude Code | no | The Agent SDK (0.3.329) has no way to change a session's folder; sessions are stored per project folder and `forkSession` takes no target folder. A move is YAAC's placement only. |
 | Fake | yes, unless `FAKE_MOVE_CWD=0` | Records the folder it was handed (`received[].cwd`). |
+
+### Trusting a folder is a capability
+
+**Decided (D147); Proposed (P160–P162).** A provider reports **`folderTrust`** at runtime when
+its harness can be told, through an interface the harness supports, that a folder is trusted;
+it then implements `trustFolder(folder)`: read the harness's configuration first, write only
+when it has no word on the folder, never downgrade or remove, and report `marked`, `trusted`,
+`declined` (the user set something else there) or `failed` (with `uncertain` when no answer
+came). `yaacd` decides when to call it ([05](05-threads.md#folder-trust)); the instance's
+`trustFolders` switch (absent = on) turns it off. A harness's files are never edited by hand.
+
+| Harness | `folderTrust` | How |
+| --- | --- | --- |
+| Codex | yes | `config/read { includeLayers: true }` → `config.projects["<folder>"].trust_level`; if absent, `config/value/write { keyPath: "projects", value: { "<folder>": { trust_level: "trusted" } }, mergeStrategy: "upsert", expectedVersion: <user layer's version> }` over the connection `yaacd` already has. Verified on codex-cli 0.170.0. |
+| Claude Code | no | Trust is `projects["<folder>"].hasTrustDialogAccepted` in `~/.claude.json`. The only programmatic way to set it is the Agent SDK's `workspaceTrust` option, which is not in the SDK's published types and is marked `@internal` in the CLI (2.1.330 / SDK 0.3.329) — not a supported interface, so it is not used. |
+| Fake | no | |
 
 ### Fast mode is a model capability
 

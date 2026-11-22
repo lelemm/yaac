@@ -40,6 +40,12 @@ open_enum! {
         ThreadMoveWorkingDirectory = "threadMoveWorkingDirectory",
         /// Can show live updates of a thread someone else is driving.
         FollowExternal = "followExternal",
+        /// The harness can be told, through an interface it supports, that a folder is trusted
+        /// (Codex: `projects."<folder>".trust_level` via its app-server's `config/value/write`).
+        /// `yaacd` then marks the folders of the threads YAAC starts in a user's project, so the
+        /// harness's own interface does not ask about them again (D147), unless the instance's
+        /// `trustFolders` is off. Without it the harness keeps its own behaviour.
+        FolderTrust = "folderTrust",
         // Turn control
         /// Incremental agent text.
         StreamText = "streamText",

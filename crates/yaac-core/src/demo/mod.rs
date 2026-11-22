@@ -778,6 +778,9 @@ impl Inner {
                         ps.iter()
                             .map(|x| {
                                 let mut v = json!({ "id": x.instance, "kind": x.kind, "enabled": x.status != yaac_protocol::ProviderStatus::Disabled, "backend": "auto", "implicit": x.name.is_none() });
+                                if self.fleet.trust_off.get(target).is_some_and(|off| off.iter().any(|i| i == x.instance.as_str())) {
+                                    v["trustFolders"] = json!(false);
+                                }
                                 if let Some(n) = &x.name {
                                     v["name"] = json!(n);
                                     v["endpoint"] = json!({ "socket": format!("/run/user/1000/codex-{n}/control.sock") });
@@ -816,6 +819,13 @@ impl Inner {
                 let iid = p.get("id").and_then(Value::as_str).unwrap_or("").to_owned();
                 if let (Some(e), Some(x)) = (p.get("enabled").and_then(Value::as_bool), self.fleet.providers.get_mut(target).and_then(|ps| ps.iter_mut().find(|x| x.instance.as_str() == iid))) {
                     x.status = if e { yaac_protocol::ProviderStatus::Ready } else { yaac_protocol::ProviderStatus::Disabled };
+                }
+                if let Some(on) = p.get("trustFolders").and_then(Value::as_bool) {
+                    let off = self.fleet.trust_off.entry(target.clone()).or_default();
+                    off.retain(|i| i != &iid);
+                    if !on {
+                        off.push(iid.clone());
+                    }
                 }
                 self.ready.push_back(result(id, json!({ "instance": { "id": iid, "kind": "", "enabled": true, "backend": "auto" } })));
             }
