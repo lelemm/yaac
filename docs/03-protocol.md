@@ -338,7 +338,9 @@ Each thread summary and each `thread/subscribe` result carries a control state:
 
 In the read-only states the composer is disabled, and requests are displayed but cannot be
 answered from this UI. `turn/start`, `turn/steer`, and `request/respond` are rejected with
-`thread_in_use`, so the rule holds even if a UI is out of date. Control returns to `free` when
+`thread_in_use`, so the rule holds even if a UI is out of date. (One exception: a read-only
+harness sub-agent's requests are the user's, so `request/respond` on it checks its parent's
+control instead of its own, D162/P242.) Control returns to `free` when
 the other party finishes or lets go — or, for `external`, when the user **takes it over**
 (D140): `thread/takeOver { opId, threadId }`, under the `threadTakeOver` capability, answered
 with `{}` (also when nobody else holds it) or refused with `thread_in_use` and the harness's

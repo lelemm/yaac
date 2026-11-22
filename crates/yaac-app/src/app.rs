@@ -894,7 +894,7 @@ impl YaacApp {
     }
 
     fn pending_card(&self, key: &ThreadKey) -> Option<ItemId> {
-        if !self.client.state.may_act(key) {
+        if !self.client.state.may_answer(key) {
             return None;
         }
         let t = self.client.state.transcripts.get(key)?;

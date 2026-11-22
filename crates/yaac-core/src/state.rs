@@ -442,6 +442,21 @@ impl AppState {
         self.control(key).may_act() && self.stopped_distro(&key.target).is_none()
     }
 
+    /// Whether this window may answer a thread's approvals and questions. As `may_act`, except
+    /// for a read-only harness sub-agent (D151): it is held by the agent that started it, but
+    /// what it asks is the user's (D162), answered by whoever may act on its parent.
+    pub fn may_answer(&self, key: &ThreadKey) -> bool {
+        let Some(s) = self.summary(key) else { return self.may_act(key) };
+        match (&s.subagent, &s.spawned_by) {
+            (Some(_), Some(parent)) => match self.key_of(parent) {
+                Some(p) => self.may_act(&p),
+                // Its parent is not listed here: nothing says another writer holds it.
+                None => self.stopped_distro(&key.target).is_none(),
+            },
+            _ => self.may_act(key),
+        }
+    }
+
     /// A WSL distro that is down (D96): its name, while the target is a WSL connection that is
     /// turned on but not connected. Its threads stay listed and readable from the cache, but
     /// every state-changing action on them is unavailable until it is started again — which
@@ -578,7 +593,7 @@ impl AppState {
         let change: HintChange = self.hints.entry(key.clone()).or_default().apply(event, stamp);
         if let Some(kind) = change.arrived
             && self.selected_thread() != Some(&key)
-            && self.may_act(&key)
+            && self.may_answer(&key)
         {
             self.arrivals.retain(|a| a.key != key);
             self.arrivals.push(Arrival { key: key.clone(), kind });

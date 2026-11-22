@@ -93,3 +93,27 @@ fn a_subagent_opens_read_only_with_the_reason_and_its_parent() {
     // Its header names the parent as "Spawned by".
     assert!(matches!(h.links, yaac_core::header::LinkLine::SpawnedBy { .. } | yaac_core::header::LinkLine::Ancestry(_)));
 }
+
+#[test]
+fn a_subagents_request_is_the_users_needs_you_and_answerable_while_it_stays_read_only() {
+    // D162: what a read-only subagent asks follows its parent's writer, not its own hold.
+    let mut c = with_subagents();
+    let k = threads::subagent_explore();
+    c.state.threads.get_mut(&k).unwrap().summary.state = yaac_protocol::ThreadState::NeedsAttention;
+    assert!(!c.state.may_act(&k), "still read-only for sending");
+    assert!(c.state.may_answer(&k));
+    let map = AttentionMap::compute(&c.state);
+    assert!(map.of(&k).is_some(), "it needs the user");
+    let p = agents_panel(&c.state, &map, &threads::search()).expect("the panel");
+    let w = p.workers.iter().find(|w| w.key.as_ref() == Some(&k)).expect("the subagent row");
+    assert_eq!(w.display.mark, Mark::NeedsYou, "the needs-you mark on the parent's agents pill");
+    let needs = yaac_core::sidebar::needs_you(&c.state, &map, NOW);
+    assert!(needs.iter().any(|e| e.key == k), "listed in Needs you");
+    // Its parent held by another program: answered there, not here.
+    c.state.threads.get_mut(&threads::search()).unwrap().summary.control = yaac_protocol::Control::External;
+    if let Some(t) = c.state.transcripts.get_mut(&threads::search()) {
+        t.control = Some(yaac_protocol::Control::External);
+    }
+    assert!(!c.state.may_answer(&k));
+    assert!(AttentionMap::compute(&c.state).of(&k).is_none());
+}

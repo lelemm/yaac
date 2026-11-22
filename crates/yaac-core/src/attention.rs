@@ -100,8 +100,9 @@ impl Attention {
 pub fn own_attention(state: &AppState, key: &ThreadKey) -> Option<Attention> {
     let rec = state.threads.get(key)?;
     // Held by another program: not "needs you" here. (A stopped WSL distro does not hide a
-    // blocked thread: its question is still the user's.)
-    if !state.control(key).may_act() {
+    // blocked thread: its question is still the user's.) A harness sub-agent's requests follow
+    // its parent's writer (D162).
+    if !state.control(key).may_act() && !state.may_answer(key) {
         return None;
     }
     let from_requests = match state.hints.get(key) {

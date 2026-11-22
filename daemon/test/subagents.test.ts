@@ -3,6 +3,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { SUBAGENT_READ_ONLY } from "../src/providers/fake/index.js";
 import { client, fakeOf, opId, readAll, startDaemon, startThread, text, tmpHome, until, waitTurnDone, RpcFailure } from "./helpers.js";
 
@@ -87,6 +89,34 @@ test("sub-agents: read-only with the harness's reason — no turns, no writes, n
   // Nothing was handed to the harness for it.
   const kidNative = daemon.core.thread(kid.id)!.record.native;
   assert.ok(!fakeOf(daemon).received.some((r) => r.thread === kidNative));
+  await c.close();
+  await daemon.stop("test");
+});
+
+test("sub-agents: an approval a sub-agent asks for is on its own thread, journaled, and answerable there (D162)", async () => {
+  const home = tmpHome();
+  const daemon = await startDaemon(home);
+  const c = await client(daemon);
+  const { threadId, turnId } = await startThread(c, "/fake subagent general-purpose | Build it | Built. | approve npm run build");
+  await c.request("thread/subscribe", { threadId, epoch: 1, afterSeq: 0 });
+  const kid = await until(async () => (await summaries(c)).find((s) => s.subagent && s.state === "needsAttention"), "the sub-agent needing the user");
+  const kidRt = daemon.core.thread(kid.id)!;
+  const rec = [...kidRt.requests.values()][0]!;
+  assert.equal(rec.state, "pending");
+  // Journaled on the sub-agent's thread, not the parent's.
+  const kept = JSON.parse(fs.readFileSync(path.join(kidRt.dir, "requests.json"), "utf8"));
+  assert.deepEqual(kept.map((r: any) => [r.requestId, r.state]), [[rec.requestId, "pending"]]);
+  assert.equal(daemon.core.thread(threadId)!.requests.size, 0, "nothing on the parent");
+  const parent = (await summaries(c)).find((s) => s.id === threadId);
+  assert.notEqual(parent.state, "needsAttention");
+
+  // The sub-agent is read-only for sending, but its approval is the user's: answered there.
+  await assert.rejects(c.request("turn/start", { opId: opId(), threadId: kid.id, input: text("hello") }), inUse);
+  await c.request("request/respond", { opId: opId(), threadId: kid.id, requestId: rec.requestId, response: { requestKind: "approval", decision: "allow" } });
+  const kidNative = kidRt.record.native;
+  assert.deepEqual(fakeOf(daemon).answers.map((a) => [a.thread, a.requestId]), [[kidNative, rec.requestId]]);
+  await waitTurnDone(c, threadId, turnId);
+  await until(() => rec.state === "resolved", "the request resolved");
   await c.close();
   await daemon.stop("test");
 });

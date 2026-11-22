@@ -993,7 +993,7 @@ impl Client {
     /// Answer a request. The card shows "submitted" at once; a lost answer becomes "outcome
     /// unknown" and is never re-sent.
     pub fn respond(&mut self, key: &ThreadKey, request_id: &RequestId, response: &RequestResponse, summary: String) {
-        if !self.state.may_act(key) {
+        if !self.state.may_answer(key) {
             return;
         }
         let rev = self.state.next_stamp();
