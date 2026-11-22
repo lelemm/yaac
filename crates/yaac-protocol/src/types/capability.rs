@@ -112,6 +112,10 @@ open_enum! {
         SlashCommands = "slashCommands",
         /// Runs sub-agents of its own.
         Subagents = "subagents",
+        /// Lists the sub-agents it runs itself as threads of their own, each linked to the
+        /// thread that started it (`ThreadSummary.subagent` and `spawnedBy`, D151): a Claude
+        /// Code subagent, a Codex sub-agent.
+        SubagentThreads = "subagentThreads",
         /// Can search the web.
         WebSearch = "webSearch",
         /// Per-turn diff of file changes.

@@ -563,6 +563,7 @@ impl Client {
                         hold: None,
                         fast: draft.fast,
                         placement: None,
+                        subagent: None,
                     };
                     self.state.upsert_summary(&draft.target, summary);
                 }

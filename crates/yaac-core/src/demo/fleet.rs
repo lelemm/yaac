@@ -324,6 +324,7 @@ impl Fleet {
             hold: None,
             fast: false,
             placement: None,
+            subagent: None,
         };
         let effective = self.effective_for(key, instance, model_id);
         self.threads.insert(

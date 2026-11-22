@@ -278,7 +278,7 @@ export type BackendPreference = "auto" | "daemon" | "sdk";
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
+export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -1157,6 +1157,29 @@ export type HandoverState = "scheduled" | "exiting";
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
 export type HandoverWhen = "idle" | "now";
+
+/**
+ * A conversation the **harness itself** started for one of its own agents (D151): a Claude
+ * Code subagent (the `Agent` tool, a background agent, a workflow's agent) or a Codex
+ * sub-agent (`spawn_agent`). Not a YAAC worker: the parent's harness runs it, inside the
+ * parent's own process. Its parent is `ThreadSummary.spawnedBy`, always on the same target.
+ */
+export interface HarnessSubagent {
+  /**
+   * The agent type or role the harness gave it ("general-purpose", "explorer"). Display
+   * only, never branched on.
+   */
+  agentType?: string | null;
+  /**
+   * Why YAAC cannot send to it, as a sentence for the read-only banner. Absent: it can be
+   * continued from YAAC.
+   */
+  readOnly?: string | null;
+  /**
+   * What the harness last reported.
+   */
+  status: SubagentStatus;
+}
 
 /**
  * `holdChanged`: the thread was stopped and held, or released.
@@ -3695,6 +3718,13 @@ export interface StreamCreditParams {
 export type StreamId = number;
 
 /**
+ * What the harness reports of one of its own sub-agents (D151).
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type SubagentStatus = "running" | "completed" | "failed" | "stopped";
+
+/**
  * Replay: events `fromSeq ..= headSeq` follow, then live events.
  */
 export interface SubscribeReplay {
@@ -4645,6 +4675,11 @@ export interface ThreadSummary {
    * What it is doing.
    */
   state: ThreadState;
+  /**
+   * Set when this thread is one of the harness's own sub-agents (D151), not a YAAC worker.
+   * Its parent is `spawnedBy`. Absent: an ordinary thread (or a YAAC worker).
+   */
+  subagent?: HarnessSubagent | null;
   /**
    * Harness title, or first prompt, or user override.
    */

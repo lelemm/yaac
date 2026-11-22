@@ -130,6 +130,7 @@ pub fn summary(id: &str) -> ThreadSummary {
         hold: None,
         fast: false,
         placement: None,
+        subagent: None,
     }
 }
 

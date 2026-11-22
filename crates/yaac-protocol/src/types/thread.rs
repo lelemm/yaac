@@ -169,6 +169,39 @@ impl Control {
 }
 
 open_enum! {
+    /// What the harness reports of one of its own sub-agents (D151).
+    pub enum SubagentStatus fallback Unknown {
+        /// It is working.
+        Running = "running",
+        /// It finished and handed its result back.
+        Completed = "completed",
+        /// It ended with an error.
+        Failed = "failed",
+        /// It was stopped before it finished (by the user or its parent).
+        Stopped = "stopped",
+    }
+}
+
+/// A conversation the **harness itself** started for one of its own agents (D151): a Claude
+/// Code subagent (the `Agent` tool, a background agent, a workflow's agent) or a Codex
+/// sub-agent (`spawn_agent`). Not a YAAC worker: the parent's harness runs it, inside the
+/// parent's own process. Its parent is `ThreadSummary.spawnedBy`, always on the same target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HarnessSubagent {
+    /// The agent type or role the harness gave it ("general-purpose", "explorer"). Display
+    /// only, never branched on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    /// What the harness last reported.
+    pub status: SubagentStatus,
+    /// Why YAAC cannot send to it, as a sentence for the read-only banner. Absent: it can be
+    /// continued from YAAC.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only: Option<String>,
+}
+
+open_enum! {
     /// How a thread came to exist; drives the sidebar's "hide automated" filter.
     pub enum OriginKind fallback Unknown {
         /// Started by a person in the harness's own interface.
@@ -326,6 +359,10 @@ pub struct ThreadSummary {
     /// where its folder puts it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<ThreadPlacement>,
+    /// Set when this thread is one of the harness's own sub-agents (D151), not a YAAC worker.
+    /// Its parent is `spawnedBy`. Absent: an ordinary thread (or a YAAC worker).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagent: Option<HarnessSubagent>,
 }
 
 /// The model / effort / mode the harness reports it is **actually** using.

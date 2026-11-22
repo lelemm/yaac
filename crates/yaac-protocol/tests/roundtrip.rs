@@ -436,3 +436,35 @@ fn folder_trust_round_trips_and_the_switch_is_optional() {
     assert_eq!(patch.trust_folders, Some(false));
     assert!(patch.enabled.is_none() && patch.name.is_none(), "a patch changes only what it names");
 }
+
+/// D151: a harness's own sub-agent is a thread whose summary carries `subagent` (its agent
+/// type, the harness's status, and why it is read-only); its parent is `spawnedBy`. A summary
+/// without it (an older daemon, an ordinary thread) reads as no sub-agent, and an unknown
+/// status is kept.
+#[test]
+fn a_harness_subagent_round_trips_and_is_optional() {
+    use yaac_protocol::types::{SubagentStatus, ThreadSummary};
+    let summary = json!({
+        "id": "t2", "instance": "pi_1", "title": "Explore the parser", "cwd": "/srv/api", "state": "running",
+        "control": "external", "originKind": "programmatic", "createdAt": "2026-11-22T00:00:00Z",
+        "updatedAt": "2026-11-22T00:00:00Z", "spawnedBy": "tg_1/t1",
+        "subagent": { "agentType": "Explore", "status": "running", "readOnly": "Only the agent that started it can continue it." }
+    });
+    let s: ThreadSummary = serde_json::from_value(summary.clone()).unwrap();
+    let sub = s.subagent.clone().expect("subagent");
+    assert_eq!(sub.agent_type.as_deref(), Some("Explore"));
+    assert_eq!(sub.status, SubagentStatus::Running);
+    assert!(sub.read_only.is_some());
+    assert_eq!(serde_json::from_value::<ThreadSummary>(serde_json::to_value(&s).unwrap()).unwrap(), s);
+    let mut older = summary.clone();
+    older.as_object_mut().unwrap().remove("subagent");
+    let o: ThreadSummary = serde_json::from_value(older).unwrap();
+    assert!(o.subagent.is_none());
+    assert!(serde_json::to_value(&o).unwrap().get("subagent").is_none(), "absent stays absent");
+    let mut newer = summary;
+    newer["subagent"] = json!({ "status": "paused" });
+    let n: ThreadSummary = serde_json::from_value(newer).unwrap();
+    assert!(matches!(n.subagent.unwrap().status, SubagentStatus::Unknown(_)));
+    let c: yaac_protocol::Capability = serde_json::from_value(json!("subagentThreads")).unwrap();
+    assert_eq!(c, yaac_protocol::Capability::SubagentThreads);
+}
