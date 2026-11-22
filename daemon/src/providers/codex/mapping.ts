@@ -19,6 +19,8 @@ import type {
   TurnStatus,
 } from "../../protocol/generated/types.js";
 import type { NativeThreadInfo, RaisedRequest } from "../types.js";
+import { userItem } from "../markup.js";
+import { CODEX_MARKUP, textWithElements } from "./markup.js";
 import { INTERACTIVE_SOURCES, type Model, type Thread, type ThreadItem, type ThreadTokenUsage, type TokenUsageBreakdown } from "./wire.js";
 
 // ── Small helpers ──────────────────────────────────────────────────────────────────────────
@@ -124,7 +126,7 @@ export function userInputToParts(content: unknown): InputPart[] {
   const parts: InputPart[] = [];
   for (const raw of arr(content)) {
     const c = obj(raw);
-    if (c.type === "text" && typeof c.text === "string") parts.push({ type: "text", text: c.text });
+    if (c.type === "text" && typeof c.text === "string") parts.push(...textWithElements(c.text, c.text_elements ?? c.textElements));
     else if (c.type === "localImage" || c.type === "image") parts.push({ type: "text", text: `[image: ${str(c.path) ?? str(c.url) ?? "attached"}]` });
     else if (c.type === "localAudio" || c.type === "audio") parts.push({ type: "text", text: `[audio: ${str(c.path) ?? str(c.url) ?? "attached"}]` });
     else if (c.type === "skill" || c.type === "mention") parts.push({ type: "text", text: `[${String(c.type)}: ${str(c.name) ?? ""}]` });
@@ -175,7 +177,7 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus): Ite
   const base = { id, turnId };
   switch (raw.type) {
     case "userMessage":
-      return { ...base, status: "completed", kind: "userMessage", parts: userInputToParts(it.content) };
+      return userItem(base, userInputToParts(it.content), CODEX_MARKUP);
     case "agentMessage":
       return { ...base, status: final, kind: "agentMessage", text: str(it.text) ?? "" };
     case "reasoning": {
@@ -249,7 +251,13 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus): Ite
     case "exitedReviewMode":
       return { ...base, status: "completed", kind: "notice", noticeKind: "info", text: `${raw.type === "enteredReviewMode" ? "Entered" : "Left"} review mode${str(it.review) ? `: ${it.review}` : ""}` };
     case "hookPrompt":
-      return { ...base, status: "completed", kind: "notice", noticeKind: "info", text: "A hook added a prompt.", details: { fragments: it.fragments ?? [] } };
+    {
+      const body = arr(it.fragments)
+        .map((f) => str(obj(f).text) ?? "")
+        .filter((t) => t.trim())
+        .join("\n\n");
+      return { ...base, status: "completed", kind: "notice", noticeKind: "info", text: "A hook added a prompt.", ...(body ? { body } : {}), details: { fragments: it.fragments ?? [] } };
+    }
     default: {
       // dynamicToolCall, functionCallOutput, imageView, imageGeneration, sleep, and anything newer.
       const { id: _id, type, ...rest } = it;

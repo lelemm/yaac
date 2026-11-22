@@ -15,6 +15,9 @@ import type { Item, PlanStep, ToolKind, TurnId } from "../../protocol/generated/
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ASK_TOOL, normaliseQuestions } from "./questions.js";
 import { editDiff, editedPath } from "./diff.js";
+import { cleanToolOutput, promptItem, unwrapToolError, type PromptFlags } from "./markup.js";
+
+export { promptItem };
 
 type Json = Record<string, unknown>;
 type Block = Json & { type?: unknown };
@@ -66,6 +69,10 @@ export function todoSteps(input: Json): PlanStep[] {
 
 /** The text of a tool_result's content (a string, or text and image blocks). */
 export function resultText(content: unknown): string {
+  return cleanToolOutput(unwrapToolError(rawResultText(content)));
+}
+
+function rawResultText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return content == null ? "" : JSON.stringify(content);
   return (content as Block[])
@@ -107,23 +114,10 @@ export function withResult(item: Item, result: Block, structured?: unknown): Ite
   return done as Item;
 }
 
-/** A user prompt (not a tool result): from a person, it is a user message; from anything else, a notice. */
-export function promptItem(uuid: string, content: unknown, origin: unknown): Item {
-  const turnId = uuid;
-  const texts: string[] = [];
-  if (typeof content === "string") texts.push(content);
-  else if (Array.isArray(content)) {
-    for (const b of content as Block[]) {
-      if (b.type === "text") texts.push(str(b.text) ?? "");
-      else if (b.type === "image") texts.push("[image]");
-      else texts.push(JSON.stringify(b));
-    }
-  }
-  const kind = str(obj(origin).kind);
-  if (kind && kind !== "human") {
-    return { id: `user:${uuid}`, turnId, status: "completed", kind: "notice", noticeKind: "info", text: texts.join("\n\n"), details: { origin } };
-  }
-  return { id: `user:${uuid}`, turnId, status: "completed", kind: "userMessage", parts: texts.map((text) => ({ type: "text", text })) };
+/** Claude Code's flags beside a stored or streamed user-role message. */
+export function flagsOf(m: unknown): PromptFlags {
+  const r = (m ?? {}) as Record<string, unknown>;
+  return { meta: r.isMeta === true || r.is_meta === true || r.isSynthetic === true, compactSummary: r.isCompactSummary === true };
 }
 
 export function isToolResultMessage(content: unknown): boolean {
@@ -181,8 +175,10 @@ export function historyItems(messages: SessionMessage[], cwd: string | null): It
         }
         continue;
       }
-      turnId = m.uuid;
-      put(promptItem(m.uuid, content, (m as { origin?: unknown }).origin));
+      const flags = flagsOf(m);
+      // A message the harness wrote (a reminder, a caveat) does not begin a turn.
+      if (!flags.meta) turnId = m.uuid;
+      put(promptItem(m.uuid, turnId, content, (m as { origin?: unknown }).origin, flags));
       continue;
     }
     if (m.type !== "assistant") continue;
@@ -432,16 +428,16 @@ export class LiveTranslator {
    * A user message of the main conversation: tool results, or a prompt yaacd did not send.
    * `toolUseResult` is the SDK's structured result of the (single) tool it answers.
    */
-  user(content: unknown, uuid: string | null, origin: unknown, toolUseResult?: unknown): void {
+  user(content: unknown, uuid: string | null, origin: unknown, toolUseResult?: unknown, flags: PromptFlags = {}): void {
     if (isToolResultMessage(content)) {
       const results = (content as Block[]).filter((b) => b.type === "tool_result");
       for (const b of results) this.result(b, results.length === 1 ? toolUseResult : undefined);
       return;
     }
     if (!uuid) return;
-    const item = promptItem(uuid, content, origin);
-    this.start({ ...item, turnId: this.turnId } as Item);
-    this.complete({ ...item, turnId: this.turnId } as Item);
+    const item = promptItem(uuid, this.turnId, content, origin, flags);
+    this.start(item);
+    this.complete(item);
   }
 
   /** The turn ended: close what is still open. Tool calls stay open only if the turn completed. */
