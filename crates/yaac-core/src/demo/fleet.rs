@@ -648,6 +648,25 @@ impl Fleet {
             s.origin_kind = OriginKind::Interactive;
         });
         f.push(&parser, done("parser-1", "p-t1", user("Try the new parser on the sample files.", &[], &[])));
+        // A Codex turn as Codex sends it: hidden reasoning (an empty summary) between almost
+        // every command. Only the long silent one and the one with text are lines (D148).
+        let ran = |cmd: &str, out: &str| tool(ToolKind::Command, &format!("Ran `{cmd}`"), Some(0), out);
+        for (id, body, (start, end)) in [
+            ("parser-2", reasoning(""), (-86_390, -86_390)),
+            ("parser-3", ran("ls samples/", "a.frm\nb.frm\nc.frm"), (-86_389, -86_388)),
+            ("parser-4", ran("cargo build -p parser", "Finished `dev` profile"), (-86_388, -86_380)),
+            ("parser-5", reasoning(""), (-86_380, -86_380)),
+            ("parser-6", ran("./target/debug/parser samples/a.frm", "3 frames"), (-86_380, -86_379)),
+            ("parser-7", reasoning("  "), (-86_379, -86_379)),
+            ("parser-8", ran("./target/debug/parser samples/b.frm", "error: truncated frame at byte 412"), (-86_379, -86_378)),
+            ("parser-9", reasoning(""), (-86_378, -86_372)),
+            ("parser-10", ran("./target/debug/parser samples/c.frm", "5 frames"), (-86_372, -86_371)),
+            ("parser-11", reasoning("b.frm ends mid-frame; check whether the sample itself is cut short."), (-86_371, -86_368)),
+            ("parser-12", agent("Two of the three samples parse. `b.frm` ends in the middle of a frame at byte 412, so the file looks truncated rather than the parser being wrong."), (-86_368, -86_368)),
+        ] {
+            f.push(&parser, done(id, "p-t1", body));
+            f.time_item(&parser, id, start, end);
+        }
         let lint = k(LINT);
         f.set(&lint, |s| s.root = Some(root.clone()));
 

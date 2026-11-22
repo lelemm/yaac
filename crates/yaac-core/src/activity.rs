@@ -21,6 +21,10 @@ use crate::state::AppState;
 /// Runs longer than this fold into one summary line.
 pub const FOLD_AFTER: usize = 6;
 
+/// Reasoning with no text is shown ("Thought for 3s") only when it took at least this many
+/// seconds; a shorter one is not shown at all (D148).
+pub const SILENT_THOUGHT_SHOWN_AFTER: i64 = 2;
+
 /// Which lines and runs the user opened, per thread.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Expansion {
@@ -276,17 +280,23 @@ pub fn short_receipt(sent: &yaac_protocol::MeshSentItem) -> String {
 fn line_of(state: &AppState, map: &AttentionMap, index: usize, item: &Item) -> Option<ActivityLine> {
     let in_progress = item.status == ItemStatus::InProgress;
     let (mark, text, failed) = match &item.body {
-        ItemBody::Reasoning(_) => {
+        ItemBody::Reasoning(r) => {
             let took = item
                 .started_at
                 .as_ref()
                 .zip(item.completed_at.as_ref())
                 .and_then(|(a, b)| Some(crate::time::secs(b)? - crate::time::secs(a)?))
                 .filter(|s| *s >= 0);
+            // Reasoning with nothing to read (Codex's hidden reasoning has an empty summary;
+            // a thinking block can be empty) is not a line of its own unless it took long
+            // enough to explain a pause (D148). Under way, it has no duration yet: it shows
+            // only once it has text.
+            let has_text = !r.reasoning.trim().is_empty();
             let text = match (in_progress, took) {
-                (true, _) => "Thinking…".to_owned(),
-                (false, Some(s)) => format!("Thought for {}", crate::time::duration(s)),
-                (false, None) => "Thought".to_owned(),
+                (true, _) if has_text => "Thinking…".to_owned(),
+                (false, Some(s)) if has_text || s >= SILENT_THOUGHT_SHOWN_AFTER => format!("Thought for {}", crate::time::duration(s)),
+                (false, None) if has_text => "Thought".to_owned(),
+                _ => return None,
             };
             (LineMark::Thought, text, false)
         }
@@ -498,4 +508,63 @@ pub fn collapse_all(key: &ThreadKey, expansion: &mut Expansion) {
     expansion.files.retain(|(k, _, _)| k != key);
     expansion.rest.retain(|(k, _, _)| k != key);
     expansion.turns.retain(|(k, _)| k != key);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yaac_protocol::{ReasoningItem, TargetId, ThreadId};
+
+    /// The lines one reasoning item becomes, alone in a transcript.
+    fn lines_of(text: &str, status: ItemStatus, took: Option<i64>) -> Vec<String> {
+        let key = ThreadKey::new(TargetId::new("local"), ThreadId::new("t"));
+        let item = Item {
+            id: ItemId::new("r1"),
+            turn_id: TurnId::new("t1"),
+            status,
+            body: ItemBody::Reasoning(ReasoningItem { reasoning: text.to_owned(), summary: true }),
+            started_at: Some(crate::time::timestamp(1_000)),
+            completed_at: took.map(|s| crate::time::timestamp(1_000 + s)),
+        };
+        let mut t = crate::transcript::Transcript::new();
+        t.upsert(item, 1);
+        let mut state = AppState::default();
+        state.transcripts.insert(key.clone(), t);
+        let map = AttentionMap::compute(&state);
+        blocks(&state, &map, &key, &Expansion::default())
+            .into_iter()
+            .flat_map(|b| match b {
+                Block::Run { lines } => lines.into_iter().map(|l| l.text).collect(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn empty_reasoning_is_not_a_line() {
+        assert!(lines_of("", ItemStatus::Completed, Some(0)).is_empty());
+        assert!(lines_of("  \n\n ", ItemStatus::Completed, Some(1)).is_empty());
+        assert!(lines_of("", ItemStatus::Completed, None).is_empty());
+    }
+
+    #[test]
+    fn empty_reasoning_that_took_a_while_reads_as_a_pause() {
+        assert_eq!(lines_of("", ItemStatus::Completed, Some(SILENT_THOUGHT_SHOWN_AFTER)), ["Thought for 2s"]);
+        assert_eq!(lines_of(" ", ItemStatus::Completed, Some(75)), ["Thought for 1m"]);
+    }
+
+    #[test]
+    fn reasoning_with_text_keeps_its_line() {
+        assert_eq!(lines_of("Check the prefix.", ItemStatus::Completed, Some(0)), ["Thought for 0s"]);
+        assert_eq!(lines_of("Check the prefix.", ItemStatus::Completed, Some(4)), ["Thought for 4s"]);
+        assert_eq!(lines_of("Check the prefix.", ItemStatus::Completed, None), ["Thought"]);
+    }
+
+    #[test]
+    fn reasoning_under_way_has_no_duration() {
+        assert_eq!(lines_of("Check the", ItemStatus::InProgress, None), ["Thinking…"]);
+        // Nothing to read yet: no line, and never "Thought for 0s".
+        assert!(lines_of("", ItemStatus::InProgress, None).is_empty());
+        assert!(lines_of("", ItemStatus::InProgress, Some(0)).is_empty());
+    }
 }
