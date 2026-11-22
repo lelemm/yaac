@@ -203,6 +203,9 @@ pub(crate) struct UiState {
     pub set: crate::settings::SettingsUi,
     /// Item heights, keyed by content hash and width.
     pub heights: HashMap<u64, f32>,
+    /// Tests only: the transcript's geometry, one entry per pass.
+    #[cfg(test)]
+    pub geom: Vec<crate::thread::Geom>,
     /// The transcript's text selection.
     pub textsel: crate::seltext::TextSel,
     /// Parsed diffs of file changes.
@@ -293,6 +296,8 @@ impl UiState {
             layout_size: None,
             set: crate::settings::SettingsUi::default(),
             heights: HashMap::new(),
+            #[cfg(test)]
+            geom: Vec::new(),
             textsel: crate::seltext::TextSel::default(),
             diffs: crate::thread::DiffCache::default(),
             history: yaac_core::history::History::default(),
@@ -1665,6 +1670,77 @@ pub(crate) mod tests {
         let map = yaac_core::attention::AttentionMap::compute(&app.client.state);
         let h = yaac_core::header::header(&app.client.state, &map, &hs).unwrap();
         assert!(!h.banners.iter().any(|b| matches!(b, yaac_core::header::Banner::InUseElsewhere { .. })), "the banner goes away");
+    }
+
+    /// D152: while a reply streams into a thread read at its bottom, the view only ever moves
+    /// forward: one frame per delta, the content never shrinks, the offset never goes back,
+    /// the newest line stays in view, and a block once measured is never drawn at a guess.
+    #[test]
+    fn a_streaming_reply_never_moves_the_view_backwards() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let fix = threads::fix();
+        app.apply(vec![Action::Open(fix.clone())]);
+        let clock = std::cell::Cell::new(0.0_f64);
+        // 40 ms apart: the demo hub releases one scheduled event per frame.
+        let screen = || {
+            clock.set(clock.get() + 0.04);
+            egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 600.0))), time: Some(clock.get()), ..Default::default() }
+        };
+        for _ in 0..6 {
+            window_frame(&ctx, &mut app, screen());
+        }
+        assert!(app.ui.away_from_end.is_none(), "opened at its bottom");
+        app.apply(vec![Action::StreamReply]);
+        // The pass each frame showed (an earlier one may have been discarded).
+        let mut shown: Vec<crate::thread::Geom> = Vec::new();
+        let mut passes = 0;
+        for _ in 0..400 {
+            app.ui.geom.clear();
+            window_frame(&ctx, &mut app, screen());
+            passes += app.ui.geom.len();
+            shown.push(app.ui.geom.last().cloned().expect("the transcript was drawn"));
+            if !app.demo.as_ref().unwrap().busy() && shown.len() > 3 {
+                break;
+            }
+        }
+        // Settled: nothing left to measure, so a few more frames change nothing.
+        for _ in 0..3 {
+            app.ui.geom.clear();
+            window_frame(&ctx, &mut app, screen());
+            shown.push(app.ui.geom.last().cloned().expect("drawn"));
+        }
+        let text: Vec<String> = shown
+            .iter()
+            .enumerate()
+            .map(|(n, g)| format!("{n:3} drawn@{:7.1} end@{:7.1} content {:7.1} view {:5.1} last {:?} est {:?}", g.drawn_offset, g.offset, g.content, g.view, g.last_bottom, g.estimated))
+            .collect();
+        eprintln!("{} frames, {passes} passes\n{}", shown.len(), text.join("\n"));
+        let mut problems = Vec::new();
+        let mut measured = std::collections::BTreeSet::new();
+        for (n, w) in shown.windows(2).enumerate() {
+            let (a, b) = (&w[0], &w[1]);
+            if b.content < a.content - 0.5 {
+                problems.push(format!("frame {}: content shrank {} → {}", n + 1, a.content, b.content));
+            }
+            if b.drawn_offset < a.drawn_offset - 0.5 {
+                problems.push(format!("frame {}: offset went back {} → {}", n + 1, a.drawn_offset, b.drawn_offset));
+            }
+        }
+        for (n, g) in shown.iter().enumerate() {
+            // Stuck to the bottom: the frame shows the end of what it laid out.
+            if (g.drawn_offset - (g.content - g.view).max(0.0)).abs() > 1.0 {
+                problems.push(format!("frame {n}: drawn at {} but the end is at {}", g.drawn_offset, g.content - g.view));
+            }
+            if let Some(again) = g.estimated.iter().find(|i| measured.contains(*i)) {
+                problems.push(format!("frame {n}: item {again} drawn at a guess after it was measured"));
+            }
+            measured.extend(g.drawn.iter().filter(|i| !g.estimated.contains(i)));
+        }
+        assert!(problems.is_empty(), "{} problems:\n{}", problems.len(), problems.join("\n"));
+        assert!(app.ui.away_from_end.is_none(), "still at the bottom");
+        let last = shown.last().unwrap();
+        assert!(last.estimated.is_empty());
     }
 
     #[test]

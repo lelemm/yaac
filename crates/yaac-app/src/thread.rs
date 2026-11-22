@@ -337,6 +337,23 @@ fn item_units(blocks: &[Block], t: &Transcript, index: usize) -> Vec<(Unit, Vec<
     out
 }
 
+/// Tests only: how one pass laid the transcript out.
+#[cfg(test)]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Geom {
+    /// The scroll offset the pass drew with, and the one it ended with.
+    pub drawn_offset: f32,
+    pub offset: f32,
+    pub content: f32,
+    pub view: f32,
+    /// The bottom of the last block on screen.
+    pub last_bottom: Option<f32>,
+    /// Items whose block was drawn, and those placed at a guessed height (not measured as
+    /// they are now).
+    pub drawn: Vec<usize>,
+    pub estimated: Vec<usize>,
+}
+
 fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
     let p = app.p;
     let state = &app.client.state;
@@ -393,7 +410,13 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
     app.ui.textsel.begin(key);
     let mut area = ui.max_rect();
     let mut reading = None;
+    #[cfg(test)]
+    let mut geom = Geom::default();
     let out = sa.show_viewport(ui, |ui, view| {
+        #[cfg(test)]
+        {
+            geom.drawn_offset = view.top();
+        }
         ui.set_height(total);
         area = ui.clip_rect();
         let origin = ui.max_rect().top();
@@ -437,6 +460,16 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
                 render_block(ui, View { p, state: &app.client.state, ui: &mut app.ui, md: &mut app.md }, key, t, b, unit, now, &mut actions_local);
             });
             let h = r.response.rect.height();
+            #[cfg(test)]
+            {
+                geom.drawn.push(unit.item);
+                if app.ui.heights.get(&hashes[i]).is_none() {
+                    geom.estimated.push(unit.item);
+                }
+                if i + 1 == bl.len() {
+                    geom.last_bottom = Some(r.response.rect.bottom());
+                }
+            }
             if (app.ui.heights.get(&hashes[i]).copied().unwrap_or(-1.0) - h).abs() > 0.5 {
                 app.ui.heights.insert(hashes[i], h);
                 changed = true;
@@ -455,6 +488,13 @@ fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Th
     // Away from the newest message (D142): remember how many messages there were when the
     // view left the bottom, and offer a way back above the composer.
     let at_end = out.state.clamped_offset().y + out.inner_rect.height() >= out.content_size.y - 8.0;
+    #[cfg(test)]
+    {
+        geom.offset = out.state.offset.y;
+        geom.content = out.content_size.y;
+        geom.view = out.inner_rect.height();
+        app.ui.geom.push(geom);
+    }
     if std::env::var_os("YAAC_DEBUG_LAYOUT").is_some() {
         eprintln!("transcript offset {} view {} content {}", out.state.clamped_offset().y, out.inner_rect.height(), out.content_size.y);
     }
