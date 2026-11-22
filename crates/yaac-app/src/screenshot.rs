@@ -84,6 +84,8 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("71", "bulk-archive-confirm"),
     ("72", "group-header-menu"),
     ("73", "bulk-archive-report"),
+    ("74", "take-over-blocked"),
+    ("75", "taken-over"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -627,6 +629,21 @@ fn setup(app: &mut YaacApp, id: &str) {
                 ("Release notes".into(), Outcome::Failed("staging is offline".into())),
                 ("billing-service".into(), Outcome::Uncertain),
             ]);
+        }
+        "74" | "75" => {
+            // D140: the holder will not let go (74), or the thread was just taken over (75).
+            let k = threads::handshake();
+            app.open(&k, None);
+            app.pump_demo();
+            if let Some(h) = &hub {
+                if id == "74" {
+                    h.block_take_over(&k, Some("Claude Code runs it as a background session; it cannot be continued elsewhere until that session is stopped there (claude stop 7f3a2c91)"));
+                    h.drain();
+                } else {
+                    app.client.take_over(&k);
+                }
+            }
+            app.pump_demo();
         }
         "68" => {
             // Settings → About: version, build, links, components (D137).

@@ -62,6 +62,7 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 | Dismiss / Show again | Hide a discovered thread in the window. | — |
 | Dismiss all in this temporary project | As the header's action. | — |
 | Fork… | Open the fork dialog (native or handoff). | Ctrl+Shift+F **new** |
+| Take over | Continue here a thread another program holds (D140); that program is not stopped. Enabled only when its harness can hand it over. | —  |
 | Check for the latest | Re-read a thread used elsewhere. | — |
 | Continue (budget) | Resume an orchestration paused on its budget. | — |
 | Archive selected… / Mute selected… / Clear selection | The rows selected in the sidebar (D138): Archive asks once for all and says which are skipped and why; Mute opens the Mute dialog once and applies it to all. Enabled only with a selection. | — / — / Esc in the list |

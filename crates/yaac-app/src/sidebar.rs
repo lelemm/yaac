@@ -339,6 +339,7 @@ pub(crate) fn run_menu_action(app: &mut YaacApp, ctx: &egui::Context, key: &yaac
             app.ui.rename = Some((k, title));
         }
         MenuAction::Fork => actions.push(Action::OpenFork(k)),
+        MenuAction::TakeOver => actions.push(Action::TakeOver(k)),
         MenuAction::Pin => actions.push(Action::SetPinned(k, true)),
         MenuAction::Unpin => actions.push(Action::SetPinned(k, false)),
         MenuAction::Mute => actions.push(Action::OpenMute(k, false)),

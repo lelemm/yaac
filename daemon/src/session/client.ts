@@ -186,6 +186,8 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.THREAD_DELETE:
         await core.threadDelete(this, p as never);
         return {};
+      case METHODS.THREAD_TAKE_OVER:
+        return core.threadTakeOver(p as never);
       case METHODS.TURN_START:
         return core.turnStart(this, p as never);
       case METHODS.TURN_INTERRUPT:

@@ -304,7 +304,12 @@ Each thread summary and each `thread/subscribe` result carries a control state:
 In the read-only states the composer is disabled, and requests are displayed but cannot be
 answered from this UI. `turn/start`, `turn/steer`, and `request/respond` are rejected with
 `thread_in_use`, so the rule holds even if a UI is out of date. Control returns to `free` when
-the other party finishes or lets go. How "in use elsewhere" is detected is per provider
+the other party finishes or lets go — or, for `external`, when the user **takes it over**
+(D140): `thread/takeOver { opId, threadId }`, under the `threadTakeOver` capability, answered
+with `{}` (also when nobody else holds it) or refused with `thread_in_use` and the harness's
+reason. Where the holder will not let go now, `controlChanged` and the `thread/subscribe`
+result carry that reason as `takeOverBlocked`, so the UI can disable **Take over** with it
+([05 Threads](05-threads.md#taking-it-over)). How "in use elsewhere" is detected is per provider
 ([05 Threads](05-threads.md#in-use-elsewhere)).
 
 ## Events

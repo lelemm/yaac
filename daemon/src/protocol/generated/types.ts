@@ -183,7 +183,7 @@ export type BackendPreference = "auto" | "daemon" | "sdk";
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "followExternal" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
+export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "followExternal" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "subagents" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -264,6 +264,12 @@ export interface ControlChangedEvent {
    * Where it is in use, for the read-only states.
    */
   holder?: string | null;
+  /**
+   * When `control` is `external` and the holder will not let YAAC take the thread over now
+   * (D140), why — shown on a disabled **Take over**. Absent: it can be taken over (under
+   * `threadTakeOver`).
+   */
+  takeOverBlocked?: string | null;
 }
 
 /**
@@ -2246,7 +2252,7 @@ export interface NoticeItem {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered" | "stopped";
+export type NoticeKind = "error" | "warning" | "info" | "compaction" | "modelRerouted" | "rateLimit" | "interruptedByUpdate" | "budgetExhausted" | "meshLimit" | "workerNeedsAttention" | "undelivered" | "stopped" | "takenOver";
 
 /**
  * A client-generated operation id. Every state-changing request carries one; re-sending
@@ -4284,6 +4290,12 @@ export type ThreadSubscribeResult = ({
    */
   queued?: QueuedMessage[] | null;
   /**
+   * When `control` is `external` and the holder will not let YAAC take the thread over now
+   * (D140), why — shown on a disabled **Take over**. Absent: it can be taken over (under
+   * `threadTakeOver`).
+   */
+  takeOverBlocked?: string | null;
+  /**
    * Cumulative token usage of the thread, when known.
    */
   tokens?: TokenUsage | null;
@@ -4458,6 +4470,25 @@ export interface ThreadSyncResult {
    * Token to send next time.
    */
   token: SyncToken;
+}
+
+/**
+ * `thread/takeOver` (D140): continue here a thread another program holds. `yaacd` stops
+ * treating that holder's presence as making the thread read-only, journals a notice, and
+ * keeps the takeover (across restarts) until a *different* holder appears or the holder
+ * goes away. The other program is not stopped. Refused with `thread_in_use` when the
+ * harness will not let go (the reason is the message), and with `capability_missing`
+ * without `threadTakeOver`. A thread nobody else holds is answered with success.
+ */
+export interface ThreadTakeOverParams {
+  /**
+   * Operation id.
+   */
+  opId: OpId;
+  /**
+   * The thread.
+   */
+  threadId: ThreadId;
 }
 
 /**

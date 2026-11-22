@@ -171,6 +171,11 @@ pub struct ControlChangedEvent {
     /// Where it is in use, for the read-only states.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub holder: Option<String>,
+    /// When `control` is `external` and the holder will not let YAAC take the thread over now
+    /// (D140), why — shown on a disabled **Take over**. Absent: it can be taken over (under
+    /// `threadTakeOver`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take_over_blocked: Option<String>,
     /// The running turn, when there is one (needed for Stop).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_turn: Option<TurnId>,

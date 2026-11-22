@@ -75,10 +75,25 @@ export interface ThreadRecord {
   /** Stopped and held (docs/10-agent-mesh.md#stopping-workers). */
   hold?: ThreadHold | null;
   /**
+   * Taken over from another program (D140): while every holder the harness reports is one of
+   * `holderIds`, that evidence does not make the thread read-only. Cleared when a different
+   * holder appears or the harness reports nobody else.
+   */
+  takenOver?: TakenOver | null;
+  /**
    * Fast mode (D125): the setting the last turn started with, and the next turns' unless a
    * `turn/start` changes it. Only ever true while the model has `fastMode`.
    */
   fast?: boolean;
+}
+
+/** A takeover (D140), kept with the thread record so it survives a yaacd restart. */
+export interface TakenOver {
+  /** Where it was taken from ("another Claude Code session"). */
+  from: string;
+  /** The holders it was taken from (`ExternalControl.holderIds`); empty: not named. */
+  holderIds: string[];
+  at: string;
 }
 
 /** A user message waiting for the running turn to end (`queue.json`). */

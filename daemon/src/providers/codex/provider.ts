@@ -176,6 +176,8 @@ interface ThreadState {
   foreignTurn: TurnId | null;
   /** Another client drove this thread; cleared only when Codex unloads it. */
   foreignSeen: boolean;
+  /** The last turn another client started (names the holder for a takeover, D140). */
+  lastForeignTurn: TurnId | null;
   /** turn/start or turn/steer in flight: events are held until we know whose turn it is. */
   starting: boolean;
   held: Array<{ method: string; params: Record<string, unknown> }>;
@@ -422,6 +424,7 @@ export class CodexProvider implements HarnessProvider {
         ownOrigin: "user",
         foreignTurn: null,
         foreignSeen: false,
+        lastForeignTurn: null,
         starting: false,
         held: [],
         turnsSeen: new Set(),
@@ -449,10 +452,14 @@ export class CodexProvider implements HarnessProvider {
   /** Who holds the thread, from what this connection knows right now. */
   private localControl(st: ThreadState): ExternalControl {
     if (!this.conn?.isOpen) return { external: false, uncertain: true, holder: "Codex (the daemon is not reachable)" };
-    if (st.foreignTurn) return { external: true, holder: "another Codex client" };
-    if (this.isActive(st.status) && !st.ownTurn && !st.starting) return { external: true, holder: "another Codex client" };
+    // Codex cannot name its clients: the holder is known by the turns it starts, so each turn
+    // another client starts is a new holder (it ends a takeover, D140). While that turn runs
+    // the thread cannot be taken over: input sent now would join it.
+    const busy = "another Codex client is running a turn in it; it can be taken over when that turn ends";
+    if (st.foreignTurn) return { external: true, holder: "another Codex client", holderIds: [`turn:${st.foreignTurn}`], takeOverBlocked: busy };
+    if (this.isActive(st.status) && !st.ownTurn && !st.starting) return { external: true, holder: "another Codex client", holderIds: [st.lastForeignTurn ? `turn:${st.lastForeignTurn}` : "active"], takeOverBlocked: busy };
     if (st.status?.type === "notLoaded") return { external: false };
-    if (st.foreignSeen) return { external: true, holder: "another Codex client" };
+    if (st.foreignSeen) return { external: true, holder: "another Codex client", holderIds: [st.lastForeignTurn ? `turn:${st.lastForeignTurn}` : "seen"] };
     if (st.status === null) return { external: false, uncertain: true, holder: "Codex (state not known yet)" };
     if (st.subscribed) return { external: false };
     // Loaded on the daemon but not by this connection: it may be open in a terminal or another
@@ -552,6 +559,7 @@ export class CodexProvider implements HarnessProvider {
       "threadRename",
       "threadArchive",
       "threadDelete",
+      "threadTakeOver",
       "followExternal",
       "streamText",
       "streamReasoning",
@@ -810,6 +818,7 @@ export class CodexProvider implements HarnessProvider {
       // Codex spliced the input into a turn that was already running. The dispatcher should
       // have made that impossible; it is reported, not hidden.
       st.foreignTurn = turnId;
+      st.lastForeignTurn = turnId;
       st.foreignSeen = true;
       this.flushHeld(st);
       this.publishControl(st);
@@ -949,6 +958,7 @@ export class CodexProvider implements HarnessProvider {
       "threadRename",
       "threadArchive",
       "threadDelete",
+      "threadTakeOver",
       "followExternal",
       "streamText",
       "streamReasoning",
@@ -1168,6 +1178,7 @@ export class CodexProvider implements HarnessProvider {
         st.turnsSeen.add(turn.id);
         if (turn.id === st.ownTurn) return; // announced when turn/start returned
         st.foreignTurn = turn.id;
+        st.lastForeignTurn = turn.id;
         st.foreignSeen = true;
         st.usageAtStart = st.lastUsage;
         st.plan = null;

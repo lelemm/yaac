@@ -236,6 +236,14 @@ export interface ExternalControl {
   holder?: string | null;
   /** The provider cannot tell. yaacd treats this as free: only positive evidence makes a thread read-only (D72). */
   uncertain?: boolean;
+  /**
+   * Stable identities of what holds it (a process, a background session, a turn another
+   * client started), for take over (D140): a takeover lasts while every holder is one it was
+   * taken from. Absent: the provider cannot name the holder, and a takeover is kept.
+   */
+  holderIds?: string[];
+  /** The holder will not let YAAC continue the thread now (`thread/takeOver` is refused): why. */
+  takeOverBlocked?: string | null;
 }
 
 /** A request the harness raised: an approval, a question, or a form. */

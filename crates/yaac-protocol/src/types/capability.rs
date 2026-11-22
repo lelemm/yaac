@@ -27,6 +27,9 @@ open_enum! {
         /// The harness can delete its own sessions: `thread/delete` may be asked to delete the
         /// session there too (`alsoInHarness`, D110). Without it YAAC removes only its record.
         ThreadDelete = "threadDelete",
+        /// A thread another program holds can be taken over (`thread/takeOver`, D140): YAAC
+        /// continues it here without stopping the other program.
+        ThreadTakeOver = "threadTakeOver",
         /// Can show live updates of a thread someone else is driving.
         FollowExternal = "followExternal",
         // Turn control

@@ -557,11 +557,28 @@ test("codex: control — not loaded is free; loaded elsewhere is in use; a forei
     assert.equal((r.events.find((e) => e.type === "turnStarted" && e.turnId === "foreign-1") as any).origin, "external");
     await until(() => r.events.some((e) => e.type === "itemStarted" && e.item.id === "u-f"));
     await until(() => r.events.some((e) => e.type === "controlChanged" && e.thread === THREAD_ID && e.control.external));
+    // While the other client's turn runs, the thread cannot be taken over (D140): input would join it.
+    status = { type: "active", activeFlags: [] };
+    const running = await r.provider.control(THREAD_ID);
+    assert.deepEqual(running.holderIds, ["turn:foreign-1"]);
+    assert.match(running.takeOverBlocked ?? "", /running a turn/);
     await assert.rejects(r.provider.startTurn(THREAD_ID, input("no"), {}));
     r.fake.push({ method: "turn/completed", params: { threadId: THREAD_ID, turn: { id: "foreign-1", status: "completed", items: [] } } });
     await until(() => r.fake.requests("thread/unsubscribe").length === 1);
     status = { type: "idle" };
-    assert.notDeepEqual(await r.provider.control(THREAD_ID), { external: false }, "still open in the other client");
+    const after = await r.provider.control(THREAD_ID);
+    assert.notDeepEqual(after, { external: false }, "still open in the other client");
+    // Once it ends, the holder is named by that turn and the thread can be taken over.
+    assert.deepEqual(after, { external: true, holder: "another Codex client", holderIds: ["turn:foreign-1"] });
+    // After a takeover yaacd sends: Codex lets a second client rejoin a thread another client
+    // has loaded and start a turn in it (verified against codex app-server 0.170.0).
+    const resumes = r.fake.requests("thread/resume").length;
+    r.fake.handlers.set("thread/resume", (p) => ({ thread: { id: p.threadId, status: { type: "idle" }, cwd: "/work/fixture" }, model: "model-1" }));
+    r.fake.handlers.set("turn/start", () => ({ turn: { id: "mine-2", status: "inProgress" } }));
+    assert.equal(await r.provider.startTurn(THREAD_ID, input("taken over"), {}), "mine-2");
+    assert.equal(r.fake.requests("thread/resume").length, resumes + 1, "it rejoins the thread first");
+    r.fake.push({ method: "turn/completed", params: { threadId: THREAD_ID, turn: { id: "mine-2", status: "completed", items: [] } } });
+    await until(() => r.events.some((e) => e.type === "turnCompleted" && e.turnId === "mine-2"));
     status = { type: "notLoaded" };
     assert.deepEqual(await r.provider.control(THREAD_ID), { external: false }, "Codex unloaded it: nobody has it");
   } finally {

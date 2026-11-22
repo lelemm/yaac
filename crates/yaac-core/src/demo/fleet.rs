@@ -26,6 +26,8 @@ pub(crate) struct DemoThread {
     pub epoch: Epoch,
     pub control: Control,
     pub holder: Option<String>,
+    /// Why the program holding it will not hand it over (D140).
+    pub take_over_blocked: Option<String>,
     pub active_turn: Option<TurnId>,
     pub effective: ThreadEffective,
     pub context: Option<ContextUsage>,
@@ -134,6 +136,7 @@ fn caps() -> Vec<Capability> {
         Capability::ThreadRename,
         Capability::ThreadArchive,
         Capability::ThreadDelete,
+        Capability::ThreadTakeOver,
         Capability::StreamText,
         Capability::StreamReasoning,
         Capability::Interrupt,
@@ -325,6 +328,7 @@ impl Fleet {
                 epoch: Epoch(1),
                 control: Control::Free,
                 holder: None,
+                take_over_blocked: None,
                 active_turn: None,
                 effective,
                 context: Some(ContextUsage { used: Some(76_000), window: Some(200_000) }),
@@ -364,6 +368,7 @@ impl Fleet {
             ThreadEvent::ControlChanged(e) => {
                 t.control = e.control.clone();
                 t.holder = e.holder.clone();
+                t.take_over_blocked = e.take_over_blocked.clone();
             }
             ThreadEvent::SettingsChanged(e) => t.effective = e.effective.clone(),
             ThreadEvent::UsageUpdated(e) => {

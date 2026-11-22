@@ -361,6 +361,8 @@ pub(crate) enum Action {
     /// A draft in this thread's project and target, with its harness and model.
     NewInProject(ThreadKey),
     CheckLatest(ThreadKey),
+    /// **Take over** a thread another program holds (D140).
+    TakeOver(ThreadKey),
     ContinueBudget(Address),
     OpenFork(ThreadKey),
     /// Fork; a handoff carries its first message.
@@ -909,6 +911,7 @@ impl YaacApp {
                 Action::NewThread => self.new_thread(),
                 Action::NewInProject(k) => self.new_in_project(&k),
                 Action::CheckLatest(k) => self.client.check_latest(&k),
+                Action::TakeOver(k) => self.client.take_over(&k),
                 Action::ContinueBudget(r) => self.client.continue_budget(&r),
                 Action::OpenFork(k) => {
                     if let Some(choice) = yaac_core::fork::default_choice(&self.client.state, &k) {
@@ -1571,6 +1574,43 @@ mod tests {
         let mut frame = eframe::Frame::_new_kittest();
         let mut out = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
         out.textures_delta.clear();
+    }
+
+    /// D140: the banner's **Take over** sends `thread/takeOver` with an operation id, once;
+    /// when it is answered the banner goes and the composer unlocks.
+    #[test]
+    fn clicking_take_over_on_the_banner_sends_thread_take_over() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let hs = threads::handshake();
+        app.apply(vec![Action::Open(hs.clone())]);
+        app.pump_demo();
+        assert!(!app.client.state.may_act(&hs), "held by a terminal session");
+        let screen = Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0)));
+        for _ in 0..3 {
+            window_frame(&ctx, &mut app, egui::RawInput { screen_rect: screen, ..Default::default() });
+        }
+        let button = ctx.read_response(egui::Id::unique(crate::thread::TAKE_OVER_BUTTON)).expect("Take over is on the banner");
+        let at = button.rect.center();
+        let sent = |app: &YaacApp| app.demo.as_ref().unwrap().requests().into_iter().filter(|(_, m, _)| m == "thread/takeOver").collect::<Vec<_>>();
+        assert!(sent(&app).is_empty());
+        for events in [
+            vec![egui::Event::PointerMoved(at)],
+            vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }],
+            vec![egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE }],
+        ] {
+            window_frame(&ctx, &mut app, egui::RawInput { screen_rect: screen, events, ..Default::default() });
+        }
+        let reqs = sent(&app);
+        assert_eq!(reqs.len(), 1, "one click, no confirmation");
+        assert_eq!(reqs[0].2["threadId"], hs.thread.as_str());
+        assert!(reqs[0].2["opId"].as_str().is_some_and(|o| !o.is_empty()), "an operation id");
+        app.pump_demo();
+        window_frame(&ctx, &mut app, egui::RawInput { screen_rect: screen, ..Default::default() });
+        assert!(app.client.state.may_act(&hs), "the composer unlocks");
+        let map = yaac_core::attention::AttentionMap::compute(&app.client.state);
+        let h = yaac_core::header::header(&app.client.state, &map, &hs).unwrap();
+        assert!(!h.banners.iter().any(|b| matches!(b, yaac_core::header::Banner::InUseElsewhere { .. })), "the banner goes away");
     }
 
     #[test]

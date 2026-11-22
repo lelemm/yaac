@@ -645,6 +645,21 @@ pub struct ThreadDeleteParams {
     pub also_in_harness: bool,
 }
 
+/// `thread/takeOver` (D140): continue here a thread another program holds. `yaacd` stops
+/// treating that holder's presence as making the thread read-only, journals a notice, and
+/// keeps the takeover (across restarts) until a *different* holder appears or the holder
+/// goes away. The other program is not stopped. Refused with `thread_in_use` when the
+/// harness will not let go (the reason is the message), and with `capability_missing`
+/// without `threadTakeOver`. A thread nobody else holds is answered with success.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadTakeOverParams {
+    /// Operation id.
+    pub op_id: OpId,
+    /// The thread.
+    pub thread_id: ThreadId,
+}
+
 // ── turns ─────────────────────────────────────────────────────────────────────────────────
 
 /// `turn/start`: send a user message to an existing thread.

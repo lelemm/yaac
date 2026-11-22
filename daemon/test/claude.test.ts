@@ -701,9 +701,24 @@ test("in use elsewhere comes from claude agents --json; yaacd's own process does
   r.cli.agentsList = [{ pid: q.pid, sessionId: thread, kind: "interactive", status: "idle" }];
   assert.deepEqual(await r.provider.control(thread), { external: false });
   r.cli.agentsList = [{ pid: q.pid, sessionId: thread, kind: "interactive" }, { pid: 1, sessionId: thread, kind: "interactive", status: "idle" }];
-  assert.deepEqual(await r.provider.control(thread), { external: true, holder: "another Claude Code session" });
-  r.cli.agentsList = [{ id: "bg1", sessionId: "other", kind: "background", state: "blocked" }, { id: "bg2", sessionId: thread, kind: "background", state: "blocked" }];
-  assert.deepEqual(await r.provider.control(thread), { external: true, holder: "a Claude Code background session" });
+  // Take over (D140): an idle interactive holder can be taken over, and is named by its process.
+  assert.deepEqual(await r.provider.control(thread), { external: true, holder: "another Claude Code session", holderIds: ["pid:1"] });
+  r.cli.agentsList = [{ pid: 1, sessionId: thread, kind: "interactive", status: "busy" }];
+  assert.deepEqual(await r.provider.control(thread), {
+    external: true,
+    holder: "another Claude Code session",
+    holderIds: ["pid:1"],
+    takeOverBlocked: "the other Claude Code session is running a turn; it can be taken over when that turn ends",
+  });
+  // A background holder refuses a resume (verified: `session_held_by_background`), so it cannot
+  // be taken over; it is named by its id, not the shared background host's pid.
+  r.cli.agentsList = [{ id: "bg1", sessionId: "other", kind: "background", state: "blocked" }, { pid: 99, id: "bg2", sessionId: thread, kind: "background", state: "done", status: "idle" }];
+  assert.deepEqual(await r.provider.control(thread), {
+    external: true,
+    holder: "a Claude Code background session",
+    holderIds: ["bg:bg2"],
+    takeOverBlocked: "Claude Code runs it as a background session; it cannot be continued elsewhere until that session is stopped there (claude stop bg2)",
+  });
   r.cli.agentsList = [{ id: "bg1", sessionId: "other", kind: "background" }];
   assert.deepEqual(await r.provider.control(thread), { external: false });
   r.cli.agentsList = [{ pid: 7, kind: "interactive" }];

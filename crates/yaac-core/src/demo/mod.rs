@@ -214,6 +214,15 @@ impl DemoHub {
         self.inner.borrow().log.iter().cloned().collect()
     }
 
+    /// The program holding `key` will not hand it over (`Some(reason)`), or will again
+    /// (`None`) — D140, for the screens and tests.
+    pub fn block_take_over(&self, key: &ThreadKey, reason: Option<&str>) {
+        let mut inner = self.inner.borrow_mut();
+        let Some(t) = inner.fleet.threads.get(key) else { return };
+        let ev = yaac_protocol::ControlChangedEvent { control: t.control.clone(), holder: t.holder.clone(), take_over_blocked: reason.map(str::to_owned), active_turn: t.active_turn.clone() };
+        inner.emit_now(key, ThreadEvent::ControlChanged(ev));
+    }
+
     /// What `hub/wsl/distros` answers from now on: `{ distros }`, or a failure's message.
     pub fn set_wsl_distros(&self, answer: Result<Value, String>) {
         self.inner.borrow_mut().distros = answer;
@@ -592,6 +601,9 @@ impl Inner {
                 if let Some(h) = &t.holder {
                     res["controlHolder"] = json!(h);
                 }
+                if let Some(b) = &t.take_over_blocked {
+                    res["takeOverBlocked"] = json!(b);
+                }
                 if let Some(turn) = &t.active_turn {
                     res["activeTurn"] = json!(turn);
                 }
@@ -751,6 +763,11 @@ impl Inner {
                 self.ready.push_back(result(id, json!({})));
                 self.ready.push_back(routed(target, m::THREAD_UPDATED, json!({ "thread": summary, "token": "tok-2" })));
             }
+            m::THREAD_TAKE_OVER => {
+                if let Some(key) = thread(p, "threadId") {
+                    self.take_over(id, &key);
+                }
+            }
             m::THREAD_DELETE => {
                 let Some(key) = thread(p, "threadId") else { return };
                 if self.fleet.threads.remove(&key).is_none() {
@@ -802,6 +819,34 @@ impl Inner {
             m::FORGE_PRS | m::FORGE_PREPARE | m::FORGE_PR_CREATE => self.forge(id, target, method, p),
             _ => self.ready.push_back(error(id, ErrorCode::MethodNotFound, method)),
         }
+    }
+
+    /// `thread/takeOver` (D140), as `yaacd` answers it: refused with the holder's reason, or
+    /// the thread is free here, with the notice in its transcript.
+    fn take_over(&mut self, id: RpcId, key: &ThreadKey) {
+        let key = key.clone();
+        let Some(t) = self.fleet.threads.get(&key) else {
+            self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
+            return;
+        };
+        if t.control != Control::External {
+            self.ready.push_back(result(id, json!({})));
+            return;
+        }
+        if let Some(why) = t.take_over_blocked.clone() {
+            self.ready.push_back(error(id, ErrorCode::ThreadInUse, &why));
+            return;
+        }
+        let from = t.holder.clone().unwrap_or_else(|| "another program".to_owned());
+        let turn = t.items.last().map(|i| i.turn_id.to_string()).unwrap_or_default();
+        let text = format!("Taken over from {from} · the other program is still open and will not see these messages");
+        self.emit_now(&key, ThreadEvent::ItemCompleted(ItemEvent { item: done("takeover", &turn, notice(NoticeKind::TakenOver, &text, None)) }));
+        self.emit_now(&key, ThreadEvent::ControlChanged(yaac_protocol::ControlChangedEvent { control: Control::Free, holder: None, take_over_blocked: None, active_turn: None }));
+        self.summary_now(&key, |s| {
+            s.control = Control::Free;
+            s.control_holder = None;
+        });
+        self.ready.push_back(result(id, json!({})));
     }
 
     // ── journal and delivery ───────────────────────────────────────────────────────────

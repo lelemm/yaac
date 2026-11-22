@@ -21,6 +21,11 @@ pub(crate) fn primary(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>) 
     button(ui, p, label, key, true, None)
 }
 
+/// A filled button with a stable id (one a test or a screenshot can find).
+pub(crate) fn primary_with_id(ui: &mut Ui, p: &Palette, label: &str, id: egui::Id) -> Response {
+    button_with(ui, p, label, None, true, None, Some(id))
+}
+
 /// A plain-text button: no outline, a faint fill on hover.
 pub(crate) fn plain(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>) -> Response {
     button(ui, p, label, key, false, None)
@@ -32,13 +37,24 @@ pub(crate) fn plain_colored(ui: &mut Ui, p: &Palette, label: &str, color: Color3
 }
 
 fn button(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>, filled: bool, color: Option<Color32>) -> Response {
+    button_with(ui, p, label, key, filled, color, None)
+}
+
+#[allow(clippy::too_many_arguments, reason = "the one painter behind every button kind")]
+fn button_with(ui: &mut Ui, p: &Palette, label: &str, key: Option<&str>, filled: bool, color: Option<Color32>, id: Option<egui::Id>) -> Response {
     let font = if filled { theme::bold(size::UI) } else { theme::ui(size::UI) };
     let key_font = theme::ui(size::SMALL);
     let tw = text_size(ui, label, &font);
     let kw = key.map_or(0.0, |k| if k == "Enter" { 14.0 + 10.0 } else { text_size(ui, k, &key_font).x + 10.0 });
     let pad = vec2(12.0, 5.0);
     let size = vec2(tw.x + kw + pad.x * 2.0, (tw.y + pad.y * 2.0).max(28.0));
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let (rect, resp) = match id {
+        Some(id) => {
+            let (_, rect) = ui.allocate_space(size);
+            (rect, ui.interact(rect, id, Sense::click()))
+        }
+        None => ui.allocate_exact_size(size, Sense::click()),
+    };
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     let fg = if filled { p.on_primary } else { color.unwrap_or(p.text) };
     if filled {

@@ -64,6 +64,7 @@ const CATALOGUE: &[(&str, &[&str])] = &[
     ("Dismiss / Show again", &["dismiss"]),
     ("Dismiss all in this temporary project", &["dismiss-all-temp"]),
     ("Fork…", &["fork"]),
+    ("Take over", &["take-over"]),
     ("Check for the latest", &["check-latest"]),
     ("Continue (budget)", &["continue-budget"]),
     ("Archive selected… / Mute selected… / Clear selection", &["archive-selected", "mute-selected", "clear-selection"]),

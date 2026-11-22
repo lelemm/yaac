@@ -783,7 +783,10 @@ step.*
 - Sidebar as standard; **Explain the handshake** selected, with a small lock mark.
 - Header: a lock mark, "Explain the handshake", tag "Read-only", breadcrumb.
 - A banner under the header: "This thread is open in another program on devbox. You can
-  watch, but not send." and one button: **Fork to continue here**.
+  watch, but not send." and, right-aligned, a filled **Take over** (D140; its tooltip: "Continue
+  here. The other program is not stopped and will not see what you send from now on.") with a
+  plain **Fork to continue here** beside it. Without `threadTakeOver` only **Fork to continue
+  here**, filled.
 - Transcript live and normal, including an approval card with **no buttons**: "Waiting for an
   answer in the other program."
 - **No composer input, no Send, no Stop.** In its place a single quiet line: "Held by a
@@ -1371,3 +1374,19 @@ the list.*
   Release notes · uncertain: billing-service", wrapped to at most three lines, and a cross that
   dismisses it. Hovering it lists each thread with its reason ("Release notes: staging is
   offline"; for an uncertain one, that it may or may not be archived and is not asked again).
+
+### 74 — Take over is not possible now
+
+- As 10, but the program holding the thread will not let go (a Claude Code background
+  session): under the banner's sentence, in secondary text, "Claude Code runs it as a background
+  session; it cannot be continued elsewhere until that session is stopped there (claude stop
+  7f3a2c91)"; **Take over** drawn as an unavailable control (dashed border, the unavailable
+  colour) and the plain **Fork to continue here** beside it (D140, P112). A failed attempt
+  shows "Not taken over: …" there in the failed colour instead.
+
+### 75 — Taken over
+
+- As 10, after **Take over**: no banner, no "Read-only" tag, the composer enabled. At the end of
+  the transcript the notice "Taken over from a terminal session · the other program is still
+  open and will not see these messages" (D140, P110). The approval the harness re-surfaces to
+  `yaacd` is answerable here now.
