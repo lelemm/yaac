@@ -289,12 +289,12 @@ fn the_needs_you_button_cycles_drops_resolved_threads_and_disappears() {
 
 #[test]
 fn card_docked_and_pill_share_one_grouping_by_relation() {
-    use yaac_core::agents::{Relation, SpawnedBy, agents_panel, clusters};
+    use yaac_core::agents::{Relation, SpawnedBy, agents_panel, clusters, pill};
     let (c, _) = boot();
     let map = AttentionMap::compute(&c.state);
     for k in [threads::orchestrator(), threads::search(), threads::index(), threads::ci()] {
         let Some(panel) = agents_panel(&c.state, &map, &k) else { continue };
-        let cl = clusters(&panel, None);
+        let cl = clusters(&panel);
         // In order, and only the relations that have someone.
         let want: Vec<Relation> = [
             (Relation::SpawnedBy, matches!(panel.spawned_by, SpawnedBy::Agent(_))),
@@ -305,21 +305,21 @@ fn card_docked_and_pill_share_one_grouping_by_relation() {
         .filter_map(|(r, has)| has.then_some(r))
         .collect();
         assert_eq!(cl.iter().map(|c| c.relation).collect::<Vec<_>>(), want, "{k:?}");
-        // Every row once, in the panel's order: the same rows the docked panel lists.
-        let flat: Vec<_> = cl.iter().flat_map(|c| c.rows.iter().map(|r| r.title.clone())).collect();
-        let all: Vec<_> = panel.all().map(|r| r.title.clone()).collect();
+        // Every row once: the same rows the docked panel lists (D168 orders them within each).
+        let mut flat: Vec<_> = cl.iter().flat_map(|c| c.rows.iter().map(|r| r.title.clone())).collect();
+        let mut all: Vec<_> = panel.all().map(|r| r.title.clone()).collect();
+        flat.sort();
+        all.sort();
         assert_eq!(flat, all);
-        // The pill's cap trims, keeping one icon per relation and counting the rest.
-        let capped = clusters(&panel, Some(3));
-        assert!(capped.iter().all(|c| !c.rows.is_empty()));
-        assert_eq!(capped.iter().map(|c| c.rows.len() + c.more).sum::<usize>(), all.len());
-        if all.len() > 3 {
-            assert!(capped.iter().map(|c| c.rows.len() + usize::from(c.more > 0)).sum::<usize>() <= 3.max(capped.len() * 2));
-        }
+        // The pill's cap trims, counting the rest in its one "more" item.
+        let capped = pill(&panel, 3);
+        assert!(capped.icons() <= 3);
+        assert_eq!(capped.icons() + capped.more.hidden, all.len());
+        assert!(capped.clusters.iter().all(|c| !c.rows.is_empty()));
     }
     // The orchestrator was started by the user: no "Spawned by" cluster in the pill.
     let panel = agents_panel(&c.state, &map, &threads::orchestrator()).unwrap();
-    assert!(clusters(&panel, None).iter().all(|c| c.relation != Relation::SpawnedBy));
+    assert!(clusters(&panel).iter().all(|c| c.relation != Relation::SpawnedBy));
 }
 
 // ── D129: show only running ──────────────────────────────────────────────────────────────

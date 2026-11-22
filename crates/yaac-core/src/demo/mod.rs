@@ -80,11 +80,13 @@ pub enum Scene {
     /// 120: billing-service (Claude Code) is working, and two messages wait in its queue (D166).
     /// The turn runs until it is stopped, sent to now, or [`DemoHub::finish_turn`].
     QueueWhileRunning,
+    /// 130–133: the orchestrator with 30 related agents, most of them finished (D168).
+    ManyAgents,
 }
 
 impl Scene {
     /// Every scene, for the demo menu.
-    pub const ALL: [Scene; 12] = [
+    pub const ALL: [Scene; 13] = [
         Scene::RequestStates,
         Scene::Permission,
         Scene::Notices,
@@ -97,6 +99,7 @@ impl Scene {
         Scene::AgentCalls,
         Scene::HarnessSubagents,
         Scene::QueueWhileRunning,
+        Scene::ManyAgents,
     ];
 
     /// Menu label.
@@ -114,6 +117,7 @@ impl Scene {
             Scene::AgentCalls => "Agents talking to agents: spawn, message, wait, Claude Code subagents",
             Scene::HarnessSubagents => "Claude Code's own subagents under search-service",
             Scene::QueueWhileRunning => "billing-service is working; two messages wait in its queue",
+            Scene::ManyAgents => "An orchestrator with 30 agents, most of them finished",
         }
     }
 }
@@ -1743,6 +1747,14 @@ impl Inner {
                 // reports them: listed, linked, and the parent counting them.
                 let kids = self.fleet.add_harness_subagents();
                 for key in kids.iter().chain(std::iter::once(&k(SEARCH))) {
+                    self.summary_now(key, |_| {});
+                }
+            }
+            Scene::ManyAgents => {
+                // Thirty related agents on the orchestrator (D168): its own Codex subagents and
+                // users-service's Claude Code subagents join the fleet's six.
+                let kids = self.fleet.add_many_agents();
+                for key in kids.iter().chain([&k(ORCH), &k(USERS)]) {
                     self.summary_now(key, |_| {});
                 }
             }

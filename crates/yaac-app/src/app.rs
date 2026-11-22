@@ -122,6 +122,15 @@ pub(crate) struct UiState {
     pub panel: PanelMode,
     /// The agents card's open/close rule.
     pub hover: yaac_core::hover::HoverCard,
+    /// What the floating pill drew last frame: its icons and its "more" item (D168).
+    pub pill_icons: usize,
+    pub pill_more: Option<egui::Rect>,
+    /// The card opens scrolled to the agents the pill hides (the pointer came from "more").
+    pub card_to_hidden: bool,
+    /// The docked panel's "N finished" folds that are open, by relation (D168).
+    pub dock_folds_open: [bool; 3],
+    /// Scroll the docked panel to its first fold once (screenshots).
+    pub dock_to_fold: bool,
     pub menu: Option<Menu>,
     /// The sidebar's ordering (D116).
     pub ordering: yaac_core::sidebar::Ordering,
@@ -271,6 +280,11 @@ impl UiState {
             expansion: Expansion::default(),
             panel: PanelMode::Pill,
             hover: yaac_core::hover::HoverCard::default(),
+            pill_icons: 0,
+            pill_more: None,
+            card_to_hidden: false,
+            dock_folds_open: [false; 3],
+            dock_to_fold: false,
             menu: None,
             ordering: yaac_core::sidebar::Ordering::default(),
             steady: yaac_core::sidebar::Steady::default(),

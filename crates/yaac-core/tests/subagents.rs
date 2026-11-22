@@ -5,7 +5,7 @@
 mod common;
 
 use common::{NOW, boot, settle};
-use yaac_core::agents::{Relation, Role, agents_panel, clusters};
+use yaac_core::agents::{Relation, Role, agents_panel};
 use yaac_core::attention::{AttentionMap, Mark};
 use yaac_core::demo::{Scene, threads};
 use yaac_core::header::{Banner, header};
@@ -35,8 +35,8 @@ fn subagents_are_workers_of_their_parent_beside_its_yaac_worker() {
     );
     assert_eq!(p.direct_workers, 3);
     // The pill's Workers cluster holds all three.
-    let pill = clusters(&p, Some(8));
-    let w = pill.iter().find(|c| c.relation == Relation::Workers).expect("workers");
+    let pill = yaac_core::agents::pill(&p, yaac_core::agents::PILL_MAX);
+    let w = pill.clusters.iter().find(|c| c.relation == Relation::Workers).expect("workers");
     assert_eq!(w.rows.len(), 3);
     // Each row opens the subagent.
     assert!(p.workers.iter().all(|w| w.key.is_some()));

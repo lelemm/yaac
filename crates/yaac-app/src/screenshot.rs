@@ -111,6 +111,10 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("111", "rate-limits-tooltip"),
     ("112", "rate-limits-strip"),
     ("120", "running-queue"),
+    ("130", "many-agents-pill"),
+    ("131", "many-agents-card"),
+    ("132", "many-agents-docked"),
+    ("133", "many-agents-alive-overflow"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -660,6 +664,34 @@ fn setup(app: &mut YaacApp, id: &str) {
             app.pump_demo();
             app.ui.ordering.order = yaac_core::sidebar::Order::AToZ;
             app.ui.menu = Some(Menu::Ordering);
+        }
+        "130" | "131" | "132" | "133" => {
+            // An orchestrator with 30 related agents (D168), 7 of them alive. 130: the pill —
+            // the alive ones, then "more (23)". 131: the card opened from "more", scrolled to
+            // the hidden ones. 132: docked, the finished folded under "17 inactive". 133: two
+            // more running than the pill has room for: "more (23 · 2 alive)".
+            play(app, Scene::ManyAgents);
+            app.open(&threads::orchestrator(), None);
+            match id {
+                "131" => {
+                    app.ui.panel = PanelMode::Card;
+                    app.ui.card_to_hidden = true;
+                }
+                "132" => {
+                    app.ui.panel = PanelMode::Docked;
+                    app.ui.dock_to_fold = true;
+                }
+                "133" => {
+                    for t in ["t-many-cx01", "t-many-cx02"] {
+                        let key = yaac_core::key::ThreadKey::new("local", t);
+                        if let Some(r) = app.client.state.threads.get_mut(&key) {
+                            r.summary.state = yaac_protocol::ThreadState::Running;
+                            r.summary.preview = "running cargo test -p auth".into();
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
         "95" | "96" => {
             // Claude Code's own subagents (D151): search-service, started by the user here,
