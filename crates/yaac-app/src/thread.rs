@@ -3,6 +3,7 @@
 use std::hash::{Hash, Hasher};
 
 use eframe::egui::{self, Margin, Panel, Rect, Sense, UiBuilder, pos2, vec2};
+use yaac_core::agentcall::{CallLine, Pill};
 use yaac_core::activity::{ActivityLine, Block, Expansion, LineMark, blocks};
 use yaac_core::diff::{FileDiff, LineKind};
 use yaac_core::selection::Unit;
@@ -234,6 +235,7 @@ fn block_hash(b: &Block, t: &Transcript, key: &ThreadKey, e: &Expansion, width: 
                 l.expanded.hash(&mut h);
                 l.highlighted.hash(&mut h);
                 l.text.hash(&mut h);
+                e.raw.contains(&(key.clone(), l.id.clone())).hash(&mut h);
                 if let Some(d) = l.diff {
                     d.file.hash(&mut h);
                     e.rest.contains(&(key.clone(), l.id.clone(), d.file)).hash(&mut h);
@@ -895,12 +897,15 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
     let item = &t.items()[l.index];
     let unit = Unit::new(l.index, l.diff.map_or(0, |d| d.file));
     let state_mark = if l.failed { Some(Mark::Failed) } else { None };
-    let resp = line_row(
-        ui,
-        &mut v.sel(unit),
-        &p,
-        Row { state_mark, mark: l.mark, text: &l.text, failed: l.failed, highlighted: l.highlighted, folded: false, counts: l.diff.map(|d| (d.added, d.removed)), trailer: None },
-    );
+    let resp = match &l.call {
+        Some(call) => call_row(ui, &mut v.sel(unit), &p, l, call, actions),
+        None => line_row(
+            ui,
+            &mut v.sel(unit),
+            &p,
+            Row { state_mark, mark: l.mark, text: &l.text, failed: l.failed, highlighted: l.highlighted, folded: false, counts: l.diff.map(|d| (d.added, d.removed)), trailer: None },
+        ),
+    };
     if resp.clicked() {
         match l.diff {
             Some(d) => v.ui.expansion.toggle_file(key, &l.id, d.file),
@@ -925,6 +930,20 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
         return;
     }
     let fill = if l.highlighted { p.selected } else { egui::Color32::TRANSPARENT };
+    if let (Some(call), ItemBody::ToolCall(tc)) = (&l.call, &item.body)
+        && let Some(ac) = &tc.agent_call
+    {
+        let raw_open = v.ui.expansion.raw.contains(&(key.clone(), l.id.clone()));
+        let mut toggle_raw = false;
+        egui::Frame::NONE.fill(fill).corner_radius(4).inner_margin(Margin { left: 22, right: 8, top: 2, bottom: 8 }).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            toggle_raw = call_detail(ui, v, unit, t, item, tc, ac, call, raw_open, actions);
+        });
+        if toggle_raw {
+            v.ui.expansion.toggle_raw(key, &l.id);
+        }
+        return;
+    }
     egui::Frame::NONE.fill(fill).corner_radius(4).inner_margin(Margin { left: 22, right: 8, top: 2, bottom: 8 }).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 3.0;
@@ -1035,6 +1054,189 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
             _ => {}
         }
     });
+}
+
+// ── Agent calls (D150) ──────────────────────────────────────────────────────────────────
+
+const PILL_H: f32 = 18.0;
+
+/// A pill's width at `font`: logo, label, and its machine.
+fn pill_size(ui: &egui::Ui, pill: &Pill, font: &egui::FontId, p: &Palette) -> (f32, std::sync::Arc<egui::Galley>, Option<std::sync::Arc<egui::Galley>>) {
+    let label = ui.fonts_mut(|f| f.layout_no_wrap(pill.label.clone(), font.clone(), p.text));
+    let machine = pill.machine.as_ref().map(|m| ui.fonts_mut(|f| f.layout_no_wrap(format!("· {m}"), font.clone(), p.text2)));
+    let logo = if pill.kind.is_some() { 17.0 } else { 0.0 };
+    let w = 8.0 + logo + label.size().x + machine.as_ref().map_or(0.0, |g| g.size().x + 4.0) + 8.0;
+    (w, label, machine)
+}
+
+/// Draws one pill with its left edge at `x` on the row centred at `cy`: the harness logo, the
+/// title, the machine; a pill that opens a thread is a link (hover fill, pointing hand), one
+/// that does not is drawn the same, muted. Returns its width.
+#[allow(clippy::too_many_arguments)]
+fn draw_pill(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, pill: &Pill, x: f32, cy: f32, font: &egui::FontId, id: egui::Id, actions: &mut Vec<Action>) -> f32 {
+    let (w, label, machine) = pill_size(ui, pill, font, p);
+    let rect = egui::Rect::from_min_size(pos2(x, cy - PILL_H / 2.0), vec2(w, PILL_H));
+    #[cfg(test)]
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::unique(("test-pill", pill.label.as_str())), rect));
+    let hovered = pill.key.is_some() && ui.rect_contains_pointer(rect);
+    let fill = if hovered { p.selected } else { p.faint };
+    ui.painter().rect_filled(rect, PILL_H / 2.0, fill);
+    let mut tx = rect.left() + 8.0;
+    if let Some(kind) = &pill.kind {
+        crate::agents_ui::harness_mark(ui.painter(), pos2(tx + 6.0, cy), 13.0, Some(kind), None, false, p);
+        tx += 17.0;
+    }
+    let ty = cy - label.size().y / 2.0;
+    let lw = label.size().x;
+    sc.paint(ui, pos2(tx, ty), label, if pill.key.is_some() { p.text } else { p.text2 });
+    if let Some(m) = machine {
+        sc.paint(ui, pos2(tx + lw + 4.0, ty), m, p.text2);
+    }
+    if let Some(k) = &pill.key {
+        let resp = ui.interact(rect, id, Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.clicked() {
+            actions.push(Action::OpenAt(k.clone(), pill.at.clone()));
+        }
+    }
+    w
+}
+
+/// An agent call's line: its mark, what it did, the other agents as pills, the message as a
+/// quoted preview, and a quiet status at the end. A click on the row (outside a pill) expands
+/// it; a pill opens its thread.
+fn call_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, l: &ActivityLine, call: &CallLine, actions: &mut Vec<Action>) -> egui::Response {
+    let width = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click());
+    if l.highlighted {
+        ui.painter().rect_filled(rect, 4.0, p.selected);
+    } else if resp.hovered() {
+        ui.painter().rect_filled(rect, 4.0, p.faint);
+    }
+    let color = if l.failed { p.failed } else { p.text2 };
+    let c = pos2(rect.left() + 9.0, rect.center().y);
+    {
+        let pa = ui.painter();
+        match l.mark {
+            _ if l.failed => icons::mark(pa, c, 12.0, Mark::Failed, p),
+            LineMark::Sent => icons::arrow_out(pa, c, 12.0, color),
+            LineMark::Received => icons::arrow_in(pa, c, 12.0, color),
+            LineMark::Spawn => icons::branch(pa, c, 12.0, color),
+            LineMark::Waiting => icons::hourglass(pa, c, 11.0, color),
+            LineMark::Resumed => icons::refresh(pa, c, 11.0, color),
+            _ => {
+                pa.circle_filled(c, 2.0, color);
+            }
+        }
+    }
+    let font = theme::ui(size::SMALL + 0.5);
+    let cy = rect.center().y;
+    let right = rect.right() - 8.0;
+    // The tail ("gpt-6.2-sol · medium · delivered") is kept whole; the preview gets what is left.
+    let tail: Vec<String> = call.meta.iter().chain(call.status.iter()).cloned().collect();
+    let tail_g = (!tail.is_empty()).then(|| ui.fonts_mut(|f| f.layout_no_wrap(format!("· {}", tail.join(" · ")), font.clone(), color)));
+    let tail_w = tail_g.as_ref().map_or(0.0, |g| g.size().x + 8.0);
+    let mut x = rect.left() + 22.0;
+    let text_at = |ui: &mut egui::Ui, sc: &mut SelCx<'_>, x: &mut f32, s: &str, col: egui::Color32, limit: f32| {
+        let max = limit - *x;
+        if s.is_empty() || max <= 12.0 {
+            return;
+        }
+        let g = crate::widgets::elided(ui, s, &font, col, max);
+        let w = g.size().x;
+        sc.paint(ui, pos2(*x, cy - g.size().y / 2.0), g, col);
+        *x += w + 6.0;
+    };
+    text_at(ui, sc, &mut x, &call.lead, color, right - tail_w);
+    for (n, pill) in call.pills.iter().enumerate() {
+        let (w, _, _) = pill_size(ui, pill, &font, p);
+        if x + w > right - tail_w {
+            text_at(ui, sc, &mut x, &format!("+{}", call.pills.len() - n), color, right);
+            break;
+        }
+        x += draw_pill(ui, sc, p, pill, x, cy, &font, ui.scope_id().with(("pill", &l.id, n)), actions) + 5.0;
+    }
+    text_at(ui, sc, &mut x, &call.after, color, right - tail_w);
+    if let Some(pv) = &call.preview {
+        text_at(ui, sc, &mut x, &format!("\u{201c}{pv}\u{201d}"), p.text2, right - tail_w);
+    }
+    if let Some(g) = tail_g {
+        let gy = cy - g.size().y / 2.0;
+        sc.paint(ui, pos2(x.min(right - tail_w + 8.0), gy), g, color);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// An agent call expanded: who it was with (pills), the message or task in full, the receipt
+/// or reason, what came back, and a "Raw call" disclosure with the original input and output.
+/// Returns true when "Raw call" was clicked.
+#[allow(clippy::too_many_arguments)]
+fn call_detail(
+    ui: &mut egui::Ui,
+    v: &mut View<'_>,
+    unit: Unit,
+    t: &Transcript,
+    item: &yaac_protocol::Item,
+    tc: &yaac_protocol::ToolCallItem,
+    ac: &yaac_protocol::AgentCall,
+    call: &CallLine,
+    raw_open: bool,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let p = v.p;
+    let d = yaac_core::agentcall::detail(Some(t), tc, ac);
+    let small = theme::ui(size::SMALL + 0.5);
+    ui.spacing_mut().item_spacing.y = 4.0;
+    if !call.pills.is_empty() {
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PILL_H + 4.0), Sense::hover());
+        let cy = rect.center().y;
+        let mut sc = v.sel(unit);
+        let g = ui.fonts_mut(|f| f.layout_no_wrap(d.heading.clone(), small.clone(), p.text2));
+        let mut x = rect.left() + g.size().x + 6.0;
+        sc.paint(ui, pos2(rect.left(), cy - g.size().y / 2.0), g, p.text2);
+        for (n, pill) in call.pills.iter().enumerate() {
+            x += draw_pill(ui, &mut sc, &p, pill, x, cy, &small, ui.scope_id().with(("detail-pill", &item.id, n)), actions) + 5.0;
+        }
+    }
+    let md = |v: &mut View<'_>, ui: &mut egui::Ui, suffix: &str, text: &str, color: egui::Color32| {
+        let id = yaac_protocol::ItemId::new(format!("{}#{suffix}", item.id));
+        let parsed = v.md.get(&id, text, true).clone();
+        let refs: Vec<&markdown::Block> = parsed.blocks().collect();
+        markdown::show(ui, &mut v.sel(unit), &refs, &p, color, size::SMALL + 1.0);
+    };
+    if let Some(text) = &d.text {
+        md(v, ui, "call-text", text, p.text);
+    }
+    if let Some(status) = &d.status {
+        let c = if l_failed(item, ac) { p.failed } else { p.text2 };
+        v.sel(unit).text(ui, status, small.clone(), c);
+    }
+    if let Some(result) = &d.result {
+        ui.add_space(2.0);
+        v.sel(unit).text(ui, "Result", theme::bold(size::SMALL), p.text2);
+        md(v, ui, "call-result", &bounded(result), p.text);
+    }
+    ui.add_space(2.0);
+    let clicked = disclosure_row(ui, &p, "Raw call", raw_open, ui.scope_id().with(("raw", &item.id)));
+    if raw_open {
+        for (label, body) in [("Input", &d.raw_input), ("Output", &d.raw_output)] {
+            if body.is_empty() {
+                continue;
+            }
+            v.sel(unit).text(ui, label, small.clone(), p.text2);
+            let out = bounded(body);
+            let mut sc = v.sel(unit);
+            let fr = egui::Frame::NONE.fill(p.code_bg).corner_radius(4).inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                sc.text(ui, &out, theme::mono(size::MONO - 1.0), p.text2);
+            });
+            markdown::copy_button(ui, &p, fr.response.rect, body, ui.scope_id().with(("raw-copy", &item.id, label)));
+        }
+    }
+    clicked
+}
+
+fn l_failed(item: &yaac_protocol::Item, ac: &yaac_protocol::AgentCall) -> bool {
+    item.status == yaac_protocol::ItemStatus::Failed || ac.outcome == Some(yaac_protocol::AgentCallOutcome::Failed)
 }
 
 /// One file's unified diff, expanded in place: removed lines on a faint red ground, added on a
@@ -1199,5 +1401,53 @@ mod tests {
         app.ui.expansion.toggle_pasted(&key, &"um1".into(), 1);
         app.ui.expansion.toggle_context(&key, &"um1".into());
         assert!((draw(&mut app, &ctx)["um1"] - closed).abs() < 0.5);
+    }
+
+    #[test]
+    fn clicking_a_pill_opens_that_thread_and_clicking_the_line_expands_it() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        if let Some(h) = &app.demo {
+            h.play(Scene::AgentCalls);
+            h.drain();
+        }
+        app.pump_demo();
+        let key = threads::orchestrator();
+        app.open(&key, None);
+        let frame = |app: &mut YaacApp, events: Vec<egui::Event>| {
+            let mut actions = Vec::new();
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 4000.0))), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                let map = AttentionMap::compute(&app.client.state);
+                transcript(ui, app, &map, &key, 0, &mut actions);
+            });
+            out.textures_delta.clear();
+            actions
+        };
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        let rect: Rect = ctx.data(|d| d.get_temp(egui::Id::unique(("test-pill", "billing-service")))).expect("the billing-service pill was drawn");
+        let at = rect.center();
+        let click = |at: egui::Pos2| {
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE },
+                egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE },
+            ]
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let actions = frame(&mut app, click(at));
+        assert!(
+            actions.iter().any(|a| matches!(a, Action::OpenAt(k, _) if *k == threads::billing())),
+            "the pill opens billing-service"
+        );
+        // The last billing-service pill drawn is the wait line's ("reported back").
+        assert!(!app.ui.expansion.lines.contains(&(key.clone(), "ac5".into())), "a pill click does not expand the line");
+        // Beside the pill, the row expands; expanded, the full message and "Raw call" show.
+        let beside = pos2(rect.right() + 200.0, at.y);
+        frame(&mut app, vec![egui::Event::PointerMoved(beside)]);
+        frame(&mut app, click(beside));
+        assert!(app.ui.expansion.lines.contains(&(key.clone(), "ac5".into())), "the line opens");
     }
 }
