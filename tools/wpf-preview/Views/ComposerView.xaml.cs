@@ -39,6 +39,7 @@ public partial class ComposerView : UserControl
     public ComposerView()
     {
         InitializeComponent();
+        fileSearchTimer.Tick += (_, _) => RequestFiles();
         TextCompositionManager.AddPreviewTextInputStartHandler(Editor, (_, _) => imeComposing = true);
         TextCompositionManager.AddPreviewTextInputUpdateHandler(Editor, (_, _) => imeComposing = true);
         TextCompositionManager.AddPreviewTextInputHandler(Editor, (_, _) => imeComposing = false);
@@ -58,6 +59,7 @@ public partial class ComposerView : UserControl
         {
             Visibility = Visibility.Collapsed;
             editingEnabled = false;
+            CloseFiles();
             focusRequested = false;
             DropOverlay.Visibility = Visibility.Collapsed;
             return;
@@ -71,6 +73,7 @@ public partial class ComposerView : UserControl
         textKey = nextTextKey;
         if (editorChanged)
         {
+            CloseFiles();
             pasteSelection = null;
             imeComposing = false;
             focusRequested = false;
@@ -89,6 +92,7 @@ public partial class ComposerView : UserControl
         System.Windows.Automation.AutomationProperties.SetName(Editor, placeholder);
         UpdateText(Field(view, "text").String(), editorChanged);
         UpdatePlaceholder();
+        RenderFileSearch(Field(view, "filePicker"), Field(view, "fileScope").String());
 
         DisplayText(Hint, Field(view, "hint").String());
         RenderStatus(Field(view, "status"));
@@ -219,6 +223,7 @@ public partial class ComposerView : UserControl
             pendingEdits.RemoveAt(0);
         pendingEdits.Add(text);
         Command?.Invoke("composer.edit", new { key, text });
+        RefreshFileToken();
         UpdateSendButtons();
     }
 
@@ -245,6 +250,11 @@ public partial class ComposerView : UserControl
             return;
 
         var modifiers = Keyboard.Modifiers;
+        if (modifiers == ModifierKeys.None && HandleFileKey(e.Key))
+        {
+            e.Handled = true;
+            return;
+        }
         if (e.Key == Key.Escape && modifiers == ModifierKeys.None)
         {
             if (CancelEditButton.IsEnabled && CancelEditButton.Visibility == Visibility.Visible)
@@ -276,7 +286,11 @@ public partial class ComposerView : UserControl
             SubmitMessage(ctrlEnter ? shift : ctrl);
     }
 
-    private void EditorLostFocus(object sender, KeyboardFocusChangedEventArgs e) => imeComposing = false;
+    private void EditorLostFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        imeComposing = false;
+        CloseFiles();
+    }
 
     private void ApplyFocus()
     {

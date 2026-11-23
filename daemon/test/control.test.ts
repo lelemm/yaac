@@ -164,3 +164,53 @@ test("dispatcher: agent input starts a turn on an idle held thread, queues behin
   await c.close();
   await daemon.stop("test");
 });
+
+test("manual compaction owns the thread, deduplicates its operation, and lets queued input wait", async () => {
+  const daemon = await startDaemon(tmpHome());
+  const a = await client(daemon, "a", "host-a");
+  const b = await client(daemon, "b", "host-b");
+  let finish!: () => void;
+  const pending = new Promise<void>((resolve) => { finish = resolve; });
+  try {
+    const { threadId, turnId } = await startThread(a, "/fake say before");
+    await a.request("thread/subscribe", { threadId, epoch: 1, afterSeq: 0 });
+    await waitTurnDone(a, threadId, turnId);
+    const rt = daemon.core.thread(threadId)!;
+    const fake = fakeOf(daemon) as ReturnType<typeof fakeOf> & { compact: (thread: string) => Promise<void> };
+    const effective = await fake.effective(rt.record.native);
+    rt.effective = { ...effective, capabilities: [...(effective.capabilities ?? []), "compact"] };
+    let compactCalls = 0;
+    fake.compact = async () => {
+      compactCalls++;
+      await pending;
+      daemon.core.noticeItem(rt, "compaction", "Context compacted");
+    };
+
+    const params = { threadId, opId: opId() };
+    const first = a.request("thread/compact", params);
+    await until(() => compactCalls === 1, "compaction to be dispatched");
+    const same = a.request("thread/compact", params);
+    await assert.rejects(b.request("thread/compact", { threadId, opId: opId() }), inUse);
+    await assert.rejects(a.request("thread/compact", { threadId, opId: opId() }), (e: RpcFailure) => e.code === "turn_in_progress");
+    const queued = await a.request("turn/start", { threadId, opId: opId(), delivery: "queue", input: text("/fake say after") });
+    const { outcome, queueId } = queued as { outcome: string; queueId: string };
+    assert.equal(outcome, "queued");
+    await assert.rejects(a.request("turn/queuePromote", { threadId, opId: opId(), queueId }), (e: RpcFailure) => e.code === "turn_in_progress");
+    assert.equal(daemon.core.queuedOf(rt)[0]?.queueId, queueId);
+    assert.equal(rt.activeTurn, null);
+
+    finish();
+    assert.deepEqual(await first, {});
+    assert.deepEqual(await same, {});
+    assert.equal(compactCalls, 1);
+    await a.waitEvent((e) => e.event.type === "itemCompleted" && e.event.item.kind === "notice" && e.event.item.text === "Context compacted", "compaction confirmation");
+    await a.waitEvent((e) => e.event.type === "itemCompleted" && e.event.item.kind === "agentMessage" && e.event.item.text === "after", "queued turn");
+    const items = (await readAll(a, threadId)).flatMap((page) => page.items);
+    assert.ok(items.some((item) => item.kind === "agentMessage" && item.text === "before"));
+  } finally {
+    finish();
+    await a.close();
+    await b.close();
+    await daemon.stop("test");
+  }
+});

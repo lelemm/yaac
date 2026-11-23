@@ -271,6 +271,9 @@ impl Fleet {
         let p = self.providers.get(&key.target).and_then(|ps| ps.iter().find(|p| p.instance.as_str() == instance));
         let m = p.and_then(|p| p.models.iter().find(|m| m.id.as_str() == model_id));
         let mut capabilities = p.map(|p| p.capabilities.clone()).unwrap_or_default();
+        if p.is_some() {
+            capabilities.push(Capability::Compact);
+        }
         if m.is_some_and(has_fast) {
             capabilities.push(Capability::FastMode);
         }

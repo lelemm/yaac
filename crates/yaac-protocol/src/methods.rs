@@ -307,6 +307,9 @@ catalogue! {
         /// holder's evidence no longer makes it read-only, until a different holder appears.
         ThreadTakeOver = "thread/takeOver" as THREAD_TAKE_OVER:
             t::ThreadTakeOverParams => t::Empty, HostToDaemon, request Control, response Control, op;
+        /// Run the harness’s manual context compaction (under `compact`).
+        ThreadCompact = "thread/compact" as THREAD_COMPACT:
+            t::ThreadCompactParams => t::Empty, HostToDaemon, request Control, response Control, op;
         /// List a thread under another project or worktree on the same target (D144); with
         /// `threadMoveWorkingDirectory`, its working directory follows from the next turn.
         ThreadMove = "thread/move" as THREAD_MOVE:
@@ -377,6 +380,9 @@ catalogue! {
         /// List a directory on the target.
         FsList = "fs/list" as FS_LIST:
             t::FsListParams => t::FsListResult, HostToDaemon, request Control, response Control;
+        /// Find files under a working directory on the target.
+        FsSearch = "fs/search" as FS_SEARCH:
+            t::FsSearchParams => t::FsSearchResult, HostToDaemon, request Control, response Control;
         /// The git identity of a directory.
         ProjectResolve = "project/resolve" as PROJECT_RESOLVE:
             t::ProjectResolveParams => t::ProjectResolveResult, HostToDaemon, request Control, response Control;

@@ -859,6 +859,22 @@ impl Inner {
             m::THREAD_START => self.start_thread(id, target, p),
             m::THREAD_FORK_PREVIEW => self.fork_preview(id, target, p),
             m::FS_LIST => self.fs_list(id, p),
+            m::FS_SEARCH => {
+                let cwd = p["cwd"].as_str().unwrap_or_default().trim_end_matches('/');
+                let query = p["query"].as_str().unwrap_or_default().to_lowercase();
+                let entries: Vec<Value> = ["README.md", "docs/design notes.md", "src/main.rs"].into_iter()
+                    .filter(|name| name.to_lowercase().contains(&query))
+                    .map(|name| json!({ "name": name, "path": format!("{cwd}/{name}"), "kind": "file" }))
+                    .collect();
+                self.ready.push_back(result(id, json!({ "entries": entries, "truncated": false })));
+            }
+            m::THREAD_COMPACT => {
+                let Some(key) = thread(p, "threadId") else { return };
+                let item_id = self.next("compact");
+                let item = done(&item_id, "", notice(NoticeKind::Compaction, "Context compacted", None));
+                self.emit_now(&key, ThreadEvent::ItemCompleted(ItemEvent { item }));
+                self.ready.push_back(result(id, json!({})));
+            }
             m::PROVIDER_REFRESH => self.ready.push_back(result(id, json!({}))),
             m::PROVIDER_INSTANCE_LIST => {
                 let instances: Vec<Value> = self

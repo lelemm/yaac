@@ -43,6 +43,9 @@ import type { RateLimitReport } from "./ratelimits.js";
 /** Whatever the harness uses to resume that exact conversation (Codex: `Thread.id`). */
 export type NativeId = string;
 
+/** The harness may have compacted, but its connection or confirmation was lost. */
+export class CompactionUnconfirmed extends Error {}
+
 export interface PageRequest {
   cursor?: string | null;
   /** A hint; providers may return fewer or more. */
@@ -379,6 +382,8 @@ export interface HarnessProvider {
    * a false result means the daemon no longer authorizes the handoff.
    */
   deliverPeer?(thread: NativeId, turn: TurnId, input: ProviderInput, beforeSend: () => boolean, beforeFollowOn: () => void): Promise<TurnId | null>;
+  /** Runs manual compaction and waits for native confirmation. */
+  compact?(thread: NativeId): Promise<void>;
   interrupt(thread: NativeId, turn: TurnId): Promise<void>;
   /** Hands an answer to the harness. Confirm with `requestResolved { by: "client" }`. */
   respond(thread: NativeId, requestId: RequestId, response: RequestResponse): Promise<void>;

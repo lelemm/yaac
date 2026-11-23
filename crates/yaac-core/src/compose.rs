@@ -48,9 +48,59 @@ pub fn enter(send_key: SendKey, shift: bool, command: bool, composing: bool) -> 
     }
 }
 
+/// A file search token at a UTF-8 caret offset. File search stays separate from slash commands.
+pub fn file_token(text: &str, caret: usize) -> Option<(std::ops::Range<usize>, &str)> {
+    let before = text.get(..caret)?;
+    let after = text.get(caret..)?;
+    let start = before.rfind(char::is_whitespace).map_or(0, |i| {
+        i + before[i..].chars().next().map_or(0, char::len_utf8)
+    });
+    let query = before[start..].strip_prefix('@')?;
+    let end = caret + after.find(char::is_whitespace).unwrap_or(after.len());
+    Some((start..end, query))
+}
+
+/// The absolute target path as a Markdown code span. Paths with spaces and backticks remain
+/// intact, and the transcript displays exactly the path the agent can open.
+pub fn file_reference(path: &str) -> String {
+    // A code span normalizes line endings. Preserve unusual filenames as a JSON string.
+    let escaped = path.contains(['\r', '\n']).then(|| serde_json::Value::String(path.to_owned()).to_string());
+    let path = escaped.as_deref().unwrap_or(path);
+    let mut longest = 0;
+    let mut run = 0;
+    for c in path.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    let ticks = "`".repeat(longest + 1);
+    if longest == 0 {
+        format!("{ticks}{path}{ticks}")
+    } else {
+        format!("{ticks} {path} {ticks}")
+    }
+}
+
+/// Whether the composer contains the manual compaction command.
+pub fn is_compact_command(text: &str) -> bool {
+    text.trim() == "/compact"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_tokens_and_references_preserve_surrounding_text() {
+        let text = "éarlier @src/main later";
+        let caret = text.find("/main").unwrap();
+        let (range, query) = file_token(text, caret).unwrap();
+        assert_eq!(query, "src");
+        assert_eq!(&text[range], "@src/main");
+        assert!(file_token("user@example.org", 16).is_none());
+        assert!(file_token("é", 1).is_none());
+        assert_eq!(file_reference(r"C:\work\design notes.md"), r"`C:\work\design notes.md`");
+        assert_eq!(file_reference("/tmp/a`b"), "`` /tmp/a`b ``");
+    }
 
     #[test]
     fn height_table() {

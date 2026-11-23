@@ -120,6 +120,7 @@ requests. They are items in the thread, answered with `request/respond`
 | `thread/subscribe` · `unsubscribe` · `ack` | Start or stop live events for a thread, and report how far the client has durably got ([journal and replay](#journal-and-replay)). |
 | `thread/fork` | Create a new thread from an existing one, on any instance and model, with its first message ([05 Threads](05-threads.md#fork)). The result's `forkKind` says which mechanism was used. A handoff can only be made this way; `thread/forkOnly` (no first message) is native only. |
 | `thread/rename` · `archive` | Gated by capability. |
+| `thread/compact` | `{ opId, threadId }` → `{}` once the harness confirms context compaction. Requires `compact`, an idle thread without a pending request, and writer ownership. Queued messages wait. The journal retains prior messages and records the native compaction notice. |
 | `thread/delete` | `{ opId, threadId, alsoInHarness }` (D110). Always removes YAAC's record and journal; `alsoInHarness: true` (only under `threadDelete`) first deletes the harness's session too, and nothing is removed if that fails. Absent means `false`. Without it, discovery leaves the session out until it is looked up by id. Followed by `thread/removed`. |
 | `thread/move` | `{ opId, threadId, project?, worktree? }` → `{ thread, workingDirectory? }` (D144). Lists the thread under another project of the **same target** (and optionally a checkout of its repository, by root); without `project` the placement is forgotten. `ThreadSummary.placement` carries it. Under the provider's `threadMoveWorkingDirectory` the agent's folder follows from its next turn, and `workingDirectory` names it; otherwise only the placement changes. Refused for an archived thread and one in use elsewhere (`thread_in_use`). Offered under `threadMove`. Followed by `thread/updated`. |
 | → `thread/updated` · `thread/removed` | Index changes pushed while connected, including for threads created outside YAAC. |
@@ -199,6 +200,7 @@ no connected target reports it now (the values are the last known, kept across h
 | Method | Purpose |
 | --- | --- |
 | `fs/list` | List a directory on the target, for the working-directory picker. |
+| `fs/search` | `{ cwd, query }` → `{ entries, truncated }`. Case-insensitive search for files below an absolute target directory. Results carry relative display names and absolute paths. Includes tracked and unignored untracked git files, or searches a bounded directory tree outside a repository. |
 | `project/resolve` | For a directory: git root, common directory, worktree, branch, and origin URL. Used for sidebar grouping. |
 
 ## Input parts

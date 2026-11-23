@@ -45,6 +45,7 @@ import type {
   ThreadPage,
   TurnOverrides,
 } from "../types.js";
+import { CompactionUnconfirmed } from "../types.js";
 import { connectBackend, planEndpoint, realExec, type EndpointPlan, type Exec } from "./backend.js";
 import { collabStatus, fastTier, subagentStatusOf, mapItem, mapModel, mapServerRequest, planState, threadInfo, tokenUsage, turnStatus, usageDelta, type MappedRequest } from "./mapping.js";
 import { InputOutcomeUnknown } from "../types.js";
@@ -223,6 +224,7 @@ interface ThreadState {
   lastForeignTurn: TurnId | null;
   /** turn/start or turn/steer in flight: events are held until we know whose turn it is. */
   starting: boolean;
+  compact?: { item?: Item; legacy?: string; candidate?: Turn; finish: (error: Error | null) => void };
   held: Array<{ method: string; params: Record<string, unknown> }>;
   /** Turn ids seen in `turn/started` (to detect `turn/start` joining a running turn). */
   turnsSeen: Set<TurnId>;
@@ -411,6 +413,7 @@ export class CodexProvider implements HarnessProvider {
     for (const st of this.threads.values()) {
       if (st.subscribed) subscribed.push(st.native);
       st.subscribed = false;
+      st.compact?.finish(new CompactionUnconfirmed("Lost the Codex connection before compaction was confirmed"));
     }
     this.resubscribe = new Set([...this.resubscribe, ...subscribed]);
     if (this.disposed) return;
@@ -509,7 +512,7 @@ export class CodexProvider implements HarnessProvider {
     // the thread cannot be taken over: input sent now would join it.
     const busy = "another Codex client is running a turn in it; it can be taken over when that turn ends";
     if (st.foreignTurn) return { external: true, holder: "another Codex client", holderIds: [`turn:${st.foreignTurn}`], takeOverBlocked: busy };
-    if (this.isActive(st.status) && !st.ownTurn && !st.starting) return { external: true, holder: "another Codex client", holderIds: [st.lastForeignTurn ? `turn:${st.lastForeignTurn}` : "active"], takeOverBlocked: busy };
+    if (this.isActive(st.status) && !st.ownTurn && !st.starting && !st.compact) return { external: true, holder: "another Codex client", holderIds: [st.lastForeignTurn ? `turn:${st.lastForeignTurn}` : "active"], takeOverBlocked: busy };
     if (st.status?.type === "notLoaded") return { external: false };
     if (st.foreignSeen) return { external: true, holder: "another Codex client", holderIds: [st.lastForeignTurn ? `turn:${st.lastForeignTurn}` : "seen"] };
     if (st.status === null) return { external: false, uncertain: true, holder: "Codex (state not known yet)" };
@@ -622,6 +625,7 @@ export class CodexProvider implements HarnessProvider {
       "streamReasoning",
       "interrupt",
       "steer",
+      "compact",
       "approvals",
       "userQuestions",
       "userForms",
@@ -861,6 +865,39 @@ export class CodexProvider implements HarnessProvider {
     }
     if (this.isActive(st.status)) throw new ThreadInUseError("the Codex thread is busy");
     return this.beginTurn(st, input, { model: overrides.model ?? null, effort: overrides.effort ?? null, mode: findMode(overrides.mode), fast: overrides.fast ?? null, cwd: overrides.cwd ?? null });
+  }
+
+  async compact(thread: NativeId): Promise<void> {
+    const conn = await this.ensure();
+    const st = this.state(thread);
+    if (!st.subscribed) await this.resume(thread, null);
+    if (st.ownTurn || st.foreignTurn || st.starting || st.compact || this.isActive(st.status)) {
+      throw new ThreadInUseError("the Codex thread is busy");
+    }
+    let finish!: (error: Error | null) => void;
+    const finished = new Promise<Error | null>((resolve) => { finish = resolve; });
+    const compact: NonNullable<ThreadState["compact"]> = { finish };
+    st.compact = compact;
+    const timer = setTimeout(() => {
+      if (!st.ownTurn) compact.finish(new CompactionUnconfirmed("Codex did not confirm compaction"));
+    }, 120_000);
+    timer.unref();
+    try {
+      try {
+        await conn.request("thread/compact/start", { threadId: thread });
+      } catch (e) {
+        if (!(e instanceof CodexRpcError) || e.code !== undefined) throw e;
+        throw new CompactionUnconfirmed(e.message);
+      }
+      const error = await finished;
+      if (error) throw error;
+    } finally {
+      clearTimeout(timer);
+      const candidate = compact.candidate;
+      delete st.compact;
+      if (candidate) this.observedTurn(st, candidate, "external");
+      this.publishControl(st);
+    }
   }
 
   private userInput(input: ProviderInput): UserInput[] {
@@ -1137,6 +1174,7 @@ export class CodexProvider implements HarnessProvider {
       "streamReasoning",
       "interrupt",
       "steer",
+      "compact",
       "approvals",
       "userQuestions",
       "userForms",
@@ -1423,21 +1461,53 @@ export class CodexProvider implements HarnessProvider {
     return (typeof p.turnId === "string" && p.turnId) || st.ownTurn || st.foreignTurn || "";
   }
 
+  private observedTurn(st: ThreadState, turn: Turn, origin: "user" | "external"): void {
+    st.usageAtStart = st.lastUsage;
+    st.plan = null;
+    if (origin === "user") {
+      st.ownTurn = turn.id;
+      st.ownOrigin = origin;
+      this.persisted.ownTurns[st.native] = turn.id;
+      this.save();
+    } else {
+      st.foreignTurn = turn.id;
+      st.lastForeignTurn = turn.id;
+      st.foreignSeen = true;
+    }
+    this.emit({ type: "turnStarted", thread: st.native, turnId: turn.id, origin, at: new Date().toISOString() });
+    this.publishControl(st);
+  }
+
   private onThreadNotification(st: ThreadState, method: string, p: Record<string, unknown>): void {
     const native = st.native;
+    const compact = st.compact;
+    const candidate = compact?.candidate;
+    if (candidate && compact) {
+      // The RPC returns no turn id. A racing external turn must not be claimed as ours.
+      // Native manual compaction opens with a compaction item; a user prompt belongs elsewhere.
+      const item = method === "item/started" || method === "item/completed" ? p.item as ThreadItem | undefined : undefined;
+      const end = method === "turn/completed" ? p.turn as Turn | undefined : undefined;
+      if ((item && p.turnId === candidate.id) || end?.id === candidate.id || (method === "thread/compacted" && p.turnId === candidate.id)) {
+        delete compact.candidate;
+        if (item && item.type !== "contextCompaction") {
+          this.observedTurn(st, candidate, "external");
+          compact.finish(new ThreadInUseError("another Codex client started a turn before compaction"));
+        } else {
+          this.observedTurn(st, candidate, "user");
+        }
+      }
+    }
     switch (method) {
       case "turn/started": {
         const turn = p.turn as Turn | undefined;
         if (!turn?.id) return;
         st.turnsSeen.add(turn.id);
         if (turn.id === st.ownTurn) return; // announced when turn/start returned
-        st.foreignTurn = turn.id;
-        st.lastForeignTurn = turn.id;
-        st.foreignSeen = true;
-        st.usageAtStart = st.lastUsage;
-        st.plan = null;
-        this.emit({ type: "turnStarted", thread: native, turnId: turn.id, origin: "external", at: new Date().toISOString() });
-        this.publishControl(st);
+        if (st.compact && !st.compact.candidate && !st.ownTurn && !st.foreignTurn) {
+          st.compact.candidate = turn;
+        } else {
+          this.observedTurn(st, turn, "external");
+        }
         return;
       }
       case "turn/completed": {
@@ -1455,8 +1525,29 @@ export class CodexProvider implements HarnessProvider {
         const turnId = this.turnOf(st, p);
         if (item.type === "userMessage" && this.isOwnInput(st, item, turnId, method === "item/completed")) return;
         const mapped = mapItem(item, turnId, method === "item/started" ? "inProgress" : "completed");
+        if (st.compact && item.type === "contextCompaction") {
+          // The composer already shows progress. Wait for the native turn outcome before
+          // journaling success, as a completed item may arrive during a failed turn.
+          if (method === "item/started") return;
+          st.compact.item = mapped;
+          if (st.ownTurn) return;
+          // Older notification sequences may lack the native turn events.
+          st.compact.finish(null);
+        }
         this.emit({ type: method === "item/started" ? "itemStarted" : "itemCompleted", thread: native, item: mapped });
         if (item.type === "collabAgentToolCall") this.onCollab(item as unknown as Record<string, unknown>);
+        return;
+      }
+      case "thread/compacted": {
+        // Older Codex sends this after compaction. Modern Codex sends the item above.
+        if (st.compact && !st.compact.item) {
+          st.compact.legacy = this.turnOf(st, p);
+          if (!st.ownTurn) {
+            st.compact.item = this.legacyCompactionNotice(st.compact.legacy);
+            this.emit({ type: "itemCompleted", thread: native, item: st.compact.item });
+            st.compact.finish(null);
+          }
+        }
         return;
       }
       case "item/agentMessage/delta":
@@ -1541,6 +1632,10 @@ export class CodexProvider implements HarnessProvider {
     this.emit({ type: "itemCompleted", thread: st.native, item });
   }
 
+  private legacyCompactionNotice(turnId: string): Item {
+    return { id: `compact:${turnId}`, turnId, status: "completed", kind: "notice", noticeKind: "compaction", text: "Context compacted" };
+  }
+
   private finishTurn(st: ThreadState, turn: Turn, whose: "own" | "foreign"): void {
     const native = st.native;
     if (st.plan && st.plan.turnId === turn.id) {
@@ -1559,6 +1654,17 @@ export class CodexProvider implements HarnessProvider {
     const error = turn.error?.message ?? null;
     const usage = usageDelta(st.lastUsage, st.usageAtStart);
     if (whose === "own") {
+      if (st.compact) {
+        const raw = turn.items?.find((item) => item.type === "contextCompaction");
+        const item = st.compact.item ?? (raw ? mapItem(raw, turn.id, "completed") : null)
+          ?? (st.compact.legacy === turn.id ? this.legacyCompactionNotice(turn.id) : null);
+        if (status === "completed" && item) {
+          this.emit({ type: "itemCompleted", thread: native, item });
+          st.compact.finish(null);
+        } else {
+          st.compact.finish(new Error(error ?? "Codex did not confirm compaction"));
+        }
+      }
       st.ownTurn = null;
       st.ownInputsPending = 0;
       st.sentClientIds.clear();

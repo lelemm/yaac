@@ -1063,3 +1063,69 @@ test("codex: a sub-agent appears when it starts, and its parent's collab calls u
     await r.done();
   }
 });
+
+test("codex: compaction is confirmed by the native item and completes without a user prompt", async () => {
+  const r = await rig();
+  try {
+    idleThread(r.fake);
+    r.fake.handlers.set("thread/compact/start", (params) => {
+      assert.deepEqual(params, { threadId: THREAD_ID });
+      return {};
+    });
+    let resolved = false;
+    const run = r.provider.compact(THREAD_ID).then(() => { resolved = true; });
+    await until(() => r.fake.received.some((msg) => msg.method === "thread/compact/start"));
+    const params = { threadId: THREAD_ID, turnId: TURN_ID, item: { id: "native-compaction", type: "contextCompaction" } };
+    r.fake.push({ method: "turn/started", params: { threadId: THREAD_ID, turn: { id: TURN_ID, status: "inProgress" } } });
+    r.fake.push({ method: "item/started", params });
+    await until(() => r.events.some((e) => e.type === "turnStarted" && e.turnId === TURN_ID));
+    assert.equal(resolved, false, "the request reply and start event do not confirm compaction");
+    r.fake.push({ method: "item/completed", params });
+    r.fake.push({ method: "turn/completed", params: { threadId: THREAD_ID, turn: { id: TURN_ID, status: "completed" } } });
+    await run;
+    assert.ok(r.events.some((e) => e.type === "itemCompleted" && e.item.kind === "notice" && e.item.text === "Context compacted"));
+    assert.ok(r.events.some((e) => e.type === "turnStarted" && e.origin === "user" && e.turnId === TURN_ID));
+    assert.equal(r.fake.received.filter((msg) => msg.method === "turn/start").length, 0);
+  } finally {
+    await r.done();
+  }
+});
+
+test("codex: a racing external user turn is not owned by the compaction request", async () => {
+  const r = await rig();
+  try {
+    idleThread(r.fake);
+    r.fake.handlers.set("thread/compact/start", () => ({}));
+    const run = assert.rejects(r.provider.compact(THREAD_ID), ThreadInUseError);
+    await until(() => r.fake.received.some((msg) => msg.method === "thread/compact/start"));
+    r.fake.push({ method: "turn/started", params: { threadId: THREAD_ID, turn: { id: TURN_ID, status: "inProgress" } } });
+    r.fake.push({ method: "item/completed", params: {
+      threadId: THREAD_ID, turnId: TURN_ID, item: { id: "outside", type: "userMessage", content: [{ type: "text", text: "A different client" }] },
+    } });
+    await run;
+    assert.ok(r.events.some((e) => e.type === "turnStarted" && e.turnId === TURN_ID && e.origin === "external"));
+    assert.equal((await r.provider.control(THREAD_ID)).external, true);
+  } finally {
+    await r.done();
+  }
+});
+
+test("codex: a compaction item in a failed turn does not produce a success notice", async () => {
+  const r = await rig();
+  try {
+    idleThread(r.fake);
+    r.fake.handlers.set("thread/compact/start", () => ({}));
+    const run = assert.rejects(r.provider.compact(THREAD_ID), /compaction failed/);
+    await until(() => r.fake.received.some((msg) => msg.method === "thread/compact/start"));
+    const params = { threadId: THREAD_ID, turnId: TURN_ID, item: { id: "failed-compaction", type: "contextCompaction" } };
+    r.fake.push({ method: "turn/started", params: { threadId: THREAD_ID, turn: { id: TURN_ID, status: "inProgress" } } });
+    r.fake.push({ method: "item/completed", params });
+    r.fake.push({ method: "turn/completed", params: { threadId: THREAD_ID, turn: {
+      id: TURN_ID, status: "failed", error: { message: "compaction failed" },
+    } } });
+    await run;
+    assert.ok(!r.events.some((e) => e.type === "itemCompleted" && e.item.id === "failed-compaction"));
+  } finally {
+    await r.done();
+  }
+});

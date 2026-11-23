@@ -160,9 +160,34 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
         "drop": action("attachPaths", "Attach files", true),
         "paste": action("paste", "Paste", true),
         "insert": insert,
+        "fileScope": app.client.composer_cwd(&draft).map(|scope| json!(scope).to_string()),
     });
+    if let Some(search) = app.client.composer_files(&draft) {
+        v["filePicker"] = match &search.result {
+            None => json!({ "query": search.params.query, "hint": "Finding files…" }),
+            Some(Err(error)) => json!({ "query": search.params.query, "hint": error }),
+            Some(Ok(files)) => {
+                let entries: Vec<_> = files.entries.iter().map(|file| json!({
+                    "name": file.name, "path": file.path,
+                    "reference": yaac_core::compose::file_reference(file.path.as_str()),
+                })).collect();
+                let hint = if files.truncated { "Keep typing to narrow the search." } else if entries.is_empty() { "No matching files." } else { "" };
+                json!({ "query": search.params.query, "entries": entries, "hint": hint })
+            }
+        };
+    }
     match draft {
         DraftRef::Thread(key) => {
+            let compacting = app.client.compacting(&key);
+            if app.client.offers_compact(&key) {
+                let enabled = !compacting && state.may_act(&key) && !yaac_core::queue::running(state, &key)
+                    && !yaac_core::queue::awaiting_user(state, &key)
+                    && state.summary(&key).is_some_and(|s| s.hold.is_none());
+                v["compact"] = action("compact", "/compact", enabled);
+            }
+            if compacting {
+                notices.push(json!({ "id": "compacting", "text": "Compacting context…" }));
+            }
             notices.extend(
                 app.client
                     .errors
@@ -186,6 +211,8 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                     editing,
                     ..
                 } => {
+                    let running = running || compacting;
+                    let send_now = send_now.filter(|_| !compacting);
                     let dim = dimmed_hint.is_some() && !running;
                     let edit = state.queue_edits.get(&key);
                     let has = edit.map_or(!text.trim().is_empty() || !chip_views.is_empty(), |e| {
@@ -284,7 +311,11 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
             v["attachments"] = json!(chips(&views));
             v["placeholder"] = json!("Write the first message…");
             let blocked = attachments::blocked(&views);
-            v["hint"] = json!(blocked);
+            v["hint"] = if yaac_core::compose::is_compact_command(text) {
+                json!("Start the conversation before compacting context.")
+            } else {
+                json!(blocked)
+            };
             let provider_ready = state.target(&d.target).is_some_and(|target| {
                 target.providers.iter().any(|p| {
                     p.status == yaac_protocol::ProviderStatus::Ready
@@ -335,6 +366,10 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
         return Ok(());
     }
     let action = match name {
+        "composer.fileQuery" => {
+            app.client.search_composer_files(&draft, string(p, "query"));
+            None
+        }
         "composer.edit" => {
             let text = string(p, "text");
             match &draft {
@@ -368,6 +403,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
         "composer.stop" => thread.map(Action::Stop),
         "composer.action" => match id {
             "takeOver" => thread.map(Action::TakeOver),
+            "compact" => thread.map(Action::Compact),
             "attach" => Some(Action::AttachPick(draft)),
             "attachPaths" => {
                 let paths = p["paths"]
@@ -500,4 +536,32 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
         app.apply(vec![action]);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exposes_file_choices_and_manual_compaction_to_wpf() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = yaac_core::demo::threads::users();
+        app.client.open(&key);
+        app.client.pump();
+        let draft_key = DraftRef::Thread(key.clone()).store_key();
+        let payload = json!({ "key": draft_key, "query": "notes" });
+        command(&mut app, "composer.fileQuery", &payload).unwrap();
+        app.client.pump();
+        let model = view(&app, &AttentionMap::compute(&app.client.state), None);
+        let cwd = app.client.state.summary(&key).unwrap().cwd.as_str();
+        assert_eq!(model["filePicker"]["query"], "notes");
+        assert_eq!(model["filePicker"]["entries"][0]["reference"], format!("`{cwd}/docs/design notes.md`"));
+        assert_eq!(model["compact"]["id"], "compact");
+
+        command(&mut app, "composer.action", &json!({ "key": draft_key, "id": "compact" })).unwrap();
+        assert!(app.client.compacting(&key));
+        let model = view(&app, &AttentionMap::compute(&app.client.state), None);
+        assert!(model["notices"].as_array().unwrap().iter().any(|notice| notice["text"] == "Compacting context…"));
+    }
 }

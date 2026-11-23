@@ -138,13 +138,145 @@ fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &st
         .max_height(row_h * compose::MAX_ROWS as f32 + 2.0)
         .auto_shrink([false, true])
         .show(ui, |ui| ui.add(te));
-    ui.data_mut(|d| d.insert_temp(id.with("scroll-offset"), out.state.clamped_offset().y));
+    ui.data_mut(|d| {
+        d.insert_temp(id.with("scroll-offset"), out.state.clamped_offset().y);
+        d.insert_temp(id.with("file-picker-anchor"), out.inner.rect);
+    });
     let r = out.inner;
     if *focus {
         r.request_focus();
         *focus = false;
     }
     send
+}
+
+#[derive(Clone, Default)]
+struct FilePicker {
+    selected: usize,
+    token: Option<(usize, String)>,
+    dismissed: bool,
+    search_at: f64,
+    requested: bool,
+    scope: Option<(yaac_protocol::TargetId, yaac_protocol::TargetPath)>,
+}
+
+fn caret_token(ui: &egui::Ui, id: egui::Id, text: &str) -> Option<(std::ops::Range<usize>, String)> {
+    let range = egui::TextEdit::load_state(ui.ctx(), id)?.cursor.char_range()?;
+    if !range.is_empty() {
+        return None;
+    }
+    let caret = text.char_indices().nth(range.primary.index.into()).map_or(text.len(), |(i, _)| i);
+    compose::file_token(text, caret).map(|(range, query)| (range, query.to_owned()))
+}
+
+#[allow(clippy::too_many_arguments, reason = "the composer editor receives each enabled draft here")]
+fn file_text_box(ui: &mut egui::Ui, app: &mut YaacApp, draft: &DraftRef, text: &mut String, id: egui::Id, placeholder: &str, enabled: bool) -> Submit {
+    let state_id = id.with("file-picker");
+    let mut picker = ui.data_mut(|data| data.get_temp::<FilePicker>(state_id)).unwrap_or_default();
+    let mut choose = false;
+    let mut scroll_selection = false;
+    if enabled && !app.ui.ime_composing && picker.token.is_some() && !picker.dismissed && ui.memory(|m| m.has_focus(id)) {
+        ui.input_mut(|input| {
+            input.events.retain(|event| {
+                let egui::Event::Key { key, pressed: true, modifiers, .. } = event else { return true };
+                if !modifiers.is_none() {
+                    return true;
+                }
+                match key {
+                    Key::Escape => picker.dismissed = true,
+                    Key::ArrowDown => {
+                        picker.selected = picker.selected.saturating_add(1);
+                        scroll_selection = true;
+                    }
+                    Key::ArrowUp => {
+                        picker.selected = picker.selected.saturating_sub(1);
+                        scroll_selection = true;
+                    }
+                    Key::Enter | Key::Tab => choose = true,
+                    _ => return true,
+                }
+                false
+            });
+        });
+    }
+    let p = app.p;
+    let submit = text_box(ui, text, id, placeholder, &p, &mut app.ui.ime_composing, enabled, &mut app.ui.focus_composer, app.ui.send_key);
+    let active = enabled && !app.ui.ime_composing && (ui.memory(|m| m.has_focus(id))
+        || (picker.token.is_some() && ui.input(|i| i.pointer.any_down() || i.pointer.any_released())));
+    let token = active.then(|| caret_token(ui, id, text)).flatten();
+    let identity = token.as_ref().map(|(range, query)| (range.start, query.clone()));
+    let now = ui.input(|input| input.time);
+    let scope = identity.as_ref().and_then(|_| app.client.composer_cwd(draft));
+    if identity != picker.token || scope != picker.scope {
+        picker = FilePicker { token: identity, scope, search_at: now + 0.12, ..Default::default() };
+        choose = false;
+    }
+    if let Some((range, query)) = token.filter(|_| !picker.dismissed) {
+        ui.memory_mut(|m| m.set_focus_lock_filter(id, egui::EventFilter {
+            tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true,
+        }));
+        if !picker.requested && picker.scope.is_some() {
+            if now >= picker.search_at {
+                app.client.search_composer_files(draft, &query);
+                picker.requested = true;
+            } else {
+                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(picker.search_at - now));
+            }
+        }
+        let search = app.client.composer_files(draft).filter(|search| search.params.query == query);
+        let result = search.and_then(|search| search.result.as_ref());
+        let entries = result.and_then(|r| r.as_ref().ok()).map_or(&[][..], |r| r.entries.as_slice());
+        picker.selected = picker.selected.min(entries.len().saturating_sub(1));
+        let mut pick = choose.then(|| entries.get(picker.selected)).flatten();
+        if let Some(anchor) = ui.data(|data| data.get_temp::<egui::Rect>(id.with("file-picker-anchor"))) {
+            widgets::menu_popup(egui::Popup::new(state_id, ui.ctx().clone(), anchor, ui.layer_id()), &p)
+                .align(egui::RectAlign::TOP_START)
+                .open(true)
+                .show(|ui| {
+                    ui.set_width(340.0_f32.min(anchor.width()));
+                    if entries.is_empty() {
+                        let message = match (search, result) {
+                            (None, _) if picker.scope.is_none() => "Choose a working directory to find files.",
+                            (_, None) => "Finding files…",
+                            (_, Some(Err(error))) => error,
+                            (_, Some(Ok(result))) if result.truncated => "No matches in the files searched.",
+                            _ => "No matching files.",
+                        };
+                        ui.label(widgets::secondary(message, &p));
+                    }
+                    if result.is_some_and(|r| r.as_ref().is_ok_and(|r| r.truncated)) && !entries.is_empty() {
+                        ui.label(widgets::secondary("Keep typing to narrow the search.", &p));
+                    }
+                    egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                        for (i, file) in entries.iter().enumerate() {
+                            let response = ui.selectable_label(i == picker.selected, &file.name).on_hover_text(file.path.as_str());
+                            if response.clicked() {
+                                pick = Some(file);
+                            }
+                            if scroll_selection && i == picker.selected {
+                                response.scroll_to_me(None);
+                            }
+                        }
+                    });
+                });
+        }
+        if let Some(file) = pick {
+            let mut reference = compose::file_reference(file.path.as_str());
+            if text[range.end..].chars().next().is_none_or(|c| !c.is_whitespace()) {
+                reference.push(' ');
+            }
+            let caret = text[..range.start].chars().count() + reference.chars().count();
+            text.replace_range(range, &reference);
+            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(caret))));
+                state.store(ui.ctx(), id);
+            }
+            ui.memory_mut(|m| m.request_focus(id));
+            picker = FilePicker::default();
+        }
+    }
+    ui.data_mut(|data| data.insert_temp(state_id, picker));
+    submit
 }
 
 /// The focus id of a composer's text box.
@@ -334,6 +466,10 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
     for e in app.client.errors.iter().filter(|e| e.key.as_ref() == Some(key)) {
         ui.label(egui::RichText::new(&e.text).font(theme::ui(size::SMALL)).color(p.failed));
     }
+    let compacting = app.client.compacting(key);
+    if compacting {
+        ui.label(widgets::secondary("Compacting context…", &p));
+    }
     match composer(&app.client.state, map, key) {
         ComposerView::Absent { holder_line } => {
             egui::Frame::NONE.fill(p.faint).corner_radius(6).inner_margin(Margin::symmetric(12, 10)).show(ui, |ui| {
@@ -345,6 +481,8 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
             });
         }
         ComposerView::Shown { placeholder, dimmed_hint, stop, chips: chip_views, blocked, running, send_now, editing, .. } => {
+            let running = running || compacting;
+            let send_now = send_now.filter(|_| !compacting);
             // A request waiting on the user dims the composer only when no turn runs; while one
             // runs, a message can still be queued behind the answer (D166).
             let dimmed = dimmed_hint.is_some() && !running;
@@ -440,8 +578,10 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
             if ui.memory(|m| m.has_focus(id)) {
                 widgets::focus_ring(ui, inner.response.rect, &p);
             }
+            let compact_command = !editing && app.client.draft(&d).is_some_and(|draft| compose::is_compact_command(&draft.text));
             match submit {
                 Submit::None => {}
+                _ if compact_command => actions.push(Action::Compact(key.clone())),
                 // Saving an edit, sending, or (while a turn runs) queueing.
                 Submit::Send => actions.push(Action::Send(key.clone())),
                 Submit::SendNow if running && !editing && send_now.is_some() => actions.push(Action::SendNow(key.clone())),
@@ -481,16 +621,21 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
 /// being edited, on that edit (D166).
 #[allow(clippy::too_many_arguments, reason = "the two layouts of one composer share it")]
 fn text_column(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, d: &DraftRef, id: egui::Id, placeholder: &str, dimmed: bool, editing: bool, actions: &mut Vec<Action>) -> Submit {
-    let p = app.p;
-    if editing && let Some(e) = app.client.state.queue_edits.get_mut(key) {
-        return text_box(ui, &mut e.text, id, "The queued message…", &p, &mut app.ui.ime_composing, true, &mut app.ui.focus_composer, app.ui.send_key);
+    if editing && let Some(edit) = app.client.state.queue_edits.get_mut(key) {
+        let mut text = std::mem::take(&mut edit.text);
+        let submit = file_text_box(ui, app, d, &mut text, id, "The queued message…", true);
+        if let Some(edit) = app.client.state.queue_edits.get_mut(key) {
+            edit.text = text;
+        }
+        return submit;
     }
-    let draft = app.client.state.drafts.entry(key.clone()).or_default();
-    let had = draft.text.clone();
-    let submit = text_box(ui, &mut draft.text, id, placeholder, &p, &mut app.ui.ime_composing, !dimmed, &mut app.ui.focus_composer, app.ui.send_key);
-    if draft.text != had {
+    let mut text = std::mem::take(&mut app.client.state.drafts.entry(key.clone()).or_default().text);
+    let had = text.clone();
+    let submit = file_text_box(ui, app, d, &mut text, id, placeholder, !dimmed);
+    if text != had {
         actions.push(Action::DraftEdited(d.clone()));
     }
+    app.client.state.drafts.entry(key.clone()).or_default().text = text;
     submit
 }
 
@@ -822,12 +967,14 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(ui.available_width() - 130.0);
-                    if let Some(dd) = app.client.state.new_threads.iter_mut().find(|x| x.id == id) {
-                        let had = dd.draft.text.clone();
-                        send = text_box(ui, &mut dd.draft.text, eid, &format!("Message {name}…"), &p, &mut app.ui.ime_composing, true, &mut app.ui.focus_composer, app.ui.send_key);
-                        if dd.draft.text != had {
-                            actions.push(Action::DraftEdited(dref.clone()));
-                        }
+                    let mut text = d.draft.text.clone();
+                    send = file_text_box(ui, app, &dref, &mut text, eid, &format!("Message {name}…"), true);
+                    if compose::is_compact_command(&text) {
+                        ui.label(widgets::secondary("Start the conversation before compacting context.", &p));
+                    }
+                    if text != d.draft.text && let Some(dd) = app.client.state.new_threads.iter_mut().find(|x| x.id == id) {
+                        dd.draft.text = text;
+                        actions.push(Action::DraftEdited(dref.clone()));
                     }
                     if let Some(why) = blocked.as_ref().filter(|_| !chip_views.is_empty()) {
                         ui.label(widgets::secondary(why, &p));
@@ -909,6 +1056,44 @@ mod tests {
         let (sent, _) = frame(&ctx, &mut text, vec![key(Key::Enter, Modifiers::COMMAND)], false);
         assert_eq!(sent, Submit::SendNow, "Ctrl+Enter sends now");
         assert_eq!(text, "one\ntwo");
+    }
+
+    #[test]
+    fn file_picker_tab_inserts_a_target_path_at_the_caret() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let thread = yaac_core::demo::threads::users();
+        let draft = DraftRef::Thread(thread.clone());
+        let id = composer_id(&draft);
+        let cwd = app.client.state.summary(&thread).unwrap().cwd.to_string();
+        let mut text = "Read  later".to_owned();
+        let mut at = 0.0;
+        let mut draw = |events, initial: bool| {
+            at += 0.15;
+            let input = RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))),
+                time: Some(at),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                if initial {
+                    ui.memory_mut(|m| m.request_focus(id));
+                    let mut state = egui::text_edit::TextEditState::default();
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(5))));
+                    state.store(ui.ctx(), id);
+                }
+                assert_eq!(file_text_box(ui, &mut app, &draft, &mut text, id, "Message", true), Submit::None);
+            });
+            out.textures_delta.clear();
+            app.client.pump();
+        };
+        draw(vec![], true);
+        draw(vec![Event::Text("@notes".into())], false);
+        draw(vec![], false);
+        draw(vec![], false);
+        draw(vec![key(Key::Tab, Modifiers::NONE)], false);
+        assert_eq!(text, format!("Read `{cwd}/docs/design notes.md` later"));
     }
 
     #[test]

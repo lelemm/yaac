@@ -21,6 +21,8 @@ import type {
   ForgePrsResult,
   FsListParams,
   FsListResult,
+  FsSearchParams,
+  FsSearchResult,
   InitializeParams,
   InitializeResult,
   InstanceRateLimits,
@@ -61,6 +63,7 @@ import type {
   StreamCreditParams,
   ThreadAckParams,
   ThreadArchiveParams,
+  ThreadCompactParams,
   ThreadDeleteParams,
   ThreadEventParams,
   ThreadForkOnlyParams,
@@ -151,6 +154,7 @@ export const METHODS = {
   THREAD_ARCHIVE: "thread/archive",
   THREAD_DELETE: "thread/delete",
   THREAD_TAKE_OVER: "thread/takeOver",
+  THREAD_COMPACT: "thread/compact",
   THREAD_MOVE: "thread/move",
   THREAD_UPDATE: "thread/update",
   THREAD_FORK_ONLY: "thread/forkOnly",
@@ -172,6 +176,7 @@ export const METHODS = {
   UPLOAD_CANCEL: "upload/cancel",
   UPLOAD_READ: "upload/read",
   FS_LIST: "fs/list",
+  FS_SEARCH: "fs/search",
   PROJECT_RESOLVE: "project/resolve",
   PROJECT_LIST: "project/list",
   PROJECT_CREATE: "project/create",
@@ -300,6 +305,8 @@ export interface RequestMap {
   "thread/delete": { params: ThreadDeleteParams; result: Empty };
   /** Continue here a thread another program holds (under `threadTakeOver`, D140): the */
   "thread/takeOver": { params: ThreadTakeOverParams; result: Empty };
+  /** Run the harness’s manual context compaction (under `compact`). */
+  "thread/compact": { params: ThreadCompactParams; result: Empty };
   /** List a thread under another project or worktree on the same target (D144); with */
   "thread/move": { params: ThreadMoveParams; result: ThreadMoveResult };
   /** Set YAAC's own settings of a thread (the agents policy, a hold). A patch. */
@@ -342,6 +349,8 @@ export interface RequestMap {
   "upload/read": { params: UploadReadParams; result: UploadReadResult };
   /** List a directory on the target. */
   "fs/list": { params: FsListParams; result: FsListResult };
+  /** Find files under a working directory on the target. */
+  "fs/search": { params: FsSearchParams; result: FsSearchResult };
   /** The git identity of a directory. */
   "project/resolve": { params: ProjectResolveParams; result: ProjectResolveResult };
   /** The projects the user created on this target. */
@@ -447,6 +456,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "thread/archive": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/delete": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/takeOver": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "thread/compact": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/move": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/update": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/forkOnly": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
@@ -468,6 +478,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "upload/cancel": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "upload/read": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "fs/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "fs/search": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "project/resolve": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "project/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "project/create": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },

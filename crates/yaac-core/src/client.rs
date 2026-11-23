@@ -111,6 +111,8 @@ enum Call {
     Delete(ThreadKey),
     /// `thread/takeOver` (D140).
     TakeOver(ThreadKey),
+    Compact { key: ThreadKey, command: Option<String> },
+    FsSearch(u64),
     /// One `thread/archive` of a bulk Archive (D138).
     BulkArchive { batch: u64, key: ThreadKey },
     /// One `thread/move` (D144); `before`: the summary to put back if it is refused.
@@ -193,6 +195,8 @@ pub struct Client {
     warm: Vec<ThreadKey>,
     /// Errors not yet shown.
     pub errors: Vec<ClientError>,
+    /// The composer’s most recent file lookup.
+    pub composer_files: Option<ComposerFiles>,
     /// The last attachment id handed out.
     attach_ids: u64,
     /// Drafts changed since they were last stored in the hub.
@@ -221,6 +225,20 @@ pub struct Client {
     pub move_notice: Option<crate::moving::MoveNotice>,
 }
 
+/// The composer’s current read-only file search.
+#[derive(Debug)]
+pub struct ComposerFiles {
+    /// Draft that requested this search.
+    pub draft: DraftRef,
+    /// Target serving this lookup.
+    pub target: TargetId,
+    /// Last requested query and working directory.
+    pub params: yaac_protocol::FsSearchParams,
+    /// Results, or the reason the target could not search. `None` while loading.
+    pub result: Option<Result<yaac_protocol::FsSearchResult, String>>,
+    id: u64,
+}
+
 /// A bulk Archive in flight: each thread's outcome, in the order asked; `None` while waiting.
 #[derive(Clone, Debug, Default)]
 struct ArchiveBatch {
@@ -246,6 +264,7 @@ impl Client {
             build: build.into(),
             warm: Vec::new(),
             errors: Vec::new(),
+            composer_files: None,
             attach_ids: 0,
             dirty: std::collections::BTreeSet::new(),
             orphans: std::collections::VecDeque::new(),
@@ -591,6 +610,15 @@ impl Client {
                 }
             }
             Call::Delete(key) => self.deleted(&key),
+            Call::Compact { key, command } => {
+                if let Some(draft) = self.state.drafts.get_mut(&key)
+                    && command.as_ref() == Some(&draft.text)
+                {
+                    draft.text.clear();
+                    self.draft_changed(&DraftRef::Thread(key));
+                }
+            }
+            Call::FsSearch(id) => self.finish_composer_search(id, serde_json::from_value(result).map_err(|e| e.to_string())),
             Call::TakeOver(key) => {
                 if let Some(t) = self.state.transcripts.get_mut(&key) {
                     t.take_over = None;
@@ -679,6 +707,15 @@ impl Client {
                     self.error(Some(key), format!("Not sent: {}", error.message));
                 }
             }
+            Call::Compact { key, .. } => {
+                let message = if error.code == ErrorCode::OutcomeUnknown {
+                    "YAAC lost contact before the harness confirmed compaction. Check the transcript before trying again.".to_owned()
+                } else {
+                    format!("Could not compact context: {}", error.message)
+                };
+                self.error(Some(key), message);
+            }
+            Call::FsSearch(id) => self.finish_composer_search(id, Err(error.message.clone())),
             Call::TakeOver(key) => {
                 // Shown on the banner, never retried on its own.
                 let why = if error.code == ErrorCode::OutcomeUnknown {
@@ -1162,10 +1199,89 @@ impl Client {
         id
     }
 
+    /// Whether this thread advertises native context compaction.
+    pub fn offers_compact(&self, key: &ThreadKey) -> bool {
+        self.state.transcripts.get(key).and_then(|t| t.effective.as_ref())
+            .is_some_and(|effective| effective.capabilities.contains(&yaac_protocol::Capability::Compact))
+    }
+
+    /// A manual compaction request is waiting for native confirmation.
+    pub fn compacting(&self, key: &ThreadKey) -> bool {
+        self.pending.values().any(|call| matches!(call, Call::Compact { key: active, .. } if active == key))
+    }
+
+    /// Run native compaction without replacing the thread or sending a user message.
+    pub fn compact(&mut self, key: &ThreadKey) -> bool {
+        if self.compacting(key) || !self.state.may_act(key) {
+            return false;
+        }
+        let unavailable = if !self.offers_compact(key) {
+            Some("This thread does not support context compaction.")
+        } else if self.state.summary(key).is_some_and(|s| s.hold.is_some()) {
+            Some("The thread is stopped and held.")
+        } else if crate::queue::running(&self.state, key) {
+            Some("Wait for the current turn to finish before compacting context.")
+        } else if crate::queue::awaiting_user(&self.state, key) {
+            Some("Answer the pending request before compacting context.")
+        } else {
+            None
+        };
+        if let Some(message) = unavailable {
+            self.error(Some(key.clone()), message);
+            return false;
+        }
+        let command = self.state.drafts.get(key).filter(|draft| crate::compose::is_compact_command(&draft.text))
+            .map(|draft| draft.text.clone());
+        let params = yaac_protocol::ThreadCompactParams { op_id: self.op_id(), thread_id: key.thread.clone() };
+        self.routed(&key.target, m::THREAD_COMPACT, json!(params), Call::Compact { key: key.clone(), command });
+        true
+    }
+
+    /// Resolve the working directory on the target serving this composer.
+    pub fn composer_cwd(&self, draft: &DraftRef) -> Option<(TargetId, yaac_protocol::TargetPath)> {
+        match draft {
+            DraftRef::Thread(key) => Some((key.target.clone(), self.state.summary(key)?.cwd.clone())),
+            DraftRef::New(id) => {
+                let draft = self.state.new_threads.iter().find(|d| d.id == *id)?;
+                Some((draft.target.clone(), draft.cwd.clone()?))
+            }
+        }
+    }
+
+    /// Ask the existing target connection for files under this composer's working directory.
+    pub fn search_composer_files(&mut self, draft: &DraftRef, query: &str) {
+        let Some((target, cwd)) = self.composer_cwd(draft) else { return };
+        let params = yaac_protocol::FsSearchParams { cwd, query: query.to_owned() };
+        if self.composer_files.as_ref().is_some_and(|search| &search.draft == draft
+            && search.target == target && search.params == params && search.result.is_none()) {
+            return;
+        }
+        let id = self.state.next_stamp();
+        self.composer_files = Some(ComposerFiles { draft: draft.clone(), target: target.clone(), params: params.clone(), result: None, id });
+        self.routed(&target, m::FS_SEARCH, json!(params), Call::FsSearch(id));
+    }
+
+    /// Only show results for the current draft and its current working directory.
+    pub fn composer_files(&self, draft: &DraftRef) -> Option<&ComposerFiles> {
+        let search = self.composer_files.as_ref()?;
+        let (target, cwd) = self.composer_cwd(draft)?;
+        (&search.draft == draft && search.target == target && search.params.cwd == cwd).then_some(search)
+    }
+
+    fn finish_composer_search(&mut self, id: u64, result: Result<yaac_protocol::FsSearchResult, String>) {
+        if let Some(search) = self.composer_files.as_mut().filter(|search| search.id == id) {
+            search.result = Some(result);
+        }
+    }
+
     /// Send a draft's first message: `thread/start` creates the thread and sends it, as one
     /// operation.
     pub fn start_thread(&mut self, draft_id: u64) -> bool {
         let Some(draft) = self.state.new_threads.iter().find(|d| d.id == draft_id).cloned() else { return false };
+        if crate::compose::is_compact_command(&draft.draft.text) {
+            self.error(None, "Start the conversation before compacting context.");
+            return false;
+        }
         let Some(target) = self.state.target(&draft.target) else { return false };
         let instance = draft.instance.clone().or_else(|| {
             target.providers.iter().find(|p| p.status == yaac_protocol::ProviderStatus::Ready).map(|p| p.instance.clone())

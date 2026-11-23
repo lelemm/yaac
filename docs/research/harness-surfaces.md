@@ -831,3 +831,19 @@ subagent that runs a `Bash` command, `canUseTool` holding the prompt open:
   `completed`, `task_notification`).
 - After the subagent's `task_notification`, Claude Code starts a parent turn by itself to
   report it (the `external` turn of D160) — that one is real work and is shown as a turn.
+
+### Manual context compaction (2026-11-23)
+
+Codex CLI 0.170.0's generated app-server bindings define
+`thread/compact/start` with `{ threadId }` and an empty result. The current notification is
+a `contextCompaction` item. An isolated app-server emitted the empty reply, then
+`turn/started`, then `item/started` for the compaction. The bindings still include
+`thread/compacted`, now deprecated
+in favor of the item.
+
+The installed Claude Agent SDK 0.3.329 defines `SDKCompactBoundaryMessage` with
+`compact_metadata.trigger` of `manual` or `auto`. Its `SDKLocalCommandOutputMessage`
+carries local slash command feedback. An isolated Claude Code 2.1.330 stream with no prior
+messages emitted a synthetic assistant message, `Error: No messages to compact`, followed by
+a result with subtype `success`. YAAC checks for the manual boundary before accepting
+a successful SDK result as confirmation of `/compact`.

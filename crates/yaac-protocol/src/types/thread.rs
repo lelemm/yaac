@@ -714,6 +714,16 @@ pub struct ThreadDeleteParams {
     pub also_in_harness: bool,
 }
 
+/// `thread/compact`: request native context compaction on an idle thread.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadCompactParams {
+    /// The operation id (deduplicates this request).
+    pub op_id: OpId,
+    /// The conversation to compact.
+    pub thread_id: ThreadId,
+}
+
 /// `thread/takeOver` (D140): continue here a thread another program holds. `yaacd` stops
 /// treating that holder's presence as making the thread read-only, journals a notice, and
 /// keeps the takeover (across restarts) until a *different* holder appears or the holder

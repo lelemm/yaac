@@ -449,6 +449,7 @@ pub(crate) enum Action {
     DismissSend(ThreadKey, ItemId),
     Stop(ThreadKey),
     StartDraft(u64),
+    Compact(ThreadKey),
     NewThread,
     /// A draft in this thread's project and target, with its harness and model.
     NewInProject(ThreadKey),
@@ -1079,6 +1080,11 @@ impl YaacApp {
                     self.client.dismiss_send(&k, &item);
                 }
                 Action::Stop(k) => self.client.interrupt(&k),
+                Action::Compact(k) => {
+                    if self.client.compact(&k) {
+                        self.ui.scroll_end = true;
+                    }
+                }
                 Action::StartDraft(id) => {
                     self.client.start_thread(id);
                 }
