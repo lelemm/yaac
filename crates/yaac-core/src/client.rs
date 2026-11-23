@@ -123,6 +123,8 @@ enum Call {
     /// A harness-home change (P300); a `store_change` refusal asks the user.
     InstanceHome { target: TargetId, instance: InstanceId, home: Option<String> },
     FsList { target: TargetId, path: String },
+    /// `skills/list` for a composer's scope.
+    Skills(crate::skills::SkillScopeKey),
     HubSettings,
     Projects(TargetId),
     ProjectCreate { target: TargetId, for_draft: Option<u64> },
@@ -443,6 +445,13 @@ impl Client {
                     Err(e) => FsListingState::Failed(e.to_string()),
                 };
                 self.state.fs_listings.insert((target, path), state);
+            }
+            Call::Skills(key) => {
+                let state = match serde_json::from_value::<yaac_protocol::SkillsListResult>(result) {
+                    Ok(r) => crate::skills::SkillsState::Ready(r.skills),
+                    Err(e) => crate::skills::SkillsState::Failed(e.to_string()),
+                };
+                self.state.skills.insert(key, state);
             }
             Call::View => {
                 self.state.apply_view(&result);
@@ -819,6 +828,9 @@ impl Client {
             }
             Call::FsList { target, path } => {
                 self.state.fs_listings.insert((target, path), FsListingState::Failed(error.message.clone()));
+            }
+            Call::Skills(key) => {
+                self.state.skills.insert(key, crate::skills::SkillsState::Failed(error.message.clone()));
             }
             Call::HubSettings | Call::Projects(_) | Call::SshRecords => {}
             Call::InstanceHome { target, instance, home } => {
@@ -1331,6 +1343,7 @@ impl Client {
         chosen.instance = Some(instance.clone());
         let support = crate::attachments::draft_image_support(&self.state, &chosen);
         let Some(input) = crate::attachments::input_parts(&draft.draft.text, &draft.draft.attachments, &support, Some(&draft.target)) else { return false };
+        let input = crate::skills::attach(&self.state, crate::skills::for_new_thread(&self.state, &chosen), input, &draft.draft.text);
         let Some(cwd) = draft.cwd.clone() else { return false };
         let op = self.op_id();
         let mut params = json!({ "opId": op, "instance": instance, "cwd": cwd, "input": input });
@@ -1827,6 +1840,19 @@ impl Client {
         self.state.fs_listings.insert(slot, FsListingState::Loading);
         let params = if path.is_empty() { json!({}) } else { json!({ "path": path }) };
         self.routed(target, m::FS_LIST, params, Call::FsList { target: target.clone(), path: path.to_owned() });
+    }
+
+    /// Asks for a composer's skills (`skills/list`) unless they are loading or loaded. `force`
+    /// asks again (after a failure, or to pick up a new `SKILL.md`).
+    pub fn skills_list(&mut self, scope: &crate::skills::SkillScopeKey, force: bool) {
+        use crate::skills::SkillsState;
+        let known = self.state.skills.get(scope);
+        if matches!(known, Some(SkillsState::Loading)) || (!force && matches!(known, Some(SkillsState::Ready(_)))) {
+            return;
+        }
+        self.state.skills.insert(scope.clone(), SkillsState::Loading);
+        let params = json!({ "instance": scope.instance, "cwd": scope.cwd, "forceReload": force });
+        self.routed(&scope.target, m::SKILLS_LIST, params, Call::Skills(scope.clone()));
     }
 
     // ── hub, targets, providers (settings) ─────────────────────────────────────────────

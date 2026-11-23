@@ -205,13 +205,23 @@ no connected target reports it now (the values are the last known, kept across h
 | `fs/search` | `{ cwd, query }` → `{ entries, truncated }`. Case-insensitive search for files below an absolute target directory. Results carry relative display names and absolute paths. Includes tracked and unignored untracked git files, or searches a bounded directory tree outside a repository. |
 | `project/resolve` | For a directory: git root, common directory, worktree, branch, and origin URL. Used for sidebar grouping. |
 
+### Skills
+
+| Method | Purpose |
+| --- | --- |
+| `skills/list` | The skills one provider instance offers for a working directory (`{ instance, cwd, forceReload }` → `{ skills: [{ name, description, path, scope?, argumentHint? }], errors? }`). Needs the instance's `skills` capability (`capability_missing` otherwise). Scoped by the target answering, the instance (its harness home) and the folder; disabled skills are left out. Read-only. See [04](04-providers.md#skills-are-a-capability). |
+
 ## Input parts
 
 ```jsonc
 { "type": "text",  "text": "Why does this test fail?" }
 { "type": "image", "uploadId": "u_01J…" }   // send as real image input
 { "type": "file",  "uploadId": "u_01J…" }   // reference by path on the target
+{ "type": "skill", "name": "plan", "path": "/home/me/.codex/skills/plan/SKILL.md" } // a skill named in the text
 ```
+
+A `skill` part accompanies a text part that names the skill (`$plan`); only the `inlineSkills`
+capability sends one. A provider without it ignores the part — the text says it all.
 
 The UI chooses between `image` and `file` from the thread's effective capabilities; `yaacd`
 re-checks and rejects an `image` part the model cannot read. The reasoning is in
@@ -242,7 +252,7 @@ into these item kinds:
 | `userMessage` | The input parts as sent; `opId`, the operation of the `thread/start` or `turn/start` that sent it (a queued message keeps the one that queued it), so the window can replace its echo of the message in place (D165). |
 | `agentMessage` | Markdown text. |
 | `reasoning` | Reasoning text or summary, when the provider exposes it. |
-| `toolCall` | A tool invocation: `command`, `fileChange`, `mcp`, `webSearch`, `subagent`, or `other`; with title, input, output, and exit status — and, for communication with another agent, an `agentCall` ([10](10-agent-mesh.md#agent-calls-in-the-transcript)). |
+| `toolCall` | A tool invocation: `command`, `fileChange`, `mcp`, `webSearch`, `subagent`, or `other`; with title, input, output, and exit status — and, for communication with another agent, an `agentCall` ([10](10-agent-mesh.md#agent-calls-in-the-transcript)), and, when the harness confirmed it loaded a skill's instructions, a `skill` (`{ name }`; the title is then "Skill loaded" or "Read skill instructions" — [04](04-providers.md#skills-are-a-capability)). |
 | `plan` | The agent's task list and each step's state. |
 | `request` | Something awaiting the user: an approval or a question. |
 | `notice` | Out-of-band information: errors, context compaction, model rerouting, rate-limit warnings, a turn the harness recorded as stopped (`interrupted`, D167). |

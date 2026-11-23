@@ -320,6 +320,8 @@ pub struct AppState {
     pub fork_previews: BTreeMap<(ThreadKey, InstanceId), ForkPreviewState>,
     /// `fs/list` answers, by target and directory asked for ("" for the home directory).
     pub fs_listings: BTreeMap<(TargetId, String), FsListingState>,
+    /// `skills/list` answers, by target, instance and folder (the composer's picker).
+    pub skills: BTreeMap<crate::skills::SkillScopeKey, crate::skills::SkillsState>,
     /// An item to scroll to and highlight (navigation from a To/From link or Needs you).
     pub focus_item: Option<(ThreadKey, ItemId)>,
     /// Bounded transcript cache size (open thread excluded).

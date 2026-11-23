@@ -129,7 +129,8 @@ export interface ThreadTokenUsage {
 
 export type UserInput =
   | { type: "text"; text: string; text_elements: unknown[] }
-  | { type: "localImage"; path: string };
+  | { type: "localImage"; path: string }
+  | { type: "skill"; name: string; path: string };
 
 /** A JSON-RPC id as Codex uses it: a number or a string. */
 export type RpcId = number | string;

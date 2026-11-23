@@ -385,6 +385,9 @@ internal static class ComposerJson
     public static string Identifier(this JsonElement value) =>
         value.ValueKind == JsonValueKind.Number ? value.GetRawText() : value.String();
 
+    public static int ComposerInt(this JsonElement value, int fallback = 0) =>
+        value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var n) ? n : fallback;
+
     public static bool ComposerFlag(this JsonElement value, bool fallback = false) => value.ValueKind switch
     {
         JsonValueKind.True => true,

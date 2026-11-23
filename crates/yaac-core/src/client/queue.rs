@@ -61,6 +61,7 @@ impl Client {
         }
         let support = crate::attachments::thread_image_support(&self.state, key);
         let Some(input) = crate::attachments::input_parts(&draft.text, &draft.attachments, &support, Some(&key.target)) else { return false };
+        let input = crate::skills::attach(&self.state, crate::skills::for_thread(&self.state, key), input, &draft.text);
         let op = self.op_id();
         let next = self.state.next_settings.get(key).cloned().unwrap_or_default();
         self.state.drafts.remove(key);

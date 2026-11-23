@@ -22,6 +22,8 @@ import type {
   ThreadEffective,
   TurnId,
   TurnOrigin,
+  SkillScope,
+  SkillsListResult,
   SubagentStatus,
 } from "../../protocol/generated/types.js";
 import { RpcError } from "../../protocol/rpc.js";
@@ -48,7 +50,7 @@ import type {
 } from "../types.js";
 import { CompactionUnconfirmed } from "../types.js";
 import { connectBackend, planEndpoint, realExec, type EndpointPlan, type Exec } from "./backend.js";
-import { collabStatus, fastTier, subagentStatusOf, mapItem, mapModel, mapServerRequest, planState, threadInfo, tokenUsage, turnStatus, usageDelta, type MappedRequest } from "./mapping.js";
+import { collabStatus, fastTier, subagentStatusOf, mapItem, mapModel, mapServerRequest, planState, skillPathKey, threadInfo, tokenUsage, turnStatus, usageDelta, type MappedRequest } from "./mapping.js";
 import { InputOutcomeUnknown } from "../types.js";
 import { peerXml, supportsPeerInput } from "../../mesh/format.js";
 import { CodexConnection, CodexRpcError, type ServerRequest } from "./rpc.js";
@@ -281,6 +283,8 @@ export class CodexProvider implements HarnessProvider {
   private models: ModelInfo[] = [];
   /** Each listed model's fast service tier id (D125), by model id. */
   private fastTiers = new Map<string, string>();
+  /** `SKILL.md` path → skill name, from the last `skills/list`: what makes a read "skill instructions". */
+  private skillPaths = new Map<string, string>();
   /** Sign-in mode at the last probe (lower case); undefined before the first probe. */
   private authMode: string | null | undefined = undefined;
   private sourceKinds: string[] = [...THREAD_SOURCE_KINDS];
@@ -465,7 +469,7 @@ export class CodexProvider implements HarnessProvider {
     if (!turn || turn.status === "inProgress") return;
     for (const raw of turn.items ?? []) {
       if (raw.type === "userMessage" || isYaacPeerOutput(raw)) continue;
-      this.emit({ type: "itemCompleted", thread: st.native, item: mapItem(raw, turnId, "completed") });
+      this.emit({ type: "itemCompleted", thread: st.native, item: mapItem(raw, turnId, "completed", this.skillPaths) });
     }
     this.finishTurn(st, turn, "own");
   }
@@ -648,6 +652,9 @@ export class CodexProvider implements HarnessProvider {
       "modes",
       // `turn/start` and `thread/resume` take `cwd` (D144, verified on codex-cli 0.170.0).
       "threadMoveWorkingDirectory",
+      // `skills/list`, and a `skill` item in `turn/start` input (codex-cli 0.170.0 schema).
+      "skills",
+      "inlineSkills",
       // `config/read` and `config/value/write` keep `projects."<folder>".trust_level` (D147, codex-cli 0.170.0).
       "folderTrust",
       // `account/rateLimits/read` and `account/rateLimits/updated` (D161, codex-cli 0.170.0).
@@ -805,14 +812,14 @@ export class CodexProvider implements HarnessProvider {
         sortDirection: "asc",
         ...(page.cursor ? { cursor: page.cursor } : {}),
       })) as Paged<ThreadItemEntry>;
-      return { items: (res.data ?? []).filter((e) => !isYaacPeerOutput(e.item)).map((e) => mapItem(e.item, e.turnId, "completed")), cursor: res.nextCursor ?? null };
+      return { items: (res.data ?? []).filter((e) => !isYaacPeerOutput(e.item)).map((e) => mapItem(e.item, e.turnId, "completed", this.skillPaths)), cursor: res.nextCursor ?? null };
     } catch (e) {
       if (page.cursor) throw e;
       // Older history without item paging: one full read.
       const r = (await conn.request("thread/read", { threadId: thread, includeTurns: true })) as { thread: Thread };
       const items: Item[] = [];
       for (const turn of r.thread.turns ?? []) for (const raw of turn.items ?? []) {
-        if (!isYaacPeerOutput(raw)) items.push(mapItem(raw, turn.id, turn.status === "inProgress" ? "inProgress" : "completed"));
+        if (!isYaacPeerOutput(raw)) items.push(mapItem(raw, turn.id, turn.status === "inProgress" ? "inProgress" : "completed", this.skillPaths));
       }
       return { items, cursor: null };
     }
@@ -909,6 +916,8 @@ export class CodexProvider implements HarnessProvider {
     const out: UserInput[] = [];
     if (input.text.length > 0 || input.images.length === 0) out.push({ type: "text", text: input.text, text_elements: [] });
     for (const img of input.images) out.push({ type: "localImage", path: img.path });
+    // Skills the user named (`inlineSkills`): Codex's own reference, beside the `$name` text.
+    for (const part of input.parts) if (part.type === "skill") out.push({ type: "skill", name: part.name, path: part.path });
     return out;
   }
 
@@ -1156,6 +1165,32 @@ export class CodexProvider implements HarnessProvider {
     });
   }
 
+  /**
+   * The skills Codex offers for a folder (`skills/list`, schema of codex-cli 0.170.0): the
+   * enabled ones only. Remembers their paths so a later read of one is recognised.
+   */
+  async skills(cwd: string, opts: { forceReload: boolean }): Promise<SkillsListResult> {
+    const conn = await this.ensure();
+    const res = ((await conn.request("skills/list", { cwds: [cwd], forceReload: opts.forceReload })) ?? {}) as { data?: Array<{ skills?: Array<Record<string, unknown>>; errors?: Array<Record<string, unknown>> }> };
+    const out: SkillsListResult = { skills: [], errors: [] };
+    const seen = new Set<string>();
+    for (const entry of res.data ?? []) {
+      for (const s of entry.skills ?? []) {
+        const name = typeof s.name === "string" ? s.name : null;
+        const path = typeof s.path === "string" ? s.path : null;
+        if (!name || !path || s.enabled === false || seen.has(path)) continue;
+        seen.add(path);
+        this.skillPaths.set(skillPathKey(path), name);
+        const iface = (s.interface ?? {}) as Record<string, unknown>;
+        const description = [iface.shortDescription, s.shortDescription, s.description].find((d) => typeof d === "string" && d.length > 0);
+        out.skills.push({ name, description: typeof description === "string" ? description : "", path, scope: codexScope(s.scope) });
+      }
+      for (const e of entry.errors ?? []) out.errors?.push(`${typeof e.path === "string" ? e.path : "skill"}: ${typeof e.message === "string" ? e.message : "unreadable"}`);
+    }
+    out.skills.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  }
+
   // ── Effective capabilities and control ──────────────────────────────────────────────────
 
   async effective(thread: NativeId): Promise<ThreadEffective> {
@@ -1192,6 +1227,8 @@ export class CodexProvider implements HarnessProvider {
       "reasoningSummary",
       "modes",
       "threadMoveWorkingDirectory",
+      "skills",
+      "inlineSkills",
     ];
     if (efforts.length > 0) base.push("effortSwitch", "reasoning");
     if (image === "supported") base.push("imageInput");
@@ -1550,7 +1587,7 @@ export class CodexProvider implements HarnessProvider {
           const output = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : undefined;
           this.commands.item(native, item.id, turnId, method === "item/started", output);
         }
-        const mapped = mapItem(item, turnId, method === "item/started" ? "inProgress" : "completed");
+        const mapped = mapItem(item, turnId, method === "item/started" ? "inProgress" : "completed", this.skillPaths);
         if (st.compact && item.type === "contextCompaction") {
           // The composer already shows progress. Wait for the native turn outcome before
           // journaling success, as a completed item may arrive during a failed turn.
@@ -1719,6 +1756,20 @@ export function serverVersion(userAgent: string | undefined): string | null {
   if (!userAgent) return null;
   const m = /^[^/\s]+\/(\S+)/.exec(userAgent);
   return m ? m[1]! : null;
+}
+
+function codexScope(scope: unknown): SkillScope | null {
+  switch (scope) {
+    case "user":
+      return "user";
+    case "repo":
+      return "project";
+    case "system":
+    case "admin":
+      return "system";
+    default:
+      return null;
+  }
 }
 
 /** The store identity key: the server's CODEX_HOME. Sign-in is not part of it (it can change). */

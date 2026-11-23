@@ -108,6 +108,20 @@ pub struct ToolCallItem {
     /// not know this field shows the tool call as an ordinary one, under its readable title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_call: Option<AgentCall>,
+    /// The call loaded a skill's instructions, and the harness confirmed it: set by `yaacd`
+    /// only on a completed call (Claude Code's `Skill` tool result; for Codex, a successful read
+    /// of a `SKILL.md` it listed). The title then reads "Skill loaded" or "Read skill
+    /// instructions". Absent for every other tool, and for a call that failed or is not done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill: Option<SkillLoad>,
+}
+
+/// A skill whose instructions a tool call loaded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillLoad {
+    /// The skill's name.
+    pub name: String,
 }
 
 open_enum! {

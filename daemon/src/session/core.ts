@@ -1885,6 +1885,9 @@ export class Core {
         if (p.type === "image" && imageSupport === "unsupported") {
           throw notActed("capability_missing", "the selected model cannot see images; send the image as a file instead");
         }
+      } else if (p?.type === "skill") {
+        // A provider without `inlineSkills` ignores it: the `$name` text still says it all.
+        if (typeof p.name !== "string" || p.name === "" || typeof p.path !== "string" || p.path === "") throw notActed("invalid_params", "a skill part needs a name and a path");
       } else {
         throw notActed("invalid_params", `unsupported input part type ${String((p as { type?: unknown })?.type)}`);
       }

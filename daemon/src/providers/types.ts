@@ -26,6 +26,7 @@ import type {
   ProviderInstanceConfig,
   ProviderStatus,
   RequestResponse,
+  SkillsListResult,
   StoreIdentity,
   ThreadEffective,
   Timestamp,
@@ -435,6 +436,13 @@ export interface HarnessProvider {
    * the provider's own interval allows (yaacd already holds five minutes between asks).
    */
   rateLimits?(opts: { refresh: boolean }): Promise<RateLimitReport | null>;
+
+  /**
+   * The skills this instance offers for a folder (`skills`, `skills/list`): enabled ones only.
+   * Never throws for an unreadable skill (that is one line in `errors`); throws when the
+   * harness cannot be asked at all.
+   */
+  skills?(cwd: string, opts: { forceReload: boolean }): Promise<SkillsListResult>;
 
   readonly events: EventSource<ProviderEvent>;
   dispose(): Promise<void>;

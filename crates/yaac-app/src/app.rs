@@ -197,6 +197,10 @@ pub(crate) struct UiState {
     pub scroll_anchor: Option<(ThreadKey, u64, f32)>,
     /// An input method is composing in the composer.
     pub ime_composing: bool,
+    /// The skill picker over the composer (`/` and `$`).
+    pub(crate) skills: crate::skills_ui::Picker,
+    /// The same picker over the WPF composer.
+    pub(crate) wpf_skills: crate::skills_ui::WpfSkills,
     pub settings: bool,
     pub settings_page: Page,
     pub theme: ThemeChoice,
@@ -316,6 +320,8 @@ impl UiState {
             at_end: None,
             scroll_anchor: None,
             ime_composing: false,
+            skills: Default::default(),
+            wpf_skills: Default::default(),
             settings: false,
             settings_page: Page::Targets,
             theme,
@@ -555,6 +561,8 @@ pub(crate) enum Action {
     SetAlways(bool),
     ClearCache,
     FsList(TargetId, String),
+    /// `skills/list` for a composer's picker; `true`: ask again (Retry).
+    Skills(yaac_core::skills::SkillScopeKey, bool),
     Scene(Scene),
     DemoReset,
     StreamReply,
@@ -1324,6 +1332,7 @@ impl YaacApp {
                 }
                 Action::ClearCache => self.client.clear_cache(),
                 Action::FsList(t, path) => self.client.fs_list(&t, &path),
+                Action::Skills(scope, force) => self.client.skills_list(&scope, force),
                 Action::Scene(s) => {
                     if let Some(h) = &self.demo {
                         h.play(s);

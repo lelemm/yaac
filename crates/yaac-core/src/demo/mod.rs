@@ -875,6 +875,7 @@ impl Inner {
                 self.emit_now(&key, ThreadEvent::ItemCompleted(ItemEvent { item }));
                 self.ready.push_back(result(id, json!({})));
             }
+            m::SKILLS_LIST => self.skills_list(id, p),
             m::PROVIDER_REFRESH => self.ready.push_back(result(id, json!({}))),
             m::PROVIDER_INSTANCE_LIST => {
                 let instances: Vec<Value> = self
@@ -1604,6 +1605,18 @@ impl Inner {
             res["omittedAttachments"] = json!(["screenshot.png", "diagram.png"]);
         }
         self.ready.push_back(result(id, res));
+    }
+
+    /// The demo's skills: the same few for every instance and folder, enough to try the picker.
+    fn skills_list(&mut self, id: RpcId, p: &Value) {
+        let cwd = p.get("cwd").and_then(Value::as_str).unwrap_or("/home/dev").trim_end_matches('/');
+        let skills = json!([
+            { "name": "review", "description": "Review the changes on this branch for bugs", "path": format!("{cwd}/.claude/skills/review/SKILL.md"), "scope": "project" },
+            { "name": "release-notes", "description": "Draft release notes from merged pull requests", "path": format!("{cwd}/.claude/skills/release-notes/SKILL.md"), "scope": "project", "argumentHint": "[version]" },
+            { "name": "plan", "description": "Write a plan before touching code", "path": "/home/dev/.agents/skills/plan/SKILL.md", "scope": "user" },
+            { "name": "skill-creator", "description": "Create or improve a skill", "path": "/opt/harness/skills/skill-creator/SKILL.md", "scope": "system" },
+        ]);
+        self.ready.push_back(result(id, json!({ "skills": skills })));
     }
 
     fn fs_list(&mut self, id: RpcId, p: &Value) {

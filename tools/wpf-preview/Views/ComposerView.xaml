@@ -98,7 +98,7 @@
                          VerticalScrollBarVisibility="Auto"
                          HorizontalScrollBarVisibility="Disabled" InputMethod.IsInputMethodEnabled="True"
                          PreviewKeyDown="EditorKeyDown" TextChanged="EditorTextChanged"
-                         SelectionChanged="EditorFileSelectionChanged" GotKeyboardFocus="EditorFileSelectionChanged"
+                         SelectionChanged="EditorComposerSelectionChanged" GotKeyboardFocus="EditorFileSelectionChanged"
                          LostKeyboardFocus="EditorLostFocus" AutomationProperties.Name="Message" />
                 <Popup x:Name="FilePopup" Placement="Top" PlacementTarget="{Binding ElementName=Editor}">
                   <Border Background="{DynamicResource YaacRaised}" BorderBrush="{DynamicResource YaacMuted}"
@@ -120,6 +120,22 @@
                           </Style>
                         </ListBox.ItemContainerStyle>
                       </ListBox>
+                    </StackPanel>
+                  </Border>
+                </Popup>
+                <Popup x:Name="SkillPopup" PlacementTarget="{Binding ElementName=Editor}" Placement="Top"
+                       StaysOpen="True" AllowsTransparency="True" Focusable="False" IsOpen="False">
+                  <Border Background="{DynamicResource YaacRaised}" BorderBrush="{DynamicResource YaacRule}"
+                          BorderThickness="1" CornerRadius="6" Padding="6" Margin="0,0,0,4" MinWidth="320" MaxWidth="520"
+                          Focusable="False">
+                    <StackPanel Focusable="False">
+                      <TextBlock x:Name="SkillNote" Style="{StaticResource ComposerQuietText}" Margin="4,2" Visibility="Collapsed" />
+                      <Button x:Name="SkillRetryButton" Content="Retry" Style="{StaticResource ComposerButton}"
+                              Visibility="Collapsed" Focusable="False" HorizontalAlignment="Left" Click="SkillRetryClicked" />
+                      <ScrollViewer x:Name="SkillScroller" MaxHeight="240" VerticalScrollBarVisibility="Auto"
+                                    HorizontalScrollBarVisibility="Disabled" Focusable="False">
+                        <StackPanel x:Name="SkillRows" Focusable="False" />
+                      </ScrollViewer>
                     </StackPanel>
                   </Border>
                 </Popup>
