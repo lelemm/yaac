@@ -99,14 +99,65 @@ pub struct ControlRow {
 pub struct FastToggle {
     /// Fast mode is on for the next turns.
     pub on: bool,
+    pub offers_fast: bool,
+    pub offers_ultrafast: bool,
+    pub ultrafast_on: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Speed {
+    Standard,
+    Fast,
+    Ultrafast,
+}
+
+impl Speed {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Fast => "fast",
+            Self::Ultrafast => "ultrafast",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Standard => "Standard",
+            Self::Fast => "Fast",
+            Self::Ultrafast => "Ultrafast",
+        }
+    }
+}
+
+impl FastToggle {
+    pub fn current(self) -> Speed {
+        if self.ultrafast_on { Speed::Ultrafast } else if self.on { Speed::Fast } else { Speed::Standard }
+    }
+
+    pub fn options(self) -> impl Iterator<Item = Speed> {
+        [Some(Speed::Standard), self.offers_fast.then_some(Speed::Fast), self.offers_ultrafast.then_some(Speed::Ultrafast)].into_iter().flatten()
+    }
+}
 /// The tooltip of the toggle.
 pub const FAST_TOOLTIP: &str = "Fast mode";
+pub const ULTRAFAST_WARNING: &str = "This session is in Ultrafast mode. It can use up your allowance very quickly.";
+pub const ULTRAFAST_CONFIRM_TITLE: &str = "Enable Ultrafast for this session?";
+pub const ULTRAFAST_CONFIRM_BODY: &str = "Ultrafast can use up your allowance very quickly. Future turns in this session will use Ultrafast until you switch modes.";
 
 /// Whether a model offers fast mode: a definite yes from the target. Unknown is not yes.
 pub fn model_has_fast(m: &ModelInfo) -> bool {
     m.capabilities.iter().any(|c| c.capability == Capability::FastMode && c.support.is_supported())
+}
+
+pub fn model_has_ultrafast(m: &ModelInfo) -> bool {
+    m.capabilities.iter().any(|c| c.capability == Capability::UltrafastMode && c.support.is_supported())
+}
+
+fn speed_control(m: &ModelInfo, fast: bool, ultrafast: bool) -> Option<FastToggle> {
+    let offers_fast = model_has_fast(m);
+    let offers_ultrafast = model_has_ultrafast(m);
+    let ultrafast_on = offers_ultrafast && ultrafast;
+    (offers_fast || offers_ultrafast).then_some(FastToggle { on: offers_fast && fast && !ultrafast_on, offers_fast, offers_ultrafast, ultrafast_on })
 }
 
 /// Fast mode after the model changes: kept when the new model has it; otherwise turned off,
@@ -247,7 +298,7 @@ pub fn draft_row(providers: &[ProviderDescriptor], target_name: &str, draft: &Ne
     let mode = selected_p
         .filter(|p| has_capability(&p.capabilities, &Capability::Modes) && !p.modes.is_empty())
         .map(|p| mode_choice(&p.modes, draft.mode.as_ref()));
-    let fast = model_info.filter(|m| model_has_fast(m)).map(|_| FastToggle { on: draft.fast });
+    let fast = model_info.and_then(|m| speed_control(m, draft.fast, draft.ultrafast));
     ControlRow {
         model: Some(ModelControl {
             instance_label: selected_p.map_or_else(|| "No provider".to_owned(), |p| p.display_name.clone()),
@@ -281,6 +332,7 @@ pub struct StartedInputs<'a> {
     pub summary_model: Option<&'a ModelId>,
     /// Fast mode as the summary reports it (the thread's setting on the target).
     pub summary_fast: bool,
+    pub summary_ultrafast: bool,
     /// Selections for the next message.
     pub next: Option<&'a NextSettings>,
     /// Context usage.
@@ -348,13 +400,14 @@ pub fn started_row(input: StartedInputs<'_>) -> ControlRowView {
             .then(|| mode_choice(&e.modes, input.next.and_then(|n| n.mode.as_ref()).or(e.applied.mode.as_ref())))
     });
     // Fast mode: shown when the model the next message goes to has it (D125).
-    let next_model = applied_model.and_then(|id| own.and_then(|p| p.models.iter().find(|m| &m.id == id)));
-    let fast = next_model.filter(|m| model_has_fast(m)).map(|_| FastToggle {
-        on: input
-            .next
-            .and_then(|n| n.fast)
-            .unwrap_or(input.summary_fast),
+    let next_model = own.and_then(|p| match applied_model {
+        Some(id) => p.models.iter().find(|m| &m.id == id),
+        None => p.models.iter().find(|m| m.is_default),
     });
+    let fast = next_model.and_then(|m| speed_control(m,
+        input.next.and_then(|n| n.fast).unwrap_or(input.summary_fast),
+        input.next.and_then(|n| n.ultrafast).unwrap_or(input.summary_ultrafast),
+    ));
     let context_percent = if has_capability(caps, &Capability::ContextUsage) {
         input.context.and_then(|c| match (c.used, c.window) {
             (Some(u), Some(w)) if w > 0 => Some(u8::try_from((u.saturating_mul(100) / w).min(100)).unwrap_or(100)),
@@ -423,6 +476,7 @@ pub fn thread_row(state: &crate::state::AppState, key: &crate::key::ThreadKey) -
         effective: t.and_then(|t| t.effective.as_ref()),
         summary_model: s.model.as_ref(),
         summary_fast: s.fast,
+        summary_ultrafast: s.ultrafast == Some(true),
         next: state.next_settings.get(key),
         context: t.and_then(|t| t.context.as_ref()),
         may_act: state.may_act(key),

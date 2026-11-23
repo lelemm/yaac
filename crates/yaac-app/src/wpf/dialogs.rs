@@ -128,7 +128,7 @@ pub(super) fn view(app: &YaacApp) -> Value {
             fields,
         )
     } else if let Some(d) = &u.create_project {
-        form(
+        let mut form = form(
             "project",
             "Create project",
             &format!("On {}", state.target_name(&d.target)),
@@ -137,7 +137,9 @@ pub(super) fn view(app: &YaacApp) -> Value {
                 field("folder", "Folder", &d.folder),
                 field("name", "Name (optional)", &d.name),
             ],
-        )
+        );
+        form["instance"] = json!(format!("project:{}:{}", d.target, d.folder));
+        form
     } else if let Some(d) = &u.fork
         && let Some(v) = fork::view(state, &d.key, &d.choice)
     {
@@ -190,6 +192,9 @@ pub(super) fn view(app: &YaacApp) -> Value {
             .concat()
             .join("\n");
         form("mode", &v.title, &body, &v.confirm_label, vec![])
+    } else if u.ultrafast_confirm.as_ref().and_then(|draft| app.composer_speed(draft)).is_some_and(|control| control.offers_ultrafast) {
+        use yaac_core::controls::{ULTRAFAST_CONFIRM_BODY, ULTRAFAST_CONFIRM_TITLE};
+        form("ultrafast", ULTRAFAST_CONFIRM_TITLE, ULTRAFAST_CONFIRM_BODY, "Enable Ultrafast", vec![])
     } else if let Some(d) = &u.update_now {
         form("update", &d.title, &d.body, "Update now", vec![])
     } else if let Some(d) = &state.create_pr {
@@ -248,6 +253,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             "fork" => u.fork = None,
             "update" => u.update_now = None,
             "mode" => app.apply(vec![Action::CancelMode]),
+            "ultrafast" => u.ultrafast_confirm = None,
             "pullRequest" => app.client.state.create_pr = None,
             _ => {}
         }
@@ -392,6 +398,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             ))
         }
         "mode" => Some(Action::ConfirmMode),
+        "ultrafast" => Some(Action::ConfirmUltrafast),
         "update" => app
             .ui
             .update_now

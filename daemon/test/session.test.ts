@@ -196,6 +196,28 @@ test("no gap and no duplicate between thread/read and live events", async () => 
   await daemon.stop("test");
 });
 
+test("interactive history pages are bounded and keep a stable anchor as live items arrive", async () => {
+  const daemon = await startDaemon(tmpHome());
+  const c = await client(daemon);
+  try {
+    const { threadId } = await startThread(c, "/fake say One\n/fake tool check => okay\n/fake say Three");
+    const idle = async () => !(await c.request("thread/subscribe", { threadId }) as { activeTurn?: string }).activeTurn;
+    await until(idle, "initial history to settle");
+    const before = (await readAll(c, threadId)).flatMap((page) => page.items);
+    assert.ok(before.length > 2);
+    const first: any = await c.request("thread/read", { threadId, maxItems: 2 });
+    assert.deepEqual(first.items.map((item: any) => item.id), before.slice(0, 2).map((item) => item.id));
+    assert.match(first.cursor, /^history:/);
+    await c.request("turn/start", { threadId, opId: opId(), input: text("/fake say Latest") });
+    await until(idle, "new history to settle");
+    const older: any = await c.request("thread/read", { threadId, cursor: first.cursor, maxItems: 2 });
+    assert.deepEqual(older.items.map((item: any) => item.id), before.slice(2, 4).map((item) => item.id));
+  } finally {
+    await c.close();
+    await daemon.stop("test");
+  }
+});
+
 test("the journal survives a daemon restart", async () => {
   const home = tmpHome();
   let daemon = await startDaemon(home);

@@ -31,8 +31,8 @@ use yaac_protocol::methods::{
 use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
 use yaac_protocol::session::{ClientSession, ReadyInfo, SessionEvent};
 use yaac_protocol::{
-    ClientInfo, Control, DaemonHandoverParams, Epoch, HandoverState, HandoverWhen, Item, JournalPosition, MeshDeliverParams, MeshUsageParams, MeshMessage, MeshQueryParams, MeshReceiptParams,
-    MeshRosterParams, MessageId, OpId, PageCursor, Receipt, ReceiptReason, ReceiptStatus, RosterEntry, Seq,
+    ClientInfo, Control, DaemonHandoverParams, Epoch, HandoverState, HandoverWhen, Item, ItemBody, JournalPosition, MeshDeliverParams, MeshUsageParams, MeshMessage, MeshQueryParams, MeshReceiptParams,
+    MeshRosterParams, MessageId, OpId, PageCursor, Receipt, ReceiptReason, ReceiptStatus, RequestState, RosterEntry, Seq,
     StreamCreditParams, SubscribeMode, SubscribeReplay, SubscribeReset, SyncToken, TargetId, TargetName, ThreadAckParams,
     ThreadEvent, ThreadEventParams, ThreadId, ThreadReadParams, ThreadReadResult, ThreadState, ThreadSubscribeParams,
     ThreadSubscribeResult, ThreadSyncParams, ThreadSyncResult, ThreadUnsubscribeParams, ThreadUpdatedParams,
@@ -2928,24 +2928,47 @@ fn window_answer(
 fn read_from_cache(cache: &mut crate::cache::Cache, target: &TargetId, p: &ThreadReadParams) -> Result<Value, String> {
     let cached = cache.thread(target, &p.thread_id).map_err(|e| e.to_string())?;
     let Some(cached) = cached else { return Err("the thread is not cached".into()) };
-    let skip: usize = p.cursor.as_ref().and_then(|c| c.as_str().strip_prefix("hubcache:")).and_then(|n| n.parse().ok()).unwrap_or(0);
+    let skip: usize = match p.cursor.as_ref().map(|c| c.as_str()) {
+        Some(cursor) if cursor.starts_with("history:") => cached.items.iter().rev()
+            .position(|item| item.id.as_str() == &cursor[8..]).map(|offset| offset + 1)
+            .ok_or_else(|| "the older page is not cached".to_owned())?,
+        Some(cursor) => cursor.strip_prefix("hubcache:").and_then(|n| n.parse().ok()).unwrap_or(0),
+        None => 0,
+    };
     let max = p.max_bytes.unwrap_or(64 * 1024).max(1); // a page always holds at least one item
     let mut items = Vec::new();
     let mut bytes = 0u64;
-    let newest_first: Vec<&Item> = cached.items.iter().rev().collect();
     let mut next = skip;
-    for item in newest_first.iter().skip(skip) {
+    let max_items = p.max_items.map_or(usize::MAX, |n| n.clamp(1, 200) as usize);
+    for item in cached.items.iter().rev().skip(skip).take(max_items) {
         let len = serde_json::to_vec(item).map_or(0, |v| v.len() as u64);
         if !items.is_empty() && bytes + len > max {
             break;
         }
         bytes += len;
-        items.push((*item).clone());
+        items.push(item.clone());
         next += 1;
     }
-    let cursor = (next < newest_first.len()).then(|| PageCursor::new(format!("hubcache:{next}")));
+    let cursor = if next < cached.items.len() {
+        if p.max_items.is_some() {
+            items.last().map(|item| PageCursor::new(format!("history:{}", item.id)))
+        } else {
+            Some(PageCursor::new(format!("hubcache:{next}")))
+        }
+    } else {
+        None
+    };
     let context = if skip == 0 { cached.live.context.clone() } else { None };
-    Ok(to_value(&ThreadReadResult { items, position: cached.position, cursor, uploads: vec![], context }))
+    let required_items = if skip == 0 && p.max_items.is_some() {
+        let required: Vec<_> = cached.items.iter().rev().skip(next)
+            .filter(|item| matches!(&item.body, ItemBody::Request(request) if matches!(request.state, RequestState::Pending | RequestState::Submitted)))
+            .cloned()
+            .collect();
+        (!required.is_empty()).then_some(required)
+    } else {
+        None
+    };
+    Ok(to_value(&ThreadReadResult { items, position: cached.position, cursor, required_items, uploads: vec![], context }))
 }
 
 #[cfg(test)]

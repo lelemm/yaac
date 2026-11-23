@@ -111,25 +111,34 @@ pub(crate) fn selector(ui: &mut Ui, p: &Palette, label: &str, enabled: bool) -> 
     resp
 }
 
-/// The fast-mode toggle under the composer (D125): the lightning bolt, an outline when off;
-/// when on, filled in the fast yellow on the selected tint, so it reads in greyscale too.
-pub(crate) fn fast_toggle(ui: &mut Ui, p: &Palette, on: bool) -> Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 26.0), Sense::click());
-    let resp = resp.on_hover_text(yaac_core::controls::FAST_TOOLTIP);
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on, yaac_core::controls::FAST_TOOLTIP));
+/// The lightning toggle or speed menu under the composer.
+pub(crate) fn speed_control(ui: &mut Ui, p: &Palette, speed: yaac_core::controls::FastToggle) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(if speed.offers_ultrafast { 40.0 } else { 28.0 }, 26.0), Sense::click());
+    let label = if speed.offers_ultrafast { format!("Speed · {}", speed.current().label()) } else { yaac_core::controls::FAST_TOOLTIP.to_owned() };
+    let resp = resp.on_hover_text(&label);
+    let on = speed.on || speed.ultrafast_on;
+    resp.widget_info(|| egui::WidgetInfo::selected(if speed.offers_ultrafast { egui::Role::Button } else { egui::Role::CheckBox }, true, on, &label));
     if on {
         ui.painter().rect_filled(rect, 5.0, p.selected);
     } else if resp.hovered() || resp.has_focus() {
         ui.painter().rect_filled(rect, 5.0, p.faint);
     }
-    let col = if on {
+    let col = if speed.ultrafast_on {
+        p.ultrafast
+    } else if on {
         p.fast
     } else if resp.hovered() {
         p.text
     } else {
         p.text2
     };
-    icons::bolt(ui.painter(), rect.center(), 16.0, on, col);
+    let center = rect.center() - vec2(if speed.offers_ultrafast { 5.0 } else { 0.0 }, 0.0);
+    icons::bolt(ui.painter(), center, 16.0, on, col);
+    if speed.offers_ultrafast {
+        let arrow = center + vec2(14.0, 0.0);
+        ui.painter().line_segment([arrow + vec2(-3.0, -2.0), arrow + vec2(0.0, 1.0)], Stroke::new(1.0, p.text2));
+        ui.painter().line_segment([arrow + vec2(0.0, 1.0), arrow + vec2(3.0, -2.0)], Stroke::new(1.0, p.text2));
+    }
     if resp.has_focus() {
         focus_ring(ui, rect, p);
     }

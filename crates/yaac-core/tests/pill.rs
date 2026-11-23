@@ -18,7 +18,7 @@ fn row(title: &str, role: Role, mark: Mark, updated: i64, depth: u8) -> AgentRow
         provider: None,
         model: None,
         target: "local".into(),
-        display: ThreadDisplay { mark, attention: None, read_only: false, unseen: false, fast: false },
+        display: ThreadDisplay { mark, attention: None, read_only: false, unseen: false, fast: false, ultrafast: false },
         activity: String::new(),
         depth,
         git: None,

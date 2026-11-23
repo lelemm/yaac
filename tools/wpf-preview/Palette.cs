@@ -33,6 +33,7 @@ internal static class Palette
         ("YaacCodeNumber",  0xF09A5C, 0xB35000),
         ("YaacCodeType",    0x6CC4FF, 0x1A5FB4),
         ("YaacFast",        0xF5C518, 0x9A7000),
+        ("YaacUltrafast",   0x5BA8FF, 0x1764BA),
     ];
 
     private static readonly Dictionary<string, (SolidColorBrush Brush, Swatch Swatch)> Brushes = new(StringComparer.Ordinal);

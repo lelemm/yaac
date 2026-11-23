@@ -99,8 +99,12 @@ pub fn project_for<'a>(projects: &'a [Project], loc: &Location) -> Option<&'a Pr
             return Some(p);
         }
     }
+    let main = loc.repo.as_ref().filter(|repo| repo.checkout.is_some())
+        .and_then(|repo| repo.repo.rsplit_once(['/', '\\']))
+        .filter(|(_, name)| *name == ".git").map(|(folder, _)| folder);
     same_machine
-        .filter(|p| contains(&p.folder, &loc.folder))
+        .filter(|p| contains(&p.folder, &loc.folder)
+            || p.repo.is_none() && main.is_some_and(|folder| contains(&p.folder, folder)))
         .max_by_key(|p| components(&p.folder).len())
 }
 

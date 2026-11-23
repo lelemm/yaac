@@ -114,7 +114,7 @@ requests. They are items in the thread, answered with `request/respond`
 | --- | --- |
 | `thread/sync` | Incremental thread index ([below](#the-thread-index)). |
 | `thread/start` | Create a thread **and send its first message**, as one operation: instance, working directory, model, effort, mode, `fast` (D125), input. Returns the thread id and the first turn id. There is no separate "create empty thread" call: an abandoned draft should leave nothing behind, and one operation is one thing to make idempotent. |
-| `thread/read` | A page of items, newest first, with the journal position the snapshot is valid at, and whether each attachment it mentions still exists on the target. |
+| `thread/read` | A page of items, newest first, with the journal position the snapshot is valid at, and whether each attachment it mentions still exists on the target. An interactive read can also set `maxItems` for stable older cursors and include outstanding requests outside the newest page. |
 | `item/read` | A further byte range of one large item's output. |
 | `thread/forkPreview` | What a fork to a given destination would carry: mechanism, turn it cuts at, sizes, what is left out, and the destination account. For a handoff, the transcript's size and its first `maxPreviewBytes`, rendered from the harness's store exactly as the fork would; `unavailableReason` when it cannot fork (no completed turn yet, no history, destination not usable). Changes nothing. |
 | `thread/subscribe` · `unsubscribe` · `ack` | Start or stop live events for a thread, and report how far the client has durably got ([journal and replay](#journal-and-replay)). |
@@ -131,7 +131,7 @@ requests. They are items in the thread, answered with `request/respond`
 | --- | --- |
 | `command/logs` | `{ threadId, commandId }` → `{ output?, truncated }`. Reads a bounded output tail for a live command on its owner. Absent output means the harness has provided none to YAAC. |
 | `command/stop` | `{ opId, threadId, commandId }` → `{}`. Stops one command on its owner when supported and allowed by writer control. Liveness changes arrive through the index. |
-| `turn/start` | Send a user message to an existing thread: [input parts](#input-parts) plus optional overrides (`model`, `effort`, mode, `fast`). `fast` (fast mode, D125, under the model's `fastMode`) sticks for later turns like `model`; `ThreadSummary.fast` reports the thread's setting, and so whether its running turn was started in fast mode ([04](04-providers.md#fast-mode-is-a-model-capability)). Returns the turn id. Rejected with `thread_in_use` when the thread is being driven elsewhere. |
+| `turn/start` | Send a user message to an existing thread with optional `model`, `effort`, `mode`, `fast`, and `ultrafast` overrides. Speed is validated against the model. It persists for later turns and is reported by `ThreadSummary.fast` and `ThreadSummary.ultrafast`. An explicit Fast or Standard selection clears Ultrafast. Returns the turn id. Rejected with `thread_in_use` when the thread is being driven elsewhere. |
 | `turn/interrupt` | Stop a turn. Takes the **turn id**, so a late Stop can never hit the next turn. |
 | `turn/steer` | Add input to the running turn. Takes the turn id it expects to be running. Gated by capability. |
 | `request/respond` | Answer a pending approval or question. |

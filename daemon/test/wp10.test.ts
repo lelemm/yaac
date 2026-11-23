@@ -159,10 +159,14 @@ test("git status: clean, modified, added, deleted, ahead, behind, no upstream, n
   assert.equal(await computeStatus(git, plain), null, "not a repository");
   assert.equal(await resolveRepo(git, plain), null);
 
+  const project = path.join(dir, "project");
+  fs.mkdirSync(project);
+  const primary = path.join(project, "work");
+  fs.renameSync(work, primary);
   const wt = path.join(dir, "wt-feature");
-  g(work, "worktree", "add", "-q", "-b", "feature", wt);
+  g(primary, "worktree", "add", "-q", "-b", "feature", wt);
   fs.mkdirSync(path.join(wt, "sub"));
-  const main = await resolveRepo(git, work);
+  const main = await resolveRepo(git, primary);
   const linked = await resolveRepo(git, path.join(wt, "sub"));
   assert.ok(main && linked);
   assert.equal(linked.repo, main.repo, "the same repository");
@@ -170,6 +174,7 @@ test("git status: clean, modified, added, deleted, ahead, behind, no upstream, n
   assert.equal(linked.worktreeName, "wt-feature");
   assert.equal(linked.relative, "sub");
   assert.equal(linked.root, wt);
+  assert.equal(matchProject([proj("Parent", project)], { folder: path.join(wt, "sub"), repo: linked })?.name, "Parent");
   const ws = (await computeStatus(git, wt))!;
   assert.equal(ws.branch, "feature");
 

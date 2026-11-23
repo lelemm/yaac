@@ -848,12 +848,12 @@ export class CodexProvider implements HarnessProvider {
     const st = this.state(native);
     st.subscribed = true;
     st.status = r.thread.status ?? { type: "idle" };
-    st.model = r.model ?? r.thread.model ?? null;
+    st.model = r.model ?? r.thread.model ?? params.model ?? null;
     st.effort = r.reasoningEffort ?? null;
     st.mode = reportedMode(r) ?? mode?.id ?? null;
     st.lastControl = JSON.stringify({ external: false });
     try {
-      const turn = await this.beginTurn(st, input, { model: null, effort: params.effort ?? null, mode: null, fast: params.fast ?? null });
+      const turn = await this.beginTurn(st, input, { model: null, effort: params.effort ?? null, mode: null, fast: params.fast ?? null, ultrafast: params.ultrafast });
       return { thread: native, turn };
     } catch (e) {
       // Nothing was sent: do not leave an empty conversation behind.
@@ -877,7 +877,7 @@ export class CodexProvider implements HarnessProvider {
       }
     }
     if (this.isActive(st.status)) throw new ThreadInUseError("the Codex thread is busy");
-    return this.beginTurn(st, input, { model: overrides.model ?? null, effort: overrides.effort ?? null, mode: findMode(overrides.mode), fast: overrides.fast ?? null, cwd: overrides.cwd ?? null });
+    return this.beginTurn(st, input, { model: overrides.model ?? null, effort: overrides.effort ?? null, mode: findMode(overrides.mode), fast: overrides.fast ?? null, ultrafast: overrides.ultrafast, cwd: overrides.cwd ?? null });
   }
 
   async compact(thread: NativeId): Promise<void> {
@@ -923,16 +923,20 @@ export class CodexProvider implements HarnessProvider {
   }
 
   /**
-   * The `turn/start` service tier for fast mode (D125): the model's fast tier when on, and
-   * "default" (standard speed) when off, for this turn only (`serviceTierForTurn`), so the
-   * thread's own tier in Codex is never changed. Nothing is sent for a model with no fast tier.
+   * The model's requested speed for this turn only. An explicit Standard selection uses
+   * "default" on models with a faster tier.
    */
-  serviceTierFor(model: string | null, fast: boolean | null): string | null {
-    if (fast === null) return null;
-    const id = model ?? this.models.find((m) => m.isDefault)?.id ?? null;
+  serviceTierFor(model: string | null, fast: boolean | null, ultrafast = false): string | null {
+    const id = model ?? (this.models.find((m) => m.isDefault) ?? this.models[0])?.id ?? null;
     const tier = id ? this.fastTiers.get(id) : undefined;
-    if (!tier) return null;
-    return fast ? tier : "default";
+    const offersUltrafast = this.models.find((m) => m.id === id)?.capabilities
+      ?.some((cap) => cap.capability === "ultrafastMode" && cap.support === "supported");
+    if (ultrafast) {
+      if (!offersUltrafast) throw new Error("The selected Codex model no longer advertises Ultrafast.");
+      return "ultrafast";
+    }
+    if (fast === null || (!tier && !offersUltrafast)) return null;
+    return fast && tier ? tier : "default";
   }
 
   private peerOutput(input: ProviderInput) {
@@ -982,13 +986,13 @@ export class CodexProvider implements HarnessProvider {
     }
   }
 
-  private async beginTurn(st: ThreadState, input: ProviderInput, o: { model: string | null; effort: string | null; mode: CodexMode | null; fast?: boolean | null; cwd?: string | null }): Promise<TurnId> {
+  private async beginTurn(st: ThreadState, input: ProviderInput, o: { model: string | null; effort: string | null; mode: CodexMode | null; fast?: boolean | null; ultrafast?: boolean | null; cwd?: string | null }): Promise<TurnId> {
     const conn = await this.ensure();
     this.primeSkills(o.cwd ?? st.cwd);
     const clientId = randomId("yaac-", 12);
     let peer = this.peerOutput(input);
     const effort = o.effort ?? st.pendingEffort;
-    const tier = this.serviceTierFor(o.model ?? st.model, o.fast ?? null);
+    const tier = this.serviceTierFor(o.model ?? st.model, o.fast ?? null, o.ultrafast === true);
     st.sentClientIds.add(clientId);
     st.starting = true;
     st.held = [];

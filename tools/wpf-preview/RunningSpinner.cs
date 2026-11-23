@@ -12,6 +12,20 @@ public sealed class RunningSpinner : ContentControl
     private static readonly Geometry Arc = Geometry.Parse("M 15.5,5.5 A 7,7 0 1 1 7,2.3");
     private readonly RotateTransform rotation = new();
 
+    public static readonly DependencyProperty FastProperty = DependencyProperty.Register(
+        nameof(Fast), typeof(bool), typeof(RunningSpinner), new PropertyMetadata(false, SpeedChanged));
+    public static readonly DependencyProperty UltrafastProperty = DependencyProperty.Register(
+        nameof(Ultrafast), typeof(bool), typeof(RunningSpinner), new PropertyMetadata(false, SpeedChanged));
+
+    public bool Fast { get => (bool)GetValue(FastProperty); set => SetValue(FastProperty, value); }
+    public bool Ultrafast { get => (bool)GetValue(UltrafastProperty); set => SetValue(UltrafastProperty, value); }
+
+    private static void SpeedChanged(DependencyObject element, DependencyPropertyChangedEventArgs e) =>
+        ((RunningSpinner)element).UpdateAnimation();
+
+    internal static Brush Ink(bool fast, bool ultrafast) =>
+        Palette.Brush(ultrafast ? "YaacUltrafast" : fast ? "YaacFast" : "YaacText");
+
     public RunningSpinner()
     {
         Focusable = false;
@@ -44,7 +58,7 @@ public sealed class RunningSpinner : ContentControl
             return;
         }
 
-        var animation = new DoubleAnimation(0, 360, TimeSpan.FromMilliseconds(900))
+        var animation = new DoubleAnimation(0, 360, TimeSpan.FromMilliseconds(Ultrafast ? 350 : Fast ? 650 : 900))
         {
             RepeatBehavior = RepeatBehavior.Forever,
         };

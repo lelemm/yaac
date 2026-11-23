@@ -1,12 +1,19 @@
 <Application x:Class="Yaac.WpfPreview.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Yaac.WpfPreview"
              ThemeMode="Dark">
   <Application.Resources>
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries>
         <ResourceDictionary Source="Controls.xaml" />
       </ResourceDictionary.MergedDictionaries>
+      <Style TargetType="ContextMenu">
+        <Setter Property="FontFamily" Value="{x:Static local:YaacFonts.Ui}" />
+      </Style>
+      <Style TargetType="ToolTip">
+        <Setter Property="FontFamily" Value="{x:Static local:YaacFonts.Ui}" />
+      </Style>
     </ResourceDictionary>
   </Application.Resources>
 </Application>

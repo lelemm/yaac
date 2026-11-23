@@ -5,6 +5,7 @@ use std::f32::consts::TAU;
 
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use yaac_core::attention::Mark;
+use yaac_core::controls::Speed;
 
 use crate::theme::Palette;
 
@@ -28,21 +29,28 @@ fn stroke(c: Color32, w: f32) -> Stroke {
 
 /// A state mark centred at `c`, `d` across.
 pub(crate) fn mark(p: &Painter, c: Pos2, d: f32, m: Mark, pal: &Palette) {
-    mark_fast(p, c, d, m, false, pal);
+    mark_with_speed(p, c, d, m, Speed::Standard, pal);
 }
 
 /// A thread's mark: as [`mark`], and a running turn in fast mode (D125) spins yellow and a
 /// little faster.
 pub(crate) fn thread_mark(p: &Painter, c: Pos2, d: f32, display: &yaac_core::attention::ThreadDisplay, pal: &Palette) {
-    mark_fast(p, c, d, display.mark, display.fast, pal);
+    mark_running_speed(p, c, d, display.mark, display.fast, display.ultrafast, pal);
 }
 
-/// A state mark; `fast` only changes the running spinner.
-pub(crate) fn mark_fast(p: &Painter, c: Pos2, d: f32, m: Mark, fast: bool, pal: &Palette) {
+pub(crate) fn mark_running_speed(p: &Painter, c: Pos2, d: f32, m: Mark, fast: bool, ultrafast: bool, pal: &Palette) {
+    let speed = if ultrafast { Speed::Ultrafast } else if fast { Speed::Fast } else { Speed::Standard };
+    mark_with_speed(p, c, d, m, speed, pal);
+}
+
+fn mark_with_speed(p: &Painter, c: Pos2, d: f32, m: Mark, speed: Speed, pal: &Palette) {
     let p = &soft(p);
-    if fast && m == Mark::Running {
-        spinner_turning(p, c, d, pal.fast, SPINNER_TURN_FAST);
-        return;
+    if m == Mark::Running {
+        match speed {
+            Speed::Ultrafast => return spinner_turning(p, c, d, pal.ultrafast, 0.35),
+            Speed::Fast => return spinner_turning(p, c, d, pal.fast, SPINNER_TURN_FAST),
+            Speed::Standard => {}
+        }
     }
     let col = pal.mark(m);
     let r = d * 0.45;

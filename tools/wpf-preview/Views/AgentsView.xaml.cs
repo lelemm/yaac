@@ -30,6 +30,9 @@ public partial class AgentsView : UserControl
     private bool _scrollHidden;
     private bool _keyboardCard;
     private double? _heightLimit;
+    private double _floatingOffset;
+    private double _floatingViewport;
+    private readonly TranslateTransform _pillPosition = new();
 
     public AgentsView()
     {
@@ -37,15 +40,18 @@ public partial class AgentsView : UserControl
         PillItems.ItemsSource = _pill;
         CardRows.ItemsSource = _card;
         DockRows.ItemsSource = _dock;
+        Pill.RenderTransform = _pillPosition;
         Floating.CustomPopupPlacementCallback = (size, target, _) =>
         [
             new(new Point(target.Width - size.Width, (target.Height - size.Height) / 2), PopupPrimaryAxis.Vertical)
         ];
+        Pill.SizeChanged += (_, _) => PositionFloating();
+        Card.SizeChanged += (_, _) => PositionFloating();
         _closeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _closeTimer.Tick += (_, _) =>
         {
             _closeTimer.Stop();
-            if (!Pill.IsMouseOver && !Card.IsMouseOver && !_keyboardCard && _menu is null)
+            if (!Pill.IsMouseOver && !Card.IsMouseOver && !FloatingGrip.IsDragging && !_keyboardCard && _menu is null)
                 CloseCard();
         };
         Loaded += (_, _) => ApplyMode();
@@ -59,6 +65,35 @@ public partial class AgentsView : UserControl
     }
 
     public event Action<string, object?>? Command;
+
+    internal void SetFloatingViewport(double height)
+    {
+        _floatingViewport = height;
+        PositionFloating();
+    }
+
+    private double FloatingTravel => Math.Max(0, (_floatingViewport - Math.Max(Card.ActualHeight, Pill.ActualHeight)) / 2 - 4);
+
+    private void PositionFloating()
+    {
+        var travel = FloatingTravel;
+        var offset = Math.Clamp(_floatingOffset, -travel, travel);
+        _pillPosition.Y = offset;
+        Floating.VerticalOffset = offset;
+    }
+
+    private void OnFloatingDrag(object sender, DragDeltaEventArgs e)
+    {
+        var travel = FloatingTravel;
+        _floatingOffset = Math.Clamp(Floating.VerticalOffset + e.VerticalChange, -travel, travel);
+        PositionFloating();
+    }
+
+    private void OnFloatingDragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        if (!Card.IsMouseOver)
+            _closeTimer.Start();
+    }
 
     public void Render(JsonElement view)
     {

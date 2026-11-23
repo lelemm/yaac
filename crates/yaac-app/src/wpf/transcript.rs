@@ -391,7 +391,12 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, markdown: &mut super::mark
             .map(|item| json!({ "id": row_id(item), "offset": anchor.offset }))
     }));
     let focus = focus.and_then(|id| transcript?.item(id)).map(row_id);
+    let page = transcript.filter(|t| t.older_cursor.is_some()).map(|t| json!({
+        "id": "older", "label": if t.loading_older { "Loading older messages…" } else { "Load older messages" },
+        "enabled": !t.loading_older && t.loading.is_none(),
+    }));
     json!({ "threadId": key.address(), "rows": rows, "loading": transcript.is_some_and(|t| !t.is_loaded()),
+        "page": page, "historyAway": transcript.is_some_and(|t| t.history_away),
         "emptyText": "No messages yet", "focusId": focus, "focusToken": focus, "anchor": anchor })
 }
 
@@ -474,6 +479,14 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
     if let Some(thread) = p["threadId"].as_str()
         && k.address().as_str() != thread
     {
+        return Ok(());
+    }
+    if name == "transcript.page" {
+        match string(p, "id") {
+            "older" => app.apply(vec![Action::OlderHistory(k)]),
+            "latest" => app.apply(vec![Action::LatestHistory(k)]),
+            _ => {}
+        }
         return Ok(());
     }
     if name == "transcript.anchor" {

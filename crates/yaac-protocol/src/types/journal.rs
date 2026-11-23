@@ -123,9 +123,12 @@ pub struct ThreadReadParams {
     /// Continue from a previous page; absent for the first page (which takes a new snapshot).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<PageCursor>,
-    /// Upper bound on the page size in bytes. Pages are bounded by bytes, never by count.
+    /// Upper bound on the page size in bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_bytes: Option<u64>,
+    /// Optional item limit for an interactive history window, with a stable older cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_items: Option<u32>,
 }
 
 /// Whether an attachment referenced by the thread is still on the target.
@@ -144,6 +147,9 @@ pub struct UploadPresence {
 pub struct ThreadReadResult {
     /// Items, newest first.
     pub items: Vec<Item>,
+    /// Outstanding requests outside the latest page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_items: Option<Vec<Item>>,
     /// The journal position the snapshot is valid at. Same on every page of one snapshot.
     pub position: JournalPosition,
     /// Cursor for the next (older) page; absent on the last page.

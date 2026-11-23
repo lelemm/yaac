@@ -771,11 +771,11 @@ impl Inner {
                     self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
                     return;
                 };
-                const PAGE: usize = 6;
+                let page_size = p["maxItems"].as_u64().and_then(|n| usize::try_from(n).ok()).unwrap_or(6);
                 let start: usize = p.get("cursor").and_then(Value::as_str).and_then(|c| c.parse().ok()).unwrap_or(0);
                 let newest_first: Vec<Item> = t.items.iter().rev().cloned().collect();
-                let page: Vec<Item> = newest_first.iter().skip(start).take(PAGE).cloned().collect();
-                let cursor = (start + PAGE < newest_first.len()).then(|| (start + PAGE).to_string());
+                let page: Vec<Item> = newest_first.iter().skip(start).take(page_size).cloned().collect();
+                let cursor = (start + page_size < newest_first.len()).then(|| (start + page_size).to_string());
                 let mut uploads = Vec::new();
                 for item in &page {
                     if let ItemBody::UserMessage(u) = &item.body {
@@ -1266,7 +1266,7 @@ impl Inner {
     fn deliver_while_running(&mut self, id: RpcId, key: &ThreadKey, running: &TurnId, p: &Value, input: Vec<InputPart>) {
         match p.get("delivery").and_then(Value::as_str) {
             Some("queue") => {
-                let entry = yaac_protocol::QueuedMessage { queue_id: self.next("q"), input, queued_at: crate::time::timestamp(self.fleet.base), model: None, effort: None, mode: None, fast: None };
+                let entry = yaac_protocol::QueuedMessage { queue_id: self.next("q"), input, queued_at: crate::time::timestamp(self.fleet.base), model: None, effort: None, mode: None, fast: None, ultrafast: None };
                 self.emit_now(key, ThreadEvent::QueueChanged(QueueChangedEvent { change: QueueChange::Added, entry: entry.clone(), turn_id: None }));
                 self.ready.push_back(result(id, json!({ "turnId": "", "outcome": "queued", "queueId": entry.queue_id })));
             }
@@ -1834,7 +1834,7 @@ impl Inner {
                 self.emit_now(&billing, ThreadEvent::ItemStarted(ItemEvent { item: item("bq-test", t, ItemStatus::InProgress, tool(ToolKind::Command, "cargo test -p billing webhook", None, "running 12 tests\n")) }));
                 self.set_state_now(&billing, ThreadState::Running);
                 for (i, text) in ["Also log each retry at debug level, with the attempt number.", "When the tests pass, open a draft PR against main."].iter().enumerate() {
-                    let entry = yaac_protocol::QueuedMessage { queue_id: format!("bq-{}", i + 1), input: vec![InputPart::text(*text)], queued_at: crate::time::timestamp(base - 20 + i as i64 * 10), model: None, effort: None, mode: None, fast: None };
+                    let entry = yaac_protocol::QueuedMessage { queue_id: format!("bq-{}", i + 1), input: vec![InputPart::text(*text)], queued_at: crate::time::timestamp(base - 20 + i as i64 * 10), model: None, effort: None, mode: None, fast: None, ultrafast: None };
                     self.emit_now(&billing, ThreadEvent::QueueChanged(QueueChangedEvent { change: QueueChange::Added, entry, turn_id: None }));
                 }
             }

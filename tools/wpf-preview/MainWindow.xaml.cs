@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     internal MainWindow(Func<Controller> connect, bool demo, bool tray)
     {
         InitializeComponent();
+        FontFamily = YaacFonts.Ui;
         Title = demo ? "YAAC · WPF demo" : "YAAC";
         if (tray) this.tray = WindowTray.TryCreate(ShowFromTray, QuitWindow);
         SidebarPane.Command += Send;
@@ -295,9 +296,9 @@ public partial class MainWindow : Window
         if (lastSidebar.ValueKind != JsonValueKind.Object
             || !lastSidebar.TryGetProperty("sections", out var sections)) return;
         var rows = sections.EnumerateArray().SelectMany(section => section.GetProperty("rows").EnumerateArray())
-            .Select(row => (Id: Text(row, "id"), Title: Text(row, "title"), Tone: Text(row, "tone"), Selected: Flag(row, "selected"), Fast: Flag(row, "fast")))
+            .Select(row => (Id: Text(row, "id"), Title: Text(row, "title"), Tone: Text(row, "tone"), Selected: Flag(row, "selected"), Fast: Flag(row, "fast"), Ultrafast: Flag(row, "ultrafast")))
             .ToArray();
-        var signature = JsonSerializer.Serialize(rows.Select(row => new { row.Id, row.Title, row.Tone, row.Selected, row.Fast }));
+        var signature = JsonSerializer.Serialize(rows.Select(row => new { row.Id, row.Title, row.Tone, row.Selected, row.Fast, row.Ultrafast }));
         if (railSignature == signature) return;
         railSignature = signature;
         RailItems.Children.Clear();
@@ -307,7 +308,7 @@ public partial class MainWindow : Window
             {
                 Style = (Style)FindResource("RailButton"),
                 Content = row.Tone == "running"
-                    ? new RunningSpinner { Width = 15, Height = 15, Foreground = Palette.Brush(row.Fast ? "YaacFast" : "YaacText") }
+                    ? new RunningSpinner { Width = 15, Height = 15, Fast = row.Fast, Ultrafast = row.Ultrafast, Foreground = RunningSpinner.Ink(row.Fast, row.Ultrafast) }
                     : string.IsNullOrEmpty(MarkGlyph(row.Tone)) && row.Title.Length > 0 ? row.Title[..1] : MarkGlyph(row.Tone),
                 ToolTip = row.Title,
             };
@@ -320,6 +321,33 @@ public partial class MainWindow : Window
 
     private void SidebarClicked(object sender, RoutedEventArgs args) => Send("shell.sidebar");
     private void RailNewClicked(object sender, RoutedEventArgs args) => Send("shell.new");
+    private double preferredChatWidth = 860;
+
+    private void ThreadContentSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        ApplyChatWidth(e.NewSize.Width);
+        AgentsPane?.SetFloatingViewport(e.NewSize.Height);
+    }
+
+    private void ComposerResize(object sender, System.Windows.Controls.Primitives.DragDeltaEventArgs e)
+    {
+        var max = ThreadContent.ActualWidth * .95;
+        if (max <= 0) return;
+        preferredChatWidth = Math.Clamp(ComposerColumn.ActualWidth + e.HorizontalChange * 2, Math.Min(360, max), max);
+        ApplyChatWidth(ThreadContent.ActualWidth);
+    }
+
+    private void ApplyChatWidth(double viewport)
+    {
+        if (viewport <= 0 || ComposerColumn is null || TranscriptPane is null) return;
+        var max = viewport * .95;
+        var width = Math.Clamp(preferredChatWidth, Math.Min(360, max), max);
+        var gutter = Math.Min(28, (viewport - width) / 2);
+        ComposerColumn.Width = width;
+        TranscriptPane.Width = width + gutter * 2;
+        TranscriptPane.SetChatGutter(gutter);
+    }
+
     private void MinimizeClicked(object sender, RoutedEventArgs args) => SystemCommands.MinimizeWindow(this);
     private void CloseClicked(object sender, RoutedEventArgs args) => SystemCommands.CloseWindow(this);
     private void MaximizeClicked(object sender, RoutedEventArgs args)

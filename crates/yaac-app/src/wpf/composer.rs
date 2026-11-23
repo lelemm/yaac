@@ -1,6 +1,6 @@
 use super::*;
 use yaac_core::attachments::{self, ChipStatus, ChipView};
-use yaac_core::controls::{self, Choice, ControlRow, ControlRowView};
+use yaac_core::controls::{self, Choice, ControlRow, ControlRowView, Speed, ULTRAFAST_WARNING};
 use yaac_core::header::{self, ComposerView};
 use yaac_core::images::ImageRoute;
 use yaac_core::mode_confirm::ModeTarget;
@@ -88,7 +88,18 @@ fn controls(row: &ControlRow) -> Vec<Value> {
         }));
     }
     if let Some(fast) = row.fast {
-        v.push(option("fast", "Fast mode", true, fast.on, None));
+        if fast.offers_ultrafast {
+            let current = fast.current();
+            v.push(json!({
+                "id": "speed", "label": "ϟ ▾", "detail": format!("Speed · {}", current.label()),
+                "enabled": true, "tone": current.id(),
+                "children": fast.options().map(|speed| {
+                    option(&format!("speed:{}", speed.id()), speed.label(), true, speed == current, None)
+                }).collect::<Vec<_>>(),
+            }));
+        } else {
+            v.push(option("fast", "Fast mode", true, fast.on, None));
+        }
     }
     if row.fork {
         v.push(action("fork", "Fork", true));
@@ -273,6 +284,9 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
             }
             if let ControlRowView::Row(row) = controls::thread_row(state, &key) {
                 v["controls"] = json!(controls(&row));
+                if row.fast.is_some_and(|speed| speed.ultrafast_on) {
+                    v["ultrafastWarning"] = json!(ULTRAFAST_WARNING);
+                }
                 v["contextPercent"] = json!(row.context_percent);
                 v["note"] = json!(row.note);
             }
@@ -333,6 +347,9 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
             );
             if let Some(row) = controls::draft_row_of(state, id) {
                 v["controls"] = json!(controls(&row));
+                if row.fast.is_some_and(|speed| speed.ultrafast_on) {
+                    v["ultrafastWarning"] = json!(ULTRAFAST_WARNING);
+                }
                 v["note"] = json!(row.note);
             }
         }
@@ -552,6 +569,9 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             }
             "cancelEdit" => thread.map(Action::QueueEditEnd),
             "fork" => thread.map(Action::OpenFork),
+            "speed:standard" => Some(Action::ChooseSpeed(draft, Speed::Standard)),
+            "speed:fast" => Some(Action::ChooseSpeed(draft, Speed::Fast)),
+            "speed:ultrafast" => Some(Action::ChooseSpeed(draft, Speed::Ultrafast)),
             "fast" => match (thread, new) {
                 (Some(key), _) => {
                     let on = matches!(controls::thread_row(&app.client.state, &key), ControlRowView::Row(r) if r.fast.is_some_and(|f| f.on));
@@ -647,6 +667,38 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
 mod tests {
     use super::*;
     use yaac_core::demo::threads;
+
+    #[test]
+    fn ultrafast_requires_a_confirmation_and_updates_the_composer() {
+        use yaac_protocol::{Capability, ModelCapability, Support};
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.client.open(&key);
+        app.client.pump();
+        let summary = app.client.state.summary(&key).unwrap().clone();
+        let target = app.client.state.targets.iter_mut().find(|target| target.entry.id == key.target).unwrap();
+        let provider = target.providers.iter_mut().find(|provider| provider.instance == summary.instance).unwrap();
+        let model = provider.models.iter_mut().find(|model| Some(&model.id) == summary.model.as_ref()).unwrap();
+        model.capabilities.extend([Capability::FastMode, Capability::UltrafastMode].map(|capability| ModelCapability {
+            capability, support: Support::Supported,
+        }));
+        let draft = DraftRef::Thread(key.clone()).store_key();
+        let select = |app: &mut YaacApp, id| command(app, "composer.action", &json!({ "key": draft, "id": id })).unwrap();
+        select(&mut app, "speed:ultrafast");
+        assert_eq!(super::super::dialogs::view(&app)["id"], "ultrafast");
+        assert!(!app.client.state.thread_ultrafast(&key));
+        super::super::dialogs::command(&mut app, "dialog.cancel", &json!({ "id": "ultrafast" })).unwrap();
+        assert!(!app.client.state.thread_ultrafast(&key));
+        select(&mut app, "speed:ultrafast");
+        app.apply(vec![Action::ConfirmUltrafast]);
+        let view = view(&app, &AttentionMap::compute(&app.client.state), None);
+        assert_eq!(view["ultrafastWarning"], ULTRAFAST_WARNING);
+        let speed = view["controls"].as_array().unwrap().iter().find(|item| item["id"] == "speed").unwrap();
+        assert_eq!(speed["tone"], "ultrafast");
+        select(&mut app, "speed:standard");
+        assert!(!app.client.state.thread_ultrafast(&key));
+    }
 
     #[test]
     fn exposes_file_choices_and_manual_compaction_to_wpf() {

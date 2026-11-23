@@ -18,6 +18,7 @@ fn row(c: &yaac_core::client::Client, key: &yaac_core::ThreadKey, edit: impl FnO
         effective: Some(&eff),
         summary_model: s.model.as_ref(),
         summary_fast: s.fast,
+        summary_ultrafast: s.ultrafast == Some(true),
         next: None,
         context: t.context.as_ref(),
         may_act: c.state.may_act(key),

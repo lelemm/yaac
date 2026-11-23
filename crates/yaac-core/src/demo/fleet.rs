@@ -342,6 +342,7 @@ impl Fleet {
             native_id: None,
             hold: None,
             fast: false,
+            ultrafast: None,
             placement: None,
             subagent: None,
             unavailable: None,

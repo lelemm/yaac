@@ -50,7 +50,7 @@ export function modelId(m: Model): string {
  * lists tiers and none is fast, or lists none.
  */
 export function fastTier(m: Model): string | null {
-  const tiers = arr(m.serviceTiers).map((t) => obj(t)).filter((t) => typeof t.id === "string" && t.id.length > 0);
+  const tiers = arr(m.serviceTiers).map((t) => obj(t)).filter((t) => typeof t.id === "string" && t.id.length > 0 && t.id !== "ultrafast");
   const named = tiers.find((t) => typeof t.name === "string" && t.name.trim().toLowerCase() === "fast");
   const byId = tiers.find((t) => t.id === "fast" || t.id === "priority");
   return ((named ?? byId)?.id as string | undefined) ?? null;
@@ -74,6 +74,7 @@ export function mapModel(m: Model): ModelInfo {
   // (an older Codex), never "yes".
   if (Array.isArray(m.serviceTiers)) {
     capabilities.push({ capability: "fastMode", support: fastTier(m) ? "supported" : "unsupported" });
+    capabilities.push({ capability: "ultrafastMode", support: m.serviceTiers.some((tier) => tier?.id === "ultrafast") ? "supported" : "unsupported" });
   } else {
     capabilities.push({ capability: "fastMode", support: "unknown" });
   }

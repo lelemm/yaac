@@ -28,6 +28,37 @@ fn window(title: &str, p: &Palette, ctx: &egui::Context) -> egui::Window<'static
         .frame(egui::Frame::popup(&ctx.global_style()).fill(p.raised).inner_margin(Margin::same(20)))
 }
 
+pub(crate) fn ultrafast_confirm(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    use yaac_core::controls::{ULTRAFAST_CONFIRM_BODY, ULTRAFAST_CONFIRM_TITLE};
+    let Some(draft) = &app.ui.ultrafast_confirm else { return };
+    if !app.composer_speed(draft).is_some_and(|control| control.offers_ultrafast) {
+        app.ui.ultrafast_confirm = None;
+        return;
+    }
+    let p = app.p;
+    scrim(ctx, &p, "ultrafast");
+    window("ultrafast-confirm", &p, ctx).show(ctx, |ui| {
+        ui.set_width(420.0);
+        ui.label(RichText::new(ULTRAFAST_CONFIRM_TITLE).font(theme::bold(size::SECTION + 1.5)));
+        ui.add_space(8.0);
+        ui.label(ULTRAFAST_CONFIRM_BODY);
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            let cancel = widgets::plain(ui, &p, "Cancel", Some("Esc"));
+            if cancel.clicked() {
+                app.ui.ultrafast_confirm = None;
+            }
+            let confirm = danger(ui, &p, "Enable Ultrafast");
+            if confirm.clicked() {
+                actions.push(Action::ConfirmUltrafast);
+            }
+            if !confirm.has_focus() && !cancel.has_focus() {
+                cancel.request_focus();
+            }
+        });
+    });
+}
+
 /// Screen 30: "Let this agent act without asking?" Cancel is the focused default (Esc
 /// cancels); Enter does not confirm; the confirming action is the one filled button, in the
 /// failed colour.

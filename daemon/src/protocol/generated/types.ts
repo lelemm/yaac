@@ -278,7 +278,7 @@ export type BackendPreference = "auto" | "daemon" | "sdk";
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -3342,6 +3342,10 @@ export interface QueuedMessage {
    * When it was queued.
    */
   queuedAt: Timestamp;
+  /**
+   * Use Ultrafast for the turn and subsequent turns.
+   */
+  ultrafast?: boolean | null;
 }
 
 /**
@@ -4680,9 +4684,13 @@ export interface ThreadReadParams {
    */
   cursor?: PageCursor | null;
   /**
-   * Upper bound on the page size in bytes. Pages are bounded by bytes, never by count.
+   * Upper bound on the page size in bytes.
    */
   maxBytes?: number | null;
+  /**
+   * Optional item limit for an interactive history window, with a stable older cursor.
+   */
+  maxItems?: number | null;
   /**
    * The thread.
    */
@@ -4709,6 +4717,10 @@ export interface ThreadReadResult {
    * The journal position the snapshot is valid at. Same on every page of one snapshot.
    */
   position: JournalPosition;
+  /**
+   * Outstanding requests outside the latest page.
+   */
+  requiredItems?: Item[] | null;
   /**
    * Presence of the attachments referenced by the items on this page.
    */
@@ -4793,6 +4805,10 @@ export interface ThreadStartParams {
    * The project the thread is started in (docs/05-threads.md#projects).
    */
   project?: ProjectId | null;
+  /**
+   * Use Ultrafast for the turn and subsequent turns.
+   */
+  ultrafast?: boolean | null;
 }
 
 /**
@@ -5030,6 +5046,10 @@ export interface ThreadSummary {
    * Harness title, or first prompt, or user override.
    */
   title: string;
+  /**
+   * Ultrafast mode is active for this session.
+   */
+  ultrafast?: boolean | null;
   /**
    * Set when the thread cannot be used now because its instance points at another store
    * than the one the thread is bound to (P10, P300: the instance's home or socket was
@@ -5430,6 +5450,10 @@ export interface TurnStartParams {
    * The thread.
    */
   threadId: ThreadId;
+  /**
+   * Use Ultrafast for the turn and subsequent turns.
+   */
+  ultrafast?: boolean | null;
 }
 
 /**

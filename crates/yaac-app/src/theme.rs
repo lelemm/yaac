@@ -50,6 +50,7 @@ pub(crate) struct Palette {
     /// Fast mode (D125): the lightning toggle when on, and the running spinner of a turn in
     /// fast mode. A graphic, never text: 3:1 against every surface it is drawn on.
     pub fast: Color32,
+    pub ultrafast: Color32,
     pub scrim: Color32,
     /// Fill of code blocks.
     pub code_bg: Color32,
@@ -88,6 +89,7 @@ impl Palette {
         git_deleted: hex(0xF47C7C),
         unseen: hex(0x6495ED),
         fast: hex(0xF5C518),
+        ultrafast: hex(0x5BA8FF),
         scrim: Color32::from_black_alpha(140),
         code_bg: hex(0x1E2128),
         user_bg: hex(0x2D333E),
@@ -117,6 +119,7 @@ impl Palette {
         git_deleted: hex(0xC22E29),
         unseen: hex(0x4A7FE0),
         fast: hex(0x9A7000),
+        ultrafast: hex(0x1764BA),
         scrim: Color32::from_black_alpha(89),
         code_bg: hex(0xF3F4F7),
         user_bg: hex(0xE3E7EE),
@@ -257,8 +260,8 @@ pub(crate) fn visuals(p: &Palette) -> Visuals {
 }
 
 /// Fonts: egui's bundled faces, plus a regular and bold system sans when one is installed in a
-/// well-known place (egui bundles no bold face). Nothing is shipped with the binary. On Windows
-/// that is Segoe UI from the system font folder, `%WINDIR%\Fonts`, wherever Windows lives.
+/// well-known place (egui bundles no bold face). The bundled Nerd Font supplies icon glyphs
+/// for every family without requiring a system font installation.
 pub(crate) fn install_fonts(ctx: &egui::Context) {
     use std::path::PathBuf;
     let mut fonts = egui::FontDefinitions::default();
@@ -286,6 +289,13 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
             bold_family.push("sys-bold".to_owned());
             break;
         }
+    }
+    let symbols = "nerd-font-symbols".to_owned();
+    fonts.font_data.insert(symbols.clone(), std::sync::Arc::new(egui::FontData::from_static(
+        include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf"),
+    )));
+    for family in fonts.families.values_mut() {
+        family.push(symbols.clone());
     }
     let fallback = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     bold_family.extend(fallback);

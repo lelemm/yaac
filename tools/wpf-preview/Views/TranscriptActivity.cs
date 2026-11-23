@@ -48,7 +48,7 @@ internal sealed class TranscriptActivity : StackPanel
             Width = 22,
             MinHeight = 22,
             Padding = new Thickness(0),
-            FontFamily = new FontFamily("Segoe UI Symbol"),
+            FontFamily = YaacFonts.Symbol,
         };
         disclosure.Click += (_, _) => Toggle();
         disclosure.IsKeyboardFocusWithinChanged += (_, _) => UpdateMark();

@@ -141,7 +141,7 @@ mod tests {
     use super::*;
 
     fn entry(id: &str, input: Vec<InputPart>) -> QueuedMessage {
-        QueuedMessage { queue_id: id.into(), input, queued_at: crate::time::timestamp(1_800_000_000), model: None, effort: None, mode: None, fast: None }
+        QueuedMessage { queue_id: id.into(), input, queued_at: crate::time::timestamp(1_800_000_000), model: None, effort: None, mode: None, fast: None, ultrafast: None }
     }
 
     fn file(name: &str) -> InputPart {

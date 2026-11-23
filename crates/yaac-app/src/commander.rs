@@ -224,7 +224,15 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
             }
         }
         Cmd::NeedsNext => actions.push(Action::NeedsNext),
-        Cmd::JumpToBottom => app.ui.scroll_end = true,
+        Cmd::JumpToBottom => {
+            if let Some(key) = app.client.state.selected_thread().cloned()
+                && app.client.state.transcripts.get(&key).is_some_and(|t| t.history_away)
+            {
+                app.apply(vec![Action::LatestHistory(key)]);
+            } else {
+                app.ui.scroll_end = true;
+            }
+        }
         Cmd::PrevMessage | Cmd::NextMessage => {
             if let Some(k) = &thread {
                 crate::timeline::go(app, k, cmd == Cmd::NextMessage);
@@ -361,7 +369,7 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
             app.paste(ctx);
         }
         Cmd::Fast => {
-            let on = with_ctx(app, None, |c| cmds::control_row(c).and_then(|r| r.fast).map(|f| f.on));
+            let on = with_ctx(app, None, |c| cmds::control_row(c).and_then(|r| r.fast).map(|f| f.on || f.ultrafast_on));
             match (on, &thread, &app.client.state.selection) {
                 (Some(on), Some(k), _) => actions.push(Action::SetFast(k.clone(), !on)),
                 (Some(on), None, Selection::NewThread(id)) => actions.push(Action::DraftFast(*id, !on)),

@@ -112,6 +112,7 @@ pub(super) fn build_start(_: &Dialect, command: &StartThread) -> Result<Value, D
         effort: command.effort.clone(),
         mode: command.mode.clone(),
         fast: command.fast,
+        ultrafast: command.ultrafast,
         input: command.input.clone(),
     };
     encode("thread/start", &params)
@@ -145,7 +146,7 @@ pub(super) fn read_first_page(
     if matches!(subscribed.mode, SubscribeMode::Replay(_)) {
         return Ok(None);
     }
-    let params = ThreadReadParams { thread_id: command.thread_id.clone(), cursor: None, max_bytes: command.page_bytes };
+    let params = ThreadReadParams { thread_id: command.thread_id.clone(), cursor: None, max_bytes: command.page_bytes, max_items: None };
     encode("thread/read", &params).map(Some)
 }
 
@@ -154,6 +155,7 @@ pub(super) fn read_next_page(_: &Dialect, command: &OpenThread, cursor: &PageCur
         thread_id: command.thread_id.clone(),
         cursor: Some(cursor.clone()),
         max_bytes: command.page_bytes,
+        max_items: None,
     };
     encode("thread/read", &params)
 }

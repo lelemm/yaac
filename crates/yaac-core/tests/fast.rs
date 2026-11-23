@@ -20,6 +20,7 @@ fn row(c: &Client, key: &ThreadKey) -> yaac_core::controls::ControlRow {
         effective: t.and_then(|t| t.effective.as_ref()),
         summary_model: s.model.as_ref(),
         summary_fast: s.fast,
+        summary_ultrafast: s.ultrafast == Some(true),
         next: c.state.next_settings.get(key),
         context: None,
         may_act: c.state.may_act(key),
@@ -36,7 +37,7 @@ fn the_toggle_is_shown_only_for_a_model_that_has_fast_mode() {
     let users = threads::users();
     c.open(&users);
     settle(&mut c, &hub);
-    assert_eq!(row(&c, &users).fast, Some(FastToggle { on: false }));
+    assert_eq!(row(&c, &users).fast, Some(FastToggle { on: false, offers_fast: true, offers_ultrafast: false, ultrafast_on: false }));
     // A Codex thread whose model does not report it: no toggle.
     let fix = threads::fix();
     c.open(&fix);
@@ -54,17 +55,17 @@ fn the_choice_is_kept_per_thread_and_goes_with_the_next_turn() {
     c.open(&users);
     settle(&mut c, &hub);
     c.set_fast(&users, true);
-    assert_eq!(row(&c, &users).fast, Some(FastToggle { on: true }));
+    assert_eq!(row(&c, &users).fast, Some(FastToggle { on: true, offers_fast: true, offers_ultrafast: false, ultrafast_on: false }));
     assert!(!c.state.thread_fast(&threads::billing()), "another thread is not touched");
     c.state.drafts.entry(users.clone()).or_default().text = "Quick one.".into();
     assert!(c.send(&users));
     settle(&mut c, &hub);
     // The target took it: the summary reports the thread in fast mode, and the choice stays.
     assert!(c.state.summary(&users).unwrap().fast);
-    assert_eq!(row(&c, &users).fast, Some(FastToggle { on: true }));
+    assert_eq!(row(&c, &users).fast, Some(FastToggle { on: true, offers_fast: true, offers_ultrafast: false, ultrafast_on: false }));
     // Off again.
     c.set_fast(&users, false);
-    assert_eq!(row(&c, &users).fast, Some(FastToggle { on: false }));
+    assert_eq!(row(&c, &users).fast, Some(FastToggle { on: false, offers_fast: true, offers_ultrafast: false, ultrafast_on: false }));
 }
 
 #[test]
@@ -82,7 +83,7 @@ fn switching_to_a_model_without_fast_mode_turns_it_off_with_a_note() {
     // Back to a model with fast mode: offered again, but off until turned on.
     c.set_next_model(&users, ModelId::new("opus-5.5"));
     let r = row(&c, &users);
-    assert_eq!(r.fast, Some(FastToggle { on: false }));
+    assert_eq!(r.fast, Some(FastToggle { on: false, offers_fast: true, offers_ultrafast: false, ultrafast_on: false }));
     assert_eq!(r.note, None);
     // A model switch while off says nothing.
     c.set_next_model(&users, ModelId::new("haiku-5"));
@@ -98,9 +99,9 @@ fn a_draft_keeps_its_own_choice_and_loses_it_on_a_model_without_it() {
     // The default (Codex) model has no fast mode: no toggle.
     assert_eq!(draft_row(&providers, "local", &draft(&c)).fast, None);
     c.set_draft_model(id, InstanceId::new("claude"), ModelId::new("opus-5.5"));
-    assert_eq!(draft_row(&providers, "local", &draft(&c)).fast, Some(FastToggle { on: false }));
+    assert_eq!(draft_row(&providers, "local", &draft(&c)).fast, Some(FastToggle { on: false, offers_fast: true, offers_ultrafast: false, ultrafast_on: false }));
     c.set_draft_fast(id, true);
-    assert_eq!(draft_row(&providers, "local", &draft(&c)).fast, Some(FastToggle { on: true }));
+    assert_eq!(draft_row(&providers, "local", &draft(&c)).fast, Some(FastToggle { on: true, offers_fast: true, offers_ultrafast: false, ultrafast_on: false }));
     c.set_draft_model(id, InstanceId::new("claude"), ModelId::new("haiku-5"));
     let r = draft_row(&providers, "local", &draft(&c));
     assert_eq!(r.fast, None);

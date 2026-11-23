@@ -33,6 +33,8 @@ pub enum TakeOverRequest {
 pub struct ResetLoad {
     /// Items collected so far, newest first, as the pages arrive.
     pub pages: Vec<Item>,
+    /// Outstanding requests that may be outside the latest page.
+    pub required: Vec<Item>,
     /// Events received while paging.
     pub buffered: Vec<ThreadEventParams>,
     /// Attachments reported gone.
@@ -69,6 +71,12 @@ pub struct Transcript {
     pub turns: BTreeMap<TurnId, crate::turns::TurnTimes>,
     /// A reset being loaded.
     pub loading: Option<ResetLoad>,
+    /// Cursor immediately before the loaded history window.
+    pub older_cursor: Option<String>,
+    /// Whether a request for an older page is in flight.
+    pub loading_older: bool,
+    /// Newer settled rows were left behind to keep the window bounded.
+    pub history_away: bool,
     /// Answers this window gave.
     pub local_answers: BTreeMap<RequestId, LocalAnswer>,
     /// User messages queued behind the running turn, in delivery order (D166): from the
@@ -238,6 +246,7 @@ impl Transcript {
         }
         self.position = Some(event.position_after());
         self.apply_body(&event.event, rev);
+        self.trim_history();
         self.revision = rev;
         true
     }
@@ -335,6 +344,61 @@ impl Transcript {
     /// Begin a reset: subsequent events are held until [`Self::finish_reset`].
     pub fn begin_reset(&mut self) {
         self.loading = Some(ResetLoad::default());
+        self.loading_older = false;
+        self.older_cursor = None;
+        self.history_away = false;
+    }
+
+    /// Fits the visible history into a bounded window while preserving live requests and drafts.
+    pub fn trim_history(&mut self) {
+        const WINDOW: usize = 360;
+        if self.items.len() <= WINDOW || self.loading_older {
+            return;
+        }
+        let protected = |item: &Item| {
+            item.status == yaac_protocol::ItemStatus::InProgress
+                || matches!(&item.body, ItemBody::Request(r) if matches!(r.state, RequestState::Pending | RequestState::Submitted))
+                || self.pending.iter().any(|p| &p.item == &item.id)
+        };
+        let excess = self.items.len() - WINDOW;
+        let mut candidates = (0..self.items.len()).filter(|&i| !protected(&self.items[i]));
+        let dropping: BTreeSet<_> = if self.history_away {
+            candidates.rev().take(excess).collect()
+        } else {
+            candidates.by_ref().take(excess).collect()
+        };
+        if !self.history_away && !dropping.is_empty()
+            && self.older_cursor.as_deref().is_none_or(|c| c.starts_with("history:"))
+        {
+            self.older_cursor = dropping.last().and_then(|i| self.items.get(i + 1))
+                .map(|item| format!("history:{}", item.id));
+        }
+        self.retain_history(|i| !dropping.contains(&i));
+    }
+
+    fn retain_history(&mut self, keep: impl Fn(usize) -> bool) {
+        let mut index = 0;
+        self.items.retain(|_| { let yes = keep(index); index += 1; yes });
+        index = 0;
+        self.revs.retain(|_| { let yes = keep(index); index += 1; yes });
+        self.index = self.items.iter().enumerate().map(|(i, item)| (item.id.clone(), i)).collect();
+    }
+
+    /// Prepend an older page without overwriting records already updated by the live stream.
+    pub fn prepend_history(&mut self, items: Vec<Item>, rev: u64) {
+        let mut older: Vec<_> = items.into_iter().rev().filter(|item| !self.index.contains_key(&item.id)).collect();
+        if older.is_empty() {
+            self.trim_history();
+            return;
+        }
+        self.history_away |= older.len() + self.items.len() > 360;
+        let count = older.len();
+        older.append(&mut self.items);
+        self.items = older;
+        self.revs.splice(..0, std::iter::repeat_n(rev, count));
+        self.index = self.items.iter().enumerate().map(|(i, item)| (item.id.clone(), i)).collect();
+        self.revision = rev;
+        self.trim_history();
     }
 
     /// Finish a reset with the complete snapshot (`pages` newest first) and its position; then
@@ -343,6 +407,7 @@ impl Transcript {
         let Some(load) = self.loading.take() else { return };
         let mut items = load.pages;
         items.reverse();
+        items.extend(load.required);
         self.replace_all(items, rev);
         self.missing_uploads = load.missing;
         self.position = Some(position);

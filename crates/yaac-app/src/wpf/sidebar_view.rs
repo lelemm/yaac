@@ -153,7 +153,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, selection_epoch: u64) -> V
                 "title": r.title, "right": right, "status": display.mark.word(),
                 "tone": tone(display.mark), "detail": display.attention.map(|a| a.word()),
                 "selected": r.selected, "unseen": display.unseen, "readOnly": display.read_only,
-                "muted": r.muted, "fast": display.fast, "draggable": moving::can_drag(grouping) && moving::blocked(state, &r.key).is_none(),
+                "muted": r.muted, "fast": display.fast, "ultrafast": display.ultrafast, "draggable": moving::can_drag(grouping) && moving::blocked(state, &r.key).is_none(),
                 "actions": menu(app, &r.key), "line2": line2, "badge": badge,
             })
         }).collect();

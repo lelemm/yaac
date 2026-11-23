@@ -438,6 +438,7 @@ fn the_mode_selector_warns_while_a_bypass_mode_is_chosen() {
         effective: t.and_then(|t| t.effective.as_ref()),
         summary_model: s.model.as_ref(),
         summary_fast: s.fast,
+        summary_ultrafast: s.ultrafast == Some(true),
         next: c.state.next_settings.get(&fix),
         context: None,
         may_act: true,

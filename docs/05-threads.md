@@ -420,6 +420,11 @@ round-trip.
 
 ### Projects
 
+A linked checkout outside the configured project folder still belongs to the project
+when its main Git checkout is inside that folder. A project bound to a repository
+continues to use the repository-relative matching rule.
+
+
 **Decided: a project is something the user creates.** It is a folder on a machine, chosen by
 the user, with a name the user gives it. The name is free — "Billing API" rather than
 `billing-api-v2-final` — and is what the sidebar shows.

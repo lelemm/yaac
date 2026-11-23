@@ -77,6 +77,21 @@ fn a_reset_holds_live_events_until_the_snapshot_is_complete() {
 }
 
 #[test]
+fn older_pages_slide_the_window_without_losing_live_items() {
+    let mut t = Transcript::new();
+    let item = |i: usize| agent(&format!("row-{i}"), "", ItemStatus::Completed);
+    t.replace_all((400..520).map(item).chain([agent("live", "", ItemStatus::InProgress)]).collect(), 1);
+    t.prepend_history((280..400).rev().map(item).collect(), 2);
+    t.prepend_history((160..280).rev().map(item).collect(), 3);
+    t.prepend_history((40..160).rev().map(item).collect(), 4);
+    assert_eq!(t.items().len(), 360);
+    assert!(t.history_away);
+    assert_eq!(t.items()[0].id.as_str(), "row-40");
+    assert!(t.item(&"live".into()).is_some());
+    assert!(t.item(&"row-519".into()).is_none());
+}
+
+#[test]
 fn reset_pages_then_replay_after_reconnect_through_the_client() {
     let (mut c, hub) = boot();
     let key = threads::billing();

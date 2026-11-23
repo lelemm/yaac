@@ -192,7 +192,10 @@ mod tests {
         let mut app = app(&ctx);
         settle(&mut app, &ctx);
         let dashes = app.ui.timeline.dashes.clone();
-        assert!(dashes.len() > 30, "one dash per prompt: {}", dashes.len());
+        assert!(dashes.len() > 11, "one dash per loaded prompt: {}", dashes.len());
+        let transcript = app.client.state.transcripts.get(&threads::parser()).unwrap();
+        assert!(transcript.older_cursor.is_some());
+        assert!(transcript.items().len() <= 120);
         // The view starts at the end: the last dash is lit, the tenth is not in view.
         let before = view_tops(&app);
         assert!(before[10] < 0.0);

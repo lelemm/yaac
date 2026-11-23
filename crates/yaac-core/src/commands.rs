@@ -624,7 +624,7 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
         },
         Cmd::Fast => match row() {
             None => off(in_use),
-            Some(r) => when(r.fast.is_some(), "This model has no fast mode"),
+            Some(r) => when(r.fast.is_some_and(|speed| speed.offers_fast || speed.ultrafast_on), "This model has no fast mode"),
         },
         Cmd::AllowOnce | Cmd::AllowSession | Cmd::Deny => {
             if pending(ctx).is_empty() {
@@ -714,6 +714,7 @@ pub fn title(cmd: Cmd, ctx: &Ctx<'_>) -> String {
             None => d.name.to_owned(),
         },
         Cmd::Fast => match control_row(ctx).and_then(|r| r.fast) {
+            Some(f) if f.ultrafast_on => "Ultrafast mode off".to_owned(),
             Some(f) => pick(f.on, "Fast mode off", "Fast mode on"),
             None => d.name.to_owned(),
         },

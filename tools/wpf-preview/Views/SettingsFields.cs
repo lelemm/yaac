@@ -247,7 +247,7 @@ public partial class SettingsView
             {
                 MinHeight = 29,
                 Padding = new Thickness(8, 4, 8, 4),
-                FontFamily = new FontFamily("Cascadia Mono, Consolas")
+                FontFamily = YaacFonts.Mono
             };
             text.TextChanged += (_, _) => Edited();
             var browse = new Button

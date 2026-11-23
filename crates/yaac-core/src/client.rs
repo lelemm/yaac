@@ -101,6 +101,7 @@ enum Call {
     Sync { target: TargetId, connected: bool },
     Subscribe(ThreadKey),
     Read(ThreadKey),
+    ReadOlder(ThreadKey, String),
     Budget,
     Respond { key: ThreadKey, request_id: RequestId },
     /// `turn/start` or `turn/steer` of the composer's message; `op` is its echo (D165).
@@ -543,15 +544,13 @@ impl Client {
                 }
                 let Some(load) = t.loading.as_mut() else { return };
                 load.pages.extend(r.items);
+                load.required.extend(r.required_items.into_iter().flatten());
                 for u in r.uploads {
                     if !u.present {
                         load.missing.insert(u.upload_id);
                     }
                 }
-                if let Some(cursor) = r.cursor {
-                    self.read_page(&key, Some(cursor.to_string()));
-                    return;
-                }
+                t.older_cursor = r.cursor.map(|cursor| cursor.to_string());
                 let buffered = load.buffered.clone();
                 t.finish_reset(r.position, rev);
                 let items = t.items().to_vec();
@@ -563,6 +562,23 @@ impl Client {
                         hints.apply(ev, stamp);
                     }
                 }
+                self.load_history_focus(&key);
+            }
+            Call::ReadOlder(key, cursor) => {
+                let rev = self.state.next_stamp();
+                let Some(t) = self.state.transcripts.get_mut(&key) else { return };
+                if t.older_cursor.as_deref() != Some(cursor.as_str()) || !std::mem::take(&mut t.loading_older) {
+                    return;
+                }
+                let Ok(r) = serde_json::from_value::<ThreadReadResult>(result) else { return };
+                if t.position.is_none_or(|position| position.epoch != r.position.epoch) {
+                    self.latest_history(&key);
+                    return;
+                }
+                t.older_cursor = r.cursor.map(|cursor| cursor.to_string());
+                t.missing_uploads.extend(r.uploads.into_iter().filter(|u| !u.present).map(|u| u.upload_id));
+                t.prepend_history(r.items, rev);
+                self.load_history_focus(&key);
             }
             Call::Budget => {
                 if let Ok(b) = serde_json::from_value::<MeshBudgetResult>(result) {
@@ -631,6 +647,7 @@ impl Client {
                         native_id: None,
                         hold: None,
                         fast: draft.fast,
+                        ultrafast: draft.ultrafast.then_some(true),
                         placement: None,
                         subagent: None,
                         unavailable: None,
@@ -807,6 +824,15 @@ impl Client {
                     self.state.new_threads.push(draft);
                 }
                 self.error(None, format!("The thread was not started: {}", error.message));
+            }
+            Call::ReadOlder(key, cursor) => {
+                if let Some(t) = self.state.transcripts.get_mut(&key).filter(|t| t.older_cursor.as_deref() == Some(cursor.as_str())) {
+                    t.loading_older = false;
+                    t.trim_history();
+                } else {
+                    return;
+                }
+                self.error(Some(key), format!("Could not load older messages: {}", error.message));
             }
             Call::Subscribe(key) | Call::Read(key) => {
                 if let Some(t) = self.state.transcripts.get_mut(&key) {
@@ -999,11 +1025,41 @@ impl Client {
     }
 
     fn read_page(&mut self, key: &ThreadKey, cursor: Option<String>) {
-        let mut params = json!({ "threadId": key.thread, "maxBytes": 262_144 });
-        if let Some(c) = cursor {
-            params["cursor"] = json!(c);
+        let mut params = json!({ "threadId": key.thread, "maxBytes": 262_144, "maxItems": 120 });
+        let call = if let Some(cursor) = cursor {
+            params["cursor"] = json!(cursor);
+            Call::ReadOlder(key.clone(), cursor)
+        } else {
+            Call::Read(key.clone())
+        };
+        self.routed(&key.target, m::THREAD_READ, params, call);
+    }
+
+    /// Move the transcript window toward older messages.
+    pub fn older_history(&mut self, key: &ThreadKey) {
+        let Some(t) = self.state.transcripts.get_mut(key) else { return };
+        let Some(cursor) = t.older_cursor.clone().filter(|_| t.loading.is_none() && !t.loading_older) else { return };
+        t.loading_older = true;
+        self.read_page(key, Some(cursor));
+    }
+
+    /// Keep reading when opening a link to a particular message outside the current window.
+    pub fn load_history_focus(&mut self, key: &ThreadKey) {
+        if let Some((_, item)) = self.state.focus_item.as_ref().filter(|(k, _)| k == key)
+            && self.state.transcripts.get(key).is_some_and(|t| t.item(item).is_none())
+        {
+            self.older_history(key);
         }
-        self.routed(&key.target, m::THREAD_READ, params, Call::Read(key.clone()));
+    }
+
+    /// Return to a fresh page at the live end.
+    pub fn latest_history(&mut self, key: &ThreadKey) {
+        if self.state.focus_item.as_ref().is_some_and(|(k, _)| k == key) {
+            self.state.focus_item = None;
+        }
+        let Some(t) = self.state.transcripts.get_mut(key).filter(|t| t.loading.is_none()) else { return };
+        t.begin_reset();
+        self.read_page(key, None);
     }
 
     fn refresh_budget_of(&mut self, key: &ThreadKey) {
@@ -1244,6 +1300,7 @@ impl Client {
             effort: None,
             mode: None,
             fast: false,
+            ultrafast: false,
             fast_note: None,
             draft: Draft::default(),
         });
@@ -1387,6 +1444,9 @@ impl Client {
         }
         if draft.fast {
             params["fast"] = json!(true);
+        }
+        if draft.ultrafast {
+            params["ultrafast"] = json!(true);
         }
         let mut sent = draft.clone();
         sent.instance = Some(instance);
@@ -1743,6 +1803,7 @@ impl Client {
                 d.model = None;
                 d.effort = None;
                 d.mode = None;
+                d.ultrafast = false;
                 retarget = true;
             }
             d.target = p.target.clone();
@@ -1761,6 +1822,15 @@ impl Client {
     pub fn set_fast(&mut self, key: &ThreadKey, on: bool) {
         let n = self.state.next_settings.entry(key.clone()).or_default();
         n.fast = Some(on);
+        n.ultrafast = Some(false);
+        n.fast_note = None;
+    }
+
+    /// Apply a confirmed selection to subsequent messages in this session.
+    pub fn set_ultrafast(&mut self, key: &ThreadKey) {
+        let n = self.state.next_settings.entry(key.clone()).or_default();
+        n.fast = Some(false);
+        n.ultrafast = Some(true);
         n.fast_note = None;
     }
 
@@ -1768,6 +1838,7 @@ impl Client {
     /// mode off, with a quiet note.
     pub fn set_next_model(&mut self, key: &ThreadKey, model: yaac_protocol::ModelId) {
         let was = self.state.thread_fast(key);
+        let was_ultrafast = self.state.thread_ultrafast(key);
         self.state.next_settings.entry(key.clone()).or_default().model = Some(model);
         let info = self.state.next_model_info(key).cloned();
         let (on, note) = crate::controls::reconcile_fast(info.as_ref(), was);
@@ -1776,12 +1847,26 @@ impl Client {
             n.fast = Some(on);
         }
         n.fast_note = note;
+        if was_ultrafast && !info.as_ref().is_some_and(crate::controls::model_has_ultrafast) {
+            n.ultrafast = Some(false);
+            n.fast_note = Some("Ultrafast is off for this model.".to_owned());
+        }
     }
 
     /// Turn fast mode on or off for a new-thread draft.
     pub fn set_draft_fast(&mut self, id: u64, on: bool) {
         if let Some(d) = self.state.new_threads.iter_mut().find(|d| d.id == id) {
             d.fast = on;
+            d.ultrafast = false;
+            d.fast_note = None;
+        }
+        self.draft_changed(&crate::attachments::DraftRef::New(id));
+    }
+
+    pub fn set_draft_ultrafast(&mut self, id: u64) {
+        if let Some(d) = self.state.new_threads.iter_mut().find(|d| d.id == id) {
+            d.fast = false;
+            d.ultrafast = true;
             d.fast_note = None;
         }
         self.draft_changed(&crate::attachments::DraftRef::New(id));
@@ -1805,6 +1890,10 @@ impl Client {
             let (on, note) = crate::controls::reconcile_fast(info, d.fast);
             d.fast = on;
             d.fast_note = note;
+            if d.ultrafast && (d.instance.as_ref() != Some(&instance) || !info.is_some_and(crate::controls::model_has_ultrafast)) {
+                d.ultrafast = false;
+                d.fast_note = Some("Ultrafast is off for this model or provider.".to_owned());
+            }
             if d.instance.as_ref() != Some(&instance) {
                 d.mode = None;
             }

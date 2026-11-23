@@ -86,7 +86,7 @@ pub(super) fn fields(app: &YaacApp, map: &AttentionMap) -> Value {
     json!({
         "title": h.title, "location": h.breadcrumb.join(" · "), "hasThread": true, "threadId": key.address(),
         "showEditor": !h.display.read_only, "readOnly": h.display.read_only, "mark": sidebar_view::tone(h.display.mark),
-        "fast": h.display.fast, "tag": tag, "tagTone": tone, "links": links, "banners": banners, "budget": h.budget.is_some(),
+        "fast": h.display.fast, "ultrafast": h.display.ultrafast, "tag": tag, "tagTone": tone, "links": links, "banners": banners, "budget": h.budget.is_some(),
     })
 }
 

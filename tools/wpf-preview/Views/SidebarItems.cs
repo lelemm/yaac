@@ -167,6 +167,7 @@ internal sealed class SidebarItemState
         Tone = value.Text("tone");
         Glyph = value.Text("glyph");
         Fast = value.Flag("fast");
+        Ultrafast = value.Flag("ultrafast");
         Detail = value.Text("detail");
         Selected = value.Flag("selected");
         Unseen = value.Flag("unseen");
@@ -251,6 +252,7 @@ internal sealed class SidebarItemState
     };
 
     public bool Fast { get; }
+    public bool Ultrafast { get; }
 
     public bool MarkDanger => Tone is "needs" or "needsYou" or "needs you" or "failed";
     public bool Dimmed => Muted || Tone is "offline" or "off";

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Margin, text::LayoutJob};
 use yaac_core::ThreadKey;
 use yaac_core::attention::AttentionMap;
-use yaac_core::controls::{Choice, ControlRow, ControlRowView, StartedInputs, draft_row, started_row};
+use yaac_core::controls::{Choice, ControlRow, ControlRowView, Speed, ULTRAFAST_WARNING, draft_row, thread_row};
 use yaac_core::attachments::{DraftRef, Phase, Source};
 use yaac_core::header::{ChipStatus, ChipView, ComposerView, composer, short_provider};
 use yaac_core::state::SendAs;
@@ -471,6 +471,10 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
     if compacting {
         ui.label(widgets::secondary("Compacting context…", &p));
     }
+    let controls = thread_row(&app.client.state, key);
+    if matches!(&controls, ControlRowView::Row(row) if row.fast.is_some_and(|speed| speed.ultrafast_on)) {
+        ui.label(egui::RichText::new(ULTRAFAST_WARNING).font(theme::ui(size::SMALL)).color(p.needs));
+    }
     match composer(&app.client.state, map, key) {
         ComposerView::Absent { holder_line } => {
             egui::Frame::NONE.fill(p.faint).corner_radius(6).inner_margin(Margin::symmetric(12, 10)).show(ui, |ui| {
@@ -596,24 +600,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
         }
     }
     ui.add_space(6.0);
-    let s = app.client.state.summary(key).cloned();
-    let Some(s) = s else { return };
-    let t = app.client.state.transcripts.get(key);
-    let providers = app.client.state.target(&key.target).map(|t| t.providers.clone()).unwrap_or_default();
-    let target_name = app.client.state.target_name(&key.target);
-    let view = started_row(StartedInputs {
-        providers: &providers,
-        instance: &s.instance,
-        target_name: &target_name,
-        effective: t.and_then(|t| t.effective.as_ref()),
-        summary_model: s.model.as_ref(),
-        summary_fast: s.fast,
-        next: app.client.state.next_settings.get(key),
-        context: t.and_then(|t| t.context.as_ref()),
-        may_act: app.client.state.may_act(key),
-        agents: s.spawned_by.is_none().then(|| app.client.state.agents_policy(key)),
-    });
-    if let ControlRowView::Row(row) = view {
+    if let ControlRowView::Row(row) = controls {
         control_row(ui, app, &row, &Target::Thread(key.clone()), actions);
     }
 }
@@ -677,7 +664,7 @@ pub(crate) fn running_commands(ui: &mut egui::Ui, app: &mut YaacApp, key: &Threa
     let expanded = !app.ui.commands_collapsed.contains(key);
     let disclosure = if expanded { "▾" } else { "▸" };
     let label = format!("{disclosure} Running commands · {}", rows.len());
-    if widgets::plain(ui, &p, &label, None).clicked() {
+    if ui.add(egui::Button::new(egui::RichText::new(label).size(11.0).color(p.text2)).frame(false)).clicked() {
         actions.push(Action::ToggleCommands(key.clone()));
     }
     if !expanded {
@@ -699,7 +686,7 @@ pub(crate) fn running_commands(ui: &mut egui::Ui, app: &mut YaacApp, key: &Threa
                         }
                         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                             let command = row.command.command.lines().next().unwrap_or("");
-                            ui.add(egui::Label::new(egui::RichText::new(command).monospace()).truncate()).on_hover_text(&row.command.command);
+                            ui.add(egui::Label::new(egui::RichText::new(command).monospace().size(11.0).color(p.text2)).truncate()).on_hover_text(&row.command.command);
                             ui.add(egui::Label::new(widgets::secondary(row.detail(app.now()), &p)).truncate());
                         });
                     });
@@ -721,7 +708,7 @@ pub(crate) fn running_commands(ui: &mut egui::Ui, app: &mut YaacApp, key: &Threa
         }
         if let Some(mut output) = log.result.as_ref().and_then(|r| r.output.as_deref()).filter(|o| !o.is_empty()) {
             egui::ScrollArea::vertical().id_salt(("command-logs", &log.command.id)).max_height(145.0).stick_to_bottom(true).show(ui, |ui| {
-                ui.add(egui::TextEdit::multiline(&mut output).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
+                ui.add(egui::TextEdit::multiline(&mut output).font(egui::FontId::monospace(11.0)).text_color(p.text2).desired_width(f32::INFINITY));
             });
         }
     }
@@ -917,13 +904,32 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
                 Target::Draft(d) => Action::DraftEffort(*d, id),
             }, actions);
         }
-        if let Some(f) = row.fast
-            && widgets::fast_toggle(ui, &p, f.on).clicked()
-        {
-            actions.push(match target {
-                Target::Thread(k) => Action::SetFast(k.clone(), !f.on),
-                Target::Draft(d) => Action::DraftFast(*d, !f.on),
-            });
+        if let Some(speed) = row.fast {
+            let draft = match target {
+                Target::Thread(k) => DraftRef::Thread(k.clone()),
+                Target::Draft(id) => DraftRef::New(*id),
+            };
+            let trigger = widgets::speed_control(ui, &p, speed);
+            if speed.offers_ultrafast {
+                if trigger.clicked() {
+                    app.ui.toggle_menu(Menu::Speed);
+                }
+                let mut open = app.ui.menu == Some(Menu::Speed);
+                widgets::menu_popup(egui::Popup::from_response(&trigger), &p)
+                    .kind(egui::PopupKind::Menu).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+                    .show(|ui| {
+                        for option in speed.options() {
+                            if ui.selectable_label(speed.current() == option, option.label()).clicked() {
+                                actions.push(Action::ChooseSpeed(draft.clone(), option));
+                            }
+                        }
+                    });
+                if !open && app.ui.menu == Some(Menu::Speed) {
+                    app.ui.menu = None;
+                }
+            } else if trigger.clicked() {
+                actions.push(Action::ChooseSpeed(draft, if speed.on { Speed::Standard } else { Speed::Fast }));
+            }
         }
         if let Some(m) = &row.mode {
             let t = target.clone();
@@ -973,7 +979,11 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
         };
         ui.label(widgets::secondary(crumb, &p));
     });
-    egui::Panel::bottom("draft-composer").show_separator_line(false).frame(egui::Frame::NONE.inner_margin(Margin { left: 28, right: 28, top: 6, bottom: 10 })).show(ui, |ui| {
+    let preferred = app.ui.chat_width;
+    let contents = |ui: &mut egui::Ui| {
+        if d.ultrafast && app.composer_speed(&DraftRef::New(id)).is_some_and(|speed| speed.ultrafast_on) {
+            ui.label(egui::RichText::new(ULTRAFAST_WARNING).font(theme::ui(size::SMALL)).color(p.needs));
+        }
         // One selector: the project (a new thread starts in the root of its folder).
         let project_label = d
             .project
@@ -1076,7 +1086,13 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
         ui.add_space(6.0);
         let row = draft_row(&providers, &target_name, &d);
         control_row(ui, app, &row, &Target::Draft(id), actions);
-    });
+    };
+    let panel = egui::Panel::bottom("draft-composer")
+        .show_separator_line(false)
+        .frame(egui::Frame::NONE.inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 10 }));
+    if let Some(width) = panel.show(ui, |ui| crate::thread::composer_column(ui, preferred, &p, contents)).inner {
+        app.ui.chat_width = width;
+    }
     egui::CentralPanel::no_frame().show(ui, |ui| {
         ui.centered_and_justified(|ui| ui.label(widgets::secondary("Describe what you want done.", &p)));
     });

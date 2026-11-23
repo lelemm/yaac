@@ -41,7 +41,9 @@ public partial class MainWindow
         ThreadMark.Foreground = MarkColor(mark);
         ThreadMarkSlot.Visibility = Flag(shell, "hasThread") ? Visibility.Visible : Visibility.Collapsed;
         ThreadSpinner.Visibility = mark == "running" ? Visibility.Visible : Visibility.Collapsed;
-        ThreadSpinner.Foreground = Palette.Brush(Flag(shell, "fast") ? "YaacFast" : "YaacText");
+        ThreadSpinner.Fast = Flag(shell, "fast");
+        ThreadSpinner.Ultrafast = Flag(shell, "ultrafast");
+        ThreadSpinner.Foreground = RunningSpinner.Ink(ThreadSpinner.Fast, ThreadSpinner.Ultrafast);
         ThreadTagText.Text = tag;
         ThreadTagText.Foreground = MarkColor(Text(shell, "tagTone"));
         ThreadTag.Visibility = tag.Length == 0 ? Visibility.Collapsed : Visibility.Visible;

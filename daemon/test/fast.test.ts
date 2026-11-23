@@ -117,6 +117,9 @@ test("codex: a model's Fast service tier is its fastMode; no tier list is unknow
   assert.equal(fastTier(none), null);
   assert.equal(support(none), "unsupported");
   assert.equal(support(old), "unknown");
+  const ultrafast = (m: typeof fast) => mapModel(m).capabilities!.find((c) => c.capability === "ultrafastMode")?.support;
+  assert.equal(ultrafast(fast), "supported");
+  assert.equal(ultrafast({ ...fast, serviceTiers: fast.serviceTiers.slice(0, 1) }), "unsupported");
   // The tier Codex names Fast wins over the id; an id alone is enough.
   assert.equal(fastTier({ id: "x", serviceTiers: [{ id: "speedy", name: "Fast" }, { id: "priority", name: "Other" }] } as any), "speedy");
   assert.equal(fastTier({ id: "x", serviceTiers: [{ id: "priority" }] } as any), "priority");
@@ -131,7 +134,7 @@ function input(t: string): ProviderInput {
   return { parts: [{ type: "text", text: t }], text: t, images: [], files: [], origin: "user" };
 }
 
-test("codex: fast mode becomes serviceTierForTurn — the fast tier when on, default when off, nothing for a model without one", async () => {
+test("codex: Fast and Ultrafast use the advertised per-turn service tier", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "yaac-cx-fast-"));
   const fake = await FakeCodex.start(path.join(dir, "s.sock"));
   const provider = new CodexProvider(
@@ -142,7 +145,7 @@ test("codex: fast mode becomes serviceTierForTurn — the fast tier when on, def
     fake.handlers.set("account/read", () => ({ account: { type: "apiKey" } }));
     fake.handlers.set("model/list", () => ({
       data: [
-        { id: "m-fast", model: "m-fast", displayName: "M fast", isDefault: true, serviceTiers: [{ id: "priority", name: "Fast", description: "1.5x speed" }] },
+        { id: "m-fast", model: "m-fast", displayName: "M fast", isDefault: true, serviceTiers: [{ id: "priority", name: "Fast", description: "1.5x speed" }, { id: "ultrafast", name: "Ultrafast" }] },
         { id: "m-slow", model: "m-slow", displayName: "M slow", serviceTiers: [] },
       ],
       nextCursor: null,
@@ -174,6 +177,11 @@ test("codex: fast mode becomes serviceTierForTurn — the fast tier when on, def
     await provider.startTurn(T, input("slow model"), { model: "m-slow", fast: false });
     assert.equal(tierOf(3), undefined, "a model without a fast tier gets no tier");
     await settled("t4");
+    await provider.startTurn(T, input("Ultrafast"), { model: "m-fast", fast: false, ultrafast: true });
+    assert.equal(tierOf(4), "ultrafast");
+    await settled("t5");
+    await assert.rejects(provider.startTurn(T, input("unsupported"), { model: "m-slow", ultrafast: true }), /no longer advertises Ultrafast/);
+    assert.equal(fake.requests("turn/start").length, 5, "an ineligible selection never starts a turn");
   } finally {
     await provider.dispose();
     await fake.close();

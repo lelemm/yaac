@@ -168,13 +168,16 @@ public partial class MainWindow
     private void RenderDialog(JsonElement data)
     {
         var id = Text(data, "id");
-        if (activeDialog != id && dialog != null)
+        var instance = Text(data, "instance");
+        var key = instance.Length == 0 ? id : instance;
+        if (activeDialog != key)
         {
             var previous = dialog;
             dialog = null;
-            previous.Close();
+            fieldValues.Clear();
+            previous?.Close();
         }
-        activeDialog = id;
+        activeDialog = key;
         if (id.Length == 0) return;
         if (dialog == null)
         {
@@ -186,14 +189,14 @@ public partial class MainWindow
             dialogSubmit = new Button
             {
                 Style = (Style)FindResource("YaacPrimaryButton"),
-                IsDefault = true, MinWidth = 90, Margin = new Thickness(0, 10, 8, 0),
+                IsDefault = id != "ultrafast", MinWidth = 90, Margin = new Thickness(0, 10, 8, 0),
             };
             dialogSubmit.Click += (_, _) => Send("dialog.submit", new
             {
                 id,
                 values = fieldValues.ToDictionary(field => field.Key, field => field.Value()),
             });
-            var cancel = new Button { Content = "Close", IsCancel = true, MinWidth = 80, Margin = new Thickness(0, 10, 0, 0) };
+            var cancel = new Button { Content = id == "ultrafast" ? "Cancel" : "Close", IsCancel = true, MinWidth = 80, Margin = new Thickness(0, 10, 0, 0) };
             cancel.Click += (_, _) => Send("dialog.cancel", new { id });
             buttons.Children.Add(dialogSubmit);
             buttons.Children.Add(cancel);
@@ -215,6 +218,8 @@ public partial class MainWindow
                 }
             };
             dialog.Show();
+            if (id == "ultrafast")
+                cancel.Focus();
         }
         dialogBody!.Text = Text(data, "body");
         var submit = Text(data, "submit");

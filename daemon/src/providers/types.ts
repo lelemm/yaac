@@ -141,6 +141,8 @@ export interface StartThreadParams {
    * `fastMode`. The provider maps it to its harness's own option.
    */
   fast?: boolean | null;
+  /** A confirmed Ultrafast selection, resolved against the selected model by yaacd. */
+  ultrafast?: boolean | null;
 }
 
 export interface TurnOverrides {
@@ -153,6 +155,8 @@ export interface TurnOverrides {
    * `true` or `false`, `true` only when the model has `fastMode`.
    */
   fast?: boolean | null;
+  /** A confirmed Ultrafast selection, resolved against the selected model by yaacd. */
+  ultrafast?: boolean | null;
   /**
    * The working directory for this and later turns (D144). Set by yaacd only for a thread a
    * `thread/move` moved, and only under `threadMoveWorkingDirectory`; a provider that declares

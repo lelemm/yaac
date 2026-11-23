@@ -95,6 +95,7 @@ public partial class ComposerView : UserControl
         RenderFileSearch(Field(view, "filePicker"), Field(view, "fileScope").String());
 
         DisplayText(Hint, Field(view, "hint").String());
+        DisplayText(UltrafastWarning, Field(view, "ultrafastWarning").String());
         RenderStatus(Field(view, "status"));
         RenderRows(Notices, Field(view, "notices"), RowKind.Notice);
         RenderRunningCommands(Field(view, "runningCommands"), keyChanged);

@@ -25,6 +25,7 @@ use yaac_core::settings::Page;
 use yaac_core::sidebar::Grouping;
 use yaac_core::ssh_setup::{SetupRecord, SshSetupBackend};
 use yaac_core::attachments::DraftRef;
+use yaac_core::controls::{self, ControlRowView, FastToggle, Speed};
 use yaac_core::state::{AgentsPolicy, HelloOutcome, SendAs};
 use yaac_core::ThreadKey;
 use yaac_protocol::attach::TargetTransport;
@@ -51,6 +52,7 @@ pub(crate) enum Menu {
     Project,
     Model,
     Effort,
+    Speed,
     Mode,
     Agents,
     ForkDest,
@@ -103,6 +105,9 @@ pub(crate) struct UiState {
     pub search: String,
     pub muted_open: bool,
     pub commands_collapsed: BTreeSet<ThreadKey>,
+    pub chat_width: f32,
+    pub agents_offset: f32,
+    pub ultrafast_confirm: Option<DraftRef>,
     /// The Archived section is open.
     pub archived_open: bool,
     /// The Mute dialog.
@@ -274,6 +279,9 @@ impl UiState {
             search: String::new(),
             muted_open: false,
             commands_collapsed: BTreeSet::new(),
+            chat_width: 860.0,
+            agents_offset: 0.0,
+            ultrafast_confirm: None,
             archived_open: false,
             mute: None,
             sidebar_to_end: false,
@@ -432,6 +440,8 @@ pub(crate) struct CreateProject {
 /// What the user did this frame.
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
+    OlderHistory(ThreadKey),
+    LatestHistory(ThreadKey),
     Open(ThreadKey),
     /// After the Commander or a key opened a thread: the caret goes to its composer when the
     /// user can type there (D149).
@@ -518,6 +528,8 @@ pub(crate) enum Action {
     SetEffort(ThreadKey, yaac_protocol::EffortId),
     /// Fast mode on or off for a thread's next turns (D125).
     SetFast(ThreadKey, bool),
+    ChooseSpeed(DraftRef, Speed),
+    ConfirmUltrafast,
     ChooseMode(ModeTarget, ModeId),
     ConfirmMode,
     CancelMode,
@@ -939,6 +951,7 @@ impl YaacApp {
         self.ui.settings = false;
         self.ui.threads_overlay = false;
         self.client.state.focus_item = item.clone().map(|i| (key.clone(), i));
+        self.client.load_history_focus(key);
         self.ui.scroll_to = item;
         if self.ui.scroll_to.is_none() {
             self.ui.scroll_end = true;
@@ -1045,6 +1058,14 @@ impl YaacApp {
     pub(crate) fn apply(&mut self, actions: Vec<Action>) {
         for a in actions {
             match a {
+                Action::OlderHistory(k) => self.client.older_history(&k),
+                Action::LatestHistory(k) => {
+                    self.client.latest_history(&k);
+                    self.ui.scroll_end = true;
+                    self.ui.scroll_anchor = None;
+                    self.ui.scroll_to = None;
+                    self.ui.restore = None;
+                }
                 Action::Open(k) => self.open(&k, None),
                 Action::TypeHere => self.type_here(),
                 Action::OpenAt(k, i) => self.open(&k, i),
@@ -1233,6 +1254,26 @@ impl YaacApp {
                 Action::SetModel(k, m) => self.client.set_next_model(&k, m),
                 Action::SetFast(k, on) => self.client.set_fast(&k, on),
                 Action::DraftFast(id, on) => self.client.set_draft_fast(id, on),
+                Action::ChooseSpeed(draft, speed) => {
+                    if self.composer_speed(&draft).is_some_and(|control| control.options().any(|s| s == speed) && control.current() != speed) {
+                        let on = speed == Speed::Fast;
+                        match (speed, draft) {
+                            (Speed::Ultrafast, draft) => self.ui.ultrafast_confirm = Some(draft),
+                            (_, DraftRef::Thread(key)) => self.client.set_fast(&key, on),
+                            (_, DraftRef::New(id)) => self.client.set_draft_fast(id, on),
+                        }
+                    }
+                }
+                Action::ConfirmUltrafast => {
+                    if let Some(draft) = self.ui.ultrafast_confirm.take()
+                        && self.composer_speed(&draft).is_some_and(|control| control.offers_ultrafast)
+                    {
+                        match draft {
+                            DraftRef::Thread(key) => self.client.set_ultrafast(&key),
+                            DraftRef::New(id) => self.client.set_draft_ultrafast(id),
+                        }
+                    }
+                }
                 Action::SetEffort(k, e) => {
                     self.client.state.next_settings.entry(k).or_default().effort = Some(e);
                 }
@@ -1471,6 +1512,19 @@ impl YaacApp {
 
     /// The composer of what is open, when it takes attachments: a thread this window may act
     /// on, or a new-thread draft.
+    pub(crate) fn composer_speed(&self, draft: &DraftRef) -> Option<FastToggle> {
+        if self.open_composer().as_ref() != Some(draft) {
+            return None;
+        }
+        match draft {
+            DraftRef::Thread(key) => match controls::thread_row(&self.client.state, key) {
+                ControlRowView::Row(row) => row.fast,
+                ControlRowView::Hidden => None,
+            },
+            DraftRef::New(id) => controls::draft_row_of(&self.client.state, *id).and_then(|row| row.fast),
+        }
+    }
+
     pub(crate) fn open_composer(&self) -> Option<DraftRef> {
         match &self.client.state.selection {
             yaac_core::state::Selection::Thread(k) if self.client.state.may_act(k) && !self.ui.settings => Some(DraftRef::Thread(k.clone())),
@@ -1671,7 +1725,18 @@ impl eframe::App for YaacApp {
             }
         }
         let mut actions = Vec::new();
-        self.keyboard(&ctx, &mut actions);
+        if self.ui.ultrafast_confirm.is_some() {
+            let escape = ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, Key::Enter);
+                i.consume_key(egui::Modifiers::CTRL, Key::Enter);
+                i.consume_key(egui::Modifiers::NONE, Key::Escape)
+            });
+            if escape {
+                self.ui.ultrafast_confirm = None;
+            }
+        } else {
+            self.keyboard(&ctx, &mut actions);
+        }
         let map = AttentionMap::compute(&self.client.state);
         let now = self.now();
         // The window's own title strip (D104): the strip's empty part drags the window; the
@@ -1703,6 +1768,7 @@ impl eframe::App for YaacApp {
         }
         crate::dialogs::update_notice(ui.ctx(), self);
         crate::dialogs::mode_confirm(ui.ctx(), self, &mut actions);
+        crate::dialogs::ultrafast_confirm(ui.ctx(), self, &mut actions);
         crate::dialogs::mute(ui.ctx(), self, &mut actions);
         crate::pr_ui::create_dialog(ui.ctx(), self, &mut actions);
         crate::dialogs::quit(ui.ctx(), self);

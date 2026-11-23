@@ -40,7 +40,7 @@ public partial class SettingsView
                 {
                     var run = new Run(spans[i]);
                     if (i % 2 != 0)
-                        run.FontFamily = new FontFamily("Cascadia Mono, Consolas");
+                        run.FontFamily = YaacFonts.Mono;
                     block.Inlines.Add(run);
                 }
             }
@@ -261,7 +261,7 @@ public partial class SettingsView
         {
             IsReadOnly = true,
             IsUndoEnabled = false,
-            FontFamily = new FontFamily("Cascadia Mono, Consolas"),
+            FontFamily = YaacFonts.Mono,
             TextWrapping = TextWrapping.Wrap,
             Padding = new Thickness(9, 6, 9, 6),
             Visibility = Visibility.Collapsed

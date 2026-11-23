@@ -93,6 +93,7 @@ export interface ThreadRecord {
    * `turn/start` changes it. Only ever true while the model has `fastMode`.
    */
   fast?: boolean;
+  ultrafast?: boolean;
   /**
    * Where the user moved the thread in YAAC (`thread/move`, D144): its project and, when the
    * project is in git, the checkout. Apart from `cwd`; absent: the folder rule decides.

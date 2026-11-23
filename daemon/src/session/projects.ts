@@ -36,7 +36,7 @@ export function matchProject<P extends { folder: string; repo?: RepoLocation | n
     let best: P | null = null;
     let depth = -1;
     for (const p of projects) {
-      if (!p.repo || p.repo.repo !== repo.repo || !contains(p.repo.relative, repo.relative)) continue;
+      if (!p.repo || path.relative(p.repo.repo, repo.repo) !== "" || !contains(p.repo.relative, repo.relative)) continue;
       const d = components(p.repo.relative).length;
       if (d > depth) {
         best = p;
@@ -45,10 +45,13 @@ export function matchProject<P extends { folder: string; repo?: RepoLocation | n
     }
     if (best) return best;
   }
+  // A project may cover several repositories without itself being a Git checkout.
+  // The shared .git directory of a linked checkout identifies its primary folder.
+  const main = repo?.worktreeName && path.basename(repo.repo) === ".git" ? path.dirname(repo.repo) : null;
   let best: P | null = null;
   let depth = -1;
   for (const p of projects) {
-    if (!contains(p.folder, loc.folder)) continue;
+    if (!contains(p.folder, loc.folder) && (p.repo || !main || !contains(p.folder, main))) continue;
     const d = components(p.folder).length;
     if (d > depth) {
       best = p;

@@ -209,6 +209,7 @@ const SUBAGENT_WRITES: ReadonlySet<Capability> = new Set<Capability>([
   "modelSwitch",
   "effortSwitch",
   "fastMode",
+  "ultrafastMode",
   "meshTools",
 ]);
 
@@ -408,8 +409,8 @@ export class Core {
     // Queued user messages are delivered with no window attached.
     for (const rt of this.allThreads()) if (rt.userQueue.length > 0) this.pump(rt);
     void this.refreshProjectRepos();
-    // Threads whose repository was never looked up (older records): in the background.
-    for (const rt of this.allThreads()) if (!rt.record.repoResolved) void this.resolveProject(rt);
+    // Resolve older records and retry previous misses in the background.
+    for (const rt of this.allThreads()) if (!rt.record.repoResolved || !rt.record.repo) void this.resolveProject(rt);
     const every = this.opts.gitRefreshMs ?? DEFAULT_GIT_REFRESH_MS;
     if (every > 0) {
       this.gitTimer = setInterval(() => this.refreshWatchedGit(), every);
@@ -939,16 +940,26 @@ export class Core {
     if (!p) {
       p = this.gitLimiter.run(() => resolveRepo(this.git, folder).catch(() => null), urgent);
       this.repoLookups.set(folder, p);
+      const cached = p;
+      void cached.then((repo) => {
+        if (repo) return;
+        const timer = setTimeout(() => {
+          if (this.repoLookups.get(folder) === cached) this.repoLookups.delete(folder);
+        }, 60_000);
+        timer.unref();
+      });
     }
     return p;
   }
 
   /** Resolves a thread's repository location once; a vanished folder keeps what was known. */
   private async resolveProject(rt: ThreadRuntime, urgent = false): Promise<void> {
-    if (rt.record.repoResolved) return;
-    if (!fs.existsSync(rt.record.cwd)) return;
-    const repo = await this.repoOf(rt.record.cwd, urgent);
-    if (rt.deleted) return;
+    if (rt.record.repoResolved && rt.record.repo) return;
+    const cwd = rt.record.cwd;
+    if (!fs.existsSync(cwd)) return;
+    const repo = await this.repoOf(cwd, urgent);
+    if (rt.deleted || rt.record.cwd !== cwd) return;
+    if (!repo) return;
     rt.record.repo = repo;
     rt.record.repoResolved = true;
     rt.saveRecord();
@@ -1173,8 +1184,14 @@ export class Core {
         false,
       );
     } else {
-      // The registry, not the harness, says what YAAC started.
+      // Keep YAAC's working directory for threads it started or explicitly moved.
       const r = rt.record;
+      if (r.originKind !== "yaac" && info.cwd && !r.cwdMoved && !r.placement && info.cwd !== r.cwd) {
+        r.cwd = info.cwd;
+        r.repo = null;
+        r.repoResolved = false;
+      }
+      if (!r.repoResolved) void this.resolveProject(rt);
       r.title = info.title ?? r.title ?? null;
       r.preview = info.preview ?? r.preview ?? null;
       r.model = info.model ?? r.model ?? null;
@@ -1255,6 +1272,7 @@ export class Core {
     }
     if (r.hold) s.hold = r.hold;
     if (r.fast) s.fast = true;
+    if (r.ultrafast) s.ultrafast = true;
     if (r.model) s.model = r.model;
     if (r.forkedFrom) s.forkedFrom = r.forkedFrom;
     if (r.spawnedBy) s.spawnedBy = r.spawnedBy;
@@ -1504,6 +1522,45 @@ export class Core {
   async read(client: ClientLink, p: ThreadReadParams): Promise<ThreadReadResult> {
     const rt = this.requireThread(p.threadId);
     const limit = Math.max(1024, Math.min(p.maxBytes ?? PAGE_MAX_BYTES, PAGE_MAX_BYTES));
+    const maxItems = typeof p.maxItems === "number" && Number.isFinite(p.maxItems) ? Math.max(1, Math.min(200, Math.floor(p.maxItems))) : Infinity;
+    const cursor = p.cursor ? String(p.cursor) : null;
+    if (cursor?.startsWith("history:") || (!cursor && maxItems !== Infinity)) {
+      const projection = await this.ensureProjection(rt);
+      this.flushDeltas(rt);
+      const journal = this.journalOf(rt);
+      const position = { epoch: journal.epoch, seq: journal.headSeq };
+      const anchor = cursor?.slice(8);
+      if (anchor !== undefined && !projection.has(anchor)) {
+        throw rpc("invalid_params", "this history window is no longer available; return to the latest messages");
+      }
+      const items: Item[] = [];
+      let bytes = 0;
+      let more = false;
+      for (const item of projection.historyBefore(anchor)) {
+        const size = Buffer.byteLength(canonical(item));
+        if (items.length >= maxItems || (items.length && bytes + size > limit)) {
+          more = true;
+          break;
+        }
+        items.push(item);
+        bytes += size;
+      }
+      const result: ThreadReadResult = { items, position };
+      const oldest = items.at(-1);
+      if (more && oldest) result.cursor = `history:${oldest.id}`;
+      if (!cursor) {
+        if (rt.context) result.context = rt.context;
+        const included = new Set(items.map((item) => item.id));
+        const required = [...rt.requests.values()]
+          .filter((r) => (r.state === "pending" || r.state === "submitted") && !included.has(r.itemId))
+          .flatMap((r) => projection.get(r.itemId) ?? []);
+        if (required.length) result.requiredItems = required;
+        client.onSnapshot(rt.id, position);
+      }
+      const uploads = this.uploadPresence(items);
+      if (uploads.length) result.uploads = uploads;
+      return result;
+    }
     let snap: Snapshot;
     let offset = 0;
     this.expireSnapshots();
@@ -1651,7 +1708,7 @@ export class Core {
       ...(rt.record.hold ? { hold: rt.record.hold } : {}),
     };
     // Someone is watching this thread: make sure its checkout's git status is known.
-    if (!rt.record.repoResolved) void this.resolveProject(rt, true);
+    if (!rt.record.repoResolved || !rt.record.repo) void this.resolveProject(rt, true);
     else if (rt.record.repo && !this.gitStatus.has(rt.record.repo.root)) void this.gitStatus.refresh(rt.record.repo.root, true);
     if (typeof p.epoch === "number" && typeof p.afterSeq === "number" && journal.canReplay(p.epoch, p.afterSeq)) {
       register(p.afterSeq, "replay");
@@ -1705,8 +1762,10 @@ export class Core {
     // `threadMove` is yaacd's own (D144): any thread can be placed under another project.
     if (!eff.capabilities.includes("threadMove")) eff.capabilities.push("threadMove");
     // Fast mode (D125) is a model-level capability: present when the thread's model has it.
-    eff.capabilities = eff.capabilities.filter((c) => c !== "fastMode");
-    if (this.modelHasFast(inst.descriptor, eff.applied?.model ?? this.modelOf(rt))) eff.capabilities.push("fastMode");
+    eff.capabilities = eff.capabilities.filter((c) => c !== "fastMode" && c !== "ultrafastMode");
+    for (const cap of ["fastMode", "ultrafastMode"] as const) {
+      if (this.modelSupportsSpeed(inst.descriptor, eff.applied?.model ?? this.modelOf(rt), cap)) eff.capabilities.push(cap);
+    }
     // A read-only harness sub-agent (D151) can be read and watched, nothing more.
     if (this.subagentReadOnly(rt)) eff.capabilities = eff.capabilities.filter((c) => !SUBAGENT_WRITES.has(c));
     rt.effective = eff;
@@ -1851,20 +1910,19 @@ export class Core {
    * Whether a model offers fast mode (D125): a definite `supported` on its descriptor (the
    * default model when none is named). Unknown is not yes.
    */
-  modelHasFast(descriptor: ProviderDescriptor, model: ModelId | null | undefined): boolean {
+  modelSupportsSpeed(descriptor: ProviderDescriptor, model: ModelId | null | undefined, speed: "fastMode" | "ultrafastMode"): boolean {
     const models = descriptor.models ?? [];
     const m = model ? models.find((x) => x.id === model) : models.find((x) => x.isDefault) ?? models[0];
-    return m?.capabilities?.some((c) => c.capability === "fastMode" && c.support === "supported") ?? false;
+    return m?.capabilities?.some((c) => c.capability === speed && c.support === "supported") ?? false;
   }
 
-  /** Validates a client's `fast`: a boolean, and `true` only for a model that has fast mode. */
-  private checkFast(descriptor: ProviderDescriptor, model: ModelId | null | undefined, fast: unknown): boolean {
-    if (fast === undefined || fast === null) return false;
-    if (typeof fast !== "boolean") throw notActed("invalid_params", "fast must be true or false");
-    if (fast && !this.modelHasFast(descriptor, model)) {
-      throw notActed("invalid_params", `${model ?? "the default model"} has no fast mode on ${descriptor.displayName}`);
+  private checkSpeed(descriptor: ProviderDescriptor, model: ModelId | null | undefined, speed: "fast" | "ultrafast", value: unknown): boolean {
+    if (value === undefined || value === null) return false;
+    if (typeof value !== "boolean") throw notActed("invalid_params", `${speed} must be true or false`);
+    if (value && !this.modelSupportsSpeed(descriptor, model, speed === "fast" ? "fastMode" : "ultrafastMode")) {
+      throw notActed("invalid_params", `${model ?? "the default model"} has no ${speed} mode on ${descriptor.displayName}`);
     }
-    return fast;
+    return value;
   }
 
   private modelImageSupport(descriptor: ProviderDescriptor, model: ModelId | null | undefined): "supported" | "unsupported" | "unknown" {
@@ -1951,7 +2009,8 @@ export class Core {
       }
       if (p.agents !== undefined && p.agents !== null && typeof p.agents !== "string") throw notActed("invalid_params", "agents must be a string");
       this.checkModel(instance.descriptor, p.model);
-      const fast = this.checkFast(instance.descriptor, p.model, p.fast);
+      const ultrafast = this.checkSpeed(instance.descriptor, p.model, "ultrafast", p.ultrafast);
+      const fast = this.checkSpeed(instance.descriptor, p.model, "fast", p.fast) && !ultrafast;
       const parts = this.validateParts(p.input, this.modelImageSupport(instance.descriptor, p.model));
       // The thread's id is not known until the harness has started it: its attachment
       // folder is keyed by this operation, for the thread's whole life.
@@ -1962,7 +2021,7 @@ export class Core {
       this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
       let started: { thread: NativeId; turn: TurnId };
       try {
-        started = await provider.startThread({ cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null, fast }, input);
+        started = await provider.startThread({ cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null, fast, ultrafast }, input);
       } catch (e) {
         this.finishPendingStart(key);
         throw rpc("provider_unavailable", `${instance.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
@@ -1979,6 +2038,7 @@ export class Core {
           model: p.model ?? null,
           uploadsKey,
           ...(fast ? { fast: true } : {}),
+          ...(ultrafast ? { ultrafast: true } : {}),
           ...(typeof p.agents === "string" ? { agents: p.agents } : {}),
         },
         true,
@@ -2092,10 +2152,11 @@ export class Core {
       if (rt.compactDriver && delivery !== "queue") throw notActed("turn_in_progress", "context is being compacted");
       this.checkModel(inst.descriptor, p.model);
       const eff = rt.effective ?? (await this.computeEffective(rt));
-      if (p.fast !== undefined && p.fast !== null) this.checkFast(inst.descriptor, p.model ?? this.modelOf(rt), p.fast);
+      this.checkSpeed(inst.descriptor, p.model ?? this.modelOf(rt), "fast", p.fast);
+      this.checkSpeed(inst.descriptor, p.model ?? this.modelOf(rt), "ultrafast", p.ultrafast);
       const imageSupport = p.model ? this.modelImageSupport(inst.descriptor, p.model) : eff.imageInput;
       const parts = this.validateParts(p.input, imageSupport);
-      const overrides = { model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null, fast: p.fast ?? null };
+      const overrides = { model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null, fast: p.fast ?? null, ultrafast: p.ultrafast ?? null };
       const driver: Driver = { key: client.key, host: client.host };
       const busy = !!rt.activeTurn || rt.dispatching || rt.claimed;
       if (!busy || delivery !== null) this.mesh?.humanInput?.(rt);
@@ -2140,6 +2201,7 @@ export class Core {
       ...(overrides.effort ? { effort: overrides.effort } : {}),
       ...(overrides.mode ? { mode: overrides.mode } : {}),
       ...(typeof overrides.fast === "boolean" ? { fast: overrides.fast } : {}),
+      ...(typeof overrides.ultrafast === "boolean" ? { ultrafast: overrides.ultrafast } : {}),
       driver,
       ...(opId ? { opId } : {}),
     };
@@ -2234,7 +2296,7 @@ export class Core {
       this.queueEvent(rt, "removed", e);
       rt.queuePaused = false;
       if (rt.record.hold) this.releaseHold(rt, false);
-      const overrides = { model: e.model ?? null, effort: e.effort ?? null, mode: e.mode ?? null, fast: e.fast ?? null };
+      const overrides = { model: e.model ?? null, effort: e.effort ?? null, mode: e.mode ?? null, fast: e.fast ?? null, ultrafast: e.ultrafast ?? null };
       const driver: Driver = { key: client.key, host: client.host };
       if (!rt.activeTurn && !rt.dispatching && !rt.claimed) {
         const turnId = await this.submit(rt, { origin: "user", parts: e.input, overrides, driver, ...(e.opId ? { opId: e.opId } : {}) }, "now");
@@ -2353,7 +2415,7 @@ export class Core {
     const work: Work = {
       origin: "user",
       parts: entry.input,
-      overrides: { model: entry.model ?? null, effort: entry.effort ?? null, mode: entry.mode ?? null, fast: entry.fast ?? null },
+      overrides: { model: entry.model ?? null, effort: entry.effort ?? null, mode: entry.mode ?? null, fast: entry.fast ?? null, ultrafast: entry.ultrafast ?? null },
       driver: entry.driver ?? null,
       ...(entry.opId ? { opId: entry.opId } : {}),
       onStarted: (turnId) => {
@@ -2512,13 +2574,16 @@ export class Core {
       if (work.mesh) input.mesh = work.mesh;
       rt.expectTurn = { origin: work.origin, parts: work.parts, driver: work.driver, ...(work.journalItems ? { items: work.journalItems } : {}), ...(work.opId ? { opId: work.opId } : {}) };
       const expected = rt.expectTurn;
-      // Fast mode for this turn (D125): asked for, else the thread's setting — and only while
-      // the model the turn runs on has it.
+      // A queued turn keeps its explicit choice; otherwise use the session's current speed.
       const descriptor = this.registry.get(rt.record.instance)?.descriptor;
-      const fast = (work.overrides.fast ?? rt.record.fast ?? false) === true && !!descriptor && this.modelHasFast(descriptor, work.overrides.model ?? this.modelOf(rt));
+      const model = work.overrides.model ?? this.modelOf(rt);
+      const ultrafast = (work.overrides.ultrafast ?? (work.overrides.fast == null && rt.record.ultrafast)) === true
+        && !!descriptor && this.modelSupportsSpeed(descriptor, model, "ultrafastMode");
+      const fast = !ultrafast && (work.overrides.fast ?? rt.record.fast) === true
+        && !!descriptor && this.modelSupportsSpeed(descriptor, model, "fastMode");
       // A thread a `thread/move` moved (D144): every turn names its folder, and the first one
       // after the move begins with a short fixed note saying so. Only the harness sees it.
-      const overrides: TurnOverrides = { ...work.overrides, fast };
+      const overrides: TurnOverrides = { ...work.overrides, fast, ultrafast };
       if (rt.record.cwdMoved) overrides.cwd = rt.record.cwd;
       const note = rt.record.cwdNote;
       if (note) input.text = movedNote(note.from, note.to) + input.text;
@@ -2533,12 +2598,17 @@ export class Core {
         throw rpc("provider_unavailable", `the harness did not start the turn: ${(e as Error).message}`);
       }
       if (note) delete rt.record.cwdNote;
-      if ((rt.record.fast ?? false) !== fast) {
+      const speedChanged = (rt.record.fast ?? false) !== fast || (rt.record.ultrafast ?? false) !== ultrafast;
+      if (speedChanged) {
         if (fast) rt.record.fast = true;
         else delete rt.record.fast;
+        if (ultrafast) rt.record.ultrafast = true;
+        else delete rt.record.ultrafast;
+        rt.saveRecord();
       }
       // A provider can emit both start and completion before returning the turn id.
       if (rt.expectTurn === expected) this.turnBegan(rt, turnId, work.origin, work.parts, work.driver, work.journalItems, work.opId);
+      else if (speedChanged) this.updateIndex(rt);
       rt.dispatching = false;
       try {
         await work.onStarted?.(turnId);

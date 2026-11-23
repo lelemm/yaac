@@ -90,6 +90,13 @@ export class Projection {
     return this.byId.get(id);
   }
 
+  /** Iterate backward from the live end or immediately before an item. */
+  *historyBefore(before?: string): IterableIterator<Item> {
+    const end = before === undefined ? this.order.length : this.order.lastIndexOf(before);
+    if (end < 0) throw new Error("history anchor missing");
+    for (let i = end - 1; i >= 0; i--) yield this.byId.get(this.order[i]!)!;
+  }
+
   /** Items oldest first, cloned. */
   snapshot(): Item[] {
     return this.order.map((id) => clone(this.byId.get(id)!));

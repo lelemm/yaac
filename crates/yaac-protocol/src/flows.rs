@@ -38,6 +38,8 @@ pub struct StartThread {
     pub mode: Option<ModeId>,
     /// Fast mode (D125).
     pub fast: Option<bool>,
+    /// Ultrafast mode.
+    pub ultrafast: Option<bool>,
     /// The first message.
     pub input: Vec<InputPart>,
 }

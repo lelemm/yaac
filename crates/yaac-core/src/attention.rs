@@ -186,6 +186,8 @@ pub struct ThreadDisplay {
     /// Running in fast mode (D125), as the target reports it: the spinner is yellow and
     /// turns a little faster. Only ever set beside the running mark.
     pub fast: bool,
+    /// A running turn launched with Ultrafast.
+    pub ultrafast: bool,
 }
 
 /// The display of a thread.
@@ -198,8 +200,10 @@ pub fn display(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> ThreadD
         None => base_mark(state, key),
     };
     let unseen = state.is_unseen(key) && unseen_shows(mark);
-    let fast = mark == Mark::Running && state.summary(key).is_some_and(|s| s.fast);
-    ThreadDisplay { mark, attention, read_only, unseen, fast }
+    let summary = state.summary(key).filter(|_| mark == Mark::Running);
+    let ultrafast = summary.is_some_and(|s| s.ultrafast == Some(true));
+    let fast = !ultrafast && summary.is_some_and(|s| s.fast);
+    ThreadDisplay { mark, attention, read_only, unseen, fast, ultrafast }
 }
 
 /// Whether the unseen outline is drawn beside this mark (D114's precedence): needs you,

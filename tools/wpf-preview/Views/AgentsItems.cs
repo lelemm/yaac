@@ -100,6 +100,8 @@ internal sealed record AgentsData
     public string Mark { get; init; } = "";
     public string MarkLabel { get; init; } = "";
     public Brush MarkColor { get; init; } = Palette.Brush("YaacMuted");
+    public bool Fast { get; init; }
+    public bool Ultrafast { get; init; }
     public string Traits { get; init; } = "";
     public string Branch { get; init; } = "";
     public string Changes { get; init; } = "";
@@ -148,7 +150,7 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, int De
         var (symbol, label, brush) = row.StringField("mark") switch
         {
             "needsYou" => ("!", "needs you", Red),
-            "running" => ("", "running", row.BoolField("fast") ? Palette.Brush("YaacFast") : Palette.Brush("YaacText")),
+            "running" => ("", "running", RunningSpinner.Ink(row.BoolField("fast"), row.BoolField("ultrafast"))),
             "paused" => ("Ⅱ", "paused", Yellow),
             "waiting" => ("⌛", "waiting", Muted),
             "done" => ("✓", "done", Green),
@@ -193,6 +195,8 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, int De
             Mark = symbol,
             MarkLabel = label,
             MarkColor = brush,
+            Fast = row.BoolField("fast"),
+            Ultrafast = row.BoolField("ultrafast"),
             Traits = traits,
             Flow = flow,
             Branch = git.StringField("branch"),

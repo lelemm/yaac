@@ -82,7 +82,7 @@
       </Border>
       <GridSplitter x:Name="SidebarSplitter" Grid.Column="1" Background="{DynamicResource YaacRule}"
                     Margin="-2,42,-2,0" Width="5" HorizontalAlignment="Center" VerticalAlignment="Stretch" />
-      <Grid Grid.Column="2" x:Name="ThreadContent">
+      <Grid Grid.Column="2" x:Name="ThreadContent" SizeChanged="ThreadContentSizeChanged">
         <Grid.RowDefinitions>
           <RowDefinition Height="42" />
           <RowDefinition Height="Auto" />
@@ -117,8 +117,21 @@
           <StackPanel x:Name="HeaderLinks" Orientation="Horizontal" />
           <StackPanel x:Name="HeaderBanners" />
         </StackPanel>
-        <views:TranscriptView Grid.Row="2" x:Name="TranscriptPane" />
-        <views:ComposerView Grid.Row="3" x:Name="ComposerPane" Margin="28,0,28,10" />
+        <views:TranscriptView Grid.Row="2" x:Name="TranscriptPane" HorizontalAlignment="Center" />
+        <Grid Grid.Row="3" x:Name="ComposerColumn" HorizontalAlignment="Center" Margin="0,0,0,10">
+          <views:ComposerView x:Name="ComposerPane" />
+          <Thumb HorizontalAlignment="Right" VerticalAlignment="Bottom" Width="10" Height="44"
+                 Margin="0,0,-6,8" Cursor="SizeWE" DragDelta="ComposerResize"
+                 ToolTip="Resize chat and composer" AutomationProperties.Name="Resize chat and composer">
+            <Thumb.Template>
+              <ControlTemplate TargetType="Thumb">
+                <Grid Background="Transparent">
+                  <Border Width="2" Height="21" CornerRadius="1" Background="{DynamicResource YaacMuted}" Opacity=".45" />
+                </Grid>
+              </ControlTemplate>
+            </Thumb.Template>
+          </Thumb>
+        </Grid>
       </Grid>
       <views:AgentsView Grid.Column="2" x:Name="AgentsPane" Panel.ZIndex="2"
                         HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,20,0" />

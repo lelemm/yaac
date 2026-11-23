@@ -99,7 +99,7 @@ fn card_height(cl: &[Cluster<'_>], thread: Rect) -> f32 {
 /// The pill and card regions for a panel in a thread view (what the hover rule uses).
 #[cfg(test)]
 pub(crate) fn regions_for(thread: Rect, panel: &AgentsPanel) -> (Rect, Rect) {
-    floating_regions(thread, pill_height(&pill(panel, pill_cap_for(thread))), card_height(&clusters(panel), thread))
+    floating_regions(thread, pill_height(&pill(panel, pill_cap_for(thread))), card_height(&clusters(panel), thread), 0.0)
 }
 
 /// The pill's "more" item (D168), in `r`.
@@ -131,7 +131,11 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
     let all = clusters(panel);
     let spent = panel.budget.as_ref().is_some_and(|b| b.exhausted);
     let (pill_extra, card_extra) = if spent { (BUDGET_H, BUDGET_H + 4.0) } else { (0.0, 0.0) };
-    let (strip, card_rect) = floating_regions(thread, pill_height(&pl) + pill_extra, card_height(&all, thread) + card_extra);
+    let pill_h = pill_height(&pl) + pill_extra;
+    let card_h = card_height(&all, thread) + card_extra;
+    let travel = ((thread.height() - pill_h.max(card_h)) / 2.0 - 4.0).max(0.0);
+    let offset = app.ui.agents_offset.clamp(-travel, travel);
+    let (strip, card_rect) = floating_regions(thread, pill_h, card_h, offset);
     let width = if card { CARD_W } else { PILL_W };
     let pos = if card { card_rect.min } else { strip.min };
     let mut any_focus = false;
@@ -146,6 +150,18 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                 ui.set_min_height(card_rect.height() - 20.0);
                 ui.set_max_height(card_rect.height() - 20.0);
                 ui.horizontal(|ui| {
+                    let (grip, drag) = ui.allocate_exact_size(vec2(16.0, 20.0), Sense::drag());
+                    let drag = drag.on_hover_cursor(egui::CursorIcon::ResizeVertical).on_hover_text("Move Related agents");
+                    let ink = if drag.hovered() || drag.dragged() { p.text } else { p.text2 };
+                    for y in [-3.0, 0.0, 3.0] {
+                        let center = grip.center() + vec2(0.0, y);
+                        ui.painter().hline((center.x - 4.0)..=(center.x + 4.0), center.y, Stroke::new(1.0, ink));
+                    }
+                    if drag.dragged() {
+                        any_focus = true;
+                        app.ui.agents_offset = (offset + drag.drag_delta().y).clamp(-travel, travel);
+                        ctx.request_repaint();
+                    }
                     ui.label(egui::RichText::new("Related agents").font(theme::bold(size::UI)));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let d = widgets::plain(ui, &p, "Dock", None).on_hover_text("Pin to the side");
@@ -310,9 +326,9 @@ const CARD_MARGIN: f32 = 12.0;
 
 /// The pill's strip and the card's region, from the layout alone: both share the thread's
 /// right edge (less a 12 pt margin) and are centred on the same line.
-pub(crate) fn floating_regions(thread: Rect, pill_h: f32, card_h: f32) -> (Rect, Rect) {
+fn floating_regions(thread: Rect, pill_h: f32, card_h: f32, offset: f32) -> (Rect, Rect) {
     let right = thread.right() - 12.0;
-    let cy = thread.center().y;
+    let cy = thread.center().y + offset;
     let strip = Rect::from_min_max(pos2(right - PILL_W, cy - pill_h / 2.0), pos2(right, cy + pill_h / 2.0));
     let card = Rect::from_min_max(pos2(right - CARD_W, cy - card_h / 2.0), pos2(right, cy + card_h / 2.0));
     (strip, card)

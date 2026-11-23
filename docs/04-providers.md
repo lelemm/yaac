@@ -556,6 +556,12 @@ own `fast` and applies it when delivered.
 | Codex | `Model.serviceTiers[]` (`{ id, name, description }`): the model has fast mode when a tier is named "Fast" (or has the id `fast` / `priority`); a listed but empty `serviceTiers` is `unsupported`; no field at all (older Codex) is `unknown` | `turn/start.serviceTierForTurn`: that tier's id when on, `"default"` when off — for the turn only, so the thread's own tier in Codex is never changed. Nothing is sent for a model without a fast tier. |
 | Claude Code | `supportsFastMode` on `supportedModels()` (absent: `unknown`) | Claude Code's `fastMode` setting in the query's flag layer: `settings: { fastMode: true }` when a query opens, `applyFlagSettings({ fastMode })` on a live query (re-opened with `resume` if refused). Setting it is also the Agent SDK's opt-in to fast mode. When the result reports `fast_mode_state` other than `on` for a turn asked to be fast, a notice in the transcript says so, with Claude Code's reason. |
 
+Codex also exposes `ultrafastMode` when that instance's catalog advertises the exact
+`ultrafast` tier for the model. Once confirmed in the window, `ultrafast: true` on
+`thread/start` or `turn/start` selects `serviceTierForTurn: "ultrafast"`.
+The daemon validates the model and saves the setting for later turns.
+Queued user messages retain their explicit speed selection.
+
 ## Models are never hardcoded
 
 **Decided.** No model id, model name, effort level, or model-to-capability table appears in YAAC

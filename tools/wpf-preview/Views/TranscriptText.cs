@@ -28,7 +28,7 @@ internal sealed class TranscriptText : ContentControl
             && TranscriptJson.Same(Data, other.Data);
     }
 
-    private static readonly FontFamily Mono = new("Consolas, Cascadia Mono");
+    private static readonly FontFamily Mono = YaacFonts.Mono;
 
     public TranscriptText(string key, TranscriptRowState state, Func<string?> copyMessage)
     {
@@ -382,7 +382,7 @@ internal sealed class TranscriptText : ContentControl
             Content = "Copy",
             Style = (Style)Application.Current.FindResource("YaacQuietButton"),
             ToolTip = "Copy code",
-            FontFamily = SystemFonts.MessageFontFamily,
+            FontFamily = YaacFonts.Ui,
             FontSize = 11,
         };
         AutomationProperties.SetName(button, "Copy code");

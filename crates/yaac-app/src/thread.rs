@@ -20,7 +20,35 @@ use crate::seltext::SelCx;
 use crate::theme::{self, Palette, size};
 use crate::widgets;
 
-const COLUMN: f32 = 860.0;
+fn chat_width(viewport: f32, preferred: f32) -> f32 {
+    let max = viewport.max(0.0) * 0.95;
+    preferred.clamp(360.0_f32.min(max), max)
+}
+
+pub(crate) fn composer_column(ui: &mut egui::Ui, preferred: f32, p: &Palette, contents: impl FnOnce(&mut egui::Ui)) -> Option<f32> {
+    let viewport = ui.available_width();
+    let width = chat_width(viewport, preferred);
+    let spacing = (viewport - width) * 0.5;
+    let row = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(spacing);
+        ui.allocate_ui_with_layout(vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.set_width(width);
+            contents(ui);
+        }).response.rect
+    });
+    let edge = pos2(row.response.rect.left() + spacing + width, row.inner.center().y);
+    let grip = ui.interact(Rect::from_center_size(edge, vec2(10.0, 32.0)), ui.scope_id().with("chat-width-grip"), Sense::drag())
+        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal).on_hover_text("Resize chat and composer");
+    ui.painter().vline(edge.x, (edge.y - 10.0)..=(edge.y + 10.0), egui::Stroke::new(2.0, if grip.hovered() || grip.dragged() { p.text2 } else { p.border }));
+    let resized = chat_width(viewport, width + grip.drag_delta().x * 2.0);
+    if resized != width {
+        ui.ctx().request_repaint();
+        Some(resized)
+    } else {
+        None
+    }
+}
 
 pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
     let p = app.p;
@@ -31,24 +59,28 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key
         .show(ui, |ui| header_view(ui, app, map, key, actions));
     Panel::bottom("thread-composer")
         .show_separator_line(false)
-        .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 28, right: 28, top: 6, bottom: 10 }))
+        .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 10 }))
         .show(ui, |ui| {
-            crate::composer::running_commands(ui, app, key, actions);
-            match app.client.state.stopped_distro(&key.target) {
-                // A stopped WSL distro: the composer and control row give way to one line (D96).
-                Some(distro) => {
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        widgets::icon(ui, 16.0, |pa, c, d| icons::warning(pa, c, d, p.needs, p.bg));
-                        ui.label(format!("{distro} is not running ·"));
-                        if widgets::link(ui, &p, "Start it", theme::ui(size::UI)).clicked() {
-                            actions.push(Action::Retry(key.target.clone()));
-                        }
-                    });
-                    ui.add_space(8.0);
+            if let Some(width) = composer_column(ui, app.ui.chat_width, &p, |ui| {
+                crate::composer::running_commands(ui, app, key, actions);
+                match app.client.state.stopped_distro(&key.target) {
+                    // A stopped WSL distro: the composer and control row give way to one line (D96).
+                    Some(distro) => {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            widgets::icon(ui, 16.0, |pa, c, d| icons::warning(pa, c, d, p.needs, p.bg));
+                            ui.label(format!("{distro} is not running ·"));
+                            if widgets::link(ui, &p, "Start it", theme::ui(size::UI)).clicked() {
+                                actions.push(Action::Retry(key.target.clone()));
+                            }
+                        });
+                        ui.add_space(8.0);
+                    }
+                    None => crate::composer::bottom(ui, app, map, key, actions),
                 }
-                None => crate::composer::bottom(ui, app, map, key, actions),
+            }) {
+                app.ui.chat_width = width;
             }
         });
     egui::CentralPanel::no_frame().show(ui, |ui| transcript(ui, app, map, key, now, actions));
@@ -443,6 +475,19 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
         ui.vertical_centered(|ui| ui.label(widgets::secondary("Loading…", &p)));
         return;
     }
+    if t.older_cursor.is_some() || t.history_away {
+        ui.horizontal(|ui| {
+            if t.older_cursor.is_some() {
+                let label = if t.loading_older { "Loading older messages…" } else { "Load older messages" };
+                if ui.add_enabled(!t.loading_older && t.loading.is_none(), egui::Button::new(label)).clicked() {
+                    actions.push(Action::OlderHistory(key.clone()));
+                }
+            }
+            if t.history_away && ui.add_enabled(t.loading.is_none(), egui::Button::new("Latest messages")).clicked() {
+                actions.push(Action::LatestHistory(key.clone()));
+            }
+        });
+    }
     let bl = blocks(state, map, key, &app.ui.expansion);
     // Finished turns fold into "Worked for …" and their final message (D156).
     let focus = state.focus_item.as_ref().filter(|(k, _)| k == key).map(|(_, id)| id);
@@ -451,8 +496,8 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     if std::env::var_os("YAAC_DEBUG_LAYOUT").is_some() {
         eprintln!("transcript rect {:?} avail {avail}", ui.max_rect());
     }
-    let width = (avail - 56.0).clamp(200.0, COLUMN);
-    let x0 = ui.max_rect().left() + ((avail - width) / 2.0).max(28.0);
+    let width = chat_width(avail, app.ui.chat_width);
+    let x0 = ui.max_rect().left() + (avail - width) * 0.5;
     const GAP: f32 = 14.0;
     // Positions from measured heights. A block whose content changed since (a streaming
     // reply) keeps its last height until it is drawn and measured again, never a guess (D152);
@@ -512,6 +557,8 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
             && let Some(bi) = bl.iter().position(|b| block_items(b).contains(&i))
         {
             sa = sa.vertical_scroll_offset((tops[bi] - 80.0).max(0.0));
+        } else if !t.is_loaded() || t.loading_older {
+            app.ui.scroll_to = Some(item);
         }
     } else {
         // At the end, the pass starts at the end of this layout (D152): egui's stick-to-bottom
@@ -694,7 +741,11 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
         ui.painter().rect_filled(r, size.y / 2.0, fill);
         ui.painter().galley(r.center() - g.size() / 2.0, g, p.text);
         if resp.clicked() {
-            app.ui.scroll_end = true;
+            if t.history_away {
+                actions.push(Action::LatestHistory(key.clone()));
+            } else {
+                app.ui.scroll_end = true;
+            }
             ui.ctx().request_repaint();
         }
     }
@@ -1648,6 +1699,25 @@ fn bounded(s: &str) -> String {
 mod tests {
     use super::*;
     use yaac_core::demo::{Scene, threads};
+
+    #[test]
+    fn the_composer_column_is_centered_at_the_chat_width() {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 600.0))), ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| {
+            let viewport = ui.available_rect_before_wrap();
+            for preferred in [100.0, 620.0, 2000.0] {
+                let width = chat_width(viewport.width(), preferred);
+                composer_column(ui, preferred, &Palette::DARK, |ui| {
+                    assert!((ui.available_width() - width).abs() < 1.0);
+                    let left = viewport.left() + (viewport.width() - width) * 0.5;
+                    assert!((ui.max_rect().left() - left).abs() < 1.0);
+                    ui.label("Composer");
+                });
+            }
+        });
+        output.textures_delta.clear();
+    }
 
     /// The users-service transcript of screens 76–77, drawn once; returns each user block's
     /// measured height by item id.

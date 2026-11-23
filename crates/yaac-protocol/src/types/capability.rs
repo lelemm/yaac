@@ -99,6 +99,7 @@ open_enum! {
         /// unknown, is never offered fast mode. In a thread's effective capabilities: the
         /// thread's current model has it.
         FastMode = "fastMode",
+        UltrafastMode = "ultrafastMode",
         // Reporting
         /// Reports token usage.
         TokenUsage = "tokenUsage",

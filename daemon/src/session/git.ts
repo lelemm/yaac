@@ -46,7 +46,11 @@ export async function resolveRepo(git: GitRunner, dir: string): Promise<RepoLoca
   const common = await git(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
   const gitDir = await git(dir, ["rev-parse", "--path-format=absolute", "--git-dir"]);
   if (!common.ok || !root) return null;
-  const repo = path.resolve(dir, common.out.trim());
+  const realPath = (input: string) => {
+    const absolute = path.resolve(dir, input);
+    try { return fs.realpathSync.native(absolute); } catch { return absolute; }
+  };
+  const repo = realPath(common.out.trim());
   let real = dir;
   try {
     real = fs.realpathSync(dir);
@@ -60,8 +64,8 @@ export async function resolveRepo(git: GitRunner, dir: string): Promise<RepoLoca
     /* keep it as given */
   }
   const rel = slash(path.relative(realRoot, real)) || ".";
-  const loc: RepoLocation = { repo, relative: rel.startsWith("..") ? "." : rel, root };
-  const linked = gitDir.ok && path.resolve(dir, gitDir.out.trim()) !== repo;
+  const loc: RepoLocation = { repo, relative: rel === ".." || rel.startsWith("../") ? "." : rel, root };
+  const linked = gitDir.ok && realPath(gitDir.out.trim()) !== repo;
   if (linked) loc.worktreeName = path.basename(root);
   return loc;
 }

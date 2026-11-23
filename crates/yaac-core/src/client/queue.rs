@@ -81,6 +81,9 @@ impl Client {
         if let Some(f) = next.fast {
             params["fast"] = json!(f);
         }
+        if let Some(on) = next.ultrafast {
+            params["ultrafast"] = json!(on);
+        }
         if let Some(n) = self.state.next_settings.get_mut(key) {
             n.fast_note = None;
         }

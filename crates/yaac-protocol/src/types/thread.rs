@@ -376,6 +376,9 @@ pub struct ThreadSummary {
     /// otherwise. Only ever true while the thread's model has `fastMode`. Absent: off.
     #[serde(default)]
     pub fast: bool,
+    /// Ultrafast mode is active for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ultrafast: Option<bool>,
     /// Where the user moved the thread in YAAC (`thread/move`, D144). Absent: it is listed
     /// where its folder puts it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -524,6 +527,9 @@ pub struct ThreadStartParams {
     /// Absent: off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast: Option<bool>,
+    /// Use Ultrafast for the turn and subsequent turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ultrafast: Option<bool>,
     /// The first message.
     pub input: Vec<InputPart>,
 }
@@ -819,6 +825,9 @@ pub struct TurnStartParams {
     /// `model`. Absent: the thread's current setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast: Option<bool>,
+    /// Use Ultrafast for the turn and subsequent turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ultrafast: Option<bool>,
     /// What to do while a turn is running (docs/07-ui.md#composer). Absent: refuse with
     /// `turn_in_progress`, as before. `queue`: kept by `yaacd` (durably, in order, ahead of
     /// queued agent messages) and delivered when the turn ends. `now`: steered into the
@@ -878,6 +887,9 @@ pub struct QueuedMessage {
     /// Fast mode for the turn it starts (and after).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fast: Option<bool>,
+    /// Use Ultrafast for the turn and subsequent turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ultrafast: Option<bool>,
 }
 
 /// `turn/queueEdit`: replace a queued message's text and attachments before it is delivered.

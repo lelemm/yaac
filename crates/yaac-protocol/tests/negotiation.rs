@@ -225,6 +225,7 @@ fn requests_notifications_peer_requests_and_data_after_the_handshake() {
         delivery: None,
         mode: None,
         fast: Some(true),
+        ultrafast: None,
     };
     let id = session.request::<methods::TurnStart>(&params).unwrap();
     let (messages, _) = daemon.take(&mut session);
@@ -318,6 +319,7 @@ fn start_thread_flow() {
         effort: None,
         mode: None,
         fast: Some(true),
+        ultrafast: None,
         input: vec![InputPart::text("go")],
     };
     let id = flows::start_thread(&mut session, &command).unwrap();

@@ -130,6 +130,7 @@ pub struct NewThreadDraft {
     pub mode: Option<ModeId>,
     /// Fast mode (D125), offered only when the chosen model has it.
     pub fast: bool,
+    pub ultrafast: bool,
     /// "Fast mode is off …": a quiet note after a model change turned fast mode off.
     pub fast_note: Option<String>,
     /// Composer content.
@@ -147,6 +148,7 @@ pub struct NextSettings {
     pub mode: Option<ModeId>,
     /// Fast mode on or off (D125); `None` keeps the thread's own setting.
     pub fast: Option<bool>,
+    pub ultrafast: Option<bool>,
     /// "Fast mode is off …": a quiet note after a model change turned fast mode off.
     pub fast_note: Option<String>,
 }
@@ -420,6 +422,11 @@ impl AppState {
             .get(key)
             .and_then(|n| n.fast)
             .unwrap_or_else(|| self.summary(key).is_some_and(|s| s.fast))
+    }
+
+    pub fn thread_ultrafast(&self, key: &ThreadKey) -> bool {
+        self.next_settings.get(key).and_then(|n| n.ultrafast)
+            .unwrap_or_else(|| self.summary(key).is_some_and(|s| s.ultrafast == Some(true)))
     }
 
     /// The provider descriptor of a thread.

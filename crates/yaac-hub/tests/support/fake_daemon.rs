@@ -134,6 +134,7 @@ pub fn summary(id: &str) -> ThreadSummary {
         agents: yaac_protocol::AgentsPolicy::Ask,
         hold: None,
         fast: false,
+        ultrafast: None,
         placement: None,
         subagent: None,
         unavailable: None,
@@ -602,7 +603,7 @@ impl FakeDaemon {
                 let (items, position) = s.conns[&conn_id].snapshots[&snap_id].clone();
                 let end = (offset + page).min(items.len());
                 let cursor = (end < items.len()).then(|| yaac_protocol::PageCursor::new(format!("{snap_id}:{end}")));
-                let result = ThreadReadResult { items: items[offset..end].to_vec(), position, cursor, uploads: vec![], context: None };
+                let result = ThreadReadResult { items: items[offset..end].to_vec(), position, cursor, required_items: None, uploads: vec![], context: None };
                 Ok(serde_json::to_value(result).unwrap())
             }
             names::THREAD_ACK => {

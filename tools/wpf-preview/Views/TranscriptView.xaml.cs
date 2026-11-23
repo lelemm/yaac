@@ -31,6 +31,7 @@ public partial class TranscriptView : UserControl
     private TranscriptRow[] prompts = [];
     private ThreadViewState? thread;
     private ScrollViewer? scroll;
+    private double chatGutter = 28;
     private ScrollContentPresenter? viewport;
     private VirtualizingStackPanel? panel;
     private ScrollPin? pendingPin;
@@ -48,6 +49,7 @@ public partial class TranscriptView : UserControl
     private ScrollPin? requestedPin;
     private bool focusApplied;
     private JsonElement page;
+    private bool historyAway;
 
     public event Action<string, object?>? Command;
 
@@ -67,11 +69,27 @@ public partial class TranscriptView : UserControl
             Rows.ApplyTemplate();
             scroll = FindVisual<ScrollViewer>(Rows);
             scroll?.ApplyTemplate();
+            ApplyChatPadding();
             viewport = scroll is null ? null : FindVisual<ScrollContentPresenter>(scroll);
             panel = viewport is null ? null : FindVisual<VirtualizingStackPanel>(viewport);
             RebuildTimeline();
             QueuePin();
         };
+    }
+
+    public void SetChatGutter(double width)
+    {
+        chatGutter = width;
+        TimelineColumn.Width = new GridLength(width);
+        ApplyChatPadding();
+    }
+
+    private void ApplyChatPadding()
+    {
+        var scrollbar = scroll?.ComputedVerticalScrollBarVisibility == Visibility.Visible
+            ? (scroll.Template.FindName("PART_VerticalScrollBar", scroll) as ScrollBar)?.Width ?? 0
+            : 0;
+        Rows.Padding = new Thickness(0, 10, Math.Max(0, chatGutter - scrollbar), 16);
     }
 
     public void Render(JsonElement view)
@@ -102,6 +120,7 @@ public partial class TranscriptView : UserControl
             follow = pin.Bottom;
         }
 
+        historyAway = view.Value("historyAway").Flag();
         var pageData = view.Value("page");
         var pageChanged = !TranscriptJson.Same(page, pageData);
         if (pageChanged)
@@ -268,7 +287,12 @@ public partial class TranscriptView : UserControl
             if (projectedRows.TryGetValue(id, out var row)) yield return row;
     }
 
-    public void JumpToBottom() => SetPin(new ScrollPin(null, 0, 0, true), report: true);
+    public void JumpToBottom()
+    {
+        if (historyAway)
+            Command?.Invoke("transcript.page", new { id = "latest", threadId });
+        SetPin(new ScrollPin(null, 0, 0, true), report: true);
+    }
 
     public bool NavigatePrompt(int direction)
     {
@@ -299,7 +323,11 @@ public partial class TranscriptView : UserControl
     private void PageClicked(object sender, RoutedEventArgs e)
     {
         if (page.Value("enabled").Flag() && page.Value("id").OptionalText() is { } id)
+        {
+            follow = false;
+            pendingPin = CapturePin();
             Command?.Invoke("transcript.page", new { id, threadId });
+        }
     }
 
     private void LatestClicked(object sender, RoutedEventArgs e) => JumpToBottom();
@@ -466,6 +494,7 @@ public partial class TranscriptView : UserControl
     {
         if (scroll is null || e.OriginalSource != scroll || selectingThread)
             return;
+        ApplyChatPadding();
         selection.QueueRefresh();
         if (pendingPin is null)
         {
@@ -509,8 +538,8 @@ public partial class TranscriptView : UserControl
     private void UpdateLatest()
     {
         var fresh = Math.Max(0, messages - seen);
-        Latest.Content = fresh switch { 0 => "Jump to bottom", 1 => "1 new message", _ => $"{fresh} new messages" };
-        Latest.Visibility = !follow && items.Count > 0 && !AtBottom() ? Visibility.Visible : Visibility.Collapsed;
+        Latest.Content = historyAway ? "Latest messages" : fresh switch { 0 => "Jump to bottom", 1 => "1 new message", _ => $"{fresh} new messages" };
+        Latest.Visibility = historyAway || !follow && items.Count > 0 && !AtBottom() ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void TimelineSizeChanged(object sender, SizeChangedEventArgs e) => RebuildTimeline();

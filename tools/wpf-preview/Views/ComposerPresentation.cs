@@ -10,10 +10,10 @@ namespace Yaac.WpfPreview.Views;
 
 public partial class ComposerView
 {
-    private enum RowKind { Notice, Queue, Attachment }
+    private enum RowKind { Notice, Queue, Command, Attachment }
 
     private sealed record ComposerAction(
-        string Id, string Label, bool Enabled, bool Checked, string Detail, ComposerAction[] Children);
+        string Id, string Label, bool Enabled, bool Checked, string Detail, string Tone, ComposerAction[] Children);
 
     private sealed class OptionButton : Button
     {
@@ -46,6 +46,7 @@ public partial class ComposerView
             Field(value, "enabled").ComposerFlag(),
             Field(value, "checked").ComposerFlag(),
             Field(value, "detail").String(),
+            Field(value, "tone").String(),
             ReadActions(Field(value, "children")));
     }
 
@@ -100,7 +101,7 @@ public partial class ComposerView
         var actions = ReadActions(Field(view, "controls"));
         var selectors = actions.Where(a => a.Id != "fork").OrderBy(a => a.Id switch
         {
-            "model" => 0, "effort" => 1, "fast" => 2, "mode" => 3, "agents" => 4, _ => 5,
+            "model" => 0, "effort" => 1, "fast" or "speed" => 2, "mode" => 3, "agents" => 4, _ => 5,
         }).Select(a => a.Id == "fast" ? a with { Label = "ϟ", Detail = "Fast mode" } : a).ToArray();
         RenderActions(ControlActions, selectors);
         RenderActions(ForkActions, actions.Where(a => a.Id == "fork").ToArray());
@@ -126,9 +127,12 @@ public partial class ComposerView
                 button.Option = action;
                 SetButton(button, action, available);
                 if (action.Id == "fast") AutomationProperties.SetName(button, "Fast mode");
+                if (action.Id == "speed") AutomationProperties.SetName(button, action.Detail);
                 AutomationProperties.SetItemStatus(button, action.Checked ? "On" : "");
                 button.FontWeight = action.Checked ? FontWeights.SemiBold : FontWeights.Normal;
-                if (action.Checked && action.Label.Trim() is "⚡" or "ϟ")
+                if (action.Tone == "ultrafast")
+                    button.Foreground = (Brush)FindResource("YaacUltrafast");
+                else if (action.Tone == "fast" || action.Id == "fast" && action.Checked)
                     button.Foreground = (Brush)FindResource("YaacFast");
                 else
                     button.ClearValue(ForegroundProperty);
@@ -216,7 +220,7 @@ public partial class ComposerView
         CommandTitle.Content = title;
         var expanded = Field(view, "expanded").ComposerFlag();
         AutomationProperties.SetName(CommandTitle, title);
-        RenderRows(CommandRows, Field(view, "rows"), RowKind.Queue);
+        RenderRows(CommandRows, Field(view, "rows"), RowKind.Command);
         CommandScroller.Visibility = VisibleWhen(expanded && CommandRows.Children.Count > 0);
         if (keyChanged) CommandScroller.ScrollToTop();
 
@@ -267,12 +271,18 @@ public partial class ComposerView
             Tag = id;
             detail.Style = (Style)owner.FindResource("ComposerQuietText");
             detail.Margin = new Thickness(5, 0, 5, 0);
-            actions = kind == RowKind.Queue
+            actions = kind is RowKind.Queue or RowKind.Command
                 ? new StackPanel { Orientation = Orientation.Horizontal }
                 : new WrapPanel();
 
             switch (kind)
             {
+                case RowKind.Command:
+                    label.SetResourceReference(TextBlock.ForegroundProperty, "YaacMuted");
+                    label.FontSize = 11;
+                    label.FontFamily = YaacFonts.Mono;
+                    detail.FontSize = 11;
+                    goto case RowKind.Queue;
                 case RowKind.Queue:
                     label.TextTrimming = TextTrimming.CharacterEllipsis;
                     detail.TextTrimming = TextTrimming.CharacterEllipsis;
@@ -308,7 +318,7 @@ public partial class ComposerView
         public void Update(JsonElement model)
         {
             var title = Field(model, kind == RowKind.Notice ? "text" : "label").String();
-            label.Text = kind == RowKind.Queue ? title.Split(['\r', '\n'], 2)[0] : title;
+            label.Text = kind is RowKind.Queue or RowKind.Command ? title.Split(['\r', '\n'], 2)[0] : title;
             label.ToolTip = title.Length > 0 ? title : null;
             var busy = Field(model, "busy").ComposerFlag();
             Opacity = busy ? 0.65 : 1;

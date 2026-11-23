@@ -42,7 +42,7 @@ fn row(app: &YaacApp, row: &AgentRow) -> Value {
         "lastAction": row.last_action, "activity": row.activity, "mark": sidebar_view::tone(row.display.mark),
         "markLabel": row.display.mark.word(), "attention": row.display.attention.map(|a| a.word()),
         "unseen": row.display.unseen, "finished": row.finished, "readOnly": row.display.read_only,
-        "fast": row.display.fast, "depth": row.depth, "git": git, "actions": actions,
+        "fast": row.display.fast, "ultrafast": row.display.ultrafast, "depth": row.depth, "git": git, "actions": actions,
         "logo": logo.map(|(logo, _)| crate::logos::source(logo).0), "logoColor": logo_color, "badge": badge,
         "flow": row.flow.map(|flow| match flow { Flow::Sending => "sending", Flow::Receiving => "receiving" }),
     })

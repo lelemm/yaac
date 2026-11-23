@@ -93,6 +93,7 @@ pub enum StripEntry {
         unseen: bool,
         /// Running in fast mode (D125): the yellow, quicker spinner.
         fast: bool,
+        ultrafast: bool,
     },
     /// A hairline between one section's last thread and the next section.
     Separator,
@@ -114,7 +115,7 @@ pub fn entries(sections: &[Section]) -> Vec<StripEntry> {
             out.push(StripEntry::Label { text, collapsed: s.collapsed, pinned: s.kind == SectionKind::Pinned });
         }
         for r in &s.rows {
-            out.push(StripEntry::Thread { key: r.key.clone(), mark: r.display.mark, selected: r.selected, needs_you: r.display.mark == Mark::NeedsYou, unseen: r.display.unseen, fast: r.display.fast });
+            out.push(StripEntry::Thread { key: r.key.clone(), mark: r.display.mark, selected: r.selected, needs_you: r.display.mark == Mark::NeedsYou, unseen: r.display.unseen, fast: r.display.fast, ultrafast: r.display.ultrafast });
         }
     }
     out

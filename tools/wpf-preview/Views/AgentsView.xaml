@@ -128,6 +128,7 @@
               <Grid x:Name="DockMark" Width="18" Height="18" Visibility="Collapsed" Margin="0,0,3,0" VerticalAlignment="Top">
                 <TextBlock Text="{Binding Data.Mark}" Foreground="{Binding Data.MarkColor}" TextAlignment="Center" FontWeight="SemiBold" />
                 <preview:RunningSpinner Width="14" Height="14" Foreground="{Binding Data.MarkColor}"
+                                        Fast="{Binding Data.Fast}" Ultrafast="{Binding Data.Ultrafast}"
                                         Visibility="{Binding Data.Running, Converter={StaticResource AgentsVisible}}" />
               </Grid>
               <StackPanel Grid.Column="1">
@@ -257,6 +258,21 @@
           <DockPanel DockPanel.Dock="Top" Margin="2,0,0,4">
             <Button x:Name="DockButton" DockPanel.Dock="Right" Click="OnDock" Content="Dock"
                     ToolTip="Pin to the side" Padding="8,2" />
+            <Thumb x:Name="FloatingGrip" DockPanel.Dock="Left" Width="18" Margin="0,0,4,0" Cursor="SizeNS"
+                   ToolTip="Move Related agents" AutomationProperties.Name="Move Related agents"
+                   DragDelta="OnFloatingDrag" DragCompleted="OnFloatingDragCompleted">
+              <Thumb.Template>
+                <ControlTemplate TargetType="Thumb">
+                  <Grid Background="Transparent">
+                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                      <Rectangle Width="9" Height="1" Fill="{DynamicResource YaacMuted}" Margin="0,0,0,2" />
+                      <Rectangle Width="9" Height="1" Fill="{DynamicResource YaacMuted}" Margin="0,0,0,2" />
+                      <Rectangle Width="9" Height="1" Fill="{DynamicResource YaacMuted}" />
+                    </StackPanel>
+                  </Grid>
+                </ControlTemplate>
+              </Thumb.Template>
+            </Thumb>
             <TextBlock Text="Related agents" FontWeight="SemiBold" VerticalAlignment="Center"
                        AutomationProperties.HeadingLevel="Level1" />
           </DockPanel>
