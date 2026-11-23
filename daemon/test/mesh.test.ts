@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import { client, fakeOf, opId, sleep, startDaemon, startThread, text, tmpHome, until, type TestClient } from "./helpers.js";
 import { meshAgentCall } from "../src/providers/agentcalls.js";
 import { addressOf, childOf, itemsOf, kinds, startAllowed, stateOf, toolOutputs, untilIdle, untilTool } from "./mesh-helpers.js";
+import { InputOutcomeUnknown, type HarnessProvider } from "../src/providers/types.js";
 import type { Daemon } from "../src/session/daemon.js";
 
 const MESH_OPTS = { waitMaxMs: 3000, permissionWaitMs: 4000, remotePollMs: 200, tickMs: 0 };
@@ -193,6 +194,63 @@ test("a message to a busy thread is queued and dispatched when its turn ends", a
     assert.equal(read.outcome, "queued");
     assert.match(read.detail ?? "", /running a turn/);
     assert.deepEqual(read.messages, [sent[0]!.message.id], "the call names its meshSent item's message");
+  } finally {
+    await done();
+  }
+});
+
+test("default peer delivery preserves the active turn and stamps the sender in the recipient transcript", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const sender = await idleThread(d, c);
+    const { threadId: recipient, turnId } = await startAllowed(c, "/fake sleep 2500\n/fake say uninterrupted");
+    const provider: HarnessProvider = fakeOf(d);
+    let offers = 0;
+    provider.deliverPeer = async (thread, turn, input, beforeSend) => {
+      assert.equal(thread, native(d, recipient));
+      assert.equal(turn, turnId);
+      assert.equal(input.origin, "mesh");
+      assert.equal(input.mesh?.[0]?.from, addressOf(d, sender));
+      assert.match(input.text, /reply with send_message/);
+      assert.ok(beforeSend());
+      assert.equal(inboxOf(d, recipient)[0]?.inState, "dispatching", "intent stored before the harness call");
+      offers++;
+      return turn;
+    };
+    await call(d, sender, "send_message", { to: addressOf(d, recipient), text: "peer input", from: "forged" });
+    await until(() => inboxOf(d, recipient)[0]?.receipt?.handling === "nextBoundary", "accepted for next boundary");
+    const [item] = await kinds(c, recipient, "meshReceived");
+    assert.equal(item?.turnId, turnId);
+    assert.equal(item?.message.from, addressOf(d, sender));
+    assert.equal(d.core.thread(recipient)?.activeTurn, turnId);
+    await untilIdle(d, recipient);
+    assert.equal(offers, 1);
+    assert.equal(fakeOf(d).turnLog(native(d, recipient)).length, 1);
+    assert.equal((await kinds(c, sender, "meshSent"))[0]?.receipt.handling, "nextBoundary");
+  } finally {
+    await done();
+  }
+});
+
+test("an ambiguous peer handoff is shown and never falls back to an idle wake", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const sender = await idleThread(d, c);
+    const { threadId: recipient } = await startAllowed(c, "/fake sleep 600");
+    const provider: HarnessProvider = fakeOf(d);
+    let offers = 0;
+    provider.deliverPeer = async (_thread, _turn, _input, beforeSend) => {
+      assert.ok(beforeSend());
+      offers++;
+      throw new InputOutcomeUnknown("lost peer acknowledgement");
+    };
+    await call(d, sender, "send_message", { to: addressOf(d, recipient), text: "peer input" });
+    await until(() => inboxOf(d, recipient)[0]?.inState === "outcomeUnknown", "ambiguous receipt");
+    await untilIdle(d, recipient);
+    d.mesh.kick(recipient);
+    assert.equal((await kinds(c, sender, "meshSent"))[0]?.receipt.status, "outcomeUnknown");
+    assert.equal(offers, 1);
+    assert.equal(fakeOf(d).turnLog(native(d, recipient)).length, 1);
   } finally {
     await done();
   }
@@ -656,6 +714,7 @@ test("a message stored before a restart is delivered after it; a crash between i
     c = await client(d);
     const after = d.mesh.store.get(ghost.message.id)!;
     assert.equal(after.inState, "outcomeUnknown");
+    assert.equal(after.receipt?.status, "outcomeUnknown");
     // The fake's "in use" did not survive its own restart: the stored message is delivered.
     await until(() => fakeOf(d).received.some((r) => r.input.text.includes("after restart")), "delivered after the restart");
     await untilIdle(d, b);

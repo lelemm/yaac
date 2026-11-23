@@ -198,6 +198,9 @@ interface HarnessProvider {
   // Optional — presence must match the declared capabilities.
   forkThread?(thread: NativeId, opts: ForkOptions): Promise<NativeId>;   // native fork only
   steer?(thread: NativeId, turn: TurnId, input: InputPart[]): Promise<void>;
+  // Offer structured peer input at a boundary of an owned running turn, if supported.
+  deliverPeer?(thread: NativeId, turn: TurnId, input: ProviderInput,
+    beforeSend: () => boolean, beforeFollowOn: () => void): Promise<TurnId | null>;
   rename?(thread: NativeId, title: string): Promise<void>;
   archive?(thread: NativeId): Promise<void>;
   remove?(thread: NativeId): Promise<void>;

@@ -123,7 +123,7 @@ const MESH_TOOLS: ToolDef[] = [
   },
   {
     name: "send_message",
-    description: "Send a message to another thread (an agent), on this machine or another. By default it waits for a busy recipient's current turn to end (`delivery: queue`); `delivery: now` interrupts what it is doing (see the parameter). Returns a delivery receipt (delivered, queued and why, or failed) as soon as the message is safely stored — not the reply. To get a reply, call `wait`. Address it with an address from `list_threads`, `find_thread`, a spawn result, or a message you received.",
+    description: "Send a message to another thread (an agent), on this machine or another. By default it reaches a busy recipient at its next supported boundary without interrupting it (`delivery: queue`); an idle recipient starts a turn. Older harnesses receive it after the running turn ends. `delivery: now` requests immediate delivery to a worker (see the parameter). Returns a delivery receipt as soon as the message is safely stored — not the reply. To get a reply, call `wait`. Address it with an address from `list_threads`, `find_thread`, a spawn result, or a message you received.",
     inputSchema: {
       type: "object",
       properties: {
@@ -134,7 +134,7 @@ const MESH_TOOLS: ToolDef[] = [
           type: "string",
           enum: ["queue", "now"],
           description:
-            "`queue` (default): \"when you get a moment\" — a busy recipient gets it when its current turn ends. `now`: \"stop what you are doing\" — it reaches a busy recipient at once: added to its running turn where its harness can steer, otherwise its running turn is interrupted and restarted with your message (work in progress stops). Only toward threads beneath you (your workers and theirs); to anyone else it is delivered as `queue`. Never interrupts a thread waiting on its user.",
+            "`queue` (default): \"when you get a moment\" — a busy recipient gets it at its next supported boundary without interrupting its work. If the harness cannot do that, it waits for the turn to end. `now`: \"stop what you are doing\" — it reaches a busy recipient at once: added to its running turn where its harness can steer, otherwise its running turn is interrupted and restarted with your message (work in progress stops). Only toward threads beneath you (your workers and theirs); to anyone else it is delivered as `queue`. Never interrupts a thread waiting on its user.",
         },
       },
       required: ["to", "text"],

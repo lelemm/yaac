@@ -238,6 +238,28 @@ impl RelayQueue {
         Ok(out)
     }
 
+    /// Commit the recipient's final outcome. Only the original destination can report it.
+    /// A replay with the same receipt is harmless even after the source acknowledged it.
+    pub fn record_outcome(&mut self, dest: &TargetId, message: &MessageId, receipt: &Receipt) -> Result<Option<TargetId>, RelayError> {
+        let tx = self.conn.transaction()?;
+        let row: Option<(String, Option<String>)> = tx.query_row(
+            "SELECT source_target, receipt FROM messages WHERE message_id = ?1 AND dest_target = ?2 AND state != 'failed'",
+            params![message.as_str(), dest.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).optional()?;
+        let Some((source, previous)) = row else { return Ok(None) };
+        if source.is_empty() { return Ok(None) }
+        let encoded = serde_json::to_string(receipt)?;
+        if previous.as_deref() == Some(&encoded) { return Ok(None) }
+        let state = if receipt.status == ReceiptStatus::Failed { "failed" } else { "handedOff" };
+        tx.execute(
+            "UPDATE messages SET state = ?2, receipt = ?3, receipt_pending = 1, updated_at = ?4 WHERE message_id = ?1",
+            params![message.as_str(), state, encoded, now_ms()],
+        )?;
+        tx.commit()?;
+        Ok(Some(TargetId::new(source)))
+    }
+
     /// The sender of `message` has been told it is overdue.
     pub fn mark_noticed(&mut self, message: &MessageId) -> Result<(), RelayError> {
         self.conn.execute("UPDATE messages SET noticed = 1 WHERE message_id = ?1", params![message.as_str()])?;
@@ -259,10 +281,10 @@ impl RelayQueue {
     }
 
     /// The source acknowledged the receipt.
-    pub fn receipt_sent(&mut self, message: &MessageId) -> Result<(), RelayError> {
+    pub fn receipt_sent(&mut self, message: &MessageId, receipt: &Receipt) -> Result<(), RelayError> {
         self.conn.execute(
-            "UPDATE messages SET receipt_pending = 0, updated_at = ?2 WHERE message_id = ?1",
-            params![message.as_str(), now_ms()],
+            "UPDATE messages SET receipt_pending = 0, updated_at = ?2 WHERE message_id = ?1 AND receipt = ?3",
+            params![message.as_str(), now_ms(), serde_json::to_string(receipt)?],
         )?;
         Ok(())
     }

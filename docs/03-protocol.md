@@ -81,7 +81,7 @@ These are JSON-RPC 2.0 *shapes*; the `"jsonrpc": "2.0"` member is omitted, and a
 
 The host sends requests; `yaacd` sends responses and notifications. The one exception is the
 agent mesh: a target must be able to hand the host a message for another target without being
-asked, so `mesh/relay` and `mesh/query` are requests that `yaacd` originates and the host
+asked, so `mesh/relay`, `mesh/deliveryReceipt`, and `mesh/query` are requests that `yaacd` originates and the host
 answers, with their own id space. Things a harness asks the
 user — approve this command, answer this question — are **not** modelled as daemon-to-UI
 requests. They are items in the thread, answered with `request/respond`
@@ -146,7 +146,7 @@ requests. They are items in the thread, answered with `request/respond`
 
 Agents reach each other through tools `yaacd` serves to the harness, not through this
 protocol. What crosses this protocol is the part that needs the host: delivery between targets,
-and keeping the UI informed. The catalogue (`mesh/relay`, `mesh/deliver`, `mesh/query`,
+and keeping the UI informed. The catalogue (`mesh/relay`, `mesh/deliver`, `mesh/deliveryReceipt`, `mesh/query`,
 `mesh/roster`, `mesh/policy`) and its guarantees are in
 [10 Agent mesh](10-agent-mesh.md#in-the-protocol). All of it is additive.
 

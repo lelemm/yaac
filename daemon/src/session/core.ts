@@ -59,6 +59,7 @@ import type {
 } from "../protocol/generated/types.js";
 import { canonical } from "../protocol/json.js";
 import { RpcError } from "../protocol/rpc.js";
+import { InputOutcomeUnknown, PeerInputDenied } from "../providers/types.js";
 import type { ExternalControl, HarnessProvider, MeshInputMessage, RaisedRequest, NativeId, NativeThreadInfo, ProviderEvent, ProviderFactory, ProviderInput, TurnOverrides } from "../providers/types.js";
 import { ProviderRegistry, type Instance } from "../providers/registry.js";
 import { Emitter } from "../util/emitter.js";
@@ -2163,9 +2164,11 @@ export class Core {
     origin: TurnOrigin,
     extra: { journalItems?: Item[]; mesh?: MeshInputMessage[]; onStarted?: (turnId: TurnId) => void | Promise<void>; beforeStart?: () => void | Promise<void>; opId?: string } = {},
   ): Promise<TurnStartResult> {
+    if (rt.claimed) throw notActed("turn_in_progress", "another message is being handed to this thread");
     const provider = this.provider(rt);
     const turn = rt.activeTurn;
-    if (turn && !rt.claimed && (await this.canSteer(rt))) {
+    if (turn && (await this.canSteer(rt))) {
+      if (rt.claimed || rt.activeTurn !== turn || rt.pendingRequestCount() > 0) throw notActed("turn_in_progress", "the recipient changed before the message could be delivered");
       const input = this.buildInput(rt.uploadsKey, parts, origin);
       if (extra.mesh) input.mesh = extra.mesh;
       await extra.beforeStart?.();
@@ -2206,6 +2209,35 @@ export class Core {
     }
     const turnId = await this.submit(rt, { origin, parts, overrides, driver, ...(extra.opId ? { opId: extra.opId } : {}), ...(extra.journalItems ? { journalItems: extra.journalItems } : {}), ...(extra.mesh ? { mesh: extra.mesh } : {}), ...(extra.onStarted ? { onStarted: extra.onStarted } : {}), ...(extra.beforeStart ? { beforeStart: extra.beforeStart } : {}) }, "now");
     return { turnId, outcome: (interrupted ? "interruptedAndStarted" : "started") as TurnStartOutcome };
+  }
+
+  /** Offer mail only to the same owned turn, with the ownership and approval checks repeated at handoff. */
+  async deliverPeer(rt: ThreadRuntime, dispatch: AgentDispatch, beforeSend: () => boolean, beforeFollowOn: () => void): Promise<TurnId | null> {
+    const provider = this.provider(rt);
+    const turn = rt.activeTurn;
+    const blocked = () => rt.activeTurn !== turn || rt.deleted || rt.dispatching || rt.record.hold || rt.external.external || rt.pendingRequestCount() > 0;
+    if (!provider.deliverPeer || !turn || rt.claimed || blocked()) return null;
+    rt.claimed = true;
+    try {
+      const raw = await provider.control(rt.record.native).catch((): ExternalControl => ({ external: false, uncertain: true }));
+      this.setExternal(rt, raw);
+      if (blocked()) return null;
+      const input = this.buildInput(rt.uploadsKey, dispatch.input, "mesh");
+      input.mesh = dispatch.mesh;
+      const accepted = await provider.deliverPeer(rt.record.native, turn, input, () => !blocked() && beforeSend(), beforeFollowOn);
+      if (accepted) {
+        for (const rawItem of dispatch.journalItems ?? []) {
+          const at = nowIso();
+          const item = { ...rawItem, turnId: accepted, startedAt: at, completedAt: at } as Item;
+          this.append(rt, { type: "itemStarted", item });
+          this.append(rt, { type: "itemCompleted", item });
+        }
+      }
+      return accepted;
+    } finally {
+      rt.claimed = false;
+      if (rt.canDispatch()) this.afterIdle(rt);
+    }
   }
 
   /** Dispatches the first queued user message (the queue goes ahead of agent input). */
@@ -2355,6 +2387,7 @@ export class Core {
 
   private async execute(rt: ThreadRuntime, work: Work): Promise<void> {
     rt.dispatching = true;
+    let handedOver = false;
     try {
       const provider = this.provider(rt);
       // Ownership must be shown, not assumed: ask the harness right before handing input over.
@@ -2368,10 +2401,16 @@ export class Core {
         else rt.queue.unshift(work);
         return;
       }
+      if (work.origin === "mesh") {
+        if (rt.pendingRequestCount() || rt.activeTurn || rt.record.hold || rt.claimed || rt.deleted) {
+          throw notActed("thread_in_use", "the recipient became unavailable before handoff");
+        }
+      }
       await work.beforeStart?.();
       const input = this.buildInput(rt.uploadsKey, work.parts, work.origin);
       if (work.mesh) input.mesh = work.mesh;
       rt.expectTurn = { origin: work.origin, parts: work.parts, driver: work.driver, ...(work.journalItems ? { items: work.journalItems } : {}), ...(work.opId ? { opId: work.opId } : {}) };
+      const expected = rt.expectTurn;
       // Fast mode for this turn (D125): asked for, else the thread's setting — and only while
       // the model the turn runs on has it.
       const descriptor = this.registry.get(rt.record.instance)?.descriptor;
@@ -2385,8 +2424,11 @@ export class Core {
       let turnId: TurnId;
       try {
         turnId = await provider.startTurn(rt.record.native, input, overrides);
+        handedOver = true;
       } catch (e) {
         rt.expectTurn = null;
+        if (e instanceof InputOutcomeUnknown) throw rpc("outcome_unknown", e.message);
+        if (e instanceof PeerInputDenied) throw rpc("policy_denied", e.message);
         throw rpc("provider_unavailable", `the harness did not start the turn: ${(e as Error).message}`);
       }
       if (note) delete rt.record.cwdNote;
@@ -2394,16 +2436,20 @@ export class Core {
         if (fast) rt.record.fast = true;
         else delete rt.record.fast;
       }
-      this.turnBegan(rt, turnId, work.origin, work.parts, work.driver, work.journalItems, work.opId);
+      // A provider can emit both start and completion before returning the turn id.
+      if (rt.expectTurn === expected) this.turnBegan(rt, turnId, work.origin, work.parts, work.driver, work.journalItems, work.opId);
       rt.dispatching = false;
       try {
         await work.onStarted?.(turnId);
       } finally {
         work.resolve(turnId);
       }
+      if (rt.canDispatch()) this.afterIdle(rt);
     } catch (e) {
       rt.dispatching = false;
-      const err = e instanceof NotActed ? e : e instanceof RpcError ? e : rpc("internal_error", (e as Error).message);
+      const err = handedOver && work.origin === "mesh"
+        ? rpc("outcome_unknown", (e as Error).message)
+        : e instanceof NotActed || e instanceof RpcError ? e : rpc("internal_error", (e as Error).message);
       work.onFailed?.(err instanceof NotActed ? err.error : err);
       work.reject(err);
       if (rt.canDispatch()) this.afterIdle(rt);
@@ -2634,6 +2680,7 @@ export class Core {
     this.append(rt, ev, undefined, true);
     this.updateIndex(rt);
     this.activity.emit();
+    if (rt.pendingRequestCount() === 0) this.mesh?.holdReleased?.(rt);
   }
 
   async requestRespond(client: ClientLink, p: RequestRespondParams): Promise<void> {
@@ -3118,7 +3165,7 @@ export class Core {
     switch (ev.type) {
       case "turnStarted": {
         if (rt.activeTurn === ev.turnId) return;
-        if (rt.expectTurn) {
+        if (rt.expectTurn && (!ev.origin || ev.origin === rt.expectTurn.origin)) {
           const x = rt.expectTurn;
           this.turnBegan(rt, ev.turnId, x.origin, x.parts, x.driver, x.items, x.opId);
           return;

@@ -29,6 +29,8 @@ export interface MessageRecord {
   outState?: "local" | "relayPending" | "relayed" | "done";
   /** The sender's receipt, as far as this target knows. */
   receipt?: Receipt;
+  /** The recipient owes its final harness receipt to the hub. */
+  receiptPending?: boolean;
   /** The local recipient thread id. */
   recipient?: string;
   /** The local sender thread id. */

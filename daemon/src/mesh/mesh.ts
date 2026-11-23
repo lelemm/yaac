@@ -39,6 +39,7 @@ import type {
   TurnOrigin,
 } from "../protocol/generated/types.js";
 import { RpcError } from "../protocol/rpc.js";
+import { PeerInputDenied } from "../providers/types.js";
 import type { MeshAttachment, MeshHooks, MeshInputMessage, MeshToolCall, MeshToolResult, NativeId } from "../providers/types.js";
 import type { ClientSession, MethodHandler } from "../session/client.js";
 import type { ClientLink, Core, CoreMeshHooks, DispatchHandle } from "../session/core.js";
@@ -199,6 +200,9 @@ export class Mesh implements CoreMeshHooks {
   private workerPolling = false;
   /** Threads a `now` delivery is being made to. */
   private readonly nowInFlight = new Set<string>();
+  private readonly peerInFlight = new Set<string>();
+  private readonly receiptsInFlight = new Set<string>();
+  private readonly legacyReceiptHubs = new WeakSet<ClientSession>();
   /** `alwaysAsk`: the open prompt of each thread. */
   private readonly eachPrompt = new Map<string, string>();
   private readonly stopWaitMs: number;
@@ -231,12 +235,11 @@ export class Mesh implements CoreMeshHooks {
       if (r.inState === "dispatching" && !r.turnId) {
         // The intent was recorded and the turn id was not: yaacd cannot tell whether the harness
         // started a turn with it. It is shown, never re-sent (a retry could be a second paid turn).
-        this.store.update(r.message.id, { inState: "outcomeUnknown" });
         const rt = r.recipient ? this.core.thread(r.recipient) : undefined;
         if (rt && !rt.deleted) {
           this.noticeItem(rt, "warning", `yaacd stopped while handing over a message from ${this.labelOf(r.message.from)}. It may or may not have reached the agent; it will not be sent again automatically.`);
         }
-        this.updateReceipt(r, { status: "delivered", detail: "yaacd stopped while handing it over: the outcome is unknown, and it will not be re-sent" });
+        this.updateReceipt(r, { status: "outcomeUnknown", detail: "yaacd stopped during handoff. It may have reached the agent and will not be sent again automatically" }, { inState: "outcomeUnknown" });
       } else if (r.inState === "offered") {
         this.store.update(r.message.id, { inState: "pending", offered: undefined });
       }
@@ -1592,7 +1595,8 @@ export class Mesh implements CoreMeshHooks {
 
   private receiptText(receipt: Receipt, label: string): string {
     if (receipt.status === "delivered") return `Delivered to ${label}${receipt.detail ? ` — ${receipt.detail}` : ""}.`;
-    if (receipt.status === "queued") return `Queued for ${label}${receipt.detail ? ` — ${receipt.detail}` : ""}. It is stored and will be delivered; it has not been lost.`;
+    if (receipt.status === "queued") return `Queued for ${label}${receipt.detail ? ` — ${receipt.detail}` : ""}. It is stored for delivery.`;
+    if (receipt.status === "outcomeUnknown") return `Delivery to ${label} is uncertain — ${receipt.detail ?? "it may have reached the agent and will not be sent again automatically"}.`;
     return `Failed: ${label} — ${receipt.detail ?? "it could not be delivered"}.`;
   }
 
@@ -1607,9 +1611,9 @@ export class Mesh implements CoreMeshHooks {
     const why = m.kind === "notice" ? null : this.exhaustedReason(m.root ?? null);
     if (why) return q("budgetExhausted", `the orchestration's budget is used up (${why}); it is delivered after the user chooses Continue`);
     if (rt.pendingRequestCount() > 0) return q("awaitingUser", "the thread is waiting for its user to answer a question or approval");
-    if (this.waiters.has(rt.id)) return { status: "delivered", detail: "it was waiting, and gets it now" };
-    if (rt.activeTurn || rt.dispatching) return q("recipientBusy", "the thread is running a turn; it gets the message when that turn ends");
-    return { status: "delivered", detail: m.kind === "notice" ? "it sees it at its next turn" : "it starts a turn with it now", ...(m.delivery === "now" ? { handling: "delivered" as const } : {}) };
+    if (this.waiters.get(rt.id)?.forMessages) return { status: "queued", detail: "the recipient is waiting for messages" };
+    if (rt.activeTurn || rt.dispatching) return q("recipientBusy", "the recipient is running a turn; delivery is pending");
+    return m.kind === "notice" ? { status: "delivered", detail: "it sees it at its next turn" } : { status: "delivered", detail: "waiting for its harness to start a turn" };
   }
 
   /** Stores and routes one message from a thread on this target (or about it, for notices). */
@@ -1671,14 +1675,37 @@ export class Mesh implements CoreMeshHooks {
     } else this.core.injectItem(rt.id, "itemUpdated", item);
   }
 
-  private updateReceipt(rec: MessageRecord, receipt: Receipt): void {
-    const before = JSON.stringify(rec.receipt ?? null);
-    if (before === JSON.stringify(receipt)) return;
+  private updateReceipt(rec: MessageRecord, receipt: Receipt, patch: Partial<MessageRecord> = {}): void {
+    const changed = JSON.stringify(rec.receipt ?? null) !== JSON.stringify(receipt);
+    if (!changed && Object.keys(patch).length === 0) return;
     const held = rec.receipt?.reason === "budgetExhausted" || receipt.reason === "budgetExhausted";
-    this.store.update(rec.message.id, { receipt });
+    const state = patch.inState ?? rec.inState;
+    const terminal = state === "offered" || state === "consumed" || state === "failed" || state === "outcomeUnknown";
+    const receiptPending = changed && terminal && receipt.status !== "queued" && rec.inbox && !rec.outbox && !this.isLocalAddress(rec.message.from) && rec.message.kind !== "notice";
+    this.store.update(rec.message.id, { ...patch, receipt, ...(receiptPending ? { receiptPending: true } : {}) });
+    if (!changed) return;
+    void this.forwardReceipt(rec);
     if (held && rec.inbox) this.budgetChanged(rec.message.root);
     const sender = rec.sender ? this.core.thread(rec.sender) : undefined;
     if (sender && !sender.deleted && (rec as MessageRecord & { sentTurn?: string }).sentTurn !== undefined) this.sentItem(sender, rec, "itemUpdated");
+  }
+
+  private async forwardReceipt(rec: MessageRecord): Promise<void> {
+    const hub = this.hub;
+    const receipt = rec.receipt;
+    const id = rec.message.id;
+    if (!hub || hub.isClosed || this.legacyReceiptHubs.has(hub) || !receipt || !rec.receiptPending || this.receiptsInFlight.has(id)) return;
+    this.receiptsInFlight.add(id);
+    try {
+      await hub.requestHost("mesh/deliveryReceipt", { messageId: id, receipt }, 30_000);
+      if (!this.closed && rec.receipt === receipt) this.store.update(id, { receiptPending: false });
+    } catch (e) {
+      // An older hub only returns the original mailbox receipt. Other failures retry this
+      // idempotent, durable receipt on the next tick or connection. Never resend the mail.
+      if (e instanceof RpcError && e.code === "method_not_found") this.legacyReceiptHubs.add(hub);
+    } finally {
+      this.receiptsInFlight.delete(id);
+    }
   }
 
   private async relay(rec: MessageRecord): Promise<void> {
@@ -1704,7 +1731,10 @@ export class Mesh implements CoreMeshHooks {
   }
 
   private flushOutbox(): void {
-    for (const r of this.store.all()) if (r.outbox && r.outState === "relayPending") void this.relay(r);
+    for (const r of this.store.all()) {
+      if (r.outbox && r.outState === "relayPending") void this.relay(r);
+      else void this.forwardReceipt(r);
+    }
   }
 
   // ── Delivery ───────────────────────────────────────────────────────────────────────
@@ -1749,19 +1779,29 @@ export class Mesh implements CoreMeshHooks {
     // A message from the agent that stopped a thread is what starts it again.
     const hold = rt.record.hold;
     if (hold?.by && pending.some((r) => r.message.kind === "message" && this.normalise(r.message.from) === this.normalise(hold.by!))) this.core.releaseHold(rt, false);
-    if (this.nowInFlight.has(threadId)) return;
+    if (this.nowInFlight.has(threadId) || this.peerInFlight.has(threadId)) return;
     if (pending.some((r) => r.message.delivery === "now" && !r.nowHandled) && (rt.activeTurn || rt.dispatching)) {
       void this.tryNow(rt);
       return;
     }
     const waiter = this.waiters.get(threadId);
     if (waiter && !waiter.done && waiter.forMessages) {
-      waiter.finish(this.offer(rt, pending, waiter.turnId));
-      return;
+      const available = this.waitable(rt, pending);
+      if (available.length > 0) {
+        waiter.finish(this.offer(rt, available, waiter.turnId));
+        return;
+      }
     }
     if (this.dispatches.has(threadId)) return;
     // Notices are passive: they never start a turn.
     if (!pending.some((r) => r.message.kind !== "notice")) return;
+    if (rt.activeTurn && !rt.dispatching && !rt.claimed && !rt.record.hold && !rt.external.external && rt.pendingRequestCount() === 0) {
+      const first = pending.find((r) => r.message.kind !== "notice");
+      if (first && !this.exhaustedReason(first.message.root ?? null)) {
+        void this.deliverPeer(rt, first, rt.activeTurn);
+        return;
+      }
+    }
     if (!this.core.dispatchableNow(rt)) {
       for (const r of pending) if (r.message.kind !== "notice") this.updateReceipt(r, this.receiptFor(rt, r.message));
       return;
@@ -1788,6 +1828,57 @@ export class Mesh implements CoreMeshHooks {
     this.dispatch(rt, ready, waking[0]!.message.root ?? waking[0]!.message.from);
   }
 
+  private async deliverPeer(rt: ThreadRuntime, rec: MessageRecord, oldTurn: TurnId): Promise<void> {
+    const input = this.inputOf(rec);
+    const id = rec.message.id;
+    const root = this.normalise(rec.message.root ?? rec.message.from);
+    this.peerInFlight.add(rt.id);
+    try {
+      const turnId = await this.core.deliverPeer(rt, {
+        input: [{ type: "text", text: frameMessages([input]) }],
+        mesh: [input],
+        journalItems: [this.receivedItem(rec, "")],
+      }, () => {
+        if (rec.inState !== "pending" || this.exhaustedReason(rec.message.root ?? null)) return false;
+        this.store.update(id, { inState: "dispatching" });
+        this.pendingRoots.set(rt.id, root);
+        return true;
+      }, () => {
+        this.pendingRoots.set(rt.id, root);
+        this.countTurn(root);
+      });
+      if (!turnId) {
+        if (rec.inState === "dispatching") this.store.update(id, { inState: "pending" });
+        const fallback = this.receiptFor(rt, rec.message);
+        if (fallback.reason === "recipientBusy" && rt.activeTurn === oldTurn) {
+          fallback.detail = "the harness could not take it mid-turn; it waits for the current turn to end";
+        }
+        this.updateReceipt(rec, fallback);
+        return;
+      }
+      if (turnId !== oldTurn) this.countTurn(root);
+      this.updateReceipt(rec, turnId === oldTurn
+        ? { status: "delivered", detail: "its harness accepted it for the next boundary", handling: "nextBoundary" }
+        : { status: "delivered", detail: "it started a new turn with it", handling: "delivered" }, { inState: "consumed", turnId });
+      this.kick(rt.id);
+    } catch (e) {
+      if (rec.inState === "dispatching") {
+        if (e instanceof PeerInputDenied) this.updateReceipt(rec, { status: "failed", reason: "policyDenied", detail: e.message }, { inState: "failed" });
+        else this.unknownDelivery(rt, rec, e as Error);
+      }
+      this.opts.log(`mesh: peer delivery to ${rt.id}: ${(e as Error).message}`);
+    } finally {
+      this.pendingRoots.delete(rt.id);
+      this.peerInFlight.delete(rt.id);
+      if (rt.activeTurn !== oldTurn || rec.inState === "outcomeUnknown" || rec.inState === "failed") this.kick(rt.id);
+    }
+  }
+
+  private unknownDelivery(rt: ThreadRuntime, rec: MessageRecord, error: Error): void {
+    this.updateReceipt(rec, { status: "outcomeUnknown", detail: `the harness may have accepted it (${error.message}). It will not be sent again automatically` }, { inState: "outcomeUnknown" });
+    this.noticeItem(rt, "warning", `A message from ${this.labelOf(rec.message.from)} may have reached this thread. YAAC will not send it again automatically.`);
+  }
+
   private dispatch(rt: ThreadRuntime, recs: MessageRecord[], root: Address): void {
     const tm = this.store.thread(rt.id);
     const intro =
@@ -1809,24 +1900,31 @@ export class Mesh implements CoreMeshHooks {
       },
       onStarted: (turnId) => {
         turn = turnId;
-        for (const id of ids) this.store.update(id, { inState: "consumed", turnId });
-        for (const id of ids) {
-          const r = this.store.get(id);
-          if (r && r.message.kind !== "notice") this.updateReceipt(r, { status: "delivered", detail: "it started a turn with it", ...(r.message.delivery === "now" ? { handling: "delivered" as const } : {}) });
-          if (r?.message.delivery === "now") this.store.update(id, { nowHandled: true });
+        for (const r of recs) {
+          const patch = { inState: "consumed" as const, turnId, ...(r.message.delivery === "now" ? { nowHandled: true } : {}) };
+          if (r.message.kind === "notice") this.store.update(r.message.id, patch);
+          else this.updateReceipt(r, { status: "delivered", detail: "it started a turn with it", handling: "delivered" }, patch);
         }
         if (intro) tm.introduced = true;
         this.countTurn(root);
       },
       onFailed: (error) => {
-        // The harness refused: the messages are put back, and tried again at the next chance.
+        this.pendingRoots.delete(rt.id);
+        // Retry only a definite refusal. A missing response can mean the turn already ran.
         for (const id of ids) {
           const r = this.store.get(id);
           if (!r || r.inState !== "dispatching") continue;
+          if (error instanceof RpcError && error.code === "outcome_unknown") {
+            this.unknownDelivery(rt, r, error);
+            continue;
+          }
+          if (error instanceof RpcError && error.code === "policy_denied") {
+            this.updateReceipt(r, { status: "failed", reason: "policyDenied", detail: error.message }, { inState: "failed" });
+            continue;
+          }
           const n = (r.dispatchErrors ?? 0) + 1;
           if (n >= 3) {
-            this.store.update(id, { inState: "failed", dispatchErrors: n });
-            this.updateReceipt(r, { status: "failed", detail: `the harness refused it: ${error.message}` });
+            this.updateReceipt(r, { status: "failed", detail: `the harness refused it: ${error.message}` }, { inState: "failed", dispatchErrors: n });
           } else this.store.update(id, { inState: "pending", dispatchErrors: n });
         }
       },
@@ -1861,7 +1959,7 @@ export class Mesh implements CoreMeshHooks {
    * message is delivered as `queue`, and its receipt says why.
    */
   async tryNow(rt: ThreadRuntime): Promise<void> {
-    if (this.nowInFlight.has(rt.id) || rt.deleted) return;
+    if (this.nowInFlight.has(rt.id) || this.peerInFlight.has(rt.id) || rt.deleted) return;
     const pending = this.store.inbox(rt.id, ["pending"]);
     const asked = pending.filter((r) => r.message.delivery === "now" && !r.nowHandled);
     if (asked.length === 0) return this.kick(rt.id);
@@ -1874,7 +1972,8 @@ export class Mesh implements CoreMeshHooks {
     const eligible: MessageRecord[] = [];
     for (const r of asked) {
       if (!this.isBeneath(rt, r.message.from)) degrade(r, "notBeneathSender", "`now` is only for threads beneath the sender: it was delivered as `queue`, and waits for the running turn to end");
-      else eligible.push(r);
+      else if (!this.exhaustedReason(r.message.root ?? null)) eligible.push(r);
+      else degrade(r, "budgetExhausted", "the orchestration’s budget is used up; it waits for the user to choose Continue");
     }
     if (eligible.length === 0) return this.kick(rt.id);
     if (rt.pendingRequestCount() > 0) {
@@ -1890,8 +1989,7 @@ export class Mesh implements CoreMeshHooks {
       for (const r of eligible) degrade(r, "inUseElsewhere", `the thread is open in ${rt.external.holder ?? "another program"}`);
       return;
     }
-    // Everything waiting for it goes in, in order.
-    const recs = pending;
+    const recs = eligible;
     const ids = recs.map((r) => r.message.id);
     const inputs = recs.map((r) => this.inputOf(r));
     const items = recs.map((r) => this.receivedItem(r, ""));
@@ -1929,10 +2027,11 @@ export class Mesh implements CoreMeshHooks {
       if (replacing && tm.spawnTurn === null) tm.spawnTurn = spawnTurn;
       for (const id of ids) {
         const r = this.store.get(id);
-        if (r && r.inState === "dispatching") this.store.update(id, { inState: "pending" });
+        if (r && r.inState === "dispatching") this.unknownDelivery(rt, r, e as Error);
       }
-      for (const r of eligible) degrade(r, "recipientBusy", `it could not be delivered at once (${(e as Error).message}); it is queued`);
+      for (const r of eligible) if (r.inState === "pending") degrade(r, "recipientBusy", `it could not be delivered at once (${(e as Error).message}); it is queued`);
     } finally {
+      this.pendingRoots.delete(rt.id);
       this.nowInFlight.delete(rt.id);
       this.store.save();
       this.kick(rt.id);
@@ -1947,6 +2046,11 @@ export class Mesh implements CoreMeshHooks {
       if (!r || r.receipt?.handling || r.receipt?.status === "failed" || r.outState === "done") return;
       await new Promise((res) => setTimeout(res, 50));
     }
+  }
+
+  private waitable(rt: ThreadRuntime, recs: MessageRecord[]): MessageRecord[] {
+    if (rt.external.external || rt.record.hold || rt.pendingRequestCount() > 0) return [];
+    return recs.filter((r) => r.message.kind === "notice" || !this.exhaustedReason(r.message.root ?? null));
   }
 
   /** Hands mail to a `wait`: journaled in the waiting turn, consumed once confirmed. */
@@ -1993,7 +2097,7 @@ export class Mesh implements CoreMeshHooks {
     // Mail already here is handed over at once.
     const existing = this.dispatches.get(rt.id);
     if (existing) existing.cancel();
-    const pending = this.store.inbox(rt.id, ["pending"]);
+    const pending = this.waitable(rt, this.store.inbox(rt.id, ["pending"]));
     if (forMessages && pending.length > 0) return this.offer(rt, pending, rt.activeTurn);
     const finished = (): string | null => {
       const done: string[] = [];
@@ -2244,6 +2348,7 @@ export class Mesh implements CoreMeshHooks {
   // ── Session-core hooks ─────────────────────────────────────────────────────────────
 
   turnStarted(rt: ThreadRuntime, _turnId: TurnId, origin: TurnOrigin): void {
+    this.kick(rt.id);
     if (origin === "mesh") {
       const root = this.pendingRoots.get(rt.id);
       this.pendingRoots.delete(rt.id);
@@ -2468,9 +2573,12 @@ export class Mesh implements CoreMeshHooks {
     if (!id || !receipt) throw new RpcError("invalid_params", "messageId and receipt are required");
     const rec = this.store.get(id);
     if (!rec) return {};
+    // A terminal peer receipt can beat the initial mailbox acknowledgement through the hub.
+    if (rec.receipt?.handling && receipt.status === "queued") return {};
+    const before = rec.receipt?.status;
     if (rec.outState !== "done") this.store.update(id, { outState: receipt.status === "queued" ? "relayed" : "done" });
     this.updateReceipt(rec, receipt);
-    if (receipt.status === "failed" && rec.sender && rec.message.kind !== "notice") {
+    if (before !== "failed" && receipt.status === "failed" && rec.sender && rec.message.kind !== "notice") {
       this.notice(rec.message.to, this.addressOf(rec.sender), `Your message to ${this.labelOf(rec.message.to)} could not be delivered: ${receipt.detail ?? receipt.reason ?? "it failed"}.`);
     }
     // A child's result arriving updates the parent's spawn item.

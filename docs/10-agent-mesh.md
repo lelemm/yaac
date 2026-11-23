@@ -132,7 +132,7 @@ One MCP server, named `yaac`. Few tools, each doing one thing.
 | `find_thread` | Find a specific thread **across all targets**, either by **id** or by a **fuzzy match on its title**. Needs a query; ten matches per page. |
 | `read_thread` | The recent messages, or just the last answer, of another thread — to check on a worker without interrupting it. |
 | `spawn_thread` | Start a **new thread** on any target, provider instance, and model, with a first message. Returns its address. The new thread is a child of the caller. |
-| `send_message` | Send a message to a thread, either **queued** (the default: it waits for the recipient's current turn to end) or **now** (it reaches the recipient at once, even mid-turn). Returns a delivery receipt. See [queued or now](#queued-or-now). |
+| `send_message` | Send a message to a thread, either **queued** (the default: it reaches the recipient at its next supported boundary without interrupting work) or **now** (it reaches the recipient at once, even mid-turn). Returns a delivery receipt. See [queued or now](#queued-or-now). |
 | `wait` | Block until something happens: a message arrives for the caller, or one of the named threads finishes its turn, needs attention, or fails. **Bounded at 45 seconds** — it then returns "nothing yet" with a cursor, and is called again. Harnesses time tool calls out (Codex defaults to 300 s; YAAC configures 60 s for this server), and a long silent call is indistinguishable from a hung one. |
 | `notify_when_done` | Register "when my current turn ends, send my final answer to *that* thread". `yaacd` carries it out, so it still happens if the agent forgets or is cut off. |
 | `stop_thread` | Stop a worker **and everything it spawned**, and hold them stopped. Only for threads beneath the caller. Reports what actually happened. See [stopping workers](#stopping-workers). |
@@ -331,7 +331,7 @@ and stays visible in the transcript.
 
 | `delivery` | The recipient is idle | The recipient is mid-turn |
 | --- | --- | --- |
-| `queue` (the default) | Delivered at once: a new turn starts. | Waits in the mailbox; delivered when the turn ends. |
+| `queue` (the default) | Delivered at once: a new turn starts. | Reaches the next supported boundary without interruption. If the harness cannot accept it, it waits in the mailbox for the turn to end. |
 | `now` | Delivered at once. | **Reaches it immediately**, by whichever means its harness has. |
 
 How *now* reaches a thread mid-turn depends on a capability, not on the harness's name:
@@ -359,7 +359,7 @@ Rules:
   delivered*, *delivered* (it was idle), or *queued* with the reason.
 
 The user has the same two choices in the chat composer while a turn runs — queue, or send now
-— with the same mechanics ([07 UI](07-ui.md#composer)).
+— using the composer’s own turn-end queue and Send now control ([07 UI](07-ui.md#composer)).
 
 ### Messages
 
@@ -397,24 +397,12 @@ a thread. It is handed over with the recipient's next turn or its next `wait`.
 
 ### One dispatcher per thread
 
-Everything that can start work in a thread goes through a single per-thread queue in `yaacd`:
-a message from the user, a message from another agent, a result coming back, and a `wait`
-picking up mail. Nothing reaches the harness except from that queue, one at a time.
-
-This is not a nicety. In Codex, sending input to a thread that is in the middle of a turn
-**joins that turn** instead of starting a new one — so a message handed to the harness at the
-wrong moment would be spliced into whatever the agent was doing. YAAC therefore never relies on
-the harness to queue. It dispatches only when both of these hold:
-
-1. the thread is **idle**, as far as the harness reports; and
-2. the thread is **not known to be in use elsewhere**
-   ([in use elsewhere](05-threads.md#in-use-elsewhere)).
-
-If the thread is busy, or is known to be in use elsewhere, the message stays in the mailbox.
-A lock inside YAAC cannot keep out a terminal that YAAC does not control. Where there is
-positive evidence of another user the answer is "queued"; where `yaacd` merely cannot tell,
-it takes the thread ([decided](05-threads.md#detecting-it)) — a thread nobody is visibly
-using should not sit with mail it never receives.
+All harness handoffs go through the per-thread dispatcher in `yaacd`. Mailbox delivery
+rechecks ownership, the recipient’s active turn and outstanding approvals or questions before
+offering a peer message. Supported harnesses queue it at a tool or turn boundary. Older
+harnesses keep it in the YAAC mailbox until the thread is idle. A terminal that YAAC does not
+control can take ownership independently. Positive evidence of another holder blocks the
+handoff. When `yaacd` cannot tell, it applies the usual [takeover rule](05-threads.md#detecting-it).
 
 ### What happens to a message
 
@@ -422,7 +410,7 @@ using should not sit with mail it never receives.
 | --- | --- |
 | **Idle and held by YAAC** | A new turn starts, with the message as its input. |
 | **Inside a `wait` call** | The message is returned as that call's result. No new turn. |
-| **Running a turn** (not waiting) | Queued; dispatched when the turn ends and the two conditions hold again. |
+| **Running a turn** (not waiting) | Offered for the next supported boundary. The mailbox keeps it until the turn ends if the harness cannot take it. |
 | **Waiting on an approval or question** | Queued. A message from an agent never answers a request meant for the user. |
 | **In use elsewhere** — including open but idle in a terminal | Stored in its mailbox, and the sender is told why it is waiting. YAAC does not write into a conversation another program holds. |
 | **A thread YAAC has never held** (started elsewhere, now free) | YAAC takes it, gives it the one-time YAAC introduction, then delivers. |
@@ -433,14 +421,16 @@ using should not sit with mail it never receives.
 
 ### How the agent sees it
 
-The sender and the body travel as **separate fields** all the way to the harness; they are
-never concatenated into one string that a clever message body could imitate.
+YAAC stamps the sender’s address independently of the message body and includes it in the
+instructions for replying with `send_message`. Both transcripts link to that address.
 
-- Where the harness can take agent-originated input as something other than a user message,
-  YAAC uses that. Codex accepts a turn whose input is a *tool output* attributed to
-  `yaac.receive_message`, so the model sees the message in the tool role — not as the user
-  speaking. (Verify in spike S10.)
-- Where it cannot, the message is given as input inside a fixed frame:
+- Codex app-server takes `turn/start` with empty user input and a retained
+  `codex_app.send_message_to_thread` tool output. It can accept the output inside a running
+  turn or start an idle one.
+- Claude Code accepts `priority: next` and peer origin on the SDK input stream, with a
+  `cross-session-message` envelope. Its command lifecycle acknowledges the submission. It
+  may fold the message in at a tool boundary or run it after the current reply.
+- On older harnesses, the mailbox wakes an idle thread with a fixed frame:
 
 ```
 [Message from Codex agent "Orchestrator" on local — via YAAC]
@@ -459,10 +449,10 @@ it as it would any untrusted request, and approvals still go to the human.
   Each hop deduplicates by id in the same transaction that stores the message, and the
   recipient's dispatcher hands messages over in sequence order.
 - Being *stored in the mailbox* and being *consumed by a turn* are tracked separately. Before
-  `yaacd` asks the harness to start a turn for a message, it records the intent on disk; after,
-  it records the turn id. If it crashes between the two, it looks for the turn in the harness
-  before doing anything else. If it cannot tell, the dispatch is marked **outcome unknown** and
-  shown to the user — it is not retried, because a retry could be a second paid turn.
+  `yaacd` asks the harness to accept the message, it records the intent on disk. Once the
+  harness acknowledges, it records the turn id. A timeout, disconnect, or daemon crash during
+  handoff leaves the result **uncertain**. The receipt says so and the message is never sent
+  again automatically.
 - A `wait` does not destroy what it returns. It hands over messages up to a **cursor**, and the
   mailbox advances only when the agent's next call or next turn confirms that cursor. A `wait`
   that times out or is cancelled has consumed nothing.
@@ -478,6 +468,11 @@ it as it would any untrusted request, and approvals still go to the human.
 | `delivered` | Stored in the recipient's mailbox on its target. |
 | `queued` | Stored, and waiting — for a target to come back, for a turn to end, or for another program to let go. Says which. |
 | `failed` | Could not be delivered at all: unknown address, deleted thread, mesh limits exceeded. |
+| `outcomeUnknown` | The harness may have accepted the message. YAAC keeps the record and does not automatically resend it. |
+
+A receipt can move from the initial mailbox acknowledgement to the harness outcome. Across
+targets, the recipient sends its final receipt through the hub using the same message id. An
+older hub still relays the message and its initial mailbox receipt.
 
 Sending is not a round trip to an answer. An agent that wants the reply calls `wait`.
 
@@ -702,9 +697,10 @@ item kinds, no version bump.
 | `toolCall.agentCall` | A tool call that is communication with another agent, read by `yaacd` ([below](#agent-calls-in-the-transcript)). |
 | Item kinds `meshSent`, `meshReceived`, `meshSpawn`, `meshWait` | What agents did with the mesh, in the transcript ([07 UI](07-ui.md#agents-in-the-thread-view)). |
 | `ThreadSummary.spawned_by`, `children`, `peers` | Relationships, for the sub-thread sidebar. |
-| `mesh/relay` (target → hub), `mesh/deliver` (hub → target), each acknowledged | Cross-target delivery. These are the one place where a **target** originates a request — see [03](03-protocol.md#messages). |
+| `mesh/relay` (target → hub), `mesh/deliver` (hub → target), each acknowledged | Cross-target delivery. See [03](03-protocol.md#messages). |
 | `mesh/query` | A tool call that needs another target (`list_threads`, `spawn_thread`, `read_thread` there), routed through the hub and answered. |
 | `mesh/roster` (hub → target) | The target's own name and the list of targets, kept current. |
+| `mesh/deliveryReceipt` (recipient target → hub) | The recipient reports the harness outcome. The hub checks which target held the mailbox and stores the receipt before acknowledging it. |
 | `mesh/receipt` (hub → source target) | A queued message was later delivered, or failed. This is what moves a *sent* item's receipt from "queued" to "delivered". |
 | `mesh/usage` (target → hub → the root's target) | Agent-started turns and spawns counted against a root, reported from wherever they happened. |
 | A `meshPermission` request, and a per-thread `agents` setting (`ask` / `allow`) | The permission prompt and the composer toggle. |

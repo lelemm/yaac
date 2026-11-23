@@ -76,6 +76,7 @@ struct ThreadUpdatedTokenOnly {
 pub(super) fn decode_peer_request(_: &Dialect, method: &str, params: Value) -> Result<PeerRequest, DialectError> {
     Ok(match method {
         names::MESH_RELAY => PeerRequest::MeshRelay(decode("mesh/relay", params)?),
+        names::MESH_DELIVERY_RECEIPT => PeerRequest::MeshDeliveryReceipt(decode("mesh/deliveryReceipt", params)?),
         names::MESH_QUERY => PeerRequest::MeshQuery(decode("mesh/query", params)?),
         names::MESH_USAGE => PeerRequest::MeshUsage(decode("mesh/usage", params)?),
         other => PeerRequest::Other { method: other.to_owned(), params },
