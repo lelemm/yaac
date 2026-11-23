@@ -114,6 +114,12 @@ open_enum! {
         Plan = "plan",
         /// Offers slash commands.
         SlashCommands = "slashCommands",
+        /// Lists the skills available in a folder (`skills/list`) and runs one when the user
+        /// names it: Claude Code with `/name` at the start of a message, Codex with `$name`.
+        Skills = "skills",
+        /// A skill can be named anywhere in a message (`$name`, with a structured `skill` input
+        /// part), not only at its start. Codex; Claude Code has it only as a leading `/name`.
+        InlineSkills = "inlineSkills",
         /// Runs sub-agents of its own.
         Subagents = "subagents",
         /// Lists the sub-agents it runs itself as threads of their own, each linked to the

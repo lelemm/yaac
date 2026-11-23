@@ -29,6 +29,7 @@ import type {
   ModeInfo,
   ModelInfo,
   RequestResponse,
+  SkillsListResult,
   SubagentStatus,
   ThreadEffective,
   TokenUsage,
@@ -62,6 +63,7 @@ import { ASK_TOOL, answeredInput, approvalRequest, approvalResult, normaliseQues
 import { EXECUTABLE_VAR, findExecutable, loadRealSdk, realCli, subagentFiles, type AgentEntry, type ClaudeCli, type ClaudeSdk, type SdkQuery, type SubagentFile } from "./sdk.js";
 import { flagsOf, historyItems, isToolResultMessage, LiveTranslator, type ItemEvent } from "./translate.js";
 import { previewText } from "./markup.js";
+import { claudeSkills } from "../skills.js";
 import { ClaudeRateLimits, readWithOwnQuery } from "./ratelimits.js";
 import type { RateLimitReport } from "../ratelimits.js";
 
@@ -500,6 +502,8 @@ export class ClaudeProvider implements HarnessProvider {
       "subagents",
       "subagentThreads",
       "webSearch",
+      // `/name` at the start of a message runs a skill; the list is read from disk (`skills/list`).
+      "skills",
       // accountInfo(), the usage report, and the stream's rate_limit_event (D161).
       "rateLimits",
     ];
@@ -609,6 +613,11 @@ export class ClaudeProvider implements HarnessProvider {
       modes,
     });
     return this.lastProbe;
+  }
+
+  /** The skills Claude Code would find for this folder: its project's and the user's. */
+  async skills(cwd: string): Promise<SkillsListResult> {
+    return claudeSkills(cwd, this.configDir, this.options.env.HOME ?? this.options.env.USERPROFILE ?? os.homedir());
   }
 
   /**

@@ -58,6 +58,8 @@ import type {
   ProviderRefreshParams,
   ProviderUpdatedParams,
   RequestRespondParams,
+  SkillsListParams,
+  SkillsListResult,
   StreamCreditParams,
   ThreadAckParams,
   ThreadArchiveParams,
@@ -173,6 +175,7 @@ export const METHODS = {
   UPLOAD_READ: "upload/read",
   FS_LIST: "fs/list",
   PROJECT_RESOLVE: "project/resolve",
+  SKILLS_LIST: "skills/list",
   PROJECT_LIST: "project/list",
   PROJECT_CREATE: "project/create",
   PROJECT_RENAME: "project/rename",
@@ -343,6 +346,8 @@ export interface RequestMap {
   "fs/list": { params: FsListParams; result: FsListResult };
   /** The git identity of a directory. */
   "project/resolve": { params: ProjectResolveParams; result: ProjectResolveResult };
+  /** The skills one instance offers for a working directory (under `skills`). */
+  "skills/list": { params: SkillsListParams; result: SkillsListResult };
   /** The projects the user created on this target. */
   "project/list": { params: ProjectListParams; result: ProjectListResult };
   /** Create a project: a folder and a name. Moves every thread inside it under it. */
@@ -466,6 +471,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "upload/read": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "fs/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "project/resolve": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "skills/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "project/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "project/create": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "project/rename": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },

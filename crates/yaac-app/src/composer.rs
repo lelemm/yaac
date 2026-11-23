@@ -16,6 +16,7 @@ use yaac_core::mode_confirm::ModeTarget;
 use yaac_core::compose::{self, EnterAction};
 use yaac_core::prefs::SendKey;
 
+use crate::skills_ui;
 use crate::app::{Action, Menu, YaacApp};
 use crate::files::ThumbKey;
 use crate::icons;
@@ -485,9 +486,25 @@ fn text_column(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, d: &DraftR
     if editing && let Some(e) = app.client.state.queue_edits.get_mut(key) {
         return text_box(ui, &mut e.text, id, "The queued message…", &p, &mut app.ui.ime_composing, true, &mut app.ui.focus_composer, app.ui.send_key);
     }
-    let draft = app.client.state.drafts.entry(key.clone()).or_default();
-    let had = draft.text.clone();
+    let comp = yaac_core::skills::for_thread(&app.client.state, key);
+    let state = &mut app.client.state;
+    let had = state.drafts.get(key).map_or_else(String::new, |d| d.text.clone());
+    if let Some(c) = &comp {
+        let draft = state.drafts.entry(key.clone()).or_default();
+        skills_ui::keys(ui, &mut app.ui.skills, id, c, &mut draft.text, &mut app.ui.focus_composer);
+    }
+    let draft = state.drafts.entry(key.clone()).or_default();
     let submit = text_box(ui, &mut draft.text, id, placeholder, &p, &mut app.ui.ime_composing, !dimmed, &mut app.ui.focus_composer, app.ui.send_key);
+    if let Some(c) = &comp {
+        let mut text = std::mem::take(&mut draft.text);
+        skills_ui::show(ui, &mut app.ui.skills, id, c, state, &mut text, &mut app.ui.focus_composer, &p, actions);
+        let changed = text != had;
+        state.drafts.entry(key.clone()).or_default().text = text;
+        if changed {
+            actions.push(Action::DraftEdited(d.clone()));
+        }
+        return submit;
+    }
     if draft.text != had {
         actions.push(Action::DraftEdited(d.clone()));
     }
@@ -816,17 +833,27 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
         let chip_views = yaac_core::attachments::chips(&d.draft.attachments, &support, Some(&d.target));
         let blocked = yaac_core::attachments::blocked(&chip_views);
         let has = !d.draft.text.trim().is_empty() || !d.draft.attachments.is_empty();
+        let comp = yaac_core::skills::for_new_thread(&app.client.state, &d);
         let inner = widgets::faint_frame(&p).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             chips(ui, app, &dref, &chip_views, actions);
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(ui.available_width() - 130.0);
-                    if let Some(dd) = app.client.state.new_threads.iter_mut().find(|x| x.id == id) {
-                        let had = dd.draft.text.clone();
-                        send = text_box(ui, &mut dd.draft.text, eid, &format!("Message {name}…"), &p, &mut app.ui.ime_composing, true, &mut app.ui.focus_composer, app.ui.send_key);
-                        if dd.draft.text != had {
+                    if let Some(mut text) = app.client.state.new_threads.iter_mut().find(|x| x.id == id).map(|dd| std::mem::take(&mut dd.draft.text)) {
+                        let had = text.clone();
+                        if let Some(c) = &comp {
+                            skills_ui::keys(ui, &mut app.ui.skills, eid, c, &mut text, &mut app.ui.focus_composer);
+                        }
+                        send = text_box(ui, &mut text, eid, &format!("Message {name}…"), &p, &mut app.ui.ime_composing, true, &mut app.ui.focus_composer, app.ui.send_key);
+                        if let Some(c) = &comp {
+                            skills_ui::show(ui, &mut app.ui.skills, eid, c, &app.client.state, &mut text, &mut app.ui.focus_composer, &p, actions);
+                        }
+                        if text != had {
                             actions.push(Action::DraftEdited(dref.clone()));
+                        }
+                        if let Some(dd) = app.client.state.new_threads.iter_mut().find(|x| x.id == id) {
+                            dd.draft.text = text;
                         }
                     }
                     if let Some(why) = blocked.as_ref().filter(|_| !chip_views.is_empty()) {
@@ -955,5 +982,63 @@ mod tests {
         frame(&ctx, &mut text, vec![], false);
         let (_, h) = frame(&ctx, &mut text, vec![], false);
         assert!((h - heights[0]).abs() < 1.0);
+    }
+
+    /// The skill picker over the text box: `/` lists, arrows move, Enter picks (and does not
+    /// send), Esc closes, and a path never opens it.
+    #[test]
+    fn skill_picker_opens_on_a_leading_slash_and_a_pick_replaces_the_trigger() {
+        use yaac_core::skills::{Composer, SkillCaps, SkillScopeKey, SkillsState};
+        use yaac_protocol::{InstanceId, SkillInfo, TargetId};
+        let scope = SkillScopeKey { target: TargetId::new("t"), instance: InstanceId::new("i"), cwd: "/w".into() };
+        let comp = Composer { scope: scope.clone(), caps: SkillCaps { skills: true, inline: true }, provider: "Codex".into(), builtins: vec![] };
+        let skill = |n: &str| SkillInfo { name: n.into(), description: "d".into(), path: format!("/s/{n}/SKILL.md"), scope: None, argument_hint: None };
+        let mut state = yaac_core::state::AppState::default();
+        state.skills.insert(scope, SkillsState::Ready(vec![skill("plan"), skill("planet"), skill("lint")]));
+        let ctx = egui::Context::default();
+        let id = egui::Id::unique("skills-test");
+        let mut picker = skills_ui::Picker::default();
+        let mut text = String::new();
+        let run = |text: &mut String, picker: &mut skills_ui::Picker, events: Vec<Event>| -> (Submit, Vec<Action>) {
+            let input = RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))), events, ..Default::default() };
+            let mut sent = Submit::None;
+            let mut actions = Vec::new();
+            let mut out = ctx.run_ui(input, |ui| {
+                ui.memory_mut(|m| m.request_focus(id));
+                let (mut ime, mut focus) = (false, false);
+                skills_ui::keys(ui, picker, id, &comp, text, &mut focus);
+                sent = text_box(ui, text, id, "Message", &Palette::DARK, &mut ime, true, &mut focus, SendKey::Enter);
+                skills_ui::show(ui, picker, id, &comp, &state, text, &mut focus, &Palette::DARK, &mut actions);
+            });
+            out.textures_delta.clear();
+            (sent, actions)
+        };
+        run(&mut text, &mut picker, vec![]);
+        run(&mut text, &mut picker, vec![Event::Text("/pl".into())]);
+        assert_eq!(text, "/pl");
+        run(&mut text, &mut picker, vec![]);
+        // Down moves to the second row; Enter picks it and does not send.
+        run(&mut text, &mut picker, vec![key(Key::ArrowDown, Modifiers::NONE)]);
+        let (sent, _) = run(&mut text, &mut picker, vec![key(Key::Enter, Modifiers::NONE)]);
+        assert_eq!(sent, Submit::None, "Enter picked a skill; it did not send");
+        assert_eq!(text, "$planet ", "Codex names the skill inline");
+        // The picker is closed now: Enter sends.
+        run(&mut text, &mut picker, vec![]);
+        let (sent, _) = run(&mut text, &mut picker, vec![key(Key::Enter, Modifiers::NONE)]);
+        assert_eq!(sent, Submit::Send);
+
+        // Esc closes the picker and keeps the text; a path never opens one.
+        let mut text = String::new();
+        run(&mut text, &mut picker, vec![Event::Text("/li".into())]);
+        run(&mut text, &mut picker, vec![]);
+        run(&mut text, &mut picker, vec![key(Key::Escape, Modifiers::NONE)]);
+        assert_eq!(text, "/li");
+        let (sent, _) = run(&mut text, &mut picker, vec![key(Key::Enter, Modifiers::NONE)]);
+        assert_eq!(sent, Submit::Send, "a dismissed picker no longer takes Enter");
+        let mut text = String::new();
+        run(&mut text, &mut picker, vec![Event::Text("/home/me".into())]);
+        run(&mut text, &mut picker, vec![]);
+        let (sent, _) = run(&mut text, &mut picker, vec![key(Key::Enter, Modifiers::NONE)]);
+        assert_eq!((sent, text.as_str()), (Submit::Send, "/home/me"));
     }
 }

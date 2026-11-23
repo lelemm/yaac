@@ -283,6 +283,8 @@ pub enum Capability {
     // ── Agent features surfaced in the UI ───────────────────────────────────
     Plan,                // task list updates
     SlashCommands,
+    Skills,              // lists skills for a folder (`skills/list`); `/name` runs one
+    InlineSkills,        // a skill can be named anywhere in a message (`$name` + a skill part)
     Subagents,
     WebSearch,
     FileDiffs,           // per-turn diff of file changes
@@ -425,6 +427,45 @@ came). `yaacd` decides when to call it ([05](05-threads.md#folder-trust)); the i
 | Codex | yes | `config/read { includeLayers: true }` → `config.projects["<folder>"].trust_level`; if absent, `config/value/write { keyPath: "projects", value: { "<folder>": { trust_level: "trusted" } }, mergeStrategy: "upsert", expectedVersion: <user layer's version> }` over the connection `yaacd` already has. Verified on codex-cli 0.170.0. |
 | Claude Code | no | Trust is `projects["<folder>"].hasTrustDialogAccepted` in `~/.claude.json`. The only programmatic way to set it is the Agent SDK's `workspaceTrust` option, which is not in the SDK's published types and is marked `@internal` in the CLI (2.1.330 / SDK 0.3.329) — not a supported interface, so it is not used. |
 | Fake | no | |
+
+### Skills are a capability
+
+**Proposed (D172, P310–P313).** A *skill* is a folder with a `SKILL.md` the agent can load. Two
+capabilities describe what a harness does with them; the UI branches on these, never on the
+kind:
+
+- **`skills`** — the instance can list its skills for a folder (`skills/list`,
+  [03](03-protocol.md#skills)), and the user runs one with `/name` at the start of a message.
+- **`inlineSkills`** — a skill can also be named anywhere in a message, as `$name`, and
+  `yaacd` hands the harness a structured reference beside the text (the message's `skill` input
+  part).
+
+| Harness | `skills` | `inlineSkills` | How |
+| --- | --- | --- | --- |
+| Claude Code | yes | no | `yaacd` reads the folders Claude Code uses: `<CLAUDE_CONFIG_DIR>/skills/*/SKILL.md` and `commands/*.md` (the user's), and `.claude/skills`, `.claude/commands` of the folder and each parent up to the git root (the project's); a nearer one hides a farther one of the same name, `user-invocable: false` hides a skill. The harness's own list (the stream's `system init` carries names only) has no descriptions or paths. The user's `/name` is sent as text; Claude Code runs it. Plugin skills are not listed (P312). |
+| Codex | yes | yes | App-server `skills/list { cwds: [cwd], forceReload }` → `data[].skills[]` (`name`, `description` / `shortDescription` / `interface.shortDescription`, `path`, `scope`, `enabled`); disabled skills are left out. `turn/start` input takes `{ "type": "skill", "name", "path" }` next to the text item (codex-cli 0.170.0 schema). |
+| Fake | no | no | |
+
+**The picker (UI).** `/` at the very start of a message opens it when the thread has `skills`;
+`$` at the start of a word opens it only under `inlineSkills`. `$5`, `$HOME` mid-sentence,
+`/home/me/x` and any other path never open anything. Choosing a row inserts `/name ` (Claude
+Code) or `$name ` (Codex) and, under `inlineSkills`, the sent message carries a `skill` part for
+every `$name` that is a listed skill. A trigger the provider does not support keeps the text and
+shows a tooltip naming the provider ("Claude Code cannot name a skill inside a message. Start
+the message with /name to use a skill."). The shared logic is `yaac_core::skills`; both windows
+(egui and WPF) draw it. The picker also takes built-in commands from its caller: `/compact`
+appears under the `compact` capability.
+
+**Confirmed loads in the transcript.** A tool call is shown as a skill load only when the
+harness confirmed it, never from the request alone:
+
+- Claude Code: the `Skill` tool call's *successful* result → title **"Skill loaded"**, `skill.name`
+  from the call's input. A failed or unfinished call keeps its ordinary title.
+- Codex: a *successful* command whose parsed actions read exactly a `SKILL.md` that the last
+  `skills/list` returned → title **"Read skill instructions"**. Conservative: a command that
+  only mentions a skill, a failed read, or a path not listed never counts; before the first
+  `skills/list` of the instance nothing is recognised (P313). No direct "skill used" signal
+  exists in the schema, so this is the only evidence.
 
 ### Listing a harness's own sub-agents is a capability
 

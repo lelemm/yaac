@@ -49,6 +49,7 @@ mod settings;
 mod strip;
 mod shell;
 mod sidebar;
+mod skills_ui;
 mod theme;
 mod thread;
 mod timeline;

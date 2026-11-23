@@ -161,7 +161,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
         "paste": action("paste", "Paste", true),
         "insert": insert,
     });
-    match draft {
+    match draft.clone() {
         DraftRef::Thread(key) => {
             notices.extend(
                 app.client
@@ -306,7 +306,47 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
         }
     }
     v["notices"] = json!(notices);
+    // The skill picker (`/` and `$`), unless a queued message is being edited.
+    if v["textKey"].is_null() {
+        let comp = match &draft {
+            DraftRef::Thread(k) => yaac_core::skills::for_thread(state, k),
+            DraftRef::New(id) => state.new_threads.iter().find(|d| d.id == *id).and_then(|d| yaac_core::skills::for_new_thread(state, d)),
+        };
+        if let Some(c) = comp {
+            v["skills"] = app.ui.wpf_skills.view(&draft_key, text, &c, state);
+        }
+    }
     v
+}
+
+/// The skills context and text of the open composer, for the picker's commands.
+fn skills_of(app: &YaacApp, draft: &DraftRef) -> Option<(yaac_core::skills::Composer, String)> {
+    let state = &app.client.state;
+    match draft {
+        DraftRef::Thread(k) => {
+            if state.queue_edits.contains_key(k) {
+                return None;
+            }
+            Some((yaac_core::skills::for_thread(state, k)?, state.drafts.get(k).map_or_else(String::new, |d| d.text.clone())))
+        }
+        DraftRef::New(id) => {
+            let d = state.new_threads.iter().find(|d| d.id == *id)?;
+            Some((yaac_core::skills::for_new_thread(state, d)?, d.draft.text.clone()))
+        }
+    }
+}
+
+/// The caret moved (`composer.caret`) or the text changed (`composer.edit`, which carries the
+/// caret): the picker follows, and asks for the list when it needs it.
+fn follow_caret(app: &mut YaacApp, draft: &DraftRef, p: &Value) {
+    let Some(caret) = p["caret"].as_u64() else { return };
+    let key = draft.store_key();
+    app.ui.wpf_skills.caret(&key, usize::try_from(caret).unwrap_or(usize::MAX));
+    if let Some((comp, text)) = skills_of(app, draft)
+        && let Some(scope) = app.ui.wpf_skills.settle(&key, &text, &comp, &app.client.state)
+    {
+        app.client.skills_list(&scope, false);
+    }
 }
 
 pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), String> {
@@ -357,7 +397,24 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
                     }
                 }
             }
+            follow_caret(app, &draft, p);
             Some(Action::DraftEdited(draft))
+        }
+        "composer.caret" => {
+            follow_caret(app, &draft, p);
+            None
+        }
+        "composer.skillDismiss" => {
+            if let Some((comp, text)) = skills_of(app, &draft) {
+                app.ui.wpf_skills.dismiss(&draft.store_key(), &text, &comp);
+            }
+            None
+        }
+        "composer.skillRetry" => {
+            if let Some((comp, _)) = skills_of(app, &draft) {
+                app.client.skills_list(&comp.scope, true);
+            }
+            None
         }
         "composer.send" => thread
             .map(Action::Send)
@@ -500,4 +557,70 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
         app.apply(vec![action]);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! The skill picker as the WPF composer sees it: the controller's view of `skills`.
+    use super::*;
+    use yaac_core::demo::threads;
+
+    fn settle(app: &mut YaacApp) {
+        for _ in 0..50 {
+            let ticked = app.demo.as_ref().is_some_and(|h| h.tick());
+            if !app.pump_demo() && !ticked {
+                break;
+            }
+        }
+    }
+
+    fn edit(app: &mut YaacApp, name: &str, text: &str, caret: usize) {
+        let key = DraftRef::Thread(threads::fix()).store_key();
+        command(app, name, &json!({ "key": key, "text": text, "caret": caret })).unwrap();
+    }
+
+    fn skills_view(app: &YaacApp) -> Value {
+        let map = AttentionMap::compute(&app.client.state);
+        view(app, &map, None)["skills"].clone()
+    }
+
+    #[test]
+    fn a_leading_slash_lists_skills_a_pick_is_its_insertion_and_a_path_lists_nothing() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        app.apply(vec![Action::Open(threads::fix())]);
+        // Nothing before the caret is known.
+        assert!(skills_view(&app).is_null());
+        edit(&mut app, "composer.edit", "/re", 3);
+        // The list is asked for, and meanwhile the picker says it is loading.
+        assert_eq!(skills_view(&app)["status"], "loading");
+        settle(&mut app);
+        let v = skills_view(&app);
+        assert_eq!(v["status"], "rows");
+        assert_eq!((v["start"].as_u64(), v["end"].as_u64()), (Some(0), Some(3)));
+        let labels: Vec<&str> = v["rows"].as_array().unwrap().iter().map(|r| r["label"].as_str().unwrap()).collect();
+        // Names that start with the query first, then names that contain it, then descriptions.
+        assert_eq!(&labels[..2], ["$review", "$release-notes"], "the demo's Codex names skills inline");
+        // What a pick puts in place of `[start, end)`.
+        assert_eq!(v["rows"][0]["insert"], "$review ");
+
+        // Esc closes it for this trigger; typing on keeps it closed; clearing the trigger ends that.
+        let key = DraftRef::Thread(threads::fix()).store_key();
+        command(&mut app, "composer.skillDismiss", &json!({ "key": key })).unwrap();
+        assert!(skills_view(&app).is_null());
+        edit(&mut app, "composer.edit", "/rev", 4);
+        assert!(skills_view(&app).is_null());
+        edit(&mut app, "composer.edit", "hello", 5);
+        edit(&mut app, "composer.edit", "/re", 3);
+        assert_eq!(skills_view(&app)["status"], "rows");
+
+        // A path, and money, list nothing: the text is the user's.
+        edit(&mut app, "composer.edit", "/home/me/x", 10);
+        assert!(skills_view(&app).is_null());
+        edit(&mut app, "composer.edit", "it costs $5", 11);
+        assert!(skills_view(&app).is_null());
+        // The caret is counted in UTF-16 units: a name after an astral character.
+        edit(&mut app, "composer.edit", "/ré", 3);
+        assert_eq!(skills_view(&app)["end"], 3);
+    }
 }

@@ -162,6 +162,8 @@ fn caps() -> Vec<Capability> {
         Capability::ContextUsage,
         Capability::ModelList,
         Capability::MeshTools,
+        // `/name` runs a skill; the demo's Codex also names them inline as `$name`.
+        Capability::Skills,
         // yaacd's own (D144): any thread can be moved to another project.
         Capability::ThreadMove,
     ]
@@ -186,7 +188,7 @@ pub(crate) fn codex(instance: &str, name: Option<&str>, status: ProviderStatus) 
         // (D147); its Claude cannot.
         // Codex can add input to a running turn (`turn/steer`); Claude Code cannot (D166).
         // Its harness home can be set (P300); Claude's cannot, in the demo.
-        capabilities: [caps(), vec![Capability::ThreadMoveWorkingDirectory, Capability::FolderTrust, Capability::Steer, Capability::ConfigurableHome]].concat(),
+        capabilities: [caps(), vec![Capability::ThreadMoveWorkingDirectory, Capability::FolderTrust, Capability::Steer, Capability::ConfigurableHome, Capability::InlineSkills]].concat(),
         models: vec![
             model("gpt-6.2-sol", true, Support::Supported),
             model("gpt-6.2-astra", false, Support::Supported),

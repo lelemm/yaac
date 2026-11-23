@@ -104,6 +104,7 @@ public partial class ComposerView : UserControl
         RenderProject(showEditor ? ReadAction(Field(view, "project")) : null);
         RenderControls(view);
         RenderEditorActions(view);
+        RenderSkills(Field(view, "skills"));
         if (!CanDrop)
             DropOverlay.Visibility = Visibility.Collapsed;
 
@@ -218,7 +219,8 @@ public partial class ComposerView : UserControl
         if (pendingEdits.Count == MaxPendingEdits)
             pendingEdits.RemoveAt(0);
         pendingEdits.Add(text);
-        Command?.Invoke("composer.edit", new { key, text });
+        lastCaret = Editor.CaretIndex;
+        Command?.Invoke("composer.edit", new { key, text, caret = Editor.CaretIndex });
         UpdateSendButtons();
     }
 
@@ -243,6 +245,12 @@ public partial class ComposerView : UserControl
     {
         if (imeComposing || e.Key is Key.ImeProcessed or Key.DeadCharProcessed)
             return;
+
+        if (SkillKeyDown(e))
+        {
+            e.Handled = true;
+            return;
+        }
 
         var modifiers = Keyboard.Modifiers;
         if (e.Key == Key.Escape && modifiers == ModifierKeys.None)
@@ -276,7 +284,11 @@ public partial class ComposerView : UserControl
             SubmitMessage(ctrlEnter ? shift : ctrl);
     }
 
-    private void EditorLostFocus(object sender, KeyboardFocusChangedEventArgs e) => imeComposing = false;
+    private void EditorLostFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        imeComposing = false;
+        CloseSkills();
+    }
 
     private void ApplyFocus()
     {

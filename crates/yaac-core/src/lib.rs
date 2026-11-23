@@ -56,6 +56,7 @@ pub mod requests;
 pub mod selection;
 pub mod sending;
 pub mod sidebar;
+pub mod skills;
 pub mod permission;
 pub mod projects;
 pub mod queue;

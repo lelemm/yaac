@@ -381,6 +381,11 @@ catalogue! {
         ProjectResolve = "project/resolve" as PROJECT_RESOLVE:
             t::ProjectResolveParams => t::ProjectResolveResult, HostToDaemon, request Control, response Control;
 
+        // ── Skills ─────────────────────────────────────────────────────────────────────
+        /// The skills one instance offers for a working directory (under `skills`).
+        SkillsList = "skills/list" as SKILLS_LIST:
+            t::SkillsListParams => t::SkillsListResult, HostToDaemon, request Control, response Control;
+
         // ── Projects ───────────────────────────────────────────────────────────────────
         /// The projects the user created on this target.
         ProjectList = "project/list" as PROJECT_LIST:

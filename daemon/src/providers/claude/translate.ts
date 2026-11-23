@@ -49,6 +49,8 @@ export function describeTool(name: string, input: Json): { tool: ToolKind; title
       return { tool: "webSearch", title: str(input.query) ?? name };
     case "WebFetch":
       return { tool: "webSearch", title: str(input.url) ?? name };
+    case "Skill":
+      return { tool: "other", title: str(input.skill) ? `Skill ${str(input.skill)}` : "Skill" };
     case "Agent":
     case "Task":
       return { tool: "subagent", title: str(input.description) ?? str(input.subagent_type) ?? name };
@@ -117,6 +119,10 @@ export function withResult(item: Item, result: Block, structured?: unknown): Ite
   if (done.input && (done.agentCall || str(done.input.name) === "TaskStop")) {
     const { name, ...input } = done.input;
     done = withAgentCall(done, str(name) ?? "", input, done.output ?? "", structured, failed) as typeof done;
+  }
+  // Confirmed by the tool's own successful result, never by the request alone.
+  if (!failed && done.input && str(done.input.name) === "Skill" && str(done.input.skill)) {
+    done = { ...done, title: "Skill loaded", skill: { name: str(done.input.skill)! } } as typeof done;
   }
   if (!failed && done.tool === "fileChange" && done.input) {
     const name = str(done.input.name) ?? "";

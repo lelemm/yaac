@@ -350,6 +350,10 @@ pub fn line_of(state: &AppState, map: &AttentionMap, key: &ThreadKey, index: usi
         ItemBody::ToolCall(t) => {
             let failed = item.status == ItemStatus::Failed || t.exit_code.is_some_and(|c| c != 0);
             let mut text = plain(&t.title);
+            // A skill's instructions were loaded (the harness confirmed it): say which skill.
+            if let Some(skill) = &t.skill {
+                text.push_str(&format!(" · {}", skill.name));
+            }
             if failed {
                 match t.exit_code {
                     Some(c) if c != 0 => text.push_str(&format!(" · failed (exit {c})")),
@@ -623,5 +627,39 @@ mod tests {
         // Nothing to read yet: no line, and never "Thought for 0s".
         assert!(lines_of("", ItemStatus::InProgress, None).is_empty());
         assert!(lines_of("", ItemStatus::InProgress, Some(0)).is_empty());
+    }
+
+    #[test]
+    fn a_confirmed_skill_load_names_the_skill_and_other_tools_do_not() {
+        use yaac_protocol::{SkillLoad, ToolCallItem, ToolKind};
+        let tool = |title: &str, skill: Option<&str>| ToolCallItem {
+            tool: ToolKind::Other,
+            title: title.to_owned(),
+            input: None,
+            output: String::new(),
+            output_truncated: false,
+            output_bytes: None,
+            exit_code: None,
+            cwd: None,
+            agent_call: None,
+            skill: skill.map(|n| SkillLoad { name: n.to_owned() }),
+        };
+        let key = ThreadKey::new(TargetId::new("local"), ThreadId::new("t"));
+        let mut t = crate::transcript::Transcript::new();
+        for (n, body) in [("a", tool("Skill loaded", Some("review"))), ("b", tool("Read skill instructions", Some("plan"))), ("c", tool("Skill", None))] {
+            let item = Item { id: ItemId::new(n), turn_id: TurnId::new("t1"), status: ItemStatus::Completed, body: ItemBody::ToolCall(body), started_at: None, completed_at: None };
+            t.upsert(item, 1);
+        }
+        let mut state = AppState::default();
+        state.transcripts.insert(key.clone(), t);
+        let map = AttentionMap::compute(&state);
+        let lines: Vec<String> = blocks(&state, &map, &key, &Expansion::default())
+            .into_iter()
+            .flat_map(|b| match b {
+                Block::Run { lines } => lines.into_iter().map(|l| l.text).collect(),
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(lines, ["Skill loaded · review", "Read skill instructions · plan", "Skill"]);
     }
 }

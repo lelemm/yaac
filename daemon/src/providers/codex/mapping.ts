@@ -183,6 +183,7 @@ export function userInputToParts(content: unknown): InputPart[] {
     if (c.type === "text" && typeof c.text === "string") parts.push(...textWithElements(c.text, c.text_elements ?? c.textElements));
     else if (c.type === "localImage" || c.type === "image") parts.push({ type: "text", text: `[image: ${str(c.path) ?? str(c.url) ?? "attached"}]` });
     else if (c.type === "localAudio" || c.type === "audio") parts.push({ type: "text", text: `[audio: ${str(c.path) ?? str(c.url) ?? "attached"}]` });
+    else if (c.type === "skill" && str(c.name) && str(c.path)) parts.push({ type: "skill", name: str(c.name)!, path: str(c.path)! });
     else if (c.type === "skill" || c.type === "mention") parts.push({ type: "text", text: `[${String(c.type)}: ${str(c.name) ?? ""}]` });
     else if (typeof c.type === "string") parts.push({ type: "text", text: `[${c.type}]` });
   }
@@ -220,12 +221,37 @@ function mcpOutput(result: unknown, error: unknown): string {
   return "";
 }
 
+/** `/` and `\\` alike, no trailing slash, so a path compares the same on every target. */
+export function skillPathKey(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/**
+ * The skill a finished command read the instructions of, or null. Conservative: only a
+ * successful command whose parsed actions include a read of exactly a `SKILL.md` that `skills/list`
+ * gave (`skills`: path → name). A command that merely mentions a skill, a failed or running
+ * one, or a read of another file never counts.
+ */
+export function skillRead(it: Record<string, unknown>, status: ItemStatus, skills: ReadonlyMap<string, string>): string | null {
+  if (status !== "completed" || num(it.exitCode) !== 0) return null;
+  const cwd = str(it.cwd);
+  for (const a of arr(it.commandActions)) {
+    const act = obj(a);
+    const p = act.type === "read" ? str(act.path) : null;
+    if (!p) continue;
+    const abs = /^(\/|[A-Za-z]:[\\/])/.test(p) || !cwd ? p : `${cwd}/${p}`;
+    const name = skills.get(skillPathKey(abs));
+    if (name) return name;
+  }
+  return null;
+}
+
 /**
  * One Codex thread item → one YAAC item. Never drops anything: what has no YAAC kind becomes
  * a `toolCall` of type `other` (or a `notice` where it is out-of-band information).
  * `final` is the status to assume when Codex gives none (completed for history).
  */
-export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus): Item {
+export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus, skills?: ReadonlyMap<string, string>): Item {
   const it = raw as Record<string, unknown>;
   const id = String(raw.id);
   const base = { id, turnId };
@@ -258,6 +284,8 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus): Ite
         (item as { output?: string }).output = output;
         (item as { outputBytes?: number }).outputBytes = Buffer.byteLength(output);
       }
+      const skill = skills ? skillRead(it, item.status, skills) : null;
+      if (skill) Object.assign(item, { title: "Read skill instructions", skill: { name: skill } });
       return item;
     }
     case "fileChange": {

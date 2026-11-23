@@ -19,6 +19,7 @@ mod project;
 mod provider;
 mod request;
 mod session;
+mod skill;
 mod thread;
 mod upload;
 
@@ -36,6 +37,7 @@ pub use project::*;
 pub use provider::*;
 pub use request::*;
 pub use session::*;
+pub use skill::*;
 pub use thread::*;
 pub use upload::*;
 

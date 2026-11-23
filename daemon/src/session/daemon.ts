@@ -24,6 +24,7 @@ import { Mesh, type MeshOptions } from "../mesh/mesh.js";
 import { serveBridge, sniffBridge } from "../mesh/mcp.js";
 import { Forge, type ForgeOptions } from "../forge/forge.js";
 import { PrTools } from "../forge/pr-tools.js";
+import { Skills } from "./skills.js";
 import { RateLimits } from "./ratelimits.js";
 
 /** The on-disk state format. Separate from the protocol version and the build. */
@@ -143,6 +144,8 @@ export class Daemon implements FrozenCoreHost {
     // Rate limits (D161): each instance's account and usage windows.
     this.rateLimits = new RateLimits(this.core.registry, { broadcast: (m, p) => this.core.broadcast(m, p), log: (l) => this.log(l) });
     for (const [method, handler] of this.rateLimits.methods()) this.extraMethods.set(method, handler);
+    // Skills: what an instance offers for a folder.
+    for (const [method, handler] of new Skills(this.core.registry).methods()) this.extraMethods.set(method, handler);
   }
 
   /** Starts a daemon: state, providers, the thread index, and (unless `noSocket`) the socket. */

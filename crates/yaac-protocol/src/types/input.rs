@@ -67,6 +67,17 @@ pub struct FilePart {
     pub media_type: Option<String>,
 }
 
+/// A skill the user named in the message (`inlineSkills`): `yaacd` hands it to the harness as
+/// its own skill reference, beside the text that holds the `$name`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillPart {
+    /// The skill's name.
+    pub name: String,
+    /// The path of the skill's `SKILL.md` on the target, as `skills/list` gave it.
+    pub path: String,
+}
+
 open_union! {
     /// One part of a user message.
     pub enum InputPart tag "type" {
@@ -76,6 +87,8 @@ open_union! {
         Image(ImagePart) = "image",
         /// A file referenced by path.
         File(FilePart) = "file",
+        /// A skill named in the text (only under `inlineSkills`).
+        Skill(SkillPart) = "skill",
     }
 }
 
