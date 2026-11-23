@@ -488,6 +488,8 @@ pub(crate) enum Action {
     MuteMany(Vec<ThreadKey>, Option<i64>),
     /// Unmute several threads, in one `hub/view/setMany`.
     UnmuteMany(Vec<ThreadKey>),
+    /// Clear the related agents' unseen marks in one hub update.
+    MarkRead(Vec<ThreadKey>),
     /// Unselect every sidebar row.
     ClearSelection,
     /// Open the Move dialog for these threads (D144), with a destination already chosen (a
@@ -1167,6 +1169,10 @@ impl YaacApp {
                     self.client.unmute_many(&plan.eligible);
                     self.ui.menu = None;
                     self.ui.list_sel.clear();
+                }
+                Action::MarkRead(keys) => {
+                    let changes: Vec<_> = keys.into_iter().map(|k| (k, yaac_core::state::ViewPatch { unseen: Some(false), ..Default::default() })).collect();
+                    self.client.set_view_many(&changes);
                 }
                 Action::ClearSelection => {
                     self.ui.list_sel.clear();

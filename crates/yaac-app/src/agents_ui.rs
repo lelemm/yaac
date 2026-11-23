@@ -153,6 +153,7 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                         if d.clicked() {
                             actions.push(Action::Panel(PanelInput::Dock));
                         }
+                        any_focus |= mark_all_as_read(ui, &p, panel, actions);
                     });
                 });
                 ui.add_space(4.0);
@@ -409,6 +410,18 @@ fn budget_continue(ui: &mut egui::Ui, p: &Palette, b: &BudgetLine, actions: &mut
     });
 }
 
+fn mark_all_as_read(ui: &mut egui::Ui, p: &Palette, panel: &AgentsPanel, actions: &mut Vec<Action>) -> bool {
+    let unseen = || panel.all().filter(|row| row.display.unseen).filter_map(|row| row.key.as_ref());
+    if unseen().next().is_none() {
+        return false;
+    }
+    let button = widgets::plain(ui, p, "Mark all as read", None);
+    if button.clicked() {
+        actions.push(Action::MarkRead(unseen().cloned().collect()));
+    }
+    button.has_focus()
+}
+
 /// Docked: "Related agents" (D115), the rows under the three quiet headings (D118); no
 /// boxes, no rules.
 pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, actions: &mut Vec<Action>) {
@@ -427,6 +440,7 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
             }
         });
     });
+    mark_all_as_read(ui, &p, panel, actions);
     if let Some(b) = &panel.budget {
         ui.horizontal(|ui| {
             if b.exhausted {
@@ -675,5 +689,69 @@ mod tests {
         let (mode, _) = frame(&ctx, &mut app, thread, Some(more.center()), 1.05);
         assert_eq!(mode, PanelMode::Card);
         assert!(!app.ui.card_to_hidden, "scrolled to the first hidden agent");
+    }
+
+    #[test]
+    fn mark_all_as_read_clears_related_unseen_marks_in_one_update() {
+        use yaac_core::state::ViewPatch;
+
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        let demo = app.demo.clone().unwrap();
+        demo.play(yaac_core::demo::Scene::ManyAgents);
+        demo.drain();
+        app.pump_demo();
+        let root = yaac_core::demo::threads::orchestrator();
+        app.open(&root, None);
+        let related = {
+            let map = AttentionMap::compute(&app.client.state);
+            let panel = agents_panel(&app.client.state, &map, &root).unwrap();
+            panel.all().filter(|row| row.display.mark == Mark::Done).filter_map(|row| row.key.clone()).collect::<Vec<_>>()
+        };
+        assert!(related.len() > yaac_core::agents::PILL_MAX);
+        let unrelated = yaac_core::demo::threads::fix();
+        assert!(!related.contains(&unrelated));
+        for key in related.iter().chain(std::iter::once(&unrelated)) {
+            app.client.set_view(key, ViewPatch { unseen: Some(true), pinned: Some(true), ..Default::default() });
+        }
+        app.pump_demo();
+        let request_start = demo.requests().len();
+        let thread = Rect::from_min_max(pos2(280.0, 0.0), pos2(1600.0, 440.0));
+        let mut draw = |events| {
+            let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, ..Default::default() };
+            let mut actions = Vec::new();
+            let mut out = ctx.run_ui(input, |ui| {
+                let map = AttentionMap::compute(&app.client.state);
+                let panel = agents_panel(&app.client.state, &map, &root).unwrap();
+                floating(ui.ctx(), &mut app, thread, &panel, &mut actions);
+            });
+            out.textures_delta.clear();
+            app.apply(actions);
+            out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Mark all as read" => Some(t.pos + t.galley.size() / 2.0),
+                _ => None,
+            })
+        };
+        draw(vec![Event::PointerMoved(pos2(1566.0, 220.0))]);
+        draw(Vec::new());
+        let at = draw(Vec::new()).expect("Mark all as read is in the card header");
+        draw(vec![Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            draw(vec![Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }]);
+        }
+        assert!(draw(Vec::new()).is_none(), "all related agents are read");
+        app.pump_demo();
+        assert_eq!(app.client.state.selected_thread(), Some(&root));
+        assert!(app.client.state.is_unseen(&unrelated));
+        for key in &related {
+            let view = &app.client.state.view[key];
+            assert!(!view.unseen && view.pinned);
+        }
+        let requests = demo.requests();
+        let updates: Vec<_> = requests[request_start..].iter().filter(|(_, method, _)| method == yaac_core::client::hub_names::VIEW_SET_MANY).collect();
+        assert_eq!(updates.len(), 1);
+        let entries = updates[0].2["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), related.len());
+        assert!(entries.iter().all(|entry| entry["unseen"] == false && entry.get("pinned").is_none()));
     }
 }
