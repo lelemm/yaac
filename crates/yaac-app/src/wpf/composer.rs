@@ -435,19 +435,17 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
     };
     let can_write = thread.as_ref().is_none_or(|k| app.client.state.may_act(k));
     let id = string(p, "id");
-    if name == "composer.action" {
-        if let Some(key) = &thread {
-            let command = if id == "toggleCommands" {
-                Some(Action::ToggleCommands(key.clone()))
-            } else if let Some(id) = id.strip_prefix("commandLogs:") {
-                Some(Action::CommandLogs(key.clone(), id.to_owned()))
-            } else {
-                id.strip_prefix("commandStop:").map(|id| Action::CommandStop(key.clone(), id.to_owned()))
-            };
-            if let Some(command) = command {
-                app.apply(vec![command]);
-                return Ok(());
-            }
+    if name == "composer.action" && let Some(key) = &thread {
+        let command = if id == "toggleCommands" {
+            Some(Action::ToggleCommands(key.clone()))
+        } else if let Some(id) = id.strip_prefix("commandLogs:") {
+            Some(Action::CommandLogs(key.clone(), id.to_owned()))
+        } else {
+            id.strip_prefix("commandStop:").map(|id| Action::CommandStop(key.clone(), id.to_owned()))
+        };
+        if let Some(command) = command {
+            app.apply(vec![command]);
+            return Ok(());
         }
     }
     if !can_write

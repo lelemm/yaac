@@ -488,10 +488,10 @@ impl Client {
                 let Ok(r) = serde_json::from_value::<ThreadSyncResult>(result) else { return };
                 let more = r.more;
                 self.state.apply_sync(&t, r);
-                if connected && !more {
-                    if let Some(target) = self.state.target_mut(&t).filter(|target| target.connected()) {
-                        target.commands_current = true;
-                    }
+                if connected && !more
+                    && let Some(target) = self.state.target_mut(&t).filter(|target| target.connected())
+                {
+                    target.commands_current = true;
                 }
                 if more {
                     self.sync(&t);
@@ -579,13 +579,13 @@ impl Client {
                 self.sent(&DraftRef::Thread(key), &draft);
             }
             Call::CommandLogs(command) => {
-                if let Some(log) = self.command_log.as_mut().filter(|l| l.command == command) {
-                    if let Ok(result) = serde_json::from_value::<yaac_protocol::CommandLogsResult>(result) {
-                        if result.output.is_some() || log.result.is_none() {
-                            log.result = Some(result);
-                        }
-                        log.error = None;
+                if let Some(log) = self.command_log.as_mut().filter(|l| l.command == command)
+                    && let Ok(result) = serde_json::from_value::<yaac_protocol::CommandLogsResult>(result)
+                {
+                    if result.output.is_some() || log.result.is_none() {
+                        log.result = Some(result);
                     }
+                    log.error = None;
                 }
             }
             Call::CommandStop { .. } => {}
