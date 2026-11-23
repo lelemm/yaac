@@ -61,7 +61,7 @@ impl Daemons {
     fn config(&self, name: &str) -> LocalConfig {
         let home = self.home_of(name);
         std::fs::create_dir_all(home.join("work")).unwrap();
-        LocalConfig { runtime: self.runtime.clone(), bundle: self.bundle.clone(), env: vec![], inherit_stderr: false, build: None }
+        LocalConfig { runtime: self.runtime.clone(), bundle: self.bundle.clone(), env: vec![], inherit_stderr: false, build: None, install_files: vec![] }
             .with_env("YAAC_FAKE_PROVIDER", "1")
             // Never let these tests probe or start the user's real harnesses.
             .with_env("YAAC_CODEX_PROVIDER", "0")

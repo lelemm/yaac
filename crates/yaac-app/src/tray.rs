@@ -40,6 +40,8 @@ pub(crate) struct Shell {
     quitting: bool,
     /// The window is hidden in the tray.
     pub hidden: bool,
+    /// The presentation process hosts the tray on its own Windows message loop.
+    pub external_tray: bool,
     #[cfg(windows)]
     tray: Option<WinTray>,
     /// Tests: pretend a tray icon is there.
@@ -65,6 +67,7 @@ impl Shell {
             rx,
             quitting: false,
             hidden: false,
+            external_tray: false,
             #[cfg(windows)]
             tray: None,
             #[cfg(test)]
@@ -113,7 +116,7 @@ impl Shell {
         let real = self.tray.is_some();
         #[cfg(not(windows))]
         let real = false;
-        fake || real
+        fake || real || self.external_tray
     }
 
     /// Tests: as if the tray had sent `cmd`.

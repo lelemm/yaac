@@ -8,9 +8,10 @@
 //
 // Never logs to standard output (that is the MCP channel).
 
-import * as net from "node:net";
+import type * as net from "node:net";
 import { spawn } from "node:child_process";
 import type { MeshToolCall, MeshToolResult } from "../providers/types.js";
+import { connectDaemonSocket } from "../session/server.js";
 import { BRIDGE_MAGIC } from "./link.js";
 import { serveStdioMcp } from "./stdio-mcp.js";
 import { SERVER_INSTRUCTIONS, SERVER_NAME, TOOLS } from "./tools.js";
@@ -32,25 +33,14 @@ class DaemonLink {
     private readonly startDaemon: (() => void) | null,
   ) {}
 
-  private connectOnce(): Promise<net.Socket | null> {
-    return new Promise((resolve) => {
-      const s = net.connect(this.socketPath);
-      s.once("connect", () => {
-        s.removeAllListeners("error");
-        resolve(s);
-      });
-      s.once("error", () => resolve(null));
-    });
-  }
-
   private async open(): Promise<net.Socket> {
-    let s = await this.connectOnce();
+    let s = await connectDaemonSocket(this.socketPath);
     if (!s && this.startDaemon) {
       this.startDaemon();
       const deadline = Date.now() + 15000;
       while (!s && Date.now() < deadline) {
         await new Promise((r) => setTimeout(r, 100));
-        s = await this.connectOnce();
+        s = await connectDaemonSocket(this.socketPath);
       }
     }
     if (!s) throw new Error("yaacd is not running on this machine, so the yaac tools are unavailable right now");
@@ -117,7 +107,7 @@ export async function runBridge(env: NodeJS.ProcessEnv, selfArgs: string[]): Pro
   // The daemon's own entry: this process may be the small bridge bundle, which cannot serve.
   const daemonArgs = env.YAAC_DAEMON_ENTRY ? [env.YAAC_DAEMON_ENTRY] : selfArgs;
   const startDaemon = () => {
-    const child = spawn(process.execPath, [...process.execArgv, ...daemonArgs, "serve"], { detached: true, stdio: "ignore", env });
+    const child = spawn(process.execPath, [...process.execArgv, ...daemonArgs, "serve"], { detached: true, windowsHide: true, stdio: "ignore", env });
     child.unref();
   };
   const link = new DaemonLink(socketPath, ticket, startDaemon);

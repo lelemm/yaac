@@ -1,0 +1,161 @@
+<Window x:Class="Yaac.WpfPreview.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:preview="clr-namespace:Yaac.WpfPreview"
+        xmlns:views="clr-namespace:Yaac.WpfPreview.Views"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        Title="YAAC · WPF preview" Icon="Assets/yaac.ico" Width="1440" Height="900" MinWidth="780" MinHeight="500"
+        ResizeMode="CanResize" WindowState="Maximized"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource YaacCanvas}" Foreground="{DynamicResource YaacText}"
+        FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13"
+        UseLayoutRounding="True" SnapsToDevicePixels="True"
+        PreviewKeyDown="WindowKey" PreviewMouseDown="WindowMouse">
+  <shell:WindowChrome.WindowChrome>
+    <shell:WindowChrome CaptionHeight="42" ResizeBorderThickness="5" GlassFrameThickness="0"
+                        CornerRadius="0" UseAeroCaptionButtons="False" />
+  </shell:WindowChrome.WindowChrome>
+  <Window.Template>
+    <ControlTemplate TargetType="Window">
+      <Border Background="{TemplateBinding Background}">
+        <AdornerDecorator>
+          <ContentPresenter />
+        </AdornerDecorator>
+      </Border>
+    </ControlTemplate>
+  </Window.Template>
+  <Window.Resources>
+    <Style x:Key="CaptionButton" TargetType="Button" BasedOn="{StaticResource YaacQuietButton}">
+      <Setter Property="Width" Value="44" />
+      <Setter Property="Height" Value="42" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Foreground" Value="{DynamicResource YaacMuted}" />
+      <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+    </Style>
+    <Style x:Key="RailButton" TargetType="Button" BasedOn="{StaticResource YaacQuietButton}">
+      <Setter Property="Width" Value="40" />
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="Padding" Value="0" />
+    </Style>
+  </Window.Resources>
+
+  <Grid x:Name="ClientArea">
+    <Grid x:Name="Workspace">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition x:Name="SidebarColumn" Width="280" MinWidth="220" MaxWidth="480" />
+        <ColumnDefinition x:Name="SidebarGap" Width="1" />
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="Auto" />
+      </Grid.ColumnDefinitions>
+
+      <views:SidebarView x:Name="SidebarPane" />
+      <Border x:Name="SidebarRail" Visibility="Collapsed" Background="{DynamicResource YaacPanel}">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+          </Grid.RowDefinitions>
+          <StackPanel>
+            <TextBlock Text="Y" Height="42" HorizontalAlignment="Center" Padding="0,9,0,0" FontWeight="Bold" FontSize="18" />
+            <Button Style="{StaticResource RailButton}" Content="◫" Click="SidebarClicked"
+                    AutomationProperties.Name="Expand sidebar" ToolTip="Expand the sidebar (Ctrl+B)" />
+            <Button Style="{StaticResource RailButton}" Content="+" Click="RailNewClicked"
+                    AutomationProperties.Name="New thread" ToolTip="New thread (Ctrl+N)" />
+            <UniformGrid Rows="1">
+              <Button x:Name="RailBack" Padding="0" Content="‹" Click="BackClicked" AutomationProperties.Name="Back" />
+              <Button x:Name="RailForward" Padding="0" Content="›" Click="ForwardClicked" AutomationProperties.Name="Forward" />
+            </UniformGrid>
+            <Button x:Name="RailNeeds" Style="{StaticResource RailButton}" Click="NeedsClicked" AutomationProperties.Name="Needs you" />
+          </StackPanel>
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel x:Name="RailItems" />
+          </ScrollViewer>
+          <StackPanel Grid.Row="2">
+            <views:UsageMeter x:Name="RailUsage" Compact="True" Visibility="Collapsed" />
+            <Button Style="{StaticResource RailButton}" Content="⚙" Click="SettingsClicked"
+                    AutomationProperties.Name="Settings" ToolTip="Settings (Ctrl+,)" />
+          </StackPanel>
+        </Grid>
+      </Border>
+      <GridSplitter x:Name="SidebarSplitter" Grid.Column="1" Background="{DynamicResource YaacRule}"
+                    Margin="-2,42,-2,0" Width="5" HorizontalAlignment="Center" VerticalAlignment="Stretch" />
+      <Grid Grid.Column="2" x:Name="ThreadContent">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="42" />
+          <RowDefinition Height="Auto" />
+          <RowDefinition Height="*" />
+          <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+        <Grid Margin="28,0,132,0">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="Auto" MaxWidth="560" />
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="*" />
+          </Grid.ColumnDefinitions>
+          <Grid x:Name="ThreadMarkSlot" Width="25" Margin="0,0,4,0" VerticalAlignment="Center">
+            <TextBlock x:Name="ThreadMark" FontSize="21" VerticalAlignment="Center" />
+            <preview:RunningSpinner x:Name="ThreadSpinner" Width="20" Height="20" Visibility="Collapsed" />
+          </Grid>
+          <TextBlock x:Name="ThreadTitle" Grid.Column="1" VerticalAlignment="Center"
+                     FontSize="19" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
+          <Border x:Name="ThreadTag" Grid.Column="2" Visibility="Collapsed" Background="{DynamicResource YaacRaised}"
+                  CornerRadius="4" Padding="7,3" Margin="8,0,0,0" VerticalAlignment="Center">
+            <TextBlock x:Name="ThreadTagText" />
+          </Border>
+          <StackPanel x:Name="HeaderBudget" Grid.Column="3" Visibility="Collapsed" Orientation="Horizontal"
+                      VerticalAlignment="Center" Margin="8,0,0,0">
+            <TextBlock Text="Agent budget reached" VerticalAlignment="Center" Foreground="{DynamicResource YaacMuted}" />
+            <Button Content="Continue" Click="ContinueClicked" shell:WindowChrome.IsHitTestVisibleInChrome="True" />
+          </StackPanel>
+        </Grid>
+        <StackPanel Grid.Row="1" x:Name="HeaderDetails" Margin="60,3,26,6">
+          <TextBlock x:Name="ThreadLocation" Foreground="{DynamicResource YaacMuted}" TextTrimming="CharacterEllipsis" />
+          <StackPanel x:Name="HeaderLinks" Orientation="Horizontal" />
+          <StackPanel x:Name="HeaderBanners" />
+        </StackPanel>
+        <views:TranscriptView Grid.Row="2" x:Name="TranscriptPane" />
+        <views:ComposerView Grid.Row="3" x:Name="ComposerPane" Margin="28,0,28,10" />
+      </Grid>
+      <views:AgentsView Grid.Column="2" x:Name="AgentsPane" Panel.ZIndex="2"
+                        HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,20,0" />
+    </Grid>
+
+    <views:SettingsView x:Name="SettingsPane" Visibility="Collapsed" />
+    <StackPanel Panel.ZIndex="4" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
+      <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" Click="MinimizeClicked"
+              AutomationProperties.Name="Minimize" ToolTip="Minimize" />
+      <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}" Content="&#xE922;" Click="MaximizeClicked"
+              AutomationProperties.Name="Maximize" ToolTip="Maximize" />
+      <Button Style="{StaticResource CaptionButton}" Content="&#xE8BB;" Click="CloseClicked"
+              AutomationProperties.Name="Close" ToolTip="Close" />
+    </StackPanel>
+    <TextBlock x:Name="Status" Panel.ZIndex="4" VerticalAlignment="Bottom" HorizontalAlignment="Center"
+               Background="{DynamicResource YaacCanvas}" TextTrimming="CharacterEllipsis"
+               Foreground="{DynamicResource YaacFailure}" Margin="5" />
+    <Grid x:Name="CommanderOverlay" Panel.ZIndex="5" Visibility="Collapsed"
+          PreviewKeyDown="CommanderKeyDown" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+      <Border Background="#50000000" MouseLeftButtonDown="CommanderOutsideClicked"
+              MouseRightButtonDown="CommanderOutsideClicked" />
+      <Border HorizontalAlignment="Center" VerticalAlignment="Center" Margin="24"
+              Width="620" MaxHeight="500" Padding="12" CornerRadius="8"
+              Background="{DynamicResource YaacPanel}" KeyboardNavigation.TabNavigation="Cycle">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+          </Grid.RowDefinitions>
+          <TextBox x:Name="CommanderQuery" Margin="0,0,0,8" TextChanged="CommanderQueryChanged"
+                   AutomationProperties.Name="Search commands" />
+          <ListBox x:Name="CommanderRows" Grid.Row="1" Background="Transparent" BorderThickness="0"
+                   ItemContainerStyle="{StaticResource YaacNavigationItem}"
+                   ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                   AutomationProperties.Name="Commands" PreviewMouseLeftButtonUp="CommanderRowClicked" />
+        </Grid>
+      </Border>
+    </Grid>
+  </Grid>
+</Window>

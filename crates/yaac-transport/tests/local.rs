@@ -47,7 +47,7 @@ async fn the_stream_is_binary_clean_and_dropping_it_kills_the_child() {
     let script = dir.join("echo.sh");
     // `$1` is "connect", as for the real bundle.
     std::fs::write(&script, "test \"$1\" = connect || exit 3\nexec cat\n").unwrap();
-    let config = LocalConfig { runtime: "sh".into(), bundle: script, env: vec![], inherit_stderr: true, build: None };
+    let config = LocalConfig { runtime: "sh".into(), bundle: script, env: vec![], inherit_stderr: true, build: None, install_files: vec![] };
     let connector = LocalConnector::new(config);
     assert!(connector.describe().starts_with("local: sh "));
 

@@ -67,6 +67,10 @@ Name: desktopicon; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm
 
 [Files]
 Source: "{#SourceDir}\yaac.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\yaacd.mjs"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\runtime\node.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion
+Source: "{#SourceDir}\runtime\LICENSE-Node.js.txt"; DestDir: "{app}\runtime"; Flags: ignoreversion
+Source: "{#SourceDir}\wpf\*"; DestDir: "{app}\wpf"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
 [Icons]
 Name: "{autoprograms}\YAAC"; Filename: "{app}\yaac.exe"

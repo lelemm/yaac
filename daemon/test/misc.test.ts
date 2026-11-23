@@ -275,7 +275,11 @@ test("one serving daemon per user; idle exit; hand-over when idle", async () => 
   const home = tmpHome();
   let reason = "";
   const daemon = await startDaemon(home, { idleTimeoutMs: 300, onExit: (r) => (reason = r) });
+  const index = path.join(home, "index.json");
+  const generation = () => JSON.parse(fs.readFileSync(index, "utf8")).generation;
+  const before = generation();
   await assert.rejects(startDaemon(home), AlreadyServing);
+  assert.equal(generation(), before, "the losing daemon never rewrites the serving daemon's index");
   const c = await client(daemon);
   await sleep(500);
   assert.equal(reason, "", "an attached client keeps it up");

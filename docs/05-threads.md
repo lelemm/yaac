@@ -123,13 +123,12 @@ gives threads a second kind of relationship besides fork lineage:
 | `spawned_by` / children | Was started by another agent to do part of its work. | Both: the child knows its parent, the parent lists its children — even across targets. |
 | peers | Have exchanged messages, with neither having spawned the other. | Both, derived from the messages. |
 
-A spawned thread is a full thread: it has its own row in the sidebar, under its own origin and
-project, and the user can open, steer, or continue it. It runs in the permission mode that
+A spawned thread is a full thread that the user can open, steer, or continue. It runs in the permission mode that
 corresponds to its parent's, never a more permissive one, and keeps it when the parent's mode
-changes later ([D146](10-agent-mesh.md#the-workers-permission-mode)). In the sidebar it carries a small
-"spawned by" mark, and a parent's row shows how many direct workers it has. A worker that is
-blocked on the user is found through the **Needs you** list; parents carry no warning mark of
-their own.
+changes later ([D146](10-agent-mesh.md#the-workers-permission-mode)). While its parent is in
+the index, the worker appears under **Workers** in the parent's agents panel and contributes to
+the parent's sidebar worker count (D171). A worker whose parent is missing can still appear in
+the main list. A blocked worker is reachable through **Needs you**.
 
 The [agents panel](07-ui.md#agents-in-the-thread-view) in the thread view shows the same
 relationships as a tree, from the point of view of the open thread.

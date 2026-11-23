@@ -32,7 +32,7 @@ const BY_PROJECT: Grouping = Grouping { machine: true, project: true, worktree: 
 
 #[test]
 fn a_row_drops_on_another_project_of_its_machine_and_nowhere_else() {
-    let (c, _) = boot();
+    let (c, _) = common::boot_with_independent_threads();
     let st = &c.state;
     let (billing, fix, search) = (threads::billing(), threads::fix(), threads::search());
     // billing-service (devbox, api, Claude) onto "yaac" on devbox: moved at once (its harness
@@ -84,7 +84,7 @@ fn grouped_by_machine_alone_there_is_nothing_to_move_to() {
 
 #[test]
 fn without_the_machine_level_a_group_is_still_one_machines_project() {
-    let (c, _) = boot();
+    let (c, _) = common::boot_with_independent_threads();
     let st = &c.state;
     let g = Grouping { machine: false, project: true, worktree: false, show_dismissed: false };
     // "api" exists on local and on devbox: two groups, each of its own machine.

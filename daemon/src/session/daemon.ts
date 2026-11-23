@@ -19,7 +19,7 @@ import { ensureDir, readJson, writeJsonAtomic } from "../util/fsx.js";
 import { Core } from "./core.js";
 import { ClientSession, DEFAULT_CLIENT_OPTIONS, type ClientOptions, type MethodHandler } from "./client.js";
 import { DEFAULT_JOURNAL_OPTIONS, type JournalOptions } from "./journal.js";
-import { listenExclusive, socketPathFor } from "./server.js";
+import { listenExclusive, removePipeKey, socketPathFor } from "./server.js";
 import { Mesh, type MeshOptions } from "../mesh/mesh.js";
 import { serveBridge, sniffBridge } from "../mesh/mcp.js";
 import { Forge, type ForgeOptions } from "../forge/forge.js";
@@ -151,36 +151,46 @@ export class Daemon implements FrozenCoreHost {
     ensureDir(config.home);
     fs.chmodSync(config.home, 0o700);
     const stateFile = path.join(config.home, "state.json");
-    let state: StateFile | undefined;
-    try {
-      state = readJson<StateFile>(stateFile);
-    } catch {
-      state = undefined;
-    }
-    if (state && state.stateFormat > STATE_FORMAT) {
-      throw new Error(`the state in ${config.home} was written by a newer yaacd (state format ${state.stateFormat}); daemons only move forward`);
-    }
-    const daemon = new Daemon(config, state ? state.clean : true);
-    if (!config.noSocket) {
-      // The socket is the lock: bind it before touching any state another daemon might own.
-      // Connections accepted before start-up finishes wait for `ready`.
-      daemon.server = await listenExclusive(daemon.socketPath, path.join(config.home, "run"), (s) => {
-        void daemon.ready.then(async () => {
-          // A `yaacd mcp` bridge announces itself with a magic no YAAC frame can start with.
-          if (await sniffBridge(s)) serveBridge(s, (ticket, call) => daemon.mesh.callWithTicket(ticket, call), (l) => daemon.log(l));
-          else daemon.attach(s);
-          s.resume();
-        });
+    const runDir = path.join(config.home, "run");
+    const socket = config.socketPath ?? socketPathFor(config.home, config.env);
+    let daemon: Daemon | undefined;
+    // Bind IPC before constructing the thread index or writing any shared daemon state.
+    const server = config.noSocket ? null : await listenExclusive(socket, runDir, (s) => {
+      const serving = daemon;
+      if (!serving) {
+        s.destroy();
+        return;
+      }
+      void serving.ready.then(async () => {
+        if (await sniffBridge(s)) serveBridge(s, (ticket, call) => serving.mesh.callWithTicket(ticket, call), (l) => serving.log(l));
+        else serving.attach(s);
+        s.resume();
       });
-      daemon.socketId = fileId(daemon.socketPath);
+    });
+    try {
+      let state: StateFile | undefined;
+      try {
+        state = readJson<StateFile>(stateFile);
+      } catch {
+        state = undefined;
+      }
+      if (state && state.stateFormat > STATE_FORMAT) {
+        throw new Error(`the state in ${config.home} was written by a newer yaacd (state format ${state.stateFormat}); daemons only move forward`);
+      }
+      daemon = new Daemon(config, state?.clean ?? true);
+      daemon.server = server;
+      if (server && process.platform !== "win32") daemon.socketId = fileId(socket);
+      writeJsonAtomic(stateFile, { stateFormat: STATE_FORMAT, clean: false } satisfies StateFile);
+      await daemon.core.start();
+      daemon.mesh.start();
+      daemon.markReady();
+      daemon.log(`serving build ${config.build} on ${socket}`);
+      daemon.checkIdle();
+      return daemon;
+    } catch (error) {
+      server?.close();
+      throw error;
     }
-    writeJsonAtomic(stateFile, { stateFormat: STATE_FORMAT, clean: false } satisfies StateFile);
-    await daemon.core.start();
-    daemon.mesh.start();
-    daemon.markReady();
-    daemon.log(`serving build ${config.build} on ${daemon.socketPath}`);
-    daemon.checkIdle();
-    return daemon;
   }
 
   log(line: string): void {
@@ -326,19 +336,30 @@ export class Daemon implements FrozenCoreHost {
       this.forge.close();
       this.rateLimits.close();
       await this.core.close();
-      // Only a socket this process still owns: a newer daemon may already have bound the path
-      // (once this one stopped answering), and its socket and pid file must stay.
-      if (this.server && this.ownsSocket()) {
-        fs.rmSync(this.socketPath, { force: true });
-        fs.rmSync(path.join(this.config.home, "run", "yaacd.pid"), { force: true });
+      // Closing a Unix listener can remove its socket before the state is flushed.
+      // Keep the pid file as the ownership marker until all writes are complete.
+      if (!this.server || this.ownsPidFile()) {
+        writeJsonAtomic(path.join(this.config.home, "state.json"), { stateFormat: STATE_FORMAT, clean: true } satisfies StateFile);
+        if (this.server) {
+          if (process.platform === "win32") removePipeKey(this.socketPath);
+          else if (this.ownsSocket()) fs.rmSync(this.socketPath, { force: true });
+          fs.rmSync(path.join(this.config.home, "run", "yaacd.pid"), { force: true });
+        }
       }
-      writeJsonAtomic(path.join(this.config.home, "state.json"), { stateFormat: STATE_FORMAT, clean: true } satisfies StateFile);
       this.config.onExit?.(reason);
     })();
     return this.stopping;
   }
 
-  /** Whether the socket path is still the file this daemon bound. */
+  private ownsPidFile(): boolean {
+    try {
+      return fs.readFileSync(path.join(this.config.home, "run", "yaacd.pid"), "utf8").trim() === String(process.pid);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Whether the Unix socket file still belongs to this daemon. */
   ownsSocket(): boolean {
     const now = fileId(this.socketPath);
     return !!now && !!this.socketId && now.dev === this.socketId.dev && now.ino === this.socketId.ino;

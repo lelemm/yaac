@@ -1,8 +1,8 @@
 //! The local connector: `<private runtime> <bundle> connect`, with no shell in between
 //! (docs/02-architecture.md#the-single-connection-rule).
 //!
-//! Until the installer unpacks a private runtime into the data directory, the runtime and the
-//! bundle come from configuration:
+//! An installed Windows build copies its private runtime and bundle into versioned data
+//! directories. Development builds find them through configuration:
 //!
 //! | Variable | Default |
 //! | --- | --- |
@@ -14,10 +14,27 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::process::Command;
 
 use crate::{BoxFuture, ChildGuard, ConnectCtx, ConnectError, Connector, Stream};
+
+fn install_file(source: &Path, dest: &Path) -> std::io::Result<()> {
+    if dest.is_file() {
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let part = dest.with_extension(format!("part-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let result = std::fs::copy(source, &part).and_then(|_| std::fs::rename(&part, dest));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    if dest.is_file() { Ok(()) } else { result }
+}
 
 /// Where the runtime and bundle are, and how the child is started.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +51,8 @@ pub struct LocalConfig {
     /// ([`Connector::daemon_build`]). `None`: unknown, and the hub never asks an older local
     /// daemon to hand over.
     pub build: Option<String>,
+    /// Files copied from the installer into the data directory before the first connection.
+    pub install_files: Vec<(PathBuf, PathBuf)>,
 }
 
 impl LocalConfig {
@@ -53,7 +72,7 @@ impl LocalConfig {
         let bundle = lookup("YAAC_DAEMON_BUNDLE")
             .filter(|v| !v.is_empty())
             .map_or_else(|| Self::default_bundle(root), PathBuf::from);
-        Self { runtime, bundle, env: Vec::new(), inherit_stderr: true, build: None }
+        Self { runtime, bundle, env: Vec::new(), inherit_stderr: true, build: None, install_files: Vec::new() }
     }
 
     /// Declares the bundle's build ([`LocalConfig::build`]).
@@ -104,6 +123,8 @@ impl LocalConnector {
             .stdout(Stdio::piped())
             .stderr(if config.inherit_stderr { Stdio::inherit() } else { Stdio::null() })
             .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(crate::CREATE_NO_WINDOW);
         for (key, value) in &config.env {
             command.env(key, value);
         }
@@ -117,7 +138,20 @@ impl LocalConnector {
 
 impl Connector for LocalConnector {
     fn connect<'a>(&'a self, _ctx: &'a ConnectCtx) -> BoxFuture<'a, Result<Stream, ConnectError>> {
-        Box::pin(async move { self.spawn() })
+        Box::pin(async move {
+            if !self.config.install_files.is_empty() {
+                let files = self.config.install_files.clone();
+                tokio::task::spawn_blocking(move || -> Result<(), ConnectError> {
+                    for (source, dest) in files {
+                        install_file(&source, &dest).map_err(|e| ConnectError::NotInstalled(format!("could not install {}: {e}", dest.display())))?;
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(|e| ConnectError::Other(e.to_string()))??;
+            }
+            self.spawn()
+        })
     }
 
     fn describe(&self) -> String {

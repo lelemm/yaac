@@ -13,6 +13,15 @@ pub fn boot() -> (Client, DemoHub) {
     boot_with(Scenario::Fleet)
 }
 
+/// The fleet's titles and groups as independent threads for tests that exercise ordinary rows.
+pub fn boot_with_independent_threads() -> (Client, DemoHub) {
+    let (mut client, hub) = boot();
+    for thread in client.state.threads.values_mut() {
+        thread.summary.spawned_by = None;
+    }
+    (client, hub)
+}
+
 pub fn boot_with(s: Scenario) -> (Client, DemoHub) {
     let hub = DemoHub::new(s, NOW);
     let mut c = Client::new(Box::new(hub.clone()), "test", ClientId::new(DEMO_CLIENT));

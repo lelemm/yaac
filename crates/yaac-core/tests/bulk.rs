@@ -19,7 +19,7 @@ fn order(c: &yaac_core::client::Client, ordering: Ordering) -> Vec<ThreadKey> {
 
 #[test]
 fn ctrl_click_toggles_plain_click_opens_and_clears() {
-    let (c, _) = boot();
+    let (c, _) = common::boot_with_independent_threads();
     let o = order(&c, Ordering::default());
     let mut sel = ListSelection::default();
     assert!(!sel.click(&o, &threads::billing(), Click::Toggle, None), "Ctrl+click does not open");
@@ -36,7 +36,7 @@ fn ctrl_click_toggles_plain_click_opens_and_clears() {
 
 #[test]
 fn shift_click_selects_the_range_from_the_anchor_across_groups_in_display_order() {
-    let (c, _) = boot();
+    let (c, _) = common::boot_with_independent_threads();
     let o = order(&c, Ordering::default());
     // search-service (group "search · gpu-box") to billing-service ("api · devbox"): the rows
     // between them, as shown, whatever group they are in.
@@ -60,7 +60,7 @@ fn shift_click_selects_the_range_from_the_anchor_across_groups_in_display_order(
 
 #[test]
 fn the_selection_survives_a_reorder_and_drops_threads_that_leave_the_list() {
-    let (c, _) = boot();
+    let (c, _) = common::boot_with_independent_threads();
     let o = order(&c, Ordering::default());
     let mut sel = ListSelection::default();
     sel.click(&o, &threads::billing(), Click::Toggle, None);
@@ -81,7 +81,7 @@ fn the_selection_survives_a_reorder_and_drops_threads_that_leave_the_list() {
 
 #[test]
 fn esc_clears_ctrl_a_selects_every_listed_row_and_shift_arrows_extend() {
-    let (c, _) = boot();
+    let (c, _) = common::boot_with_independent_threads();
     let o = order(&c, Ordering::default());
     let mut sel = ListSelection::default();
     sel.select_all(&o);

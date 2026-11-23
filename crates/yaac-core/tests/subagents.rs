@@ -54,17 +54,32 @@ fn an_agent_call_pill_finds_the_subagent_by_its_harness_agent_id() {
 }
 
 #[test]
-fn subagents_are_not_sidebar_rows_while_their_parent_is_listed() {
-    let c = with_subagents();
+fn workers_are_listed_under_their_parents_instead_of_in_the_sidebar() {
+    let mut c = with_subagents();
+    let keys = |state: &yaac_core::state::AppState, filter| {
+        let map = AttentionMap::compute(state);
+        sections(state, &map, Grouping::default(), Ordering::default(), filter, Open { muted: true, archived: true }, NOW, yaac_core::time::Zone::UTC)
+            .into_iter().flat_map(|s| s.rows.into_iter().map(|r| r.key)).collect::<Vec<_>>()
+    };
+    let root = threads::orchestrator();
+    let billing = threads::billing();
+    let search = threads::search();
+    let index = threads::index();
+    let explore = threads::subagent_explore();
+    assert_ne!(billing.target, root.target, "a worker on a different machine");
+    let listed = keys(&c.state, "");
+    assert!(listed.contains(&root));
+    for worker in [billing.clone(), search.clone(), index.clone(), explore.clone(), threads::subagent_schema()] {
+        assert!(!listed.contains(&worker), "{worker:?} belongs under its parent");
+    }
+    assert!(keys(&c.state, "reindex script").is_empty());
     let map = AttentionMap::compute(&c.state);
-    let secs = sections(&c.state, &map, Grouping::default(), Ordering::default(), "", Open { muted: true, archived: true }, NOW, yaac_core::time::Zone::UTC);
-    let keys: Vec<_> = secs.iter().flat_map(|s| s.rows.iter().map(|r| r.key.clone())).collect();
-    assert!(keys.contains(&threads::search()));
-    assert!(!keys.contains(&threads::subagent_explore()));
-    assert!(!keys.contains(&threads::subagent_schema()));
-    // A filter that matches a subagent's title still does not list it.
-    let secs = sections(&c.state, &map, Grouping::default(), Ordering::default(), "reindex script", Open::default(), NOW, yaac_core::time::Zone::UTC);
-    assert!(secs.iter().all(|s| s.rows.iter().all(|r| r.key != threads::subagent_explore())));
+    assert!(yaac_core::sidebar::needs_you(&c.state, &map, NOW).iter().any(|e| e.key == index));
+    c.state.view.entry(billing.clone()).or_default().unseen = true;
+    assert_eq!(yaac_core::commands::next_unseen(&c.state, &listed, None), Some(billing));
+    c.state.remove_thread(&search);
+    let listed = keys(&c.state, "");
+    assert!(listed.contains(&explore) && listed.contains(&index), "workers remain accessible when their parent is missing");
 }
 
 #[test]

@@ -141,15 +141,27 @@ impl Settings {
         let hub = HubSettings { always, ..HubSettings::default() };
         let mut settings = Self { targets: Vec::new(), hub, client_id: None, ssh: Vec::new(), extra: Map::new() };
         if seed_local {
-            settings.targets.push(TargetDef {
-                id: TargetId::new(new_id("t")),
-                name: TargetName::new("local"),
-                transport: TargetTransport::Local(LocalTransport {}),
-                enabled: true,
-                extra: Map::new(),
-            });
+            settings.ensure_local_target();
         }
         settings
+    }
+
+    /// Add the built-in target to settings from Windows releases that did not register it.
+    pub(crate) fn ensure_local_target(&mut self) {
+        if self.targets.iter().any(|t| matches!(t.transport, TargetTransport::Local(_))) {
+            return;
+        }
+        let name = std::iter::once("local".to_owned())
+            .chain((2..).map(|n| format!("local ({n})")))
+            .find(|name| self.name_is_free(name, None))
+            .expect("a unique local target name");
+        self.targets.insert(0, TargetDef {
+            id: TargetId::new(new_id("t")),
+            name: TargetName::new(name),
+            transport: TargetTransport::Local(LocalTransport {}),
+            enabled: true,
+            extra: Map::new(),
+        });
     }
 
     /// The target with this id.

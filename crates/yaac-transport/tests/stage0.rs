@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
-use yaac_transport::ConnectError;
 use yaac_transport::bootstrap::{DaemonBundle, STAGE0, Stage0Timeouts, bootstrap};
+use yaac_transport::{ConnectCtx, ConnectError, Connector, WslConfig, WslConnector};
 
 const ECHO_DAEMON: &[u8] = b"if (process.argv[2] !== 'connect') process.exit(3);\nprocess.stdin.pipe(process.stdout);\n";
 
@@ -94,6 +94,75 @@ async fn installs_once_then_reuses_under_dash_and_bash_with_noise() {
         assert_eq!(entries, vec![std::ffi::OsString::from(&bundle.build)], "{shell}: no temporary or lock left behind");
         std::fs::remove_dir_all(&home).unwrap();
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn wsl_imports_provider_directories_with_a_bounded_binary_clean_startup() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if !["bash", "timeout"].iter().all(|tool| {
+        std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(tool).is_file()))
+    }) {
+        eprintln!("skipped: needs bash and timeout");
+        return;
+    }
+
+    let home = temp_dir("wsl-profile");
+    let wsl = home.join("wsl.exe");
+    let node = home.join("node");
+    std::fs::write(&wsl, r#"#!/bin/sh
+[ "$1 $2 $3 $4 $5" = '-d Test -u fixture --exec' ] || exit 2
+shift 5
+HOME=$(dirname "$0")
+export HOME
+unset CODEX_HOME CLAUDE_CONFIG_DIR
+if [ -f "$HOME/inherited" ]; then export CODEX_HOME=inherited; fi
+exec "$@" 2>"$HOME/startup.stderr"
+"#).unwrap();
+    std::fs::write(&node, r#"#!/bin/sh
+if [ "$1" = -e ]; then printf 99.0.0; exit; fi
+[ "$2" = connect ] || exit 3
+printf '%s\0%s\0' "${CODEX_HOME-<unset>}" "${CLAUDE_CONFIG_DIR-<unset>}"
+exec cat
+"#).unwrap();
+    for file in [&wsl, &node] {
+        std::fs::set_permissions(file, PermissionsExt::from_mode(0o700)).unwrap();
+    }
+    let mut config = WslConfig::new("Test", Some("fixture".into()), Some(DaemonBundle::new("0.1.0-test", ECHO_DAEMON.to_vec())));
+    config.wsl_exe = wsl.into_os_string();
+    config.env.push(("YAAC_HOME".into(), home.join("yaac").display().to_string()));
+    config.env.push(("YAAC_NODE".into(), node.display().to_string()));
+    let connector = WslConnector::new(config);
+    let ctx = ConnectCtx { allow_start: true, ..ConnectCtx::default() };
+
+    let profile = r#"
+[[ $- == *i* ]] || return
+printf 'YAAC0 fake marker from bashrc\n'
+printf 'noise from bashrc\n' >&2
+export CODEX_HOME="$HOME/codex with spaces"
+export CLAUDE_CONFIG_DIR="$HOME/"$'claude\'s\nconfig'
+export YAAC_HOME=/ignored PATH=/ignored
+"#;
+    let imported = format!("{0}/codex with spaces\0{0}/claude's\nconfig\0", home.display());
+    for (rc, expected, inherited) in [
+        (profile.to_owned(), imported.as_bytes(), false),
+        (format!("{profile}\nexport -n CLAUDE_CONFIG_DIR\n"), b"inherited\0<unset>\0", true),
+        (format!("{profile}\ntrap '' TERM\n/bin/sleep 30\n"), b"inherited\0<unset>\0", true),
+    ] {
+        if inherited {
+            std::fs::write(home.join("inherited"), b"").unwrap();
+        }
+        std::fs::write(home.join(".bashrc"), rc).unwrap();
+        tokio::time::timeout(Duration::from_secs(8), async {
+            let mut stream = connector.connect(&ctx).await.expect("WSL startup");
+            let mut received = vec![0; expected.len()];
+            stream.reader.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, expected);
+            assert!(std::fs::read(home.join("startup.stderr")).unwrap().is_empty());
+            echo_works(&mut stream.reader, &mut stream.writer).await;
+        }).await.expect("WSL startup and bridge finish within the profile time limit");
+    }
+    std::fs::remove_dir_all(home).unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]

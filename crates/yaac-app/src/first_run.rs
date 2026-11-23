@@ -47,7 +47,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
         ui.spacing_mut().item_spacing.x = 16.0;
         ui.style_mut().spacing.item_spacing.y = 6.0;
         card(ui, &p, card_w, |ui| {
-            ui.label(RichText::new("This computer").font(theme::bold(size::SECTION)));
+            ui.label(RichText::new(v.other_name.as_deref().unwrap_or("This computer")).font(theme::bold(size::SECTION)));
             ui.add_space(8.0);
             if v.checking {
                 ui.label(widgets::secondary("Checking what is installed…", &p));
@@ -68,7 +68,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
                 ui.horizontal(|ui| {
                     ui.add_space(14.0);
                     if widgets::plain(ui, &p, "Refresh", None).on_hover_text("Check this computer again").clicked()
-                        && let Some(t) = &v.local
+                        && let Some(t) = &v.target
                     {
                         actions.push(Action::RefreshProviders(t.clone(), None));
                     }

@@ -1232,9 +1232,15 @@ pub fn step_in_list(order: &[ThreadKey], current: Option<&ThreadKey>, delta: isi
     order.get(j).cloned()
 }
 
-/// The next unseen finished thread after `current` in the sidebar's order, wrapping.
+/// The next unseen thread in sidebar order, then the newest unseen worker under a parent.
 pub fn next_unseen(state: &AppState, order: &[ThreadKey], current: Option<&ThreadKey>) -> Option<ThreadKey> {
     let start = current.and_then(|c| order.iter().position(|k| k == c)).map_or(0, |i| i + 1);
-    (0..order.len()).map(|n| &order[(start + n) % order.len()]).find(|k| state.is_unseen(k) && Some(*k) != current).cloned()
+    let unseen = |k: &ThreadKey| state.is_unseen(k) && Some(k) != current;
+    (0..order.len()).map(|n| &order[(start + n) % order.len()]).find(|k| unseen(k)).cloned().or_else(|| {
+        state.threads.iter()
+            .filter(|(k, row)| unseen(k) && crate::sidebar::worker_has_parent(state, &row.summary))
+            .max_by_key(|(k, row)| (crate::time::secs(&row.summary.updated_at), *k))
+            .map(|(k, _)| k.clone())
+    })
 }
 

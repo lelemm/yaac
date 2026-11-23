@@ -6,7 +6,7 @@ use yaac_core::attention::Mark;
 use yaac_core::components::ComponentStatus;
 use yaac_core::settings::{CHOOSE_DISTRO, DistroOption, DistroPhase, DistroPicker, LEGEND, Page, SshAction, diagnostics, distro_picker, kind_label, providers_view, targets_view};
 use yaac_core::ssh_setup::{Credential, Phase, Revoke, RevokePhase, Secret, SetupRecord, SignInMethod, SshConn, SshSetup, SshSetupBackend, StepLine, StepMark, form_ready};
-use yaac_protocol::attach::{SshTransport, TargetTransport, WslTransport};
+use yaac_protocol::attach::{ConnectionStatus, SshTransport, TargetTransport, WslTransport};
 use yaac_protocol::{InstanceId, TargetId};
 
 use crate::app::{Action, Menu, YaacApp};
@@ -247,16 +247,28 @@ fn targets(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     let v = targets_view(&app.client.state);
 
     widgets::heading(ui, "Local");
-    if let Some((id, enabled)) = &v.local {
+    if let Some((id, enabled)) = &v.local
+        && let Some(target) = app.client.state.target(id)
+    {
         ui.horizontal(|ui| {
             ui.set_min_height(30.0);
             ui.label("This computer");
+            let status = match target.entry.state.status {
+                ConnectionStatus::Connected => "Connected",
+                ConnectionStatus::Connecting => "Connecting…",
+                ConnectionStatus::Disabled => "Off",
+                _ => "Offline",
+            };
+            ui.label(widgets::secondary(status, &p));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if widgets::switch(ui, &p, *enabled).on_hover_text(if *enabled { "Disable" } else { "Enable" }).clicked() {
                     actions.push(Action::TargetEnabled(id.clone(), !enabled));
                 }
             });
         });
+        if let Some(detail) = &target.entry.state.detail {
+            ui.label(widgets::secondary(detail, &p));
+        }
     }
 
     widgets::heading(ui, "SSH");
@@ -1099,7 +1111,7 @@ fn window(ui: &mut egui::Ui, app: &mut YaacApp) {
 
     widgets::heading(ui, "Display");
     let host = Host::current();
-    let choices = offered(host, crate::display::BUILT);
+    let choices = offered(host, crate::display::built());
     let current = app.display.file.renderer;
     ui.horizontal(|ui| {
         ui.label("Renderer");

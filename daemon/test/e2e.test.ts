@@ -84,7 +84,8 @@ test("yaacd connect over stdio: starts the daemon, initializes, and completes a 
   assert.ok(sync.changed.some((s: any) => s.id === started.threadId && s.originKind === "yaac"));
   assert.equal((await c2.request("daemon/handover", { when: "now" })).state, "exiting");
   await until(() => c2.exited, "the bridge to end with the daemon");
-  await until(() => !fs.existsSync(path.join(home, "run", "yaacd.sock")), "the socket to be removed");
+  const endpoint = process.platform === "win32" ? "yaacd.pid" : "yaacd.sock";
+  await until(() => !fs.existsSync(path.join(home, "run", endpoint)), "the daemon endpoint to be released");
 });
 
 test("killed between handing a turn over and recording it: outcome_unknown, never re-sent", async () => {

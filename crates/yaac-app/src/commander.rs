@@ -483,7 +483,7 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
 }
 
 /// What choosing a step's row does.
-fn run_step(app: &mut YaacApp, cmd: Cmd, value: StepValue, actions: &mut Vec<Action>) {
+pub(crate) fn run_step(app: &mut YaacApp, cmd: Cmd, value: StepValue, actions: &mut Vec<Action>) {
     let st = &app.client.state;
     let thread = st.selected_thread().cloned().filter(|_| !app.ui.settings);
     let draft = match st.selection {
@@ -553,7 +553,7 @@ fn run_step(app: &mut YaacApp, cmd: Cmd, value: StepValue, actions: &mut Vec<Act
 }
 
 /// One row of what the Commander shows.
-enum Row {
+pub(crate) enum Row {
     Cmd(cmds::ListRow),
     Step(cmds::StepItem),
 }
@@ -567,7 +567,7 @@ impl Row {
     }
 }
 
-fn rows(app: &YaacApp, c: &CommanderUi) -> Vec<Row> {
+pub(crate) fn rows(app: &YaacApp, c: &CommanderUi) -> Vec<Row> {
     match c.step {
         None => with_ctx(app, c.card.as_ref(), |x| cmds::list(x, &c.query, &app.ui.recent)).into_iter().map(Row::Cmd).collect(),
         Some((_, kind)) => {

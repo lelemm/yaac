@@ -28,7 +28,7 @@ const CODEX_SVG: &str = include_str!("../assets/logos/codex.svg");
 const CLAUDE_SVG: &str = include_str!("../assets/logos/claude.svg");
 
 /// The path data and the view box (width, height) of a logo.
-fn source(logo: Logo) -> (String, (f32, f32)) {
+pub(crate) fn source(logo: Logo) -> (String, (f32, f32)) {
     let svg = match logo {
         Logo::Codex => CODEX_SVG,
         Logo::Claude => CLAUDE_SVG,

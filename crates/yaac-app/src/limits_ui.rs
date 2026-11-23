@@ -30,7 +30,7 @@ const LOGO: f32 = 14.0;
 const GROUP_GAP: f32 = 8.0;
 const PAD: f32 = 6.0;
 
-fn colour(kind: &str, p: &Palette) -> Color32 {
+pub(crate) fn colour(kind: &str, p: &Palette) -> Color32 {
     COLOURS.iter().find(|(k, _)| *k == kind).map_or(p.text2, |(_, c)| *c)
 }
 

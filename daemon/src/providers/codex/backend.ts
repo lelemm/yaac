@@ -5,10 +5,12 @@
 // yaacd starts a Codex daemon; it never stops, restarts, or updates one. Nothing in this file
 // runs `daemon stop`, `restart`, `update`, or `bootstrap`.
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { windowsExecutable } from "../windows-executable.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Duplex } from "node:stream";
 import type { ProviderStatus } from "../../protocol/generated/types.js";
 import { CodexConnection, ConnectError } from "./rpc.js";
 
@@ -25,7 +27,7 @@ export type Exec = (file: string, args: string[], env: NodeJS.ProcessEnv, timeou
 
 export const realExec: Exec = (file, args, env, timeoutMs) =>
   new Promise((resolve) => {
-    execFile(file, args, { env, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(file, args, { env, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       const e = err as (NodeJS.ErrnoException & { code?: string | number }) | null;
       if (e && typeof e.code === "string" && (e.code === "ENOENT" || e.code === "EACCES")) {
         resolve({ code: null, stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), spawnError: e.code });
@@ -77,18 +79,21 @@ function isExecutableFile(p: string): boolean {
 export function findCodexExecutable(env: NodeJS.ProcessEnv): string | null {
   const explicit = env[CODEX_EXECUTABLE_VAR];
   if (explicit) return isExecutableFile(explicit) ? explicit : null;
-  const names = process.platform === "win32" ? ["codex.exe", "codex.cmd", "codex"] : ["codex"];
-  const dirs = (env.PATH ?? env.Path ?? "").split(path.delimiter).filter(Boolean);
   // Only the given environment's home: an environment without one (a test's) finds nothing there.
   const home = env.HOME ?? env.USERPROFILE;
-  if (home) dirs.push(path.join(home, ".local", "bin"));
   const codexHome = env.CODEX_HOME && env.CODEX_HOME.length > 0 ? env.CODEX_HOME : home ? path.join(home, ".codex") : null;
-  if (codexHome) dirs.push(path.join(codexHome, "packages", "standalone", "current", "bin"));
+  const launcherDirs = home ? [path.join(home, ".local", "bin")] : [];
+  if (codexHome) launcherDirs.push(path.join(codexHome, "packages", "standalone", "current", "bin"));
+  if (process.platform === "win32") {
+    const rustArch = process.arch === "arm64" ? "aarch64" : "x86_64";
+    return windowsExecutable(env, "codex.exe", launcherDirs,
+      [`@openai/codex-win32-${process.arch}/vendor/${rustArch}-pc-windows-msvc/bin`], "OpenAI/Codex/bin/*/codex.exe");
+  }
+  const dirs = (env.PATH ?? env.Path ?? "").split(path.delimiter).filter(Boolean);
+  dirs.push(...launcherDirs);
   for (const dir of dirs) {
-    for (const name of names) {
-      const candidate = path.join(dir, name);
-      if (isExecutableFile(candidate)) return candidate;
-    }
+    const candidate = path.join(dir, "codex");
+    if (isExecutableFile(candidate)) return candidate;
   }
   return null;
 }
@@ -109,9 +114,44 @@ export interface ConnectOptions {
   startWaitMs?: number;
 }
 
-async function tryOpen(socket: string): Promise<CodexConnection | ConnectError> {
+async function tryOpen(plan: EndpointPlan, bin: string | null): Promise<CodexConnection | ConnectError> {
   try {
-    return await CodexConnection.open(socket);
+    if (process.platform === "win32" && !plan.socket.startsWith("\\\\.\\pipe\\")) {
+      // Codex's native control socket is AF_UNIX, which Node's Windows IPC cannot open.
+      // Windows Node can't stat the AF_UNIX reparse point, even when Codex can open it.
+      const name = path.basename(plan.socket).toLowerCase();
+      try {
+        if (!fs.readdirSync(path.dirname(plan.socket)).some((entry) => entry.toLowerCase() === name)) {
+          return new ConnectError("absent", `no Codex daemon socket at ${plan.socket}`);
+        }
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") return new ConnectError("absent", (e as Error).message);
+        if (code === "EACCES" || code === "EPERM") return new ConnectError("accessDenied", (e as Error).message);
+        throw e;
+      }
+      if (!bin) return new ConnectError("other", "a native Codex CLI is needed to open the Codex daemon socket");
+      let stderr = "";
+      try {
+        return await CodexConnection.open(plan.socket, 5000, () => {
+          const child = spawn(bin, ["app-server", "proxy", "--sock", plan.socket], {
+            env: withBinOnPath(plan.env, bin), windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+          });
+          const stream = Duplex.from({ readable: child.stdout, writable: child.stdin });
+          child.stderr.setEncoding("utf8").on("data", (text: string) => { stderr = (stderr + text).slice(-2048); });
+          child.on("error", (e) => stream.destroy(e));
+          stream.once("close", () => { if (child.exitCode === null) child.kill(); });
+          return stream;
+        });
+      } catch (e) {
+        const detail = lastLine(stderr);
+        if (/\(os error (?:2|3|10050|10061)\)$/.test(detail)) return new ConnectError("absent", detail);
+        if (/\(os error (?:5|10013)\)$/.test(detail)) return new ConnectError("accessDenied", detail);
+        if (detail && e instanceof ConnectError) return new ConnectError(e.reason, detail);
+        throw e;
+      }
+    }
+    return await CodexConnection.open(plan.socket);
   } catch (e) {
     return e instanceof ConnectError ? e : new ConnectError("other", (e as Error).message);
   }
@@ -122,7 +162,8 @@ async function tryOpen(socket: string): Promise<CodexConnection | ConnectError> 
  * failure reasons distinct: not installed, too old, could not start, access denied, unreachable.
  */
 export async function connectBackend(plan: EndpointPlan, opts: ConnectOptions): Promise<BackendResult> {
-  const first = await tryOpen(plan.socket);
+  const nativeBin = process.platform === "win32" ? plan.codexBin ?? findCodexExecutable(plan.env) : null;
+  const first = await tryOpen(plan, nativeBin);
   if (first instanceof CodexConnection) return { ok: true, connection: first, started: false };
   if (first.reason === "accessDenied") {
     return { ok: false, status: "accessDenied", message: `access to the Codex daemon socket was denied: ${first.message}` };
@@ -136,8 +177,8 @@ export async function connectBackend(plan: EndpointPlan, opts: ConnectOptions): 
   if (!opts.mayStart) return { ok: false, status: "unreachable", message: "the Codex daemon is not running" };
 
   // Is Codex installed, and new enough to have the daemon?
-  const bin = plan.codexBin ?? findCodexExecutable(plan.env);
-  const notInstalled = { ok: false as const, status: "notInstalled" as const, message: "Codex is not installed on this target (no `codex` on PATH, in ~/.local/bin, or in Codex's own package folder)" };
+  const bin = nativeBin ?? plan.codexBin ?? findCodexExecutable(plan.env);
+  const notInstalled = { ok: false as const, status: "notInstalled" as const, message: "No Codex CLI was found on this target. Install the Codex CLI or set YAAC_CODEX_EXECUTABLE." };
   if (!bin) return notInstalled;
   const env = withBinOnPath(plan.env, bin);
   const version = await opts.exec(bin, ["--version"], env, 20_000);
@@ -158,7 +199,7 @@ export async function connectBackend(plan: EndpointPlan, opts: ConnectOptions): 
   const deadline = Date.now() + (opts.startWaitMs ?? 15_000);
   let last: ConnectError | null = null;
   while (Date.now() < deadline) {
-    const c = await tryOpen(plan.socket);
+    const c = await tryOpen(plan, bin);
     if (c instanceof CodexConnection) return { ok: true, connection: c, started: true };
     last = c;
     if (c.reason === "accessDenied") return { ok: false, status: "accessDenied", message: `access to the Codex daemon socket was denied: ${c.message}` };

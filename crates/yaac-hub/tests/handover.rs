@@ -97,7 +97,7 @@ impl Rig {
 
     /// The hub's local connector runs `bundle` and says it starts `build`.
     fn use_bundle(&self, bundle: &Path, build: Option<&str>) {
-        let mut config = LocalConfig { runtime: self.runtime.clone(), bundle: bundle.to_owned(), env: vec![], inherit_stderr: false, build: build.map(str::to_owned) };
+        let mut config = LocalConfig { runtime: self.runtime.clone(), bundle: bundle.to_owned(), env: vec![], inherit_stderr: false, build: build.map(str::to_owned), install_files: vec![] };
         for (k, v) in self.env() {
             config = config.with_env(k, v);
         }

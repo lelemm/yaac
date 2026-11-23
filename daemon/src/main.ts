@@ -11,7 +11,6 @@
 // implicit fake provider instance), YAAC_MESH_WORKER_POLL_MS (how often remote workers' states
 // are asked for).
 
-import * as net from "node:net";
 import { spawn } from "node:child_process";
 // Each subcommand loads only what it needs: `yaacd mcp` runs once per Codex thread and must
 // stay small, so the daemon's modules are imported lazily.
@@ -53,28 +52,18 @@ async function serve(args: string[]): Promise<void> {
   }
 }
 
-function connectOnce(socket: string): Promise<net.Socket | null> {
-  return new Promise((resolve) => {
-    const s = net.connect(socket);
-    s.once("connect", () => {
-      s.removeAllListeners("error");
-      resolve(s);
-    });
-    s.once("error", () => resolve(null));
-  });
-}
-
 async function connect(): Promise<void> {
   const env = process.env;
   const { defaultHome } = await import("./session/daemon.js");
-  const { socketPathFor } = await import("./session/server.js");
+  const { socketPathFor, connectDaemonSocket } = await import("./session/server.js");
   const home = defaultHome(env);
   const socket = socketPathFor(home, env);
-  let sock = await connectOnce(socket);
+  let sock = await connectDaemonSocket(socket);
   if (!sock) {
     // Nothing is serving: start the daemon, detached, so it outlives this bridge.
     const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "serve"], {
       detached: true,
+      windowsHide: true,
       stdio: "ignore",
       env,
     });
@@ -82,7 +71,7 @@ async function connect(): Promise<void> {
     const deadline = Date.now() + 15000;
     while (!sock && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
-      sock = await connectOnce(socket);
+      sock = await connectDaemonSocket(socket);
     }
     if (!sock) {
       process.stderr.write(`yaacd connect: no daemon is serving on ${socket}\n`);

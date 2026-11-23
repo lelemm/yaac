@@ -989,8 +989,7 @@ impl YaacApp {
         let target = st
             .selected_thread()
             .map(|k| k.target.clone())
-            .or_else(|| st.targets.iter().find(|t| t.connected() && matches!(t.entry.transport, TargetTransport::Local(_))).map(|t| t.entry.id.clone()))
-            .or_else(|| st.targets.iter().find(|t| t.connected()).map(|t| t.entry.id.clone()));
+            .or_else(|| yaac_core::first_run::preferred_start_target(st).cloned());
         let Some(t) = target else { return };
         let selected_project = st.selected_thread().and_then(|k| st.project_of(k)).map(|p| p.id.clone());
         let first_here = st.projects.iter().find(|p| p.target == t).map(|p| p.id.clone());
@@ -1506,29 +1505,8 @@ impl YaacApp {
     }
 }
 
-impl eframe::App for YaacApp {
-    /// Ctrl+C and Ctrl+X become egui's copy and cut again (the clipboard shortcuts are off so
-    /// that Ctrl+V reaches the window as a key), and text read from the clipboard by a worker
-    /// is pasted into the focused field.
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        for e in &mut raw.events {
-            if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
-                let copy = (modifiers.command_only() && *key == Key::C) || *key == Key::Copy || (cfg!(windows) && modifiers.ctrl && *key == Key::Insert);
-                let cut = (modifiers.command_only() && *key == Key::X) || *key == Key::Cut || (cfg!(windows) && modifiers.shift && *key == Key::Delete);
-                if copy {
-                    *e = egui::Event::Copy;
-                } else if cut {
-                    *e = egui::Event::Cut;
-                }
-            }
-        }
-        raw.events.append(&mut self.files.paste_events);
-        if let Some(at) = self.ui.shot_pointer.filter(|_| self.shots.is_some()) {
-            raw.events.push(egui::Event::PointerMoved(at));
-        }
-    }
-
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl YaacApp {
+    pub(crate) fn upkeep(&mut self, ctx: &egui::Context) {
         // Apply everything that arrived since the last frame: a burst of events becomes one
         // repaint. Arrivals from a real hub wake the window through the link's waker.
         self.updater.poll();
@@ -1584,6 +1562,33 @@ impl eframe::App for YaacApp {
             let map = AttentionMap::compute(state);
             yaac_core::sidebar::needs_you(state, &map, now).len()
         });
+    }
+}
+
+impl eframe::App for YaacApp {
+    /// Ctrl+C and Ctrl+X become egui's copy and cut again (the clipboard shortcuts are off so
+    /// that Ctrl+V reaches the window as a key), and text read from the clipboard by a worker
+    /// is pasted into the focused field.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        for e in &mut raw.events {
+            if let egui::Event::Key { key, pressed: true, modifiers, .. } = e {
+                let copy = (modifiers.command_only() && *key == Key::C) || *key == Key::Copy || (cfg!(windows) && modifiers.ctrl && *key == Key::Insert);
+                let cut = (modifiers.command_only() && *key == Key::X) || *key == Key::Cut || (cfg!(windows) && modifiers.shift && *key == Key::Delete);
+                if copy {
+                    *e = egui::Event::Copy;
+                } else if cut {
+                    *e = egui::Event::Cut;
+                }
+            }
+        }
+        raw.events.append(&mut self.files.paste_events);
+        if let Some(at) = self.ui.shot_pointer.filter(|_| self.shots.is_some()) {
+            raw.events.push(egui::Event::PointerMoved(at));
+        }
+    }
+
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.upkeep(ctx);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -2418,6 +2423,9 @@ pub(crate) mod tests {
     fn ctrl_click_two_rows_and_archive_selected_sends_one_archive_each_with_its_own_op_id() {
         let ctx = egui::Context::default();
         let mut app = demo_app(&ctx);
+        for key in [threads::users(), threads::billing()] {
+            app.client.state.threads.get_mut(&key).unwrap().summary.spawned_by = None;
+        }
         app.apply(vec![Action::Open(threads::fix())]);
         for _ in 0..3 {
             keys(&ctx, &mut app, vec![]);
@@ -2484,6 +2492,9 @@ pub(crate) mod tests {
     fn dragging_a_row_onto_another_projects_header_sends_thread_move_with_an_undo() {
         let ctx = egui::Context::default();
         let mut app = demo_app(&ctx);
+        for key in [threads::billing(), threads::search()] {
+            app.client.state.threads.get_mut(&key).unwrap().summary.spawned_by = None;
+        }
         app.apply(vec![Action::Open(threads::fix())]);
         for _ in 0..3 {
             keys(&ctx, &mut app, vec![]);
@@ -2539,6 +2550,9 @@ pub(crate) mod tests {
     fn shift_click_ranges_esc_clears_and_a_plain_click_opens() {
         let ctx = egui::Context::default();
         let mut app = demo_app(&ctx);
+        for key in [threads::search(), threads::billing(), threads::users(), threads::index()] {
+            app.client.state.threads.get_mut(&key).unwrap().summary.spawned_by = None;
+        }
         app.apply(vec![Action::Open(threads::search())]);
         for _ in 0..3 {
             keys(&ctx, &mut app, vec![]);

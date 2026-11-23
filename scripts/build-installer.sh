@@ -4,7 +4,7 @@
 #   scripts/build-installer.sh              release yaac.exe (scripts/build-windows.sh), then setup
 #   scripts/build-installer.sh --no-build   package the dist/windows/yaac.exe already built
 #
-# Needs what scripts/build-windows.sh needs, plus Inno Setup 6 on the Windows side, reached
+# Needs what scripts/build-windows.sh needs, plus Inno Setup 6 and the .NET 10 SDK on the Windows side, reached
 # through WSL interop. ISCC.exe is looked for in $ISCC, then in the per-user install
 # (%LOCALAPPDATA%\Programs\Inno Setup 6, what `winget install JRSoftware.InnoSetup --scope user`
 # makes), then in Program Files. Every path and the version are passed to installer/yaac.iss
@@ -35,6 +35,10 @@ fi
 # the installer carries the same one: `<version>+<id>`, file version `<numeric>.<id>`.
 id=$(tr -cd '0-9' <"$out/build-id" 2>/dev/null || true)
 [ -n "$id" ] || { echo "$out/build-id is missing: rebuild with scripts/build-windows.sh" >&2; exit 1; }
+grep -qF "$version+$id" "$out/yaacd.mjs" || { echo "The staged yaacd bundle is missing or from another build: run scripts/build-windows.sh" >&2; exit 1; }
+sh "$root/scripts/stage-windows-runtime.sh" "$out"
+"${DOTNET_WINDOWS:-dotnet.exe}" publish "$(wslpath -w "$root/tools/wpf-preview/Yaac.WpfPreview.csproj")" \
+  -c Release -r win-x64 --self-contained -p:DebugType=None -o "$(wslpath -w "$out/wpf")"
 version="$version+$id"
 numeric="$numeric.$id"
 

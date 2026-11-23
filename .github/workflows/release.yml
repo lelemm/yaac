@@ -106,8 +106,9 @@ jobs:
           set -eu
           [ "$(cat dist/windows/build-id)" = "${{ steps.id.outputs.build }}" ]
           mkdir -p dist/stage
-          cp dist/windows/yaac.exe dist/windows/yaac.ico dist/windows/build-id dist/stage/
-          cp daemon/dist/yaacd.mjs daemon/dist/yaacd-mcp.mjs dist/stage/
+          cp dist/windows/yaac.exe dist/windows/yaac.ico dist/windows/build-id dist/windows/yaacd.mjs dist/stage/
+          cp daemon/dist/yaacd-mcp.mjs dist/stage/
+          sh scripts/stage-windows-runtime.sh dist/stage
           # The daemon bundle says the same build.
           grep -q "${{ steps.id.outputs.version }}+${{ steps.id.outputs.build }}" dist/stage/yaacd.mjs
           ls -l dist/stage
@@ -131,6 +132,16 @@ jobs:
         with:
           name: build
           path: dist/stage
+
+      - name: Test the native Windows daemon
+        run: ./dist/stage/runtime/node.exe scripts/test-windows-local.mjs dist/stage/yaacd.mjs
+
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish the Windows WPF renderer
+        run: dotnet publish tools/wpf-preview/Yaac.WpfPreview.csproj -c Release -r win-x64 --self-contained -p:DebugType=None -o dist/stage/wpf
 
       # Inno Setup 6 is on GitHub's Windows images (listed in actions/runner-images); it is
       # installed here only if an image ever lacks it.
@@ -224,7 +235,7 @@ jobs:
           TAG: ${{ needs.build.outputs.tag }}
         run: |
           set -eu
-          notes="YAAC $VERSION+$BUILD. Install with YAAC-Setup-$VERSION-build.$BUILD.exe (per user, no administrator rights); an installed YAAC offers this update itself. manifest.json lists every file with its SHA-256."
+          notes="YAAC $VERSION+$BUILD. Install with YAAC-Setup-$VERSION-build.$BUILD.exe. To try the Windows compatibility renderer, choose Windows WPF in Settings → Window → Renderer, then restart YAAC. The Windows installer includes the WPF runtime. manifest.json lists every file with its SHA-256."
           gh release create "$TAG" dist/release/* \
             --target "$GITHUB_SHA" \
             --title "YAAC $VERSION+$BUILD" \

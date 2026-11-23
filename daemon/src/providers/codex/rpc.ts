@@ -3,6 +3,7 @@
 // reconnecting is the provider's job.
 
 import * as net from "node:net";
+import type { Duplex } from "node:stream";
 import WebSocket from "ws";
 import { Emitter } from "../../util/emitter.js";
 import type { InitializeResponse, RpcId, RpcMessage } from "./wire.js";
@@ -56,18 +57,20 @@ export class CodexConnection {
     ws.on("error", (e) => this.onClose(e));
   }
 
-  /** Opens a WebSocket on a Unix socket. */
-  static open(socketPath: string, timeoutMs = 5000): Promise<CodexConnection> {
+  /** Opens a WebSocket on the daemon control stream. */
+  static open(socketPath: string, timeoutMs = 5000, createConnection = (): Duplex => net.connect(socketPath)): Promise<CodexConnection> {
     return new Promise((resolve, reject) => {
       let settled = false;
       const ws = new WebSocket("ws://localhost/", {
-        createConnection: () => net.connect(socketPath),
+        // ws only needs the byte stream. Its types require the TCP/IPC Socket subclass.
+        createConnection: createConnection as () => net.Socket,
         handshakeTimeout: timeoutMs,
         maxPayload: 256 * 1024 * 1024,
       } as WebSocket.ClientOptions);
       const fail = (e: NodeJS.ErrnoException) => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
         ws.removeAllListeners();
         ws.on("error", () => {});
         try {
@@ -80,11 +83,15 @@ export class CodexConnection {
           code === "ENOENT" || code === "ECONNREFUSED" || code === "ENOTSOCK" ? "absent" : code === "EACCES" || code === "EPERM" ? "accessDenied" : "other";
         reject(new ConnectError(reason, `${socketPath}: ${e.message}`));
       };
+      // The Windows stdio proxy is a Duplex without a native socket timeout.
+      const timer = setTimeout(() => fail(new Error("timed out opening the Codex connection")), timeoutMs);
+      timer.unref();
       ws.once("error", fail);
       ws.once("unexpected-response", (_req, res) => fail(Object.assign(new Error(`the socket answered HTTP ${res.statusCode}, not a WebSocket upgrade`), { code: "EPROTO" })));
       ws.once("open", () => {
         if (settled) return;
         settled = true;
+        clearTimeout(timer);
         ws.removeAllListeners();
         resolve(new CodexConnection(ws));
       });

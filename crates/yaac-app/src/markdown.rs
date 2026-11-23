@@ -20,7 +20,7 @@ pub(crate) struct Span {
     pub bold: bool,
     pub italic: bool,
     pub code: bool,
-    pub link: bool,
+    pub link: Option<String>,
 }
 
 /// A block.
@@ -54,7 +54,8 @@ pub(crate) fn parse_typed(text: &str) -> Vec<Block> {
 fn parse_with(text: &str, typed: bool) -> Vec<Block> {
     let mut out = Vec::new();
     let mut spans: Vec<Span> = Vec::new();
-    let (mut bold, mut italic, mut link) = (0u32, 0u32, 0u32);
+    let (mut bold, mut italic) = (0u32, 0u32);
+    let mut link = None;
     let mut code: Option<(String, String)> = None;
     let mut lists: Vec<Option<u64>> = Vec::new();
     let mut item_marker: Option<(u8, String)> = None;
@@ -90,8 +91,8 @@ fn parse_with(text: &str, typed: bool) -> Vec<Block> {
             }
             continue;
         }
-        let push = |spans: &mut Vec<Span>, t: &str, c: bool, b: u32, i: u32, l: u32| {
-            spans.push(Span { text: t.to_owned(), bold: b > 0, italic: i > 0, code: c, link: l > 0 });
+        let push = |spans: &mut Vec<Span>, t: &str, c: bool, b: u32, i: u32, l: Option<&str>| {
+            spans.push(Span { text: t.to_owned(), bold: b > 0, italic: i > 0, code: c, link: l.map(str::to_owned) });
         };
         match ev {
             Event::Start(Tag::Paragraph) => {}
@@ -139,15 +140,15 @@ fn parse_with(text: &str, typed: bool) -> Vec<Block> {
             Event::End(TagEnd::Strong) => bold = bold.saturating_sub(1),
             Event::Start(Tag::Emphasis) => italic += 1,
             Event::End(TagEnd::Emphasis) => italic = italic.saturating_sub(1),
-            Event::Start(Tag::Link { .. }) => link += 1,
-            Event::End(TagEnd::Link) => link = link.saturating_sub(1),
-            Event::Text(t) => push(&mut spans, &t, false, bold, italic, link),
-            Event::Code(t) => push(&mut spans, &t, true, bold, italic, link),
+            Event::Start(Tag::Link { dest_url, .. }) => link = Some(dest_url.into_string()),
+            Event::End(TagEnd::Link) => link = None,
+            Event::Text(t) => push(&mut spans, &t, false, bold, italic, link.as_deref()),
+            Event::Code(t) => push(&mut spans, &t, true, bold, italic, link.as_deref()),
             // HTML is not rendered: it is text the author wrote (`<details>`, `Vec<T>`, a tag a
             // harness left), shown as written rather than dropped.
-            Event::InlineHtml(t) => push(&mut spans, &t, false, bold, italic, link),
+            Event::InlineHtml(t) => push(&mut spans, &t, false, bold, italic, link.as_deref()),
             Event::Start(Tag::HtmlBlock) => flush(&mut spans, &mut out, heading, &mut item_marker, quote),
-            Event::Html(t) => push(&mut spans, &t, false, 0, 0, 0),
+            Event::Html(t) => push(&mut spans, &t, false, 0, 0, None),
             Event::End(TagEnd::HtmlBlock) => {
                 if let Some(last) = spans.last_mut() {
                     let trimmed = last.text.trim_end_matches('\n').len();
@@ -181,8 +182,8 @@ fn parse_with(text: &str, typed: bool) -> Vec<Block> {
                     out.push(Block::Table { head, rows });
                 }
             }
-            Event::SoftBreak => push(&mut spans, if typed { "\n" } else { " " }, false, 0, 0, 0),
-            Event::HardBreak => push(&mut spans, "\n", false, 0, 0, 0),
+            Event::SoftBreak => push(&mut spans, if typed { "\n" } else { " " }, false, 0, 0, None),
+            Event::HardBreak => push(&mut spans, "\n", false, 0, 0, None),
             Event::Rule => out.push(Block::Rule),
             _ => {}
         }
@@ -249,7 +250,7 @@ impl Parsed {
         }
         let tail = &text[self.stable_end..];
         self.tail = if tail.len() > MAX_TAIL {
-            vec![Block::Para(vec![Span { text: tail.to_owned(), bold: false, italic: false, code: false, link: false }])]
+            vec![Block::Para(vec![Span { text: tail.to_owned(), bold: false, italic: false, code: false, link: None }])]
         } else {
             parse(tail)
         };
@@ -291,7 +292,7 @@ fn job_for(spans: &[Span], font: &FontId, color: Color32, p: &Palette, wrap: f32
     for s in spans {
         let font_id = if s.code {
             theme::mono(font.size * 0.9)
-        } else if s.bold || s.link {
+        } else if s.bold || s.link.is_some() {
             theme::bold(font.size)
         } else {
             font.clone()
@@ -318,13 +319,13 @@ pub(crate) fn inline_job(text: &str, font: &FontId, color: Color32, p: &Palette,
         .into_iter()
         .flat_map(|b| match b {
             Block::Para(s) | Block::Heading(_, s) | Block::Quote(s) | Block::Item { spans: s, .. } => s,
-            Block::Code { text, .. } => vec![Span { text, bold: false, italic: false, code: true, link: false }],
+            Block::Code { text, .. } => vec![Span { text, bold: false, italic: false, code: true, link: None }],
             Block::Rule => vec![],
             Block::Table { head, rows } => {
                 let mut out = Vec::new();
                 for cell in head.into_iter().chain(rows.into_iter().flatten()) {
                     if !out.is_empty() {
-                        out.push(Span { text: " · ".into(), bold: false, italic: false, code: false, link: false });
+                        out.push(Span { text: " · ".into(), bold: false, italic: false, code: false, link: None });
                     }
                     out.extend(cell);
                 }

@@ -56,6 +56,7 @@ mod titlebar;
 mod tray;
 mod updater;
 mod widgets;
+mod wpf;
 
 use std::process::ExitCode;
 
@@ -105,6 +106,9 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
+    if args.first().is_some_and(|a| a == "--wpf-controller") {
+        return wpf::controller_main(args.get(1).map(String::as_str), args.get(2).map(String::as_str));
+    }
     let mut demo = None;
     let mut theme = theme::ThemeChoice::System;
     let mut shots_dir = None;
@@ -150,7 +154,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 i += 1;
             }
             "--help" | "-h" => {
-                println!("yaac [hub] | yaac quit [--wait-for <exe>] | yaac autostart on|off|status|sync [--start] | yaac remove-data | yaac --demo [fleet|fresh] [--theme dark|light|system] [--host windows|linux] [--screenshots <dir> [--only 01,02]] [--renderer auto|dx12|vulkan|wgpu-gl|glow|software]");
+                println!("yaac [hub] | yaac quit [--wait-for <exe>] | yaac autostart on|off|status|sync [--start] | yaac remove-data | yaac --demo [fleet|fresh] [--theme dark|light|system] [--host windows|linux] [--screenshots <dir> [--only 01,02]] [--renderer auto|dx12|vulkan|wgpu-gl|glow|software|windows-wpf]");
                 return ExitCode::SUCCESS;
             }
             other => eprintln!("ignoring unknown argument {other}"),
@@ -215,8 +219,15 @@ pub fn run(args: &[String]) -> ExitCode {
     let store = display::Store::at(display_path);
     let mut file = store.load();
     file.note_unfinished_start();
-    let choice = display::choice(&file, renderer_arg.as_deref());
-    let plan = yaac_core::display::plan(choice, yaac_core::display::Host::current(), display::BUILT, file.crashed);
+    let mut choice = display::choice(&file, renderer_arg.as_deref());
+    if shots.is_some() && choice == yaac_core::display::Renderer::WindowsWpf {
+        choice = yaac_core::display::Renderer::Auto;
+    }
+    let built = display::built();
+    let mut plan = yaac_core::display::plan(choice, yaac_core::display::Host::current(), built, file.crashed);
+    if choice == yaac_core::display::Renderer::WindowsWpf && !built.wpf {
+        plan.skipped = Some("the Windows WPF renderer is unavailable in this build".to_owned());
+    }
     let size = if shots.is_some() { [1600.0, 1000.0] } else { [1440.0, 900.0] };
     let maximized = shots.is_none();
     let base = move || eframe::NativeOptions {

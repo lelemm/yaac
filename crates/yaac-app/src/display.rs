@@ -21,7 +21,9 @@ use std::sync::{Arc, Mutex};
 use yaac_core::display::{Built, DisplayFile, Host, InUse, Plan, Renderer};
 
 /// The renderers compiled into this build.
-pub(crate) const BUILT: Built = Built { glow: cfg!(feature = "glow"), wgpu: cfg!(feature = "wgpu") };
+pub(crate) fn built() -> Built {
+    Built { glow: cfg!(feature = "glow"), wgpu: cfg!(feature = "wgpu"), wpf: crate::wpf::available() }
+}
 
 /// Where the display file is kept; `None` keeps nothing (the demo, tests).
 #[derive(Clone, Debug, Default)]
@@ -128,7 +130,7 @@ fn wgpu_options(r: Renderer, fail: bool) -> eframe::egui_wgpu::WgpuConfiguration
         // WARP is a Direct3D 12 adapter; elsewhere lavapipe (Vulkan) or llvmpipe (OpenGL).
         Renderer::Software if cfg!(windows) => Backends::DX12,
         Renderer::Software => Backends::VULKAN | Backends::GL,
-        Renderer::Auto | Renderer::Glow => Backends::PRIMARY | Backends::GL,
+        Renderer::Auto | Renderer::Glow | Renderer::WindowsWpf => Backends::PRIMARY | Backends::GL,
     };
     setup.native_adapter_selector = Some(Arc::new(move |adapters: &[wgpu::Adapter], surface: Option<&wgpu::Surface<'_>>| {
         if fail {
@@ -230,6 +232,32 @@ pub(crate) fn run_window(base: &dyn Fn() -> eframe::NativeOptions, plan: &Plan, 
         let fail = fail_first && i == 0;
         file.starting = Some(r);
         store.save(&file);
+        #[cfg(windows)]
+        if r == Renderer::WindowsWpf {
+            let frontend = if fail {
+                Err(std::io::Error::other("YAAC_RENDERER_FAIL is set"))
+            } else {
+                crate::wpf::Frontend::start(launch.borrow().as_ref().expect("the WPF window has not started"))
+            };
+            match frontend {
+                Ok(frontend) => {
+                    let mut launch = launch.borrow_mut().take().expect("the WPF window has not started");
+                    launch.display = DisplayState {
+                        store: store.clone(), file: file.clone(), started_with: choice, first_frame: Arc::default(),
+                        in_use: InUse { renderer: r, software: true, fell_back: why, ..InUse::default() },
+                    };
+                    return match frontend.run(launch) {
+                        Ok(()) => ExitCode::SUCCESS,
+                        Err(e) => { eprintln!("yaac: WPF window: {e}"); ExitCode::FAILURE }
+                    };
+                }
+                Err(e) => {
+                    eprintln!("yaac: {} failed to start: {e}", r.label(host));
+                    why = Some(format!("{} failed to start: {e}", r.label(host)));
+                    continue;
+                }
+            }
+        }
         let first_frame = Arc::new(AtomicBool::new(false));
         let (ff, reason, f) = (first_frame.clone(), why.clone(), file.clone());
         let created = std::cell::Cell::new(false);

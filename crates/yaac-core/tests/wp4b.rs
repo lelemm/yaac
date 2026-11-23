@@ -339,6 +339,30 @@ fn first_run_shows_this_computer_with_the_targets_own_hint() {
     assert_eq!(signed_out.hint.as_deref(), Some("Run `claude` in a terminal to sign in"));
 }
 
+#[test]
+fn first_run_and_new_thread_prefer_a_connected_target_with_a_ready_provider() {
+    let (mut c, _) = boot_with_fresh();
+    // This computer has nothing ready; a connected WSL target has a ready provider.
+    let mut wsl = c.state.targets[0].clone();
+    for p in &mut c.state.targets[0].providers {
+        p.status = yaac_protocol::ProviderStatus::NeedsAuth;
+    }
+    wsl.providers.iter_mut().for_each(|p| p.status = yaac_protocol::ProviderStatus::Ready);
+    wsl.entry.id = yaac_protocol::TargetId::new("wsl");
+    wsl.entry.name = yaac_protocol::TargetName::new("Ubuntu");
+    wsl.entry.transport = yaac_protocol::attach::TargetTransport::Wsl(yaac_protocol::attach::WslTransport { distro: "Ubuntu".into(), user: None });
+    c.state.targets.push(wsl);
+    let v = yaac_core::first_run::first_run(&c.state);
+    assert!(v.can_start);
+    assert_eq!(v.target.as_ref().map(|t| t.as_str()), Some("wsl"));
+    assert_eq!(v.other_name.as_deref(), Some("Ubuntu"));
+    assert_eq!(yaac_core::first_run::preferred_start_target(&c.state).map(|t| t.as_str()), Some("wsl"));
+    // An offline WSL target cannot make the welcome screen ready through cached providers.
+    c.state.targets[1].entry.state.status = yaac_protocol::attach::ConnectionStatus::Offline;
+    assert_eq!(yaac_core::first_run::preferred_start_target(&c.state).map(|t| t.as_str()), Some("local"));
+    assert!(!yaac_core::first_run::first_run(&c.state).can_start);
+}
+
 fn boot_with_fresh() -> (Client, DemoHub) {
     let hub = DemoHub::new(Scenario::Fresh, NOW);
     let mut c = Client::new(Box::new(hub.clone()), "test", ClientId::new("w"));

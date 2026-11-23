@@ -110,9 +110,17 @@ pub struct Stream {
 
 ### Local
 
-The app unpacks its private runtime and the `yaacd` bundle once into the user data directory
-and spawns the runtime directly. On Windows this is a native Windows process tree; no WSL and no
-shell are involved.
+The hub registers a Local target for the current Windows user, including on upgrade from
+a build that did not register one. A disabled Local target stays disabled. The Windows
+installer includes the private runtime and daemon bundle. On first connection the hub copies
+them into versioned directories under the native daemon's home before spawning the runtime
+directly. The copies let a serving daemon and its tool bridges outlive installer upgrades.
+
+The Windows daemon's bridge uses a local named pipe with TLS pre-shared-key authentication
+in both directions. The key is created under the start-up lock and stored in the daemon's
+Windows user profile, including when the daemon's home is configured on another drive.
+The same bridge reconnects to an already serving daemon. POSIX
+daemons use the user-only Unix socket.
 
 ### SSH
 
@@ -282,6 +290,14 @@ when the connection is tested.
 
 Each enabled WSL connection gets one long-lived `wsl.exe` child. The same distro may be added
 more than once with different users; see [what a target is](#what-a-target-is).
+
+Before stage 0, that child can fill in `CODEX_HOME` and `CLAUDE_CONFIG_DIR` from exports in
+the selected user's `~/.bashrc`. It runs the file in an isolated interactive Bash with no
+terminal, discards its output, and gives it two seconds plus one second to terminate.
+Inherited values take precedence. If Bash or `timeout` is unavailable or the profile times
+out, startup continues with the inherited environment. A daemon
+started by the bridge inherits these directories. An already serving daemon keeps the
+environment it started with until it exits or hands over through the normal update path.
 
 Two things to prove before building on WSL (spikes S2 and S8):
 
@@ -723,6 +739,7 @@ needed before the attach): the user's choice, and a start marker. Then:
 | reached its first frame, or first start | the choice | software |
 | the choice never reached a first frame (crashed or killed) | software | the choice |
 | the choice is software | software | *Automatic* |
+| the choice is Windows WPF | WPF window | *Automatic* |
 
 "Fails to initialise" is eframe returning an error — no adapter, no device, no OpenGL context
 — and the retry happens in the same process (eframe keeps its event loop for a second
@@ -734,7 +751,7 @@ the CPU adapter only for software — or when it is all there is, and then Setti
 "software". What runs is recorded and shown in Settings → Window ([07](07-ui.md#display)).
 
 `YAAC_RENDERER=<id>` or `--renderer <id>` (`auto`, `dx12`, `vulkan`, `wgpu-gl`, `glow`,
-`software`) overrides the choice for one start; `YAAC_RENDERER_FAIL=1` makes the first attempt
+`software`, `windows-wpf`) overrides the choice for one start; `YAAC_RENDERER_FAIL=1` makes the first attempt
 fail, to exercise the fallback.
 
 Building `wgpu` in costs **3.3 MB** of executable: the Windows release `yaac.exe` is 14.6 MB with
@@ -763,3 +780,15 @@ repaint than wgpu on this machine but has the smallest memory, which is why *Aut
 `glow`. A window hidden in the tray used 0 ms of CPU over 15 s while the demo fleet streamed
 (it had used 25 % visible). On WSLg the only Vulkan adapter is lavapipe ("llvmpipe"), so
 *Vulkan* and *Software* both run on the CPU there, and Settings says so.
+
+### Windows compatibility
+
+The Windows compatibility renderer uses WPF and runs through the same Rust controller and hub
+connection. The controller launches the Windows presentation and exchanges view updates and
+input over anonymous pipes. WPF owns the visible window and notification-area icon. The
+controller retains subscriptions, drafts, preferences, and the single-instance and quit
+signals. The installer ships the self-contained WPF runtime.
+
+Choose **Windows WPF** under **Settings → Window → Display**. Existing `windows-compat`
+preferences use WPF. The demo command is `yaac.exe --demo fleet --renderer windows-wpf`.
+Renderer selection applies on restart.

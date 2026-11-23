@@ -32,6 +32,8 @@ pub enum Renderer {
     /// Software rendering: Direct3D 12 on WARP on Windows; wgpu's CPU adapter (lavapipe or
     /// llvmpipe) elsewhere.
     Software,
+    /// Windows Presentation Foundation, using the YAAC window controller.
+    WindowsWpf,
 }
 
 /// Which host the window runs on (the choices differ).
@@ -57,12 +59,14 @@ pub struct Built {
     pub glow: bool,
     /// wgpu (Direct3D 12, Vulkan, OpenGL, and the software adapters).
     pub wgpu: bool,
+    /// The packaged Windows WPF window is available.
+    pub wpf: bool,
 }
 
 impl Renderer {
     /// Every renderer, in the dropdown's order.
-    pub const ALL: [Renderer; 6] =
-        [Renderer::Auto, Renderer::Direct3D12, Renderer::Vulkan, Renderer::WgpuGl, Renderer::Glow, Renderer::Software];
+    pub const ALL: [Renderer; 7] =
+        [Renderer::Auto, Renderer::Direct3D12, Renderer::Vulkan, Renderer::WgpuGl, Renderer::Glow, Renderer::Software, Renderer::WindowsWpf];
 
     /// The stored id.
     pub fn id(self) -> &'static str {
@@ -73,11 +77,15 @@ impl Renderer {
             Renderer::WgpuGl => "wgpu-gl",
             Renderer::Glow => "glow",
             Renderer::Software => "software",
+            Renderer::WindowsWpf => "windows-wpf",
         }
     }
 
     /// From a stored id.
     pub fn from_id(id: &str) -> Option<Renderer> {
+        if id == "windows-compat" {
+            return Some(Renderer::WindowsWpf);
+        }
         Renderer::ALL.into_iter().find(|r| r.id() == id)
     }
 
@@ -91,6 +99,7 @@ impl Renderer {
             (Renderer::Glow, _) => "OpenGL (glow)",
             (Renderer::Software, Host::Windows) => "Software (WARP)",
             (Renderer::Software, Host::Unix) => "Software",
+            (Renderer::WindowsWpf, _) => "Windows WPF",
         }
     }
 
@@ -101,6 +110,7 @@ impl Renderer {
             Renderer::Direct3D12 => host == Host::Windows && built.wgpu,
             Renderer::Vulkan | Renderer::WgpuGl | Renderer::Software => built.wgpu,
             Renderer::Glow => built.glow,
+            Renderer::WindowsWpf => host == Host::Windows && built.wpf,
         }
     }
 
@@ -137,6 +147,14 @@ pub fn plan(choice: Renderer, host: Host, built: Built, crashed: Option<Renderer
     let choice = if choice.offered(host, built) { choice } else { Renderer::Auto };
     let first = choice.resolve(built);
     let software = Renderer::Software.offered(host, built).then_some(Renderer::Software);
+    if first == Renderer::WindowsWpf {
+        let auto = Renderer::Auto.resolve(built);
+        let fallback = (built.wgpu || built.glow).then_some(auto);
+        if crashed == Some(first) && let Some(auto) = fallback {
+            return Plan { first: auto, fallback: software, skipped: Some(format!("{} did not finish starting last time", first.label(host))) };
+        }
+        return Plan { first, fallback, skipped: None };
+    }
     if first == Renderer::Software {
         let auto = Renderer::Auto.resolve(built);
         return Plan { first, fallback: (auto != Renderer::Software).then_some(auto), skipped: None };
@@ -262,16 +280,16 @@ pub fn tray_tooltip(need_you: usize) -> String {
 mod tests {
     use super::*;
 
-    const ALL: Built = Built { glow: true, wgpu: true };
+    const ALL: Built = Built { glow: true, wgpu: true, wpf: true };
 
     #[test]
     fn the_dropdown_lists_what_the_build_and_host_offer() {
         let win = offered(Host::Windows, ALL);
         assert_eq!(win, Renderer::ALL);
         let labels: Vec<_> = win.iter().map(|r| r.label(Host::Windows)).collect();
-        assert_eq!(labels, ["Automatic", "Direct3D 12", "Vulkan", "OpenGL (wgpu)", "OpenGL (glow)", "Software (WARP)"]);
+        assert_eq!(labels, ["Automatic", "Direct3D 12", "Vulkan", "OpenGL (wgpu)", "OpenGL (glow)", "Software (WARP)", "Windows WPF"]);
         assert_eq!(offered(Host::Unix, ALL), [Renderer::Auto, Renderer::Vulkan, Renderer::WgpuGl, Renderer::Glow, Renderer::Software]);
-        assert_eq!(offered(Host::Windows, Built { glow: true, wgpu: false }), [Renderer::Auto, Renderer::Glow]);
+        assert_eq!(offered(Host::Windows, Built { glow: true, wgpu: false, wpf: false }), [Renderer::Auto, Renderer::Glow]);
         for r in Renderer::ALL {
             assert_eq!(Renderer::from_id(r.id()), Some(r));
         }
@@ -283,11 +301,11 @@ mod tests {
         assert_eq!(p, Plan { first: Renderer::Direct3D12, fallback: Some(Renderer::Software), skipped: None });
         // Automatic is OpenGL through wgpu in a build that has wgpu (D132), else glow.
         assert_eq!(plan(Renderer::Auto, Host::Windows, ALL, None).first, Renderer::WgpuGl);
-        assert_eq!(plan(Renderer::Auto, Host::Windows, Built { glow: true, wgpu: false }, None).first, Renderer::Glow);
+        assert_eq!(plan(Renderer::Auto, Host::Windows, Built { glow: true, wgpu: false, wpf: false }, None).first, Renderer::Glow);
         // Software chosen: automatic is what is left to try.
         assert_eq!(plan(Renderer::Software, Host::Windows, ALL, None).fallback, Some(Renderer::WgpuGl));
         // Without wgpu there is nothing to fall back to.
-        assert_eq!(plan(Renderer::Glow, Host::Windows, Built { glow: true, wgpu: false }, None).fallback, None);
+        assert_eq!(plan(Renderer::Glow, Host::Windows, Built { glow: true, wgpu: false, wpf: false }, None).fallback, None);
         // A choice this host cannot run (a file copied from Windows) is automatic.
         assert_eq!(plan(Renderer::Direct3D12, Host::Unix, ALL, None).first, Renderer::WgpuGl);
     }
@@ -302,6 +320,16 @@ mod tests {
         assert_eq!(plan(Renderer::Glow, Host::Windows, ALL, Some(Renderer::Vulkan)).first, Renderer::Glow);
         // Automatic resolved to OpenGL through wgpu, and that crashed.
         assert_eq!(plan(Renderer::Auto, Host::Windows, ALL, Some(Renderer::WgpuGl)).first, Renderer::Software);
+    }
+
+    #[test]
+    fn wpf_is_explicit_migrates_the_legacy_id_and_can_fall_back() {
+        let compat = Renderer::WindowsWpf;
+        assert_eq!(Renderer::from_id("windows-compat"), Some(compat));
+        assert_eq!(plan(compat, Host::Windows, ALL, None), Plan { first: compat, fallback: Some(Renderer::WgpuGl), skipped: None });
+        assert_eq!(plan(compat, Host::Windows, ALL, Some(compat)).first, Renderer::WgpuGl);
+        assert_eq!(plan(compat, Host::Unix, ALL, None).first, Renderer::WgpuGl);
+        assert_eq!(plan(compat, Host::Windows, Built { wpf: false, ..ALL }, None).first, Renderer::WgpuGl);
     }
 
     #[test]

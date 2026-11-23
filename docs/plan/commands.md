@@ -39,7 +39,7 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 | Next thread that needs you | Open the next thread waiting on you, at its request (D117). | Ctrl+J |
 | Jump to the bottom | Scroll the open thread to its newest message; with the view scrolled up, the button above the composer says how many messages arrived since (D142). | Ctrl+End |
 | Go to previous / next message | Scroll the open thread to the prompt before / after the one in view — what the timeline's dashes stand for (D153, P212). Disabled below two prompts. | Alt+PageUp / Alt+PageDown **new** |
-| Next unseen finished thread | Open the next thread whose finished turn you have not seen (D114). | Ctrl+U **new** |
+| Next unseen finished thread | Open the next unseen finished thread in sidebar order, or the newest unseen worker if the sidebar has none (D114, D171). | Ctrl+U **new** |
 | Next / previous thread in the list | Move the selection down / up the sidebar. | Ctrl+↓ / Ctrl+↑ |
 | Back / forward | Through visited threads (D87). | Alt+← / Alt+→, mouse buttons |
 | History… | The back/forward list (D88). | — |

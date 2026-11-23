@@ -18,17 +18,11 @@ fn the_default_matches_the_brief() {
     let want = [
         "# Pinned · 1",
         "Migrate auth module · orchestrator (running) now / main ~4 3w",
-        "# search · gpu-box",
-        "index-rebuild (needs you) 41m / auth/search ~3",
-        "search-service (running) now / auth/search ~3 1w",
         "# api · devbox",
         "CI integration (waiting) 1m / main v2",
-        "billing-service (done) 9m / auth/billing +2 ~6 -1 ^1",
         "# yaac · devbox",
         "Fix frame decoder (needs you) 2m / feature/protocol +1 ~6 ^2",
         "Explain the handshake () 2h / feature/protocol",
-        "# api · local",
-        "users-service (done) 12m / auth/users +3 ~8 -1 ^3",
         "# docs · staging (offline · last seen 3h ago)",
         "Release notes (offline) 3h / main",
         "# _~/scratch/spike-7_ · devbox",
@@ -55,7 +49,7 @@ fn every_combination_yields_flat_sections_holding_each_thread_once() {
                 let archived: usize = secs.iter().filter(|s| s.kind == SectionKind::Archived).map(|s| s.rows.len()).sum();
                 assert_eq!(pinned, 1);
                 assert_eq!(archived, 3);
-                assert_eq!(rows + muted + pinned + archived, c.state.threads.len(), "{grouping:?}");
+                assert_eq!(rows + muted + pinned + archived, c.state.threads.len() - 4, "{grouping:?}");
                 assert_eq!(muted, 4);
                 let any = machine || project || worktree;
                 assert!(groups.iter().all(|s| s.header.is_some() == any), "{grouping:?}");
@@ -84,7 +78,7 @@ fn every_combination_yields_flat_sections_holding_each_thread_once() {
 
 #[test]
 fn header_text_follows_the_ticks() {
-    let (c, _) = boot();
+    let (c, _) = common::boot_with_independent_threads();
     // Projects are per machine: two "api" projects stay two sections.
     let r = render(&c, g(false, true, false));
     assert_eq!(r.iter().filter(|l| *l == "# api").count(), 2, "{r:#?}");
@@ -104,7 +98,7 @@ fn header_text_follows_the_ticks() {
 
 #[test]
 fn muted_and_archived() {
-    let (mut c, _) = boot();
+    let (mut c, _) = common::boot_with_independent_threads();
     let (mute, unmute) = DemoHub::mute_scene();
     for k in &mute {
         c.set_muted(k, true);
@@ -167,7 +161,7 @@ fn a_timed_mute_ends_by_itself_and_dismissed_threads_hide() {
 
 #[test]
 fn search_filters_title_and_preview() {
-    let (c, _) = boot();
+    let (c, _) = common::boot_with_independent_threads();
     let map = AttentionMap::compute(&c.state);
     let found: Vec<_> = sections(&c.state, &map, Grouping::default(), Ordering::default(), "REBUILD", Open::default(), NOW, Zone::UTC)
         .into_iter()

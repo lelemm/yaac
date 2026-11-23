@@ -69,7 +69,7 @@ impl Rig {
             let tmp = home.dir.path().join(format!("tmp-{name}"));
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::create_dir_all(&tmp).unwrap();
-            let local = LocalConfig { runtime: runtime.clone(), bundle: bundle.clone(), env: vec![], inherit_stderr: false, build: None }
+            let local = LocalConfig { runtime: runtime.clone(), bundle: bundle.clone(), env: vec![], inherit_stderr: false, build: None, install_files: vec![] }
                 .with_env("YAAC_FAKE_PROVIDER", "1")
                 // Never let this test probe or start the user's real harnesses.
                 .with_env("YAAC_CODEX_PROVIDER", "0")

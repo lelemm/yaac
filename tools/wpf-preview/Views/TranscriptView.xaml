@@ -1,0 +1,71 @@
+<UserControl x:Class="Yaac.WpfPreview.Views.TranscriptView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Yaac.WpfPreview.Views"
+             Focusable="False" UseLayoutRounding="True">
+  <UserControl.Resources>
+    <Style x:Key="TranscriptContainer" TargetType="ListBoxItem">
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Focusable" Value="False" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <ContentPresenter HorizontalAlignment="Stretch" />
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="TimelineButton" TargetType="Button" BasedOn="{StaticResource YaacQuietButton}">
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Height" Value="9" />
+      <Setter Property="Width" Value="14" />
+    </Style>
+  </UserControl.Resources>
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="28" />
+      <ColumnDefinition Width="*" />
+    </Grid.ColumnDefinitions>
+    <Button x:Name="Older" Grid.Column="1" HorizontalAlignment="Center"
+            Margin="0,6" Padding="12,4" Visibility="Collapsed" Click="PageClicked" />
+    <Canvas x:Name="Timeline" Grid.Row="1" Margin="0,4" ClipToBounds="True"
+            SizeChanged="TimelineSizeChanged" AutomationProperties.Name="Message timeline" />
+    <ListBox x:Name="Rows" Grid.Row="1" Grid.Column="1" IsTabStop="False"
+             Style="{StaticResource YaacVerticalList}"
+             Background="Transparent" BorderThickness="0" Padding="0,10,28,16"
+             ItemContainerStyle="{StaticResource TranscriptContainer}"
+             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+             ScrollViewer.VerticalScrollBarVisibility="Auto"
+             ScrollViewer.CanContentScroll="True"
+             ScrollViewer.ScrollChanged="RowsScrolled"
+             VirtualizingPanel.IsVirtualizing="True"
+             VirtualizingPanel.ScrollUnit="Pixel"
+             VirtualizingPanel.VirtualizationMode="Recycling"
+             VirtualizingPanel.CacheLengthUnit="Page"
+             VirtualizingPanel.CacheLength="0.5,0.5"
+             PreviewMouseWheel="ScrollInput" PreviewMouseDown="ScrollInput" PreviewKeyDown="ScrollKey"
+             AutomationProperties.Name="Transcript">
+      <ListBox.ItemsPanel>
+        <ItemsPanelTemplate>
+          <VirtualizingStackPanel />
+        </ItemsPanelTemplate>
+      </ListBox.ItemsPanel>
+      <ListBox.ItemTemplate>
+        <DataTemplate>
+          <local:TranscriptRowView />
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+    <TextBlock x:Name="Empty" Grid.Row="1" Grid.Column="1" Margin="16,24,44,0"
+               HorizontalAlignment="Center" VerticalAlignment="Top" TextWrapping="Wrap"
+               Foreground="{DynamicResource YaacMuted}" IsHitTestVisible="False" />
+    <Button x:Name="Latest" Grid.Row="1" Grid.Column="1" Content="Jump to bottom"
+            HorizontalAlignment="Center" VerticalAlignment="Bottom" Padding="12,5"
+            Margin="0,0,28,9" Visibility="Collapsed" Click="LatestClicked" />
+  </Grid>
+</UserControl>

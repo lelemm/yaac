@@ -250,8 +250,8 @@ directory, a title, and the first message.
   agent must name a directory. Either way the destination `yaacd` confirms the directory
   exists before anything is started, and the spawn fails with a readable reason if it does not.
 
-- The new thread is an ordinary YAAC thread in every respect. It appears in the sidebar, can be
-  opened, steered, and continued by the user, and outlives its parent.
+- The worker appears in its parent's agents panel while that parent is indexed (D171). The
+  user can open, steer, and continue it, and it outlives its parent.
 - It records `spawned_by`; the parent records it as a child. That relationship is what the
   sub-thread sidebar draws.
 - It runs in **the mode that corresponds to its parent's** ([below](#the-workers-permission-mode)),

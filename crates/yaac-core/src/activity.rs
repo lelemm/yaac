@@ -309,7 +309,7 @@ pub fn short_receipt(sent: &yaac_protocol::MeshSentItem) -> String {
 }
 
 /// The activity line an item becomes, or `None` when it is not activity.
-fn line_of(state: &AppState, map: &AttentionMap, key: &ThreadKey, index: usize, item: &Item) -> Option<ActivityLine> {
+pub fn line_of(state: &AppState, map: &AttentionMap, key: &ThreadKey, index: usize, item: &Item) -> Option<ActivityLine> {
     let in_progress = item.status == ItemStatus::InProgress;
     if let Some((_, call)) = crate::agentcall::of(item) {
         use yaac_protocol::{AgentCallKind as K, AgentCallOutcome as O};

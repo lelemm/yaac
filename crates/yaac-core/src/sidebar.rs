@@ -406,10 +406,9 @@ pub fn section_of(state: &AppState, grouping: Grouping, key: &ThreadKey) -> Opti
 /// A section's header and its threads.
 type Group = (Option<Header>, Vec<ThreadKey>);
 
-/// Whether a summary is one of a harness's own sub-agents (D151) whose parent is in the index:
-/// it is shown under that parent, never as a sidebar row.
-pub fn harness_subagent_under_parent(state: &AppState, s: &ThreadSummary) -> bool {
-    s.subagent.is_some() && s.spawned_by.as_ref().is_some_and(|p| state.key_of(p).is_some())
+/// Whether a worker can be opened from its parent's agents panel.
+pub(crate) fn worker_has_parent(state: &AppState, summary: &ThreadSummary) -> bool {
+    summary.spawned_by.as_ref().is_some_and(|parent| state.key_of(parent).is_some())
 }
 
 /// The whole list. `filter` matches title and preview, case-insensitively; `open` expands
@@ -461,9 +460,8 @@ pub fn sections(state: &AppState, map: &AttentionMap, grouping: Grouping, orderi
     let mut archived: Vec<ThreadKey> = Vec::new();
     for (key, rec) in &state.threads {
         let s = &rec.summary;
-        // A harness's own sub-agent (D151) is listed under its parent (the agents panel, the
-        // parent's worker count), not as a row of its own — unless its parent is not listed.
-        if harness_subagent_under_parent(state, s) {
+        // Both mesh workers and harness subagents live in the parent's agents panel.
+        if worker_has_parent(state, s) {
             continue;
         }
         if s.archived {

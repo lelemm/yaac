@@ -9,15 +9,18 @@ Inno Setup 6 must be installed on the Windows side
 (`winget install --id JRSoftware.InnoSetup -e --scope user`); the script finds `ISCC.exe`
 there, or takes `$ISCC`. Published releases are built by CI instead ([Releases](#releases)).
 
-There is one program file. The window and the hub are the same `yaac.exe` (`yaac` and
-`yaac hub`, [02](02-architecture.md#processes)); the `yaacd` bundle the hub installs on WSL
-targets is embedded in it.
+The window and the hub are the same `yaac.exe` (`yaac` and `yaac hub`,
+[02](02-architecture.md#processes)). The installer includes the runtime and `yaacd` bundle
+for native Windows provider discovery under **Local**. The hub also embeds the bundle it
+installs inside WSL after the distro is added in **Settings → Targets → WSL**.
 
 ## What goes where
 
 | What | Where |
 | --- | --- |
 | `yaac.exe` | `%LOCALAPPDATA%\Programs\YAAC\` — no directory page; `/DIR=<folder>` picks another |
+| `yaacd.mjs`, `runtime\node.exe` and Node.js license | Beside `yaac.exe` and in its `runtime` subdirectory |
+| Native daemon state, runtime and daemon builds | `%USERPROFILE%\.yaac\` (or `YAAC_HOME`) |
 | Start menu shortcut **YAAC** | the user's Start menu programs folder |
 | Desktop shortcut (optional, unticked by default) | the user's desktop |
 | Uninstaller | `unins000.exe` beside `yaac.exe`, listed in *Apps & features* for this user (`HKCU\…\Uninstall\{68D966F3-0510-46E4-9581-B0279B70C15D}_is1`) |

@@ -170,9 +170,8 @@ pub struct HubConfig {
     pub cache_cap_bytes: u64,
     /// Cap on the bytes read when a thread's transcript is rebuilt after a `reset`.
     pub rebuild_cap_bytes: u64,
-    /// On first run, add an enabled local target named `local`. Off by default on Windows:
-    /// the daemon's runtime and harnesses are not assumed to exist natively there; agents run
-    /// in WSL distros, which the user adds.
+    /// Add the default local target on first run. On Windows, also add it to existing settings
+    /// from builds that lacked a native daemon.
     pub seed_local_target: bool,
     /// On first run, the `always` setting written to `hub.json` (default `true`: the hub
     /// runs always and starts at login; `false` is the idle-exit mode).
@@ -230,7 +229,27 @@ impl HubConfig {
     /// connector from `YAAC_RUNTIME` / `YAAC_DAEMON_BUNDLE` relative to [`default_root`].
     pub fn from_env(build: impl Into<String>) -> Result<Self, PathsError> {
         let paths = HubPaths::from_env()?;
-        let local = LocalConfig::from_env(&default_root());
+        let mut local = LocalConfig::from_env(&default_root());
+        if cfg!(windows) && let Some(install) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(std::path::Path::to_path_buf)) {
+            let home = std::env::var_os("YAAC_HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
+                .or_else(|| std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".yaac")))
+                .unwrap_or_else(|| paths.data_dir.clone());
+            local = local.with_env("YAAC_HOME", &home);
+            let runtime = install.join("runtime").join("node.exe");
+            if std::env::var_os("YAAC_RUNTIME").is_none_or(|v| v.is_empty()) && runtime.is_file() {
+                let dest = home.join("runtime").join(format!("node-{}", yaac_transport::runtime::PINNED_NODE)).join("node.exe");
+                local.install_files.push((runtime, dest.clone()));
+                local.runtime = dest.into_os_string();
+            }
+            let bundle = install.join("yaacd.mjs");
+            if std::env::var_os("YAAC_DAEMON_BUNDLE").is_none_or(|v| v.is_empty()) && bundle.is_file() {
+                let build = env!("YAAC_DAEMON_VERSION");
+                let dest = home.join("daemon").join(build).join("yaacd.mjs");
+                local.install_files.push((bundle, dest.clone()));
+                local.bundle = dest;
+                local.build = Some(build.to_owned());
+            }
+        }
         let mut wsl = WslDefaults::from_lookup(|k| std::env::var_os(k));
         let runtime = RuntimeSource::pinned(Some(paths.data_dir.join("runtime-cache")));
         wsl.runtime = Some(runtime.clone());
@@ -257,7 +276,7 @@ impl HubConfig {
             dead_after: Duration::from_secs(45),
             cache_cap_bytes: 256 * 1024 * 1024,
             rebuild_cap_bytes: 8 * 1024 * 1024,
-            seed_local_target: !cfg!(windows),
+            seed_local_target: true,
             first_run_always: true,
             test_methods: false,
             host_name: host_name(),

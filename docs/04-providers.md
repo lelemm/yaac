@@ -83,6 +83,10 @@ Rules:
   a non-login `PATH` leaves out; a folder found off `PATH` is added to the end of the `PATH` it
   runs with (P130). `yaacd` **starts** the daemon; it never stops,
   restarts, or updates it — those can interrupt work that is not YAAC's.
+- On Windows, discovery also checks per-user npm and WinGet locations and the Codex and
+  Claude desktop applications' bundled CLIs. An existing native Codex daemon is reached
+  through `codex app-server proxy` over its control socket. A desktop CLI without the full
+  Codex package can be detected even when it cannot start the managed daemon.
 - An instance defined by an **explicit socket** is connect-only. If nothing is listening there
   and the instance has no home to start a daemon from, it is unavailable, and says so. It does
   not fall back to something else that might be a different store.

@@ -195,7 +195,7 @@ fn group_titles(c: &yaac_core::client::Client, o: Ordering, id_part: &str) -> Ve
 
 #[test]
 fn ordering_table() {
-    let (mut c, hub) = boot();
+    let (mut c, hub) = common::boot_with_independent_threads();
     // "api — devbox": CI integration (1m), billing-service (9m).
     let on = Ordering::default();
     assert_eq!(group_titles(&c, on, "api"), ["CI integration", "billing-service"]);
@@ -243,7 +243,7 @@ fn an_answered_thread_drops_back_into_the_order() {
 
 #[test]
 fn a_reorder_waits_while_the_pointer_is_over_the_list() {
-    let (mut c, hub) = boot();
+    let (mut c, hub) = common::boot_with_independent_threads();
     let o = Ordering { order: Order::ZToA, ..Ordering::default() };
     let map = AttentionMap::compute(&c.state);
     let mut steady = Steady::default();
@@ -326,7 +326,7 @@ fn card_docked_and_pill_share_one_grouping_by_relation() {
 
 #[test]
 fn running_only_keeps_running_and_floated_threads() {
-    let (mut c, hub) = boot();
+    let (mut c, hub) = common::boot_with_independent_threads();
     let only = Ordering { running_only: true, ..Ordering::default() };
     // "api — devbox": CI integration is waiting on another agent (at work); billing-service is done.
     assert_eq!(group_titles(&c, only, "api"), ["CI integration"]);

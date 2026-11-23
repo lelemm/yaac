@@ -11,6 +11,7 @@
 // `importSessionToStore` carries along), best effort: see `subagentFiles`.
 
 import { execFile } from "node:child_process";
+import { windowsExecutable } from "../windows-executable.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -281,16 +282,19 @@ function isExecutableFile(p: string): boolean {
 export function findExecutable(env: NodeJS.ProcessEnv, override?: string | null): string | null {
   const explicit = override ?? env[EXECUTABLE_VAR];
   if (explicit) return isExecutableFile(explicit) ? fs.realpathSync(explicit) : null;
-  const names = process.platform === "win32" ? ["claude.exe", "claude.cmd", "claude"] : ["claude"];
-  const dirs = (env.PATH ?? env.Path ?? "").split(path.delimiter).filter(Boolean);
-  // Only the given environment's home: an environment without one (a test's) finds nothing.
+  // Only the given environment's home: an environment without one (a test's) finds nothing there.
   const home = env.HOME ?? env.USERPROFILE;
-  if (home) dirs.push(path.join(home, ".local", "bin"), path.join(home, ".claude", "local"));
+  const launcherDirs = home ? [path.join(home, ".local", "bin"), path.join(home, ".claude", "local")] : [];
+  if (process.platform === "win32") {
+    const exe = windowsExecutable(env, "claude.exe", launcherDirs, [`@anthropic-ai/claude-code-win32-${process.arch}`],
+      "Claude-Data/claude_*/claude-code/*/*/claude.exe");
+    return exe ? fs.realpathSync(exe) : null;
+  }
+  const dirs = (env.PATH ?? env.Path ?? "").split(path.delimiter).filter(Boolean);
+  dirs.push(...launcherDirs);
   for (const dir of dirs) {
-    for (const name of names) {
-      const candidate = path.join(dir, name);
-      if (isExecutableFile(candidate)) return fs.realpathSync(candidate);
-    }
+    const candidate = path.join(dir, "claude");
+    if (isExecutableFile(candidate)) return fs.realpathSync(candidate);
   }
   return null;
 }

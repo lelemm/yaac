@@ -124,6 +124,9 @@ pub fn run_hub(config: HubConfig) -> Result<HubExit, HubError> {
         Some(settings) => settings,
         None => Settings::first_run(config.seed_local_target, config.first_run_always),
     };
+    if cfg!(windows) && config.seed_local_target {
+        settings.ensure_local_target();
+    }
     if settings.client_id.is_none() {
         settings.client_id = Some(yaac_protocol::ClientId::new(settings::new_id("c")));
     }

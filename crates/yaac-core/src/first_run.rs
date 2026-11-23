@@ -1,6 +1,6 @@
 //! First run (screen 07) and the draft's project picker (screen 08).
 
-use yaac_protocol::attach::TargetTransport;
+use yaac_protocol::attach::{ConnectionStatus, TargetTransport};
 use yaac_protocol::{ProviderStatus, TargetId};
 
 use crate::state::AppState;
@@ -22,8 +22,10 @@ pub struct ProviderLine {
 /// Screen 07.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FirstRunView {
-    /// This computer's target, when the hub has one.
-    pub local: Option<TargetId>,
+    /// The target shown in the provider card.
+    pub target: Option<TargetId>,
+    /// The remote or WSL target's name.
+    pub other_name: Option<String>,
     /// Its provider instances.
     pub providers: Vec<ProviderLine>,
     /// Still being read from this computer.
@@ -52,10 +54,38 @@ fn word(status: &ProviderStatus) -> String {
     }
 }
 
-/// Screen 07's content.
+fn has_ready(t: &crate::state::TargetRecord) -> bool {
+    t.providers.iter().any(|p| p.status == ProviderStatus::Ready)
+}
+
+fn is_local(t: &crate::state::TargetRecord) -> bool {
+    matches!(t.entry.transport, TargetTransport::Local(_))
+}
+
+/// When no target is chosen, prefer a connected target with a ready provider.
+/// Among equally suitable targets, prefer Local.
+pub fn preferred_start_target(state: &AppState) -> Option<&TargetId> {
+    let connected = || state.targets.iter().filter(|t| t.connected());
+    connected()
+        .find(|t| is_local(t) && has_ready(t))
+        .or_else(|| connected().find(|t| has_ready(t)))
+        .or_else(|| connected().find(|t| is_local(t)))
+        .or_else(|| connected().next())
+        .map(|t| &t.entry.id)
+}
+
+/// Screen 07's content. It shows this computer, unless another connected machine has a
+/// ready provider and this computer has none.
 pub fn first_run(state: &AppState) -> FirstRunView {
-    let local = state.targets.iter().find(|t| matches!(t.entry.transport, TargetTransport::Local(_)));
-    let providers: Vec<ProviderLine> = local
+    let this = state.targets.iter().find(|t| is_local(t));
+    let ready_elsewhere = if this.is_some_and(|t| t.connected() && has_ready(t)) {
+        None
+    } else {
+        state.targets.iter().find(|t| t.connected() && has_ready(t))
+    };
+    let target = ready_elsewhere.or(this).or_else(|| state.targets.iter().find(|t| t.connected()));
+    let providers: Vec<ProviderLine> = target
+        .filter(|t| t.connected())
         .map(|t| {
             t.providers
                 .iter()
@@ -69,8 +99,9 @@ pub fn first_run(state: &AppState) -> FirstRunView {
         })
         .unwrap_or_default();
     FirstRunView {
-        local: local.map(|t| t.entry.id.clone()),
-        checking: local.is_some_and(|t| !t.providers_fresh && t.providers.is_empty()),
+        target: target.map(|t| t.entry.id.clone()),
+        other_name: target.filter(|t| !is_local(t)).map(|t| t.entry.name.to_string()),
+        checking: target.is_some_and(|t| t.entry.state.status == ConnectionStatus::Connecting || t.connected() && !t.providers_fresh),
         can_start: providers.iter().any(|p| p.ready),
         providers,
     }

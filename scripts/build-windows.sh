@@ -50,6 +50,9 @@ cargo build --release --locked --target "$target" -p yaac-app $features
 
 mkdir -p "$out"
 cp "$CARGO_TARGET_DIR/$target/release/yaac.exe" "$out/yaac.exe"
+if [ -z "$features" ]; then
+  cp "$root/daemon/dist/yaacd.mjs" "$out/yaacd.mjs"
+fi
 printf '%s\n' "$YAAC_BUILD_ID" >"$out/build-id"
 # The icon build.rs drew for the exe's resources, for the installer (installer/yaac.iss).
 # (Cargo has laid build-script output out as build/yaac-app-<hash>/out and build/yaac-app/<hash>/out.)

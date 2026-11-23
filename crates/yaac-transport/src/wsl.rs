@@ -1,8 +1,9 @@
 //! The WSL connector (docs/02-architecture.md#wsl): one long-lived
-//! `wsl.exe -d <distro> [-u <user>] --exec sh -c <stage 0> yaac-stage0 [YAAC_NAME=value …]`
+//! `wsl.exe -d <distro> [-u <user>] --exec sh -c <WSL startup> …`
 //! child per connection. Its standard input and output are the stream; it gets no console
 //! window; dropping the stream kills it, which closes the bridge's standard input inside the
 //! distro (the daemon itself keeps running, as on every target).
+//! WSL startup picks up the user's provider directories before handing off to stage 0.
 //!
 //! A stopped distro is never started behind the user's back (D35). Before spawning, the
 //! connector asks `wsl.exe -l --running -q`, which starts nothing, and returns
@@ -24,6 +25,8 @@ use crate::bootstrap::{DaemonBundle, Stage0Timeouts, bootstrap_child, stage0_arg
 use crate::CREATE_NO_WINDOW;
 use crate::runtime::RuntimeSource;
 use crate::{BoxFuture, ConnectCtx, ConnectError, Connector, Stream};
+
+const WSL_STARTUP: &str = include_str!("wsl-startup.sh");
 
 /// Decodes console output that may be UTF-16LE (what `wsl.exe` prints by default) or UTF-8.
 pub fn console_text(bytes: &[u8]) -> String {
@@ -234,7 +237,8 @@ impl WslConnector {
         if let Some(name) = config.runtime.as_ref().and_then(RuntimeSource::name) {
             env.push(("YAAC_RUNTIME_VERSION".into(), name.to_owned()));
         }
-        let argv = stage0_argv(&env);
+        let mut argv = vec!["sh".into(), "-c".into(), WSL_STARTUP.into(), "yaac-wsl-startup".into()];
+        argv.extend(stage0_argv(&env));
         let child = wsl_command(&config.wsl_exe, &config.distro, config.user.as_deref(), &argv)
             .spawn()
             .map_err(|source| ConnectError::Spawn { what: self.describe(), source })?;
@@ -249,7 +253,7 @@ impl Connector for WslConnector {
 
     fn describe(&self) -> String {
         let user = self.config.user.as_ref().map(|u| format!(" -u {u}")).unwrap_or_default();
-        format!("wsl: {} -d {}{user} --exec sh -c <stage 0>", self.config.wsl_exe.to_string_lossy(), self.config.distro)
+        format!("wsl: {} -d {}{user} --exec sh -c <WSL startup>", self.config.wsl_exe.to_string_lossy(), self.config.distro)
     }
 
     fn daemon_build(&self) -> Option<String> {
