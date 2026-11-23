@@ -185,6 +185,11 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.TURN_QUEUE_EDIT:
         await core.queueEdit(this, p as never);
         return {};
+      case METHODS.COMMAND_LOGS:
+        return core.commandLogs(str(p, "threadId"), str(p, "commandId"));
+      case METHODS.COMMAND_STOP:
+        await core.commandStop(this, str(p, "opId"), str(p, "threadId"), str(p, "commandId"));
+        return {};
       case METHODS.TURN_QUEUE_CANCEL:
         await core.queueCancel(this, p as never);
         return {};

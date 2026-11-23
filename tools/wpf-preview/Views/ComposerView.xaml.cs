@@ -93,6 +93,7 @@ public partial class ComposerView : UserControl
         DisplayText(Hint, Field(view, "hint").String());
         RenderStatus(Field(view, "status"));
         RenderRows(Notices, Field(view, "notices"), RowKind.Notice);
+        RenderRunningCommands(Field(view, "runningCommands"), keyChanged);
         RenderRows(QueueRows, Field(view, "queue"), RowKind.Queue);
         if (keyChanged)
             QueueScroller.ScrollToTop();

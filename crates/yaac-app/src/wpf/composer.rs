@@ -171,6 +171,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                     .filter(|(_, e)| e.key.as_ref() == Some(&key))
                     .map(|(index, e)| json!({ "id": format!("error:{index}"), "text": e.text })),
             );
+            v["runningCommands"] = command_strip(app, &key);
             match header::composer(state, map, &key) {
                 ComposerView::Absent { .. } => {
                     v["showEditor"] = json!(false);
@@ -309,6 +310,40 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
     v
 }
 
+fn command_strip(app: &YaacApp, key: &ThreadKey) -> Value {
+    let rows = yaac_core::running_commands::rows(&app.client.state, key);
+    let log = app.client.command_log.as_ref().filter(|log| &log.view == key);
+    if rows.is_empty() && log.is_none() {
+        return Value::Null;
+    }
+    let expanded = !app.ui.commands_collapsed.contains(key);
+    let arrow = if expanded { "▾" } else { "▸" };
+    let title = format!("{arrow} Running commands · {}", rows.len());
+    let mut out = json!({ "title": title, "expanded": expanded });
+    if !expanded {
+        return out;
+    }
+    out["rows"] = json!(rows.iter().map(|r| {
+        let id = &r.command.id;
+        let mut actions = vec![action(&format!("commandLogs:{id}"), "Logs", true)];
+        if r.can_stop {
+            let waiting = app.client.stopping_command(&r.key());
+            actions.push(action(&format!("commandStop:{id}"), if waiting { "Stopping…" } else { "Stop" }, !waiting));
+        }
+        json!({ "id": id, "label": r.command.command, "detail": r.detail(app.now()), "actions": actions })
+    }).collect::<Vec<_>>());
+    if let Some(log) = log {
+        let listed = rows.iter().any(|r| r.key() == log.command);
+        out["log"] = json!({
+            "title": log.title.lines().next(),
+            "status": log.status(listed),
+            "output": log.result.as_ref().and_then(|r| r.output.as_ref()),
+            "close": action(&format!("commandLogs:{}", log.command.id), "Close logs", true),
+        });
+    }
+    out
+}
+
 pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), String> {
     let Some(draft) = app
         .open_composer()
@@ -329,6 +364,21 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
     };
     let can_write = thread.as_ref().is_none_or(|k| app.client.state.may_act(k));
     let id = string(p, "id");
+    if name == "composer.action" {
+        if let Some(key) = &thread {
+            let command = if id == "toggleCommands" {
+                Some(Action::ToggleCommands(key.clone()))
+            } else if let Some(id) = id.strip_prefix("commandLogs:") {
+                Some(Action::CommandLogs(key.clone(), id.to_owned()))
+            } else {
+                id.strip_prefix("commandStop:").map(|id| Action::CommandStop(key.clone(), id.to_owned()))
+            };
+            if let Some(command) = command {
+                app.apply(vec![command]);
+                return Ok(());
+            }
+        }
+    }
     if !can_write
         && !(name == "composer.action" && (id == "takeOver" || id.starts_with("openRequest:")))
     {

@@ -360,7 +360,7 @@ export class Core {
   constructor(readonly opts: CoreOptions) {
     this.threadsDir = path.join(opts.home, "threads");
     ensureDir(this.threadsDir);
-    this.registry = new ProviderRegistry(opts.home, opts.env, opts.log);
+    this.registry = new ProviderRegistry(opts.home, opts.env, opts.log, (id) => this.clearInstanceCommands(id));
     for (const f of opts.factories) this.registry.registerKind(f);
     this.index = new ThreadIndex(opts.home, opts.cleanStart);
     this.ops = new OpLog(path.join(opts.home, "ops.jsonl"));
@@ -656,6 +656,7 @@ export class Core {
       !!r.userArchived ||
       !!r.hold ||
       !!rt.activeTurn ||
+      rt.runningCommands.length > 0 ||
       rt.dispatching ||
       rt.pendingRequestCount() > 0 ||
       rt.waiting.size > 0 ||
@@ -1202,6 +1203,14 @@ export class Core {
     return rt;
   }
 
+  private commandController(rt: ThreadRuntime): ThreadRuntime | undefined {
+    if (rt.commandController) {
+      const id = this.byNative.get(rt.record.instance, rt.commandController, this.storeNow(rt.record.instance));
+      return id ? this.threads.get(id) : undefined;
+    }
+    return this.subagentReadOnly(rt) ? this.subagentParent(rt) : rt;
+  }
+
   /** The sidebar summary of a thread, with `control: "free"` (applied per client). */
   summaryOf(rt: ThreadRuntime): ThreadSummary {
     const r = rt.record;
@@ -1235,6 +1244,12 @@ export class Core {
     };
     const away = this.storeAway(rt);
     if (away) s.unavailable = away;
+    else if (rt.runningCommands.length) {
+      const controller = this.commandController(rt);
+      s.runningCommands = rt.runningCommands.map((c) => ({
+        ...c, ...(controller && controller !== rt && { controller: controller.id }), canStop: c.canStop && !!controller,
+      }));
+    }
     if (r.hold) s.hold = r.hold;
     if (r.fast) s.fast = true;
     if (r.model) s.model = r.model;
@@ -1293,6 +1308,16 @@ export class Core {
     if (away) throw rpc("provider_unavailable", away);
   }
 
+  private clearInstanceCommands(id: string): void {
+    for (const rt of this.allThreads()) {
+      if (rt.record.instance !== id || !rt.runningCommands.length) continue;
+      rt.runningCommands = [];
+      rt.commandController = undefined;
+      this.updateIndex(rt);
+    }
+    this.activity.emit();
+  }
+
   /** After an instance's configuration changed: its threads' availability, then its listing. */
   async instanceChanged(id: string): Promise<void> {
     const inst = this.registry.get(id);
@@ -1343,15 +1368,17 @@ export class Core {
     for (const c of this.clients) c.notify(method, params);
   }
 
-  busy(): { runningTurns: number; pendingRequests: number } {
+  busy(): { runningTurns: number; pendingRequests: number; runningCommands: number } {
     let runningTurns = 0;
     let pendingRequests = 0;
+    let runningCommands = 0;
     for (const rt of this.threads.values()) {
       if (rt.deleted) continue;
       if (rt.activeTurn) runningTurns++;
       pendingRequests += rt.pendingRequestCount();
+      runningCommands += rt.runningCommands.length;
     }
-    return { runningTurns, pendingRequests };
+    return { runningTurns, pendingRequests, runningCommands };
   }
 
   // ── Journal ────────────────────────────────────────────────────────────────────────────
@@ -2099,6 +2126,31 @@ export class Core {
       this.queueEvent(rt, "updated", e);
       rt.queuePaused = false;
       this.pump(rt);
+      return {};
+    });
+  }
+
+  async commandLogs(threadId: string, commandId: string) {
+    const rt = this.findThread(threadId);
+    if (!rt || rt.deleted) throw rpc("thread_not_found", "The command's thread is no longer available.");
+    const provider = this.provider(rt);
+    if (!provider.commandLogs) return { truncated: false };
+    return provider.commandLogs(rt.record.native, commandId);
+  }
+
+  async commandStop(client: ClientLink, opId: string, threadId: string, commandId: string): Promise<void> {
+    await this.ops.run("command/stop", opId, async () => {
+      const rt = this.findThread(threadId);
+      if (!rt || rt.deleted || !rt.runningCommands.some((c) => c.id === commandId && c.canStop)) {
+        throw notActed("command_unavailable", "This command no longer has a Stop action.");
+      }
+      const controller = this.commandController(rt);
+      if (!controller || controller.deleted) throw notActed("command_unavailable", "The command's controlling thread is unavailable.");
+      this.checkWriter(controller, client, true);
+      const provider = this.provider(rt);
+      if (!provider.stopCommand || !(await provider.stopCommand(rt.record.native, commandId))) {
+        throw notActed("command_unavailable", "The harness could not stop this command.");
+      }
       return {};
     });
   }
@@ -3116,6 +3168,14 @@ export class Core {
     }
     if (rt.deleted) return;
     switch (ev.type) {
+      case "runningCommands": {
+        const changed = !!rt.runningCommands.length !== !!ev.commands.length;
+        rt.runningCommands = ev.commands;
+        rt.commandController = ev.controller;
+        this.updateIndex(rt);
+        if (changed) this.activity.emit();
+        return;
+      }
       case "turnStarted": {
         if (rt.activeTurn === ev.turnId) return;
         if (rt.expectTurn) {
@@ -3186,7 +3246,7 @@ export class Core {
         const wasWaiting = rt.waiting.size > 0;
         if (item.kind === "meshWait" && item.status === "inProgress" && ev.type !== "itemCompleted") rt.waiting.add(item.id);
         else rt.waiting.delete(item.id);
-        this.append(rt, { type: ev.type, item });
+        this.append(rt, { type: ev.type, item }, undefined, item.kind === "notice" && item.id.startsWith("notice:command:"));
         if (wasWaiting !== rt.waiting.size > 0) this.updateIndex(rt);
         if (ev.type === "itemCompleted") this.mesh?.itemCompleted(rt, item);
         return;

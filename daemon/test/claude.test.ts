@@ -91,6 +91,9 @@ class StubQuery implements SdkQuery {
     }
   }
 
+  async stopTask(taskId: string) {
+    this.calls.push(["stopTask", taskId]);
+  }
   async interrupt() {
     this.calls.push(["interrupt", null]);
     return undefined;
@@ -1343,4 +1346,53 @@ test("a subagent's open request ends with its run (D162)", async () => {
   assert.equal(expired.thread, native);
   assert.equal((await pending)?.behavior, "deny");
   await r.provider.dispose();
+});
+
+test("Claude reports a subagent's Bash after the turn, tails output, and only stops its exact task", async () => {
+  const r = rig();
+  const { thread, q } = await startedThread(r);
+  const parent = "agent-1";
+  const taskId = "shell-1";
+  const toolId = "bash-1";
+  const command = "printf first; sleep 60";
+  const description = "Run producer";
+  const output = path.join(r.dir, thread, "tasks", `${taskId}.output`);
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  fs.writeFileSync(output, "first");
+  const shell = { task_id: taskId, run_id: "one", task_type: "local_bash", description, parent_task_id: parent };
+  q.push(
+    { type: "system", subtype: "task_started", task_id: parent, task_type: "local_agent", description: "Worker" },
+    { type: "assistant", uuid: "bash", agent_id: parent, message: { content: [{ type: "tool_use", name: "Bash", id: toolId, input: { command } }] } },
+  );
+  await until(() => r.events.find((e) => e.type === "threadChanged" && e.info.parent === thread), "subagent discovered");
+  const locate = () => r.events.findLast((e) => e.type === "runningCommands" && e.commands.some((c) => c.command === command));
+  assert.equal(locate(), undefined, "proposed Bash input is not a launch");
+  q.push(
+    bgTasks([shell, agentTask(parent, "Worker"), { ...shell, task_id: "ambient", ambient: true }]),
+    { type: "system", subtype: "task_started", task_id: taskId, task_type: "local_bash", tool_use_id: toolId },
+    { type: "user", agent_id: parent, uuid: "bash-result", session_id: thread,
+      message: { content: [{ type: "tool_result", tool_use_id: toolId, content: `Command running in background with ID: ${taskId}. Output is being written to: ${output}. You will be notified when it completes.` }] },
+      tool_use_result: { backgroundTaskId: taskId } },
+    result(),
+  );
+  await until(() => r.events.find((e) => e.type === "turnCompleted" && e.thread === thread), "parent turn completed");
+  const active = await until(locate, "command attributed to its worker");
+  assert.equal(active.type, "runningCommands");
+  if (active.type !== "runningCommands") return;
+  assert.equal(active.controller, thread);
+  assert.notEqual(active.thread, thread);
+  assert.equal(active.commands.length, 1);
+  const [cmd] = active.commands;
+  assert.ok(cmd?.canStop);
+  assert.deepEqual(await r.provider.commandLogs(active.thread, cmd.id), { output: "first", truncated: false });
+  fs.appendFileSync(output, " second");
+  assert.deepEqual(await r.provider.commandLogs(active.thread, cmd.id), { output: "first second", truncated: false });
+  assert.equal(await r.provider.stopCommand(thread, cmd.id), false);
+  assert.equal(await r.provider.stopCommand(active.thread, cmd.id), true);
+  assert.deepEqual(q.calls.filter(([name]) => name === "stopTask"), [["stopTask", taskId]]);
+  q.push(bgTasks([shell]), bgTasks([]));
+  await until(() => r.events.findLast((e) => e.type === "runningCommands" && e.thread === active.thread && !e.commands.length), "command removed by harness");
+  assert.equal(await r.provider.stopCommand(active.thread, cmd.id), false);
+  const notices = r.events.filter((e) => e.type === "itemCompleted" && e.thread === active.thread && e.item.kind === "notice" && e.item.text === `Started background command: ${command}`);
+  assert.equal(notices.length, 1);
 });

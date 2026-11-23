@@ -51,6 +51,15 @@ export class ThreadIndex {
     } catch {
       loaded = undefined;
     }
+    // Process inventory needs a fresh observation after a daemon restart. Move the token
+    // forward for clients that cached a running row before the restart.
+    if (loaded) {
+      for (const entry of Object.values(loaded.entries)) {
+        if (!entry.summary.runningCommands?.length) continue;
+        delete entry.summary.runningCommands;
+        entry.changeSeq = ++loaded.counter;
+      }
+    }
     this.data = loaded ?? { generation: randomId("", 6), counter: 0, entries: {}, tombstones: {}, stale: [] };
     // After an unclean stop the counter on disk may be behind tokens already handed out:
     // a new generation makes every old token a full listing.

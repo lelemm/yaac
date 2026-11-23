@@ -102,6 +102,7 @@ pub(crate) struct UiState {
     pub grouping: Grouping,
     pub search: String,
     pub muted_open: bool,
+    pub commands_collapsed: BTreeSet<ThreadKey>,
     /// The Archived section is open.
     pub archived_open: bool,
     /// The Mute dialog.
@@ -268,6 +269,7 @@ impl UiState {
             grouping: Grouping::default(),
             search: String::new(),
             muted_open: false,
+            commands_collapsed: BTreeSet::new(),
             archived_open: false,
             mute: None,
             sidebar_to_end: false,
@@ -439,6 +441,9 @@ pub(crate) enum Action {
     /// Leave the edit without saving.
     QueueEditEnd(ThreadKey),
     /// Cancel a queued message.
+    ToggleCommands(ThreadKey),
+    CommandLogs(ThreadKey, String),
+    CommandStop(ThreadKey, String),
     QueueCancel(ThreadKey, String),
     /// Send a queued message now.
     QueuePromote(ThreadKey, String),
@@ -1062,6 +1067,13 @@ impl YaacApp {
                     self.client.end_queue_edit(&k);
                     self.ui.focus_composer = true;
                 }
+                Action::ToggleCommands(key) => {
+                    if !self.ui.commands_collapsed.remove(&key) {
+                        self.ui.commands_collapsed.insert(key);
+                    }
+                }
+                Action::CommandLogs(key, id) => self.client.toggle_command_log(&key, &id),
+                Action::CommandStop(key, id) => self.client.stop_command(&key, &id),
                 Action::QueueCancel(k, q) => self.client.queue_cancel(&k, &q),
                 Action::QueuePromote(k, q) => {
                     self.client.queue_promote(&k, &q);
@@ -1516,6 +1528,17 @@ impl YaacApp {
 }
 
 impl YaacApp {
+    pub(crate) fn tick_running_commands(&mut self, ctx: &egui::Context, key: &ThreadKey) {
+        if self.ui.commands_collapsed.contains(key) {
+            return;
+        }
+        let now = self.now();
+        self.client.refresh_command_log(key, now);
+        if !yaac_core::running_commands::rows(&self.client.state, key).is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
+    }
+
     pub(crate) fn upkeep(&mut self, ctx: &egui::Context) {
         // Apply everything that arrived since the last frame: a burst of events becomes one
         // repaint. Arrivals from a real hub wake the window through the link's waker.

@@ -128,6 +128,8 @@ requests. They are items in the thread, answered with `request/respond`
 
 | Method | Purpose |
 | --- | --- |
+| `command/logs` | `{ threadId, commandId }` → `{ output?, truncated }`. Reads a bounded output tail for a live command on its owner. Absent output means the harness has provided none to YAAC. |
+| `command/stop` | `{ opId, threadId, commandId }` → `{}`. Stops one command on its owner when supported and allowed by writer control. Liveness changes arrive through the index. |
 | `turn/start` | Send a user message to an existing thread: [input parts](#input-parts) plus optional overrides (`model`, `effort`, mode, `fast`). `fast` (fast mode, D125, under the model's `fastMode`) sticks for later turns like `model`; `ThreadSummary.fast` reports the thread's setting, and so whether its running turn was started in fast mode ([04](04-providers.md#fast-mode-is-a-model-capability)). Returns the turn id. Rejected with `thread_in_use` when the thread is being driven elsewhere. |
 | `turn/interrupt` | Stop a turn. Takes the **turn id**, so a late Stop can never hit the next turn. |
 | `turn/steer` | Add input to the running turn. Takes the turn id it expects to be running. Gated by capability. |
@@ -417,6 +419,12 @@ yaacd:  { mode: "replay", epoch: 3, fromSeq: 399, headSeq: 431, control: "free" 
   transcript.
 
 ## The thread index
+
+The optional `ThreadSummary.runningCommands` field carries the live process ids, command
+text, observation time and stop capability for the owning thread. An optional `controller`
+names the same-target thread whose writer permission governs a harness subagent's command.
+The list is refreshed from the harness after a daemon restart. The window derives a parent's
+cross-target list from the worker links in its indexes.
 
 `yaacd` keeps its own index of every thread on the target and a change counter. The sync token
 is a position in that counter — it is YAAC's, not any harness's.

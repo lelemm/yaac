@@ -36,6 +36,7 @@ import type {
 /** What the provider uses of a running `query()`. */
 export interface SdkQuery extends AsyncIterable<SDKMessage> {
   interrupt(): Promise<unknown>;
+  stopTask?(taskId: string): Promise<void>;
   setModel(model?: string): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
   applyFlagSettings(settings: Record<string, unknown>): Promise<void>;

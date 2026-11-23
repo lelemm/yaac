@@ -13,6 +13,7 @@ import type {
   ProjectRef,
   RequestResolution,
   RequestState,
+  RunningCommand,
   QueuedMessage,
   ThreadEffective,
   ThreadHold,
@@ -201,6 +202,9 @@ export class ThreadRuntime {
   projection: Projection | null = null;
   projectionLoading: Promise<Projection> | null = null;
   activeTurn: TurnId | null = null;
+  runningCommands: RunningCommand[] = [];
+  /** A harness subagent's commands can run in its parent's harness process. */
+  commandController: NativeId | undefined;
   turnOrigin: TurnOrigin | null = null;
   driver: Driver | null = null;
   external: ExternalControl = { external: false };

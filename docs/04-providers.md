@@ -219,6 +219,22 @@ life. A provider that confines reads (Claude Code) keeps them; one that does not
 sandbox reads anywhere) may ignore them. `forkThread` is only the native fork
 ([05 Threads](05-threads.md#fork)).
 
+### Running shell processes
+
+Providers publish the currently observed processes by owning thread, separately from turn events.
+Live commands keep yaacd running when its last client disconnects and defer idle handover.
+Claude Code uses the non-ambient `local_bash` entries in `background_tasks_changed`, joins the
+Bash input by tool-use id, and attributes known `parent_task_id` entries to their subagent.
+The live query's `stopTask` stops one task. YAAC reads a bounded tail of the output file that
+Claude reports for that Bash result.
+
+Codex checks `thread/backgroundTerminals/list` on loaded threads. This also lists commands
+during the initial wait, so YAAC records a background launch only when a list requested
+after the originating turn completes still includes the process. Live output comes from
+`item/commandExecution/outputDelta` when the existing subscription receives it. A process
+discovered without a live output stream can still be listed. Stops use
+`thread/backgroundTerminals/terminate` with that thread and its confirmed process id.
+
 ## Capabilities
 
 A capability is a flag the UI checks before offering a feature.

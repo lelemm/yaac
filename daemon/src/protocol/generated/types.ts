@@ -323,6 +323,34 @@ export interface ClientInfo {
 }
 
 /**
+ * `command/logs`: a bounded output tail for a process on its owning thread.
+ */
+export interface CommandLogsParams {
+  commandId: string;
+  threadId: ThreadId;
+}
+
+/**
+ * The available output tail and whether its beginning was clipped.
+ */
+export interface CommandLogsResult {
+  /**
+   * Absent when the harness has not exposed an output stream.
+   */
+  output?: string | null;
+  truncated?: boolean;
+}
+
+/**
+ * `command/stop`: stop one process on its owning thread.
+ */
+export interface CommandStopParams {
+  commandId: string;
+  opId: OpId;
+  threadId: ThreadId;
+}
+
+/**
  * How full the context window is.
  */
 export interface ContextUsage {
@@ -3631,6 +3659,32 @@ export interface RpcResponse {
 }
 
 /**
+ * A shell process reported running by the owning thread's harness.
+ */
+export interface RunningCommand {
+  /**
+   * Whether the harness can stop this individual process.
+   */
+  canStop: boolean;
+  /**
+   * Shell input when available, otherwise the harness description.
+   */
+  command: string;
+  /**
+   * Same-target thread whose writer permission controls this process, if distinct.
+   */
+  controller?: ThreadId | null;
+  /**
+   * An opaque id scoped to this owner and process run.
+   */
+  id: string;
+  /**
+   * When the harness or YAAC first observed this process run.
+   */
+  observedAt: Timestamp;
+}
+
+/**
  * A sequence number within an epoch. Increases by one per event and is never reused.
  */
 export type Seq = number;
@@ -4816,6 +4870,10 @@ export interface ThreadSummary {
    * agent.
    */
   root?: Address | null;
+  /**
+   * Live shell processes belonging to this thread, independent of its turn.
+   */
+  runningCommands?: RunningCommand[] | null;
   /**
    * The agent that started this thread, possibly on another target.
    */

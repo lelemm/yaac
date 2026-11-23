@@ -303,8 +303,8 @@ forward.
 2. The handshake agrees on the older version. The UI selects that dialect and works normally.
 3. The target shows a warning: *"This target is running an older YAAC daemon (0.7). It will be
    updated when it is idle."* with a button, **Update now**.
-4. The UI calls `daemon/handover { when: "idle" }`. As soon as the daemon has no running turn
-   and no pending request, it exits — attached clients do not hold it back. The connection
+4. The UI calls `daemon/handover { when: "idle" }`. Once the daemon has no running turn, live
+   shell command, or pending request, it exits — attached clients do not hold it back. The connection
    drops, the UI reconnects, stage 0 finds nothing serving and starts the newest installed
    build, which migrates the on-disk state. The warning disappears.
 5. **Update now** is `daemon/handover { when: "now" }`. Running turns are interrupted, and

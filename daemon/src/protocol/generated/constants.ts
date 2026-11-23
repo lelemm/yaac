@@ -4,6 +4,9 @@
 // Protocol constants and the method catalogue.
 
 import type {
+  CommandLogsParams,
+  CommandLogsResult,
+  CommandStopParams,
   DaemonHandoverParams,
   DaemonHandoverResult,
   DaemonStatusResult,
@@ -164,6 +167,8 @@ export const METHODS = {
   TURN_INTERRUPT: "turn/interrupt",
   TURN_STEER: "turn/steer",
   TURN_QUEUE_EDIT: "turn/queueEdit",
+  COMMAND_LOGS: "command/logs",
+  COMMAND_STOP: "command/stop",
   TURN_QUEUE_CANCEL: "turn/queueCancel",
   TURN_QUEUE_PROMOTE: "turn/queuePromote",
   REQUEST_RESPOND: "request/respond",
@@ -326,6 +331,10 @@ export interface RequestMap {
   /** Replace a queued user message before it is delivered. */
   "turn/queueEdit": { params: TurnQueueEditParams; result: Empty };
   /** Cancel a queued user message before it is delivered. */
+  "command/logs": { params: CommandLogsParams; result: CommandLogsResult };
+  /**  */
+  "command/stop": { params: CommandStopParams; result: Empty };
+  /**  */
   "turn/queueCancel": { params: TurnQueueCancelParams; result: Empty };
   /** Send a queued user message now ("Send now"): out of the queue, with `now` mechanics. */
   "turn/queuePromote": { params: TurnQueueCancelParams; result: TurnStartResult };
@@ -457,6 +466,8 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "turn/interrupt": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "turn/steer": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "turn/queueEdit": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "command/logs": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "command/stop": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "turn/queueCancel": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "turn/queuePromote": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "request/respond": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },

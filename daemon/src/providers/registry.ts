@@ -55,6 +55,7 @@ export class ProviderRegistry {
     private readonly home: string,
     private readonly env: NodeJS.ProcessEnv,
     private readonly log: (line: string) => void,
+    private readonly providerRemoved?: (id: string) => void,
   ) {
     this.file = path.join(home, "instances.json");
   }
@@ -369,6 +370,7 @@ export class ProviderRegistry {
       return config;
     }
     instance.off?.();
+    this.providerRemoved?.(instance.config.id);
     await instance.provider?.dispose().catch(() => {});
     const next = this.materialise(config);
     next.descriptor = { ...next.descriptor, revision: instance.descriptor.revision };
@@ -383,6 +385,7 @@ export class ProviderRegistry {
       throw new RpcError("invalid_params", "an implicit default instance cannot be removed; disable it instead");
     }
     instance.off?.();
+    this.providerRemoved?.(instance.config.id);
     await instance.provider?.dispose().catch(() => {});
     this.byId.delete(id);
     this.stored = this.stored.filter((c) => c.id !== id);

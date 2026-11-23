@@ -348,3 +348,28 @@ test("idle exit: with a Codex daemon connection open, yaacd exits and leaves the
     await fake.close();
   }
 });
+
+test("idle exit waits for a reported producer after the originating turn ends", async () => {
+  const home = tmpHome("yidle-command-");
+  let exited = "";
+  const d = await startDaemon(home, { idleTimeoutMs: 300, onExit: (reason) => { exited = reason; } });
+  try {
+    const c = await client(d);
+    const started = await c.request<{ threadId: string }>("thread/start", {
+      opId: opId(), instance: FAKE, cwd: home, input: text("/fake say hello"),
+    });
+    const thread = d.core.thread(started.threadId)!;
+    const provider = fakeOf(d);
+    provider.events.emit({ type: "runningCommands", thread: thread.record.native,
+      commands: [{ id: "producer", command: "npm run preview", observedAt: new Date().toISOString(), canStop: false }] });
+    await until(() => !thread.activeTurn, "producer's turn to end");
+    await c.close();
+    await sleep(450);
+    assert.equal(exited, "", "the live producer keeps yaacd running");
+    provider.events.emit({ type: "runningCommands", thread: thread.record.native, commands: [] });
+    await until(() => exited === "idle", "idle exit after producer ends", 300 + SLACK_MS);
+  } finally {
+    await d.stop("test");
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
