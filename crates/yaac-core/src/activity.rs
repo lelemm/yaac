@@ -445,15 +445,11 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
     let focus = state.focus_item.as_ref().filter(|(k, _)| k == key).map(|(_, id)| id);
     let mut out = Vec::new();
     let mut run: Vec<ActivityLine> = Vec::new();
-    let flush = |run: &mut Vec<ActivityLine>, out: &mut Vec<Block>| {
-        if run.is_empty() {
-            return;
-        }
-        let lines = std::mem::take(run);
-        let first = lines[0].id.clone();
+    let emit_run = |lines: Vec<ActivityLine>, out: &mut Vec<Block>, fold: bool| {
+        let Some(first) = lines.first().map(|l| l.id.clone()) else { return };
         let opened = expansion.runs.contains(&(key.clone(), first.clone()))
             || lines.iter().any(|l| l.highlighted || l.expanded);
-        if lines.len() > FOLD_AFTER && !opened {
+        if fold && lines.len() > 1 && !opened {
             out.push(Block::Folded {
                 text: fold_summary(&lines),
                 failed: lines.iter().any(|l| l.failed),
@@ -464,6 +460,24 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
         } else {
             out.push(Block::Run { lines });
         }
+    };
+    let flush = |run: &mut Vec<ActivityLine>, out: &mut Vec<Block>| {
+        // Splitting a long run must keep its smaller groups folded, too.
+        let fold = run.len() > FOLD_AFTER;
+        if !run.iter().any(|line| line.failed) {
+            emit_run(std::mem::take(run), out, fold);
+            return;
+        }
+        let mut group = Vec::new();
+        for line in std::mem::take(run) {
+            if line.failed && failed_command(&t.items()[line.index]) {
+                emit_run(std::mem::take(&mut group), out, fold);
+                out.push(Block::Run { lines: vec![line] });
+            } else {
+                group.push(line);
+            }
+        }
+        emit_run(group, out, fold);
     };
     let mut seen_prompt = false;
     // Mesh items that only echo an agent call's line.
@@ -538,12 +552,7 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
                 } else if let Some(mut line) = line_of(state, map, key, index, item) {
                     line.highlighted = focus == Some(&item.id);
                     line.expanded = line.highlighted || expansion.lines.contains(&(key.clone(), item.id.clone()));
-                    if failed_command(item) {
-                        flush(&mut run, &mut out);
-                        out.push(Block::Run { lines: vec![line] });
-                    } else {
-                        run.push(line);
-                    }
+                    run.push(line);
                 }
             }
         }

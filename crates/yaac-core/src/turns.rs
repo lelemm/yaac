@@ -441,7 +441,7 @@ mod tests {
         items.push(item("x", "t1", ItemStatus::Completed, notice(NoticeKind::Interrupted, "Interrupted during a tool call", None), None));
         let t = transcript(items);
         assert_eq!(finished(&t, &TurnId::new("t1")).unwrap().outcome, Outcome::Interrupted);
-        assert_eq!(kinds(&shown(&t, &Opened::default())), ["user", "Worked for 4s · interrupted"]);
+        assert_eq!(kinds(&shown(&t, &Opened::default())), ["user", "Worked for 4s · interrupted", "run1"]);
         // Opened, it is a quiet line of its own with the stop mark, never a user bubble.
         let mut o = Opened::default();
         o.toggle(&key(), &TurnId::new("t1"));
