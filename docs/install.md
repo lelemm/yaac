@@ -149,8 +149,8 @@ with a numeric build id checks for updates. Development builds leave the updater
    any existing update offer. After a rate limit the worker waits for the latest of the
    regular 10-minute interval, GitHub's reset time, and its `Retry-After` delay, when supplied.
    The hub, command-line commands, and demo never make these checks.
-2. **A newer build** (`build` above this one's) puts an **update icon** in the title row,
-   left of the window buttons: *"YAAC <version>+<id> is available · Download"*.
+2. **A newer build** (`build` above this one's) puts an **update icon** in the title row
+   beside Minimize in both WPF and egui: *"YAAC <version>+<id> is available · Download"*.
 3. **Download** (a click): on a worker, into `%LOCALAPPDATA%\yaac\updates\` (YAAC's own
    data folder; earlier downloads there are deleted first). The icon becomes a **mini progress
    bar**, repainted only when it moves a visible step and at most ten times a second. The

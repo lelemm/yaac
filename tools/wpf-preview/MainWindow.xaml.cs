@@ -29,7 +29,6 @@ public partial class MainWindow : Window
     internal MainWindow(Func<Controller> connect, bool demo, bool tray)
     {
         InitializeComponent();
-        FontFamily = YaacFonts.Ui;
         Title = demo ? "YAAC · WPF demo" : "YAAC";
         if (tray) this.tray = WindowTray.TryCreate(ShowFromTray, QuitWindow);
         SidebarPane.Command += Send;
@@ -136,6 +135,7 @@ public partial class MainWindow : Window
         if (frame.TryGetProperty("copy", out var copy)) Send("shell.copy", copy.GetString());
         if (!frame.TryGetProperty("views", out var views)) return;
         if (views.TryGetProperty("shell", out var shell)) RenderShell(shell);
+        if (views.TryGetProperty("captionUpdate", out var update)) RenderCaptionUpdate(update);
         if (views.TryGetProperty("shortcuts", out var bindings)) RenderShortcuts(bindings);
         if (views.TryGetProperty("sidebar", out var sidebar))
         {
@@ -349,6 +349,32 @@ public partial class MainWindow : Window
     }
 
     private void MinimizeClicked(object sender, RoutedEventArgs args) => SystemCommands.MinimizeWindow(this);
+    private void CaptionUpdateClicked(object sender, RoutedEventArgs args)
+    {
+        if (CaptionUpdateButton.Tag is string action)
+            Send("shell.update", new { action });
+    }
+
+    private void RenderCaptionUpdate(JsonElement update)
+    {
+        var visible = update.ValueKind == JsonValueKind.Object;
+        CaptionUpdate.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        CaptionThreadHeader.Margin = new Thickness(28, 0, 132 + (visible ? CaptionUpdate.Width : 0), 0);
+        if (!visible) return;
+
+        var action = Text(update, "action");
+        var tooltip = Text(update, "tooltip");
+        var downloading = action.Length == 0;
+        CaptionUpdate.ToolTip = tooltip;
+        CaptionUpdateButton.Tag = action;
+        CaptionUpdateButton.Content = action == "install" ? "\uEB37" : "\uEA78";
+        CaptionUpdateButton.Visibility = downloading ? Visibility.Collapsed : Visibility.Visible;
+        System.Windows.Automation.AutomationProperties.SetName(CaptionUpdateButton, tooltip);
+        CaptionUpdateProgress.Visibility = downloading ? Visibility.Visible : Visibility.Collapsed;
+        CaptionUpdateProgress.Value = update.GetProperty("progress").GetDouble();
+        System.Windows.Automation.AutomationProperties.SetName(CaptionUpdateProgress, tooltip);
+    }
+
     private void CloseClicked(object sender, RoutedEventArgs args) => SystemCommands.CloseWindow(this);
     private void MaximizeClicked(object sender, RoutedEventArgs args)
     {
@@ -359,7 +385,7 @@ public partial class MainWindow : Window
     private void UpdateCaption()
     {
         var restore = WindowState == WindowState.Maximized;
-        MaximizeButton.Content = restore ? "\uE923" : "\uE922";
+        MaximizeButton.Content = restore ? "\uEABB" : "\uEAB9";
         MaximizeButton.ToolTip = restore ? "Restore" : "Maximize";
         System.Windows.Automation.AutomationProperties.SetName(MaximizeButton, (string)MaximizeButton.ToolTip);
     }

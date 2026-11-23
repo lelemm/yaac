@@ -148,7 +148,7 @@
               </Grid>
               <WrapPanel x:Name="EditorActions" Grid.Column="1" MaxWidth="330" Margin="4,0,0,0"
                          HorizontalAlignment="Right" VerticalAlignment="Center">
-                <Button x:Name="AttachButton" FontFamily="Segoe MDL2 Assets" Style="{StaticResource ComposerButton}" Click="AttachClicked" />
+                <Button x:Name="AttachButton" Style="{StaticResource ComposerButton}" Click="AttachClicked" />
                 <Button x:Name="SendButton" Style="{StaticResource ComposerPrimaryButton}" Click="SendClicked" />
                 <Button x:Name="SendNowButton" Style="{StaticResource ComposerButton}" Click="SendNowClicked" />
                 <Button x:Name="StopButton" Style="{StaticResource ComposerButton}" Click="StopClicked" />

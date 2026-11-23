@@ -259,9 +259,7 @@ pub(crate) fn visuals(p: &Palette) -> Visuals {
     v
 }
 
-/// Fonts: egui's bundled faces, plus a regular and bold system sans when one is installed in a
-/// well-known place (egui bundles no bold face). The bundled Nerd Font supplies icon glyphs
-/// for every family without requiring a system font installation.
+/// Use the bundled Nerd Font for text, bold labels, and code, with fallback for other scripts.
 pub(crate) fn install_fonts(ctx: &egui::Context) {
     use std::path::PathBuf;
     let mut fonts = egui::FontDefinitions::default();
@@ -290,16 +288,18 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
             break;
         }
     }
-    let symbols = "nerd-font-symbols".to_owned();
-    fonts.font_data.insert(symbols.clone(), std::sync::Arc::new(egui::FontData::from_static(
-        include_bytes!("../assets/fonts/SymbolsNerdFontMono-Regular.ttf"),
-    )));
-    for family in fonts.families.values_mut() {
-        family.push(symbols.clone());
-    }
     let fallback = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     bold_family.extend(fallback);
-    fonts.families.insert(FontFamily::Name("bold".into()), bold_family);
+    let bold = FontFamily::Name("bold".into());
+    fonts.families.insert(bold.clone(), bold_family);
+    for (family, name, data) in [
+        (FontFamily::Proportional, "caskaydia-ui", &include_bytes!("../assets/fonts/CaskaydiaCoveNerdFontPropo-Regular.ttf")[..]),
+        (bold, "caskaydia-bold", &include_bytes!("../assets/fonts/CaskaydiaCoveNerdFontPropo-Bold.ttf")[..]),
+        (FontFamily::Monospace, "caskaydia-mono", &include_bytes!("../assets/fonts/CaskaydiaCoveNerdFontMono-Regular.ttf")[..]),
+    ] {
+        fonts.font_data.insert(name.to_owned(), std::sync::Arc::new(egui::FontData::from_static(data)));
+        fonts.families.entry(family).or_default().insert(0, name.to_owned());
+    }
     ctx.set_fonts(fonts);
 }
 
@@ -312,6 +312,20 @@ pub(crate) fn contrast(a: Color32, b: Color32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_primary_faces_render_nerd_font_glyphs() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |root| {
+            root.fonts_mut(|fonts| {
+                for font in [ui(14.0), bold(14.0), mono(14.0)] {
+                    assert!(fonts.has_glyphs(&font, "YAAC \u{e0b0}\u{eab9}\u{f0c6}\u{f0001}"), "{font:?}");
+                }
+            });
+        });
+        output.textures_delta.clear();
+    }
 
     fn lum(c: Color32) -> f64 {
         let f = |v: u8| {

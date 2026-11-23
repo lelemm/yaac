@@ -1201,7 +1201,7 @@ pub(super) fn command(
             app.updater.download();
             return Ok(());
         }
-        "update.install" => return app.updater.install(),
+        "update.install" => return app.install_update(),
         _ if id.starts_with("keys.") => return keyboard_command(app, id, values),
         _ if id.starts_with("ssh.") => return ssh_command(app, id, values),
         _ => return Err("This settings action is unavailable.".into()),

@@ -149,7 +149,7 @@ public partial class ComposerView : UserControl
         SetButton(AttachButton, attachAction, editingEnabled);
         if (attachAction is not null)
         {
-            AttachButton.Content = "\uE723";
+            AttachButton.Content = "\uF0C6";
         }
         SetButton(SendButton, ReadAction(Field(view, "send")), editingEnabled, sendKey, showShortcut: true);
         SetButton(SendNowButton, sendNow, editingEnabled, nowKey);

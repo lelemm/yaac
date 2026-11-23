@@ -403,6 +403,7 @@ fn view(
     }
     Map::from_iter([
         ("shell".into(), shell),
+        ("captionUpdate".into(), caption_update(&app.updater.phase)),
         (
             "sidebar".into(),
             sidebar_view::view(app, &attention, selection_epoch),
@@ -413,6 +414,45 @@ fn view(
         ("agents".into(), agents::view(app, &attention)),
         ("settings".into(), settings::view(app, settings_target)),
     ])
+}
+
+fn caption_update(phase: &crate::updater::Phase) -> Value {
+    use crate::updater::CaptionAction;
+    let Some(caption) = phase.caption() else { return Value::Null };
+    let action = match caption.action {
+        Some(CaptionAction::Download) => Some("download"),
+        Some(CaptionAction::Install) => Some("install"),
+        None => None,
+    };
+    json!({ "tooltip": caption.tooltip, "action": action, "progress": caption.progress })
+}
+
+#[cfg(test)]
+#[test]
+fn caption_update_tracks_the_shared_update_phases() {
+    use crate::updater::{Found, Phase};
+    use yaac_core::update::{Manifest, Pending};
+
+    let manifest = Manifest::parse(include_str!("../../../scripts/testdata/manifest.sample.json")).unwrap();
+    let found = Found { installer_url: manifest.installer().unwrap().url.clone(), manifest };
+    assert!(caption_update(&Phase::Idle).is_null());
+    assert_eq!(caption_update(&Phase::Available(found.clone()))["action"], "download");
+
+    let progress = caption_update(&Phase::Downloading { found: found.clone(), done: 3, total: 4 });
+    assert!(progress["action"].is_null());
+    assert_eq!(progress["progress"], 0.75);
+    assert_eq!(progress["tooltip"], "Downloading YAAC 0.1.0+1005 · 75%");
+
+    let failed = caption_update(&Phase::Failed { found, message: "connection closed".into() });
+    assert_eq!(failed["action"], "download");
+    assert!(failed["tooltip"].as_str().unwrap().contains("Try again"));
+
+    let pending = Pending {
+        build: 1005, version: "0.1.0+1005".into(), path: "setup.exe".into(), sha256: String::new(), size: 0, attempted: false,
+    };
+    let ready = caption_update(&Phase::Ready(pending));
+    assert_eq!(ready["action"], "install");
+    assert!(ready["tooltip"].as_str().unwrap().contains("Restart to update"));
 }
 
 fn dispatch(
@@ -448,6 +488,14 @@ fn dispatch(
         cmd if cmd.starts_with("commander.") => return navigation::command(app, ctx, cmd, payload),
         "shell.needs" => Some(Action::NeedsNext),
         "shell.stream" => Some(Action::StreamReply),
+        "shell.update" => match string(payload, "action") {
+            "download" => {
+                app.updater.download();
+                None
+            }
+            "install" => return app.install_update(),
+            _ => None,
+        },
         "shell.visible" => {
             app.shell.hidden = payload["hidden"] == true;
             None

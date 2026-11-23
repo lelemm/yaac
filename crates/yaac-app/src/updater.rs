@@ -344,6 +344,35 @@ pub(crate) enum Phase {
     Failed { found: Found, message: String },
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum CaptionAction {
+    Download,
+    Install,
+}
+
+pub(crate) struct Caption {
+    pub tooltip: String,
+    pub action: Option<CaptionAction>,
+    pub progress: f64,
+}
+
+impl Phase {
+    pub(crate) fn caption(&self) -> Option<Caption> {
+        let (tooltip, action, progress) = match self {
+            Self::Idle => return None,
+            Self::Available(found) => (format!("YAAC {} is available · Download", found.manifest.label()), Some(CaptionAction::Download), 0.0),
+            Self::Downloading { found, done, total } => {
+                let progress = if *total == 0 { 0.0 } else { (*done as f64 / *total as f64).clamp(0.0, 1.0) };
+                let percent = done.saturating_mul(100).checked_div(*total).unwrap_or(0).min(100);
+                (format!("Downloading YAAC {} · {percent}%", found.manifest.label()), None, progress)
+            }
+            Self::Ready(pending) => (format!("YAAC {} is downloaded · Restart to update", pending.version), Some(CaptionAction::Install), 0.0),
+            Self::Failed { found, message } => (format!("The download of YAAC {} failed: {message} · Try again", found.manifest.label()), Some(CaptionAction::Download), 0.0),
+        };
+        Some(Caption { tooltip, action, progress })
+    }
+}
+
 enum Msg {
     Checked(Result<Found, CheckError>, Option<Pending>, SystemTime),
     Progress(u64, u64),

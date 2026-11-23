@@ -102,6 +102,7 @@ All dated entries are from 2026-11-20.
 | D173 | **A failed shell command breaks a run of activity.** The earlier and later runs fold independently, while the failed command is a separate expandable row in egui and WPF. Folding the finished turn keeps the error row visible. | Owner |
 | D174 | **Resize the transcript and composer together.** One width per window applies across chats. The floating Related agents panel moves vertically by its header handle. | Owner |
 | D175 | **Ultrafast in the composer.** The lightning control becomes a speed menu on a model that advertises Ultrafast. Confirm for the session before enabling it. Show a usage warning above the composer, a blue lightning control, and a much faster blue spinner during Ultrafast turns. | Owner |
+| D176 | **Use a full Nerd Font across both renderers.** Bundle the interface and monospace faces and make them the primary fonts in egui and WPF. | Owner |
 | D145 | **Check for updates every 10 minutes while the window is open, without restarting it.** Extends D136. | Owner |
 | D152 | **A streaming message never makes the transcript flicker.** Read at its bottom, the view follows a reply as it streams without jumping back and forth on each update ("it's flickering, like it's trying to scroll down on every streaming update"). | Owner |
 | D136 | **GitHub releases and an in-app updater.** A GitHub Actions workflow makes each release — the installer, each binary (`yaac.exe`, `yaacd.mjs`, `yaacd-mcp.mjs`) and a manifest — on a `v*` tag or by hand, with the run number as the build id. On Windows the window checks the latest release as it starts (off the UI thread, silent offline), shows an update icon in the title row when a newer build exists, downloads and verifies the installer on request with a mini progress bar, and on *Restart to update* runs it silently and relaunches; a verified update waiting at the next start is installed instead of starting. Targets get the new `yaacd` from the updated hub, in-band ([install](install.md#updating)). | Owner |
@@ -386,6 +387,7 @@ assume these.
 | P312 | **Skills: not listed yet.** Claude Code plugin and marketplace skills, Codex plugin skills outside `skills/list`, and a skill's argument hint for Codex. They can still be typed. | Proposed (D172) |
 | P313 | **Skills: what counts as "Read skill instructions" for Codex.** Only a successful command whose parsed `read` action names exactly a `SKILL.md` that the instance's last `skills/list` returned (path compared with either slash, relative paths resolved against the command's cwd). The provider primes discovery when starting a turn. A read with an unknown path stays an ordinary command. | Proposed (D172) |
 | P314 | **Chat sizing.** Start the shared transcript and composer column at 860 points, with a 360-point minimum when space permits and a 95% viewport cap. | Proposed (D174) |
+| P315 | **Nerd Font family.** Use CaskaydiaCove Nerd Font Propo for interface text and chat, and its Mono variant for code and command output. | Proposed (D176) |
 
 ## Open
 

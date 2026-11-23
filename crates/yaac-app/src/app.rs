@@ -1055,6 +1055,12 @@ impl YaacApp {
         }
     }
 
+    pub(crate) fn install_update(&mut self) -> Result<(), String> {
+        self.updater.install()?;
+        self.shell.quit(&self.ctx);
+        Ok(())
+    }
+
     pub(crate) fn apply(&mut self, actions: Vec<Action>) {
         for a in actions {
             match a {
@@ -1757,13 +1763,14 @@ impl eframe::App for YaacApp {
         }
         crate::titlebar::buttons(ui, window, &p);
         match crate::titlebar::update(ui, window, &p, &self.updater) {
-            Some(crate::titlebar::UpdateClick::Download) => self.updater.download(),
+            Some(crate::updater::CaptionAction::Download) => self.updater.download(),
             // The installer closes the window and the hub itself (`yaac quit`), so quitting
             // here only saves it the wait; it starts YAAC again when done (`/RELAUNCH`).
-            Some(crate::titlebar::UpdateClick::Install) => match self.updater.install() {
-                Ok(()) => self.shell.quit(&ctx),
-                Err(e) => self.updater.notice = Some(e),
-            },
+            Some(crate::updater::CaptionAction::Install) => {
+                if let Err(e) = self.install_update() {
+                    self.updater.notice = Some(e);
+                }
+            }
             None => {}
         }
         crate::dialogs::update_notice(ui.ctx(), self);

@@ -8,7 +8,7 @@
         ResizeMode="CanResize" WindowState="Maximized"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource YaacCanvas}" Foreground="{DynamicResource YaacText}"
-        FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13"
+        FontFamily="{x:Static preview:YaacFonts.Ui}" FontSize="13"
         UseLayoutRounding="True" SnapsToDevicePixels="True"
         PreviewKeyDown="WindowKey" PreviewMouseDown="WindowMouse">
   <shell:WindowChrome.WindowChrome>
@@ -29,7 +29,6 @@
       <Setter Property="Width" Value="44" />
       <Setter Property="Height" Value="42" />
       <Setter Property="Padding" Value="0" />
-      <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
       <Setter Property="FontSize" Value="12" />
       <Setter Property="Foreground" Value="{DynamicResource YaacMuted}" />
       <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
@@ -89,7 +88,7 @@
           <RowDefinition Height="*" />
           <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-        <Grid Margin="28,0,132,0">
+        <Grid x:Name="CaptionThreadHeader" Margin="28,0,132,0">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="Auto" MaxWidth="560" />
@@ -139,11 +138,18 @@
 
     <views:SettingsView x:Name="SettingsPane" Visibility="Collapsed" />
     <StackPanel Panel.ZIndex="4" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Top">
-      <Button Style="{StaticResource CaptionButton}" Content="&#xE921;" Click="MinimizeClicked"
+      <Grid x:Name="CaptionUpdate" Width="44" Height="42" Visibility="Collapsed" Background="Transparent"
+            shell:WindowChrome.IsHitTestVisibleInChrome="True">
+        <Button x:Name="CaptionUpdateButton" Style="{StaticResource CaptionButton}" Click="CaptionUpdateClicked" />
+        <ProgressBar x:Name="CaptionUpdateProgress" Minimum="0" Maximum="1" Width="28" Height="4"
+                     VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed"
+                     Foreground="{DynamicResource YaacMuted}" Background="{DynamicResource YaacRule}" />
+      </Grid>
+      <Button Style="{StaticResource CaptionButton}" Content="&#xEABA;" Click="MinimizeClicked"
               AutomationProperties.Name="Minimize" ToolTip="Minimize" />
-      <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}" Content="&#xE922;" Click="MaximizeClicked"
+      <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}" Content="&#xEAB9;" Click="MaximizeClicked"
               AutomationProperties.Name="Maximize" ToolTip="Maximize" />
-      <Button Style="{StaticResource CaptionButton}" Content="&#xE8BB;" Click="CloseClicked"
+      <Button Style="{StaticResource CaptionButton}" Content="&#xEAB8;" Click="CloseClicked"
               AutomationProperties.Name="Close" ToolTip="Close" />
     </StackPanel>
     <TextBlock x:Name="Status" Panel.ZIndex="4" VerticalAlignment="Bottom" HorizontalAlignment="Center"

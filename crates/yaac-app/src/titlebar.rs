@@ -98,60 +98,31 @@ fn resize_edges(ui: &mut egui::Ui, full: Rect) {
     }
 }
 
-/// What a click on the update item asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum UpdateClick {
-    Download,
-    Install,
-}
-
 /// The update item (D136), left of the window buttons: an update icon while a newer release
 /// is offered, a mini progress bar while it downloads, "Restart to update" once it is
 /// verified. Calm and monochrome, like the window buttons. Nothing while there is no update.
-pub(crate) fn update(ui: &mut egui::Ui, full: Rect, p: &Palette, u: &crate::updater::Updater) -> Option<UpdateClick> {
-    use crate::updater::Phase;
+pub(crate) fn update(ui: &mut egui::Ui, full: Rect, p: &Palette, u: &crate::updater::Updater) -> Option<crate::updater::CaptionAction> {
+    use crate::updater::CaptionAction;
+    let caption = u.phase.caption()?;
     let w = u.title_width();
-    if w <= 0.0 {
-        return None;
-    }
     let r = Rect::from_min_size(pos2(full.right() - 3.0 * BUTTON_W - w, full.top()), vec2(w, HEIGHT));
-    let label = |f: &crate::updater::Found| f.manifest.label();
-    let tip = match &u.phase {
-        Phase::Idle => return None,
-        Phase::Available(f) => format!("YAAC {} is available · Download", label(f)),
-        Phase::Downloading { found, done, total } => {
-            let pct = done.saturating_mul(100).checked_div(*total).unwrap_or(0);
-            format!("Downloading YAAC {} · {pct}%", label(found))
-        }
-        Phase::Ready(pending) => format!("YAAC {} is downloaded · Restart to update", pending.version),
-        Phase::Failed { found, message } => format!("The download of YAAC {} failed: {message} · Try again", label(found)),
-    };
-    let clickable = !matches!(u.phase, Phase::Downloading { .. });
-    let resp = ui.interact(r, egui::Id::unique("title-update"), if clickable { Sense::click() } else { Sense::hover() }).on_hover_text(tip);
+    let clickable = caption.action.is_some();
+    let resp = ui.interact(r, egui::Id::unique("title-update"), if clickable { Sense::click() } else { Sense::hover() }).on_hover_text(caption.tooltip);
     let hot = clickable && (resp.hovered() || resp.has_focus());
     if hot {
         ui.painter().rect_filled(r, 0.0, p.faint);
     }
     let ink = if hot { p.text } else { p.text2 };
     let c = r.center();
-    match &u.phase {
-        Phase::Available(_) | Phase::Failed { .. } => icons::download(ui.painter(), c, 16.0, ink),
-        Phase::Downloading { done, total, .. } => {
+    match caption.action {
+        Some(CaptionAction::Download) => icons::download(ui.painter(), c, 16.0, ink),
+        Some(CaptionAction::Install) => icons::refresh(ui.painter(), c, 16.0, ink),
+        None => {
             let track = Rect::from_center_size(c, vec2(w - 16.0, 4.0));
             ui.painter().rect_filled(track, 2.0, p.border);
-            let frac = if *total == 0 { 0.0 } else { (*done as f32 / *total as f32).clamp(0.0, 1.0) };
-            let fill = Rect::from_min_size(track.min, vec2(track.width() * frac, track.height()));
+            let fill = Rect::from_min_size(track.min, vec2(track.width() * caption.progress as f32, track.height()));
             ui.painter().rect_filled(fill, 2.0, p.text2);
         }
-        Phase::Ready(_) => icons::refresh(ui.painter(), c, 16.0, ink),
-        Phase::Idle => {}
     }
-    if !resp.clicked() {
-        return None;
-    }
-    match u.phase {
-        Phase::Available(_) | Phase::Failed { .. } => Some(UpdateClick::Download),
-        Phase::Ready(_) => Some(UpdateClick::Install),
-        _ => None,
-    }
+    if resp.clicked() { caption.action } else { None }
 }
