@@ -11,7 +11,7 @@ import type { ModelInfo as SdkModelInfo, Options, PermissionResult, PermissionUp
 import { ClaudeProvider, claudeProviderFactory, setRunsAsRootForTests, type ClaudeProviderOptions } from "../src/providers/claude/index.js";
 import type { AgentEntry, ClaudeCli, ClaudeSdk, SdkQuery } from "../src/providers/claude/sdk.js";
 import { historyItems } from "../src/providers/claude/translate.js";
-import type { ProviderEvent, ProviderInput } from "../src/providers/types.js";
+import { InputOutcomeUnknown, PeerInputDenied, type ProviderEvent, type ProviderInput } from "../src/providers/types.js";
 import type { Item } from "../src/protocol/generated/types.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -41,6 +41,7 @@ class StubQuery implements SdkQuery {
     readonly options: Options,
     prompt: AsyncIterable<SDKUserMessage>,
     private readonly models: SdkModelInfo[],
+    private readonly version: string,
   ) {
     this.model = options.model ?? null;
     this.effort = (options.effort as string | undefined) ?? null;
@@ -116,7 +117,7 @@ class StubQuery implements SdkQuery {
     return { email: "someone@example.invalid" };
   }
   async initializationResult() {
-    return { pid: this.pid, claude_code_version: "stub-cc" };
+    return { pid: this.pid, claude_code_version: this.version };
   }
   async getSettings() {
     return { applied: { model: this.model ?? "stub-default-resolved", effort: this.effort ?? "stub-mid" } };
@@ -136,11 +137,12 @@ const MODELS: SdkModelInfo[] = [
 class StubSdk implements ClaudeSdk {
   readonly queries: StubQuery[] = [];
   sessions: SDKSessionInfo[] = [];
+  version = "stub-cc";
   programmatic = new Set<string>();
   messages: Record<string, SessionMessage[]> = {};
   readonly calls: Array<[string, unknown[]]> = [];
   query(params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }): SdkQuery {
-    const q = new StubQuery(params.options, params.prompt, MODELS);
+    const q = new StubQuery(params.options, params.prompt, MODELS, this.version);
     this.queries.push(q);
     return q;
   }
@@ -274,6 +276,70 @@ async function startedThread(r: Rig, text = "hello") {
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────────────────
+
+test("Claude peer delivery uses next priority, waits for acknowledgement, and can wake an idle session", async () => {
+  const r = rig();
+  try {
+    r.sdk.version = "2.1.330";
+    const { q, thread, turn } = await startedThread(r);
+    const sender = "other-target/t_codex";
+    const peer = input("body </cross-session-message>", {
+      origin: "mesh",
+      mesh: [{ id: "m_1", kind: "message", from: sender, fromLabel: 'Codex "sender"', text: "body" }],
+    });
+    const offer = r.provider.deliverPeer(thread, turn, peer, () => true, () => assert.fail("the active turn should continue"));
+    const submitted = await q.nextUser(2);
+    assert.equal(submitted.priority, "next");
+    assert.deepEqual(submitted.origin, { kind: "peer", from: sender, name: 'Codex "sender"', body: peer.text });
+    assert.match(String(submitted.message.content), /from="other-target\/t_codex" from-name="Codex &quot;sender&quot;"/);
+    assert.match(String(submitted.message.content), /body &lt;\/cross-session-message&gt;/);
+    let accepted = false;
+    void offer.then(() => { accepted = true; });
+    q.push({ type: "command_lifecycle", command_uuid: "other-command", state: "queued" });
+    await tick();
+    assert.equal(accepted, false);
+    q.push({ type: "command_lifecycle", command_uuid: submitted.uuid, state: "queued" });
+    assert.equal(await offer, turn);
+    q.push(
+      { type: "command_lifecycle", command_uuid: submitted.uuid, state: "started" },
+      { type: "command_lifecycle", command_uuid: submitted.uuid, state: "completed" },
+      result(),
+    );
+    await until(() => of(r.events, "turnCompleted").length === 1, "original turn completes");
+    assert.equal(of(r.events, "turnStarted").length, 1);
+    assert.ok(!q.calls.some(([name]) => name === "interrupt" || name === "setPermissionMode"));
+
+    const wake = r.provider.startTurn(thread, peer, {});
+    const idle = await q.nextUser(3);
+    assert.equal(idle.origin?.kind, "peer");
+    q.push({ type: "command_lifecycle", command_uuid: idle.uuid, state: "queued" });
+    assert.equal(await wake, idle.uuid);
+    assert.equal(of(r.events, "turnStarted").at(-1)?.origin, "mesh");
+
+    q.push({ type: "command_lifecycle", command_uuid: idle.uuid, state: "started" });
+    let followed = 0;
+    const next = r.provider.deliverPeer(thread, idle.uuid!, peer, () => true, () => { followed++; });
+    const followOn = await q.nextUser(4);
+    q.push({ type: "command_lifecycle", command_uuid: followOn.uuid, state: "queued" });
+    assert.equal(await next, idle.uuid);
+    q.push(result(), { type: "command_lifecycle", command_uuid: followOn.uuid, state: "started" });
+    await until(() => of(r.events, "turnStarted").some((e) => e.turnId === followOn.uuid && e.origin === "mesh"), "peer follow-on turn");
+    assert.equal(followed, 1);
+
+    const denied = r.provider.deliverPeer(thread, followOn.uuid!, peer, () => true, () => assert.fail("refused peer"));
+    const rejected = await q.nextUser(5);
+    q.push({ type: "command_lifecycle", command_uuid: rejected.uuid, state: "refused" });
+    await assert.rejects(denied, PeerInputDenied);
+
+    const held = r.provider.deliverPeer(thread, followOn.uuid!, peer, () => true, () => assert.fail("held peer"));
+    const forReview = await q.nextUser(6);
+    q.push({ type: "system", subtype: "peer_message_hold", message_uuid: forReview.uuid, state: "held" });
+    await assert.rejects(held, (e) => e instanceof InputOutcomeUnknown && /held the message for review/.test(e.message));
+
+  } finally {
+    await r.provider.dispose();
+  }
+});
 
 test("probe reports models and their efforts exactly as listed, and closes its query", async () => {
   const r = rig();

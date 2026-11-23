@@ -379,6 +379,7 @@ pub fn receipt_text(
             let w = detail.map_or_else(|| why(reason), str::to_owned);
             format!("Failed · {w} The message was not delivered.")
         }
+        S::OutcomeUnknown => detail.map_or_else(|| "Delivery uncertain".to_owned(), |d| format!("Delivery uncertain · {d}")),
         S::Unknown(s) => s.clone(),
     }
 }

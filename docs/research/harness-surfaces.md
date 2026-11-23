@@ -626,6 +626,28 @@ receiverThreadIds, prompt, model, reasoningEffort, agentsStates: {<thread id>: {
 rollouts is the code-mode exec wait, not an agent wait.) YAAC's tools arrive as
 `mcpToolCall` items with `server: "yaac"`.
 
+## YAAC peer delivery (verified 2026-11-23)
+
+Scratch homes and local synthetic model endpoints exercised Codex CLI 0.170.0 and
+Claude Code 2.1.330 with Agent SDK 0.3.329.
+
+- **Codex.** An experimental app-server `turn/start` with `input: []` and
+  `toolOutput: { name: "send_message_to_thread", namespace: "codex_app", output, retain: true }`
+  returns the active turn id while busy and a new turn id while idle. The model saw a
+  `function_call_output` at the subsequent boundary. A YAAC address in the
+  `codex_delegation` envelope's `source_thread_id` worked without a local sender thread.
+- **Claude Code.** SDK input with `priority: "next"`, peer origin, and a
+  `cross-session-message` envelope appeared in the next model request, following the
+  original tool round or final reply. The SDK emitted `command_lifecycle` frames carrying the
+  input's UUID as `command_uuid`, with `queued`, `started`, and `completed` states. The
+  bundled SDK implements `interrupt({ cancelQueued: true })` even though the public declaration
+  omits the option. The provider checks for the CLI's `interrupt_cancel_queued_v1` capability
+  before requesting cancellation when the user stops a turn with pending peer input. Sending
+  a prompting-class peer to a bypass session produced `peer_message_hold`, and the model
+  did not see the message. Explicit inbound refusal produced lifecycle state `refused`.
+  YAAC leaves the sender's permission class unset and keeps Claude Code's inbound policy
+  in effect. A held or refused command never falls back to a framed prompt.
+
 ## Subagents (verified 2026-11-22)
 
 What each harness exposes of the sub-agents it runs itself (D151). Checked against Claude Code

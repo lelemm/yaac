@@ -35,7 +35,9 @@ import type {
 
 /** What the provider uses of a running `query()`. */
 export interface SdkQuery extends AsyncIterable<SDKMessage> {
-  interrupt(): Promise<unknown>;
+  // The bundled SDK implements cancelQueued on interrupt() and the CLI advertises it
+  // in system/init, but this parameter is missing from the public Query declaration.
+  interrupt(options?: { cancelQueued?: boolean }): Promise<unknown>;
   setModel(model?: string): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
   applyFlagSettings(settings: Record<string, unknown>): Promise<void>;
@@ -225,7 +227,7 @@ export function realCli(executable: string, env: NodeJS.ProcessEnv): ClaudeCli {
     async version() {
       try {
         const out = (await run(executable, ["--version"], env, 15000)).trim();
-        // "2.1.329 (Claude Code)" — keep the first token; it is only shown, never compared.
+        // "2.1.329 (Claude Code)" — keep the first token; used for the descriptor.
         return out.split(/\s+/)[0] || null;
       } catch {
         return null;

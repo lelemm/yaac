@@ -47,6 +47,8 @@ import type {
 } from "../types.js";
 import { connectBackend, planEndpoint, realExec, type EndpointPlan, type Exec } from "./backend.js";
 import { collabStatus, fastTier, subagentStatusOf, mapItem, mapModel, mapServerRequest, planState, threadInfo, tokenUsage, turnStatus, usageDelta, type MappedRequest } from "./mapping.js";
+import { InputOutcomeUnknown } from "../types.js";
+import { peerXml, supportsPeerInput } from "../../mesh/format.js";
 import { CodexConnection, CodexRpcError, type ServerRequest } from "./rpc.js";
 import { CodexRateLimits, type CodexAccountResponse, type CodexRateLimitSnapshot, type CodexRateLimitsResponse } from "./ratelimits.js";
 import type { RateLimitReport } from "../ratelimits.js";
@@ -198,6 +200,12 @@ export function reportedMode(r: ReportedSettings): string | null | undefined {
 
 const CLIENT_NAME = "yaacd";
 const DEFAULT_CLIENT_VERSION = "0.1.0";
+
+/** The YAAC journal carries the attributable meshReceived item for these transport echoes. */
+function isYaacPeerOutput(item: ThreadItem): boolean {
+  return item.type === "functionCallOutput" && item.name === "send_message_to_thread" && item.namespace === "codex_app"
+    && typeof item.output === "string" && /^<codex_delegation>\n  <source_thread_id>[^<]+<\/source_thread_id>\n  <input>\[YAAC peer message: m_[a-zA-Z0-9_-]+\]/.test(item.output);
+}
 
 interface ThreadState {
   native: NativeId;
@@ -448,7 +456,7 @@ export class CodexProvider implements HarnessProvider {
     const turn = page.data.find((t) => t.id === turnId);
     if (!turn || turn.status === "inProgress") return;
     for (const raw of turn.items ?? []) {
-      if (raw.type === "userMessage") continue;
+      if (raw.type === "userMessage" || isYaacPeerOutput(raw)) continue;
       this.emit({ type: "itemCompleted", thread: st.native, item: mapItem(raw, turnId, "completed") });
     }
     this.finishTurn(st, turn, "own");
@@ -788,13 +796,15 @@ export class CodexProvider implements HarnessProvider {
         sortDirection: "asc",
         ...(page.cursor ? { cursor: page.cursor } : {}),
       })) as Paged<ThreadItemEntry>;
-      return { items: (res.data ?? []).map((e) => mapItem(e.item, e.turnId, "completed")), cursor: res.nextCursor ?? null };
+      return { items: (res.data ?? []).filter((e) => !isYaacPeerOutput(e.item)).map((e) => mapItem(e.item, e.turnId, "completed")), cursor: res.nextCursor ?? null };
     } catch (e) {
       if (page.cursor) throw e;
       // Older history without item paging: one full read.
       const r = (await conn.request("thread/read", { threadId: thread, includeTurns: true })) as { thread: Thread };
       const items: Item[] = [];
-      for (const turn of r.thread.turns ?? []) for (const raw of turn.items ?? []) items.push(mapItem(raw, turn.id, turn.status === "inProgress" ? "inProgress" : "completed"));
+      for (const turn of r.thread.turns ?? []) for (const raw of turn.items ?? []) {
+        if (!isYaacPeerOutput(raw)) items.push(mapItem(raw, turn.id, turn.status === "inProgress" ? "inProgress" : "completed"));
+      }
       return { items, cursor: null };
     }
   }
@@ -873,9 +883,57 @@ export class CodexProvider implements HarnessProvider {
     return fast ? tier : "default";
   }
 
+  private peerOutput(input: ProviderInput) {
+    const source = input.mesh?.find((m) => m.kind !== "notice");
+    if (!source || input.mesh?.some((m) => m.task) || !supportsPeerInput(serverVersion(this.init?.userAgent), [0, 170, 0])) return null;
+    const messages = input.mesh!;
+    const from = messages.every((m) => m.kind === "notice" || m.from === source.from) ? source.from : "yaac";
+    return {
+      name: "send_message_to_thread",
+      namespace: "codex_app",
+      output: `<codex_delegation>\n  <source_thread_id>${peerXml(from)}</source_thread_id>\n  <input>[YAAC peer message: ${peerXml(source.id)}]\n${peerXml(input.text)}</input>\n</codex_delegation>`,
+      retain: true,
+    };
+  }
+
+  async deliverPeer(thread: NativeId, turn: TurnId, input: ProviderInput, beforeSend: () => boolean): Promise<TurnId | null> {
+    const conn = this.conn;
+    const st = this.state(thread);
+    const output = this.peerOutput(input);
+    if (!output || !conn?.isOpen || st.ownTurn !== turn || st.starting || !beforeSend()) return null;
+    st.starting = true;
+    try {
+      const { turn: accepted } = (await conn.request("turn/start", { threadId: thread, input: [], toolOutput: output }, 5000)) as { turn: Turn };
+      if (!accepted?.id) throw new Error("Codex did not return a turn id");
+      if (accepted.id !== turn) {
+        // The turn ended before Codex received the mail. Drain its events before adopting
+        // the new turn, preserving turn order if the new one completed in the same reply.
+        const later = st.held.filter((h) => this.turnOf(st, h.params) === accepted.id || (h.params.turn as Turn | undefined)?.id === accepted.id);
+        st.held = st.held.filter((h) => !later.includes(h));
+        this.flushHeld(st);
+        if (st.ownTurn || st.foreignTurn || st.turnsSeen.has(accepted.id)) {
+          st.held = later;
+          throw new Error("Codex returned a turn that YAAC could not claim");
+        }
+        this.announceTurn(st, accepted.id, "mesh", 0);
+        st.held = later;
+      }
+      return accepted.id;
+    } catch (e) {
+      // JSON-RPC explicitly rejected this input. Connection errors and missing replies
+      // leave its acceptance unknown, so only the former permit mailbox fallback.
+      if (e instanceof CodexRpcError && [-32600, -32601, -32602].includes(e.code ?? 0)) return null;
+      throw new InputOutcomeUnknown((e as Error).message);
+    } finally {
+      st.starting = false;
+      this.flushHeld(st);
+    }
+  }
+
   private async beginTurn(st: ThreadState, input: ProviderInput, o: { model: string | null; effort: string | null; mode: CodexMode | null; fast?: boolean | null; cwd?: string | null }): Promise<TurnId> {
     const conn = await this.ensure();
     const clientId = randomId("yaac-", 12);
+    let peer = this.peerOutput(input);
     const effort = o.effort ?? st.pendingEffort;
     const tier = this.serviceTierFor(o.model ?? st.model, o.fast ?? null);
     st.sentClientIds.add(clientId);
@@ -884,21 +942,37 @@ export class CodexProvider implements HarnessProvider {
     const seenBefore = new Set(st.turnsSeen);
     let turnId: TurnId;
     try {
-      const r = (await conn.request("turn/start", {
+      const params = {
         threadId: st.native,
-        input: this.userInput(input),
-        clientUserMessageId: clientId,
         ...(o.model ? { model: o.model } : {}),
         ...(effort ? { effort } : {}),
         ...(tier ? { serviceTierForTurn: tier } : {}),
         ...(o.cwd ? { cwd: o.cwd } : {}),
         ...(o.mode ? { approvalPolicy: o.mode.approvalPolicy, sandboxPolicy: o.mode.sandboxPolicy } : {}),
-      })) as { turn: Turn };
-      turnId = r.turn.id;
+      };
+      const send = (output: ReturnType<CodexProvider["peerOutput"]>) => conn.request("turn/start", {
+        ...params,
+        ...(output ? { input: [], toolOutput: output } : { input: this.userInput(input), clientUserMessageId: clientId }),
+      });
+      let response: unknown;
+      try {
+        response = await send(peer);
+      } catch (e) {
+        // Unsupported experimental fields can be explicitly rejected. No fallback after a
+        // timeout or disconnect, which could have happened after acceptance.
+        if (!peer || !(e instanceof CodexRpcError) || ![-32600, -32601, -32602].includes(e.code ?? 0)) throw e;
+        peer = null;
+        response = await send(null);
+      }
+      turnId = (response as { turn: Turn }).turn.id;
+      if (!turnId) throw new Error("Codex did not return a turn id");
     } catch (e) {
       st.starting = false;
       st.sentClientIds.delete(clientId);
       this.flushHeld(st);
+      if (input.mesh?.length && (!(e instanceof CodexRpcError) || ![-32600, -32601, -32602].includes(e.code ?? 0))) {
+        throw new InputOutcomeUnknown((e as Error).message);
+      }
       throw e;
     }
     st.starting = false;
@@ -910,24 +984,35 @@ export class CodexProvider implements HarnessProvider {
       st.foreignSeen = true;
       this.flushHeld(st);
       this.publishControl(st);
-      throw new ThreadInUseError(`Codex joined this input into turn ${turnId}, which was already running`);
+      const detail = `Codex joined this input into turn ${turnId}, which was already running`;
+      if (input.mesh?.length) throw new InputOutcomeUnknown(detail);
+      throw new ThreadInUseError(detail);
     }
     st.pendingEffort = null;
     if (o.model) st.model = o.model;
     if (effort) st.effort = effort;
     if (o.mode) st.mode = o.mode.id;
+    try {
+      this.announceTurn(st, turnId, input.origin, peer ? 0 : 1);
+      if (o.model || effort || o.mode) this.emit({ type: "settingsChanged", thread: st.native, applied: { model: st.model, effort: st.effort, mode: st.mode } });
+      this.flushHeld(st);
+    } catch (e) {
+      if (input.mesh?.length) throw new InputOutcomeUnknown((e as Error).message);
+      throw e;
+    }
+    return turnId;
+  }
+
+  private announceTurn(st: ThreadState, turnId: TurnId, origin: TurnOrigin, inputsPending: number): void {
     st.ownTurn = turnId;
-    st.ownOrigin = input.origin;
-    st.ownInputsPending = 1;
+    st.ownOrigin = origin;
+    st.ownInputsPending = inputsPending;
     st.turnsSeen.add(turnId);
     st.usageAtStart = st.lastUsage;
     st.plan = null;
     this.persisted.ownTurns[st.native] = turnId;
     this.save();
-    this.emit({ type: "turnStarted", thread: st.native, turnId, origin: input.origin, at: new Date().toISOString() });
-    if (o.model || effort || o.mode) this.emit({ type: "settingsChanged", thread: st.native, applied: { model: st.model, effort: st.effort, mode: st.mode } });
-    this.flushHeld(st);
-    return turnId;
+    this.emit({ type: "turnStarted", thread: st.native, turnId, origin, at: new Date().toISOString() });
   }
 
   private flushHeld(st: ThreadState): void {
@@ -1366,7 +1451,7 @@ export class CodexProvider implements HarnessProvider {
       case "item/started":
       case "item/completed": {
         const item = p.item as ThreadItem | undefined;
-        if (!item?.id) return;
+        if (!item?.id || isYaacPeerOutput(item)) return;
         const turnId = this.turnOf(st, p);
         if (item.type === "userMessage" && this.isOwnInput(st, item, turnId, method === "item/completed")) return;
         const mapped = mapItem(item, turnId, method === "item/started" ? "inProgress" : "completed");

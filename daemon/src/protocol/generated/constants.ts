@@ -180,6 +180,7 @@ export const METHODS = {
   MESH_RELAY: "mesh/relay",
   MESH_DELIVER: "mesh/deliver",
   MESH_RECEIPT: "mesh/receipt",
+  MESH_DELIVERY_RECEIPT: "mesh/deliveryReceipt",
   MESH_QUERY: "mesh/query",
   MESH_ROSTER: "mesh/roster",
   MESH_POLICY: "mesh/policy",
@@ -357,6 +358,8 @@ export interface RequestMap {
   "mesh/deliver": { params: MeshDeliverParams; result: MeshReceiptResult };
   /** Hub → source target: a relayed message's receipt changed. */
   "mesh/receipt": { params: MeshReceiptParams; result: Empty };
+  /** Recipient target → hub: final harness handoff outcome for a relayed message. */
+  "mesh/deliveryReceipt": { params: MeshReceiptParams; result: Empty };
   /** A tool call that needs another target, routed through the hub (both directions). */
   "mesh/query": { params: MeshQueryParams; result: MeshQueryResult };
   /** Hub → target: the target's own identity and the roster of targets. */
@@ -473,6 +476,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "mesh/relay": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "mesh/deliver": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "mesh/receipt": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "mesh/deliveryReceipt": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "mesh/query": { direction: "both", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "mesh/roster": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "mesh/policy": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },

@@ -304,6 +304,7 @@ pub fn short_receipt(sent: &yaac_protocol::MeshSentItem) -> String {
             let w = r.detail.clone().unwrap_or(why);
             if w.is_empty() { "failed".to_owned() } else { format!("failed · {w}") }
         }
+        ReceiptStatus::OutcomeUnknown => crate::header::receipt_text(&r.status, r.reason.as_ref(), r.detail.as_deref(), &target),
         ReceiptStatus::Unknown(s) => s.clone(),
     }
 }

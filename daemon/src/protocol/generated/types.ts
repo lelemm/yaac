@@ -458,11 +458,11 @@ export type DecisionKind = "allow" | "allowSession" | "allowAlways" | "deny" | "
 export type Delivery = "queue" | "now";
 
 /**
- * What was done with a message on arrival (the receipt of a `now` message says it).
+ * How the recipient handled a peer message.
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type DeliveryHandling = "steered" | "interruptedAndDelivered" | "delivered" | "queued";
+export type DeliveryHandling = "steered" | "nextBoundary" | "interruptedAndDelivered" | "delivered" | "queued";
 
 /**
  * The item field an `itemDelta` appends to.
@@ -3390,7 +3390,7 @@ export interface Receipt {
    */
   detail?: string | null;
   /**
-   * For a `now` message: what was done with it.
+   * How the harness took the message, when known.
    */
   handling?: DeliveryHandling | null;
   /**
@@ -3415,7 +3415,7 @@ export type ReceiptReason = "targetOffline" | "hubUnavailable" | "recipientBusy"
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type ReceiptStatus = "delivered" | "queued" | "failed";
+export type ReceiptStatus = "delivered" | "queued" | "failed" | "outcomeUnknown";
 
 /**
  * Where a folder sits inside a git repository (docs/05-threads.md#worktrees-that-live-somewhere-else).

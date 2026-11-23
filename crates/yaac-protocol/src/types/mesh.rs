@@ -59,10 +59,12 @@ pub struct MeshMessage {
 }
 
 open_enum! {
-    /// What was done with a message on arrival (the receipt of a `now` message says it).
+    /// How the recipient handled a peer message.
     pub enum DeliveryHandling fallback Unknown {
         /// Added to the recipient's running turn.
         Steered = "steered",
+        /// The harness accepted it for the next boundary of its running turn.
+        NextBoundary = "nextBoundary",
         /// The recipient's running turn was interrupted and a new one started with it.
         InterruptedAndDelivered = "interruptedAndDelivered",
         /// The recipient was idle; a turn started with it.
@@ -81,6 +83,8 @@ open_enum! {
         Queued = "queued",
         /// Could not be delivered at all; `reason` says why.
         Failed = "failed",
+        /// The harness may have accepted it; it will not be sent again.
+        OutcomeUnknown = "outcomeUnknown",
     }
 }
 
@@ -128,7 +132,7 @@ pub struct Receipt {
     /// Text for the agent and the user, shown as-is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    /// For a `now` message: what was done with it.
+    /// How the harness took the message, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handling: Option<DeliveryHandling>,
 }

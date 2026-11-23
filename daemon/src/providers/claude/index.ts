@@ -58,6 +58,8 @@ import type {
   ThreadPage,
   TurnOverrides,
 } from "../types.js";
+import { InputOutcomeUnknown, PeerInputDenied } from "../types.js";
+import { peerXml, supportsPeerInput } from "../../mesh/format.js";
 import { ASK_TOOL, answeredInput, approvalRequest, approvalResult, normaliseQuestions, type ToolPermissionContext } from "./questions.js";
 import { EXECUTABLE_VAR, findExecutable, loadRealSdk, realCli, subagentFiles, type AgentEntry, type ClaudeCli, type ClaudeSdk, type SdkQuery, type SubagentFile } from "./sdk.js";
 import { flagsOf, historyItems, isToolResultMessage, LiveTranslator, type ItemEvent } from "./translate.js";
@@ -178,10 +180,12 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
   private waiters: Array<(r: IteratorResult<SDKUserMessage>) => void> = [];
   private ended = false;
 
-  push(m: SDKUserMessage): void {
+  push(m: SDKUserMessage): boolean {
+    if (this.ended) return false;
     const w = this.waiters.shift();
     if (w) w({ value: m, done: false });
     else this.items.push(m);
+    return true;
   }
 
   end(): void {
@@ -210,6 +214,10 @@ class Live {
   readonly input = new InputQueue();
   pid: number | null = null;
   pidKnown!: Promise<void>;
+  peerInput = false;
+  cancelQueued = false;
+  /** Native lifecycle acknowledgements and optional follow-on turns, by command uuid. */
+  readonly peerCommands = new Map<string, { acknowledge: (error?: Error) => void; beforeFollowOn?: () => void; started?: boolean; expired?: boolean }>();
   turn: TurnState | null = null;
   readonly requests = new Map<string, Pending>();
   readonly ours = new Set<string>();
@@ -266,8 +274,12 @@ class Live {
     this.translator = new LiveTranslator(emit, cwd);
   }
 
+  hasQueuedPeer(): boolean {
+    return [...this.peerCommands.values()].some((command) => !command.started && !command.expired);
+  }
+
   busy(): boolean {
-    return this.turn !== null || this.requests.size > 0 || this.background.size > 0;
+    return this.turn !== null || this.requests.size > 0 || this.background.size > 0 || this.hasQueuedPeer();
   }
 
   /** Whether closing the process now would kill background work. */
@@ -896,6 +908,7 @@ export class ClaudeProvider implements HarnessProvider {
     live.pidKnown = live.query
       .initializationResult()
       .then((r) => {
+        live.peerInput = supportsPeerInput(r?.claude_code_version ?? this.lastProbe?.harnessVersion, [2, 1, 330]);
         if (typeof r?.pid === "number") {
           live.pid = r.pid;
           this.ownPids.set(r.pid, Number.POSITIVE_INFINITY);
@@ -913,6 +926,8 @@ export class ClaudeProvider implements HarnessProvider {
     } catch (e) {
       failure = (e as Error).message;
     }
+    for (const command of live.peerCommands.values()) command.acknowledge(new InputOutcomeUnknown(failure ?? "the Claude Code process closed during peer delivery"));
+    live.peerCommands.clear();
     if (live.pid !== null) this.ownPids.set(live.pid, Date.now());
     const wasLive = this.live.get(live.native) === live;
     if (wasLive) this.live.delete(live.native);
@@ -966,6 +981,31 @@ export class ClaudeProvider implements HarnessProvider {
   }
 
   private onMessage(live: Live, m: SDKMessage): void {
+    // Emitted by the SDK on the streaming CLI's stdout, absent from SDKMessage.
+    const lifecycle = m as unknown as { type: string; command_uuid: string; state: string };
+    if (lifecycle.type === "command_lifecycle") {
+      const { command_uuid: id, state } = lifecycle;
+      const command = live.peerCommands.get(id);
+      if (!command) return;
+      if (state === "refused" || state === "discarded" || state === "cancelled") {
+        command.acknowledge(state === "cancelled"
+          ? new InputOutcomeUnknown("Claude Code cancelled the queued peer command")
+          : new PeerInputDenied("Claude Code declined the message under the recipient’s cross-session policy"));
+        live.peerCommands.delete(id);
+        if (!live.busy()) this.touch(live);
+        return;
+      }
+      if (state === "queued" || state === "started" || state === "completed") command.acknowledge();
+      if (state === "started") {
+        command.started = true;
+        if (!live.turn) {
+          command.beforeFollowOn?.();
+          this.beginTurn(live, id, "mesh");
+        }
+      }
+      if (state === "completed") live.peerCommands.delete(id);
+      return;
+    }
     if (m.type === "rate_limit_event") return this.limits.applyEvent(m.rate_limit_info);
     const msg = m as SDKMessage & { parent_tool_use_id?: string | null; uuid?: string };
     // Inside a subagent (D151): its own transcript, not this one's (the Agent tool call stands for it here).
@@ -1017,14 +1057,24 @@ export class ClaudeProvider implements HarnessProvider {
         return;
       }
       case "system": {
-        const sys = m as { subtype?: string; model?: string; permissionMode?: string; uuid?: string };
+        const sys = m as {
+          subtype?: string; model?: string; permissionMode?: string; uuid?: string; capabilities?: string[];
+          message_uuid?: string; state?: string;
+        };
         if (sys.subtype === "init") {
+          live.cancelQueued = sys.capabilities?.includes("interrupt_cancel_queued_v1") === true;
           const applied: AppliedSettings = {};
           if (live.model) applied.model = live.model;
           else if (sys.model) applied.model = sys.model;
           if (sys.permissionMode) applied.mode = sys.permissionMode;
           if (live.effort) applied.effort = live.effort;
           this.emit({ type: "settingsChanged", thread: live.native, applied });
+        } else if (sys.subtype === "peer_message_hold" && sys.state === "held" && sys.message_uuid) {
+          const command = live.peerCommands.get(sys.message_uuid);
+          if (command) {
+            command.expired = true;
+            command.acknowledge(new InputOutcomeUnknown("Claude Code held the message for review under the recipient’s cross-session policy"));
+          }
         } else if (sys.subtype === "background_tasks_changed") {
           this.onBackgroundTasks(live, (m as { tasks?: unknown }).tasks);
         } else if (sys.subtype === "compact_boundary" && live.turn) {
@@ -1352,13 +1402,76 @@ export class ClaudeProvider implements HarnessProvider {
     return blocks as unknown as SDKUserMessage["message"]["content"];
   }
 
+  private peerMessage(live: Live, input: ProviderInput, id: string): SDKUserMessage | null {
+    const source = input.mesh?.find((m) => m.kind !== "notice");
+    if (!live.peerInput || !source) return null;
+    const sameSender = input.mesh!.every((m) => m.kind === "notice" || m.from === source.from);
+    const from = sameSender ? source.from : "yaac";
+    const name = sameSender ? source.fromLabel : "YAAC";
+    return {
+      type: "user",
+      message: { role: "user", content: `<cross-session-message from="${peerXml(from)}" from-name="${peerXml(name)}">\n${peerXml(input.text)}\n</cross-session-message>` },
+      parent_tool_use_id: null,
+      uuid: id as SDKUserMessage["uuid"],
+      priority: "next",
+      // The mailbox authenticates the sender's address. Its provider permission class
+      // is unknown here, so leave it for Claude Code to handle under its inbound policy.
+      origin: { kind: "peer", from, name, body: input.text },
+      isSynthetic: true,
+      client_composed: true,
+    };
+  }
+
+  private async enqueuePeer(live: Live, id: string, message: SDKUserMessage, beforeFollowOn?: () => void): Promise<boolean> {
+    let acknowledge!: (error?: Error) => void;
+    const ack = new Promise<void>((resolve, reject) => {
+      acknowledge = (error) => error ? reject(error) : resolve();
+    });
+    live.peerCommands.set(id, { acknowledge, ...(beforeFollowOn ? { beforeFollowOn } : {}) });
+    if (!live.input.push(message)) {
+      live.peerCommands.delete(id);
+      return false;
+    }
+    live.ours.add(id);
+    const timer = setTimeout(() => {
+      const command = live.peerCommands.get(id);
+      if (command) command.expired = true;
+      acknowledge(new InputOutcomeUnknown("Claude Code did not acknowledge the peer message"));
+    }, 5000);
+    timer.unref();
+    try {
+      await ack;
+      return true;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async deliverPeer(thread: NativeId, turn: TurnId, input: ProviderInput, beforeSend: () => boolean, beforeFollowOn: () => void): Promise<TurnId | null> {
+    const live = this.live.get(thread);
+    if (!live || live.closing || live.turn?.turnId !== turn || live.turn.interrupting || live.requests.size > 0) return null;
+    const id = randomUUID();
+    const message = this.peerMessage(live, input, id);
+    if (!message || !beforeSend()) return null;
+    return await this.enqueuePeer(live, id, message, beforeFollowOn) ? turn : null;
+  }
+
   private async send(live: Live, input: ProviderInput): Promise<TurnId> {
     const content = await this.userContent(input);
     const turnId = randomUUID();
+    // Spawn tasks use the first-prompt path. A mailbox wake on an existing session uses
+    // the native peer command's uuid as the turn id when Claude reports it has started.
+    const message = input.mesh?.some((m) => m.task) ? null : this.peerMessage(live, input, turnId);
+    if (message) {
+      if (!await this.enqueuePeer(live, turnId, message)) throw new Error("Claude Code closed its input stream");
+      if (!live.turn && live.peerCommands.has(turnId)) this.beginTurn(live, turnId, input.origin);
+      return turnId;
+    }
     live.ours.add(turnId);
-    // The message's uuid is the turn id: Claude Code keeps it in the transcript, so history
-    // read back later has the same turn ids.
-    live.input.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: turnId as SDKUserMessage["uuid"] });
+    if (!live.input.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: turnId as SDKUserMessage["uuid"] })) {
+      live.ours.delete(turnId);
+      throw new Error("Claude Code closed its input stream");
+    }
     this.beginTurn(live, turnId, input.origin);
     return turnId;
   }
@@ -1383,7 +1496,7 @@ export class ClaudeProvider implements HarnessProvider {
   async startTurn(thread: NativeId, input: ProviderInput, overrides: TurnOverrides): Promise<TurnId> {
     const s = await this.threadSettings(thread);
     const current = this.live.get(thread);
-    if (current?.turn) throw new Error("a turn is already running in this Claude Code session");
+    if (current?.turn || current?.hasQueuedPeer()) throw new Error("a turn or peer command is already running in this Claude Code session");
     if (overrides.model) s.model = overrides.model;
     if (overrides.effort) s.effort = overrides.effort;
     if (overrides.mode) s.mode = overrides.mode;
@@ -1391,6 +1504,8 @@ export class ClaudeProvider implements HarnessProvider {
     this.save();
     let live = await this.ensureLive(thread, this.attachmentDirs(thread, input));
     live = await this.applySettings(live, s);
+    if (input.mesh?.length) await live.pidKnown;
+    if (live.turn || live.hasQueuedPeer()) throw new Error("a turn or peer command is already running in this Claude Code session");
     return this.send(live, input);
   }
 
@@ -1489,7 +1604,7 @@ export class ClaudeProvider implements HarnessProvider {
     t.interrupting = true;
     for (const p of [...live.requests.values()]) if (p.turnId === turn) p.expire();
     try {
-      await live.query.interrupt();
+      await live.query.interrupt(live.cancelQueued && live.peerCommands.size ? { cancelQueued: true } : undefined);
     } catch (e) {
       this.log(`interrupt failed: ${(e as Error).message}`);
     }

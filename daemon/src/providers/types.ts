@@ -349,6 +349,12 @@ export type ProviderEvent =
   /** The account or its rate-limit windows changed (`rateLimits`, D161). */
   | { type: "rateLimitsChanged"; report: RateLimitReport };
 
+/** The harness may have accepted input before its response was lost. Never resend it. */
+export class InputOutcomeUnknown extends Error {}
+
+/** The harness explicitly declined peer input under the recipient’s policy. */
+export class PeerInputDenied extends Error {}
+
 /** What a provider implements inside yaacd. */
 export interface HarnessProvider {
   /** Install, sign-in, backend, models. Called at start, on `provider/refresh`, on `descriptorChanged`. */
@@ -367,6 +373,12 @@ export interface HarnessProvider {
   startThread(params: StartThreadParams, input: ProviderInput): Promise<{ thread: NativeId; turn: TurnId }>;
   /** Starts a turn on an idle conversation yaacd holds. */
   startTurn(thread: NativeId, input: ProviderInput, overrides: TurnOverrides): Promise<TurnId>;
+  /**
+   * Offer peer input without interrupting the turn. Null means no handoff was made (the
+   * mailbox can wait for idle). Call beforeSend synchronously just before handing it over;
+   * a false result means the daemon no longer authorizes the handoff.
+   */
+  deliverPeer?(thread: NativeId, turn: TurnId, input: ProviderInput, beforeSend: () => boolean, beforeFollowOn: () => void): Promise<TurnId | null>;
   interrupt(thread: NativeId, turn: TurnId): Promise<void>;
   /** Hands an answer to the harness. Confirm with `requestResolved { by: "client" }`. */
   respond(thread: NativeId, requestId: RequestId, response: RequestResponse): Promise<void>;

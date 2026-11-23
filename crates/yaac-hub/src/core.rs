@@ -81,6 +81,15 @@ pub(crate) enum CoreEvent {
     RelayAccepted { source: TargetId, generation: u64, peer_id: RpcId, message: MeshMessage, accepted: Result<Accepted, String>, in_flight: u64 },
     /// Messages waiting for a destination that is now connected.
     Deliver { dest: TargetId, messages: Vec<MeshMessage>, in_flight: u64 },
+    /// The recipient reported the final harness outcome for a relayed message.
+    DeliveryReceipt {
+        dest: TargetId,
+        generation: u64,
+        peer_id: RpcId,
+        outcome: Result<Option<TargetId>, String>,
+        params: MeshReceiptParams,
+        in_flight: u64,
+    },
     /// Receipts owed to sources (one that just connected, or that just became due).
     Receipts { receipts: Vec<(TargetId, MessageId, Receipt)>, in_flight: u64 },
     /// Undelivered-message notices to hand to their senders' targets now.
@@ -168,7 +177,7 @@ enum Pending {
     /// One target's answer to a `thread/lookup` the hub fans out.
     Lookup { lookup: u64 },
     Deliver { message_id: MessageId },
-    Receipt { message_id: MessageId },
+    Receipt { message_id: MessageId, receipt: Receipt },
     UploadBegin { handle: String },
     UploadEnd { handle: String },
     UploadCancel { handle: String },
@@ -551,6 +560,19 @@ impl Core {
                 for message in messages {
                     self.deliver(&dest, message);
                 }
+            }
+            CoreEvent::DeliveryReceipt { dest, generation, peer_id, outcome, params, in_flight } => {
+                self.in_flight = in_flight;
+                let result = match outcome {
+                    Ok(source) => {
+                        if let Some(source) = source {
+                            self.send_receipt(&source, params.message_id, params.receipt);
+                        }
+                        Ok(json!({}))
+                    }
+                    Err(e) => Err(err(ErrorCode::InternalError, e)),
+                };
+                self.respond_peer(&dest, generation, peer_id, names::MESH_DELIVERY_RECEIPT, result);
             }
             CoreEvent::Receipts { receipts, in_flight } => {
                 self.in_flight = in_flight;
@@ -1757,10 +1779,10 @@ impl Core {
             Pending::UploadBegin { handle } => self.on_upload_begun(id, &handle, outcome),
             Pending::UploadEnd { handle } => self.on_upload_ended(id, &handle, outcome),
             Pending::UploadCancel { handle } => self.on_upload_cancelled(&handle),
-            Pending::Receipt { message_id } => {
+            Pending::Receipt { message_id, receipt } => {
                 if outcome.is_ok() {
                     self.worker.submit(move |s| {
-                        let _ = s.relay.receipt_sent(&message_id);
+                        let _ = s.relay.receipt_sent(&message_id, &receipt);
                         Some(CoreEvent::InFlight(s.relay.in_flight().unwrap_or(0)))
                     });
                 }
@@ -2271,7 +2293,7 @@ impl Core {
         }
         let method = request.method.as_str();
         match method {
-            names::INITIALIZE | names::MESH_RELAY | names::MESH_DELIVER | names::MESH_RECEIPT | names::MESH_ROSTER => {
+            names::INITIALIZE | names::MESH_RELAY | names::MESH_DELIVER | names::MESH_RECEIPT | names::MESH_DELIVERY_RECEIPT | names::MESH_ROSTER => {
                 return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, format!("{method} is handled by the hub itself"))));
             }
             names::THREAD_SUBSCRIBE => {
@@ -2369,6 +2391,19 @@ impl Core {
                     Some(CoreEvent::RelayAccepted { source, generation, peer_id, message, accepted, in_flight })
                 });
             }
+            PeerRequest::MeshDeliveryReceipt(params) => {
+                if !matches!(params.receipt.status, ReceiptStatus::Delivered | ReceiptStatus::Failed | ReceiptStatus::OutcomeUnknown) {
+                    let e = err(ErrorCode::InvalidParams, "a final delivery receipt is required");
+                    self.respond_peer(source, generation, peer_id, names::MESH_DELIVERY_RECEIPT, Err(e));
+                    return;
+                }
+                let dest = source.clone();
+                self.worker.submit(move |s| {
+                    let outcome = s.relay.record_outcome(&dest, &params.message_id, &params.receipt).map_err(|e| e.to_string());
+                    let in_flight = s.relay.in_flight().unwrap_or(0);
+                    Some(CoreEvent::DeliveryReceipt { dest, generation, peer_id, outcome, params, in_flight })
+                });
+            }
             PeerRequest::MeshQuery(params) => self.route_query(source, generation, peer_id, &params),
             PeerRequest::MeshUsage(params) => self.route_usage(source, generation, peer_id, &params),
             PeerRequest::Other { .. } => {} // the session already answered method_not_found
@@ -2454,8 +2489,8 @@ impl Core {
     }
 
     fn send_receipt(&mut self, source: &TargetId, message_id: MessageId, receipt: Receipt) {
-        let params = MeshReceiptParams { message_id: message_id.clone(), receipt };
-        self.send::<MeshReceipt>(source, &params, Pending::Receipt { message_id });
+        let params = MeshReceiptParams { message_id: message_id.clone(), receipt: receipt.clone() };
+        self.send::<MeshReceipt>(source, &params, Pending::Receipt { message_id, receipt });
         self.flush(source);
     }
 

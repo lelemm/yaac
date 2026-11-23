@@ -405,6 +405,9 @@ catalogue! {
         /// Hub → source target: a relayed message's receipt changed.
         MeshReceipt = "mesh/receipt" as MESH_RECEIPT:
             t::MeshReceiptParams => t::Empty, HostToDaemon, request Control, response Control;
+        /// Recipient target → hub: final harness handoff outcome for a relayed message.
+        MeshDeliveryReceipt = "mesh/deliveryReceipt" as MESH_DELIVERY_RECEIPT:
+            t::MeshReceiptParams => t::Empty, DaemonToHost, request Control, response Control;
         /// A tool call that needs another target, routed through the hub (both directions).
         MeshQuery = "mesh/query" as MESH_QUERY:
             t::MeshQueryParams => t::MeshQueryResult, Both, request Control, response Bulk;

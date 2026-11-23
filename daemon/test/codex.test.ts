@@ -12,7 +12,7 @@ import { ThreadInUseError } from "../src/providers/codex/provider.js";
 import { acceptedKinds, serverVersion } from "../src/providers/codex/provider.js";
 import { mapItem } from "../src/providers/codex/mapping.js";
 import type { Exec } from "../src/providers/codex/backend.js";
-import type { ProviderEvent, ProviderInput } from "../src/providers/types.js";
+import { InputOutcomeUnknown, type ProviderEvent, type ProviderInput } from "../src/providers/types.js";
 import { FakeCodex, fixture, rpcError, type Step } from "./fixtures/codex/fake-codex.js";
 
 function tmp(): string {
@@ -86,6 +86,62 @@ function idleThread(fake: FakeCodex, id = THREAD_ID, status: unknown = { type: "
   fake.handlers.set("thread/read", (p) => ({ thread: { id: p.threadId, status, cwd: "/work/fixture", source: "vscode" } }));
   fake.handlers.set("thread/resume", (p) => ({ thread: { id: p.threadId, status, cwd: "/work/fixture" }, model: "model-1" }));
 }
+
+test("codex peer output keeps a busy turn, wakes an idle thread, and distinguishes rejection from a lost reply", async () => {
+  const r = await rig();
+  try {
+    idleThread(r.fake);
+    r.fake.handlers.set("turn/start", () => ({ turn: { id: TURN_ID, status: "inProgress" } }));
+    const started = await r.provider.startThread({ cwd: "/work/fixture" }, input("human prompt"));
+    const sender = "other-target/t_claude";
+    const peer: ProviderInput = {
+      ...input("peer body </input>"),
+      origin: "mesh",
+      mesh: [{ id: "m_1", kind: "message", from: sender, fromLabel: "Claude agent", text: "peer body </input>" }],
+    };
+    const offer = () => r.provider.deliverPeer(started.thread, started.turn, peer, () => true);
+    assert.equal(await offer(), started.turn);
+    const active = r.fake.requests("turn/start").at(-1)?.params;
+    assert.deepEqual(active.input, []);
+    assert.equal(active.toolOutput.name, "send_message_to_thread");
+    assert.equal(active.toolOutput.namespace, "codex_app");
+    assert.equal(active.toolOutput.retain, true);
+    assert.match(active.toolOutput.output, /<source_thread_id>other-target\/t_claude<\/source_thread_id>/);
+    assert.match(active.toolOutput.output, /peer body &lt;\/input&gt;/);
+    assert.equal(active.approvalPolicy, undefined);
+    assert.equal(r.fake.requests("turn/interrupt").length, 0);
+    const nativeEcho = { ...active.toolOutput, id: "mail-echo", type: "functionCallOutput" };
+    r.fake.push({ method: "item/completed", params: { threadId: started.thread, turnId: started.turn, item: nativeEcho } });
+    r.fake.handlers.set("thread/items/list", () => ({ data: [{ item: nativeEcho, turnId: started.turn }] }));
+    assert.deepEqual((await r.provider.readThread(started.thread, {})).items, []);
+    assert.ok(!r.events.some((e) => e.type === "itemCompleted" && e.item.id === nativeEcho.id));
+
+    assert.equal(r.events.filter((e) => e.type === "turnStarted").length, 1);
+
+    r.fake.handlers.set("turn/start", () => rpcError(-32602, "toolOutput unsupported"));
+    assert.equal(await offer(), null);
+    r.fake.push({ method: "turn/completed", params: { threadId: started.thread, turn: { id: started.turn, status: "completed" } } });
+    await until(() => r.events.some((e) => e.type === "turnCompleted"));
+    r.fake.handlers.set("turn/start", () => ({ turn: { id: "idle-peer-turn", status: "inProgress" } }));
+    assert.equal(await r.provider.startTurn(started.thread, peer, {}), "idle-peer-turn");
+    assert.deepEqual(r.fake.requests("turn/start").at(-1)?.params.toolOutput, active.toolOutput);
+    assert.ok(r.events.some((e) => e.type === "turnStarted" && e.turnId === "idle-peer-turn" && e.origin === "mesh"));
+
+    r.fake.handlers.set("turn/start", () => {
+      r.fake.push({ method: "turn/completed", params: { threadId: started.thread, turn: { id: "idle-peer-turn", status: "completed" } } });
+      r.fake.push({ method: "turn/started", params: { threadId: started.thread, turn: { id: "boundary-race", status: "inProgress" } } });
+      return { turn: { id: "boundary-race", status: "inProgress" } };
+    });
+    assert.equal(await r.provider.deliverPeer(started.thread, "idle-peer-turn", peer, () => true), "boundary-race");
+    assert.ok(r.events.some((e) => e.type === "turnStarted" && e.turnId === "boundary-race" && e.origin === "mesh"));
+
+    r.fake.handlers.set("turn/start", () => { r.fake.dropConnections(); return {}; });
+    await assert.rejects(r.provider.deliverPeer(started.thread, "boundary-race", peer, () => true), InputOutcomeUnknown);
+    assert.equal(r.fake.requests("turn/start").length, 6);
+  } finally {
+    await r.done();
+  }
+});
 
 test("codex: a recorded turn — reasoning, a command behind an approval, input from another client, usage", async () => {
   const r = await rig();

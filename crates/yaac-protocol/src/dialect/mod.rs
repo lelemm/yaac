@@ -72,7 +72,7 @@ use serde_json::{Value, json};
 use crate::flows::{OpenThread, StartThread, Started};
 use crate::rpc::{ErrorCode, ErrorObject};
 use crate::types::{
-    Capability, Item, MeshQueryParams, MeshRelayParams, MeshUsageParams, ProjectListResult, PageCursor, ProviderUpdatedParams, StreamCreditParams,
+    Capability, Item, MeshQueryParams, MeshReceiptParams, MeshRelayParams, MeshUsageParams, ProjectListResult, PageCursor, ProviderUpdatedParams, StreamCreditParams,
     ThreadEventParams, ThreadReadResult, ThreadRemovedParams, ThreadSubscribeResult, ThreadSummary, SyncToken,
 };
 
@@ -375,6 +375,8 @@ pub enum Inbound {
 pub enum PeerRequest {
     /// `mesh/relay`.
     MeshRelay(MeshRelayParams),
+    /// `mesh/deliveryReceipt`.
+    MeshDeliveryReceipt(MeshReceiptParams),
     /// `mesh/query`.
     MeshQuery(MeshQueryParams),
     /// `mesh/usage`.

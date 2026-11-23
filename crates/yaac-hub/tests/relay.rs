@@ -99,6 +99,35 @@ fn a_relayed_message_survives_the_destination_being_offline_and_is_delivered_exa
 }
 
 #[test]
+fn a_final_harness_receipt_can_only_come_from_the_recipient_target() {
+    let home = Home::new();
+    let alpha = FakeDaemon::new("alpha");
+    let beta = FakeDaemon::new("beta");
+    home.fakes.add(&alpha);
+    home.fakes.add(&beta);
+    let hub = home.start();
+    let c = hub.client();
+    let a = c.add_target("alpha").id;
+    let b = c.add_target("beta").id;
+    c.wait_status(&a, ConnectionStatus::Connected);
+    c.wait_status(&b, ConnectionStatus::Connected);
+
+    let m = message("m-peer", &a, &b);
+    answer(&alpha, alpha.relay(&m).unwrap()).unwrap();
+    wait_until("mailbox receipt", || alpha.receipts().iter().any(|r| r.message_id == m.id));
+    let terminal = json!({ "messageId": m.id, "receipt": { "status": "outcomeUnknown", "detail": "the reply was lost" } });
+    let method = yaac_protocol::methods::names::MESH_DELIVERY_RECEIPT;
+    answer(&alpha, alpha.originate(method, terminal.clone()).unwrap()).unwrap();
+    assert_eq!(receipt_status(&answer(&alpha, alpha.relay(&m).unwrap()).unwrap()), "delivered");
+
+    answer(&beta, beta.originate(method, terminal.clone()).unwrap()).unwrap();
+    wait_until("final receipt", || alpha.receipts().iter().any(|r| r.message_id == m.id && r.receipt.status == ReceiptStatus::OutcomeUnknown));
+    answer(&beta, beta.originate(method, terminal).unwrap()).unwrap();
+    assert_eq!(receipt_status(&answer(&alpha, alpha.relay(&m).unwrap()).unwrap()), "outcomeUnknown");
+    assert_eq!(beta.deliver_calls().len(), 1);
+}
+
+#[test]
 fn a_message_to_an_online_destination_is_delivered_at_once_and_failures_are_receipted() {
     let home = Home::new();
     let alpha = FakeDaemon::new("alpha");

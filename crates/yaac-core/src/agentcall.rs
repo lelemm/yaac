@@ -231,6 +231,9 @@ pub fn line(state: &AppState, map: &AttentionMap, caller: &ThreadKey, t: Option<
             l.status = match t.and_then(|t| live_receipt(t, &call.messages)) {
                 // A YAAC message's receipt moves on after the call (queued → delivered).
                 Some(s) if !failed => Some(match &s.receipt.status {
+                    ReceiptStatus::Delivered if s.receipt.handling == Some(yaac_protocol::DeliveryHandling::NextBoundary) => {
+                        "accepted for the next boundary".to_owned()
+                    }
                     ReceiptStatus::Delivered => "delivered".to_owned(),
                     _ => crate::activity::short_receipt(s).replacen(", ", " · ", 1),
                 }),
