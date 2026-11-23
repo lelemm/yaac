@@ -559,6 +559,16 @@ impl Cache {
         Ok(out)
     }
 
+    /// One summary from the cached index.
+    pub fn thread_summary(&self, target: &TargetId, thread: &ThreadId) -> Result<Option<ThreadSummary>, CacheError> {
+        let summary = self.conn.query_row(
+            "SELECT summary FROM threads WHERE target_id = ?1 AND thread_id = ?2",
+            params![target.as_str(), thread.as_str()],
+            |row| row.get::<_, String>(0),
+        ).optional()?;
+        Ok(summary.as_deref().map(serde_json::from_str).transpose()?)
+    }
+
     /// Every thread's last known state, for the hub's lifecycle.
     pub fn thread_states(&self) -> Result<Vec<(TargetId, ThreadId, ThreadState)>, CacheError> {
         let mut stmt = self.conn.prepare("SELECT target_id, thread_id, state FROM threads")?;

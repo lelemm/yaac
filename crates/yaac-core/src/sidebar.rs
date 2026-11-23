@@ -244,10 +244,16 @@ pub struct Section {
     pub header: Option<Header>,
     /// Collapsed to its header.
     pub collapsed: bool,
-    /// Rows (empty when collapsed).
+    /// Rows available to the section's header actions.
     pub rows: Vec<ThreadRow>,
     /// Rows it holds, collapsed or not.
     pub count: usize,
+}
+
+impl Section {
+    pub fn visible_rows(&self) -> &[ThreadRow] {
+        if self.collapsed { &[] } else { &self.rows }
+    }
 }
 
 /// One entry of the Needs-you list (also Ctrl+J).

@@ -1524,32 +1524,38 @@ export class Core {
     const limit = Math.max(1024, Math.min(p.maxBytes ?? PAGE_MAX_BYTES, PAGE_MAX_BYTES));
     const maxItems = typeof p.maxItems === "number" && Number.isFinite(p.maxItems) ? Math.max(1, Math.min(200, Math.floor(p.maxItems))) : Infinity;
     const cursor = p.cursor ? String(p.cursor) : null;
-    if (cursor?.startsWith("history:") || (!cursor && maxItems !== Infinity)) {
+    const newerPrefix = "history-newer:";
+    const olderPrefix = "history:";
+    const forward = p.around != null || cursor?.startsWith(newerPrefix);
+    if (forward || cursor?.startsWith(olderPrefix) || (!cursor && maxItems !== Infinity)) {
       const projection = await this.ensureProjection(rt);
       this.flushDeltas(rt);
       const journal = this.journalOf(rt);
       const position = { epoch: journal.epoch, seq: journal.headSeq };
-      const anchor = cursor?.slice(8);
-      if (anchor !== undefined && !projection.has(anchor)) {
-        throw rpc("invalid_params", "this history window is no longer available; return to the latest messages");
+      const anchor = p.around ?? cursor?.slice(forward ? newerPrefix.length : olderPrefix.length);
+      const offset = anchor == null ? projection.length : projection.offset(anchor);
+      if (offset === undefined) {
+        throw rpc("invalid_params", "this message is no longer in the thread");
       }
+      const start = offset + (forward && p.around == null ? 1 : 0);
+      const source = forward ? projection.historyFrom(start) : projection.historyBefore(anchor ?? undefined);
       const items: Item[] = [];
       let bytes = 0;
-      let more = false;
-      for (const item of projection.historyBefore(anchor)) {
+      for (const item of source) {
         const size = Buffer.byteLength(canonical(item));
-        if (items.length >= maxItems || (items.length && bytes + size > limit)) {
-          more = true;
-          break;
-        }
+        if (items.length >= maxItems || (items.length && bytes + size > limit)) break;
         items.push(item);
         bytes += size;
       }
+      if (forward) items.reverse();
       const result: ThreadReadResult = { items, position };
-      const oldest = items.at(-1);
-      if (more && oldest) result.cursor = `history:${oldest.id}`;
+      const first = forward ? start : start - items.length;
+      const end = forward ? start + items.length : start;
+      if (first > 0 && items.length) result.cursor = `${olderPrefix}${items.at(-1)!.id}`;
+      if (end < projection.length && items.length) result.newerCursor = `${newerPrefix}${items[0]!.id}`;
       if (!cursor) {
         if (rt.context) result.context = rt.context;
+        if (p.around == null) result.prompts = projection.timeline(!!rt.record.spawnedBy);
         const included = new Set(items.map((item) => item.id));
         const required = [...rt.requests.values()]
           .filter((r) => (r.state === "pending" || r.state === "submitted") && !included.has(r.itemId))

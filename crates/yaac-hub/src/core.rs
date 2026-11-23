@@ -2928,47 +2928,42 @@ fn window_answer(
 fn read_from_cache(cache: &mut crate::cache::Cache, target: &TargetId, p: &ThreadReadParams) -> Result<Value, String> {
     let cached = cache.thread(target, &p.thread_id).map_err(|e| e.to_string())?;
     let Some(cached) = cached else { return Err("the thread is not cached".into()) };
-    let skip: usize = match p.cursor.as_ref().map(|c| c.as_str()) {
-        Some(cursor) if cursor.starts_with("history:") => cached.items.iter().rev()
-            .position(|item| item.id.as_str() == &cursor[8..]).map(|offset| offset + 1)
-            .ok_or_else(|| "the older page is not cached".to_owned())?,
-        Some(cursor) => cursor.strip_prefix("hubcache:").and_then(|n| n.parse().ok()).unwrap_or(0),
-        None => 0,
-    };
-    let max = p.max_bytes.unwrap_or(64 * 1024).max(1); // a page always holds at least one item
+    let cursor = p.cursor.as_ref().map(PageCursor::as_str);
+    let interactive = p.around.is_some() || cursor.is_some_and(|c| c.starts_with("history:") || c.starts_with("history-newer:"))
+        || (cursor.is_none() && p.max_items.is_some());
+    let first_page = cursor.is_none() && p.around.is_none();
+    let position = cached.position;
+    let context = cursor.is_none().then(|| cached.live.context.clone()).flatten();
+    if interactive {
+        let (items, cursor, newer_cursor) = yaac_protocol::cached_history_page(&cached.items, p)?;
+        let prompts = if first_page {
+            let spawned = cache.thread_summary(target, &p.thread_id).map_err(|e| e.to_string())?.is_some_and(|s| s.spawned_by.is_some());
+            Some(yaac_protocol::TimelinePrompt::index(&cached.items, spawned))
+        } else {
+            None
+        };
+        let required_items = p.cursor.is_none().then(|| {
+            cached.items.iter().filter(|item|
+                matches!(&item.body, ItemBody::Request(request) if matches!(request.state, RequestState::Pending | RequestState::Submitted))
+                    && !items.iter().any(|present| present.id == item.id)
+            ).cloned().collect::<Vec<_>>()
+        }).filter(|items| !items.is_empty());
+        return Ok(to_value(&ThreadReadResult { items, position, cursor, newer_cursor, prompts, required_items, uploads: vec![], context }));
+    }
+
+    let skip = cursor.and_then(|c| c.strip_prefix("hubcache:")).and_then(|n| n.parse().ok()).unwrap_or(0);
+    let max = p.max_bytes.unwrap_or(64 * 1024).max(1);
     let mut items = Vec::new();
     let mut bytes = 0u64;
-    let mut next = skip;
-    let max_items = p.max_items.map_or(usize::MAX, |n| n.clamp(1, 200) as usize);
-    for item in cached.items.iter().rev().skip(skip).take(max_items) {
+    for item in cached.items.iter().rev().skip(skip) {
         let len = serde_json::to_vec(item).map_or(0, |v| v.len() as u64);
-        if !items.is_empty() && bytes + len > max {
-            break;
-        }
+        if !items.is_empty() && bytes + len > max { break; }
         bytes += len;
         items.push(item.clone());
-        next += 1;
     }
-    let cursor = if next < cached.items.len() {
-        if p.max_items.is_some() {
-            items.last().map(|item| PageCursor::new(format!("history:{}", item.id)))
-        } else {
-            Some(PageCursor::new(format!("hubcache:{next}")))
-        }
-    } else {
-        None
-    };
-    let context = if skip == 0 { cached.live.context.clone() } else { None };
-    let required_items = if skip == 0 && p.max_items.is_some() {
-        let required: Vec<_> = cached.items.iter().rev().skip(next)
-            .filter(|item| matches!(&item.body, ItemBody::Request(request) if matches!(request.state, RequestState::Pending | RequestState::Submitted)))
-            .cloned()
-            .collect();
-        (!required.is_empty()).then_some(required)
-    } else {
-        None
-    };
-    Ok(to_value(&ThreadReadResult { items, position: cached.position, cursor, required_items, uploads: vec![], context }))
+    let next = skip + items.len();
+    let cursor = (next < cached.items.len()).then(|| PageCursor::new(format!("hubcache:{next}")));
+    Ok(to_value(&ThreadReadResult { items, position, cursor, newer_cursor: None, prompts: None, required_items: None, uploads: vec![], context }))
 }
 
 #[cfg(test)]

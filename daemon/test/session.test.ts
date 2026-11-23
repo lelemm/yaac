@@ -208,10 +208,22 @@ test("interactive history pages are bounded and keep a stable anchor as live ite
     const first: any = await c.request("thread/read", { threadId, maxItems: 2 });
     assert.deepEqual(first.items.map((item: any) => item.id), before.slice(0, 2).map((item) => item.id));
     assert.match(first.cursor, /^history:/);
+    const prompt = before.at(-1)!;
+    assert.deepEqual(first.prompts.map((entry: any) => entry.itemId), [prompt.id]);
+    assert.ok(!first.items.some((item: any) => item.id === prompt.id));
     await c.request("turn/start", { threadId, opId: opId(), input: text("/fake say Latest") });
     await until(idle, "new history to settle");
     const older: any = await c.request("thread/read", { threadId, cursor: first.cursor, maxItems: 2 });
     assert.deepEqual(older.items.map((item: any) => item.id), before.slice(2, 4).map((item) => item.id));
+    const sought: any = await c.request("thread/read", { threadId, around: prompt.id, maxItems: 1 });
+    assert.deepEqual(sought.items.map((item: any) => item.id), [prompt.id]);
+    assert.match(sought.newerCursor, /^history-newer:/);
+    const newer: any = await c.request("thread/read", { threadId, cursor: sought.newerCursor, maxItems: 1 });
+    assert.deepEqual(newer.items.map((item: any) => item.id), [before.at(-2)!.id]);
+    const back: any = await c.request("thread/read", { threadId, cursor: newer.cursor, maxItems: 1 });
+    assert.deepEqual(back.items.map((item: any) => item.id), [prompt.id]);
+    const latest: any = await c.request("thread/read", { threadId, maxItems: 1 });
+    assert.equal(latest.prompts.length, 2);
   } finally {
     await c.close();
     await daemon.stop("test");

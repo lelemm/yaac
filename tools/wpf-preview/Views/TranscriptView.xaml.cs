@@ -28,7 +28,15 @@ public partial class TranscriptView : UserControl
     private readonly Dictionary<string, ThreadViewState> threads = new();
     private readonly DispatcherTimer reportTimer;
     private readonly TranscriptSelection selection;
-    private TranscriptRow[] prompts = [];
+    private sealed record Prompt(string Id, string Title, string? Stamp);
+    private Prompt[] prompts = [];
+    private Prompt[]? promptIndex;
+    private readonly Dictionary<string, TranscriptRow> promptRows = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, int> promptNumbers = new(StringComparer.Ordinal);
+    private (int Number, int Row)[] loadedPrompts = [];
+    private string? timelineTarget;
+    private string? requestedPage;
+    private bool jumpingLatest;
     private ThreadViewState? thread;
     private ScrollViewer? scroll;
     private double chatGutter = 28;
@@ -114,6 +122,9 @@ public partial class TranscriptView : UserControl
             focusId = null;
             focusToken = null;
             focusApplied = false;
+            promptIndex = null;
+            timelineTarget = requestedPage = null;
+            jumpingLatest = false;
             byId.Clear();
             items.Clear();
             pin = thread.Pin ?? new ScrollPin(null, 0, 0, true);
@@ -124,12 +135,15 @@ public partial class TranscriptView : UserControl
         var pageData = view.Value("page");
         var pageChanged = !TranscriptJson.Same(page, pageData);
         if (pageChanged)
-        {
             page = pageData.Snapshot();
-            Older.Content = page.Value("label").Text();
-            Older.IsEnabled = page.Value("enabled").Flag();
-            Older.ToolTip = page.Value("detail").OptionalText();
-            Older.Visibility = page.Value("id").Text().Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+
+        var indexData = view.Value("prompts");
+        var indexChanged = indexData.ValueKind != JsonValueKind.Undefined;
+        if (indexChanged)
+        {
+            promptIndex = indexData.ValueKind == JsonValueKind.Array
+                ? indexData.EnumerateArray().Select(data => new Prompt(data.Value("id").Text(), data.Value("title").Text(), data.Value("stamp").OptionalText())).ToArray()
+                : null;
         }
 
         var state = thread!;
@@ -191,16 +205,31 @@ public partial class TranscriptView : UserControl
         Empty.Text = empty;
         Empty.Visibility = empty.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
 
-        if (structureChanged || dataChanged)
+        if (structureChanged || dataChanged || indexChanged || switched)
         {
-            var nextPrompts = items.Where(row => row.Kind is "user" or "task").ToArray();
+            var nextPrompts = promptIndex ?? items.Where(row => row.Kind is "user" or "task")
+                .Select(row => new Prompt(row.ActionId, row.Prompt, row.Data.Value("stamp").OptionalText())).ToArray();
             var timelineChanged = !nextPrompts.SequenceEqual(prompts);
             prompts = nextPrompts;
+            if (timelineChanged)
+            {
+                promptNumbers.Clear();
+                for (var i = 0; i < prompts.Length; i++)
+                    promptNumbers.TryAdd(prompts[i].Id, i);
+            }
+            promptRows.Clear();
+            var loaded = new List<(int Number, int Row)>();
+            foreach (var row in items)
+            {
+                if (promptNumbers.TryGetValue(row.ActionId, out var number) && promptRows.TryAdd(row.ActionId, row))
+                    loaded.Add((number, row.Index));
+            }
+            loadedPrompts = loaded.ToArray();
             messages = items.Count(row => row.Kind is "user" or "agent");
             if (timelineChanged)
                 RebuildTimeline();
             else
-                UpdateTimeline(labels: true);
+                UpdateTimeline();
         }
 
         var requestedFocus = view.Value("focusId").OptionalText();
@@ -226,12 +255,19 @@ public partial class TranscriptView : UserControl
             }
         }
         anchorToken = nextAnchorToken;
-        if (!focusApplied && FindRow(focusId) is { } requestedFocusRow)
+        if (jumpingLatest && !historyAway && !page.Value("loading").Flag())
+        {
+            jumpingLatest = false;
+            SetPin(new ScrollPin(null, 0, 0, true), report: true);
+        }
+        else if (!focusApplied && FindRow(focusId) is { } requestedFocusRow)
         {
             focusApplied = true;
             requestedPin = null;
             seen = messages;
-            SetPin(new ScrollPin(requestedFocusRow.Id, 60, 0, false, Focus: true), report: true);
+            var fromTimeline = requestedFocusRow.ActionId == timelineTarget;
+            timelineTarget = null;
+            SetPin(new ScrollPin(requestedFocusRow.Id, fromTimeline ? 10 : 60, 0, false, Focus: !fromTimeline), report: true);
         }
         else if (requestedPin is { } toRestore && FindRow(toRestore.Id) is { } anchorRow)
         {
@@ -239,7 +275,7 @@ public partial class TranscriptView : UserControl
             seen = messages;
             SetPin(toRestore with { Id = anchorRow.Id }, report: true);
         }
-        else if (structureChanged || dataChanged || pageChanged)
+        else if (structureChanged || dataChanged)
         {
             if (!pin.Bottom && pin.Id is not null && !byId.ContainsKey(pin.Id) && items.Count > 0)
                 pin = pin with { Id = switched ? null : items[Math.Clamp(oldIndex, 0, items.Count - 1)].Id, Top = 0 };
@@ -252,6 +288,7 @@ public partial class TranscriptView : UserControl
         if (structureChanged || dataChanged)
             selection.QueueRefresh();
         UpdateLatest();
+        MaybePage();
     }
 
     private TranscriptRow? FindRow(string? id) =>
@@ -290,7 +327,12 @@ public partial class TranscriptView : UserControl
     public void JumpToBottom()
     {
         if (historyAway)
+        {
+            jumpingLatest = true;
+            timelineTarget = null;
             Command?.Invoke("transcript.page", new { id = "latest", threadId });
+            return;
+        }
         SetPin(new ScrollPin(null, 0, 0, true), report: true);
     }
 
@@ -302,16 +344,33 @@ public partial class TranscriptView : UserControl
         var rowIndex = anchor.Id is not null && byId.TryGetValue(anchor.Id, out var current)
             ? current.Index
             : anchor.Bottom ? items.Count : 0;
-        var candidates = direction > 0 ? prompts.AsEnumerable() : prompts.Reverse();
-        foreach (var prompt in candidates)
+        var candidates = direction > 0 ? loadedPrompts.AsEnumerable() : loadedPrompts.Reverse();
+        foreach (var (number, index) in candidates)
         {
-            var index = prompt.Index;
             if (direction > 0 ? index <= rowIndex : index > rowIndex || (index == rowIndex && anchor.Top > -2))
                 continue;
-            SetPin(new ScrollPin(prompt.Id, 10, 0, false), report: true);
+            ScrollToPrompt(prompts[number]);
             return true;
         }
-        return false;
+        var adjacent = loadedPrompts.Length == 0 ? (direction < 0 && !historyAway ? prompts.Length - 1 : -1)
+            : direction > 0 ? loadedPrompts[^1].Number + 1 : loadedPrompts[0].Number - 1;
+        if (adjacent < 0 || adjacent >= prompts.Length)
+            return false;
+        ScrollToPrompt(prompts[adjacent]);
+        return true;
+    }
+
+    private void ScrollToPrompt(Prompt prompt)
+    {
+        jumpingLatest = false;
+        if (promptRows.TryGetValue(prompt.Id, out var row))
+        {
+            SetPin(new ScrollPin(row.Id, 10, 0, false), report: true);
+            return;
+        }
+
+        timelineTarget = prompt.Id;
+        Command?.Invoke("transcript.prompt", new { id = prompt.Id, threadId });
     }
 
     private void EmitAction(TranscriptRow row, object payload)
@@ -320,14 +379,22 @@ public partial class TranscriptView : UserControl
             Command?.Invoke("transcript.action", payload);
     }
 
-    private void PageClicked(object sender, RoutedEventArgs e)
+    private void MaybePage()
     {
-        if (page.Value("enabled").Flag() && page.Value("id").OptionalText() is { } id)
-        {
-            follow = false;
-            pendingPin = CapturePin();
-            Command?.Invoke("transcript.page", new { id, threadId });
-        }
+        if (scroll is null || pendingPin is not null || selectingThread || jumpingLatest || page.Value("loading").Flag())
+            return;
+        var top = scroll.VerticalOffset;
+        var bottom = scroll.ScrollableHeight - top;
+        var older = page.Value("older").OptionalText();
+        var newer = page.Value("newer").OptionalText();
+        const double prefetch = 220;
+        var direction = newer is not null && bottom < prefetch && (top >= prefetch || top > bottom || older is null)
+            ? "newer" : older is not null && top < prefetch ? "older" : null;
+        var cursor = direction == "newer" ? newer : direction == "older" ? older : null;
+        if (cursor is null || cursor == requestedPage)
+            return;
+        requestedPage = cursor;
+        Command?.Invoke("transcript.page", new { id = direction, threadId });
     }
 
     private void LatestClicked(object sender, RoutedEventArgs e) => JumpToBottom();
@@ -406,6 +473,7 @@ public partial class TranscriptView : UserControl
         }
         UpdateLatest();
         UpdateTimeline();
+        MaybePage();
     }
 
     private bool AtBottom() => scroll is null || scroll.ScrollableHeight - scroll.VerticalOffset < 1;
@@ -501,7 +569,7 @@ public partial class TranscriptView : UserControl
             if (follow && e.VerticalChange == 0 && (e.ExtentHeightChange != 0 || e.ViewportHeightChange != 0) && !AtBottom())
                 SetPin(new ScrollPin(null, 0, 0, true));
             else
-                follow = AtBottom();
+                follow = !historyAway && AtBottom();
             if (e.VerticalChange != 0 && e.ExtentHeightChange == 0 && e.ViewportHeightChange == 0)
                 QueueAnchorReport();
         }
@@ -509,6 +577,7 @@ public partial class TranscriptView : UserControl
             seen = messages;
         UpdateLatest();
         UpdateTimeline();
+        MaybePage();
     }
 
     private void QueueAnchorReport()
@@ -561,19 +630,39 @@ public partial class TranscriptView : UserControl
             var button = new Button
             {
                 Style = (Style)FindResource("TimelineButton"),
-                Width = 28,
+                Width = Math.Min(28, Timeline.ActualWidth),
                 Height = step,
                 Cursor = Cursors.Hand,
                 IsTabStop = false,
                 Content = new Border { Width = 7, Height = 2, CornerRadius = new CornerRadius(1), Background = TranscriptColors.Muted },
                 Tag = (first, end),
             };
-            var id = prompts[first].Id;
-            button.Click += (_, _) => SetPin(new ScrollPin(id, 10, 0, false), report: true);
+            button.Click += (_, _) => PickPrompt(button, first, end);
             Timeline.Children.Add(button);
             Canvas.SetTop(button, top + i * step);
         }
         UpdateTimeline(labels: true);
+    }
+
+    private void PickPrompt(Button button, int first, int end)
+    {
+        if (end - first == 1)
+        {
+            ScrollToPrompt(prompts[first]);
+            return;
+        }
+        var menu = new ContextMenu
+        {
+            PlacementTarget = button, Placement = PlacementMode.Right, MaxHeight = 320,
+        };
+        for (var i = first; i < end; i++)
+        {
+            var prompt = prompts[i];
+            var item = new MenuItem { Header = prompt.Title, ToolTip = prompt.Stamp };
+            item.Click += (_, _) => ScrollToPrompt(prompt);
+            menu.Items.Add(item);
+        }
+        menu.IsOpen = true;
     }
 
     private void UpdateTimeline(bool labels = false)
@@ -591,14 +680,23 @@ public partial class TranscriptView : UserControl
                 firstVisible = index;
             lastVisible = index;
         }
+        var firstPrompt = -1;
+        var lastPrompt = -1;
+        foreach (var (number, row) in loadedPrompts)
+        {
+            if (row <= firstVisible || firstPrompt < 0 && row <= lastVisible)
+                firstPrompt = number;
+            if (row <= lastVisible)
+                lastPrompt = number;
+        }
         foreach (Button button in Timeline.Children)
         {
             var (first, end) = ((int, int))button.Tag;
-            var row = prompts[first];
+            var prompt = prompts[first];
             if (labels)
             {
-                var stamp = row.Data.Value("stamp").OptionalText();
-                var line = row.Prompt;
+                var stamp = prompt.Stamp;
+                var line = prompt.Title;
                 var label = (stamp is null ? line : $"{line}\n{stamp}") + (end - first > 1 ? $"\nand {end - first - 1} more" : "");
                 if (!Equals(button.ToolTip, label))
                 {
@@ -607,11 +705,9 @@ public partial class TranscriptView : UserControl
                 }
             }
 
-            var startRow = row.Index;
-            var endRow = end < prompts.Length ? prompts[end].Index : items.Count;
-            var lit = firstVisible >= 0 && startRow <= lastVisible && endRow > firstVisible;
+            var lit = firstPrompt >= 0 && first <= lastPrompt && end > firstPrompt;
             var dash = (Border)button.Content;
-            dash.Width = lit ? 12 : 7;
+            dash.Width = Math.Min(lit ? 12 : 7, Math.Max(0, Timeline.ActualWidth - 2));
             dash.Background = lit ? TranscriptColors.Text : TranscriptColors.Muted;
         }
     }

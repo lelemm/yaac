@@ -475,19 +475,6 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
         ui.vertical_centered(|ui| ui.label(widgets::secondary("Loading…", &p)));
         return;
     }
-    if t.older_cursor.is_some() || t.history_away {
-        ui.horizontal(|ui| {
-            if t.older_cursor.is_some() {
-                let label = if t.loading_older { "Loading older messages…" } else { "Load older messages" };
-                if ui.add_enabled(!t.loading_older && t.loading.is_none(), egui::Button::new(label)).clicked() {
-                    actions.push(Action::OlderHistory(key.clone()));
-                }
-            }
-            if t.history_away && ui.add_enabled(t.loading.is_none(), egui::Button::new("Latest messages")).clicked() {
-                actions.push(Action::LatestHistory(key.clone()));
-            }
-        });
-    }
     let bl = blocks(state, map, key, &app.ui.expansion);
     // Finished turns fold into "Worked for …" and their final message (D156).
     let focus = state.focus_item.as_ref().filter(|(k, _)| k == key).map(|(_, id)| id);
@@ -528,7 +515,7 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     // The same room under the last block whatever it is, so the newest line does not move
     // when a message (with its time line, D154) gives way to an activity line.
     let total = y + 20.0 + bl.last().map_or(0.0, |b| crate::messages::STAMP_LINE - crate::messages::stamp_space(b));
-    let mut sa = egui::ScrollArea::vertical().id_salt(("transcript", key.to_string())).auto_shrink([false, false]).stick_to_bottom(true);
+    let mut sa = egui::ScrollArea::vertical().id_salt(("transcript", key.to_string())).auto_shrink([false, false]).stick_to_bottom(!t.history_away);
     if let Some(a) = app.ui.restore.take() {
         // Back or forward: the same lines the user was reading, even if items arrived since.
         app.ui.scroll_end = false;
@@ -565,7 +552,7 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
         // only moves the offset when a pass ends, so content that grew would be drawn one pass
         // late, below the view. A jump to the end goes to the end itself, not past it.
         let view = app.ui.at_end.as_ref().filter(|(k, _)| k == key).map(|(_, v)| *v);
-        if std::mem::take(&mut app.ui.scroll_end) || view.is_some() {
+        if (t.is_loaded() && std::mem::take(&mut app.ui.scroll_end)) || view.is_some() {
             sa = sa.vertical_scroll_offset((total - view.unwrap_or_else(|| ui.available_height())).max(0.0));
         } else if let Some((_, id, off)) = app.ui.scroll_anchor.as_ref().filter(|(k, ..)| k == key)
             && let Some(i) = idents.iter().position(|x| x == id)
@@ -673,16 +660,42 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
             Some(yaac_core::history::Anchor { item, offset: view.top() - tops[i] })
         });
     });
-    // The timeline at the left edge (D153): one dash per prompt, those in view lit.
+    let view_top = out.state.clamped_offset().y;
+    let view_bottom = view_top + out.inner_rect.height();
+    // Prefetch the adjacent page before the reader reaches either edge of the window.
+    if t.is_loaded() && !t.loading_older && !t.loading_newer && app.ui.timeline.go_to.is_none() {
+        let remaining = (total - view_bottom).max(0.0);
+        if t.newer_cursor.is_some() && remaining < 220.0 && (view_top >= 220.0 || view_top > remaining) {
+            actions.push(Action::NewerHistory(key.clone()));
+        } else if t.older_cursor.is_some() && view_top < 220.0 {
+            actions.push(Action::OlderHistory(key.clone()));
+        } else if t.newer_cursor.is_some() && remaining < 220.0 {
+            actions.push(Action::NewerHistory(key.clone()));
+        }
+    }
+    // Dashes use the full prompt index; the loaded rows only determine the highlight.
     {
-        let entries = yaac_core::timeline::entries(t, &bl);
+        use yaac_core::timeline as timeline;
+        let entries = timeline::entries(t, &bl);
         let etops: Vec<f32> = entries
             .iter()
             .map(|e| bl.iter().position(|b| matches!(b, Block::User { index } | Block::Task { index } if *index == e.index)).map_or(0.0, |bi| tops[bi]))
             .collect();
-        let view_top = out.state.clamped_offset().y;
-        let view = (view_top, view_top + out.inner_rect.height());
-        if let Some(item) = crate::timeline::show(ui, &mut app.ui.timeline, &p, area, &entries, &etops, view, now, app.zone) {
+        let visible = timeline::visible(&etops, view_top, view_bottom);
+        let index = t.prompts.as_deref();
+        let highlight = if let Some(index) = index {
+            let id_at = |i| entries.get(i).and_then(|entry: &timeline::Entry| index.iter().position(|p| p.item_id == entry.item));
+            match (id_at(visible.start), visible.end.checked_sub(1).and_then(id_at)) {
+                (Some(first), Some(last)) => first..last + 1,
+                _ => 0..0,
+            }
+        } else {
+            visible
+        };
+        if let Some(item) = crate::timeline::show(ui, &mut app.ui.timeline, &p, area, &entries, index, highlight, now, app.zone) {
+            if t.item(&item).is_none() {
+                actions.push(Action::FocusHistory(key.clone(), item.clone()));
+            }
             app.ui.timeline.go_to = Some(item);
             ui.ctx().request_repaint();
         }
@@ -693,9 +706,9 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     }
     // Away from the newest message (D142): remember how many messages there were when the
     // view left the bottom, and offer a way back above the composer.
-    let at_end = out.state.clamped_offset().y + out.inner_rect.height() >= out.content_size.y - 8.0;
+    let at_end = !t.history_away && out.state.clamped_offset().y + out.inner_rect.height() >= out.content_size.y - 8.0;
     // Exactly at the end: egui's own test for sticking to it.
-    let stuck = out.state.unclamped_offset().y + out.inner_rect.height() >= out.content_size.y - 0.5;
+    let stuck = !t.history_away && out.state.unclamped_offset().y + out.inner_rect.height() >= out.content_size.y - 0.5;
     app.ui.at_end = stuck.then(|| (key.clone(), out.inner_rect.height()));
     // What the next pass keeps in place (D163): the block reaching into the top of the view,
     // as a browser's scroll anchoring does. Its own growth (a reply streaming into it) is
@@ -724,10 +737,11 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     }
     if let Some((_, seen)) = app.ui.away_from_end.as_ref().filter(|(k, _)| k == key) {
         let fresh = messages.saturating_sub(*seen);
-        let text = match fresh {
-            0 => "Jump to bottom".to_owned(),
-            1 => "1 new message".to_owned(),
-            n => format!("{n} new messages"),
+        let text = match (t.history_away, fresh) {
+            (true, _) => "Latest messages".to_owned(),
+            (_, 0) => "Jump to bottom".to_owned(),
+            (_, 1) => "1 new message".to_owned(),
+            (_, n) => format!("{n} new messages"),
         };
         // "3 new messages (Ctrl+End)", with the key as bound now (D131).
         let label = crate::commander::tip(app, &text, yaac_core::commands::Cmd::JumpToBottom);

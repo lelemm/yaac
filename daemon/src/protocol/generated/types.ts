@@ -4680,6 +4680,10 @@ export interface ThreadPlacement {
  */
 export interface ThreadReadParams {
   /**
+   * Open a history window at this item.
+   */
+  around?: ItemId | null;
+  /**
    * Continue from a previous page; absent for the first page (which takes a new snapshot).
    */
   cursor?: PageCursor | null;
@@ -4714,9 +4718,17 @@ export interface ThreadReadResult {
    */
   items: Item[];
   /**
+   * Cursor for the adjacent newer page in an interactive window.
+   */
+  newerCursor?: PageCursor | null;
+  /**
    * The journal position the snapshot is valid at. Same on every page of one snapshot.
    */
   position: JournalPosition;
+  /**
+   * Full timeline metadata, oldest first. Sent on the first interactive page.
+   */
+  prompts?: TimelinePrompt[] | null;
   /**
    * Outstanding requests outside the latest page.
    */
@@ -5188,6 +5200,15 @@ export interface ThreadUpdatedParams {
    * The index token that includes this change.
    */
   token: SyncToken;
+}
+
+/**
+ * Compact metadata for one prompt on the full-thread timeline.
+ */
+export interface TimelinePrompt {
+  at?: Timestamp | null;
+  itemId: ItemId;
+  title: string;
 }
 
 /**

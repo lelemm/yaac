@@ -121,7 +121,7 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.THREAD_START:
         return core.threadStart(this, p as never);
       case METHODS.THREAD_READ:
-        return core.read(this, { threadId: str(p, "threadId"), cursor: (p.cursor as string | null) ?? null, maxBytes: (p.maxBytes as number | null) ?? null, maxItems: (p.maxItems as number | null) ?? null });
+        return core.read(this, { threadId: str(p, "threadId"), cursor: (p.cursor as string | null) ?? null, maxBytes: (p.maxBytes as number | null) ?? null, maxItems: (p.maxItems as number | null) ?? null, around: (p.around as string | null) ?? null });
       case METHODS.THREAD_SUBSCRIBE: {
         const threadId = str(p, "threadId");
         const result = await core.subscribe(

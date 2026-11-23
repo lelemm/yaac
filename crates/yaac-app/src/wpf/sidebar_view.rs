@@ -2,7 +2,7 @@ use super::*;
 use yaac_core::attention::Mark;
 use yaac_core::bulk::{self, BulkKind, Click};
 use yaac_core::moving::{self, Drop};
-use yaac_core::sidebar::{Open, Order, RowRight, Section, SectionKind};
+use yaac_core::sidebar::{Order, RowRight, Section, SectionKind};
 use yaac_core::thread_menu::{self, MenuAction};
 use yaac_protocol::TargetId;
 
@@ -50,19 +50,28 @@ pub(super) fn menu(app: &YaacApp, key: &ThreadKey) -> Vec<Value> {
 }
 
 fn sections(app: &YaacApp, map: &AttentionMap) -> Vec<Section> {
-    sidebar::sections(
-        &app.client.state,
-        map,
-        app.ui.grouping,
-        app.ui.ordering,
-        &app.ui.search,
-        Open {
-            muted: app.ui.muted_open,
-            archived: app.ui.archived_open,
-        },
-        app.now(),
-        app.zone,
-    )
+    crate::sidebar::window_sections(app, map, app.now())
+}
+
+#[cfg(test)]
+#[test]
+fn wpf_collapsed_groups_keep_header_actions_and_are_revealed_in_search() {
+    let ctx = egui::Context::default();
+    let mut app = crate::app::tests::demo_app(&ctx);
+    let key = yaac_core::demo::threads::fix();
+    let group = sidebar::section_of(&app.client.state, app.ui.grouping, &key).unwrap();
+    command(&mut app, &ctx, "sidebar.action", &json!({ "action": "section.toggle", "sectionId": group })).unwrap();
+    let snapshot = view(&app, &AttentionMap::compute(&app.client.state), 0);
+    let section = snapshot["sections"].as_array().unwrap().iter().find(|s| s["id"] == group).unwrap();
+    assert_eq!(section["collapsed"], true);
+    assert_eq!(section["header"]["toggle"]["id"], "section.toggle");
+    assert!(section["header"]["actions"].as_array().unwrap().iter().any(|action| action["id"] == "section.archiveAll"));
+
+    app.ui.search = app.client.state.summary(&key).unwrap().title.clone();
+    let sections = sections(&app, &AttentionMap::compute(&app.client.state));
+    let section = sections.iter().find(|s| s.id == group).unwrap();
+    assert!(section.visible_rows().iter().any(|row| row.key == key));
+    assert!(app.ui.prefs().collapsed_groups.contains(&group));
 }
 
 fn usage(app: &YaacApp, now: i64) -> Vec<Value> {
@@ -99,13 +108,15 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, selection_epoch: u64) -> V
     let sections = sections(app, map);
     let order: Vec<_> = sections
         .iter()
-        .flat_map(|s| s.rows.iter().map(|r| r.key.clone()))
+        .flat_map(|s| s.visible_rows().iter().map(|r| r.key.clone()))
         .collect();
     let picked = app.ui.list_sel.in_order(&order);
     let groups: Vec<_> = sections.iter().map(|s| {
         let header = s.header.as_ref().map(|h| {
-            let toggle = matches!(s.kind, SectionKind::Muted | SectionKind::Archived)
-                .then(|| action("section.toggle", &h.left, true));
+            let toggle = crate::sidebar::can_toggle_section(app, s).then(|| {
+                let label = format!("{} {}", if s.collapsed { "Expand" } else { "Collapse" }, h.left);
+                json!({ "id": "section.toggle", "label": label, "detail": label, "enabled": true })
+            });
             let target = h.machine.as_ref().and_then(|name| state.targets.iter().find(|t| t.entry.name.as_str() == name)).map(|t| &t.entry.id);
             let retry = h.retry.then(|| target.map(|t| action(&format!("target.retry:{t}"), "Retry", true))).flatten();
             let mut actions = Vec::new();
@@ -226,6 +237,7 @@ fn selection(app: &YaacApp, p: &Value) -> Vec<ThreadKey> {
         .collect();
     visible
         .into_iter()
+        .filter(|section| !section.collapsed)
         .flat_map(|section| section.rows)
         .filter_map(|row| ids.contains(row.key.address().as_str()).then_some(row.key))
         .collect()
@@ -389,11 +401,7 @@ fn section_action(app: &mut YaacApp, id: &str, p: &Value) -> Option<Action> {
                 Action::OpenBulkMute(keys)
             });
         }
-        "section.toggle" => match section.kind {
-            SectionKind::Muted => app.ui.muted_open = !app.ui.muted_open,
-            SectionKind::Archived => app.ui.archived_open = !app.ui.archived_open,
-            _ => {}
-        },
+        "section.toggle" => crate::sidebar::toggle_section(app, &section),
         "section.drop" => {
             let rows = selection(app, p);
             if let Drop::Move {

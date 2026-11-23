@@ -66,6 +66,8 @@
           <DockPanel Margin="3,0,4,0">
             <TextBlock DockPanel.Dock="Left" Text="{Binding State.HeaderGlyph}"
                        Style="{StaticResource SidebarOptionalLabel}" />
+            <TextBlock DockPanel.Dock="Left" Text="{Binding State.TemporaryGlyph}"
+                       Style="{StaticResource SidebarOptionalLabel}" />
             <TextBlock Text="{Binding State.Title}" FontWeight="SemiBold"
                        Style="{StaticResource SidebarQuietLabel}" />
           </DockPanel>

@@ -771,11 +771,21 @@ impl Inner {
                     self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
                     return;
                 };
-                let page_size = p["maxItems"].as_u64().and_then(|n| usize::try_from(n).ok()).unwrap_or(6);
-                let start: usize = p.get("cursor").and_then(Value::as_str).and_then(|c| c.parse().ok()).unwrap_or(0);
-                let newest_first: Vec<Item> = t.items.iter().rev().cloned().collect();
-                let page: Vec<Item> = newest_first.iter().skip(start).take(page_size).cloned().collect();
-                let cursor = (start + page_size < newest_first.len()).then(|| (start + page_size).to_string());
+                let params: yaac_protocol::ThreadReadParams = serde_json::from_value(p.clone()).expect("demo thread/read params");
+                let (page, cursor, newer, prompts) = if params.max_items.is_some() {
+                    let Ok((items, cursor, newer)) = yaac_protocol::cached_history_page(&t.items, &params) else {
+                        self.ready.push_back(error(id, ErrorCode::InvalidParams, "no such message"));
+                        return;
+                    };
+                    let prompts = (params.cursor.is_none() && params.around.is_none())
+                        .then(|| yaac_protocol::TimelinePrompt::index(&t.items, t.summary.spawned_by.is_some()));
+                    (items, cursor, newer, prompts)
+                } else {
+                    let skip: usize = p["cursor"].as_str().and_then(|c| c.parse().ok()).unwrap_or(0);
+                    let page: Vec<_> = t.items.iter().rev().skip(skip).take(6).cloned().collect();
+                    let next = skip + page.len();
+                    (page, (next < t.items.len()).then(|| yaac_protocol::PageCursor::new(next.to_string())), None, None)
+                };
                 let mut uploads = Vec::new();
                 for item in &page {
                     if let ItemBody::UserMessage(u) = &item.body {
@@ -795,6 +805,8 @@ impl Inner {
                 if let Some(c) = cursor {
                     res["cursor"] = json!(c);
                 }
+                if let Some(c) = newer { res["newerCursor"] = json!(c); }
+                if let Some(prompts) = prompts { res["prompts"] = json!(prompts); }
                 self.ready.push_back(result(id, res));
                 // Context usage is a live report, not part of a snapshot: report it after one.
                 if last && let Some(c) = context {

@@ -101,7 +101,9 @@ enum Call {
     Sync { target: TargetId, connected: bool },
     Subscribe(ThreadKey),
     Read(ThreadKey),
+    ReadAround(ThreadKey, ItemId),
     ReadOlder(ThreadKey, String),
+    ReadNewer(ThreadKey, String),
     Budget,
     Respond { key: ThreadKey, request_id: RequestId },
     /// `turn/start` or `turn/steer` of the composer's message; `op` is its echo (D165).
@@ -535,10 +537,25 @@ impl Client {
                 }
                 self.refresh_budget_of(&key);
             }
-            Call::Read(key) => {
+            read @ (Call::Read(_) | Call::ReadAround(_, _)) => {
                 let Ok(r) = serde_json::from_value::<ThreadReadResult>(result) else { return };
+                let (key, around) = match read {
+                    Call::Read(key) => (key, None),
+                    Call::ReadAround(key, id) => (key, Some(id)),
+                    _ => unreachable!(),
+                };
                 let rev = self.state.next_stamp();
                 let Some(t) = self.state.transcripts.get_mut(&key) else { return };
+                if let Some(id) = &around
+                    && !r.items.iter().any(|item| &item.id == id)
+                {
+                    t.cancel_reset(rev);
+                    if self.state.focus_item.as_ref() == Some(&(key.clone(), id.clone())) {
+                        self.state.focus_item = None;
+                    }
+                    self.error(Some(key), "The selected message is unavailable.".to_owned());
+                    return;
+                }
                 if r.context.is_some() {
                     t.context = r.context;
                 }
@@ -551,12 +568,17 @@ impl Client {
                     }
                 }
                 t.older_cursor = r.cursor.map(|cursor| cursor.to_string());
+                t.newer_cursor = r.newer_cursor.map(|cursor| cursor.to_string());
+                t.history_away = t.newer_cursor.is_some();
+                if around.is_none() || r.prompts.is_some() {
+                    t.prompts = r.prompts;
+                }
                 let buffered = load.buffered.clone();
                 t.finish_reset(r.position, rev);
                 let items = t.items().to_vec();
                 let stamp = self.state.next_stamp();
                 let hints = self.state.hints.entry(key.clone()).or_default();
-                if hints.position.is_none_or(|p| p.epoch != r.position.epoch || p.seq <= r.position.seq) {
+                if around.is_none() && hints.position.is_none_or(|p| p.epoch != r.position.epoch || p.seq <= r.position.seq) {
                     hints.rebuild(&items, r.position, stamp);
                     for ev in &buffered {
                         hints.apply(ev, stamp);
@@ -564,10 +586,12 @@ impl Client {
                 }
                 self.load_history_focus(&key);
             }
-            Call::ReadOlder(key, cursor) => {
+            Call::ReadOlder(key, cursor) | Call::ReadNewer(key, cursor) => {
+                let newer = cursor.strip_prefix("history-newer:");
                 let rev = self.state.next_stamp();
                 let Some(t) = self.state.transcripts.get_mut(&key) else { return };
-                if t.older_cursor.as_deref() != Some(cursor.as_str()) || !std::mem::take(&mut t.loading_older) {
+                let (edge, loading) = if newer.is_some() { (&t.newer_cursor, &mut t.loading_newer) } else { (&t.older_cursor, &mut t.loading_older) };
+                if edge.as_deref() != Some(cursor.as_str()) || !std::mem::take(loading) {
                     return;
                 }
                 let Ok(r) = serde_json::from_value::<ThreadReadResult>(result) else { return };
@@ -575,9 +599,15 @@ impl Client {
                     self.latest_history(&key);
                     return;
                 }
-                t.older_cursor = r.cursor.map(|cursor| cursor.to_string());
                 t.missing_uploads.extend(r.uploads.into_iter().filter(|u| !u.present).map(|u| u.upload_id));
-                t.prepend_history(r.items, rev);
+                if let Some(anchor) = newer {
+                    t.newer_cursor = r.newer_cursor.map(|cursor| cursor.to_string());
+                    t.history_away = t.newer_cursor.is_some();
+                    t.append_history(&ItemId::new(anchor), r.items, rev);
+                } else {
+                    t.older_cursor = r.cursor.map(|cursor| cursor.to_string());
+                    t.prepend_history(r.items, rev);
+                }
                 self.load_history_focus(&key);
             }
             Call::Budget => {
@@ -825,18 +855,21 @@ impl Client {
                 }
                 self.error(None, format!("The thread was not started: {}", error.message));
             }
-            Call::ReadOlder(key, cursor) => {
-                if let Some(t) = self.state.transcripts.get_mut(&key).filter(|t| t.older_cursor.as_deref() == Some(cursor.as_str())) {
-                    t.loading_older = false;
-                    t.trim_history();
+            Call::ReadOlder(key, cursor) | Call::ReadNewer(key, cursor) => {
+                let Some(t) = self.state.transcripts.get_mut(&key) else { return };
+                let (edge, loading) = if cursor.starts_with("history-newer:") {
+                    (&mut t.newer_cursor, &mut t.loading_newer)
                 } else {
-                    return;
-                }
-                self.error(Some(key), format!("Could not load older messages: {}", error.message));
+                    (&mut t.older_cursor, &mut t.loading_older)
+                };
+                if edge.as_deref() != Some(&cursor) || !std::mem::take(loading) { return; }
+                *edge = None;
+                self.error(Some(key), format!("Could not load this page of messages: {}", error.message));
             }
-            Call::Subscribe(key) | Call::Read(key) => {
+            Call::Subscribe(key) | Call::Read(key) | Call::ReadAround(key, _) => {
+                let rev = self.state.next_stamp();
                 if let Some(t) = self.state.transcripts.get_mut(&key) {
-                    t.loading = None;
+                    t.cancel_reset(rev);
                 }
                 self.error(Some(key), format!("Could not load the thread: {}", error.message));
             }
@@ -1028,7 +1061,7 @@ impl Client {
         let mut params = json!({ "threadId": key.thread, "maxBytes": 262_144, "maxItems": 120 });
         let call = if let Some(cursor) = cursor {
             params["cursor"] = json!(cursor);
-            Call::ReadOlder(key.clone(), cursor)
+            if cursor.starts_with("history-newer:") { Call::ReadNewer(key.clone(), cursor) } else { Call::ReadOlder(key.clone(), cursor) }
         } else {
             Call::Read(key.clone())
         };
@@ -1038,16 +1071,34 @@ impl Client {
     /// Move the transcript window toward older messages.
     pub fn older_history(&mut self, key: &ThreadKey) {
         let Some(t) = self.state.transcripts.get_mut(key) else { return };
-        let Some(cursor) = t.older_cursor.clone().filter(|_| t.loading.is_none() && !t.loading_older) else { return };
+        let Some(cursor) = t.older_cursor.clone().filter(|_| t.loading.is_none() && !t.loading_older && !t.loading_newer) else { return };
         t.loading_older = true;
         self.read_page(key, Some(cursor));
     }
 
-    /// Keep reading when opening a link to a particular message outside the current window.
+    pub fn newer_history(&mut self, key: &ThreadKey) {
+        let Some(t) = self.state.transcripts.get_mut(key) else { return };
+        let Some(cursor) = t.newer_cursor.clone().filter(|_| t.loading.is_none() && !t.loading_older && !t.loading_newer) else { return };
+        t.loading_newer = true;
+        self.read_page(key, Some(cursor));
+    }
+
+    pub fn focus_history_item(&mut self, key: &ThreadKey, item: ItemId) {
+        self.state.focus_item = Some((key.clone(), item));
+        self.load_history_focus(key);
+    }
+
+    /// Seek directly to a prompt or linked message, keeping paging for older targets.
     pub fn load_history_focus(&mut self, key: &ThreadKey) {
-        if let Some((_, item)) = self.state.focus_item.as_ref().filter(|(k, _)| k == key)
-            && self.state.transcripts.get(key).is_some_and(|t| t.item(item).is_none())
-        {
+        let Some((_, item)) = self.state.focus_item.as_ref().filter(|(k, _)| k == key) else { return };
+        let Some(t) = self.state.transcripts.get_mut(key) else { return };
+        if !t.is_loaded() || t.item(item).is_some() { return; }
+        if t.prompts.is_some() {
+            let item = item.clone();
+            let params = json!({ "threadId": key.thread, "maxBytes": 262_144, "maxItems": 120, "around": item });
+            t.begin_reset();
+            self.routed(&key.target, m::THREAD_READ, params, Call::ReadAround(key.clone(), item));
+        } else {
             self.older_history(key);
         }
     }

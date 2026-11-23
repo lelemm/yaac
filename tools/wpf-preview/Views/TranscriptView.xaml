@@ -23,19 +23,13 @@
     </Style>
   </UserControl.Resources>
   <Grid>
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="*" />
-    </Grid.RowDefinitions>
     <Grid.ColumnDefinitions>
       <ColumnDefinition x:Name="TimelineColumn" Width="28" />
       <ColumnDefinition Width="*" />
     </Grid.ColumnDefinitions>
-    <Button x:Name="Older" Grid.Column="1" HorizontalAlignment="Center"
-            Margin="0,6" Padding="12,4" Visibility="Collapsed" Click="PageClicked" />
-    <Canvas x:Name="Timeline" Grid.Row="1" Margin="0,4" ClipToBounds="True"
+    <Canvas x:Name="Timeline" Margin="0,4" ClipToBounds="True"
             SizeChanged="TimelineSizeChanged" AutomationProperties.Name="Message timeline" />
-    <ListBox x:Name="Rows" Grid.Row="1" Grid.Column="1" IsTabStop="False"
+    <ListBox x:Name="Rows" Grid.Column="1" IsTabStop="False"
              Style="{StaticResource YaacVerticalList}"
              Background="Transparent" BorderThickness="0" Padding="0,10,28,16"
              ItemContainerStyle="{StaticResource TranscriptContainer}"
@@ -61,10 +55,10 @@
         </DataTemplate>
       </ListBox.ItemTemplate>
     </ListBox>
-    <TextBlock x:Name="Empty" Grid.Row="1" Grid.Column="1" Margin="16,24,44,0"
+    <TextBlock x:Name="Empty" Grid.Column="1" Margin="16,24,44,0"
                HorizontalAlignment="Center" VerticalAlignment="Top" TextWrapping="Wrap"
                Foreground="{DynamicResource YaacMuted}" IsHitTestVisible="False" />
-    <Button x:Name="Latest" Grid.Row="1" Grid.Column="1" Content="Jump to bottom"
+    <Button x:Name="Latest" Grid.Column="1" Content="Jump to bottom"
             HorizontalAlignment="Center" VerticalAlignment="Bottom" Padding="12,5"
             Margin="0,0,28,9" Visibility="Collapsed" Click="LatestClicked" />
   </Grid>

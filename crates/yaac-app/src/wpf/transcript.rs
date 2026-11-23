@@ -391,12 +391,17 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, markdown: &mut super::mark
             .map(|item| json!({ "id": row_id(item), "offset": anchor.offset }))
     }));
     let focus = focus.and_then(|id| transcript?.item(id)).map(row_id);
-    let page = transcript.filter(|t| t.older_cursor.is_some()).map(|t| json!({
-        "id": "older", "label": if t.loading_older { "Loading older messages…" } else { "Load older messages" },
-        "enabled": !t.loading_older && t.loading.is_none(),
+    let page = transcript.map(|t| json!({
+        "older": t.older_cursor, "newer": t.newer_cursor,
+        "loading": t.loading.is_some() || t.loading_older || t.loading_newer,
     }));
+    let now = app.now();
+    let prompts = transcript.and_then(|t| t.prompts.as_ref()).map(|prompts| prompts.iter().map(|p| {
+        let stamp = p.at.as_ref().and_then(yaac_core::time::secs).map(|at| yaac_core::time::message_time(now, at, app.zone));
+        json!({ "id": p.item_id, "title": p.title, "stamp": stamp })
+    }).collect::<Vec<_>>());
     json!({ "threadId": key.address(), "rows": rows, "loading": transcript.is_some_and(|t| !t.is_loaded()),
-        "page": page, "historyAway": transcript.is_some_and(|t| t.history_away),
+        "page": page, "prompts": prompts, "historyAway": transcript.is_some_and(|t| t.history_away),
         "emptyText": "No messages yet", "focusId": focus, "focusToken": focus, "anchor": anchor })
 }
 
@@ -484,8 +489,20 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
     if name == "transcript.page" {
         match string(p, "id") {
             "older" => app.apply(vec![Action::OlderHistory(k)]),
+            "newer" => app.apply(vec![Action::NewerHistory(k)]),
             "latest" => app.apply(vec![Action::LatestHistory(k)]),
             _ => {}
+        }
+        return Ok(());
+    }
+    if name == "transcript.prompt" {
+        let id = ItemId::new(string(p, "id"));
+        if app.client.state.transcripts.get(&k).and_then(|t| t.prompts.as_ref())
+            .is_some_and(|prompts| prompts.iter().any(|p| p.item_id == id))
+        {
+            app.ui.focus_card = None;
+            app.ui.scroll_to = Some(id.clone());
+            app.apply(vec![Action::FocusHistory(k, id)]);
         }
         return Ok(());
     }
@@ -578,6 +595,9 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
 pub(super) fn diff(old: &Value, new: &mut Value) {
     if old["threadId"] != new["threadId"] {
         return;
+    }
+    if old["prompts"] == new["prompts"] {
+        new.as_object_mut().expect("transcript view").remove("prompts");
     }
     let (Some(older), Some(rows)) = (old["rows"].as_array(), new["rows"].as_array()) else {
         return;

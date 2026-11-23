@@ -157,6 +157,7 @@ internal sealed class SidebarItemState
             Toggle = SidebarAction.Read(value.Get("toggle"));
             Primary = SidebarAction.Read(value.Get("primary"));
             HeaderGlyph = Toggle is not null ? (collapsed ? "▸" : "▾") : Temporary ? "◌" : "";
+            TemporaryGlyph = Toggle is not null && Temporary ? "◌" : "";
             return;
         }
 
@@ -222,6 +223,7 @@ internal sealed class SidebarItemState
     public bool Temporary { get; }
     public bool OlderDaemon { get; }
     public string HeaderGlyph { get; } = "";
+    public string TemporaryGlyph { get; } = "";
     public bool HasToggle => Toggle is not null;
     public SidebarAction? Toggle { get; }
     public SidebarAction? Primary { get; }

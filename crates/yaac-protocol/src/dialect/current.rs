@@ -146,7 +146,7 @@ pub(super) fn read_first_page(
     if matches!(subscribed.mode, SubscribeMode::Replay(_)) {
         return Ok(None);
     }
-    let params = ThreadReadParams { thread_id: command.thread_id.clone(), cursor: None, max_bytes: command.page_bytes, max_items: None };
+    let params = ThreadReadParams { thread_id: command.thread_id.clone(), cursor: None, max_bytes: command.page_bytes, max_items: None, around: None };
     encode("thread/read", &params).map(Some)
 }
 
@@ -156,6 +156,7 @@ pub(super) fn read_next_page(_: &Dialect, command: &OpenThread, cursor: &PageCur
         cursor: Some(cursor.clone()),
         max_bytes: command.page_bytes,
         max_items: None,
+        around: None,
     };
     encode("thread/read", &params)
 }

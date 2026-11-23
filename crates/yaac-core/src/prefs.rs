@@ -6,6 +6,8 @@
 //! not here: it is needed before the window exists, so the window keeps it in its own display
 //! file, [`crate::display::DisplayFile`].)
 
+use std::collections::BTreeSet;
+
 use serde_json::{Value, json};
 
 use crate::sidebar::{Grouping, Order, Ordering};
@@ -37,6 +39,8 @@ pub enum SendKey {
 pub struct UiPrefs {
     /// The sidebar grouping checkboxes and "Show dismissed".
     pub grouping: Grouping,
+    /// Sidebar group IDs whose rows are hidden.
+    pub collapsed_groups: BTreeSet<String>,
     /// The sidebar's ordering inside each group (D116).
     pub ordering: Ordering,
     /// The agents panel is docked.
@@ -76,7 +80,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { grouping: Grouping::default(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, tray_on_close: true, bindings: crate::keys::Overrides::default(), recent: Vec::new() }
+        Self { grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, tray_on_close: true, bindings: crate::keys::Overrides::default(), recent: Vec::new() }
     }
 }
 
@@ -90,6 +94,8 @@ pub mod keys {
     pub const THEME: &str = "theme";
     /// Collapsed sections.
     pub const COLLAPSED: &str = "collapsed";
+    /// Collapsed sidebar groups.
+    pub const COLLAPSED_GROUPS: &str = "collapsedGroups";
     /// Font size.
     pub const FONT_SIZE: &str = "fontSize";
     /// Send key.
@@ -107,7 +113,7 @@ pub mod keys {
     /// The Commander's recently used commands (D130).
     pub const COMMANDER_RECENT: &str = "commanderRecent";
     /// Every key.
-    pub const ALL: [&str; 12] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT];
+    pub const ALL: [&str; 13] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT];
 }
 
 impl UiPrefs {
@@ -137,6 +143,7 @@ impl UiPrefs {
                 ThemePref::Light => "light",
             }),
             keys::COLLAPSED => json!({ "muted": !self.muted_open }),
+            keys::COLLAPSED_GROUPS => json!(self.collapsed_groups),
             keys::FONT_SIZE => json!(self.font_size),
             keys::SIDEBAR => json!({ "width": self.sidebar.width, "collapsed": self.sidebar.collapsed }),
             keys::AGENTS_WIDTH => json!(self.agents_width),
@@ -195,6 +202,11 @@ impl UiPrefs {
                 }
             }
             keys::COLLAPSED => self.muted_open = !b("muted", !self.muted_open),
+            keys::COLLAPSED_GROUPS => {
+                if let Ok(groups) = serde_json::from_value(v.clone()) {
+                    self.collapsed_groups = groups;
+                }
+            }
             #[allow(clippy::cast_possible_truncation, reason = "font sizes are small")]
             keys::FONT_SIZE => {
                 if let Some(f) = v.as_f64().filter(|f| (9.0..=24.0).contains(f)) {

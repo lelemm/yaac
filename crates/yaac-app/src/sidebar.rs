@@ -21,6 +21,45 @@ enum Line<'a> {
     Row(&'a Section, usize),
 }
 
+pub(crate) fn window_sections(app: &YaacApp, map: &AttentionMap, now: i64) -> Vec<Section> {
+    let open = yaac_core::sidebar::Open { muted: app.ui.muted_open, archived: app.ui.archived_open };
+    let mut sections = sections(&app.client.state, map, app.ui.grouping, app.ui.ordering, &app.ui.search, open, now, app.zone);
+    for section in &mut sections {
+        if is_collapsible_group(app, section) && app.ui.collapsed_groups.contains(&section.id) {
+            section.collapsed = true;
+            if section.kind == SectionKind::Group
+                && let Some(header) = &mut section.header
+            {
+                header.left = format!("{} · {}", header.left, section.count);
+            }
+        }
+    }
+    sections
+}
+
+fn is_collapsible_group(app: &YaacApp, section: &Section) -> bool {
+    app.ui.search.trim().is_empty() && section.header.is_some()
+        && matches!(section.kind, SectionKind::Group | SectionKind::Pinned)
+}
+
+pub(crate) fn can_toggle_section(app: &YaacApp, section: &Section) -> bool {
+    is_collapsible_group(app, section) || matches!(section.kind, SectionKind::Muted | SectionKind::Archived)
+}
+
+pub(crate) fn toggle_section(app: &mut YaacApp, section: &Section) {
+    match section.kind {
+        SectionKind::Muted => app.ui.muted_open = !app.ui.muted_open,
+        SectionKind::Archived => app.ui.archived_open = !app.ui.archived_open,
+        _ if is_collapsible_group(app, section) => {
+            if !app.ui.collapsed_groups.remove(&section.id) {
+                app.ui.collapsed_groups.insert(section.id.clone());
+            }
+        }
+        _ => return,
+    }
+    app.persist_prefs();
+}
+
 pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, actions: &mut Vec<Action>) {
     let p = app.p;
     // A fresh install: just the name, a disabled search field, and the footer (screen 07).
@@ -63,8 +102,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             return;
         }
     }
-    let open = yaac_core::sidebar::Open { muted: app.ui.muted_open, archived: app.ui.archived_open };
-    let fresh = sections(&app.client.state, map, app.ui.grouping, app.ui.ordering, &app.ui.search, open, now, app.zone);
+    let fresh = window_sections(app, map, now);
     // Rows do not jump under the pointer (D116): while it is over the list, or a row's menu
     // is open, a reorder waits until it leaves.
     let pointer = ui.ctx().pointer_hover_pos();
@@ -74,7 +112,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             && (matches!(app.ui.menu, Some(Menu::Context(_) | Menu::Selection(_) | Menu::Header(_))) || pointer.is_some_and(|pt| app.ui.list_rect.is_some_and(|r| r.contains(pt)))));
     let secs = app.ui.steady.apply(fresh, hold);
     // The multi-selection (D138) keeps only rows still listed, in the order they are shown.
-    let order: Vec<yaac_core::ThreadKey> = secs.iter().flat_map(|s| s.rows.iter().map(|r| r.key.clone())).collect();
+    let order: Vec<yaac_core::ThreadKey> = secs.iter().flat_map(|s| s.visible_rows().iter().map(|r| r.key.clone())).collect();
     app.ui.list_sel.retain_listed(&order);
     list_keys(ui.ctx(), app, &order);
     app.ui.list_order = order;
@@ -88,8 +126,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             lines.push((y, HEAD, Line::Head(s)));
             y += HEAD;
         }
-        for r in 0..s.rows.len() {
-            let h = if s.rows[r].line2.is_some() { ROW2 } else { ROW };
+        for (r, row) in s.visible_rows().iter().enumerate() {
+            let h = if row.line2.is_some() { ROW2 } else { ROW };
             lines.push((y, h, Line::Row(s, r)));
             y += h;
         }
@@ -715,6 +753,11 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
     let font = theme::ui(size::SMALL);
     let y = rect.bottom() - 7.0;
     let mut x = rect.left() + 4.0;
+    let can_toggle = can_toggle_section(app, s);
+    if can_toggle {
+        icons::chevron(ui.painter(), pos2(x + 5.0, y - 6.0), 12.0, !s.collapsed, p.text2);
+        x += 16.0;
+    }
     if h.temporary {
         icons::dashed_circle(ui.painter(), pos2(x + 6.0, y - 6.0), 5.0, egui::Stroke::new(1.2, p.text2));
         x += 16.0;
@@ -723,9 +766,17 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
     // while the pointer is on it. A temporary project's also offers Create project… (D-29).
     let menu = Menu::Header(s.id.clone());
     let has_menu = h.temporary || (matches!(s.kind, SectionKind::Group | SectionKind::Pinned) && !s.rows.is_empty());
+    let resp = ui.interact(rect, egui::Id::unique(("header", s.id.as_str(), rect.top().to_bits())), if has_menu || can_toggle { Sense::click() } else { Sense::hover() });
+    if can_toggle {
+        let name = format!("{} {}", if s.collapsed { "Expand" } else { "Collapse" }, h.left);
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, !s.collapsed, &name));
+        if resp.clicked() {
+            toggle_section(app, s);
+            ui.ctx().request_repaint();
+        }
+    }
     let mut dots = None;
     if has_menu {
-        let resp = ui.interact(rect, egui::Id::unique(("header", s.id.as_str(), rect.top().to_bits())), Sense::click());
         let open = app.ui.menu == Some(menu.clone());
         if resp.secondary_clicked() {
             app.ui.menu = Some(menu.clone());
@@ -745,18 +796,6 @@ fn header(ui: &mut egui::Ui, app: &mut YaacApp, s: &Section, rect: Rect, actions
             anchor = dr;
         }
         header_menu(app, s, h, &anchor, actions);
-    }
-    if matches!(s.kind, SectionKind::Muted | SectionKind::Archived) {
-        icons::chevron(ui.painter(), pos2(x + 5.0, y - 6.0), 12.0, !s.collapsed, p.text2);
-        x += 16.0;
-        let resp = ui.interact(rect, egui::Id::unique(("collapsible-header", s.id.as_str(), rect.top().to_bits())), Sense::click());
-        if resp.clicked() {
-            if s.kind == SectionKind::Muted {
-                app.ui.muted_open = !app.ui.muted_open;
-            } else {
-                app.ui.archived_open = !app.ui.archived_open;
-            }
-        }
     }
     let mut rx = dots.map_or(rect.right() - 4.0, |d| d.left() - 4.0);
     if h.retry {

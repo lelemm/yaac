@@ -102,6 +102,7 @@ pub(crate) struct ForkDialog {
 #[derive(Debug)]
 pub(crate) struct UiState {
     pub grouping: Grouping,
+    pub collapsed_groups: BTreeSet<String>,
     pub search: String,
     pub muted_open: bool,
     pub commands_collapsed: BTreeSet<ThreadKey>,
@@ -276,6 +277,7 @@ impl UiState {
     fn new(theme: ThemeChoice) -> Self {
         Self {
             grouping: Grouping::default(),
+            collapsed_groups: BTreeSet::new(),
             search: String::new(),
             muted_open: false,
             commands_collapsed: BTreeSet::new(),
@@ -384,6 +386,7 @@ impl UiState {
     pub(crate) fn prefs(&self) -> UiPrefs {
         UiPrefs {
             grouping: self.grouping,
+            collapsed_groups: self.collapsed_groups.clone(),
             ordering: self.ordering,
             docked: self.panel == PanelMode::Docked,
             theme: match self.theme {
@@ -405,6 +408,7 @@ impl UiState {
     #[cfg_attr(not(feature = "hub"), allow(dead_code))]
     fn load_prefs(&mut self, p: &UiPrefs) {
         self.grouping = p.grouping;
+        self.collapsed_groups = p.collapsed_groups.clone();
         self.ordering = p.ordering;
         self.panel = if p.docked { PanelMode::Docked } else { PanelMode::Pill };
         self.theme = match p.theme {
@@ -441,6 +445,8 @@ pub(crate) struct CreateProject {
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
     OlderHistory(ThreadKey),
+    NewerHistory(ThreadKey),
+    FocusHistory(ThreadKey, ItemId),
     LatestHistory(ThreadKey),
     Open(ThreadKey),
     /// After the Commander or a key opened a thread: the caret goes to its composer when the
@@ -1065,6 +1071,8 @@ impl YaacApp {
         for a in actions {
             match a {
                 Action::OlderHistory(k) => self.client.older_history(&k),
+                Action::NewerHistory(k) => self.client.newer_history(&k),
+                Action::FocusHistory(k, item) => self.client.focus_history_item(&k, item),
                 Action::LatestHistory(k) => {
                     self.client.latest_history(&k);
                     self.ui.scroll_end = true;
@@ -1493,7 +1501,7 @@ impl YaacApp {
 
     /// Send changed window-side choices to the hub (attached only; the demo keeps them in
     /// memory).
-    fn persist_prefs(&mut self) {
+    pub(crate) fn persist_prefs(&mut self) {
         let now = self.ui.prefs();
         if now == self.saved_prefs {
             return;
@@ -2607,6 +2615,25 @@ pub(crate) mod tests {
 
     fn row_of(app: &YaacApp, key: &ThreadKey) -> egui::Pos2 {
         app.ui.list_rows.iter().find(|(k, _)| k == key).map(|(_, r)| r.center()).unwrap_or_else(|| panic!("{key:?} is drawn"))
+    }
+
+    #[test]
+    fn clicking_a_group_header_hides_its_rows_and_keeps_the_chat_open() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let key = threads::fix();
+        app.apply(vec![Action::Open(key.clone())]);
+        keys(&ctx, &mut app, vec![]);
+        let header = head_of(&app, &key);
+        click_at(&ctx, &mut app, header, egui::PointerButton::Primary, Modifiers::NONE);
+        keys(&ctx, &mut app, vec![]);
+        assert!(!app.ui.list_order.contains(&key));
+        assert_eq!(app.client.state.selected_thread(), Some(&key));
+
+        let header = head_of(&app, &key);
+        click_at(&ctx, &mut app, header, egui::PointerButton::Primary, Modifiers::NONE);
+        keys(&ctx, &mut app, vec![]);
+        assert!(app.ui.list_order.contains(&key));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 // Applying events to items, and bounding item size.
 
-import type { DeltaField, Item, ThreadEvent } from "../protocol/generated/types.js";
+import type { DeltaField, Item, ThreadEvent, TimelinePrompt } from "../protocol/generated/types.js";
 
 /** Bound on a tool call's output kept inline; the rest is read on demand. */
 export const OUTPUT_HEAD_BYTES = 16 * 1024;
@@ -48,6 +48,9 @@ export function clone<T>(value: T): T {
 export class Projection {
   private order: string[] = [];
   private byId = new Map<string, Item>();
+  private offsets = new Map<string, number>();
+  private prompts = new Map<string, TimelinePrompt>();
+  private firstPromptItem?: string;
 
   apply(event: ThreadEvent): void {
     const e = event as unknown as Record<string, unknown>;
@@ -78,8 +81,17 @@ export class Projection {
   }
 
   upsert(item: Item): void {
-    if (!this.byId.has(item.id)) this.order.push(item.id);
+    if (!this.byId.has(item.id)) {
+      this.offsets.set(item.id, this.order.length);
+      this.order.push(item.id);
+    }
     this.byId.set(item.id, item);
+    if (item.kind === "userMessage" || item.kind === "meshReceived") {
+      this.firstPromptItem ??= item.id;
+      const prompt = timelinePrompt(item);
+      if (prompt) this.prompts.set(item.id, prompt);
+      else this.prompts.delete(item.id);
+    }
   }
 
   has(id: string): boolean {
@@ -92,9 +104,24 @@ export class Projection {
 
   /** Iterate backward from the live end or immediately before an item. */
   *historyBefore(before?: string): IterableIterator<Item> {
-    const end = before === undefined ? this.order.length : this.order.lastIndexOf(before);
-    if (end < 0) throw new Error("history anchor missing");
+    const end = before === undefined ? this.order.length : this.offsets.get(before);
+    if (end === undefined) throw new Error("history anchor missing");
     for (let i = end - 1; i >= 0; i--) yield this.byId.get(this.order[i]!)!;
+  }
+
+  get length(): number { return this.order.length; }
+
+  offset(id: string): number | undefined { return this.offsets.get(id); }
+
+  *historyFrom(start: number): IterableIterator<Item> {
+    for (let i = start; i < this.order.length; i++) yield this.byId.get(this.order[i]!)!;
+  }
+
+  timeline(spawned: boolean): TimelinePrompt[] {
+    const first = spawned && this.firstPromptItem ? this.get(this.firstPromptItem) : undefined;
+    return first?.kind === "meshReceived"
+      ? [promptTitle(first, first.message.text), ...this.prompts.values()]
+      : [...this.prompts.values()];
   }
 
   /** Items oldest first, cloned. */
@@ -105,4 +132,18 @@ export class Projection {
   items(): Item[] {
     return this.order.map((id) => this.byId.get(id)!);
   }
+}
+
+function timelinePrompt(item: Item): TimelinePrompt | null {
+  if (item.kind !== "userMessage") return null;
+  const parts = item.parts;
+  const typed = parts.flatMap((part) => part.type === "text" && part.role !== "context" ? [part.text] : []).find((text) => text.trim());
+  if (!typed && !parts.some((p) => p.type === "image" || p.type === "file") && parts.some((p) => p.type === "text" && p.role === "context")) return null;
+  return promptTitle(item, typed ?? "Attachments");
+}
+
+function promptTitle(item: Item, text: string): TimelinePrompt {
+  const line = (text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "").replace(/^#+/, "").trim().replace(/\s+/g, " ");
+  const chars = Array.from(line);
+  return { itemId: item.id, title: chars.length > 80 ? chars.slice(0, 79).join("") + "…" : line, at: item.startedAt ?? item.completedAt };
 }

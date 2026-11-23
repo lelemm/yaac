@@ -79,6 +79,7 @@ fn a_reset_holds_live_events_until_the_snapshot_is_complete() {
 #[test]
 fn older_pages_slide_the_window_without_losing_live_items() {
     let mut t = Transcript::new();
+    t.prompts = Some(vec![]);
     let item = |i: usize| agent(&format!("row-{i}"), "", ItemStatus::Completed);
     t.replace_all((400..520).map(item).chain([agent("live", "", ItemStatus::InProgress)]).collect(), 1);
     t.prepend_history((280..400).rev().map(item).collect(), 2);
@@ -89,6 +90,15 @@ fn older_pages_slide_the_window_without_losing_live_items() {
     assert_eq!(t.items()[0].id.as_str(), "row-40");
     assert!(t.item(&"live".into()).is_some());
     assert!(t.item(&"row-519".into()).is_none());
+    assert_eq!(t.newer_cursor.as_deref(), Some("history-newer:row-398"));
+
+    t.history_away = false;
+    t.newer_cursor = None;
+    t.append_history(&"row-398".into(), (399..520).rev().map(item).collect(), 5);
+    assert_eq!(t.items().len(), 360);
+    assert!(t.items()[..359].iter().map(|item| item.id.as_str()).eq((161..520).map(|i| format!("row-{i}"))));
+    assert_eq!(t.items()[359].id.as_str(), "live");
+    assert_eq!(t.older_cursor.as_deref(), Some("history:row-161"));
 }
 
 #[test]

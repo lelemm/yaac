@@ -75,6 +75,11 @@ pub struct Transcript {
     pub older_cursor: Option<String>,
     /// Whether a request for an older page is in flight.
     pub loading_older: bool,
+    /// Cursor and request state at the newer edge of a historical window.
+    pub newer_cursor: Option<String>,
+    pub loading_newer: bool,
+    /// Full prompt metadata, independent of the loaded rows. None for older targets.
+    pub prompts: Option<Vec<yaac_protocol::TimelinePrompt>>,
     /// Newer settled rows were left behind to keep the window bounded.
     pub history_away: bool,
     /// Answers this window gave.
@@ -265,8 +270,8 @@ impl Transcript {
                     self.active_turn = None;
                 }
             }
-            ThreadEvent::ItemStarted(e) | ThreadEvent::ItemCompleted(e) => self.upsert(e.item.clone(), rev),
-            ThreadEvent::ItemUpdated(e) => self.upsert(e.item.clone(), rev),
+            ThreadEvent::ItemStarted(e) | ThreadEvent::ItemCompleted(e) => self.apply_item(&e.item, rev),
+            ThreadEvent::ItemUpdated(e) => self.apply_item(&e.item, rev),
             ThreadEvent::ItemDelta(e) => {
                 if let Some(&i) = self.index.get(&e.item_id) {
                     append_delta(&mut self.items[i].body, &e.field, &e.delta);
@@ -300,6 +305,26 @@ impl Transcript {
             // SEAM (window package): the stopped state.
             ThreadEvent::HoldChanged(_) | ThreadEvent::Unknown(_) => {}
         }
+    }
+
+    fn apply_item(&mut self, item: &Item, rev: u64) {
+        if let Some(prompts) = &mut self.prompts
+            && let Some(prompt) = yaac_protocol::TimelinePrompt::of(item, false)
+        {
+            if let Some(known) = prompts.iter_mut().find(|p| p.item_id == prompt.item_id) {
+                *known = prompt;
+            } else {
+                prompts.push(prompt);
+            }
+        }
+        if self.history_away && self.newer_cursor.is_some()
+            && !self.index.contains_key(&item.id)
+            && !matches!(&item.body, ItemBody::Request(_))
+            && !self.pending.iter().any(|p| p.matches(item))
+        {
+            return;
+        }
+        self.upsert(item.clone(), rev);
     }
 
     /// The queue as the subscription reported it (absent: empty).
@@ -345,14 +370,25 @@ impl Transcript {
     pub fn begin_reset(&mut self) {
         self.loading = Some(ResetLoad::default());
         self.loading_older = false;
-        self.older_cursor = None;
-        self.history_away = false;
+        self.loading_newer = false;
+    }
+
+    pub fn cancel_reset(&mut self, rev: u64) {
+        if let Some(load) = self.loading.take() {
+            for event in load.buffered {
+                self.apply(&event, rev);
+            }
+        }
     }
 
     /// Fits the visible history into a bounded window while preserving live requests and drafts.
     pub fn trim_history(&mut self) {
+        self.trim_history_from(self.history_away);
+    }
+
+    fn trim_history_from(&mut self, newest: bool) {
         const WINDOW: usize = 360;
-        if self.items.len() <= WINDOW || self.loading_older {
+        if self.items.len() <= WINDOW || self.loading_older || self.loading_newer {
             return;
         }
         let protected = |item: &Item| {
@@ -362,16 +398,21 @@ impl Transcript {
         };
         let excess = self.items.len() - WINDOW;
         let mut candidates = (0..self.items.len()).filter(|&i| !protected(&self.items[i]));
-        let dropping: BTreeSet<_> = if self.history_away {
+        let dropping: BTreeSet<_> = if newest {
             candidates.rev().take(excess).collect()
         } else {
             candidates.by_ref().take(excess).collect()
         };
-        if !self.history_away && !dropping.is_empty()
+        if !newest && !dropping.is_empty()
             && self.older_cursor.as_deref().is_none_or(|c| c.starts_with("history:"))
         {
             self.older_cursor = dropping.last().and_then(|i| self.items.get(i + 1))
                 .map(|item| format!("history:{}", item.id));
+        }
+        if newest && self.prompts.is_some()
+            && let Some(anchor) = dropping.first().and_then(|i| i.checked_sub(1)).and_then(|i| self.items.get(i))
+        {
+            self.newer_cursor = Some(format!("history-newer:{}", anchor.id));
         }
         self.retain_history(|i| !dropping.contains(&i));
     }
@@ -399,6 +440,17 @@ impl Transcript {
         self.index = self.items.iter().enumerate().map(|(i, item)| (item.id.clone(), i)).collect();
         self.revision = rev;
         self.trim_history();
+    }
+
+    pub fn append_history(&mut self, anchor: &ItemId, items: Vec<Item>, rev: u64) {
+        let Some(edge) = self.index_of(anchor) else { return };
+        let items: Vec<_> = items.into_iter().rev().filter(|item| !self.index.contains_key(&item.id)).collect();
+        let count = items.len();
+        self.items.splice(edge + 1..edge + 1, items);
+        self.revs.splice(edge + 1..edge + 1, std::iter::repeat_n(rev, count));
+        self.index = self.items.iter().enumerate().map(|(i, item)| (item.id.clone(), i)).collect();
+        self.revision = rev;
+        self.trim_history_from(false);
     }
 
     /// Finish a reset with the complete snapshot (`pages` newest first) and its position; then

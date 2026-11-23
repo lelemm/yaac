@@ -10,7 +10,7 @@ use eframe::egui::{self, Rect, Sense, pos2, vec2};
 use yaac_core::ThreadKey;
 use yaac_core::time::Zone;
 use yaac_core::timeline::{self as tl, Entry};
-use yaac_protocol::ItemId;
+use yaac_protocol::{ItemId, TimelinePrompt};
 
 use crate::app::YaacApp;
 use crate::theme::{self, Palette, size};
@@ -42,6 +42,8 @@ pub(crate) struct TimelineUi {
     pub force_stamp: Option<ItemId>,
     /// The dashes as last drawn, in screen coordinates (tests click them).
     pub dashes: Vec<Rect>,
+    /// An expanded dash when several prompts share one mark.
+    group: Option<(usize, ItemId)>,
 }
 
 /// "Go to previous / next message" (Alt+PageUp / Alt+PageDown): the prompt before or after the
@@ -55,20 +57,42 @@ pub(crate) fn go(app: &mut YaacApp, key: &ThreadKey, forward: bool) {
     let to = if forward { tl::next(&tops, *view_top) } else { tl::prev(&tops, *view_top) };
     if let Some(i) = to {
         app.ui.timeline.go_to = Some(entries[i].0.clone());
+    } else if let Some(t) = app.client.state.transcripts.get(key)
+        && let Some(prompts) = &t.prompts
+    {
+        let edge = if forward { entries.last() } else { entries.first() };
+        let index = edge.and_then(|(id, _)| prompts.iter().position(|p| &p.item_id == id));
+        let next = match (index, forward) {
+            (Some(i), true) => prompts.get(i + 1),
+            (Some(i), false) => i.checked_sub(1).and_then(|j| prompts.get(j)),
+            (None, false) if !t.history_away => prompts.last(),
+            _ => None,
+        };
+        if let Some(item) = next.map(|p| p.item_id.clone()) {
+            app.ui.timeline.go_to = Some(item.clone());
+            app.client.focus_history_item(key, item);
+        }
     }
 }
 
 /// Draw the column at the left of `area` (the transcript's visible rectangle). `tops` are the
 /// prompts' tops in the transcript; `view` its visible range. Returns the prompt clicked.
 #[allow(clippy::too_many_arguments, reason = "the drawing context of one column")]
-pub(crate) fn show(ui: &mut egui::Ui, ui_state: &mut TimelineUi, p: &Palette, area: Rect, entries: &[Entry], tops: &[f32], view: (f32, f32), now: i64, zone: Zone) -> Option<ItemId> {
+pub(crate) fn show(ui: &mut egui::Ui, ui_state: &mut TimelineUi, p: &Palette, area: Rect, entries: &[Entry], index: Option<&[TimelinePrompt]>, in_view: std::ops::Range<usize>, now: i64, zone: Zone) -> Option<ItemId> {
     ui_state.dashes.clear();
     let col = Rect::from_min_max(pos2(area.left() + 4.0, area.top() + PAD), pos2(area.left() + COLUMN, area.bottom() - PAD));
-    let layout = tl::layout(entries.len(), col.height());
+    let layout = tl::layout(index.map_or(entries.len(), <[TimelinePrompt]>::len), col.height());
     if layout.dashes.is_empty() {
+        ui_state.group = None;
         return None;
     }
-    let in_view = tl::visible(tops, view.0, view.1);
+    let prompt = |i: usize| {
+        if let Some(index) = index {
+            index.get(i).map(|p: &TimelinePrompt| (&p.item_id, p.title.as_str(), p.at.as_ref().and_then(yaac_core::time::secs)))
+        } else {
+            entries.get(i).map(|e| (&e.item, e.title.as_str(), e.at))
+        }
+    };
     let resp = ui.interact(col, ui.scope_id().with("timeline"), Sense::click());
     let hovered = resp.hover_pos().and_then(|pos| tl::dash_at(&layout, pos.y - col.top())).or(ui_state.force_hover);
     if hovered.is_some() && resp.hovered() {
@@ -88,25 +112,64 @@ pub(crate) fn show(ui: &mut egui::Ui, ui_state: &mut TimelineUi, p: &Palette, ar
         painter.hline(x..=x + len, y, egui::Stroke::new(w, color));
         ui_state.dashes.push(Rect::from_center_size(pos2(x + DASH_LIT / 2.0, y), vec2(DASH_LIT + 4.0, layout.pitch.max(3.0))));
     }
-    let clicked = if resp.clicked() { hovered.and_then(|i| layout.dashes.get(i)).and_then(|d| entries.get(d.first)).map(|e| e.item.clone()) } else { None };
-    if let Some(i) = hovered {
-        let d = layout.dashes[i];
-        card(ui, p, pos2(col.right() + 6.0, col.top() + d.y), &entries[d.first], d.last - d.first, now, zone);
+    let mut clicked = None;
+    if let Some(i) = hovered
+        && let Some(d) = layout.dashes.get(i)
+        && let Some((id, title, at)) = prompt(d.first)
+    {
+        if resp.clicked() {
+            if d.first == d.last {
+                clicked = Some(id.clone());
+                ui_state.group = None;
+            } else {
+                ui_state.group = Some((i, id.clone()));
+            }
+        }
+        if ui_state.group.is_none() {
+            card(ui, p, pos2(col.right() + 6.0, col.top() + d.y), title, at, d.last - d.first, now, zone);
+        }
+    }
+    if let Some((i, id)) = ui_state.group.as_ref()
+        && let Some(d) = layout.dashes.get(*i)
+        && prompt(d.first).is_some_and(|(first, _, _)| first == id)
+    {
+        let mut open = true;
+        crate::widgets::menu_popup(egui::Popup::from_response(&resp), p)
+            .anchor(ui_state.dashes[*i])
+            .align(egui::RectAlign::RIGHT_START)
+            .open_bool(&mut open)
+            .show(|ui| {
+                ui.set_width(300.0);
+                egui::ScrollArea::vertical().max_height(288.0).show_rows(ui, 24.0, d.last - d.first + 1, |ui, range| {
+                    for i in range {
+                        if let Some((id, title, _)) = prompt(d.first + i)
+                            && ui.add(egui::Button::new(title).truncate()).clicked()
+                        {
+                            clicked = Some(id.clone());
+                        }
+                    }
+                });
+            });
+        if !open || clicked.is_some() {
+            ui_state.group = None;
+        }
+    } else {
+        ui_state.group = None;
     }
     clicked
 }
 
 /// The hover card: the prompt's first line and when it was sent; "and N more" for a dash
 /// that stands for several.
-fn card(ui: &egui::Ui, p: &Palette, at: egui::Pos2, e: &Entry, more: usize, now: i64, zone: Zone) {
+fn card(ui: &egui::Ui, p: &Palette, at: egui::Pos2, title: &str, stamp: Option<i64>, more: usize, now: i64, zone: Zone) {
     let ctx = ui.ctx().clone();
     egui::Area::new(egui::Id::unique("timeline-card")).order(egui::Order::Tooltip).fixed_pos(pos2(at.x, at.y - 24.0)).interactable(false).show(&ctx, |ui| {
         egui::Frame::popup(ui.style()).fill(p.raised).corner_radius(8).inner_margin(egui::Margin::symmetric(10, 7)).show(ui, |ui| {
             ui.set_max_width(320.0);
-            let g = crate::widgets::elided(ui, &e.title, &theme::ui(size::UI), p.text, 300.0);
+            let g = crate::widgets::elided(ui, title, &theme::ui(size::UI), p.text, 300.0);
             let (r, _) = ui.allocate_exact_size(g.size(), Sense::hover());
             ui.painter().galley(r.min, g, p.text);
-            let mut sub = e.at.map(|a| yaac_core::time::message_time(now, a, zone)).unwrap_or_default();
+            let mut sub = stamp.map(|a| yaac_core::time::message_time(now, a, zone)).unwrap_or_default();
             if more > 0 {
                 if !sub.is_empty() {
                     sub.push_str(" · ");
@@ -155,6 +218,8 @@ mod tests {
             let map = AttentionMap::compute(&app.client.state);
             crate::thread::transcript(ui, app, &map, &key, NOW, &mut actions);
         });
+        app.apply(actions);
+        app.pump_demo();
         out.textures_delta.clear();
         let mut texts = Vec::new();
         for c in std::mem::take(&mut out.shapes) {
@@ -180,10 +245,14 @@ mod tests {
         frame(app, ctx, vec![press(false)]);
     }
 
-    /// Each prompt's top relative to the view, as last drawn.
-    fn view_tops(app: &YaacApp) -> Vec<f32> {
+    fn prompt_top(app: &YaacApp, id: &yaac_protocol::ItemId) -> Option<f32> {
         let (_, entries, view_top) = app.ui.timeline.last.as_ref().expect("drawn");
-        entries.iter().map(|(_, t)| t - view_top).collect()
+        entries.iter().find(|(item, _)| item == id).map(|(_, top)| top - view_top)
+    }
+
+    fn view_tops(app: &YaacApp) -> Vec<f32> {
+        let (_, entries, view_top) = app.ui.timeline.last.as_ref().unwrap();
+        entries.iter().map(|(_, top)| top - view_top).collect()
     }
 
     #[test]
@@ -192,24 +261,28 @@ mod tests {
         let mut app = app(&ctx);
         settle(&mut app, &ctx);
         let dashes = app.ui.timeline.dashes.clone();
-        assert!(dashes.len() > 11, "one dash per loaded prompt: {}", dashes.len());
-        let transcript = app.client.state.transcripts.get(&threads::parser()).unwrap();
-        assert!(transcript.older_cursor.is_some());
+        let key = threads::parser();
+        let transcript = &app.client.state.transcripts[&key];
+        let prompts = transcript.prompts.as_ref().unwrap();
+        let index = prompts.windows(2).rposition(|pair| transcript.item(&pair[0].item_id).is_none()).expect("an unloaded prompt");
+        let selected = prompts[index].item_id.clone();
+        let next = prompts[index + 1].item_id.clone();
+        assert_eq!(dashes.len(), prompts.len());
+        assert!(transcript.item(&selected).is_none(), "the dash exists before its message is loaded");
         assert!(transcript.items().len() <= 120);
-        // The view starts at the end: the last dash is lit, the tenth is not in view.
-        let before = view_tops(&app);
-        assert!(before[10] < 0.0);
-        click(&mut app, &ctx, dashes[10].center());
+
+        click(&mut app, &ctx, dashes[index].center());
         settle(&mut app, &ctx);
-        let after = view_tops(&app);
-        assert!((after[10] - yaac_core::timeline::MARGIN).abs() < 2.0, "prompt 10 at the top of the view: {}", after[10]);
-        // Go to next message: the eleventh.
-        crate::timeline::go(&mut app, &threads::parser(), true);
+        let at = prompt_top(&app, &selected).expect("the position was loaded");
+        assert!((at - yaac_core::timeline::MARGIN).abs() < 5.0, "prompt at the top of the view: {at}");
+        assert!(app.demo.as_ref().unwrap().requests().iter().any(|(_, method, params)| method == "thread/read" && params["around"] == selected.as_str()));
+
+        crate::timeline::go(&mut app, &key, true);
         settle(&mut app, &ctx);
-        assert!((view_tops(&app)[11] - yaac_core::timeline::MARGIN).abs() < 2.0);
-        crate::timeline::go(&mut app, &threads::parser(), false);
+        assert!((prompt_top(&app, &next).unwrap() - yaac_core::timeline::MARGIN).abs() < 2.0);
+        crate::timeline::go(&mut app, &key, false);
         settle(&mut app, &ctx);
-        assert!((view_tops(&app)[10] - yaac_core::timeline::MARGIN).abs() < 2.0);
+        assert!((prompt_top(&app, &selected).unwrap() - yaac_core::timeline::MARGIN).abs() < 5.0);
     }
 
     #[test]
