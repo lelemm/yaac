@@ -92,6 +92,7 @@ fn settings_target<'a>(app: &'a YaacApp, target: Option<&'a TargetId>) -> Option
             .targets
             .iter()
             .find(|t| t.connected())
+            .or_else(|| state.targets.first())
             .map(|t| &t.entry.id)
     })
 }
@@ -563,11 +564,22 @@ fn target_options(app: &YaacApp) -> Vec<Value> {
 fn providers(app: &YaacApp, target: Option<&TargetId>) -> Value {
     let state = &app.client.state;
     let target = settings_target(app, target);
+    let refresh = target.and_then(|id| state.target(id)).map(|target| {
+        with(
+            args(
+                action("providers.refresh", "Refresh", target.connected()),
+                json!({ "target": target.entry.id }),
+            ),
+            json!({ "detail": "Re-check all providers and models on this target" }),
+        )
+    });
     let mut sections = vec![section(
         "target",
         "",
         vec![json!({
-            "id": "selection", "fields": [choice("target", "Target", target.map(TargetId::as_str), "providers.target", target_options(app))]
+            "id": "selection", "layout": "inline",
+            "fields": [choice("target", "Target", target.map(TargetId::as_str), "providers.target", target_options(app))],
+            "actions": refresh.into_iter().collect::<Vec<_>>()
         })],
     )];
     let Some(v) = target.and_then(|t| model::providers_view(state, t)) else {
@@ -1610,4 +1622,29 @@ fn ssh_config_hosts() -> Vec<String> {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_is_available_when_the_local_provider_list_is_empty() {
+        let mut app = crate::app::tests::demo_app(&egui::Context::default());
+        let local = TargetId::new("local");
+        let target = app.client.state.targets.iter_mut().find(|t| t.entry.id == local).unwrap();
+        target.providers.clear();
+
+        let view = providers(&app, Some(&local));
+        let refresh = &view["sections"][0]["rows"][0]["actions"][0];
+        assert_eq!(refresh["id"], "providers.refresh");
+        assert_eq!(refresh["enabled"], true);
+        assert_eq!(refresh["values"], json!({ "target": local }));
+
+        command(&mut app, &mut Some(local.clone()), "settings.action", refresh).unwrap();
+        assert!(app.demo.as_ref().unwrap().requests().iter().any(|(target, method, params)| {
+            target.as_ref() == Some(&local) && method == yaac_protocol::methods::names::PROVIDER_REFRESH
+                && params.get("instance").is_none()
+        }));
+    }
 }

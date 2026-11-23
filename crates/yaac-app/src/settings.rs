@@ -873,7 +873,11 @@ fn providers(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         .providers_target
         .clone()
         .filter(|t| st.target(t).is_some())
-        .or_else(|| st.targets.iter().find(|t| t.connected()).map(|t| t.entry.id.clone()));
+        .or_else(|| {
+            st.targets.iter().find(|t| t.connected())
+                .or_else(|| st.targets.first())
+                .map(|t| t.entry.id.clone())
+        });
     let Some(target) = target else {
         title_row(ui, "Providers", |_| {});
         ui.label(widgets::secondary("No target is connected.", &p));
@@ -888,6 +892,12 @@ fn providers(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     }
     let Some(v) = providers_view(&app.client.state, &target) else { return };
     title_row(ui, "Providers", |ui| {
+        let refresh = ui.add_enabled_ui(!v.offline, |ui| {
+            widgets::plain(ui, &p, "Refresh", None).on_hover_text("Re-check all providers and models on this target")
+        }).inner;
+        if refresh.clicked() {
+            actions.push(Action::RefreshProviders(target.clone(), None));
+        }
         let r = widgets::selector(ui, &p, &v.target_name, true);
         if r.clicked() {
             app.ui.toggle_menu(Menu::SettingsTarget);
