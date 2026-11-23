@@ -1129,3 +1129,52 @@ test("codex: a compaction item in a failed turn does not produce a success notic
     await r.done();
   }
 });
+
+test("Codex tracks process lifetime and late output separately from the turn", async () => {
+  const r = await rig();
+  try {
+    idleThread(r.fake);
+    r.fake.handlers.set("turn/start", () => ({ turn: { id: TURN_ID, status: "inProgress" } }));
+    r.fake.handlers.set("thread/loaded/list", () => ({ data: [THREAD_ID], nextCursor: null }));
+    const terminal = { itemId: "producer", processId: "473", command: "npm run preview", cwd: "/work/fixture" };
+    let running = true;
+    r.fake.handlers.set("thread/backgroundTerminals/list", (p) => {
+      assert.equal(p.threadId, THREAD_ID);
+      return { data: running ? [terminal] : [], nextCursor: null };
+    });
+    const stops: unknown[] = [];
+    r.fake.handlers.set("thread/backgroundTerminals/terminate", (p) => {
+      stops.push(p);
+      running = false;
+      return { terminated: true };
+    });
+    await r.provider.startThread({ cwd: "/work/fixture" }, input("launch preview"));
+    r.fake.push({ method: "item/started", params: {
+      threadId: THREAD_ID, turnId: TURN_ID, item: { id: terminal.itemId, type: "commandExecution", command: terminal.command },
+    } });
+    const last = () => r.events.findLast((e) => e.type === "runningCommands");
+    await until(() => last()?.type === "runningCommands");
+    const active = last();
+    assert.equal(active?.type, "runningCommands");
+    if (active?.type !== "runningCommands") return;
+    const cmd = active.commands[0]!;
+    assert.equal(cmd.command, terminal.command);
+    const started = () => r.events.filter((e) => e.type === "itemCompleted" && e.item.kind === "notice" && e.item.text === `Started background command: ${terminal.command}`);
+    assert.equal(started().length, 0, "the running foreground phase is not yet a confirmed background launch");
+    r.fake.push({ method: "turn/completed", params: { threadId: THREAD_ID, turn: { id: TURN_ID, status: "completed" } } });
+    r.fake.push({ method: "item/commandExecution/outputDelta", params: { threadId: THREAD_ID, turnId: TURN_ID, itemId: terminal.itemId, delta: "server ready" } });
+    await until(() => started().length === 1);
+    assert.deepEqual(await r.provider.commandLogs(THREAD_ID, cmd.id), { output: "server ready", truncated: false });
+    assert.equal(await r.provider.stopCommand("another-owner", cmd.id), false);
+    assert.equal(await r.provider.stopCommand(THREAD_ID, cmd.id), true);
+    assert.deepEqual(stops, [{ threadId: THREAD_ID, processId: terminal.processId }]);
+    await until(() => {
+      const latest = last();
+      return latest?.type === "runningCommands" && !latest.commands.length;
+    });
+    assert.equal(await r.provider.stopCommand(THREAD_ID, cmd.id), false);
+    assert.equal(started().length, 1);
+  } finally {
+    await r.done();
+  }
+});

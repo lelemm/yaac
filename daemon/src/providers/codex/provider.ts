@@ -24,6 +24,7 @@ import type {
   TurnOrigin,
   SubagentStatus,
 } from "../../protocol/generated/types.js";
+import { RpcError } from "../../protocol/rpc.js";
 import { Emitter } from "../../util/emitter.js";
 import { randomId, readJson, sha256Hex, writeJsonAtomic } from "../../util/fsx.js";
 import type {
@@ -51,6 +52,7 @@ import { collabStatus, fastTier, subagentStatusOf, mapItem, mapModel, mapServerR
 import { InputOutcomeUnknown } from "../types.js";
 import { peerXml, supportsPeerInput } from "../../mesh/format.js";
 import { CodexConnection, CodexRpcError, type ServerRequest } from "./rpc.js";
+import { CodexCommands } from "./commands.js";
 import { CodexRateLimits, type CodexAccountResponse, type CodexRateLimitSnapshot, type CodexRateLimitsResponse } from "./ratelimits.js";
 import type { RateLimitReport } from "../ratelimits.js";
 import {
@@ -267,6 +269,7 @@ export class CodexProvider implements HarnessProvider {
   private readonly plan: EndpointPlan;
   private readonly exec: Exec;
   private conn: CodexConnection | null = null;
+  private readonly commands = new CodexCommands((event) => this.emit(event));
   /** Whether the daemon of the current connection was found running or started by yaacd. */
   private backendOrigin: "foundRunning" | "startedByYaac" | null = null;
   private connecting: Promise<CodexConnection> | null = null;
@@ -396,6 +399,7 @@ export class CodexProvider implements HarnessProvider {
     this.init = init;
     this.lastFailure = null;
     this.conn = conn;
+    this.commands.connect(conn);
     this.gen += 1;
     this.reconnectDelay = this.options.reconnectMinMs ?? 500;
     conn.notifications.on((n) => this.onNotification(n.method, n.params));
@@ -409,6 +413,7 @@ export class CodexProvider implements HarnessProvider {
   private onClosed(conn: CodexConnection): void {
     if (this.conn !== conn) return;
     this.conn = null;
+    this.commands.disconnect();
     const subscribed: NativeId[] = [];
     for (const st of this.threads.values()) {
       if (st.subscribed) subscribed.push(st.native);
@@ -1317,7 +1322,23 @@ export class CodexProvider implements HarnessProvider {
     }
   }
 
+  async commandLogs(native: NativeId, id: string) {
+    return this.commands.logs(native, id);
+  }
+
+  async stopCommand(native: NativeId, id: string): Promise<boolean> {
+    try {
+      return await this.commands.stop(native, id);
+    } catch (error) {
+      if (error instanceof CodexRpcError && error.code === undefined) {
+        throw new RpcError("outcome_unknown", "Codex did not confirm whether the command stopped.");
+      }
+      throw error;
+    }
+  }
+
   async dispose(): Promise<void> {
+    this.commands.disconnect();
     this.disposed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
@@ -1513,6 +1534,7 @@ export class CodexProvider implements HarnessProvider {
       case "turn/completed": {
         const turn = p.turn as Turn | undefined;
         if (!turn?.id) return;
+        this.commands.turnCompleted(native, turn.id);
         const whose = turn.id === st.ownTurn ? "own" : turn.id === st.foreignTurn ? "foreign" : null;
         if (!whose) return;
         this.finishTurn(st, turn, whose);
@@ -1524,6 +1546,10 @@ export class CodexProvider implements HarnessProvider {
         if (!item?.id || isYaacPeerOutput(item)) return;
         const turnId = this.turnOf(st, p);
         if (item.type === "userMessage" && this.isOwnInput(st, item, turnId, method === "item/completed")) return;
+        if (item.type === "commandExecution") {
+          const output = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : undefined;
+          this.commands.item(native, item.id, turnId, method === "item/started", output);
+        }
         const mapped = mapItem(item, turnId, method === "item/started" ? "inProgress" : "completed");
         if (st.compact && item.type === "contextCompaction") {
           // The composer already shows progress. Wait for the native turn outcome before
@@ -1561,6 +1587,8 @@ export class CodexProvider implements HarnessProvider {
         }
         return;
       case "item/commandExecution/outputDelta":
+        if (typeof p.itemId === "string" && typeof p.delta === "string") this.commands.delta(native, p.itemId, p.delta);
+        return this.delta(st, p, "output");
       case "item/fileChange/outputDelta":
         return this.delta(st, p, "output");
       case "turn/plan/updated": {

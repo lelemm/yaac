@@ -38,6 +38,7 @@ export interface SdkQuery extends AsyncIterable<SDKMessage> {
   // The bundled SDK implements cancelQueued on interrupt() and the CLI advertises it
   // in system/init, but this parameter is missing from the public Query declaration.
   interrupt(options?: { cancelQueued?: boolean }): Promise<unknown>;
+  stopTask?(taskId: string): Promise<void>;
   setModel(model?: string): Promise<void>;
   setPermissionMode(mode: PermissionMode): Promise<void>;
   applyFlagSettings(settings: Record<string, unknown>): Promise<void>;

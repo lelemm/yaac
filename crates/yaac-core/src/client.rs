@@ -98,7 +98,7 @@ enum Call {
     View,
     Targets,
     Providers(TargetId),
-    Sync(TargetId),
+    Sync { target: TargetId, connected: bool },
     Subscribe(ThreadKey),
     Read(ThreadKey),
     Budget,
@@ -161,12 +161,15 @@ enum Call {
     ForgeAsk(ThreadKey),
     /// `turn/queueEdit`, `turn/queueCancel` or `turn/queuePromote` on a queued message (D166).
     Queue { key: ThreadKey, queue_id: String, op: queue::QueueOp },
+    CommandLogs(crate::running_commands::CommandKey),
+    CommandStop { view: ThreadKey, command: crate::running_commands::CommandKey },
     Ignore,
 }
 
 mod forge;
 mod limits;
 mod queue;
+mod running_commands;
 mod ssh;
 mod uploads;
 mod wsl;
@@ -197,6 +200,8 @@ pub struct Client {
     pub errors: Vec<ClientError>,
     /// The composer’s most recent file lookup.
     pub composer_files: Option<ComposerFiles>,
+    /// The command log the user has opened in the composer.
+    pub command_log: Option<crate::running_commands::CommandLog>,
     /// The last attachment id handed out.
     attach_ids: u64,
     /// Drafts changed since they were last stored in the hub.
@@ -265,6 +270,7 @@ impl Client {
             warm: Vec::new(),
             errors: Vec::new(),
             composer_files: None,
+            command_log: None,
             attach_ids: 0,
             dirty: std::collections::BTreeSet::new(),
             orphans: std::collections::VecDeque::new(),
@@ -466,10 +472,18 @@ impl Client {
             Call::TargetChanged => {
                 self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
             }
-            Call::Sync(t) => {
+            Call::Sync { target: t, connected } => {
+                if !connected && self.state.target(&t).is_some_and(|target| target.connected()) {
+                    return; // A fresh sync was requested on reconnect.
+                }
                 let Ok(r) = serde_json::from_value::<ThreadSyncResult>(result) else { return };
                 let more = r.more;
                 self.state.apply_sync(&t, r);
+                if connected && !more {
+                    if let Some(target) = self.state.target_mut(&t).filter(|target| target.connected()) {
+                        target.commands_current = true;
+                    }
+                }
                 if more {
                     self.sync(&t);
                 } else {
@@ -555,6 +569,17 @@ impl Client {
                 self.echo_answered(&key, &op, &result);
                 self.sent(&DraftRef::Thread(key), &draft);
             }
+            Call::CommandLogs(command) => {
+                if let Some(log) = self.command_log.as_mut().filter(|l| l.command == command) {
+                    if let Ok(result) = serde_json::from_value::<yaac_protocol::CommandLogsResult>(result) {
+                        if result.output.is_some() || log.result.is_none() {
+                            log.result = Some(result);
+                        }
+                        log.error = None;
+                    }
+                }
+            }
+            Call::CommandStop { .. } => {}
             Call::Queue { key, queue_id, .. } => self.on_queue_result(&key, &queue_id),
             Call::UploadStart { draft, id, attempt } => self.on_upload_started(&draft, id, attempt, &result),
             Call::BlobBegin { draft, id, chunks } => self.on_blob_begun(&draft, id, chunks, &result),
@@ -600,6 +625,7 @@ impl Client {
                         placement: None,
                         subagent: None,
                         unavailable: None,
+                        running_commands: None,
                     };
                     self.state.upsert_summary(&draft.target, summary);
                 }
@@ -684,6 +710,19 @@ impl Client {
                         }
                     }
                 }
+            }
+            Call::CommandLogs(command) => {
+                if let Some(log) = self.command_log.as_mut().filter(|l| l.command == command) {
+                    log.error = Some(error.message.clone());
+                }
+            }
+            Call::CommandStop { view, .. } => {
+                let why = if error.code == ErrorCode::OutcomeUnknown {
+                    "The harness did not confirm whether the command stopped.".to_owned()
+                } else {
+                    format!("Could not stop the command. {}", error.message)
+                };
+                self.error(Some(view), why);
             }
             Call::Queue { key, queue_id, op } => self.on_queue_error(key, &queue_id, op, error),
             Call::TurnStart { key, draft, op } => {
@@ -933,7 +972,8 @@ impl Client {
 
     fn sync(&mut self, target: &TargetId) {
         let token = self.state.target(target).map(|t| t.sync_token.clone()).unwrap_or_default();
-        self.routed(target, m::THREAD_SYNC, json!({ "token": token }), Call::Sync(target.clone()));
+        let connected = self.state.target(target).is_some_and(|t| t.connected());
+        self.routed(target, m::THREAD_SYNC, json!({ "token": token }), Call::Sync { target: target.clone(), connected });
     }
 
     fn subscribe(&mut self, key: &ThreadKey) {

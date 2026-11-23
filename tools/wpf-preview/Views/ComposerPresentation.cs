@@ -205,6 +205,43 @@ public partial class ComposerView
         return item;
     }
 
+    private ComposerAction? closeCommandLogs;
+
+    private void RenderRunningCommands(JsonElement view, bool keyChanged)
+    {
+        var title = Field(view, "title").String();
+        CommandArea.Visibility = VisibleWhen(title.Length > 0);
+        if (title.Length == 0) return;
+
+        CommandTitle.Content = title;
+        var expanded = Field(view, "expanded").ComposerFlag();
+        AutomationProperties.SetName(CommandTitle, title);
+        RenderRows(CommandRows, Field(view, "rows"), RowKind.Queue);
+        CommandScroller.Visibility = VisibleWhen(expanded && CommandRows.Children.Count > 0);
+        if (keyChanged) CommandScroller.ScrollToTop();
+
+        var log = Field(view, "log");
+        closeCommandLogs = ReadAction(Field(log, "close"));
+        CommandLogArea.Visibility = VisibleWhen(expanded && closeCommandLogs is not null);
+        SetButton(CommandLogClose, closeCommandLogs);
+        DisplayText(CommandLogTitle, Field(log, "title").String());
+        DisplayText(CommandLogStatus, Field(log, "status").String());
+        var output = Field(log, "output").String();
+        CommandOutput.Visibility = VisibleWhen(output.Length > 0);
+        if (CommandOutput.Text != output)
+        {
+            var follow = keyChanged || CommandOutput.Text.Length == 0
+                || CommandOutput.VerticalOffset + CommandOutput.ViewportHeight >= CommandOutput.ExtentHeight - 2;
+            CommandOutput.Text = output;
+            if (follow) CommandOutput.ScrollToEnd();
+        }
+    }
+
+    private void ToggleCommandsClicked(object sender, RoutedEventArgs e) =>
+        Command?.Invoke("composer.action", new { key, id = "toggleCommands" });
+
+    private void CloseCommandLogsClicked(object sender, RoutedEventArgs e) => InvokeAction(closeCommandLogs);
+
     private void RenderRows(Panel panel, JsonElement value, RowKind kind)
     {
         Reconcile<ComposerRow, JsonElement>(

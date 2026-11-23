@@ -6,6 +6,8 @@
 
 import type {
   AppliedSettings,
+  CommandLogsResult,
+  RunningCommand,
   BackendKind,
   BackendOrigin,
   Capability,
@@ -306,6 +308,7 @@ export type RaisedRequest =
  * - Item ids are unique within the conversation.
  */
 export type ProviderEvent =
+  | { type: "runningCommands"; thread: NativeId; commands: RunningCommand[]; controller?: NativeId }
   | { type: "turnStarted"; thread: NativeId; turnId: TurnId; origin?: TurnOrigin; at?: Timestamp }
   | {
       type: "turnCompleted";
@@ -385,6 +388,9 @@ export interface HarnessProvider {
   /** Runs manual compaction and waits for native confirmation. */
   compact?(thread: NativeId): Promise<void>;
   interrupt(thread: NativeId, turn: TurnId): Promise<void>;
+  commandLogs?(thread: NativeId, id: string): Promise<CommandLogsResult>;
+  /** False when the command is no longer running or the harness refuses to stop it. */
+  stopCommand?(thread: NativeId, id: string): Promise<boolean>;
   /** Hands an answer to the harness. Confirm with `requestResolved { by: "client" }`. */
   respond(thread: NativeId, requestId: RequestId, response: RequestResponse): Promise<void>;
 

@@ -53,6 +53,7 @@ pub mod prefs;
 pub mod settings;
 pub mod ssh_setup;
 pub mod requests;
+pub mod running_commands;
 pub mod selection;
 pub mod sending;
 pub mod sidebar;

@@ -657,6 +657,68 @@ fn strip_button(ui: &mut egui::Ui, p: &Palette, label: &str, id: egui::Id, enabl
     if enabled { r.on_hover_cursor(egui::CursorIcon::PointingHand) } else { r }
 }
 
+pub(crate) fn running_commands(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, actions: &mut Vec<Action>) {
+    app.tick_running_commands(ui.ctx(), key);
+    let rows = yaac_core::running_commands::rows(&app.client.state, key);
+    let log = app.client.command_log.as_ref().filter(|log| &log.view == key);
+    if rows.is_empty() && log.is_none() {
+        return;
+    }
+    let p = app.p;
+    let expanded = !app.ui.commands_collapsed.contains(key);
+    let disclosure = if expanded { "▾" } else { "▸" };
+    let label = format!("{disclosure} Running commands · {}", rows.len());
+    if widgets::plain(ui, &p, &label, None).clicked() {
+        actions.push(Action::ToggleCommands(key.clone()));
+    }
+    if !expanded {
+        return;
+    }
+    egui::ScrollArea::vertical().id_salt(("running-commands", key)).max_height(112.0).show(ui, |ui| {
+        for row in &rows {
+            ui.push_id(&row.command.id, |ui| {
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if row.can_stop {
+                            let waiting = app.client.stopping_command(&row.key());
+                            if ui.add_enabled(!waiting, egui::Button::new(if waiting { "Stopping…" } else { "Stop" })).clicked() {
+                                actions.push(Action::CommandStop(key.clone(), row.command.id.clone()));
+                            }
+                        }
+                        if widgets::plain(ui, &p, "Logs", None).clicked() {
+                            actions.push(Action::CommandLogs(key.clone(), row.command.id.clone()));
+                        }
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            let command = row.command.command.lines().next().unwrap_or("");
+                            ui.add(egui::Label::new(egui::RichText::new(command).monospace()).truncate()).on_hover_text(&row.command.command);
+                            ui.add(egui::Label::new(widgets::secondary(row.detail(app.now()), &p)).truncate());
+                        });
+                    });
+                });
+            });
+        }
+    });
+    if let Some(log) = log {
+        ui.separator();
+        ui.horizontal(|ui| {
+            if widgets::plain(ui, &p, "Close logs", None).clicked() {
+                actions.push(Action::CommandLogs(key.clone(), log.command.id.clone()));
+            }
+            ui.add(egui::Label::new(widgets::secondary(log.title.lines().next().unwrap_or(""), &p)).truncate());
+        });
+        let listed = rows.iter().any(|row| row.key() == log.command);
+        if let Some(status) = log.status(listed) {
+            ui.label(widgets::secondary(status, &p));
+        }
+        if let Some(mut output) = log.result.as_ref().and_then(|r| r.output.as_deref()).filter(|o| !o.is_empty()) {
+            egui::ScrollArea::vertical().id_salt(("command-logs", &log.command.id)).max_height(145.0).stick_to_bottom(true).show(ui, |ui| {
+                ui.add(egui::TextEdit::multiline(&mut output).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
+            });
+        }
+    }
+    ui.add_space(4.0);
+}
+
 /// The queued messages above the composer (D166), in delivery order: a one-line preview,
 /// **Send now**, **Edit** and ✕ each. Gone when nothing waits.
 fn queue_strip(ui: &mut egui::Ui, app: &YaacApp, key: &ThreadKey, send_now: Option<&'static str>, actions: &mut Vec<Action>) {

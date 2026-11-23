@@ -847,3 +847,20 @@ carries local slash command feedback. An isolated Claude Code 2.1.330 stream wit
 messages emitted a synthetic assistant message, `Error: No messages to compact`, followed by
 a result with subtype `success`. YAAC checks for the manual boundary before accepting
 a successful SDK result as confirmation of `/compact`.
+
+## Live shell commands (verified 2026-11-23)
+
+- Claude Code 2.1.330 via Agent SDK 0.3.329, in an isolated query against a
+  synthetic API, reported a `local_bash` task, paired its `task_started.tool_use_id`
+  with the Bash call, and sent a structured `tool_use_result.backgroundTaskId`.
+  The corresponding tool result named a regular output file under that session's
+  `tasks` directory. The task remained listed after `result`. `stopTask(taskId)`
+  was acknowledged. Claude reported the task stopped and sent an empty live set.
+- Codex app-server 0.171.0, launched privately with a temporary home and a
+  synthetic Responses API, reported the process through
+  `thread/backgroundTerminals/list` after the launch turn completed. It emitted a
+  later `item/commandExecution/outputDelta` with the original command's item
+  and turn ids. `thread/backgroundTerminals/terminate` returned `terminated: true`
+  for that thread and process id. The next inventory was empty. The 0.170.0
+  source also shows the inventory includes live processes during initial output
+  collection, before they have yielded.

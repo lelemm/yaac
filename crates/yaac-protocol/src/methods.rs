@@ -353,6 +353,10 @@ catalogue! {
         TurnQueueEdit = "turn/queueEdit" as TURN_QUEUE_EDIT:
             t::TurnQueueEditParams => t::Empty, HostToDaemon, request Control, response Control, op;
         /// Cancel a queued user message before it is delivered.
+        CommandLogs = "command/logs" as COMMAND_LOGS:
+            t::CommandLogsParams => t::CommandLogsResult, HostToDaemon, request Control, response Control;
+        CommandStop = "command/stop" as COMMAND_STOP:
+            t::CommandStopParams => t::Empty, HostToDaemon, request Control, response Control, op;
         TurnQueueCancel = "turn/queueCancel" as TURN_QUEUE_CANCEL:
             t::TurnQueueCancelParams => t::Empty, HostToDaemon, request Control, response Control, op;
         /// Send a queued user message now ("Send now"): out of the queue, with `now` mechanics.

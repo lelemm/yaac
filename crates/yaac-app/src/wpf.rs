@@ -236,6 +236,9 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                     if window_shown && !app.ui.settings {
                         let now = app.now();
                         app.client.rate_limits_shown(now);
+                        if let Some(key) = selected_thread(&app).cloned() {
+                            app.tick_running_commands(ui.ctx(), &key);
+                        }
                         if let Some(secs) = yaac_core::limits::next_change(&app.client.state.rate_limits.accounts, now) {
                             ui.ctx().request_repaint_after(Duration::from_secs(u64::try_from(secs).unwrap_or(60)));
                         }

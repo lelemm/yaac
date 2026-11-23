@@ -42,6 +42,27 @@
           </StackPanel>
         </Border>
 
+        <StackPanel x:Name="CommandArea" Visibility="Collapsed" Margin="0,0,0,6">
+          <Button x:Name="CommandTitle" HorizontalAlignment="Left" Style="{StaticResource ComposerButton}"
+                  Click="ToggleCommandsClicked" />
+          <ScrollViewer x:Name="CommandScroller" MaxHeight="112" VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled" Focusable="False">
+            <StackPanel x:Name="CommandRows" />
+          </ScrollViewer>
+          <StackPanel x:Name="CommandLogArea" Margin="0,4,0,0">
+            <DockPanel>
+              <Button x:Name="CommandLogClose" DockPanel.Dock="Right" Style="{StaticResource ComposerButton}"
+                      Click="CloseCommandLogsClicked" />
+              <TextBlock x:Name="CommandLogTitle" Style="{StaticResource ComposerQuietText}" />
+            </DockPanel>
+            <TextBlock x:Name="CommandLogStatus" Style="{StaticResource ComposerQuietText}" />
+            <TextBox x:Name="CommandOutput" MaxHeight="145" VerticalScrollBarVisibility="Auto"
+                     HorizontalScrollBarVisibility="Auto" IsReadOnly="True" FontFamily="Consolas"
+                     Background="{DynamicResource YaacInput}" Foreground="{DynamicResource YaacText}"
+                     AutomationProperties.Name="Command output" />
+          </StackPanel>
+        </StackPanel>
+
         <StackPanel x:Name="QueueArea" Visibility="Collapsed" Margin="0,0,0,6">
           <TextBlock x:Name="QueueTitle" Style="{StaticResource ComposerQuietText}" Margin="0,0,0,2" />
           <ScrollViewer x:Name="QueueScroller" MaxHeight="142" VerticalScrollBarVisibility="Auto"

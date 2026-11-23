@@ -264,6 +264,7 @@ export class Daemon implements FrozenCoreHost {
           `runtime: node ${process.versions.node}`,
           `up: ${Math.round((Date.now() - this.startedAt) / 1000)} s`,
           `attached clients: ${b.attachedClients}; running turns: ${b.runningTurns}; pending requests: ${b.pendingRequests}`,
+          `running commands: ${this.core.busy().runningCommands}`,
           `threads: ${this.core.allThreads().length}`,
           `hand-over scheduled: ${this.handoverPending ? "yes" : "no"}`,
         ],
@@ -275,16 +276,16 @@ export class Daemon implements FrozenCoreHost {
 
   private checkIdle(): void {
     if (this.stopping) return;
-    const b = this.busy();
-    const workIdle = b.runningTurns === 0 && b.pendingRequests === 0;
+    const b = this.core.busy();
+    const workIdle = b.runningTurns === 0 && b.pendingRequests === 0 && b.runningCommands === 0;
     if (this.handoverPending && workIdle) {
       // Attached clients do not hold a hand-over back.
       void this.stop("handover idle", false);
       return;
     }
     // Only hosts count: a connection that has not initialized (a probe, a client mid-handshake)
-    // neither holds the daemon nor restarts the idle period. Activity that is not a turn or a
-    // request (journal writes, uploads, mesh housekeeping) does not either.
+    // neither holds the daemon nor restarts the idle period. Turns, pending requests, and
+    // live shell commands hold it while they run.
     const idle = workIdle && this.hosts.size === 0;
     if (idle && !this.idleTimer && this.config.idleTimeoutMs > 0) {
       this.armIdle(this.config.idleTimeoutMs);
@@ -298,8 +299,8 @@ export class Daemon implements FrozenCoreHost {
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
       if (this.stopping) return;
-      const now = this.busy();
-      if (this.hosts.size > 0 || now.runningTurns > 0 || now.pendingRequests > 0) return;
+      const now = this.core.busy();
+      if (this.hosts.size > 0 || now.runningTurns > 0 || now.pendingRequests > 0 || now.runningCommands > 0) return;
       // A connection still within its handshake grace may be a host about to initialize: give it
       // the rest of its grace, never more.
       const youngest = Math.max(0, ...[...this.connections].filter((c) => !this.hosts.has(c)).map((c) => this.acceptedAt.get(c) ?? 0));

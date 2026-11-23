@@ -275,6 +275,23 @@ pub struct ThreadPlacement {
     pub worktree_name: Option<String>,
 }
 
+/// A shell process reported running by the owning thread's harness.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunningCommand {
+    /// An opaque id scoped to this owner and process run.
+    pub id: String,
+    /// Shell input when available, otherwise the harness description.
+    pub command: String,
+    /// When the harness or YAAC first observed this process run.
+    pub observed_at: Timestamp,
+    /// Whether the harness can stop this individual process.
+    pub can_stop: bool,
+    /// Same-target thread whose writer permission controls this process, if distinct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller: Option<ThreadId>,
+}
+
 /// What the sidebar needs, and what the host cache stores, per thread.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -373,6 +390,9 @@ pub struct ThreadSummary {
     /// leads back to its store. Absent: usable as far as the store goes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable: Option<String>,
+    /// Live shell processes belonging to this thread, independent of its turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_commands: Option<Vec<RunningCommand>>,
 }
 
 /// The model / effort / mode the harness reports it is **actually** using.
@@ -1037,4 +1057,32 @@ pub struct ThreadKeepParams {
     /// Every thread to keep.
     #[serde(default)]
     pub thread_ids: Vec<ThreadId>,
+}
+
+/// `command/logs`: a bounded output tail for a process on its owning thread.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandLogsParams {
+    pub thread_id: ThreadId,
+    pub command_id: String,
+}
+
+/// The available output tail and whether its beginning was clipped.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandLogsResult {
+    /// Absent when the harness has not exposed an output stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
+/// `command/stop`: stop one process on its owning thread.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandStopParams {
+    pub op_id: OpId,
+    pub thread_id: ThreadId,
+    pub command_id: String,
 }

@@ -492,8 +492,8 @@ and will be updated once idle, and offers a button to update it immediately.
   installed on the target, whatever the connecting UI asked for. An older UI is then served by
   a newer daemon, which adapts to it.
 - **Upgrade happens at idle.** The UI installs its newer build alongside and asks the running
-  daemon to hand over when idle. With no running turn and no pending request, the old daemon
-  exits; the next connection starts the new one, which migrates the on-disk state forward.
+  daemon to hand over when idle. With no running turn, live shell command, or pending request,
+  the old daemon exits; the next connection starts the new one, which migrates the on-disk state forward.
 - **"Update now"** interrupts running turns — marked as interrupted by an update — and hands
   over at once.
 
@@ -513,8 +513,9 @@ connections (invariant #14).
   whatever serves, or starts itself when nothing does. A development bundle runs itself, as
   before build numbers. So an older YAAC never starts an older daemon over a newer one.
 - **At idle.** When a target connects and its daemon can be updated, the hub sends
-  `daemon/handover { when: "idle" }` once. The daemon exits as soon as it has no running turn
-  and no pending request (a pending approval or question holds it, and stays pending); it
+  `daemon/handover { when: "idle" }` once. The daemon exits once it has no running turn, live
+  shell command, or pending request. A pending approval or question stays pending and holds
+  the daemon. It
   flushes its journals and marks its state clean first. The hub sees the stream end and
   reconnects through its normal path — the same one connection, never a side channel
   (invariant #1) — and stage 0 starts the newest build, which migrates the state. A starting
@@ -605,14 +606,15 @@ The start-up step runs in `yaac_app::run` before the window is created.
 ### Staying small
 
 - An idle runtime process on the target (target: under 60 MB resident). `yaacd` exits by itself
-  after a configurable idle period, but **only** when no client is attached, no turn is running,
-  and no request is pending. The journal is on disk, so exiting loses nothing.
+  after a configurable idle period once no client is attached, no turn or shell command is
+  running, and no request is pending. The journal is on disk, so exiting loses nothing.
   - *Attached* means a connection that has finished `initialize`. A connection that has not (a
     liveness probe, a client still in its handshake) neither holds the daemon nor restarts the
     idle period; it gets a short grace to finish its handshake (10 s from when it was
     accepted) and is closed by the exit after that.
   - A *running turn* holds the daemon until the harness reports it ended, with or without a
-    host: the idle period starts when the last turn ends. A *pending request* holds it: an
+    host. A *live shell command* holds it while its harness reports the process running. A
+    *pending request* holds it: an
     approval or a question until it is answered, resolved elsewhere, or expires with its turn;
     a mesh permission prompt, which outlives its turn, until the user answers it. YAAC never
     times a request out to be able to exit.

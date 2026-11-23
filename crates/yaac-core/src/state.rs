@@ -25,6 +25,8 @@ pub struct TargetRecord {
     pub sync_token: SyncToken,
     /// Whether a full index has been received at least once.
     pub synced: bool,
+    /// The live index has caught up on this connection, so process observations are current.
+    pub commands_current: bool,
     /// Instances whose last scan was incomplete.
     pub stale_instances: Vec<InstanceId>,
     /// The providers were read from the connected target in this session (not only from the
@@ -43,6 +45,7 @@ impl TargetRecord {
             providers: Vec::new(),
             sync_token: SyncToken::default(),
             synced: false,
+            commands_current: false,
             stale_instances: Vec::new(),
             providers_fresh: false,
             instance_configs: None,
@@ -381,7 +384,7 @@ impl AppState {
         self.targets.iter().find(|t| &t.entry.id == id)
     }
 
-    fn target_mut(&mut self, id: &TargetId) -> Option<&mut TargetRecord> {
+    pub(crate) fn target_mut(&mut self, id: &TargetId) -> Option<&mut TargetRecord> {
         self.targets.iter_mut().find(|t| &t.entry.id == id)
     }
 
@@ -521,6 +524,9 @@ impl AppState {
                 Some(i) => {
                     let mut rec = old.swap_remove(i);
                     rec.entry = entry;
+                    if !rec.connected() {
+                        rec.commands_current = false;
+                    }
                     self.targets.push(rec);
                 }
                 None => self.targets.push(TargetRecord::new(entry)),
@@ -533,6 +539,9 @@ impl AppState {
         if let Some(t) = self.target_mut(&params.id) {
             t.entry.state = params.state;
             t.entry.enabled = params.enabled;
+            if !t.connected() {
+                t.commands_current = false;
+            }
         }
     }
 

@@ -29,6 +29,7 @@ import type {
   ModeInfo,
   ModelInfo,
   RequestResponse,
+  RunningCommand,
   SubagentStatus,
   ThreadEffective,
   TokenUsage,
@@ -36,6 +37,8 @@ import type {
   TurnOrigin,
   TurnStatus,
 } from "../../protocol/generated/types.js";
+import { RpcError } from "../../protocol/rpc.js";
+import { ClaudeCommands, claudeCommandLogs } from "./commands.js";
 import { Emitter } from "../../util/emitter.js";
 import { readJson, sha256Hex, writeJsonAtomic } from "../../util/fsx.js";
 import type {
@@ -233,6 +236,8 @@ class Live {
    * any runs (D160): closing it kills them.
    */
   readonly background = new Map<string, BackgroundTask>();
+  readonly commands = new ClaudeCommands();
+  commandOwners = new Set<NativeId>();
   /** A re-open wanted once the background work ends (why, for the log), and folders it adds. */
   reopenWanted: string | null = null;
   readonly wantedDirs = new Set<string>();
@@ -945,6 +950,8 @@ export class ClaudeProvider implements HarnessProvider {
       this.notice(live, "warning", `Claude Code's process ${why} while background work was running in it; this stopped: ${describeTasks([...live.background.values()])}.`);
       live.background.clear();
     }
+    live.commands.active.clear();
+    this.publishCommands(live);
     if (live.turn) {
       if (live.turn.compact && !live.turn.interrupting) live.turn.compact.connectionLost = true;
       const detail = failure ?? (live.stderrTail.trim().split("\n").pop() || null);
@@ -1010,6 +1017,7 @@ export class ClaudeProvider implements HarnessProvider {
       if (state === "completed") live.peerCommands.delete(id);
       return;
     }
+    if (live.commands.message(m)) this.publishCommands(live);
     if (m.type === "rate_limit_event") return this.limits.applyEvent(m.rate_limit_info);
     const msg = m as SDKMessage & { parent_tool_use_id?: string | null; uuid?: string };
     // Inside a subagent (D151): its own transcript, not this one's (the Agent tool call stands for it here).
@@ -1158,6 +1166,7 @@ export class ClaudeProvider implements HarnessProvider {
       }
       sub.running = true;
       this.emitSubagent(live, sub);
+      this.publishCommands(live);
       sub.translator.begin(sub.turnId);
       this.emit({ type: "turnStarted", thread: native, turnId: sub.turnId, origin: "external", at: new Date().toISOString() });
       return;
@@ -1216,9 +1225,10 @@ export class ClaudeProvider implements HarnessProvider {
    * make room. When it empties, the idle clock starts.
    */
   private onBackgroundTasks(live: Live, tasks: unknown): void {
+    if (!Array.isArray(tasks)) return;
     const had = live.background.size > 0;
     live.background.clear();
-    for (const t of Array.isArray(tasks) ? tasks : []) {
+    for (const t of tasks) {
       const r = (t ?? {}) as { task_id?: unknown; task_type?: unknown; description?: unknown; subagent_type?: unknown; ambient?: unknown };
       if (typeof r.task_id !== "string" || r.ambient === true) continue;
       live.background.set(r.task_id, {
@@ -1227,12 +1237,63 @@ export class ClaudeProvider implements HarnessProvider {
         ...(typeof r.subagent_type === "string" ? { subagentType: r.subagent_type } : {}),
       });
     }
+    live.commands.replace(tasks, typeof live.query.stopTask === "function");
+    this.publishCommands(live);
     const has = live.background.size > 0;
     if (has && live.idleTimer) {
       clearTimeout(live.idleTimer);
       live.idleTimer = null;
     }
     if (had && !has && !live.busy()) this.touch(live);
+  }
+
+  private commandOwner(live: Live, parent?: string): NativeId {
+    return (parent && live.subagents.get(parent)?.native) || live.native;
+  }
+
+  private publishCommands(live: Live): void {
+    const owners = new Map<NativeId, RunningCommand[]>();
+    for (const shell of live.commands.active.values()) {
+      const owner = this.commandOwner(live, shell.parent);
+      const command = live.commands.enrich(shell);
+      if (command) {
+        const turnId = (shell.parent && live.subagents.get(shell.parent)?.turnId) || live.turn?.turnId || "";
+        const item = { id: `notice:command:${shell.view.id}`, turnId, status: "completed", kind: "notice", noticeKind: "info", text: `Started background command: ${command}` } as const;
+        this.emit({ type: "itemCompleted", thread: owner, item });
+      }
+      const views = owners.get(owner) ?? [];
+      views.push(shell.view);
+      owners.set(owner, views);
+    }
+    for (const owner of new Set([...live.commandOwners, ...owners.keys()])) {
+      this.emit({ type: "runningCommands", thread: owner, commands: owners.get(owner) ?? [], ...(owner !== live.native ? { controller: live.native } : {}) });
+    }
+    live.commandOwners = new Set(owners.keys());
+  }
+
+  private findCommand(native: NativeId, id: string) {
+    for (const live of this.live.values()) {
+      if (live.closing) continue;
+      for (const shell of live.commands.active.values()) {
+        if (shell.view.id === id && this.commandOwner(live, shell.parent) === native) return { live, shell };
+      }
+    }
+    return null;
+  }
+
+  async commandLogs(native: NativeId, id: string) {
+    return claudeCommandLogs(this.findCommand(native, id)?.shell.outputPath);
+  }
+
+  async stopCommand(native: NativeId, id: string): Promise<boolean> {
+    const found = this.findCommand(native, id);
+    if (!found || typeof found.live.query.stopTask !== "function") return false;
+    try {
+      await found.live.query.stopTask(found.shell.taskId);
+    } catch {
+      throw new RpcError("outcome_unknown", "Claude Code did not confirm whether the command stopped.");
+    }
+    return true;
   }
 
   /** A notice item in the thread's transcript, in its running turn if there is one. */
