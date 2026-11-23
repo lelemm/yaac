@@ -22,10 +22,14 @@ enum Line<'a> {
 }
 
 pub(crate) fn window_sections(app: &YaacApp, map: &AttentionMap, now: i64) -> Vec<Section> {
+    sections_for_query(app, map, now, &app.ui.search)
+}
+
+pub(crate) fn sections_for_query(app: &YaacApp, map: &AttentionMap, now: i64, query: &str) -> Vec<Section> {
     let open = yaac_core::sidebar::Open { muted: app.ui.muted_open, archived: app.ui.archived_open };
-    let mut sections = sections(&app.client.state, map, app.ui.grouping, app.ui.ordering, &app.ui.search, open, now, app.zone);
+    let mut sections = sections(&app.client.state, map, app.ui.grouping, app.ui.ordering, query, open, now, app.zone);
     for section in &mut sections {
-        if is_collapsible_group(app, section) && app.ui.collapsed_groups.contains(&section.id) {
+        if query.trim().is_empty() && is_collapsible_group(section) && app.ui.collapsed_groups.contains(&section.id) {
             section.collapsed = true;
             if section.kind == SectionKind::Group
                 && let Some(header) = &mut section.header
@@ -37,20 +41,20 @@ pub(crate) fn window_sections(app: &YaacApp, map: &AttentionMap, now: i64) -> Ve
     sections
 }
 
-fn is_collapsible_group(app: &YaacApp, section: &Section) -> bool {
-    app.ui.search.trim().is_empty() && section.header.is_some()
-        && matches!(section.kind, SectionKind::Group | SectionKind::Pinned)
+fn is_collapsible_group(section: &Section) -> bool {
+    section.header.is_some() && matches!(section.kind, SectionKind::Group | SectionKind::Pinned)
 }
 
 pub(crate) fn can_toggle_section(app: &YaacApp, section: &Section) -> bool {
-    is_collapsible_group(app, section) || matches!(section.kind, SectionKind::Muted | SectionKind::Archived)
+    (app.ui.search.trim().is_empty() && is_collapsible_group(section))
+        || matches!(section.kind, SectionKind::Muted | SectionKind::Archived)
 }
 
 pub(crate) fn toggle_section(app: &mut YaacApp, section: &Section) {
     match section.kind {
         SectionKind::Muted => app.ui.muted_open = !app.ui.muted_open,
         SectionKind::Archived => app.ui.archived_open = !app.ui.archived_open,
-        _ if is_collapsible_group(app, section) => {
+        _ if is_collapsible_group(section) => {
             if !app.ui.collapsed_groups.remove(&section.id) {
                 app.ui.collapsed_groups.insert(section.id.clone());
             }
@@ -917,6 +921,7 @@ pub(crate) fn create_project_for(app: &YaacApp, target: &yaac_protocol::TargetId
         repo_root,
         for_draft: None,
         browse: None,
+        field_revision: 0,
     }
 }
 

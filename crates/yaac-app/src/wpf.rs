@@ -28,6 +28,7 @@ mod dialogs;
 mod header;
 mod markdown_view;
 mod navigation;
+mod pull_requests;
 mod settings;
 mod sidebar_view;
 mod transcript;
@@ -204,6 +205,8 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
     let mut insert = None;
     let mut paste_sequence = 0;
     let mut window_shown = false;
+    let mut visible_pr_rows = Vec::new();
+    let mut next_pr_check = None;
     let mut selection_epoch = 0;
     let mut markdown = markdown_view::MarkdownView::default();
     let result = (|| loop {
@@ -233,6 +236,21 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                 },
                 |ui| {
                     app.upkeep(ui.ctx());
+                    if window_shown && !app.ui.settings && !visible_pr_rows.is_empty() && app.shots.is_none() {
+                        app.client.forge_visible(&visible_pr_rows, app.now());
+                        // Preserve the wake time across earlier repaints from unrelated work.
+                        let now = Instant::now();
+                        let at = *next_pr_check.get_or_insert(now);
+                        let at = if at <= now {
+                            now + Duration::from_secs(u64::try_from(yaac_core::pr::VISIBLE_REFRESH_SECS).unwrap_or(300))
+                        } else {
+                            at
+                        };
+                        next_pr_check = Some(at);
+                        ui.ctx().request_repaint_after(at.saturating_duration_since(now));
+                    } else {
+                        next_pr_check = None;
+                    }
                     if window_shown && !app.ui.settings {
                         let now = app.now();
                         app.client.rate_limits_shown(now);
@@ -245,6 +263,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                     }
                 },
             );
+            app.persist_prefs();
             output.textures_delta.clear();
             let mut window = None;
             for viewport in output.viewport_output.values() {
@@ -287,7 +306,13 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                 insert = None;
             }
             settings::upkeep(&mut app, selected_settings_target.as_ref());
+            dialogs::upkeep(&mut app);
             app.pump_demo();
+            app.client.poll_create_pr();
+            sidebar_view::upkeep_search(&mut app);
+            if window_shown {
+                composer::upkeep(&mut app);
+            }
             let current = view(
                 &app,
                 selected_settings_target.as_ref(),
@@ -323,6 +348,20 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                 let payload = &frame["payload"];
                 if command == "shell.visible" {
                     window_shown = payload["shown"] == true;
+                    if !window_shown {
+                        visible_pr_rows.clear();
+                    }
+                }
+                if command == "shell.prVisible" {
+                    visible_pr_rows = payload["ids"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .filter_map(|id| key(&app, id))
+                        .collect();
+                    once = true;
+                    continue;
                 }
                 if command == "composer.action"
                     && matches!(string(payload, "id"), "paste" | "largeText")
@@ -380,7 +419,6 @@ fn view(
     let needs = sidebar::needs_you(state, &attention, app.now()).len();
     let mut shell = json!({
         "settings": app.ui.settings,
-        "sidebarCollapsed": app.ui.sidebar.collapsed,
         "focusSearch": app.ui.focus_search,
         "demo": app.demo.is_some(), "trayOnClose": app.ui.tray_on_close,
         "scenes": Scene::ALL.into_iter().enumerate().map(|(id, s)| json!({ "id": id, "label": s.label() })).collect::<Vec<_>>(),
@@ -392,8 +430,12 @@ fn view(
         "back": back, "forward": forward,
         "needs": needs, "trayTooltip": yaac_core::display::tray_tooltip(needs),
         "status": app.client.errors.last().map(|e| e.text.as_str()),
+        "stoppedWsl": if app.ui.settings { vec![] } else {
+            crate::shell::stopped_wsl_notifications(app).into_iter()
+                .map(|(target, distro)| json!({ "id": target, "label": format!("WSL distro {distro} is not running.") })).collect::<Vec<_>>()
+        },
         "theme": theme_name(app.ui.theme),
-        "fontSize": app.ui.font_size,
+        "fontScale": app.ui.font_size / crate::theme::size::UI,
         "commander": navigation::command_view(app),
     });
     if let (Some(shell), Value::Object(header)) =
@@ -403,6 +445,11 @@ fn view(
     }
     Map::from_iter([
         ("shell".into(), shell),
+        ("paneSizing".into(), json!({
+            "sidebarCollapsed": app.ui.sidebar.collapsed,
+            "sidebarWidth": app.ui.sidebar.width,
+            "dockWidth": app.ui.agents_width,
+        })),
         ("captionUpdate".into(), caption_update(&app.updater.phase)),
         (
             "sidebar".into(),
@@ -464,12 +511,22 @@ fn dispatch(
 ) -> Result<(), String> {
     let action = match command {
         "sidebar.open" | "agents.open" => key(app, string(payload, "id")).map(Action::Open),
+        "pr.action" => pull_requests::action(app, ctx, payload),
         "header.action" => {
             header::command(app, payload);
             None
         }
         "sidebar.new" | "shell.new" | "settings.start" => Some(Action::NewThread),
         "shell.settings" => Some(Action::Settings(true)),
+        "shell.startWsl" => {
+            let id = yaac_protocol::TargetId::from(string(payload, "id"));
+            if app.client.state.stopped_distro(&id).is_some() {
+                app.ui.dismissed.insert(id.clone());
+                Some(Action::Retry(id))
+            } else {
+                None
+            }
+        }
         "settings.close" => Some(Action::Settings(false)),
         "settings.page" => Page::ALL
             .into_iter()
@@ -493,7 +550,12 @@ fn dispatch(
                 app.updater.download();
                 None
             }
-            "install" => return app.install_update(),
+            "install" => {
+                if let Err(error) = app.install_update() {
+                    app.updater.notice = Some(error);
+                }
+                None
+            }
             _ => None,
         },
         "shell.visible" => {
@@ -518,6 +580,12 @@ fn dispatch(
         }
         "shell.sidebar" => {
             app.ui.sidebar.toggle();
+            None
+        }
+        "shell.resizeSidebar" => {
+            if let Some(width) = payload["width"].as_f64() {
+                app.ui.sidebar.drag_to(width as f32);
+            }
             None
         }
         "shell.scene" => payload["id"]
@@ -553,6 +621,12 @@ fn dispatch(
         "shell.reset" => Some(Action::DemoReset),
         "agents.dock" => Some(Action::Panel(PanelInput::Dock)),
         "agents.undock" => Some(Action::Panel(PanelInput::Undock)),
+        "agents.resizeDock" => {
+            if let Some(width) = payload["width"].as_f64() {
+                app.ui.agents_width = yaac_core::prefs::agents_width(width as f32);
+            }
+            None
+        }
         "agents.markRead" => {
             let rows = selected_thread(app).and_then(|key| {
                 agents_panel(
@@ -587,12 +661,10 @@ fn dispatch(
                 .filter(|budget| budget.exhausted)
                 .map(|budget| Action::ContinueBudget(budget.root))
         }
-        cmd if cmd.starts_with("sidebar.")
-            || cmd == "agents.action"
-            || cmd.starts_with("dialog.") =>
-        {
+        cmd if cmd.starts_with("sidebar.") || cmd == "agents.action" => {
             return sidebar_view::command(app, ctx, cmd, payload);
         }
+        cmd if cmd.starts_with("dialog.") => return dialogs::command(app, cmd, payload),
         cmd if cmd.starts_with("composer.") => return composer::command(app, cmd, payload),
         cmd if cmd.starts_with("transcript.") => return transcript::command(app, cmd, payload),
         cmd if cmd.starts_with("settings.") => {

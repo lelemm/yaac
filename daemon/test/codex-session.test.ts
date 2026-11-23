@@ -129,3 +129,94 @@ test("codex + session layer: threads archived in Codex are listed and marked arc
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("codex + session layer: early foreign events are journaled before a sub-agent is filed under its parent", async () => {
+  const home = tmpHome("yaac-cxm-");
+  const fake = await FakeCodex.start(path.join(home, "codex.sock"));
+  const cwd = fs.mkdtempSync(path.join(home, "project-"));
+  const createdAt = Math.floor(Date.now() / 1000) - 120;
+  const parent = { id: "parent", name: "Parent", cwd, source: "vscode", createdAt, updatedAt: createdAt, status: { type: "idle" } };
+  const child = {
+    id: "child", name: null, cwd, createdAt, updatedAt: createdAt + 1, status: { type: "active", activeFlags: [] },
+    source: { subagent: { thread_spawn: { parent_thread_id: parent.id, agent_nickname: "Kepler", agent_role: "explorer" } } },
+  };
+  const ordinary = { ...parent, id: "ordinary", name: "External session" };
+  const legacy = { ...child, id: "legacy" };
+  const oldRow = { ...parent, id: legacy.id, cwd: home, name: null };
+  const listing: Record<string, unknown>[] = [parent, oldRow];
+  let releaseChild!: (value: { thread: typeof child }) => void;
+  const readChild = new Promise<{ thread: typeof child }>((resolve) => { releaseChild = resolve; });
+  fake.handlers.set("account/read", () => ({ account: { type: "apiKey" }, requiresOpenaiAuth: true }));
+  fake.handlers.set("model/list", () => ({ data: [], nextCursor: null }));
+  fake.handlers.set("thread/list", (p) => ({ data: p.archived ? [] : listing, nextCursor: null }));
+  fake.handlers.set("thread/read", (p) => p.threadId === child.id ? readChild : { thread: p.threadId === ordinary.id ? ordinary : parent });
+  fake.handlers.set("thread/items/list", () => ({ data: [], nextCursor: null }));
+  const daemon = await startDaemon(home, { factories: [codexProviderFactory], env: { YAAC_FAKE_PROVIDER: "0", YAAC_CODEX_PROVIDER: "0" } });
+  try {
+    const c = await client(daemon);
+    const { instance } = await c.request("providerInstance/add", { opId: opId(), kind: "codex", endpoint: { socket: fake.socket } });
+    await c.request("provider/refresh", { instance: instance.id });
+    const before = daemon.core.threadByNative(instance.id, legacy.id)!;
+    delete before.record.metadataPending; // Restore the record shape the old unknown-event path wrote.
+    before.saveRecord();
+    const sync = () => c.request("thread/sync", {});
+    assert.equal((await sync()).changed.find((t: any) => t.nativeId === legacy.id).cwd, home);
+
+    fake.push({ method: "thread/status/changed", params: { threadId: child.id, status: child.status } });
+    fake.push({ method: "turn/started", params: { threadId: child.id, turn: { id: "foreign-turn", status: "inProgress" } } });
+    fake.push({ method: "item/completed", params: { threadId: child.id, turnId: "foreign-turn", item: { type: "agentMessage", id: "early-answer", text: "Early answer" } } });
+    fake.push({ id: 11, method: "item/commandExecution/requestApproval", params: { threadId: child.id, turnId: "foreign-turn", itemId: "command", availableDecisions: ["accept", "cancel"] } });
+    const rt = await until(() => {
+      const found = daemon.core.threadByNative(instance.id, child.id);
+      return found?.pendingRequestCount() ? found : undefined;
+    }, "the early approval to be recorded");
+    assert.ok(fs.existsSync(path.join(rt.dir, "requests.json")));
+    assert.ok(rt.journal?.entries().some((e) => e.event.type === "itemStarted" && e.event.item.kind === "request"));
+    assert.equal((await sync()).changed.some((t: any) => t.nativeId === child.id), false);
+    assert.equal(c.notifications.some((n) => n.method === "thread/updated" && n.params.thread.nativeId === child.id), false);
+    assert.equal(fake.requests("thread/read").filter((q) => q.params.threadId === child.id).length, 1);
+    assert.equal(fake.replies.has(11), false);
+
+    releaseChild({ thread: child });
+    const row = await until(async () => (await sync()).changed.find((t: any) => t.nativeId === child.id), "the child to be indexed");
+    assert.equal(row.id, rt.id);
+    assert.equal(row.title, "Kepler");
+    assert.equal(row.cwd, cwd);
+    assert.equal(row.originKind, "programmatic");
+    assert.equal(row.createdAt, new Date(createdAt * 1000).toISOString());
+    assert.equal(row.control, "external");
+    assert.equal(row.state, "needsAttention");
+    assert.equal(row.subagent.agentType, "explorer");
+    assert.ok(row.spawnedBy.endsWith((await sync()).changed.find((t: any) => t.nativeId === parent.id).id));
+    assert.equal((await sync()).changed.find((t: any) => t.nativeId === parent.id).children, 1);
+    const items = (await readAll(c, row.id)).flatMap((p) => p.items);
+    assert.ok(items.some((i) => i.kind === "agentMessage" && i.text === "Early answer"));
+    const request = items.find((i) => i.kind === "request");
+    assert.ok(request && request.state === "pending");
+    await c.request("request/respond", { opId: opId(), threadId: row.id, requestId: request.requestId, response: { requestKind: "approval", decision: "accept" } });
+    await until(() => fake.replies.has(11), "the original server request to receive the answer");
+    assert.deepEqual(fake.replies.get(11), { decision: "accept" });
+
+    fake.push({ method: "thread/status/changed", params: { threadId: ordinary.id, status: ordinary.status } });
+    const external = await until(async () => (await sync()).changed.find((t: any) => t.nativeId === ordinary.id), "the ordinary external thread to be indexed");
+    assert.equal(external.title, ordinary.name);
+    assert.equal(external.originKind, "interactive");
+    assert.equal(external.control, "free");
+    assert.equal(external.subagent, undefined);
+
+    listing[1] = legacy;
+    await c.request("provider/refresh", { instance: instance.id });
+    const repaired = (await sync()).changed.find((t: any) => t.nativeId === legacy.id);
+    assert.equal(repaired.id, before.id);
+    assert.equal(repaired.cwd, cwd);
+    assert.equal(repaired.originKind, "programmatic");
+    assert.equal(repaired.subagent.agentId, legacy.id);
+    assert.ok(repaired.spawnedBy);
+    assert.equal(fake.connections, 1);
+    await c.close();
+  } finally {
+    await daemon.stop("test");
+    await fake.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

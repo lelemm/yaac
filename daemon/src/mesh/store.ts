@@ -130,6 +130,7 @@ export const DEFAULT_POLICY: MeshPolicyState = {
   mode: "allow",
   acceptFromOtherTargets: true,
   budget: { agentTurns: 100, threadsSpawned: 20, wallClockSecs: 12 * 3600 },
+  // Keep runningThreads in persisted and wire policy for clients and daemons on older builds.
   limits: { workersPerThread: 8, spawnDepth: 3, runningThreads: 6, pairMessages: 30, pairWindowSecs: 600, undeliveredNoticeSecs: 900 },
 };
 

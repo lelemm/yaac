@@ -3,6 +3,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Shell;
 
 namespace Yaac.WpfPreview;
 
@@ -17,21 +19,22 @@ public partial class MainWindow : Window
     private bool closed;
     private string? activeDialog;
     private Window? dialog;
-    private bool sidebarCollapsed;
-    private double restoredSidebarWidth = 280;
-    private bool sidebarPreference;
+    private double fontScale = 1;
     private bool firstRun;
-    private JsonElement lastSidebar;
-    private string? railSignature;
     private readonly Dictionary<(string Key, ModifierKeys Modifiers), Shortcut> shortcuts = new();
     private sealed record Shortcut(string Id, bool InText, bool Repeat);
 
     internal MainWindow(Func<Controller> connect, bool demo, bool tray)
     {
         InitializeComponent();
+        InitializeRail();
         Title = demo ? "YAAC · WPF demo" : "YAAC";
         if (tray) this.tray = WindowTray.TryCreate(ShowFromTray, QuitWindow);
-        SidebarPane.Command += Send;
+        SidebarPane.Command += (command, payload) =>
+        {
+            Send(command, payload);
+            if (command == "sidebar.open") CloseNarrowSidebar();
+        };
         SidebarPane.BackButton.Click += BackClicked;
         SidebarPane.ForwardButton.Click += ForwardClicked;
         SidebarPane.NeedsButton.Click += NeedsClicked;
@@ -40,8 +43,12 @@ public partial class MainWindow : Window
         SidebarPane.ScenesButton.Click += ScenesClicked;
         TranscriptPane.Command += Send;
         ComposerPane.Command += Send;
+        ComposerPane.DropOverlayChanged += visible =>
+            ComposerDropOverlay.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         AgentsPane.Command += Send;
         SettingsPane.Command += Send;
+        SidebarPane.ObservePrRows(QueueVisiblePrRows);
+        AgentsPane.ObservePrRows(QueueVisiblePrRows);
         Loaded += async (_, _) => await StartAsync(connect);
         SourceInitialized += (_, _) => UpdateClientArea();
         LocationChanged += (_, _) => UpdateClientArea();
@@ -53,11 +60,10 @@ public partial class MainWindow : Window
             UpdateCaption();
             UpdateVisibility();
         };
-        SizeChanged += (_, _) =>
+        SizeChanged += (_, _) => UpdateClientArea();
+        Workspace.SizeChanged += (_, e) =>
         {
-            UpdateClientArea();
-            UpdateSidebar();
-            PositionFirstRun();
+            if (e.WidthChanged) UpdatePaneLayout();
         };
         UpdateCaption();
         IsVisibleChanged += (_, _) => UpdateVisibility();
@@ -81,8 +87,25 @@ public partial class MainWindow : Window
         var inset = WindowState == WindowState.Maximized
             ? WindowInsets.ForMaximized(this)
             : new Thickness();
-        if (ClientArea.Margin != inset)
-            ClientArea.Margin = inset;
+        if (Padding != inset)
+            Padding = inset;
+    }
+
+    private void ApplyFontScale(JsonElement shell)
+    {
+        if (!shell.TryGetProperty("fontScale", out var value) || value.ValueKind != JsonValueKind.Number
+            || !value.TryGetDouble(out var scale) || !double.IsFinite(scale) || scale <= 0 || fontScale == scale)
+            return;
+
+        fontScale = scale;
+        Application.Current.Resources["YaacUiScale"] = new ScaleTransform(scale, scale);
+        WindowChrome.GetWindowChrome(this).CaptionHeight = 42 * scale;
+        UpdateDialogWidth();
+
+        // In-tree popups copy the accumulated layout transform when they open.
+        ComposerPane.DismissPickers();
+        AgentsPane.DismissFloatingCard();
+        CloseRailHover();
     }
 
     private async Task StartAsync(Func<Controller> connect)
@@ -134,15 +157,16 @@ public partial class MainWindow : Window
         }
         if (frame.TryGetProperty("copy", out var copy)) Send("shell.copy", copy.GetString());
         if (!frame.TryGetProperty("views", out var views)) return;
-        if (views.TryGetProperty("shell", out var shell)) RenderShell(shell);
+        if (views.TryGetProperty("paneSizing", out var panes)) RenderPaneSizing(panes);
+        bool hasShell = views.TryGetProperty("shell", out var shell);
+        if (hasShell) RenderShell(shell);
         if (views.TryGetProperty("captionUpdate", out var update)) RenderCaptionUpdate(update);
         if (views.TryGetProperty("shortcuts", out var bindings)) RenderShortcuts(bindings);
         if (views.TryGetProperty("sidebar", out var sidebar))
         {
             SidebarPane.Render(sidebar);
             RailUsage.Render(sidebar.TryGetProperty("usage", out var usage) ? usage : default);
-            lastSidebar = sidebar.Clone();
-            if (sidebarCollapsed) RenderRail();
+            SetRailData(sidebar);
         }
         if (views.TryGetProperty("transcript", out var transcript)) TranscriptPane.Render(transcript);
         if (views.TryGetProperty("composer", out var composer))
@@ -152,19 +176,27 @@ public partial class MainWindow : Window
         }
         if (views.TryGetProperty("agents", out var agents))
         {
-            bool docked = Text(agents, "mode") == "docked";
-            Grid.SetColumn(AgentsPane, docked ? 3 : 2);
-            AgentsPane.Width = docked ? 300 : double.NaN;
-            AgentsPane.HorizontalAlignment = docked ? HorizontalAlignment.Stretch : HorizontalAlignment.Right;
-            AgentsPane.VerticalAlignment = docked ? VerticalAlignment.Stretch : VerticalAlignment.Center;
-            AgentsPane.Margin = docked ? new Thickness(0, 42, 0, 0) : new Thickness(0, 0, 20, 0);
             AgentsPane.Render(agents);
+            UpdateDockLayout();
         }
         if (views.TryGetProperty("settings", out var settings)) SettingsPane.Render(settings);
+        if (hasShell && Flag(shell, "focusSearch"))
+        {
+            if (!settingsOpen && SidebarPane.SearchEnabled)
+            {
+                if (NarrowWorkspace) OpenNarrowSidebar();
+                SidebarPane.FocusSearch();
+            }
+            Send("shell.focusSearchDone");
+        }
+        if (views.TryGetProperty("sidebar", out _) || views.TryGetProperty("agents", out _)
+            || views.TryGetProperty("shell", out _))
+            QueueVisiblePrRows();
     }
 
     private void RenderShell(JsonElement shell)
     {
+        ApplyFontScale(shell);
         RenderHeader(shell);
         settingsOpen = Flag(shell, "settings");
         firstRun = Flag(shell, "firstRun") && !settingsOpen;
@@ -180,21 +212,14 @@ public partial class MainWindow : Window
         SidebarPane.NeedsButton.Content = RailNeeds.Content = $"!  {count}";
         SidebarPane.NeedsButton.Visibility = RailNeeds.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
         Status.Text = Text(shell, "status");
+        if (shell.TryGetProperty("stoppedWsl", out var stoppedWsl)) RenderWslNotifications(stoppedWsl);
         if (shell.TryGetProperty("commander", out var commands)) RenderCommander(commands);
-        FontSize = shell.TryGetProperty("fontSize", out var size) ? size.GetDouble() : FontSize;
         Palette.SetTheme(Text(shell, "theme"));
         RenderHistory(SidebarPane.BackButton, shell, "back");
         RenderHistory(SidebarPane.ForwardButton, shell, "forward");
         RenderHistory(RailBack, shell, "back");
         RenderHistory(RailForward, shell, "forward");
         RenderScenes(shell);
-        sidebarPreference = Flag(shell, "sidebarCollapsed");
-        UpdateSidebar();
-        if (Flag(shell, "focusSearch"))
-        {
-            SidebarPane.FocusSearch();
-            Send("shell.focusSearchDone");
-        }
         if (shell.TryGetProperty("dialog", out var dialogView))
             RenderDialog(dialogView);
     }
@@ -238,12 +263,19 @@ public partial class MainWindow : Window
     private void ForwardClicked(object sender, RoutedEventArgs args) => Send("shell.forward");
     private void NeedsClicked(object sender, RoutedEventArgs args) => Send("shell.needs");
 
-    private void UpdateVisibility() =>
-        Send("shell.visible", new { shown = IsVisible && WindowState != WindowState.Minimized, hidden = !IsVisible });
+    private void UpdateVisibility()
+    {
+        bool shown = IsVisible && WindowState != WindowState.Minimized;
+        if (!shown)
+            visiblePrRows = [];
+        Send("shell.visible", new { shown, hidden = !IsVisible });
+        QueueVisiblePrRows();
+    }
 
     private void HideToTray()
     {
         AgentsPane.DismissFloatingCard();
+        CloseRailHover();
         dialog?.Hide();
         Hide();
     }
@@ -266,60 +298,9 @@ public partial class MainWindow : Window
 
     private void PositionFirstRun()
     {
-        SettingsPane.Margin = new Thickness(firstRun ? SidebarColumn.ActualWidth + 1 : 0, 0, 0, 0);
+        SettingsPane.Margin = new Thickness(firstRun ? SidebarColumn.Width.Value + SidebarGap.Width.Value : 0, 0, 0, 0);
     }
 
-    private void UpdateSidebar()
-    {
-        var collapsed = sidebarPreference || ActualWidth > 0 && ActualWidth < 1000;
-        if (sidebarCollapsed == collapsed) return;
-        sidebarCollapsed = collapsed;
-        if (collapsed)
-        {
-            if (SidebarColumn.ActualWidth >= 220) restoredSidebarWidth = SidebarColumn.ActualWidth;
-            SidebarColumn.MinWidth = 48;
-            SidebarColumn.Width = new GridLength(48);
-        }
-        else
-        {
-            SidebarColumn.MinWidth = 220;
-            SidebarColumn.Width = new GridLength(restoredSidebarWidth);
-        }
-        SidebarPane.Visibility = SidebarSplitter.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
-        SidebarRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
-        if (collapsed) RenderRail();
-        PositionFirstRun();
-    }
-
-    private void RenderRail()
-    {
-        if (lastSidebar.ValueKind != JsonValueKind.Object
-            || !lastSidebar.TryGetProperty("sections", out var sections)) return;
-        var rows = sections.EnumerateArray().SelectMany(section => section.GetProperty("rows").EnumerateArray())
-            .Select(row => (Id: Text(row, "id"), Title: Text(row, "title"), Tone: Text(row, "tone"), Selected: Flag(row, "selected"), Fast: Flag(row, "fast"), Ultrafast: Flag(row, "ultrafast")))
-            .ToArray();
-        var signature = JsonSerializer.Serialize(rows.Select(row => new { row.Id, row.Title, row.Tone, row.Selected, row.Fast, row.Ultrafast }));
-        if (railSignature == signature) return;
-        railSignature = signature;
-        RailItems.Children.Clear();
-        foreach (var row in rows)
-        {
-            var button = new Button
-            {
-                Style = (Style)FindResource("RailButton"),
-                Content = row.Tone == "running"
-                    ? new RunningSpinner { Width = 15, Height = 15, Fast = row.Fast, Ultrafast = row.Ultrafast, Foreground = RunningSpinner.Ink(row.Fast, row.Ultrafast) }
-                    : string.IsNullOrEmpty(MarkGlyph(row.Tone)) && row.Title.Length > 0 ? row.Title[..1] : MarkGlyph(row.Tone),
-                ToolTip = row.Title,
-            };
-            if (row.Selected) button.Background = Palette.Brush("YaacSelected");
-            System.Windows.Automation.AutomationProperties.SetName(button, row.Title);
-            button.Click += (_, _) => Send("sidebar.open", new { id = row.Id });
-            RailItems.Children.Add(button);
-        }
-    }
-
-    private void SidebarClicked(object sender, RoutedEventArgs args) => Send("shell.sidebar");
     private void RailNewClicked(object sender, RoutedEventArgs args) => Send("shell.new");
     private double preferredChatWidth = 860;
 
@@ -450,6 +431,14 @@ public partial class MainWindow : Window
             }
             return;
         }
+        if (key == Key.Escape && Keyboard.Modifiers == ModifierKeys.None &&
+            narrowSidebarOpen && SidebarPane.IsKeyboardFocusWithin && !SidebarPane.SearchHasText)
+        {
+            CloseNarrowSidebar();
+            RailExpand.Focus();
+            args.Handled = true;
+            return;
+        }
         args.Handled = InvokeShortcut(logical, Keyboard.Modifiers, args.IsRepeat);
     }
 
@@ -482,9 +471,12 @@ public partial class MainWindow : Window
                 case "jump-to-bottom": TranscriptPane.JumpToBottom(); return true;
                 case "prev-message": TranscriptPane.NavigatePrompt(-1); return true;
                 case "next-message": TranscriptPane.NavigatePrompt(1); return true;
+                case "search-threads" when NarrowWorkspace: Send("shell.focusSearch"); return true;
+                case "toggle-sidebar" when NarrowWorkspace: ToggleNarrowSidebar(); return true;
             }
         }
-        Send("shell.shortcut", new { id = shortcut.Id, inText });
+        var approval = TranscriptPane.FocusedApproval;
+        Send("shell.shortcut", new { id = shortcut.Id, inText, card = approval?.ActionId, threadId = approval?.ThreadId });
         return true;
     }
 

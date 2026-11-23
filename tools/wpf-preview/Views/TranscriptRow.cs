@@ -120,7 +120,10 @@ internal sealed class TranscriptRow
     {
         Kind = Data.Value("kind").Text();
         if (Kind is not ("user" or "task"))
+        {
+            Prompt = "";
             return;
+        }
         var text = Data.Value("text").OptionalText() ?? Data.Value("copyText").OptionalText() ??
             Data.Value("parts").Elements()
                 .Where(part => part.Value("kind").Text() is "text" or "markdown" or "code" or "pasted" or "command")

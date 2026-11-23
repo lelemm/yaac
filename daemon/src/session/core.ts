@@ -213,6 +213,8 @@ const SUBAGENT_WRITES: ReadonlySet<Capability> = new Set<Capability>([
   "meshTools",
 ]);
 
+const METADATA_PENDING = "Codex thread metadata is not available yet.";
+
 /** The thread state a sub-agent's harness status stands for while YAAC runs no turn of it. */
 function subagentState(status: string | undefined): ThreadSummary["state"] | null {
   if (status === "running") return "running";
@@ -345,6 +347,7 @@ export class Core {
   private snapshots = new Map<string, Snapshot>();
   private pendingStarts = new Map<string, number>();
   private buffered = new Map<string, ProviderEvent[]>();
+  private metadataReads = new WeakMap<ThreadRuntime, { pending: Promise<void> | null; failedAt?: number }>();
   private readonly threadsDir: string;
   private readonly git: GitRunner;
   private readonly gitLimiter: Limiter;
@@ -466,7 +469,7 @@ export class Core {
     const parent = rt.record.nativeParent;
     if (!parent) return undefined;
     const p = this.threadByNative(rt.record.instance, parent);
-    return p && !p.deleted ? p : undefined;
+    return p && !p.record.metadataPending ? p : undefined;
   }
 
   /** How many listed harness sub-agents a thread has. */
@@ -615,7 +618,9 @@ export class Core {
         const rt = this.discovered(instance, info, false);
         if (rt.record.capped) this.setCapped(rt, false);
       } else {
-        // Beyond the caps: not brought in. One already known is trimmed below.
+        // Repair existing records even if this scan would not bring them in.
+        const rt = this.threadByNative(id, info.native);
+        if (rt && this.needsMetadata(rt)) this.discovered(instance, info, rt.record.capped);
       }
     }
     if (complete) {
@@ -625,6 +630,7 @@ export class Core {
         // A thread of another store (the instance's home or socket changed, P10/P300) is not
         // in this listing for that reason alone: it is kept, and shown unavailable.
         if (this.storeAway(rt)) continue;
+        if (!listedNatives.has(rt.record.native) && this.needsMetadata(rt)) void this.recoverMetadata(instance, rt);
         const inCaps = within.has(rt.record.native) || (listedNatives.has(rt.record.native) && keptNow({ native: rt.record.native } as NativeThreadInfo));
         if (!inCaps && !this.neverCut(rt)) {
           if (!rt.record.capped) this.setCapped(rt, true);
@@ -678,6 +684,7 @@ export class Core {
 
   /** Whether a thread is in the index (listed to clients). */
   private listed(rt: ThreadRuntime): boolean {
+    if (rt.record.metadataPending) return this.metadataFailed(rt) && rt.pendingRequestCount() > 0;
     return !rt.record.capped || !!rt.record.broughtIn || this.neverCut(rt) || this.isOpen(rt);
   }
 
@@ -710,7 +717,7 @@ export class Core {
   findThread(id: unknown): ThreadRuntime | undefined {
     if (typeof id !== "string") return undefined;
     const rt = this.threads.get(id);
-    if (rt && !rt.deleted) {
+    if (rt && !rt.deleted && (!rt.record.metadataPending || this.metadataFailed(rt))) {
       if (!this.index.get(rt.id) && rt.record.capped) this.bringIn(rt);
       return rt;
     }
@@ -744,6 +751,8 @@ export class Core {
     for (const inst of instances) {
       const known = this.threadByNative(inst.config.id, id);
       if (known) {
+        if (this.needsMetadata(known)) await this.recoverMetadata(inst, known, true);
+        if (known.deleted || (known.record.metadataPending && !this.listed(known))) continue;
         if (!out.includes(known)) out.push(known);
         if (known.record.capped) this.bringIn(known);
         continue;
@@ -1163,10 +1172,12 @@ export class Core {
   private discovered(instance: Instance, info: NativeThreadInfo, capped?: boolean): ThreadRuntime {
     const known = this.byNative.get(instance.config.id, info.native, this.storeNow(instance.config.id));
     let rt = known ? this.threads.get(known) : undefined;
+    const metadataWasPending = !!rt?.record.metadataPending;
+    const parentWasUnknown = !rt || rt.deleted || metadataWasPending;
+    // Seen outside a scan (a harness event): only the age cap can be checked here.
+    const ageCap = this.caps.enabled && this.caps.maxAgeDays > 0 ? new Date(Date.now() - this.caps.maxAgeDays * 86_400_000).toISOString() : null;
+    const isCapped = capped ?? (!!ageCap && info.updatedAt < ageCap);
     if (!rt || rt.deleted) {
-      // Seen outside a scan (a harness event): only the age cap can be checked here.
-      const ageCap = this.caps.enabled && this.caps.maxAgeDays > 0 ? new Date(Date.now() - this.caps.maxAgeDays * 86_400_000).toISOString() : null;
-      const isCapped = capped ?? (!!ageCap && info.updatedAt < ageCap);
       rt = this.createThread(
         instance,
         info.native,
@@ -1179,6 +1190,7 @@ export class Core {
           archived: info.archived ?? false,
           createdAt: info.createdAt,
           updatedAt: info.updatedAt,
+          ...(instance.config.kind === "codex" ? { metadataPending: false } : {}),
           ...(isCapped ? { capped: true } : {}),
         },
         false,
@@ -1186,6 +1198,12 @@ export class Core {
     } else {
       // Keep YAAC's working directory for threads it started or explicitly moved.
       const r = rt.record;
+      if (this.needsMetadata(rt)) {
+        r.metadataPending = false;
+        r.createdAt = info.createdAt;
+        if (metadataWasPending) r.capped = isCapped;
+        if (r.originKind !== "yaac") r.originKind = info.originKind === "yaac" ? "programmatic" : info.originKind;
+      }
       if (r.originKind !== "yaac" && info.cwd && !r.cwdMoved && !r.placement && info.cwd !== r.cwd) {
         r.cwd = info.cwd;
         r.repo = null;
@@ -1206,17 +1224,17 @@ export class Core {
       if (changed) {
         r.nativeParent = info.parent;
         r.subagent = { ...info.subagent };
+        if (r.originKind !== "yaac") r.originKind = info.originKind === "yaac" ? "programmatic" : info.originKind;
         rt.saveRecord();
         this.linkSubagent(rt);
       }
-      this.updateIndex(rt);
-      const parent = this.subagentParent(rt);
-      if (parent) this.updateIndex(parent);
-      return rt;
     }
+    if (metadataWasPending) this.appendControl(rt);
     this.updateIndex(rt);
+    const parent = this.subagentParent(rt);
+    if (parent) this.updateIndex(parent);
     // Sub-agents filed before their parent was known name it now.
-    if (!known) for (const kid of this.subagentKids.get(this.nativeKey(instance.config.id, info.native)) ?? []) {
+    if (parentWasUnknown) for (const kid of this.subagentKids.get(this.nativeKey(instance.config.id, info.native)) ?? []) {
       const k = this.threads.get(kid);
       if (k && !k.deleted) this.updateIndex(k);
     }
@@ -1262,7 +1280,7 @@ export class Core {
       archived: r.archived ?? false,
       agents: r.agents ?? "ask",
     };
-    const away = this.storeAway(rt);
+    const away = this.storeAway(rt) ?? (r.metadataPending ? METADATA_PENDING : null);
     if (away) s.unavailable = away;
     else if (rt.runningCommands.length) {
       const controller = this.commandController(rt);
@@ -1348,7 +1366,7 @@ export class Core {
   }
 
   holderOf(rt: ThreadRuntime): Holder {
-    // Read-only only on positive evidence: `uncertain` without `external` is free.
+    // Read-only ownership requires positive evidence of an external writer.
     const ext = rt.external.external ? rt.external.holder ?? "another program" : null;
     const driver = rt.driver ?? rt.compactDriver;
     return { driver: driver?.key ?? null, driverHost: driver?.host ?? null, external: ext };
@@ -1421,10 +1439,12 @@ export class Core {
     const ev: ControlChangedEvent & { type: "controlChanged" } = { type: "controlChanged", control: "free" };
     if (rt.activeTurn) ev.activeTurn = rt.activeTurn;
     const driver = rt.driver ?? rt.compactDriver;
-    const holder = rt.external.external ? rt.external.holder ?? "another program" : driver?.host ?? null;
+    const external = this.holderOf(rt).external;
+    const holder = external ?? driver?.host ?? null;
     if (holder) ev.holder = holder;
-    if (rt.external.external && rt.external.takeOverBlocked) ev.takeOverBlocked = rt.external.takeOverBlocked;
-    this.append(rt, ev, { driver: driver?.key ?? null, external: rt.external.external });
+    const blocked = rt.record.metadataPending ? METADATA_PENDING : rt.external.takeOverBlocked;
+    if (external && blocked) ev.takeOverBlocked = blocked;
+    this.append(rt, ev, { driver: driver?.key ?? null, external: !!external });
   }
 
   /** Renders a journal entry's event for one client (control is relative to the receiver). */
@@ -1702,10 +1722,11 @@ export class Core {
     journal.touch(client.key);
     const holder = this.holderOf(rt);
     const c = controlFor(holder, client.key);
+    const blocked = rt.record.metadataPending ? METADATA_PENDING : rt.external.takeOverBlocked;
     const common = {
       control: c.control,
       ...(c.controlHolder ? { controlHolder: c.controlHolder } : {}),
-      ...(c.control === "external" && rt.external.takeOverBlocked ? { takeOverBlocked: rt.external.takeOverBlocked } : {}),
+      ...(c.control === "external" && blocked ? { takeOverBlocked: blocked } : {}),
       ...(rt.activeTurn ? { activeTurn: rt.activeTurn } : {}),
       effective,
       ...(rt.context ? { context: rt.context } : {}),
@@ -1773,7 +1794,7 @@ export class Core {
       if (this.modelSupportsSpeed(inst.descriptor, eff.applied?.model ?? this.modelOf(rt), cap)) eff.capabilities.push(cap);
     }
     // A read-only harness sub-agent (D151) can be read and watched, nothing more.
-    if (this.subagentReadOnly(rt)) eff.capabilities = eff.capabilities.filter((c) => !SUBAGENT_WRITES.has(c));
+    if (rt.record.metadataPending || this.subagentReadOnly(rt)) eff.capabilities = eff.capabilities.filter((c) => !SUBAGENT_WRITES.has(c));
     rt.effective = eff;
     return eff;
   }
@@ -1864,6 +1885,8 @@ export class Core {
   }
 
   private setExternal(rt: ThreadRuntime, raw: ExternalControl): void {
+    const readOnly = this.subagentReadOnly(rt);
+    if (readOnly) raw = { external: true, holder: "the agent that started it", takeOverBlocked: readOnly };
     const ext = this.applyTakeOver(rt, raw);
     const before = canonical(rt.external);
     rt.external = {
@@ -1878,7 +1901,7 @@ export class Core {
     if (rt.canDispatch()) this.afterIdle(rt);
   }
 
-  private checkWriter(rt: ThreadRuntime, client: ClientLink | null, wrap: boolean): void {
+  private checkWriter(rt: ThreadRuntime, client: ClientLink | null, wrap: boolean, answeringRequest = false): void {
     const fail = (message: string, holder: string | null) => {
       const err = rpc("thread_in_use", message, holder ? { holder } : undefined);
       throw wrap ? new NotActed(err) : err;
@@ -1886,6 +1909,7 @@ export class Core {
     if (rt.external.external) {
       fail(`this thread is in use in ${rt.external.holder ?? "another program"}; it can only be watched`, rt.external.holder ?? null);
     }
+    if (rt.record.metadataPending && !answeringRequest) fail(METADATA_PENDING, null);
     const driver = rt.driver ?? rt.compactDriver;
     if (driver && (!client || driver.key !== client.key)) {
       fail(`this thread is being driven from ${driver.host ?? "another YAAC client"}; it can only be watched`, driver.host);
@@ -2788,13 +2812,6 @@ export class Core {
     return true;
   }
 
-  /** Threads running a turn now, not counting those blocked in a mesh `wait`. */
-  runningCount(): number {
-    let n = 0;
-    for (const rt of this.threads.values()) if (!rt.deleted && rt.activeTurn && rt.waiting.size === 0) n++;
-    return n;
-  }
-
   /** Whether the thread is idle and not known to be held elsewhere (no harness round trip). */
   dispatchableNow(rt: ThreadRuntime): boolean {
     return rt.canDispatch() && rt.queue.length === 0 && rt.userQueue.length === 0 && rt.pendingRequestCount() === 0;
@@ -2873,7 +2890,7 @@ export class Core {
       const writer = this.subagentReadOnly(rt) ? this.subagentParent(rt) : rt;
       if (writer) {
         await this.refreshExternal(writer);
-        this.checkWriter(writer, client, true);
+        this.checkWriter(writer, client, true, true);
       }
       if (rec.state !== "pending") throw notActed("request_not_pending", `the request is ${rec.state}`, { state: rec.state });
       if (!p.response || p.response.requestKind !== rec.requestKind) {
@@ -2916,6 +2933,7 @@ export class Core {
   private forkPlan(src: ThreadRuntime, instanceId: string): { kind: "native"; dest: Instance } | { kind: "handoff"; dest: Instance; unavailable: string | null } {
     const dest = this.registry.get(instanceId);
     if (!dest) throw rpc("instance_not_found", `no provider instance ${instanceId} on this target`);
+    if (src.record.metadataPending) return { kind: "handoff", dest, unavailable: METADATA_PENDING };
     const srcInst = this.registry.get(src.record.instance);
     const sameStore =
       !!srcInst &&
@@ -3185,7 +3203,7 @@ export class Core {
   // ── Rename, archive, delete ────────────────────────────────────────────────────────────
 
   private async gated(rt: ThreadRuntime, cap: Capability, method: "rename" | "archive" | "remove"): Promise<HarnessProvider> {
-    const readOnly = this.subagentReadOnly(rt);
+    const readOnly = rt.record.metadataPending ? METADATA_PENDING : this.subagentReadOnly(rt);
     if (readOnly) throw notActed("thread_in_use", readOnly);
     const away = this.storeAway(rt);
     if (away) throw notActed("provider_unavailable", away);
@@ -3299,6 +3317,49 @@ export class Core {
 
   // ── Provider events ────────────────────────────────────────────────────────────────────
 
+  private needsMetadata(rt: ThreadRuntime): boolean {
+    const r = rt.record;
+    // The old event fallback used the daemon home and no title for an interactive thread.
+    return r.metadataPending ?? (r.kind === "codex" && r.originKind === "interactive" && r.cwd === this.opts.home && !r.title);
+  }
+
+  private metadataFailed(rt: ThreadRuntime): boolean {
+    return this.metadataReads.get(rt)?.failedAt !== undefined;
+  }
+
+  private recoverMetadata(instance: Instance, rt: ThreadRuntime, force = false): Promise<void> | undefined {
+    const provider = instance.provider;
+    if (!provider?.lookupThread) return;
+    const state = this.metadataReads.get(rt) ?? { pending: null };
+    if (state.pending) return state.pending;
+    // A notification can precede the initial rollout write. A later observation can retry a
+    // failed read without issuing one RPC for every item or delta in the meantime.
+    if (!force && state.failedAt !== undefined && Date.now() - state.failedAt < 1000) return;
+    const store = instance.descriptor.store.key;
+    const native = rt.record.native;
+    const stillPending = () => !rt.deleted && instance.provider === provider && instance.descriptor.store.key === store && this.needsMetadata(rt);
+    state.pending = Promise.resolve().then(async () => {
+      if (!stillPending()) return;
+      const info = await provider.lookupThread!(native);
+      if (!stillPending()) return;
+      if (info?.native === native && info.cwd) this.discovered(instance, info);
+      else {
+        state.failedAt = Date.now();
+        this.updateIndex(rt);
+      }
+    }).catch((e) => {
+      this.opts.log(`metadata for ${native} from ${instance.config.id} failed: ${(e as Error).message}`);
+      if (stillPending()) {
+        state.failedAt = Date.now();
+        this.updateIndex(rt);
+      }
+    }).finally(() => {
+      state.pending = null;
+    });
+    this.metadataReads.set(rt, state);
+    return state.pending;
+  }
+
   private onProviderEvent(instanceId: string, ev: ProviderEvent): void {
     try {
       this.handleProviderEvent(instanceId, ev);
@@ -3336,11 +3397,19 @@ export class Core {
       }
       // A conversation the user deleted from YAAC only stays out.
       if (this.isForgotten(instanceId, ev.thread)) return;
-      // A conversation yaacd has not seen: someone else started it.
-      rt = this.discovered(instance, { native: ev.thread, cwd: this.opts.home, createdAt: nowIso(), updatedAt: nowIso(), originKind: "interactive" });
+      if (instance.config.kind === "codex") {
+        // Events and approvals must reach the journal even if we do not yet know how to file
+        // the conversation. In particular an externally spawned sub-agent can arrive here.
+        rt = this.createThread(instance, ev.thread, { cwd: "", originKind: "programmatic", metadataPending: true }, false);
+      } else {
+        rt = this.discovered(instance, { native: ev.thread, cwd: this.opts.home, createdAt: nowIso(), updatedAt: nowIso(), originKind: "interactive" });
+      }
     }
     if (rt.deleted) return;
+    if (this.needsMetadata(rt)) void this.recoverMetadata(instance, rt);
     switch (ev.type) {
+      case "threadObserved":
+        return;
       case "runningCommands": {
         const changed = !!rt.runningCommands.length !== !!ev.commands.length;
         rt.runningCommands = ev.commands;

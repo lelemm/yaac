@@ -70,13 +70,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             Selection::NewThread(id) => crate::composer::draft_view(ui, app, id, actions),
             _ if yaac_core::first_run::is_first_run(&app.client.state) => crate::first_run::show(ui, app, actions),
             _ => {
-                let text = match &app.client.state.hub.last_error {
-                    Some(e) if !app.client.state.hub.attached => e.clone(),
-                    _ if !app.client.state.hub.attached => "Attaching to the hub…".to_owned(),
-                    _ => format!("Choose a thread, or start one with {}.", crate::commander::tip(app, "New", yaac_core::commands::Cmd::NewThread)),
-                };
                 ui.centered_and_justified(|ui| {
-                    ui.label(widgets::secondary(text, &p));
+                    ui.label(widgets::secondary(empty_workspace(app), &p));
                 });
             }
         }
@@ -110,19 +105,22 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     crate::dialogs::move_dialog(ui.ctx(), app, actions);
 }
 
+pub(crate) fn empty_workspace(app: &YaacApp) -> String {
+    let hub = &app.client.state.hub;
+    if hub.attached {
+        format!("Choose a thread, or start one with {}.", crate::commander::tip(app, "New", yaac_core::commands::Cmd::NewThread))
+    } else {
+        hub.last_error.clone().unwrap_or_else(|| "Attaching to the hub…".to_owned())
+    }
+}
+
 
 /// Create project (screen 29): machine (read-only), folder, name; one filled button.
 fn create_project_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
     let p = app.p;
     let Some(mut cp) = app.ui.create_project.take() else { return };
     let machine = app.client.state.target_name(&cp.target);
-    let moving = app
-        .client
-        .state
-        .threads
-        .iter()
-        .filter(|(k, r)| k.target == cp.target && yaac_core::projects::contains(&cp.folder, r.summary.cwd.as_str()) && app.client.state.project_of(k).is_none())
-        .count();
+    let moving = project_thread_count(app, &cp.target, &cp.folder);
     let mut keep = true;
     // The scrim dims the shell behind the dialog.
     crate::dialogs::scrim(ctx, &p, "create-project");
@@ -196,6 +194,13 @@ fn create_project_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut V
     if keep {
         app.ui.create_project = Some(cp);
     }
+}
+
+pub(crate) fn project_thread_count(app: &YaacApp, target: &yaac_protocol::TargetId, folder: &str) -> usize {
+    app.client.state.threads.iter().filter(|(key, record)| {
+        &key.target == target && yaac_core::projects::contains(folder, record.summary.cwd.as_str())
+            && app.client.state.project_of(key).is_none()
+    }).count()
 }
 
 /// The folder browser in the Create project dialog, backed by the target's `fs/list`.
@@ -285,9 +290,8 @@ fn rename_dialog(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Actio
 }
 
 /// A WSL distro that stopped on its own raises a notification; YAAC does not start it.
-fn wsl_notification(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
-    let p = app.p;
-    let down: Vec<_> = app
+pub(crate) fn stopped_wsl_notifications(app: &YaacApp) -> Vec<(yaac_protocol::TargetId, String)> {
+    app
         .client
         .state
         .targets
@@ -305,8 +309,12 @@ fn wsl_notification(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Ac
             };
             (t.entry.id.clone(), distro)
         })
-        .collect();
-    for (id, distro) in down {
+        .collect()
+}
+
+fn wsl_notification(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    for (id, distro) in stopped_wsl_notifications(app) {
         egui::Area::new(egui::Id::unique(("wsl", id.as_str()))).order(egui::Order::Foreground).anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -16.0)).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).fill(p.raised).inner_margin(Margin::same(14)).show(ui, |ui| {
                 ui.set_width(300.0);

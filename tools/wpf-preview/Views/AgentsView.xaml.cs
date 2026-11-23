@@ -21,6 +21,7 @@ public partial class AgentsView : UserControl
     private string? _snapshot;
     private string _threadId = "";
     private string _mode = "pill";
+    private bool _dockFolded;
     private string _firstHidden = "";
     private string _budgetId = "";
     private AgentsAction? _continueBudget;
@@ -51,7 +52,8 @@ public partial class AgentsView : UserControl
         _closeTimer.Tick += (_, _) =>
         {
             _closeTimer.Stop();
-            if (!Pill.IsMouseOver && !Card.IsMouseOver && !FloatingGrip.IsDragging && !_keyboardCard && _menu is null)
+            if (!Pill.IsMouseOver && !Card.IsMouseOver && !FloatingGrip.IsDragging && !_keyboardCard &&
+                _menu is null && FindChild<PullRequestBadge>(Card, badge => badge.IsFlyoutOpen) is null)
                 CloseCard();
         };
         Loaded += (_, _) => ApplyMode();
@@ -66,10 +68,46 @@ public partial class AgentsView : UserControl
 
     public event Action<string, object?>? Command;
 
+    internal void ObservePrRows(Action changed)
+    {
+        VisibleListRows.Observe(DockRows, changed);
+        VisibleListRows.Observe(CardRows, changed);
+        Floating.Opened += (_, _) => changed();
+        Floating.Closed += (_, _) => changed();
+    }
+
+    internal IEnumerable<string> VisiblePrRows()
+    {
+        if (!IsVisible || (!IsDocked && !Floating.IsOpen))
+            return [];
+        return VisibleListRows.Read(IsDocked ? DockRows : CardRows).OfType<AgentsEntry>()
+            .Where(entry => entry.Kind is "dockRow" or "cardRow" && entry.Data.CanOpen)
+            .Select(entry => entry.CommandId);
+    }
+
+    internal bool IsDocked => _mode == "docked" && !_dockFolded;
+
+    internal void SetDockFolded(bool folded)
+    {
+        if (_dockFolded == folded)
+            return;
+
+        _dockFolded = folded;
+        ApplyMode();
+    }
+
     internal void SetFloatingViewport(double height)
     {
         _floatingViewport = height;
+        if (Floating.IsOpen)
+            UpdateFloatingHeight();
         PositionFloating();
+    }
+
+    private void UpdateFloatingHeight()
+    {
+        var height = _floatingViewport > 0 ? _floatingViewport : 600;
+        Card.MaxHeight = Math.Min(_heightLimit ?? double.PositiveInfinity, Math.Max(170, height - 100));
     }
 
     private double FloatingTravel => Math.Max(0, (_floatingViewport - Math.Max(Card.ActualHeight, Pill.ActualHeight)) / 2 - 4);
@@ -326,7 +364,6 @@ public partial class AgentsView : UserControl
         entry.CommandId = row.CommandId;
         entry.RowId = row.Id;
         entry.Actions = row.Actions;
-        entry.BadgeAction = row.BadgeAction;
         return entry;
     }
 
@@ -386,7 +423,7 @@ public partial class AgentsView : UserControl
 
     private void ApplyMode()
     {
-        bool docked = _mode == "docked";
+        bool docked = IsDocked;
         Pill.Visibility = docked ? Visibility.Collapsed : Floating.IsOpen ? Visibility.Hidden : Visibility.Visible;
         Docked.Visibility = Show(docked);
         if (!IsVisible || docked && Floating.IsOpen)
@@ -397,14 +434,14 @@ public partial class AgentsView : UserControl
 
     private void OpenCard(bool focus = false, bool hidden = false)
     {
-        if (!IsLoaded || !IsVisible || _mode == "docked")
+        if (!IsLoaded || !IsVisible || IsDocked)
             return;
 
         _closeTimer.Stop();
         _focusCard |= focus;
         _scrollHidden |= hidden;
         _keyboardCard |= focus;
-        Card.MaxHeight = _heightLimit ?? Math.Max(170, (Window.GetWindow(this)?.ActualHeight ?? 600) - 100);
+        UpdateFloatingHeight();
         if (!Floating.IsOpen)
             Floating.IsOpen = true;
         else if (_focusCard || _scrollHidden)
@@ -422,7 +459,7 @@ public partial class AgentsView : UserControl
         if (_menu is not null)
             _menu.IsOpen = false;
         Floating.IsOpen = false;
-        Pill.Visibility = Show(_mode != "docked");
+        Pill.Visibility = Show(!IsDocked);
         if (focusPill && Pill.IsVisible)
         {
             _suppressPillFocus = true;
@@ -520,6 +557,8 @@ public partial class AgentsView : UserControl
     {
         if (e.Key == Key.Escape && Floating.IsOpen)
         {
+            if (FindChild<PullRequestBadge>(Card, badge => badge.IsFlyoutFocused) is not null)
+                return;
             CloseCard(force: true, focusPill: true);
             e.Handled = true;
         }
@@ -568,7 +607,8 @@ public partial class AgentsView : UserControl
 
     private void OnRowRightClick(object sender, MouseButtonEventArgs e)
     {
-        if (sender is FrameworkElement row && EntryOf(row) is { Actions.Count: > 0 } entry)
+        if (!PullRequestBadge.IsSource(e.OriginalSource) &&
+            sender is FrameworkElement row && EntryOf(row) is { Actions.Count: > 0 } entry)
         {
             OpenMenu(row, entry, PlacementMode.MousePoint);
             e.Handled = true;
@@ -578,6 +618,7 @@ public partial class AgentsView : UserControl
     private void OnRowKeyDown(object sender, KeyEventArgs e)
     {
         if ((e.Key == Key.Apps || e.Key == Key.F10 && Keyboard.Modifiers == ModifierKeys.Shift)
+            && !PullRequestBadge.IsSource(e.OriginalSource)
             && sender is FrameworkElement row && EntryOf(row) is { Actions.Count: > 0 } entry)
         {
             OpenMenu(row, entry, PlacementMode.Bottom);
@@ -585,10 +626,16 @@ public partial class AgentsView : UserControl
         }
     }
 
-    private void OnBadge(object sender, RoutedEventArgs e)
+    private void OnPrAction(object? sender, PullRequestBadgeEventArgs e)
     {
-        if (EntryOf(sender) is { } entry)
-            InvokeAction(entry.CommandId, entry.BadgeAction);
+        if (sender is PullRequestBadge badge)
+            Command?.Invoke("pr.action", new { id = badge.ThreadId, action = e.Action, number = e.Number });
+    }
+
+    private void OnPrFlyoutChanged(object? sender, EventArgs e)
+    {
+        if (Floating.IsOpen && sender is PullRequestBadge { IsFlyoutOpen: false })
+            _closeTimer.Start();
     }
 
     private void OpenMenu(FrameworkElement anchor, AgentsEntry entry, PlacementMode placement)

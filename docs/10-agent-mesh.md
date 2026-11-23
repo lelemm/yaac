@@ -646,12 +646,14 @@ is not looping, just working longer and wider than anyone intended.
 | --- | --- | --- |
 | Workers per thread | 8 | A fan-out mistake should cost eight threads, not eighty. |
 | Depth of spawning | 3 | Workers of workers of workers is enough. |
-| Threads running at once, per target | 6 | Each is a harness process using memory and money. A thread blocked in `wait` does not count, so parents waiting on children can never use up every slot and deadlock the fleet. |
 | Messages between the same two threads | 30 per 10 minutes | Catches the simplest ping-pong early. |
 | A message waiting undelivered | notice to the sender after 15 minutes | Silence is not an answer. The message is not cancelled, and the notice does not start a turn. |
 
 Hitting a limit is never hidden: the tool call fails with a reason the agent can read, and the
 thread shows a notice the user can see.
+
+The mesh places no cap on the target's number of active turns (D180). The legacy
+`runningThreads` policy field remains readable and writable for older builds.
 
 ### A worker that is blocked must be seen
 

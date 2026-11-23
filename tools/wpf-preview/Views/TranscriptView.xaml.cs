@@ -47,6 +47,7 @@ public partial class TranscriptView : UserControl
     private bool pinQueued;
     private bool reportAfterPin;
     private bool follow = true;
+    private bool scrollingBar;
     private bool selectingThread;
     private int messages;
     private int seen;
@@ -71,6 +72,12 @@ public partial class TranscriptView : UserControl
             Interval = TimeSpan.FromMilliseconds(120),
         };
         reportTimer.Tick += (_, _) => ReportAnchor();
+        Rows.PreviewMouseLeftButtonUp += (_, _) => EndScrollbarScroll();
+        Rows.LostMouseCapture += (_, _) =>
+        {
+            if (Mouse.LeftButton == MouseButtonState.Released)
+                EndScrollbarScroll();
+        };
         Unloaded += (_, _) => reportTimer.Stop();
         Loaded += (_, _) =>
         {
@@ -84,6 +91,10 @@ public partial class TranscriptView : UserControl
             QueuePin();
         };
     }
+
+    internal TranscriptRow? FocusedApproval => IsVisible && IsKeyboardFocusWithin
+        ? FindAncestor<TranscriptRowView>(Keyboard.FocusedElement as DependencyObject)?.FocusedApproval
+        : null;
 
     public void SetChatGutter(double width)
     {
@@ -105,10 +116,12 @@ public partial class TranscriptView : UserControl
         var nextId = view.Value("threadId").Text();
         var switched = thread is null || nextId != threadId;
         var pin = pendingPin ?? CapturePin();
-        var oldIndex = pin.Id is not null && byId.TryGetValue(pin.Id, out var anchored) ? anchored.Index : -1;
+        var anchored = pin.Id is not null ? byId.GetValueOrDefault(pin.Id) : null;
+        var oldIndex = anchored?.Index ?? -1;
         if (switched)
         {
             selection.Clear();
+            scrollingBar = false;
             if (thread is not null)
                 thread.Pin = pin with { Focus = false };
 
@@ -122,6 +135,8 @@ public partial class TranscriptView : UserControl
             focusId = null;
             focusToken = null;
             focusApplied = false;
+            anchorToken = null;
+            requestedPin = null;
             promptIndex = null;
             timelineTarget = requestedPage = null;
             jumpingLatest = false;
@@ -242,9 +257,8 @@ public partial class TranscriptView : UserControl
         }
         var nextAnchorToken = view.Value("anchorToken").Scalar();
         var incomingAnchor = view.Value("anchor");
-        if (switched || nextAnchorToken is not null && nextAnchorToken != anchorToken)
+        if (nextAnchorToken is not null && nextAnchorToken != anchorToken)
         {
-            requestedPin = null;
             var anchorId = incomingAnchor.OptionalText() ?? incomingAnchor.Value("id").OptionalText();
             if (anchorId is not null)
             {
@@ -252,9 +266,13 @@ public partial class TranscriptView : UserControl
                 var offset = offsetData.ValueKind == JsonValueKind.Number && offsetData.TryGetDouble(out var pixels)
                     && double.IsFinite(pixels) ? Math.Max(0, pixels) : 0;
                 requestedPin = new ScrollPin(anchorId, -offset, 0, false);
+                anchorToken = nextAnchorToken;
             }
         }
-        anchorToken = nextAnchorToken;
+        else if (nextAnchorToken is null)
+        {
+            anchorToken = null;
+        }
         if (jumpingLatest && !historyAway && !page.Value("loading").Flag())
         {
             jumpingLatest = false;
@@ -277,11 +295,23 @@ public partial class TranscriptView : UserControl
         }
         else if (structureChanged || dataChanged)
         {
-            if (!pin.Bottom && pin.Id is not null && !byId.ContainsKey(pin.Id) && items.Count > 0)
-                pin = pin with { Id = switched ? null : items[Math.Clamp(oldIndex, 0, items.Count - 1)].Id, Top = 0 };
+            var removedAnchor = !pin.Bottom && pin.Id is not null && !byId.ContainsKey(pin.Id) && items.Count > 0;
+            if (removedAnchor)
+            {
+                var run = anchored?.Data.Value("foldRun").OptionalText();
+                var turn = anchored?.Data.Value("turnId").OptionalText();
+                var fallback = (run is null ? null : byId.GetValueOrDefault(run))
+                    ?? (turn is null ? null : byId.GetValueOrDefault($"~worked:{turn}"));
+                pin = pin with
+                {
+                    Id = switched ? null : fallback?.Id ?? items[Math.Clamp(oldIndex, 0, items.Count - 1)].Id,
+                    Top = fallback is null ? 0 : Math.Max(0, pin.Top),
+                    Focus = false,
+                };
+            }
             if (switched)
                 seen = messages;
-            SetPin(pin, report: switched);
+            SetPin(pin, report: switched || removedAnchor);
         }
 
         selectingThread = false;
@@ -481,7 +511,9 @@ public partial class TranscriptView : UserControl
     private ScrollPin CapturePin()
     {
         var offset = scroll?.VerticalOffset ?? 0;
-        if (items.Count == 0 || follow && AtBottom())
+        // Geometry may be between two layout passes when a streamed patch arrives.
+        // Remember the user's follow intent independently of the current offset.
+        if (items.Count == 0 || follow && !historyAway)
             return new ScrollPin(null, 0, offset, true);
         foreach (var (row, top, bottom) in RealizedRows())
         {
@@ -537,14 +569,14 @@ public partial class TranscriptView : UserControl
             return;
         if (e is MouseWheelEventArgs wheel)
         {
-            BeginManualScroll();
-            var delta = -wheel.Delta * (100.0 / 120.0);
-            scroll.ScrollToVerticalOffset(Math.Clamp(scroll.VerticalOffset + delta, 0, scroll.ScrollableHeight));
+            ScrollManuallyBy(-wheel.Delta * (100.0 / 120.0));
             e.Handled = true;
         }
-        else if (FindAncestor<ScrollBar>(e.OriginalSource as DependencyObject) is not null)
+        else if (e is MouseButtonEventArgs { ChangedButton: MouseButton.Left }
+            && FindAncestor<ScrollBar>(e.OriginalSource as DependencyObject) is not null)
         {
             BeginManualScroll();
+            scrollingBar = true;
         }
     }
 
@@ -552,10 +584,36 @@ public partial class TranscriptView : UserControl
     {
         if (scroll is null || Keyboard.Modifiers != ModifierKeys.None || e.Key is not (Key.PageUp or Key.PageDown))
             return;
-        BeginManualScroll();
-        if (e.Key == Key.PageUp) scroll.PageUp();
-        else scroll.PageDown();
+        ScrollManuallyBy(e.Key == Key.PageUp ? -scroll.ViewportHeight : scroll.ViewportHeight);
         e.Handled = true;
+    }
+
+    private void ScrollManuallyBy(double delta)
+    {
+        if (scroll is null || delta == 0)
+            return;
+        var offset = Math.Clamp(scroll.VerticalOffset + delta, 0, scroll.ScrollableHeight);
+        if (!historyAway && (delta > 0 && offset >= scroll.ScrollableHeight - 1 || scroll.ScrollableHeight < 1))
+            SetPin(new ScrollPin(null, 0, 0, true), report: true);
+        else
+        {
+            BeginManualScroll();
+            scroll.ScrollToVerticalOffset(offset);
+        }
+    }
+
+    private void EndScrollbarScroll()
+    {
+        if (!scrollingBar)
+            return;
+        scrollingBar = false;
+        var selected = thread;
+        Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            if (ReferenceEquals(selected, thread) && !scrollingBar && !historyAway && AtBottom()
+                && pendingPin is null)
+                SetPin(new ScrollPin(null, 0, 0, true), report: true);
+        }));
     }
 
     private void RowsScrolled(object sender, ScrollChangedEventArgs e)
@@ -566,10 +624,8 @@ public partial class TranscriptView : UserControl
         selection.QueueRefresh();
         if (pendingPin is null)
         {
-            if (follow && e.VerticalChange == 0 && (e.ExtentHeightChange != 0 || e.ViewportHeightChange != 0) && !AtBottom())
+            if (follow && !historyAway && !AtBottom())
                 SetPin(new ScrollPin(null, 0, 0, true));
-            else
-                follow = !historyAway && AtBottom();
             if (e.VerticalChange != 0 && e.ExtentHeightChange == 0 && e.ViewportHeightChange == 0)
                 QueueAnchorReport();
         }
@@ -591,6 +647,15 @@ public partial class TranscriptView : UserControl
         reportTimer.Stop();
         if (thread is null || pendingPin is not null)
             return;
+        if (follow && !historyAway)
+        {
+            if (thread.LastReported is not { Id: "" })
+            {
+                thread.LastReported = ("", 0);
+                Command?.Invoke("transcript.anchor", new { id = "", offset = 0, threadId });
+            }
+            return;
+        }
         foreach (var (row, top, bottom) in RealizedRows())
         {
             if (bottom <= 0)
@@ -599,7 +664,7 @@ public partial class TranscriptView : UserControl
             if (thread.LastReported is { } last && row.Id == last.Id && Math.Abs(offset - last.Offset) < 1)
                 break;
             thread.LastReported = (row.Id, offset);
-            Command?.Invoke("transcript.anchor", new { id = row.ActionId, offset, threadId });
+            Command?.Invoke("transcript.anchor", new { id = row.Id, itemId = row.ActionId, offset, threadId });
             break;
         }
     }

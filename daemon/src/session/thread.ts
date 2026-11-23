@@ -38,6 +38,8 @@ export interface ThreadRecord {
   createdAt: string;
   updatedAt: string;
   originKind: OriginKind;
+  /** An event was journaled before the provider reported this thread's metadata. */
+  metadataPending?: boolean;
   forkedFrom?: string | null;
   /**
    * A handoff fork's transcript file (in `~/.yaac/handoffs/`), pinned to this thread: kept
@@ -310,6 +312,6 @@ export class ThreadRuntime {
   canDispatch(): boolean {
     // Only positive evidence of another holder blocks dispatch; "uncertain" is free.
     // A held (stopped) thread starts nothing by itself; a claimed one waits for its `now` input.
-    return !this.deleted && !this.activeTurn && !this.dispatching && !this.external.external && !this.record.hold && !this.claimed;
+    return !this.deleted && !this.record.metadataPending && !this.activeTurn && !this.dispatching && !this.external.external && !this.record.hold && !this.claimed;
   }
 }

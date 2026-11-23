@@ -692,7 +692,8 @@ stored sessions — shapes and counts only) and codex-cli 0.170.0 (`app-server g
 
 **Codex**
 
-- A sub-agent is a thread. `Thread.source` is `{ subAgent: { thread_spawn: { parent_thread_id,
+- A sub-agent is a thread. In the installed app-server 0.171.0 schema, `Thread.source` is
+  `{ subagent: { thread_spawn: { parent_thread_id,
   depth, agent_path, agent_nickname, agent_role } } }` (other kinds: `review`, `compact`,
   `memory_consolidation`, `other` — no parent). `Thread.agentNickname`, `agentRole` too.
 - `thread/list` returns them when `sourceKinds` includes `subAgentThreadSpawn` (yaacd always

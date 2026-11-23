@@ -309,6 +309,6 @@ fn expand_and_collapse_all_tool_lines() {
     assert!(!blocks.iter().any(|b| matches!(b, yaac_core::activity::Block::Folded { .. })));
     let lines: Vec<_> = blocks.iter().filter_map(|b| if let yaac_core::activity::Block::Run { lines } = b { Some(lines) } else { None }).flatten().filter(|l| l.diff.is_none()).collect();
     assert!(!lines.is_empty() && lines.iter().all(|l| l.expanded));
-    yaac_core::activity::collapse_all(&k, &mut e);
+    yaac_core::activity::collapse_all(&c.state, &k, &mut e);
     assert_eq!(e, yaac_core::activity::Expansion::default());
 }

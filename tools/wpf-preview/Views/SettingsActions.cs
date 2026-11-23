@@ -100,11 +100,7 @@ public partial class SettingsView
                     button.Style = (Style)owner.FindResource("YaacLinkButton");
                 else if (kind == "menu")
                 {
-                    button.ContextMenu = new ContextMenu
-                    {
-                        PlacementTarget = button,
-                        Placement = PlacementMode.Bottom
-                    };
+                    button.ContextMenu = DropdownPlacement.CreateMenu(button);
                 }
 
                 control = button;

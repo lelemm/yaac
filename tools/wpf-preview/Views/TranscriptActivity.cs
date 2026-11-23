@@ -15,11 +15,17 @@ internal sealed class TranscriptActivity : StackPanel
     private readonly WrapPanel peers = new();
     private readonly TextBlock receipt = Label("");
     private readonly TextBlock resultLabel = Label("Result");
+    private readonly TextBlock groupError = new()
+    {
+        Foreground = TranscriptColors.Error, TextWrapping = TextWrapping.Wrap,
+        Margin = new Thickness(22, 1, 8, 6), FontSize = 12,
+    };
     private readonly TranscriptText message;
     private readonly TranscriptText result;
     private readonly TranscriptRowState state;
     private readonly Action<JsonElement> open;
     private readonly Button disclosure;
+    private readonly Button rest;
     private readonly TextBlock staticMark = Label("");
     private readonly bool call;
     private readonly Action showDetails;
@@ -37,6 +43,7 @@ internal sealed class TranscriptActivity : StackPanel
         this.open = open;
         this.showDetails = showDetails;
         Children.Add(line);
+        Children.Add(groupError);
         Children.Add(expandedArea);
         line.Background = Brushes.Transparent;
         line.MouseEnter += (_, _) => UpdateMark();
@@ -79,6 +86,16 @@ internal sealed class TranscriptActivity : StackPanel
         expanded.Children.Add(resultLabel);
         expanded.Children.Add(result);
         expanded.Children.Add(details);
+        rest = new Button
+        {
+            Style = (Style)FindResource("YaacQuietButton"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Foreground = TranscriptColors.Link,
+            FontSize = 12,
+            Visibility = Visibility.Collapsed,
+        };
+        rest.Click += (_, _) => open(current.Value("restAction"));
+        expanded.Children.Add(rest);
         expandedArea.Visibility = Visibility.Collapsed;
     }
 
@@ -90,15 +107,27 @@ internal sealed class TranscriptActivity : StackPanel
         var pills = data.Value("pills").Elements().ToArray();
         groupToggle = data.Value("groupToggle");
         groupOpen = data.Value("groupOpen").Flag();
-        canExpand = groupToggle.Value("enabled").Flag() || pills.Length > 0 || data.Value("parts").Elements().Any(part => part.Value("text").OptionalText() is not null)
+        groupError.Text = data.Value("groupError").Text();
+        groupError.Visibility = groupError.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        canExpand = groupToggle.Value("enabled").Flag() || data.Value("activityToggle").Value("enabled").Flag()
+            || pills.Length > 0 || data.Value("parts").Elements().Any(part => part.Value("text").OptionalText() is not null)
             || new[] { "detail", "message", "result", "receipt" }.Any(field => data.Value(field).OptionalText() is not null);
         disclosure.Foreground = tone;
         staticMark.Foreground = tone;
         staticMark.Text = mark;
         staticMark.FontSize = mark == "•" ? 9 : 12;
         line.Cursor = canExpand ? Cursors.Hand : null;
-        line.Children.Clear();
-        line.Children.Add(canExpand ? disclosure : staticMark);
+        var marker = canExpand ? (UIElement)disclosure : staticMark;
+        if (line.Children.Count > 0 && line.Children[0] == marker)
+        {
+            if (line.Children.Count > 1)
+                line.Children.RemoveRange(1, line.Children.Count - 1);
+        }
+        else
+        {
+            line.Children.Clear();
+            line.Children.Add(marker);
+        }
         var tail = data.Value("tail").OptionalText();
         if (tail is not null)
         {
@@ -133,7 +162,8 @@ internal sealed class TranscriptActivity : StackPanel
             UpdateDisclosure(groupOpen);
             return;
         }
-        ShowExpanded(canExpand && state.Expanded.GetValueOrDefault("activity"));
+        var isOpen = data.Value("activityOpen").Flag(state.Expanded.GetValueOrDefault("activity", data.Value("defaultExpanded").Flag()));
+        ShowExpanded(canExpand && isOpen);
         if (IsExpanded)
             RenderDetails(data);
     }
@@ -147,7 +177,11 @@ internal sealed class TranscriptActivity : StackPanel
         {
             AddLabel(peers, data.Value("heading").Text(), tone);
             foreach (var pill in pills)
+            {
                 peers.Children.Add(Pill(pill));
+                if (pill.Value("detail").OptionalText() is { } detail)
+                    AddLabel(peers, detail, tone);
+            }
         }
         message.Show(data.Value("message").Text(), "markdown", data.Value("messageBlocks"));
         receipt.Text = data.Value("receipt").Text();
@@ -156,6 +190,12 @@ internal sealed class TranscriptActivity : StackPanel
         var resultText = data.Value("result").Text();
         resultLabel.Visibility = resultText.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         result.Show(resultText, "markdown", data.Value("resultBlocks"));
+        var action = data.Value("restAction");
+        var reveal = action.Value("enabled").Flag();
+        if (!reveal && rest.IsKeyboardFocusWithin)
+            disclosure.Focus();
+        rest.Content = action.Value("label").Text();
+        rest.Visibility = reveal ? Visibility.Visible : Visibility.Collapsed;
     }
 
     public void DetachDetails(FrameworkElement details) => expanded.Children.Remove(details);
@@ -170,7 +210,15 @@ internal sealed class TranscriptActivity : StackPanel
             open(groupToggle);
             return;
         }
-        ShowExpanded(!IsExpanded);
+        var action = current.Value("activityToggle");
+        if (action.Value("enabled").Flag())
+        {
+            open(action);
+            return;
+        }
+        var nextOpen = !IsExpanded;
+        state.Expanded["activity"] = nextOpen;
+        ShowExpanded(nextOpen);
         if (IsExpanded)
         {
             RenderDetails(current);
@@ -181,7 +229,6 @@ internal sealed class TranscriptActivity : StackPanel
     private void ShowExpanded(bool value)
     {
         expandedArea.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
-        state.Expanded["activity"] = value;
         UpdateDisclosure(value);
     }
 
@@ -198,7 +245,8 @@ internal sealed class TranscriptActivity : StackPanel
     private void UpdateMark()
     {
         var active = canExpand && (line.IsMouseOver || disclosure.IsKeyboardFocusWithin || IsExpanded);
-        line.Background = active ? Palette.Brush("YaacHover") : Brushes.Transparent;
+        line.Background = current.Value("highlighted").Flag() ? Palette.Brush("YaacSelected")
+            : active ? Palette.Brush("YaacHover") : Brushes.Transparent;
         var symbol = groupToggle.Value("enabled").Flag() && mark != "×"
             ? groupOpen ? "⌄" : "›"
             : !call && mark == "•" && active ? IsExpanded ? "⌄" : "›" : mark;

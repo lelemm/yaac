@@ -164,12 +164,9 @@
               </StackPanel>
             </Grid>
           </Button>
-          <Button x:Name="BadgeButton" Grid.Column="1" Content="{Binding Data.Badge}" Click="OnBadge"
-                  Style="{StaticResource AgentsLink}" Padding="4,1" Margin="0,2"
-                  VerticalAlignment="Top" FontSize="10" MaxWidth="64" Foreground="{DynamicResource YaacMuted}"
-                  ToolTip="{Binding Data.BadgeDetail}" IsEnabled="{Binding Data.CanUseBadge}"
-                  ToolTipService.ShowOnDisabled="True"
-                  Visibility="{Binding Data.HasBadge, Converter={StaticResource AgentsVisible}}" />
+          <local:PullRequestBadge Grid.Column="1" Badge="{Binding Data.Badge}" ThreadId="{Binding CommandId}"
+                                  Invoked="OnPrAction" FlyoutChanged="OnPrFlyoutChanged"
+                                  VerticalAlignment="Top" Margin="0,3,0,0" />
           <Button x:Name="OptionsButton" Grid.Column="2" Content="⋯" Click="OnOptions"
                   Style="{StaticResource AgentsLink}" Padding="4,0" Margin="1,1"
                   VerticalAlignment="Top" FontSize="14" Foreground="{DynamicResource YaacMuted}"

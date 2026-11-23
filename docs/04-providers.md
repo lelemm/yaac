@@ -504,8 +504,14 @@ them under the parent ([05](05-threads.md#harness-sub-agents)).
 | Harness | `subagentThreads` | How |
 | --- | --- | --- |
 | Claude Code | yes | `listSubagents` / `getSubagentMessages` (SDK), the `agent-<id>.meta.json` sidecar, the query's `task_*` events with `forwardSubagentText`. Native id `<sessionId>/agent-<agentId>`. Read-only. |
-| Codex | yes | Threads with `source.subAgent.thread_spawn.parent_thread_id`; `thread/started`, `thread/status/changed`, the parent's `collabAgentToolCall.agentsStates`. Read-only. |
+| Codex | yes | Threads with `source.subagent.thread_spawn.parent_thread_id`; `thread/started`, `thread/status/changed`, the parent's `collabAgentToolCall.agentsStates`. Read-only. |
 | Fake | yes | `/fake subagent` (README). Read-only. |
+
+Events from a Codex thread that the daemon has yet to discover go into its journal
+immediately. The daemon resolves the name, working directory, and parent with `thread/read`
+on the existing connection before publishing the normal sidebar row. A lookup failure
+can surface a provisional row when an approval or question needs the user. A later
+successful read or discovery fills in the existing record.
 
 ### Rate limits
 

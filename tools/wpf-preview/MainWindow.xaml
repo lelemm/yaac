@@ -4,11 +4,11 @@
         xmlns:preview="clr-namespace:Yaac.WpfPreview"
         xmlns:views="clr-namespace:Yaac.WpfPreview.Views"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
-        Title="YAAC · WPF preview" Icon="Assets/yaac.ico" Width="1440" Height="900" MinWidth="780" MinHeight="500"
+        Title="YAAC · WPF preview" Icon="Assets/yaac.ico" Width="1440" Height="900" MinWidth="960" MinHeight="600"
         ResizeMode="CanResize" WindowState="Maximized"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource YaacCanvas}" Foreground="{DynamicResource YaacText}"
-        FontFamily="{x:Static preview:YaacFonts.Ui}" FontSize="13"
+        FontFamily="{x:Static preview:YaacFonts.Ui}" FontSize="13.5"
         UseLayoutRounding="True" SnapsToDevicePixels="True"
         PreviewKeyDown="WindowKey" PreviewMouseDown="WindowMouse">
   <shell:WindowChrome.WindowChrome>
@@ -18,7 +18,7 @@
   <Window.Template>
     <ControlTemplate TargetType="Window">
       <Border Background="{TemplateBinding Background}">
-        <AdornerDecorator>
+        <AdornerDecorator Margin="{TemplateBinding Padding}">
           <ContentPresenter />
         </AdornerDecorator>
       </Border>
@@ -33,20 +33,103 @@
       <Setter Property="Foreground" Value="{DynamicResource YaacMuted}" />
       <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
     </Style>
+    <Style x:Key="PaneSplitter" TargetType="Thumb">
+      <Setter Property="Width" Value="7" />
+      <Setter Property="Cursor" Value="SizeWE" />
+      <Setter Property="shell:WindowChrome.IsHitTestVisibleInChrome" Value="True" />
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Thumb">
+            <Grid Background="Transparent">
+              <Border x:Name="Rule" Width="1" Background="{DynamicResource YaacRule}" />
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Rule" Property="Width" Value="2" />
+                <Setter TargetName="Rule" Property="Background" Value="{DynamicResource YaacAccent}" />
+              </Trigger>
+              <Trigger Property="IsDragging" Value="True">
+                <Setter TargetName="Rule" Property="Width" Value="2" />
+                <Setter TargetName="Rule" Property="Background" Value="{DynamicResource YaacAccent}" />
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
     <Style x:Key="RailButton" TargetType="Button" BasedOn="{StaticResource YaacQuietButton}">
       <Setter Property="Width" Value="40" />
       <Setter Property="MinHeight" Value="28" />
       <Setter Property="Padding" Value="0" />
     </Style>
+    <BooleanToVisibilityConverter x:Key="RailVisible" />
+    <DataTemplate x:Key="RailThreadMark">
+      <Grid Width="28" Height="28" IsHitTestVisible="False" ToolTipService.IsEnabled="False">
+        <Border x:Name="Initial" Width="18" Height="18" BorderThickness="1" CornerRadius="9"
+                BorderBrush="{DynamicResource YaacMuted}" Margin="0,0,3,3" Visibility="Collapsed">
+          <TextBlock Text="{Binding State.HarnessInitial}" FontSize="10" FontWeight="SemiBold"
+                     HorizontalAlignment="Center" VerticalAlignment="Center" />
+        </Border>
+        <Path x:Name="Logo" Data="{Binding State.HarnessLogo}" Fill="{Binding State.HarnessColor}"
+              Margin="0,0,3,3" Width="18" Height="18" Stretch="Uniform" />
+        <Border Width="24" Height="24" CornerRadius="12" Margin="0,0,3,3"
+                BorderThickness="1.5" BorderBrush="{DynamicResource YaacUnread}"
+                Visibility="{Binding State.Unseen, Converter={StaticResource RailVisible}}" />
+        <Border x:Name="Badge" Width="12" Height="12" CornerRadius="6" VerticalAlignment="Bottom"
+                HorizontalAlignment="Right" Background="{DynamicResource YaacPanel}">
+          <Grid>
+            <TextBlock x:Name="BadgeText" Text="{Binding State.Mark}" FontSize="11" FontWeight="Bold"
+                       Foreground="{DynamicResource YaacMuted}" HorizontalAlignment="Center"
+                       VerticalAlignment="Center" />
+            <preview:RunningSpinner x:Name="BadgeSpinner" Width="10" Height="10" Visibility="Collapsed"
+                                    Foreground="{DynamicResource YaacText}"
+                                    Fast="{Binding State.Fast}" Ultrafast="{Binding State.Ultrafast}" />
+          </Grid>
+        </Border>
+      </Grid>
+      <DataTemplate.Triggers>
+        <DataTrigger Binding="{Binding State.HarnessLogo}" Value="{x:Null}">
+          <Setter TargetName="Initial" Property="Visibility" Value="Visible" />
+          <Setter TargetName="Logo" Property="Visibility" Value="Collapsed" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding State.MarkDanger}" Value="True">
+          <Setter TargetName="BadgeText" Property="Foreground" Value="{DynamicResource YaacFailure}" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding State.Selected}" Value="True">
+          <Setter TargetName="Badge" Property="Background" Value="{DynamicResource YaacSelected}" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding State.Tone}" Value="done">
+          <Setter TargetName="BadgeText" Property="Foreground" Value="{DynamicResource YaacSuccess}" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding State.Mark}" Value="">
+          <Setter TargetName="Badge" Property="Visibility" Value="Collapsed" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding State.Tone}" Value="running">
+          <Setter TargetName="Badge" Property="Visibility" Value="Visible" />
+          <Setter TargetName="BadgeText" Property="Visibility" Value="Collapsed" />
+          <Setter TargetName="BadgeSpinner" Property="Visibility" Value="Visible" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding State.Fast}" Value="True">
+          <Setter TargetName="BadgeSpinner" Property="Foreground" Value="{DynamicResource YaacFast}" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding State.Ultrafast}" Value="True">
+          <Setter TargetName="BadgeSpinner" Property="Foreground" Value="{DynamicResource YaacUltrafast}" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding State.Dimmed}" Value="True">
+          <Setter TargetName="Initial" Property="Opacity" Value=".53" />
+          <Setter TargetName="Logo" Property="Opacity" Value=".53" />
+        </DataTrigger>
+      </DataTemplate.Triggers>
+    </DataTemplate>
   </Window.Resources>
 
-  <Grid x:Name="ClientArea">
+  <Grid LayoutTransform="{DynamicResource YaacUiScale}">
     <Grid x:Name="Workspace">
       <Grid.ColumnDefinitions>
-        <ColumnDefinition x:Name="SidebarColumn" Width="280" MinWidth="220" MaxWidth="480" />
+        <ColumnDefinition x:Name="SidebarColumn" Width="280" />
         <ColumnDefinition x:Name="SidebarGap" Width="1" />
         <ColumnDefinition Width="*" />
-        <ColumnDefinition Width="Auto" />
+        <ColumnDefinition x:Name="DockColumn" Width="0" />
       </Grid.ColumnDefinitions>
 
       <views:SidebarView x:Name="SidebarPane" />
@@ -59,7 +142,7 @@
           </Grid.RowDefinitions>
           <StackPanel>
             <TextBlock Text="Y" Height="42" HorizontalAlignment="Center" Padding="0,9,0,0" FontWeight="Bold" FontSize="18" />
-            <Button Style="{StaticResource RailButton}" Content="◫" Click="SidebarClicked"
+            <Button x:Name="RailExpand" Style="{StaticResource RailButton}" Content="◫" Click="SidebarClicked"
                     AutomationProperties.Name="Expand sidebar" ToolTip="Expand the sidebar (Ctrl+B)" />
             <Button Style="{StaticResource RailButton}" Content="+" Click="RailNewClicked"
                     AutomationProperties.Name="New thread" ToolTip="New thread (Ctrl+N)" />
@@ -69,7 +152,8 @@
             </UniformGrid>
             <Button x:Name="RailNeeds" Style="{StaticResource RailButton}" Click="NeedsClicked" AutomationProperties.Name="Needs you" />
           </StackPanel>
-          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled">
+          <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled"
+                        ScrollChanged="RailScrolled">
             <StackPanel x:Name="RailItems" />
           </ScrollViewer>
           <StackPanel Grid.Row="2">
@@ -77,10 +161,21 @@
             <Button Style="{StaticResource RailButton}" Content="⚙" Click="SettingsClicked"
                     AutomationProperties.Name="Settings" ToolTip="Settings (Ctrl+,)" />
           </StackPanel>
+          <Popup x:Name="RailHover" Placement="Custom" AllowsTransparency="True" Focusable="False"
+                 Opened="RailHoverChanged" Closed="RailHoverChanged">
+            <Border x:Name="RailHoverCard" Width="300" Padding="5" CornerRadius="8" BorderThickness="1"
+                    Background="{DynamicResource YaacRaised}" BorderBrush="{DynamicResource YaacRule}"
+                    MouseEnter="RailHoverEnter" MouseLeave="RailHoverLeave">
+              <ContentControl x:Name="RailHoverHost" FontFamily="{x:Static preview:YaacFonts.Ui}"
+                              FontSize="13.5" Foreground="{DynamicResource YaacText}" />
+            </Border>
+          </Popup>
         </Grid>
       </Border>
-      <GridSplitter x:Name="SidebarSplitter" Grid.Column="1" Background="{DynamicResource YaacRule}"
-                    Margin="-2,42,-2,0" Width="5" HorizontalAlignment="Center" VerticalAlignment="Stretch" />
+      <Thumb x:Name="SidebarSplitter" Grid.Column="1" Panel.ZIndex="3" Style="{StaticResource PaneSplitter}"
+             Margin="-3,0,-3,0" HorizontalAlignment="Center" IsHitTestVisible="False"
+             DragStarted="PaneDragStarted" DragDelta="PaneDragDelta" DragCompleted="PaneDragCompleted"
+             AutomationProperties.Name="Resize sidebar" />
       <Grid Grid.Column="2" x:Name="ThreadContent" SizeChanged="ThreadContentSizeChanged">
         <Grid.RowDefinitions>
           <RowDefinition Height="42" />
@@ -131,9 +226,19 @@
             </Thumb.Template>
           </Thumb>
         </Grid>
+        <Grid x:Name="ComposerDropOverlay" Grid.RowSpan="4" Visibility="Collapsed" IsHitTestVisible="False">
+          <Border Background="{DynamicResource YaacSelected}" BorderBrush="{DynamicResource YaacAccent}"
+                  BorderThickness="1" Opacity=".84" />
+          <TextBlock Text="Drop to attach" HorizontalAlignment="Center" VerticalAlignment="Center"
+                     FontSize="17" FontWeight="SemiBold" />
+        </Grid>
       </Grid>
       <views:AgentsView Grid.Column="2" x:Name="AgentsPane" Panel.ZIndex="2"
                         HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,20,0" />
+      <Thumb x:Name="DockSplitter" Grid.Column="3" Panel.ZIndex="3" Style="{StaticResource PaneSplitter}"
+             Margin="-3.5,0,0,0" HorizontalAlignment="Left" Visibility="Collapsed"
+             DragStarted="PaneDragStarted" DragDelta="PaneDragDelta" DragCompleted="PaneDragCompleted"
+             AutomationProperties.Name="Resize docked agents panel" />
     </Grid>
 
     <views:SettingsView x:Name="SettingsPane" Visibility="Collapsed" />
@@ -155,6 +260,8 @@
     <TextBlock x:Name="Status" Panel.ZIndex="4" VerticalAlignment="Bottom" HorizontalAlignment="Center"
                Background="{DynamicResource YaacCanvas}" TextTrimming="CharacterEllipsis"
                Foreground="{DynamicResource YaacFailure}" Margin="5" />
+    <StackPanel x:Name="WslNotifications" Panel.ZIndex="4" HorizontalAlignment="Right"
+                VerticalAlignment="Bottom" Margin="16" MaxWidth="330" />
     <Grid x:Name="CommanderOverlay" Panel.ZIndex="5" Visibility="Collapsed"
           PreviewKeyDown="CommanderKeyDown" shell:WindowChrome.IsHitTestVisibleInChrome="True">
       <Border Background="#50000000" MouseLeftButtonDown="CommanderOutsideClicked"

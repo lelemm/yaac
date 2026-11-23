@@ -46,7 +46,6 @@ internal sealed class AgentsEntry(string kind) : INotifyPropertyChanged
     public string GroupId { get; set; } = "";
     public IReadOnlyList<AgentsEntry> FoldRows { get; set; } = [];
     public IReadOnlyList<AgentsAction> Actions { get; set; } = [];
-    public AgentsAction? BadgeAction { get; set; }
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public AgentsData Data
@@ -107,29 +106,26 @@ internal sealed record AgentsData
     public string Changes { get; init; } = "";
     public string Ahead { get; init; } = "";
     public string Behind { get; init; } = "";
-    public string Badge { get; init; } = "";
-    public string BadgeDetail { get; init; } = "";
+    public PullRequestBadgeState? Badge { get; init; }
     public bool Attention { get; init; }
     public bool Unseen { get; init; }
     public bool Running { get; init; }
     public bool Finished { get; init; }
     public bool HasActions { get; init; }
     public bool CanOpen { get; init; }
-    public bool CanUseBadge { get; init; }
     public Thickness Indent { get; init; }
     public bool HasLogo => Logo is not null;
     public bool HasLastAction => LastAction.Length > 0;
     public bool HasMetadata => Metadata.Length > 0;
     public bool HasActivity => Activity.Length > 0;
     public bool HasGit => Branch.Length + Changes.Length + Ahead.Length + Behind.Length > 0;
-    public bool HasBadge => Badge.Length > 0;
 }
 
 internal sealed record AgentsGroup(string Id, string Label, string Glyph, int? Count,
     IReadOnlyList<AgentsRow> Rows, JsonElement Docked);
 
 internal sealed record AgentsRow(string Id, string CommandId, string Raw, int Depth, AgentsData Data,
-    IReadOnlyList<AgentsAction> Actions, AgentsAction? BadgeAction)
+    IReadOnlyList<AgentsAction> Actions)
 {
     private static Brush Muted => Palette.Brush("YaacMuted");
     private static Brush Red => Palette.Brush("YaacFailure");
@@ -168,8 +164,6 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, int De
         };
 
         var actions = row.Array("actions").Select(AgentsAction.Read).OfType<AgentsAction>().ToArray();
-        var badge = row.Field("badge");
-        var badgeAction = AgentsAction.Read(badge.Field("action"));
         var git = row.Field("git");
         var traits = Joined(" ", row.BoolField("readOnly") ? "🔒" : "", row.BoolField("fast") ? "ϟ" : "");
         bool unseen = row.BoolField("unseen");
@@ -203,11 +197,9 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, int De
             Changes = git.CountText("changes"),
             Ahead = WithArrow(git.CountText("ahead"), '↑'),
             Behind = WithArrow(git.CountText("behind"), '↓'),
-            Badge = badge.StringField("label"),
-            BadgeDetail = badge.StringField("detail"),
-            CanUseBadge = badgeAction is { Enabled: true }
+            Badge = PullRequestBadgeState.Read(row.Field("badge"))
         };
-        return new(identity, id, raw, Math.Max(0, row.Number("depth")), data, actions, badgeAction);
+        return new(identity, id, raw, Math.Max(0, row.Number("depth")), data, actions);
     }
 
     private static string Joined(string delimiter, params string[] values) =>

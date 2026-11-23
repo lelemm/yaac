@@ -14,6 +14,7 @@
 //! asks for none of its own, so it costs nothing while it sits open.
 
 use eframe::egui::{self, Event, Key, Modifiers, Sense, pos2, vec2};
+use yaac_core::ThreadKey;
 use yaac_core::commands::{self as cmds, Avail, Cmd, Ctx, StepKind, StepValue};
 use yaac_core::history::Place;
 use yaac_core::keys::{Chord, MouseButton};
@@ -40,7 +41,7 @@ pub(crate) struct CommanderUi {
     /// The command whose choice is being made, and which.
     pub step: Option<(Cmd, StepKind)>,
     /// The request card that had focus when it opened (Allow and Deny act on it only).
-    pub card: Option<ItemId>,
+    card: Option<(ThreadKey, ItemId)>,
     /// Put the caret in the field on the next frame.
     pub focus: bool,
     /// Scroll the highlighted row into view on the next frame.
@@ -61,8 +62,19 @@ struct Keys {
 }
 
 impl CommanderUi {
-    pub(crate) fn at(step: Option<(Cmd, StepKind)>, card: Option<ItemId>) -> Self {
+    pub(crate) fn at(step: Option<(Cmd, StepKind)>, card: Option<(ThreadKey, ItemId)>) -> Self {
         Self { query: String::new(), sel: 0, step, card, focus: true, reveal: true, keys: Keys::default() }
+    }
+
+    pub(crate) fn card(&self, app: &YaacApp) -> Option<&ItemId> {
+        let (thread, item) = self.card.as_ref()?;
+        let state = &app.client.state;
+        (!app.ui.settings && state.selected_thread() == Some(thread) && state.may_answer(thread))
+            .then_some(item)
+    }
+
+    pub(crate) fn back(self) -> Self {
+        Self::at(None, self.card)
     }
 }
 
@@ -207,13 +219,13 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
     if let Some(step) = d.step
         && !(cmd == Cmd::Mute && muted)
     {
-        app.ui.commander = Some(CommanderUi::at(Some((cmd, step)), card));
+        app.ui.commander = Some(CommanderUi::at(Some((cmd, step)), thread.zip(card)));
         return;
     }
     app.ui.menu = None;
     let st = &app.client.state;
     match cmd {
-        Cmd::Commander => app.ui.commander = Some(CommanderUi::at(None, card)),
+        Cmd::Commander => app.ui.commander = Some(CommanderUi::at(None, thread.zip(card))),
         Cmd::SearchThreads => {
             if app.ui.sidebar.collapsed {
                 app.ui.sidebar.toggle();
@@ -440,8 +452,12 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
         }
         Cmd::CollapseAll => {
             if let Some(k) = thread {
-                yaac_core::activity::collapse_all(&k, &mut app.ui.expansion);
+                yaac_core::activity::collapse_all(&app.client.state, &k, &mut app.ui.expansion);
                 app.ui.worked.close_all(&k);
+                if app.client.state.focus_item.as_ref().is_some_and(|(thread, _)| thread == &k) {
+                    app.client.state.focus_item = None;
+                    app.ui.scroll_to = None;
+                }
             }
         }
         Cmd::CopySelection => ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy),
@@ -577,7 +593,7 @@ impl Row {
 
 pub(crate) fn rows(app: &YaacApp, c: &CommanderUi) -> Vec<Row> {
     match c.step {
-        None => with_ctx(app, c.card.as_ref(), |x| cmds::list(x, &c.query, &app.ui.recent)).into_iter().map(Row::Cmd).collect(),
+        None => with_ctx(app, c.card(app), |x| cmds::list(x, &c.query, &app.ui.recent)).into_iter().map(Row::Cmd).collect(),
         Some((_, kind)) => {
             let exists = |p: &Place| app.place_exists(p);
             let mut history: Vec<(isize, String, Option<String>)> = Vec::new();
@@ -590,7 +606,7 @@ pub(crate) fn rows(app: &YaacApp, c: &CommanderUi) -> Vec<Row> {
                     }
                 }
             }
-            let items = with_ctx(app, c.card.as_ref(), |x| cmds::step_items(kind, x, &history));
+            let items = with_ctx(app, c.card(app), |x| cmds::step_items(kind, x, &history));
             cmds::filter_step(items, &c.query).into_iter().map(Row::Step).collect()
         }
     }
@@ -614,7 +630,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
     if esc || back {
         // Esc in a step goes back to the list; on the list it closes.
         if c.step.is_some() {
-            app.ui.commander = Some(CommanderUi::at(None, c.card));
+            app.ui.commander = Some(c.back());
         }
         return;
     }
@@ -710,7 +726,7 @@ pub(crate) fn show(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
             Row::Cmd(r) => {
                 let cmd = r.cmd;
                 cmds::note_recent(&mut app.ui.recent, cmds::def_of(cmd).id);
-                let card = c.card.clone();
+                let card = c.card(app).cloned();
                 // Runs with the Commander closed; a command with a step opens it again there.
                 run(app, ctx, cmd, card, true, actions);
                 return;

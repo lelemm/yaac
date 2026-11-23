@@ -420,7 +420,7 @@ fn chips(ui: &mut egui::Ui, app: &mut YaacApp, d: &DraftRef, chips: &[ChipView],
     ui.add_space(6.0);
 }
 
-fn human_size(bytes: u64) -> String {
+pub(crate) fn human_size(bytes: u64) -> String {
     #[allow(clippy::cast_precision_loss, reason = "a rounded size for people")]
     let b = bytes as f64;
     if b >= 1024.0 * 1024.0 { format!("{:.1} MB", b / 1024.0 / 1024.0) } else { format!("{:.0} KB", (b / 1024.0).ceil()) }

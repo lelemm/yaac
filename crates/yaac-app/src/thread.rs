@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 
 use eframe::egui::{self, Margin, Panel, Rect, Sense, UiBuilder, pos2, vec2};
 use yaac_core::agentcall::{CallLine, Pill};
-use yaac_core::activity::{ActivityLine, Block, LineMark, blocks};
+use yaac_core::activity::{ActivityLine, Block, LineMark, blocks, thought_text};
 use yaac_core::diff::{FileDiff, LineKind};
 use yaac_core::selection::Unit;
 use yaac_core::attention::{AttentionMap, Mark};
@@ -374,7 +374,11 @@ fn item_units(blocks: &[Block], t: &Transcript, index: usize) -> Vec<(Unit, Vec<
                         let (a, r) = yaac_core::diff::counts(d.added, d.removed);
                         text = format!("{text}  {a} {r}");
                     }
-                    out.push((Unit::new(index, l.diff.map_or(0, |d| d.file)), vec![text]));
+                    let mut parts = vec![text];
+                    if l.expanded && let Some(thought) = thought_text(item) {
+                        parts.extend(md(thought));
+                    }
+                    out.push((Unit::new(index, l.diff.map_or(0, |d| d.file)), parts));
                 }
             }
             Block::Folded { first, text, .. } if t.index_of(first) == Some(index) => out.push((Unit::new(index, 0), vec![text.clone()])),
@@ -413,7 +417,22 @@ fn guess(cache: &mut std::collections::HashMap<u64, (u64, f32, f32)>, ident: u64
     #[allow(clippy::cast_precision_loss, reason = "a block's line count")]
     let lines = |n: usize| n as f32;
     let index = match b {
-        Block::Run { lines: l } => return lines(l.len()) * 22.0,
+        Block::Run { lines: run } => {
+            let mut height = lines(run.len()) * 22.0;
+            for line in run.iter().filter(|line| !flat && line.expanded && line.mark == LineMark::Thought) {
+                let Some(thought) = thought_text(&t.items()[line.index]) else { continue };
+                let rev = t.item_rev(line.index);
+                let mut thought_id = std::collections::hash_map::DefaultHasher::new();
+                ("thought", &line.id).hash(&mut thought_id);
+                let entry = cache.entry(thought_id.finish()).or_default();
+                if entry.0 != rev || (entry.1 - m.width).abs() >= 0.5 {
+                    let body = markdown::guess_height(thought, m.width - 30.0, m.char_w, size::PROSE, m.gap);
+                    *entry = (rev, m.width, body + 10.0);
+                }
+                height += entry.2;
+            }
+            return height;
+        }
         Block::Folded { .. } | Block::TurnChanges { .. } => return 22.0,
         Block::Worked { .. } => return crate::messages::WORKED_LINE,
         Block::Card { .. } => return 60.0,
@@ -800,6 +819,14 @@ impl View<'_> {
     pub(crate) fn sel(&mut self, unit: Unit) -> SelCx<'_> {
         SelCx { ts: &mut self.ui.textsel, unit }
     }
+
+    fn assistant_prose(&mut self, ui: &mut egui::Ui, unit: Unit, item: &yaac_protocol::Item, text: &str) {
+        let p = self.p;
+        let complete = item.status != yaac_protocol::ItemStatus::InProgress;
+        let parsed = self.md.get(&item.id, text, complete).clone();
+        let refs: Vec<&markdown::Block> = parsed.blocks().collect();
+        markdown::show(ui, &mut self.sel(unit), &refs, &p, p.text, size::PROSE);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -912,11 +939,8 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
         Block::Prose { index } => {
             let item = &t.items()[*index];
             let ItemBody::AgentMessage(a) = &item.body else { return };
-            let streaming = item.status == yaac_protocol::ItemStatus::InProgress;
-            let parsed = v.md.get(&item.id, &a.text, !streaming).clone();
-            let refs: Vec<&markdown::Block> = parsed.blocks().collect();
-            markdown::show(ui, &mut v.sel(unit), &refs, &p, p.text, size::PROSE);
-            if streaming {
+            v.assistant_prose(ui, unit, item, &a.text);
+            if item.status == yaac_protocol::ItemStatus::InProgress {
                 // The cursor at the end of streaming prose.
                 let (r, _) = ui.allocate_exact_size(vec2(8.0, 18.0), Sense::hover());
                 ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(7.0, 17.0)), 1.0, p.text2);
@@ -947,9 +971,10 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
             ui.painter().galley(pos2(gx, r.center().y - g.size().y / 2.0), g, p.text2);
         }
         Block::Run { lines } => {
+            let prose_gap = ui.spacing().item_spacing.y;
             ui.spacing_mut().item_spacing.y = 0.0;
             for l in lines {
-                activity_line(ui, &mut v, key, t, l, now, actions);
+                activity_line(ui, &mut v, key, t, l, now, prose_gap, actions);
             }
         }
         Block::Folded { first, text, failed, .. } => {
@@ -1195,10 +1220,12 @@ struct Row<'a> {
 /// expands it).
 fn line_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, row: Row<'_>) -> egui::Response {
     let width = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 22.0), Sense::click());
+    let clickable = row.folded || row.open.is_some();
+    let sense = if clickable { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 22.0), sense);
     if row.highlighted {
         ui.painter().rect_filled(rect, 4.0, p.selected);
-    } else if resp.hovered() || row.open == Some(true) {
+    } else if clickable && resp.hovered() || row.open == Some(true) {
         ui.painter().rect_filled(rect, 4.0, p.faint);
     }
     let color = if row.failed { p.failed } else { p.text2 };
@@ -1244,31 +1271,40 @@ fn line_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, row: Row<'_>) ->
         ui.painter().galley(pos2(x, y), g, *c);
         x += w + 6.0;
     }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    if clickable { resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp }
 }
 
-fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript, l: &ActivityLine, now: i64, actions: &mut Vec<Action>) {
+#[allow(clippy::too_many_arguments)]
+fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript, l: &ActivityLine, now: i64, prose_gap: f32, actions: &mut Vec<Action>) {
     let p = v.p;
     let item = &t.items()[l.index];
+    let thought = thought_text(item);
     let unit = Unit::new(l.index, l.diff.map_or(0, |d| d.file));
     let state_mark = if l.failed { Some(Mark::Failed) } else { None };
     let resp = match &l.call {
-        Some(call) => call_row(ui, &mut v.sel(unit), &p, l, call, actions),
+        Some(call) => {
+            let lead = if l.failed && let ItemBody::ToolCall(tc) = &item.body {
+                failed_call_label(tc)
+            } else {
+                &call.lead
+            };
+            call_row(ui, &mut v.sel(unit), &p, l, call, lead, actions)
+        }
         None => line_row(
             ui,
             &mut v.sel(unit),
             &p,
-            Row { state_mark, mark: l.mark, text: &l.text, failed: l.failed, highlighted: l.highlighted, folded: false, counts: l.diff.map(|d| (d.added, d.removed)), trailer: None, open: Some(l.expanded) },
+            Row { state_mark, mark: l.mark, text: &l.text, failed: l.failed, highlighted: l.highlighted, folded: false, counts: l.diff.map(|d| (d.added, d.removed)), trailer: None, open: (l.mark != LineMark::Thought || thought.is_some()).then_some(l.expanded) },
         ),
     };
     if resp.clicked() {
         match l.diff {
             Some(d) => v.ui.expansion.toggle_file(key, &l.id, d.file),
+            None if thought.is_some() => v.ui.expansion.toggle_thought(key, &l.id),
             None => v.ui.expansion.toggle_line(key, &l.id),
         }
     }
-    // Silent reasoning ("Thought for 5s" with no text, D148) has nothing to open.
-    if !l.expanded || matches!(&item.body, ItemBody::Reasoning(r) if r.reasoning.trim().is_empty()) {
+    if !l.expanded {
         return;
     }
     if let Some(d) = l.diff
@@ -1302,13 +1338,15 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
     }
     let body = egui::Frame::NONE.fill(fill).corner_radius(4).inner_margin(Margin { left: 22, right: 8, top: 2, bottom: 8 }).show(ui, |ui| {
         ui.set_width(ui.available_width());
+        if let Some(text) = thought {
+            ui.spacing_mut().item_spacing.y = prose_gap;
+            v.assistant_prose(ui, unit, item, text);
+            return;
+        }
         ui.spacing_mut().item_spacing.y = 3.0;
         let small = theme::ui(size::SMALL + 0.5);
         let mut sc = SelCx { ts: &mut v.ui.textsel, unit };
         match &item.body {
-            ItemBody::Reasoning(r) => {
-                sc.text(ui, &r.reasoning, small.clone(), p.text2);
-            }
             ItemBody::ToolCall(tc) => {
                 // The line above already says it; repeat the title only when it says more.
                 if tc.title.replace('`', "").trim() != l.text.replace('`', "").trim() {
@@ -1422,7 +1460,11 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
     let stroke = egui::Stroke::new(if g.hovered() { 2.0 } else { 1.0 }, if g.hovered() { p.text2 } else { p.border });
     ui.painter().vline(x, (r.top() + 2.0)..=(r.bottom() - 6.0), stroke);
     if g.clicked() {
-        v.ui.expansion.toggle_line(key, &l.id);
+        if thought.is_some() {
+            v.ui.expansion.toggle_thought(key, &l.id);
+        } else {
+            v.ui.expansion.toggle_line(key, &l.id);
+        }
     }
 }
 
@@ -1474,9 +1516,12 @@ fn draw_pill(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, pill: &Pill, x:
 /// An agent call's line: its mark, what it did, the other agents as pills, the message as a
 /// quoted preview, and a quiet status at the end. A click on the row (outside a pill) expands
 /// it; a pill opens its thread.
-fn call_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, l: &ActivityLine, call: &CallLine, actions: &mut Vec<Action>) -> egui::Response {
+fn call_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, l: &ActivityLine, call: &CallLine, lead: &str, actions: &mut Vec<Action>) -> egui::Response {
     let width = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 24.0), Sense::click());
+    let mut row = ui.new_child(UiBuilder::new().max_rect(rect).id_salt(("call-row", &l.id)));
+    row.set_clip_rect(ui.clip_rect().intersect(rect));
+    let ui = &mut row;
     if l.highlighted {
         ui.painter().rect_filled(rect, 4.0, p.selected);
     } else if resp.hovered() {
@@ -1501,14 +1546,10 @@ fn call_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, l: &ActivityLine
     let font = theme::ui(size::SMALL + 0.5);
     let cy = rect.center().y;
     let right = rect.right() - 8.0;
-    // The tail ("gpt-6.2-sol · medium · delivered") is kept whole; the preview gets what is left.
-    let tail: Vec<String> = call.meta.iter().chain(call.status.iter()).cloned().collect();
-    let tail_g = (!tail.is_empty()).then(|| ui.fonts_mut(|f| f.layout_no_wrap(format!("· {}", tail.join(" · ")), font.clone(), color)));
-    let tail_w = tail_g.as_ref().map_or(0.0, |g| g.size().x + 8.0);
     let mut x = rect.left() + 22.0;
     let text_at = |ui: &mut egui::Ui, sc: &mut SelCx<'_>, x: &mut f32, s: &str, col: egui::Color32, limit: f32| {
         let max = limit - *x;
-        if s.is_empty() || max <= 12.0 {
+        if s.is_empty() || max < 10.0 {
             return;
         }
         let g = crate::widgets::elided(ui, s, &font, col, max);
@@ -1516,24 +1557,47 @@ fn call_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, l: &ActivityLine
         sc.paint(ui, pos2(*x, cy - g.size().y / 2.0), g, col);
         *x += w + 6.0;
     };
-    text_at(ui, sc, &mut x, &call.lead, color, right - tail_w);
+    text_at(ui, sc, &mut x, lead, color, right);
+    let tail = if l.failed {
+        "failed".to_owned()
+    } else {
+        call.meta.iter().chain(call.status.iter()).map(String::as_str).collect::<Vec<_>>().join(" · ")
+    };
+    // Cap trailing text when it shares the row with pills or a preview.
+    let tail_max = if call.pills.is_empty() && call.after.is_empty() && call.preview.is_none() {
+        right - x
+    } else {
+        (right - x) / 2.0
+    };
+    let tail_g = (!tail.is_empty() && tail_max >= 10.0).then(|| {
+        crate::widgets::elided(ui, &format!("· {tail}"), &font, color, tail_max)
+    });
+    let content_right = right - tail_g.as_ref().map_or(0.0, |g| g.size().x + 6.0);
     for (n, pill) in call.pills.iter().enumerate() {
         let (w, _, _) = pill_size(ui, pill, &font, p);
-        if x + w > right - tail_w {
-            text_at(ui, sc, &mut x, &format!("+{}", call.pills.len() - n), color, right);
+        if x + w > content_right {
+            text_at(ui, sc, &mut x, &format!("+{}", call.pills.len() - n), color, content_right);
             break;
         }
         x += draw_pill(ui, sc, p, pill, x, cy, &font, ui.scope_id().with(("pill", &l.id, n)), actions) + 5.0;
     }
-    text_at(ui, sc, &mut x, &call.after, color, right - tail_w);
+    text_at(ui, sc, &mut x, &call.after, color, content_right);
     if let Some(pv) = &call.preview {
-        text_at(ui, sc, &mut x, &format!("\u{201c}{pv}\u{201d}"), p.text2, right - tail_w);
+        text_at(ui, sc, &mut x, &format!("\u{201c}{pv}\u{201d}"), p.text2, content_right);
     }
     if let Some(g) = tail_g {
         let gy = cy - g.size().y / 2.0;
-        sc.paint(ui, pos2(x.min(right - tail_w + 8.0), gy), g, color);
+        sc.paint(ui, pos2(x, gy), g, color);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+fn failed_call_label(tc: &yaac_protocol::ToolCallItem) -> &str {
+    tc.input.as_ref().and_then(|input| {
+        ["tool", "name"].iter().filter_map(|key| input.get(key)?.as_str()).find(|name| !name.trim().is_empty())
+    }).map_or(&tc.title, |name| {
+        name.strip_prefix("mcp__").and_then(|name| name.split_once("__")).map_or(name, |(_, tool)| tool)
+    })
 }
 
 /// An agent call expanded: who it was with (pills), the message or task in full, the receipt
@@ -1576,11 +1640,18 @@ fn call_detail(
     if let Some(text) = &d.text {
         md(v, ui, "call-text", text, p.text);
     }
-    if let Some(status) = &d.status {
-        let c = if l_failed(item, ac) { p.failed } else { p.text2 };
+    let failed = l_failed(item, ac);
+    let status = d.status.as_deref().map(str::trim).filter(|status| !status.is_empty())
+        .or_else(|| failed.then(|| first_nonempty_line(&d.raw_output)).flatten());
+    if let Some(status) = status {
+        let c = if failed { p.failed } else { p.text2 };
         v.sel(unit).text(ui, status, small.clone(), c);
     }
-    if let Some(result) = &d.result {
+    if let Some(result) = &d.result
+        && !(failed && status.is_some_and(|status| {
+            result.trim() == status || (result.trim() == d.raw_output.trim() && first_nonempty_line(result) == Some(status))
+        }))
+    {
         ui.add_space(2.0);
         v.sel(unit).text(ui, "Result", theme::bold(size::SMALL), p.text2);
         md(v, ui, "call-result", &bounded(result), p.text);
@@ -1593,16 +1664,26 @@ fn call_detail(
                 continue;
             }
             v.sel(unit).text(ui, label, small.clone(), p.text2);
-            let out = bounded(body);
             let mut sc = v.sel(unit);
             let fr = egui::Frame::NONE.fill(p.code_bg).corner_radius(4).inner_margin(Margin::symmetric(8, 6)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                sc.text(ui, &out, theme::mono(size::MONO - 1.0), p.text2);
+                sc.text(ui, body, theme::mono(size::MONO - 1.0), p.text2);
             });
             markdown::copy_button(ui, &p, fr.response.rect, body, ui.scope_id().with(("raw-copy", &item.id, label)));
         }
+        if tc.output_truncated {
+            let notice = tc.output_bytes.map_or_else(
+                || "Output is longer. The rest is on the target.".to_owned(),
+                |bytes| format!("Output is longer ({bytes} bytes). The rest is on the target."),
+            );
+            v.sel(unit).text(ui, &notice, small, p.text2);
+        }
     }
     clicked
+}
+
+fn first_nonempty_line(text: &str) -> Option<&str> {
+    text.lines().map(str::trim).find(|line| !line.is_empty())
 }
 
 fn l_failed(item: &yaac_protocol::Item, ac: &yaac_protocol::AgentCall) -> bool {
@@ -1713,6 +1794,60 @@ fn bounded(s: &str) -> String {
 mod tests {
     use super::*;
     use yaac_core::demo::{Scene, threads};
+
+    #[test]
+    fn failed_agent_call_keeps_the_tool_label_and_wraps_one_error_summary() {
+        let reason = "The directory service could not finish this request. ".repeat(20);
+        let raw_output = format!("{}\n{}", reason.trim(), "More diagnostic information\n".repeat(160));
+        let item: yaac_protocol::Item = serde_json::from_value(serde_json::json!({
+            "id": "failed-call",
+            "turnId": "turn",
+            "status": "failed",
+            "kind": "toolCall",
+            "tool": "mcp",
+            "title": "Looked up agents",
+            "input": { "tool": "list_workers", "arguments": { "scope": "project" } },
+            "output": raw_output,
+            "agentCall": { "kind": "list", "outcome": "failed", "detail": reason, "result": raw_output },
+        })).expect("a failed call");
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::orchestrator();
+        let mut t = Transcript::new();
+        t.upsert(item.clone(), 1);
+        let map = AttentionMap::compute(&app.client.state);
+        let mut line = yaac_core::activity::line_of(&app.client.state, &map, &key, 0, &item).expect("activity line");
+        let mut draw = |line: &ActivityLine, width, raw| {
+            if raw {
+                app.ui.expansion.toggle_raw(&key, &item.id);
+            }
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 2000.0))), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                let mut view = View { p: Palette::DARK, state: &app.client.state, ui: &mut app.ui, md: &mut app.md };
+                activity_line(ui, &mut view, &key, &t, line, 0, 0.0, &mut Vec::new());
+            });
+            output.textures_delta.clear();
+            output.shapes.into_iter().filter_map(|shape| {
+                let egui::Shape::Text(text) = shape.shape else { return None };
+                Some((text, shape.clip_rect))
+            }).collect::<Vec<_>>()
+        };
+        for width in [132.0, 360.0] {
+            let closed = draw(&line, width, false);
+            let label = closed.iter().find(|(text, _)| text.galley.text() == "list_workers").expect("tool label");
+            assert!(!label.0.galley.elided);
+            assert!(closed.iter().all(|(text, clip)| text.pos.x >= clip.left() + 22.0 && text.pos.x + text.galley.size().x <= clip.right()));
+            assert!(!closed.iter().any(|(text, _)| text.galley.text().contains(reason.trim())));
+        }
+        line.expanded = true;
+        let expanded = draw(&line, 360.0, false);
+        let summaries: Vec<_> = expanded.iter().filter(|(text, _)| text.galley.text().contains(reason.trim())).collect();
+        assert_eq!(summaries.len(), 1);
+        assert!(summaries[0].0.galley.rows.len() > 1);
+        let raw = draw(&line, 360.0, true);
+        assert!(raw.iter().any(|(text, _)| text.galley.text() == raw_output));
+        assert!(raw.iter().any(|(text, _)| text.galley.text().contains("\"scope\": \"project\"")));
+    }
 
     #[test]
     fn the_composer_column_is_centered_at_the_chat_width() {

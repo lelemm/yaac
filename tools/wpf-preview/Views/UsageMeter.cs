@@ -22,6 +22,39 @@ public sealed class UsageMeter : WrapPanel
         Visibility = Children.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
 
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        var children = InternalChildren;
+        double top = 0, rowWidth = 0, rowHeight = 0;
+        int rowStart = 0;
+
+        void ArrangeRow(int end)
+        {
+            double left = Math.Max(0, (finalSize.Width - rowWidth) / 2);
+            for (int i = rowStart; i < end; i++)
+            {
+                var child = children[i];
+                double width = child.DesiredSize.Width;
+                child.Arrange(new Rect(left, top, width, rowHeight));
+                left += width;
+            }
+            top += rowHeight;
+            rowStart = end;
+            rowWidth = rowHeight = 0;
+        }
+
+        for (int i = 0; i < children.Count; i++)
+        {
+            var size = children[i].DesiredSize;
+            if (i > rowStart && rowWidth + size.Width > finalSize.Width)
+                ArrangeRow(i);
+            rowWidth += size.Width;
+            rowHeight = Math.Max(rowHeight, size.Height);
+        }
+        ArrangeRow(children.Count);
+        return finalSize;
+    }
+
     private FrameworkElement Account(JsonElement account)
     {
         var tooltip = account.Value("tooltip").Text();
@@ -32,7 +65,7 @@ public sealed class UsageMeter : WrapPanel
         var meter = new StackPanel
         {
             Orientation = Compact ? Orientation.Vertical : Orientation.Horizontal,
-            Margin = Compact ? new Thickness(4, 4, 4, 3) : new Thickness(2, 3, 6, 3),
+            Margin = Compact ? new Thickness(4, 4, 4, 3) : new Thickness(4, 3, 4, 3),
             Opacity = account.Value("stale").Flag() ? .55 : 1,
             ToolTip = tooltip,
         };
@@ -48,14 +81,23 @@ public sealed class UsageMeter : WrapPanel
         }
         else
             meter.Children.Add(new TextBlock { Text = Compact ? label[..Math.Min(1, label.Length)] : label,
-                Foreground = TranscriptColors.Muted, FontSize = 10, Margin = new Thickness(0, 0, 4, 0) });
+                Foreground = TranscriptColors.Muted, FontSize = 10,
+                HorizontalAlignment = Compact ? HorizontalAlignment.Center : HorizontalAlignment.Stretch,
+                Margin = Compact ? new Thickness() : new Thickness(0, 0, 4, 0) });
 
-        var windows = new StackPanel();
+        var windows = new StackPanel
+        {
+            HorizontalAlignment = Compact ? HorizontalAlignment.Center : HorizontalAlignment.Stretch,
+        };
         foreach (var bar in bars)
         {
             var brand = BrushFrom(account.Value("color").Text());
             var textColor = bar.Value("near").Flag() ? TranscriptColors.Error : brand;
-            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = Compact ? new Thickness(1.5, 0, 0, 0) : new Thickness(),
+            };
             foreach (var segment in bar.Value("segments").Elements())
             {
                 var fill = segment.GetDouble();

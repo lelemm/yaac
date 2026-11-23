@@ -53,6 +53,39 @@ fn sections(app: &YaacApp, map: &AttentionMap) -> Vec<Section> {
     crate::sidebar::window_sections(app, map, app.now())
 }
 
+fn search_enabled(app: &YaacApp) -> bool {
+    !yaac_core::first_run::is_first_run(&app.client.state)
+}
+
+fn hub_find(app: &YaacApp) -> Option<&yaac_core::state::FindState> {
+    app.client.state.find.as_ref().filter(|f| {
+        search_enabled(app) && app.uses_hub_search() && f.query == app.ui.search.trim()
+    })
+}
+
+pub(super) fn upkeep_search(app: &mut YaacApp) {
+    if search_enabled(app) && app.uses_hub_search() {
+        app.client.find(&app.ui.search);
+        if app.client.state.find.is_some() {
+            app.ui.list_sel.clear();
+        }
+    } else {
+        app.client.state.find = None;
+    }
+}
+
+fn search_rows(app: &YaacApp, map: &AttentionMap, find: &yaac_core::state::FindState) -> Vec<Value> {
+    let state = &app.client.state;
+    find.results.iter().filter_map(|key| {
+        let summary = state.summary(key)?;
+        let mark = yaac_core::attention::display(state, map, key).mark;
+        Some(json!({
+            "id": key.address(), "title": summary.title, "right": state.target_name(&key.target),
+            "selected": state.selected_thread() == Some(key), "status": mark.word(), "tone": tone(mark),
+        }))
+    }).collect()
+}
+
 #[cfg(test)]
 #[test]
 fn wpf_collapsed_groups_keep_header_actions_and_are_revealed_in_search() {
@@ -67,11 +100,34 @@ fn wpf_collapsed_groups_keep_header_actions_and_are_revealed_in_search() {
     assert_eq!(section["header"]["toggle"]["id"], "section.toggle");
     assert!(section["header"]["actions"].as_array().unwrap().iter().any(|action| action["id"] == "section.archiveAll"));
 
-    app.ui.search = app.client.state.summary(&key).unwrap().title.clone();
+    let title = app.client.state.summary(&key).unwrap().title.clone();
+    command(&mut app, &ctx, "sidebar.search", &json!({ "text": title })).unwrap();
+    upkeep_search(&mut app);
+    let snapshot = view(&app, &AttentionMap::compute(&app.client.state), 0);
+    assert_eq!(snapshot["search"], title);
+    assert_eq!(snapshot["searchResults"], false);
+    let rail = snapshot["railSections"].as_array().unwrap().iter().find(|s| s["id"] == group).unwrap();
+    assert_eq!(rail["collapsed"], true);
     let sections = sections(&app, &AttentionMap::compute(&app.client.state));
     let section = sections.iter().find(|s| s.id == group).unwrap();
     assert!(section.visible_rows().iter().any(|row| row.key == key));
     assert!(app.ui.prefs().collapsed_groups.contains(&group));
+    command(&mut app, &ctx, "sidebar.railToggle", &json!({ "sectionId": group })).unwrap();
+    assert!(!app.ui.prefs().collapsed_groups.contains(&group));
+    assert_eq!(app.ui.search, title);
+}
+
+#[cfg(test)]
+#[test]
+fn wpf_first_run_disables_sidebar_search() {
+    let ctx = egui::Context::default();
+    let mut app = crate::app::tests::demo_app(&ctx);
+    app.client.state.threads.clear();
+    app.client.state.projects.clear();
+    let snapshot = view(&app, &AttentionMap::compute(&app.client.state), 0);
+    assert_eq!(snapshot["searchEnabled"], false);
+    command(&mut app, &ctx, "sidebar.search", &json!({ "text": "thread" })).unwrap();
+    assert!(app.ui.search.is_empty());
 }
 
 fn usage(app: &YaacApp, now: i64) -> Vec<Value> {
@@ -105,15 +161,16 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, selection_epoch: u64) -> V
     let ordering = app.ui.ordering;
     let state = &app.client.state;
     let now = app.now();
+    let find = hub_find(app);
     let sections = sections(app, map);
     let order: Vec<_> = sections
         .iter()
         .flat_map(|s| s.visible_rows().iter().map(|r| r.key.clone()))
         .collect();
     let picked = app.ui.list_sel.in_order(&order);
-    let groups: Vec<_> = sections.iter().map(|s| {
+    let group = |s: &Section, rail: bool| {
         let header = s.header.as_ref().map(|h| {
-            let toggle = crate::sidebar::can_toggle_section(app, s).then(|| {
+            let toggle = (rail || crate::sidebar::can_toggle_section(app, s)).then(|| {
                 let label = format!("{} {}", if s.collapsed { "Expand" } else { "Collapse" }, h.left);
                 json!({ "id": "section.toggle", "label": label, "detail": label, "enabled": true })
             });
@@ -153,12 +210,15 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, selection_epoch: u64) -> V
                 })
             });
             let display = r.display;
-            let badge = yaac_core::pr::badge_of(state, &r.key).and_then(|b| {
-                (b.primary.is_some() || b.can_create).then(|| {
-                    let label = if b.primary.is_some() { b.number_text() } else { "Create PR".to_owned() };
-                    json!({ "id": "pullRequest", "label": label, "detail": b.tooltip(), "enabled": b.enabled })
-                })
-            });
+            let provider = state.provider_of(&r.key);
+            let logo = if line2.as_ref().is_some_and(|line| line["logo"].is_string()) {
+                None
+            } else {
+                provider.and_then(|p| crate::logos::for_kind(p.kind.as_str()))
+            };
+            let color = logo.and_then(|(_, color)| color)
+                .map(|c| format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b()));
+            let badge = pull_requests::badge(state, &r.key);
             json!({
                 "id": r.key.address(), "copyId": state.summary(&r.key).and_then(|s| s.native_id.as_ref()),
                 "title": r.title, "right": right, "status": display.mark.word(),
@@ -166,6 +226,8 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, selection_epoch: u64) -> V
                 "selected": r.selected, "unseen": display.unseen, "readOnly": display.read_only,
                 "muted": r.muted, "fast": display.fast, "ultrafast": display.ultrafast, "draggable": moving::can_drag(grouping) && moving::blocked(state, &r.key).is_none(),
                 "actions": menu(app, &r.key), "line2": line2, "badge": badge,
+                "providerName": provider.map(|p| &p.display_name),
+                "logo": logo.map(|(logo, _)| crate::logos::source(logo).0), "logoColor": color,
             })
         }).collect();
         let drop = if moving::can_drag(grouping) && s.kind == SectionKind::Group {
@@ -177,7 +239,12 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, selection_epoch: u64) -> V
             None
         };
         json!({ "id": s.id, "header": header, "rows": rows, "collapsed": s.collapsed, "drop": drop })
-    }).collect();
+    };
+    let groups: Vec<_> = sections.iter().map(|s| group(s, false)).collect();
+    let rail_groups = (!app.ui.search.trim().is_empty()).then(|| {
+        crate::sidebar::sections_for_query(app, map, now, "").iter()
+            .map(|s| group(s, true)).collect::<Vec<_>>()
+    });
     let footer = sidebar::hub_footer(state);
     let down = if footer.down > 0 {
         format!("   ↓ {}", footer.down)
@@ -202,7 +269,15 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, selection_epoch: u64) -> V
     })
     .collect::<Vec<_>>();
     json!({
-        "search": app.ui.search, "searchEnabled": true, "sections": groups, "selectionReset": selection_epoch.to_string(),
+        "search": app.ui.search, "searchEnabled": search_enabled(app), "sections": groups, "selectionReset": selection_epoch.to_string(),
+        "railSections": rail_groups,
+        "searchResults": find.is_some(), "searchRows": find.map(|f| search_rows(app, map, f)),
+        "searchStatus": find.map(|f| {
+            if f.loading && f.results.is_empty() { "Searching…".to_owned() } else { format!("{} found", f.total) }
+        }),
+        "searchError": find.and_then(|f| f.error.as_deref()),
+        "searchEmpty": find.is_some_and(|f| f.results.is_empty() && !f.loading && f.error.is_none()),
+        "searchMore": find.filter(|f| f.cursor.is_some() && !f.loading).map(|_| action("search.more", "More results", true)),
         "newThread": action("new", "New", yaac_core::first_run::preferred_start_target(state).is_some()),
         "grouping": [
             check("group.machine", "Group by machine", grouping.machine),
@@ -251,19 +326,36 @@ pub(super) fn command(
 ) -> Result<(), String> {
     match name {
         "sidebar.search" => {
-            app.ui.search = string(p, "text").to_owned();
+            if search_enabled(app) {
+                app.ui.search = string(p, "text").to_owned();
+            }
+            return Ok(());
+        }
+        "sidebar.searchMore" => {
+            if hub_find(app).is_some_and(|f| !f.loading && f.query == string(p, "query").trim()) {
+                app.client.find_more();
+            }
+            return Ok(());
+        }
+        "sidebar.railToggle" => {
+            let map = AttentionMap::compute(&app.client.state);
+            if let Some(section) = crate::sidebar::sections_for_query(app, &map, app.now(), "").into_iter()
+                .find(|s| s.id == string(p, "sectionId"))
+            {
+                crate::sidebar::toggle_section(app, &section);
+            }
             return Ok(());
         }
         "sidebar.selection" => {
-            let rows = selection(app, p);
             app.ui.list_sel.clear();
+            if hub_find(app).is_some() {
+                return Ok(());
+            }
+            let rows = selection(app, p);
             for k in &rows {
                 app.ui.list_sel.click(&rows, k, Click::Toggle, None);
             }
             return Ok(());
-        }
-        "dialog.cancel" | "dialog.submit" | "dialog.change" => {
-            return super::dialogs::command(app, name, p);
         }
         _ => {}
     }
@@ -325,29 +417,11 @@ pub(super) fn command(
         | "section.dismissAll"
         | "section.archiveAll"
         | "section.muteAll" => section_action(app, id, p),
-        "pullRequest" => {
-            let chosen = if name == "agents.action" {
-                key(app, string(p, "id"))
-            } else {
-                selection(app, p).into_iter().next()
-            };
-            if let Some(k) = chosen
-                && let Some(badge) = yaac_core::pr::badge_of(&app.client.state, &k)
-            {
-                match yaac_core::pr::click(&badge) {
-                    yaac_core::pr::BadgeClick::Open(url) => Some(Action::OpenUrl(url)),
-                    yaac_core::pr::BadgeClick::Create => Some(Action::OpenCreatePr(k)),
-                    _ => None,
-                }
-            } else {
-                None
-            }
-        }
         _ => {
             let Some(&(op, _)) = MENU_ACTIONS.iter().find(|(_, menu_id)| *menu_id == id) else {
                 return Err(format!("Unavailable preview menu action {id}"));
             };
-            let key = if name == "agents.action" {
+            let key = if matches!(name, "agents.action" | "sidebar.railAction") {
                 key(app, string(p, "id"))
             } else {
                 selection(app, p).into_iter().next()
@@ -401,7 +475,9 @@ fn section_action(app: &mut YaacApp, id: &str, p: &Value) -> Option<Action> {
                 Action::OpenBulkMute(keys)
             });
         }
-        "section.toggle" => crate::sidebar::toggle_section(app, &section),
+        "section.toggle" if crate::sidebar::can_toggle_section(app, &section) => {
+            crate::sidebar::toggle_section(app, &section);
+        }
         "section.drop" => {
             let rows = selection(app, p);
             if let Drop::Move {

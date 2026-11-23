@@ -64,10 +64,11 @@ fn layout(ui: &egui::Ui, panel: &Panel, width: f32) -> (Vec<Rect>, f32) {
     let (mut x, mut y, mut row_h) = (0.0_f32, 0.0_f32, 0.0_f32);
     let mut rects: Vec<Rect> = Vec::new();
     let mut row_start = 0;
-    // Each group is centred on its row's height.
     let centre = |rects: &mut [Rect], row_h: f32| {
+        let row_width = rects.last().map_or(0.0, |r| r.right());
+        let left = ((width - row_width) / 2.0).max(0.0);
         for r in rects {
-            *r = r.translate(vec2(0.0, (row_h - r.height()) / 2.0));
+            *r = r.translate(vec2(left, (row_h - r.height()) / 2.0));
         }
     };
     for g in &panel.groups {
@@ -138,7 +139,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, now: i64) {
     // Set apart from the list by space alone (no rules inside the sidebar).
     for (g, r) in panel.groups.iter().zip(rects) {
         let force = app.ui.limits_tip_force.as_deref() == Some(g.key.as_str());
-        draw_group(ui, g, r.translate(area.min.to_vec2() + vec2(2.0, PAD)), &p, force);
+        draw_group(ui, g, r.translate(area.min.to_vec2() + vec2(0.0, PAD)), &p, force);
     }
 }
 
@@ -172,4 +173,38 @@ pub(crate) fn strip(ui: &mut egui::Ui, app: &mut YaacApp, now: i64, cx: f32, bot
         y -= CELL;
     }
     bottom - y
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wraps_and_centres_each_usage_row() {
+        let panel = Panel {
+            groups: (0..3)
+                .map(|i| Group {
+                    key: i.to_string(),
+                    kind: yaac_protocol::ProviderKind::new("fixture"),
+                    bars: Vec::new(),
+                    tightest: 0,
+                    tooltip: String::new(),
+                    stale: false,
+                })
+                .collect(),
+        };
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let width = 170.0;
+            let (rects, height) = layout(ui, &panel, width);
+            let [first, second, third] = rects.as_slice() else { panic!("expected one placement per account") };
+            assert_eq!(first.top(), second.top());
+            assert_eq!(first.left(), width - second.right());
+            assert_eq!(second.left() - first.right(), GROUP_GAP);
+            assert_eq!(third.top(), first.bottom() + PAD);
+            assert_eq!(third.center().x, width / 2.0);
+            assert_eq!(height, third.bottom() + PAD * 2.0);
+        });
+        output.textures_delta.clear();
+    }
 }

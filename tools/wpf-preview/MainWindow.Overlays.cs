@@ -1,6 +1,9 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 
 namespace Yaac.WpfPreview;
@@ -12,16 +15,24 @@ public partial class MainWindow
     private string? commanderStep;
     private string commanderRenderedQuery = "";
     private TextBlock? dialogBody;
+    private TextBlock? dialogHint;
     private Button? dialogSubmit;
+    private Button? dialogCancel;
     private StackPanel? dialogFields;
+    private StackPanel? dialogExtras;
+    private PullRequestForm? pullRequestForm;
     private string? fieldSignature;
+    private string? dialogFieldRevision;
+    private string? dialogExtrasSignature;
     private readonly Dictionary<string, Func<object?>> fieldValues = new();
 
-    private Window Overlay(string title, double width, double maxHeight) => new()
+    private const double DialogWidth = 560;
+
+    private Window Overlay(string title, double maxHeight) => new()
     {
         Owner = this,
         Title = title,
-        Width = width,
+        Width = DialogWidth * fontScale,
         MaxHeight = maxHeight,
         SizeToContent = SizeToContent.Height,
         WindowStartupLocation = WindowStartupLocation.CenterOwner,
@@ -32,7 +43,22 @@ public partial class MainWindow
         Foreground = Palette.Brush("YaacText"),
     };
 
-    private void OpenCommander() => Send(CommanderOverlay.IsVisible ? "commander.close" : "commander.open");
+    private void UpdateDialogWidth()
+    {
+        if (dialog is not null)
+            dialog.Width = DialogWidth * fontScale;
+    }
+
+    private void OpenCommander()
+    {
+        if (CommanderOverlay.IsVisible)
+        {
+            Send("commander.close");
+            return;
+        }
+        var approval = TranscriptPane.FocusedApproval;
+        Send("commander.open", new { card = approval?.ActionId, threadId = approval?.ThreadId });
+    }
 
     private void RenderCommander(JsonElement data)
     {
@@ -174,6 +200,7 @@ public partial class MainWindow
         {
             var previous = dialog;
             dialog = null;
+            pullRequestForm = null;
             fieldValues.Clear();
             previous?.Close();
         }
@@ -182,54 +209,109 @@ public partial class MainWindow
         if (dialog == null)
         {
             fieldSignature = null;
-            dialog = Overlay(Text(data, "title"), 560, Math.Max(360, ActualHeight - 50));
-            var content = new DockPanel { Margin = new Thickness(16) };
+            dialogFieldRevision = null;
+            dialogExtrasSignature = null;
+            dialog = Overlay(Text(data, "title"), Math.Max(360, ActualHeight - 50));
+            var content = new DockPanel();
+            var surface = new Border { Padding = new Thickness(16), Child = content };
+            surface.SetResourceReference(LayoutTransformProperty, "YaacUiScale");
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
             DockPanel.SetDock(buttons, Dock.Bottom);
             dialogSubmit = new Button
             {
                 Style = (Style)FindResource("YaacPrimaryButton"),
-                IsDefault = id != "ultrafast", MinWidth = 90, Margin = new Thickness(0, 10, 8, 0),
+                IsDefault = id is not ("mode" or "ultrafast"), MinWidth = 90, Margin = new Thickness(0, 10, 8, 0),
             };
             dialogSubmit.Click += (_, _) => Send("dialog.submit", new
             {
                 id,
-                values = fieldValues.ToDictionary(field => field.Key, field => field.Value()),
+                instance,
+                values = pullRequestForm is { } pullRequest
+                    ? new Dictionary<string, object?> { ["draft"] = pullRequest.Draft }
+                    : fieldValues.ToDictionary(field => field.Key, field => field.Value()),
             });
-            var cancel = new Button { Content = id == "ultrafast" ? "Cancel" : "Close", IsCancel = true, MinWidth = 80, Margin = new Thickness(0, 10, 0, 0) };
-            cancel.Click += (_, _) => Send("dialog.cancel", new { id });
+            var cancel = new Button { Content = id is "mode" or "ultrafast" or "pullRequest" or "project" or "mute" or "fork" or "quit" ? "Cancel" : "Close",
+                IsCancel = id != "updateNotice", Visibility = id == "updateNotice" ? Visibility.Collapsed : Visibility.Visible,
+                MinWidth = 80, Margin = new Thickness(0, 10, 0, 0) };
+            dialogCancel = cancel;
+            cancel.Click += (_, _) => Send("dialog.cancel", new { id, instance });
             buttons.Children.Add(dialogSubmit);
             buttons.Children.Add(cancel);
             content.Children.Add(buttons);
             dialogBody = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 8) };
+            dialogHint = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 0) };
             dialogFields = new StackPanel();
+            dialogExtras = new StackPanel();
             var form = new StackPanel();
             form.Children.Add(dialogBody);
-            form.Children.Add(dialogFields);
+            if (id == "pullRequest")
+            {
+                pullRequestForm = new PullRequestForm(this, instance);
+                form.Children.Add(pullRequestForm);
+            }
+            else
+            {
+                form.Children.Add(dialogFields);
+                form.Children.Add(dialogExtras);
+                form.Children.Add(dialogHint);
+            }
             content.Children.Add(new ScrollViewer { Content = form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
-            dialog.Content = content;
+            dialog.Content = surface;
             var window = dialog;
+            window.PreviewKeyDown += (_, e) =>
+            {
+                if (id is "mode" or "ultrafast" && e.Key == Key.Enter)
+                    e.Handled = true;
+                if (id == "updateNotice" && e.Key == Key.Escape)
+                {
+                    Send("dialog.cancel", new { id, instance });
+                    e.Handled = true;
+                }
+            };
             window.Closing += (_, e) =>
             {
                 if (ReferenceEquals(dialog, window) && !closed)
                 {
                     e.Cancel = true;
-                    Send("dialog.cancel", new { id });
+                    if (cancel.IsEnabled)
+                        Send("dialog.cancel", new { id, instance });
                 }
             };
             dialog.Show();
-            if (id == "ultrafast")
+            if (id is "mode" or "ultrafast")
                 cancel.Focus();
         }
         dialogBody!.Text = Text(data, "body");
         var submit = Text(data, "submit");
+        var blocked = Text(data, "submitBlocked");
         dialogSubmit!.Content = submit;
         dialogSubmit.Visibility = submit.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        dialogSubmit.IsEnabled = blocked.Length == 0;
+        dialogSubmit.ToolTip = blocked.Length == 0 ? null : blocked;
+        ToolTipService.SetShowOnDisabled(dialogSubmit, true);
+        if (pullRequestForm is { } pr)
+        {
+            var canCancel = !Flag(data, "creating");
+            dialogCancel!.IsEnabled = canCancel;
+            dialogCancel.IsCancel = canCancel;
+            pr.Render(data);
+            return;
+        }
+        var hint = Text(data, "hint");
+        dialogHint!.Text = hint.Length == 0 ? blocked : blocked.Length == 0 ? hint : $"{hint}\n{blocked}";
+        dialogHint.Visibility = dialogHint.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        dialogHint.SetResourceReference(TextBlock.ForegroundProperty, blocked.Length == 0 ? "YaacMuted" : "YaacFailure");
+        RenderDialogExtras(data, id, instance);
         if (!data.TryGetProperty("fields", out var fields)) return;
-        var signature = fields.GetRawText();
-        if (fieldSignature == signature) return;
+        var signature = string.Join("\n", fields.EnumerateArray().Select(field => Flag(field, "live")
+            ? $"{Text(field, "id")} · {Text(field, "type")} · {Text(field, "minDate")}"
+            : field.GetRawText()));
+        var revision = data.TryGetProperty("fieldRevision", out var revisionValue) ? revisionValue.GetRawText() : "";
+        var replace = dialogFieldRevision != revision;
+        if (!replace && fieldSignature == signature) return;
         fieldSignature = signature;
-        var drafts = fieldValues.ToDictionary(field => field.Key, field => field.Value());
+        dialogFieldRevision = revision;
+        var drafts = replace ? new Dictionary<string, object?>() : fieldValues.ToDictionary(field => field.Key, field => field.Value());
         fieldValues.Clear();
         dialogFields!.Children.Clear();
         foreach (var field in fields.EnumerateArray())
@@ -251,14 +333,17 @@ public partial class MainWindow
                 var selected = Text(field, "value");
                 foreach (var option in options.EnumerateArray())
                 {
-                    var item = new ComboBoxItem { Content = Text(option, "label"), Tag = Text(option, "id") };
+                    var reason = Text(option, "detail");
+                    var item = new ComboBoxItem { Content = Text(option, "label"), Tag = Text(option, "id"),
+                        IsEnabled = !Flag(option, "disabled"), ToolTip = reason.Length == 0 ? null : reason };
+                    ToolTipService.SetShowOnDisabled(item, true);
                     choice.Items.Add(item);
                     if (Equals(item.Tag, selected)) choice.SelectedItem = item;
                 }
                 fieldValues[fieldId] = () => (choice.SelectedItem as ComboBoxItem)?.Tag;
                 choice.SelectionChanged += (_, _) => Send("dialog.change", new
                 {
-                    id,
+                    id, instance,
                     values = new Dictionary<string, object?> { [fieldId] = fieldValues[fieldId]() },
                 });
                 dialogFields.Children.Add(choice);
@@ -273,9 +358,106 @@ public partial class MainWindow
                     AcceptsReturn = type == "multiline",
                     MinHeight = type == "multiline" ? 65 : 25,
                 };
+                AutomationProperties.SetName(box, label);
                 fieldValues[fieldId] = () => box.Text;
-                dialogFields.Children.Add(box);
+                if (Flag(field, "live"))
+                    box.TextChanged += (_, _) => Send("dialog.change", new
+                    {
+                        id, instance, values = new Dictionary<string, object?> { [fieldId] = box.Text },
+                    });
+                dialogFields.Children.Add(type == "date" ? DialogDateField(box, Text(field, "minDate")) : box);
             }
         }
+    }
+
+    private void RenderDialogExtras(JsonElement data, string id, string instance)
+    {
+        bool hasActions = data.TryGetProperty("auxiliaryActions", out var actions);
+        bool hasFolders = data.TryGetProperty("folders", out var folders);
+        var signature = (hasActions ? actions.GetRawText() : "") + (hasFolders ? folders.GetRawText() : "");
+        if (signature == dialogExtrasSignature) return;
+        dialogExtrasSignature = signature;
+        dialogExtras!.Children.Clear();
+
+        void AddActions(Panel host, JsonElement descriptors)
+        {
+            foreach (var item in descriptors.EnumerateArray())
+            {
+                var action = Text(item, "id");
+                var path = Text(item, "path");
+                var button = new Button
+                {
+                    Content = Text(item, "label"), IsEnabled = Flag(item, "enabled"),
+                    HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 3, 6, 0),
+                };
+                button.Click += (_, _) => Send("dialog.action", new
+                {
+                    id, instance, action, path, values = fieldValues.ToDictionary(field => field.Key, field => field.Value()),
+                });
+                host.Children.Add(button);
+            }
+        }
+
+        if (hasActions)
+        {
+            var links = new WrapPanel();
+            AddActions(links, actions);
+            dialogExtras.Children.Add(links);
+        }
+        if (hasFolders)
+        {
+            var list = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+            list.Children.Add(new TextBlock { Text = Text(folders, "text"), TextWrapping = TextWrapping.Wrap });
+            if (folders.TryGetProperty("entries", out var entries))
+            {
+                var rows = new StackPanel();
+                AddActions(rows, entries);
+                list.Children.Add(new ScrollViewer { Content = rows, MaxHeight = 148,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+            }
+            var hint = Text(folders, "hint");
+            if (hint.Length > 0)
+                list.Children.Add(new TextBlock { Text = hint, TextWrapping = TextWrapping.Wrap });
+            dialogExtras.Children.Add(list);
+        }
+    }
+
+    private static DockPanel DialogDateField(TextBox text, string earliest)
+    {
+        var row = new DockPanel();
+        var pick = new Button { Content = "Choose date", Margin = new Thickness(6, 2, 0, 7) };
+        var calendar = new System.Windows.Controls.Calendar { SelectionMode = CalendarSelectionMode.SingleDate };
+        if (DateTime.TryParseExact(earliest, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var start))
+            calendar.DisplayDateStart = start;
+        var frame = new Border { Child = calendar, Padding = new Thickness(5), CornerRadius = new CornerRadius(5) };
+        frame.SetResourceReference(Border.BackgroundProperty, "YaacRaised");
+        var popup = new Popup { Child = frame, PlacementTarget = pick, Placement = PlacementMode.Custom,
+            CustomPopupPlacementCallback = DropdownPlacement.Below, AllowsTransparency = true, StaysOpen = false };
+        bool showing = false;
+        pick.Click += (_, _) =>
+        {
+            showing = true;
+            if (DateTime.TryParseExact(text.Text, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
+                && (calendar.DisplayDateStart is null || date >= calendar.DisplayDateStart))
+            {
+                calendar.DisplayDate = date;
+                calendar.SelectedDate = date;
+            }
+            showing = false;
+            popup.IsOpen = true;
+        };
+        calendar.SelectedDatesChanged += (_, _) =>
+        {
+            if (showing || calendar.SelectedDate is not { } selected)
+                return;
+            text.Text = selected.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            popup.IsOpen = false;
+            text.Focus();
+        };
+        row.Unloaded += (_, _) => popup.IsOpen = false;
+        DockPanel.SetDock(pick, Dock.Right);
+        row.Children.Add(pick);
+        row.Children.Add(text);
+        return row;
     }
 }

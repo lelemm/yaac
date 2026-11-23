@@ -39,15 +39,22 @@ public partial class ComposerView : UserControl
     public ComposerView()
     {
         InitializeComponent();
+        Markdown.Attach(Editor);
+        IsVisibleChanged += (_, _) =>
+        {
+            if (!IsVisible)
+                DropOverlayChanged?.Invoke(false);
+        };
         fileSearchTimer.Tick += (_, _) => RequestFiles();
-        TextCompositionManager.AddPreviewTextInputStartHandler(Editor, (_, _) => imeComposing = true);
-        TextCompositionManager.AddPreviewTextInputUpdateHandler(Editor, (_, _) => imeComposing = true);
-        TextCompositionManager.AddPreviewTextInputHandler(Editor, (_, _) => imeComposing = false);
+        TextCompositionManager.AddPreviewTextInputStartHandler(Editor, (_, _) => SetComposing(true));
+        TextCompositionManager.AddPreviewTextInputUpdateHandler(Editor, (_, _) => SetComposing(true));
+        TextCompositionManager.AddPreviewTextInputHandler(Editor, (_, _) => SetComposing(false));
         CommandManager.AddPreviewCanExecuteHandler(Editor, EditorCanPaste);
         CommandManager.AddPreviewExecutedHandler(Editor, EditorPaste);
     }
 
     public event Action<string, object?>? Command;
+    internal event Action<bool>? DropOverlayChanged;
 
     // Each render describes the complete composer for a selection. Action ids are opaque to
     // WPF. Picker and clipboard work run in the controller, which returns a single-use insert
@@ -61,7 +68,7 @@ public partial class ComposerView : UserControl
             editingEnabled = false;
             CloseFiles();
             focusRequested = false;
-            DropOverlay.Visibility = Visibility.Collapsed;
+            DropOverlayChanged?.Invoke(false);
             return;
         }
 
@@ -75,7 +82,7 @@ public partial class ComposerView : UserControl
         {
             CloseFiles();
             pasteSelection = null;
-            imeComposing = false;
+            SetComposing(false);
             focusRequested = false;
         }
 
@@ -90,7 +97,9 @@ public partial class ComposerView : UserControl
         var placeholder = Field(view, "placeholder").String("Message…");
         Placeholder.Text = placeholder;
         System.Windows.Automation.AutomationProperties.SetName(Editor, placeholder);
-        UpdateText(Field(view, "text").String(), editorChanged);
+        var text = Field(view, "text").String();
+        UpdateText(text, editorChanged);
+        Markdown.SetSpans(Normalize(text), Field(view, "markdown"));
         UpdatePlaceholder();
         RenderFileSearch(Field(view, "filePicker"), Field(view, "fileScope").String());
 
@@ -112,7 +121,7 @@ public partial class ComposerView : UserControl
         RenderEditorActions(view);
         RenderSkills(Field(view, "skills"));
         if (!CanDrop)
-            DropOverlay.Visibility = Visibility.Collapsed;
+            DropOverlayChanged?.Invoke(false);
 
         var nextFocus = Field(view, "focus");
         var token = nextFocus.ValueKind == JsonValueKind.True ? "true" : nextFocus.Identifier();
@@ -304,7 +313,18 @@ public partial class ComposerView : UserControl
 
     private void EditorLostFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
-        imeComposing = false;
+        SetComposing(false);
+        DismissPickers();
+    }
+
+    private void SetComposing(bool composing)
+    {
+        imeComposing = composing;
+        Markdown.SetComposing(composing);
+    }
+
+    internal void DismissPickers()
+    {
         CloseFiles();
         CloseSkills();
     }
@@ -433,7 +453,7 @@ public partial class ComposerView : UserControl
 
     private void ComposerUnloaded(object sender, RoutedEventArgs e)
     {
-        DropOverlay.Visibility = Visibility.Collapsed;
+        DropOverlayChanged?.Invoke(false);
         if (dropHost is null)
             return;
         dropHost.PreviewDragOver -= FileDragOver;
@@ -447,19 +467,19 @@ public partial class ComposerView : UserControl
     {
         if (!CanDrop || !e.Data.GetDataPresent(DataFormats.FileDrop) || (e.AllowedEffects & DragDropEffects.Copy) == 0)
         {
-            DropOverlay.Visibility = Visibility.Collapsed;
+            DropOverlayChanged?.Invoke(false);
             return;
         }
-        DropOverlay.Visibility = Visibility.Visible;
+        DropOverlayChanged?.Invoke(true);
         e.Effects = DragDropEffects.Copy;
         e.Handled = true;
     }
 
-    private void FileDragLeave(object sender, DragEventArgs e) => DropOverlay.Visibility = Visibility.Collapsed;
+    private void FileDragLeave(object sender, DragEventArgs e) => DropOverlayChanged?.Invoke(false);
 
     private void FileDrop(object sender, DragEventArgs e)
     {
-        DropOverlay.Visibility = Visibility.Collapsed;
+        DropOverlayChanged?.Invoke(false);
         if (!CanDrop || (e.AllowedEffects & DragDropEffects.Copy) == 0 ||
             !e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetData(DataFormats.FileDrop) is not string[] files)
             return;

@@ -26,12 +26,7 @@ fn row(app: &YaacApp, row: &AgentRow) -> Value {
     let logo_color = logo
         .and_then(|(_, color)| color)
         .map(|c| format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b()));
-    let badge = row.key.as_ref().and_then(|k| yaac_core::pr::badge_of(&app.client.state, k)).and_then(|b| {
-        (b.primary.is_some() || b.can_create).then(|| {
-            let label = if b.primary.is_some() { b.number_text() } else { "Create PR".to_owned() };
-            json!({ "label": label, "detail": b.tooltip(), "action": sidebar_view::action("pullRequest", &label, b.enabled) })
-        })
-    });
+    let badge = row.key.as_ref().and_then(|key| pull_requests::badge(&app.client.state, key));
     let actions = row
         .key
         .as_ref()

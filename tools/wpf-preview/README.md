@@ -20,8 +20,8 @@ To test with demo data on Windows:
 Use the latter to try **Mark all as read** in the related-agents card or dock.
 **Stream a reply in this thread** runs the existing scripted demo turn. Choose an idle thread for the test.
 
-Composer Markdown styling while typing, image thumbnails, and some transcript grouping details
-remain pending.
+In a demo thread, use the composer to exercise Markdown styling, drop an image to see the
+attachment thumbnail, and open a finished turn to reveal its tool activity and file changes.
 
 ## Build
 

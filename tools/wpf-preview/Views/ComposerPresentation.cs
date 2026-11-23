@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace Yaac.WpfPreview.Views;
 
@@ -168,9 +169,7 @@ public partial class ComposerView
                 InvokeAction(action);
                 return;
             }
-            var menu = button.ContextMenu ??= new ContextMenu();
-            menu.PlacementTarget = button;
-            menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Top;
+            var menu = button.ContextMenu ??= DropdownPlacement.CreateMenu(button, preferAbove: true);
             RenderMenu(menu, action.Children);
             menu.IsOpen = true;
         };
@@ -196,8 +195,7 @@ public partial class ComposerView
 
     private OptionMenuItem CreateMenuItem(string id)
     {
-        var item = new OptionMenuItem { Tag = id, Style = TryFindResource(typeof(MenuItem)) as Style };
-        ToolTipService.SetShowOnDisabled(item, true);
+        var item = new OptionMenuItem { Tag = id, Style = (Style)FindResource("YaacMenuItem") };
         item.Click += (_, e) =>
         {
             if (ReferenceEquals(e.OriginalSource, item) && item.Option is { } action && action.Children.Length == 0)
@@ -263,6 +261,8 @@ public partial class ComposerView
         private readonly Panel actions;
         private readonly ProgressBar? progress;
         private readonly TextBlock? imageMark;
+        private readonly Image? thumbnail;
+        private (int Width, int Height, string Pixels) thumbnailFrame = (0, 0, "");
 
         public ComposerRow(ComposerView owner, string id, RowKind kind)
         {
@@ -296,9 +296,16 @@ public partial class ComposerView
                     Background = (Brush)owner.FindResource("YaacRaised");
                     Margin = new Thickness(0, 0, 5, 4);
                     imageMark = new TextBlock { Margin = new Thickness(6, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center };
+                    thumbnail = new Image
+                    {
+                        Height = 24, MinWidth = 16, MaxWidth = 40, Stretch = Stretch.Uniform,
+                        VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 5, 0),
+                        Visibility = Visibility.Collapsed,
+                    };
                     progress = new ProgressBar { Width = 44, Height = 4, Maximum = 1, Margin = new Thickness(5, 0, 0, 0) };
                     AutomationProperties.SetName(progress, "Upload progress");
                     AddDocked(imageMark, Dock.Left);
+                    AddDocked(thumbnail, Dock.Left);
                     AddDocked(actions, Dock.Bottom);
                     AddDocked(progress, Dock.Right);
                     AddDocked(detail, Dock.Right);
@@ -341,9 +348,36 @@ public partial class ComposerView
                 var image = Field(model, "image").ComposerFlag();
                 imageMark.Text = image ? "▧" : "▤";
                 imageMark.ToolTip = image ? "Image" : "File";
+                UpdateThumbnail(Field(model, "thumbnail"));
             }
             DisplayText(detail, detailText);
             detail.ToolTip = detailText.Length > 0 ? detailText : null;
+        }
+
+        private void UpdateThumbnail(JsonElement model)
+        {
+            if (thumbnail is null || imageMark is null) return;
+            var pixels = Field(model, "pixels").String();
+            var width = Field(model, "width").ComposerInt();
+            var height = Field(model, "height").ComposerInt();
+            if ((width, height, pixels) == thumbnailFrame) return;
+            thumbnailFrame = (width, height, pixels);
+            thumbnail.Source = null;
+
+            // The shared worker already decoded and shrank the image.
+            if (width is > 0 and <= 160 && height is > 0 and <= 160)
+            {
+                var stride = width * 4;
+                var bytes = new byte[stride * height];
+                if (Convert.TryFromBase64String(pixels, bytes, out var written) && written == bytes.Length)
+                {
+                    var bitmap = BitmapSource.Create(width, height, 96, 96, PixelFormats.Pbgra32, null, bytes, stride);
+                    bitmap.Freeze();
+                    thumbnail.Source = bitmap;
+                }
+            }
+            thumbnail.Visibility = VisibleWhen(thumbnail.Source is not null);
+            imageMark.Visibility = VisibleWhen(thumbnail.Source is null);
         }
 
         private void AddDocked(UIElement element, Dock position)

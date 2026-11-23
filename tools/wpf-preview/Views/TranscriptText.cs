@@ -201,7 +201,7 @@ internal sealed class TranscriptText : ContentControl
                         ? markdown.Elements().Select(block => new Piece(block.Value("kind").Text(), block.Value("text").Text(),
                             block.Value("language").OptionalText(), block.Value("kind").Text() == "code" ? default : block)).ToList()
                         : [new Piece("paragraph", value)],
-                    "diff" => [new Piece("diff", value)],
+                    "diff" => [new Piece("diff", value, Data: markdown)],
                     _ => [new Piece("code", value)],
                 });
                 var begin = editor.Document.ContentStart;
@@ -264,6 +264,7 @@ internal sealed class TranscriptText : ContentControl
                 var pointer = editor.GetPositionFromPoint(Mouse.GetPosition(editor), snapToText: true);
                 codeText = pointer?.Paragraph?.Tag as string;
             }
+            code.Header = mode == "diff" ? "Copy diff" : "Copy code";
             code.Visibility = codeText is null ? Visibility.Collapsed : Visibility.Visible;
         };
         menu.Items.Add(selection);
@@ -370,6 +371,9 @@ internal sealed class TranscriptText : ContentControl
 
     private static Section CodeBlock(Piece piece)
     {
+        var diff = piece.Kind == "diff";
+        var copyText = piece.Data.Value("copyText").OptionalText() ?? piece.Text;
+        var copyLabel = diff ? "Copy diff" : "Copy code";
         var section = new Section
         {
             Background = TranscriptColors.Code,
@@ -381,11 +385,11 @@ internal sealed class TranscriptText : ContentControl
         {
             Content = "Copy",
             Style = (Style)Application.Current.FindResource("YaacQuietButton"),
-            ToolTip = "Copy code",
+            ToolTip = copyLabel,
             FontFamily = YaacFonts.Ui,
             FontSize = 11,
         };
-        AutomationProperties.SetName(button, "Copy code");
+        AutomationProperties.SetName(button, copyLabel);
         DockPanel.SetDock(button, Dock.Right);
         header.Children.Add(button);
         if (piece.Language is { Length: > 0 } language)
@@ -403,7 +407,7 @@ internal sealed class TranscriptText : ContentControl
         button.Unloaded += (_, _) => reset.Stop();
         button.Click += (_, _) =>
         {
-            if (!TryCopy(piece.Text)) return;
+            if (!TryCopy(copyText)) return;
             button.Content = "Copied";
             reset.Stop();
             reset.Start();
@@ -414,18 +418,25 @@ internal sealed class TranscriptText : ContentControl
         {
             Margin = new Thickness(0),
             FontFamily = Mono,
-            Tag = piece.Text,
+            Tag = copyText,
         };
-        if (piece.Kind == "diff")
+        if (diff)
         {
+            var width = piece.Data.Value("prefixWidth");
+            var prefix = width.ValueKind == JsonValueKind.Number && width.TryGetInt32(out var count) ? count : 0;
             var first = true;
             foreach (var line in piece.Text.Split('\n'))
             {
                 if (!first) paragraph.Inlines.Add(new LineBreak());
                 first = false;
-                var color = line.StartsWith('+') ? TranscriptColors.Success
-                    : line.StartsWith('-') ? TranscriptColors.Error : TranscriptColors.Muted;
-                paragraph.Inlines.Add(new Run(line) { Foreground = color });
+                var split = Math.Clamp(prefix, 0, line.Length);
+                if (split > 0)
+                    paragraph.Inlines.Add(new Run(line[..split]) { Foreground = TranscriptColors.Muted });
+                var body = line[split..];
+                var color = body.StartsWith('+') ? TranscriptColors.Success
+                    : body.StartsWith('-') ? TranscriptColors.Error
+                    : split > 0 && body.StartsWith(' ') ? TranscriptColors.Text : TranscriptColors.Muted;
+                paragraph.Inlines.Add(new Run(body) { Foreground = color });
             }
         }
         else

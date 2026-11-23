@@ -22,7 +22,9 @@ public partial class SidebarView : UserControl
     private readonly SidebarActions bulk = new();
     private readonly SidebarActions footer = new();
     private readonly SidebarActions notice = new();
+    private readonly SidebarItem searchError = new(SidebarItemKind.Status, "searchError");
     private readonly SidebarItem searchStatus = new(SidebarItemKind.Status, "searchStatus");
+    private readonly SidebarItem searchEmpty = new(SidebarItemKind.Status, "searchEmpty");
     private readonly SidebarItem searchMore = new(SidebarItemKind.More, "searchMore");
     private static readonly SidebarAction LocalClear = new("clearSelection", "Clear selection",
         true, null, "Esc", []);
@@ -67,6 +69,19 @@ public partial class SidebarView : UserControl
 
     public event Action<string, object?>? Command;
 
+    internal void ObservePrRows(Action changed) => VisibleListRows.Observe(Threads, changed);
+
+    internal IEnumerable<string> VisiblePrRows()
+    {
+        if (searchResults)
+            return [];
+        var coveredTop = StickyHeader.IsVisible ? Math.Max(0, StickyHeader.ActualHeight + StickyOffset.Y) : 0;
+        return VisibleListRows.Read(Threads, coveredTop).OfType<SidebarItem>()
+            .Where(item => item.Kind == SidebarItemKind.Row).Select(item => item.Id);
+    }
+    internal bool SearchEnabled => SearchBox.IsEnabled;
+    internal bool SearchHasText => SearchBox.Text.Length > 0;
+
     public void Render(JsonElement view)
     {
         if (view.ValueKind == JsonValueKind.Object && lastView.ValueKind == JsonValueKind.Object
@@ -78,8 +93,8 @@ public partial class SidebarView : UserControl
         SetButton(NewButton, newThread);
         grouping.Update(view.Get("grouping"));
         ordering.Update(view.Get("ordering"));
-        GroupButton.Visibility = VisibilityOf(grouping.Items.Count > 0);
-        OrderButton.Visibility = VisibilityOf(ordering.Items.Count > 0);
+        GroupButton.Visibility = VisibilityOf(SearchBox.IsEnabled && grouping.Items.Count > 0);
+        OrderButton.Visibility = VisibilityOf(SearchBox.IsEnabled && ordering.Items.Count > 0);
 
         var footerData = view.Get("footer");
         var footerLabel = footerData.Text("label");
@@ -96,30 +111,49 @@ public partial class SidebarView : UserControl
         noticeDetail = noticeData.Text("detail");
         bulk.Update(view.Get("bulkActions"));
         notice.Update(noticeData.Get("actions"));
+        bool wasSearching = searchResults;
+        searchResults = view.Flag("searchResults");
         var reset = view.Get("selectionReset");
         string nextReset = reset.ValueKind == JsonValueKind.Number
             ? reset.GetRawText() : view.Text("selectionReset");
-        if (nextReset != selectionReset)
+        if ((nextReset.Length > 0 && nextReset != selectionReset) || (searchResults && !wasSearching))
         {
-            selectionReset = nextReset;
-            if (nextReset.Length > 0)
-            {
-                rangeAnchor = rangeHead = null;
-                UpdateSelection([], notify: false);
-            }
+            rangeAnchor = rangeHead = null;
+            UpdateSelection([], notify: false);
         }
+        selectionReset = nextReset;
 
-        var status = view.Text("searchStatus");
-        searchResults = view.Flag("searchResults") || status.Length > 0;
         var next = new List<SidebarItem>();
         var nextDrops = new Dictionary<string, SidebarAction>(StringComparer.Ordinal);
+        var seen = new HashSet<(SidebarItemKind, string)>();
+        var error = view.Text("searchError");
+        if (error.Length > 0)
+        {
+            searchError.UpdateStatus(error, tone: "failed");
+            next.Add(searchError);
+        }
+        var status = view.Text("searchStatus");
         if (status.Length > 0)
         {
             searchStatus.UpdateStatus(status);
             next.Add(searchStatus);
         }
-        var seen = new HashSet<(SidebarItemKind, string)>();
-        foreach (var section in view.Get("sections").Items())
+        if (searchResults)
+        {
+            AddRows(view.Get("searchRows"), "hubSearch");
+            if (view.Flag("searchEmpty"))
+            {
+                searchEmpty.UpdateStatus("No thread matches.");
+                next.Add(searchEmpty);
+            }
+            var more = view.Get("searchMore");
+            if (more.ValueKind == JsonValueKind.Object)
+            {
+                searchMore.Update(more, "");
+                next.Add(searchMore);
+            }
+        }
+        foreach (var section in (searchResults ? default : view.Get("sections")).Items())
         {
             string sectionId = section.Text("id");
             if (sectionId.Length == 0 || !seen.Add((SidebarItemKind.Header, sectionId)))
@@ -137,9 +171,18 @@ public partial class SidebarView : UserControl
                 item.Update(header, sectionId, collapsed, next.Count > 0);
                 next.Add(item);
             }
-            if (collapsed)
-                continue;
-            foreach (var data in section.Get("rows").Items())
+            if (!collapsed)
+                AddRows(section.Get("rows"), sectionId);
+        }
+        desired = next;
+        dropActions = nextDrops;
+        ApplyLayout(HoldLayout);
+        UpdateBar();
+        refreshActiveMenu?.Invoke();
+
+        void AddRows(JsonElement rows, string sectionId)
+        {
+            foreach (var data in rows.Items())
             {
                 string id = data.Text("id");
                 if (id.Length == 0 || !seen.Add((SidebarItemKind.Row, id)))
@@ -149,24 +192,30 @@ public partial class SidebarView : UserControl
                 next.Add(row);
             }
         }
-        var more = view.Get("searchMore");
-        if (more.ValueKind == JsonValueKind.Object)
-        {
-            searchMore.Update(more, "");
-            next.Add(searchMore);
-        }
-        desired = next;
-        dropActions = nextDrops;
-        ApplyLayout(HoldLayout);
-        UpdateBar();
-        refreshActiveMenu?.Invoke();
     }
 
     public void FocusSearch() => SearchBox.Focus();
 
+    internal event Action? RailPrFlyoutChanged;
+    internal PullRequestBadge? RailPrBadge(ContentControl preview) => FindVisualChild<PullRequestBadge>(preview);
+
+    internal ContentControl CreateRailPreview()
+    {
+        return new ContentControl
+        {
+            ContentTemplate = (DataTemplate)Resources["SidebarRowTemplate"],
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        };
+    }
+
+    internal void OpenRailMenu(SidebarItem row, FrameworkElement anchor, PlacementMode placement) =>
+        ShowMenu(anchor, () => row.State.Actions, action => InvokeRowAction(row, action, rail: true), placement, row);
+
     private void RenderSearch(JsonElement view)
     {
         SearchBox.IsEnabled = view.Get("searchEnabled").ValueKind != JsonValueKind.False;
+        if (!SearchBox.IsEnabled)
+            pendingSearch = null;
         if (view.Get("search").ValueKind != JsonValueKind.String)
             return;
         var incoming = view.Text("search");
@@ -195,7 +244,7 @@ public partial class SidebarView : UserControl
         return item;
     }
 
-    private bool HoldLayout => ListHost.IsMouseOver || menuHoldsLayout || dragIds is not null;
+    private bool HoldLayout => !searchResults && (ListHost.IsMouseOver || menuHoldsLayout || dragIds is not null);
 
     private IReadOnlyList<SidebarItem> SteadyOrder()
     {
@@ -540,6 +589,13 @@ public partial class SidebarView : UserControl
     {
         if (syncingSelection || e.OriginalSource != Threads)
             return;
+        if (searchResults)
+        {
+            syncingSelection = true;
+            Threads.UnselectAll();
+            syncingSelection = false;
+            return;
+        }
         var next = Threads.SelectedItems.OfType<SidebarItem>()
             .Where(item => item.Kind == SidebarItemKind.Row).ToHashSet();
         UpdateSelection(next);
@@ -591,7 +647,7 @@ public partial class SidebarView : UserControl
         }
         else if (e.Key == Key.Apps || (e.Key == Key.F10 && modifiers == ModifierKeys.Shift))
         {
-            if (row is null)
+            if (row is null || Ancestor<PullRequestBadge>(source) is not null)
                 return;
             var target = (FrameworkElement?)ContainerAt(source) ?? StickyHeader;
             OpenItemMenu(row, target, PlacementMode.Bottom);
@@ -606,7 +662,8 @@ public partial class SidebarView : UserControl
     private void OnListMenu(object sender, MouseButtonEventArgs e)
     {
         var source = e.OriginalSource as DependencyObject;
-        if (Ancestor<ScrollBar>(source) is not null || ItemAt(source) is not { } item)
+        if (Ancestor<ScrollBar>(source) is not null || Ancestor<PullRequestBadge>(source) is not null ||
+            ItemAt(source) is not { } item)
             return;
         var anchor = (FrameworkElement?)ContainerAt(source) ?? StickyHeader;
         OpenItemMenu(item, anchor, PlacementMode.MousePoint);
@@ -732,9 +789,9 @@ public partial class SidebarView : UserControl
             InvokeAction(action, ids);
     }
 
-    private void InvokeRowAction(SidebarItem row, SidebarAction action)
+    private void InvokeRowAction(SidebarItem row, SidebarAction action, bool rail = false)
     {
-        if (!action.Enabled || !rows.Contains(row))
+        if (!action.Enabled || (!rail && !rows.Contains(row)))
             return;
         if (action.Id == "copyId")
         {
@@ -748,7 +805,10 @@ public partial class SidebarView : UserControl
             }
             return;
         }
-        InvokeAction(action, [row.Id]);
+        if (rail)
+            Command?.Invoke("sidebar.railAction", new { id = row.Id, action = action.Id });
+        else
+            InvokeAction(action, [row.Id]);
     }
 
     private void InvokeAction(SidebarAction? choice, string[] ids, string? sectionId = null)
@@ -842,14 +902,23 @@ public partial class SidebarView : UserControl
             InvokeAction(item.State.Primary, [], item.SectionId);
     }
 
-    private void OnRowBadge(object sender, RoutedEventArgs e)
+    private void OnPrAction(object? sender, PullRequestBadgeEventArgs e)
     {
-        if (sender is FrameworkElement { DataContext: SidebarItem item } && item.State.Badge is { } badge)
-            InvokeRowAction(item, badge);
+        if (sender is PullRequestBadge badge)
+            Command?.Invoke("pr.action", new { id = badge.ThreadId, action = e.Action, number = e.Number });
     }
 
-    private void OnSearchMore(object sender, RoutedEventArgs e) =>
-        InvokeAction(searchMore.State.Primary, []);
+    private void OnPrFlyoutChanged(object? sender, EventArgs e)
+    {
+        if (sender is PullRequestBadge { DataContext: SidebarItem item } && !rows.Contains(item))
+            RailPrFlyoutChanged?.Invoke();
+    }
+
+    private void OnSearchMore(object sender, RoutedEventArgs e)
+    {
+        if (pendingSearch is null && searchMore.State.Primary?.Enabled == true)
+            Command?.Invoke("sidebar.searchMore", new { query = SearchBox.Text });
+    }
 
     private void OnSearchChanged(object sender, TextChangedEventArgs e)
     {

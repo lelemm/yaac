@@ -67,9 +67,13 @@ pub(super) fn fields(app: &YaacApp, map: &AttentionMap) -> Value {
             let mut actions = vec![fork];
             if let Some(t) = take_over {
                 actions.push(json!({ "id": "takeOver", "label": if t.busy { "Taking over…" } else { "Take over" },
-                    "enabled": t.enabled, "primary": true, "detail": t.tooltip }));
+                    "enabled": t.enabled, "primary": true, "detail": t.tooltip, "busy": t.busy }));
             }
-            json!({ "label": text, "detail": take_over.as_ref().and_then(|t| t.failure.as_ref()), "actions": actions })
+            let detail = take_over.as_ref().and_then(|t| {
+                t.failure.as_ref().map(|why| format!("Not taken over: {why}"))
+                    .or_else(|| (!t.enabled && !t.busy).then(|| t.tooltip.clone()))
+            });
+            json!({ "label": text, "detail": detail, "failed": take_over.as_ref().is_some_and(|t| t.failure.is_some()), "actions": actions })
         }
         Banner::Subagent { text, reason, parent } => {
             let actions = parent.as_ref().and_then(|p| p.key.as_ref()).map(|k| {

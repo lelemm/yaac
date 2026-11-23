@@ -354,6 +354,8 @@ export type ProviderEvent =
   | { type: "usageUpdated"; thread: NativeId; tokens?: TokenUsage | null; context?: ContextUsage | null }
   /** A conversation appeared or changed in the harness's listing (including outside YAAC). */
   | { type: "threadChanged"; info: NativeThreadInfo }
+  /** Lifecycle activity without enough metadata to classify the conversation. */
+  | { type: "threadObserved"; thread: NativeId }
   /** The harness positively reports a conversation gone. */
   | { type: "threadRemoved"; thread: NativeId }
   /** Anything in the descriptor changed (models, sign-in, …): yaacd re-probes. */

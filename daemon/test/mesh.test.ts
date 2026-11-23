@@ -537,7 +537,7 @@ test("a budget's exhaustion and its freeing are both notified (mesh/budget/chang
 test("each local limit trips with a readable reason and a visible notice", async () => {
   const { d, c, done } = await setup();
   try {
-    await c.request("mesh/policy", { opId: opId(), update: { limits: { workersPerThread: 1, spawnDepth: 1, pairMessages: 2, runningThreads: 3 } } });
+    await c.request("mesh/policy", { opId: opId(), update: { limits: { workersPerThread: 1, spawnDepth: 1, pairMessages: 2 } } });
     // Workers per thread.
     const { threadId: a } = await startAllowed(c, "/fake mesh-spawn | /fake say one\n/fake mesh-spawn | /fake say two");
     const spawns = await untilTool(c, a, "spawn_thread", 2);
@@ -558,28 +558,25 @@ test("each local limit trips with a readable reason and a visible notice", async
     const third = await call(d, x, "send_message", { to: addressOf(d, y), text: "ping" });
     assert.equal(third.isError, true);
     assert.match(third.text, /at most 2 messages/);
-    // Running at once (threads in wait do not count).
-    await untilIdle(d, a);
-    await untilIdle(d, b);
-    const stall1 = await idleThread(d, c, "/fake say fine");
-    void stall1;
-    const running = d.core.runningCount();
-    await c.request("mesh/policy", { opId: opId(), update: { limits: { runningThreads: running, workersPerThread: 8, spawnDepth: 3 } } });
-    const z = await idleThread(d, c);
-    const blocked = await call(d, z, "spawn_thread", { text: "/fake say hi" });
-    assert.equal(blocked.isError, true);
-    assert.match(blocked.text, /already running/);
   } finally {
     await done();
   }
 });
 
-test("a thread blocked in wait does not count as running", async () => {
+test("active turns do not prevent spawning or waking another thread", async () => {
   const { d, c, done } = await setup();
   try {
-    const { threadId: w } = await startAllowed(c, "/fake mesh-wait timeoutSecs=3");
-    await until(() => stateOf(d, w) === "waiting", "waiting");
-    assert.equal(d.core.runningCount(), 0);
+    const parent = await idleThread(d, c);
+    const peer = await idleThread(d, c);
+    for (let i = 0; i < 6; i++) {
+      const { threadId } = await startAllowed(c, "/fake stall");
+      await until(() => stateOf(d, threadId) === "running", "stalling thread");
+    }
+    const spawned = await call(d, parent, "spawn_thread", { text: "/fake say worker" });
+    assert.equal(spawned.isError, false, spawned.text);
+    const sent = await call(d, parent, "send_message", { to: addressOf(d, peer), text: "/fake say received" });
+    assert.equal(sent.isError, false, sent.text);
+    await until(async () => (await kinds(c, peer, "meshReceived")).length === 1, "peer received the message");
   } finally {
     await done();
   }

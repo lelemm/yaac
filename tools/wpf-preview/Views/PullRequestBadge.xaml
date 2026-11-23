@@ -1,0 +1,49 @@
+<UserControl x:Class="Yaac.WpfPreview.Views.PullRequestBadge"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:preview="clr-namespace:Yaac.WpfPreview"
+             Focusable="False" Visibility="Collapsed" VerticalAlignment="Center">
+  <UserControl.Resources>
+    <Style x:Key="BadgeButton" TargetType="Button" BasedOn="{StaticResource YaacQuietButton}">
+      <Setter Property="FontSize" Value="10.5" />
+      <Setter Property="Foreground" Value="{DynamicResource YaacMuted}" />
+      <Setter Property="Padding" Value="4,0" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="Height" Value="17" />
+    </Style>
+  </UserControl.Resources>
+  <Grid Background="Transparent">
+    <Rectangle x:Name="Outline" RadiusX="3" RadiusY="3" Stroke="{DynamicResource YaacRule}"
+               IsHitTestVisible="False" />
+    <StackPanel Orientation="Horizontal">
+      <Button x:Name="Primary" Style="{StaticResource BadgeButton}" Click="OnPrimary">
+        <StackPanel Orientation="Horizontal" IsHitTestVisible="False">
+          <TextBlock Text="PR#" VerticalAlignment="Center" />
+          <TextBlock x:Name="Number" VerticalAlignment="Center" Margin="4,0,0,0" />
+          <Path x:Name="Mark" Width="8" Height="8" Stretch="Uniform" VerticalAlignment="Center"
+                Stroke="{DynamicResource YaacMuted}" Margin="3,0,0,0" />
+        </StackPanel>
+      </Button>
+      <Border x:Name="MoreRule" Width="1" Margin="0,3" Background="{DynamicResource YaacRule}" />
+      <Button x:Name="More" Style="{StaticResource BadgeButton}" Click="OnMoreClick"
+              MouseEnter="OnMoreEnter" MouseLeave="OnMoreLeave" />
+    </StackPanel>
+    <Popup x:Name="Others" PlacementTarget="{Binding ElementName=Outline}" Placement="Bottom"
+           AllowsTransparency="True" Opened="OnPopupChanged" Closed="OnPopupChanged">
+      <Border x:Name="OtherPanel" Background="{DynamicResource YaacRaised}"
+              BorderBrush="{DynamicResource YaacRule}" BorderThickness="1" CornerRadius="5"
+              MaxWidth="360" Padding="4" MouseEnter="OnMoreEnter" MouseLeave="OnMoreLeave"
+              PreviewKeyDown="OnOtherKeyDown" LostKeyboardFocus="OnOtherFocusLost"
+              KeyboardNavigation.TabNavigation="Cycle">
+        <StackPanel>
+          <TextBlock Text="Also from this branch" FontSize="11" Margin="5,2"
+                     FontFamily="{x:Static preview:YaacFonts.Ui}" Foreground="{DynamicResource YaacMuted}" />
+          <ScrollViewer MaxHeight="240" VerticalScrollBarVisibility="Auto"
+                        HorizontalScrollBarVisibility="Disabled" Focusable="False">
+            <StackPanel x:Name="OtherLinks" />
+          </ScrollViewer>
+        </StackPanel>
+      </Border>
+    </Popup>
+  </Grid>
+</UserControl>

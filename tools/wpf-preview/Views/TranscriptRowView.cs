@@ -17,6 +17,9 @@ public sealed class TranscriptRowView : UserControl
     private readonly TextBlock cursor = Label("▌", color: TranscriptColors.Muted);
     private readonly TextBlock status = Label(color: TranscriptColors.Muted);
     private readonly TextBlock stamp = Label(color: TranscriptColors.Muted);
+    private readonly WrapPanel taskHeader = new() { Margin = new Thickness(0, 0, 0, 5) };
+    private readonly TextBlock handoffDivider = Label(color: TranscriptColors.Muted);
+    private readonly Grid handoffRule = new() { Margin = new Thickness(0, 10, 0, 3) };
     private readonly WrapPanel attachments = new();
     private readonly WrapPanel actions = new();
     private readonly StackPanel details = new();
@@ -26,6 +29,7 @@ public sealed class TranscriptRowView : UserControl
     private readonly List<TranscriptPart> parts = new();
     private readonly Dictionary<string, Button> buttons = new();
     private TranscriptRow? row;
+    private string? boundKind;
     private TranscriptRowState? state;
     private TranscriptText? body;
     private TranscriptText? detail;
@@ -52,6 +56,20 @@ public sealed class TranscriptRowView : UserControl
         stamp.Margin = new Thickness(1, 2, 1, 0);
         status.FontSize = 12;
         status.Margin = new Thickness(0, 2, 0, 1);
+        handoffDivider.HorizontalAlignment = HorizontalAlignment.Center;
+        handoffDivider.Margin = new Thickness(9, 0, 9, 0);
+        handoffRule.ColumnDefinitions.Add(new ColumnDefinition());
+        handoffRule.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto, MaxWidth = 640 });
+        handoffRule.ColumnDefinitions.Add(new ColumnDefinition());
+        handoffRule.Children.Add(handoffDivider);
+        Grid.SetColumn(handoffDivider, 1);
+        foreach (var column in new[] { 0, 2 })
+        {
+            var line = new Border { Height = 1, VerticalAlignment = VerticalAlignment.Center };
+            line.SetResourceReference(Border.BackgroundProperty, "YaacRule");
+            Grid.SetColumn(line, column);
+            handoffRule.Children.Add(line);
+        }
         KeyboardNavigation.SetTabNavigation(this, KeyboardNavigationMode.Continue);
 
         var menu = new ContextMenu();
@@ -72,20 +90,23 @@ public sealed class TranscriptRowView : UserControl
     private void Bind()
     {
         var next = DataContext as TranscriptRow;
-        if (ReferenceEquals(row, next))
+        if (ReferenceEquals(row, next) && boundKind == next?.Kind)
             return;
         Unbind();
         if (next is null)
             return;
         row = next;
+        boundKind = next.Kind;
         state = row.State;
         row.Changed += Refresh;
         body = CreateText("body");
         detail = CreateText("detail");
         content.Children.Add(title);
+        content.Children.Add(taskHeader);
         content.Children.Add(body);
+        content.Children.Add(handoffRule);
         content.Children.Add(cursor);
-        if (row.Kind is "call" or "tool" or "activity")
+        if (row.Kind is "call" or "tool" or "activity" or "worked" or "changes")
         {
             activityRow = new TranscriptActivity(state, CopyMessage, descriptor => Submit(descriptor, false),
                 details, () => UpdateDetails(next.Data, force: true), row.Kind == "call");
@@ -111,6 +132,7 @@ public sealed class TranscriptRowView : UserControl
         CloseMenus(attachments);
         row.Changed -= Refresh;
         row = null;
+        boundKind = null;
         state = null;
         previous = default;
         escape = default;
@@ -118,6 +140,7 @@ public sealed class TranscriptRowView : UserControl
         activityRow?.DetachDetails(details);
         activityRow = null;
         details.Children.Clear();
+        taskHeader.Children.Clear();
         if (detailExpander is not null)
             detailExpander.Content = null;
         detailExpander = null;
@@ -136,6 +159,11 @@ public sealed class TranscriptRowView : UserControl
     {
         if (row is null || state is null || body is null)
             return;
+        if (boundKind != row.Kind)
+        {
+            Bind();
+            return;
+        }
         var data = row.Data;
         var kind = row.Kind;
         var user = kind == "user";
@@ -152,16 +180,19 @@ public sealed class TranscriptRowView : UserControl
         plate.Padding = user || card || kind == "task" ? new Thickness(12, 8, 12, 8) : new Thickness(2, activity ? 2 : 3, 2, 0);
         Margin = new Thickness(0, 0, 0, activityRow is null ? 9 : 0);
 
-        SetLabel(title, user ? "" : data.Value("title").Text(), tone);
+        SetLabel(title, user || kind == "task" ? "" : data.Value("title").Text(), tone);
+        SetLabel(handoffDivider, data.Value("divider").Text(), TranscriptColors.Muted);
+        handoffRule.Visibility = kind == "handoff" ? Visibility.Visible : Visibility.Collapsed;
+        if (!Same("taskPeer", data))
+            UpdateTaskHeader(data.Value("taskPeer"));
+        taskHeader.Visibility = kind == "task" ? Visibility.Visible : Visibility.Collapsed;
         activityRow?.Render(data);
         var format = data.Value("markdown").Flag(kind is "agent" or "task" or "handoff") ? "markdown" : "text";
-        body.Foreground = tone;
+        body.Foreground = kind == "handoff" ? TranscriptColors.Muted : tone;
         body.Show(data.Value("text").Text(), format, data.Value("textBlocks"));
         cursor.Visibility = data.Value("streaming").Flag() ? Visibility.Visible : Visibility.Collapsed;
 
         var statusText = data.Value("status").OptionalText();
-        if (statusText is null && kind == "form" && !data.Value("actions").Elements().Any())
-            statusText = "This form must be answered in the harness itself.";
         var statusTone = TranscriptColors.Tone(data.Value("tone").Text(), TranscriptColors.Muted);
         showStatusStamp = user && statusText is not null && !data.Value("actions").Elements().Any();
         reserveStamp = user || kind is "agent" or "task";
@@ -192,6 +223,26 @@ public sealed class TranscriptRowView : UserControl
     private void ShowStamp() => stamp.Visibility = showStatusStamp || stamp.Text.Length > 0 && IsMouseOver
         ? Visibility.Visible
         : reserveStamp || stamp.Text.Length > 0 ? Visibility.Hidden : Visibility.Collapsed;
+
+    private void UpdateTaskHeader(JsonElement peer)
+    {
+        taskHeader.Children.Clear();
+        if (peer.ValueKind != JsonValueKind.Object)
+            return;
+        var from = Label("From", color: TranscriptColors.Muted);
+        from.Margin = new Thickness(0, 0, 5, 0);
+        taskHeader.Children.Add(from);
+        if (peer.Value("enabled").Flag())
+            taskHeader.Children.Add(ActionButton(peer, includeDraft: false));
+        else
+            taskHeader.Children.Add(Label(peer.Value("label").Text(), semiBold: true));
+        if (peer.Value("machine").OptionalText() is { } machine)
+        {
+            var on = Label($"on {machine}", color: TranscriptColors.Muted);
+            on.Margin = new Thickness(5, 0, 0, 0);
+            taskHeader.Children.Add(on);
+        }
+    }
 
     private string? CopyMessage()
     {
@@ -328,7 +379,8 @@ public sealed class TranscriptRowView : UserControl
             label ??= part.Value("language").OptionalText();
 
         var text = slot.Text ??= CreateText("part:" + slot.Id);
-        text.Foreground = kind == "detail" ? TranscriptColors.Muted : TranscriptColors.Text;
+        text.Foreground = TranscriptColors.Tone(part.Value("tone").Text(),
+            kind == "detail" ? TranscriptColors.Muted : TranscriptColors.Text);
         void Show() => text.Show(slot.Value, slot.Format, slot.Blocks);
         if (label is null || kind is "text" or "markdown" or "command")
         {
@@ -722,10 +774,16 @@ public sealed class TranscriptRowView : UserControl
             row.Send(new { id, action, threadId });
     }
 
+    private Button? FocusedAction => Keyboard.FocusedElement is Button { Tag: string id } button
+        && buttons.TryGetValue(id, out var action) && action == button ? button : null;
+
+    internal TranscriptRow? FocusedApproval => row?.Kind == "approval"
+        && FocusedAction is { IsEnabled: true, Tag: string id }
+        && id.StartsWith("approval:", StringComparison.Ordinal) ? row : null;
+
     private void CardKeyDown(object sender, KeyEventArgs e)
     {
-        if (!card || Keyboard.Modifiers != ModifierKeys.None || Keyboard.FocusedElement is not Button button
-            || button.Tag is not string id || !buttons.TryGetValue(id, out var action) || action != button)
+        if (!card || Keyboard.Modifiers != ModifierKeys.None || FocusedAction is not { } button)
             return;
         if (e.Key == Key.Escape && escape.ValueKind != JsonValueKind.Undefined)
         {

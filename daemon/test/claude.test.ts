@@ -1471,6 +1471,11 @@ test("Claude reports a subagent's Bash after the turn, tails output, and only st
   assert.equal(active.controller, thread);
   assert.notEqual(active.thread, thread);
   assert.equal(active.commands.length, 1);
+  assert.ok(
+    r.events.every((e) => e.type !== "runningCommands" || !e.commands.length
+      || (e.thread === active.thread && e.commands.length === 1)),
+    "the background agent itself is never listed as a shell command",
+  );
   const [cmd] = active.commands;
   assert.ok(cmd?.canStop);
   assert.deepEqual(await r.provider.commandLogs(active.thread, cmd.id), { output: "first", truncated: false });

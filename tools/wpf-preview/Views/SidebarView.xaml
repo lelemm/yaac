@@ -141,9 +141,8 @@
               <TextBlock Grid.Column="3" Text="&#xEA63;"
                          Style="{StaticResource SidebarQuietLabel}" Margin="4,0,0,0" ToolTip="Forked thread"
                          Visibility="{Binding State.Forked, Converter={StaticResource SidebarBooleanVisibility}}" />
-              <Button x:Name="Badge" Grid.Column="4" Style="{StaticResource SidebarSmallButton}"
-                      Content="{Binding State.Badge.Label}" IsEnabled="{Binding State.Badge.Enabled}"
-                      ToolTip="{Binding State.Badge.ToolTip}" Click="OnRowBadge" Margin="4,0,0,0" />
+              <local:PullRequestBadge Grid.Column="4" Badge="{Binding State.Badge}" ThreadId="{Binding Id}"
+                                      Invoked="OnPrAction" FlyoutChanged="OnPrFlyoutChanged" Margin="4,0,0,0" />
               <TextBlock Grid.Column="5" x:Name="Right" Text="{Binding State.Right}"
                          Style="{StaticResource SidebarOptionalLabel}" Margin="6,0,0,0" />
             </Grid>
@@ -230,15 +229,17 @@
         <DataTrigger Binding="{Binding State.Dimmed}" Value="True">
           <Setter TargetName="Title" Property="Foreground" Value="{DynamicResource YaacMuted}" />
         </DataTrigger>
-        <DataTrigger Binding="{Binding State.Badge}" Value="{x:Null}">
-          <Setter TargetName="Badge" Property="Visibility" Value="Collapsed" />
-        </DataTrigger>
       </DataTemplate.Triggers>
     </DataTemplate>
 
     <DataTemplate x:Key="SidebarStatusTemplate">
-      <TextBlock Text="{Binding State.Title}" Margin="7,0"
+      <TextBlock x:Name="Status" Text="{Binding State.Title}" Margin="7,0"
                  Style="{StaticResource SidebarQuietLabel}" ToolTip="{Binding State.Title}" />
+      <DataTemplate.Triggers>
+        <DataTrigger Binding="{Binding State.Tone}" Value="failed">
+          <Setter TargetName="Status" Property="Foreground" Value="{DynamicResource YaacFailure}" />
+        </DataTrigger>
+      </DataTemplate.Triggers>
     </DataTemplate>
     <DataTemplate x:Key="SidebarMoreTemplate">
       <Button HorizontalAlignment="Left" Margin="6,0" Style="{StaticResource SidebarSmallButton}"

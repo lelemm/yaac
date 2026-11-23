@@ -34,7 +34,11 @@ pub(crate) enum ThumbKey {
 
 enum Thumb {
     Loading,
-    Ready(TextureHandle),
+    Ready {
+        image: ColorImage,
+        texture: Option<TextureHandle>,
+        wire: std::cell::OnceCell<serde_json::Value>,
+    },
     None,
 }
 
@@ -170,22 +174,39 @@ impl Files {
     /// A chip's thumbnail: decoded once, off the UI thread, at display size; `None` while it
     /// is being decoded, and for what is not an image.
     pub(crate) fn thumb(&mut self, key: &ThumbKey) -> Option<TextureHandle> {
-        match self.thumbs.get(key) {
-            Some(Thumb::Ready(t)) => return Some(t.clone()),
-            Some(Thumb::Loading | Thumb::None) => return None,
-            None => {}
-        }
-        let ThumbKey::Path(path) = key.clone() else { return None };
-        self.thumbs.insert(key.clone(), Thumb::Loading);
-        let k = key.clone();
-        self.spawn("yaac-thumb", move || Outcome::Thumb(k, decode_thumb(&path)));
-        None
+        self.request_thumb(key);
+        let Some(Thumb::Ready { image, texture, .. }) = self.thumbs.get_mut(key) else { return None };
+        Some(texture.get_or_insert_with(|| {
+            self.ctx.load_texture(format!("thumb-{key:?}"), image.clone(), egui::TextureOptions::LINEAR)
+        }).clone())
     }
 
-    /// A decoded thumbnail arrived: it becomes a texture (small; a few KiB).
+    pub(crate) fn request_thumb(&mut self, key: &ThumbKey) {
+        if !self.thumbs.contains_key(key) && let ThumbKey::Path(path) = key {
+            let path = path.clone();
+            self.thumbs.insert(key.clone(), Thumb::Loading);
+            let k = key.clone();
+            self.spawn("yaac-thumb", move || Outcome::Thumb(k, decode_thumb(&path)));
+        }
+    }
+
+    /// WPF consumes the same display-sized pixels directly as premultiplied BGRA.
+    pub(crate) fn wire_thumb(&self, key: &ThumbKey) -> Option<&serde_json::Value> {
+        let Some(Thumb::Ready { image, wire, .. }) = self.thumbs.get(key) else { return None };
+        Some(wire.get_or_init(|| {
+            use base64::Engine as _;
+            let pixels: Vec<u8> = image.pixels.iter().flat_map(|p| [p.b(), p.g(), p.r(), p.a()]).collect();
+            serde_json::json!({
+                "width": image.size[0], "height": image.size[1],
+                "pixels": base64::engine::general_purpose::STANDARD.encode(pixels),
+            })
+        }))
+    }
+
+    /// Retain only the display-sized pixels. The active renderer uses them on demand.
     pub(crate) fn set_thumb(&mut self, key: ThumbKey, image: Option<ColorImage>) {
         let t = match image {
-            Some(img) => Thumb::Ready(self.ctx.load_texture(format!("thumb-{key:?}"), img, egui::TextureOptions::LINEAR)),
+            Some(image) => Thumb::Ready { image, texture: None, wire: std::cell::OnceCell::new() },
             None => Thumb::None,
         };
         self.thumbs.insert(key, t);

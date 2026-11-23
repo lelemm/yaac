@@ -60,7 +60,7 @@ fn a_spawned_thread_shows_its_task_in_full_and_cards_are_never_collapsed() {
         shape(&c, &threads::billing(), &Expansion::default()),
         [
             "task",
-            "run[Thought for 9s | Edited services/billing/src/client.rs +4 −9 | Edited services/billing/Cargo.toml +1 −1 | Deleted services/billing/src/session.rs +0 −6 | Created services/billing/tests/auth.rs +9 −0 | Ran cargo test -p billing · 14 passed]",
+            "run[+Thought for 9s | Edited services/billing/src/client.rs +4 −9 | Edited services/billing/Cargo.toml +1 −1 | Deleted services/billing/src/session.rs +0 −6 | Created services/billing/tests/auth.rs +9 −0 | Ran cargo test -p billing · 14 passed]",
             "prose",
             "run[Migrate auth module · orchestrator · delivered]",
             "changes[Changed 4 files +14 −16]",
@@ -130,7 +130,7 @@ fn a_failed_command_splits_two_independently_folded_runs() {
     };
     e.toggle_run(&key, &first);
     let opened = shape(&c, &key, &e);
-    assert!(opened[1].starts_with("run[Thought"));
+    assert!(opened[1].starts_with("run[+Thought"));
     assert_eq!(opened[3], s[3]);
 }
 
@@ -191,8 +191,22 @@ fn a_codex_turn_shows_no_line_for_hidden_reasoning() {
         shape(&c, &key, &e),
         [
             "user",
-            "run[Ran ls samples/ | Ran cargo build -p parser | Ran ./target/debug/parser samples/a.frm | Ran ./target/debug/parser samples/b.frm | Thought for 6s | Ran ./target/debug/parser samples/c.frm | Thought for 3s]",
+            "run[Ran ls samples/ | Ran cargo build -p parser | Ran ./target/debug/parser samples/a.frm | Ran ./target/debug/parser samples/b.frm | Thought for 6s | Ran ./target/debug/parser samples/c.frm | +Thought for 3s]",
             "prose",
         ]
     );
+
+    e.toggle_thought(&key, &"parser-11".into());
+    assert!(shape(&c, &key, &e)[1].ends_with("| Thought for 3s]"));
+    e.toggle_thought(&key, &"parser-11".into());
+    assert!(shape(&c, &key, &e)[1].ends_with("| +Thought for 3s]"));
+
+    let map = AttentionMap::compute(&c.state);
+    yaac_core::activity::collapse_all(&c.state, &key, &mut e);
+    e.toggle_run(&key, &"parser-3".into());
+    assert!(shape(&c, &key, &e)[1].ends_with("| Thought for 3s]"));
+    yaac_core::activity::expand_all(&c.state, &map, &key, &mut e);
+    let expanded = shape(&c, &key, &e);
+    assert!(expanded[1].ends_with("| +Thought for 3s]"));
+    assert!(expanded[1].contains("| Thought for 6s |"));
 }

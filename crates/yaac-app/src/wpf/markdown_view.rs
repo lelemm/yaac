@@ -9,6 +9,7 @@ use yaac_protocol::ItemId;
 pub(super) struct MarkdownView {
     thread: Option<ThreadKey>,
     entries: HashMap<(ItemId, String), Entry>,
+    pub(super) diffs: crate::thread::DiffCache,
 }
 
 #[derive(Default)]
@@ -21,6 +22,8 @@ struct Entry {
 
 impl MarkdownView {
     pub(super) fn select(&mut self, thread: Option<&ThreadKey>) {
+        // A tool item can become several file rows within this projection.
+        self.diffs = crate::thread::DiffCache::default();
         if self.thread.as_ref() != thread {
             self.entries.clear();
             self.thread = thread.cloned();

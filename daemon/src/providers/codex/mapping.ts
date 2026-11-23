@@ -117,15 +117,16 @@ export function threadInfo(t: Thread, archived: boolean, status?: SubagentStatus
   };
   if (t.forkedFromId) info.forkedFrom = t.forkedFromId;
   const spawn = spawnSource(t.source);
-  if (spawn) {
-    info.parent = spawn.parent;
+  const parent = spawn?.parent ?? t.parentThreadId;
+  if (parent) {
+    info.parent = parent;
     info.subagent = {
       agentId: t.id,
-      ...(spawn.role ?? t.agentRole ? { agentType: (spawn.role ?? t.agentRole)! } : {}),
+      ...(spawn?.role ?? t.agentRole ? { agentType: (spawn?.role ?? t.agentRole)! } : {}),
       status: status ?? subagentStatusOf(t.status),
       readOnly: CODEX_SUBAGENT_READ_ONLY,
     };
-    if (!info.title) info.title = spawn.nickname ?? t.agentNickname ?? null;
+    if (!info.title) info.title = spawn?.nickname ?? t.agentNickname ?? null;
   }
   return info;
 }
@@ -134,11 +135,12 @@ export function threadInfo(t: Thread, archived: boolean, status?: SubagentStatus
 export const CODEX_SUBAGENT_READ_ONLY = "YAAC does not send to a Codex sub-agent: the agent that spawned it is its only writer. Message that agent instead.";
 
 /**
- * A sub-agent spawned by another thread (`source.subAgent.thread_spawn`, codex-cli 0.170.0):
+ * A sub-agent spawned by another thread (`source.subagent.thread_spawn`, daemon 0.171.0):
  * its parent thread, nickname and role. Review and compaction sub-agents name no parent.
  */
 export function spawnSource(source: unknown): { parent: string; nickname: string | null; role: string | null } | null {
-  const sub = obj(obj(source).subAgent);
+  const src = obj(source);
+  const sub = obj(src.subagent ?? src.subAgent);
   const spawn = obj(sub.thread_spawn);
   const parent = str(spawn.parent_thread_id);
   if (!parent) return null;

@@ -32,9 +32,14 @@ pub(super) fn command(
     payload: &Value,
 ) -> Result<(), String> {
     match cmd {
-        "commander.open" => app.ui.commander = Some(CommanderUi::default()),
+        "commander.open" => {
+            if app.ui.commander.is_none() {
+                let card = focused_card(app, payload);
+                app.ui.commander = Some(CommanderUi::at(None, card));
+            }
+        }
         "commander.close" => app.ui.commander = None,
-        "commander.back" => app.ui.commander = Some(CommanderUi::default()),
+        "commander.back" => app.ui.commander = app.ui.commander.take().map(CommanderUi::back),
         "commander.query" => {
             if let Some(ui) = &mut app.ui.commander {
                 ui.query = string(payload, "text").to_owned();
@@ -57,7 +62,8 @@ pub(super) fn command(
                     true
                 } else { false }
             } else if let Some(Row::Cmd(row)) = rows.into_iter().find(|row| matches!(row, Row::Cmd(row) if commands::def_of(row.cmd).id == id && row.avail.enabled())) {
-                commander::run(app, ctx, row.cmd, ui.card.clone(), true, &mut actions);
+                let card = ui.card(app).cloned();
+                commander::run(app, ctx, row.cmd, card, true, &mut actions);
                 commands::note_recent(&mut app.ui.recent, id);
                 true
             } else { false };
@@ -70,6 +76,15 @@ pub(super) fn command(
         _ => return Err(format!("Unknown Commander action {cmd}")),
     }
     Ok(())
+}
+
+fn focused_card(app: &YaacApp, payload: &Value) -> Option<(ThreadKey, ItemId)> {
+    let thread = selected_thread(app)?;
+    let card = payload["card"].as_str()?;
+    if app.ui.settings || thread.address().as_str() != payload["threadId"].as_str()? {
+        return None;
+    }
+    Some((thread.clone(), selected_item(app, card)?))
 }
 
 pub(super) fn places(app: &YaacApp, forward: bool) -> Vec<Value> {
@@ -113,7 +128,7 @@ pub(super) fn shortcut(app: &mut YaacApp, ctx: &egui::Context, payload: &Value) 
         }
         return;
     }
-    let item = selected_item(app, string(payload, "card"));
+    let item = focused_card(app, payload).map(|(_, item)| item);
     if commander::with_ctx(app, item.as_ref(), |c| commands::availability(def.cmd, c)).enabled() {
         let mut actions = Vec::new();
         commander::run(
@@ -125,5 +140,58 @@ pub(super) fn shortcut(app: &mut YaacApp, ctx: &egui::Context, payload: &Value) 
             &mut actions,
         );
         app.apply(actions);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use yaac_core::demo::threads;
+    use yaac_protocol::{ItemBody, RequestState};
+
+    #[test]
+    fn commander_keeps_the_focused_approval_scoped_to_its_thread() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let fix = threads::fix();
+        let index = threads::index();
+        let item_id = ItemId::from("f5");
+        app.apply(vec![Action::Open(fix.clone()), Action::Open(index.clone())]);
+        let transcript = app.client.state.transcripts.get_mut(&index).unwrap();
+        let mut items = transcript.items().to_vec();
+        let other = items.iter_mut().find(|item| item.id.as_str() == "i3").unwrap();
+        other.id = item_id.clone();
+        transcript.replace_all(items, 99);
+        app.apply(vec![Action::Open(fix.clone())]);
+
+        let enabled = |app: &YaacApp, id: &str| {
+            command_view(app)["rows"].as_array().unwrap().iter()
+                .any(|row| row["id"] == id && row["enabled"] == true)
+        };
+        for payload in [json!({}), json!({ "card": item_id, "threadId": index.address() })] {
+            command(&mut app, &ctx, "commander.open", &payload).unwrap();
+            assert!(!enabled(&app, "allow-once"));
+            assert!(!enabled(&app, "deny"));
+            command(&mut app, &ctx, "commander.close", &Value::Null).unwrap();
+        }
+
+        let focused = json!({ "card": item_id, "threadId": fix.address() });
+        command(&mut app, &ctx, "commander.open", &focused).unwrap();
+        assert!(enabled(&app, "allow-once"));
+        assert!(enabled(&app, "allow-session"));
+        command(&mut app, &ctx, "commander.pick", &json!({ "id": "theme" })).unwrap();
+        command(&mut app, &ctx, "commander.back", &Value::Null).unwrap();
+        assert!(enabled(&app, "deny"));
+
+        let deny = json!({ "id": "deny" });
+        app.client.state.selection = Selection::Thread(index.clone());
+        assert!(!enabled(&app, "deny"));
+        command(&mut app, &ctx, "commander.pick", &deny).unwrap();
+        app.client.state.selection = Selection::Thread(fix.clone());
+        command(&mut app, &ctx, "commander.pick", &deny).unwrap();
+        for (key, state) in [(fix, RequestState::Submitted), (index, RequestState::Pending)] {
+            let item = app.client.state.transcripts.get(&key).unwrap().item(&item_id).unwrap();
+            assert!(matches!(&item.body, ItemBody::Request(request) if request.state == state));
+        }
     }
 }

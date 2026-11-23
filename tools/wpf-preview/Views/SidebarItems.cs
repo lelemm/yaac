@@ -104,11 +104,11 @@ internal sealed class SidebarItem(SidebarItemKind kind, string id) : INotifyProp
             Changed(nameof(GappedHeader));
     }
 
-    public void UpdateStatus(string title)
+    public void UpdateStatus(string title, string tone = "")
     {
-        if (State.Title == title)
+        if (State.Title == title && State.Tone == tone)
             return;
-        State = new SidebarItemState { Title = title };
+        State = new SidebarItemState { Title = title, Tone = tone };
         Changed(nameof(State));
     }
 
@@ -176,7 +176,11 @@ internal sealed class SidebarItemState
         ReadOnly = value.Flag("readOnly");
         Forked = value.Flag("forked");
         Draggable = value.Flag("draggable");
-        Badge = SidebarAction.Read(value.Get("badge"));
+        Badge = PullRequestBadgeState.Read(value.Get("badge"));
+        HarnessName = value.Text("providerName");
+        HarnessLogo = AgentsRow.ReadLogo(value.Text("logo"));
+        HarnessColor = value.Text("logoColor") is { Length: > 0 } harnessColor
+            ? AgentsRow.ReadColor(harnessColor) : Palette.Brush("YaacText");
 
         if (value.Get("drops") is { ValueKind: JsonValueKind.Object } drops)
         {
@@ -196,6 +200,11 @@ internal sealed class SidebarItemState
         ProviderLogo = AgentsRow.ReadLogo(line.Text("logo"));
         ProviderLogoColor = line.Text("logoColor") is { Length: > 0 } color
             ? AgentsRow.ReadColor(color) : Palette.Brush("YaacMuted");
+        if (HarnessLogo is null && ProviderLogo is not null)
+        {
+            HarnessLogo = ProviderLogo;
+            HarnessColor = line.Text("logoColor") is { Length: > 0 } ? ProviderLogoColor : Palette.Brush("YaacText");
+        }
         Branch = line.Text("branch");
         Added = Count(line, "added", "+");
         Modified = Count(line, "modified", "~");
@@ -210,7 +219,7 @@ internal sealed class SidebarItemState
     public string Right { get; } = "";
     public string Status { get; } = "";
     public string CopyId { get; } = "";
-    public string Tone { get; } = "";
+    public string Tone { get; init; } = "";
     public string Glyph { get; } = "";
     public bool Selected { get; }
     public bool Unseen { get; }
@@ -227,7 +236,11 @@ internal sealed class SidebarItemState
     public bool HasToggle => Toggle is not null;
     public SidebarAction? Toggle { get; }
     public SidebarAction? Primary { get; }
-    public SidebarAction? Badge { get; }
+    public PullRequestBadgeState? Badge { get; }
+    public string HarnessName { get; } = "";
+    public Geometry? HarnessLogo { get; }
+    public Brush? HarnessColor { get; }
+    public string HarnessInitial => HarnessName.Length > 0 ? StringInfo.GetNextTextElement(HarnessName) : "·";
     public IReadOnlyList<SidebarAction> Actions { get; } = [];
     public IReadOnlyDictionary<string, SidebarAction> Drops { get; } = NoDrops;
     public bool HasLine2 { get; }

@@ -179,6 +179,8 @@ pub(crate) struct UiState {
     pub pr_more: Option<((ThreadKey, String), egui::Rect)>,
     /// The threads whose rows were drawn this frame (their pull requests are kept fresh).
     pub pr_visible: Vec<ThreadKey>,
+    /// The last WPF pull request text edit acknowledged by the controller.
+    pub wpf_pr_edit: u64,
     /// Screenshots only: show this sidebar row's `+N` list as if hovered.
     pub pr_more_force: Option<ThreadKey>,
     /// Screenshots only: show this account's rate-limit tooltip as if hovered (D161).
@@ -321,6 +323,7 @@ impl UiState {
             list_focus: false,
             pr_more: None,
             pr_visible: Vec::new(),
+            wpf_pr_edit: 0,
             pr_more_force: None,
             limits_tip_force: None,
             focus_card: None,
@@ -439,6 +442,8 @@ pub(crate) struct CreateProject {
     pub for_draft: Option<u64>,
     /// The folder browser is open at this directory ("" for the home directory).
     pub browse: Option<String>,
+    /// Changes only when a folder-picker action replaces text in the WPF fields.
+    pub field_revision: u32,
 }
 
 /// What the user did this frame.
@@ -958,6 +963,7 @@ impl YaacApp {
         self.ui.threads_overlay = false;
         self.client.state.focus_item = item.clone().map(|i| (key.clone(), i));
         self.client.load_history_focus(key);
+        self.ui.restore = None;
         self.ui.scroll_to = item;
         if self.ui.scroll_to.is_none() {
             self.ui.scroll_end = true;
@@ -1065,6 +1071,10 @@ impl YaacApp {
         self.updater.install()?;
         self.shell.quit(&self.ctx);
         Ok(())
+    }
+
+    pub(crate) fn quit_window(&mut self) {
+        self.shell.quit(&self.ctx);
     }
 
     pub(crate) fn apply(&mut self, actions: Vec<Action>) {
@@ -1425,7 +1435,10 @@ impl YaacApp {
                 }
                 Action::OpenCreatePr(k) => {
                     self.ui.menu = None;
-                    self.client.open_create_pr(&k);
+                    if self.client.state.create_pr.is_none() {
+                        self.ui.wpf_pr_edit = 0;
+                        self.client.open_create_pr(&k);
+                    }
                 }
                 Action::CreatePr => {
                     self.client.submit_create_pr();

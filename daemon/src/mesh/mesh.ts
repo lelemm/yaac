@@ -1451,10 +1451,6 @@ export class Mesh implements CoreMeshHooks {
   }): Promise<{ thread: MeshPeer; turnId: TurnId; modeNote: string }> {
     const limits = this.store.state.policy.limits;
     if (p.depth > limits.spawnDepth) throw new RpcError("limit_exceeded", `Limit reached: workers can be nested at most ${limits.spawnDepth} deep.`);
-    if (this.core.runningCount() >= limits.runningThreads) {
-      if (p.callerRt) this.limitNotice(p.callerRt, `at most ${limits.runningThreads} threads may run at once on ${this.selfName()}`);
-      throw new RpcError("limit_exceeded", `Limit reached: ${this.core.runningCount()} threads are already running on ${this.selfName()} (at most ${limits.runningThreads} at once; threads blocked in wait do not count). Wait for one to finish, then spawn again.`);
-    }
     const why = this.exhaustedReason(p.root, true);
     if (why) throw new RpcError("limit_exceeded", `The orchestration's budget is used up (${why}).`);
     const d = this.resolveInstance(this.localDescriptors(), p.instance, p.callerRt?.record.instance ?? null);
@@ -1826,11 +1822,6 @@ export class Mesh implements CoreMeshHooks {
     }
     const waking = ready.filter((r) => r.message.kind !== "notice");
     if (waking.length === 0) return;
-    const limits = this.store.state.policy.limits;
-    if (this.core.runningCount() >= limits.runningThreads) {
-      for (const r of waking) this.updateReceipt(r, { status: "queued", reason: "limitExceeded", detail: `${limits.runningThreads} threads are already running on ${this.selfName()}; it is delivered when one finishes` });
-      return;
-    }
     this.dispatch(rt, ready, waking[0]!.message.root ?? waking[0]!.message.from);
   }
 

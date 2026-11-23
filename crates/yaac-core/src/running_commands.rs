@@ -41,7 +41,7 @@ impl CommandRow<'_> {
 
     /// The row's owner, target, and time since the first observation.
     pub fn detail(&self, now: i64) -> String {
-        let location = format!("{} · {}", self.title, self.target);
+        let location = format!("Run by {} · {}", self.title, self.target);
         match time::secs(&self.command.observed_at) {
             Some(at) => format!(
                 "{location} · {} observed",
@@ -170,7 +170,7 @@ mod tests {
         assert!(rows[0].can_stop);
         assert_eq!(
             rows[0].detail(time::parse_rfc3339("2026-11-23T12:00:10Z").unwrap()),
-            "Worker · Builder · 10s observed"
+            "Run by Worker · Builder · 10s observed"
         );
         let mut connection = state.target(&worker.target).unwrap().entry.state.clone();
         connection.status = ConnectionStatus::Offline;

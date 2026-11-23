@@ -1,5 +1,5 @@
 use super::*;
-use yaac_core::attachments::{self, ChipStatus, ChipView};
+use yaac_core::attachments::{self, ChipStatus, ChipView, Source};
 use yaac_core::controls::{self, Choice, ControlRow, ControlRowView, Speed, ULTRAFAST_WARNING};
 use yaac_core::header::{self, ComposerView};
 use yaac_core::images::ImageRoute;
@@ -8,6 +8,7 @@ use yaac_core::prefs::SendKey;
 use yaac_core::state::{AgentsPolicy, SendAs};
 use yaac_protocol::{EffortId, InstanceId, ModeId, ModelId};
 
+use crate::files::ThumbKey;
 use sidebar_view::action;
 
 fn option(id: &str, label: &str, enabled: bool, selected: bool, detail: Option<&str>) -> Value {
@@ -107,9 +108,48 @@ fn controls(row: &ControlRow) -> Vec<Value> {
     v
 }
 
-fn chips(chips: &[ChipView]) -> Vec<Value> {
+fn thumbnail_key(draft: &DraftRef, id: u64, source: Option<&Source>) -> ThumbKey {
+    match source {
+        Some(Source::Path { path }) => ThumbKey::Path(path.clone()),
+        _ => ThumbKey::Chip(draft.clone(), id),
+    }
+}
+
+pub(super) fn upkeep(app: &mut YaacApp) {
+    let Some(draft) = app.open_composer() else { return };
+    if let Some(value) = app.client.draft(&draft) {
+        for attachment in &value.attachments {
+            app.files.request_thumb(&thumbnail_key(&draft, attachment.id, attachment.source.as_ref()));
+        }
+    }
+}
+
+fn markdown_spans(text: &str) -> Vec<Value> {
+    use yaac_core::markstyle::{self, Style};
+    let mut offset = 0;
+    markstyle::style(text, 64 * 1024).into_iter().filter_map(|span| {
+        // WPF indexes UTF-16; the parser gives contiguous UTF-8 byte ranges.
+        let style = match span.style {
+            Style::Plain if span.range.end == text.len() => return None,
+            Style::Plain => None,
+            Style::Marker => Some("marker"),
+            Style::Heading(_) => Some("heading"),
+            Style::Bold => Some("bold"),
+            Style::Italic => Some("italic"),
+            Style::Code | Style::CodeBlock => Some("code"),
+        };
+        let start = offset;
+        offset += text[span.range].encode_utf16().count();
+        style.map(|style| json!({ "start": start, "end": offset, "style": style }))
+    }).collect()
+}
+
+fn chips(app: &YaacApp, draft: &DraftRef, chips: &[ChipView]) -> Vec<Value> {
+    let attachments = app.client.draft(draft).map(|value| value.attachments.as_slice()).unwrap_or_default();
     chips.iter().map(|chip| {
         let id = chip.id;
+        let source = attachments.iter().find(|attachment| attachment.id == id).and_then(|attachment| attachment.source.as_ref());
+        let thumbnail = app.files.wire_thumb(&thumbnail_key(draft, id, source));
         let mut actions = vec![action(&format!("remove:{id}"), "Remove", true)];
         let (status, progress) = match &chip.status {
             ChipStatus::Storing => ("Preparing…".to_owned(), None),
@@ -130,7 +170,8 @@ fn chips(chips: &[ChipView]) -> Vec<Value> {
             _ => None,
         };
         let detail = [(!status.is_empty()).then_some(status.as_str()), route].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-        json!({ "id": id.to_string(), "label": chip.name, "detail": detail, "progress": progress, "image": chip.image, "actions": actions })
+        json!({ "id": id.to_string(), "label": chip.name, "detail": detail, "progress": progress,
+            "image": chip.image, "thumbnail": thumbnail, "actions": actions })
     }).collect()
 }
 
@@ -155,13 +196,14 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
     if let Some(why) = &app.files.notice {
         notices.push(json!({ "id": "clipboard", "text": why, "actions": [action("dismissNotice", "Dismiss", true)] }));
     }
-    if app
+    if let Some(paste) = app
         .files
         .large_paste
         .as_ref()
-        .is_some_and(|p| p.draft == draft)
+        .filter(|p| p.draft == draft)
     {
-        notices.push(json!({ "id": "largePaste", "text": "Attach this large paste as a file?",
+        let size = crate::composer::human_size(paste.text.len() as u64);
+        notices.push(json!({ "id": "largePaste", "text": format!("The pasted text is long ({size})."),
             "actions": [action("largeFile", "Attach as file", true), action("largeText", "Paste as text", true), action("largeCancel", "Cancel", true)] }));
     }
     let mut v = json!({
@@ -189,6 +231,15 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
     }
     match draft.clone() {
         DraftRef::Thread(key) => {
+            v["runningCommands"] = command_strip(app, &key);
+            if let Some(distro) = state.stopped_distro(&key.target) {
+                v["showEditor"] = json!(false);
+                v["notices"] = json!([{
+                    "id": "wslStopped", "text": format!("{distro} is not running"),
+                    "actions": [action("startWsl", "Start it", true)]
+                }]);
+                return v;
+            }
             let compacting = app.client.compacting(&key);
             if app.client.offers_compact(&key) {
                 let enabled = !compacting && state.may_act(&key) && !yaac_core::queue::running(state, &key)
@@ -207,7 +258,6 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                     .filter(|(_, e)| e.key.as_ref() == Some(&key))
                     .map(|(index, e)| json!({ "id": format!("error:{index}"), "text": e.text })),
             );
-            v["runningCommands"] = command_strip(app, &key);
             match header::composer(state, map, &key) {
                 ComposerView::Absent { .. } => {
                     v["showEditor"] = json!(false);
@@ -268,7 +318,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                         v["drop"] = Value::Null;
                         v["paste"] = Value::Null;
                     } else {
-                        v["attachments"] = json!(chips(&chip_views));
+                        v["attachments"] = json!(chips(app, &draft, &chip_views));
                     }
                     let queue = yaac_core::queue::strip(state, &key).into_iter().map(|q| {
                         let mut actions = vec![
@@ -323,7 +373,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
             v["project"] = menu("project", label, true, options);
             let support = attachments::draft_image_support(state, d);
             let views = attachments::chips(&d.draft.attachments, &support, Some(&d.target));
-            v["attachments"] = json!(chips(&views));
+            v["attachments"] = json!(chips(app, &draft, &views));
             v["placeholder"] = json!("Write the first message…");
             let blocked = attachments::blocked(&views);
             v["hint"] = if yaac_core::compose::is_compact_command(text) {
@@ -364,6 +414,13 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
         if let Some(c) = comp {
             v["skills"] = app.ui.wpf_skills.view(&draft_key, text, &c, state);
         }
+    }
+    if let Some(text) = v["text"].as_str() {
+        v["markdown"] = if text.contains("\r\n") {
+            json!(markdown_spans(&text.replace("\r\n", "\n")))
+        } else {
+            json!(markdown_spans(text))
+        };
     }
     v
 }
@@ -453,6 +510,11 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
     let can_write = thread.as_ref().is_none_or(|k| app.client.state.may_act(k));
     let id = string(p, "id");
     if name == "composer.action" && let Some(key) = &thread {
+        if id == "startWsl" && app.client.state.stopped_distro(&key.target).is_some() {
+            app.ui.dismissed.insert(key.target.clone());
+            app.apply(vec![Action::Retry(key.target.clone())]);
+            return Ok(());
+        }
         let command = if id == "toggleCommands" {
             Some(Action::ToggleCommands(key.clone()))
         } else if let Some(id) = id.strip_prefix("commandLogs:") {
@@ -667,6 +729,15 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
 mod tests {
     use super::*;
     use yaac_core::demo::threads;
+
+    #[test]
+    fn composer_markdown_ranges_use_utf16_offsets() {
+        assert_eq!(markdown_spans("🦀\n**já**"), vec![
+            json!({ "start": 3, "end": 5, "style": "marker" }),
+            json!({ "start": 5, "end": 7, "style": "bold" }),
+            json!({ "start": 7, "end": 9, "style": "marker" }),
+        ]);
+    }
 
     #[test]
     fn ultrafast_requires_a_confirmation_and_updates_the_composer() {

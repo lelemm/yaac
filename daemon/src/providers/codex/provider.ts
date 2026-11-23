@@ -291,6 +291,7 @@ export class CodexProvider implements HarnessProvider {
   private sourceKinds: string[] = [...THREAD_SOURCE_KINDS];
   /** Threads known to be sub-agents spawned by another thread (D151). */
   private readonly subagentIds = new Set<NativeId>();
+  private readonly threadLookups = new Map<NativeId, Promise<NativeThreadInfo | null>>();
   /** A sub-agent's last state as its parent's collab tool calls reported it (`agentsStates`). */
   private readonly subagentStatus = new Map<NativeId, SubagentStatus>();
   private setupHook: CodexThreadSetupHook | null = null;
@@ -789,17 +790,18 @@ export class CodexProvider implements HarnessProvider {
     return { threads, cursor: next, complete: true };
   }
 
-  async lookupThread(native: NativeId): Promise<NativeThreadInfo | null> {
-    let t: Thread;
-    try {
-      t = await this.readThreadMeta(native);
-    } catch {
-      return null;
-    }
-    // `thread/read` does not say whether the thread is archived.
-    const info = threadInfo(t, false);
-    delete info.archived;
-    return info;
+  lookupThread(native: NativeId): Promise<NativeThreadInfo | null> {
+    const pending = this.threadLookups.get(native);
+    if (pending) return pending;
+    const read = this.readThreadMeta(native).then((t) => {
+      // `thread/read` does not say whether the thread is archived.
+      const info = threadInfo(t, false, this.subagentStatus.get(native) ?? null);
+      if (info.parent) this.subagentIds.add(native);
+      delete info.archived;
+      return info;
+    }).catch(() => null).finally(() => this.threadLookups.delete(native));
+    this.threadLookups.set(native, read);
+    return read;
   }
 
   // ── History ──────────────────────────────────────────────────────────────────────────────
@@ -1417,13 +1419,10 @@ export class CodexProvider implements HarnessProvider {
 
   /** Re-reads a sub-agent's thread and reports it with its current status. */
   private refreshSubagent(id: NativeId): void {
-    void this.readThreadMeta(id)
-      .then((t) => {
-        const info = threadInfo(t, false, this.subagentStatus.get(id) ?? null);
-        delete info.archived;
-        if (info.parent) this.emit({ type: "threadChanged", info });
-      })
-      .catch(() => {});
+    if (this.threadLookups.has(id)) return;
+    void this.lookupThread(id).then((info) => {
+      if (info?.parent) this.emit({ type: "threadChanged", info });
+    });
   }
 
   private onNotification(method: string, raw: unknown): void {
@@ -1460,7 +1459,7 @@ export class CodexProvider implements HarnessProvider {
         if (this.subagentIds.has(id)) {
           this.subagentStatus.set(id, subagentStatusOf(st.status));
           this.refreshSubagent(id);
-        }
+        } else this.emit({ type: "threadObserved", thread: id });
         if (st.status?.type === "notLoaded") {
           st.foreignSeen = false;
           st.subscribed = false;

@@ -5,7 +5,7 @@ use eframe::egui::{self, Margin, Rect, Sense, UiBuilder, pos2, vec2};
 use yaac_core::activity::Block;
 use yaac_core::time::Zone;
 use yaac_core::transcript::Transcript;
-use yaac_protocol::ItemBody;
+use yaac_protocol::{Item, ItemBody};
 
 use crate::icons;
 use crate::theme::{self, Palette, size};
@@ -54,12 +54,16 @@ pub(crate) fn bubble<R>(ui: &mut egui::Ui, p: &Palette, natural: Option<f32>, ad
 /// When a message was written: the user's when sent, the agent's when finished.
 pub(crate) fn message_time(b: &Block, t: &Transcript) -> Option<i64> {
     let (Block::User { index } | Block::Task { index } | Block::Prose { index }) = b else { return None };
-    let item = t.items().get(*index)?;
+    item_time(t.items().get(*index)?)
+}
+
+pub(crate) fn item_time(item: &Item) -> Option<i64> {
     let at = match &item.body {
         ItemBody::AgentMessage(_) if item.status == yaac_protocol::ItemStatus::InProgress => return None,
         ItemBody::AgentMessage(_) => item.completed_at.as_ref().or(item.started_at.as_ref()),
         ItemBody::MeshReceived(r) => item.started_at.as_ref().or(Some(&r.message.sent_at)),
-        _ => item.started_at.as_ref().or(item.completed_at.as_ref()),
+        ItemBody::UserMessage(_) => item.started_at.as_ref().or(item.completed_at.as_ref()),
+        _ => None,
     };
     at.and_then(yaac_core::time::secs)
 }

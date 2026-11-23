@@ -1,8 +1,9 @@
 //! The transcript as the user reads it (docs/design/screens.md, "The transcript: the
 //! conversation first"): the user's messages and the agent's prose at full size; everything
-//! else is **activity** — one muted line each, collapsed by default, consecutive lines sitting
+//! else is **activity** — one muted line each, consecutive lines sitting
 //! together as a run, a long run folded into one summary line. What needs the user is never
-//! collapsed: requests and the budget notice are the only cards.
+//! collapsed: requests and the budget notice are the only cards. Reasoning with text opens
+//! by default within its run.
 //!
 //! Expansion is view state kept in [`Expansion`]; this module decides what each item becomes.
 
@@ -30,6 +31,8 @@ pub const SILENT_THOUGHT_SHOWN_AFTER: i64 = 2;
 pub struct Expansion {
     /// Activity lines shown expanded.
     pub lines: BTreeSet<(ThreadKey, ItemId)>,
+    /// Thoughts with text that the user closed.
+    collapsed_thoughts: BTreeSet<(ThreadKey, ItemId)>,
     /// Folded runs opened (keyed by their first item).
     pub runs: BTreeSet<(ThreadKey, ItemId)>,
     /// One file of a file-change item, shown as its diff (item, file index).
@@ -76,6 +79,14 @@ impl Expansion {
         let k = (key.clone(), id.clone());
         if !self.lines.remove(&k) {
             self.lines.insert(k);
+        }
+    }
+
+    /// Toggle a thought, which starts out expanded.
+    pub fn toggle_thought(&mut self, key: &ThreadKey, id: &ItemId) {
+        let k = (key.clone(), id.clone());
+        if !self.collapsed_thoughts.remove(&k) {
+            self.collapsed_thoughts.insert(k);
         }
     }
 
@@ -330,7 +341,7 @@ pub fn line_of(state: &AppState, map: &AttentionMap, key: &ThreadKey, index: usi
         return Some(ActivityLine { index, id: item.id.clone(), mark, text, failed, in_progress, expanded: false, highlighted: false, diff: None, call: Some(line) });
     }
     let (mark, text, failed) = match &item.body {
-        ItemBody::Reasoning(r) => {
+        ItemBody::Reasoning(_) => {
             let took = item
                 .started_at
                 .as_ref()
@@ -341,7 +352,7 @@ pub fn line_of(state: &AppState, map: &AttentionMap, key: &ThreadKey, index: usi
             // a thinking block can be empty) is not a line of its own unless it took long
             // enough to explain a pause (D148). Under way, it has no duration yet: it shows
             // only once it has text.
-            let has_text = !r.reasoning.trim().is_empty();
+            let has_text = thought_text(item).is_some();
             let text = match (in_progress, took) {
                 (true, _) if has_text => "Thinking…".to_owned(),
                 (false, Some(s)) if has_text || s >= SILENT_THOUGHT_SHOWN_AFTER => format!("Thought for {}", crate::time::duration(s)),
@@ -453,7 +464,7 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
     let emit_run = |lines: Vec<ActivityLine>, out: &mut Vec<Block>, fold: bool| {
         let Some(first) = lines.first().map(|l| l.id.clone()) else { return };
         let opened = expansion.runs.contains(&(key.clone(), first.clone()))
-            || lines.iter().any(|l| l.highlighted || l.expanded);
+            || lines.iter().any(|l| l.highlighted || l.expanded && l.mark != LineMark::Thought);
         if fold && lines.len() > 1 && !opened {
             out.push(Block::Folded {
                 text: fold_summary(&lines),
@@ -556,7 +567,12 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
                     }
                 } else if let Some(mut line) = line_of(state, map, key, index, item) {
                     line.highlighted = focus == Some(&item.id);
-                    line.expanded = line.highlighted || expansion.lines.contains(&(key.clone(), item.id.clone()));
+                    let entry = (key.clone(), item.id.clone());
+                    line.expanded = if line.mark == LineMark::Thought {
+                        thought_text(item).is_some() && !expansion.collapsed_thoughts.contains(&entry)
+                    } else {
+                        line.highlighted || expansion.lines.contains(&entry)
+                    };
                     run.push(line);
                 }
             }
@@ -567,9 +583,18 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
     out
 }
 
+/// The original Markdown of a thought with text.
+pub fn thought_text(item: &Item) -> Option<&str> {
+    match &item.body {
+        ItemBody::Reasoning(r) if !r.reasoning.trim().is_empty() => Some(&r.reasoning),
+        _ => None,
+    }
+}
+
 /// "Expand all tool lines": every folded run of the thread opens and every activity line in
 /// it is expanded (file diffs keep their own state: a turn's "show all" opens those).
 pub fn expand_all(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: &mut Expansion) {
+    expansion.collapsed_thoughts.retain(|(k, _)| k != key);
     for b in blocks(state, map, key, expansion) {
         if let Block::Folded { first, .. } = b {
             expansion.runs.insert((key.clone(), first));
@@ -577,16 +602,20 @@ pub fn expand_all(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansi
     }
     for b in blocks(state, map, key, expansion) {
         if let Block::Run { lines } = b {
-            for l in lines.into_iter().filter(|l| l.diff.is_none()) {
+            for l in lines.into_iter().filter(|l| l.diff.is_none() && l.mark != LineMark::Thought) {
                 expansion.lines.insert((key.clone(), l.id));
             }
         }
     }
 }
 
-/// "Collapse all tool lines": the thread's lines, runs and diffs return to their collapsed
-/// form.
-pub fn collapse_all(key: &ThreadKey, expansion: &mut Expansion) {
+/// "Collapse all tool lines": the thread's currently loaded lines, runs and diffs collapse.
+pub fn collapse_all(state: &AppState, key: &ThreadKey, expansion: &mut Expansion) {
+    if let Some(t) = state.transcripts.get(key) {
+        expansion.collapsed_thoughts.extend(t.items().iter()
+            .filter(|item| thought_text(item).is_some())
+            .map(|item| (key.clone(), item.id.clone())));
+    }
     expansion.lines.retain(|(k, _)| k != key);
     expansion.runs.retain(|(k, _)| k != key);
     expansion.files.retain(|(k, _, _)| k != key);

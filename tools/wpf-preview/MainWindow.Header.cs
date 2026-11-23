@@ -9,6 +9,7 @@ public partial class MainWindow
 {
     private string? headerLinks;
     private string? headerBanners;
+    private string? wslNotifications;
     private string headerKey = "";
 
     private static string MarkGlyph(string mark) => mark switch
@@ -98,7 +99,14 @@ public partial class MainWindow
                     Margin = new Thickness(5, 0, 0, 0),
                 };
                 if (Flag(action, "primary")) button.Style = (Style)FindResource("YaacPrimaryButton");
+                ToolTipService.SetShowOnDisabled(button, true);
                 button.Click += (_, _) => Send("header.action", new { id, threadId = headerKey });
+                if (Flag(action, "busy"))
+                    buttons.Children.Add(new RunningSpinner
+                    {
+                        Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center,
+                        Foreground = Palette.Brush("YaacMuted"), Margin = new Thickness(6, 0, 0, 0),
+                    });
                 buttons.Children.Add(button);
             }
         }
@@ -106,13 +114,36 @@ public partial class MainWindow
         var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         text.Children.Add(new TextBlock { Text = Text(entry, "label"), TextWrapping = TextWrapping.Wrap });
         if (Text(entry, "detail") is { Length: > 0 } detail)
-            text.Children.Add(new TextBlock { Text = detail, TextWrapping = TextWrapping.Wrap, Foreground = Palette.Brush("YaacMuted") });
+            text.Children.Add(new TextBlock { Text = detail, TextWrapping = TextWrapping.Wrap,
+                Foreground = Palette.Brush(Flag(entry, "failed") ? "YaacFailure" : "YaacMuted") });
         row.Children.Add(text);
         HeaderBanners.Children.Add(new Border
         {
             CornerRadius = new CornerRadius(6), Background = Palette.Brush("YaacInput"),
             Margin = new Thickness(0, 5, 0, 0), Child = row,
         });
+    }
+
+    private void RenderWslNotifications(JsonElement targets)
+    {
+        var signature = targets.GetRawText();
+        if (wslNotifications == signature) return;
+        wslNotifications = signature;
+        WslNotifications.Children.Clear();
+        foreach (var target in targets.EnumerateArray())
+        {
+            var id = Text(target, "id");
+            var body = new StackPanel();
+            body.Children.Add(new TextBlock { Text = Text(target, "label"), TextWrapping = TextWrapping.Wrap });
+            var start = new Button { Content = "Start it", HorizontalAlignment = HorizontalAlignment.Left,
+                Margin = new Thickness(0, 7, 0, 0) };
+            start.Click += (_, _) => Send("shell.startWsl", new { id });
+            body.Children.Add(start);
+            var card = new Border { CornerRadius = new CornerRadius(6), Padding = new Thickness(12),
+                Margin = new Thickness(0, 5, 0, 0), Child = body };
+            card.SetResourceReference(Border.BackgroundProperty, "YaacRaised");
+            WslNotifications.Children.Add(card);
+        }
     }
 
     private void ContinueClicked(object sender, RoutedEventArgs args) =>
