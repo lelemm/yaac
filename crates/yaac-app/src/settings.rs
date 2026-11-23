@@ -88,7 +88,11 @@ pub(crate) struct SettingsUi {
     pub add_kind: Option<yaac_protocol::ProviderKind>,
     pub add_name: String,
     pub add_socket: String,
+    /// The Add form's harness home (P300).
+    pub add_home: String,
     pub edit: Option<(TargetId, InstanceId, String, String)>,
+    /// An instance's harness home being edited (P300).
+    pub home_edit: Option<(TargetId, InstanceId, String)>,
     pub wsl_distro: String,
     pub wsl_user: String,
     pub diag_target: Option<TargetId>,
@@ -935,20 +939,27 @@ fn providers(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         }
         widgets::field(ui, &p, &mut app.ui.set.add_name, "Name (optional)", 160.0, false);
         widgets::field(ui, &p, &mut app.ui.set.add_socket, "/path/to/control.sock", 260.0, true);
-        let ok = app.ui.set.add_kind.is_some() && (!app.ui.set.add_name.trim().is_empty() || !app.ui.set.add_socket.trim().is_empty());
+        // The harness home (P300), for a kind whose instances report `configurableHome`.
+        let home_kind = app.ui.set.add_kind.as_ref().is_some_and(|k| v.home_kinds.contains(k));
+        if home_kind {
+            widgets::field(ui, &p, &mut app.ui.set.add_home, "Harness home (optional)", 220.0, true);
+        }
+        let home = if home_kind { app.ui.set.add_home.trim().to_owned() } else { String::new() };
+        let ok = app.ui.set.add_kind.is_some() && (!app.ui.set.add_name.trim().is_empty() || !app.ui.set.add_socket.trim().is_empty() || !home.is_empty());
         if ok {
             if widgets::plain(ui, &p, "Add", None).clicked()
                 && let Some(k) = app.ui.set.add_kind.clone()
             {
-                actions.push(Action::AddInstance(target.clone(), k, app.ui.set.add_name.clone(), app.ui.set.add_socket.clone()));
+                actions.push(Action::AddInstance(target.clone(), k, app.ui.set.add_name.clone(), app.ui.set.add_socket.clone(), home));
                 app.ui.set.add_name.clear();
                 app.ui.set.add_socket.clear();
+                app.ui.set.add_home.clear();
             }
         } else {
             widgets::unavailable(ui, &p, "Add", "");
         }
     });
-    ui.label(widgets::secondary("A second instance of a kind needs a name or its own socket.", &p));
+    ui.label(widgets::secondary("A second instance of a kind needs a name, its own socket, or its own harness home.", &p));
 
     // Instances that need attention on other targets.
     let others: Vec<(String, Vec<yaac_core::settings::InstanceRow>)> = app
@@ -1015,6 +1026,9 @@ fn instance_row(ui: &mut egui::Ui, app: &mut YaacApp, target: &TargetId, row: &y
             ui.label(RichText::new(s).font(theme::mono(size::SMALL)).color(p.text2));
         }
     });
+    if let Some(home) = &row.home {
+        harness_home(ui, app, target, row, home, actions);
+    }
     if let Some((t, i, name, socket)) = &mut app.ui.set.edit
         && t == target
         && i == &row.instance
@@ -1052,6 +1066,68 @@ fn instance_row(ui: &mut egui::Ui, app: &mut YaacApp, target: &TargetId, row: &y
             }
             ui.label("Trust folders YAAC works in");
             ui.label(widgets::secondary("· marks a project's folder trusted in this harness when YAAC starts a thread there", &p));
+        });
+    }
+}
+
+/// An instance's harness home (P300): the folder in use, **Change**, an inline field whose
+/// placeholder is the folder in use, and the confirmation when the new folder is another store.
+fn harness_home(ui: &mut egui::Ui, app: &mut YaacApp, target: &TargetId, row: &yaac_core::settings::InstanceRow, home: &yaac_core::settings::HomeField, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let editing = app.ui.set.home_edit.as_ref().is_some_and(|(t, i, _)| t == target && i == &row.instance);
+    if !editing {
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            ui.label(RichText::new(home.line()).font(theme::mono(size::SMALL)).color(p.text2));
+            if widgets::plain(ui, &p, "Change", None).on_hover_text("Where this harness keeps its configuration, sessions and sign-in").clicked() {
+                app.ui.set.home_edit = Some((target.clone(), row.instance.clone(), home.set.clone().unwrap_or_default()));
+            }
+        });
+    }
+    if let Some((t, i, text)) = &mut app.ui.set.home_edit
+        && t == target
+        && i == &row.instance
+    {
+        let mut done = false;
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            ui.label("Harness home");
+            widgets::field(ui, &p, text, &home.placeholder(), 320.0, true);
+            if widgets::plain(ui, &p, "Save", None).clicked() {
+                actions.push(Action::InstanceHome(t.clone(), i.clone(), text.trim().to_owned()));
+                done = true;
+            }
+            if home.set.is_some() && widgets::plain(ui, &p, "Use default", None).clicked() {
+                actions.push(Action::InstanceHome(t.clone(), i.clone(), String::new()));
+                done = true;
+            }
+            if widgets::plain(ui, &p, "Cancel", None).clicked() {
+                done = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            ui.label(widgets::secondary("Empty: the harness default. Threads stay with the store they belong to.", &p));
+        });
+        if done {
+            app.ui.set.home_edit = None;
+        }
+    }
+    let confirm = app.client.state.home_confirm.clone().filter(|c| &c.target == target && c.instance == row.instance);
+    if let Some(c) = confirm {
+        ui.horizontal_wrapped(|ui| {
+            ui.add_space(24.0);
+            widgets::icon(ui, 16.0, |pa, col, d| crate::icons::warning(pa, col, d, p.needs, p.faint));
+            ui.add(egui::Label::new(c.text()).wrap());
+        });
+        ui.horizontal(|ui| {
+            ui.add_space(24.0);
+            if widgets::plain(ui, &p, "Change home", None).clicked() {
+                actions.push(Action::ConfirmInstanceHome);
+            }
+            if widgets::plain(ui, &p, "Keep current", None).clicked() {
+                actions.push(Action::CancelInstanceHome);
+            }
         });
     }
 }

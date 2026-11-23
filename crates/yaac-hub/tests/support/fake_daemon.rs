@@ -136,6 +136,7 @@ pub fn summary(id: &str) -> ThreadSummary {
         fast: false,
         placement: None,
         subagent: None,
+        unavailable: None,
     }
 }
 

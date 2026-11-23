@@ -500,6 +500,7 @@ show as-is.
 | `protocol_unsupported` | The two sides have no protocol version in common. Says which side is too old. Part of the frozen core. |
 | `provider_unavailable` · `needs_auth` | The instance cannot be reached, or the harness is not signed in. |
 | `capability_missing` | The instance or model cannot do what was asked. |
+| `store_change` | A `providerInstance/update` would lead the instance to another store and lacks `confirmStoreChange`; nothing changed. `data` is `{ current?, next? }`, the two homes (P300, [04](04-providers.md#an-instance-has-a-store-identity)). |
 | `thread_not_found` | The thread does not exist on this target. |
 | `thread_in_use` | The thread is being driven elsewhere; this client may only watch. |
 | `turn_in_progress` · `turn_mismatch` | A turn is already running, or the turn id given is not the running one. |

@@ -281,6 +281,12 @@ pub struct ProviderInstanceConfig {
     /// Extra environment for the harness (e.g. `CODEX_HOME`).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// The harness home (P300): the folder the harness keeps its configuration, sessions and
+    /// sign-in in, under the `configurableHome` capability. `yaacd` maps it to the provider's
+    /// own variable (Codex: `CODEX_HOME`, Claude Code: `CLAUDE_CONFIG_DIR`). It wins over that
+    /// variable in `env` and in the daemon's environment. Absent: the harness default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<TargetPath>,
     /// Whether this is an implicit default instance (exists without configuration).
     #[serde(default)]
     pub implicit: bool,
@@ -351,6 +357,9 @@ pub struct ProviderInstanceAddParams {
     /// Extra environment.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+    /// The harness home (P300), under the `configurableHome` capability. Absent: the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<TargetPath>,
 }
 
 /// Result of `providerInstance/add` and `providerInstance/update`.
@@ -390,6 +399,28 @@ pub struct ProviderInstanceUpdateParams {
     /// New "Trust folders YAAC works in" switch (D147).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_folders: Option<bool>,
+    /// New harness home (P300): absent = unchanged, `null` = back to the harness default.
+    /// Under the `configurableHome` capability.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::types::double_option")]
+    #[schemars(with = "Option<TargetPath>")]
+    pub home: Option<Option<TargetPath>>,
+    /// The user confirmed that the new home is another store (P300). Without it, a `home`
+    /// that leads to another store is refused with `store_change` and nothing changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_store_change: Option<bool>,
+}
+
+/// The `data` of a `store_change` error (P300): the instance's home now and the one asked
+/// for, which lead to different stores.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreChangeData {
+    /// The home in use now, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<TargetPath>,
+    /// The home asked for (the harness default when it was cleared).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<TargetPath>,
 }
 
 /// `providerInstance/remove`.

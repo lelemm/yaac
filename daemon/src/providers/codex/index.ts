@@ -1,7 +1,9 @@
 // The Codex provider kind (`codex`). See provider.ts.
 
+import * as os from "node:os";
+import * as path from "node:path";
 import type { ProviderContext, ProviderFactory } from "../types.js";
-import { CodexProvider } from "./provider.js";
+import { CodexProvider, storeKey } from "./provider.js";
 
 export { CodexProvider, CODEX_MODES, type CodexThreadSetup, type CodexThreadSetupHook, type CodexThreadSetupRequest, type CodexOptions } from "./provider.js";
 
@@ -22,5 +24,11 @@ export const codexProviderFactory: ProviderFactory = {
       env,
       baseEnv: ctx.env,
     });
+  },
+  // The harness home (P300) is `CODEX_HOME`: the daemon's socket, store and sign-in follow it.
+  home: {
+    variable: "CODEX_HOME",
+    defaultHome: (env) => path.join(env.HOME ?? env.USERPROFILE ?? os.homedir(), ".codex"),
+    storeKey,
   },
 };

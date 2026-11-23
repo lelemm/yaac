@@ -46,6 +46,10 @@ open_enum! {
         /// harness's own interface does not ask about them again (D147), unless the instance's
         /// `trustFolders` is off. Without it the harness keeps its own behaviour.
         FolderTrust = "folderTrust",
+        /// The instance's harness home — where the harness keeps its configuration, sessions
+        /// and sign-in — can be set (`ProviderInstanceConfig.home`, P300); `yaacd` maps it to
+        /// the provider's own variable. Without it Settings does not offer the field.
+        ConfigurableHome = "configurableHome",
         // Turn control
         /// Incremental agent text.
         StreamText = "streamText",

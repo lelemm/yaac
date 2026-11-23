@@ -103,7 +103,12 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.PROVIDER_INSTANCE_ADD:
         return core.ops.run(method, p.opId, async () => ({ instance: await core.registry.add(p as never) }));
       case METHODS.PROVIDER_INSTANCE_UPDATE:
-        return core.ops.run(method, p.opId, async () => ({ instance: await core.registry.update(p as never) }));
+        return core.ops.run(method, p.opId, async () => {
+          const instance = await core.registry.update(p as never);
+          // Its threads may now be of another store (P10, P300), or of theirs again.
+          await core.instanceChanged(instance.id);
+          return { instance };
+        });
       case METHODS.PROVIDER_INSTANCE_REMOVE:
         return core.ops.run(method, p.opId, async () => {
           await core.registry.remove(str(p, "id"));

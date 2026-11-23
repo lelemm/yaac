@@ -6,6 +6,7 @@
 // may hardcode a model.
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type {
   AppliedSettings,
@@ -1210,6 +1211,12 @@ export const fakeProviderFactory: ProviderFactory = {
       moveCwd: env.FAKE_MOVE_CWD !== "0",
       modes: modesFrom(env.FAKE_MODES),
     });
+  },
+  // The harness home (P300) is the fake's store folder, `FAKE_STORE`.
+  home: {
+    variable: "FAKE_STORE",
+    defaultHome: (env) => path.join(env.HOME ?? os.homedir(), ".fake-harness"),
+    storeKey: (dir) => `fake:${sha256Hex(path.resolve(dir)).slice(0, 16)}`,
   },
 };
 

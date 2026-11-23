@@ -96,6 +96,8 @@ pub fn current_schema() -> Value {
     let _ = generator.subschema_for::<RpcId>();
     let _ = generator.subschema_for::<ErrorObject>();
     let _ = generator.subschema_for::<ErrorCode>();
+    // Error data types, carried in `ErrorObject.data`.
+    let _ = generator.subschema_for::<crate::types::StoreChangeData>();
     let mut defs: Map<String, Value> = generator.take_definitions(true).into_iter().collect();
     for (name, schema) in crate::rpc::envelope_schemas() {
         defs.insert(name.to_owned(), schema);

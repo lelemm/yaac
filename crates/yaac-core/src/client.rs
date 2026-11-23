@@ -118,6 +118,8 @@ enum Call {
     ForkPreview { key: ThreadKey, instance: InstanceId },
     InstanceList(TargetId),
     InstanceChanged(TargetId),
+    /// A harness-home change (P300); a `store_change` refusal asks the user.
+    InstanceHome { target: TargetId, instance: InstanceId, home: Option<String> },
     FsList { target: TargetId, path: String },
     HubSettings,
     Projects(TargetId),
@@ -399,7 +401,7 @@ impl Client {
                     rec.instance_configs = Some(r.instances);
                 }
             }
-            Call::InstanceChanged(t) => {
+            Call::InstanceChanged(t) | Call::InstanceHome { target: t, .. } => {
                 self.list_instances(&t);
                 self.routed(&t, m::PROVIDER_LIST, json!({}), Call::Providers(t.clone()));
             }
@@ -578,6 +580,7 @@ impl Client {
                         fast: draft.fast,
                         placement: None,
                         subagent: None,
+                        unavailable: None,
                     };
                     self.state.upsert_summary(&draft.target, summary);
                 }
@@ -742,6 +745,23 @@ impl Client {
                 self.state.fs_listings.insert((target, path), FsListingState::Failed(error.message.clone()));
             }
             Call::HubSettings | Call::Projects(_) | Call::SshRecords => {}
+            Call::InstanceHome { target, instance, home } => {
+                if error.code == ErrorCode::StoreChange {
+                    // Another store: nothing changed; the user decides (P300).
+                    let data = error.data.clone().and_then(|d| serde_json::from_value::<yaac_protocol::StoreChangeData>(d).ok());
+                    self.state.home_confirm = Some(crate::settings::HomeConfirm {
+                        target,
+                        instance,
+                        home,
+                        current: data.as_ref().and_then(|d| d.current.as_ref()).map(ToString::to_string),
+                        next: data.as_ref().and_then(|d| d.next.as_ref()).map(ToString::to_string),
+                    });
+                } else if error.code == ErrorCode::OutcomeUnknown {
+                    self.error(None, "YAAC lost contact while changing the harness home. It may or may not have changed; it will not be asked again. Check Settings → Providers once the target answers.");
+                } else {
+                    self.error(None, format!("The harness home was not changed: {}", error.message));
+                }
+            }
             Call::Ssh(id) => self.ssh_replies.push((id, Err(error.clone()))),
             Call::WslDistros => self.on_wsl_distros_error(error),
             c @ (Call::ForgePrs(_) | Call::ForgePrepare(_) | Call::ForgeCreate(_) | Call::ForgeAsk(_)) => self.on_forge_error(c, error),
@@ -1728,9 +1748,12 @@ impl Client {
     }
 
     /// Add an instance: a kind the target reports, an optional name, an optional socket.
-    pub fn add_instance(&mut self, target: &TargetId, kind: &yaac_protocol::ProviderKind, name: Option<&str>, socket: Option<&str>) {
+    pub fn add_instance(&mut self, target: &TargetId, kind: &yaac_protocol::ProviderKind, name: Option<&str>, socket: Option<&str>, home: Option<&str>) {
         let op = self.op_id();
         let mut params = json!({ "opId": op, "kind": kind, "enabled": true, "backend": "auto" });
+        if let Some(h) = home.filter(|h| !h.trim().is_empty()) {
+            params["home"] = json!(h.trim());
+        }
         if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
             params["name"] = json!(n.trim());
         }
@@ -1765,6 +1788,34 @@ impl Client {
             c.trust_folders = if on { None } else { Some(false) };
         }
         self.routed(target, m::PROVIDER_INSTANCE_UPDATE, json!({ "opId": op, "id": id, "trustFolders": on }), Call::InstanceChanged(target.clone()));
+    }
+
+    /// Set an instance's harness home (P300); `None` or empty: back to the harness default.
+    /// Editing an implicit default instance stores its configuration on the target. A home
+    /// that leads to another store is refused until the user confirms it
+    /// ([`AppState::home_confirm`]); `confirmed` is that confirmation, sent with a new
+    /// operation id.
+    pub fn set_instance_home(&mut self, target: &TargetId, id: &InstanceId, home: Option<&str>, confirmed: bool) {
+        let op = self.op_id();
+        let home = home.map(str::trim).filter(|h| !h.is_empty()).map(str::to_owned);
+        let mut params = json!({ "opId": op, "id": id, "home": home });
+        if confirmed {
+            params["confirmStoreChange"] = json!(true);
+        }
+        self.state.home_confirm = None;
+        self.routed(target, m::PROVIDER_INSTANCE_UPDATE, params, Call::InstanceHome { target: target.clone(), instance: id.clone(), home });
+    }
+
+    /// The user confirmed the waiting harness-home change (P300).
+    pub fn confirm_instance_home(&mut self) {
+        if let Some(c) = self.state.home_confirm.take() {
+            self.set_instance_home(&c.target, &c.instance, c.home.as_deref(), true);
+        }
+    }
+
+    /// The user kept the current harness home.
+    pub fn cancel_instance_home(&mut self) {
+        self.state.home_confirm = None;
     }
 
     /// Remove an instance.

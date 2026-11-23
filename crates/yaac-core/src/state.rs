@@ -305,6 +305,9 @@ pub struct AppState {
     /// A mode that bypasses approvals, chosen and waiting for confirmation (screen 30). Never
     /// remembered beyond the one choice.
     pub mode_confirm: Option<crate::mode_confirm::PendingModeConfirm>,
+    /// A harness-home change that leads to another store, waiting for the user's
+    /// confirmation (P300). Never sent again on its own.
+    pub home_confirm: Option<crate::settings::HomeConfirm>,
     /// SEAM (wire field missing): the WSL master switch (off by default). The hub settings
     /// carry no such field; window-local.
     pub wsl_on: bool,
@@ -446,7 +449,13 @@ impl AppState {
 
     /// Whether this window may send, steer, and answer on a thread.
     pub fn may_act(&self, key: &ThreadKey) -> bool {
-        self.control(key).may_act() && self.stopped_distro(&key.target).is_none()
+        self.control(key).may_act() && self.stopped_distro(&key.target).is_none() && self.store_away(key).is_none()
+    }
+
+    /// Why the thread cannot be used while its instance leads to another store (P10, P300),
+    /// as the target said; `None` when it can.
+    pub fn store_away(&self, key: &ThreadKey) -> Option<String> {
+        self.summary(key).and_then(|s| s.unavailable.clone())
     }
 
     /// Whether this window may answer a thread's approvals and questions. As `may_act`, except

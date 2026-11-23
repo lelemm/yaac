@@ -83,6 +83,12 @@ pub enum Banner {
         /// or the update is under way).
         update_now: Option<TargetId>,
     },
+    /// The thread's instance leads to another store now (P10, P300): kept, shown read-only
+    /// until the instance's home is changed back.
+    StoreAway {
+        /// The target's reason.
+        text: String,
+    },
 }
 
 /// The header.
@@ -185,7 +191,9 @@ pub fn header(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Option<H
 
     let mut banners = Vec::new();
     let target_name = state.target_name(&key.target);
-    if let Some(sub) = s.subagent.as_ref().filter(|sub| sub.read_only.is_some()) {
+    if let Some(text) = s.unavailable.clone() {
+        banners.push(Banner::StoreAway { text });
+    } else if let Some(sub) = s.subagent.as_ref().filter(|sub| sub.read_only.is_some()) {
         // A harness sub-agent (D151) is not "open in another program": its parent drives it.
         let kind = crate::agents::origin_label(state, key).unwrap_or_else(|| "A subagent".to_owned());
         let parent = s.spawned_by.as_ref().map(|a| {
@@ -291,6 +299,9 @@ pub fn chips(draft: Option<&Draft>, support: &Support, target: Option<&yaac_prot
 
 /// The composer of a started thread.
 pub fn composer(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> ComposerView {
+    if let Some(why) = state.store_away(key) {
+        return ComposerView::Absent { holder_line: why };
+    }
     if !state.may_act(key) {
         let holder = state.control_holder(key).unwrap_or_else(|| "another program".to_owned());
         return ComposerView::Absent { holder_line: format!("Held by {holder} on {}.", state.target_name(&key.target)) };

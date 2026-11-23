@@ -437,6 +437,40 @@ fn folder_trust_round_trips_and_the_switch_is_optional() {
     assert!(patch.enabled.is_none() && patch.name.is_none(), "a patch changes only what it names");
 }
 
+/// P300: the harness home on an instance's configuration, its patch (absent = unchanged,
+/// `null` = back to the default), the confirmation, the `store_change` error and its data, and
+/// the `unavailable` reason on a thread summary.
+#[test]
+fn harness_home_round_trips_and_absent_differs_from_null() {
+    use yaac_protocol::rpc::ErrorCode;
+    use yaac_protocol::{Capability, ProviderInstanceAddParams, ProviderInstanceConfig, ProviderInstanceUpdateParams, StoreChangeData, TargetPath};
+    assert_eq!(serde_json::from_value::<Capability>(json!("configurableHome")).unwrap(), Capability::ConfigurableHome);
+    assert_eq!(serde_json::from_value::<ErrorCode>(json!("store_change")).unwrap(), ErrorCode::StoreChange);
+    // An older yaacd's configuration has no home: the harness default.
+    let older: ProviderInstanceConfig = serde_json::from_value(json!({ "id": "pi_codex", "kind": "codex", "enabled": true, "backend": "auto", "implicit": true })).unwrap();
+    assert_eq!(older.home, None);
+    assert!(serde_json::to_value(&older).unwrap().get("home").is_none());
+    let set: ProviderInstanceConfig = serde_json::from_value(json!({ "id": "pi_codex", "kind": "codex", "enabled": true, "backend": "auto", "home": "/home/me/harnessess/.codex" })).unwrap();
+    assert_eq!(set.home, Some(TargetPath::new("/home/me/harnessess/.codex")));
+    assert_eq!(serde_json::from_value::<ProviderInstanceConfig>(serde_json::to_value(&set).unwrap()).unwrap(), set);
+    let add: ProviderInstanceAddParams = serde_json::from_value(json!({ "opId": "op_1", "kind": "claude", "enabled": true, "backend": "auto", "home": "/h/.claude" })).unwrap();
+    assert_eq!(add.home, Some(TargetPath::new("/h/.claude")));
+    // Absent: unchanged. Null: back to the default. A value: set.
+    let unchanged: ProviderInstanceUpdateParams = serde_json::from_value(json!({ "opId": "op_2", "id": "pi_codex" })).unwrap();
+    assert_eq!(unchanged.home, None);
+    assert_eq!(unchanged.confirm_store_change, None);
+    let cleared: ProviderInstanceUpdateParams = serde_json::from_value(json!({ "opId": "op_3", "id": "pi_codex", "home": null })).unwrap();
+    assert_eq!(cleared.home, Some(None));
+    assert_eq!(serde_json::to_value(&cleared).unwrap()["home"], Value::Null);
+    let to: ProviderInstanceUpdateParams = serde_json::from_value(json!({ "opId": "op_4", "id": "pi_codex", "home": "/x", "confirmStoreChange": true })).unwrap();
+    assert_eq!(to.home, Some(Some(TargetPath::new("/x"))));
+    assert_eq!(to.confirm_store_change, Some(true));
+    assert_eq!(serde_json::from_value::<ProviderInstanceUpdateParams>(serde_json::to_value(&to).unwrap()).unwrap(), to);
+    let data: StoreChangeData = serde_json::from_value(json!({ "current": "/a", "next": "/b" })).unwrap();
+    assert_eq!(data.current, Some(TargetPath::new("/a")));
+    assert_eq!(data.next, Some(TargetPath::new("/b")));
+}
+
 /// D151: a harness's own sub-agent is a thread whose summary carries `subagent` (its agent
 /// type, the harness's status, and why it is read-only); its parent is `spawnedBy`. A summary
 /// without it (an older daemon, an ordinary thread) reads as no sub-agent, and an unknown

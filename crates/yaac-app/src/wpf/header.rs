@@ -81,6 +81,7 @@ pub(super) fn fields(app: &YaacApp, map: &AttentionMap) -> Value {
             let actions = update_now.as_ref().map(|_| sidebar_view::action("update", "Update now", true)).into_iter().collect::<Vec<_>>();
             json!({ "label": text, "actions": actions })
         }
+        Banner::StoreAway { text } => json!({ "label": text, "actions": [] }),
     }).collect::<Vec<_>>();
     json!({
         "title": h.title, "location": h.breadcrumb.join(" · "), "hasThread": true, "threadId": key.address(),

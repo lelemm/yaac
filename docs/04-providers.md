@@ -34,13 +34,37 @@ backend            daemon           daemon              sdk
   "enabled": true,
   "backend": "auto",            // auto | daemon | sdk
   "endpoint": { "socket": "/run/user/1000/codex-work/control.sock" },  // optional
-  "env": { "CODEX_HOME": "/home/me/.codex-work" }                      // optional
+  "env": { "YAAC_CODEX_EXECUTABLE": "/opt/codex/bin/codex" },          // optional
+  "home": "/home/me/.codex-work"                                       // optional (P300)
 }
 ```
 
 Instance configuration is stored **on the target** by `yaacd` and edited from the UI through
 `providerInstance/*`. It describes things that exist on that machine, and any host connecting to
 the target should see the same instances.
+
+### Harness home
+
+**Proposed (P300).** Where a harness keeps its configuration, sessions and sign-in is the
+instance's **harness home**: a typed `home` in its configuration, offered under the
+`configurableHome` capability. `yaacd` reports that capability for every instance of a kind
+that has a home (Codex, Claude Code), whatever the instance's status — it is most needed when
+the instance says it is not signed in because it is looking in the wrong folder.
+
+- `yaacd` maps `home` to the kind's own variable: Codex `CODEX_HOME`, Claude Code
+  `CLAUDE_CONFIG_DIR`. The window never writes those variables; it sets `home`.
+- **Precedence:** `home`; then that variable in the instance's `env`; then the daemon's
+  environment (on WSL this carries the `.bashrc` exports of
+  [P297](02-architecture.md#wsl)); then the harness default (`~/.codex`, `~/.claude`).
+- A home given as `~` or `~/…` is the target user's home. It must be an absolute path to a
+  folder that **already exists**; anything else is refused with `invalid_params`.
+- `providerInstance/add` takes `home`; `providerInstance/update` takes `home` (absent:
+  unchanged; `null`: back to the default) with an operation id like every other edit.
+  Editing an implicit default instance stores its configuration on the target.
+- When the harness does not report its home (not signed in, unreachable), the descriptor's
+  `store.home` is the home the instance is configured to use, so Settings can show it.
+- For Codex, after a change `yaacd` connects to the daemon under the new home, starting one if
+  none runs there. The daemon under the old home keeps running; `yaacd` never stops one.
 
 ### An instance has a store identity
 
@@ -54,9 +78,27 @@ what tells YAAC:
 
 - whether two instances are looking at the same conversations (same store) or different ones;
 - whether a thread can be forked natively to another instance (only within one store);
-- whether an edited socket path still points at the same store. If it does not, the instance's
-  existing threads are **not** silently re-pointed: they are shown as unavailable until the
-  user confirms the change.
+- whether an edited socket path or harness home still points at the same store. If it does
+  not, the instance's existing threads are **not** silently re-pointed: they are shown as
+  unavailable until the user confirms the change.
+
+**Same store** is decided by the store key each kind computes from a home — the key its probe
+reports. Codex's key is the home's real path, so a symlink to the same folder is the same
+store; Claude Code's is the resolved path as written, so a symlink is another store (P300).
+
+A `providerInstance/update` whose `home` (or `env`) leads to another store is refused with
+`store_change`, nothing changed, its `data` naming the `current` and the `next` home — unless
+it carries `confirmStoreChange: true`, which the window sends, as a new operation, only after
+the user confirms. Afterwards (P10, P300):
+
+- the instance's threads of the old store stay listed and carry
+  `ThreadSummary.unavailable` (the reason, shown as-is); a scan of the new store does not
+  trim them;
+- turns, steer, rename, archive, delete, unarchive and fork are refused for them with
+  `provider_unavailable`, and their history is not read from the new store;
+- harness thread ids are indexed per store, so a conversation of the new store never receives
+  another store's events even when the two use the same id;
+- they are usable again as soon as the instance leads back to their store.
 
 **Decided:** Claude Code has a single instance per target in the MVP. The contract allows
 several — for example separate config directories for two accounts — and that can be added

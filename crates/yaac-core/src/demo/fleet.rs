@@ -57,7 +57,12 @@ pub(crate) struct Fleet {
     pub view: BTreeMap<ThreadKey, crate::state::ViewPref>,
     /// Instances whose "Trust folders YAAC works in" switch is off (D147), by target.
     pub trust_off: BTreeMap<TargetId, Vec<String>>,
+    /// Harness homes set in instances' configurations (P300), by target: (instance, home).
+    pub homes: BTreeMap<TargetId, Vec<(String, String)>>,
 }
+
+/// The demo Codex's default harness home (P300).
+pub(crate) const DEMO_CODEX_HOME: &str = "/home/demo/.codex";
 
 pub(crate) const ORCH: (&str, &str) = ("local", "t-orch");
 pub(crate) const USERS: (&str, &str) = ("local", "t-users");
@@ -174,13 +179,14 @@ pub(crate) fn codex(instance: &str, name: Option<&str>, status: ProviderStatus) 
         display_name: display,
         backend: BackendKind::Daemon,
         harness_version: Some("0.171".into()),
-        store: StoreIdentity { key: Some(format!("store-{instance}")), home: None, account: None },
+        store: StoreIdentity { key: Some(format!("store-{instance}")), home: Some(yaac_protocol::TargetPath::new(DEMO_CODEX_HOME)), account: None },
         status,
         status_message: None,
         // The demo's Codex can change a conversation's folder (D144) and mark folders trusted
         // (D147); its Claude cannot.
         // Codex can add input to a running turn (`turn/steer`); Claude Code cannot (D166).
-        capabilities: [caps(), vec![Capability::ThreadMoveWorkingDirectory, Capability::FolderTrust, Capability::Steer]].concat(),
+        // Its harness home can be set (P300); Claude's cannot, in the demo.
+        capabilities: [caps(), vec![Capability::ThreadMoveWorkingDirectory, Capability::FolderTrust, Capability::Steer, Capability::ConfigurableHome]].concat(),
         models: vec![
             model("gpt-6.2-sol", true, Support::Supported),
             model("gpt-6.2-astra", false, Support::Supported),
@@ -333,6 +339,7 @@ impl Fleet {
             fast: false,
             placement: None,
             subagent: None,
+            unavailable: None,
         };
         let effective = self.effective_for(key, instance, model_id);
         self.threads.insert(
@@ -563,6 +570,7 @@ impl Fleet {
             projects: BTreeMap::new(),
             view: BTreeMap::new(),
             trust_off: BTreeMap::new(),
+            homes: BTreeMap::new(),
         };
         f.providers.insert(TargetId::new("local"), vec![codex("codex", None, ProviderStatus::Ready), claude(ProviderStatus::Ready)]);
         f.providers.insert(
@@ -963,6 +971,7 @@ impl Fleet {
             projects: BTreeMap::new(),
             view: BTreeMap::new(),
             trust_off: BTreeMap::new(),
+            homes: BTreeMap::new(),
         };
         let mut c = claude(ProviderStatus::NeedsAuth);
         c.status_message = Some(SIGN_IN_HINT.into());

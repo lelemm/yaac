@@ -872,6 +872,9 @@ impl Inner {
                                 if self.fleet.trust_off.get(target).is_some_and(|off| off.iter().any(|i| i == x.instance.as_str())) {
                                     v["trustFolders"] = json!(false);
                                 }
+                                if let Some((_, h)) = self.fleet.homes.get(target).and_then(|hs| hs.iter().find(|(i, _)| i == x.instance.as_str())) {
+                                    v["home"] = json!(h);
+                                }
                                 if let Some(n) = &x.name {
                                     v["name"] = json!(n);
                                     v["endpoint"] = json!({ "socket": format!("/run/user/1000/codex-{n}/control.sock") });
@@ -916,6 +919,29 @@ impl Inner {
                     off.retain(|i| i != &iid);
                     if !on {
                         off.push(iid.clone());
+                    }
+                }
+                // The harness home (P300): another folder is another store, refused until confirmed.
+                if let Some(h) = p.get("home") {
+                    let set = h.as_str().filter(|s| !s.is_empty()).map(str::to_owned);
+                    let next = set.clone().unwrap_or_else(|| fleet::DEMO_CODEX_HOME.to_owned());
+                    let x = self.fleet.providers.get_mut(target).and_then(|ps| ps.iter_mut().find(|x| x.instance.as_str() == iid));
+                    let Some(x) = x else {
+                        self.ready.push_back(error(id, ErrorCode::InstanceNotFound, "no such instance"));
+                        return;
+                    };
+                    let current = x.store.home.as_ref().map(ToString::to_string);
+                    if current.as_deref() != Some(next.as_str()) && p.get("confirmStoreChange").and_then(Value::as_bool) != Some(true) {
+                        let data = json!({ "current": current, "next": next });
+                        self.ready.push_back(Message::Error { id: Some(id), error: ErrorObject::new(ErrorCode::StoreChange, "another store").with_data(data) });
+                        return;
+                    }
+                    x.store.home = Some(yaac_protocol::TargetPath::new(next.clone()));
+                    x.store.key = Some(format!("store-{iid}-{next}"));
+                    let hs = self.fleet.homes.entry(target.clone()).or_default();
+                    hs.retain(|(i, _)| i != &iid);
+                    if let Some(s) = set {
+                        hs.push((iid.clone(), s));
                     }
                 }
                 self.ready.push_back(result(id, json!({ "instance": { "id": iid, "kind": "", "enabled": true, "backend": "auto" } })));

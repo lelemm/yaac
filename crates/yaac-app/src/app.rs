@@ -533,7 +533,14 @@ pub(crate) enum Action {
     /// Ask the hub for the installed WSL distros again (`hub/wsl/distros`).
     LoadDistros,
     RefreshProviders(TargetId, Option<InstanceId>),
-    AddInstance(TargetId, ProviderKind, String, String),
+    /// Target, kind, name, socket, harness home (P300; empty: the default).
+    AddInstance(TargetId, ProviderKind, String, String, String),
+    /// Set an instance's harness home (P300); empty: back to the default.
+    InstanceHome(TargetId, InstanceId, String),
+    /// Confirm the waiting harness-home change to another store (P300).
+    ConfirmInstanceHome,
+    /// Keep the current harness home.
+    CancelInstanceHome,
     UpdateInstance(TargetId, InstanceId, String, String),
     InstanceEnabled(TargetId, InstanceId, bool),
     RemoveInstance(TargetId, InstanceId),
@@ -1273,7 +1280,10 @@ impl YaacApp {
                 }
                 Action::LoadDistros => self.client.load_wsl_distros(),
                 Action::RefreshProviders(t, i) => self.client.refresh_providers(&t, i.as_ref()),
-                Action::AddInstance(t, kind, name, socket) => self.client.add_instance(&t, &kind, Some(&name), Some(&socket)),
+                Action::AddInstance(t, kind, name, socket, home) => self.client.add_instance(&t, &kind, Some(&name), Some(&socket), Some(&home)),
+                Action::InstanceHome(t, i, home) => self.client.set_instance_home(&t, &i, Some(&home), false),
+                Action::ConfirmInstanceHome => self.client.confirm_instance_home(),
+                Action::CancelInstanceHome => self.client.cancel_instance_home(),
                 Action::UpdateInstance(t, i, name, socket) => {
                     let name = name.trim().to_owned();
                     let socket = socket.trim().to_owned();

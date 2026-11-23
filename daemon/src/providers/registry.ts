@@ -5,8 +5,10 @@
 // so also has an implicit default instance. The registry owns each instance's provider
 // object and its descriptor, whose `revision` only ever increases.
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
+  Capability,
   ProviderDescriptor,
   ProviderInstanceAddParams,
   ProviderInstanceConfig,
@@ -15,7 +17,7 @@ import type {
 import { canonical } from "../protocol/json.js";
 import { RpcError } from "../protocol/rpc.js";
 import { ensureDir, randomId, readJson, writeJsonAtomic } from "../util/fsx.js";
-import type { HarnessProvider, MeshHooks, ProbeResult, ProviderEvent, ProviderFactory } from "./types.js";
+import type { HarnessHome, HarnessProvider, MeshHooks, ProbeResult, ProviderEvent, ProviderFactory } from "./types.js";
 
 export interface Instance {
   config: ProviderInstanceConfig;
@@ -112,17 +114,81 @@ export class ProviderRegistry {
     return config.name ? `${kind} · ${config.name}` : kind;
   }
 
+  // ── The harness home (P300) ────────────────────────────────────────────────────────────
+
+  /** The kind's harness home, when it has one the user may set. */
+  private homeOf(kind: string): HarnessHome | undefined {
+    return this.factories.get(kind)?.home;
+  }
+
+  /** Capabilities that come from the kind and yaacd, not from a probe. */
+  private ownCapabilities(kind: string): Capability[] {
+    return this.homeOf(kind) ? ["configurableHome"] : [];
+  }
+
+  /**
+   * The home an instance uses with this configuration (P300), or null for a kind without one.
+   * Precedence: the instance's `home`; then the kind's variable in the instance's `env`; then
+   * in the daemon's environment (on WSL that carries P297's `.bashrc` exports); then the
+   * harness default.
+   */
+  configuredHome(config: ProviderInstanceConfig): string | null {
+    const h = this.homeOf(config.kind);
+    if (!h) return null;
+    const fromEnv = (v: string | undefined) => (v && v.length > 0 ? v : null);
+    return config.home ?? fromEnv(config.env?.[h.variable]) ?? fromEnv(this.env[h.variable]) ?? h.defaultHome(this.env);
+  }
+
+  /** The configuration the provider applies: `home` put in `env` under the kind's variable. */
+  private applied(config: ProviderInstanceConfig): ProviderInstanceConfig {
+    const h = this.homeOf(config.kind);
+    if (!h || !config.home) return config;
+    return { ...config, env: { ...(config.env ?? {}), [h.variable]: config.home } };
+  }
+
+  /** A home as typed: trimmed, `~` expanded against the daemon's home; an existing folder. */
+  private checkHome(kind: string, raw: unknown): string {
+    if (!this.homeOf(kind)) throw new RpcError("capability_missing", `a ${kind} instance has no harness home to set`);
+    if (typeof raw !== "string") throw new RpcError("invalid_params", "home must be a path");
+    let p = raw.trim();
+    const userHome = this.env.HOME ?? this.env.USERPROFILE;
+    if (userHome && (p === "~" || p.startsWith("~/"))) p = path.join(userHome, p.slice(1));
+    if (!path.isAbsolute(p)) throw new RpcError("invalid_params", `the harness home must be an absolute path: ${raw}`);
+    p = path.normalize(p);
+    if (p.length > 1) p = p.replace(/[\\/]+$/, "") || p;
+    let dir = false;
+    try {
+      dir = fs.statSync(p).isDirectory();
+    } catch {
+      dir = false;
+    }
+    if (!dir) throw new RpcError("invalid_params", `there is no folder at ${p} on this target`);
+    return p;
+  }
+
+  /**
+   * Whether two homes of one kind lead to the same store: the same store key, as the kind's
+   * probe would report it. Codex's key is the real path, so a symlink to the same folder is the
+   * same store; Claude Code's is the resolved path, so it is not, and its threads would not
+   * follow — the user is asked.
+   */
+  private sameStore(kind: string, a: string, b: string): boolean {
+    const h = this.homeOf(kind);
+    return !h || h.storeKey(a) === h.storeKey(b);
+  }
+
   private placeholder(config: ProviderInstanceConfig, status: ProviderDescriptor["status"], message?: string): ProviderDescriptor {
+    const home = this.configuredHome(config);
     return {
       instance: config.id,
       kind: config.kind,
       name: config.name ?? null,
       displayName: this.displayName(config),
       backend: "sdk",
-      store: { key: null },
+      store: home ? { key: null, home } : { key: null },
       status,
       statusMessage: message ?? null,
-      capabilities: [],
+      capabilities: this.ownCapabilities(config.kind),
       models: [],
       modelsComplete: false,
       modes: [],
@@ -141,7 +207,7 @@ export class ProviderRegistry {
     } else {
       const stateDir = path.join(this.home, "providers", config.id);
       ensureDir(stateDir);
-      provider = factory.create({ config, stateDir, home: this.home, env: this.env, log: (l) => this.log(`[${config.id}] ${l}`) });
+      provider = factory.create({ config: this.applied(config), stateDir, home: this.home, env: this.env, log: (l) => this.log(`[${config.id}] ${l}`) });
       if (this.meshHooks) provider.attachMesh?.(this.meshHooks(config.id));
       descriptor = this.placeholder(config, "probing");
     }
@@ -211,11 +277,14 @@ export class ProviderRegistry {
       displayName: this.displayName(instance.config, result.displayName),
       backend: result.backend,
       harnessVersion: result.harnessVersion ?? null,
-      store: result.store,
+      // A harness that did not say where its home is (not reachable, not signed in): the one
+      // it is configured to use, so Settings can show it (P300).
+      store: result.store.home || !this.homeOf(instance.config.kind) ? result.store : { ...result.store, home: this.configuredHome(instance.config) },
       status: result.status,
       statusMessage: result.statusMessage ?? null,
-      // `threadMove` is yaacd's own (D144): it can place any instance's threads.
-      capabilities: result.capabilities.includes("threadMove") ? result.capabilities : [...result.capabilities, "threadMove"],
+      // `threadMove` is yaacd's own (D144): it can place any instance's threads; and
+      // `configurableHome` the kind's (P300), whatever the probe found.
+      capabilities: [...result.capabilities, ...["threadMove" as const, ...this.ownCapabilities(instance.config.kind)].filter((c) => !result.capabilities.includes(c))],
       models: result.models,
       modelsComplete: result.modelsComplete,
       modes: result.modes,
@@ -251,6 +320,7 @@ export class ProviderRegistry {
     if (params.name) config.name = params.name;
     if (params.endpoint) config.endpoint = params.endpoint;
     if (params.env && Object.keys(params.env).length > 0) config.env = params.env;
+    if (params.home !== undefined && params.home !== null && params.home !== "") config.home = this.checkHome(params.kind, params.home);
     this.stored.push(config);
     this.save();
     const instance = this.materialise(config);
@@ -273,6 +343,19 @@ export class ProviderRegistry {
       else config.endpoint = params.endpoint;
     }
     if (params.env !== undefined && params.env !== null) config.env = params.env;
+    if (params.home !== undefined) {
+      if (params.home === null || params.home === "") delete config.home;
+      else config.home = this.checkHome(config.kind, params.home);
+    }
+    // Another store (P10, P300): asked for only once the user confirmed it; the instance's
+    // threads stay bound to the store they belong to and show unavailable meanwhile.
+    if ((params.home !== undefined || (params.env !== undefined && params.env !== null)) && params.confirmStoreChange !== true) {
+      const next = this.configuredHome(config);
+      const current = instance.descriptor.store.home ?? this.configuredHome(instance.config);
+      if (next && current && !this.sameStore(config.kind, current, next)) {
+        throw new RpcError("store_change", `${instance.descriptor.displayName} would use another store: ${next} instead of ${current}. Its threads stay with ${current} and show unavailable until it is changed back.`, { current, next });
+      }
+    }
     // "Trust folders YAAC works in" (D147): absent in the stored configuration means on.
     if (params.trustFolders === true) delete config.trustFolders;
     else if (params.trustFolders === false) config.trustFolders = false;

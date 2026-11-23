@@ -225,6 +225,7 @@ export const FROZEN_CORE_METHODS = [
 export const ERROR_CODES = {
   PROTOCOL_UNSUPPORTED: "protocol_unsupported",
   PROVIDER_UNAVAILABLE: "provider_unavailable",
+  STORE_CHANGE: "store_change",
   NEEDS_AUTH: "needs_auth",
   CAPABILITY_MISSING: "capability_missing",
   THREAD_NOT_FOUND: "thread_not_found",

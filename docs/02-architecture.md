@@ -298,6 +298,8 @@ Inherited values take precedence. If Bash or `timeout` is unavailable or the pro
 out, startup continues with the inherited environment. A daemon
 started by the bridge inherits these directories. An already serving daemon keeps the
 environment it started with until it exits or hands over through the normal update path.
+These values are only the daemon's environment: an instance's own harness home (`home`, P300,
+[04](04-providers.md#harness-home)) wins over them, and so does the variable in its `env`.
 
 Two things to prove before building on WSL (spikes S2 and S8):
 

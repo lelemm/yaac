@@ -529,7 +529,7 @@ export class ClaudeProvider implements HarnessProvider {
     const auth = await this.cli.authStatus();
     const configDir = auth?.configDirectory ?? this.options.env.CLAUDE_CONFIG_DIR ?? path.join(this.options.env.HOME ?? os.homedir(), ".claude");
     this.configDir = configDir;
-    const store = { key: `claude:${sha256Hex(path.resolve(configDir)).slice(0, 16)}`, home: configDir };
+    const store = { key: claudeStoreKey(configDir), home: configDir };
     if (auth && !auth.loggedIn) {
       return this.result("needsAuth", "Claude Code is not signed in on this target; run `claude auth login` there", { harnessVersion: version, store });
     }
@@ -1747,4 +1747,15 @@ export const claudeProviderFactory: ProviderFactory = {
       log: ctx.log,
     });
   },
+  // The harness home (P300) is `CLAUDE_CONFIG_DIR`: sessions, settings and sign-in follow it.
+  home: {
+    variable: "CLAUDE_CONFIG_DIR",
+    defaultHome: (env) => path.join(env.HOME ?? env.USERPROFILE ?? os.homedir(), ".claude"),
+    storeKey: claudeStoreKey,
+  },
 };
+
+/** The store identity key of a Claude Code configuration folder (as the probe reports it). */
+export function claudeStoreKey(configDir: string): string {
+  return `claude:${sha256Hex(path.resolve(configDir)).slice(0, 16)}`;
+}

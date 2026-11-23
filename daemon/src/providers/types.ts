@@ -419,7 +419,10 @@ export interface HarnessProvider {
 
 /** Context yaacd gives a provider instance. */
 export interface ProviderContext {
-  /** The stored instance configuration. */
+  /**
+   * The instance configuration, as the provider should apply it: the stored one, with its
+   * harness home (P300) already put in `env` under the kind's own variable.
+   */
   config: ProviderInstanceConfig;
   /** A private state directory for this instance, under the yaacd home. */
   stateDir: string;
@@ -441,4 +444,19 @@ export interface ProviderFactory {
   /** Whether an implicit default instance of this kind exists without configuration. */
   implicit(env: NodeJS.ProcessEnv): boolean;
   create(ctx: ProviderContext): HarnessProvider;
+  /**
+   * The kind's harness home (P300), when it has one the user may set: the registry then
+   * offers `configurableHome` and maps the instance's `home` to `variable`.
+   */
+  home?: HarnessHome;
+}
+
+/** Where a kind keeps its configuration, sessions and sign-in (P300). */
+export interface HarnessHome {
+  /** The environment variable that names it (Codex: `CODEX_HOME`). */
+  variable: string;
+  /** The harness's own default when nothing names it, from the given environment. */
+  defaultHome(env: NodeJS.ProcessEnv): string;
+  /** The store identity key a home leads to — the same key the provider's probe reports. */
+  storeKey(home: string): string;
 }

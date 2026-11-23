@@ -265,6 +265,44 @@ export function movedNote(from: string, to: string): string {
   return `[YAAC] Your working directory is now ${to}. It was ${from}; paths earlier in this conversation refer to that folder.\n\n---\n\n`;
 }
 
+/**
+ * Threads by their harness id within an instance. Two stores of one instance (its home or
+ * socket changed, P10/P300) may use the same harness id; the thread of the store the instance
+ * leads to now wins, then one bound before its store was known.
+ */
+class NativeIndex {
+  private map = new Map<string, Array<{ store: string | null; id: string }>>();
+
+  private key(instance: string, native: string): string {
+    return `${instance}\u0000${native}`;
+  }
+
+  set(instance: string, store: string | null, native: string, id: string): void {
+    const k = this.key(instance, native);
+    const list = (this.map.get(k) ?? []).filter((e) => e.id !== id && e.store !== store);
+    list.push({ store, id });
+    this.map.set(k, list);
+  }
+
+  /** With the instance's store unknown (`now` null), any; else only one of that store, or unbound. */
+  get(instance: string, native: string, now: string | null): string | undefined {
+    const list = this.map.get(this.key(instance, native)) ?? [];
+    if (now === null) return list.at(-1)?.id;
+    return (list.find((e) => e.store === now) ?? list.find((e) => e.store === null))?.id;
+  }
+
+  has(instance: string, native: string, now: string | null): boolean {
+    return this.get(instance, native, now) !== undefined;
+  }
+
+  delete(instance: string, native: string, id: string): void {
+    const k = this.key(instance, native);
+    const list = (this.map.get(k) ?? []).filter((e) => e.id !== id);
+    if (list.length > 0) this.map.set(k, list);
+    else this.map.delete(k);
+  }
+}
+
 export function threadIdFor(kind: string, storeKey: string | null, instance: string, native: string): string {
   const basis = storeKey ? ["s", kind, storeKey, native] : ["i", instance, native];
   return `t_${sha256Hex(JSON.stringify(basis)).slice(0, 32)}`;
@@ -297,7 +335,7 @@ export class Core {
   /** The agent mesh, when one is attached (WP7). */
   mesh: CoreMeshHooks | null = null;
   private threads = new Map<string, ThreadRuntime>();
-  private byNative = new Map<string, string>();
+  private byNative = new NativeIndex();
   /** Harness sub-agents (D151) of each parent, by `nativeKey(instance, parent native)`: thread ids. */
   private subagentKids = new Map<string, Set<string>>();
   private snapshots = new Map<string, Snapshot>();
@@ -399,7 +437,7 @@ export class Core {
         rt.tokens = runtime.tokens ?? null;
       }
       this.threads.set(record.id, rt);
-      this.byNative.set(`${record.instance}\u0000${record.native}`, record.id);
+      this.byNative.set(record.instance, record.storeKey, record.native, record.id);
       this.linkSubagent(rt);
     }
   }
@@ -580,6 +618,9 @@ export class Core {
       const listedNatives = new Set(seen.map((i) => i.native));
       for (const rt of this.allThreads()) {
         if (rt.record.instance !== id) continue;
+        // A thread of another store (the instance's home or socket changed, P10/P300) is not
+        // in this listing for that reason alone: it is kept, and shown unavailable.
+        if (this.storeAway(rt)) continue;
         const inCaps = within.has(rt.record.native) || (listedNatives.has(rt.record.native) && keptNow({ native: rt.record.native } as NativeThreadInfo));
         if (!inCaps && !this.neverCut(rt)) {
           if (!rt.record.capped) this.setCapped(rt, true);
@@ -840,6 +881,11 @@ export class Core {
     return [...this.threads.values()].filter((t) => !t.deleted);
   }
 
+  /** The store an instance leads to now, when known. */
+  private storeNow(instance: string): string | null {
+    return this.registry.get(instance)?.descriptor.store.key ?? null;
+  }
+
   private nativeKey(instance: string, native: string): string {
     return `${instance}\u0000${native}`;
   }
@@ -855,7 +901,7 @@ export class Core {
         existing.record.alsoVisibleTo = [...also];
         existing.saveRecord();
       }
-      this.byNative.set(this.nativeKey(instance.config.id, native), id);
+      this.byNative.set(instance.config.id, existing.record.storeKey, native, id);
       return existing;
     }
     const now = nowIso();
@@ -876,7 +922,7 @@ export class Core {
     rt.saveRecord();
     rt.openJournal(this.opts.journal, fresh);
     this.threads.set(id, rt);
-    this.byNative.set(this.nativeKey(instance.config.id, native), id);
+    this.byNative.set(instance.config.id, storeKey, native, id);
     void this.resolveProject(rt);
     return rt;
   }
@@ -1100,7 +1146,7 @@ export class Core {
   }
 
   private discovered(instance: Instance, info: NativeThreadInfo, capped?: boolean): ThreadRuntime {
-    const known = this.byNative.get(this.nativeKey(instance.config.id, info.native));
+    const known = this.byNative.get(instance.config.id, info.native, this.storeNow(instance.config.id));
     let rt = known ? this.threads.get(known) : undefined;
     if (!rt || rt.deleted) {
       // Seen outside a scan (a harness event): only the age cap can be checked here.
@@ -1187,6 +1233,8 @@ export class Core {
       archived: r.archived ?? false,
       agents: r.agents ?? "ask",
     };
+    const away = this.storeAway(rt);
+    if (away) s.unavailable = away;
     if (r.hold) s.hold = r.hold;
     if (r.fast) s.fast = true;
     if (r.model) s.model = r.model;
@@ -1225,6 +1273,32 @@ export class Core {
       if (git?.branch) s.branch = git.branch;
     }
     return s;
+  }
+
+  /**
+   * Why the thread cannot be used while its instance leads to another store than the one it
+   * is bound to (P10, P300), or null. Unknown keys on either side are not evidence.
+   */
+  storeAway(rt: ThreadRuntime): string | null {
+    const bound = rt.record.storeKey;
+    const inst = this.registry.get(rt.record.instance);
+    const now = inst?.descriptor.store.key ?? null;
+    if (!bound || !now || bound === now) return null;
+    return `${inst!.descriptor.displayName} now uses another store${inst!.descriptor.store.home ? ` (${inst!.descriptor.store.home})` : ""}. This thread belongs to the one it used before; change the instance's harness home back in Settings → Providers to use it.`;
+  }
+
+  /** Refuses to drive a thread of another store than its instance's now (P10, P300). */
+  private checkStore(rt: ThreadRuntime): void {
+    const away = this.storeAway(rt);
+    if (away) throw rpc("provider_unavailable", away);
+  }
+
+  /** After an instance's configuration changed: its threads' availability, then its listing. */
+  async instanceChanged(id: string): Promise<void> {
+    const inst = this.registry.get(id);
+    if (!inst) return;
+    for (const rt of this.allThreads()) if (rt.record.instance === id) this.updateIndex(rt);
+    await this.scanInstance(inst);
   }
 
   holderOf(rt: ThreadRuntime): Holder {
@@ -1353,7 +1427,8 @@ export class Core {
         if (!journal.complete) {
           const inst = this.registry.get(rt.record.instance);
           const provider = inst?.provider;
-          if (provider && (inst.descriptor.capabilities ?? []).includes("threadRead")) {
+          // Not from another store than the thread's (P10, P300): what the journal has is shown.
+          if (provider && (inst.descriptor.capabilities ?? []).includes("threadRead") && !this.storeAway(rt)) {
             let cursor: string | null | undefined = null;
             try {
               for (let i = 0; i < 100000; i++) {
@@ -1722,6 +1797,7 @@ export class Core {
   // ── Input ──────────────────────────────────────────────────────────────────────────────
 
   private provider(rt: ThreadRuntime): HarnessProvider {
+    this.checkStore(rt);
     return this.registry.usable(rt.record.instance).provider;
   }
 
@@ -1930,6 +2006,7 @@ export class Core {
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
       let inst;
       try {
+        this.checkStore(rt);
         inst = this.registry.usable(rt.record.instance).instance;
       } catch (e) {
         throw new NotActed(e as RpcError);
@@ -2394,7 +2471,7 @@ export class Core {
 
   /** The thread a provider instance knows by this native id. */
   threadByNative(instance: string, native: NativeId): ThreadRuntime | undefined {
-    const id = this.byNative.get(this.nativeKey(instance, native));
+    const id = this.byNative.get(instance, native, this.storeNow(instance));
     const rt = id ? this.threads.get(id) : undefined;
     return rt && !rt.deleted ? rt : undefined;
   }
@@ -2523,6 +2600,8 @@ export class Core {
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
       await this.refreshExternal(rt);
       this.checkWriter(rt, client, true);
+      const away = this.storeAway(rt);
+      if (away) throw notActed("provider_unavailable", away);
       const provider = this.registry.get(rt.record.instance)?.provider;
       const eff = rt.effective ?? (await this.computeEffective(rt));
       if (!provider?.steer || !(eff.capabilities ?? []).includes("steer")) throw notActed("capability_missing", "this thread cannot be steered");
@@ -2621,8 +2700,10 @@ export class Core {
       src.record.storeKey === dest.descriptor.store.key;
     const can = sameStore && typeof srcInst?.provider?.forkThread === "function" && (srcInst.descriptor.capabilities ?? []).includes("threadFork");
     if (can) return { kind: "native", dest };
-    let unavailable: string | null = null;
-    if (!srcInst?.provider || !(srcInst.descriptor.capabilities ?? []).includes("threadRead")) {
+    let unavailable: string | null = this.storeAway(src);
+    if (unavailable) {
+      // Its history is in a store the instance does not lead to now (P10, P300).
+    } else if (!srcInst?.provider || !(srcInst.descriptor.capabilities ?? []).includes("threadRead")) {
       unavailable = "this thread's provider cannot read its history back, so YAAC will not fork it";
     } else if (!fs.existsSync(src.record.cwd)) {
       unavailable = `the working directory ${src.record.cwd} no longer exists on this target`;
@@ -2881,6 +2962,8 @@ export class Core {
   private async gated(rt: ThreadRuntime, cap: Capability, method: "rename" | "archive" | "remove"): Promise<HarnessProvider> {
     const readOnly = this.subagentReadOnly(rt);
     if (readOnly) throw notActed("thread_in_use", readOnly);
+    const away = this.storeAway(rt);
+    if (away) throw notActed("provider_unavailable", away);
     const inst = this.registry.get(rt.record.instance);
     const provider = inst?.provider;
     if (!provider || typeof provider[method] !== "function" || !(inst!.descriptor.capabilities ?? []).includes(cap)) {
@@ -2923,6 +3006,8 @@ export class Core {
     await this.ops.run("thread/unarchive", p.opId, async () => {
       const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)}`);
+      const away = this.storeAway(rt);
+      if (away) throw notActed("provider_unavailable", away);
       const inst = this.registry.get(rt.record.instance);
       const provider = inst?.provider;
       if (!provider || typeof provider.unarchive !== "function" || !(inst!.descriptor.capabilities ?? []).includes("threadArchive")) {
@@ -2982,7 +3067,7 @@ export class Core {
     // A handoff transcript is pinned to its thread: it goes with it.
     if (rt.record.handoffTranscript) fs.rmSync(path.dirname(rt.record.handoffTranscript), { recursive: true, force: true });
     this.threads.delete(rt.id);
-    this.byNative.delete(this.nativeKey(rt.record.instance, rt.record.native));
+    this.byNative.delete(rt.record.instance, rt.record.native, rt.id);
     if (this.index.remove(rt.id)) this.broadcast("thread/removed", { threadId: rt.id, token: this.index.token });
     this.activity.emit();
   }
@@ -3003,21 +3088,21 @@ export class Core {
     // Not about a thread: the registry's listeners (re-probe; rate limits, session/ratelimits.ts) take these.
     if (ev.type === "descriptorChanged" || ev.type === "rateLimitsChanged") return;
     if (ev.type === "threadChanged") {
-      if (this.pendingStarts.has(instanceId) && !this.byNative.has(this.nativeKey(instanceId, ev.info.native))) {
+      if (this.pendingStarts.has(instanceId) && !this.byNative.has(instanceId, ev.info.native, this.storeNow(instanceId))) {
         this.bufferEvent(instanceId, ev);
         return;
       }
-      if (this.isForgotten(instanceId, ev.info.native) && !this.byNative.has(this.nativeKey(instanceId, ev.info.native))) return;
+      if (this.isForgotten(instanceId, ev.info.native) && !this.byNative.has(instanceId, ev.info.native, this.storeNow(instanceId))) return;
       this.discovered(instance, ev.info);
       return;
     }
     if (ev.type === "threadRemoved") {
-      const id = this.byNative.get(this.nativeKey(instanceId, ev.thread));
+      const id = this.byNative.get(instanceId, ev.thread, this.storeNow(instanceId));
       const rt = id ? this.threads.get(id) : undefined;
       if (rt) this.forget(rt);
       return;
     }
-    const id = this.byNative.get(this.nativeKey(instanceId, ev.thread));
+    const id = this.byNative.get(instanceId, ev.thread, this.storeNow(instanceId));
     let rt = id ? this.threads.get(id) : undefined;
     if (!rt) {
       if (this.pendingStarts.has(instanceId)) {

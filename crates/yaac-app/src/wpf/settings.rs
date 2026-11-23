@@ -614,6 +614,31 @@ fn providers(app: &YaacApp, target: Option<&TargetId>) -> Value {
                 ]
             }));
         }
+        // The harness home (P300): the folder in use, Change, the inline field, and the
+        // confirmation when the new folder is another store.
+        if let Some(home) = &row.home {
+            let editing = app.ui.set.home_edit.as_ref().filter(|(t, i, _)| t == target && i == &row.instance);
+            if let Some((_, _, text)) = editing {
+                let mut acts = vec![submit(args(action("provider.homeSave", "Save", !v.offline), context.clone()), false)];
+                if home.set.is_some() {
+                    acts.push(args(action("provider.homeDefault", "Use default", !v.offline), context.clone()));
+                }
+                acts.push(cancel("provider.homeCancel", "Cancel"));
+                rows.push(json!({ "id": format!("home-edit:{}:{}", target, row.instance), "layout": "inline",
+                    "detail": "Empty: the harness default. Threads stay with the store they belong to.",
+                    "fields": [field("home", "Harness home", text, &home.placeholder())],
+                    "actions": acts }));
+            } else {
+                rows.push(json!({ "id": format!("home:{}:{}", target, row.instance), "label": "Harness home",
+                    "detail": home.line(),
+                    "actions": [args(action("provider.homeEdit", "Change", !v.offline), context.clone())] }));
+            }
+            if let Some(c) = state.home_confirm.as_ref().filter(|c| &c.target == target && c.instance == row.instance) {
+                rows.push(json!({ "id": format!("home-confirm:{}:{}", target, row.instance), "label": "Another store",
+                    "status": c.text(), "tone": "warning",
+                    "actions": [primary(action("provider.homeConfirm", "Change home", !v.offline)), action("provider.homeKeep", "Keep current", true)] }));
+            }
+        }
         let mut prefs = vec![args(
             toggle(
                 "provider.outside",
@@ -650,13 +675,18 @@ fn providers(app: &YaacApp, target: Option<&TargetId>) -> Value {
         .iter()
         .map(|kind| action(kind.as_str(), &model::kind_label(state, kind), true))
         .collect();
+    let mut add_fields = vec![
+        with(choice("kind", "Kind", active_kind.map(|kind| kind.as_str()), "provider.kind", choices), json!({ "required": true })),
+        with(field("name", "Name (optional)", "", "Name"), json!({ "validation": "any" })),
+        with(field("socket", "Socket (optional)", "", "/path/to/control.sock"), json!({ "validation": "any" })),
+    ];
+    // The harness home (P300), for a kind whose instances report `configurableHome`.
+    if active_kind.is_some_and(|k| v.home_kinds.contains(k)) {
+        add_fields.push(with(field("home", "Harness home (optional)", "", "Harness default"), json!({ "validation": "any" })));
+    }
     sections.push(section("add", "Add instance", vec![json!({
-        "id": format!("add:{}", target), "layout": "inline", "detail": "A second instance of a kind needs a name or its own socket.",
-        "fields": [
-            with(choice("kind", "Kind", active_kind.map(|kind| kind.as_str()), "provider.kind", choices), json!({ "required": true })),
-            with(field("name", "Name (optional)", "", "Name"), json!({ "validation": "any" })),
-            with(field("socket", "Socket (optional)", "", "/path/to/control.sock"), json!({ "validation": "any" }))
-        ],
+        "id": format!("add:{}", target), "layout": "inline", "detail": "A second instance of a kind needs a name, its own socket, or its own harness home.",
+        "fields": add_fields,
         "actions": [submit(args(action("provider.add", "Add", !v.offline && active_kind.is_some()), json!({ "target": target })), true)]
     })]));
     for other in state.targets.iter().filter(|t| &t.entry.id != target) {
@@ -1050,14 +1080,43 @@ pub(super) fn command(
             let kind = provider_kind(app, &target, values)?;
             let name = string(values, "name").trim();
             let socket = string(values, "socket").trim();
-            if name.is_empty() && socket.is_empty() {
-                return Err("Supply a name or socket for the instance.".into());
+            // The harness home (P300): only for a kind whose instances report it.
+            let home_kind = model::providers_view(&app.client.state, &target).is_some_and(|v| v.home_kinds.contains(&kind));
+            let home = if home_kind { string(values, "home").trim() } else { "" };
+            if name.is_empty() && socket.is_empty() && home.is_empty() {
+                return Err("Supply a name, socket or harness home for the instance.".into());
             }
-            Action::AddInstance(target, kind, name.to_owned(), socket.to_owned())
+            Action::AddInstance(target, kind, name.to_owned(), socket.to_owned(), home.to_owned())
         }
         "provider.cancel" => {
             app.ui.set.edit = None;
             return Ok(());
+        }
+        "provider.homeCancel" => {
+            app.ui.set.home_edit = None;
+            return Ok(());
+        }
+        "provider.homeConfirm" => Action::ConfirmInstanceHome,
+        "provider.homeKeep" => Action::CancelInstanceHome,
+        "provider.homeEdit" => {
+            let target = connected_target(app, values)?;
+            let instance = instance_id(app, &target, values)?;
+            let home = model::providers_view(&app.client.state, &target)
+                .and_then(|v| v.rows.into_iter().find(|row| row.instance == instance))
+                .and_then(|row| row.home)
+                .ok_or("This instance has no harness home to set.")?;
+            app.ui.set.home_edit = Some((target, instance, home.set.unwrap_or_default()));
+            return Ok(());
+        }
+        "provider.homeSave" | "provider.homeDefault" => {
+            let target = connected_target(app, values)?;
+            let instance = instance_id(app, &target, values)?;
+            if !app.ui.set.home_edit.as_ref().is_some_and(|(t, i, _)| t == &target && i == &instance) {
+                return Err("This harness home is not being edited.".into());
+            }
+            app.ui.set.home_edit = None;
+            let home = if id == "provider.homeSave" { string(values, "home").trim().to_owned() } else { String::new() };
+            Action::InstanceHome(target, instance, home)
         }
         "provider.edit" => {
             let target = connected_target(app, values)?;

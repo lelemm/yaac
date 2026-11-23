@@ -213,6 +213,10 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                         });
                     }
                 }
+                Banner::StoreAway { text } => {
+                    widgets::icon(ui, 16.0, |pa, c, d| icons::warning(pa, c, d, p.needs, p.faint));
+                    ui.add(egui::Label::new(text.as_str()).wrap());
+                }
             });
         });
     }

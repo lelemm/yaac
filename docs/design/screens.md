@@ -937,8 +937,28 @@ Three panels in the settings shell:
   - **Claude** — done mark — "Ready" · "2.1.329" · "SDK" · "account: work@example.com".
   - Each instance row ends with a small switch: "Offer YAAC tools to sessions started outside
     YAAC" — off — with the hint "edits this harness's own configuration".
+  - Under each Codex row (instances that report `configurableHome`, P300), in small monospace:
+    "Home · /home/me/.codex (default)" with **Change**. Claude here does not report it and
+    has no such line.
+  - **Codex**'s home being changed: an inline row "Harness home" with a field whose
+    placeholder is "Default · /home/me/.codex", holding `/home/me/harnessess/.codex`;
+    **Save**, **Cancel**, and the hint "Empty: the harness default. Threads stay with the store
+    they belong to."
+  - After **Save**, the target answers that this is another store, so beneath it a warning
+    mark and: "/home/me/harnessess/.codex is another store than /home/me/.codex. This
+    instance's threads stay with /home/me/.codex and show as unavailable until the home is
+    changed back. Change the home?" — **Change home**, **Keep current**.
 - An "Add instance" form, **empty**: Kind dropdown "Codex", Name field with placeholder
-  "optional", Socket path field with placeholder "/path/to/control.sock", **Add** (disabled).
+  "optional", Socket path field with placeholder "/path/to/control.sock", Harness home field
+  (only for a kind that reports `configurableHome`), **Add** (disabled). Hint: "A second
+  instance of a kind needs a name, its own socket, or its own harness home."
+- The WPF renderer shows the same content as Settings rows: "Harness home" with the line as
+  its detail and **Change**; the inline edit row; an "Another store" row in the warning tone
+  with **Change home** (primary) and **Keep current**.
+- Elsewhere, a thread of the old store: under its header a warning banner, "Codex now uses
+  another store (/home/me/harnessess/.codex). This thread belongs to the one it used before;
+  change the instance's harness home back in Settings → Providers to use it." The composer
+  is replaced by the same sentence.
 - A second example row, on a different target, shown beneath a divider "local":
   **Claude** — warning mark — "Not signed in — run `claude` in a terminal on this computer".
 

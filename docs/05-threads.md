@@ -47,8 +47,11 @@ needs a real answer, because two instances may share one conversation store.
   other instance is recorded as also able to see it.
 - *Seeing* a thread and *driving* it are tracked separately. Only one process can be a
   conversation's writer at a time.
-- If an instance's endpoint is edited and now leads to a different store, its threads are not
-  re-pointed. They show as unavailable until the user confirms the change.
+- If an instance's endpoint or harness home is edited and now leads to a different store, its
+  threads are not re-pointed. The edit needs the user's confirmation first; afterwards those
+  threads stay listed with `ThreadSummary.unavailable` and are read-only until the instance
+  leads back to their store (P10, P300;
+  [04](04-providers.md#an-instance-has-a-store-identity)).
 
 ## Thread summary
 

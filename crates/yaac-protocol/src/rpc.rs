@@ -47,6 +47,9 @@ open_enum! {
         ProtocolUnsupported = "protocol_unsupported",
         /// The instance cannot be reached.
         ProviderUnavailable = "provider_unavailable",
+        /// A `providerInstance/update` would point the instance at another store and lacks
+        /// `confirmStoreChange` (P300). Nothing was changed; `data` is a `StoreChangeData`.
+        StoreChange = "store_change",
         /// The harness is not signed in.
         NeedsAuth = "needs_auth",
         /// The instance or model cannot do what was asked.

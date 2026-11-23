@@ -359,6 +359,60 @@ pub struct InstanceRow {
     /// The "Trust folders YAAC works in" switch (D147): shown only when the instance reports
     /// `folderTrust`; on unless its stored configuration turns it off.
     pub trust_folders: Option<bool>,
+    /// The "Harness home" setting (P300): shown only when the instance reports
+    /// `configurableHome`.
+    pub home: Option<HomeField>,
+}
+
+/// An instance's harness home on the Providers page (P300).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HomeField {
+    /// The home the instance's configuration sets; `None`: the harness default.
+    pub set: Option<String>,
+    /// The home in use now, as the instance reports it: the field's placeholder.
+    pub effective: Option<String>,
+}
+
+impl HomeField {
+    /// The placeholder of an empty field: the folder in use, or the default in words.
+    pub fn placeholder(&self) -> String {
+        self.effective.as_ref().map_or_else(|| "Harness default".to_owned(), |e| format!("Default · {e}"))
+    }
+
+    /// The one-line summary under the instance: "Home · /home/me/.codex (default)".
+    pub fn line(&self) -> String {
+        match (&self.set, &self.effective) {
+            (Some(s), _) => format!("Home · {s}"),
+            (None, Some(e)) => format!("Home · {e} (default)"),
+            (None, None) => "Home · harness default".to_owned(),
+        }
+    }
+}
+
+/// A harness-home change that leads to another store, waiting for the user (P300).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HomeConfirm {
+    /// The target.
+    pub target: TargetId,
+    /// The instance.
+    pub instance: InstanceId,
+    /// The home asked for; `None`: back to the harness default.
+    pub home: Option<String>,
+    /// The home in use now, as the target said.
+    pub current: Option<String>,
+    /// The home asked for, as the target resolved it.
+    pub next: Option<String>,
+}
+
+impl HomeConfirm {
+    /// The question.
+    pub fn text(&self) -> String {
+        let next = self.next.clone().or_else(|| self.home.clone()).unwrap_or_else(|| "the harness default".to_owned());
+        let current = self.current.clone().unwrap_or_else(|| "the current home".to_owned());
+        format!(
+            "{next} is another store than {current}. This instance's threads stay with {current} and show as unavailable until the home is changed back. Change the home?"
+        )
+    }
 }
 
 /// The Providers page for one target.
@@ -375,6 +429,9 @@ pub struct ProvidersView {
     /// The kinds the Add form offers: those this target's (and every known target's) yaacd
     /// reports. Never a list in the window.
     pub kinds: Vec<ProviderKind>,
+    /// The kinds whose instances report `configurableHome` (P300): the Add form offers a
+    /// harness home for them.
+    pub home_kinds: Vec<ProviderKind>,
 }
 
 fn status_word(s: &ProviderStatus) -> &'static str {
@@ -438,6 +495,10 @@ pub fn providers_view(state: &AppState, target: &TargetId) -> Option<ProvidersVi
                 enabled: config.is_none_or(|c| c.enabled),
                 outside_tools: state.outside_tools.contains(&(target.clone(), p.instance.clone())),
                 trust_folders: p.capabilities.contains(&Capability::FolderTrust).then(|| config.is_none_or(|c| c.trust_folders != Some(false))),
+                home: p.capabilities.contains(&Capability::ConfigurableHome).then(|| HomeField {
+                    set: config.and_then(|c| c.home.as_ref()).map(ToString::to_string),
+                    effective: p.store.home.as_ref().map(ToString::to_string),
+                }),
             }
         })
         .collect();
@@ -447,7 +508,13 @@ pub fn providers_view(state: &AppState, target: &TargetId) -> Option<ProvidersVi
             kinds.push(k.clone());
         }
     }
-    Some(ProvidersView { target: target.clone(), target_name: t.entry.name.to_string(), offline: !t.connected(), rows, kinds })
+    let mut home_kinds: Vec<ProviderKind> = Vec::new();
+    for p in t.providers.iter().filter(|p| p.capabilities.contains(&Capability::ConfigurableHome)) {
+        if !home_kinds.contains(&p.kind) {
+            home_kinds.push(p.kind.clone());
+        }
+    }
+    Some(ProvidersView { target: target.clone(), target_name: t.entry.name.to_string(), offline: !t.connected(), rows, kinds, home_kinds })
 }
 
 /// A kind's label for the Add form: the display name of an instance of that kind without its

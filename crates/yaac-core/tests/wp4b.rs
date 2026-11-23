@@ -238,7 +238,7 @@ fn adding_and_removing_an_instance_goes_to_the_target() {
     let devbox = "devbox".into();
     let kind = c.state.target(&devbox).unwrap().providers[0].kind.clone();
     let before = c.state.target(&devbox).unwrap().providers.len();
-    c.add_instance(&devbox, &kind, Some("lab"), Some("/tmp/lab.sock"));
+    c.add_instance(&devbox, &kind, Some("lab"), Some("/tmp/lab.sock"), None);
     settle(&mut c, &hub);
     assert_eq!(c.state.target(&devbox).unwrap().providers.len(), before + 1);
     let added = c.state.target(&devbox).unwrap().providers.last().unwrap().instance.clone();
@@ -607,4 +607,80 @@ fn a_stopped_wsl_distro_disables_its_threads_until_started() {
     settle(&mut c, &hub);
     assert_eq!(c.state.stopped_distro(&wsl), None);
     assert!(c.state.may_act(&key));
+}
+
+// ── harness home (P300) ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn harness_home_is_offered_only_under_configurable_home() {
+    let (mut c, hub) = boot();
+    let devbox = "devbox".into();
+    c.list_instances(&devbox);
+    settle(&mut c, &hub);
+    let v = providers_view(&c.state, &devbox).expect("devbox");
+    // The demo's Codex reports `configurableHome`; its Claude does not, and gets no field.
+    let work = v.rows.iter().find(|r| r.name == "Codex · work").expect("work");
+    let home = work.home.as_ref().expect("a harness home field");
+    assert_eq!(home.set, None, "nothing set: the harness default");
+    assert_eq!(home.effective.as_deref(), Some("/home/demo/.codex"));
+    assert_eq!(home.placeholder(), "Default · /home/demo/.codex", "the placeholder is the folder in use");
+    let claude = v.rows.iter().find(|r| r.facts.iter().any(|f| f.starts_with("account:"))).expect("claude");
+    assert_eq!(claude.home, None);
+    assert!(v.home_kinds.iter().any(|k| k.as_str() == "codex"));
+    assert!(!v.home_kinds.iter().any(|k| k.as_str() == "claude"));
+}
+
+#[test]
+fn another_store_waits_for_confirmation_and_is_then_sent_once() {
+    let (mut c, hub) = boot();
+    let devbox = "devbox".into();
+    c.list_instances(&devbox);
+    settle(&mut c, &hub);
+    let row = |c: &Client| providers_view(&c.state, &devbox).unwrap().rows.into_iter().find(|r| r.name == "Codex · work").unwrap();
+    let id = row(&c).instance;
+    c.set_instance_home(&devbox, &id, Some(" /home/me/harnessess/.codex "), false);
+    settle(&mut c, &hub);
+    // Refused by the target: nothing changed, and the window asks.
+    let confirm = c.state.home_confirm.clone().expect("a confirmation waits");
+    assert_eq!(confirm.home.as_deref(), Some("/home/me/harnessess/.codex"));
+    assert_eq!(confirm.current.as_deref(), Some("/home/demo/.codex"));
+    assert!(confirm.text().contains("show as unavailable until the home is changed back"), "{}", confirm.text());
+    assert_eq!(row(&c).home.unwrap().set, None);
+    // Kept: nothing is sent again.
+    c.cancel_instance_home();
+    settle(&mut c, &hub);
+    assert!(c.state.home_confirm.is_none());
+    assert_eq!(row(&c).home.unwrap().set, None);
+    // Asked again and confirmed: the change is stored, and the descriptor shows it.
+    c.set_instance_home(&devbox, &id, Some("/home/me/harnessess/.codex"), false);
+    settle(&mut c, &hub);
+    c.confirm_instance_home();
+    settle(&mut c, &hub);
+    assert!(c.state.home_confirm.is_none());
+    let home = row(&c).home.unwrap();
+    assert_eq!(home.set.as_deref(), Some("/home/me/harnessess/.codex"));
+    assert_eq!(home.effective.as_deref(), Some("/home/me/harnessess/.codex"));
+    // The same folder again: no question.
+    c.set_instance_home(&devbox, &id, Some("/home/me/harnessess/.codex"), false);
+    settle(&mut c, &hub);
+    assert!(c.state.home_confirm.is_none());
+}
+
+#[test]
+fn a_thread_of_another_store_is_read_only_with_the_reason() {
+    let (mut c, hub) = boot();
+    let fix = threads::fix();
+    c.open(&fix);
+    settle(&mut c, &hub);
+    assert!(c.state.may_act(&fix));
+    let why = "Codex now uses another store. Change the instance's harness home back to use it.".to_owned();
+    let mut s = c.state.summary(&fix).cloned().expect("summary");
+    s.unavailable = Some(why.clone());
+    c.state.upsert_summary(&fix.target, s);
+    assert!(!c.state.may_act(&fix));
+    assert_eq!(c.state.store_away(&fix).as_deref(), Some(why.as_str()));
+    let map = yaac_core::attention::AttentionMap::compute(&c.state);
+    assert_eq!(yaac_core::header::composer(&c.state, &map, &fix), yaac_core::header::ComposerView::Absent { holder_line: why.clone() });
+    let h = yaac_core::header::header(&c.state, &map, &fix).expect("header");
+    assert!(h.banners.contains(&yaac_core::header::Banner::StoreAway { text: why }));
 }

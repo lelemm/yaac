@@ -367,6 +367,12 @@ pub struct ThreadSummary {
     /// Its parent is `spawnedBy`. Absent: an ordinary thread (or a YAAC worker).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent: Option<HarnessSubagent>,
+    /// Set when the thread cannot be used now because its instance points at another store
+    /// than the one the thread is bound to (P10, P300: the instance's home or socket was
+    /// changed). The reason, shown as-is. The thread is kept and works again once the instance
+    /// leads back to its store. Absent: usable as far as the store goes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
 }
 
 /// The model / effort / mode the harness reports it is **actually** using.
