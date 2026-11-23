@@ -481,12 +481,12 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             .as_f64()
             .unwrap_or_default()
             .clamp(0.0, 100_000.0);
+        let id = string(p, "id");
+        let id = id.strip_prefix("~run:").unwrap_or(id);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "bounded DIP offset is stored at UI precision"
         )]
-        let id = string(p, "id");
-        let id = id.strip_prefix("~run:").unwrap_or(id);
         let anchor = selected_item(app, id).map(|item| yaac_core::history::Anchor {
             item,
             offset: offset as f32,
