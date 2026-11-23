@@ -12,7 +12,7 @@ import type { ConnectionView, SessionHandler } from "../protocol/connection.js";
 import type { ClientLink, Core } from "./core.js";
 import { eventItemId } from "./items.js";
 import { lastSeqOf, type JournalEntry } from "./journal.js";
-import { fsList, projectResolve } from "./fsinfo.js";
+import { fsList, fsSearch, projectResolve } from "./fsinfo.js";
 
 export interface ClientOptions {
   /** Stop handing events to the connection above this many queued bytes. */
@@ -193,6 +193,8 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.THREAD_DELETE:
         await core.threadDelete(this, p as never);
         return {};
+      case METHODS.THREAD_COMPACT:
+        return core.threadCompact(this, p as never);
       case METHODS.THREAD_TAKE_OVER:
         return core.threadTakeOver(p as never);
       case METHODS.TURN_START:
@@ -219,6 +221,8 @@ export class ClientSession implements SessionHandler, ClientLink {
       }
       case METHODS.FS_LIST:
         return fsList(p as never);
+      case METHODS.FS_SEARCH:
+        return fsSearch(p as never);
       case METHODS.PROJECT_RESOLVE:
         return projectResolve(str(p, "path"));
       default: {

@@ -208,6 +208,8 @@ export class ThreadRuntime {
   requests = new Map<string, RequestRecord>();
   queue: Work[] = [];
   dispatching = false;
+  /** Owns the thread from the manual compaction request through native completion. */
+  compactDriver: Driver | null = null;
   /** Set while yaacd waits for the harness to start a turn it asked for. */
   expectTurn: { origin: TurnOrigin; parts: InputPart[]; driver: Driver | null; items?: Item[]; opId?: string } | null = null;
   pendingDeltas = new Map<string, { itemId: string; field: "text" | "reasoning" | "output"; delta: string }>();

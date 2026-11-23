@@ -60,6 +60,26 @@ pub struct FsListResult {
     pub truncated: bool,
 }
 
+/// `fs/search`: search for files relative to the working directory.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FsSearchParams {
+    /// Absolute working directory on the target.
+    pub cwd: TargetPath,
+    /// Case-insensitive path search.
+    pub query: String,
+}
+
+/// A bounded set of matching files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FsSearchResult {
+    /// Files, with display names relative to the working directory and full target paths.
+    pub entries: Vec<FsEntry>,
+    /// More matches or entries may exist.
+    pub truncated: bool,
+}
+
 /// `project/resolve`: the git identity of a directory.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

@@ -221,6 +221,12 @@ sandbox reads anywhere) may ignore them. `forkThread` is only the native fork
 
 ## Capabilities
 
+The `compact` capability runs manual context compaction in the existing conversation.
+Codex uses `thread/compact/start`; its empty reply acknowledges the request, and YAAC
+waits for the native `contextCompaction` item or the older `thread/compacted` notification.
+Claude Code receives `/compact` through its existing SDK query and confirms it through a
+manual `compact_boundary` followed by a successful result.
+
 A capability is a flag the UI checks before offering a feature.
 
 ```rust

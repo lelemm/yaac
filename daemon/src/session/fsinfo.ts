@@ -4,7 +4,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
-import type { FsEntry, FsListParams, FsListResult, ProjectResolveResult } from "../protocol/generated/types.js";
+import type { FsEntry, FsListParams, FsListResult, FsSearchParams, FsSearchResult, ProjectResolveResult } from "../protocol/generated/types.js";
+import { gitRunner } from "./git.js";
+import { Limiter } from "../util/exec.js";
 import { RpcError } from "../protocol/rpc.js";
 
 export const FS_LIST_MAX = 2000;
@@ -73,4 +75,59 @@ export async function projectResolve(dir: string): Promise<ProjectResolveResult>
   };
   if (origin) result.project.crossTargetKey = normaliseRemote(origin);
   return result;
+}
+
+const fileSearches = new Limiter(4);
+const MATCH_LIMIT = 50;
+const WALK_LIMIT = 20_000;
+const searchGit = gitRunner(process.env, 3_000);
+
+/** Search the target's working directory, including untracked but unignored git files. */
+export function fsSearch({ cwd, query }: FsSearchParams): Promise<FsSearchResult> {
+  if (typeof cwd !== "string" || !path.isAbsolute(cwd) || typeof query !== "string" || query.length > 512) {
+    throw new RpcError("invalid_params", "an absolute cwd and a query of up to 512 characters are required");
+  }
+  if (fileSearches.pending >= 16) throw new RpcError("invalid_params", "file search is busy; try again");
+  return fileSearches.run(async () => {
+    if (!(await fs.promises.stat(cwd).catch(() => null))?.isDirectory()) {
+      throw new RpcError("invalid_params", `cannot search ${cwd}`);
+    }
+    const terms = query.toLowerCase().replaceAll("\\", "/").split(/\s+/).filter(Boolean);
+    const matches = (name: string) => terms.every((term) => name.toLowerCase().includes(term));
+    const entries: FsEntry[] = [];
+    const add = (name: string) => entries.push({ name, path: path.join(cwd, name), kind: "file" });
+    const listed = await searchGit(cwd, ["ls-files", "--cached", "--others", "--exclude-standard", "--deduplicate", "-z", "--", "."]);
+    const listedNames = listed.out.split("\0");
+    listedNames.pop(); // A timed-out or capped command may end in a partial path.
+    if (listed.ok || listedNames.length > 0) {
+      const names = [...new Set(listedNames.filter(matches))];
+      for (let i = 0; i < names.length; i += MATCH_LIMIT) {
+        const checked = await Promise.all(names.slice(i, i + MATCH_LIMIT).map(async (name) =>
+          (await fs.promises.stat(path.join(cwd, name)).catch(() => null))?.isFile() ? name : null));
+        for (const name of checked) if (name) add(name);
+        if (entries.length > MATCH_LIMIT) return { entries: entries.slice(0, MATCH_LIMIT), truncated: true };
+      }
+      return { entries, truncated: !listed.ok };
+    }
+
+    // Outside git, walk real directories only and keep remote searches bounded.
+    const dirs = [""];
+    let visited = 0;
+    const deadline = Date.now() + 3_000;
+    for (let i = 0; i < dirs.length; i++) {
+      const dir = dirs[i]!;
+      const stream = await fs.promises.opendir(path.join(cwd, dir)).catch(() => null);
+      if (!stream) continue;
+      for await (const entry of stream) {
+        if (++visited > WALK_LIMIT || Date.now() > deadline || entries.length > MATCH_LIMIT) {
+          return { entries: entries.slice(0, MATCH_LIMIT), truncated: true };
+        }
+        if (entry.name === ".git") continue;
+        const name = dir ? `${dir}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) dirs.push(name);
+        else if (entry.isFile() && matches(name)) add(name);
+      }
+    }
+    return { entries: entries.slice(0, MATCH_LIMIT), truncated: entries.length > MATCH_LIMIT };
+  });
 }

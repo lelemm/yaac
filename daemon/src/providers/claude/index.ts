@@ -58,6 +58,7 @@ import type {
   ThreadPage,
   TurnOverrides,
 } from "../types.js";
+import { CompactionUnconfirmed } from "../types.js";
 import { ASK_TOOL, answeredInput, approvalRequest, approvalResult, normaliseQuestions, type ToolPermissionContext } from "./questions.js";
 import { EXECUTABLE_VAR, findExecutable, loadRealSdk, realCli, subagentFiles, type AgentEntry, type ClaudeCli, type ClaudeSdk, type SdkQuery, type SubagentFile } from "./sdk.js";
 import { flagsOf, historyItems, isToolResultMessage, LiveTranslator, type ItemEvent } from "./translate.js";
@@ -169,6 +170,7 @@ interface TurnState {
   turnId: TurnId;
   origin: TurnOrigin;
   interrupting: boolean;
+  compact?: { confirmed: boolean; error: string | null; connectionLost: boolean };
   ended: Promise<void>;
   end: () => void;
 }
@@ -487,6 +489,7 @@ export class ClaudeProvider implements HarnessProvider {
       "streamText",
       "streamReasoning",
       "interrupt",
+      "compact",
       "approvals",
       "userQuestions",
       "modes",
@@ -929,6 +932,7 @@ export class ClaudeProvider implements HarnessProvider {
       live.background.clear();
     }
     if (live.turn) {
+      if (live.turn.compact && !live.turn.interrupting) live.turn.compact.connectionLost = true;
       const detail = failure ?? (live.stderrTail.trim().split("\n").pop() || null);
       const why = live.closing ? "the Claude Code process was closed" : "the Claude Code process ended";
       this.finishTurn(live, live.turn.interrupting ? "interrupted" : "failed", detail ? `${why}: ${detail}` : why, null);
@@ -955,6 +959,7 @@ export class ClaudeProvider implements HarnessProvider {
   private finishTurn(live: Live, status: TurnStatus, error: string | null, usage: TokenUsage | null): void {
     const turn = live.turn;
     if (!turn) return;
+    if (turn.compact && status !== "completed") turn.compact.error = error ?? "Claude Code interrupted compaction";
     for (const p of [...live.requests.values()]) if (p.turnId === turn.turnId) p.expire();
     live.translator.finish(status === "completed");
     live.asking.clear();
@@ -978,10 +983,20 @@ export class ClaudeProvider implements HarnessProvider {
         this.ensureTurn(live);
         live.translator.stream(m.event as unknown as Record<string, unknown>);
         return;
-      case "assistant":
-        this.ensureTurn(live);
+      case "assistant": {
+        const turn = this.ensureTurn(live);
+        // Claude's local command refusal can arrive as a synthetic assistant message and
+        // even be followed by a successful result. Keep its actual error for the reply.
+        if (turn.compact && !turn.compact.confirmed && m.message.model === "<synthetic>") {
+          const text = m.message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n").trim();
+          if (text.startsWith("Error:")) {
+            turn.compact.error = text;
+            return;
+          }
+        }
         live.translator.assistant(m.message as unknown as Record<string, unknown>, m.uuid, m.error ?? null);
         return;
+      }
       case "user": {
         const content = (m.message as { content?: unknown }).content;
         const uuid = typeof msg.uuid === "string" ? msg.uuid : null;
@@ -1008,7 +1023,9 @@ export class ClaudeProvider implements HarnessProvider {
           // query's setting off through `applyFlagSettings`.)
           if (fms.fast_mode_state !== "cooldown") this.emit({ type: "fastRefused", thread: live.native });
         }
-        if (m.subtype === "success" && !m.is_error) this.finishTurn(live, "completed", null, usage);
+        if (m.subtype === "success" && !m.is_error && turn.compact && !turn.compact.confirmed) {
+          this.finishTurn(live, "failed", turn.compact.error ?? "Claude Code did not confirm compaction", usage);
+        } else if (m.subtype === "success" && !m.is_error) this.finishTurn(live, "completed", null, usage);
         else if (turn.interrupting) this.finishTurn(live, "interrupted", null, usage);
         else {
           const errors = "errors" in m && Array.isArray(m.errors) ? m.errors.join("; ") : "";
@@ -1028,9 +1045,17 @@ export class ClaudeProvider implements HarnessProvider {
         } else if (sys.subtype === "background_tasks_changed") {
           this.onBackgroundTasks(live, (m as { tasks?: unknown }).tasks);
         } else if (sys.subtype === "compact_boundary" && live.turn) {
-          const item = { id: `compact:${sys.uuid ?? randomUUID()}`, turnId: live.turn.turnId, status: "completed", kind: "notice", noticeKind: "compaction", text: "The conversation was compacted." } as const;
+          const metadata = (m as { compact_metadata?: { trigger?: string } }).compact_metadata;
+          if (live.turn.compact && metadata?.trigger === "manual") {
+            live.turn.compact.confirmed = true;
+            live.turn.compact.error = null;
+          }
+          const item = { id: `compact:${sys.uuid ?? randomUUID()}`, turnId: live.turn.turnId, status: "completed", kind: "notice", noticeKind: "compaction", text: "Context compacted" } as const;
           this.emit({ type: "itemStarted", thread: live.native, item });
           this.emit({ type: "itemCompleted", thread: live.native, item });
+        } else if (sys.subtype === "local_command_output" && live.turn?.compact && !live.turn.compact.confirmed) {
+          const content = (m as { content?: string }).content;
+          if (content) live.turn.compact.error = content.trim();
         } else if (sys.subtype === "task_started" || sys.subtype === "task_updated" || sys.subtype === "task_notification") {
           this.onTask(live, m as unknown as Record<string, unknown>);
         }
@@ -1392,6 +1417,20 @@ export class ClaudeProvider implements HarnessProvider {
     let live = await this.ensureLive(thread, this.attachmentDirs(thread, input));
     live = await this.applySettings(live, s);
     return this.send(live, input);
+  }
+
+  async compact(thread: NativeId): Promise<void> {
+    const live = await this.ensureLive(thread, []);
+    if (live.turn) throw new Error("a turn is already running in this Claude Code session");
+    const turnId = randomUUID();
+    const turn = this.beginTurn(live, turnId, "user");
+    const compact: NonNullable<TurnState["compact"]> = { confirmed: false, error: null, connectionLost: false };
+    turn.compact = compact;
+    live.ours.add(turnId);
+    live.input.push({ type: "user", message: { role: "user", content: "/compact" }, parent_tool_use_id: null, uuid: turnId as SDKUserMessage["uuid"] });
+    await turn.ended;
+    if (compact.connectionLost && !compact.confirmed) throw new CompactionUnconfirmed(compact.error ?? "Claude Code ended before compaction was confirmed");
+    if (compact.error || !compact.confirmed) throw new Error(compact.error ?? "Claude Code did not confirm compaction");
   }
 
   /** Brings a live query to the thread's settings: `setModel`, effort, `setPermissionMode`. */

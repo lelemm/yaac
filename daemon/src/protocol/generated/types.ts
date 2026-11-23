@@ -1072,6 +1072,34 @@ export interface FsListResult {
 }
 
 /**
+ * `fs/search`: search for files relative to the working directory.
+ */
+export interface FsSearchParams {
+  /**
+   * Absolute working directory on the target.
+   */
+  cwd: TargetPath;
+  /**
+   * Case-insensitive path search.
+   */
+  query: string;
+}
+
+/**
+ * A bounded set of matching files.
+ */
+export interface FsSearchResult {
+  /**
+   * Files, with display names relative to the working directory and full target paths.
+   */
+  entries: FsEntry[];
+  /**
+   * More matches or entries may exist.
+   */
+  truncated: boolean;
+}
+
+/**
  * How a thread's checkout differs from origin (docs/07-ui.md#sidebar). Computed once per
  * checkout on the target, not per thread.
  */
@@ -4037,6 +4065,20 @@ export interface ThreadArchiveParams {
   opId: OpId;
   /**
    * The thread.
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * `thread/compact`: request native context compaction on an idle thread.
+ */
+export interface ThreadCompactParams {
+  /**
+   * The operation id (deduplicates this request).
+   */
+  opId: OpId;
+  /**
+   * The conversation to compact.
    */
   threadId: ThreadId;
 }

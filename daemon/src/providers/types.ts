@@ -43,6 +43,9 @@ import type { RateLimitReport } from "./ratelimits.js";
 /** Whatever the harness uses to resume that exact conversation (Codex: `Thread.id`). */
 export type NativeId = string;
 
+/** The harness may have compacted, but its connection or confirmation was lost. */
+export class CompactionUnconfirmed extends Error {}
+
 export interface PageRequest {
   cursor?: string | null;
   /** A hint; providers may return fewer or more. */
@@ -367,6 +370,8 @@ export interface HarnessProvider {
   startThread(params: StartThreadParams, input: ProviderInput): Promise<{ thread: NativeId; turn: TurnId }>;
   /** Starts a turn on an idle conversation yaacd holds. */
   startTurn(thread: NativeId, input: ProviderInput, overrides: TurnOverrides): Promise<TurnId>;
+  /** Runs manual compaction and waits for native confirmation. */
+  compact?(thread: NativeId): Promise<void>;
   interrupt(thread: NativeId, turn: TurnId): Promise<void>;
   /** Hands an answer to the harness. Confirm with `requestResolved { by: "client" }`. */
   respond(thread: NativeId, requestId: RequestId, response: RequestResponse): Promise<void>;

@@ -313,7 +313,7 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus): Ite
     case "subAgentActivity":
       return { ...base, status: final, kind: "toolCall", tool: "subagent", title: `Sub-agent ${String(it.kind ?? "activity")}`, input: { agentThreadId: it.agentThreadId ?? null, agentPath: it.agentPath ?? null } };
     case "contextCompaction":
-      return { ...base, status: "completed", kind: "notice", noticeKind: "compaction", text: "The conversation context was compacted." };
+      return { ...base, status: final, kind: "notice", noticeKind: "compaction", text: final === "inProgress" ? "Compacting context…" : "Context compacted" };
     case "enteredReviewMode":
     case "exitedReviewMode":
       return { ...base, status: "completed", kind: "notice", noticeKind: "info", text: `${raw.type === "enteredReviewMode" ? "Entered" : "Left"} review mode${str(it.review) ? `: ${it.review}` : ""}` };

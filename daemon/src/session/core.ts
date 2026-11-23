@@ -23,6 +23,7 @@ import type {
   ThreadReadParams,
   ThreadReadResult,
   ThreadStartParams,
+  ThreadCompactParams,
   ThreadStartResult,
   ThreadSubscribeResult,
   ThreadSummary,
@@ -60,6 +61,7 @@ import type {
 import { canonical } from "../protocol/json.js";
 import { RpcError } from "../protocol/rpc.js";
 import type { ExternalControl, HarnessProvider, MeshInputMessage, RaisedRequest, NativeId, NativeThreadInfo, ProviderEvent, ProviderFactory, ProviderInput, TurnOverrides } from "../providers/types.js";
+import { CompactionUnconfirmed } from "../providers/types.js";
 import { ProviderRegistry, type Instance } from "../providers/registry.js";
 import { Emitter } from "../util/emitter.js";
 import { ensureDir, nowIso, randomId, readJson, sha256Hex, writeJsonAtomic } from "../util/fsx.js";
@@ -1304,7 +1306,8 @@ export class Core {
   holderOf(rt: ThreadRuntime): Holder {
     // Read-only only on positive evidence: `uncertain` without `external` is free.
     const ext = rt.external.external ? rt.external.holder ?? "another program" : null;
-    return { driver: rt.driver?.key ?? null, driverHost: rt.driver?.host ?? null, external: ext };
+    const driver = rt.driver ?? rt.compactDriver;
+    return { driver: driver?.key ?? null, driverHost: driver?.host ?? null, external: ext };
   }
 
   renderSummary(summary: ThreadSummary, holder: Holder, clientKey: string): ThreadSummary {
@@ -1348,7 +1351,7 @@ export class Core {
     let pendingRequests = 0;
     for (const rt of this.threads.values()) {
       if (rt.deleted) continue;
-      if (rt.activeTurn) runningTurns++;
+      if (rt.activeTurn || rt.compactDriver) runningTurns++;
       pendingRequests += rt.pendingRequestCount();
     }
     return { runningTurns, pendingRequests };
@@ -1371,10 +1374,11 @@ export class Core {
   private appendControl(rt: ThreadRuntime): void {
     const ev: ControlChangedEvent & { type: "controlChanged" } = { type: "controlChanged", control: "free" };
     if (rt.activeTurn) ev.activeTurn = rt.activeTurn;
-    const holder = rt.external.external ? rt.external.holder ?? "another program" : rt.driver?.host ?? null;
+    const driver = rt.driver ?? rt.compactDriver;
+    const holder = rt.external.external ? rt.external.holder ?? "another program" : driver?.host ?? null;
     if (holder) ev.holder = holder;
     if (rt.external.external && rt.external.takeOverBlocked) ev.takeOverBlocked = rt.external.takeOverBlocked;
-    this.append(rt, ev, { driver: rt.driver?.key ?? null, external: rt.external.external });
+    this.append(rt, ev, { driver: driver?.key ?? null, external: rt.external.external });
   }
 
   /** Renders a journal entry's event for one client (control is relative to the receiver). */
@@ -1789,8 +1793,9 @@ export class Core {
     if (rt.external.external) {
       fail(`this thread is in use in ${rt.external.holder ?? "another program"}; it can only be watched`, rt.external.holder ?? null);
     }
-    if (rt.driver && (!client || rt.driver.key !== client.key)) {
-      fail(`this thread is being driven from ${rt.driver.host ?? "another YAAC client"}; it can only be watched`, rt.driver.host);
+    const driver = rt.driver ?? rt.compactDriver;
+    if (driver && (!client || driver.key !== client.key)) {
+      fail(`this thread is being driven from ${driver.host ?? "another YAAC client"}; it can only be watched`, driver.host);
     }
   }
 
@@ -1996,6 +2001,44 @@ export class Core {
     this.mesh?.turnStarted(rt, turnId, origin);
   }
 
+  /** Compact in place, using the same writer and dispatch checks as a message. */
+  async threadCompact(client: ClientLink, p: ThreadCompactParams): Promise<Record<string, never>> {
+    return this.ops.run("thread/compact", p.opId, async () => {
+      const rt = this.findThread(p.threadId);
+      if (!rt || rt.deleted) throw notActed("thread_not_found", "the thread was not found");
+      const away = this.storeAway(rt);
+      if (away) throw notActed("provider_unavailable", away);
+      const provider = this.registry.get(rt.record.instance)?.provider;
+      const effective = rt.effective ?? (await this.computeEffective(rt));
+      if (!provider?.compact || !effective.capabilities?.includes("compact")) {
+        throw notActed("capability_missing", "this thread does not support context compaction");
+      }
+      await this.refreshExternal(rt);
+      this.checkWriter(rt, client, true);
+      if (rt.pendingRequestCount()) throw notActed("awaiting_user", "answer the pending request before compacting context");
+      if (rt.record.hold) throw notActed("thread_held", "the thread is stopped and held");
+      if (!rt.canDispatch()) throw notActed("turn_in_progress", "wait for the current turn to finish before compacting context");
+      rt.dispatching = true;
+      rt.compactDriver = { key: client.key, host: client.host };
+      this.appendControl(rt);
+      this.updateIndex(rt);
+      this.activity.emit();
+      try {
+        await provider.compact(rt.record.native);
+        return {};
+      } catch (e) {
+        throw rpc(e instanceof CompactionUnconfirmed ? "outcome_unknown" : "provider_unavailable", (e as Error).message);
+      } finally {
+        rt.compactDriver = null;
+        rt.dispatching = false;
+        this.appendControl(rt);
+        this.updateIndex(rt);
+        this.activity.emit();
+        if (rt.canDispatch()) this.afterIdle(rt);
+      }
+    });
+  }
+
   /**
    * `turn/start`: a client's message. With no turn running it starts one. With one running:
    * refused (no `delivery`, as before), queued (`queue`), or delivered now (`now`).
@@ -2015,6 +2058,7 @@ export class Core {
       if (delivery !== null && delivery !== "queue" && delivery !== "now") throw notActed("invalid_params", "delivery must be queue or now");
       await this.refreshExternal(rt);
       this.checkWriter(rt, client, true);
+      if (rt.compactDriver && delivery !== "queue") throw notActed("turn_in_progress", "context is being compacted");
       this.checkModel(inst.descriptor, p.model);
       const eff = rt.effective ?? (await this.computeEffective(rt));
       if (p.fast !== undefined && p.fast !== null) this.checkFast(inst.descriptor, p.model ?? this.modelOf(rt), p.fast);
@@ -2126,6 +2170,7 @@ export class Core {
       await this.refreshExternal(rt);
       this.checkWriter(rt, client, true);
       const e = this.queuedEntry(rt, p.queueId);
+      if (rt.compactDriver) throw notActed("turn_in_progress", "context is being compacted");
       if (rt.pendingRequestCount() > 0) throw notActed("awaiting_user", NOW_WHILE_ASKING);
       this.mesh?.humanInput?.(rt);
       rt.userQueue = rt.userQueue.filter((q) => q !== e);
@@ -2163,6 +2208,7 @@ export class Core {
     origin: TurnOrigin,
     extra: { journalItems?: Item[]; mesh?: MeshInputMessage[]; onStarted?: (turnId: TurnId) => void | Promise<void>; beforeStart?: () => void | Promise<void>; opId?: string } = {},
   ): Promise<TurnStartResult> {
+    if (rt.compactDriver) throw notActed("turn_in_progress", "context is being compacted");
     const provider = this.provider(rt);
     const turn = rt.activeTurn;
     if (turn && !rt.claimed && (await this.canSteer(rt))) {
@@ -2600,6 +2646,7 @@ export class Core {
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
       await this.refreshExternal(rt);
       this.checkWriter(rt, client, true);
+      if (rt.compactDriver) throw notActed("turn_in_progress", "context is being compacted");
       const away = this.storeAway(rt);
       if (away) throw notActed("provider_unavailable", away);
       const provider = this.registry.get(rt.record.instance)?.provider;
@@ -3034,7 +3081,7 @@ export class Core {
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)}`);
       await this.refreshExternal(rt);
       this.checkWriter(rt, client, true);
-      if (rt.activeTurn) throw notActed("turn_in_progress", "stop the running turn before deleting the thread");
+      if (rt.activeTurn || rt.compactDriver) throw notActed("turn_in_progress", "stop the running turn before deleting the thread");
       if (p.alsoInHarness === true) {
         const provider = await this.gated(rt, "threadDelete", "remove");
         await provider.remove!(rt.record.native);
@@ -3125,10 +3172,11 @@ export class Core {
         }
         rt.activeTurn = ev.turnId;
         rt.turnOrigin = ev.origin ?? "external";
-        rt.driver = null;
+        rt.driver = ev.origin === "user" ? rt.compactDriver : null;
         rt.lastStatus = null;
         rt.saveRuntime();
         this.append(rt, { type: "turnStarted", turnId: ev.turnId, origin: rt.turnOrigin, at: ev.at ?? nowIso() });
+        if (rt.driver) this.appendControl(rt);
         this.updateIndex(rt);
         this.activity.emit();
         this.mesh?.turnStarted(rt, ev.turnId, rt.turnOrigin);

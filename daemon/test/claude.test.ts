@@ -1344,3 +1344,26 @@ test("a subagent's open request ends with its run (D162)", async () => {
   assert.equal((await pending)?.behavior, "deny");
   await r.provider.dispose();
 });
+
+test("claude: manual compaction needs a native boundary, not just a successful SDK result", async () => {
+  const r = rig();
+  try {
+    const started = await r.provider.startThread({ cwd: r.dir }, input("some earlier conversation"));
+    const q = r.sdk.queries[0]!;
+    q.push(result());
+    await until(() => of(r.events, "turnCompleted").length === 1, "the initial turn");
+    const compact = r.provider.compact(started.thread);
+    assert.equal((await q.nextUser(2)).message.content, "/compact");
+    q.push({ type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual", pre_tokens: 1200 }, uuid: "boundary" }, result());
+    await compact;
+    assert.ok(completedItems(r.events).some((item) => item.kind === "notice" && item.text === "Context compacted"));
+
+    const retry = r.provider.compact(started.thread);
+    assert.equal((await q.nextUser(3)).message.content, "/compact");
+    q.push({ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: "Error: No messages to compact" }] } }, result());
+    await assert.rejects(retry, /No messages to compact/);
+    assert.equal(completedItems(r.events).filter((item) => item.kind === "notice" && item.text === "Context compacted").length, 1);
+  } finally {
+    await r.provider.dispose();
+  }
+});

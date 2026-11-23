@@ -56,6 +56,9 @@ impl Client {
             return false;
         }
         let Some(draft) = self.state.drafts.get(key).cloned() else { return false };
+        if crate::compose::is_compact_command(&draft.text) {
+            return self.compact(key);
+        }
         let support = crate::attachments::thread_image_support(&self.state, key);
         let Some(input) = crate::attachments::input_parts(&draft.text, &draft.attachments, &support, Some(&key.target)) else { return false };
         let op = self.op_id();
