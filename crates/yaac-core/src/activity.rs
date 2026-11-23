@@ -233,6 +233,8 @@ pub enum Block {
         failed: bool,
         /// How many lines it holds.
         count: usize,
+        /// Transcript index of the last item in the run.
+        last_index: usize,
     },
     /// A finished turn's work folded into one line (D156): "Worked for 26s ›". Made by
     /// [`crate::turns::collapse`], never by [`blocks`].
@@ -401,6 +403,12 @@ pub fn line_of(state: &AppState, map: &AttentionMap, key: &ThreadKey, index: usi
     Some(ActivityLine { index, id: item.id.clone(), mark, text, failed, in_progress, expanded: false, highlighted: false, diff: None, call: None })
 }
 
+/// A shell command that failed, including providers that only report a nonzero exit.
+pub fn failed_command(item: &Item) -> bool {
+    matches!(&item.body, ItemBody::ToolCall(t) if t.tool == ToolKind::Command
+        && (item.status == ItemStatus::Failed || t.exit_code.is_some_and(|code| code != 0)))
+}
+
 /// The files of a file-change item whose output is a diff.
 pub fn file_stats(item: &Item) -> Option<Vec<FileStat>> {
     match &item.body {
@@ -450,6 +458,7 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
                 text: fold_summary(&lines),
                 failed: lines.iter().any(|l| l.failed),
                 count: lines.len(),
+                last_index: lines.last().expect("nonempty activity run").index,
                 first,
             });
         } else {
@@ -529,7 +538,12 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
                 } else if let Some(mut line) = line_of(state, map, key, index, item) {
                     line.highlighted = focus == Some(&item.id);
                     line.expanded = line.highlighted || expansion.lines.contains(&(key.clone(), item.id.clone()));
-                    run.push(line);
+                    if failed_command(item) {
+                        flush(&mut run, &mut out);
+                        out.push(Block::Run { lines: vec![line] });
+                    } else {
+                        run.push(line);
+                    }
                 }
             }
         }

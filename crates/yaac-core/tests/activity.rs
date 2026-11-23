@@ -88,17 +88,17 @@ fn clicking_expands_in_place_and_a_failure_is_never_muted() {
 }
 
 #[test]
-fn a_long_run_folds_into_one_line_that_opens() {
+fn a_failed_command_splits_two_independently_folded_runs() {
     let (mut c, hub) = boot();
     let key = threads::billing();
     // Make a long run: duplicate the tool line many times.
     let mut t = c.state.transcripts.get(&key).unwrap().clone();
     let tool = t.items()[3].clone();
     let mut items: Vec<_> = t.items()[..3].to_vec();
-    for i in 0..10 {
+    for i in 0..17 {
         let mut x = tool.clone();
         x.id = format!("extra-{i}").into();
-        if i == 4
+        if i == 8
             && let yaac_protocol::ItemBody::ToolCall(tc) = &mut x.body
         {
             tc.exit_code = Some(1);
@@ -112,23 +112,26 @@ fn a_long_run_folds_into_one_line_that_opens() {
     settle(&mut c, &hub);
     let e = Expansion::default();
     let s = shape(&c, &key, &e);
-    const { assert!(13 > FOLD_AFTER) };
-    assert_eq!(s[1], "folded[16 steps · 15 commands !]", "{s:#?}");
+    const { assert!(8 > FOLD_AFTER) };
+    assert_eq!(s[1], "folded[13 steps · 12 commands]", "{s:#?}");
+    assert_eq!(s[2], "run[!Ran cargo clippy · failed (exit 1)]");
+    assert_eq!(s[3], "folded[9 steps · 9 commands]");
     let map = AttentionMap::compute(&c.state);
-    let first = match &blocks(&c.state, &map, &key, &e)[1] {
+    let transcript = c.state.transcripts.get(&key).unwrap();
+    let blocks = blocks(&c.state, &map, &key, &e);
+    let completed = yaac_core::turns::collapse(transcript, &key, &blocks, &Default::default(), &e, None);
+    assert!(completed.iter().any(|block| matches!(block, Block::Run { lines } if lines.len() == 1 && lines[0].failed)));
+    let mut e = e;
+    e.toggle_line(&key, &"extra-8".into());
+    assert_eq!(shape(&c, &key, &e)[2], "run[!+Ran cargo clippy · failed (exit 1)]");
+    let first = match &blocks[1] {
         Block::Folded { first, .. } => first.clone(),
         _ => unreachable!(),
     };
-    let mut e = e;
     e.toggle_run(&key, &first);
-    let opened = blocks(&c.state, &map, &key, &e);
-    match &opened[1] {
-        Block::Run { lines } => {
-            assert_eq!(lines.len(), 16);
-            assert!(lines.iter().any(|l| l.failed && l.mark == LineMark::Tool));
-        }
-        other => panic!("{other:?}"),
-    }
+    let opened = shape(&c, &key, &e);
+    assert!(opened[1].starts_with("run[Thought"));
+    assert_eq!(opened[3], s[3]);
 }
 
 #[test]

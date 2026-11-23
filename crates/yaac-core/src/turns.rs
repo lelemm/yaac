@@ -210,10 +210,11 @@ fn block_ids<'a>(b: &'a Block, t: &'a Transcript) -> Vec<&'a ItemId> {
 }
 
 /// Blocks that stay visible in a collapsed turn: the prompt, what needs the user, and the
-/// summary of the files it changed.
+/// summary of the files it changed, and any failed shell command.
 fn always_shown(b: &Block, t: &Transcript) -> bool {
     match b {
         Block::User { .. } | Block::Task { .. } | Block::Handoff { .. } | Block::TurnChanges { .. } => true,
+        Block::Run { lines } if lines.len() == 1 => t.items().get(lines[0].index).is_some_and(crate::activity::failed_command),
         Block::Card { index } => t.items().get(*index).is_some_and(|i| match &i.body {
             ItemBody::Request(_) => waits_on_user(i),
             // The budget notice needs the user.

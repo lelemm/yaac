@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::BTreeMap;
+use yaac_core::activity::{self, Block, Expansion};
 use yaac_core::agentcall::{self, Echoes};
 use yaac_core::attention::AttentionMap;
 use yaac_core::permission::{self, BudgetFields, PermissionDecision};
@@ -338,18 +339,57 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, markdown: &mut super::mark
     let transcript = state.transcripts.get(key);
     let focus = app.ui.focus_card.as_ref().or(app.ui.scroll_to.as_ref());
     let echoes = transcript.map(|t| Echoes::of(t.items()));
-    let rows: Vec<_> = transcript
-        .into_iter()
-        .flat_map(Transcript::items)
-        .filter(|item| focus == Some(&item.id) || !echoes.as_ref().is_some_and(|e| e.hides(item)))
-        .filter_map(|item| render(app, map, key, transcript.expect("transcript for item"), item, markdown))
-        .collect();
-    let anchor = app.ui.restore.as_ref().and_then(|anchor| {
+    let mut rows = Vec::new();
+    let mut hidden_anchor = None;
+    if let Some(t) = transcript {
+        let groups: BTreeMap<_, _> = activity::blocks(state, map, key, &Expansion::default())
+            .into_iter()
+            .filter_map(|block| match block {
+                Block::Folded { first, text, failed, last_index, .. } => {
+                    Some((t.index_of(&first)?, (first, text, failed, last_index)))
+                }
+                _ => None,
+            })
+            .collect();
+        let focus_index = focus.and_then(|id| t.index_of(id));
+        let anchor_index = app.ui.restore.as_ref().and_then(|anchor| t.index_of(&anchor.item));
+        let mut skip_through = None;
+        for (index, item) in t.items().iter().enumerate() {
+            if skip_through.is_some_and(|end| index <= end) {
+                continue;
+            }
+            if let Some((first, text, failed, last)) = groups.get(&index) {
+                let id = format!("~run:{first}");
+                let contains = |i: usize| (index..=*last).contains(&i);
+                let open = app.ui.expansion.runs.contains(&(key.clone(), first.clone()))
+                    || focus_index.is_some_and(contains);
+                if !open {
+                    skip_through = Some(*last);
+                    if anchor_index.is_some_and(contains) {
+                        hidden_anchor = Some(json!({ "id": id, "offset": 0 }));
+                    }
+                }
+                rows.push(json!({ "id": id, "actionId": first, "kind": "activity",
+                    "mark": if *failed { "×" } else { "›" }, "tone": if *failed { "error" } else { "muted" },
+                    "lead": text, "disclosureName": "command group", "groupOpen": open,
+                    "groupToggle": sidebar_view::action("toggleRun", "Toggle command group", true) }));
+                if !open {
+                    continue;
+                }
+            }
+            if (focus == Some(&item.id) || !echoes.as_ref().is_some_and(|e| e.hides(item)))
+                && let Some(row) = render(app, map, key, t, item, markdown)
+            {
+                rows.push(row);
+            }
+        }
+    }
+    let anchor = hidden_anchor.or_else(|| app.ui.restore.as_ref().and_then(|anchor| {
         transcript?
             .item(&anchor.item)
             .filter(|item| !echoes.as_ref().is_some_and(|e| e.hides(item)))
             .map(|item| json!({ "id": row_id(item), "offset": anchor.offset }))
-    });
+    }));
     let focus = focus.and_then(|id| transcript?.item(id)).map(row_id);
     json!({ "threadId": key.address(), "rows": rows, "loading": transcript.is_some_and(|t| !t.is_loaded()),
         "emptyText": "No messages yet", "focusId": focus, "focusToken": focus, "anchor": anchor })
@@ -445,7 +485,9 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             clippy::cast_possible_truncation,
             reason = "bounded DIP offset is stored at UI precision"
         )]
-        let anchor = selected_item(app, string(p, "id")).map(|item| yaac_core::history::Anchor {
+        let id = string(p, "id");
+        let id = id.strip_prefix("~run:").unwrap_or(id);
+        let anchor = selected_item(app, id).map(|item| yaac_core::history::Anchor {
             item,
             offset: offset as f32,
         });
@@ -460,6 +502,10 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
     };
     let act = string(p, "action");
     let action = match act {
+        "toggleRun" => {
+            app.ui.expansion.toggle_run(&k, &item);
+            return Ok(());
+        }
         "retrySend" => Action::RetrySend(k, item),
         "editSend" => Action::EditSend(k, item),
         "dismissSend" => Action::DismissSend(k, item),
@@ -560,6 +606,46 @@ mod tests {
             })
         );
         assert!(new.get("rows").is_none());
+    }
+
+    #[test]
+    fn failed_command_stays_visible_when_wpf_groups_are_collapsed() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = yaac_core::demo::threads::parser();
+        app.apply(vec![Action::Open(key.clone())]);
+        let t = app.client.state.transcripts.get_mut(&key).unwrap();
+        let mut items = t.items().to_vec();
+        let command_index = items.iter().position(|item| matches!(&item.body,
+            ItemBody::ToolCall(tool) if tool.tool == yaac_protocol::ToolKind::Command)).unwrap();
+        let commands: Vec<_> = (0..17).map(|n| {
+            let mut item = items[command_index].clone();
+            item.id = format!("command-{n}").into();
+            if n == 8 {
+                item.status = ItemStatus::Failed;
+            }
+            item
+        }).collect();
+        items.splice(command_index..command_index, commands);
+        t.replace_all(items, 99);
+
+        let mut markdown = super::super::markdown_view::MarkdownView::default();
+        let map = AttentionMap::compute(&app.client.state);
+        let initial = view(&app, &map, &mut markdown);
+        let rows = initial["rows"].as_array().unwrap();
+        let error = rows.iter().position(|row| row["id"] == "command-8").unwrap();
+        assert_eq!(rows[error]["tone"], "error");
+        assert_eq!(rows[error - 1]["actionId"], "command-0");
+        assert_eq!(rows[error + 1]["actionId"], "command-9");
+        assert_eq!(rows[error - 1]["groupOpen"], false);
+        assert_eq!(rows[error + 1]["groupOpen"], false);
+
+        command(&mut app, "transcript.action", &json!({ "id": "command-0", "action": "toggleRun" })).unwrap();
+        let open = view(&app, &map, &mut markdown);
+        let rows = open["rows"].as_array().unwrap();
+        assert!(rows.iter().any(|row| row["id"] == "command-7"));
+        assert!(rows.iter().any(|row| row["id"] == "command-8"));
+        assert!(!rows.iter().any(|row| row["id"] == "command-10"));
     }
 
     #[test]
