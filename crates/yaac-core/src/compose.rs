@@ -56,6 +56,9 @@ pub fn file_token(text: &str, caret: usize) -> Option<(std::ops::Range<usize>, &
         i + before[i..].chars().next().map_or(0, char::len_utf8)
     });
     let query = before[start..].strip_prefix('@')?;
+    if query.starts_with('"') {
+        return None;
+    }
     let end = caret + after.find(char::is_whitespace).unwrap_or(after.len());
     Some((start..end, query))
 }

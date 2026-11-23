@@ -169,7 +169,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
             Some(Ok(files)) => {
                 let entries: Vec<_> = files.entries.iter().map(|file| json!({
                     "name": file.name, "path": file.path,
-                    "reference": yaac_core::compose::file_reference(file.path.as_str()),
+                    "reference": app.client.composer_file_reference(&draft, file.path.as_str()),
                 })).collect();
                 let hint = if files.truncated { "Keep typing to narrow the search." } else if entries.is_empty() { "No matching files." } else { "" };
                 json!({ "query": search.params.query, "entries": entries, "hint": hint })

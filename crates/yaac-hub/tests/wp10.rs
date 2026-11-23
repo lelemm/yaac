@@ -173,6 +173,7 @@ fn a_message_undelivered_past_the_limit_earns_its_sender_one_passive_notice() {
     let m = MeshMessage {
         id: MessageId::new("m-late"),
         from: Address::new(&a, &ThreadId::new("sender")),
+        sender_skips_approvals: None,
         to: Address::new(&b, &ThreadId::new("recipient")),
         kind: MeshMessageKind::Message,
         text: "are you there?".into(),

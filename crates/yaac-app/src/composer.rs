@@ -262,7 +262,7 @@ fn file_text_box(ui: &mut egui::Ui, app: &mut YaacApp, draft: &DraftRef, text: &
                 });
         }
         if let Some(file) = pick {
-            let mut reference = compose::file_reference(file.path.as_str());
+            let mut reference = app.client.composer_file_reference(draft, file.path.as_str());
             if text[range.end..].chars().next().is_none_or(|c| !c.is_whitespace()) {
                 reference.push(' ');
             }

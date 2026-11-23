@@ -523,6 +523,7 @@ export class ClaudeProvider implements HarnessProvider {
       "webSearch",
       // `/name` at the start of a message runs a skill; the list is read from disk (`skills/list`).
       "skills",
+      "nativeFileMentions",
       // accountInfo(), the usage report, and the stream's rate_limit_event (D161).
       "rateLimits",
     ];
@@ -1502,6 +1503,9 @@ export class ClaudeProvider implements HarnessProvider {
     const sameSender = input.mesh!.every((m) => m.kind === "notice" || m.from === source.from);
     const from = sameSender ? source.from : "yaac";
     const name = sameSender ? source.fromLabel : "YAAC";
+    const fromMode = sameSender && typeof source.senderSkipsApprovals === "boolean"
+      ? (source.senderSkipsApprovals ? "bypass" : "prompting")
+      : undefined;
     return {
       type: "user",
       message: { role: "user", content: `<cross-session-message from="${peerXml(from)}" from-name="${peerXml(name)}">\n${peerXml(input.text)}\n</cross-session-message>` },
@@ -1510,7 +1514,7 @@ export class ClaudeProvider implements HarnessProvider {
       priority: "next",
       // The mailbox authenticates the sender's address. Its provider permission class
       // is unknown here, so leave it for Claude Code to handle under its inbound policy.
-      origin: { kind: "peer", from, name, body: input.text },
+      origin: { kind: "peer", from, name, ...(fromMode ? { fromMode } : {}), body: input.text },
       isSynthetic: true,
       client_composed: true,
     };

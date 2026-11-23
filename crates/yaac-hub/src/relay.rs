@@ -59,6 +59,7 @@ pub fn undelivered_notice(message: &MeshMessage, waited: std::time::Duration) ->
     MeshMessage {
         id: MessageId::new(format!("undelivered:{}", message.id)),
         from: message.to.clone(),
+        sender_skips_approvals: None,
         to: message.from.clone(),
         kind: yaac_protocol::MeshMessageKind::Notice,
         text: format!(

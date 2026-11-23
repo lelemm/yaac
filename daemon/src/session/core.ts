@@ -2316,7 +2316,7 @@ export class Core {
   async deliverPeer(rt: ThreadRuntime, dispatch: AgentDispatch, beforeSend: () => boolean, beforeFollowOn: () => void): Promise<TurnId | null> {
     const provider = this.provider(rt);
     const turn = rt.activeTurn;
-    const blocked = () => rt.activeTurn !== turn || rt.deleted || rt.dispatching || rt.record.hold || rt.external.external || rt.pendingRequestCount() > 0;
+    const blocked = () => rt.activeTurn !== turn || rt.deleted || rt.dispatching || rt.compactDriver || rt.record.hold || rt.external.external || rt.pendingRequestCount() > 0;
     if (!provider.deliverPeer || !turn || rt.claimed || blocked()) return null;
     rt.claimed = true;
     try {

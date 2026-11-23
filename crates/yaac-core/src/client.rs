@@ -1300,6 +1300,32 @@ impl Client {
         }
     }
 
+    /// Format a picked path for the provider that will receive the message.
+    pub fn composer_file_reference(&self, draft: &DraftRef, path: &str) -> String {
+        use yaac_protocol::{Capability, ProviderStatus, has_capability};
+
+        let capabilities = match draft {
+            DraftRef::Thread(key) => self.state.transcripts.get(key)
+                .and_then(|transcript| transcript.effective.as_ref())
+                .map(|effective| effective.capabilities.as_slice())
+                .or_else(|| self.state.provider_of(key).map(|p| p.capabilities.as_slice())),
+            DraftRef::New(id) => (|| {
+                let draft = self.state.new_threads.iter().find(|draft| draft.id == *id)?;
+                let target = self.state.target(&draft.target)?;
+                let provider = match &draft.instance {
+                    Some(instance) => target.provider(instance),
+                    None => target.providers.iter().find(|p| p.status == ProviderStatus::Ready),
+                }?;
+                Some(provider.capabilities.as_slice())
+            })(),
+        };
+        let native = capabilities.is_some_and(|caps| has_capability(caps, &Capability::NativeFileMentions));
+        if native && !path.contains('"') && !path.chars().any(char::is_control) {
+            return format!(r#"@"{path}""#);
+        }
+        crate::compose::file_reference(path)
+    }
+
     /// Ask the existing target connection for files under this composer's working directory.
     pub fn search_composer_files(&mut self, draft: &DraftRef, query: &str) {
         let Some((target, cwd)) = self.composer_cwd(draft) else { return };

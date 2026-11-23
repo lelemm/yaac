@@ -382,7 +382,7 @@ assume these.
 | P310 | **Skills: where a Claude Code list comes from.** `yaacd` scans the folders Claude Code reads (user `skills/` and `commands/` under the config dir; `.claude/skills` and `.claude/commands` from the folder up to the git root or the home folder) instead of asking the harness, because the stream's `system init` carries names only — no description, no path. | Proposed (D172) |
 | P311 | **Skills: what a pick inserts.** `/name ` for a provider without `inlineSkills`, `$name ` with it (also when picked from `/`); a `skill` input part per `$name` that is a listed skill is added when the message is sent, resolved on the window from the list it loaded — never guessed on the target. | Proposed (D172) |
 | P312 | **Skills: not listed yet.** Claude Code plugin and marketplace skills, Codex plugin skills outside `skills/list`, and a skill's argument hint for Codex. They can still be typed. | Proposed (D172) |
-| P313 | **Skills: what counts as "Read skill instructions" for Codex.** Only a successful command whose parsed `read` action names exactly a `SKILL.md` that the instance's last `skills/list` returned (path compared with either slash, relative paths resolved against the command's cwd). No list yet, nothing recognised: a missed label is preferred to a false one. | Proposed (D172) |
+| P313 | **Skills: what counts as "Read skill instructions" for Codex.** Only a successful command whose parsed `read` action names exactly a `SKILL.md` that the instance's last `skills/list` returned (path compared with either slash, relative paths resolved against the command's cwd). The provider primes discovery when starting a turn. A read with an unknown path stays an ordinary command. | Proposed (D172) |
 
 ## Open
 

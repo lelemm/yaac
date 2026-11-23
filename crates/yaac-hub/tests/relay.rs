@@ -14,6 +14,7 @@ fn message(id: &str, from: &TargetId, to: &TargetId) -> MeshMessage {
     MeshMessage {
         id: MessageId::new(id),
         from: Address::new(from, &ThreadId::new("sender")),
+        sender_skips_approvals: None,
         to: Address::new(to, &ThreadId::new("recipient")),
         kind: MeshMessageKind::Message,
         text: "please review the decoder".into(),

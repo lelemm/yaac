@@ -285,6 +285,7 @@ export class CodexProvider implements HarnessProvider {
   private fastTiers = new Map<string, string>();
   /** `SKILL.md` path → skill name, from the last `skills/list`: what makes a read "skill instructions". */
   private skillPaths = new Map<string, string>();
+  private skillDiscovery = new Set<string>();
   /** Sign-in mode at the last probe (lower case); undefined before the first probe. */
   private authMode: string | null | undefined = undefined;
   private sourceKinds: string[] = [...THREAD_SOURCE_KINDS];
@@ -983,6 +984,7 @@ export class CodexProvider implements HarnessProvider {
 
   private async beginTurn(st: ThreadState, input: ProviderInput, o: { model: string | null; effort: string | null; mode: CodexMode | null; fast?: boolean | null; cwd?: string | null }): Promise<TurnId> {
     const conn = await this.ensure();
+    this.primeSkills(o.cwd ?? st.cwd);
     const clientId = randomId("yaac-", 12);
     let peer = this.peerOutput(input);
     const effort = o.effort ?? st.pendingEffort;
@@ -1169,6 +1171,13 @@ export class CodexProvider implements HarnessProvider {
    * The skills Codex offers for a folder (`skills/list`, schema of codex-cli 0.170.0): the
    * enabled ones only. Remembers their paths so a later read of one is recognised.
    */
+  private primeSkills(cwd: string | null): void {
+    if (!cwd || this.skillDiscovery.has(cwd)) return;
+    if (this.skillDiscovery.size >= 256) this.skillDiscovery.clear();
+    this.skillDiscovery.add(cwd);
+    void this.skills(cwd, { forceReload: false }).catch(() => this.skillDiscovery.delete(cwd));
+  }
+
   async skills(cwd: string, opts: { forceReload: boolean }): Promise<SkillsListResult> {
     const conn = await this.ensure();
     const res = ((await conn.request("skills/list", { cwds: [cwd], forceReload: opts.forceReload })) ?? {}) as { data?: Array<{ skills?: Array<Record<string, unknown>>; errors?: Array<Record<string, unknown>> }> };
@@ -1424,6 +1433,10 @@ export class CodexProvider implements HarnessProvider {
   private handleNotification(method: string, raw: unknown): void {
     const p = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
     switch (method) {
+      case "skills/changed":
+        this.skillDiscovery.clear();
+        this.skillPaths.clear();
+        return;
       case "thread/started": {
         const t = p.thread as Thread | undefined;
         if (!t?.id) return;

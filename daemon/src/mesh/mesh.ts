@@ -1581,7 +1581,8 @@ export class Mesh implements CoreMeshHooks {
       await this.ensurePermission(rt, { action: "message", summary: `Message ${this.labelOf(r.address)}`, recipients: [this.peerFor(r.address)] });
     }
     this.checkPairRate(rt, r.address);
-    const sent = this.send({ from: this.addressOf(rt.id), fromRt: rt, to: r.address, kind: "message", text, inReplyTo: typeof a.inReplyTo === "string" ? a.inReplyTo : null, root: this.rootOf(rt), sentItem: true, now });
+    const mode = await this.parentModeOf(rt).catch(() => null);
+    const sent = this.send({ from: this.addressOf(rt.id), fromRt: rt, senderSkipsApprovals: mode?.info ? mode.info.skipsApprovals === true : undefined, to: r.address, kind: "message", text, inReplyTo: typeof a.inReplyTo === "string" ? a.inReplyTo : null, root: this.rootOf(rt), sentItem: true, now });
     // A `now` message is acted on at once: report what was done with it.
     if (now) {
       const recipient = this.localOf(r.address);
@@ -1617,10 +1618,15 @@ export class Mesh implements CoreMeshHooks {
   }
 
   /** Stores and routes one message from a thread on this target (or about it, for notices). */
-  private send(p: { from: Address; fromRt: ThreadRuntime | null; to: Address; kind: MeshMessage["kind"]; text: string; inReplyTo?: string | null; root?: Address | null; sentItem: boolean; now?: boolean }): { id: string; receipt: Receipt } {
+  private send(p: { from: Address; fromRt: ThreadRuntime | null; to: Address; kind: MeshMessage["kind"]; text: string; inReplyTo?: string | null; root?: Address | null; sentItem: boolean; now?: boolean; senderSkipsApprovals?: boolean }): { id: string; receipt: Receipt } {
     const from = this.normalise(p.from);
     const to = this.normalise(p.to);
-    const message: MeshMessage = { id: randomId("m_", 12), from, to, kind: p.kind, text: p.text, sentAt: nowIso(), seq: this.store.nextSeq(from, to), ...(p.inReplyTo ? { inReplyTo: p.inReplyTo } : {}), ...(p.root ? { root: this.normalise(p.root) } : {}), ...(p.now ? { delivery: "now" as const } : {}) };
+    const effective = p.fromRt?.effective;
+    const modeId = effective?.applied?.mode;
+    const descriptor = p.fromRt && this.core.registry.get(p.fromRt.record.instance)?.descriptor;
+    const mode = modeId && [...(effective?.modes ?? []), ...(descriptor?.modes ?? [])].find((m) => m.id === modeId);
+    const senderSkipsApprovals = p.senderSkipsApprovals ?? (mode ? mode.skipsApprovals === true : undefined);
+    const message: MeshMessage = { id: randomId("m_", 12), from, to, ...(senderSkipsApprovals !== undefined ? { senderSkipsApprovals } : {}), kind: p.kind, text: p.text, sentAt: nowIso(), seq: this.store.nextSeq(from, to), ...(p.inReplyTo ? { inReplyTo: p.inReplyTo } : {}), ...(p.root ? { root: this.normalise(p.root) } : {}), ...(p.now ? { delivery: "now" as const } : {}) };
     const recipient = this.localOf(to);
     const now = Date.now();
     let rec: MessageRecord;
@@ -1760,7 +1766,7 @@ export class Mesh implements CoreMeshHooks {
 
   private inputOf(r: MessageRecord): MeshInputMessage {
     const m = r.message;
-    return { id: m.id, kind: m.kind, from: m.from, fromLabel: this.labelOf(m.from), text: m.text };
+    return { id: m.id, kind: m.kind, from: m.from, fromLabel: this.labelOf(m.from), text: m.text, senderSkipsApprovals: m.senderSkipsApprovals ?? undefined };
   }
 
   private receivedItem(r: MessageRecord, turnId: TurnId): Item {

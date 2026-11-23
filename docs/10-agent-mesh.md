@@ -421,6 +421,10 @@ handoff. When `yaacd` cannot tell, it applies the usual [takeover rule](05-threa
 
 ### How the agent sees it
 
+The source daemon stamps the sender's permission class when its effective mode is known.
+Claude Code uses that class to apply its own inbound policy, including whether to hold or
+refuse a message. A source without a known mode supplies no class.
+
 YAAC stamps the sender’s address independently of the message body and includes it in the
 instructions for replying with `send_message`. Both transcripts link to that address.
 

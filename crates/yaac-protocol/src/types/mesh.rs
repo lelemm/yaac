@@ -36,6 +36,9 @@ pub struct MeshMessage {
     /// Stamped by `yaacd` from the sender's attachment ticket, never by the agent. For a
     /// `notice`, the thread the notice is about.
     pub from: Address,
+    /// Whether the sending harness skips approvals, stamped from its effective mode by yaacd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_skips_approvals: Option<bool>,
     /// The recipient.
     pub to: Address,
     /// What it is.

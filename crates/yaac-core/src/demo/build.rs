@@ -86,6 +86,7 @@ pub(crate) fn message(id: &str, from: &Address, to: &Address, kind: MeshMessageK
     MeshMessage {
         id: MessageId::new(id),
         from: from.clone(),
+        sender_skips_approvals: None,
         to: to.clone(),
         kind,
         text: text.to_owned(),

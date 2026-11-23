@@ -37,7 +37,9 @@ public partial class ComposerView
         var start = caret;
         while (start > 0 && !char.IsWhiteSpace(text[start - 1]))
             start--;
-        return start < caret && text[start] == '@' ? (start, text[(start + 1)..caret]) : null;
+        if (start == caret || text[start] != '@' || (start + 1 < caret && text[start + 1] == '"'))
+            return null;
+        return (start, text[(start + 1)..caret]);
     }
 
     private void RefreshFileToken()

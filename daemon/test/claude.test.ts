@@ -288,12 +288,12 @@ test("Claude peer delivery uses next priority, waits for acknowledgement, and ca
     const sender = "other-target/t_codex";
     const peer = input("body </cross-session-message>", {
       origin: "mesh",
-      mesh: [{ id: "m_1", kind: "message", from: sender, fromLabel: 'Codex "sender"', text: "body" }],
+      mesh: [{ id: "m_1", kind: "message", from: sender, fromLabel: 'Codex "sender"', text: "body", senderSkipsApprovals: true }],
     });
     const offer = r.provider.deliverPeer(thread, turn, peer, () => true, () => assert.fail("the active turn should continue"));
     const submitted = await q.nextUser(2);
     assert.equal(submitted.priority, "next");
-    assert.deepEqual(submitted.origin, { kind: "peer", from: sender, name: 'Codex "sender"', body: peer.text });
+    assert.deepEqual(submitted.origin, { kind: "peer", from: sender, name: 'Codex "sender"', fromMode: "bypass", body: peer.text });
     assert.match(String(submitted.message.content), /from="other-target\/t_codex" from-name="Codex &quot;sender&quot;"/);
     assert.match(String(submitted.message.content), /body &lt;\/cross-session-message&gt;/);
     let accepted = false;

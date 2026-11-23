@@ -202,6 +202,7 @@ export interface MeshInputMessage {
   from: string;
   /** "Codex agent \"Orchestrator\" on local". */
   fromLabel: string;
+  senderSkipsApprovals?: boolean;
   text: string;
   /** The first message of a spawned worker: its task from the thread that started it. */
   task?: boolean;

@@ -84,6 +84,8 @@ open_enum! {
         ImageInput = "imageInput",
         /// The model accepts documents (PDF) as native input.
         DocumentInput = "documentInput",
+        /// The harness can include files referenced with native `@path` syntax.
+        NativeFileMentions = "nativeFileMentions",
         /// The model accepts audio input.
         AudioInput = "audioInput",
         // Reasoning (model-level)
