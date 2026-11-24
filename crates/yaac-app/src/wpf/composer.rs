@@ -369,19 +369,37 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                     menu(machine.target.as_str(), &machine.name, true, children)
                 })
                 .collect::<Vec<_>>();
-            options.push(action("createProject", "New project…", true));
+            if d.target.is_some() {
+                options.push(action("createProject", "New project…", true));
+            } else {
+                let targets = state.targets.iter().map(|t| {
+                    action(&format!("createProject:{}", t.entry.id), t.entry.name.as_str(), true)
+                }).collect();
+                options.push(menu("createProject", "New project…", !state.targets.is_empty(), targets));
+            }
             v["project"] = menu("project", label, true, options);
+            let worktrees = yaac_core::moving::draft_worktrees(state, d);
+            if !worktrees.is_empty() {
+                let selected = worktrees.iter().find(|(_, selected)| *selected);
+                let label = selected.map_or("Worktree: choose".to_owned(), |(w, _)| format!("Worktree: {}", w.label));
+                let options = worktrees.iter().map(|(w, selected)| {
+                    option(&format!("worktree:{}", w.root), &w.label, true, *selected, Some(&w.root))
+                }).collect();
+                v["worktree"] = menu("worktree", &label, worktrees.len() > 1 || selected.is_none(), options);
+            }
             let support = attachments::draft_image_support(state, d);
-            let views = attachments::chips(&d.draft.attachments, &support, Some(&d.target));
+            let views = attachments::chips(&d.draft.attachments, &support, d.target.as_ref());
             v["attachments"] = json!(chips(app, &draft, &views));
             v["placeholder"] = json!("Write the first message…");
             let blocked = attachments::blocked(&views);
             v["hint"] = if yaac_core::compose::is_compact_command(text) {
                 json!("Start the conversation before compacting context.")
+            } else if d.target.is_none() {
+                json!("Choose a project to start the thread.")
             } else {
                 json!(blocked)
             };
-            let provider_ready = state.target(&d.target).is_some_and(|target| {
+            let provider_ready = d.target.as_ref().and_then(|id| state.target(id)).is_some_and(|target| {
                 target.providers.iter().any(|p| {
                     p.status == yaac_protocol::ProviderStatus::Ready
                         && d.instance.as_ref().is_none_or(|id| &p.instance == id)
@@ -659,12 +677,9 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             },
             "createProject" => {
                 if let Some(id) = new
-                    && let Some(d) = app.client.state.new_threads.iter().find(|d| d.id == id)
+                    && let Some(target) = app.client.draft_target(&DraftRef::New(id))
                 {
-                    let folder = d.cwd.as_ref().map_or("~", |p| p.as_str());
-                    let mut cp = crate::sidebar::create_project_for(app, &d.target, folder);
-                    cp.for_draft = Some(id);
-                    app.ui.create_project = Some(cp);
+                    app.create_project_for_draft(id, &target);
                 }
                 None
             }
@@ -673,8 +688,15 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
                     return Err(format!("Unavailable composer action {id}"));
                 };
                 match kind {
+                    "createProject" => {
+                        if let Some(id) = new {
+                            app.create_project_for_draft(id, &yaac_protocol::TargetId::new(value));
+                        }
+                        None
+                    }
                     "openRequest" => key(app, value).map(Action::OpenRequest),
                     "project" => new.map(|id| Action::DraftProject(id, value.to_owned())),
+                    "worktree" => new.map(|id| Action::DraftWorktree(id, value.to_owned())),
                     "effort" => thread
                         .map(|k| Action::SetEffort(k, EffortId::new(value)))
                         .or_else(|| new.map(|id| Action::DraftEffort(id, EffortId::new(value)))),

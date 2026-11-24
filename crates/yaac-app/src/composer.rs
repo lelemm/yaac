@@ -840,7 +840,7 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
         let st = &app.client.state;
         let tid = match target {
             Target::Thread(k) => Some(k.target.clone()),
-            Target::Draft(id) => st.new_threads.iter().find(|d| d.id == *id).map(|d| d.target.clone()),
+            Target::Draft(id) => st.new_threads.iter().find(|d| d.id == *id).and_then(|d| d.target.clone()),
         };
         tid.and_then(|t| st.target(&t)).map(|t| {
             let when = if t.providers_fresh { "updated just now" } else { "from the cache" };
@@ -984,35 +984,35 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
 pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions: &mut Vec<Action>) {
     let p = app.p;
     let Some(d) = app.client.state.new_threads.iter().find(|d| d.id == id).cloned() else { return };
-    let target_name = app.client.state.target_name(&d.target);
+    let target_name = d.target.as_ref().map(|target| app.client.state.target_name(target));
     egui::Panel::top("draft-header").show_separator_line(false).frame(egui::Frame::NONE.inner_margin(Margin { left: 28, right: 127, top: 9, bottom: 6 })).show(ui, |ui| {
         ui.label(egui::RichText::new("New thread").font(theme::bold(size::TITLE)));
         let project = d.project.as_ref().and_then(|pid| app.client.state.projects.iter().find(|x| &x.id == pid)).map(|x| x.name.clone());
-        let crumb = match project {
-            Some(name) => format!("{target_name} · {name}"),
-            None => format!("{target_name} · {}", d.cwd.as_ref().map_or_else(|| "no project yet".to_owned(), ToString::to_string)),
-        };
-        ui.label(widgets::secondary(crumb, &p));
+        if let Some(target) = &target_name {
+            let location = project.or_else(|| d.cwd.as_ref().map(ToString::to_string));
+            let crumb = location.map_or_else(|| target.clone(), |location| format!("{target} · {location}"));
+            ui.label(widgets::secondary(crumb, &p));
+        }
     });
     let preferred = app.ui.chat_width;
     let contents = |ui: &mut egui::Ui| {
         if d.ultrafast && app.composer_speed(&DraftRef::New(id)).is_some_and(|speed| speed.ultrafast_on) {
             ui.label(egui::RichText::new(ULTRAFAST_WARNING).font(theme::ui(size::SMALL)).color(p.needs));
         }
-        // One selector: the project (a new thread starts in the root of its folder).
+        // The project selects the target and default checkout.
         let project_label = d
             .project
             .as_ref()
             .and_then(|pid| app.client.state.projects.iter().find(|x| &x.id == pid))
-            .map_or_else(|| format!("Project: none · {target_name}"), |x| format!("Project: {} · {}", x.name, app.client.state.target_name(&x.target)));
+            .map_or_else(|| "Choose a project".to_owned(), |x| format!("Project: {} · {}", x.name, app.client.state.target_name(&x.target)));
         let r = widgets::selector(ui, &p, &project_label, true);
         if r.clicked() {
             app.ui.toggle_menu(Menu::Project);
         }
         let mut open = app.ui.menu == Some(Menu::Project);
         let groups = yaac_core::first_run::project_picker(&app.client.state, d.project.as_deref());
-        let mut new_project = false;
-        crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).align(egui::RectAlign::TOP_START).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+        let mut new_project = None;
+        crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).align(egui::RectAlign::TOP_START).open_bool(&mut open).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.set_min_width(280.0);
             for g in &groups {
                 ui.horizontal(|ui| {
@@ -1025,25 +1025,58 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
                     let r = ui.selectable_label(x.selected, &x.name).on_hover_text(&x.folder);
                     if r.clicked() {
                         actions.push(Action::DraftProject(id, x.id.clone()));
+                        ui.close();
                     }
                 }
                 ui.add_space(4.0);
             }
-            if ui.selectable_label(false, "New project…").clicked() {
-                new_project = true;
+            if let Some(target) = &d.target {
+                if ui.selectable_label(false, "New project…").clicked() {
+                    new_project = Some(target.clone());
+                    ui.close();
+                }
+            } else {
+                ui.menu_button("New project…", |ui| {
+                    for t in &app.client.state.targets {
+                        if ui.button(t.entry.name.as_str()).clicked() {
+                            new_project = Some(t.entry.id.clone());
+                            ui.close();
+                        }
+                    }
+                });
             }
         });
         if !open && app.ui.menu == Some(Menu::Project) {
             app.ui.menu = None;
         }
-        if new_project {
-            let folder = d.cwd.as_ref().map_or_else(|| "~".to_owned(), ToString::to_string);
-            let mut cp = crate::sidebar::create_project_for(app, &d.target, &folder);
-            cp.for_draft = Some(id);
-            app.ui.create_project = Some(cp);
+        if let Some(target) = new_project {
+            app.ui.menu = None;
+            app.create_project_for_draft(id, &target);
+        }
+        let worktrees = yaac_core::moving::draft_worktrees(&app.client.state, &d);
+        if !worktrees.is_empty() {
+            let selected = worktrees.iter().find(|(_, selected)| *selected);
+            let label = selected.map_or("Worktree: choose".to_owned(), |(w, _)| format!("Worktree: {}", w.label));
+            let r = widgets::selector(ui, &p, &label, worktrees.len() > 1 || selected.is_none());
+            if r.clicked() {
+                app.ui.toggle_menu(Menu::DraftWorktree);
+            }
+            let mut open = app.ui.menu == Some(Menu::DraftWorktree);
+            crate::widgets::menu_popup(egui::Popup::from_response(&r), &p)
+                .kind(egui::PopupKind::Menu).align(egui::RectAlign::TOP_START).open_bool(&mut open)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+                    for (w, selected) in &worktrees {
+                        if ui.selectable_label(*selected, &w.label).on_hover_text(&w.root).clicked() {
+                            actions.push(Action::DraftWorktree(id, w.root.clone()));
+                        }
+                    }
+                });
+            if !open && app.ui.menu == Some(Menu::DraftWorktree) {
+                app.ui.menu = None;
+            }
         }
         ui.add_space(6.0);
-        let providers = app.client.state.target(&d.target).map(|t| t.providers.clone()).unwrap_or_default();
+        let providers = d.target.as_ref().and_then(|target| app.client.state.target(target)).map(|t| t.providers.clone()).unwrap_or_default();
         let name = d
             .instance
             .as_ref()
@@ -1054,7 +1087,7 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
         let dref = DraftRef::New(id);
         let eid = composer_id(&dref);
         let support = yaac_core::attachments::draft_image_support(&app.client.state, &d);
-        let chip_views = yaac_core::attachments::chips(&d.draft.attachments, &support, Some(&d.target));
+        let chip_views = yaac_core::attachments::chips(&d.draft.attachments, &support, d.target.as_ref());
         let blocked = yaac_core::attachments::blocked(&chip_views);
         let has = !d.draft.text.trim().is_empty() || !d.draft.attachments.is_empty();
         let comp = yaac_core::skills::for_new_thread(&app.client.state, &d);
@@ -1084,7 +1117,8 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if send_button(ui, &p, has, blocked.as_deref()) {
+                    let why = if d.target.is_none() { Some("Choose a project to start the thread.") } else { blocked.as_deref() };
+                    if send_button(ui, &p, has, why) {
                         send = Submit::Send;
                     }
                     attach_button(ui, app, &dref, actions);
@@ -1095,12 +1129,14 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
             widgets::focus_ring(ui, inner.response.rect, &p);
         }
         // A new thread runs nothing yet: Send now is an ordinary send.
-        if send != Submit::None {
+        if send != Submit::None && d.target.is_some() {
             actions.push(Action::StartDraft(id));
         }
         ui.add_space(6.0);
-        let row = draft_row(&providers, &target_name, &d);
-        control_row(ui, app, &row, &Target::Draft(id), actions);
+        if let Some(target) = &target_name {
+            let row = draft_row(&providers, target, &d);
+            control_row(ui, app, &row, &Target::Draft(id), actions);
+        }
     };
     let panel = egui::Panel::bottom("draft-composer")
         .show_separator_line(false)

@@ -109,10 +109,14 @@ public partial class TranscriptView : UserControl
 
     private void ApplyChatPadding()
     {
-        var scrollbar = scroll?.ComputedVerticalScrollBarVisibility == Visibility.Visible
-            ? (scroll.Template.FindName("PART_VerticalScrollBar", scroll) as ScrollBar)?.Width ?? 0
-            : 0;
-        Rows.Padding = new Thickness(0, 10, Math.Max(0, chatGutter - scrollbar), 16);
+        var rightPadding = chatGutter;
+        if (scroll?.Template.FindName("PART_VerticalScrollBar", scroll) is ScrollBar scrollbar)
+        {
+            scrollbar.MaxWidth = chatGutter;
+            if (scroll.ComputedVerticalScrollBarVisibility == Visibility.Visible)
+                rightPadding -= Math.Min(scrollbar.Width, chatGutter);
+        }
+        Rows.Padding = new Thickness(0, 10, rightPadding, 16);
     }
 
     public void Render(JsonElement view)

@@ -1024,7 +1024,7 @@ pub(super) fn command(
     let id = string(p, "id");
     let values = &p["values"];
     let action = match id {
-        "first.start" if first_run::first_run(&app.client.state).can_start => Action::NewThread,
+        "first.start" if first_run::first_run(&app.client.state).can_start => Action::StartFirstThread,
         "first.wsl" if app.host_windows => {
             app.apply(vec![
                 Action::WslOn(true),

@@ -116,7 +116,7 @@ public partial class ComposerView : UserControl
         QueueArea.Visibility = VisibleWhen(QueueRows.Children.Count > 0);
         DisplayText(QueueTitle, Field(view, "queueLabel").String());
 
-        RenderProject(showEditor ? ReadAction(Field(view, "project")) : null);
+        RenderProject(showEditor ? view : default);
         RenderControls(view);
         RenderEditorActions(view);
         RenderSkills(Field(view, "skills"));

@@ -18,6 +18,8 @@ open_enum! {
         ThreadResume = "threadResume",
         /// Native fork within this provider.
         ThreadFork = "threadFork",
+        /// The daemon can retain links to the source thread's current children on a fork.
+        ForkKeepChildren = "forkKeepChildren",
         /// Native fork from a chosen point, not only the end.
         ThreadForkAtTurn = "threadForkAtTurn",
         /// Can rename a thread.

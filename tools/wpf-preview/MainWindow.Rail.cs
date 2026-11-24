@@ -108,6 +108,16 @@ public partial class MainWindow
                 heading.ToolTip = collapsed ? $"{text} (collapsed)" : text;
                 AutomationProperties.SetName(heading, $"{(collapsed ? "Expand" : "Collapse")} {text}");
                 heading.IsEnabled = header.Get("toggle").Flag("enabled");
+                bool canStart = header.Get("actions").Items()
+                    .Any(action => action.Text("id") == "section.newThread" && action.Flag("enabled"));
+                if (canStart && heading.ContextMenu is null)
+                {
+                    var item = new MenuItem { Header = "New Thread" };
+                    item.Click += (_, _) => Send("sidebar.action", new { action = "section.newThread", sectionId = id });
+                    heading.ContextMenu = new ContextMenu { Items = { item } };
+                }
+                else if (!canStart && heading.ContextMenu is not null)
+                    heading.ClearValue(ContextMenuProperty);
             }
             if (collapsed) continue;
 

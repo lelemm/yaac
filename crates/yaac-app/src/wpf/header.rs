@@ -14,13 +14,14 @@ pub(super) fn fields(app: &YaacApp, map: &AttentionMap) -> Value {
     let Some(key) = selected_thread(app) else {
         let (title, location) = if let Selection::NewThread(id) = state.selection {
             let draft = state.new_threads.iter().find(|d| d.id == id);
-            let location = draft.map(|d| {
+            let location = draft.and_then(|d| {
+                let target = d.target.as_ref()?;
                 let project = state
                     .projects
                     .iter()
                     .find(|p| Some(&p.id) == d.project.as_ref());
                 let name = project.map_or("No project yet", |p| p.name.as_str());
-                format!("{} · {name}", state.target_name(&d.target))
+                Some(format!("{} · {name}", state.target_name(target)))
             });
             ("New thread", location)
         } else {

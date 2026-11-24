@@ -213,6 +213,12 @@
         </StackPanel>
         <Grid Grid.Row="2" x:Name="ChatSurface" Background="Transparent">
           <views:TranscriptView x:Name="TranscriptPane" HorizontalAlignment="Center" />
+          <DockPanel x:Name="TranscriptPreview" Background="{DynamicResource YaacCanvas}"
+                     Visibility="Collapsed" IsHitTestVisible="False" KeyboardNavigation.TabNavigation="None">
+            <TextBlock x:Name="TranscriptPreviewTitle" DockPanel.Dock="Top" HorizontalAlignment="Center"
+                       Foreground="{DynamicResource YaacMuted}" Margin="8,4" />
+            <views:TranscriptView x:Name="TranscriptPreviewPane" HorizontalAlignment="Center" />
+          </DockPanel>
         </Grid>
         <Grid Grid.Row="3" x:Name="ComposerColumn" HorizontalAlignment="Center" Margin="0,0,0,10">
           <views:ComposerView x:Name="ComposerPane" />

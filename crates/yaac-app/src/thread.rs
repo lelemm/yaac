@@ -83,7 +83,16 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key
                 app.ui.chat_width = width;
             }
         });
-    egui::CentralPanel::no_frame().show(ui, |ui| transcript(ui, app, map, key, now, actions));
+    egui::CentralPanel::no_frame().show(ui, |ui| {
+        if let Some(preview) = app.ui.dock_preview.target(key).cloned() {
+            if let Some(summary) = app.client.state.summary(&preview) {
+                ui.vertical_centered(|ui| ui.label(widgets::secondary(format!("Previewing {}", summary.title), &p)));
+            }
+            ui.push_id("docked-agent-preview", |ui| transcript(ui, app, map, &preview, now, actions));
+        } else {
+            transcript(ui, app, map, key, now, actions);
+        }
+    });
 }
 
 fn tone_color(p: &Palette, t: Tone) -> egui::Color32 {
@@ -489,6 +498,7 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     let p = app.p;
     let state = &app.client.state;
     let Some(t) = app.client.state.transcripts.get(key) else { return };
+    let preview = state.selected_thread().is_some_and(|owner| app.ui.dock_preview.target(owner) == Some(key));
     if !t.is_loaded() && t.items().is_empty() {
         ui.add_space(20.0);
         ui.vertical_centered(|ui| ui.label(widgets::secondary("Loading…", &p)));
@@ -535,7 +545,9 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     // when a message (with its time line, D154) gives way to an activity line.
     let total = y + 20.0 + bl.last().map_or(0.0, |b| crate::messages::STAMP_LINE - crate::messages::stamp_space(b));
     let mut sa = egui::ScrollArea::vertical().id_salt(("transcript", key.to_string())).auto_shrink([false, false]).stick_to_bottom(!t.history_away);
-    if let Some(a) = app.ui.restore.take() {
+    if preview {
+        sa = sa.vertical_scroll_offset((total - ui.available_height()).max(0.0));
+    } else if let Some(a) = app.ui.restore.take() {
         // Back or forward: the same lines the user was reading, even if items arrived since.
         app.ui.scroll_end = false;
         app.ui.scroll_to = None;
@@ -585,6 +597,7 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     }
     let mut changed = false;
     let mut actions_local = Vec::new();
+    let original_selection = preview.then(|| std::mem::take(&mut app.ui.textsel));
     app.ui.textsel.begin(key);
     let mut area = ui.max_rect();
     let mut reading = None;
@@ -679,6 +692,17 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
             Some(yaac_core::history::Anchor { item, offset: view.top() - tops[i] })
         });
     });
+    // Re-measure changed blocks before showing the frame.
+    if changed {
+        ui.ctx().request_discard("a transcript block changed height");
+        if !ui.ctx().will_discard() {
+            ui.ctx().request_repaint();
+        }
+    }
+    if let Some(selection) = original_selection {
+        app.ui.textsel = selection;
+        return;
+    }
     let view_top = out.state.clamped_offset().y;
     let view_bottom = view_top + out.inner_rect.height();
     // Prefetch the adjacent page before the reader reaches either edge of the window.
@@ -794,15 +818,6 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
             app.ui.timeline.go_to = Some(item);
         }
         _ => {}
-    }
-    // A block drew taller or shorter than it was placed: what follows it, the content height
-    // and the stuck-to-bottom offset were laid out wrong. Lay the frame out again before it is
-    // shown (D152), not on the next one, or the view jumps once per streamed delta.
-    if changed {
-        ui.ctx().request_discard("a transcript block changed height");
-        if !ui.ctx().will_discard() {
-            ui.ctx().request_repaint();
-        }
     }
 }
 
@@ -986,7 +1001,7 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
             }
         }
         Block::Folded { first, text, failed, .. } => {
-            let resp = line_row(ui, &mut v.sel(unit), &p, Row { state_mark: if *failed { Some(Mark::Failed) } else { None }, mark: LineMark::Other, text, failed: *failed, highlighted: false, folded: true, counts: None, trailer: None, open: None });
+            let resp = line_row(ui, &mut v.sel(unit), &p, Row { state_mark: if *failed { Some(Mark::Failed) } else { None }, mark: LineMark::Other, text, highlighted: false, folded: true, counts: None, trailer: None, open: None });
             if resp.clicked() {
                 v.ui.expansion.toggle_run(key, first);
             }
@@ -1000,7 +1015,6 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
                     state_mark: None,
                     mark: LineMark::Tool,
                     text: &totals.text(),
-                    failed: false,
                     highlighted: false,
                     folded: true,
                     counts: Some((totals.added, totals.removed)),
@@ -1193,7 +1207,6 @@ struct Row<'a> {
     state_mark: Option<Mark>,
     mark: LineMark,
     text: &'a str,
-    failed: bool,
     highlighted: bool,
     folded: bool,
     /// Lines added and removed, in the git colours after the text.
@@ -1217,7 +1230,7 @@ fn line_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, row: Row<'_>) ->
     } else if clickable && resp.hovered() || row.open == Some(true) {
         ui.painter().rect_filled(rect, 4.0, p.faint);
     }
-    let color = if row.failed { p.failed } else { p.text2 };
+    let color = p.text2;
     let c = pos2(rect.left() + 9.0, rect.center().y);
     let pa = ui.painter();
     match (row.state_mark, row.mark) {
@@ -1283,7 +1296,7 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
             ui,
             &mut v.sel(unit),
             &p,
-            Row { state_mark, mark: l.mark, text: &l.text, failed: l.failed, highlighted: l.highlighted, folded: false, counts: l.diff.map(|d| (d.added, d.removed)), trailer: None, open: (l.mark != LineMark::Thought || thought.is_some()).then_some(l.expanded) },
+            Row { state_mark, mark: l.mark, text: &l.text, highlighted: l.highlighted, folded: false, counts: l.diff.map(|d| (d.added, d.removed)), trailer: None, open: (l.mark != LineMark::Thought || thought.is_some()).then_some(l.expanded) },
         ),
     };
     if resp.clicked() {
@@ -1520,7 +1533,7 @@ fn call_row(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, l: &ActivityLine
     } else if resp.hovered() {
         ui.painter().rect_filled(rect, 4.0, p.faint);
     }
-    let color = if l.failed { p.failed } else { p.text2 };
+    let color = p.text2;
     let c = pos2(rect.left() + 9.0, rect.center().y);
     {
         let pa = ui.painter();

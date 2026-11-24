@@ -281,20 +281,30 @@ pub fn clusters(panel: &AgentsPanel) -> Vec<Cluster<'_>> {
 /// The floating card adds siblings before the usual groups. A sibling who is also a contact
 /// appears once in this view, under Siblings.
 pub fn card_groups(panel: &AgentsPanel) -> Vec<(&'static str, Vec<&AgentRow>)> {
-    let mut siblings: Vec<_> = panel.siblings.iter().collect();
-    siblings.sort_by_key(|row| list_order_key(row));
-    let sibling_keys: BTreeSet<_> = siblings.iter().filter_map(|row| row.key.as_ref()).collect();
+    let siblings = sibling_rows(panel);
     let mut groups = Vec::new();
     if !siblings.is_empty() {
         groups.push(("Siblings", siblings));
     }
-    for mut cluster in clusters(panel) {
-        cluster.rows.retain(|row| row.key.as_ref().is_none_or(|key| !sibling_keys.contains(key)));
-        if !cluster.rows.is_empty() {
-            groups.push((cluster.relation.heading(), cluster.rows));
-        }
+    for cluster in docked_clusters(panel) {
+        groups.push((cluster.relation.heading(), cluster.rows));
     }
     groups
+}
+
+pub fn sibling_rows(panel: &AgentsPanel) -> Vec<&AgentRow> {
+    let mut siblings: Vec<_> = panel.siblings.iter().collect();
+    siblings.sort_by_key(|row| list_order_key(row));
+    siblings
+}
+
+/// The usual groups, with rows already shown under Siblings omitted.
+pub fn docked_clusters(panel: &AgentsPanel) -> Vec<Cluster<'_>> {
+    let siblings: BTreeSet<_> = panel.siblings.iter().filter_map(|row| row.key.as_ref()).collect();
+    clusters(panel).into_iter().filter_map(|mut cluster| {
+        cluster.rows.retain(|row| row.key.as_ref().is_none_or(|key| !siblings.contains(key)));
+        (!cluster.rows.is_empty()).then_some(cluster)
+    }).collect()
 }
 
 /// One entry of the docked panel's list under a heading.
@@ -599,16 +609,19 @@ pub fn agents_panel(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Op
         out: &mut Vec<AgentRow>,
         seen: &mut BTreeSet<ThreadKey>,
     ) {
-        let mut kids: Vec<&ThreadKey> = children.get(parent).map(|v| v.iter().collect()).unwrap_or_default();
+        let mut kids: Vec<ThreadKey> = children.get(parent).cloned().unwrap_or_default();
+        if let Some(summary) = state.key_of(parent).as_ref().and_then(|k| state.summary(k)) {
+            kids.extend(summary.linked_children.iter().flatten().filter_map(|address| state.key_of(address)));
+        }
         kids.sort_by_key(|k| state.summary(k).map(|s| s.created_at.clone()));
         for k in kids {
             if !seen.insert(k.clone()) {
                 continue;
             }
-            if let Some(row) = row_for(state, map, k, depth) {
+            if let Some(row) = row_for(state, map, &k, depth) {
                 out.push(row);
             }
-            walk(state, map, children, &k.address(), depth + 1, out, seen);
+            walk(state, map, children, &k.address(), depth.saturating_add(1), out, seen);
         }
     }
     let mut seen = BTreeSet::from([key.clone()]);

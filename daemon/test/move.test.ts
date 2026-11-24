@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FAKE, RpcFailure, client, fakeOf, opId, readAll, startDaemon, startThread, text, tmpHome, waitTurnDone, type TestClient } from "./helpers.js";
+import { FAKE, RpcFailure, client, fakeOf, opId, readAll, startDaemon, startThread, text, tmpHome, until, waitTurnDone, type TestClient } from "./helpers.js";
 import { CodexProvider } from "../src/providers/codex/index.js";
 import type { Exec } from "../src/providers/codex/backend.js";
 import type { ProviderInput } from "../src/providers/types.js";
@@ -187,7 +187,7 @@ test("a running thread moves from its next turn; archived, unknown project, and 
   await daemon.stop("test");
 });
 
-test("a worktree of the project's repository: the agent moves to the same place in that checkout", async () => {
+test("moving and starting threads at the project's relative folder in a linked checkout", async () => {
   const home = tmpHome();
   const daemon = await startDaemon(home);
   const c = await client(daemon);
@@ -218,6 +218,16 @@ test("a worktree of the project's repository: the agent moves to the same place 
   const main: any = await c.request("thread/move", { opId: opId(), threadId, project: svc });
   assert.equal(main.workingDirectory, path.join(fs.realpathSync(repo), "svc"));
   assert.equal(main.thread.placement.worktreeName, "main");
+  // The draft's checkout picker sends the resolved directory on thread/start.
+  const cwd = path.join(wtReal, "svc");
+  const started = await startThread(c, "/fake say hi", { cwd });
+  const linked = await until(() => {
+    const thread = summary(daemon, started.threadId);
+    return thread.repo ? thread : null;
+  }, "new thread's repository");
+  assert.equal(linked.cwd, cwd);
+  assert.equal(linked.project?.id, svc);
+  assert.equal(linked.repo?.root, wtReal);
   await c.close();
   await daemon.stop("test");
 });

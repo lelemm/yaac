@@ -2424,6 +2424,10 @@ export class Mesh implements CoreMeshHooks {
     return { target: this.selfName(), address: this.addressOf(rt.id) };
   }
 
+  childrenOf(rt: ThreadRuntime): readonly Address[] {
+    return (this.store.peekThread(rt.id)?.children ?? []).map(address => this.normalise(address));
+  }
+
   stateChanged(rt: ThreadRuntime): void {
     const address = this.addressOf(rt.id);
     const state = this.core.summaryOf(rt).state;

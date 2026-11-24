@@ -211,6 +211,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
     let mut next_pr_check = None;
     let mut selection_epoch = 0;
     let mut markdown = markdown_view::MarkdownView::default();
+    let mut preview_markdown = markdown_view::MarkdownView::default();
     let result = (|| loop {
         let due = deadline
             .lock()
@@ -318,12 +319,14 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
             if window_shown {
                 composer::upkeep(&mut app);
             }
+            crate::agents_ui::poll_dock_hover(&mut app, &ctx);
             let current = view(
                 &app,
                 selected_settings_target.as_ref(),
                 insert.as_ref().map(|(_, v)| v),
                 selection_epoch,
                 &mut markdown,
+                &mut preview_markdown,
                 (window_shown && !app.ui.settings && agent_rows_visible).then_some(&ctx),
             );
             let mut changes: Map<String, Value> = current
@@ -333,6 +336,11 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                 .collect();
             if let Some(view) = changes.get_mut("transcript")
                 && let Some(old) = previous.get("transcript")
+            {
+                transcript::diff(old, view);
+            }
+            if let Some(view) = changes.get_mut("transcriptPreview").filter(|view| view.is_object())
+                && let Some(old) = previous.get("transcriptPreview")
             {
                 transcript::diff(old, view);
             }
@@ -357,6 +365,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                     if !window_shown {
                         visible_pr_rows.clear();
                         agent_rows_visible = false;
+                        crate::agents_ui::dock_hover(&mut app, &ctx, false, None);
                     }
                 }
                 if command == "shell.prVisible" {
@@ -416,6 +425,7 @@ fn view(
     insert: Option<&Value>,
     selection_epoch: u64,
     markdown: &mut markdown_view::MarkdownView,
+    preview_markdown: &mut markdown_view::MarkdownView,
     agent_ages_ctx: Option<&egui::Context>,
 ) -> Map<String, Value> {
     let state = &app.client.state;
@@ -466,6 +476,7 @@ fn view(
         ),
         ("shortcuts".into(), json!(navigation::shortcuts(app))),
         ("transcript".into(), transcript::view(app, &attention, markdown)),
+        ("transcriptPreview".into(), transcript::preview(app, &attention, preview_markdown)),
         ("composer".into(), composer::view(app, &attention, insert)),
         ("agents".into(), agents::view(app, &attention, agent_ages_ctx)),
         ("settings".into(), settings::view(app, settings_target)),
@@ -529,7 +540,8 @@ fn dispatch(
             header::command(app, payload);
             None
         }
-        "sidebar.new" | "shell.new" | "settings.start" => Some(Action::NewThread),
+        "sidebar.new" | "shell.new" => Some(Action::NewThread),
+        "settings.start" => Some(Action::StartFirstThread),
         "shell.settings" => Some(Action::Settings(true)),
         "shell.startWsl" => {
             let id = yaac_protocol::TargetId::from(string(payload, "id"));
@@ -640,6 +652,15 @@ fn dispatch(
             }
             None
         }
+        "agents.hover" => {
+            if let Some(owner) = selected_thread(app)
+                && owner.address().as_str() == string(payload, "owner")
+            {
+                let hovered = key(app, string(payload, "id"));
+                crate::agents_ui::dock_hover(app, ctx, payload["inside"] == true, hovered);
+            }
+            None
+        }
         "agents.markRead" => {
             let rows = selected_thread(app).and_then(|key| {
                 agents_panel(
@@ -653,7 +674,7 @@ fn dispatch(
                 let keys = if payload["floating"] == true {
                     yaac_core::agents::card_groups(&panel).into_iter().flat_map(|(_, rows)| rows).filter_map(unseen).collect()
                 } else {
-                    panel.all().filter_map(unseen).collect()
+                    panel.all().chain(&panel.siblings).filter_map(unseen).collect()
                 };
                 Action::MarkRead(keys)
             })

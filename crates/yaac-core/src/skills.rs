@@ -326,14 +326,15 @@ pub fn for_thread(state: &AppState, key: &ThreadKey) -> Option<Composer> {
 /// The skills context of a new-thread draft: its chosen instance (or the one `thread/start` would
 /// pick) in its folder.
 pub fn for_new_thread(state: &AppState, draft: &crate::state::NewThreadDraft) -> Option<Composer> {
-    let target = state.target(&draft.target)?;
+    let target_id = draft.target.as_ref()?;
+    let target = state.target(target_id)?;
     let provider = match &draft.instance {
         Some(i) => target.provider(i)?,
         None => target.providers.iter().find(|p| p.status == yaac_protocol::ProviderStatus::Ready)?,
     };
     let cwd = draft.cwd.as_ref()?;
     Some(Composer {
-        scope: SkillScopeKey { target: draft.target.clone(), instance: provider.instance.clone(), cwd: cwd.as_str().to_owned() },
+        scope: SkillScopeKey { target: target_id.clone(), instance: provider.instance.clone(), cwd: cwd.as_str().to_owned() },
         caps: SkillCaps::of(&provider.capabilities),
         provider: crate::header::short_provider(&provider.display_name, provider.name.as_deref()),
         // Nothing to compact in a thread that has not started.

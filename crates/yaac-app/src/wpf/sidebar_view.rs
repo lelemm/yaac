@@ -88,10 +88,44 @@ fn search_rows(app: &YaacApp, map: &AttentionMap, find: &yaac_core::state::FindS
 
 #[cfg(test)]
 #[test]
-fn wpf_collapsed_groups_keep_header_actions_and_are_revealed_in_search() {
+fn wpf_archive_confirmation_sends_every_selected_thread() {
+    let ctx = egui::Context::default();
+    let mut app = crate::app::tests::demo_app(&ctx);
+    let keys = [yaac_core::demo::threads::users(), yaac_core::demo::threads::billing()];
+    for key in &keys {
+        app.client.state.threads.get_mut(key).unwrap().summary.spawned_by = None;
+    }
+    let ids = keys.iter().map(ThreadKey::address).collect::<Vec<_>>();
+    command(&mut app, &ctx, "sidebar.action", &json!({ "action": "bulk.archive", "ids": ids })).unwrap();
+    assert_eq!(app.ui.bulk_archive.as_ref().unwrap().title, "Archive 2 threads?");
+    assert!(app.ui.archive.is_none());
+    super::dialogs::command(&mut app, "dialog.submit", &json!({ "id": "bulkArchive" })).unwrap();
+    let requests: std::collections::BTreeSet<_> = app.demo.as_ref().unwrap().requests().into_iter()
+        .filter(|(_, method, _)| method == yaac_protocol::methods::names::THREAD_ARCHIVE)
+        .map(|(target, _, params)| (target.unwrap(), params["threadId"].as_str().unwrap().to_owned()))
+        .collect();
+    assert_eq!(requests, keys.into_iter().map(|key| (key.target, key.thread.to_string())).collect());
+}
+
+#[cfg(test)]
+#[test]
+fn wpf_collapsed_groups_keep_header_actions_and_start_drafts_in_their_checkout() {
     let ctx = egui::Context::default();
     let mut app = crate::app::tests::demo_app(&ctx);
     let key = yaac_core::demo::threads::fix();
+    let project = app.client.state.project_of(&key).unwrap().id.clone();
+    let repo = "/home/dev/yaac/.git";
+    let main = "/home/dev/yaac";
+    let linked = "/home/dev/yaac-wt/protocol";
+    let p = app.client.state.projects.iter_mut().find(|p| p.id == project).unwrap();
+    p.repo = Some(yaac_core::projects::RepoLocation {
+        repo: repo.into(), relative: "src".into(), root: main.into(), checkout: None,
+    });
+    p.folder = format!("{main}/src");
+    app.client.state.threads.get_mut(&key).unwrap().summary.repo = Some(yaac_protocol::RepoLocation {
+        repo: repo.into(), relative: "src".into(), root: linked.into(), worktree_name: Some("protocol".into()),
+    });
+    app.ui.grouping.worktree = true;
     let group = sidebar::section_of(&app.client.state, app.ui.grouping, &key).unwrap();
     command(&mut app, &ctx, "sidebar.action", &json!({ "action": "section.toggle", "sectionId": group })).unwrap();
     let snapshot = view(&app, &AttentionMap::compute(&app.client.state), 0);
@@ -99,6 +133,28 @@ fn wpf_collapsed_groups_keep_header_actions_and_are_revealed_in_search() {
     assert_eq!(section["collapsed"], true);
     assert_eq!(section["header"]["toggle"]["id"], "section.toggle");
     assert!(section["header"]["actions"].as_array().unwrap().iter().any(|action| action["id"] == "section.archiveAll"));
+    assert!(section["header"]["actions"].as_array().unwrap().iter().any(|action| action["id"] == "section.newThread"));
+    app.open(&yaac_core::demo::threads::users(), None);
+    command(&mut app, &ctx, "sidebar.action", &json!({ "action": "section.newThread", "sectionId": group })).unwrap();
+    let Selection::NewThread(id) = app.client.state.selection else { panic!("expected a new draft") };
+    let draft_key = DraftRef::New(id).store_key();
+    let draft = &app.client.state.new_threads[0];
+    assert_eq!(draft.target.as_ref(), Some(&key.target));
+    assert_eq!(draft.project.as_deref(), Some(project.as_str()));
+    assert_eq!(draft.cwd.as_ref().unwrap().as_str(), format!("{linked}/src"));
+    let composer = super::composer::view(&app, &AttentionMap::compute(&app.client.state), None);
+    assert_eq!(composer["worktree"]["label"], "Worktree: protocol");
+    for root in [main, linked] {
+        super::composer::command(&mut app, "composer.action", &json!({ "key": draft_key, "id": format!("worktree:{root}") })).unwrap();
+        assert_eq!(app.client.state.new_threads[0].cwd.as_ref().unwrap().as_str(), format!("{root}/src"));
+    }
+    app.client.state.new_threads[0].draft.text = "Start from the linked checkout".to_owned();
+    super::composer::command(&mut app, "composer.send", &json!({ "key": draft_key })).unwrap();
+    let demo = app.demo.as_ref().unwrap();
+    let (target, _, params) = demo.requests().into_iter().find(|(_, method, _)| method == "thread/start").unwrap();
+    assert_eq!(target.as_ref(), Some(&key.target));
+    assert_eq!(params["cwd"], format!("{linked}/src"));
+    assert!(params.get("project").is_none());
 
     let title = app.client.state.summary(&key).unwrap().title.clone();
     command(&mut app, &ctx, "sidebar.search", &json!({ "text": title })).unwrap();
@@ -115,6 +171,18 @@ fn wpf_collapsed_groups_keep_header_actions_and_are_revealed_in_search() {
     command(&mut app, &ctx, "sidebar.railToggle", &json!({ "sectionId": group })).unwrap();
     assert!(!app.ui.prefs().collapsed_groups.contains(&group));
     assert_eq!(app.ui.search, title);
+    app.open(&key, None);
+    super::dispatch(&mut app, &ctx, &mut None, "sidebar.new", &Value::Null).unwrap();
+    let Selection::NewThread(blank) = app.client.state.selection else { panic!("expected a blank draft") };
+    let draft = app.client.state.new_threads.iter().find(|d| d.id == blank).unwrap();
+    assert_eq!((&draft.target, &draft.project, &draft.cwd), (&None, &None, &None));
+    let composer = super::composer::view(&app, &AttentionMap::compute(&app.client.state), None);
+    assert_eq!(composer["project"]["label"], "Choose a project");
+    assert!(composer["worktree"].is_null());
+    let draft_key = DraftRef::New(blank).store_key();
+    super::composer::command(&mut app, "composer.action", &json!({ "key": draft_key, "id": format!("project:{project}") })).unwrap();
+    let composer = super::composer::view(&app, &AttentionMap::compute(&app.client.state), None);
+    assert_eq!(composer["worktree"]["children"].as_array().unwrap().len(), 2);
 }
 
 #[cfg(test)]
@@ -177,6 +245,9 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, selection_epoch: u64) -> V
             let target = h.machine.as_ref().and_then(|name| state.targets.iter().find(|t| t.entry.name.as_str() == name)).map(|t| &t.entry.id);
             let retry = h.retry.then(|| target.map(|t| action(&format!("target.retry:{t}"), "Retry", true))).flatten();
             let mut actions = Vec::new();
+            if crate::sidebar::new_thread_in_section(app, s).is_some() {
+                actions.push(action("section.newThread", "New Thread", true));
+            }
             if h.temporary {
                 actions.push(action("section.createProject", "Create project…", h.folder.is_some()));
                 actions.push(action("section.dismissAll", "Dismiss all", !s.rows.is_empty()));
@@ -278,7 +349,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, selection_epoch: u64) -> V
         "searchError": find.and_then(|f| f.error.as_deref()),
         "searchEmpty": find.is_some_and(|f| f.results.is_empty() && !f.loading && f.error.is_none()),
         "searchMore": find.filter(|f| f.cursor.is_some() && !f.loading).map(|_| action("search.more", "More results", true)),
-        "newThread": action("new", "New", yaac_core::first_run::preferred_start_target(state).is_some()),
+        "newThread": action("new", "New", !state.targets.is_empty()),
         "grouping": [
             check("group.machine", "Group by machine", grouping.machine),
             check("group.project", "Group by project", grouping.project),
@@ -413,6 +484,7 @@ pub(super) fn command(
         }
         "section.toggle"
         | "section.drop"
+        | "section.newThread"
         | "section.createProject"
         | "section.dismissAll"
         | "section.archiveAll"
@@ -451,6 +523,7 @@ fn section_action(app: &mut YaacApp, id: &str, p: &Value) -> Option<Action> {
         .into_iter()
         .find(|s| s.id == string(p, "sectionId"))?;
     match id {
+        "section.newThread" => return crate::sidebar::new_thread_in_section(app, &section),
         "section.createProject" => {
             let (target, folder) = section.header?.folder?;
             app.ui.create_project = Some(crate::sidebar::create_project_for(app, &target, &folder));

@@ -96,15 +96,20 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
               </Grid.ColumnDefinitions>
-              <Grid>
-                <TextBox x:Name="Editor" AcceptsReturn="True" TextWrapping="Wrap"
+              <Grid TextOptions.TextRenderingMode="Grayscale">
+                <TextBox x:Name="Editor" FontSize="14.5" AcceptsReturn="True" TextWrapping="Wrap"
                          MinLines="3" MaxLines="5" Padding="4,3" BorderThickness="0"
                          Background="Transparent" Foreground="{DynamicResource YaacText}"
                          VerticalScrollBarVisibility="Auto"
                          HorizontalScrollBarVisibility="Disabled" InputMethod.IsInputMethodEnabled="True"
                          PreviewKeyDown="EditorKeyDown" TextChanged="EditorTextChanged"
                          SelectionChanged="EditorComposerSelectionChanged" GotKeyboardFocus="EditorFileSelectionChanged"
-                         LostKeyboardFocus="EditorLostFocus" AutomationProperties.Name="Message" />
+                         LostKeyboardFocus="EditorLostFocus" AutomationProperties.Name="Message">
+                  <TextBox.Resources>
+                    <!-- EditorPlate draws the composer's focus border. -->
+                    <Thickness x:Key="TextControlBorderThemeThicknessFocused">0</Thickness>
+                  </TextBox.Resources>
+                </TextBox>
                 <views:ComposerMarkdown x:Name="Markdown" IsHitTestVisible="False" Focusable="False"
                                         InputBrush="{DynamicResource YaacInput}" TextBrush="{DynamicResource YaacText}"
                                         MarkerBrush="{DynamicResource YaacMuted}" CodeBrush="{DynamicResource YaacRaised}" />
@@ -148,6 +153,7 @@
                   </Border>
                 </Popup>
                 <TextBlock x:Name="Placeholder" Foreground="{DynamicResource YaacMuted}"
+                           FontSize="{Binding FontSize, ElementName=Editor}"
                            IsHitTestVisible="False" TextTrimming="CharacterEllipsis" Margin="5,4,6,0" />
               </Grid>
               <WrapPanel x:Name="EditorActions" Grid.Column="1" MaxWidth="330" Margin="4,0,0,0"

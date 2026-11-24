@@ -58,10 +58,13 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     }
     if docked && let Some(panel) = &panel {
         ui.painter().rect_filled(right, 0.0, p.panel);
-        ui.scope_builder(egui::UiBuilder::new().max_rect(below(right).shrink2(vec2(14.0, 12.0))).id_salt("agents-docked"), |ui| {
+        let hovered = ui.scope_builder(egui::UiBuilder::new().max_rect(below(right).shrink2(vec2(14.0, 12.0))).id_salt("agents-docked"), |ui| {
             ui.set_clip_rect(right);
-            crate::agents_ui::docked(ui, app, panel, actions);
-        });
+            crate::agents_ui::docked(ui, app, panel, actions)
+        }).inner;
+        crate::agents_ui::dock_hover(app, ui.ctx(), ui.rect_contains_pointer(below(right)), hovered);
+    } else {
+        crate::agents_ui::dock_hover(app, ui.ctx(), false, None);
     }
     ui.scope_builder(egui::UiBuilder::new().max_rect(center).id_salt("center"), |ui| {
         ui.set_clip_rect(center);

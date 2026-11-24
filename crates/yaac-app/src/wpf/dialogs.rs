@@ -184,6 +184,9 @@ pub(super) fn view(app: &YaacApp) -> Value {
         if v.handoff {
             fields.push(json!({ "id": "message", "label": "First message to the new agent", "type": "multiline", "value": d.message }));
         }
+        if fork::can_keep_children(state, &d.key) {
+            fields.push(json!({ "id": "keepChildren", "label": "Keep children", "type": "check", "value": d.keep_children }));
+        }
         let body = [
             Some(v.at),
             v.instance_line,
@@ -564,6 +567,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
                 d.key.clone(),
                 d.choice.clone(),
                 view.handoff.then(|| message.to_owned()),
+                v["keepChildren"].as_bool().unwrap_or(d.keep_children),
             ))
         }
         "mode" => Some(Action::ConfirmMode),

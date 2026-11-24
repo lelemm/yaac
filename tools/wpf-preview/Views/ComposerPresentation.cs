@@ -94,9 +94,11 @@ public partial class ComposerView
         StatusPlate.Visibility = VisibleWhen(StatusText.Visibility == Visibility.Visible || StatusActions.Children.Count > 0);
     }
 
-    private void RenderProject(ComposerAction? project)
+    private void RenderProject(JsonElement view)
     {
-        RenderActions(ProjectActions, project is null ? [] : [project]);
+        var project = ReadAction(Field(view, "project"));
+        var worktree = ReadAction(Field(view, "worktree"));
+        RenderActions(ProjectActions, project is null ? [] : worktree is null ? [project] : [project, worktree]);
         ProjectActions.Visibility = VisibleWhen(ProjectActions.Children.Count > 0);
     }
 

@@ -1539,8 +1539,18 @@ impl Inner {
         );
         self.fleet.add(&key, &format!("{} (fork)", src.summary.title), instance.as_str(), &model, (&proj, &branch), ThreadState::Idle, 0);
         let (transcript, cutoff) = demo_transcript(&src.summary.title, &src.items);
+        let linked_children = if p["keepChildren"] == true {
+            let parent = source.address();
+            let children: Vec<_> = src.summary.linked_children.iter().flatten().cloned().chain(self.fleet.threads.iter()
+                .filter(|(_, t)| t.summary.spawned_by.as_ref() == Some(&parent))
+                .map(|(key, _)| key.address())).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+            (!children.is_empty()).then_some(children)
+        } else {
+            None
+        };
         if let Some(t) = self.fleet.threads.get_mut(&key) {
             t.summary.forked_from = Some(source.thread.clone());
+            t.summary.linked_children = linked_children;
             t.summary.cwd = src.summary.cwd.clone();
             t.summary.project = src.summary.project.clone();
             t.summary.worktree = src.summary.worktree.clone();

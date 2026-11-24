@@ -15,7 +15,7 @@ internal static class Palette
         ("YaacRaised",      0x22262E, 0xF7F8FA),
         ("YaacInput",       0x1E2128, 0xF3F4F7),
         ("YaacRule",        0x2E333D, 0xDADDE3),
-        ("YaacText",        0xE6E8EC, 0x1A1D23),
+        ("YaacText",        0xD8DADE, 0x1A1D23),
         ("YaacMuted",       0x9AA2AF, 0x5B6472),
         ("YaacAccent",      0xE6E8EC, 0x1A1D23),
         ("YaacOnAccent",    0x16181D, 0xFFFFFF),
@@ -75,6 +75,9 @@ internal static class Palette
             BindingOperations.SetBinding(brush, SolidColorBrush.ColorProperty, new Binding(nameof(Swatch.Color)) { Source = source });
             Brushes[name] = (brush, source);
             app.Resources[name] = brush;
+            // Fluent inputs share this focus brush. Use the same outline as YAAC controls.
+            if (name == "YaacAccent")
+                app.Resources["TextControlBorderBrushFocused"] = brush;
         }
     }
 

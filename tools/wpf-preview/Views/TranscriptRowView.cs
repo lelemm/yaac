@@ -11,6 +11,7 @@ namespace Yaac.WpfPreview.Views;
 
 public sealed class TranscriptRowView : UserControl
 {
+    private const double UserBubbleShare = 0.8;
     private readonly Border plate = new() { CornerRadius = new CornerRadius(7) };
     private readonly StackPanel content = new();
     private readonly TextBlock title = Label(semiBold: true);
@@ -44,7 +45,6 @@ public sealed class TranscriptRowView : UserControl
     public TranscriptRowView()
     {
         Focusable = false;
-        MaxWidth = 872;
         HorizontalAlignment = HorizontalAlignment.Stretch;
         Margin = new Thickness(0, 0, 0, 9);
         var root = new StackPanel { Background = Brushes.Transparent };
@@ -85,6 +85,12 @@ public sealed class TranscriptRowView : UserControl
         Loaded += (_, _) => Bind();
         Unloaded += (_, _) => Unbind();
         PreviewKeyDown += CardKeyDown;
+    }
+
+    protected override Size MeasureOverride(Size constraint)
+    {
+        plate.MaxWidth = boundKind == "user" ? constraint.Width * UserBubbleShare : double.PositiveInfinity;
+        return base.MeasureOverride(constraint);
     }
 
     private void Bind()
@@ -172,7 +178,6 @@ public sealed class TranscriptRowView : UserControl
         var tone = TranscriptColors.Tone(data.Value("tone").Text(), activity ? TranscriptColors.Muted : TranscriptColors.Text);
 
         plate.HorizontalAlignment = user ? HorizontalAlignment.Right : HorizontalAlignment.Stretch;
-        plate.MaxWidth = user ? 683 : double.PositiveInfinity;
         plate.Margin = user ? new Thickness(42, 0, 0, 0) : new Thickness(0);
         plate.Background = user ? TranscriptColors.User : card || kind == "task" ? TranscriptColors.Panel : Brushes.Transparent;
         plate.BorderBrush = card ? TranscriptColors.Tone(data.Value("tone").Text(), TranscriptColors.Warning) : TranscriptColors.Rule;

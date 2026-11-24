@@ -374,7 +374,8 @@
           AllowDrop="True" PreviewDragOver="OnDragOver" PreviewDrop="OnDrop" DragLeave="OnDragLeave"
           MouseLeave="OnListLeave" PreviewMouseLeftButtonDown="OnListDown"
           PreviewMouseLeftButtonUp="OnListUp" PreviewMouseMove="OnListMove"
-          PreviewMouseRightButtonUp="OnListMenu" PreviewKeyDown="OnListKeyDown">
+          PreviewMouseRightButtonDown="OnListMenuDown" PreviewMouseRightButtonUp="OnListMenu"
+          PreviewKeyDown="OnListKeyDown">
       <ListBox x:Name="Threads" AutomationProperties.Name="Threads"
                Style="{StaticResource YaacVerticalList}"
                Background="Transparent" BorderThickness="0" Padding="0,0,6,0" SelectionMode="Multiple"

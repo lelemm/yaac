@@ -217,6 +217,10 @@ pub(crate) fn fork(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
                     ui.label(n);
                 });
             }
+            if yaac_core::fork::can_keep_children(&app.client.state, &d.key) {
+                ui.checkbox(&mut d.keep_children, "Keep children")
+                    .on_hover_text("Show the source thread's existing children on this fork too.");
+            }
             if let Some(n) = &v.notice {
                 ui.add_space(10.0);
                 egui::Frame::NONE.fill(p.faint).corner_radius(5).inner_margin(Margin::symmetric(10, 8)).show(ui, |ui| {
@@ -275,7 +279,7 @@ pub(crate) fn fork(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Act
                 widgets::unavailable(ui, &p, &v.confirm, "write the first message");
             } else if widgets::primary(ui, &p, &v.confirm, (!v.handoff).then_some("Enter")).clicked() || enter {
                 let message = v.handoff.then(|| d.message.clone());
-                actions.push(Action::Fork(d.key.clone(), d.choice.clone(), message));
+                actions.push(Action::Fork(d.key.clone(), d.choice.clone(), message, d.keep_children));
                 keep = false;
             }
             if widgets::plain(ui, &p, "Cancel", Some("Esc")).clicked() || esc {

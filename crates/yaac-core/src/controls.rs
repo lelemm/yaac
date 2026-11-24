@@ -487,6 +487,7 @@ pub fn thread_row(state: &crate::state::AppState, key: &crate::key::ThreadKey) -
 /// The control row of a new-thread draft.
 pub fn draft_row_of(state: &crate::state::AppState, id: u64) -> Option<ControlRow> {
     let d = state.new_threads.iter().find(|d| d.id == id)?;
-    let providers = state.target(&d.target).map(|t| t.providers.as_slice()).unwrap_or_default();
-    Some(draft_row(providers, &state.target_name(&d.target), d))
+    let target = d.target.as_ref()?;
+    let providers = state.target(target).map(|t| t.providers.as_slice()).unwrap_or_default();
+    Some(draft_row(providers, &state.target_name(target), d))
 }

@@ -64,7 +64,8 @@ export function loadWorkerLaunchHook(home: string, daemonEnv: NodeJS.ProcessEnv)
       cwd: home, env, input: JSON.stringify(event) + "\n", timeoutMs: TIMEOUT_MS, maxBytes: MAX_OUTPUT_BYTES, killSignal: "SIGKILL",
     });
     if (result.code === 0) return;
-    if (result.failure === "timeout") throw new Error("The worker launch hook did not complete within its time or output limit.");
+    if (result.failure === "timeout") throw new Error("The worker launch hook exceeded its time limit.");
+    if (result.failure === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") throw new Error("The worker launch hook exceeded its output limit.");
     if (result.code === null) throw new Error("The configured worker launch hook could not complete. Check its executable and arguments.");
     let reason: unknown;
     try {

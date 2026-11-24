@@ -100,8 +100,9 @@ internal sealed class TranscriptActivity : StackPanel
     public void Render(JsonElement data)
     {
         current = data;
-        var tone = TranscriptColors.Tone(data.Value("tone").Text(), TranscriptColors.Muted);
         mark = data.Value("mark").Text();
+        var markerTone = TranscriptColors.Tone(data.Value("tone").Text(), TranscriptColors.Muted);
+        var tone = mark == "×" ? TranscriptColors.Muted : markerTone;
         var pills = data.Value("pills").Elements().ToArray();
         groupToggle = data.Value("groupToggle");
         groupOpen = data.Value("groupOpen").Flag();
@@ -111,8 +112,8 @@ internal sealed class TranscriptActivity : StackPanel
             || pills.Length > 0 || data.Value("parts").Elements().Any(part =>
                 part.Value("kind").Text() == "image" || part.Value("text").OptionalText() is not null)
             || new[] { "detail", "message", "result", "receipt" }.Any(field => data.Value(field).OptionalText() is not null);
-        disclosure.Foreground = tone;
-        staticMark.Foreground = tone;
+        disclosure.Foreground = markerTone;
+        staticMark.Foreground = markerTone;
         staticMark.Text = mark;
         staticMark.FontSize = mark == "•" ? 9 : 12;
         line.Cursor = canExpand ? Cursors.Hand : null;

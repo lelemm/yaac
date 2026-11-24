@@ -304,6 +304,8 @@ timeout blocks the launch. A failing hook can return `{"reason":"A short, public
 on stdout. YAAC never surfaces stderr or unstructured stdout. The process has a 15-second
 deadline and a 16 KiB output limit on each stream. User-initiated threads, native harness
 subagents, and spawns between targets use their existing launch paths.
+If Codex loses confirmation after the hook allows the first prompt, YAAC reports the
+worker's native thread ID and preserves the conversation so its status can be checked.
 
 ### The worker's permission mode
 

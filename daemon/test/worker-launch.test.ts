@@ -44,11 +44,12 @@ for (const accept of [true, false]) {
       assert.equal(fs.existsSync(receipt), false);
 
       const parent = daemon.core.thread(threadId)!;
-      const result = await fakeOf(daemon).meshAttachment(parent.record.native)!.call({
+      const spawn = () => fakeOf(daemon).meshAttachment(parent.record.native)!.call({
         tool: "spawn_thread",
         args: { instance: OTHER, text: "/fake say working" },
         meta: { threadId: parent.record.native },
       });
+      const result = await spawn();
       const event = JSON.parse(fs.readFileSync(receipt, "utf8")) as WorkerLaunchEvent;
       assert.deepEqual(event.parent, { harness: "fake", instanceId: FAKE, yaacThreadId: threadId, nativeThreadId: parent.record.native });
       assert.equal(event.event, "worker.beforeFirstPrompt");
@@ -60,6 +61,16 @@ for (const accept of [true, false]) {
       } else {
         assert.match(result.text, /The configured policy refused this worker/);
         assert.doesNotMatch(result.text, /Private diagnostic/);
+        assert.equal(fakeOf(daemon, OTHER).received.length, 0);
+        assert.equal(daemon.mesh.store.peekThread(threadId)?.children.length, 0);
+
+        writeJsonAtomic(path.join(home, "worker-launch-hook.json"), {
+          command: process.execPath,
+          args: ["-e", 'process.stdout.write("x".repeat(32768));'],
+        });
+        const overflow = await spawn();
+        assert.equal(overflow.isError, true);
+        assert.match(overflow.text, /exceeded its output limit/);
         assert.equal(fakeOf(daemon, OTHER).received.length, 0);
         assert.equal(daemon.mesh.store.peekThread(threadId)?.children.length, 0);
       }

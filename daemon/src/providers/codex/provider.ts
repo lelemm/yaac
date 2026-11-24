@@ -876,7 +876,7 @@ export class CodexProvider implements HarnessProvider {
       const turn = await this.beginTurn(st, input, { model: null, effort: params.effort ?? null, mode: null, fast: params.fast ?? null, ultrafast: params.ultrafast });
       return { thread: native, turn };
     } catch (e) {
-      if (params.beforeFirstPrompt && e instanceof InputOutcomeUnknown) {
+      if (e instanceof InputOutcomeUnknown) {
         throw new InputOutcomeUnknown(`The first turn for Codex thread ${native} was not confirmed. ${e.message}`);
       }
       // Nothing was sent: do not leave an empty conversation behind.

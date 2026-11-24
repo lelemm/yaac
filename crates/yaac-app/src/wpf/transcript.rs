@@ -618,9 +618,20 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, markdown: &mut super::mark
         };
         return json!({ "emptyText": empty, "rows": [] });
     };
+    conversation(app, map, markdown, key, false)
+}
+
+pub(super) fn preview(app: &YaacApp, map: &AttentionMap, markdown: &mut super::markdown_view::MarkdownView) -> Value {
+    let key = selected_thread(app).and_then(|owner| app.ui.dock_preview.target(owner));
+    markdown.select(key);
+    let Some(key) = key else { return Value::Null };
+    conversation(app, map, markdown, key, true)
+}
+
+fn conversation(app: &YaacApp, map: &AttentionMap, markdown: &mut super::markdown_view::MarkdownView, key: &ThreadKey, preview: bool) -> Value {
     let state = &app.client.state;
     let transcript = state.transcripts.get(key);
-    let focus = app.ui.focus_card.as_ref().or(app.ui.scroll_to.as_ref());
+    let focus = (!preview).then(|| app.ui.focus_card.as_ref().or(app.ui.scroll_to.as_ref())).flatten();
     let (rows, anchor) = if let Some(t) = transcript {
         let expansion = &app.ui.expansion;
         let blocks = activity::blocks(state, map, key, expansion);
@@ -643,11 +654,16 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, markdown: &mut super::mark
         for block in blocks {
             projection.block(block, &mut open_runs);
         }
-        let anchor = app.ui.restore.as_ref().and_then(|anchor| projection.anchor(anchor));
+        let anchor = (!preview).then(|| app.ui.restore.as_ref().and_then(|anchor| projection.anchor(anchor))).flatten();
         (projection.rows, anchor)
     } else {
         (Vec::new(), None)
     };
+    if preview {
+        let Some(summary) = state.summary(key) else { return Value::Null };
+        return json!({ "threadId": key.address(), "rows": rows, "loading": transcript.is_none_or(|t| !t.is_loaded()),
+            "emptyText": "No messages yet", "previewTitle": summary.title });
+    }
     let focus = focus.and_then(|id| transcript?.item(id)).map(row_id);
     let anchor_token = app.ui.restore.as_ref().map(|a| format!("{}:{}", a.offset, a.item));
     let page = transcript.map(|t| json!({

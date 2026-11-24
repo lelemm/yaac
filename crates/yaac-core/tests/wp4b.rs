@@ -290,7 +290,7 @@ fn the_fork_result_follows_from_the_destination() {
     assert!(v.carried.contains("turn"));
     // The handoff goes with its first message (`thread/fork`), and the new thread opens with
     // the inherited transcript above its first turn.
-    c.fork(&fix, &to_claude, Some("Carry on"));
+    c.fork(&fix, &to_claude, Some("Carry on"), false);
     settle(&mut c, &hub);
     let opened = c.state.selected_thread().cloned().expect("the fork is open");
     assert!(c.state.summary(&opened).is_some_and(|s| s.title == "Fix frame decoder (fork)"));
@@ -307,14 +307,18 @@ fn the_fork_result_follows_from_the_destination() {
 #[test]
 fn a_native_fork_opens_idle_with_the_inherited_marker_and_no_transcript() {
     let (mut c, hub) = boot();
-    let fix = threads::fix();
-    c.open(&fix);
+    let source = threads::orchestrator();
+    c.open(&source);
     settle(&mut c, &hub);
-    let own = default_choice(&c.state, &fix).expect("choice");
-    c.fork(&fix, &own, None);
+    let own = default_choice(&c.state, &source).expect("choice");
+    c.fork(&source, &own, None, true);
     settle(&mut c, &hub);
     let opened = c.state.selected_thread().cloned().expect("the fork is open");
-    assert_ne!(opened, fix);
+    assert_ne!(opened, source);
+    let child = threads::users();
+    let panel = yaac_core::agents::agents_panel(&c.state, &yaac_core::attention::AttentionMap::compute(&c.state), &opened).unwrap();
+    assert!(panel.workers.iter().any(|worker| worker.key.as_ref() == Some(&child) && worker.depth == 0));
+    assert_eq!(c.state.summary(&child).unwrap().spawned_by, Some(source.address()));
     let items = c.state.transcripts.get(&opened).map(|t| t.items().to_vec()).unwrap_or_default();
     match items.first().map(|i| &i.body) {
         Some(yaac_protocol::ItemBody::Handoff(h)) => {

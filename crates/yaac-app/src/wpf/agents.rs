@@ -55,11 +55,12 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, ctx: Option<&egui::Context
     let card_groups = agents::card_groups(&panel);
     if let Some(ctx) = ctx {
         if docked {
-            crate::agents_ui::schedule_activity_ages(ctx, app, panel.all(), now);
+            crate::agents_ui::schedule_activity_ages(ctx, app, panel.all().chain(&panel.siblings), now);
         } else {
             crate::agents_ui::schedule_activity_ages(ctx, app, card_groups.iter().flat_map(|(_, rows)| rows.iter().copied()), now);
         }
     }
+    let docked_clusters = agents::docked_clusters(&panel);
     let groups: Vec<_> = agents::clusters(&panel)
         .iter()
         .map(|cluster| {
@@ -71,7 +72,8 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, ctx: Option<&egui::Context
             let mut rows = Vec::new();
             let mut folded = Vec::new();
             let mut fold_label = None;
-            for entry in agents::docked_entries(cluster) {
+            let docked = docked_clusters.iter().find(|c| c.relation == cluster.relation);
+            for entry in docked.into_iter().flat_map(agents::docked_entries) {
                 match entry {
                     DockEntry::Row(r) => rows.push(row_id(r)),
                     DockEntry::Fold { rows, word } => {
@@ -83,7 +85,8 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, ctx: Option<&egui::Context
             json!({
                 "id": id, "label": cluster.relation.heading(), "glyph": glyph, "count": count,
                 "rows": cluster.rows.iter().map(|r| row(app, r, now)).collect::<Vec<_>>(),
-                "docked": { "rowIds": rows, "foldIds": folded, "foldLabel": fold_label },
+                "docked": { "rowIds": rows, "foldIds": folded, "foldLabel": fold_label,
+                    "count": if cluster.relation == Relation::Workers { count } else { docked.map_or(0, |c| c.rows.len()) } },
             })
         })
         .collect();
@@ -113,10 +116,10 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, ctx: Option<&egui::Context
     json!({
         "visible": !groups.is_empty() || budget.is_some() || matches!(panel.spawned_by, SpawnedBy::Agent(_)),
         "threadId": thread.address(), "mode": if docked { "docked" } else { "pill" },
-        "canDock": !docked, "canUndock": docked, "canMarkRead": panel.all().any(|r| r.display.unseen && r.key.is_some()),
+        "canDock": !docked, "canUndock": docked, "canMarkRead": panel.all().chain(&panel.siblings).any(|r| r.display.unseen && r.key.is_some()),
         "groups": groups, "budget": budget, "root": root,
         "cardGroups": card_groups, "canMarkReadCard": can_mark_read_card,
-        "siblings": panel.siblings.iter().map(|r| row(app, r, now)).collect::<Vec<_>>(),
+        "siblings": agents::sibling_rows(&panel).into_iter().map(|r| row(app, r, now)).collect::<Vec<_>>(),
         "pill": { "rowIds": pill_rows, "hidden": pill.more.hidden, "alive": pill.more.alive,
             "needsYou": pill.more.needs_you, "firstHiddenId": first_hidden },
     })

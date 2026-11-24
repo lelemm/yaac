@@ -117,11 +117,11 @@ impl Draft {
 pub struct NewThreadDraft {
     /// Local id.
     pub id: u64,
-    /// The chosen target.
-    pub target: TargetId,
-    /// The chosen project (the thread starts in its folder's root).
+    /// The target, once a project or its machine has been chosen.
+    pub target: Option<TargetId>,
+    /// The chosen project.
     pub project: Option<String>,
-    /// The working directory (the project's folder).
+    /// The working directory (the project's folder in the chosen checkout).
     pub cwd: Option<TargetPath>,
     /// The chosen instance.
     pub instance: Option<InstanceId>,

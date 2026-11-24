@@ -179,6 +179,16 @@ public partial class MainWindow : Window
             SetRailData(sidebar);
         }
         if (views.TryGetProperty("transcript", out var transcript)) TranscriptPane.Render(transcript);
+        if (views.TryGetProperty("transcriptPreview", out var preview))
+        {
+            bool visible = preview.ValueKind == JsonValueKind.Object;
+            TranscriptPreview.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+            if (visible)
+            {
+                TranscriptPreviewTitle.Text = $"Previewing {preview.GetProperty("previewTitle").GetString()}";
+                TranscriptPreviewPane.Render(preview);
+            }
+        }
         if (views.TryGetProperty("composer", out var composer))
         {
             ComposerPane.Render(composer);
@@ -330,13 +340,15 @@ public partial class MainWindow : Window
 
     private void ApplyChatWidth(double viewport)
     {
-        if (viewport <= 0 || ComposerColumn is null || TranscriptPane is null) return;
+        if (viewport <= 0 || ComposerColumn is null || TranscriptPane is null || TranscriptPreviewPane is null) return;
         var max = viewport * .95;
         var width = Math.Clamp(preferredChatWidth, Math.Min(360, max), max);
         var gutter = Math.Min(28, (viewport - width) / 2);
         ComposerColumn.Width = width;
         TranscriptPane.Width = width + gutter * 2;
         TranscriptPane.SetChatGutter(gutter);
+        TranscriptPreviewPane.Width = TranscriptPane.Width;
+        TranscriptPreviewPane.SetChatGutter(gutter);
     }
 
     private void MinimizeClicked(object sender, RoutedEventArgs args) => SystemCommands.MinimizeWindow(this);
@@ -465,11 +477,10 @@ public partial class MainWindow : Window
 
     private void ChatBackgroundClicked(object sender, MouseButtonEventArgs args)
     {
-        if (!ComposerPane.IsKeyboardFocusWithin)
-            return;
         var source = args.OriginalSource as DependencyObject;
         if (TranscriptView.FindAncestor<TextBoxBase>(source) is not null ||
-            TranscriptView.FindAncestor<ButtonBase>(source) is not null)
+            TranscriptView.FindAncestor<ButtonBase>(source) is not null ||
+            TranscriptView.FindAncestor<ScrollBar>(source) is not null)
             return;
         TranscriptPane.FocusBackground();
     }

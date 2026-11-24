@@ -30,7 +30,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
     let p = app.p;
     let v = yaac_core::first_run::first_run(&app.client.state);
     if ui.input(|i| i.key_pressed(egui::Key::Enter)) && v.can_start && ui.memory(|m| m.focused().is_none()) {
-        actions.push(Action::NewThread);
+        actions.push(Action::StartFirstThread);
     }
     let avail = ui.available_size();
     let card_w = ((avail.x - 200.0) / 3.0).clamp(200.0, 280.0);
@@ -78,7 +78,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
             if v.can_start {
                 let r = widgets::primary(ui, &p, "Start a thread", Some("Enter"));
                 if r.clicked() {
-                    actions.push(Action::NewThread);
+                    actions.push(Action::StartFirstThread);
                 }
             } else {
                 widgets::unavailable(ui, &p, "Start a thread", "no provider is ready yet");

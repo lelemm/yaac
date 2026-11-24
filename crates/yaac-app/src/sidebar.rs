@@ -25,6 +25,34 @@ pub(crate) fn window_sections(app: &YaacApp, map: &AttentionMap, now: i64) -> Ve
     sections_for_query(app, map, now, &app.ui.search)
 }
 
+pub(crate) fn new_thread_in_section(app: &YaacApp, section: &Section) -> Option<Action> {
+    if section.kind != SectionKind::Group {
+        return None;
+    }
+    let header = section.header.as_ref()?;
+    let first = &section.rows.first()?.key;
+    if section.rows.iter().any(|row| row.key.target != first.target) {
+        return None;
+    }
+    let state = &app.client.state;
+    let project = state.project_of(first).filter(|p| {
+        (app.ui.grouping.project || app.ui.grouping.worktree)
+            && section.rows.iter().all(|row| state.project_of(&row.key) == Some(*p))
+    });
+    let worktree = if app.ui.grouping.worktree && project.is_some() {
+        let checkout = |key| yaac_core::moving::current(state, key).and_then(|d| d.worktree);
+        checkout(first).filter(|root| section.rows.iter().all(|row| checkout(&row.key).as_ref() == Some(root)))
+    } else {
+        None
+    };
+    Some(Action::NewAt {
+        target: first.target.clone(),
+        project: project.map(|p| p.id.clone()),
+        worktree,
+        folder: header.folder.as_ref().map(|(_, folder)| folder.clone()),
+    })
+}
+
 pub(crate) fn sections_for_query(app: &YaacApp, map: &AttentionMap, now: i64, query: &str) -> Vec<Section> {
     let open = yaac_core::sidebar::Open { muted: app.ui.muted_open, archived: app.ui.archived_open };
     let mut sections = sections(&app.client.state, map, app.ui.grouping, app.ui.ordering, query, open, now, app.zone);
@@ -862,6 +890,7 @@ fn header_menu(app: &mut YaacApp, s: &Section, h: &yaac_core::sidebar::Header, r
     app.ui.header_menu_drawn = true;
     let p = app.p;
     let keys: Vec<yaac_core::ThreadKey> = s.rows.iter().map(|r| r.key.clone()).collect();
+    let new_thread = new_thread_in_section(app, s);
     let mut create = None;
     crate::widgets::menu_popup(egui::Popup::from_response(resp), &p)
         .kind(egui::PopupKind::Menu)
@@ -870,6 +899,11 @@ fn header_menu(app: &mut YaacApp, s: &Section, h: &yaac_core::sidebar::Header, r
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
         .show(|ui| {
             ui.set_min_width(180.0);
+            if let Some(new_thread) = new_thread
+                && widgets::menu_item(ui, &p, "New Thread", None, widgets::ItemKind::Normal).clicked()
+            {
+                actions.push(new_thread);
+            }
             if h.temporary {
                 if widgets::menu_item(ui, &p, "Create project…", None, widgets::ItemKind::Normal).clicked() {
                     create = h.folder.clone();

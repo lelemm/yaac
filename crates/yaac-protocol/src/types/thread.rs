@@ -340,6 +340,9 @@ pub struct ThreadSummary {
     /// The thread whose history this one began with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<ThreadId>,
+    /// Existing children linked by a fork, distinct from the threads it spawned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_children: Option<Vec<Address>>,
     /// The agent that started this thread, possibly on another target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawned_by: Option<Address>,
@@ -564,6 +567,9 @@ pub struct ThreadForkParams {
     pub op_id: OpId,
     /// The thread to fork from. Not modified; may be in use elsewhere.
     pub source: ThreadId,
+    /// Keep links to the source's current children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_children: Option<bool>,
     /// Destination instance, on the same target.
     pub instance: InstanceId,
     /// Model.
@@ -604,6 +610,9 @@ pub struct ThreadForkOnlyParams {
     pub op_id: OpId,
     /// The thread to fork from. Not modified; may be in use elsewhere.
     pub source: ThreadId,
+    /// Keep links to the source's current children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_children: Option<bool>,
     /// Destination instance, on the same target.
     pub instance: InstanceId,
     /// Model.

@@ -146,6 +146,18 @@ pub fn folder_for(p: &Project, worktree: Option<&str>) -> String {
     }
 }
 
+/// The checkout picker for a first-message draft, including the selected checkout.
+pub fn draft_worktrees(state: &AppState, draft: &crate::state::NewThreadDraft) -> Vec<(WorktreeChoice, bool)> {
+    let Some(project) = state.projects.iter().find(|p| Some(&p.id) == draft.project.as_ref()) else {
+        return Vec::new();
+    };
+    worktrees(state, project).into_iter().map(|worktree| {
+        let folder = folder_for(project, (!worktree.own).then_some(worktree.root.as_str()));
+        let selected = draft.cwd.as_ref().is_some_and(|cwd| cwd.as_str() == folder);
+        (worktree, selected)
+    }).collect()
+}
+
 /// Where a thread is listed now, as a destination (`None`: a temporary project).
 pub fn current(state: &AppState, key: &ThreadKey) -> Option<Destination> {
     let s = state.summary(key)?;

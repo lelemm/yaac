@@ -185,6 +185,8 @@ export interface CoreMeshHooks {
   whereIs?(rt: ThreadRuntime): { target: string; address: string };
   /** The mesh address of a thread on this target (a harness sub-agent's `spawnedBy`, D151). */
   addressOf?(threadId: string): string;
+  /** The source's direct mesh children, including children on other targets. */
+  childrenOf?(rt: ThreadRuntime): readonly string[];
 }
 
 /**
@@ -1299,6 +1301,7 @@ export class Core {
     if (r.ultrafast) s.ultrafast = true;
     if (r.model) s.model = r.model;
     if (r.forkedFrom) s.forkedFrom = r.forkedFrom;
+    if (r.linkedChildren?.length) s.linkedChildren = r.linkedChildren;
     if (r.spawnedBy) s.spawnedBy = r.spawnedBy;
     this.mesh?.decorate(rt, s);
     // A harness's own sub-agent (D151) is listed under its parent like a worker; a parent
@@ -2809,6 +2812,9 @@ export class Core {
       }, input);
     } catch (e) {
       this.finishPendingStart(key);
+      if (e instanceof InputOutcomeUnknown) {
+        throw rpc("outcome_unknown", `${e.message} Check whether the worker started before trying again.`);
+      }
       throw rpc("provider_unavailable", `${instance.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
     }
     const rt = this.createThread(
@@ -3127,6 +3133,21 @@ export class Core {
     });
   }
 
+  private retainedForkChildren(src: ThreadRuntime, requested: unknown): string[] | undefined {
+    if (requested == null || requested === false) return undefined;
+    if (requested !== true) throw notActed("invalid_params", "keepChildren must be a boolean");
+    const parent = this.addressHere(src.id);
+    const linked = new Set([...(src.record.linkedChildren ?? []), ...(this.mesh?.childrenOf?.(src) ?? [])]);
+    for (const thread of this.threads.values()) {
+      if (thread.deleted || thread === src) continue;
+      if (thread.record.spawnedBy === parent || this.subagentParent(thread) === src) {
+        linked.add(this.addressHere(thread.id));
+      }
+    }
+    linked.delete(parent);
+    return linked.size > 0 ? [...linked] : undefined;
+  }
+
   private async forkInto(p: ThreadForkParams, withInput: boolean): Promise<{ rt: ThreadRuntime; parts: InputPart[] | null }> {
     const src = this.findThread(p.source);
     if (!src || src.deleted) throw notActed("thread_not_found", `no thread ${String(p.source)} on this target`);
@@ -3145,6 +3166,7 @@ export class Core {
     }
     this.checkModel(plan.dest.descriptor, p.model);
     const parts = withInput ? this.validateParts(p.input, this.modelImageSupport(plan.dest.descriptor, p.model)) : null;
+    const linkedChildren = this.retainedForkChildren(src, p.keepChildren);
     const trusted = await this.trustProjectFolder(plan.dest, src.record.cwd);
     let native: NativeId;
     try {
@@ -3165,6 +3187,7 @@ export class Core {
         cwd: src.record.cwd,
         originKind: "yaac",
         forkedFrom: src.id,
+        ...(linkedChildren && { linkedChildren }),
         title: `${src.record.titleOverride ?? src.record.title ?? "Thread"} (fork)`,
         model: p.model ?? src.record.model ?? null,
       },
@@ -3189,6 +3212,7 @@ export class Core {
     const { provider } = this.registry.usable(dest.config.id);
     this.checkModel(dest.descriptor, p.model);
     const parts = this.validateParts(p.input, this.modelImageSupport(dest.descriptor, p.model));
+    const linkedChildren = this.retainedForkChildren(src, p.keepChildren);
     // The new thread's attachment folder is keyed by this operation, for its whole life.
     const uploadsKey = `fork:${p.opId}`;
     const { cutoff, rendered, readable } = await this.renderHandoff(src, p.atTurn ?? null, uploadsKey);
@@ -3220,6 +3244,7 @@ export class Core {
         cwd: src.record.cwd,
         originKind: "yaac",
         forkedFrom: src.id,
+        ...(linkedChildren && { linkedChildren }),
         handoffTranscript: file,
         title,
         // The harness titles the conversation from its first message, which starts with the

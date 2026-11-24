@@ -50,6 +50,7 @@ pub(crate) enum Menu {
     /// project's also has Create project… and Dismiss all.
     Header(String),
     Project,
+    DraftWorktree,
     Model,
     Effort,
     Speed,
@@ -94,6 +95,7 @@ pub(crate) struct ForkDialog {
     pub key: ThreadKey,
     pub choice: ForkChoice,
     pub preview_open: bool,
+    pub keep_children: bool,
     /// A handoff's first message, typed in the dialog.
     pub message: String,
 }
@@ -129,6 +131,7 @@ pub(crate) struct UiState {
     pub panel: PanelMode,
     /// The agents card's open/close rule.
     pub hover: yaac_core::hover::HoverCard,
+    pub dock_preview: crate::agents_ui::DockPreview,
     /// What the floating pill drew last frame: its icons and its "more" item (D168).
     pub pill_icons: usize,
     pub pill_more: Option<egui::Rect>,
@@ -298,6 +301,7 @@ impl UiState {
             expansion: Expansion::default(),
             panel: PanelMode::Pill,
             hover: yaac_core::hover::HoverCard::default(),
+            dock_preview: crate::agents_ui::DockPreview::default(),
             pill_icons: 0,
             pill_more: None,
             card_to_hidden: false,
@@ -484,6 +488,13 @@ pub(crate) enum Action {
     StartDraft(u64),
     Compact(ThreadKey),
     NewThread,
+    StartFirstThread,
+    NewAt {
+        target: TargetId,
+        project: Option<String>,
+        worktree: Option<String>,
+        folder: Option<String>,
+    },
     /// A draft in this thread's project and target, with its harness and model.
     NewInProject(ThreadKey),
     CheckLatest(ThreadKey),
@@ -492,7 +503,7 @@ pub(crate) enum Action {
     ContinueBudget(Address),
     OpenFork(ThreadKey),
     /// Fork; a handoff carries its first message.
-    Fork(ThreadKey, ForkChoice, Option<String>),
+    Fork(ThreadKey, ForkChoice, Option<String>, bool),
     SetMuted(ThreadKey, bool),
     /// Mute until a moment (`None`: no end), from the Mute dialog.
     MuteUntil(ThreadKey, Option<i64>),
@@ -511,6 +522,7 @@ pub(crate) enum Action {
     SetPinned(ThreadKey, bool),
     CreateProject(CreateProject),
     DraftProject(u64, String),
+    DraftWorktree(u64, String),
     Archive(ThreadKey),
     /// Ask once before archiving several threads (D138); they are in display order.
     OpenBulkArchive(Vec<ThreadKey>),
@@ -1033,39 +1045,68 @@ impl YaacApp {
         any
     }
 
-    /// Start a new-thread draft on the open thread's machine (or the first connected one), in
-    /// its project (or the first project there).
     pub(crate) fn new_thread(&mut self) {
+        let id = self.client.blank_thread();
+        self.show_new_draft(id);
+    }
+
+    /// The welcome screen starts on the recommended ready target.
+    pub(crate) fn start_first_thread(&mut self) {
         let st = &self.client.state;
-        let target = st
-            .selected_thread()
-            .map(|k| k.target.clone())
-            .or_else(|| yaac_core::first_run::preferred_start_target(st).cloned());
-        let Some(t) = target else { return };
-        let selected_project = st.selected_thread().and_then(|k| st.project_of(k)).map(|p| p.id.clone());
-        let first_here = st.projects.iter().find(|p| p.target == t).map(|p| p.id.clone());
-        let id = self.client.new_thread(t.clone(), None);
-        match selected_project.or(first_here) {
-            Some(p) => self.client.set_draft_project(id, &p),
+        if let Some(target) = yaac_core::first_run::preferred_start_target(st).cloned() {
+            self.new_thread_at(&target, None, None, None);
+        }
+    }
+
+    fn new_thread_at(&mut self, target: &TargetId, project: Option<&str>, worktree: Option<&str>, folder: Option<&str>) {
+        let project = project.or_else(|| {
+            if folder.is_some() {
+                return None;
+            }
+            self.client.state.projects.iter().find(|p| &p.target == target).map(|p| p.id.as_str())
+        }).map(str::to_owned);
+        let id = self.client.new_thread(target.clone(), None);
+        match project {
+            Some(p) => {
+                self.client.set_draft_project(id, &p);
+                if let Some(root) = worktree {
+                    self.client.set_draft_worktree(id, root);
+                }
+            }
             None => {
-                // No project on this machine yet: a thread starts in a project's folder, so ask
-                // for one right away (the draft goes into it once created).
-                let mut cp = crate::sidebar::create_project_for(self, &t, "~");
+                let mut cp = crate::sidebar::create_project_for(self, target, folder.unwrap_or("~"));
                 cp.for_draft = Some(id);
                 self.ui.create_project = Some(cp);
             }
         }
+        self.show_new_draft(id);
+    }
+
+    fn show_new_draft(&mut self, id: u64) {
         self.ui.settings = false;
         self.ui.threads_overlay = false;
         self.ui.focus_composer = true;
         self.ui.history.visit(Place::Draft(id), None);
     }
 
+    pub(crate) fn create_project_for_draft(&mut self, id: u64, target: &TargetId) {
+        let state = &self.client.state;
+        if state.target(target).is_none() {
+            return;
+        }
+        let Some(d) = state.new_threads.iter().find(|d| d.id == id) else { return };
+        let folder = d.cwd.as_ref().filter(|_| d.target.as_ref() == Some(target)).map_or("~", |p| p.as_str());
+        let mut project = crate::sidebar::create_project_for(self, target, folder);
+        project.for_draft = Some(id);
+        self.ui.create_project = Some(project);
+    }
+
     /// "New thread in this project": a draft beside the open thread, with the same harness and
     /// model (the draft's model picker can still change both).
     pub(crate) fn new_in_project(&mut self, key: &ThreadKey) {
         let instance_model = self.client.state.summary(key).map(|s| (s.instance.clone(), s.model.clone()));
-        self.new_thread();
+        let project = self.client.state.project_of(key).map(|p| p.id.clone());
+        self.new_thread_at(&key.target, project.as_deref(), None, None);
         let yaac_core::state::Selection::NewThread(id) = self.client.state.selection else { return };
         if let Some((inst, Some(model))) = instance_model {
             self.client.set_draft_model(id, inst, model);
@@ -1160,6 +1201,10 @@ impl YaacApp {
                     self.client.start_thread(id);
                 }
                 Action::NewThread => self.new_thread(),
+                Action::StartFirstThread => self.start_first_thread(),
+                Action::NewAt { target, project, worktree, folder } => {
+                    self.new_thread_at(&target, project.as_deref(), worktree.as_deref(), folder.as_deref());
+                }
                 Action::NewInProject(k) => self.new_in_project(&k),
                 Action::CheckLatest(k) => self.client.check_latest(&k),
                 Action::TakeOver(k) => self.client.take_over(&k),
@@ -1170,12 +1215,12 @@ impl YaacApp {
                             self.open(&k, None);
                         }
                         self.client.fork_preview(&k, &choice.instance);
-                        self.ui.fork = Some(ForkDialog { key: k, choice, preview_open: true, message: String::new() });
+                        self.ui.fork = Some(ForkDialog { key: k, choice, preview_open: true, message: String::new(), keep_children: false });
                         self.ui.menu = None;
                     }
                 }
-                Action::Fork(k, c, message) => {
-                    self.client.fork(&k, &c, message.as_deref());
+                Action::Fork(k, c, message, keep_children) => {
+                    self.client.fork(&k, &c, message.as_deref(), keep_children);
                     self.ui.fork = None;
                 }
                 Action::SetMuted(k, m) => self.client.set_muted(&k, m),
@@ -1221,6 +1266,7 @@ impl YaacApp {
                     self.client.create_project(&cp.target, &cp.folder, &cp.name, cp.for_draft);
                 }
                 Action::DraftProject(d, p) => self.client.set_draft_project(d, &p),
+                Action::DraftWorktree(d, root) => self.client.set_draft_worktree(d, &root),
                 Action::Archive(k) => {
                     self.client.archive(&k);
                     self.ui.archive = None;
@@ -1254,7 +1300,8 @@ impl YaacApp {
                     self.ui.list_sel.clear();
                 }
                 Action::MarkRead(keys) => {
-                    let changes: Vec<_> = keys.into_iter().map(|k| (k, yaac_core::state::ViewPatch { unseen: Some(false), ..Default::default() })).collect();
+                    let changes: Vec<_> = keys.into_iter().collect::<BTreeSet<_>>().into_iter()
+                        .map(|k| (k, yaac_core::state::ViewPatch { unseen: Some(false), ..Default::default() })).collect();
                     self.client.set_view_many(&changes);
                 }
                 Action::ClearSelection => {

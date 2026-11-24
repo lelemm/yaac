@@ -29,7 +29,7 @@
     </Grid.ColumnDefinitions>
     <Canvas x:Name="Timeline" Margin="0,4" ClipToBounds="True"
             SizeChanged="TimelineSizeChanged" AutomationProperties.Name="Message timeline" />
-    <ListBox x:Name="Rows" Grid.Column="1" IsTabStop="False"
+    <ListBox x:Name="Rows" Grid.Column="1" IsTabStop="False" FocusVisualStyle="{x:Null}"
              Style="{StaticResource YaacVerticalList}"
              Background="Transparent" BorderThickness="0" Padding="0,10,28,16"
              ItemContainerStyle="{StaticResource TranscriptContainer}"

@@ -81,7 +81,7 @@ pub fn modes_for(state: &AppState, target: &ModeTarget) -> Vec<ModeInfo> {
             .iter()
             .find(|d| d.id == *id)
             .and_then(|d| {
-                let t = state.target(&d.target)?;
+                let t = state.target(d.target.as_ref()?)?;
                 let inst = d.instance.clone().or_else(|| {
                     t.providers.iter().find(|p| p.status == yaac_protocol::ProviderStatus::Ready).map(|p| p.instance.clone())
                 })?;
@@ -112,7 +112,7 @@ pub fn view(state: &AppState, pending: &PendingModeConfirm) -> ConfirmView {
             let d = state.new_threads.iter().find(|d| d.id == *id);
             (
                 "New thread".to_owned(),
-                d.map(|d| d.target.clone()).unwrap_or_default(),
+                d.and_then(|d| d.target.clone()).unwrap_or_default(),
                 d.and_then(|d| d.cwd.as_ref().map(ToString::to_string)),
             )
         }

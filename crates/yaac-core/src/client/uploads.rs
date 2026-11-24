@@ -38,7 +38,7 @@ impl Client {
     pub fn draft_target(&self, d: &DraftRef) -> Option<TargetId> {
         match d {
             DraftRef::Thread(k) => Some(k.target.clone()),
-            DraftRef::New(id) => self.state.new_threads.iter().find(|x| x.id == *id).map(|x| x.target.clone()),
+            DraftRef::New(id) => self.state.new_threads.iter().find(|x| x.id == *id).and_then(|x| x.target.clone()),
         }
     }
 
@@ -170,7 +170,7 @@ impl Client {
                 todo.extend(draft.attachments.iter().filter(|a| matches!(a.upload, Upload::Failed { offline: true, .. })).map(|a| (DraftRef::Thread(k.clone()), a.id)));
             }
         }
-        for d in self.state.new_threads.iter().filter(|d| &d.target == target) {
+        for d in self.state.new_threads.iter().filter(|d| d.target.as_ref() == Some(target)) {
             todo.extend(d.draft.attachments.iter().filter(|a| matches!(a.upload, Upload::Failed { offline: true, .. })).map(|a| (DraftRef::New(d.id), a.id)));
         }
         for (d, id) in todo {
@@ -357,7 +357,7 @@ impl Client {
             }
             let draft = Draft { text, attachments };
             let d = if let Some(new_id) = DraftRef::new_id_of(&key) {
-                let (Some(target), Some(meta)) = (target, meta) else { continue };
+                let Some(meta) = meta else { continue };
                 if self.state.new_threads.iter().any(|x| x.id == new_id) {
                     continue;
                 }

@@ -381,7 +381,7 @@ git diff --check
             // The user made a project for their first thread ("New project…" in the picker).
             app.client.create_project(&"local".into(), "/home/dev/api", "api", None);
             app.pump_demo();
-            app.new_thread();
+            app.start_first_thread();
             if let Some(d) = app.client.state.new_threads.first_mut() {
                 d.draft.text = "# Investigate frame parsing\nReproduce the **last-frame** drop in `decode()`.".into();
             }
@@ -410,7 +410,7 @@ git diff --check
             let dest = ForkChoice { instance: "claude".into(), model: None };
             app.client.fork_preview(&fix, &dest.instance);
             app.pump_demo();
-            app.ui.fork = Some(ForkDialog { key: fix, choice: dest, preview_open: true, message: "Carry on from here: add the regression test for the split frame.".into() });
+            app.ui.fork = Some(ForkDialog { key: fix, choice: dest, preview_open: true, keep_children: false, message: "Carry on from here: add the regression test for the split frame.".into() });
         }
         "11n" => {
             let fix = threads::fix();
@@ -418,12 +418,12 @@ git diff --check
             let Some(dest) = yaac_core::fork::default_choice(&app.client.state, &fix) else { return };
             app.client.fork_preview(&fix, &dest.instance);
             app.pump_demo();
-            app.ui.fork = Some(ForkDialog { key: fix, choice: dest, preview_open: true, message: String::new() });
+            app.ui.fork = Some(ForkDialog { key: fix, choice: dest, preview_open: true, keep_children: false, message: String::new() });
         }
         "12" => {
             let fix = threads::fix();
             app.open(&fix, None);
-            app.client.fork(&fix, &ForkChoice { instance: "claude".into(), model: None }, Some("Carry on from here: add the regression test for the split frame."));
+            app.client.fork(&fix, &ForkChoice { instance: "claude".into(), model: None }, Some("Carry on from here: add the regression test for the split frame."), false);
             app.pump_demo();
             if let Some(k) = app.client.state.selected_thread().cloned() {
                 app.open(&k, None);

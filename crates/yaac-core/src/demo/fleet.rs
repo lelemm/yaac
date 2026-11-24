@@ -170,6 +170,7 @@ fn caps() -> Vec<Capability> {
         Capability::Skills,
         // yaacd's own (D144): any thread can be moved to another project.
         Capability::ThreadMove,
+        Capability::ForkKeepChildren,
     ]
 }
 
@@ -332,6 +333,7 @@ impl Fleet {
             control: Control::Free,
             control_holder: None,
             forked_from: None,
+            linked_children: None,
             spawned_by: None,
             root: None,
             children: 0,

@@ -288,7 +288,8 @@
       </Border>
     </Popup>
 
-    <Border x:Name="Docked" Background="{DynamicResource YaacPanel}" Padding="11,8" Visibility="Collapsed">
+    <Border x:Name="Docked" Background="{DynamicResource YaacPanel}" Padding="11,8" Visibility="Collapsed"
+            MouseEnter="OnDockHover" MouseMove="OnDockHover" MouseLeave="OnDockLeave">
       <DockPanel>
         <DockPanel DockPanel.Dock="Top" Margin="2,0,0,5">
           <Button x:Name="UndockButton" DockPanel.Dock="Right" Click="OnUndock" Content="Undock"

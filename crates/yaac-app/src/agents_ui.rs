@@ -5,7 +5,7 @@
 //! and are static: an idle fleet costs no CPU.
 
 use eframe::egui::{self, Align2, Margin, Rect, Sense, Stroke, pos2, vec2};
-use yaac_core::agents::{AgentRow, AgentsPanel, BudgetLine, DockEntry, Flow, Overflow, PanelInput, PanelMode, PillLayout, Relation, card_groups, clusters, docked_entries, pill, pill_cap};
+use yaac_core::agents::{AgentRow, AgentsPanel, BudgetLine, DockEntry, Flow, Overflow, PanelInput, PanelMode, PillLayout, Relation, card_groups, clusters, docked_clusters, docked_entries, pill, pill_cap, sibling_rows};
 use yaac_core::attention::Mark;
 use yaac_core::hover::Region;
 
@@ -13,6 +13,76 @@ use crate::app::{Action, Menu, YaacApp};
 use crate::icons;
 use crate::theme::{self, Palette, size};
 use crate::widgets;
+
+#[derive(Debug, Default)]
+pub(crate) struct DockPreview {
+    owner: Option<yaac_core::ThreadKey>,
+    hovered: Option<yaac_core::ThreadKey>,
+    due: Option<f64>,
+    armed: bool,
+}
+
+impl DockPreview {
+    pub(crate) fn target(&self, owner: &yaac_core::ThreadKey) -> Option<&yaac_core::ThreadKey> {
+        (self.armed && self.owner.as_ref() == Some(owner)).then_some(self.hovered.as_ref()).flatten()
+    }
+
+    fn hover(&mut self, owner: Option<yaac_core::ThreadKey>, hovered: Option<yaac_core::ThreadKey>, now: f64) {
+        if self.owner != owner {
+            *self = Self::default();
+            self.owner = owner;
+        } else {
+            self.advance(now);
+        }
+        let hovered = hovered.filter(|key| self.owner.as_ref().is_some_and(|owner| key != owner));
+        if self.hovered != hovered {
+            self.hovered = hovered;
+            self.due = (!self.armed && self.hovered.is_some()).then_some(now + 2.0);
+        }
+    }
+
+    fn advance(&mut self, now: f64) -> Option<yaac_core::ThreadKey> {
+        if self.due.is_some_and(|due| now >= due) {
+            self.due = None;
+            self.armed = true;
+            return self.hovered.clone();
+        }
+        None
+    }
+}
+
+/// Update only the preview. The normal open-thread path owns navigation and read marks.
+pub(crate) fn dock_hover(app: &mut YaacApp, ctx: &egui::Context, inside: bool, hovered: Option<yaac_core::ThreadKey>) {
+    let before = app.ui.dock_preview.hovered.clone().filter(|_| app.ui.dock_preview.armed);
+    let owner = if inside && app.ui.panel == PanelMode::Docked && !app.ui.settings {
+        app.client.state.selected_thread().cloned()
+    } else {
+        None
+    };
+    let now = app.started.elapsed().as_secs_f64();
+    app.ui.dock_preview.hover(owner, hovered, now);
+    if let Some(key) = &app.ui.dock_preview.hovered
+        && app.ui.dock_preview.armed && before.as_ref() != Some(key)
+    {
+        app.client.watch_transcript(key);
+    }
+    poll_dock_hover(app, ctx);
+}
+
+pub(crate) fn poll_dock_hover(app: &mut YaacApp, ctx: &egui::Context) {
+    let preview = &mut app.ui.dock_preview;
+    if app.ui.settings || app.ui.panel != PanelMode::Docked || preview.owner.as_ref() != app.client.state.selected_thread() {
+        *preview = DockPreview::default();
+        return;
+    }
+    let now = app.started.elapsed().as_secs_f64();
+    if let Some(key) = preview.advance(now) {
+        app.client.watch_transcript(&key);
+    }
+    if let Some(due) = preview.due {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f64(due - now));
+    }
+}
 
 /// A harness's logo (the table in `logos`), or its initial in a circle; the needs-you mark
 /// on its corner, and the unseen ring around it (D114).
@@ -375,7 +445,7 @@ const DOCK_LINE: f32 = 17.0;
 /// One docked row, drawn in a fixed rectangle so it can keep its hover colour while its menu
 /// is open (D108), carry the unseen outline (D114), and stay readable when narrow: the title
 /// is ellipsised and every mark keeps its place (D115).
-fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, actions: &mut Vec<Action>) {
+fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, actions: &mut Vec<Action>) -> Option<yaac_core::ThreadKey> {
     let p = app.p;
     let lines = 2 + usize::from(!row.activity.is_empty()) + usize::from(row.git.is_some());
     let h = lines as f32 * DOCK_LINE + 10.0;
@@ -446,6 +516,7 @@ fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, ac
         }
         crate::sidebar::row_menu(ui, app, &k, &resp, now, actions);
     }
+    resp.hovered().then(|| row.key.clone()).flatten()
 }
 
 /// "Agent budget reached · Continue" (D164), under the budget in the card and the docked panel.
@@ -475,10 +546,10 @@ fn mark_all_as_read<'a>(ui: &mut egui::Ui, p: &Palette, rows: impl Iterator<Item
 
 /// Docked: "Related agents" (D115), the rows under the three quiet headings (D118); no
 /// boxes, no rules.
-pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, actions: &mut Vec<Action>) {
+pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, actions: &mut Vec<Action>) -> Option<yaac_core::ThreadKey> {
     let p = app.p;
     let now = app.now();
-    schedule_activity_ages(ui.ctx(), app, panel.all(), now);
+    schedule_activity_ages(ui.ctx(), app, panel.all().chain(&panel.siblings), now);
     ui.spacing_mut().interact_size.y = 16.0;
     ui.spacing_mut().item_spacing.y = 2.0;
     let w = ui.available_width();
@@ -492,7 +563,7 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
             }
         });
     });
-    mark_all_as_read(ui, &p, panel.all(), actions);
+    mark_all_as_read(ui, &p, panel.all().chain(&panel.siblings), actions);
     if let Some(b) = &panel.budget {
         ui.horizontal(|ui| {
             if b.exhausted {
@@ -505,8 +576,19 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
         budget_continue(ui, &p, b, actions);
     }
     ui.add_space(14.0);
-    let groups = clusters(panel);
+    let groups = docked_clusters(panel);
+    let mut hovered = None;
     egui::ScrollArea::vertical().id_salt("agents-docked").auto_shrink([false, false]).show(ui, |ui| {
+        let siblings = sibling_rows(panel);
+        if !siblings.is_empty() {
+            heading(ui, &p, "Siblings", None);
+            for row in siblings {
+                if let Some(key) = docked_row(ui, app, row, now, actions) {
+                    hovered = Some(key);
+                }
+            }
+            ui.add_space(10.0);
+        }
         // "Spawned by" is always there: started by the user when no agent started it.
         if !groups.iter().any(|c| c.relation == Relation::SpawnedBy) {
             heading(ui, &p, Relation::SpawnedBy.heading(), None);
@@ -530,7 +612,11 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
             }
             for e in docked_entries(c) {
                 match e {
-                    DockEntry::Row(row) => docked_row(ui, app, row, now, actions),
+                    DockEntry::Row(row) => {
+                        if let Some(key) = docked_row(ui, app, row, now, actions) {
+                            hovered = Some(key);
+                        }
+                    }
                     DockEntry::Fold { rows, word } => {
                         let i = c.relation as usize;
                         let open = app.ui.dock_folds_open[i];
@@ -543,7 +629,9 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
                         }
                         if open {
                             for row in rows {
-                                docked_row(ui, app, row, now, actions);
+                                if let Some(key) = docked_row(ui, app, row, now, actions) {
+                                    hovered = Some(key);
+                                }
                             }
                         }
                     }
@@ -552,6 +640,7 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
             ui.add_space(10.0);
         }
     });
+    hovered
 }
 
 /// The docked panel's fold line: a chevron and "12 finished", quiet, clickable.
@@ -806,5 +895,33 @@ mod tests {
         let entries = updates[0].2["entries"].as_array().unwrap();
         assert_eq!(entries.len(), related.len());
         assert!(entries.iter().all(|entry| entry["unseen"] == false && entry.get("pinned").is_none()));
+    }
+
+    #[test]
+    fn docked_preview_waits_then_switches_rows_without_selecting_or_marking_read() {
+        use yaac_core::demo::threads;
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let owner = threads::orchestrator();
+        let first = threads::users();
+        let second = threads::billing();
+        app.open(&owner, None);
+        app.ui.panel = PanelMode::Docked;
+        app.client.state.view.entry(first.clone()).or_default().unseen = true;
+        dock_hover(&mut app, &ctx, true, Some(first.clone()));
+        assert_eq!(app.ui.dock_preview.target(&owner), None);
+        app.started -= std::time::Duration::from_secs(2);
+        poll_dock_hover(&mut app, &ctx);
+        assert_eq!(app.ui.dock_preview.target(&owner), Some(&first));
+        assert!(app.client.state.transcripts.contains_key(&first));
+        dock_hover(&mut app, &ctx, true, None);
+        assert_eq!(app.ui.dock_preview.target(&owner), None);
+        dock_hover(&mut app, &ctx, true, Some(second.clone()));
+        assert_eq!(app.ui.dock_preview.target(&owner), Some(&second));
+        assert_eq!(app.client.state.selected_thread(), Some(&owner));
+        assert!(app.client.state.is_unseen(&first));
+        dock_hover(&mut app, &ctx, false, None);
+        dock_hover(&mut app, &ctx, true, Some(second));
+        assert_eq!(app.ui.dock_preview.target(&owner), None);
     }
 }

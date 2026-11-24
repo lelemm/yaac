@@ -64,6 +64,8 @@ export interface ThreadRecord {
   repoResolved?: boolean;
   /** The agent that started this thread (set by the mesh). */
   spawnedBy?: string | null;
+  /** Existing children linked by a fork. Their original ownership stays with their parent. */
+  linkedChildren?: string[];
   /**
    * One of the harness's own sub-agents (D151): the native id of its parent conversation on
    * the same instance, and what the harness last said of it. Never a mesh relation.

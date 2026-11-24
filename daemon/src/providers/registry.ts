@@ -302,9 +302,9 @@ export class ProviderRegistry {
       store: result.store.home || !this.homeOf(instance.config.kind) ? result.store : { ...result.store, home: this.configuredHome(instance.config) },
       status: result.status,
       statusMessage: result.statusMessage ?? null,
-      // `threadMove` is yaacd's own (D144): it can place any instance's threads; and
+      // Thread placement and retaining fork child links are yaacd capabilities;
       // `configurableHome` the kind's (P300), whatever the probe found.
-      capabilities: [...result.capabilities, ...["threadMove" as const, ...this.ownCapabilities(instance.config.kind)].filter((c) => !result.capabilities.includes(c))],
+      capabilities: [...result.capabilities, ...["threadMove" as const, "forkKeepChildren" as const, ...this.ownCapabilities(instance.config.kind)].filter((c) => !result.capabilities.includes(c))],
       models: result.models,
       modelsComplete: result.modelsComplete,
       modes: result.modes,

@@ -299,10 +299,19 @@ fn drafts_keep_their_chips_across_a_window_restart() {
     assert_eq!(put["key"], "thread:devbox/t-fix");
     assert_eq!(put["attachments"].as_array().unwrap().len(), 3);
     assert!(!a.drafts_dirty());
+    let blank = a.blank_thread();
+    let blank_ref = DraftRef::New(blank);
+    a.state.new_threads.iter_mut().find(|draft| draft.id == blank).unwrap().draft.text = "Choose a project later".into();
+    a.draft_changed(&blank_ref);
+    a.flush_drafts();
+    settle(&mut a, &hub);
     drop(a);
 
     // A new window on the same hub.
     let (mut b, wire_b) = boot_on(&hub);
+    let restored = b.state.new_threads.iter().find(|draft| draft.id == blank).expect("the unset draft came back");
+    assert_eq!((&restored.target, &restored.project, &restored.cwd), (&None, &None, &None));
+    assert_eq!(restored.draft.text, "Choose a project later");
     let draft = b.state.drafts.get(&fix).expect("the draft came back").clone();
     assert_eq!(draft.text, "half-written");
     let names_: Vec<&str> = draft.attachments.iter().map(|x| x.name.as_str()).collect();

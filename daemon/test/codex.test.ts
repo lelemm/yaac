@@ -94,7 +94,8 @@ test("Codex resolves a fork's session and waits for the worker launch hook", asy
   try {
     r.fake.handlers.set("thread/read", (p) => ({ thread: { id: p.threadId, sessionId: "root-session" } }));
     assert.equal(await r.provider.workerSessionId("parent-fork"), "root-session");
-    r.fake.handlers.set("thread/start", () => ({ thread: { id: THREAD_ID, sessionId: THREAD_ID, status: { type: "idle" } } }));
+    r.fake.handlers.set("thread/start", () => ({ thread: { id: THREAD_ID, sessionId: "worker-session", status: { type: "idle" } } }));
+    r.fake.handlers.set("thread/delete", () => ({}));
     r.fake.handlers.set("turn/start", () => ({ turn: { id: TURN_ID, status: "inProgress" } }));
     let ids: [string, string] | undefined;
     const spawned = r.provider.startThread({
@@ -105,10 +106,31 @@ test("Codex resolves a fork's session and waits for the worker launch hook", asy
       },
     }, input("worker task"));
     await until(() => !!ids);
-    assert.deepEqual(ids, [THREAD_ID, THREAD_ID]);
+    assert.deepEqual(ids, [THREAD_ID, "worker-session"]);
     assert.equal(r.fake.requests("turn/start").length, 0);
     allow();
     assert.deepEqual(await spawned, { thread: THREAD_ID, turn: TURN_ID });
+
+    r.fake.handlers.set("thread/start", () => ({ thread: { id: "blocked-worker", sessionId: "blocked-session" } }));
+    await assert.rejects(r.provider.startThread({
+      cwd: "/work/fixture",
+      beforeFirstPrompt: async () => { throw new Error("Hook refused"); },
+    }, input("blocked task")), /Hook refused/);
+    assert.equal(r.fake.requests("turn/start").length, 1);
+    assert.deepEqual(r.fake.requests("thread/delete").map((request) => request.params.threadId), ["blocked-worker"]);
+
+    r.fake.handlers.set("thread/start", () => ({ thread: { id: "unconfirmed-worker", sessionId: "unconfirmed-session" } }));
+    r.fake.handlers.set("turn/start", () => ({}));
+    const peer: ProviderInput = {
+      ...input("worker task"), origin: "mesh",
+      mesh: [{ id: "m_launch", kind: "message", from: "local/parent", fromLabel: "Parent", text: "worker task", task: true }],
+    };
+    await assert.rejects(r.provider.startThread({
+      cwd: "/work/fixture",
+      beforeFirstPrompt: async () => {},
+    }, peer), (error) => error instanceof InputOutcomeUnknown && error.message.includes("unconfirmed-worker"));
+    assert.equal(r.fake.requests("turn/start").length, 2);
+    assert.equal(r.fake.requests("thread/delete").length, 1, "the unconfirmed worker was not deleted");
   } finally {
     allow();
     await r.done();

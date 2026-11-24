@@ -392,7 +392,7 @@ pub fn thread_image_support(state: &AppState, key: &ThreadKey) -> Support {
 /// The image support a new-thread draft's first message will be judged by: the chosen
 /// model's descriptor (or the instance's default model).
 pub fn draft_image_support(state: &AppState, d: &NewThreadDraft) -> Support {
-    let Some(target) = state.target(&d.target) else { return Support::Unknown };
+    let Some(target) = d.target.as_ref().and_then(|id| state.target(id)) else { return Support::Unknown };
     let instance = d.instance.clone().or_else(|| target.providers.iter().find(|p| p.status == yaac_protocol::ProviderStatus::Ready).map(|p| p.instance.clone()));
     instance
         .and_then(|i| target.provider(&i))

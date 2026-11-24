@@ -659,11 +659,21 @@ public partial class SidebarView : UserControl
         e.Handled = true;
     }
 
+    private SidebarItem? MenuItemAt(DependencyObject? source) =>
+        Ancestor<ScrollBar>(source) is null && Ancestor<PullRequestBadge>(source) is null ? ItemAt(source) : null;
+
+    private void OnListMenuDown(object sender, MouseButtonEventArgs e)
+    {
+        // WPF's Multiple selection mode toggles the row on right-button down. The context
+        // menu uses the existing selection when it opens on button up.
+        if (MenuItemAt(e.OriginalSource as DependencyObject) is { Kind: SidebarItemKind.Row })
+            e.Handled = true;
+    }
+
     private void OnListMenu(object sender, MouseButtonEventArgs e)
     {
         var source = e.OriginalSource as DependencyObject;
-        if (Ancestor<ScrollBar>(source) is not null || Ancestor<PullRequestBadge>(source) is not null ||
-            ItemAt(source) is not { } item)
+        if (MenuItemAt(source) is not { } item)
             return;
         var anchor = (FrameworkElement?)ContainerAt(source) ?? StickyHeader;
         OpenItemMenu(item, anchor, PlacementMode.MousePoint);

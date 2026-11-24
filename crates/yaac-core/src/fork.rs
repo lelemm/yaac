@@ -20,6 +20,10 @@ pub struct ForkChoice {
     pub model: Option<ModelId>,
 }
 
+pub fn can_keep_children(state: &AppState, key: &ThreadKey) -> bool {
+    state.provider_of(key).is_some_and(|provider| provider.capabilities.contains(&yaac_protocol::Capability::ForkKeepChildren))
+}
+
 /// One destination in the "Continue with" picker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Destination {

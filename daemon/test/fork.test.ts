@@ -316,14 +316,19 @@ test("handoff fork: an attachment gone from the target is marked omitted; one st
   await daemon.stop("test");
 });
 
-test("handoff fork survives a restart: the transcript file and the handoff item stay", async () => {
+test("handoff fork keeps its transcript and optional child links across a restart", async () => {
   const home = homeWithTwoStores();
   let daemon = await startDaemon(home);
   let c = await client(daemon);
   const t = await startThread(c, "/fake say before the restart");
   await c.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
   await waitTurnDone(c, t.threadId, t.turnId);
-  const f: any = await c.request("thread/fork", { opId: opId(), source: t.threadId, instance: OTHER, input: text("/fake say after") });
+  const child = await startThread(c, "/fake say child");
+  const childThread = daemon.core.thread(child.threadId)!;
+  const address = (threadId: string) => daemon.mesh.addressOf(threadId);
+  childThread.record.spawnedBy = address(t.threadId);
+  childThread.saveRecord();
+  const f: any = await c.request("thread/fork", { opId: opId(), source: t.threadId, instance: OTHER, keepChildren: true, input: text("/fake say after") });
   await c.request("thread/subscribe", { threadId: f.threadId, epoch: 1, afterSeq: 0 });
   await waitTurnDone(c, f.threadId, f.turnId);
   const file = daemon.core.thread(f.threadId)!.record.handoffTranscript!;
@@ -338,6 +343,9 @@ test("handoff fork survives a restart: the transcript file and the handoff item 
   assert.ok(String(h.transcript).includes("before the restart"));
   assert.equal(h.transcriptPath, file);
   assert.equal(daemon.core.thread(f.threadId)!.record.handoffTranscript, file);
+  const fork = daemon.core.thread(f.threadId)!;
+  assert.deepEqual(daemon.core.summaryOf(fork).linkedChildren, [address(child.threadId)]);
+  assert.equal(daemon.core.thread(child.threadId)!.record.spawnedBy, address(t.threadId));
   // The fork goes on normally.
   const next: any = await c.request("turn/start", { opId: opId(), threadId: f.threadId, input: text("/fake say second") });
   await c.request("thread/subscribe", { threadId: f.threadId, epoch: 1, afterSeq: 0 });

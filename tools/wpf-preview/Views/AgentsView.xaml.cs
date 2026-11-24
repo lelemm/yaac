@@ -20,6 +20,9 @@ public partial class AgentsView : UserControl
     private readonly DispatcherTimer _closeTimer;
     private string? _snapshot;
     private string _threadId = "";
+    private string? _floatingDestination;
+    private bool _dockMouseInside;
+    private string _hoveredDockThread = "";
     private string _mode = "pill";
     private bool _dockFolded;
     private string _firstHidden = "";
@@ -41,6 +44,12 @@ public partial class AgentsView : UserControl
         PillItems.ItemsSource = _pill;
         CardRows.ItemsSource = _card;
         DockRows.ItemsSource = _dock;
+        Docked.IsVisibleChanged += (_, _) =>
+        {
+            if (!Docked.IsVisible)
+                SetDockHover(false, "");
+        };
+        DockRows.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => TrackDockHover()));
         Pill.RenderTransform = _pillPosition;
         Floating.CustomPopupPlacementCallback = (size, target, _) =>
         [
@@ -146,8 +155,13 @@ public partial class AgentsView : UserControl
         if (threadId != _threadId)
         {
             _threadId = threadId;
-            CloseCard(force: true);
-            ScrollToTop(CardRows);
+            SetDockHover(false, "");
+            if (threadId != _floatingDestination)
+            {
+                CloseCard(force: true);
+                ScrollToTop(CardRows);
+            }
+            _floatingDestination = null;
             ScrollToTop(DockRows);
         }
 
@@ -194,7 +208,7 @@ public partial class AgentsView : UserControl
         HashSet<string> used = new(StringComparer.Ordinal);
         var pill = BuildPill(view.Field("pill"), groups, exhausted, DockBudgetText.Text.Length > 0, used);
         var card = BuildCard(view.Field("cardGroups"), groups, rows, used);
-        var dock = BuildDock(view.Field("root"), groups, rows, used);
+        var dock = BuildDock(view.Field("root"), view.Array("siblings").Select(s => s.StringField("id")), groups, rows, used);
         Synchronize(_pill, pill);
         Synchronize(_card, card, CardRows);
         Synchronize(_dock, dock, DockRows);
@@ -203,6 +217,7 @@ public partial class AgentsView : UserControl
 
         Visibility = Show(view.BoolField("visible", rows.Count > 0));
         ApplyMode();
+        TrackDockHover();
     }
 
     private List<AgentsGroup> ReadGroups(JsonElement view)
@@ -329,10 +344,17 @@ public partial class AgentsView : UserControl
         }
     }
 
-    private List<AgentsEntry> BuildDock(JsonElement root, List<AgentsGroup> groups, Dictionary<string, AgentsRow> rows,
+    private List<AgentsEntry> BuildDock(JsonElement root, IEnumerable<string> siblingIds, List<AgentsGroup> groups, Dictionary<string, AgentsRow> rows,
         HashSet<string> used)
     {
         List<AgentsEntry> result = new();
+        var siblings = siblingIds.Where(rows.ContainsKey).Select(id => rows[id]).ToArray();
+        if (siblings.Length > 0)
+        {
+            result.Add(Entry("dock", "heading", "siblings", new() { Title = "Siblings" }, used));
+            foreach (var sibling in siblings)
+                result.Add(RowEntry("dock", "dockRow", sibling, used));
+        }
         if (!groups.Any(group => group.Id == "spawnedBy" && group.Rows.Count > 0))
         {
             result.Add(Entry("dock", "heading", "you", new() { Title = "Spawned by" }, used));
@@ -341,10 +363,11 @@ public partial class AgentsView : UserControl
         }
         foreach (AgentsGroup group in groups)
         {
-            if (group.Rows.Count == 0)
+            if (group.Rows.Count == 0 || group.Docked.Field("rowIds").ValueKind == JsonValueKind.Array
+                && !group.Docked.Ids("rowIds").Any() && !group.Docked.Ids("foldIds").Any())
                 continue;
 
-            string heading = group.Id != "spawnedBy" && group.Count is int count
+            string heading = group.Id != "spawnedBy" && (group.Docked.OptionalNumber("count") ?? group.Count) is int count
                 ? $"{group.Label} ({count})"
                 : group.Label;
             result.Add(Entry("dock", "heading", group.Id, new() { Title = heading }, used));
@@ -484,6 +507,7 @@ public partial class AgentsView : UserControl
         _closeTimer.Stop();
         if (!force && _mode == "card")
             return;
+        _floatingDestination = null;
         _focusCard = false;
         _scrollHidden = false;
         _keyboardCard = false;
@@ -601,6 +625,35 @@ public partial class AgentsView : UserControl
     }
 
     private void OnDock(object sender, RoutedEventArgs e) => Command?.Invoke("agents.dock", null);
+    private void OnDockHover(object sender, MouseEventArgs e) => TrackDockHover();
+    private void OnDockLeave(object sender, MouseEventArgs e) => SetDockHover(false, "");
+
+    private void TrackDockHover()
+    {
+        if (!Docked.IsVisible || !Docked.IsMouseOver)
+            return;
+        var source = DockRows.InputHitTest(Mouse.GetPosition(DockRows)) as DependencyObject;
+        while (source is not null && source != DockRows)
+        {
+            if (source is ListBoxItem { Content: AgentsEntry { Kind: "dockRow", Data.CanOpen: true } row })
+            {
+                SetDockHover(true, row.CommandId);
+                return;
+            }
+            source = source is Visual ? VisualTreeHelper.GetParent(source) : LogicalTreeHelper.GetParent(source);
+        }
+        SetDockHover(true, "");
+    }
+
+    private void SetDockHover(bool inside, string id)
+    {
+        if (_dockMouseInside == inside && _hoveredDockThread == id)
+            return;
+        _dockMouseInside = inside;
+        _hoveredDockThread = id;
+        Command?.Invoke("agents.hover", new { owner = _threadId, inside, id });
+    }
+
     private void OnUndock(object sender, RoutedEventArgs e) => Command?.Invoke("agents.undock", null);
     private void OnMarkRead(object sender, RoutedEventArgs e) =>
         Command?.Invoke("agents.markRead", new { floating = ReferenceEquals(sender, MarkCard) });
@@ -609,7 +662,11 @@ public partial class AgentsView : UserControl
     private void OpenAgent(object sender, RoutedEventArgs e)
     {
         if (EntryOf(sender) is { Data.CanOpen: true, CommandId.Length: > 0 } entry)
+        {
+            if (Floating.IsOpen && entry.Kind == "cardRow" && entry.CommandId != _threadId)
+                _floatingDestination = entry.CommandId;
             Command?.Invoke("agents.open", new { id = entry.CommandId });
+        }
     }
 
     private void ToggleFold(object sender, RoutedEventArgs e)

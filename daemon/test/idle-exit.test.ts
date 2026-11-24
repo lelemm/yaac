@@ -6,7 +6,7 @@
 // child, a timer) can hide a daemon that does not exit. Each asserts the exit within the idle
 // timeout plus a slack generous enough for a slow machine.
 
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -142,171 +142,163 @@ async function withServed(fn: (s: Served) => Promise<void>, idleMs = IDLE_MS, en
   }
 }
 
-test("idle exit: with no host ever attached, the daemon exits after the idle period, cleanly", async () => {
-  await withServed(async (s) => {
-    const t0 = Date.now();
-    const took = await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit");
-    assert.ok(took >= IDLE_MS - 50, `not before the idle period (${took} ms)`);
-    assert.ok(s.stateClean(), "state.json records a clean stop");
-    assert.ok(!fs.existsSync(s.socket), "the socket is removed");
-    assert.match(s.log(), /stopping: idle/);
-  });
-});
-
-test("idle exit: a host that attaches holds it; once the host has gone it exits after the idle period", async () => {
-  await withServed(async (s) => {
-    const c = await s.connect();
-    const t = await c.request("thread/start", { opId: opId(), instance: FAKE, cwd: s.home, input: text("/fake say hello") });
-    await c.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
-    await c.waitEvent((e) => e.event.type === "turnCompleted", "the turn");
-    await sleep(IDLE_MS * 2);
-    assert.ok(s.alive, "an attached host keeps the daemon");
-    const t0 = Date.now();
-    c.socket.destroy(); // the host goes away abruptly
-    await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit after the host left");
-  });
-});
-
-test("idle exit: liveness probes (connect, send nothing, close) do not hold it or restart the idle period", async () => {
-  await withServed(async (s) => {
-    const c = await s.connect();
-    c.socket.destroy();
-    const t0 = Date.now();
-    // Probes every 100 ms, as a test harness checking whether the daemon is still up.
-    let probing = true;
-    const loop = (async () => {
-      while (probing && s.alive) {
-        await probe(s.socket);
-        await sleep(100);
-      }
-    })();
-    try {
-      await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit while being probed");
-    } finally {
-      probing = false;
-      await loop;
-    }
-  });
-});
-
-test("idle exit: a connection that never initializes does not hold it forever", async () => {
-  await withServed(async (s) => {
-    // Connected, half a frame sent, never closed: not a host.
-    const silent = await new Promise<net.Socket>((resolve, reject) => {
-      const x = net.connect(s.socket);
-      x.once("connect", () => resolve(x));
-      x.once("error", reject);
+// Each case owns a daemon, a socket and a temp home. Overlap their idle waits.
+describe("Native daemon idle exit", { concurrency: 3 }, () => {
+  test("with no host ever attached, the daemon exits after the idle period, cleanly", async () => {
+    await withServed(async (s) => {
+      const t0 = Date.now();
+      const took = await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit");
+      assert.ok(took >= IDLE_MS - 50, `not before the idle period (${took} ms)`);
+      assert.ok(s.stateClean(), "state.json records a clean stop");
+      assert.ok(!fs.existsSync(s.socket), "the socket is removed");
+      assert.match(s.log(), /stopping: idle/);
     });
-    silent.on("error", () => {});
-    silent.write(encodeMessageFrame(encodeMessage({ type: "request", id: 1, method: "initialize", params: {} })).subarray(0, 6));
-    const t0 = Date.now();
-    try {
-      // The idle period, plus the grace a connection gets to finish its handshake.
-      await s.exited(t0, IDLE_MS + 10_000 + SLACK_MS, "the idle exit despite a silent connection");
-    } finally {
-      silent.destroy();
-    }
   });
-});
 
-test("idle exit: a client still in its handshake when the idle period ends is not cut off", async () => {
-  await withServed(async (s) => {
-    const c = await TestClient.connect(s.socket);
-    c.sendRaw(encodeMessageFrame(encodeMessage({ type: "request", id: 0, method: "daemon/status", params: {} })));
-    await until(() => c.messages.length > 0, "the frozen-core answer");
-    // The idle period passes while the connection has not initialized; it is within its grace.
-    await sleep(IDLE_MS + 700);
-    assert.ok(s.alive, "a connection mid-handshake gets its grace");
-    await c.initialize();
-    await sleep(IDLE_MS * 2);
-    assert.ok(s.alive, "once initialized it is a host and holds the daemon");
-    const t0 = Date.now();
-    c.socket.destroy();
-    await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit after the host left");
+  test("liveness probes (connect, send nothing, close) do not hold it or restart the idle period", async () => {
+    await withServed(async (s) => {
+      const c = await s.connect();
+      c.socket.destroy();
+      const t0 = Date.now();
+      // Probes every 100 ms, as a test harness checking whether the daemon is still up.
+      let probing = true;
+      const loop = (async () => {
+        while (probing && s.alive) {
+          await probe(s.socket);
+          await sleep(100);
+        }
+      })();
+      try {
+        await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit while being probed");
+      } finally {
+        probing = false;
+        await loop;
+      }
+    });
   });
-});
 
-test("idle exit: a host that disconnects mid-turn — the turn runs to its end, journaled, and only then the idle period starts", async () => {
-  await withServed(async (s) => {
-    const c = await s.connect();
-    const words = Array.from({ length: 60 }, (_, i) => `w${i}`);
-    const t = await c.request("thread/start", { opId: opId(), instance: FAKE, cwd: s.home, input: text(`/fake pace 50\n/fake say ${words.join(" ")}`) });
-    await c.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
-    await c.waitEvent((e) => e.event.type === "itemDelta", "streaming to start");
-    c.socket.destroy();
-    // 60 words at 50 ms: about 3 s of turn, longer than the idle period.
-    await sleep(IDLE_MS + 500);
-    assert.ok(s.alive, "a running turn keeps the daemon");
-    await s.exited(Date.now(), 3000 + IDLE_MS + SLACK_MS, "the idle exit after the turn");
-    // Nothing was lost: a fresh daemon serves the whole turn from its journal.
-    const s2 = await Served.start(s.home, 0);
-    try {
-      const c2 = await s2.connect();
-      const items = (await readAll(c2, t.threadId)).flatMap((p) => p.items);
-      const agent = items.find((i) => i.kind === "agentMessage") as any;
-      assert.equal(agent.text, words.join(" "));
+  test("a connection that never initializes does not hold it forever", async () => {
+    await withServed(async (s) => {
+      // Connected, half a frame sent, never closed: not a host.
+      const silent = await new Promise<net.Socket>((resolve, reject) => {
+        const x = net.connect(s.socket);
+        x.once("connect", () => resolve(x));
+        x.once("error", reject);
+      });
+      silent.on("error", () => {});
+      silent.write(encodeMessageFrame(encodeMessage({ type: "request", id: 1, method: "initialize", params: {} })).subarray(0, 6));
+      const t0 = Date.now();
+      try {
+        // The idle period, plus the grace a connection gets to finish its handshake.
+        await s.exited(t0, IDLE_MS + 10_000 + SLACK_MS, "the idle exit despite a silent connection");
+      } finally {
+        silent.destroy();
+      }
+    });
+  });
+
+  test("handshake grace, attached host, and idle exit after disconnect", async () => {
+    await withServed(async (s) => {
+      const c = await TestClient.connect(s.socket);
+      c.sendRaw(encodeMessageFrame(encodeMessage({ type: "request", id: 0, method: "daemon/status", params: {} })));
+      await until(() => c.messages.length > 0, "the frozen-core answer");
+      // The idle period passes while the connection has not initialized; it is within its grace.
+      await sleep(IDLE_MS + 700);
+      assert.ok(s.alive, "a connection mid-handshake gets its grace");
+      await c.initialize();
+      const t = await c.request("thread/start", { opId: opId(), instance: FAKE, cwd: s.home, input: text("/fake say hello") });
+      await c.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
+      await c.waitEvent((e) => e.event.type === "turnCompleted", "the turn");
+      await sleep(IDLE_MS * 2);
+      assert.ok(s.alive, "an attached host keeps the daemon after its turn completes");
+      const t0 = Date.now();
+      c.socket.destroy();
+      await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit after the host left");
+    });
+  });
+
+  test("a host that disconnects mid-turn — the turn runs to its end, journaled, and only then the idle period starts", async () => {
+    await withServed(async (s) => {
+      const c = await s.connect();
+      const words = Array.from({ length: 60 }, (_, i) => `w${i}`);
+      const t = await c.request("thread/start", { opId: opId(), instance: FAKE, cwd: s.home, input: text(`/fake pace 50\n/fake say ${words.join(" ")}`) });
+      await c.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
+      await c.waitEvent((e) => e.event.type === "itemDelta", "streaming to start");
+      c.socket.destroy();
+      // 60 words at 50 ms: about 3 s of turn, longer than the idle period.
+      await sleep(IDLE_MS + 500);
+      assert.ok(s.alive, "a running turn keeps the daemon");
+      await s.exited(Date.now(), 3000 + IDLE_MS + SLACK_MS, "the idle exit after the turn");
+      // Nothing was lost: a fresh daemon serves the whole turn from its journal.
+      const s2 = await Served.start(s.home, 0);
+      try {
+        const c2 = await s2.connect();
+        const items = (await readAll(c2, t.threadId)).flatMap((p) => p.items);
+        const agent = items.find((i) => i.kind === "agentMessage") as any;
+        assert.equal(agent.text, words.join(" "));
+        const sync: any = await c2.request("thread/sync", {});
+        assert.equal(sync.changed.find((x: any) => x.id === t.threadId).state, "idle", "the turn completed, not interrupted");
+        c2.socket.destroy();
+      } finally {
+        s2.kill();
+      }
+    });
+  });
+
+  test("a pending approval keeps the daemon up with no host; answered later, it exits", async () => {
+    await withServed(async (s) => {
+      const c = await s.connect();
+      const t = await c.request("thread/start", { opId: opId(), instance: FAKE, cwd: s.home, input: text("/fake approve make deploy\n/fake say deployed") });
+      await c.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
+      const raised = await c.waitEvent((e) => e.event.type === "itemStarted" && (e.event as any).item.kind === "request", "the approval");
+      const requestId = (raised.event as any).item.requestId;
+      c.socket.destroy();
+      await sleep(IDLE_MS * 3);
+      assert.ok(s.alive, "a pending approval is never dropped by an idle exit");
+      const c2 = await s.connect();
       const sync: any = await c2.request("thread/sync", {});
-      assert.equal(sync.changed.find((x: any) => x.id === t.threadId).state, "idle", "the turn completed, not interrupted");
+      assert.ok(sync.changed.find((x: any) => x.id === t.threadId), "the thread is still there");
+      await c2.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
+      const replayed = await c2.waitEvent((e) => e.event.type === "itemStarted" && (e.event as any).item.requestId === requestId, "the approval, replayed");
+      assert.equal((replayed.event as any).item.state, "pending");
+      await c2.request("request/respond", { opId: opId(), threadId: t.threadId, requestId, response: { requestKind: "approval", decision: "allow" } });
+      await c2.waitEvent((e) => e.event.type === "turnCompleted", "the turn to finish");
+      const t0 = Date.now();
       c2.socket.destroy();
-    } finally {
-      s2.kill();
-    }
+      await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit once answered");
+    });
   });
-});
 
-test("idle exit: a pending approval keeps the daemon up with no host; answered later, it exits", async () => {
-  await withServed(async (s) => {
-    const c = await s.connect();
-    const t = await c.request("thread/start", { opId: opId(), instance: FAKE, cwd: s.home, input: text("/fake approve make deploy\n/fake say deployed") });
-    await c.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
-    const raised = await c.waitEvent((e) => e.event.type === "itemStarted" && (e.event as any).item.kind === "request", "the approval");
-    const requestId = (raised.event as any).item.requestId;
-    c.socket.destroy();
-    await sleep(IDLE_MS * 3);
-    assert.ok(s.alive, "a pending approval is never dropped by an idle exit");
-    const c2 = await s.connect();
-    const sync: any = await c2.request("thread/sync", {});
-    assert.ok(sync.changed.find((x: any) => x.id === t.threadId), "the thread is still there");
-    await c2.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
-    const replayed = await c2.waitEvent((e) => e.event.type === "itemStarted" && (e.event as any).item.requestId === requestId, "the approval, replayed");
-    assert.equal((replayed.event as any).item.state, "pending");
-    await c2.request("request/respond", { opId: opId(), threadId: t.threadId, requestId, response: { requestKind: "approval", decision: "allow" } });
-    await c2.waitEvent((e) => e.event.type === "turnCompleted", "the turn to finish");
-    const t0 = Date.now();
-    c2.socket.destroy();
-    await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit once answered");
+  test("a host that disconnects mid-upload — the partial upload is dropped and the daemon exits", async () => {
+    await withServed(async (s) => {
+      const c = await s.connect();
+      const size = 4 * 1024 * 1024;
+      const begin: any = await c.request("upload/begin", { name: "big.bin", size, sha256: "0".repeat(64) });
+      c.sendData(begin.stream, Buffer.alloc(Math.min(begin.credit, 64 * 1024), 1));
+      await sleep(50);
+      const t0 = Date.now();
+      c.socket.destroy();
+      await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit after a dropped upload");
+      const partials = fs.readdirSync(path.join(s.home, "tmp"), { recursive: true, encoding: "utf8" }).filter((f) => path.basename(path.dirname(f)) === "partial");
+      assert.deepEqual(partials, [], "no partial upload left behind");
+    });
   });
-});
 
-test("idle exit: a host that disconnects mid-upload — the partial upload is dropped and the daemon exits", async () => {
-  await withServed(async (s) => {
-    const c = await s.connect();
-    const size = 4 * 1024 * 1024;
-    const begin: any = await c.request("upload/begin", { name: "big.bin", size, sha256: "0".repeat(64) });
-    c.sendData(begin.stream, Buffer.alloc(Math.min(begin.credit, 64 * 1024), 1));
-    await sleep(50);
-    const t0 = Date.now();
-    c.socket.destroy();
-    await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit after a dropped upload");
-    const partials = fs.readdirSync(path.join(s.home, "tmp"), { recursive: true, encoding: "utf8" }).filter((f) => path.basename(path.dirname(f)) === "partial");
-    assert.deepEqual(partials, [], "no partial upload left behind");
-  });
-});
-
-test("idle exit: a message waiting in the outbox for the hub does not hold the daemon, and survives the exit", async () => {
-  await withServed(async (s) => {
-    const c = await s.connect();
-    await c.request("mesh/roster", { selfId: "tg_here", selfName: "here", targets: [{ id: "tg_here", name: "here", reachable: true }, { id: "tg_far", name: "far", reachable: false }] });
-    const t = await c.request("thread/start", { opId: opId(), instance: FAKE, cwd: s.home, agents: "allow", input: text("/fake mesh-send tg_far/t_peer | hello over there\n/fake say sent") });
-    await c.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
-    // The hub (this client) never answers the relay; the message stays in the outbox.
-    await c.waitEvent((e) => e.event.type === "turnCompleted", "the turn");
-    const t0 = Date.now();
-    c.socket.destroy();
-    await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit with mail in the outbox");
-    const store = fs.readFileSync(path.join(s.home, ".yaac", "mesh", "messages.jsonl"), "utf8");
-    assert.match(store, /hello over there/, "the message is on disk");
-    assert.match(store, /relayPending/, "still waiting to be relayed");
+  test("a message waiting in the outbox for the hub does not hold the daemon, and survives the exit", async () => {
+    await withServed(async (s) => {
+      const c = await s.connect();
+      await c.request("mesh/roster", { selfId: "tg_here", selfName: "here", targets: [{ id: "tg_here", name: "here", reachable: true }, { id: "tg_far", name: "far", reachable: false }] });
+      const t = await c.request("thread/start", { opId: opId(), instance: FAKE, cwd: s.home, agents: "allow", input: text("/fake mesh-send tg_far/t_peer | hello over there\n/fake say sent") });
+      await c.request("thread/subscribe", { threadId: t.threadId, epoch: 1, afterSeq: 0 });
+      // The hub (this client) never answers the relay; the message stays in the outbox.
+      await c.waitEvent((e) => e.event.type === "turnCompleted", "the turn");
+      const t0 = Date.now();
+      c.socket.destroy();
+      await s.exited(t0, IDLE_MS + SLACK_MS, "the idle exit with mail in the outbox");
+      const store = fs.readFileSync(path.join(s.home, ".yaac", "mesh", "messages.jsonl"), "utf8");
+      assert.match(store, /hello over there/, "the message is on disk");
+      assert.match(store, /relayPending/, "still waiting to be relayed");
+    });
   });
 });
 

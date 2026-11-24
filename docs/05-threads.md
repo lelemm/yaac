@@ -31,9 +31,9 @@ What follows from that:
 
 A thread that has not sent its first message is a **draft**. Drafts exist only on the host.
 The thread is created together with its first message (`thread/start`), so an abandoned draft
-leaves nothing behind in the harness. Until then, its project and provider instance are still
-editable; after it, they are fixed. A new thread is started in the root of its project's
-folder — the user picks a project, not a path.
+leaves nothing behind in the harness. The user can pick the project, its checkout and the
+provider instance before sending. A new thread starts at the project's relative folder in
+the chosen checkout, with the project's own checkout as the default.
 
 ### Binding a thread to an instance
 
@@ -493,9 +493,8 @@ What follows from it:
 - **A folder that is not in a repository** has no worktree; only the folder rule applies.
 - The lookup is one `git` query per distinct folder, cached.
 
-This matching matters for **discovered** threads — ones started in a terminal, in whatever
-folder the user happened to be in. A thread created from YAAC has no such question: it is
-started in **the root of its project's folder**.
+This matching applies to threads **discovered** from a harness and to threads YAAC starts
+in a linked checkout. A new thread in the project's own checkout uses its registered folder.
 
 #### Temporary projects
 
@@ -730,6 +729,9 @@ choice as *native* or *handoff*.
 
 The dialog asks `thread/forkPreview` for each destination chosen. It names the cut-off turn by
 its position ("at the last completed turn (turn 12)"), never by its id.
+
+**Keep children** shows the source thread's existing children on the fork as well. Each
+child keeps its original parent, budget, and destination for automatic results.
 
 - **Native:** the result line, what is carried, and **Fork** (Enter). The new thread opens idle;
   its first message goes with `turn/start`.

@@ -10,6 +10,7 @@
         <ResourceDictionary Source="Dropdowns.xaml" />
       </ResourceDictionary.MergedDictionaries>
       <ScaleTransform x:Key="YaacUiScale" ScaleX="1" ScaleY="1" />
+      <Thickness x:Key="TextControlBorderThemeThicknessFocused">1</Thickness>
       <Style TargetType="ContextMenu" BasedOn="{StaticResource YaacContextMenu}">
         <Setter Property="LayoutTransform" Value="{DynamicResource YaacUiScale}" />
       </Style>

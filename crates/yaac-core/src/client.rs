@@ -620,7 +620,8 @@ impl Client {
             Call::RateLimits => self.on_rate_limits(result),
             Call::ThreadStart { draft } => {
                 let Some(thread_id) = result.get("threadId").and_then(Value::as_str).map(ThreadId::new) else { return };
-                let key = ThreadKey::new(draft.target.clone(), thread_id.clone());
+                let Some(target) = draft.target else { return };
+                let key = ThreadKey::new(target.clone(), thread_id.clone());
                 if !self.state.threads.contains_key(&key) {
                     let title = draft.draft.text.lines().map(|l| l.trim_start_matches('#').trim()).find(|l| !l.is_empty()).unwrap_or("New thread").to_owned();
                     let now = Timestamp::new("");
@@ -638,6 +639,7 @@ impl Client {
                         control: Control::Mine,
                         control_holder: None,
                         forked_from: None,
+                        linked_children: None,
                         spawned_by: None,
                         root: None,
                         children: 0,
@@ -658,7 +660,7 @@ impl Client {
                         unavailable: None,
                         running_commands: None,
                     };
-                    self.state.upsert_summary(&draft.target, summary);
+                    self.state.upsert_summary(&target, summary);
                 }
                 self.state.new_threads.retain(|d| d.id != draft.id);
                 self.sent(&DraftRef::New(draft.id), &draft.draft);
@@ -1339,6 +1341,11 @@ impl Client {
         if self.state.is_unseen(key) {
             self.set_view(key, crate::state::ViewPatch { unseen: Some(false), ..Default::default() });
         }
+        self.watch_transcript(key);
+    }
+
+    /// Load and follow a transcript while leaving selection and read state alone.
+    pub fn watch_transcript(&mut self, key: &ThreadKey) {
         let fresh = !self.state.transcripts.contains_key(key);
         if fresh {
             self.state.transcripts.insert(key.clone(), crate::transcript::Transcript::new());
@@ -1479,6 +1486,15 @@ impl Client {
 
     /// Start a new-thread draft on a target and select it.
     pub fn new_thread(&mut self, target: TargetId, cwd: Option<yaac_protocol::TargetPath>) -> u64 {
+        self.new_draft(Some(target), cwd)
+    }
+
+    /// Open the new-thread composer before the user has picked a project.
+    pub fn blank_thread(&mut self) -> u64 {
+        self.new_draft(None, None)
+    }
+
+    fn new_draft(&mut self, target: Option<TargetId>, cwd: Option<yaac_protocol::TargetPath>) -> u64 {
         let id = self.state.new_threads.iter().map(|d| d.id).max().unwrap_or(0) + 1;
         self.state.new_threads.push(NewThreadDraft {
             id,
@@ -1542,7 +1558,7 @@ impl Client {
             DraftRef::Thread(key) => Some((key.target.clone(), self.state.summary(key)?.cwd.clone())),
             DraftRef::New(id) => {
                 let draft = self.state.new_threads.iter().find(|d| d.id == *id)?;
-                Some((draft.target.clone(), draft.cwd.clone()?))
+                Some((draft.target.clone()?, draft.cwd.clone()?))
             }
         }
     }
@@ -1558,7 +1574,7 @@ impl Client {
                 .or_else(|| self.state.provider_of(key).map(|p| p.capabilities.as_slice())),
             DraftRef::New(id) => (|| {
                 let draft = self.state.new_threads.iter().find(|draft| draft.id == *id)?;
-                let target = self.state.target(&draft.target)?;
+                let target = self.state.target(draft.target.as_ref()?)?;
                 let provider = match &draft.instance {
                     Some(instance) => target.provider(instance),
                     None => target.providers.iter().find(|p| p.status == ProviderStatus::Ready),
@@ -1607,7 +1623,8 @@ impl Client {
             self.error(None, "Start the conversation before compacting context.");
             return false;
         }
-        let Some(target) = self.state.target(&draft.target) else { return false };
+        let Some(target_id) = draft.target.as_ref() else { return false };
+        let Some(target) = self.state.target(target_id) else { return false };
         let instance = draft.instance.clone().or_else(|| {
             target.providers.iter().find(|p| p.status == yaac_protocol::ProviderStatus::Ready).map(|p| p.instance.clone())
         });
@@ -1615,12 +1632,16 @@ impl Client {
         let mut chosen = draft.clone();
         chosen.instance = Some(instance.clone());
         let support = crate::attachments::draft_image_support(&self.state, &chosen);
-        let Some(input) = crate::attachments::input_parts(&draft.draft.text, &draft.draft.attachments, &support, Some(&draft.target)) else { return false };
+        let Some(input) = crate::attachments::input_parts(&draft.draft.text, &draft.draft.attachments, &support, Some(target_id)) else { return false };
         let input = crate::skills::attach(&self.state, crate::skills::for_new_thread(&self.state, &chosen), input, &draft.draft.text);
         let Some(cwd) = draft.cwd.clone() else { return false };
         let op = self.op_id();
         let mut params = json!({ "opId": op, "instance": instance, "cwd": cwd, "input": input });
-        if let Some(p) = draft.project.as_ref().and_then(|pid| self.state.projects.iter().find(|p| &p.id == pid)) {
+        // Linked checkouts are resolved from their working directory. The project shortcut
+        // on thread/start requires the project's registered folder.
+        if let Some(p) = draft.project.as_ref().and_then(|pid| self.state.projects.iter().find(|p| &p.id == pid))
+            && cwd.as_str() == p.folder
+        {
             params["project"] = json!(p.wire_id);
         }
         if let Some(mdl) = &draft.model {
@@ -1640,7 +1661,7 @@ impl Client {
         }
         let mut sent = draft.clone();
         sent.instance = Some(instance);
-        self.routed(&draft.target, m::THREAD_START, params, Call::ThreadStart { draft: sent });
+        self.routed(target_id, m::THREAD_START, params, Call::ThreadStart { draft: sent });
         true
     }
 
@@ -1983,12 +2004,12 @@ impl Client {
         f.loading = false;
     }
 
-    /// Choose a draft's project: it starts in the project folder's root.
+    /// Choose a draft's project, defaulting to the project's own checkout.
     pub fn set_draft_project(&mut self, draft: u64, project_id: &str) {
         let Some(p) = self.state.projects.iter().find(|p| p.id == project_id).cloned() else { return };
         let mut retarget = false;
         if let Some(d) = self.state.new_threads.iter_mut().find(|d| d.id == draft) {
-            if d.target != p.target {
+            if d.target.as_ref() != Some(&p.target) {
                 d.instance = None;
                 d.model = None;
                 d.effort = None;
@@ -1996,7 +2017,7 @@ impl Client {
                 d.ultrafast = false;
                 retarget = true;
             }
-            d.target = p.target.clone();
+            d.target = Some(p.target.clone());
             d.cwd = Some(p.folder.clone().into());
             d.project = Some(p.id);
         }
@@ -2005,6 +2026,16 @@ impl Client {
             self.retarget_uploads(&DraftRef::New(draft));
         }
         self.dirty.insert(DraftRef::New(draft));
+    }
+
+    /// Choose a known checkout, keeping the project's relative folder within it.
+    pub fn set_draft_worktree(&mut self, draft: u64, root: &str) {
+        let Some(index) = self.state.new_threads.iter().position(|d| d.id == draft) else { return };
+        let d = &self.state.new_threads[index];
+        let Some(p) = self.state.projects.iter().find(|p| Some(&p.id) == d.project.as_ref()) else { return };
+        let Some(worktree) = crate::moving::worktrees(&self.state, p).into_iter().find(|w| w.root == root) else { return };
+        self.state.new_threads[index].cwd = Some(crate::moving::folder_for(p, (!worktree.own).then_some(root)).into());
+        self.draft_changed(&DraftRef::New(draft));
     }
 
     /// Turn fast mode on or off for a thread's next turns (D125). Sent with the next
@@ -2071,7 +2102,7 @@ impl Client {
             .new_threads
             .iter()
             .find(|d| d.id == id)
-            .and_then(|d| self.state.target(&d.target))
+            .and_then(|d| self.state.target(d.target.as_ref()?))
             .map(|t| t.providers.clone())
             .unwrap_or_default();
         if let Some(d) = self.state.new_threads.iter_mut().find(|d| d.id == id) {
@@ -2107,9 +2138,16 @@ impl Client {
     /// A native fork opens idle, with no first message yet (`thread/forkOnly`). A handoff
     /// creates the destination conversation with its first message (`thread/fork`): `message`
     /// is that message, which `yaacd` sends after the preamble pointing at the transcript.
-    pub fn fork(&mut self, key: &ThreadKey, choice: &crate::fork::ForkChoice, message: Option<&str>) {
+    pub fn fork(&mut self, key: &ThreadKey, choice: &crate::fork::ForkChoice, message: Option<&str>, keep_children: bool) {
         let op = self.op_id();
         let mut params = json!({ "opId": op, "source": key.thread, "instance": choice.instance });
+        if keep_children {
+            if !crate::fork::can_keep_children(&self.state, key) {
+                self.error(Some(key.clone()), "This target does not support keeping children on a fork.");
+                return;
+            }
+            params["keepChildren"] = json!(true);
+        }
         if let Some(mdl) = &choice.model {
             params["model"] = json!(mdl);
         }
