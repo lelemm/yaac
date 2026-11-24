@@ -115,6 +115,9 @@ Three things are given to every thread YAAC starts, when its provider instance h
 
 The block is appended after the harness's own system prompt, which is kept intact, and its
 text is fixed: there is no setting for adding to it.
+The block and the MCP server instructions tell agents to prefer YAAC workers via
+`spawn_thread` when delegating. A request for “subagents” means YAAC workers unless the
+user explicitly names the harness's built-in subagent tool.
 
 That is what "the harness knows" means: the ability is in the agent's context before the user
 asks for anything, so "send that to the Claude thread" needs no explanation.
@@ -127,7 +130,7 @@ One MCP server, named `yaac`. Few tools, each doing one thing.
 | --- | --- |
 | `whoami` | The caller's own address, title, provider, model, working directory, who spawned it, and its children. |
 | `list_targets` | The machines in this mesh: name, whether each is reachable, and how many threads are active there. Names and counts only — never the threads themselves. |
-| `list_models` | For a target: the provider instances, their models and effort levels, and their permission modes. Codex and Claude models show **Best used as** from official guidance or a user edit. The tool omits GPT‑5.x and earlier GPT models. Worker creation resolves the selected ID against the live catalog. |
+| `list_models` | For a target: the provider instances, their models and effort levels, and their permission modes. Codex and Claude models show **Best used as** from official guidance or a user edit. The tool omits GPT‑5.x and earlier GPT models, Claude 4.x, and the 5.0 releases of Sonnet, Opus, and Fable. Worker creation resolves the selected ID against the live catalog. |
 | `list_threads` | A **small, scoped** list of threads — by default only the caller's own orchestration. See [listing is scoped and bounded](#listing-is-scoped-and-bounded). |
 | `find_thread` | Find a specific thread **across all targets**, either by **id** or by a **fuzzy match on its title**. Needs a query; ten matches per page. |
 | `read_thread` | The recent messages, or just the last answer, of a thread on any reachable YAAC target. Use `find_thread` to get its address. |

@@ -24,13 +24,32 @@ test("model guidance extracts named recommendations and caps them at 15 words", 
   assert.equal(guide.get("gpt7spruce"), undefined);
 });
 
-test("only the agent listing filters GPT generations before six", () => {
+test("the agent listing filters retired GPT and Claude releases", () => {
   for (const id of ["gpt-5", "gpt-5.5-codex", "gpt-4o", "gpt-3.5-turbo", "openai/gpt-5.2"]) {
     assert.equal(listForAgents("codex", model(id, id)), false, id);
     assert.equal(listForAgents("claude", model(id, id)), true, id);
   }
   for (const id of ["gpt-6", "gpt-6.2-sol", "gpt-10", "o3"]) {
     assert.equal(listForAgents("codex", model(id, id)), true, id);
+  }
+  for (const retired of [
+    model("claude-sonnet-5", "Sonnet 5"),
+    model("claude-opus-5-20261120", "Opus 5"),
+    model("fable", "Fable", "claude-fable-5"),
+    model("default", "Default (Opus 4.8)"),
+    model("claude-haiku-4-5", "Haiku 4.5"),
+    model("claude-sonnet-4", "Sonnet 4"),
+  ]) {
+    assert.equal(listForAgents("claude", retired), false, retired.id);
+  }
+  for (const available of [
+    model("sonnet", "Sonnet 5", "claude-sonnet-5-5"),
+    model("claude-fable-5-5-20261120", "Fable 5.5"),
+    model("opus", "Opus 5.5"),
+    model("claude-haiku-5", "Haiku 5"),
+    model("future-alias", "Future model"),
+  ]) {
+    assert.equal(listForAgents("claude", available), true, available.id);
   }
 });
 

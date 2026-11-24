@@ -17,10 +17,24 @@ export function hasModelBestUse(kind: string): boolean {
 
 /** The catalog filter applies only when reporting models to agents. */
 export function listForAgents(kind: string, model: ModelInfo): boolean {
+  if (kind === "claude") {
+    // Claude aliases such as "opus" can move to a newer release. Use the resolved model first.
+    const version = claudeVersion(model.resolvedModel ?? "")
+      ?? claudeVersion(model.id) ?? claudeVersion(model.displayName);
+    if (!version) return true;
+    const [, family, major, minor] = version;
+    return major !== "4" && !(major === "5" && Number(minor ?? 0) === 0 && /^(sonnet|opus|fable)$/i.test(family ?? ""));
+  }
   if (kind !== "codex") return true;
   const major = /(?:^|\/)gpt[-\s\u2010-\u2015]?(\d+)/i.exec(model.id)?.[1]
     ?? /^gpt[-\s\u2010-\u2015]?(\d+)/i.exec(model.displayName)?.[1];
   return major === undefined || Number(major) >= 6;
+}
+
+function claudeVersion(value: string): RegExpExecArray | null {
+  // Match both harness IDs (opus-5-5) and display labels (Opus 5.5).
+  // A date suffix on an older model ID is not a minor release.
+  return /\b(sonnet|opus|fable|haiku)[-\s\u2010-\u2015]+(\d+)(?:[.-](\d{1,2})(?!\d))?\b/i.exec(value);
 }
 
 /** Prefer the specific model when the harness exposes it behind a mutable alias. */
