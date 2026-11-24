@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use yaac_transport::bootstrap::{DaemonBundle, STAGE0, Stage0Timeouts, bootstrap};
 use yaac_transport::{ConnectCtx, ConnectError, Connector, WslConfig, WslConnector};
@@ -49,7 +49,12 @@ fn spawn(shell: &str, home: &Path, extra_env: &[(&str, &str)], noisy: bool) -> C
 
 async fn run(shell: &str, home: &Path, bundle: &DaemonBundle, noisy: bool) -> Result<bool, ConnectError> {
     let mut child = spawn(shell, home, &[], noisy);
-    let (stdin, stdout) = (child.stdin.take().unwrap(), child.stdout.take().unwrap());
+    let stdout = child.stdout.take().unwrap();
+    run_started(child, stdout, bundle).await
+}
+
+async fn run_started(mut child: Child, stdout: impl AsyncRead + Unpin, bundle: &DaemonBundle) -> Result<bool, ConnectError> {
+    let stdin = child.stdin.take().unwrap();
     let mut done = bootstrap(stdout, stdin, bundle, "test target", Stage0Timeouts::default()).await?;
     // The protocol now: the stand-in daemon echoes every byte, including NUL and CR LF.
     let payload: Vec<u8> = (0..=255u8).cycle().take(70_000).collect();
@@ -172,12 +177,25 @@ async fn two_simultaneous_installs_leave_one_complete_daemon() {
         return;
     }
     let home = temp_dir("race");
-    // About 1 MB, so the two uploads overlap.
-    let bundle = DaemonBundle::new("0.0.2", [ECHO_DAEMON, &b"// padding\n".repeat(100_000)].concat());
-    let (a, b) = tokio::join!(run("/bin/sh", &home, &bundle, false), run("/bin/sh", &home, &bundle, false));
+    let bundle = DaemonBundle::new("0.0.2", ECHO_DAEMON.to_vec());
+    // Read both initial reports before starting either upload. Replay each report into
+    // bootstrap so both hosts install based on what their target actually reported.
+    async fn wait_for_marker(mut child: Child) -> (Child, impl AsyncRead + Unpin) {
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut marker = String::new();
+        tokio::time::timeout(Stage0Timeouts::default().marker, stdout.read_line(&mut marker))
+            .await.expect("stage 0 marker in time").expect("read stage 0 marker");
+        assert!(marker.starts_with("YAAC0 ") && marker.split_whitespace().any(|field| field == "daemon=none"), "{marker:?}");
+        (child, std::io::Cursor::new(marker.into_bytes()).chain(stdout))
+    }
+    let ((a, a_out), (b, b_out)) = tokio::join!(
+        wait_for_marker(spawn("/bin/sh", &home, &[], false)),
+        wait_for_marker(spawn("/bin/sh", &home, &[], false)),
+    );
+    let (a, b) = tokio::join!(run_started(a, a_out, &bundle), run_started(b, b_out, &bundle));
     assert!(a.expect("a") && b.expect("b"), "both saw it missing and uploaded");
     let installed = std::fs::read(home.join("daemon").join(&bundle.build).join("yaacd.mjs")).unwrap();
-    assert_eq!(installed.len(), bundle.bytes.len());
+    assert_eq!(installed.as_slice(), bundle.bytes.as_ref());
     let entries = std::fs::read_dir(home.join("daemon")).unwrap().count();
     assert_eq!(entries, 1, "no temporary or lock left behind");
     std::fs::remove_dir_all(&home).unwrap();
