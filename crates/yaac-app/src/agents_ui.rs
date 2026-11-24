@@ -577,7 +577,22 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
     }
     ui.add_space(14.0);
     let groups = docked_clusters(panel);
-    let mut hovered = None;
+    let parent = groups.iter().find(|group| group.relation == Relation::SpawnedBy).and_then(|group| group.rows.first());
+    let mut hovered = egui::Panel::bottom("agents-docked-parent")
+        .show_separator_line(false)
+        .frame(egui::Frame::NONE.inner_margin(Margin { left: 0, right: 0, top: 8, bottom: 0 }))
+        .show(ui, |ui| {
+            heading(ui, &p, Relation::SpawnedBy.heading(), None);
+            if let Some((title, _)) = &panel.root {
+                ui.label(widgets::secondary(format!("root: {title}"), &p));
+            }
+            if let Some(parent) = parent {
+                docked_row(ui, app, parent, now, actions)
+            } else {
+                ui.label(widgets::secondary("started by you", &p));
+                None
+            }
+        }).inner;
     egui::ScrollArea::vertical().id_salt("agents-docked").auto_shrink([false, false]).show(ui, |ui| {
         let siblings = sibling_rows(panel);
         if !siblings.is_empty() {
@@ -589,27 +604,9 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
             }
             ui.add_space(10.0);
         }
-        // "Spawned by" is always there: started by the user when no agent started it.
-        if !groups.iter().any(|c| c.relation == Relation::SpawnedBy) {
-            heading(ui, &p, Relation::SpawnedBy.heading(), None);
-            if let Some((title, _)) = &panel.root {
-                ui.label(widgets::secondary(format!("root: {title}"), &p));
-            }
-            ui.label(widgets::secondary("started by you", &p));
-            ui.add_space(16.0);
-        }
-        for c in &groups {
-            let n = match c.relation {
-                Relation::SpawnedBy => None,
-                Relation::Workers => Some(panel.direct_workers),
-                Relation::InContact => Some(c.rows.len()),
-            };
-            heading(ui, &p, c.relation.heading(), n);
-            if c.relation == Relation::SpawnedBy
-                && let Some((title, _)) = &panel.root
-            {
-                ui.label(widgets::secondary(format!("root: {title}"), &p));
-            }
+        for c in groups.iter().filter(|group| group.relation != Relation::SpawnedBy) {
+            let count = if c.relation == Relation::Workers { panel.direct_workers } else { c.rows.len() };
+            heading(ui, &p, c.relation.heading(), Some(count));
             for e in docked_entries(c) {
                 match e {
                     DockEntry::Row(row) => {
@@ -895,6 +892,50 @@ mod tests {
         let entries = updates[0].2["entries"].as_array().unwrap();
         assert_eq!(entries.len(), related.len());
         assert!(entries.iter().all(|entry| entry["unseen"] == false && entry.get("pinned").is_none()));
+    }
+
+    #[test]
+    fn docked_parent_stays_at_the_bottom_during_scroll() {
+        fn text_y(shapes: &[egui::epaint::ClippedShape], text: &str) -> f32 {
+            shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(label) if label.galley.text() == text => Some(label.pos.y),
+                _ => None,
+            }).unwrap_or_else(|| panic!("{text} was not drawn"))
+        }
+
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = yaac_core::demo::threads::users();
+        let map = AttentionMap::compute(&app.client.state);
+        let mut panel = agents_panel(&app.client.state, &map, &key).unwrap();
+        let mut example = panel.contacts.iter().chain(&panel.siblings).next().unwrap().clone();
+        example.display.mark = Mark::Running;
+        panel.workers = vec![example; 20];
+        panel.siblings.clear();
+        let mut render = |events| {
+            let mut output = ctx.run_ui(RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(380.0, 300.0))),
+                events,
+                ..Default::default()
+            }, |ui| {
+                docked(ui, &mut app, &panel, &mut Vec::new());
+            });
+            output.textures_delta.clear();
+            output
+        };
+        render(vec![Event::PointerMoved(pos2(130.0, 110.0))]);
+        let before = render(vec![]);
+        let parent = text_y(&before.shapes, "Spawned by");
+        assert!(parent > 180.0, "footer is not near the bottom: {parent}");
+        let workers = text_y(&before.shapes, &format!("Workers ({})", panel.direct_workers));
+        let after = render(vec![Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -25.0),
+            modifiers: egui::Modifiers::NONE, phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Wheel,
+        }]);
+        let settled = render(vec![]);
+        assert_eq!(text_y(&after.shapes, "Spawned by"), parent);
+        assert_eq!(text_y(&settled.shapes, "Spawned by"), parent);
+        assert!(text_y(&settled.shapes, &format!("Workers ({})", panel.direct_workers)) < workers);
     }
 
     #[test]

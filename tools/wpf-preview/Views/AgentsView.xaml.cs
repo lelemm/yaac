@@ -14,6 +14,7 @@ public partial class AgentsView : UserControl
     private readonly ObservableCollection<AgentsEntry> _pill = new();
     private readonly ObservableCollection<AgentsEntry> _card = new();
     private readonly ObservableCollection<AgentsEntry> _dock = new();
+    private readonly ObservableCollection<AgentsEntry> _dockParent = new();
     private readonly Dictionary<string, AgentsEntry> _entries = new(StringComparer.Ordinal);
     private readonly Dictionary<string, AgentsRow> _rows = new(StringComparer.Ordinal);
     private readonly Dictionary<string, bool> _folds = new(StringComparer.Ordinal);
@@ -44,6 +45,7 @@ public partial class AgentsView : UserControl
         PillItems.ItemsSource = _pill;
         CardRows.ItemsSource = _card;
         DockRows.ItemsSource = _dock;
+        DockParent.ItemsSource = _dockParent;
         Docked.IsVisibleChanged += (_, _) =>
         {
             if (!Docked.IsVisible)
@@ -80,6 +82,7 @@ public partial class AgentsView : UserControl
     internal void ObservePrRows(Action changed)
     {
         VisibleListRows.Observe(DockRows, changed);
+        VisibleListRows.Observe(DockParent, changed);
         VisibleListRows.Observe(CardRows, changed);
         Floating.Opened += (_, _) => changed();
         Floating.Closed += (_, _) => changed();
@@ -89,7 +92,10 @@ public partial class AgentsView : UserControl
     {
         if (!AreRowsVisible)
             return [];
-        return VisibleListRows.Read(IsDocked ? DockRows : CardRows).OfType<AgentsEntry>()
+        var visible = IsDocked
+            ? VisibleListRows.Read(DockRows).Concat(VisibleListRows.Read(DockParent))
+            : VisibleListRows.Read(CardRows);
+        return visible.OfType<AgentsEntry>()
             .Where(entry => entry.Kind is "dockRow" or "cardRow" && entry.Data.CanOpen)
             .Select(entry => entry.CommandId);
     }
@@ -208,10 +214,12 @@ public partial class AgentsView : UserControl
         HashSet<string> used = new(StringComparer.Ordinal);
         var pill = BuildPill(view.Field("pill"), groups, exhausted, DockBudgetText.Text.Length > 0, used);
         var card = BuildCard(view.Field("cardGroups"), groups, rows, used);
-        var dock = BuildDock(view.Field("root"), view.Array("siblings").Select(s => s.StringField("id")), groups, rows, used);
+        var dock = BuildDock(view.Array("siblings").Select(s => s.StringField("id")), groups, rows, used);
+        var dockParent = BuildDockParent(view.Field("root"), groups, used);
         Synchronize(_pill, pill);
         Synchronize(_card, card, CardRows);
         Synchronize(_dock, dock, DockRows);
+        Synchronize(_dockParent, dockParent, DockParent);
         foreach (string id in _entries.Keys.Except(used).ToArray())
             _entries.Remove(id);
 
@@ -344,7 +352,7 @@ public partial class AgentsView : UserControl
         }
     }
 
-    private List<AgentsEntry> BuildDock(JsonElement root, IEnumerable<string> siblingIds, List<AgentsGroup> groups, Dictionary<string, AgentsRow> rows,
+    private List<AgentsEntry> BuildDock(IEnumerable<string> siblingIds, List<AgentsGroup> groups, Dictionary<string, AgentsRow> rows,
         HashSet<string> used)
     {
         List<AgentsEntry> result = new();
@@ -355,24 +363,16 @@ public partial class AgentsView : UserControl
             foreach (var sibling in siblings)
                 result.Add(RowEntry("dock", "dockRow", sibling, used));
         }
-        if (!groups.Any(group => group.Id == "spawnedBy" && group.Rows.Count > 0))
-        {
-            result.Add(Entry("dock", "heading", "you", new() { Title = "Spawned by" }, used));
-            AddRoot(result, root, used);
-            result.Add(Entry("dock", "info", "you", new() { Title = "started by you" }, used));
-        }
         foreach (AgentsGroup group in groups)
         {
-            if (group.Rows.Count == 0 || group.Docked.Field("rowIds").ValueKind == JsonValueKind.Array
+            if (group.Id == "spawnedBy" || group.Rows.Count == 0 || group.Docked.Field("rowIds").ValueKind == JsonValueKind.Array
                 && !group.Docked.Ids("rowIds").Any() && !group.Docked.Ids("foldIds").Any())
                 continue;
 
-            string heading = group.Id != "spawnedBy" && (group.Docked.OptionalNumber("count") ?? group.Count) is int count
+            string heading = (group.Docked.OptionalNumber("count") ?? group.Count) is int count
                 ? $"{group.Label} ({count})"
                 : group.Label;
             result.Add(Entry("dock", "heading", group.Id, new() { Title = heading }, used));
-            if (group.Id == "spawnedBy")
-                AddRoot(result, root, used);
 
             var groupRows = group.Rows.Select(row => row.Id).ToHashSet(StringComparer.Ordinal);
             var foldedIds = group.Docked.Ids("foldIds").Where(groupRows.Contains).Distinct(StringComparer.Ordinal).ToArray();
@@ -396,6 +396,17 @@ public partial class AgentsView : UserControl
             if (expanded)
                 result.AddRange(folded);
         }
+        return result;
+    }
+
+    private List<AgentsEntry> BuildDockParent(JsonElement root, List<AgentsGroup> groups, HashSet<string> used)
+    {
+        List<AgentsEntry> result = [Entry("dock", "heading", "spawnedBy", new() { Title = "Spawned by" }, used)];
+        AddRoot(result, root, used);
+        var parent = groups.FirstOrDefault(group => group.Id == "spawnedBy")?.Rows.FirstOrDefault();
+        result.Add(parent is null
+            ? Entry("dock", "info", "you", new() { Title = "started by you" }, used)
+            : RowEntry("dock", "dockRow", parent, used));
         return result;
     }
 
@@ -632,8 +643,9 @@ public partial class AgentsView : UserControl
     {
         if (!Docked.IsVisible || !Docked.IsMouseOver)
             return;
-        var source = DockRows.InputHitTest(Mouse.GetPosition(DockRows)) as DependencyObject;
-        while (source is not null && source != DockRows)
+        var list = DockParent.IsMouseOver ? DockParent : DockRows;
+        var source = list.IsMouseOver ? list.InputHitTest(Mouse.GetPosition(list)) as DependencyObject : null;
+        while (source is not null && source != list)
         {
             if (source is ListBoxItem { Content: AgentsEntry { Kind: "dockRow", Data.CanOpen: true } row })
             {

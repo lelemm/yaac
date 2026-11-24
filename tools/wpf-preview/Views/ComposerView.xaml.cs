@@ -254,6 +254,11 @@ public partial class ComposerView : UserControl
         if (applyingText || !editingEnabled)
             return;
 
+        ReportEditorEdit();
+    }
+
+    private void ReportEditorEdit()
+    {
         var text = Normalize(Editor.Text);
         if (pendingEdits.Count == MaxPendingEdits)
             pendingEdits.RemoveAt(0);
@@ -424,26 +429,24 @@ public partial class ComposerView : UserControl
 
     private void InsertText(string text)
     {
+        var before = Editor.Text;
         var start = Editor.SelectionStart;
-        var kept = Editor.Text.Length - Editor.SelectionLength;
-        var end = start;
-        Editor.BeginChange();
+        var kept = before.Length - Editor.SelectionLength;
+        applyingText = true;
         try
         {
             Editor.SelectedText = text;
-            // After the inserted text, measured by how much the text grew (the editor's own
-            // line endings, not the inserted string's), with the replaced selection gone.
-            end = Math.Clamp(start + Editor.Text.Length - kept, 0, Editor.Text.Length);
+            // Read the text after WPF commits the replacement so CRLF and pasted text use
+            // the editor's character offsets. Report the edit after placing the caret.
+            var end = Math.Clamp(start + Editor.Text.Length - kept, 0, Editor.Text.Length);
             Editor.Select(end, 0);
         }
         finally
         {
-            Editor.EndChange();
+            applyingText = false;
         }
-        // Closing the change block raises TextChanged; nothing it runs may leave the caret
-        // anywhere but after the insertion.
-        if (Editor.SelectionStart != end || Editor.SelectionLength != 0)
-            Editor.Select(end, 0);
+        if (editingEnabled && Editor.Text != before)
+            ReportEditorEdit();
         QueueCaretScroll();
     }
 

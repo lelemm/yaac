@@ -308,6 +308,8 @@
           <Button x:Name="ContinueDock" Click="OnContinue" Style="{StaticResource AgentsLink}"
                   Margin="3,0,0,0" ToolTipService.ShowOnDisabled="True" />
         </WrapPanel>
+        <ListBox x:Name="DockParent" DockPanel.Dock="Bottom" Style="{StaticResource AgentsList}"
+                 Margin="0,8,0,0" ScrollViewer.VerticalScrollBarVisibility="Disabled" />
         <ListBox x:Name="DockRows" Style="{StaticResource AgentsList}" />
       </DockPanel>
     </Border>
