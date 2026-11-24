@@ -99,7 +99,7 @@ public partial class ComposerView : UserControl
         System.Windows.Automation.AutomationProperties.SetName(Editor, placeholder);
         var text = Field(view, "text").String();
         UpdateText(text, editorChanged);
-        Markdown.SetSpans(Normalize(text), Field(view, "markdown"));
+        Markdown.SetSpans(Normalize(text), Field(view, "markdown"), Field(view, "markdownBudget").ComposerInt());
         UpdatePlaceholder();
         RenderFileSearch(Field(view, "filePicker"), Field(view, "fileScope").String());
 

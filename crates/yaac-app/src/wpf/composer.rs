@@ -124,10 +124,14 @@ pub(super) fn upkeep(app: &mut YaacApp) {
     }
 }
 
+/// Bytes of composer text the markdown styler reads; the rest stays plain. WPF needs it to know
+/// which styled lines of an older text still hold for the text it is showing (P317).
+const MARKDOWN_BUDGET: usize = 64 * 1024;
+
 fn markdown_spans(text: &str) -> Vec<Value> {
     use yaac_core::markstyle::{self, Style};
     let mut offset = 0;
-    markstyle::style(text, 64 * 1024).into_iter().filter_map(|span| {
+    markstyle::style(text, MARKDOWN_BUDGET).into_iter().filter_map(|span| {
         // WPF indexes UTF-16; the parser gives contiguous UTF-8 byte ranges.
         let style = match span.style {
             Style::Plain if span.range.end == text.len() => return None,
@@ -136,7 +140,10 @@ fn markdown_spans(text: &str) -> Vec<Value> {
             Style::Heading(_) => Some("heading"),
             Style::Bold => Some("bold"),
             Style::Italic => Some("italic"),
-            Style::Code | Style::CodeBlock => Some("code"),
+            Style::Code => Some("code"),
+            // Kept apart from inline code: a line wholly inside a fence stays code while it is
+            // edited, so WPF can keep it styled until this text's own spans arrive.
+            Style::CodeBlock => Some("block"),
         };
         let start = offset;
         offset += text[span.range].encode_utf16().count();
@@ -439,6 +446,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
         } else {
             json!(markdown_spans(text))
         };
+        v["markdownBudget"] = json!(MARKDOWN_BUDGET);
     }
     v
 }
@@ -805,6 +813,33 @@ mod tests {
             json!({ "start": 3, "end": 5, "style": "marker" }),
             json!({ "start": 5, "end": 7, "style": "bold" }),
             json!({ "start": 7, "end": 9, "style": "marker" }),
+        ]);
+    }
+
+    #[test]
+    fn composer_markdown_above_the_caret_never_changes_while_the_last_line_grows() {
+        // The owner's draft: a pasted block closed by a fence, then their own line.
+        let head = "```\n• Brotli · CVE-2026-111497. The gap was for quantum-monthly-report:5549 on TOOLS.\n\
+            Debian fix 1.1.0-2+deb13u1 in a **complete** SBOM.\nDebian advisory\n```\n";
+        let line = "so, the image is gone, but the gap still here, this should be resolved automatically";
+        let head_end = head.encode_utf16().count() as u64;
+        let above = |text: &str| -> Vec<Value> {
+            markdown_spans(text).into_iter().filter(|span| span["start"].as_u64().unwrap() < head_end).collect()
+        };
+        let first = above(head);
+        assert_eq!(first, vec![json!({ "start": 0, "end": head_end, "style": "block" })]);
+        for cut in (0..=line.len()).filter(|&cut| line.is_char_boundary(cut)) {
+            assert_eq!(above(&format!("{head}{}", &line[..cut])), first, "after typing {:?}", &line[..cut]);
+        }
+    }
+
+    #[test]
+    fn composer_markdown_keeps_fenced_code_apart_from_inline_code() {
+        assert_eq!(markdown_spans("`a`\n```\nb\n```\n"), vec![
+            json!({ "start": 0, "end": 1, "style": "marker" }),
+            json!({ "start": 1, "end": 2, "style": "code" }),
+            json!({ "start": 2, "end": 3, "style": "marker" }),
+            json!({ "start": 4, "end": 14, "style": "block" }),
         ]);
     }
 

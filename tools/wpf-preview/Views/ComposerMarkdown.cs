@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -15,6 +16,7 @@ public sealed class ComposerMarkdown : FrameworkElement
     private string? parsedText;
     private string? rawText;
     private Span[] parsedSpans = [];
+    private int parsedBudget;
     private Span[] visibleTextSpans = [];
     private bool composing;
 
@@ -41,16 +43,76 @@ public sealed class ComposerMarkdown : FrameworkElement
         editor.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => InvalidateVisual()));
     }
 
-    internal void SetSpans(string text, JsonElement spans)
+    internal void SetSpans(string text, JsonElement spans, int budget)
     {
         if (parsedText == text) return;
         parsedText = text;
+        parsedBudget = budget;
         parsedSpans = spans.ValueKind == JsonValueKind.Array
             ? spans.EnumerateArray().Select(span => new Span(span.GetProperty("start").GetInt32(),
                 span.GetProperty("end").GetInt32(), span.GetProperty("style").String())).ToArray()
             : [];
         rawText = null;
         InvalidateVisual();
+    }
+
+    // The spans arrive with the text they were computed for, which lags the editor while the
+    // user types (each keystroke reaches the controller and comes back). Spans are never
+    // applied to another text by position: only lines provably styled the same in `current`
+    // keep theirs (P317). The styler is line by line and carries only "inside a fence" down
+    // the text, so:
+    // - every whole line before the first changed one keeps its spans exactly;
+    // - whole unchanged lines after the change keep theirs, shifted, when neither version of
+    //   the changed lines holds a fence marker (so the fence state below is the same);
+    // - the changed lines themselves stay code when they were wholly fenced code before;
+    // - anything else is drawn plain until the spans for this exact text arrive.
+    // A keystroke at the end of the text therefore never restyles the text above it.
+    internal static (int Start, int End, string Style)[] Carry(
+        string parsed, IReadOnlyList<(int Start, int End, string Style)> spans, string current, int budget)
+    {
+        if (parsed == current) return spans.ToArray();
+        var most = Math.Min(parsed.Length, current.Length);
+        var prefix = 0;
+        while (prefix < most && parsed[prefix] == current[prefix]) prefix++;
+        var suffix = 0;
+        while (suffix < most - prefix && parsed[^(suffix + 1)] == current[^(suffix + 1)]) suffix++;
+
+        // [changed, oldEnd) in `parsed` became [changed, newEnd) in `current`; both are whole lines.
+        var changed = prefix == 0 ? 0 : parsed.LastIndexOf('\n', prefix - 1) + 1;
+        var oldTail = parsed.Length - suffix;
+        var newTail = current.Length - suffix;
+        int oldEnd;
+        if ((oldTail == 0 || parsed[oldTail - 1] == '\n') && (newTail == 0 || current[newTail - 1] == '\n'))
+            oldEnd = oldTail;
+        else
+        {
+            var lineBreak = parsed.IndexOf('\n', oldTail);
+            oldEnd = lineBreak < 0 ? parsed.Length : lineBreak + 1;
+        }
+        var delta = current.Length - parsed.Length;
+        var newEnd = oldEnd + delta;
+
+        var output = new List<(int Start, int End, string Style)>();
+        foreach (var span in spans)
+            if (span.Start < changed)
+                output.Add((span.Start, Math.Min(span.End, changed), span.Style));
+
+        var bounded = Encoding.UTF8.GetByteCount(parsed) <= budget && Encoding.UTF8.GetByteCount(current) <= budget;
+        if (!bounded || HasFence(parsed, changed, oldEnd) || HasFence(current, changed, newEnd))
+            return output.ToArray();
+
+        if (oldEnd > changed && newEnd > changed &&
+            spans.Any(span => span.Style == "block" && span.Start <= changed && span.End >= oldEnd))
+            output.Add((changed, newEnd, "block"));
+        foreach (var span in spans)
+            if (span.End > oldEnd)
+                output.Add((Math.Max(span.Start, oldEnd) + delta, span.End + delta, span.Style));
+        return output.ToArray();
+
+        // A superset of the styler's fence rule (a line starting with ``` or ~~~).
+        static bool HasFence(string text, int start, int end) =>
+            text.IndexOf("```", start, end - start, StringComparison.Ordinal) >= 0 ||
+            text.IndexOf("~~~", start, end - start, StringComparison.Ordinal) >= 0;
     }
 
     internal void SetComposing(bool value)
@@ -65,7 +127,9 @@ public sealed class ComposerMarkdown : FrameworkElement
         if (rawText == text) return;
         rawText = text;
         visibleTextSpans = [];
-        if (text.Replace("\r\n", "\n") != parsedText) return;
+        if (parsedText is null) return;
+        var current = Carry(parsedText, parsedSpans.Select(span => (span.Start, span.End, span.Style)).ToArray(),
+            text.Replace("\r\n", "\n"), parsedBudget);
 
         // The controller normalizes line endings. Keep the TextBox's own offsets for its
         // layout APIs, including any CRs that were removed from the controller's text.
@@ -81,7 +145,7 @@ public sealed class ComposerMarkdown : FrameworkElement
             }
             return raw;
         }
-        visibleTextSpans = parsedSpans.Select(span => new Span(Advance(span.Start), Advance(span.End), span.Style)).ToArray();
+        visibleTextSpans = current.Select(span => new Span(Advance(span.Start), Advance(span.End), span.Style)).ToArray();
     }
 
     protected override void OnRender(DrawingContext drawing)
@@ -144,7 +208,7 @@ public sealed class ComposerMarkdown : FrameworkElement
         var width = Math.Abs(trailing.X - leading.X);
         if (width < .5) return;
 
-        var code = style == "code";
+        var code = style is "code" or "block";
         var heading = style == "heading";
         var typeface = new Typeface(code ? YaacFonts.Mono : box.FontFamily,
             style == "italic" ? FontStyles.Italic : box.FontStyle,

@@ -401,6 +401,7 @@ assume these.
 | P314 | **Chat sizing.** Start the shared transcript and composer column at 860 points, with a 360-point minimum when space permits and a 95% viewport cap. | Proposed (D174) |
 | P315 | **Nerd Font family.** Use Ubuntu Sans Nerd Font Propo for proportional interface text and chat, and CaskaydiaCove Nerd Font Mono for code and command output. | Proposed (D176) |
 | P316 | **Timeline and history reads.** Index prompt IDs, titles and timestamps as the target builds its transcript projection. Fetch that compact index separately from row data in the initial page. Seek directly by item ID and prefetch near either edge of the bounded row window. | Proposed (D178) |
+| P317 | **Composer Markdown while typing (WPF).** The window shows the controller's spans only for the exact text they were computed for. While the editor is ahead of them, a line keeps its style only when the styler would give it the same one: every whole line before the first changed line, whole unchanged lines after it when neither version of the changed lines holds a fence marker and both texts are within the styling budget, and changed lines that were wholly fenced code under the same conditions. Everything else is drawn plain until its own spans arrive, so a keystroke never restyles text it did not touch. | Spans for an older text applied by position would misstyle; dropping them repainted the whole composer in the plain font on every keystroke, so text above the caret jumped. The styler stays in Rust only. | [07](07-ui.md#composer) |
 
 ## Open
 
