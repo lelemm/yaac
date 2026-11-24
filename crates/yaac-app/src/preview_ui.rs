@@ -94,8 +94,8 @@ impl Renderer {
 
 #[cfg(feature = "preview")]
 impl crate::preview_agent::Driver for Renderer {
-    fn engine(&mut self, id: u64) -> Option<&mut yaac_preview::Tab> {
-        self.pages.get_mut(&id).map(|p| &mut p.tab)
+    fn engine(&mut self, id: u64) -> Option<&mut dyn crate::preview_agent::Engine> {
+        self.pages.get_mut(&id).map(|p| &mut p.tab as &mut dyn crate::preview_agent::Engine)
     }
 
     fn take_replies(&mut self) -> Vec<(u64, serde_json::Value)> {
@@ -182,6 +182,21 @@ fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
                             label.to_owned()
                         },
                     ));
+                    if let Some(kind) = &tab.agent {
+                        // An agent is acting on this tab: its harness mark.
+                        let (rect, mark) =
+                            ui.allocate_exact_size(egui::vec2(14., 14.), egui::Sense::hover());
+                        crate::agents_ui::harness_mark(
+                            ui.painter(),
+                            rect.center(),
+                            12.,
+                            Some(kind.as_str()).filter(|k| !k.is_empty()),
+                            None,
+                            false,
+                            &app.p,
+                        );
+                        mark.on_hover_text("An agent is using this tab");
+                    }
                     if r.clicked() {
                         area.active = tab.id
                     }

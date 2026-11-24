@@ -28,6 +28,7 @@ pub(crate) struct BrowserTab {
 
 impl BrowserTab {
     /// Whether a renderer has taken the engine handle for this tab.
+    #[cfg(feature = "preview")]
     pub(crate) fn started(&self) -> bool {
         self.started
     }
@@ -184,6 +185,7 @@ impl Browsers {
 
     /// An agent's tab: added after the thread's tabs without changing the active tab (the
     /// user's view), except that a thread's first tab opens its browser area.
+    #[cfg(feature = "preview")]
     pub(crate) fn open_background(&mut self, client: &mut Client, key: &ThreadKey, input: &str) -> Result<u64, String> {
         if let Some(reason) = self.reason(client, Some(key)) {
             return Err(reason);
@@ -201,6 +203,7 @@ impl Browsers {
         Ok(id)
     }
 
+    #[cfg(feature = "preview")]
     pub(crate) fn tab(&self, key: &ThreadKey, id: u64) -> Option<&BrowserTab> {
         self.areas.get(key)?.tabs.iter().find(|t| t.id == id)
     }
@@ -410,6 +413,23 @@ impl Browsers {
             return None;
         }
         Some(area.next_poll.saturating_duration_since(now))
+    }
+}
+
+#[cfg(all(test, feature = "preview"))]
+impl Browsers {
+    /// Pretend the browser host was found.
+    pub(crate) fn assume_host(&mut self) {
+        self.checked = true;
+    }
+
+    /// A tab whose engine a (fake) renderer already holds.
+    pub(crate) fn started_tab(&mut self, key: &ThreadKey, url: &str) -> u64 {
+        let id = self.insert(key);
+        let tab = self.tab_mut(key, id).unwrap();
+        tab.url = url.into();
+        tab.started = true;
+        id
     }
 }
 

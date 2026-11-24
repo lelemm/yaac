@@ -228,7 +228,7 @@ pub struct BrowserNavigateParams {
     pub history: Option<BrowserHistory>,
 }
 
-/// Click an element (snapshot reference or CSS selector) or a point in CSS pixels.
+/// Click an element (snapshot reference or CSS selector) or a viewport point in CSS pixels.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserClickParams {
@@ -240,10 +240,10 @@ pub struct BrowserClickParams {
     /// CSS selector; the first match is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
-    /// Horizontal page position, with `y`.
+    /// Horizontal viewport position, with `y`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x: Option<i32>,
-    /// Vertical page position, with `x`.
+    /// Vertical viewport position, with `x`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub y: Option<i32>,
 }

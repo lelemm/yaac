@@ -35,6 +35,15 @@ impl BrowserPipe {
 
         #[cfg(feature = "preview")]
         let updates = self.native.pump(&mut app.browsers, visible, wake);
+        // Agent browser calls (docs/11-preview.md#agents), on the calling thread's tabs.
+        #[cfg(feature = "preview")]
+        let agent = app.browser_agent.step(&mut app.client, &mut app.browsers, &mut self.native, Instant::now());
+        #[cfg(not(feature = "preview"))]
+        let agent = app.browser_agent.step(&mut app.client, &mut app.browsers, Instant::now());
+        let next = match (next, agent) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
 
         let current = self.view(&app.browsers, &app.client, thread.as_ref());
         if current != self.previous {
@@ -69,6 +78,9 @@ impl BrowserPipe {
                 "id": tab.id, "url": tab.url, "title": tab.title, "loading": tab.loading,
                 "back": tab.back, "forward": tab.forward, "error": tab.error,
                 "surface": self.has_surface(tab.id),
+                "agentLogo": tab.agent.as_deref().and_then(crate::logos::for_kind).map(|(logo, _)| crate::logos::source(logo).0),
+                "agentLogoColor": tab.agent.as_deref().and_then(crate::logos::for_kind).and_then(|(_, color)| color)
+                    .map(|c| format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())),
             })).collect::<Vec<_>>()).unwrap_or_default(),
             "ports": area.map(|area| area.ports.iter().map(|port| json!({
                 "port": port.port, "command": port.command, "cwd": port.cwd,

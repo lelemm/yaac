@@ -31,6 +31,10 @@ pub(super) struct Surfaces {
     visible: Option<u64>,
     leases: HashMap<u64, Lease>,
     next_frame: u64,
+    /// DevTools replies for agent calls (docs/11-preview.md#agents).
+    replies: Vec<(u64, Value)>,
+    /// Tabs kept rendering, though not shown, because an agent drives them.
+    awake: std::collections::HashSet<u64>,
 }
 
 pub(super) enum Output {
@@ -135,6 +139,9 @@ impl Surfaces {
 
         let mut updates = Vec::new();
         if active != self.visible {
+            if let Some(id) = self.visible {
+                self.awake.remove(&id);
+            }
             if let Some(surface) = self.visible.and_then(|id| self.tabs.get(&id)) {
                 surface.tab.send(Action::CancelComposition);
                 surface.tab.send(Action::Focus(false));
@@ -157,6 +164,21 @@ impl Surfaces {
                 }
             }
         }
+
+        for (&id, surface) in &self.tabs {
+            let agent = browsers
+                .areas
+                .get(&surface.thread)
+                .and_then(|area| area.tabs.iter().find(|tab| tab.id == id))
+                .is_some_and(|tab| tab.agent.is_some());
+            let wake = agent && active != Some(id);
+            if wake && self.awake.insert(id) {
+                surface.tab.send(Action::Hidden(false));
+            } else if !wake && self.awake.remove(&id) && active != Some(id) {
+                surface.tab.send(Action::Hidden(true));
+            }
+        }
+        self.awake.retain(|id| self.tabs.contains_key(id));
 
         let mut closed = Vec::new();
         for (&id, surface) in &mut self.tabs {
@@ -218,7 +240,13 @@ impl Surfaces {
                                 surface.prompt = Some(event);
                                 continue;
                             }
-                            Event::Paint { .. } | Event::DevTools(_) => continue,
+                            Event::DevTools(reply) => {
+                                if reply.get("id").is_some() {
+                                    self.replies.push((id, reply.clone()));
+                                }
+                                continue;
+                            }
+                            Event::Paint { .. } => continue,
                             _ => {}
                         }
                         if foreground {
@@ -355,6 +383,22 @@ mod tests {
     }
 
     #[test]
+    fn serializes_browser_ui_dismissal_and_ime_caret() {
+        assert_eq!(
+            event_message(41, &Event::DismissMenu)["browserEvent"]["event"],
+            "DismissMenu"
+        );
+        assert_eq!(
+            event_message(41, &Event::DismissDialog)["browserEvent"]["event"],
+            "DismissDialog"
+        );
+        assert_eq!(
+            event_message(41, &Event::CompositionCaret([46, 31, 2, 18]))["browserEvent"]["event"],
+            json!({ "CompositionCaret": [46, 31, 2, 18] }),
+        );
+    }
+
+    #[test]
     fn delivers_menu_coordinates_and_dialog_type_with_logical_tab() {
         assert_eq!(
             event_message(
@@ -377,5 +421,17 @@ mod tests {
             ),
             json!({"browserEvent": {"tab": 41, "event": {"Dialog": {"kind": 2, "message": "Name?", "text": "Draft"}}}}),
         );
+    }
+}
+
+impl crate::preview_agent::Driver for Surfaces {
+    fn engine(&mut self, id: u64) -> Option<&mut dyn crate::preview_agent::Engine> {
+        self.tabs
+            .get_mut(&id)
+            .map(|surface| &mut surface.tab as &mut dyn crate::preview_agent::Engine)
+    }
+
+    fn take_replies(&mut self) -> Vec<(u64, Value)> {
+        std::mem::take(&mut self.replies)
     }
 }

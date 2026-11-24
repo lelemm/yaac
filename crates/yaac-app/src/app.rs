@@ -706,6 +706,8 @@ pub(crate) struct YaacApp {
     pub client: Client,
     pub browsers: crate::preview_controller::Browsers,
     pub preview_ui: crate::preview_ui::Renderer,
+    /// Agent browser calls being carried out on this window's tabs.
+    pub browser_agent: crate::preview_agent::Agent,
     pub demo: Option<DemoHub>,
     pub scenario: Scenario,
     pub ui: UiState,
@@ -883,6 +885,7 @@ impl YaacApp {
             display: launch.display,
             browsers: Default::default(),
             preview_ui: Default::default(),
+            browser_agent: Default::default(),
             updater: launch.updater,
             ctx: cc.egui_ctx,
         };
@@ -905,6 +908,7 @@ impl YaacApp {
         let (c, h) = demo_client(scenario);
         self.browsers = Default::default();
         self.preview_ui = Default::default();
+        self.browser_agent = Default::default();
         self.client = c;
         self.demo = Some(h);
         self.scenario = scenario;
@@ -1549,6 +1553,7 @@ impl YaacApp {
                     h.restarted = true;
                     self.browsers = Default::default();
                     self.preview_ui = Default::default();
+                    self.browser_agent = Default::default();
                     self.client = hub_client(&attach);
                 }
             }
@@ -1561,6 +1566,7 @@ impl YaacApp {
                 c.state.hub.outcome = HelloOutcome::WindowOutdated { message };
                 self.browsers = Default::default();
                 self.preview_ui = Default::default();
+                self.browser_agent = Default::default();
                 self.client = c;
                 self.hub = None;
             }
@@ -1795,6 +1801,16 @@ impl eframe::App for YaacApp {
             ctx.request_repaint_after(delay);
         }
         self.preview_ui.sync(&self.browsers, visible.as_ref());
+        // Agent browser calls (docs/11-preview.md#agents), on the calling thread's tabs.
+        #[cfg(feature = "preview")]
+        self.preview_ui.pump(&mut self.browsers, visible.as_ref(), ctx);
+        #[cfg(feature = "preview")]
+        let next = self.browser_agent.step(&mut self.client, &mut self.browsers, &mut self.preview_ui, std::time::Instant::now());
+        #[cfg(not(feature = "preview"))]
+        let next = self.browser_agent.step(&mut self.client, &mut self.browsers, std::time::Instant::now());
+        if let Some(delay) = next {
+            ctx.request_repaint_after(delay);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {

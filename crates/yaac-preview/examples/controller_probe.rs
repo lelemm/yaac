@@ -108,5 +108,7 @@ fn main() {
     let mut next = Client::open(&mut host, port);
     next.page_painted();
     assert_eq!(next.eval("localStorage.getItem('test')"), Value::Null);
+    drop(next);
+    assert!(yaac_preview::finish_after_window_exit());
     println!("shared paint, per-tab storage, text and IME, console and fresh host passed");
 }

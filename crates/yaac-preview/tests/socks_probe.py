@@ -119,6 +119,22 @@ async def host_test(binary, profile, port, origin_port):
             screenshot = await devtools(4, "Page.captureScreenshot", {})
             assert base64.b64decode(screenshot["data"]).startswith(b"\x89PNG")
             print("Proxied hostname, Runtime.evaluate and screenshot passed", flush=True)
+            await send({"DevTools": {"id": 6, "method": "Runtime.evaluate", "params": {
+                "expression": "prompt('Fixture prompt','initial')", "returnByValue": True,
+            }}})
+            prompt = await receive(lambda e: isinstance(e, dict) and "Dialog" in e)
+            assert prompt["Dialog"]["kind"] == 2 and prompt["Dialog"]["text"] == "initial"
+            await send({"Dialog": {"accept": True, "text": "confirmed"}})
+            answer = await receive(lambda e: isinstance(e, dict) and e.get("DevTools", {}).get("id") == 6)
+            assert answer["DevTools"]["result"]["result"]["value"] == "confirmed"
+
+            for up in (False, True):
+                await send({"Pointer": {"x": 20, "y": 20, "flags": 0 if up else 64,
+                    "kind": {"Button": {"button": 2, "up": up, "count": 1}}}})
+            menu = await receive(lambda e: isinstance(e, dict) and "Menu" in e)
+            assert menu["Menu"]["items"]
+            await send({"Menu": None})
+            print("JS prompt and native context menu callbacks passed", flush=True)
             await send("Close")
             await receive(lambda e: e == "Closed")
             await send("Shutdown")
@@ -148,7 +164,7 @@ async def run(origin_port):
             if sys.argv[1] == "--host":
                 await host_test(sys.argv[2], profile, port, origin_port)
             else:
-                env = dict(os.environ, PROBE_PORT=str(port), PROBE_PROFILE=profile, PROBE_ORIGIN=f"http://localhost:{origin_port}/")
+                env = dict(os.environ, PROBE_PORT=str(port), PROBE_PROFILE=profile, PROBE_ORIGIN=f"http://localhost:{origin_port}/", TMPDIR=profile)
                 proc = await asyncio.create_subprocess_exec(*sys.argv[1:], env=env)
                 try:
                     assert await asyncio.wait_for(proc.wait(), 60) == 0
@@ -156,6 +172,7 @@ async def run(origin_port):
                     if proc.returncode is None:
                         proc.kill()
                         await proc.wait()
+            assert not list(Path(profile).glob("yaac-browser-*")), "browser session cleanup incomplete"
             assert seen == ({"http", "websocket", "external"} if sys.argv[1] == "--host" else {"http", "websocket"}), seen
 
 

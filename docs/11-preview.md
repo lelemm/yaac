@@ -19,9 +19,6 @@ no local port has to match, and two targets serving the same port never collide.
 browser cannot use that proxy, so **Open in browser** uses a plain forwarded port instead.
 Both end in the same `tunnel/open`.
 
-The current daemon accepts `localhost`, `127.0.0.1`, and `::1` as tunnel destinations.
-The broader destination rule in P323 is pending in this implementation.
-
 ## Tunnel (YAAC protocol)
 
 A tunnel is a raw TCP connection from the hub to a port on the target, forwarded byte for byte.
@@ -39,6 +36,10 @@ HTTP, WebSockets and server-sent events all pass through without YAAC understand
   a tunnel changes no state). When the connection drops, every tunnel on it closes; the browser
   reconnects by itself (hot-reload clients do) once the target is back.
 - `yaacd` caps open tunnels per connection (256) and closes any stream whose socket errors.
+  It accepts any host name or address (an IPv6 literal with or without brackets) and resolves
+  names itself, on the target; `localhost` is pinned to `127.0.0.1` and `::1`. It rejects with
+  `invalid_params` only what cannot name a TCP host: empty, over 253 characters, a path, `@`,
+  whitespace or control characters. A name that does not resolve is `connection_failed`.
 - The optional `features` list in the `initialize` result advertises `portForward`; an absent
   entry disables previews without probing the target. A daemon without these methods answers `method_not_found`; the dialect folds that into a
   missing **`portForward`** target feature, and the window then shows no preview controls for
@@ -51,9 +52,6 @@ HTTP, WebSockets and server-sent events all pass through without YAAC understand
 ## Hub (attach protocol)
 
 The hub owns every listener (invariant 14). The window never talks to the target directly.
-
-The current hub and daemon support `localhost`, `127.0.0.1` and `::1` as tunnel destinations.
-The SOCKS listener replies `0x02` for other destinations until the target tunnel supports them.
 
 | Method | Purpose |
 | --- | --- |
@@ -68,9 +66,12 @@ The SOCKS listener replies `0x02` for other destinations until the target tunnel
 - The target's connection state exposes support as `daemon.portForward`. Creating a listener
   requires a connected target with this feature. The hub reports `target_offline` or
   `capability_missing` otherwise. Closing and listing listeners also work while their targets
-  are offline, as does requesting the port of an existing listener. A SOCKS `CONNECT`
-  refused by the target server returns `0x05`. Other
-  tunnel-open failures return `0x01`.
+  are offline, as does requesting the port of an existing listener. A SOCKS `CONNECT` takes
+  any destination (P323); the hub refuses only a name that cannot be a host (empty, over 255
+  bytes, whitespace or control characters) with `0x02`, as it does when the target rejects
+  the destination (`invalid_params`). Refused by the target server: `0x05`. Other tunnel-open
+  failures (including a name the target cannot resolve): `0x01`. `hub/preview/open` takes the
+  same hosts.
 - A listener lives until it is closed, its target is removed, or the hub exits. It is not
   persisted.
 - One forward per port, so in the system browser each server is its own origin.
@@ -139,25 +140,51 @@ a crash), **Browser** in the + menu is shown disabled with the reason, and **Ope
 
 ## Agents
 
-The browser panes currently support manual operation. Window-side dispatch and the agent mark
-are pending in both front ends.
-
-The daemon currently serves five inspection tools: `browser_list`, `browser_snapshot`,
-`browser_screenshot`, `browser_console`, and `browser_network`. The remaining tools in the
-design table below are pending.
-
-All five use `browser/call { threadId, action }`. The daemon derives the thread id from
-the authenticated attachment. The hub adds its connection’s `target` when forwarding
-`hub/browser/call { target, threadId, action }` to the window. The window must resolve
-each tab within that target and thread. Requests and results use the same `kind` tag.
+Every tool below is one `browser/call { threadId, action }`. The daemon derives the thread id
+from the authenticated attachment, never from the tool's arguments. The hub adds its
+connection’s `target` when forwarding `hub/browser/call { target, threadId, action }` to the
+window, which looks each tab up only inside that target and thread's browser area. Requests
+and results use the same `kind` tag; a tab id is an opaque string from `list` or `open`. An
+element is named by `ref` (from the latest snapshot) or `selector` (CSS, first match), not both.
 
 | Kind | Action fields | Result fields |
 | --- | --- | --- |
 | `list` | — | `tabs: [{ tab, url, title, loading }]` |
+| `open` | `url` (a URL, `host:port` or bare port) | `{ tab, url, title, loading }` after the load (bounded) |
+| `close` | `tab` | — |
+| `navigate` | `tab`, and `url` or `history: "back" \| "forward" \| "reload"` | `{ tab, url, title, loading }` after the load (bounded) |
 | `snapshot` | `tab` | `tree` (accessible text) |
 | `screenshot` | `tab, selector?` | `data` (base64 PNG) |
+| `click` | `tab`, and `ref`, `selector`, or `x, y` (viewport CSS pixels) | — |
+| `type` | `tab, text, ref?, selector?, clear?` (no element: the focused one) | — |
+| `press` | `tab, key, ref?, selector?` (`Enter`, `Tab`, `Escape`, `ArrowDown`, `F5`, `Control+a`, …) | — |
+| `eval` | `tab, expression` (a promise is awaited) | `value` (JSON; `null` for `undefined`) |
 | `console` | `tab, cursor?` | `entries: [{ level, text }], cursor` |
 | `network` | `tab, cursor?` | `entries: [{ url, method, status?, durationMs?, error? }], cursor` |
+
+The window carries the calls out in its controller (`crates/yaac-app/src/preview_agent.rs`),
+for both front ends, through the DevTools protocol of each tab inside the browser host:
+
+- `open` adds the tab after the thread's tabs without changing the active tab, so the user's
+  view does not switch (a thread's first tab does open its browser area). A tab an agent drives
+  is started and kept rendering while hidden, so screenshots and input work, but it is not shown.
+- `open` and `navigate` wait for the load: done when the page has loaded, or after 1.5 s idle;
+  at most 20 s, after which the tab is returned with `loading: true`.
+- `snapshot` is an outline of the page (roles, names, values, `[ref=eN]` on interactive
+  elements, at most about 200 kB). A ref stays the same for the element's life; a ref to an
+  element no longer on the page is an error asking for a new snapshot.
+- `click` scrolls the element into view and dispatches mouse events at its centre; `type`
+  focuses it and inserts text (`clear` replaces the current value); `press` dispatches the key
+  down and up. These are real input events, as from the user.
+- Errors in the page (no element matches, an exception in `eval`) and a refused DevTools command
+  are returned to the agent as tool errors; nothing is retried. A call is answered within 25 s;
+  the hub gives up at 30 s.
+- While an agent acts on a tab, and for 3 s after, the tab shows the agent's harness logo
+  (`BrowserTab.agent`, the provider kind; in the WPF view `agentLogo`/`agentLogoColor`).
+- A window built without the browser host answers `method_not_found`, so the hub offers the
+  call to another window.
+- A page dialog (`alert`, `confirm`) blocks the page until the user answers it; an agent's
+  call on that tab waits and then times out. Agents never answer page dialogs.
 
 The daemon immediately reports `no_window` if no host is attached. The hub can return
 the same error when it has no window. Successful results use bulk priority and must fit
@@ -182,12 +209,11 @@ mesh tools ([10](10-agent-mesh.md)):
 
 - An agent only ever sees and drives **its own thread's** tabs. The user's tabs and the agent's
   are the same tabs: the user can watch, take over with the mouse, or close them.
-- The calls travel yaacd → hub → window as host requests (`browser/*`); the window's controller
+- The calls travel yaacd → hub → window as host requests (`browser/call`, `hub/browser/call`); the window's controller
   carries them out on the browser host. When no window process is running (the user quit it), a
   tool answers "No YAAC window is open; the browser needs one" — it does not start a window.
-- Implemented inspection calls travel as `browser/call` and `hub/browser/call`. The hub
-  prefers a window showing the calling thread and offers the call to another attached window
-  if the first reports `method_not_found`.
+- The hub prefers a window showing the calling thread and offers the call to another attached
+  window if the first reports `method_not_found`.
 - Actions are recorded in the transcript as the tool calls they are; nothing is hidden from the
   user, and no tool answers an approval or a question (invariant 13).
 - Console, exception and network buffers are kept per tab, bounded (about 1 000 entries each),
@@ -215,8 +241,9 @@ rectangle. Bounds and pointer coordinates are expressed in CEF device-independen
 separate display scale for physical pixels.
 
 The split is a WPF `GridSplitter`. Its ratio and full-screen state belong to the shared Rust
-controller. WPF sends browser input, including WPF text composition, through the pipe and shows
-the browser host's context menus, script prompts, and file choosers. When the host is unavailable
+controller. WPF sends browser input and text composition through the pipe and uses the host's
+caret coordinates to position the IME input control. WPF shows the browser host's context menus,
+script prompts, and file choosers and dismisses menus and prompts when the host cancels them. When the host is unavailable
 but the thread's target supports port forwarding, the thread header offers **Open in browser**
 with an address or port field.
 
@@ -232,7 +259,11 @@ with an address or port field.
 - **Each tab has its own request context** (in-memory, so cookies and storage of two
   tabs never mix). The host keeps its own process data in a disposable session directory. Its proxy is set at runtime to `socks5://127.0.0.1:<socksPort>` for **all** hosts
   (fixed servers, bypass list `<-loopback>` so Chromium's implicit loopback bypass is removed
-  and nothing goes direct). DNS for every host is resolved by the proxy, on the target.
+  and nothing goes direct). DNS for every host is resolved by the proxy, on the target. The
+  same context sets `webrtc.ip_handling_policy` to `disable_non_proxied_udp`, so WebRTC cannot
+  open UDP sockets from the host; a tab whose context refuses either preference is not opened.
+  The values are `wire::proxy_settings` and `wire::WEBRTC_POLICY`, unit-tested in
+  `yaac-preview`.
 - The Linux integration probe verifies an HTTP page and its WebSocket through a test SOCKS5
   endpoint, checks the pixels changed by a WebSocket message, and opens windowed DevTools
   from the windowless browser. CEF 156 accepts the manual proxy preference in

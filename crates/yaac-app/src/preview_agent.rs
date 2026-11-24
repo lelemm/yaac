@@ -5,6 +5,8 @@
 //! never switch the user's view or take focus, and every call is answered once: a result, an
 //! error, or — after [`CALL_LIMIT`] — a timeout error. Nothing here blocks the UI thread: each
 //! call is a small state machine advanced by [`Agent::step`] on every frame or pipe tick.
+// Without the browser host only the decline path is built.
+#![cfg_attr(not(feature = "preview"), allow(dead_code, unused_imports))]
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -13,7 +15,7 @@ use yaac_protocol::rpc::{ErrorCode, ErrorObject, RpcId};
 use yaac_protocol::{BrowserAction, BrowserCallResult};
 
 #[cfg(feature = "preview")]
-pub(crate) use engine::Driver;
+pub(crate) use engine::{Driver, Engine};
 
 /// The hub answers the daemon by itself at 30 s; answer before that.
 #[cfg(feature = "preview")]
@@ -59,23 +61,32 @@ fn wire_tab(tab: &crate::preview_controller::BrowserTab) -> yaac_protocol::Brows
 }
 
 impl Agent {
-    /// Whether a call is waiting on the browser.
-    pub(crate) fn busy(&self) -> bool {
-        #[cfg(feature = "preview")]
-        return !self.jobs.is_empty();
-        #[cfg(not(feature = "preview"))]
-        false
-    }
-
-    fn mark(&mut self, client: &Client, browsers: &mut crate::preview_controller::Browsers, key: &ThreadKey, id: u64, now: Instant) {
+    fn mark(
+        &mut self,
+        client: &Client,
+        browsers: &mut crate::preview_controller::Browsers,
+        key: &ThreadKey,
+        id: u64,
+        now: Instant,
+    ) {
         if let Some(tab) = browsers.tab_mut(key, id) {
-            tab.agent = Some(client.state.provider_of(key).map_or_else(String::new, |p| p.kind.to_string()));
+            tab.agent = Some(
+                client
+                    .state
+                    .provider_of(key)
+                    .map_or_else(String::new, |p| p.kind.to_string()),
+            );
             self.marks.insert((key.clone(), id), now);
         }
     }
 
     /// Clear marks whose agent stopped acting; the delay until the next one expires.
-    fn expire_marks(&mut self, browsers: &mut crate::preview_controller::Browsers, now: Instant, acting: &[(ThreadKey, u64)]) -> Option<Duration> {
+    fn expire_marks(
+        &mut self,
+        browsers: &mut crate::preview_controller::Browsers,
+        now: Instant,
+        acting: &[(ThreadKey, u64)],
+    ) -> Option<Duration> {
         let mut next = None::<Duration>;
         self.marks.retain(|(key, id), last| {
             if acting.iter().any(|(k, i)| k == key && i == id) {
@@ -97,9 +108,20 @@ impl Agent {
     /// Build without the browser host: no window here can serve the call, so the hub offers
     /// it to another window (or answers `no_window`).
     #[cfg(not(feature = "preview"))]
-    pub(crate) fn step(&mut self, client: &mut Client, browsers: &mut crate::preview_controller::Browsers, now: Instant) -> Option<Duration> {
+    pub(crate) fn step(
+        &mut self,
+        client: &mut Client,
+        browsers: &mut crate::preview_controller::Browsers,
+        now: Instant,
+    ) -> Option<Duration> {
         for (rpc, _) in client.take_browser_calls() {
-            client.answer_browser_call(rpc, Err(error(ErrorCode::MethodNotFound, "this window has no browser host")));
+            client.answer_browser_call(
+                rpc,
+                Err(error(
+                    ErrorCode::MethodNotFound,
+                    "this window has no browser host",
+                )),
+            );
         }
         self.expire_marks(browsers, now, &[])
     }
@@ -111,16 +133,41 @@ mod engine {
     use crate::preview_controller::Browsers;
     use serde_json::{Value, json};
     use yaac_preview::wire::Action;
-    use yaac_protocol::{BrowserConsole, BrowserConsoleEntry, BrowserEvalResult, BrowserHistory, BrowserNetwork, BrowserNetworkEntry, BrowserScreenshot, BrowserSnapshot, BrowserTabs, Empty};
+    use yaac_protocol::{
+        BrowserConsole, BrowserConsoleEntry, BrowserEvalResult, BrowserHistory, BrowserNetwork,
+        BrowserNetworkEntry, BrowserScreenshot, BrowserSnapshot, BrowserTabs, Empty,
+    };
 
     /// The renderer's engine handles. The egui renderer and the WPF surfaces both hold the
     /// started tabs; the controller holds only their state.
     pub(crate) trait Driver {
         /// The started engine tab, if this renderer holds it.
-        fn engine(&mut self, id: u64) -> Option<&mut yaac_preview::Tab>;
+        fn engine(&mut self, id: u64) -> Option<&mut dyn Engine>;
         /// DevTools replies (messages with an `id`) received since the last call, by tab.
         fn take_replies(&mut self) -> Vec<(u64, Value)>;
     }
+
+    /// What the calls need of one engine tab ([`yaac_preview::Tab`]; a fake in tests).
+    pub(crate) trait Engine {
+        fn send(&mut self, action: Action);
+        /// Send a DevTools command; the reply arrives through [`Driver::take_replies`].
+        fn devtools_command(&mut self, method: &str, params: Value) -> i32;
+        fn diagnostics_since(&self, cursor: u64) -> Vec<(u64, Value)>;
+    }
+
+    impl Engine for yaac_preview::Tab {
+        fn send(&mut self, action: Action) {
+            yaac_preview::Tab::send(self, action)
+        }
+        fn devtools_command(&mut self, method: &str, params: Value) -> i32 {
+            yaac_preview::Tab::devtools_command(self, method, params)
+        }
+        fn diagnostics_since(&self, cursor: u64) -> Vec<(u64, Value)> {
+            yaac_preview::Tab::diagnostics_since(self, cursor)
+        }
+    }
+
+    pub(crate) type Answers = Vec<(RpcId, Outcome)>;
 
     pub(crate) struct Job {
         rpc: RpcId,
@@ -133,8 +180,18 @@ mod engine {
     enum State {
         /// Waiting for a renderer to start the tab's engine.
         Engine(BrowserAction),
-        Load { tab: u64, open: bool, since: Option<Instant>, busy: bool },
-        Cdp { tab: u64, ids: Vec<i32>, got: Vec<Option<Value>>, next: Next },
+        Load {
+            tab: u64,
+            open: bool,
+            since: Option<Instant>,
+            busy: bool,
+        },
+        Cdp {
+            tab: u64,
+            ids: Vec<i32>,
+            got: Vec<Option<Value>>,
+            next: Next,
+        },
     }
 
     enum Next {
@@ -151,10 +208,13 @@ mod engine {
         Eval,
     }
 
-    type Outcome = Result<BrowserCallResult, ErrorObject>;
+    pub(crate) type Outcome = Result<BrowserCallResult, ErrorObject>;
 
     fn no_tab(tab: &str) -> ErrorObject {
-        error(ErrorCode::InvalidParams, format!("There is no tab {tab} in this thread; see browser_list."))
+        error(
+            ErrorCode::InvalidParams,
+            format!("There is no tab {tab} in this thread; see browser_list."),
+        )
     }
 
     fn page_error(message: impl Into<String>) -> ErrorObject {
@@ -164,16 +224,49 @@ mod engine {
     impl Agent {
         /// Take new calls from the hub and advance the pending ones. Returns when to run
         /// again (while a call waits, or until an agent mark expires).
-        pub(crate) fn step(&mut self, client: &mut Client, browsers: &mut Browsers, driver: &mut dyn Driver, now: Instant) -> Option<Duration> {
-            for (rpc, call) in client.take_browser_calls() {
-                let key = ThreadKey { target: call.target, thread: call.call.thread_id };
-                let mut job = Job { rpc, key, tab: None, started: now, state: State::Engine(BrowserAction::List(Empty {})) };
+        pub(crate) fn step(
+            &mut self,
+            client: &mut Client,
+            browsers: &mut Browsers,
+            driver: &mut dyn Driver,
+            now: Instant,
+        ) -> Option<Duration> {
+            let calls = client.take_browser_calls();
+            let (answers, next) = self.run(client, browsers, driver, calls, now);
+            for (rpc, outcome) in answers {
+                client.answer_browser_call(rpc, outcome);
+            }
+            next
+        }
+
+        /// [`Agent::step`] without the hub link: new calls in, finished answers out.
+        pub(crate) fn run(
+            &mut self,
+            client: &mut Client,
+            browsers: &mut Browsers,
+            driver: &mut dyn Driver,
+            calls: Vec<(RpcId, yaac_protocol::attach::BrowserCallParams)>,
+            now: Instant,
+        ) -> (Answers, Option<Duration>) {
+            let mut answers = Vec::new();
+            for (rpc, call) in calls {
+                let key = ThreadKey {
+                    target: call.target,
+                    thread: call.call.thread_id,
+                };
+                let mut job = Job {
+                    rpc,
+                    key,
+                    tab: None,
+                    started: now,
+                    state: State::Engine(BrowserAction::List(Empty {})),
+                };
                 match self.begin(client, browsers, driver, &mut job, call.call.action, now) {
                     Some(outcome) => {
                         if let Some(id) = job.tab {
                             self.mark(client, browsers, &job.key, id, now);
                         }
-                        client.answer_browser_call(job.rpc, outcome);
+                        answers.push((job.rpc, outcome));
                     }
                     None => {
                         if let Some(id) = job.tab {
@@ -187,40 +280,76 @@ mod engine {
             let jobs = std::mem::take(&mut self.jobs);
             for mut job in jobs {
                 let outcome = if now.duration_since(job.started) >= CALL_LIMIT {
-                    Some(Err(error(ErrorCode::InternalError, "The browser did not finish in time.")))
+                    Some(Err(error(
+                        ErrorCode::InternalError,
+                        "The browser did not finish in time.",
+                    )))
                 } else {
                     self.advance(browsers, driver, &mut job, &mut replies, now)
                 };
                 match outcome {
-                    Some(outcome) => client.answer_browser_call(job.rpc, outcome),
+                    Some(outcome) => answers.push((job.rpc, outcome)),
                     None => self.jobs.push(job),
                 }
             }
-            let acting: Vec<_> = self.jobs.iter().filter_map(|j| Some((j.key.clone(), j.tab?))).collect();
+            let acting: Vec<_> = self
+                .jobs
+                .iter()
+                .filter_map(|j| Some((j.key.clone(), j.tab?)))
+                .collect();
             let marks = self.expire_marks(browsers, now, &acting);
-            if self.jobs.is_empty() { marks } else { Some(POLL) }
+            let next = if self.jobs.is_empty() {
+                marks
+            } else {
+                Some(POLL)
+            };
+            (answers, next)
         }
 
         /// Start a call; `Some` when it finished at once.
-        fn begin(&mut self, client: &mut Client, browsers: &mut Browsers, driver: &mut dyn Driver, job: &mut Job, action: BrowserAction, now: Instant) -> Option<Outcome> {
+        fn begin(
+            &mut self,
+            client: &mut Client,
+            browsers: &mut Browsers,
+            driver: &mut dyn Driver,
+            job: &mut Job,
+            action: BrowserAction,
+            now: Instant,
+        ) -> Option<Outcome> {
             let key = job.key.clone();
             match action {
                 BrowserAction::List(_) => {
-                    let tabs = browsers.areas.get(&key).map(|a| a.tabs.iter().map(wire_tab).collect()).unwrap_or_default();
+                    let tabs = browsers
+                        .areas
+                        .get(&key)
+                        .map(|a| a.tabs.iter().map(wire_tab).collect())
+                        .unwrap_or_default();
                     Some(Ok(BrowserCallResult::List(BrowserTabs { tabs })))
                 }
                 BrowserAction::Open(p) => match browsers.open_background(client, &key, &p.url) {
                     Ok(id) => {
                         job.tab = Some(id);
-                        job.state = State::Load { tab: id, open: true, since: None, busy: false };
+                        job.state = State::Load {
+                            tab: id,
+                            open: true,
+                            since: None,
+                            busy: false,
+                        };
                         None
                     }
                     Err(e) => Some(Err(error(ErrorCode::CapabilityMissing, e))),
                 },
-                BrowserAction::Unknown(v) => Some(Err(error(ErrorCode::MethodNotFound, format!("this window does not know the browser action {}", v.tag("kind"))))),
+                BrowserAction::Unknown(v) => Some(Err(error(
+                    ErrorCode::MethodNotFound,
+                    format!(
+                        "this window does not know the browser action {}",
+                        v.tag("kind")
+                    ),
+                ))),
                 action => {
                     let name = action_tab(&action).unwrap_or_default().to_owned();
-                    let Some(id) = tab_id(&name).filter(|id| browsers.tab(&key, *id).is_some()) else {
+                    let Some(id) = tab_id(&name).filter(|id| browsers.tab(&key, *id).is_some())
+                    else {
                         return Some(Err(no_tab(&name)));
                     };
                     job.tab = Some(id);
@@ -234,11 +363,19 @@ mod engine {
                             if let Err(e) = browsers.navigate(client, &key, id, &url) {
                                 return Some(Err(page_error(e)));
                             }
-                            let url = browsers.tab(&key, id).map(|t| t.url.clone()).unwrap_or_default();
+                            let url = browsers
+                                .tab(&key, id)
+                                .map(|t| t.url.clone())
+                                .unwrap_or_default();
                             if let Some(engine) = driver.engine(id) {
                                 engine.send(Action::Navigate(url));
                             }
-                            job.state = State::Load { tab: id, open: false, since: None, busy: false };
+                            job.state = State::Load {
+                                tab: id,
+                                open: false,
+                                since: None,
+                                busy: false,
+                            };
                             None
                         }
                         action => {
@@ -250,10 +387,18 @@ mod engine {
             }
         }
 
-        fn advance(&mut self, browsers: &mut Browsers, driver: &mut dyn Driver, job: &mut Job, replies: &mut Vec<(u64, Value)>, now: Instant) -> Option<Outcome> {
+        fn advance(
+            &mut self,
+            browsers: &mut Browsers,
+            driver: &mut dyn Driver,
+            job: &mut Job,
+            replies: &mut Vec<(u64, Value)>,
+            now: Instant,
+        ) -> Option<Outcome> {
             let key = job.key.clone();
             loop {
-                let state = std::mem::replace(&mut job.state, State::Engine(BrowserAction::List(Empty {})));
+                let state =
+                    std::mem::replace(&mut job.state, State::Engine(BrowserAction::List(Empty {})));
                 match state {
                     State::Engine(action) => {
                         let id = job.tab?;
@@ -264,7 +409,9 @@ mod engine {
                             return Some(Err(error(ErrorCode::InternalError, e.clone())));
                         }
                         if tab.url.is_empty() {
-                            return Some(Err(page_error("The tab has no page; use browser_navigate first.")));
+                            return Some(Err(page_error(
+                                "The tab has no page; use browser_navigate first.",
+                            )));
                         }
                         let Some(engine) = driver.engine(id) else {
                             job.state = State::Engine(action);
@@ -272,54 +419,128 @@ mod engine {
                         };
                         match start(engine, id, action) {
                             Ok(Started::Now(outcome)) => return Some(Ok(outcome)),
-                            Ok(Started::Load) => job.state = State::Load { tab: id, open: false, since: None, busy: false },
-                            Ok(Started::Cdp(ids, next)) => job.state = State::Cdp { tab: id, got: vec![None; ids.len()], ids, next },
+                            Ok(Started::Load) => {
+                                job.state = State::Load {
+                                    tab: id,
+                                    open: false,
+                                    since: None,
+                                    busy: false,
+                                }
+                            }
+                            Ok(Started::Cdp(ids, next)) => {
+                                job.state = State::Cdp {
+                                    tab: id,
+                                    got: vec![None; ids.len()],
+                                    ids,
+                                    next,
+                                }
+                            }
                             Err(e) => return Some(Err(e)),
                         }
                     }
-                    State::Load { tab: id, open, since, mut busy } => {
+                    State::Load {
+                        tab: id,
+                        open,
+                        since,
+                        mut busy,
+                    } => {
                         let Some(tab) = browsers.tab(&key, id) else {
-                            return Some(Err(error(ErrorCode::InternalError, "The tab was closed.")));
+                            return Some(Err(error(
+                                ErrorCode::InternalError,
+                                "The tab was closed.",
+                            )));
                         };
                         if let Some(e) = &tab.error {
                             return Some(Err(error(ErrorCode::InternalError, e.clone())));
                         }
-                        let since = if tab.started() { Some(since.unwrap_or(now)) } else { None };
+                        let since = if tab.started() {
+                            Some(since.unwrap_or(now))
+                        } else {
+                            None
+                        };
                         busy |= tab.loading;
                         let page = !tab.url.is_empty() && tab.url != "about:blank";
                         let idle = since.is_some_and(|s| now.duration_since(s) >= LOAD_GRACE);
                         let done = page && !tab.loading && (busy || idle);
                         if done || now.duration_since(job.started) >= LOAD_LIMIT {
                             let state = wire_tab(tab);
-                            return Some(Ok(if open { BrowserCallResult::Open(state) } else { BrowserCallResult::Navigate(state) }));
+                            return Some(Ok(if open {
+                                BrowserCallResult::Open(state)
+                            } else {
+                                BrowserCallResult::Navigate(state)
+                            }));
                         }
-                        job.state = State::Load { tab: id, open, since, busy };
+                        job.state = State::Load {
+                            tab: id,
+                            open,
+                            since,
+                            busy,
+                        };
                         return None;
                     }
-                    State::Cdp { tab: id, ids, mut got, next } => {
+                    State::Cdp {
+                        tab: id,
+                        ids,
+                        mut got,
+                        next,
+                    } => {
                         replies.retain(|(t, v)| {
-                            let Some(i) = (*t == id).then(|| ids.iter().position(|n| v["id"].as_i64() == Some(i64::from(*n)))).flatten() else {
+                            let Some(i) = (*t == id)
+                                .then(|| {
+                                    ids.iter()
+                                        .position(|n| v["id"].as_i64() == Some(i64::from(*n)))
+                                })
+                                .flatten()
+                            else {
                                 return true;
                             };
                             got[i] = Some(v.clone());
                             false
                         });
                         if got.iter().any(Option::is_none) {
-                            job.state = State::Cdp { tab: id, ids, got, next };
+                            job.state = State::Cdp {
+                                tab: id,
+                                ids,
+                                got,
+                                next,
+                            };
                             return None;
                         }
                         let got: Vec<Value> = got.into_iter().flatten().collect();
                         if let Some(e) = got.iter().find_map(|v| v.get("error")) {
-                            return Some(Err(error(ErrorCode::InternalError, format!("The browser refused: {}", e["message"].as_str().unwrap_or("unknown error")))));
+                            return Some(Err(error(
+                                ErrorCode::InternalError,
+                                format!(
+                                    "The browser refused: {}",
+                                    e["message"].as_str().unwrap_or("unknown error")
+                                ),
+                            )));
                         }
                         let last = got.last().cloned().unwrap_or(Value::Null);
                         let Some(engine) = driver.engine(id) else {
-                            return Some(Err(error(ErrorCode::InternalError, "The tab's browser stopped.")));
+                            return Some(Err(error(
+                                ErrorCode::InternalError,
+                                "The tab's browser stopped.",
+                            )));
                         };
                         match finish(engine, next, &last) {
                             Ok(Started::Now(outcome)) => return Some(Ok(outcome)),
-                            Ok(Started::Cdp(ids, next)) => job.state = State::Cdp { tab: id, got: vec![None; ids.len()], ids, next },
-                            Ok(Started::Load) => job.state = State::Load { tab: id, open: false, since: None, busy: false },
+                            Ok(Started::Cdp(ids, next)) => {
+                                job.state = State::Cdp {
+                                    tab: id,
+                                    got: vec![None; ids.len()],
+                                    ids,
+                                    next,
+                                }
+                            }
+                            Ok(Started::Load) => {
+                                job.state = State::Load {
+                                    tab: id,
+                                    open: false,
+                                    since: None,
+                                    busy: false,
+                                }
+                            }
                             Err(e) => return Some(Err(e)),
                         }
                     }
@@ -338,7 +559,9 @@ mod engine {
             BrowserAction::Type(p) => &p.tab,
             BrowserAction::Press(p) => &p.tab,
             BrowserAction::Eval(p) => &p.tab,
-            BrowserAction::List(_) | BrowserAction::Open(_) | BrowserAction::Unknown(_) => return None,
+            BrowserAction::List(_) | BrowserAction::Open(_) | BrowserAction::Unknown(_) => {
+                return None;
+            }
         })
     }
 
@@ -348,30 +571,56 @@ mod engine {
         Cdp(Vec<i32>, Next),
     }
 
-    fn send(engine: &mut yaac_preview::Tab, commands: Vec<(&str, Value)>, next: Next) -> Started {
-        let ids = commands.into_iter().map(|(m, p)| engine.devtools_command(m, p)).collect();
+    fn send(engine: &mut dyn Engine, commands: Vec<(&str, Value)>, next: Next) -> Started {
+        let ids = commands
+            .into_iter()
+            .map(|(m, p)| engine.devtools_command(m, p))
+            .collect();
         Started::Cdp(ids, next)
     }
 
     /// `Runtime.evaluate` of a page function applied to JSON arguments.
     fn call(function: &str, args: Value) -> (&'static str, Value) {
         let expression = format!("({function})({args})");
-        ("Runtime.evaluate", json!({ "expression": expression, "returnByValue": true, "awaitPromise": true }))
+        (
+            "Runtime.evaluate",
+            json!({ "expression": expression, "returnByValue": true, "awaitPromise": true }),
+        )
     }
 
     fn target(reference: &Option<String>, selector: &Option<String>) -> Value {
         json!({ "ref": reference, "selector": selector })
     }
 
-    fn start(engine: &mut yaac_preview::Tab, _id: u64, action: BrowserAction) -> Result<Started, ErrorObject> {
+    fn start(
+        engine: &mut dyn Engine,
+        _id: u64,
+        action: BrowserAction,
+    ) -> Result<Started, ErrorObject> {
         Ok(match action {
-            BrowserAction::Snapshot(_) => send(engine, vec![call(SNAPSHOT_JS, json!({}))], Next::Snapshot),
+            BrowserAction::Snapshot(_) => {
+                send(engine, vec![call(SNAPSHOT_JS, json!({}))], Next::Snapshot)
+            }
             BrowserAction::Screenshot(p) => match p.selector {
-                Some(selector) => send(engine, vec![call(RECT_JS, target(&None, &Some(selector)))], Next::Clip),
-                None => send(engine, vec![("Page.captureScreenshot", json!({ "format": "png" }))], Next::Screenshot),
+                Some(selector) => send(
+                    engine,
+                    vec![call(&RECT_JS, target(&None, &Some(selector)))],
+                    Next::Clip,
+                ),
+                None => send(
+                    engine,
+                    vec![("Page.captureScreenshot", json!({ "format": "png" }))],
+                    Next::Screenshot,
+                ),
             },
-            BrowserAction::Console(p) => Started::Now(BrowserCallResult::Console(console(engine, p.cursor.unwrap_or(0)))),
-            BrowserAction::Network(p) => Started::Now(BrowserCallResult::Network(network(engine, p.cursor.unwrap_or(0)))),
+            BrowserAction::Console(p) => Started::Now(BrowserCallResult::Console(console(
+                engine,
+                p.cursor.unwrap_or(0),
+            ))),
+            BrowserAction::Network(p) => Started::Now(BrowserCallResult::Network(network(
+                engine,
+                p.cursor.unwrap_or(0),
+            ))),
             BrowserAction::Navigate(p) => {
                 engine.send(match p.history {
                     Some(BrowserHistory::Back) => Action::Back,
@@ -382,25 +631,43 @@ mod engine {
                 Started::Load
             }
             BrowserAction::Click(p) => match (p.x, p.y) {
-                (Some(x), Some(y)) => send(engine, click_events(f64::from(x), f64::from(y)), Next::Done("click")),
-                _ => send(engine, vec![call(CENTER_JS, target(&p.reference, &p.selector))], Next::ClickAt),
+                (Some(x), Some(y)) => send(
+                    engine,
+                    click_events(f64::from(x), f64::from(y)),
+                    Next::Done("click"),
+                ),
+                _ => send(
+                    engine,
+                    vec![call(&CENTER_JS, target(&p.reference, &p.selector))],
+                    Next::ClickAt,
+                ),
             },
             BrowserAction::Type(p) => {
                 let args = json!({ "ref": p.reference, "selector": p.selector, "clear": p.clear.unwrap_or(false), "empty": p.text.is_empty() });
-                send(engine, vec![call(FOCUS_JS, args)], Next::Type(p.text))
+                send(engine, vec![call(&FOCUS_JS, args)], Next::Type(p.text))
             }
             BrowserAction::Press(p) => {
                 let events = key_events(&p.key).map_err(page_error)?;
                 if p.reference.is_some() || p.selector.is_some() {
                     let args = json!({ "ref": p.reference, "selector": p.selector, "clear": false, "empty": true });
-                    send(engine, vec![call(FOCUS_JS, args)], Next::Press(events))
+                    send(engine, vec![call(&FOCUS_JS, args)], Next::Press(events))
                 } else {
-                    send(engine, events.into_iter().map(|e| ("Input.dispatchKeyEvent", e)).collect(), Next::Done("press"))
+                    send(
+                        engine,
+                        events
+                            .into_iter()
+                            .map(|e| ("Input.dispatchKeyEvent", e))
+                            .collect(),
+                        Next::Done("press"),
+                    )
                 }
             }
             BrowserAction::Eval(p) => send(
                 engine,
-                vec![("Runtime.evaluate", json!({ "expression": p.expression, "returnByValue": true, "awaitPromise": true, "userGesture": true }))],
+                vec![(
+                    "Runtime.evaluate",
+                    json!({ "expression": p.expression, "returnByValue": true, "awaitPromise": true, "userGesture": true }),
+                )],
                 Next::Eval,
             ),
             _ => return Err(error(ErrorCode::InternalError, "unexpected browser action")),
@@ -411,26 +678,42 @@ mod engine {
     fn evaluated(reply: &Value) -> Result<Value, ErrorObject> {
         let result = &reply["result"];
         if let Some(details) = result.get("exceptionDetails") {
-            let text = details["exception"]["description"].as_str().or(details["text"].as_str()).unwrap_or("The page threw an exception.");
+            let text = details["exception"]["description"]
+                .as_str()
+                .or(details["text"].as_str())
+                .unwrap_or("The page threw an exception.");
             return Err(page_error(text.lines().next().unwrap_or(text).to_owned()));
         }
-        Ok(result["result"].get("value").cloned().unwrap_or(Value::Null))
+        Ok(result["result"]
+            .get("value")
+            .cloned()
+            .unwrap_or(Value::Null))
     }
 
-    fn finish(engine: &mut yaac_preview::Tab, next: Next, reply: &Value) -> Result<Started, ErrorObject> {
+    fn finish(engine: &mut dyn Engine, next: Next, reply: &Value) -> Result<Started, ErrorObject> {
         Ok(match next {
             Next::Snapshot => {
                 let tree = evaluated(reply)?.as_str().unwrap_or_default().to_owned();
                 Started::Now(BrowserCallResult::Snapshot(BrowserSnapshot { tree }))
             }
             Next::Screenshot => {
-                let data = reply["result"]["data"].as_str().unwrap_or_default().to_owned();
+                let data = reply["result"]["data"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
                 Started::Now(BrowserCallResult::Screenshot(BrowserScreenshot { data }))
             }
             Next::Clip => {
                 let r = evaluated(reply)?;
                 let clip = json!({ "x": r["x"], "y": r["y"], "width": r["width"], "height": r["height"], "scale": 1 });
-                send(engine, vec![("Page.captureScreenshot", json!({ "format": "png", "clip": clip }))], Next::Screenshot)
+                send(
+                    engine,
+                    vec![(
+                        "Page.captureScreenshot",
+                        json!({ "format": "png", "clip": clip }),
+                    )],
+                    Next::Screenshot,
+                )
             }
             Next::ClickAt => {
                 let r = evaluated(reply)?;
@@ -442,13 +725,26 @@ mod engine {
                 if text.is_empty() {
                     return Ok(Started::Now(BrowserCallResult::Type(Empty {})));
                 }
-                send(engine, vec![("Input.insertText", json!({ "text": text }))], Next::Done("type"))
+                send(
+                    engine,
+                    vec![("Input.insertText", json!({ "text": text }))],
+                    Next::Done("type"),
+                )
             }
             Next::Press(events) => {
                 evaluated(reply)?;
-                send(engine, events.into_iter().map(|e| ("Input.dispatchKeyEvent", e)).collect(), Next::Done("press"))
+                send(
+                    engine,
+                    events
+                        .into_iter()
+                        .map(|e| ("Input.dispatchKeyEvent", e))
+                        .collect(),
+                    Next::Done("press"),
+                )
             }
-            Next::Eval => Started::Now(BrowserCallResult::Eval(BrowserEvalResult { value: evaluated(reply)? })),
+            Next::Eval => Started::Now(BrowserCallResult::Eval(BrowserEvalResult {
+                value: evaluated(reply)?,
+            })),
             Next::Done(kind) => Started::Now(match kind {
                 "click" => BrowserCallResult::Click(Empty {}),
                 "type" => BrowserCallResult::Type(Empty {}),
@@ -462,7 +758,10 @@ mod engine {
             .into_iter()
             .map(|kind| {
                 let button = if kind == "mouseMoved" { "none" } else { "left" };
-                ("Input.dispatchMouseEvent", json!({ "type": kind, "x": x, "y": y, "button": button, "clickCount": 1 }))
+                (
+                    "Input.dispatchMouseEvent",
+                    json!({ "type": kind, "x": x, "y": y, "button": button, "clickCount": 1 }),
+                )
             })
             .collect()
     }
@@ -475,7 +774,10 @@ mod engine {
             parts.pop();
             *parts.last_mut().unwrap() = "+";
         }
-        let key = parts.pop().filter(|k| !k.is_empty()).ok_or("No key named.")?;
+        let key = parts
+            .pop()
+            .filter(|k| !k.is_empty())
+            .ok_or("No key named.")?;
         let mut modifiers = 0;
         for m in parts {
             modifiers |= match m.to_ascii_lowercase().as_str() {
@@ -483,24 +785,47 @@ mod engine {
                 "control" | "ctrl" => 2,
                 "meta" | "cmd" | "command" => 4,
                 "shift" => 8,
-                _ => return Err(format!("Unknown modifier {m}; use Alt, Control, Meta or Shift.")),
+                _ => {
+                    return Err(format!(
+                        "Unknown modifier {m}; use Alt, Control, Meta or Shift."
+                    ));
+                }
             };
         }
         let named: &[(&str, &str, i64, &str)] = &[
-            ("Enter", "Enter", 13, "\r"), ("Tab", "Tab", 9, ""), ("Escape", "Escape", 27, ""),
-            ("Backspace", "Backspace", 8, ""), ("Delete", "Delete", 46, ""), ("Insert", "Insert", 45, ""),
-            ("ArrowLeft", "ArrowLeft", 37, ""), ("ArrowUp", "ArrowUp", 38, ""), ("ArrowRight", "ArrowRight", 39, ""),
-            ("ArrowDown", "ArrowDown", 40, ""), ("Home", "Home", 36, ""), ("End", "End", 35, ""),
-            ("PageUp", "PageUp", 33, ""), ("PageDown", "PageDown", 34, ""), ("Space", "Space", 32, " "),
+            ("Enter", "Enter", 13, "\r"),
+            ("Tab", "Tab", 9, ""),
+            ("Escape", "Escape", 27, ""),
+            ("Backspace", "Backspace", 8, ""),
+            ("Delete", "Delete", 46, ""),
+            ("Insert", "Insert", 45, ""),
+            ("ArrowLeft", "ArrowLeft", 37, ""),
+            ("ArrowUp", "ArrowUp", 38, ""),
+            ("ArrowRight", "ArrowRight", 39, ""),
+            ("ArrowDown", "ArrowDown", 40, ""),
+            ("Home", "Home", 36, ""),
+            ("End", "End", 35, ""),
+            ("PageUp", "PageUp", 33, ""),
+            ("PageDown", "PageDown", 34, ""),
+            ("Space", "Space", 32, " "),
         ];
-        let (key, code, vk, text) = if let Some(&(k, c, v, t)) = named.iter().find(|(k, ..)| k.eq_ignore_ascii_case(key) || (key == "Esc" && *k == "Escape")) {
+        let (key, code, vk, text) = if let Some(&(k, c, v, t)) = named
+            .iter()
+            .find(|(k, ..)| k.eq_ignore_ascii_case(key) || (key == "Esc" && *k == "Escape"))
+        {
             (k.to_owned(), c.to_owned(), v, t.to_owned())
-        } else if let Some(n) = key.strip_prefix(['F', 'f']).and_then(|n| n.parse::<i64>().ok()).filter(|n| (1..=12).contains(n)) {
+        } else if let Some(n) = key
+            .strip_prefix(['F', 'f'])
+            .and_then(|n| n.parse::<i64>().ok())
+            .filter(|n| (1..=12).contains(n))
+        {
             (format!("F{n}"), format!("F{n}"), 111 + n, String::new())
         } else {
             let mut chars = key.chars();
             let (Some(c), None) = (chars.next(), chars.next()) else {
-                return Err(format!("Unknown key {key}; use a single character or a name like Enter, Tab, Escape, ArrowDown, F5."));
+                return Err(format!(
+                    "Unknown key {key}; use a single character or a name like Enter, Tab, Escape, ArrowDown, F5."
+                ));
             };
             let code = if c.is_ascii_alphabetic() {
                 format!("Key{}", c.to_ascii_uppercase())
@@ -509,11 +834,19 @@ mod engine {
             } else {
                 String::new()
             };
-            let vk = if c.is_ascii_alphanumeric() { i64::from(c.to_ascii_uppercase() as u8) } else { 0 };
+            let vk = if c.is_ascii_alphanumeric() {
+                i64::from(c.to_ascii_uppercase() as u8)
+            } else {
+                0
+            };
             (c.to_string(), code, vk, c.to_string())
         };
         // Text is produced only without command modifiers, as on a keyboard.
-        let text = if modifiers & 7 == 0 { text } else { String::new() };
+        let text = if modifiers & 7 == 0 {
+            text
+        } else {
+            String::new()
+        };
         let mut down = json!({ "type": if text.is_empty() { "rawKeyDown" } else { "keyDown" }, "key": key, "code": code,
             "windowsVirtualKeyCode": vk, "modifiers": modifiers });
         if !text.is_empty() {
@@ -553,18 +886,31 @@ mod engine {
                             args.iter()
                                 .map(|a| match &a["value"] {
                                     Value::String(s) => s.clone(),
-                                    Value::Null => a["description"].as_str().or(a["type"].as_str()).unwrap_or("").to_owned(),
+                                    Value::Null => a["description"]
+                                        .as_str()
+                                        .or(a["type"].as_str())
+                                        .unwrap_or("")
+                                        .to_owned(),
                                     other => other.to_string(),
                                 })
                                 .collect::<Vec<_>>()
                                 .join(" ")
                         });
-                        Some(BrowserConsoleEntry { level: p["type"].as_str().unwrap_or("log").to_owned(), text: clip(text.unwrap_or_default()) })
+                        Some(BrowserConsoleEntry {
+                            level: p["type"].as_str().unwrap_or("log").to_owned(),
+                            text: clip(text.unwrap_or_default()),
+                        })
                     }
                     "Runtime.exceptionThrown" => {
                         let d = &p["exceptionDetails"];
-                        let text = d["exception"]["description"].as_str().or(d["text"].as_str()).unwrap_or("Uncaught exception");
-                        Some(BrowserConsoleEntry { level: "exception".into(), text: clip(text.to_owned()) })
+                        let text = d["exception"]["description"]
+                            .as_str()
+                            .or(d["text"].as_str())
+                            .unwrap_or("Uncaught exception");
+                        Some(BrowserConsoleEntry {
+                            level: "exception".into(),
+                            text: clip(text.to_owned()),
+                        })
                     }
                     _ => None,
                 }
@@ -573,7 +919,10 @@ mod engine {
         if entries.len() > MAX_ENTRIES {
             entries.drain(..entries.len() - MAX_ENTRIES);
         }
-        BrowserConsole { entries, cursor: next }
+        BrowserConsole {
+            entries,
+            cursor: next,
+        }
     }
 
     /// Requests with an event after `cursor`; earlier events of the same request fill in
@@ -589,24 +938,43 @@ mod engine {
         let mut order: Vec<String> = Vec::new();
         let mut requests: HashMap<String, Request> = HashMap::new();
         for (n, v) in events {
-            let Some(method) = v["method"].as_str().filter(|m| m.starts_with("Network.")) else { continue };
+            let Some(method) = v["method"].as_str().filter(|m| m.starts_with("Network.")) else {
+                continue;
+            };
             let p = &v["params"];
-            let Some(id) = p["requestId"].as_str() else { continue };
+            let Some(id) = p["requestId"].as_str() else {
+                continue;
+            };
             let r = requests.entry(id.to_owned()).or_insert_with(|| {
                 order.push(id.to_owned());
                 Request::default()
             });
             r.last = *n;
-            let e = r.entry.get_or_insert_with(|| BrowserNetworkEntry { url: String::new(), method: String::new(), status: None, duration_ms: None, error: None });
-            let ms = |end: &Value, start: Option<f64>| end.as_f64().zip(start).map(|(e, s)| ((e - s).max(0.) * 1000.) as u64);
+            let e = r.entry.get_or_insert_with(|| BrowserNetworkEntry {
+                url: String::new(),
+                method: String::new(),
+                status: None,
+                duration_ms: None,
+                error: None,
+            });
+            let ms = |end: &Value, start: Option<f64>| {
+                end.as_f64()
+                    .zip(start)
+                    .map(|(e, s)| ((e - s).max(0.) * 1000.) as u64)
+            };
             match method {
                 "Network.requestWillBeSent" => {
                     e.url = clip(p["request"]["url"].as_str().unwrap_or_default().to_owned());
-                    e.method = p["request"]["method"].as_str().unwrap_or_default().to_owned();
+                    e.method = p["request"]["method"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
                     r.start = p["timestamp"].as_f64();
                 }
                 "Network.responseReceived" => {
-                    e.status = p["response"]["status"].as_u64().and_then(|s| u16::try_from(s).ok());
+                    e.status = p["response"]["status"]
+                        .as_u64()
+                        .and_then(|s| u16::try_from(s).ok());
                     if e.url.is_empty() {
                         e.url = clip(p["response"]["url"].as_str().unwrap_or_default().to_owned());
                     }
@@ -628,14 +996,17 @@ mod engine {
         if entries.len() > MAX_ENTRIES {
             entries.drain(..entries.len() - MAX_ENTRIES);
         }
-        BrowserNetwork { entries, cursor: next }
+        BrowserNetwork {
+            entries,
+            cursor: next,
+        }
     }
 
-    fn console(engine: &yaac_preview::Tab, cursor: u64) -> BrowserConsole {
+    fn console(engine: &dyn Engine, cursor: u64) -> BrowserConsole {
         console_entries(&engine.diagnostics_since(cursor), cursor)
     }
 
-    fn network(engine: &yaac_preview::Tab, cursor: u64) -> BrowserNetwork {
+    fn network(engine: &dyn Engine, cursor: u64) -> BrowserNetwork {
         network_entries(&engine.diagnostics_since(0), cursor)
     }
 
@@ -804,12 +1175,30 @@ mod tests {
     #[test]
     fn console_and_network_read_after_the_cursor() {
         let events = vec![
-            (1, json!({"method":"Network.requestWillBeSent","params":{"requestId":"1","request":{"url":"http://localhost:5173/","method":"GET"},"timestamp":1.0}})),
-            (2, json!({"method":"Runtime.consoleAPICalled","params":{"type":"warning","args":[{"type":"string","value":"careful"},{"type":"number","value":3}]}})),
-            (3, json!({"method":"Network.responseReceived","params":{"requestId":"1","response":{"status":200,"url":"http://localhost:5173/"}}})),
-            (4, json!({"method":"Network.loadingFinished","params":{"requestId":"1","timestamp":1.25}})),
-            (5, json!({"method":"Runtime.exceptionThrown","params":{"exceptionDetails":{"text":"Uncaught","exception":{"description":"TypeError: x is undefined"}}}})),
-            (6, json!({"method":"Network.loadingFailed","params":{"requestId":"2","errorText":"net::ERR_CONNECTION_REFUSED"}})),
+            (
+                1,
+                json!({"method":"Network.requestWillBeSent","params":{"requestId":"1","request":{"url":"http://localhost:5173/","method":"GET"},"timestamp":1.0}}),
+            ),
+            (
+                2,
+                json!({"method":"Runtime.consoleAPICalled","params":{"type":"warning","args":[{"type":"string","value":"careful"},{"type":"number","value":3}]}}),
+            ),
+            (
+                3,
+                json!({"method":"Network.responseReceived","params":{"requestId":"1","response":{"status":200,"url":"http://localhost:5173/"}}}),
+            ),
+            (
+                4,
+                json!({"method":"Network.loadingFinished","params":{"requestId":"1","timestamp":1.25}}),
+            ),
+            (
+                5,
+                json!({"method":"Runtime.exceptionThrown","params":{"exceptionDetails":{"text":"Uncaught","exception":{"description":"TypeError: x is undefined"}}}}),
+            ),
+            (
+                6,
+                json!({"method":"Network.loadingFailed","params":{"requestId":"2","errorText":"net::ERR_CONNECTION_REFUSED"}}),
+            ),
         ];
         let console = console_entries(&events, 0);
         assert_eq!(console.cursor, 6);
@@ -823,11 +1212,424 @@ mod tests {
         assert_eq!(network.entries[0].url, "http://localhost:5173/");
         assert_eq!(network.entries[0].status, Some(200));
         assert_eq!(network.entries[0].duration_ms, Some(250));
-        assert_eq!(network.entries[1].error.as_deref(), Some("net::ERR_CONNECTION_REFUSED"));
+        assert_eq!(
+            network.entries[1].error.as_deref(),
+            Some("net::ERR_CONNECTION_REFUSED")
+        );
         // Only the request with an event after the cursor; its URL comes from earlier events.
         let later = network_entries(&events, 3);
         assert_eq!(later.entries.len(), 2);
         assert_eq!(network_entries(&events, 4).entries.len(), 1);
         assert_eq!(network_entries(&events, 6).entries.len(), 0);
+    }
+
+    use super::Agent;
+    use crate::preview_controller::Browsers;
+    use serde_json::Value;
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+    use yaac_core::{ThreadKey, client::Client, demo::threads};
+    use yaac_preview::wire::Action;
+    use yaac_protocol::rpc::{ErrorCode, RpcId};
+    use yaac_protocol::{BrowserCallResult, attach};
+
+    #[derive(Default)]
+    struct FakeEngine {
+        sent: Vec<String>,
+        commands: Vec<(i32, String, Value)>,
+        next: i32,
+        diagnostics: Vec<(u64, Value)>,
+    }
+
+    impl Engine for FakeEngine {
+        fn send(&mut self, action: Action) {
+            self.sent.push(format!("{action:?}"));
+        }
+        fn devtools_command(&mut self, method: &str, params: Value) -> i32 {
+            self.next += 1;
+            self.commands.push((self.next, method.into(), params));
+            self.next
+        }
+        fn diagnostics_since(&self, cursor: u64) -> Vec<(u64, Value)> {
+            self.diagnostics
+                .iter()
+                .filter(|(n, _)| *n > cursor)
+                .cloned()
+                .collect()
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeDriver {
+        tabs: HashMap<u64, FakeEngine>,
+        replies: Vec<(u64, Value)>,
+    }
+
+    impl Driver for FakeDriver {
+        fn engine(&mut self, id: u64) -> Option<&mut dyn Engine> {
+            self.tabs.get_mut(&id).map(|e| e as &mut dyn Engine)
+        }
+        fn take_replies(&mut self) -> Vec<(u64, Value)> {
+            std::mem::take(&mut self.replies)
+        }
+    }
+
+    impl FakeDriver {
+        /// Answer every DevTools command not answered yet with `result`.
+        fn answer(&mut self, tab: u64, result: Value) {
+            let engine = self.tabs.get_mut(&tab).unwrap();
+            for (id, _, _) in engine.commands.drain(..) {
+                self.replies
+                    .push((tab, json!({ "id": id, "result": result })));
+            }
+        }
+        fn methods(&self, tab: u64) -> Vec<String> {
+            self.tabs[&tab]
+                .commands
+                .iter()
+                .map(|(_, m, _)| m.clone())
+                .collect()
+        }
+    }
+
+    struct World {
+        client: Client,
+        browsers: Browsers,
+        driver: FakeDriver,
+        agent: Agent,
+        key: ThreadKey,
+        now: Instant,
+        serial: u64,
+    }
+
+    impl World {
+        fn new() -> Self {
+            let (mut client, _) = crate::app::demo_client(yaac_core::demo::Scenario::Fleet);
+            let key = threads::orchestrator();
+            client
+                .state
+                .targets
+                .iter_mut()
+                .find(|t| t.entry.id == key.target)
+                .unwrap()
+                .entry
+                .state
+                .daemon = Some(attach::DaemonSummary {
+                build: "test".into(),
+                older: false,
+                schema_hash_matches: true,
+                can_update: false,
+                port_forward: true,
+            });
+            let mut browsers = Browsers::default();
+            browsers.assume_host();
+            Self {
+                client,
+                browsers,
+                driver: FakeDriver::default(),
+                agent: Agent::default(),
+                key,
+                now: Instant::now(),
+                serial: 0,
+            }
+        }
+        fn tab(&mut self, key: &ThreadKey, url: &str) -> u64 {
+            let id = self.browsers.started_tab(key, url);
+            self.driver.tabs.insert(id, FakeEngine::default());
+            id
+        }
+        /// Offer calls as `key`'s agent and advance once; the answers by call number.
+        fn run(
+            &mut self,
+            key: &ThreadKey,
+            actions: Vec<Value>,
+        ) -> Vec<(
+            u64,
+            Result<BrowserCallResult, yaac_protocol::rpc::ErrorObject>,
+        )> {
+            let calls = actions
+                .into_iter()
+                .map(|action| {
+                    self.serial += 1;
+                    let params =
+                        json!({ "target": key.target, "threadId": key.thread, "action": action });
+                    (
+                        RpcId::Number(self.serial as i64),
+                        serde_json::from_value(params).unwrap(),
+                    )
+                })
+                .collect();
+            let (answers, _) = self.agent.run(
+                &mut self.client,
+                &mut self.browsers,
+                &mut self.driver,
+                calls,
+                self.now,
+            );
+            answers
+                .into_iter()
+                .map(|(rpc, outcome)| match rpc {
+                    RpcId::Number(n) => (n as u64, outcome),
+                    other => panic!("unexpected id {other:?}"),
+                })
+                .collect()
+        }
+        fn one(
+            &mut self,
+            action: Value,
+        ) -> Option<Result<BrowserCallResult, yaac_protocol::rpc::ErrorObject>> {
+            let key = self.key.clone();
+            self.run(&key, vec![action]).pop().map(|(_, o)| o)
+        }
+        fn tick(&mut self) -> Option<Result<BrowserCallResult, yaac_protocol::rpc::ErrorObject>> {
+            let key = self.key.clone();
+            self.run(&key, vec![]).pop().map(|(_, o)| o)
+        }
+    }
+
+    #[test]
+    fn an_agent_sees_only_its_own_threads_tabs() {
+        let mut w = World::new();
+        let mine = w.tab(&w.key.clone(), "http://localhost:5173/");
+        let other_key = threads::users();
+        let theirs = w.tab(&other_key, "http://localhost:3000/");
+        let Some(Ok(BrowserCallResult::List(list))) = w.one(json!({ "kind": "list" })) else {
+            panic!()
+        };
+        assert_eq!(
+            list.tabs.iter().map(|t| t.tab.clone()).collect::<Vec<_>>(),
+            vec![mine.to_string()]
+        );
+        // Another thread's tab id is not there for this agent, for reading or acting.
+        for action in [
+            json!({ "kind": "snapshot", "tab": theirs.to_string() }),
+            json!({ "kind": "eval", "tab": theirs.to_string(), "expression": "1" }),
+            json!({ "kind": "close", "tab": theirs.to_string() }),
+            json!({ "kind": "click", "tab": "nonsense", "x": 1, "y": 1 }),
+        ] {
+            let Some(Err(e)) = w.one(action) else {
+                panic!()
+            };
+            assert_eq!(e.code, ErrorCode::InvalidParams);
+            assert!(e.message.contains("browser_list"));
+        }
+        assert!(w.driver.tabs[&theirs].commands.is_empty());
+        assert!(w.browsers.tab(&other_key, theirs).is_some());
+        let Some(Err(e)) = w.one(json!({ "kind": "zoom", "tab": mine.to_string() })) else {
+            panic!()
+        };
+        assert_eq!(e.code, ErrorCode::MethodNotFound);
+    }
+
+    #[test]
+    fn eval_marks_the_tab_while_acting_and_returns_the_json_value() {
+        let mut w = World::new();
+        let key = w.key.clone();
+        let id = w.tab(&key, "http://localhost:5173/");
+        assert!(
+            w.one(json!({ "kind": "eval", "tab": id.to_string(), "expression": "1 + 1" }))
+                .is_none()
+        );
+        assert!(
+            w.browsers.tab(&key, id).unwrap().agent.is_some(),
+            "marked while acting"
+        );
+        let (_, method, params) = &w.driver.tabs[&id].commands[0];
+        assert_eq!(method, "Runtime.evaluate");
+        assert_eq!(params["expression"], "1 + 1");
+        assert_eq!(params["awaitPromise"], true);
+        w.driver
+            .answer(id, json!({ "result": { "type": "number", "value": 2 } }));
+        let Some(Ok(BrowserCallResult::Eval(r))) = w.tick() else {
+            panic!()
+        };
+        assert_eq!(r.value, json!(2));
+        // An exception in the page is the agent's error, not a crash.
+        w.one(json!({ "kind": "eval", "tab": id.to_string(), "expression": "x.y" }));
+        w.driver.answer(id, json!({ "result": { "type": "object" }, "exceptionDetails": { "text": "Uncaught", "exception": { "description": "TypeError: x is undefined\n    at <anonymous>" } } }));
+        let Some(Err(e)) = w.tick() else { panic!() };
+        assert_eq!(e.message, "TypeError: x is undefined");
+        // The mark lingers briefly, then goes.
+        assert!(w.browsers.tab(&key, id).unwrap().agent.is_some());
+        w.now += Duration::from_secs(4);
+        w.tick();
+        assert!(w.browsers.tab(&key, id).unwrap().agent.is_none());
+    }
+
+    #[test]
+    fn click_type_and_press_dispatch_input_after_locating_the_element() {
+        let mut w = World::new();
+        let key = w.key.clone();
+        let id = w.tab(&key, "http://localhost:5173/");
+        let tab = id.to_string();
+        assert!(
+            w.one(json!({ "kind": "click", "tab": tab, "ref": "e3" }))
+                .is_none()
+        );
+        assert!(
+            w.driver.tabs[&id].commands[0].2["expression"]
+                .as_str()
+                .unwrap()
+                .contains(r#"{"ref":"e3","selector":null}"#)
+        );
+        w.driver
+            .answer(id, json!({ "result": { "value": { "x": 10.5, "y": 20 } } }));
+        assert!(w.tick().is_none());
+        assert_eq!(w.driver.methods(id), vec!["Input.dispatchMouseEvent"; 3]);
+        assert_eq!(w.driver.tabs[&id].commands[1].2["type"], "mousePressed");
+        assert_eq!(w.driver.tabs[&id].commands[1].2["x"], 10.5);
+        w.driver.answer(id, json!({}));
+        assert!(matches!(w.tick(), Some(Ok(BrowserCallResult::Click(_)))));
+
+        assert!(w.one(json!({ "kind": "type", "tab": tab, "selector": "#q", "text": "hello", "clear": true })).is_none());
+        assert!(
+            w.driver.tabs[&id].commands[0].2["expression"]
+                .as_str()
+                .unwrap()
+                .contains(r##""selector":"#q""##)
+        );
+        w.driver.answer(id, json!({ "result": { "value": true } }));
+        w.tick();
+        assert_eq!(w.driver.methods(id), vec!["Input.insertText"]);
+        assert_eq!(w.driver.tabs[&id].commands[0].2["text"], "hello");
+        w.driver.answer(id, json!({}));
+        assert!(matches!(w.tick(), Some(Ok(BrowserCallResult::Type(_)))));
+
+        assert!(
+            w.one(json!({ "kind": "press", "tab": tab, "key": "Enter" }))
+                .is_none()
+        );
+        assert_eq!(w.driver.methods(id), vec!["Input.dispatchKeyEvent"; 2]);
+        w.driver.answer(id, json!({}));
+        assert!(matches!(w.tick(), Some(Ok(BrowserCallResult::Press(_)))));
+        let Some(Err(e)) = w.one(json!({ "kind": "press", "tab": tab, "key": "Hyper+x" })) else {
+            panic!()
+        };
+        assert_eq!(e.code, ErrorCode::InvalidParams);
+        // A refusal from the browser is reported, not retried.
+        w.one(json!({ "kind": "snapshot", "tab": tab }));
+        let (n, _, _) = w.driver.tabs.get_mut(&id).unwrap().commands.remove(0);
+        w.driver.replies.push((
+            id,
+            json!({ "id": n, "error": { "message": "Target closed" } }),
+        ));
+        let Some(Err(e)) = w.tick() else { panic!() };
+        assert!(e.message.contains("Target closed"));
+    }
+
+    #[test]
+    fn navigate_waits_for_the_load_within_its_bound_and_close_removes_the_tab() {
+        let mut w = World::new();
+        let key = w.key.clone();
+        let id = w.tab(&key, "http://localhost:5173/");
+        let tab = id.to_string();
+        assert!(
+            w.one(json!({ "kind": "navigate", "tab": tab, "history": "back" }))
+                .is_none()
+        );
+        assert_eq!(w.driver.tabs[&id].sent, vec!["Back"]);
+        w.browsers.tab_mut(&key, id).unwrap().loading = true;
+        assert!(w.tick().is_none());
+        let t = w.browsers.tab_mut(&key, id).unwrap();
+        t.loading = false;
+        t.url = "http://localhost:5173/previous".into();
+        let Some(Ok(BrowserCallResult::Navigate(state))) = w.tick() else {
+            panic!()
+        };
+        assert_eq!(state.url, "http://localhost:5173/previous");
+        assert!(!state.loading);
+        // A load that never ends is answered at the bound with loading still true.
+        assert!(
+            w.one(json!({ "kind": "navigate", "tab": tab, "url": "5173" }))
+                .is_none()
+        );
+        assert_eq!(
+            w.driver.tabs[&id].sent.last().unwrap(),
+            r#"Navigate("http://localhost:5173/")"#
+        );
+        w.browsers.tab_mut(&key, id).unwrap().loading = true;
+        w.now += Duration::from_secs(21);
+        let Some(Ok(BrowserCallResult::Navigate(state))) = w.tick() else {
+            panic!()
+        };
+        assert!(state.loading);
+        assert!(matches!(
+            w.one(json!({ "kind": "close", "tab": tab })),
+            Some(Ok(BrowserCallResult::Close(_)))
+        ));
+        assert!(w.browsers.tab(&key, id).is_none());
+    }
+
+    #[test]
+    fn open_adds_a_tab_without_switching_the_users_view() {
+        let mut w = World::new();
+        let key = w.key.clone();
+        let users = w.tab(&key, "http://localhost:5173/");
+        assert_eq!(w.browsers.areas[&key].active, users);
+        assert!(
+            w.one(json!({ "kind": "open", "url": "http://localhost:8080/" }))
+                .is_none()
+        );
+        let area = &w.browsers.areas[&key];
+        assert_eq!(area.tabs.len(), 2);
+        assert_eq!(area.active, users, "the user's tab stays in front");
+        let opened = area.tabs[1].id;
+        assert_eq!(area.tabs[1].url, "http://localhost:8080/");
+        assert!(area.tabs[1].agent.is_some());
+        // No renderer starts the engine here, so the bounded wait answers with the tab.
+        w.now += Duration::from_secs(21);
+        let Some(Ok(BrowserCallResult::Open(state))) = w.tick() else {
+            panic!()
+        };
+        assert_eq!(state.tab, opened.to_string());
+        let Some(Err(e)) = w.one(json!({ "kind": "open", "url": "file:///etc/passwd" })) else {
+            panic!()
+        };
+        assert!(e.message.contains("HTTP"));
+    }
+
+    #[test]
+    fn a_call_the_browser_never_answers_times_out_once() {
+        let mut w = World::new();
+        let key = w.key.clone();
+        let id = w.tab(&key, "http://localhost:5173/");
+        assert!(
+            w.one(json!({ "kind": "screenshot", "tab": id.to_string() }))
+                .is_none()
+        );
+        assert_eq!(w.driver.methods(id), vec!["Page.captureScreenshot"]);
+        w.now += Duration::from_secs(26);
+        let Some(Err(e)) = w.tick() else { panic!() };
+        assert_eq!(e.code, ErrorCode::InternalError);
+        assert!(w.tick().is_none());
+    }
+
+    #[test]
+    fn console_and_network_read_the_tabs_buffers() {
+        let mut w = World::new();
+        let key = w.key.clone();
+        let id = w.tab(&key, "http://localhost:5173/");
+        w.driver.tabs.get_mut(&id).unwrap().diagnostics = vec![
+            (
+                1,
+                json!({"method":"Runtime.consoleAPICalled","params":{"type":"log","args":[{"type":"string","value":"hi"}]}}),
+            ),
+            (
+                2,
+                json!({"method":"Network.loadingFailed","params":{"requestId":"9","errorText":"net::ERR_FAILED"}}),
+            ),
+        ];
+        let Some(Ok(BrowserCallResult::Console(c))) =
+            w.one(json!({ "kind": "console", "tab": id.to_string() }))
+        else {
+            panic!()
+        };
+        assert_eq!((c.entries.len(), c.cursor), (1, 2));
+        let Some(Ok(BrowserCallResult::Network(n))) =
+            w.one(json!({ "kind": "network", "tab": id.to_string(), "cursor": 1 }))
+        else {
+            panic!()
+        };
+        assert_eq!(n.entries[0].error.as_deref(), Some("net::ERR_FAILED"));
     }
 }

@@ -13,7 +13,10 @@ public partial class BrowserView
 {
     private ContextMenu? pageMenu;
     private Window? pageDialog;
+    private Action? dismissHostMenu;
+    private Action? dismissHostDialog;
     private Rect? popupBounds;
+    private Rect? compositionCaret;
 
     internal void Paint(BrowserFrame frame)
     {
@@ -59,7 +62,17 @@ public partial class BrowserView
     {
         var tab = envelope.GetProperty("tab").GetUInt64();
         var notice = envelope.GetProperty("event");
-        if (notice.TryGetProperty("Favicon", out var favicon) && tab == active)
+        if (active != tab) return;
+        if (notice.ValueKind == JsonValueKind.String)
+        {
+            switch (notice.GetString())
+            {
+                case "DismissMenu": dismissHostMenu?.Invoke(); break;
+                case "DismissDialog": dismissHostDialog?.Invoke(); break;
+            }
+            return;
+        }
+        if (notice.TryGetProperty("Favicon", out var favicon))
         {
             try
             {
@@ -86,7 +99,6 @@ public partial class BrowserView
             return;
         }
 
-        if (active != tab) return;
         if (!windowShown || !Surface.IsVisible)
         {
             if (notice.TryGetProperty("Menu", out _)) SendInput(new { Menu = (int?)null });
@@ -103,6 +115,12 @@ public partial class BrowserView
         }
         if (notice.TryGetProperty("Cursor", out var cursor))
             Surface.Cursor = BrowserCursor(cursor.GetInt32());
+        if (notice.TryGetProperty("CompositionCaret", out var caret))
+        {
+            compositionCaret = new Rect(caret[0].GetInt32(), caret[1].GetInt32(),
+                Math.Max(0, caret[2].GetInt32()), Math.Max(0, caret[3].GetInt32()));
+            PositionImeInput();
+        }
         if (notice.TryGetProperty("Menu", out var menu)) OpenMenu(tab, menu);
         if (notice.TryGetProperty("Dialog", out var dialog)) OpenDialog(tab, dialog);
         if (notice.TryGetProperty("FileDialog", out var file))
@@ -133,6 +151,16 @@ public partial class BrowserView
         PopupImage.Visibility = Visibility.Visible;
     }
 
+    private void PositionImeInput()
+    {
+        var caret = compositionCaret.GetValueOrDefault();
+        var height = Math.Clamp(caret.Height / LayoutScale, 1, Math.Max(1, Surface.ActualHeight));
+        var left = Math.Clamp(caret.X / LayoutScale, 0, Math.Max(0, Surface.ActualWidth - PageInput.Width));
+        var top = Math.Clamp(caret.Y / LayoutScale, 0, Math.Max(0, Surface.ActualHeight - height));
+        PageInput.Height = height;
+        PageInput.Margin = new Thickness(left, top, 0, 0);
+    }
+
     private static Cursor BrowserCursor(int cef) => cef switch
     {
         1 or 31 => Cursors.Cross,
@@ -153,7 +181,7 @@ public partial class BrowserView
 
     private void OpenMenu(ulong tab, JsonElement notice)
     {
-        pageMenu?.SetCurrentValue(ContextMenu.IsOpenProperty, false);
+        dismissHostMenu?.Invoke();
         var at = notice.GetProperty("at");
         var point = new[] { at[0].GetInt32(), at[1].GetInt32() };
         var menuThread = thread;
@@ -192,16 +220,19 @@ public partial class BrowserView
         menu.Closed += (_, _) =>
         {
             if (!answered) Complete(null);
-            if (pageMenu == menu) pageMenu = null;
+            if (pageMenu != menu) return;
+            pageMenu = null;
+            dismissHostMenu = null;
         };
         pageMenu = menu;
+        dismissHostMenu = () => { answered = true; menu.IsOpen = false; };
         menu.IsOpen = true;
     }
 
     private void OpenDialog(ulong tab, JsonElement notice)
     {
         if (Window.GetWindow(this) is not Window owner) return;
-        pageDialog?.Close();
+        dismissHostDialog?.Invoke();
         var kind = notice.GetProperty("kind").GetUInt32();
         var panel = new StackPanel { Margin = new Thickness(16) };
         panel.Children.Add(new TextBlock
@@ -229,7 +260,7 @@ public partial class BrowserView
         };
         dialog.SetResourceReference(BackgroundProperty, "YaacCanvas");
         dialog.SetResourceReference(ForegroundProperty, "YaacText");
-        bool accepted = false;
+        bool accepted = false, canceledByHost = false;
         confirm.Click += (_, _) => { accepted = true; dialog.Close(); };
         if (kind != 0)
         {
@@ -246,13 +277,17 @@ public partial class BrowserView
         var sentThread = thread;
         dialog.Closed += (_, _) =>
         {
-            Command?.Invoke("browser.input", new
-            {
-                thread = sentThread, tab, data = new { Dialog = new { accept = accepted || kind == 0, text = field?.Text ?? "" } },
-            });
-            if (pageDialog == dialog) pageDialog = null;
+            if (!canceledByHost)
+                Command?.Invoke("browser.input", new
+                {
+                    thread = sentThread, tab, data = new { Dialog = new { accept = accepted || kind == 0, text = field?.Text ?? "" } },
+                });
+            if (pageDialog != dialog) return;
+            pageDialog = null;
+            dismissHostDialog = null;
         };
         pageDialog = dialog;
+        dismissHostDialog = () => { canceledByHost = true; dialog.Close(); };
         dialog.Show();
         if (field is not null) { field.SelectAll(); field.Focus(); }
         else confirm.Focus();
@@ -313,7 +348,9 @@ public partial class BrowserView
         pageMenu?.SetCurrentValue(ContextMenu.IsOpenProperty, false);
         pageDialog?.Close();
         popupBounds = null;
+        compositionCaret = null;
         ArrangePopup();
+        PositionImeInput();
     }
 
 }

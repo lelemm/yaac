@@ -350,7 +350,7 @@ export type BrowserCallResult = ({
 } & BrowserEvalResult);
 
 /**
- * Click an element (snapshot reference or CSS selector) or a point in CSS pixels.
+ * Click an element (snapshot reference or CSS selector) or a viewport point in CSS pixels.
  */
 export interface BrowserClickParams {
   /**
@@ -366,11 +366,11 @@ export interface BrowserClickParams {
    */
   tab: string;
   /**
-   * Horizontal page position, with `y`.
+   * Horizontal viewport position, with `y`.
    */
   x?: number | null;
   /**
-   * Vertical page position, with `x`.
+   * Vertical viewport position, with `x`.
    */
   y?: number | null;
 }

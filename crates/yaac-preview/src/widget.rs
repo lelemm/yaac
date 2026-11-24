@@ -42,6 +42,8 @@ pub struct Preview {
     last_press: Option<(u8, Pos2, f64, i32)>,
     texture_context: Context,
     cursor: u32,
+    cursor_image: Option<egui::CustomCursorImage>,
+    caret: [i32; 4],
     menu: Option<ContextMenu>,
     dialog: Option<Dialog>,
     pub responses: std::collections::VecDeque<serde_json::Value>,
@@ -77,6 +79,8 @@ impl Preview {
             last_press: None,
             texture_context: ctx.clone(),
             cursor: 0,
+            cursor_image: None,
+            caret: [0, 0, 1, 16],
             menu: None,
             dialog: None,
             responses: Default::default(),
@@ -143,7 +147,24 @@ impl Preview {
                         self.state.can_go_back = back;
                         self.state.can_go_forward = forward;
                     }
-                    Event::Cursor(c) => self.cursor = c,
+                    Event::CustomCursor {
+                        rgba,
+                        size,
+                        hotspot,
+                    } => {
+                        self.cursor_image = Some(egui::CustomCursorImage {
+                            rgba: rgba.into(),
+                            size,
+                            hotspot,
+                        });
+                    }
+                    Event::Cursor(c) => {
+                        self.cursor = c;
+                        self.cursor_image = None;
+                    }
+                    Event::CompositionCaret(rect) => self.caret = rect,
+                    Event::DismissDialog => self.dialog = None,
+                    Event::DismissMenu => self.menu = None,
                     Event::Popup(r) => self.popup = r,
                     Event::Menu { at, items } => self.menu = Some(ContextMenu { at, items }),
                     Event::Dialog {
@@ -164,7 +185,9 @@ impl Preview {
                         }
                         self.responses.push_back(v);
                     }
-                    Event::Closed => self.state.error = Some("Tab closed".into()),
+                    Event::Closed => {
+                        self.state.error.get_or_insert_with(|| "Tab closed".into());
+                    }
                     Event::Paint { .. } => {}
                 },
             }
@@ -221,15 +244,44 @@ impl Preview {
             );
         }
         if r.hovered() {
+            ctx.set_cursor_image(self.cursor_image.clone());
+            use egui::CursorIcon::*;
             ctx.set_cursor_icon(match self.cursor {
-                1 => egui::CursorIcon::Crosshair,
-                2 => egui::CursorIcon::PointingHand,
-                3 => egui::CursorIcon::Text,
-                4 => egui::CursorIcon::Wait,
-                5 => egui::CursorIcon::Help,
-                6 | 13 | 15 => egui::CursorIcon::ResizeHorizontal,
-                7 | 10 | 14 => egui::CursorIcon::ResizeVertical,
-                _ => egui::CursorIcon::Default,
+                1 => Crosshair,
+                2 => PointingHand,
+                3 => Text,
+                4 => Wait,
+                5 => Help,
+                6 => ResizeEast,
+                7 => ResizeNorth,
+                8 => ResizeNorthEast,
+                9 => ResizeNorthWest,
+                10 => ResizeSouth,
+                11 => ResizeSouthEast,
+                12 => ResizeSouthWest,
+                13 => ResizeWest,
+                14 => ResizeVertical,
+                15 => ResizeHorizontal,
+                16 => ResizeNeSw,
+                17 => ResizeNwSe,
+                18 => ResizeColumn,
+                19 => ResizeRow,
+                20..=28 | 43 | 44 => AllScroll,
+                29 | 47 => Move,
+                30 => VerticalText,
+                31 => Cell,
+                32 => ContextMenu,
+                33 | 49 => Alias,
+                34 => Progress,
+                35 | 46 => NoDrop,
+                36 | 48 => Copy,
+                37 => None,
+                38 => NotAllowed,
+                39 => ZoomIn,
+                40 => ZoomOut,
+                41 => Grab,
+                42 => Grabbing,
+                _ => Default,
             });
         }
         if self.dialog.is_none() && self.menu.is_none() {
@@ -462,7 +514,10 @@ impl Preview {
                 o.ime = Some(egui::output::IMEOutput {
                     purpose: egui::IMEPurpose::Normal,
                     rect,
-                    cursor_rect: rect,
+                    cursor_rect: Rect::from_min_size(
+                        rect.min + egui::vec2(self.caret[0] as f32, self.caret[1] as f32),
+                        egui::vec2(self.caret[2].max(1) as f32, self.caret[3].max(1) as f32),
+                    ),
                     should_interrupt_composition: false,
                 })
             });

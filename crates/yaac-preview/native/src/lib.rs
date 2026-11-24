@@ -1,7 +1,7 @@
 //! CEF browser host. All CEF objects live exclusively on its main thread.
+mod tools_title;
 #[path = "../../src/wire.rs"]
 mod wire;
-mod tools_title;
 use cef::{args::Args, *};
 use memmap2::MmapMut;
 use std::{
@@ -64,7 +64,7 @@ impl State {
             return Ok(());
         }
         let mut full = surf.missed;
-        if surf.size != size {
+        if surf.size != size || surf.map.is_none() {
             let path = root().join(format!("{}-{}.bgra", self.id, u8::from(popup)));
             surf.map.take();
             let file = std::fs::OpenOptions::new()
@@ -92,6 +92,7 @@ impl State {
                 })
                 .collect()
         };
+        if dirty.is_empty() { return Ok(()); }
         let map = surf.map.as_mut().unwrap();
         for &[x, y, w, h] in &dirty {
             for row in y..y + h {
@@ -121,6 +122,23 @@ wrap_render_handler! {
                 1
             } else {
                 0
+            }
+        }
+        fn on_ime_composition_range_changed(
+            &self,
+            _browser: Option<&mut Browser>,
+            range: Option<&Range>,
+            bounds: Option<&[Rect]>,
+        ) {
+            if let Some(rects) = bounds
+                && !rects.is_empty()
+            {
+                let index = range.map_or(0, |r| r.to.saturating_sub(r.from) as usize);
+                let caret = &rects[index.min(rects.len() - 1)];
+                emit(
+                    self.s.id,
+                    Event::CompositionCaret([caret.x, caret.y, caret.width, caret.height]),
+                );
             }
         }
         fn on_popup_size(&self, _browser: Option<&mut Browser>, rect: Option<&Rect>) {
@@ -200,7 +218,10 @@ wrap_life_span_handler! {
     }
 }
 fn maybe_quit() {
-    if STOPPING.get() && TOOL_WINDOWS.with_borrow(|windows|windows.is_empty()) && TABS.with_borrow(|tabs| tabs.is_empty()) {
+    if STOPPING.get()
+        && TOOL_WINDOWS.with_borrow(|windows| windows.is_empty())
+        && TABS.with_borrow(|tabs| tabs.is_empty())
+    {
         quit_message_loop()
     }
 }
@@ -255,8 +276,35 @@ wrap_display_handler! {
             _browser: Option<&mut Browser>,
             _cursor: CursorHandle,
             kind: CursorType,
-            _custom: Option<&CursorInfo>,
+            custom: Option<&CursorInfo>,
         ) -> i32 {
+            if kind == CursorType::CUSTOM
+                && let Some(info) = custom
+            {
+                let (w, h) = (info.size.width, info.size.height);
+                if (1..=256).contains(&w) && (1..=256).contains(&h) && !info.buffer.is_null() {
+                    // SAFETY: CEF supplies the BGRA bitmap for the life of this callback.
+                    let bgra = unsafe {
+                        std::slice::from_raw_parts(info.buffer.cast::<u8>(), (w * h * 4) as usize)
+                    };
+                    let mut rgba = bgra.to_vec();
+                    for pixel in rgba.as_chunks_mut::<4>().0 {
+                        pixel.swap(0, 2);
+                    }
+                    emit(
+                        self.id,
+                        Event::CustomCursor {
+                            rgba,
+                            size: [w as u16, h as u16],
+                            hotspot: [
+                                info.hotspot.x.clamp(0, w - 1) as u16,
+                                info.hotspot.y.clamp(0, h - 1) as u16,
+                            ],
+                        },
+                    );
+                    return 1;
+                }
+            }
             emit(self.id, Event::Cursor(kind.get_raw() as u32));
             1
         }
@@ -341,6 +389,11 @@ wrap_jsdialog_handler! {
         s: Shared<State>,
     }
     impl JsdialogHandler {
+        fn on_reset_dialog_state(&self, _browser: Option<&mut Browser>) {
+            if self.s.dialog.take().is_some() {
+                emit(self.s.id, Event::DismissDialog);
+            }
+        }
         fn on_jsdialog(
             &self,
             _browser: Option<&mut Browser>,
@@ -369,6 +422,15 @@ wrap_context_menu_handler! {
         s: Shared<State>,
     }
     impl ContextMenuHandler {
+        fn on_context_menu_dismissed(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+        ) {
+            if self.s.menu.take().is_some() {
+                emit(self.s.id, Event::DismissMenu);
+            }
+        }
         fn run_context_menu(
             &self,
             _browser: Option<&mut Browser>,
@@ -403,17 +465,23 @@ wrap_context_menu_handler! {
     }
 }
 wrap_life_span_handler! {
-    struct ToolsLife{title:String}
-    impl LifeSpanHandler{
-        fn on_after_created(&self,browser:Option<&mut Browser>){
-            if let Some(browser)=browser{
-                let id=browser.identifier();
-                TOOL_WINDOWS.with_borrow_mut(|windows|windows.insert(id,(browser.clone(),self.title.clone())));
-                post(Job::SetTitle(id,0));
+    struct ToolsLife {
+        title: String,
+    }
+    impl LifeSpanHandler {
+        fn on_after_created(&self, browser: Option<&mut Browser>) {
+            if let Some(browser) = browser {
+                let id = browser.identifier();
+                TOOL_WINDOWS.with_borrow_mut(|windows| {
+                    windows.insert(id, (browser.clone(), self.title.clone()))
+                });
+                post(Job::SetTitle(id, 0));
             }
         }
-        fn on_before_close(&self,browser:Option<&mut Browser>){
-            if let Some(browser)=browser{TOOL_WINDOWS.with_borrow_mut(|windows|windows.remove(&browser.identifier()));}
+        fn on_before_close(&self, browser: Option<&mut Browser>) {
+            if let Some(browser) = browser {
+                TOOL_WINDOWS.with_borrow_mut(|windows| windows.remove(&browser.identifier()));
+            }
             maybe_quit();
         }
     }
@@ -462,7 +530,9 @@ wrap_dev_tools_message_observer! {
     }
     impl DevToolsMessageObserver {
         fn on_dev_tools_message(&self, _browser: Option<&mut Browser>, message: Option<&[u8]>) -> i32 {
-            if let Some(mut v) = message.and_then(|s| serde_json::from_slice::<serde_json::Value>(s).ok()) {
+            if let Some(mut v) =
+                message.and_then(|s| serde_json::from_slice::<serde_json::Value>(s).ok())
+            {
                 if v.get("id").is_none() {
                     let params = &v["params"];
                     let method = v["method"].as_str().unwrap_or_default();
@@ -475,7 +545,10 @@ wrap_dev_tools_message_observer! {
                             "requestId": params["requestId"], "timestamp": params["timestamp"],
                             "response": {"url":params["response"]["url"],"status":params["response"]["status"],"timing":params["response"]["timing"]}
                         }),
-                        "Runtime.consoleAPICalled"|"Runtime.exceptionThrown"|"Network.loadingFailed"|"Network.loadingFinished" => params.clone(),
+                        "Runtime.consoleAPICalled"
+                        | "Runtime.exceptionThrown"
+                        | "Network.loadingFailed"
+                        | "Network.loadingFinished" => params.clone(),
                         _ => return 1,
                     };
                     v["params"] = summary;
@@ -525,6 +598,10 @@ wrap_request_context_handler! {
                     .and_then(|c| context_proxy(c, port))
                 {
                     emit(self.id, Event::Error(e));
+                    enqueue(Request {
+                        tab: self.id,
+                        action: Action::Close,
+                    });
                     return;
                 }
             }
@@ -582,7 +659,7 @@ fn open(id: u64, url: String, socks: Option<u16>) -> Result<(), String> {
     Ok(())
 }
 enum Job {
-    SetTitle(i32,u8),
+    SetTitle(i32, u8),
     Command(Request),
     Ready(u64, String),
 }
@@ -595,12 +672,15 @@ wrap_task! {
         fn execute(&self) {
             let job = self.job.lock().unwrap().take();
             match job {
-                Some(Job::SetTitle(id,attempt))=>{
-                    let target=TOOL_WINDOWS.with_borrow(|w|w.get(&id).cloned());
-                    if let Some((mut browser,title))=target{
-                        if !tools_title::apply(&mut browser,&title) && attempt<10{
-                            let job=std::sync::Arc::new(std::sync::Mutex::new(Some(Job::SetTitle(id,attempt+1))));
-                            post_delayed_task(ThreadId::UI,Some(&mut Run::new(job)),50);
+                Some(Job::SetTitle(id, attempt)) => {
+                    let target = TOOL_WINDOWS.with_borrow(|w| w.get(&id).cloned());
+                    if let Some((mut browser, title)) = target {
+                        if !tools_title::apply(&mut browser, &title) && attempt < 10 {
+                            let job = std::sync::Arc::new(std::sync::Mutex::new(Some(Job::SetTitle(
+                                id,
+                                attempt + 1,
+                            ))));
+                            post_delayed_task(ThreadId::UI, Some(&mut Run::new(job)), 50);
                         }
                     }
                 }
@@ -797,11 +877,21 @@ fn handle(req: Request) {
             h.ime_set_composition(
                 Some(&t.as_str().into()),
                 None,
-                Some(&Range {from:u32::MAX,to:u32::MAX}),
+                Some(&Range {
+                    from: u32::MAX,
+                    to: u32::MAX,
+                }),
                 Some(&Range { from: end, to: end }),
             );
         }
-        Commit(t) => h.ime_commit_text(Some(&t.as_str().into()), Some(&Range {from:u32::MAX,to:u32::MAX}), 0),
+        Commit(t) => h.ime_commit_text(
+            Some(&t.as_str().into()),
+            Some(&Range {
+                from: u32::MAX,
+                to: u32::MAX,
+            }),
+            0,
+        ),
         CancelComposition => h.ime_cancel_composition(),
         FileDialog(paths) => {
             if let Some(cb) = s.file_dialog.take() {
@@ -872,7 +962,10 @@ fn main_with_sandbox(sandbox: *mut std::ffi::c_void) -> i32 {
     if ret >= 0 {
         return ret;
     }
-    let (Ok(dir), Some(session)) = (std::env::var("YAAC_CEF_DIR"), std::env::var_os("YAAC_PREVIEW_SESSION")) else {
+    let (Ok(dir), Some(session)) = (
+        std::env::var("YAAC_CEF_DIR"),
+        std::env::var_os("YAAC_PREVIEW_SESSION"),
+    ) else {
         eprintln!("Browser host requires a controller session");
         return 1;
     };
@@ -880,7 +973,11 @@ fn main_with_sandbox(sandbox: *mut std::ffi::c_void) -> i32 {
     let settings = Settings {
         windowless_rendering_enabled: 1,
         resources_dir_path: dir.as_str().into(),
-        locales_dir_path: std::path::Path::new(&dir).join("locales").to_string_lossy().as_ref().into(),
+        locales_dir_path: std::path::Path::new(&dir)
+            .join("locales")
+            .to_string_lossy()
+            .as_ref()
+            .into(),
         root_cache_path: profile.to_string_lossy().as_ref().into(),
         ..Default::default()
     };

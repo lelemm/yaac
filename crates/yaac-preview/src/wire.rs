@@ -96,6 +96,14 @@ pub enum Event {
         forward: bool,
     },
     Cursor(u32),
+    CustomCursor {
+        rgba: Vec<u8>,
+        size: [u16; 2],
+        hotspot: [u16; 2],
+    },
+    CompositionCaret([i32; 4]),
+    DismissDialog,
+    DismissMenu,
     Menu {
         at: [i32; 2],
         items: Vec<(i32, String, bool)>,
@@ -114,22 +122,38 @@ pub enum Event {
 /// through the hub's SOCKS proxy for the thread's target, which resolves names there.
 /// `<-loopback>` removes Chromium's implicit loopback bypass; no other entry, so nothing is
 /// fetched DIRECT from the host.
-pub fn proxy_settings(socks:u16)->[(&'static str,String);3]{
- [("mode","fixed_servers".into()),("server",format!("socks5://127.0.0.1:{socks}")),("bypass_list","<-loopback>".into())]
+pub fn proxy_settings(socks: u16) -> [(&'static str, String); 3] {
+    [
+        ("mode", "fixed_servers".into()),
+        ("server", format!("socks5://127.0.0.1:{socks}")),
+        ("bypass_list", "<-loopback>".into()),
+    ]
 }
 /// WebRTC must not open UDP sockets that bypass the proxy from the host (P323).
-pub const WEBRTC_POLICY:(&str,&str)=("webrtc.ip_handling_policy","disable_non_proxied_udp");
+pub const WEBRTC_POLICY: (&str, &str) = ("webrtc.ip_handling_policy", "disable_non_proxied_udp");
 
 #[cfg(test)]
-mod tests{
- use super::*;
- #[test]
- fn every_host_goes_through_the_target_proxy(){
-  let settings=proxy_settings(4321);
-  assert_eq!(settings,[("mode","fixed_servers".to_owned()),("server","socks5://127.0.0.1:4321".to_owned()),("bypass_list","<-loopback>".to_owned())]);
-  // No bypass entry other than removing the implicit loopback bypass.
-  let bypass=&settings[2].1;
-  assert!(bypass.split([';',',']).all(|rule|rule.trim()=="<-loopback>"),"{bypass}");
-  assert_eq!(WEBRTC_POLICY.1,"disable_non_proxied_udp");
- }
+mod tests {
+    use super::*;
+    #[test]
+    fn every_host_goes_through_the_target_proxy() {
+        let settings = proxy_settings(4321);
+        assert_eq!(
+            settings,
+            [
+                ("mode", "fixed_servers".to_owned()),
+                ("server", "socks5://127.0.0.1:4321".to_owned()),
+                ("bypass_list", "<-loopback>".to_owned())
+            ]
+        );
+        // No bypass entry other than removing the implicit loopback bypass.
+        let bypass = &settings[2].1;
+        assert!(
+            bypass
+                .split([';', ','])
+                .all(|rule| rule.trim() == "<-loopback>"),
+            "{bypass}"
+        );
+        assert_eq!(WEBRTC_POLICY.1, "disable_non_proxied_udp");
+    }
 }

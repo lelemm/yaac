@@ -8,7 +8,7 @@ const cursor = { type: "integer", minimum: 0, description: "Cursor from the prev
 const url = { type: "string", minLength: 1, description: "A URL, host:port, or a bare port (5173 means http://localhost:5173/). localhost is this machine." };
 const ref = { type: "string", minLength: 1, description: "Element reference from browser_snapshot." };
 const selector = { type: "string", minLength: 1, description: "CSS selector; the first match is used." };
-const point = (axis: string) => ({ type: "integer", description: `${axis} position in CSS pixels from the page's top left, with ${axis === "Horizontal" ? "y" : "x"}.` });
+const point = (axis: string) => ({ type: "integer", description: `${axis} position in CSS pixels from the top left of the visible page, with ${axis === "Horizontal" ? "y" : "x"}.` });
 
 function tool(kind: BrowserAction["kind"], description: string, properties: Record<string, unknown>, required = "tab" in properties ? ["tab"] : []): ToolDef {
   return {

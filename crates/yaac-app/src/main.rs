@@ -25,7 +25,15 @@ fn main() -> std::process::ExitCode {
     #[cfg(windows)]
     yaac_winsys::attach_parent_console();
     let args: Vec<_> = std::env::args().skip(1).collect();
-    if matches!(args.as_slice(), [demo, preview, ..] if demo == "--demo" && preview == "preview") {
+    let code = run(&args);
+    #[cfg(feature = "preview")]
+    if !yaac_preview::finish_after_window_exit() {
+        eprintln!("Browser host cleanup is still pending at window exit");
+    }
+    code
+}
+fn run(args: &[String]) -> std::process::ExitCode {
+    if matches!(args, [demo, preview, ..] if demo == "--demo" && preview == "preview") {
         #[cfg(feature = "preview")]
         return preview_demo::run(&args[2..]);
         #[cfg(not(feature = "preview"))]
@@ -34,5 +42,5 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     }
-    yaac_app::run(&args)
+    yaac_app::run(args)
 }

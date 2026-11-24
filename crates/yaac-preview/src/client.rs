@@ -111,6 +111,34 @@ struct Routes {
     tabs: HashMap<u64, Route>,
     error: Option<String>,
 }
+static WORKERS: (Mutex<usize>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
+struct WorkerLifetime;
+impl WorkerLifetime {
+    fn start() -> Self {
+        *WORKERS.0.lock().unwrap() += 1;
+        Self
+    }
+}
+impl Drop for WorkerLifetime {
+    fn drop(&mut self) {
+        *WORKERS.0.lock().unwrap() -= 1;
+        WORKERS.1.notify_all();
+    }
+}
+/// Wait for browser hosts and frame leases after the front end has exited. Tab close and the
+/// rendering thread never wait on CEF. Returns false if a helper fails to exit within five seconds.
+pub fn finish_after_window_exit() -> bool {
+    let (count, _timeout) = WORKERS
+        .1
+        .wait_timeout_while(
+            WORKERS.0.lock().unwrap(),
+            std::time::Duration::from_secs(5),
+            |count| *count != 0,
+        )
+        .unwrap();
+    *count == 0
+}
+
 struct Session {
     commands: Sender<Request>,
     routes: Arc<Mutex<Routes>>,
@@ -177,8 +205,9 @@ impl BrowserHost {
                 commands: commands.clone(),
                 routes: routes.clone(),
             });
+            let lifetime = WorkerLifetime::start();
             thread::spawn(move || {
-                let err = run_host(inbox, commands, &routes)
+                let err = run_host(inbox, commands, &routes, lifetime)
                     .err()
                     .map_or_else(|| "Browser host closed".to_owned(), |e| e.to_string());
                 let targets = {
@@ -320,6 +349,7 @@ fn run_host(
     inbox: Receiver<Request>,
     commands: Sender<Request>,
     routes: &Mutex<Routes>,
+    lifetime: WorkerLifetime,
 ) -> io::Result<()> {
     let dir = runtime()?;
     let adapter = dir.join(libloading::library_filename("yaac_preview_native"));
@@ -386,6 +416,8 @@ fn run_host(
                 let _ = std::fs::remove_file(profile.path().join(format!("{tab}-{surface}.bgra")));
             }
         }
+        drop(profile);
+        drop(lifetime);
     });
     let mut files = HashMap::new();
     let read = (|| -> io::Result<()> {

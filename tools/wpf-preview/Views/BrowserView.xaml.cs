@@ -331,6 +331,7 @@ public partial class BrowserView : UserControl
         if (viewport == current) return;
         viewport = current;
         ArrangePopup();
+        PositionImeInput();
         SendInput(new { Bounds = new { width, height, scale = dpi } });
     }
 
