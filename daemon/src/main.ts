@@ -12,6 +12,7 @@
 // are asked for).
 
 import { spawn } from "node:child_process";
+import { isMainThread } from "node:worker_threads";
 // Each subcommand loads only what it needs: `yaacd mcp` runs once per Codex thread and must
 // stay small, so the daemon's modules are imported lazily.
 
@@ -112,7 +113,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => {
-  process.stderr.write(`yaacd: ${(e as Error)?.stack ?? e}\n`);
-  process.exit(1);
-});
+if (isMainThread) {
+  main().catch((e) => {
+    process.stderr.write(`yaacd: ${(e as Error)?.stack ?? e}\n`);
+    process.exit(1);
+  });
+} else {
+  // The Claude session worker runs from this same bundle in a packaged daemon.
+  void import("./providers/claude/sdk.js");
+}

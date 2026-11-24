@@ -458,7 +458,7 @@ export class ClaudeProvider implements HarnessProvider {
   private sdk(): Promise<ClaudeSdk> {
     if (!this.sdkPromise) {
       const s = this.options.sdk;
-      this.sdkPromise = typeof s === "function" ? s() : s ? Promise.resolve(s) : loadRealSdk();
+      this.sdkPromise = typeof s === "function" ? s() : s ? Promise.resolve(s) : loadRealSdk(() => this.configDir);
       this.sdkPromise.catch(() => {
         this.sdkPromise = null;
       });
@@ -1911,6 +1911,8 @@ export class ClaudeProvider implements HarnessProvider {
   async dispose(): Promise<void> {
     for (const live of [...this.live.values()]) this.closeLive(live, "yaacd is stopping");
     this.disposed = true;
+    const sdk = await this.sdkPromise?.catch(() => null);
+    sdk?.dispose?.();
   }
 }
 

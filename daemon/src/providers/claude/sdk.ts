@@ -11,9 +11,11 @@
 // `importSessionToStore` carries along), best effort: see `subagentFiles`.
 
 import { execFile } from "node:child_process";
-import { windowsExecutable } from "../windows-executable.js";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { parentPort, Worker, workerData } from "node:worker_threads";
+import { windowsExecutable } from "../windows-executable.js";
 import type {
   AccountInfo,
   ForkSessionOptions,
@@ -56,6 +58,7 @@ export interface SdkQuery extends AsyncIterable<SDKMessage> {
 
 export interface ClaudeSdk {
   query(params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }): SdkQuery;
+  dispose?(): void;
   listSessions(options?: ListSessionsOptions): Promise<SDKSessionInfo[]>;
   /** A session's subagent ids (D151): `~/.claude/projects/<dir>/<sessionId>/subagents/…/agent-<id>.jsonl`. */
   listSubagents(sessionId: string, options?: ListSubagentsOptions): Promise<string[]>;
@@ -70,21 +73,125 @@ export interface ClaudeSdk {
   deleteSession(sessionId: string, options?: SessionMutationOptions): Promise<void>;
 }
 
-/** The real SDK, loaded on first use so that yaacd pays for it only when Claude is used. */
-export async function loadRealSdk(): Promise<ClaudeSdk> {
+type StoreApi = Omit<ClaudeSdk, "query" | "dispose">;
+type StoreMethod = keyof StoreApi;
+type StoreRequest = { id: number; method: StoreMethod; args: unknown[] };
+type StoreReply = { id: number } & ({ value: unknown } | { error: string });
+
+function invokeStore(sdk: StoreApi, method: StoreMethod, args: unknown[]): Promise<unknown> {
+  const run = sdk[method] as (...args: unknown[]) => Promise<unknown>;
+  return run(...args);
+}
+
+/**
+ * The SDK's on-disk session functions use its process environment. A worker gives a
+ * different Claude home its own environment, even while other instances read or write.
+ */
+class StoreWorker {
+  private readonly worker: Worker;
+  private readonly pending = new Map<number, { resolve(value: unknown): void; reject(error: unknown): void }>();
+  private nextId = 0;
+  private closing = false;
+
+  constructor(configDir: string, onExit: () => void) {
+    // This URL is sdk.js in tests and yaacd.mjs in the single-file distribution.
+    this.worker = new Worker(new URL(import.meta.url), { workerData: { claudeStoreDir: configDir } });
+    this.worker.on("message", (reply: StoreReply) => {
+      const request = this.pending.get(reply.id);
+      if (!request) return;
+      this.pending.delete(reply.id);
+      if ("error" in reply) request.reject(new Error(reply.error));
+      else request.resolve(reply.value);
+      this.whenIdle();
+    });
+    this.worker.on("error", (error) => this.fail(error));
+    this.worker.on("exit", (code) => {
+      this.fail(new Error(`Claude session worker exited (${code})`));
+      onExit();
+    });
+    this.worker.unref();
+  }
+
+  call(method: StoreMethod, args: unknown[]): Promise<unknown> {
+    const id = ++this.nextId;
+    return new Promise((resolve, reject) => {
+      this.worker.ref();
+      this.pending.set(id, { resolve, reject });
+      try {
+        this.worker.postMessage({ id, method, args } satisfies StoreRequest);
+      } catch (error) {
+        this.pending.delete(id);
+        this.whenIdle();
+        reject(error);
+      }
+    });
+  }
+
+  close(): void {
+    this.closing = true;
+    this.whenIdle();
+  }
+
+  private whenIdle(): void {
+    if (this.pending.size) return;
+    if (this.closing) void this.worker.terminate();
+    else this.worker.unref();
+  }
+
+  private fail(error: Error): void {
+    for (const request of this.pending.values()) request.reject(error);
+    this.pending.clear();
+  }
+}
+
+if (parentPort && typeof workerData?.claudeStoreDir === "string") {
+  const port = parentPort;
+  process.env.CLAUDE_CONFIG_DIR = workerData.claudeStoreDir;
+  let sdk: Promise<StoreApi> | undefined;
+  port.on("message", async ({ id, method, args }: StoreRequest) => {
+    try {
+      sdk ??= import("@anthropic-ai/claude-agent-sdk");
+      port.postMessage({ id, value: await invokeStore(await sdk, method, args) } satisfies StoreReply);
+    } catch (error) {
+      port.postMessage({ id, error: error instanceof Error ? error.message : String(error) } satisfies StoreReply);
+    }
+  });
+}
+
+/** Live queries take their own environment. Stored sessions use the probed Claude home. */
+export async function loadRealSdk(configDir: () => string): Promise<ClaudeSdk> {
   const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  const workers = new Map<string, StoreWorker>();
+  let disposed = false;
+  async function call<K extends StoreMethod>(method: K, ...args: Parameters<StoreApi[K]>): Promise<Awaited<ReturnType<StoreApi[K]>>> {
+    if (disposed) throw new Error("The Claude provider was closed");
+    const dir = path.resolve(configDir());
+    const daemonDir = path.resolve(process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude"));
+    if (dir === daemonDir) return await invokeStore(sdk, method, args) as Awaited<ReturnType<StoreApi[K]>>;
+    let worker = workers.get(dir);
+    if (!worker) {
+      worker = new StoreWorker(dir, () => workers.delete(dir));
+      workers.set(dir, worker);
+    }
+    return await worker.call(method, args) as Awaited<ReturnType<StoreApi[K]>>;
+  }
   return {
     query: (params) => sdk.query(params) as unknown as SdkQuery,
-    listSessions: (o) => sdk.listSessions(o),
-    listSubagents: (id, o) => sdk.listSubagents(id, o),
-    getSubagentMessages: (id, agent, o) => sdk.getSubagentMessages(id, agent, o),
-    getSessionInfo: (id, o) => sdk.getSessionInfo(id, o),
-    getSessionMessages: (id, o) => sdk.getSessionMessages(id, o),
-    forkSession: (id, o) => sdk.forkSession(id, o),
-    renameSession: (id, t, o) => sdk.renameSession(id, t, o),
-    archiveSession: (id, o) => sdk.archiveSession(id, o),
-    unarchiveSession: (id, o) => sdk.unarchiveSession(id, o),
-    deleteSession: (id, o) => sdk.deleteSession(id, o),
+    dispose: () => {
+      disposed = true;
+      for (const worker of workers.values()) worker.close();
+      workers.clear();
+    },
+    listSessions: (o) => call("listSessions", o),
+    listSubagents: (id, o) => call("listSubagents", id, o),
+    getSubagentMessages: (id, agent, o) => call("getSubagentMessages", id, agent, o),
+    getSessionInfo: (id, o) => call("getSessionInfo", id, o),
+    getSessionMessages: (id, o) => call("getSessionMessages", id, o),
+    forkSession: (id, o) => call("forkSession", id, o),
+    renameSession: (id, t, o) => call("renameSession", id, t, o),
+    archiveSession: (id, o) => call("archiveSession", id, o),
+    unarchiveSession: (id, o) => call("unarchiveSession", id, o),
+    deleteSession: (id, o) => call("deleteSession", id, o),
   };
 }
 

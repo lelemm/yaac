@@ -65,6 +65,9 @@ the instance says it is not signed in because it is looking in the wrong folder.
   `store.home` is the home the instance is configured to use, so Settings can show it.
 - For Codex, after a change `yaacd` connects to the daemon under the new home, starting one if
   none runs there. The daemon under the old home keeps running; `yaacd` never stops one.
+- Claude Code's live queries receive the instance's environment. When the instance uses a
+  different home from the daemon, its SDK session operations run in a worker with that
+  home's `CLAUDE_CONFIG_DIR`. Concurrent instances can read and edit their own sessions.
 
 ### An instance has a store identity
 
