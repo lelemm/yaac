@@ -954,6 +954,9 @@ pub struct TurnSteerParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveryCaps {
+    /// Whether the target automatically scans harness sessions. Absent on older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_discover: Option<bool>,
     /// Whether the caps apply at all.
     pub enabled: bool,
     /// Age cap, in days of inactivity (0: none).
@@ -965,7 +968,7 @@ pub struct DiscoveryCaps {
 impl Default for DiscoveryCaps {
     /// The documented defaults: 30 days, 50 per instance.
     fn default() -> Self {
-        Self { enabled: true, max_age_days: 30, max_threads: 50 }
+        Self { auto_discover: Some(true), enabled: true, max_age_days: 30, max_threads: 50 }
     }
 }
 
@@ -973,6 +976,9 @@ impl Default for DiscoveryCaps {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveryCapsUpdate {
+    /// See [`DiscoveryCaps`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_discover: Option<bool>,
     /// See [`DiscoveryCaps`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,

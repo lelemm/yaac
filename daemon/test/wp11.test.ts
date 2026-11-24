@@ -222,17 +222,69 @@ test("the caps are a per-target setting that persists, is pushed, and can be swi
   let s = await setup({}, home);
   try {
     const r: any = await s.c.request("discovery/caps", {});
-    assert.deepEqual(r.caps, { enabled: true, maxAgeDays: 30, maxThreads: 50 });
+    assert.deepEqual(r.caps, { autoDiscover: true, enabled: true, maxAgeDays: 30, maxThreads: 50 });
     await assert.rejects(s.c.request("discovery/caps", { update: { maxThreads: 5 } }), (e: RpcFailure) => e.code === "invalid_params");
     await assert.rejects(s.c.request("discovery/caps", { opId: opId(), update: { maxThreads: -1 } }), (e: RpcFailure) => e.code === "invalid_params");
     const u: any = await s.c.request("discovery/caps", { opId: opId(), update: { maxAgeDays: 0, maxThreads: 5 } });
-    assert.deepEqual(u.caps, { enabled: true, maxAgeDays: 0, maxThreads: 5 });
+    assert.deepEqual(u.caps, { autoDiscover: true, enabled: true, maxAgeDays: 0, maxThreads: 5 });
     await until(() => s.c.notifications.find((n) => n.method === "discovery/updated"), "discovery/updated");
     await s.done(true);
     s = await setup({}, home);
     const back: any = await s.c.request("discovery/caps", {});
-    assert.deepEqual(back.caps, { enabled: true, maxAgeDays: 0, maxThreads: 5 });
+    assert.deepEqual(back.caps, { autoDiscover: true, enabled: true, maxAgeDays: 0, maxThreads: 5 });
   } finally {
+    await s.done();
+  }
+});
+
+test("pausing discovery discards in-flight scan results, persists, and leaves explicit lookup available", async () => {
+  const home = tmpHome("discovery-");
+  let s = await setup({}, home);
+  let unblock: (() => void) | undefined;
+  try {
+    const fake = fakeOf(s.d);
+    fake.addOldThreads(1, 2, "existing-");
+    await rescan(s.c);
+    fake.addOldThreads(2, 2, "unseen-");
+    const list = fake.scanThreads.bind(fake);
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const held = new Promise<void>((resolve) => { unblock = resolve; });
+    fake.scanThreads = async (options) => {
+      const page = await list(options);
+      markStarted();
+      await held;
+      return page;
+    };
+    const scanning = s.d.core.scanAll();
+    await started;
+    await s.c.request("discovery/caps", { opId: opId(), update: { autoDiscover: false } });
+    unblock!();
+    await scanning;
+    fake.scanThreads = list;
+
+    const passive = fakeOf(s.d).addOutsideThread("Passive external session");
+    await rescan(s.c);
+    const current = await sync(s.c);
+    assert.ok(current.some((row) => row.nativeId === "existing-0"));
+    assert.ok(!current.some((row) => row.nativeId === passive));
+    assert.ok(!current.some((row) => row.nativeId?.startsWith("unseen-")));
+    const lookedUp: any = await s.c.request("thread/lookup", { id: "unseen-0" });
+    assert.equal(lookedUp.threads[0].nativeId, "unseen-0");
+    const mine = await idle(s.d, s.c);
+    assert.ok((await sync(s.c)).some((row) => row.id === mine));
+
+    await s.done(true);
+    s = await setup({}, home);
+    const saved: any = await s.c.request("discovery/caps", {});
+    assert.equal(saved.caps.autoDiscover, false);
+    fakeOf(s.d).addOldThreads(1, 2, "after-restart-");
+    await rescan(s.c);
+    assert.ok(!(await sync(s.c)).some((row) => row.nativeId === "after-restart-0"));
+    await s.c.request("discovery/caps", { opId: opId(), update: { autoDiscover: true } });
+    await until(async () => (await sync(s.c)).some((row) => row.nativeId === "after-restart-0"), "discovery resumed");
+  } finally {
+    unblock?.();
     await s.done();
   }
 });

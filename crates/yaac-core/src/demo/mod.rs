@@ -772,19 +772,19 @@ impl Inner {
                     return;
                 };
                 let params: yaac_protocol::ThreadReadParams = serde_json::from_value(p.clone()).expect("demo thread/read params");
-                let (page, cursor, newer, prompts) = if params.max_items.is_some() {
-                    let Ok((items, cursor, newer)) = yaac_protocol::cached_history_page(&t.items, &params) else {
+                let (page, cursor, newer, prompts, continues_turn) = if params.max_items.is_some() {
+                    let Ok(yaac_protocol::CachedHistoryPage { items, older: cursor, newer, continues_turn }) = yaac_protocol::cached_history_page(&t.items, &params) else {
                         self.ready.push_back(error(id, ErrorCode::InvalidParams, "no such message"));
                         return;
                     };
                     let prompts = (params.cursor.is_none() && params.around.is_none())
                         .then(|| yaac_protocol::TimelinePrompt::index(&t.items, t.summary.spawned_by.is_some()));
-                    (items, cursor, newer, prompts)
+                    (items, cursor, newer, prompts, continues_turn)
                 } else {
                     let skip: usize = p["cursor"].as_str().and_then(|c| c.parse().ok()).unwrap_or(0);
                     let page: Vec<_> = t.items.iter().rev().skip(skip).take(6).cloned().collect();
                     let next = skip + page.len();
-                    (page, (next < t.items.len()).then(|| yaac_protocol::PageCursor::new(next.to_string())), None, None)
+                    (page, (next < t.items.len()).then(|| yaac_protocol::PageCursor::new(next.to_string())), None, None, false)
                 };
                 let mut uploads = Vec::new();
                 for item in &page {
@@ -806,6 +806,7 @@ impl Inner {
                     res["cursor"] = json!(c);
                 }
                 if let Some(c) = newer { res["newerCursor"] = json!(c); }
+                if continues_turn { res["continuesTurn"] = json!(true); }
                 if let Some(prompts) = prompts { res["prompts"] = json!(prompts); }
                 self.ready.push_back(result(id, res));
                 // Context usage is a live report, not part of a snapshot: report it after one.
@@ -888,6 +889,22 @@ impl Inner {
                 self.ready.push_back(result(id, json!({})));
             }
             m::SKILLS_LIST => self.skills_list(id, p),
+            m::DISCOVERY_CAPS => {
+                let changed = p["update"]["autoDiscover"].as_bool();
+                if let Some(on) = changed {
+                    if on { self.fleet.discovery_off.remove(target); }
+                    else { self.fleet.discovery_off.insert(target.clone()); }
+                }
+                let caps = yaac_protocol::DiscoveryCaps {
+                    auto_discover: Some(!self.fleet.discovery_off.contains(target)),
+                    ..yaac_protocol::DiscoveryCaps::default()
+                };
+                let payload = json!({ "caps": caps });
+                if changed.is_some() {
+                    self.ready.push_back(routed(target, m::DISCOVERY_UPDATED, payload.clone()));
+                }
+                self.ready.push_back(result(id, payload));
+            }
             m::PROVIDER_REFRESH => self.ready.push_back(result(id, json!({}))),
             m::PROVIDER_INSTANCE_LIST => {
                 let instances: Vec<Value> = self

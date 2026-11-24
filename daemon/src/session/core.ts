@@ -105,7 +105,7 @@ const SNAPSHOT_MAX = 64;
 const NOW_INTERRUPT_WAIT_MS = 5000;
 /** Summaries of older conversations handed out by `thread/older`, so their ids work. */
 const OLDER_MEMO_MAX = 5000;
-const DEFAULT_CAPS: DiscoveryCaps = { enabled: true, maxAgeDays: 30, maxThreads: 50 };
+const DEFAULT_CAPS: DiscoveryCaps = { autoDiscover: true, enabled: true, maxAgeDays: 30, maxThreads: 50 };
 
 export interface CoreOptions {
   home: string;
@@ -557,7 +557,7 @@ export class Core {
    */
   async scanInstance(instance: Instance): Promise<void> {
     const provider = instance.provider;
-    if (!provider || instance.descriptor.status !== "ready") return;
+    if (this.caps.autoDiscover === false || !provider || instance.descriptor.status !== "ready") return;
     if (!(instance.descriptor.capabilities ?? []).includes("threadList")) return;
     const id = instance.config.id;
     const caps = this.caps;
@@ -572,6 +572,7 @@ export class Core {
     try {
       for (let pages = 0; pages < 10000; pages++) {
         const page = await provider.scanThreads({ cursor, limit: 100, ...(ageCap ? { activeSince: ageCap } : {}), ...(numCap ? { max: numCap + kept } : {}) });
+        if (this.caps !== caps) return;
         seen.push(...page.threads);
         if (page.complete === false) complete = false;
         cursor = page.cursor;
@@ -581,6 +582,7 @@ export class Core {
       this.opts.log(`scan of ${id} failed: ${(e as Error).message}`);
       complete = false;
     }
+    if (this.caps !== caps) return;
     // Which of the listed conversations are within the caps (yaacd applies them itself too).
     const keptNow = (info: NativeThreadInfo) => {
       const rt = this.threadByNative(id, info.native);
@@ -700,12 +702,15 @@ export class Core {
         if (v !== undefined && v !== null && (typeof v !== "number" || !Number.isInteger(v) || v < 0)) throw notActed("invalid_params", `${k} must be a whole number, 0 for no cap`);
       }
       if (u.enabled !== undefined && u.enabled !== null && typeof u.enabled !== "boolean") throw notActed("invalid_params", "enabled must be true or false");
-      this.caps = {
+      if (u.autoDiscover != null && typeof u.autoDiscover !== "boolean") throw notActed("invalid_params", "autoDiscover must be true or false");
+      const next = {
+        autoDiscover: typeof u.autoDiscover === "boolean" ? u.autoDiscover : this.caps.autoDiscover,
         enabled: typeof u.enabled === "boolean" ? u.enabled : this.caps.enabled,
         maxAgeDays: typeof u.maxAgeDays === "number" ? u.maxAgeDays : this.caps.maxAgeDays,
         maxThreads: typeof u.maxThreads === "number" ? u.maxThreads : this.caps.maxThreads,
       };
-      writeJsonAtomic(this.capsFile, { caps: this.caps });
+      writeJsonAtomic(this.capsFile, { caps: next });
+      this.caps = next;
       this.broadcast("discovery/updated", { caps: { ...this.caps } });
       // Raised or switched off: more comes in; lowered: the index is trimmed.
       void this.scanAll();
@@ -1557,18 +1562,26 @@ export class Core {
       if (offset === undefined) {
         throw rpc("invalid_params", "this message is no longer in the thread");
       }
-      const start = offset + (forward && p.around == null ? 1 : 0);
+      const start = p.wholeTurns && p.around != null
+        ? projection.turnStart(offset)
+        : offset + (forward && p.around == null ? 1 : 0);
       const source = forward ? projection.historyFrom(start) : projection.historyBefore(anchor ?? undefined);
       const items: Item[] = [];
       let bytes = 0;
+      let continuesTurn = false;
       for (const item of source) {
+        const sameTurn = p.wholeTurns && items.at(-1)?.turnId === item.turnId;
+        if (items.length >= maxItems && !sameTurn) break;
         const size = Buffer.byteLength(canonical(item));
-        if (items.length >= maxItems || (items.length && bytes + size > limit)) break;
+        if (items.length && bytes + size > limit) {
+          continuesTurn = sameTurn === true;
+          break;
+        }
         items.push(item);
         bytes += size;
       }
       if (forward) items.reverse();
-      const result: ThreadReadResult = { items, position };
+      const result: ThreadReadResult = { items, position, ...(continuesTurn ? { continuesTurn } : {}) };
       const first = forward ? start : start - items.length;
       const end = forward ? start + items.length : start;
       if (first > 0 && items.length) result.cursor = `${olderPrefix}${items.at(-1)!.id}`;
@@ -3378,7 +3391,10 @@ export class Core {
         this.bufferEvent(instanceId, ev);
         return;
       }
-      if (this.isForgotten(instanceId, ev.info.native) && !this.byNative.has(instanceId, ev.info.native, this.storeNow(instanceId))) return;
+      const known = this.threadByNative(instanceId, ev.info.native);
+      if (!known && this.isForgotten(instanceId, ev.info.native)) return;
+      if (!known && this.caps.autoDiscover === false
+        && !(ev.info.parent && this.threadByNative(instanceId, ev.info.parent))) return;
       this.discovered(instance, ev.info);
       return;
     }
@@ -3395,6 +3411,8 @@ export class Core {
         this.bufferEvent(instanceId, ev);
         return;
       }
+      // An observation alone does not import new external sessions when discovery is off.
+      if (ev.type === "threadObserved" && this.caps.autoDiscover === false) return;
       // A conversation the user deleted from YAAC only stays out.
       if (this.isForgotten(instanceId, ev.thread)) return;
       if (instance.config.kind === "codex") {

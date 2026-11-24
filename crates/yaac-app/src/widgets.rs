@@ -12,6 +12,26 @@ pub(crate) fn focus_ring(ui: &Ui, rect: Rect, p: &Palette) {
     ui.painter().rect_stroke(rect.expand(2.0), CornerRadius::same(6), Stroke::new(2.0, p.focus), StrokeKind::Outside);
 }
 
+/// A row with a chevron and a quiet label that opens and closes what is under it. Returns
+/// true when clicked.
+pub(crate) fn disclosure_row(ui: &mut Ui, p: &Palette, label: &str, open: bool, id: egui::Id) -> bool {
+    let font = theme::ui(size::SMALL);
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font, p.text2));
+    let w = g.size().x + 22.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
+    let resp = ui.interact(rect, id, Sense::click());
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+    if resp.hovered() || resp.has_focus() {
+        ui.painter().rect_filled(rect.expand2(vec2(3.0, 0.0)), 4.0, p.faint);
+    }
+    icons::chevron(ui.painter(), pos2(rect.left() + 6.0, rect.center().y), 9.0, open, p.text2);
+    ui.painter().galley(pos2(rect.left() + 16.0, rect.center().y - g.size().y / 2.0), g, p.text2);
+    if resp.has_focus() {
+        focus_ring(ui, rect, p);
+    }
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
 fn text_size(ui: &Ui, text: &str, font: &egui::FontId) -> Vec2 {
     ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE)).size()
 }

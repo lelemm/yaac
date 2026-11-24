@@ -132,6 +132,9 @@ pub struct ThreadReadParams {
     /// Open a history window at this item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub around: Option<ItemId>,
+    /// Keep turn boundaries in an interactive history page. The byte limit still applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whole_turns: Option<bool>,
 }
 
 /// Compact metadata for one prompt on the full-thread timeline.
@@ -214,6 +217,9 @@ pub struct ThreadReadResult {
     /// Cursor for the adjacent newer page in an interactive window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub newer_cursor: Option<PageCursor>,
+    /// The byte limit cut a turn at the requested edge. Read the adjacent page before showing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continues_turn: Option<bool>,
     /// Full timeline metadata, oldest first. Sent on the first interactive page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompts: Option<Vec<TimelinePrompt>>,
@@ -226,7 +232,7 @@ pub struct ThreadReadResult {
 }
 
 /// An interactive page from a cached transcript, in the same direction and order as the target.
-pub fn cached_history_page(items: &[Item], p: &ThreadReadParams) -> Result<(Vec<Item>, Option<PageCursor>, Option<PageCursor>), &'static str> {
+pub fn cached_history_page(items: &[Item], p: &ThreadReadParams) -> Result<CachedHistoryPage, &'static str> {
     let cursor = p.cursor.as_ref().map(PageCursor::as_str);
     let newer = cursor.and_then(|c| c.strip_prefix("history-newer:"));
     let older = cursor.and_then(|c| c.strip_prefix("history:"));
@@ -236,8 +242,14 @@ pub fn cached_history_page(items: &[Item], p: &ThreadReadParams) -> Result<(Vec<
         None => items.len(),
     };
     let forward = newer.is_some() || p.around.is_some();
-    let start = offset + usize::from(newer.is_some() && p.around.is_none());
-    let mut out = Vec::new();
+    let mut start = offset + usize::from(newer.is_some() && p.around.is_none());
+    if p.whole_turns == Some(true) && p.around.is_some() {
+        while start > 0 && items[start - 1].turn_id == items[offset].turn_id {
+            start -= 1;
+        }
+    }
+    let mut out: Vec<Item> = Vec::new();
+    let mut continues_turn = false;
     let mut bytes = 0;
     let limit = p.max_bytes.unwrap_or(64 * 1024).clamp(1024, 64 * 1024);
     let max = p.max_items.unwrap_or(200).clamp(1, 200) as usize;
@@ -246,9 +258,14 @@ pub fn cached_history_page(items: &[Item], p: &ThreadReadParams) -> Result<(Vec<
     } else {
         Box::new(items[..start].iter().rev())
     };
-    for item in source.take(max) {
+    for item in source {
+        let same_turn = p.whole_turns == Some(true) && out.last().is_some_and(|last| last.turn_id == item.turn_id);
+        if out.len() >= max && !same_turn { break; }
         let len = serde_json::to_vec(item).map_or(0, |v| v.len() as u64);
-        if !out.is_empty() && bytes + len > limit { break; }
+        if !out.is_empty() && bytes + len > limit {
+            continues_turn = same_turn;
+            break;
+        }
         bytes += len;
         out.push(item.clone());
     }
@@ -256,7 +273,20 @@ pub fn cached_history_page(items: &[Item], p: &ThreadReadParams) -> Result<(Vec<
     let (first, end) = if forward { (start, start + out.len()) } else { (start - out.len(), start) };
     let older = out.last().filter(|_| first > 0).map(|item| PageCursor::new(format!("history:{}", item.id)));
     let newer = out.first().filter(|_| end < items.len()).map(|item| PageCursor::new(format!("history-newer:{}", item.id)));
-    Ok((out, older, newer))
+    Ok(CachedHistoryPage { items: out, older, newer, continues_turn })
+}
+
+/// A page sliced from a cached interactive history window.
+#[derive(Debug)]
+pub struct CachedHistoryPage {
+    /// Items, newest first.
+    pub items: Vec<Item>,
+    /// Cursor immediately before this page.
+    pub older: Option<PageCursor>,
+    /// Cursor immediately after this page.
+    pub newer: Option<PageCursor>,
+    /// The last item in the requested direction belongs to an incomplete turn.
+    pub continues_turn: bool,
 }
 
 /// `item/read`: a byte range of one item's full output. A tool call's inline output is a

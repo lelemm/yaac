@@ -1081,25 +1081,6 @@ fn command_chip(ui: &mut egui::Ui, sc: &mut SelCx<'_>, p: &Palette, text: &str) 
     });
 }
 
-/// A row with a chevron and a quiet label that opens and closes what is under it. Returns
-/// true when clicked.
-fn disclosure_row(ui: &mut egui::Ui, p: &Palette, label: &str, open: bool, id: egui::Id) -> bool {
-    let font = theme::ui(size::SMALL);
-    let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font, p.text2));
-    let w = g.size().x + 22.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(w, 20.0), Sense::hover());
-    let resp = ui.interact(rect, id, Sense::click());
-    if resp.hovered() || resp.has_focus() {
-        ui.painter().rect_filled(rect.expand2(vec2(3.0, 0.0)), 4.0, p.faint);
-    }
-    icons::chevron(ui.painter(), pos2(rect.left() + 6.0, rect.center().y), 9.0, open, p.text2);
-    ui.painter().galley(pos2(rect.left() + 16.0, rect.center().y - g.size().y / 2.0), g, p.text2);
-    if resp.has_focus() {
-        widgets::focus_ring(ui, rect, p);
-    }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
-}
-
 /// Pasted text in a user message: "Pasted text · N lines", collapsed; opened, the text as it
 /// was pasted — plain text, or code when the paste is a fenced block. Returns true when its
 /// header was clicked.
@@ -1109,7 +1090,7 @@ fn pasted_block(ui: &mut egui::Ui, v: &mut View<'_>, unit: Unit, item: &yaac_pro
     let mut clicked = false;
     let fr = egui::Frame::NONE.fill(p.bg).corner_radius(5).inner_margin(Margin::symmetric(8, 4)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        clicked = disclosure_row(ui, &p, &yaac_core::message::pasted_label(lines), open, ui.scope_id().with(("pasted", item, part)));
+        clicked = widgets::disclosure_row(ui, &p, &yaac_core::message::pasted_label(lines), open, ui.scope_id().with(("pasted", item, part)));
         if open {
             ui.add_space(2.0);
             if code {
@@ -1133,7 +1114,7 @@ fn pasted_block(ui: &mut egui::Ui, v: &mut View<'_>, unit: Unit, item: &yaac_pro
 fn context_disclosure(ui: &mut egui::Ui, p: &Palette, ctx: &[yaac_core::message::Context<'_>], open: bool, standalone: bool) -> bool {
     let label = if standalone && ctx.len() == 1 { ctx[0].label.to_owned() } else { yaac_core::message::context_label(ctx.len()) };
     let id = ui.scope_id().with(("context", ctx.len(), ctx.first().map(|c| c.text.len())));
-    ui.horizontal(|ui| disclosure_row(ui, p, &label, open, id)).inner
+    ui.horizontal(|ui| widgets::disclosure_row(ui, p, &label, open, id)).inner
 }
 
 /// What the harness added for the model, each part under its name, as plain text.
@@ -1657,7 +1638,7 @@ fn call_detail(
         md(v, ui, "call-result", &bounded(result), p.text);
     }
     ui.add_space(2.0);
-    let clicked = disclosure_row(ui, &p, "Raw call", raw_open, ui.scope_id().with(("raw", &item.id)));
+    let clicked = widgets::disclosure_row(ui, &p, "Raw call", raw_open, ui.scope_id().with(("raw", &item.id)));
     if raw_open {
         for (label, body) in [("Input", &d.raw_input), ("Output", &d.raw_output)] {
             if body.is_empty() {

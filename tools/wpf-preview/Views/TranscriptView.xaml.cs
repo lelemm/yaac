@@ -94,6 +94,8 @@ public partial class TranscriptView : UserControl
         };
     }
 
+    internal void FocusBackground() => Rows.Focus();
+
     internal TranscriptRow? FocusedApproval => IsVisible && IsKeyboardFocusWithin
         ? FindAncestor<TranscriptRowView>(Keyboard.FocusedElement as DependencyObject)?.FocusedApproval
         : null;

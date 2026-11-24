@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
@@ -29,6 +30,7 @@ internal sealed class TranscriptText : ContentControl
     }
 
     private static readonly FontFamily Mono = YaacFonts.Mono;
+    private static readonly object CodePadding = new();
 
     public TranscriptText(string key, TranscriptRowState state, Func<string?> copyMessage)
     {
@@ -54,13 +56,22 @@ internal sealed class TranscriptText : ContentControl
     {
         var box = new RichTextBox
         {
-            Document = new FlowDocument { PagePadding = new Thickness(0) },
+            Document = new FlowDocument { PagePadding = new Thickness(0), TextAlignment = TextAlignment.Left },
             IsDocumentEnabled = true,
             IsUndoEnabled = false,
         };
         InitializeBox(box);
         BindingOperations.SetBinding(box.Document, TextElement.FontFamilyProperty, new Binding(nameof(FontFamily)) { Source = this });
         BindingOperations.SetBinding(box.Document, TextElement.FontSizeProperty, new Binding(nameof(FontSize)) { Source = this });
+        CommandManager.AddPreviewExecutedHandler(box, (_, e) =>
+        {
+            if (mode == "markdown" && e.Command == ApplicationCommands.Copy
+                && WithoutCodePadding(box.Selection.Start, box.Selection.End) is { } selected)
+            {
+                Copy(selected);
+                e.Handled = true;
+            }
+        });
         box.SelectionChanged += (_, _) =>
         {
             if (!setting && ReferenceEquals(Content, box))
@@ -103,8 +114,32 @@ internal sealed class TranscriptText : ContentControl
     {
         if (Content is TextBox plainEditor) return plainEditor.Text[start..end];
         if (Content is RichTextBox richEditor)
-            return new TextRange(PositionAt(richEditor, start), PositionAt(richEditor, end)).Text;
+        {
+            var from = PositionAt(richEditor, start);
+            var to = PositionAt(richEditor, end);
+            return (mode == "markdown" ? WithoutCodePadding(from, to) : null) ?? new TextRange(from, to).Text;
+        }
         return "";
+    }
+
+    private static string? WithoutCodePadding(TextPointer start, TextPointer end)
+    {
+        StringBuilder? text = null;
+        var from = start;
+        for (var pointer = start; pointer is not null && pointer.CompareTo(end) < 0;
+            pointer = pointer.GetNextContextPosition(LogicalDirection.Forward))
+        {
+            if (pointer.GetPointerContext(LogicalDirection.Forward) != TextPointerContext.Text
+                || pointer.Parent is not Run run || !ReferenceEquals(run.Tag, CodePadding))
+                continue;
+
+            text ??= new StringBuilder();
+            text.Append(new TextRange(from, pointer).Text);
+            from = pointer.GetNextContextPosition(LogicalDirection.Forward) ?? end;
+            if (from.CompareTo(end) >= 0)
+                return text.ToString();
+        }
+        return text?.Append(new TextRange(from, end).Text).ToString();
     }
 
     internal void PaintSelection(int start, int end)
@@ -460,18 +495,31 @@ internal sealed class TranscriptText : ContentControl
                 var run = new Run(lines[i]);
                 if (span.Value("bold").Flag()) run.FontWeight = FontWeights.SemiBold;
                 if (span.Value("italic").Flag()) run.FontStyle = FontStyles.Italic;
-                if (span.Value("code").Flag())
-                {
-                    run.FontFamily = Mono;
-                    run.Background = TranscriptColors.Code;
-                }
+                Inline inline = span.Value("code").Flag() ? InlineCode(run) : run;
                 var target = span.Value("link").OptionalText();
-                paragraph.Inlines.Add(target is null ? run : Link(run, target));
+                paragraph.Inlines.Add(target is null ? inline : Link(inline, target));
             }
         }
     }
 
-    private static Inline Link(Run label, string target)
+    private static Span InlineCode(Run text)
+    {
+        var background = TranscriptColors.Code;
+        text.FontFamily = Mono;
+        text.Foreground = TranscriptColors.Text;
+        text.Background = background;
+
+        // Narrow no-break spaces give the background room at either edge while keeping
+        // the code itself in the document as selectable, wrappable text.
+        Run Padding() => new("\u202f") { FontFamily = YaacFonts.Ui, Background = background, Tag = CodePadding };
+        var code = new Span();
+        code.Inlines.Add(Padding());
+        code.Inlines.Add(text);
+        code.Inlines.Add(Padding());
+        return code;
+    }
+
+    private static Inline Link(Inline label, string target)
     {
         if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http"))
             { label.ToolTip = target; return label; }

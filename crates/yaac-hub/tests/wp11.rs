@@ -27,7 +27,7 @@ impl Notifier for Recorder {
 fn the_discovery_caps_are_carried_in_the_cache() {
     let home = Home::new();
     let alpha = FakeDaemon::new("alpha");
-    alpha.set_caps(DiscoveryCaps { enabled: true, max_age_days: 10, max_threads: 7 });
+    alpha.set_caps(DiscoveryCaps { enabled: true, max_age_days: 10, max_threads: 7, ..DiscoveryCaps::default() });
     home.fakes.add(&alpha);
     let hub = home.start();
     let c = hub.client();

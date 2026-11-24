@@ -80,7 +80,10 @@ fn a_reset_holds_live_events_until_the_snapshot_is_complete() {
 fn older_pages_slide_the_window_without_losing_live_items() {
     let mut t = Transcript::new();
     t.prompts = Some(vec![]);
-    let item = |i: usize| agent(&format!("row-{i}"), "", ItemStatus::Completed);
+    let item = |i: usize| Item {
+        turn_id: TurnId::new(format!("turn-{i}")),
+        ..agent(&format!("row-{i}"), "", ItemStatus::Completed)
+    };
     t.replace_all((400..520).map(item).chain([agent("live", "", ItemStatus::InProgress)]).collect(), 1);
     t.prepend_history((280..400).rev().map(item).collect(), 2);
     t.prepend_history((160..280).rev().map(item).collect(), 3);
@@ -99,6 +102,26 @@ fn older_pages_slide_the_window_without_losing_live_items() {
     assert!(t.items()[..359].iter().map(|item| item.id.as_str()).eq((161..520).map(|i| format!("row-{i}"))));
     assert_eq!(t.items()[359].id.as_str(), "live");
     assert_eq!(t.older_cursor.as_deref(), Some("history:row-161"));
+}
+
+#[test]
+fn trimming_history_keeps_boundary_turns_whole() {
+    let mut t = Transcript::new();
+    t.prompts = Some(vec![]);
+    let item = |i: usize| Item {
+        turn_id: TurnId::new(format!("turn-{}", i / 100)),
+        ..agent(&format!("row-{i}"), "", ItemStatus::Completed)
+    };
+    t.replace_all((200..500).map(item).collect(), 1);
+    t.prepend_history((0..200).rev().map(item).collect(), 2);
+    assert_eq!(t.items().len(), 400);
+    assert_eq!(t.items().last().unwrap().id.as_str(), "row-399");
+    assert_eq!(t.newer_cursor.as_deref(), Some("history-newer:row-399"));
+
+    t.append_history(&"row-399".into(), (400..500).rev().map(item).collect(), 3);
+    assert_eq!(t.items().len(), 400);
+    assert_eq!(t.items()[0].id.as_str(), "row-100");
+    assert_eq!(t.older_cursor.as_deref(), Some("history:row-100"));
 }
 
 #[test]

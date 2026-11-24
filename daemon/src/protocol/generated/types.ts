@@ -530,6 +530,10 @@ export interface DiagnosticsGetResult {
  */
 export interface DiscoveryCaps {
   /**
+   * Whether the target automatically scans harness sessions. Absent on older daemons.
+   */
+  autoDiscover?: boolean | null;
+  /**
    * Whether the caps apply at all.
    */
   enabled: boolean;
@@ -572,6 +576,10 @@ export interface DiscoveryCapsResult {
  * A change to the caps. Absent fields are unchanged.
  */
 export interface DiscoveryCapsUpdate {
+  /**
+   * See [`DiscoveryCaps`].
+   */
+  autoDiscover?: boolean | null;
   /**
    * See [`DiscoveryCaps`].
    */
@@ -4699,6 +4707,10 @@ export interface ThreadReadParams {
    * The thread.
    */
   threadId: ThreadId;
+  /**
+   * Keep turn boundaries in an interactive history page. The byte limit still applies.
+   */
+  wholeTurns?: boolean | null;
 }
 
 /**
@@ -4709,6 +4721,10 @@ export interface ThreadReadResult {
    * Context window usage at the snapshot's position, when known. On the first page.
    */
   context?: ContextUsage | null;
+  /**
+   * The byte limit cut a turn at the requested edge. Read the adjacent page before showing it.
+   */
+  continuesTurn?: boolean | null;
   /**
    * Cursor for the next (older) page; absent on the last page.
    */

@@ -577,6 +577,7 @@ pub(crate) enum Action {
     /// Keep the current harness home.
     CancelInstanceHome,
     UpdateInstance(TargetId, InstanceId, String, String),
+    SessionDiscovery(TargetId, bool),
     InstanceEnabled(TargetId, InstanceId, bool),
     RemoveInstance(TargetId, InstanceId),
     OutsideTools(TargetId, InstanceId, bool),
@@ -1380,6 +1381,7 @@ impl YaacApp {
                     let socket = socket.trim().to_owned();
                     self.client.update_instance(&t, &i, Some((!name.is_empty()).then_some(name.as_str())), Some((!socket.is_empty()).then_some(socket.as_str())), None);
                 }
+                Action::SessionDiscovery(t, enabled) => self.client.set_session_discovery(&t, enabled),
                 Action::InstanceEnabled(t, i, e) => self.client.update_instance(&t, &i, None, None, Some(e)),
                 Action::RemoveInstance(t, i) => self.client.remove_instance(&t, &i),
                 Action::OutsideTools(t, i, on) => self.client.set_outside_tools(&t, &i, on),

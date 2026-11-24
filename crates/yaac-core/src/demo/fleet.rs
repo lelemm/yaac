@@ -57,6 +57,8 @@ pub(crate) struct Fleet {
     pub view: BTreeMap<ThreadKey, crate::state::ViewPref>,
     /// Instances whose "Trust folders YAAC works in" switch is off (D147), by target.
     pub trust_off: BTreeMap<TargetId, Vec<String>>,
+    /// Targets with automatic session discovery turned off.
+    pub discovery_off: std::collections::BTreeSet<TargetId>,
     /// Harness homes set in instances' configurations (P300), by target: (instance, home).
     pub homes: BTreeMap<TargetId, Vec<(String, String)>>,
 }
@@ -577,6 +579,7 @@ impl Fleet {
             projects: BTreeMap::new(),
             view: BTreeMap::new(),
             trust_off: BTreeMap::new(),
+            discovery_off: std::collections::BTreeSet::new(),
             homes: BTreeMap::new(),
         };
         f.providers.insert(TargetId::new("local"), vec![codex("codex", None, ProviderStatus::Ready), claude(ProviderStatus::Ready)]);
@@ -978,6 +981,7 @@ impl Fleet {
             projects: BTreeMap::new(),
             view: BTreeMap::new(),
             trust_off: BTreeMap::new(),
+            discovery_off: std::collections::BTreeSet::new(),
             homes: BTreeMap::new(),
         };
         let mut c = claude(ProviderStatus::NeedsAuth);

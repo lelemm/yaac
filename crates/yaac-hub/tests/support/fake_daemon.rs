@@ -603,7 +603,7 @@ impl FakeDaemon {
                 let (items, position) = s.conns[&conn_id].snapshots[&snap_id].clone();
                 let end = (offset + page).min(items.len());
                 let cursor = (end < items.len()).then(|| yaac_protocol::PageCursor::new(format!("{snap_id}:{end}")));
-                let result = ThreadReadResult { items: items[offset..end].to_vec(), position, cursor, newer_cursor: None, prompts: None, required_items: None, uploads: vec![], context: None };
+                let result = ThreadReadResult { items: items[offset..end].to_vec(), position, cursor, newer_cursor: None, continues_turn: None, prompts: None, required_items: None, uploads: vec![], context: None };
                 Ok(serde_json::to_value(result).unwrap())
             }
             names::THREAD_ACK => {

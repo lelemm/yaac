@@ -6,6 +6,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using Path = System.Windows.Shapes.Path;
 
 namespace Yaac.WpfPreview.Views;
 
@@ -19,6 +20,7 @@ public partial class ComposerView
     private sealed class OptionButton : Button
     {
         public ComposerAction? Option { get; set; }
+        public Path? SpeedBolt { get; set; }
     }
 
     private sealed class OptionMenuItem : MenuItem
@@ -74,9 +76,10 @@ public partial class ComposerView
         if (action is null)
             return;
 
-        button.Content = showShortcut
-            ? $"{action.Label}  {(shortcut == "Enter" ? "↵" : shortcut)}"
-            : action.Children.Length > 0 ? action.Label + "  ▾" : action.Label;
+        if (button is not OptionButton { SpeedBolt: not null })
+            button.Content = showShortcut
+                ? $"{action.Label}  {(shortcut == "Enter" ? "↵" : shortcut)}"
+                : action.Children.Length > 0 ? action.Label + "  ▾" : action.Label;
         AutomationProperties.SetName(button, action.Label);
         AutomationProperties.SetAcceleratorKey(button, shortcut ?? "");
         var tip = action.Detail.Length == 0 ? action.Label : action.Detail;
@@ -103,7 +106,7 @@ public partial class ComposerView
         var selectors = actions.Where(a => a.Id != "fork").OrderBy(a => a.Id switch
         {
             "model" => 0, "effort" => 1, "fast" or "speed" => 2, "mode" => 3, "agents" => 4, _ => 5,
-        }).Select(a => a.Id == "fast" ? a with { Label = "ϟ", Detail = "Fast mode" } : a).ToArray();
+        }).ToArray();
         RenderActions(ControlActions, selectors);
         RenderActions(ForkActions, actions.Where(a => a.Id == "fork").ToArray());
 
@@ -127,16 +130,28 @@ public partial class ComposerView
             {
                 button.Option = action;
                 SetButton(button, action, available);
-                if (action.Id == "fast") AutomationProperties.SetName(button, "Fast mode");
-                if (action.Id == "speed") AutomationProperties.SetName(button, action.Detail);
                 AutomationProperties.SetItemStatus(button, action.Checked ? "On" : "");
                 button.FontWeight = action.Checked ? FontWeights.SemiBold : FontWeights.Normal;
-                if (action.Tone == "ultrafast")
-                    button.Foreground = (Brush)FindResource("YaacUltrafast");
-                else if (action.Tone == "fast" || action.Id == "fast" && action.Checked)
-                    button.Foreground = (Brush)FindResource("YaacFast");
-                else
-                    button.ClearValue(ForegroundProperty);
+                if (button.SpeedBolt is { } bolt)
+                {
+                    var color = action.Tone switch
+                    {
+                        "ultrafast" => "YaacUltrafast",
+                        "fast" => "YaacFast",
+                        _ when action.Checked => "YaacFast",
+                        _ => "YaacMuted",
+                    };
+                    var active = color != "YaacMuted";
+                    var ink = Palette.Brush(color);
+                    bolt.Stroke = ink;
+                    bolt.Fill = active ? ink : null;
+                    if (active)
+                        button.Background = Palette.Brush("YaacSelected");
+                    else
+                        button.ClearValue(BackgroundProperty);
+                    if (action.Id == "speed")
+                        AutomationProperties.SetName(button, action.Detail);
+                }
 
                 if (button.ContextMenu is { IsOpen: true } menu)
                 {
@@ -148,6 +163,32 @@ public partial class ComposerView
             });
     }
 
+    // The six corners of the egui bolt, in a 10 × 16 design space.
+    private static readonly Geometry BoltOutline = Geometry.Parse("M8,0 L0,8.96 4.8,8.96 2,16 10,7.04 5.2,7.04 Z");
+    private static readonly Geometry SpeedChevron = Geometry.Parse("M0,0 L3,3 6,0");
+
+    private static void SetSpeedIcon(OptionButton button, bool menu)
+    {
+        var bolt = new Path
+        {
+            Data = BoltOutline, Stretch = Stretch.Uniform, Width = 12, Height = 18,
+            StrokeThickness = 1.3, StrokeLineJoin = PenLineJoin.Round,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var content = new StackPanel { Orientation = Orientation.Horizontal, IsHitTestVisible = false };
+        content.Children.Add(bolt);
+        if (menu)
+            content.Children.Add(new Path
+            {
+                Data = SpeedChevron, Stroke = Palette.Brush("YaacMuted"), StrokeThickness = 1.2,
+                StrokeLineJoin = PenLineJoin.Round, Margin = new Thickness(5, 0, 0, 0),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+        button.SpeedBolt = bolt;
+        button.Content = content;
+        button.MinWidth = menu ? 40 : 28;
+    }
+
     private OptionButton CreateAction(string id)
     {
         var button = new OptionButton
@@ -155,6 +196,8 @@ public partial class ComposerView
             Tag = id,
             Style = (Style)FindResource("ComposerButton"),
         };
+        if (id is "fast" or "speed")
+            SetSpeedIcon(button, id == "speed");
         button.Unloaded += (_, _) =>
         {
             if (button.ContextMenu is { } menu)

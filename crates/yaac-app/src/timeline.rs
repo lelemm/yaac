@@ -269,7 +269,9 @@ mod tests {
         let next = prompts[index + 1].item_id.clone();
         assert_eq!(dashes.len(), prompts.len());
         assert!(transcript.item(&selected).is_none(), "the dash exists before its message is loaded");
-        assert!(transcript.items().len() <= 120);
+        let items = transcript.items();
+        let oldest_turn = items.iter().take_while(|item| item.turn_id == items[0].turn_id).count();
+        assert!(items.len() - oldest_turn < 120, "only the boundary turn can extend the page");
 
         click(&mut app, &ctx, dashes[index].center());
         settle(&mut app, &ctx);

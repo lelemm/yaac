@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use yaac_protocol::{
     ContextUsage, Control, DeltaField, Item, ItemBody, ItemId, JournalPosition, QueueChange, QueuedMessage, RequestId,
-    RequestState, ThreadEffective, ThreadEvent, ThreadEventParams, TurnId, TurnOrigin, UploadId,
+    RequestState, Seq, ThreadEffective, ThreadEvent, ThreadEventParams, TurnId, TurnOrigin, UploadId,
 };
 
 /// What this window answered, kept so the card can say "You chose …" before the harness
@@ -39,6 +39,8 @@ pub struct ResetLoad {
     pub buffered: Vec<ThreadEventParams>,
     /// Attachments reported gone.
     pub missing: BTreeSet<UploadId>,
+    /// Items in later wire pages can already include live events since the first page.
+    pub(crate) covered_items: HashMap<ItemId, Seq>,
 }
 
 /// The open (or recently open) thread's transcript.
@@ -47,6 +49,8 @@ pub struct Transcript {
     items: Vec<Item>,
     index: HashMap<ItemId, usize>,
     revs: Vec<u64>,
+    covered_items: HashMap<ItemId, Seq>,
+    covered_through: Seq,
     /// Last applied journal position. `None` until the first snapshot or replayed event.
     pub position: Option<JournalPosition>,
     /// Who may act, as the subscription last reported.
@@ -249,7 +253,22 @@ impl Transcript {
         if !self.admits(event) {
             return false;
         }
-        self.position = Some(event.position_after());
+        let position = event.position_after();
+        self.position = Some(position);
+        if !self.covered_items.is_empty() {
+            let item = match &event.event {
+                ThreadEvent::ItemStarted(e) | ThreadEvent::ItemCompleted(e) => Some(&e.item.id),
+                ThreadEvent::ItemUpdated(e) => Some(&e.item.id),
+                ThreadEvent::ItemDelta(e) => Some(&e.item_id),
+                ThreadEvent::RequestChanged(e) => Some(&e.item_id),
+                _ => None,
+            };
+            let covered = item.and_then(|id| self.covered_items.get(id)).is_some_and(|&seq| position.seq <= seq);
+            if position.seq >= self.covered_through {
+                self.covered_items.clear();
+            }
+            if covered { return false; }
+        }
         self.apply_body(&event.event, rev);
         self.trim_history();
         self.revision = rev;
@@ -383,26 +402,39 @@ impl Transcript {
 
     /// Fits the visible history into a bounded window while preserving live requests and drafts.
     pub fn trim_history(&mut self) {
-        self.trim_history_from(self.history_away);
+        self.trim_history_from(self.history_away, None);
     }
 
-    fn trim_history_from(&mut self, newest: bool) {
+    fn trim_history_from(&mut self, newest: bool, overlap: Option<&TurnId>) -> bool {
         const WINDOW: usize = 360;
         if self.items.len() <= WINDOW || self.loading_older || self.loading_newer {
-            return;
+            return false;
         }
         let protected = |item: &Item| {
             item.status == yaac_protocol::ItemStatus::InProgress
                 || matches!(&item.body, ItemBody::Request(r) if matches!(r.state, RequestState::Pending | RequestState::Submitted))
                 || self.pending.iter().any(|p| &p.item == &item.id)
         };
-        let excess = self.items.len() - WINDOW;
-        let mut candidates = (0..self.items.len()).filter(|&i| !protected(&self.items[i]));
-        let dropping: BTreeSet<_> = if newest {
-            candidates.rev().take(excess).collect()
-        } else {
-            candidates.by_ref().take(excess).collect()
-        };
+        let mut start = 0;
+        let mut groups: Vec<_> = self.items.chunk_by(|left, right| left.turn_id == right.turn_id)
+            .map(|group| {
+                let range = start..start + group.len();
+                start = range.end;
+                range
+            }).collect();
+        if newest { groups.reverse(); }
+        let mut remaining = self.items.len();
+        let mut dropping = BTreeSet::new();
+        for group in groups {
+            if Some(&self.items[group.start].turn_id) == overlap || remaining - group.len() < WINDOW {
+                break;
+            }
+            if self.items[group.clone()].iter().any(protected) {
+                continue;
+            }
+            remaining -= group.len();
+            dropping.extend(group);
+        }
         if !newest && !dropping.is_empty()
             && self.older_cursor.as_deref().is_none_or(|c| c.starts_with("history:"))
         {
@@ -414,7 +446,9 @@ impl Transcript {
         {
             self.newer_cursor = Some(format!("history-newer:{}", anchor.id));
         }
+        if dropping.is_empty() { return false; }
         self.retain_history(|i| !dropping.contains(&i));
+        true
     }
 
     fn retain_history(&mut self, keep: impl Fn(usize) -> bool) {
@@ -432,25 +466,28 @@ impl Transcript {
             self.trim_history();
             return;
         }
-        self.history_away |= older.len() + self.items.len() > 360;
+        let overlap = self.items.first().map(|item| item.turn_id.clone());
         let count = older.len();
         older.append(&mut self.items);
         self.items = older;
         self.revs.splice(..0, std::iter::repeat_n(rev, count));
         self.index = self.items.iter().enumerate().map(|(i, item)| (item.id.clone(), i)).collect();
         self.revision = rev;
-        self.trim_history();
+        if self.trim_history_from(true, overlap.as_ref()) {
+            self.history_away = true;
+        }
     }
 
     pub fn append_history(&mut self, anchor: &ItemId, items: Vec<Item>, rev: u64) {
         let Some(edge) = self.index_of(anchor) else { return };
+        let overlap = self.items[edge].turn_id.clone();
         let items: Vec<_> = items.into_iter().rev().filter(|item| !self.index.contains_key(&item.id)).collect();
         let count = items.len();
         self.items.splice(edge + 1..edge + 1, items);
         self.revs.splice(edge + 1..edge + 1, std::iter::repeat_n(rev, count));
         self.index = self.items.iter().enumerate().map(|(i, item)| (item.id.clone(), i)).collect();
         self.revision = rev;
-        self.trim_history_from(false);
+        self.trim_history_from(false, Some(&overlap));
     }
 
     /// Finish a reset with the complete snapshot (`pages` newest first) and its position; then
@@ -463,6 +500,8 @@ impl Transcript {
         self.replace_all(items, rev);
         self.missing_uploads = load.missing;
         self.position = Some(position);
+        self.covered_items = load.covered_items;
+        self.covered_through = self.covered_items.values().copied().max().unwrap_or_default();
         for event in load.buffered {
             self.apply(&event, rev);
         }

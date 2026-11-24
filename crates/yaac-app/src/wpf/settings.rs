@@ -582,6 +582,25 @@ fn providers(app: &YaacApp, target: Option<&TargetId>) -> Value {
             "actions": refresh.into_iter().collect::<Vec<_>>()
         })],
     )];
+    if let Some(record) = target.and_then(|id| state.target(id)) {
+        let pending = app.client.session_discovery_pending(&record.entry.id);
+        if let Some(on) = record.session_discovery {
+            let toggle = args(
+                toggle("providers.sessionDiscovery", "Automatic session discovery", on, record.connected() && !pending),
+                json!({ "target": record.entry.id }),
+            );
+            sections.push(section("session-discovery", "", vec![json!({
+                "id": "automatic", "layout": "form",
+                "detail": "Scan this target for sessions started in its harnesses.",
+                "actions": [toggle],
+            })]));
+        } else if record.connected() {
+            sections.push(section("session-discovery", "", vec![json!({
+                "id": "unavailable",
+                "detail": if pending { "Reading session discovery…" } else { "Automatic session discovery settings require an updated target daemon." },
+            })]));
+        }
+    }
     let Some(v) = target.and_then(|t| model::providers_view(state, t)) else {
         return json!({ "sections": sections, "detail": "No target is connected." });
     };
@@ -1071,6 +1090,7 @@ pub(super) fn command(
             *settings_selection = Some(target_id(app, values)?);
             return Ok(());
         }
+        "providers.sessionDiscovery" => Action::SessionDiscovery(target_id(app, values)?, checked(values)?),
         "providers.refresh" => {
             let target = connected_target(app, values)?;
             let instance = string(values, "instance");
@@ -1632,6 +1652,27 @@ fn ssh_config_hosts() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_discovery_switch_updates_only_the_selected_target() {
+        let mut app = crate::app::tests::demo_app(&egui::Context::default());
+        let local = TargetId::new("local");
+        let remote = TargetId::new("devbox");
+        let toggle = |app: &YaacApp, target: &TargetId| {
+            providers(app, Some(target))["sections"][1]["rows"][0]["actions"][0].clone()
+        };
+        assert_eq!(toggle(&app, &local)["id"], "providers.sessionDiscovery");
+        assert_eq!(toggle(&app, &local)["checked"], true);
+        assert_eq!(toggle(&app, &remote)["checked"], true);
+
+        command(&mut app, &mut Some(local.clone()), "settings.action", &json!({
+            "id": "providers.sessionDiscovery", "values": { "target": local, "checked": false },
+        })).unwrap();
+        assert_eq!(toggle(&app, &local)["enabled"], false, "update is pending");
+        app.client.pump();
+        assert_eq!(toggle(&app, &local)["checked"], false);
+        assert_eq!(toggle(&app, &remote)["checked"], true);
+    }
 
     #[test]
     fn refresh_is_available_when_the_local_provider_list_is_empty() {

@@ -113,6 +113,13 @@ export class Projection {
 
   offset(id: string): number | undefined { return this.offsets.get(id); }
 
+  /** Beginning of the contiguous turn containing this item. */
+  turnStart(offset: number): number {
+    const turn = this.byId.get(this.order[offset]!)?.turnId;
+    while (offset > 0 && this.byId.get(this.order[offset - 1]!)?.turnId === turn) offset--;
+    return offset;
+  }
+
   *historyFrom(start: number): IterableIterator<Item> {
     for (let i = start; i < this.order.length; i++) yield this.byId.get(this.order[i]!)!;
   }

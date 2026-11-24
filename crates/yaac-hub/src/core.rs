@@ -2324,7 +2324,9 @@ impl Core {
                 return Some(Err(err(ErrorCode::TargetOffline, "the target is not connected")));
             }
         }
-        let op = info.state_changing.then(|| request.params.get("opId").and_then(Value::as_str).map(OpId::new)).flatten();
+        let mutation = info.state_changing
+            || info.name == names::DISCOVERY_CAPS && request.params.get("update").is_some_and(|update| !update.is_null());
+        let op = mutation.then(|| request.params.get("opId").and_then(Value::as_str).map(OpId::new)).flatten();
         let thread = request.params.get("threadId").and_then(Value::as_str).map(ThreadId::new);
         let Some(conn) = self.targets.get_mut(&target).and_then(|t| t.conn.as_mut()) else {
             return Some(Err(err(ErrorCode::TargetOffline, "the target is not connected")));
@@ -2935,7 +2937,8 @@ fn read_from_cache(cache: &mut crate::cache::Cache, target: &TargetId, p: &Threa
     let position = cached.position;
     let context = cursor.is_none().then(|| cached.live.context.clone()).flatten();
     if interactive {
-        let (items, cursor, newer_cursor) = yaac_protocol::cached_history_page(&cached.items, p)?;
+        let yaac_protocol::CachedHistoryPage { items, older: cursor, newer: newer_cursor, continues_turn } =
+            yaac_protocol::cached_history_page(&cached.items, p)?;
         let prompts = if first_page {
             let spawned = cache.thread_summary(target, &p.thread_id).map_err(|e| e.to_string())?.is_some_and(|s| s.spawned_by.is_some());
             Some(yaac_protocol::TimelinePrompt::index(&cached.items, spawned))
@@ -2948,7 +2951,7 @@ fn read_from_cache(cache: &mut crate::cache::Cache, target: &TargetId, p: &Threa
                     && !items.iter().any(|present| present.id == item.id)
             ).cloned().collect::<Vec<_>>()
         }).filter(|items| !items.is_empty());
-        return Ok(to_value(&ThreadReadResult { items, position, cursor, newer_cursor, prompts, required_items, uploads: vec![], context }));
+        return Ok(to_value(&ThreadReadResult { items, position, cursor, newer_cursor, continues_turn: continues_turn.then_some(true), prompts, required_items, uploads: vec![], context }));
     }
 
     let skip = cursor.and_then(|c| c.strip_prefix("hubcache:")).and_then(|n| n.parse().ok()).unwrap_or(0);
@@ -2963,7 +2966,7 @@ fn read_from_cache(cache: &mut crate::cache::Cache, target: &TargetId, p: &Threa
     }
     let next = skip + items.len();
     let cursor = (next < cached.items.len()).then(|| PageCursor::new(format!("hubcache:{next}")));
-    Ok(to_value(&ThreadReadResult { items, position, cursor, newer_cursor: None, prompts: None, required_items: None, uploads: vec![], context }))
+    Ok(to_value(&ThreadReadResult { items, position, cursor, newer_cursor: None, continues_turn: None, prompts: None, required_items: None, uploads: vec![], context }))
 }
 
 #[cfg(test)]

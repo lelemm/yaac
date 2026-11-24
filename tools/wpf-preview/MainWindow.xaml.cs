@@ -5,6 +5,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shell;
+using Yaac.WpfPreview.Views;
 
 namespace Yaac.WpfPreview;
 
@@ -42,6 +43,8 @@ public partial class MainWindow : Window
         SidebarPane.SettingsButton.Click += SettingsClicked;
         SidebarPane.ScenesButton.Click += ScenesClicked;
         TranscriptPane.Command += Send;
+        ChatSurface.AddHandler(MouseLeftButtonDownEvent, new MouseButtonEventHandler(ChatBackgroundClicked),
+            handledEventsToo: true);
         ComposerPane.Command += Send;
         ComposerPane.DropOverlayChanged += visible =>
             ComposerDropOverlay.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
@@ -440,6 +443,17 @@ public partial class MainWindow : Window
             return;
         }
         args.Handled = InvokeShortcut(logical, Keyboard.Modifiers, args.IsRepeat);
+    }
+
+    private void ChatBackgroundClicked(object sender, MouseButtonEventArgs args)
+    {
+        if (!ComposerPane.IsKeyboardFocusWithin)
+            return;
+        var source = args.OriginalSource as DependencyObject;
+        if (TranscriptView.FindAncestor<TextBoxBase>(source) is not null ||
+            TranscriptView.FindAncestor<ButtonBase>(source) is not null)
+            return;
+        TranscriptPane.FocusBackground();
     }
 
     private void WindowMouse(object sender, MouseButtonEventArgs args)

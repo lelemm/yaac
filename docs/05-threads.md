@@ -306,7 +306,10 @@ other program are not.
 
 ## Discovery
 
-`yaacd` builds the thread index by scanning each instance's conversations (`ThreadList`).
+`yaacd` builds the thread index by scanning each instance's conversations (`ThreadList`). **Settings → Providers → Automatic session discovery** can pause these
+scans for the selected target. It defaults to on and is stored by that target's daemon.
+Turning it off keeps indexed conversations, explicit lookup by ID, YAAC-started threads,
+and live events for work that needs tracking. Turning it back on scans the target again.
 
 **Decided:** show every conversation the harness knows about, not only those created in YAAC. A
 conversation started in a terminal on the server appears in the sidebar and can be continued.

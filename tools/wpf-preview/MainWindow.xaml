@@ -211,7 +211,9 @@
           <StackPanel x:Name="HeaderLinks" Orientation="Horizontal" />
           <StackPanel x:Name="HeaderBanners" />
         </StackPanel>
-        <views:TranscriptView Grid.Row="2" x:Name="TranscriptPane" HorizontalAlignment="Center" />
+        <Grid Grid.Row="2" x:Name="ChatSurface" Background="Transparent">
+          <views:TranscriptView x:Name="TranscriptPane" HorizontalAlignment="Center" />
+        </Grid>
         <Grid Grid.Row="3" x:Name="ComposerColumn" HorizontalAlignment="Center" Margin="0,0,0,10">
           <views:ComposerView x:Name="ComposerPane" />
           <Thumb HorizontalAlignment="Right" VerticalAlignment="Bottom" Width="10" Height="44"

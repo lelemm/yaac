@@ -104,6 +104,8 @@ enum Call {
     ReadAround(ThreadKey, ItemId),
     ReadOlder(ThreadKey, String),
     ReadNewer(ThreadKey, String),
+    /// A turn exceeded one wire page. Keep the complete visible window until the rest arrives.
+    HistoryTail { read: Box<Call>, page: Box<ThreadReadResult> },
     Budget,
     Respond { key: ThreadKey, request_id: RequestId },
     /// `turn/start` or `turn/steer` of the composer's message; `op` is its echo (D165).
@@ -121,6 +123,7 @@ enum Call {
     /// One `thread/move` (D144); `before`: the summary to put back if it is refused.
     Move { batch: u64, key: ThreadKey, before: Box<ThreadSummary> },
     ForkPreview { key: ThreadKey, instance: InstanceId },
+    SessionDiscovery { target: TargetId, write: bool },
     InstanceList(TargetId),
     InstanceChanged(TargetId),
     /// A harness-home change (P300); a `store_change` refusal asks the user.
@@ -330,6 +333,31 @@ impl Client {
         self.request(attach::names::REQUEST, value, call);
     }
 
+    fn apply_session_discovery(&mut self, target: &TargetId, result: Value) {
+        if let Ok(result) = serde_json::from_value::<yaac_protocol::DiscoveryCapsResult>(result)
+            && let Some(record) = self.state.target_mut(target)
+        {
+            record.session_discovery = result.caps.auto_discover;
+        }
+    }
+
+    /// Whether the target's discovery setting is being read or written.
+    pub fn session_discovery_pending(&self, target: &TargetId) -> bool {
+        self.pending.values().any(|call| matches!(call, Call::SessionDiscovery { target: t, .. } if t == target))
+    }
+
+    /// Pause or resume automatic session discovery on a connected target.
+    pub fn set_session_discovery(&mut self, target: &TargetId, enabled: bool) {
+        if self.session_discovery_pending(target) || !self.state.target(target)
+            .is_some_and(|record| record.connected() && record.session_discovery.is_some_and(|on| on != enabled))
+        {
+            return;
+        }
+        let op = self.op_id();
+        self.routed(target, m::DISCOVERY_CAPS, json!({ "opId": op, "update": { "autoDiscover": enabled } }),
+            Call::SessionDiscovery { target: target.clone(), write: true });
+    }
+
     /// A fresh operation id: this host, this window run, a counter (D159).
     pub fn op_id(&mut self) -> OpId {
         self.ops += 1;
@@ -424,6 +452,7 @@ impl Client {
                     }
                 }
             }
+            Call::SessionDiscovery { target, .. } => self.apply_session_discovery(&target, result),
             Call::InstanceList(t) => {
                 if let Ok(r) = serde_json::from_value::<yaac_protocol::ProviderInstanceListResult>(result)
                     && let Some(rec) = self.state.targets.iter_mut().find(|x| x.entry.id == t)
@@ -537,79 +566,10 @@ impl Client {
                 }
                 self.refresh_budget_of(&key);
             }
-            read @ (Call::Read(_) | Call::ReadAround(_, _)) => {
-                let Ok(r) = serde_json::from_value::<ThreadReadResult>(result) else { return };
-                let (key, around) = match read {
-                    Call::Read(key) => (key, None),
-                    Call::ReadAround(key, id) => (key, Some(id)),
-                    _ => unreachable!(),
-                };
-                let rev = self.state.next_stamp();
-                let Some(t) = self.state.transcripts.get_mut(&key) else { return };
-                if let Some(id) = &around
-                    && !r.items.iter().any(|item| &item.id == id)
-                {
-                    t.cancel_reset(rev);
-                    if self.state.focus_item.as_ref() == Some(&(key.clone(), id.clone())) {
-                        self.state.focus_item = None;
-                    }
-                    self.error(Some(key), "The selected message is unavailable.".to_owned());
-                    return;
-                }
-                if r.context.is_some() {
-                    t.context = r.context;
-                }
-                let Some(load) = t.loading.as_mut() else { return };
-                load.pages.extend(r.items);
-                load.required.extend(r.required_items.into_iter().flatten());
-                for u in r.uploads {
-                    if !u.present {
-                        load.missing.insert(u.upload_id);
-                    }
-                }
-                t.older_cursor = r.cursor.map(|cursor| cursor.to_string());
-                t.newer_cursor = r.newer_cursor.map(|cursor| cursor.to_string());
-                t.history_away = t.newer_cursor.is_some();
-                if around.is_none() || r.prompts.is_some() {
-                    t.prompts = r.prompts;
-                }
-                let buffered = load.buffered.clone();
-                t.finish_reset(r.position, rev);
-                let items = t.items().to_vec();
-                let stamp = self.state.next_stamp();
-                let hints = self.state.hints.entry(key.clone()).or_default();
-                if around.is_none() && hints.position.is_none_or(|p| p.epoch != r.position.epoch || p.seq <= r.position.seq) {
-                    hints.rebuild(&items, r.position, stamp);
-                    for ev in &buffered {
-                        hints.apply(ev, stamp);
-                    }
-                }
-                self.load_history_focus(&key);
+            read @ (Call::Read(_) | Call::ReadAround(_, _) | Call::ReadOlder(_, _) | Call::ReadNewer(_, _)) => {
+                self.on_history_page(read, None, result);
             }
-            Call::ReadOlder(key, cursor) | Call::ReadNewer(key, cursor) => {
-                let newer = cursor.strip_prefix("history-newer:");
-                let rev = self.state.next_stamp();
-                let Some(t) = self.state.transcripts.get_mut(&key) else { return };
-                let (edge, loading) = if newer.is_some() { (&t.newer_cursor, &mut t.loading_newer) } else { (&t.older_cursor, &mut t.loading_older) };
-                if edge.as_deref() != Some(cursor.as_str()) || !std::mem::take(loading) {
-                    return;
-                }
-                let Ok(r) = serde_json::from_value::<ThreadReadResult>(result) else { return };
-                if t.position.is_none_or(|position| position.epoch != r.position.epoch) {
-                    self.latest_history(&key);
-                    return;
-                }
-                t.missing_uploads.extend(r.uploads.into_iter().filter(|u| !u.present).map(|u| u.upload_id));
-                if let Some(anchor) = newer {
-                    t.newer_cursor = r.newer_cursor.map(|cursor| cursor.to_string());
-                    t.history_away = t.newer_cursor.is_some();
-                    t.append_history(&ItemId::new(anchor), r.items, rev);
-                } else {
-                    t.older_cursor = r.cursor.map(|cursor| cursor.to_string());
-                    t.prepend_history(r.items, rev);
-                }
-                self.load_history_focus(&key);
-            }
+            Call::HistoryTail { read, page } => self.on_history_page(*read, Some(*page), result),
             Call::Budget => {
                 if let Ok(b) = serde_json::from_value::<MeshBudgetResult>(result) {
                     self.state.apply_budget(b);
@@ -737,8 +697,166 @@ impl Client {
         }
     }
 
+    fn on_history_page(&mut self, read: Call, buffered: Option<ThreadReadResult>, result: Value) {
+        let (key, forward, edge) = match &read {
+            Call::Read(key) => (key, false, None),
+            Call::ReadAround(key, _) => (key, true, None),
+            Call::ReadOlder(key, cursor) => (key, false, Some(cursor)),
+            Call::ReadNewer(key, cursor) => (key, true, Some(cursor)),
+            _ => unreachable!("only interactive history can be buffered"),
+        };
+        let Some(t) = self.state.transcripts.get(key) else { return };
+        let current = match edge {
+            Some(cursor) if forward => t.loading_newer && t.newer_cursor.as_ref() == Some(cursor),
+            Some(cursor) => t.loading_older && t.older_cursor.as_ref() == Some(cursor),
+            None => t.loading.is_some(),
+        };
+        if !current { return; }
+
+        let Ok(mut page) = serde_json::from_value::<ThreadReadResult>(result) else {
+            self.on_error(read, &ErrorObject::new(ErrorCode::InternalError, "The target returned an invalid history page."));
+            return;
+        };
+        let resumed = buffered.is_some();
+        if let Some(mut first) = buffered {
+            let next_item = if forward { page.items.last() } else { page.items.first() };
+            let buffered_item = first.items.last();
+            let repeated = if forward { page.newer_cursor == first.newer_cursor } else { page.cursor == first.cursor };
+            if page.position.epoch != first.position.epoch
+                || next_item.map(|item| &item.turn_id) != buffered_item.map(|item| &item.turn_id)
+                || (page.continues_turn == Some(true) && repeated)
+            {
+                self.on_error(read, &ErrorObject::new(ErrorCode::InvalidParams, "The thread changed while loading history."));
+                return;
+            }
+            if edge.is_none() && page.position.seq > first.position.seq
+                && let Some(load) = self.state.transcripts.get_mut(key).and_then(|t| t.loading.as_mut())
+            {
+                load.covered_items.extend(page.items.iter().map(|item| (item.id.clone(), page.position.seq)));
+            }
+            if forward {
+                // Buffer in traversal order, then reverse once when the entire turn is ready.
+                first.items.extend(page.items.into_iter().rev());
+                first.newer_cursor = page.newer_cursor;
+            } else {
+                first.items.append(&mut page.items);
+                first.cursor = page.cursor;
+            }
+            first.uploads.append(&mut page.uploads);
+            first.continues_turn = page.continues_turn;
+            page = first;
+        }
+
+        if page.continues_turn == Some(true) {
+            let cursor = if forward { &page.newer_cursor } else { &page.cursor };
+            if let Some(cursor) = cursor {
+                // One item, extended through the rest of its turn, so this read never pulls
+                // another group into the batch.
+                let params = json!({ "threadId": key.thread, "cursor": cursor, "maxItems": 1, "wholeTurns": true });
+                let target = key.target.clone();
+                if forward && !resumed { page.items.reverse(); }
+                self.routed(&target, m::THREAD_READ, params, Call::HistoryTail { read: Box::new(read), page: Box::new(page) });
+                return;
+            }
+            self.on_error(read, &ErrorObject::new(ErrorCode::InternalError, "The target did not return the rest of this turn."));
+            return;
+        }
+        if forward && resumed { page.items.reverse(); }
+        if let Some(required) = &mut page.required_items {
+            let included: std::collections::HashSet<_> = page.items.iter().map(|item| &item.id).collect();
+            required.retain(|item| !included.contains(&item.id));
+        }
+        self.apply_history_page(read, page);
+    }
+
+    fn apply_history_page(&mut self, read: Call, r: ThreadReadResult) {
+        match read {
+            read @ (Call::Read(_) | Call::ReadAround(_, _)) => {
+                let (key, around) = match read {
+                    Call::Read(key) => (key, None),
+                    Call::ReadAround(key, id) => (key, Some(id)),
+                    _ => unreachable!(),
+                };
+                let rev = self.state.next_stamp();
+                let Some(t) = self.state.transcripts.get_mut(&key) else { return };
+                if let Some(id) = &around
+                    && !r.items.iter().any(|item| &item.id == id)
+                {
+                    t.cancel_reset(rev);
+                    if self.state.focus_item.as_ref() == Some(&(key.clone(), id.clone())) {
+                        self.state.focus_item = None;
+                    }
+                    self.error(Some(key), "The selected message is unavailable.".to_owned());
+                    return;
+                }
+                if r.context.is_some() {
+                    t.context = r.context;
+                }
+                let Some(load) = t.loading.as_mut() else { return };
+                load.pages.extend(r.items);
+                load.required.extend(r.required_items.into_iter().flatten());
+                for u in r.uploads {
+                    if !u.present {
+                        load.missing.insert(u.upload_id);
+                    }
+                }
+                t.older_cursor = r.cursor.map(|cursor| cursor.to_string());
+                t.newer_cursor = r.newer_cursor.map(|cursor| cursor.to_string());
+                t.history_away = t.newer_cursor.is_some();
+                if around.is_none() || r.prompts.is_some() {
+                    t.prompts = r.prompts;
+                }
+                let buffered = load.buffered.clone();
+                t.finish_reset(r.position, rev);
+                let items = t.items().to_vec();
+                let stamp = self.state.next_stamp();
+                let hints = self.state.hints.entry(key.clone()).or_default();
+                if around.is_none() && hints.position.is_none_or(|p| p.epoch != r.position.epoch || p.seq <= r.position.seq) {
+                    hints.rebuild(&items, r.position, stamp);
+                    for ev in &buffered {
+                        hints.apply(ev, stamp);
+                    }
+                }
+                self.load_history_focus(&key);
+            }
+            Call::ReadOlder(key, cursor) | Call::ReadNewer(key, cursor) => {
+                let newer = cursor.strip_prefix("history-newer:");
+                let rev = self.state.next_stamp();
+                let Some(t) = self.state.transcripts.get_mut(&key) else { return };
+                let (edge, loading) = if newer.is_some() { (&t.newer_cursor, &mut t.loading_newer) } else { (&t.older_cursor, &mut t.loading_older) };
+                if edge.as_deref() != Some(cursor.as_str()) || !std::mem::take(loading) {
+                    return;
+                }
+                if t.position.is_none_or(|position| position.epoch != r.position.epoch) {
+                    self.latest_history(&key);
+                    return;
+                }
+                t.missing_uploads.extend(r.uploads.into_iter().filter(|u| !u.present).map(|u| u.upload_id));
+                if let Some(anchor) = newer {
+                    t.newer_cursor = r.newer_cursor.map(|cursor| cursor.to_string());
+                    t.history_away = t.newer_cursor.is_some();
+                    t.append_history(&ItemId::new(anchor), r.items, rev);
+                } else {
+                    t.older_cursor = r.cursor.map(|cursor| cursor.to_string());
+                    t.prepend_history(r.items, rev);
+                }
+                self.load_history_focus(&key);
+            }
+            _ => unreachable!("only interactive history can be applied here"),
+        }
+    }
+
     fn on_error(&mut self, call: Call, error: &ErrorObject) {
         match call {
+            Call::HistoryTail { read, .. } => self.on_error(*read, error),
+            Call::SessionDiscovery { write: true, .. } => {
+                if error.code == ErrorCode::OutcomeUnknown {
+                    self.error(None, "The target disconnected while changing session discovery. Check the setting after it reconnects.");
+                } else {
+                    self.error(None, format!("Could not update session discovery: {}", error.message));
+                }
+            }
+            Call::SessionDiscovery { write: false, .. } => {}
             Call::UpdateDaemon(target) => {
                 let name = self.state.target_name(&target);
                 // Never re-sent: the target's state shows how it went once it is back.
@@ -975,6 +1093,7 @@ impl Client {
     fn on_routed(&mut self, n: RoutedNotification) {
         let target = n.target;
         match n.method.as_str() {
+            m::DISCOVERY_UPDATED => self.apply_session_discovery(&target, n.params),
             m::THREAD_EVENT => {
                 let Ok(ev) = serde_json::from_value::<ThreadEventParams>(n.params) else { return };
                 let key = ThreadKey::new(target.clone(), ev.thread_id.clone());
@@ -1036,6 +1155,9 @@ impl Client {
     // ── outgoing ────────────────────────────────────────────────────────────────────────
 
     fn load_target(&mut self, target: &TargetId) {
+        if self.state.target(target).is_some_and(|record| record.connected()) {
+            self.routed(target, m::DISCOVERY_CAPS, json!({}), Call::SessionDiscovery { target: target.clone(), write: false });
+        }
         self.routed(target, m::PROVIDER_LIST, json!({}), Call::Providers(target.clone()));
         self.routed(target, m::PROJECT_LIST, json!({}), Call::Projects(target.clone()));
         self.sync(target);
@@ -1058,7 +1180,7 @@ impl Client {
     }
 
     fn read_page(&mut self, key: &ThreadKey, cursor: Option<String>) {
-        let mut params = json!({ "threadId": key.thread, "maxBytes": 262_144, "maxItems": 120 });
+        let mut params = json!({ "threadId": key.thread, "maxBytes": 262_144, "maxItems": 120, "wholeTurns": true });
         let call = if let Some(cursor) = cursor {
             params["cursor"] = json!(cursor);
             if cursor.starts_with("history-newer:") { Call::ReadNewer(key.clone(), cursor) } else { Call::ReadOlder(key.clone(), cursor) }
@@ -1095,7 +1217,7 @@ impl Client {
         if !t.is_loaded() || t.item(item).is_some() { return; }
         if t.prompts.is_some() {
             let item = item.clone();
-            let params = json!({ "threadId": key.thread, "maxBytes": 262_144, "maxItems": 120, "around": item });
+            let params = json!({ "threadId": key.thread, "maxBytes": 262_144, "maxItems": 120, "wholeTurns": true, "around": item });
             t.begin_reset();
             self.routed(&key.target, m::THREAD_READ, params, Call::ReadAround(key.clone(), item));
         } else {
@@ -2237,4 +2359,85 @@ struct FindPage {
 struct FindHit {
     target: TargetId,
     thread: ThreadSummary,
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use crate::transcript::Transcript;
+    use yaac_protocol::{Epoch, JournalPosition, Seq};
+
+    #[test]
+    fn an_older_turn_stays_out_of_the_visible_window_until_its_last_chunk_arrives() {
+        let mut client = Client::new(Box::new(crate::link::DetachedLink), "test", ClientId::new("window"));
+        client.pending.clear();
+        let key = ThreadKey::new(TargetId::new("local"), ThreadId::new("chat"));
+        let position = JournalPosition { epoch: Epoch(3), seq: Seq(1) };
+        let message = |id: &str, turn: &str| json!({
+            "id": id, "turnId": turn, "status": "completed", "kind": "agentMessage", "text": id
+        });
+        let mut transcript = Transcript::new();
+        transcript.position = Some(position);
+        transcript.older_cursor = Some("history:visible".into());
+        transcript.replace_all(vec![serde_json::from_value(message("visible", "live")).unwrap()], 1);
+        client.state.transcripts.insert(key.clone(), transcript);
+
+        client.older_history(&key);
+        let read = client.pending.drain().next().unwrap().1;
+        client.on_result(read, json!({
+            "items": [message("old-end", "older")], "position": position,
+            "cursor": "history:old-end", "continuesTurn": true,
+        }));
+        let t = &client.state.transcripts[&key];
+        assert!(t.loading_older);
+        assert_eq!(t.older_cursor.as_deref(), Some("history:visible"));
+        assert_eq!(t.items().len(), 1);
+
+        let tail = client.pending.drain().next().unwrap().1;
+        client.on_result(tail, json!({
+            "items": [message("old-start", "older")], "position": position, "cursor": "history:old-start",
+        }));
+        let t = &client.state.transcripts[&key];
+        assert!(!t.loading_older);
+        assert_eq!(t.older_cursor.as_deref(), Some("history:old-start"));
+        assert!(t.items().iter().map(|item| item.id.as_str()).eq(["old-start", "old-end", "visible"]));
+    }
+
+    #[test]
+    fn a_later_chunk_does_not_replay_deltas_already_in_its_items() {
+        use yaac_protocol::{DeltaField, ItemDeltaEvent};
+
+        let mut client = Client::new(Box::new(crate::link::DetachedLink), "test", ClientId::new("window"));
+        client.pending.clear();
+        let key = ThreadKey::new(TargetId::new("local"), ThreadId::new("chat"));
+        let mut t = Transcript::new();
+        t.begin_reset();
+        client.state.transcripts.insert(key.clone(), t);
+        client.read_page(&key, None);
+        let first = client.pending.drain().next().unwrap().1;
+        client.on_result(first, json!({
+            "items": [{ "id": "command", "turnId": "turn", "status": "completed", "kind": "agentMessage", "text": "End" }],
+            "position": { "epoch": 3, "seq": 1 }, "cursor": "history:command", "continuesTurn": true,
+        }));
+        let delta = |seq, text: &str| ThreadEventParams {
+            thread_id: key.thread.clone(),
+            epoch: Epoch(3),
+            seq: Seq(seq),
+            event: ThreadEvent::ItemDelta(ItemDeltaEvent {
+                item_id: ItemId::new("reply"), field: DeltaField::Text, delta: text.into(),
+            }),
+        };
+        client.state.transcripts.get_mut(&key).unwrap().apply(&delta(2, "A"), 2);
+        let tail = client.pending.drain().next().unwrap().1;
+        client.on_result(tail, json!({
+            "items": [{ "id": "reply", "turnId": "turn", "status": "inProgress", "kind": "agentMessage", "text": "AB" }],
+            "position": { "epoch": 3, "seq": 3 },
+        }));
+
+        let t = client.state.transcripts.get_mut(&key).unwrap();
+        assert!(!t.apply(&delta(3, "B"), 3), "the second page already contained this delta");
+        assert!(t.apply(&delta(4, "C"), 4));
+        assert!(matches!(&t.items()[0].body, ItemBody::AgentMessage(message) if message.text == "ABC"));
+    }
+
 }

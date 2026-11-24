@@ -920,6 +920,22 @@ fn providers(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     if v.offline {
         ui.label(widgets::secondary(format!("{} is not connected · showing what was last read.", v.target_name), &p));
     }
+    if let Some(record) = app.client.state.target(&target) {
+        let pending = app.client.session_discovery_pending(&target);
+        if let Some(on) = record.session_discovery {
+            ui.horizontal(|ui| {
+                let toggle = ui.add_enabled_ui(record.connected() && !pending, |ui| widgets::switch(ui, &p, on)).inner;
+                if toggle.clicked() {
+                    actions.push(Action::SessionDiscovery(target.clone(), !on));
+                }
+                ui.label("Automatic session discovery");
+            });
+            ui.label(widgets::secondary("Scan this target for sessions started in its harnesses.", &p));
+        } else if record.connected() {
+            let detail = if pending { "Reading session discovery…" } else { "Automatic session discovery settings require an updated target daemon." };
+            ui.label(widgets::secondary(detail, &p));
+        }
+    }
     ui.add_space(8.0);
     for row in &v.rows {
         instance_row(ui, app, &target, row, actions);

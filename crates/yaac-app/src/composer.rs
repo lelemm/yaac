@@ -662,9 +662,9 @@ pub(crate) fn running_commands(ui: &mut egui::Ui, app: &mut YaacApp, key: &Threa
     }
     let p = app.p;
     let expanded = !app.ui.commands_collapsed.contains(key);
-    let disclosure = if expanded { "▾" } else { "▸" };
-    let label = format!("{disclosure} Running commands · {}", rows.len());
-    if ui.add(egui::Button::new(egui::RichText::new(label).size(11.0).color(p.text2)).frame(false)).clicked() {
+    let label = format!("Running commands · {}", rows.len());
+    let id = ui.scope_id().with(("running-commands-toggle", key));
+    if widgets::disclosure_row(ui, &p, &label, expanded, id) {
         actions.push(Action::ToggleCommands(key.clone()));
     }
     if !expanded {

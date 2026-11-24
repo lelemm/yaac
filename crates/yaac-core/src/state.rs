@@ -34,6 +34,8 @@ pub struct TargetRecord {
     pub providers_fresh: bool,
     /// The stored instance configurations (`providerInstance/list`), once asked for.
     pub instance_configs: Option<Vec<ProviderInstanceConfig>>,
+    /// Automatic session discovery advertised by the target, when supported.
+    pub session_discovery: Option<bool>,
     pending_full: Option<Vec<ThreadSummary>>,
 }
 
@@ -49,6 +51,7 @@ impl TargetRecord {
             stale_instances: Vec::new(),
             providers_fresh: false,
             instance_configs: None,
+            session_discovery: None,
             pending_full: None,
         }
     }

@@ -92,7 +92,7 @@ fn controls(row: &ControlRow) -> Vec<Value> {
         if fast.offers_ultrafast {
             let current = fast.current();
             v.push(json!({
-                "id": "speed", "label": "ϟ ▾", "detail": format!("Speed · {}", current.label()),
+                "id": "speed", "label": "Speed", "detail": format!("Speed · {}", current.label()),
                 "enabled": true, "tone": current.id(),
                 "children": fast.options().map(|speed| {
                     option(&format!("speed:{}", speed.id()), speed.label(), true, speed == current, None)

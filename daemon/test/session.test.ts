@@ -230,6 +230,43 @@ test("interactive history pages are bounded and keep a stable anchor as live ite
   }
 });
 
+test("whole-turn history extends the item limit and flags byte-sized fragments", async () => {
+  const daemon = await startDaemon(tmpHome());
+  const c = await client(daemon);
+  try {
+    const command = "/fake tool check => " + "output ".repeat(350);
+    const { threadId } = await startThread(c, ["/fake say Intro", command, "/fake say Result"].join("\n"));
+    const idle = async () => !(await c.request("thread/subscribe", { threadId }) as { activeTurn?: string }).activeTurn;
+    await until(idle, "older turn to settle");
+    await c.request("turn/start", { threadId, opId: opId(), input: text("/fake say Latest") });
+    await until(idle, "latest turn to settle");
+
+    const all = (await readAll(c, threadId)).flatMap((page) => page.items);
+    const latest = all.filter((item) => item.turnId === all[0]!.turnId);
+    const older = all.filter((item) => item.turnId !== all[0]!.turnId);
+    const first: any = await c.request("thread/read", { threadId, maxItems: 1, wholeTurns: true });
+    assert.deepEqual(first.items.map((item: any) => item.id), latest.map((item) => item.id));
+    assert.ok(!first.continuesTurn);
+    const request = { threadId, maxItems: 1, maxBytes: 1024, wholeTurns: true };
+    let page: any = await c.request("thread/read", { ...request, cursor: first.cursor });
+    assert.equal(page.continuesTurn, true);
+    const ids = page.items.map((item: any) => item.id);
+    while (page.continuesTurn) {
+      page = await c.request("thread/read", { ...request, cursor: page.cursor });
+      ids.push(...page.items.map((item: any) => item.id));
+    }
+    assert.deepEqual(ids, older.map((item) => item.id));
+
+    const sought: any = await c.request("thread/read", { threadId, maxItems: 1, wholeTurns: true, around: older[0]!.id });
+    assert.deepEqual(sought.items.map((item: any) => item.id), older.map((item) => item.id));
+    const next: any = await c.request("thread/read", { ...request, cursor: sought.newerCursor });
+    assert.deepEqual(next.items.map((item: any) => item.id), latest.map((item) => item.id));
+  } finally {
+    await c.close();
+    await daemon.stop("test");
+  }
+});
+
 test("the journal survives a daemon restart", async () => {
   const home = tmpHome();
   let daemon = await startDaemon(home);
