@@ -114,8 +114,10 @@ fn effort(id: &str) -> EffortInfo {
 fn model(id: &str, default: bool, images: Support) -> ModelInfo {
     ModelInfo {
         id: ModelId::new(id),
+        resolved_model: None,
         display_name: id.to_owned(),
         description: None,
+best_use: None,
         is_default: default,
         hidden: false,
         capabilities: vec![ModelCapability { capability: Capability::ImageInput, support: images }],

@@ -137,6 +137,8 @@ pub mod names {
     /// Window → hub: the stored blobs, of one draft or all ([`super::BlobListParams`] →
     /// [`super::BlobListResult`]).
     pub const BLOB_LIST: &str = "hub/drafts/blob/list";
+    /// Read a bounded piece of a complete draft blob.
+    pub const BLOB_READ: &str = "hub/drafts/blob/read";
     /// Window → hub: forget a blob (its chip was removed) ([`super::BlobRef`] → `{}`).
     pub const BLOB_DELETE: &str = "hub/drafts/blob/delete";
 
@@ -791,6 +793,16 @@ pub struct BlobAppendResult {
 pub struct BlobRef {
     /// The blob.
     pub blob_id: String,
+}
+
+/// The next chunk of a draft blob for local preview.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobReadParams {
+    /// The complete draft blob.
+    pub blob_id: String,
+    /// The next byte offset.
+    pub offset: u64,
 }
 
 /// A complete blob in the draft store (`hub/drafts/blob/end` result).

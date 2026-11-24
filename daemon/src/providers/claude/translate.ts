@@ -12,6 +12,7 @@
 // dropped.
 
 import type { AgentCall, AgentRef, Item, PlanStep, ToolKind, TurnId } from "../../protocol/generated/types.js";
+import { isImageBlock, resultImages, type StoreToolImage } from "../tool-images.js";
 import type { SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ASK_TOOL, normaliseQuestions } from "./questions.js";
 import { editDiff, editedPath } from "./diff.js";
@@ -79,7 +80,7 @@ function rawResultText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return content == null ? "" : JSON.stringify(content);
   return (content as Block[])
-    .map((b) => (b.type === "text" ? (str(b.text) ?? "") : b.type === "image" ? "[image]" : JSON.stringify(b)))
+    .map((b) => (b?.type === "text" ? (str(b.text) ?? "") : isImageBlock(b) ? "[image]" : JSON.stringify(b)))
     .join("\n");
 }
 
@@ -113,9 +114,11 @@ export function otherBlockItem(id: string, turnId: TurnId, block: Block): Item {
  * Completes a tool call with its result. A file change carries its change as a unified diff
  * (D86), from the tool's structured result when the SDK gives one (`tool_use_result`).
  */
-export function withResult(item: Item, result: Block, structured?: unknown): Item {
+export function withResult(item: Item, result: Block, structured?: unknown, storeImage?: StoreToolImage): Item {
   const failed = result.is_error === true;
   let done = { ...item, status: failed ? "failed" : "completed", output: resultText(result.content) } as Item & { tool?: string; input?: Json; title?: string; output?: string; agentCall?: unknown };
+  const images = resultImages(storeImage, result.content);
+  if (images.length) done = { ...done, images } as typeof done;
   if (done.input && (done.agentCall || str(done.input.name) === "TaskStop")) {
     const { name, ...input } = done.input;
     done = withAgentCall(done, str(name) ?? "", input, done.output ?? "", structured, failed) as typeof done;
@@ -166,7 +169,11 @@ export function questionHistoryItem(toolUseId: string, turnId: TurnId, input: Js
 // ── Stored history ───────────────────────────────────────────────────────────────────────
 
 /** Maps a stored session, oldest first, to items. */
-export function historyItems(messages: SessionMessage[], cwd: string | null, opts: { subagent?: boolean } = {}): Item[] {
+export function historyItems(
+  messages: SessionMessage[],
+  cwd: string | null,
+  opts: { subagent?: boolean; storeImage?: StoreToolImage; imageRange?: { start: number; end: number } } = {},
+): Item[] {
   const items: Item[] = [];
   const byId = new Map<string, number>();
   const put = (item: Item) => {
@@ -200,7 +207,11 @@ export function historyItems(messages: SessionMessage[], cwd: string | null, opt
             continue;
           }
           const at = byId.get(id);
-          if (at !== undefined && items[at]!.kind === "toolCall") items[at] = withResult(items[at]!, b, structured);
+          if (at !== undefined && items[at]!.kind === "toolCall") {
+            const range = opts.imageRange;
+            const storeImage = !range || (at >= range.start && at < range.end) ? opts.storeImage : undefined;
+            items[at] = withResult(items[at]!, b, structured, storeImage);
+          }
         }
         continue;
       }
@@ -298,6 +309,7 @@ export class LiveTranslator {
   constructor(
     private readonly emit: (ev: ItemEvent) => void,
     private readonly cwd: string | null,
+    private readonly storeImage?: StoreToolImage,
   ) {}
 
   begin(turnId: TurnId): void {
@@ -479,7 +491,7 @@ export class LiveTranslator {
     const item = this.tools.get(id);
     if (!item) return;
     this.tools.delete(id);
-    this.complete(withResult(item, b, structured));
+    this.complete(withResult(item, b, structured, this.storeImage));
   }
 
   /**

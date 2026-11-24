@@ -13,8 +13,6 @@ use yaac_protocol::{
 pub struct BudgetFields {
     /// Agent-started turns.
     pub agent_turns: u32,
-    /// Threads spawned.
-    pub threads: u32,
     /// Hours without the user.
     pub hours: u32,
 }
@@ -44,7 +42,8 @@ fn hours(secs: u64) -> u32 {
 }
 
 fn budget_of(b: BudgetFields) -> MeshBudget {
-    MeshBudget { agent_turns: b.agent_turns, threads_spawned: b.threads, wall_clock_secs: u64::from(b.hours) * 3600 }
+    // Older daemons still read the legacy allowance. Send its maximum wire value.
+    MeshBudget { agent_turns: b.agent_turns, threads_spawned: u32::MAX, wall_clock_secs: u64::from(b.hours) * 3600 }
 }
 
 /// Read a permission request from a request body.
@@ -52,7 +51,7 @@ pub fn parse(body: &RequestBody) -> Option<PermissionRequest> {
     let RequestBody::MeshPermission(r) = body else { return None };
     Some(PermissionRequest {
         actions: r.actions.iter().map(|a| a.summary.clone()).collect(),
-        budget: BudgetFields { agent_turns: r.budget.agent_turns, threads: r.budget.threads_spawned, hours: hours(r.budget.wall_clock_secs) },
+        budget: BudgetFields { agent_turns: r.budget.agent_turns, hours: hours(r.budget.wall_clock_secs) },
     })
 }
 
@@ -98,7 +97,7 @@ mod tests {
 
     #[test]
     fn round_trips_through_the_open_union() {
-        let b = BudgetFields { agent_turns: 100, threads: 20, hours: 12 };
+        let b = BudgetFields { agent_turns: 100, hours: 12 };
         let body = body(&["Start 3 threads"], b);
         let wire = serde_json::to_value(&body).unwrap();
         let back: RequestBody = serde_json::from_value(wire).unwrap();

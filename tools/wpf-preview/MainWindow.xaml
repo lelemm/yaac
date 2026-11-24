@@ -285,5 +285,7 @@
         </Grid>
       </Border>
     </Grid>
+    <views:ImageViewer x:Name="ImageOverlay" Panel.ZIndex="6" Visibility="Collapsed"
+                       shell:WindowChrome.IsHitTestVisibleInChrome="True" />
   </Grid>
 </Window>

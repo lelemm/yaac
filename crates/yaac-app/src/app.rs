@@ -449,6 +449,7 @@ pub(crate) struct CreateProject {
 /// What the user did this frame.
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
+    OpenImage(crate::images::ImageSource, String),
     OlderHistory(ThreadKey),
     NewerHistory(ThreadKey),
     FocusHistory(ThreadKey, ItemId),
@@ -582,6 +583,7 @@ pub(crate) enum Action {
     RemoveInstance(TargetId, InstanceId),
     OutsideTools(TargetId, InstanceId, bool),
     TrustFolders(TargetId, InstanceId, bool),
+    ModelBestUse(TargetId, InstanceId, yaac_protocol::ModelId, yaac_protocol::ModelId, Option<String>),
     SetAlways(bool),
     ClearCache,
     FsList(TargetId, String),
@@ -704,6 +706,7 @@ pub(crate) struct YaacApp {
     pub ssh: Box<dyn SshSetupBackend>,
     /// The file picker, the clipboard, and thumbnails, on worker threads.
     pub files: crate::files::Files,
+    pub images: crate::images::Images,
     /// When drafts were last stored in the hub (seconds of egui time).
     drafts_flushed: f64,
     /// The host's time zone (D91): every time shown or asked for is local to this computer.
@@ -849,6 +852,7 @@ impl YaacApp {
             started: std::time::Instant::now(),
             shots: launch.shots,
             files: crate::files::Files::new(&cc.egui_ctx),
+            images: crate::images::Images::new(&cc.egui_ctx),
             drafts_flushed: 0.0,
             #[cfg(feature = "hub")]
             hub,
@@ -1081,6 +1085,7 @@ impl YaacApp {
     pub(crate) fn apply(&mut self, actions: Vec<Action>) {
         for a in actions {
             match a {
+                Action::OpenImage(source, name) => self.images.open(source, name),
                 Action::OlderHistory(k) => self.client.older_history(&k),
                 Action::NewerHistory(k) => self.client.newer_history(&k),
                 Action::FocusHistory(k, item) => self.client.focus_history_item(&k, item),
@@ -1386,6 +1391,9 @@ impl YaacApp {
                 Action::RemoveInstance(t, i) => self.client.remove_instance(&t, &i),
                 Action::OutsideTools(t, i, on) => self.client.set_outside_tools(&t, &i, on),
                 Action::TrustFolders(t, i, on) => self.client.set_trust_folders(&t, &i, on),
+                Action::ModelBestUse(target, instance, model, expected, summary) => {
+                    self.client.set_model_best_use(&target, instance, model, expected, summary);
+                }
                 Action::SetAlways(on) => {
                     self.client.set_always(on);
                     #[cfg(feature = "hub")]
@@ -1652,6 +1660,7 @@ impl YaacApp {
         let ssh_changed = self.ui.set.pump_ssh(self.ssh.as_mut());
         let t = ctx.input(|i| i.time);
         let files_changed = self.pump_files();
+        self.images.pump(&mut self.client);
         // Drafts go to the hub's store at a calm pace, not on every key.
         if self.client.drafts_dirty() {
             if t - self.drafts_flushed >= 1.0 {
@@ -1724,6 +1733,7 @@ impl eframe::App for YaacApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        crate::icons::set_spinner_window_hidden(&ctx, self.shell.hidden);
         let p = self.palette_for(&ctx);
         if self.applied != Some(p.dark) {
             ctx.set_theme(if p.dark { egui::Theme::Dark } else { egui::Theme::Light });
@@ -1763,7 +1773,7 @@ impl eframe::App for YaacApp {
             if escape {
                 self.ui.ultrafast_confirm = None;
             }
-        } else {
+        } else if !self.images.is_open() {
             self.keyboard(&ctx, &mut actions);
         }
         let map = AttentionMap::compute(&self.client.state);
@@ -1803,6 +1813,7 @@ impl eframe::App for YaacApp {
         crate::pr_ui::create_dialog(ui.ctx(), self, &mut actions);
         crate::dialogs::quit(ui.ctx(), self);
         crate::commander::show(ui.ctx(), self, &mut actions);
+        self.images.show(ui.ctx());
         // Pull requests of the rows on screen (D119): asked when due, never polled; one calm
         // repaint when the next refresh is due.
         let visible = std::mem::take(&mut self.ui.pr_visible);

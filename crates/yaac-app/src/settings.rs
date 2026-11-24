@@ -7,7 +7,7 @@ use yaac_core::components::ComponentStatus;
 use yaac_core::settings::{CHOOSE_DISTRO, DistroOption, DistroPhase, DistroPicker, LEGEND, Page, SshAction, diagnostics, distro_picker, kind_label, providers_view, targets_view};
 use yaac_core::ssh_setup::{Credential, Phase, Revoke, RevokePhase, Secret, SetupRecord, SignInMethod, SshConn, SshSetup, SshSetupBackend, StepLine, StepMark, form_ready};
 use yaac_protocol::attach::{ConnectionStatus, SshTransport, TargetTransport, WslTransport};
-use yaac_protocol::{InstanceId, TargetId};
+use yaac_protocol::{InstanceId, ModelId, TargetId};
 
 use crate::app::{Action, Menu, YaacApp};
 use crate::icons;
@@ -93,6 +93,8 @@ pub(crate) struct SettingsUi {
     pub edit: Option<(TargetId, InstanceId, String, String)>,
     /// An instance's harness home being edited (P300).
     pub home_edit: Option<(TargetId, InstanceId, String)>,
+    pub model_guidance_panel: Option<(TargetId, InstanceId)>,
+    pub model_guidance_edit: Option<ModelGuidanceEdit>,
     pub wsl_distro: String,
     pub wsl_user: String,
     pub diag_target: Option<TargetId>,
@@ -101,6 +103,30 @@ pub(crate) struct SettingsUi {
     pub records: Vec<(TargetId, SetupRecord)>,
     /// Settings → Keyboard: recording a chord, and a conflict to resolve.
     pub keys: crate::keyboard::KeysUi,
+}
+
+#[derive(Debug)]
+pub(crate) struct ModelGuidanceEdit {
+    pub target: TargetId,
+    pub instance: InstanceId,
+    pub model: ModelId,
+    pub specific: ModelId,
+    pub text: String,
+}
+
+impl ModelGuidanceEdit {
+    pub(crate) fn new(target: &TargetId, instance: &InstanceId, model: &yaac_core::settings::ModelGuidanceRow) -> Self {
+        Self { target: target.clone(), instance: instance.clone(), model: model.id.clone(), specific: model.specific.clone(),
+            text: model.best_use.as_ref().map_or_else(String::new, |hint| hint.summary.clone()) }
+    }
+
+    pub(crate) fn matches(&self, target: &TargetId, instance: &InstanceId, model: &yaac_core::settings::ModelGuidanceRow) -> bool {
+        &self.target == target && &self.instance == instance && self.model == model.id && self.specific == model.specific
+    }
+}
+
+pub(crate) fn valid_model_guidance(text: &str) -> bool {
+    !text.trim().is_empty()
 }
 
 impl SettingsUi {
@@ -939,6 +965,7 @@ fn providers(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     ui.add_space(8.0);
     for row in &v.rows {
         instance_row(ui, app, &target, row, actions);
+        model_guidance(ui, app, &target, row, v.offline, actions);
     }
     // Add an instance.
     widgets::heading(ui, "Add instance");
@@ -1094,6 +1121,55 @@ fn instance_row(ui: &mut egui::Ui, app: &mut YaacApp, target: &TargetId, row: &y
             ui.label(widgets::secondary("· marks a project's folder trusted in this harness when YAAC starts a thread there", &p));
         });
     }
+}
+
+fn model_guidance(ui: &mut egui::Ui, app: &mut YaacApp, target: &TargetId,
+    row: &yaac_core::settings::InstanceRow, offline: bool, actions: &mut Vec<Action>) {
+    if row.model_guidance.is_empty() { return; }
+    let p = app.p;
+    let scope = (target.clone(), row.instance.clone());
+    let expanded = app.ui.set.model_guidance_panel.as_ref() == Some(&scope);
+    ui.indent(("model-guidance", target, &row.instance), |ui| {
+        if widgets::disclosure_row(ui, &p, "Model guidance", expanded, ui.scope_id().with("models")) {
+            app.ui.set.model_guidance_panel = (!expanded).then_some(scope);
+            app.ui.set.model_guidance_edit = None;
+        }
+        if !expanded { return; }
+        for model in &row.model_guidance {
+            ui.push_id(&model.id, |ui| {
+                ui.label(RichText::new(&model.name).font(theme::bold(size::UI)));
+                let editing = app.ui.set.model_guidance_edit.as_ref()
+                    .is_some_and(|edit| edit.matches(target, &row.instance, model));
+                if !editing {
+                    ui.label(format!("Best used as: {}", model.summary()));
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if !model.provenance().is_empty() {
+                        ui.label(widgets::secondary(model.provenance(), &p));
+                    }
+                    if !editing && ui.add_enabled(!offline, egui::Button::new("Edit")).clicked() {
+                        app.ui.set.model_guidance_edit = Some(ModelGuidanceEdit::new(target, &row.instance, model));
+                    }
+                    if !editing && model.custom() && ui.add_enabled(!offline, egui::Button::new("Reset to generated")).clicked() {
+                        actions.push(Action::ModelBestUse(target.clone(), row.instance.clone(), model.id.clone(), model.specific.clone(), None));
+                    }
+                });
+                if editing && let Some(edit) = &mut app.ui.set.model_guidance_edit {
+                    let mut close = false;
+                    ui.horizontal(|ui| {
+                        widgets::field(ui, &p, &mut edit.text, "Best used as", (ui.available_width() - 150.0).clamp(120.0, 520.0), false);
+                        if ui.add_enabled(!offline && valid_model_guidance(&edit.text), egui::Button::new("Save")).clicked() {
+                            actions.push(Action::ModelBestUse(target.clone(), row.instance.clone(), model.id.clone(), model.specific.clone(), Some(edit.text.trim().to_owned())));
+                            close = true;
+                        }
+                        if widgets::plain(ui, &p, "Cancel", None).clicked() { close = true; }
+                    });
+                    if close { app.ui.set.model_guidance_edit = None; }
+                }
+                ui.add_space(4.0);
+            });
+        }
+    });
 }
 
 /// An instance's harness home (P300): the folder in use, **Change**, an inline field whose

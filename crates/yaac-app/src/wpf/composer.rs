@@ -171,7 +171,7 @@ fn chips(app: &YaacApp, draft: &DraftRef, chips: &[ChipView]) -> Vec<Value> {
         };
         let detail = [(!status.is_empty()).then_some(status.as_str()), route].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         json!({ "id": id.to_string(), "label": chip.name, "detail": detail, "progress": progress,
-            "image": chip.image, "thumbnail": thumbnail, "actions": actions })
+            "image": chip.image || thumbnail.is_some(), "thumbnail": thumbnail, "actions": actions })
     }).collect()
 }
 
@@ -526,6 +526,16 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             app.apply(vec![command]);
             return Ok(());
         }
+    }
+    if name == "composer.action" && let Some(id) = id.strip_prefix("previewAttachment:").and_then(|id| id.parse::<u64>().ok()) {
+        if let Some(attachment) = app.client.draft(&draft).and_then(|d| d.attachments.iter().find(|a| a.id == id)) {
+            let source = match &attachment.source {
+                Some(Source::Path { path }) => crate::images::ImageSource::Path(path.clone()),
+                _ => crate::images::ImageSource::Draft(draft, id),
+            };
+            app.images.open(source, attachment.name.clone());
+        }
+        return Ok(());
     }
     if !can_write
         && !(name == "composer.action" && (id == "takeOver" || id.starts_with("openRequest:")))

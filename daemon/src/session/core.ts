@@ -367,11 +367,12 @@ export class Core {
   constructor(readonly opts: CoreOptions) {
     this.threadsDir = path.join(opts.home, "threads");
     ensureDir(this.threadsDir);
-    this.registry = new ProviderRegistry(opts.home, opts.env, opts.log, (id) => this.clearInstanceCommands(id));
+    this.uploads = new UploadStore(opts.tempDir);
+    this.registry = new ProviderRegistry(opts.home, opts.env, opts.log, (id) => this.clearInstanceCommands(id),
+      (bytes, name) => this.uploads.storeToolImage(bytes, name));
     for (const f of opts.factories) this.registry.registerKind(f);
     this.index = new ThreadIndex(opts.home, opts.cleanStart);
     this.ops = new OpLog(path.join(opts.home, "ops.jsonl"));
-    this.uploads = new UploadStore(opts.tempDir);
     this.projects = new ProjectStore(path.join(opts.home, "projects.json"));
     this.folderTrust = new FolderTrust(path.join(opts.home, "folder-trust.json"), opts.log);
     this.git = gitRunner(opts.env);
@@ -1654,6 +1655,9 @@ export class Core {
   private uploadPresence(items: Item[]): UploadPresence[] {
     const ids = new Set<string>();
     for (const item of items) {
+      if (item.kind === "toolCall") {
+        for (const image of item.images ?? []) ids.add(image.uploadId);
+      }
       if (item.kind !== "userMessage") continue;
       for (const part of item.parts ?? []) {
         const u = (part as { uploadId?: unknown }).uploadId;

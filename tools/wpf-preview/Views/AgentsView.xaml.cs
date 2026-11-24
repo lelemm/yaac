@@ -166,13 +166,20 @@ public partial class AgentsView : UserControl
         List<AgentsGroup> groups = ReadGroups(view);
         Dictionary<string, AgentsRow> rows = groups.SelectMany(group => group.Rows)
             .ToDictionary(row => row.Id, StringComparer.Ordinal);
+        foreach (JsonElement sibling in view.Array("siblings"))
+        {
+            string id = sibling.StringField("id");
+            if (id.Length > 0 && !rows.ContainsKey(id))
+                rows.Add(id, ReadRow(sibling, id, id));
+        }
         foreach (string id in _rows.Keys.Except(rows.Keys).ToArray())
             _rows.Remove(id);
 
         DockButton.IsEnabled = view.BoolField("canDock", true);
         UndockButton.IsEnabled = view.BoolField("canUndock", true);
         bool canMark = view.BoolField("canMarkRead");
-        MarkCard.Visibility = MarkDock.Visibility = Show(canMark);
+        MarkCard.Visibility = Show(view.BoolField("canMarkReadCard", canMark));
+        MarkDock.Visibility = Show(canMark);
         DockBudgetText.Text = budget.StringField("text");
         DockBudgetText.Foreground = (Brush)FindResource(exhausted ? "YaacFailure" : "YaacMuted");
         DockBudgetText.Visibility = Show(DockBudgetText.Text.Length > 0);
@@ -186,7 +193,7 @@ public partial class AgentsView : UserControl
 
         HashSet<string> used = new(StringComparer.Ordinal);
         var pill = BuildPill(view.Field("pill"), groups, exhausted, DockBudgetText.Text.Length > 0, used);
-        var card = BuildCard(groups, used);
+        var card = BuildCard(view.Field("cardGroups"), groups, rows, used);
         var dock = BuildDock(view.Field("root"), groups, rows, used);
         Synchronize(_pill, pill);
         Synchronize(_card, card, CardRows);
@@ -225,18 +232,23 @@ public partial class AgentsView : UserControl
                 string identity = rowId.Length == 0 ? $"@{id}/{rows.Count}" : rowId;
                 if (!seenRows.Add(identity))
                     continue;
-                string raw = json.GetRawText();
-                if (!_rows.TryGetValue(identity, out AgentsRow? row) || row.Raw != raw)
-                {
-                    row = AgentsRow.Read(identity, rowId, raw, json);
-                    _rows[identity] = row;
-                }
-                rows.Add(row);
+                rows.Add(ReadRow(json, identity, rowId));
             }
             groups.Add(new(id, group.StringField("label", heading), group.StringField("glyph", glyph), group.OptionalNumber("count"),
                 rows, group.Field("docked")));
         }
         return groups;
+    }
+
+    private AgentsRow ReadRow(JsonElement json, string identity, string rowId)
+    {
+        string raw = json.GetRawText();
+        if (!_rows.TryGetValue(identity, out AgentsRow? row) || row.Raw != raw)
+        {
+            row = AgentsRow.Read(identity, rowId, raw, json);
+            _rows[identity] = row;
+        }
+        return row;
     }
 
     private List<AgentsEntry> BuildPill(JsonElement view, List<AgentsGroup> groups, bool exhausted,
@@ -287,18 +299,34 @@ public partial class AgentsView : UserControl
         return result;
     }
 
-    private List<AgentsEntry> BuildCard(List<AgentsGroup> groups, HashSet<string> used)
+    private List<AgentsEntry> BuildCard(JsonElement view, List<AgentsGroup> groups,
+        Dictionary<string, AgentsRow> rows, HashSet<string> used)
     {
         List<AgentsEntry> result = new();
-        foreach (AgentsGroup group in groups)
+        if (view.ValueKind == JsonValueKind.Array)
         {
-            if (group.Rows.Count == 0)
-                continue;
-            result.Add(Entry("card", "heading", group.Id, new() { Title = group.Label }, used));
-            foreach (AgentsRow row in group.Rows)
-                result.Add(RowEntry("card", "cardRow", row, used));
+            foreach (JsonElement group in view.EnumerateArray())
+            {
+                string label = group.StringField("label");
+                AddGroup(label, label, group.Ids("rowIds").Where(rows.ContainsKey).Select(id => rows[id]));
+            }
+        }
+        else
+        {
+            foreach (AgentsGroup group in groups)
+                AddGroup(group.Id, group.Label, group.Rows);
         }
         return result;
+
+        void AddGroup(string id, string label, IEnumerable<AgentsRow> entries)
+        {
+            var visible = entries.ToArray();
+            if (visible.Length == 0)
+                return;
+            result.Add(Entry("card", "heading", id, new() { Title = label }, used));
+            foreach (AgentsRow row in visible)
+                result.Add(RowEntry("card", "cardRow", row, used));
+        }
     }
 
     private List<AgentsEntry> BuildDock(JsonElement root, List<AgentsGroup> groups, Dictionary<string, AgentsRow> rows,
@@ -574,7 +602,8 @@ public partial class AgentsView : UserControl
 
     private void OnDock(object sender, RoutedEventArgs e) => Command?.Invoke("agents.dock", null);
     private void OnUndock(object sender, RoutedEventArgs e) => Command?.Invoke("agents.undock", null);
-    private void OnMarkRead(object sender, RoutedEventArgs e) => Command?.Invoke("agents.markRead", null);
+    private void OnMarkRead(object sender, RoutedEventArgs e) =>
+        Command?.Invoke("agents.markRead", new { floating = ReferenceEquals(sender, MarkCard) });
     private void OnContinue(object sender, RoutedEventArgs e) => InvokeAction(_budgetId, _continueBudget);
 
     private void OpenAgent(object sender, RoutedEventArgs e)

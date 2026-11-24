@@ -885,6 +885,30 @@ impl Core {
                 }
                 Err(e) => Some(Err(e)),
             },
+            ext::names::BLOB_READ => match parse::<ext::BlobReadParams>(params) {
+                Ok(p) => {
+                    self.blob_reply(client, id, move |stores| {
+                        use base64::Engine as _;
+                        use std::io::{Read, Seek, SeekFrom};
+                        let Some((blob, path)) = stores.drafts.blob(&p.blob_id)? else {
+                            return Ok(json!({ "present": false }));
+                        };
+                        if !blob.media_type.as_deref().is_some_and(|mime| mime.starts_with("image/")) {
+                            return Ok(json!({ "present": false }));
+                        }
+                        let mut file = std::fs::File::open(path)?;
+                        let offset = p.offset.min(blob.size);
+                        file.seek(SeekFrom::Start(offset))?;
+                        let mut bytes = vec![0; (blob.size - offset).min(ext::BLOB_CHUNK_MAX as u64) as usize];
+                        file.read_exact(&mut bytes)?;
+                        Ok(json!({ "present": true, "size": blob.size, "mediaType": blob.media_type,
+                            "more": offset + (bytes.len() as u64) < blob.size,
+                            "dataBase64": base64::engine::general_purpose::STANDARD.encode(bytes) }))
+                    });
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
             ext::names::BLOB_LIST => match parse::<ext::BlobListParams>(params) {
                 Ok(p) => {
                     self.blob_reply(client, id, move |s| Ok(to_value(&ext::BlobListResult { blobs: s.drafts.blobs(p.draft.as_deref())? })));

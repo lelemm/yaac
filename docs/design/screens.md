@@ -536,7 +536,7 @@ activity. When the panel is narrow a row **ellipsises its title (and branch) and
 mark**. A row keeps its hover colour while its menu (the thread menu) is open, and has the
 cornflower outline when its turn ended unseen. It shows the rows under three quiet
 headings — **Spawned by**, **Workers**, **In contact with** — with the orchestration's budget
-in small secondary text at the top ("14 of 100 agent turns · 4 of 20 threads"). It is drawn in
+in small secondary text at the top ("14 of 100 agent turns"). It is drawn in
 the same muted style as everything else: no boxes around sections, no rules, rows as plain
 lines, names as links. An **undock** button returns it to the pill. The choice is remembered.
 
@@ -652,7 +652,7 @@ everyone is, without opening five windows.*
   · "38%" · **Fork**.
 - **Agents panel, docked** (this is the docked state; the default is the pill — screens 27
   and 28). Header "Agents", an undock button, and the budget line
-  "14 of 100 agent turns · 4 of 20 threads".
+  "14 of 100 agent turns".
   - **Spawned by** — "started by you".
   - **Workers (3)** — a tree: users-service done; billing-service done; search-service
     running, with a child row beneath it: **index-rebuild — needs you · approval**.
@@ -1089,8 +1089,8 @@ the same place, in one decision.*
   - "It will:" then two plain lines —
     "Start 3 threads — Claude · opus-5.5 on local, devbox, and gpu-box";
     "Message CI integration · Codex · devbox".
-  - "Budget for this orchestration" — three small number fields in a row:
-    "Agent turns 100", "Threads 20", "Hours 12"; beneath in secondary text:
+  - "Budget for this orchestration" — two small number fields in a row:
+    "Agent turns 100" and "Hours 12"; beneath in secondary text:
     "When a budget runs out, work pauses and asks you. Nothing is cancelled."
   - Actions: one filled button **Allow  ⏎** (with the focus ring), then as plain text
     **Deny  Esc** and "Always allow in this chat".

@@ -110,6 +110,29 @@ export class UploadStore {
     return path.join(this.root, "meta", `${uploadId}.json`);
   }
 
+  /** Store an image supplied by a harness without putting its bytes in the journal. */
+  storeToolImage(bytes: Buffer, label: string): { uploadId: string; name: string } | null {
+    const mediaType = sniffMediaType(bytes);
+    if (!mediaType?.startsWith("image/")) return null;
+    this.prepare();
+    const sha256 = sha256Hex(bytes);
+    const uploadId = `u_tool_${sha256}`;
+    const blob = this.blobPath(sha256);
+    if (!fs.existsSync(blob)) {
+      const temp = path.join(this.root, "partial", randomId("tool_", 12));
+      try {
+        fs.writeFileSync(temp, bytes, { flag: "wx", mode: 0o600 });
+        fs.renameSync(temp, blob);
+      } finally {
+        fs.rmSync(temp, { force: true });
+      }
+    }
+    if (!fs.existsSync(this.metaPath(uploadId))) {
+      writeJsonAtomic(this.metaPath(uploadId), { uploadId, sha256, size: bytes.length, name: sanitiseName(label), mediaType });
+    }
+    return { uploadId, name: label };
+  }
+
   begin(params: UploadBeginParams, owner: object): UploadBeginResult {
     this.prepare();
     if (typeof params.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(params.sha256)) {

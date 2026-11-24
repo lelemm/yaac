@@ -82,8 +82,10 @@ mod tests {
     fn model_without_modality_data_is_unknown() {
         let model = ModelInfo {
             id: "fake-model".into(),
+            resolved_model: None,
             display_name: "fake".into(),
             description: None,
+best_use: None,
             is_default: false,
             hidden: false,
             capabilities: vec![],

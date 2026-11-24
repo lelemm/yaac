@@ -691,6 +691,32 @@ fn providers(app: &YaacApp, target: Option<&TargetId>) -> Value {
             ));
         }
         rows.push(json!({ "id": format!("prefs:{}:{}", target, row.instance), "layout": "form", "actions": prefs }));
+        if !row.model_guidance.is_empty() {
+            let context = json!({ "target": target, "instance": row.instance });
+            let expanded = app.ui.set.model_guidance_panel.as_ref() == Some(&(target.clone(), row.instance.clone()));
+            rows.push(json!({ "id": format!("model-guidance:{target}:{}", row.instance), "label": "Model guidance",
+                "actions": [args(action("provider.bestUsePanel", if expanded { "Hide" } else { "Show" }, true), context)] }));
+            if expanded {
+                for model in &row.model_guidance {
+                    let context = json!({ "target": target, "instance": row.instance, "model": model.id,
+                        "expectedModel": model.specific });
+                    let id = format!("best-use:{target}:{}:{}", row.instance, model.id);
+                    if let Some(edit) = app.ui.set.model_guidance_edit.as_ref().filter(|edit| edit.matches(target, &row.instance, model)) {
+                        rows.push(json!({ "id": format!("{id}:edit"), "label": model.name, "layout": "form",
+                            "fields": [with(field("bestUse", "Best used as", &edit.text, "Best used as"), json!({ "required": true }))],
+                            "actions": [submit(args(action("provider.bestUseSave", "Save", !v.offline), context), true),
+                                cancel("provider.bestUseCancel", "Cancel")] }));
+                    } else {
+                        let mut acts = vec![args(action("provider.bestUseEdit", "Edit", !v.offline), context.clone())];
+                        if model.custom() {
+                            acts.push(args(action("provider.bestUseReset", "Reset to generated", !v.offline), context));
+                        }
+                        rows.push(json!({ "id": id, "label": model.name, "status": model.provenance(),
+                            "detail": format!("Best used as: {}", model.summary()), "actions": acts }));
+                    }
+                }
+            }
+        }
     }
     sections.push(section("instances", "Instances", rows));
 
@@ -1123,6 +1149,43 @@ pub(super) fn command(
         "provider.cancel" => {
             app.ui.set.edit = None;
             return Ok(());
+        }
+        "provider.bestUsePanel" => {
+            let target = target_id(app, values)?;
+            let instance = instance_id(app, &target, values)?;
+            let scope = (target, instance);
+            app.ui.set.model_guidance_panel = (app.ui.set.model_guidance_panel.as_ref() != Some(&scope)).then_some(scope);
+            app.ui.set.model_guidance_edit = None;
+            return Ok(());
+        }
+        "provider.bestUseCancel" => {
+            app.ui.set.model_guidance_edit = None;
+            return Ok(());
+        }
+        "provider.bestUseEdit" | "provider.bestUseSave" | "provider.bestUseReset" => {
+            let target = connected_target(app, values)?;
+            let instance = instance_id(app, &target, values)?;
+            let model = model::providers_view(&app.client.state, &target)
+                .and_then(|view| view.rows.into_iter().find(|row| row.instance == instance))
+                .and_then(|row| row.model_guidance.into_iter().find(|m| {
+                    m.id.as_str() == string(values, "model") && m.specific.as_str() == string(values, "expectedModel")
+                }))
+                .ok_or_else(|| "The model changed while you were editing. Reopen its current guidance.".to_owned())?;
+            if id == "provider.bestUseEdit" {
+                app.ui.set.model_guidance_edit = Some(crate::settings::ModelGuidanceEdit::new(&target, &instance, &model));
+                return Ok(());
+            }
+            let summary = if id == "provider.bestUseSave" {
+                let text = string(values, "bestUse").trim();
+                if !crate::settings::valid_model_guidance(text) {
+                    return Err("Enter a model recommendation or reset it to generated guidance.".into());
+                }
+                Some(text.to_owned())
+            } else {
+                None
+            };
+            app.ui.set.model_guidance_edit = None;
+            Action::ModelBestUse(target, instance, model.id, model.specific, summary)
         }
         "provider.homeCancel" => {
             app.ui.set.home_edit = None;
@@ -1652,6 +1715,37 @@ fn ssh_config_hosts() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_guidance_editor_sends_the_specific_model_and_preserves_the_text() {
+        let mut app = crate::app::tests::demo_app(&egui::Context::default());
+        let local = TargetId::new("local");
+        let target = app.client.state.targets.iter_mut().find(|target| target.entry.id == local).unwrap();
+        let provider = target.providers.iter_mut().find(|provider| !provider.models.is_empty()).unwrap();
+        provider.capabilities.push(yaac_protocol::Capability::ModelBestUse);
+        let model = &mut provider.models[0];
+        model.resolved_model = Some(yaac_protocol::ModelId::new("specific-model"));
+        model.best_use = Some(yaac_protocol::ModelBestUse { summary: "Small tests".into(), custom: true });
+        let identity = json!({ "target": local, "instance": provider.instance, "model": model.id, "expectedModel": "specific-model" });
+        let mut selected = Some(local.clone());
+        command(&mut app, &mut selected, "settings.action", &json!({
+            "id": "provider.bestUsePanel", "values": identity,
+        })).unwrap();
+        let view = providers(&app, Some(&local));
+        let rows = view["sections"].as_array().unwrap().iter().find(|section| section["id"] == "instances").unwrap()["rows"].as_array().unwrap();
+        let row = rows.iter().find(|row| row["detail"] == "Best used as: Small tests").unwrap();
+        assert_eq!(row["status"], "User-edited");
+        command(&mut app, &mut selected, "settings.action", &row["actions"][0]).unwrap();
+        assert_eq!(app.ui.set.model_guidance_edit.as_ref().unwrap().text, "Small tests");
+        let mut values = identity;
+        values["bestUse"] = json!("Review focused changes");
+        command(&mut app, &mut selected, "settings.action", &json!({ "id": "provider.bestUseSave", "values": values })).unwrap();
+        assert!(app.demo.as_ref().unwrap().requests().iter().any(|(target, method, params)| {
+            target.as_ref() == Some(&local) && method == yaac_protocol::methods::names::PROVIDER_MODEL_BEST_USE_SET
+                && params["expectedModel"] == "specific-model" && params["summary"] == "Review focused changes"
+                && params["opId"].is_string()
+        }));
+    }
 
     #[test]
     fn session_discovery_switch_updates_only_the_selected_target() {

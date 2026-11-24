@@ -34,6 +34,7 @@ mod composer;
 mod dialogs;
 mod display;
 mod files;
+mod images;
 mod first_run;
 mod icons;
 mod keyboard;

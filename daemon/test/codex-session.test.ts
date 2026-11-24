@@ -66,6 +66,80 @@ test("codex + session layer: a recorded turn with an approval, journaled and ans
   }
 });
 
+test("Codex tool images are journaled as references and read from the daemon's configured upload store", async () => {
+  const home = tmpHome("yaac-cxi-");
+  const imagePath = path.join(home, "pixel.png");
+  const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+XBBkAAAAASUVORK5CYII=";
+  const image = Buffer.from(data, "base64");
+  fs.writeFileSync(imagePath, image);
+  const fake = await FakeCodex.start(path.join(home, "codex.sock"));
+  const thread = { id: "image-thread", cwd: home, status: { type: "idle" } };
+  const turn = { id: "image-turn", status: "inProgress" };
+  fake.handlers.set("account/read", () => ({ account: { type: "apiKey" }, requiresOpenaiAuth: true }));
+  fake.handlers.set("model/list", () => ({ data: [], nextCursor: null }));
+  fake.handlers.set("thread/list", () => ({ data: [], nextCursor: null }));
+  fake.handlers.set("thread/start", () => ({ thread }));
+  fake.handlers.set("thread/read", () => ({ thread }));
+  fake.handlers.set("turn/start", () => ({ turn }));
+  const daemon = await startDaemon(home);
+  try {
+    const c = await client(daemon);
+    const added = await c.request("providerInstance/add", { opId: opId(), kind: "codex", endpoint: { socket: fake.socket } });
+    const { threadId } = await c.request("thread/start", { opId: opId(), instance: added.instance.id, cwd: home, input: text("Inspect images") });
+    await c.request("thread/subscribe", { threadId, epoch: 1, afterSeq: 0 });
+    const url = `data:image/png;base64,${data}`;
+    const items = [
+      { type: "imageView", id: "view", path: imagePath },
+      { type: "mcpToolCall", id: "mcp", server: "fixture", tool: "photo", status: "completed", result: { content: [
+        { type: "text", text: "Two views" },
+        { type: "image", mimeType: "image/png", data },
+        { type: "resource", resource: { uri: "fixture://pixel", mimeType: "image/png", blob: data } },
+        { type: "image", mimeType: "image/png", data: Buffer.from("plain text").toString("base64") },
+      ] } },
+      { type: "dynamicToolCall", id: "dynamic", tool: "photo", status: "completed", contentItems: [
+        { type: "inputText", text: "Screenshot" },
+        { type: "inputImage", imageUrl: url },
+        { type: "inputImage", imageUrl: "https://example.invalid/image.png" },
+      ] },
+      { type: "functionCallOutput", id: "function", namespace: "fixture", name: "photo", output: [
+        { type: "input_text", text: "Output" },
+        { type: "input_image", image_url: url },
+      ] },
+    ];
+    const emit = (method: string, item: (typeof items)[number]) => fake.push({ method, params: { threadId: thread.id, turnId: turn.id, item } });
+    emit("item/started", items[0]!);
+    for (const item of items) emit("item/completed", item);
+    await c.waitEvent((ev) => ev.event.type === "itemCompleted" && ev.event.item.id === "function", "all image results to arrive");
+    const viewStart = c.events(threadId).find((e) => e.event.type === "itemStarted" && e.event.item.id === "view")?.event;
+    assert.ok(viewStart?.type === "itemStarted" && viewStart.item.kind === "toolCall");
+    assert.equal(viewStart.item.images, undefined);
+
+    fs.unlinkSync(imagePath);
+    const page = await c.request("thread/read", { threadId });
+    const tools = page.items.filter((item: { kind: string }) => item.kind === "toolCall").reverse();
+    assert.deepEqual(tools.map((item: { id: string }) => item.id), items.map((item) => item.id));
+    assert.deepEqual(tools.map((item: { images: unknown[] }) => item.images.length), [1, 2, 1, 1]);
+    assert.equal(tools[0].images[0].name, "pixel.png");
+    assert.equal(tools[1].output, "Two views\n[image]\n[image]\n[image]");
+    assert.equal(tools[2].output, "Screenshot\n[image]\n[image]");
+    assert.ok(!JSON.stringify(page).includes(data));
+    const { uploadId } = tools[0].images[0];
+    assert.ok(tools.every((item: { images: Array<{ uploadId: string }> }) => item.images.every((image) => image.uploadId === uploadId)));
+    assert.deepEqual(page.uploads, [{ uploadId, present: true }]);
+    const head = await c.request("upload/read", { uploadId, maxBytes: 12 });
+    const tail = await c.request("upload/read", { uploadId, offset: 12, maxBytes: 1024 });
+    assert.equal(head.mediaType, "image/png");
+    assert.equal(head.more, true);
+    assert.equal(tail.more, false);
+    assert.deepEqual(Buffer.concat([Buffer.from(head.dataBase64, "base64"), Buffer.from(tail.dataBase64, "base64")]), image);
+    await c.close();
+  } finally {
+    await daemon.stop("test");
+    await fake.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("codex + session layer: threads archived in Codex are listed and marked archived; archive and unarchive go to Codex and nothing leaves the index (P131)", async () => {
   const home = tmpHome("yaac-cxa-");
   const fake = await FakeCodex.start(path.join(home, "codex.sock"));

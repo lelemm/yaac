@@ -1,6 +1,5 @@
 // Translation from Codex app-server shapes to the YAAC item model and contract types.
-// Pure functions: no I/O, no state. Nothing here names a model or an effort level; models,
-// efforts, and modalities are copied from what the harness reports.
+// Models, efforts, and modalities are copied from what the harness reports.
 
 import type {
   ApprovalDecision,
@@ -21,6 +20,7 @@ import type {
 } from "../../protocol/generated/types.js";
 import type { NativeThreadInfo, RaisedRequest } from "../types.js";
 import { userItem } from "../markup.js";
+import { imagePath, isImageBlock, resultImages, type StoreToolImage } from "../tool-images.js";
 import { CODEX_MARKUP, textWithElements } from "./markup.js";
 import { agentCallTitle, codexAgentCall, meshAgentCall, MESH_SERVER } from "../agentcalls.js";
 import { INTERACTIVE_SOURCES, type Model, type Thread, type ThreadItem, type ThreadTokenUsage, type TokenUsageBreakdown } from "./wire.js";
@@ -218,7 +218,7 @@ function mcpOutput(result: unknown, error: unknown): string {
   const r = obj(result);
   const texts = arr(r.content)
     .map((c) => obj(c))
-    .map((c) => (typeof c.text === "string" ? c.text : JSON.stringify(c)));
+    .map((c) => isImageBlock(c) ? "[image]" : typeof c.text === "string" ? c.text : JSON.stringify(c));
   if (texts.length > 0) return texts.join("\n");
   if (r.structuredContent !== undefined && r.structuredContent !== null) return JSON.stringify(r.structuredContent);
   return "";
@@ -254,7 +254,7 @@ export function skillRead(it: Record<string, unknown>, status: ItemStatus, skill
  * a `toolCall` of type `other` (or a `notice` where it is out-of-band information).
  * `final` is the status to assume when Codex gives none (completed for history).
  */
-export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus, skills?: ReadonlyMap<string, string>): Item {
+export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus, skills?: ReadonlyMap<string, string>, storeImage?: StoreToolImage): Item {
   const it = raw as Record<string, unknown>;
   const id = String(raw.id);
   const base = { id, turnId };
@@ -307,6 +307,7 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus, skil
     case "mcpToolCall": {
       const status = itemStatus(it.status, final);
       const output = mcpOutput(it.result, it.error);
+      const images = resultImages(storeImage, obj(it.result).content);
       const item = {
         ...base,
         status,
@@ -315,6 +316,7 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus, skil
         title: `${str(it.server) ?? "mcp"}.${str(it.tool) ?? "tool"}`,
         input: { server: it.server, tool: it.tool, arguments: it.arguments ?? null },
         output,
+        ...(images.length ? { images } : {}),
       } as Item;
       // YAAC's own mesh tools (D150): read as communication with another agent.
       if (str(it.server) === MESH_SERVER) {
@@ -323,6 +325,20 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus, skil
         if (call) return { ...item, agentCall: call, title: agentCallTitle(call, false) } as Item;
       }
       return item;
+    }
+    case "imageView": {
+      const image = final === "inProgress" ? null : imagePath(storeImage, it.path);
+      return { ...base, status: final, kind: "toolCall", tool: "other", title: "View image",
+        output: str(it.path) ?? "", ...(image ? { images: [image] } : {}) };
+    }
+    case "dynamicToolCall": {
+      const content = arr(it.contentItems);
+      const images = resultImages(storeImage, content);
+      const output = content.map(obj).map((c) => isImageBlock(c) ? "[image]" : str(c.text) ?? JSON.stringify(c)).join("\n");
+      return { ...base, status: itemStatus(it.status, final), kind: "toolCall", tool: "other",
+        title: str(it.tool) ?? "Dynamic tool",
+        input: { type: raw.type, namespace: it.namespace, arguments: it.arguments ?? null, success: it.success, durationMs: it.durationMs },
+        output, ...(images.length ? { images } : {}) };
     }
     case "webSearch": {
       const action = obj(it.action);
@@ -357,12 +373,15 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus, skil
       return { ...base, status: "completed", kind: "notice", noticeKind: "info", text: "A hook added a prompt.", ...(body ? { body } : {}), details: { fragments: it.fragments ?? [] } };
     }
     default: {
-      // dynamicToolCall, functionCallOutput, imageView, imageGeneration, sleep, and anything newer.
       const { id: _id, type, ...rest } = it;
       void _id;
       const name = str(it.tool) ?? str(it.name);
       const title = name ? `${String(type)}: ${name}` : String(type);
-      return { ...base, status: itemStatus(it.status, final), kind: "toolCall", tool: "other", title, input: { type, ...rest } };
+      const content = type === "functionCallOutput" ? arr(rest.output) : [];
+      const images = resultImages(storeImage, content);
+      if (content.some(isImageBlock)) rest.output = content.map((block) => isImageBlock(block) ? "[image]" : block);
+      return { ...base, status: itemStatus(it.status, final), kind: "toolCall", tool: "other", title,
+        input: { type, ...rest }, ...(images.length ? { images } : {}) };
     }
   }
 }

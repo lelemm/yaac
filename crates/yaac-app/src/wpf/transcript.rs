@@ -136,7 +136,6 @@ fn card(app: &YaacApp, key: &ThreadKey, transcript: &Transcript, item: &Item, re
             if pending {
                 fields = [
                     ("turns", "Agent-started turns", prompt.budget.agent_turns),
-                    ("threads", "Threads spawned", prompt.budget.threads),
                     ("hours", "Hours without the user", prompt.budget.hours),
                 ].into_iter().map(|(id, label, value)| json!({ "id": id, "label": label, "value": value, "min": 0, "max": u32::MAX })).collect();
                 actions = vec![
@@ -178,7 +177,7 @@ fn render(app: &YaacApp, map: &AttentionMap, key: &ThreadKey, transcript: &Trans
         ItemBody::UserMessage(message) => {
             let mut parts = vec![];
             let mut attachments = vec![];
-            for part in &message.parts {
+            for (index, part) in message.parts.iter().enumerate() {
                 match part {
                     InputPart::Text(t) => parts.push(json!({
                         "kind": match t.role { Some(TextRole::Pasted) => "pasted", Some(TextRole::Command) => "command",
@@ -186,7 +185,9 @@ fn render(app: &YaacApp, map: &AttentionMap, key: &ThreadKey, transcript: &Trans
                         "text": t.text, "label": t.label,
                     })),
                     InputPart::Image(image) => attachments.push(json!({ "label": image.name.as_deref().unwrap_or(image.upload_id.as_str()),
-                        "image": true, "missing": transcript.missing_uploads.contains(&image.upload_id) })),
+                        "image": true, "missing": transcript.missing_uploads.contains(&image.upload_id),
+                        "action": (!transcript.missing_uploads.contains(&image.upload_id)).then(|| sidebar_view::action(
+                            &format!("openAttachment:{index}"), "Open image", true)) })),
                     InputPart::File(file) => attachments.push(json!({ "label": file.name.as_deref().unwrap_or(file.upload_id.as_str()),
                         "missing": transcript.missing_uploads.contains(&file.upload_id) })),
                     _ => {}
@@ -246,10 +247,11 @@ fn render(app: &YaacApp, map: &AttentionMap, key: &ThreadKey, transcript: &Trans
                 action
             }).collect();
             let tail = line.meta.iter().chain(line.status.iter()).cloned().collect::<Vec<_>>().join(" · ");
-            let parts: Vec<_> = [("Input", detail.raw_input), ("Output", detail.raw_output)]
+            let mut parts: Vec<_> = [("Input", detail.raw_input), ("Output", detail.raw_output)]
                 .into_iter().filter(|(_, text)| !text.is_empty())
                 .map(|(label, text)| json!({ "kind": "code", "label": label, "text": text, "expanded": false }))
                 .collect();
+            tool_images(app, key, item, t, &mut parts);
             json!({ "kind": "call", "mark": mark, "lead": line.lead, "after": line.after,
                 "preview": line.preview, "tail": tail, "pills": pills, "tone": if failed { "error" } else { "muted" },
                 "heading": detail.heading, "message": detail.text, "result": detail.result, "receipt": detail.status,
@@ -274,6 +276,7 @@ fn render(app: &YaacApp, map: &AttentionMap, key: &ThreadKey, transcript: &Trans
                 parts.push(json!({ "kind": "code", "text": t.output }));
             }
             tool_output_details(t, &mut parts);
+            tool_images(app, key, item, t, &mut parts);
             json!({
                 "kind": "tool", "mark": if line.failed { "×" } else { "•" },
                 "lead": yaac_core::message::one_line(&line.text),
@@ -392,7 +395,24 @@ fn tool_output_details(tool: &yaac_protocol::ToolCallItem, parts: &mut Vec<Value
         parts.push(json!({ "kind": "text", "text": text, "tone": "muted" }));
     }
     if let Some(exit) = tool.exit_code {
-        parts.push(json!({ "kind": "text", "text": format!("exit {exit}"), "tone": "muted" }));
+        let (text, tone) = if exit == 0 { ("Success".to_owned(), "success") }
+            else { (format!("Failed (exit {exit})"), "error") };
+        parts.push(json!({ "kind": "text", "text": text, "tone": tone }));
+    }
+}
+
+fn tool_images(app: &YaacApp, key: &ThreadKey, item: &Item, tool: &yaac_protocol::ToolCallItem, parts: &mut Vec<Value>) {
+    if tool.images.is_empty() {
+        return;
+    }
+    let address = (key.clone(), item.id.clone());
+    let expanded = app.ui.expansion.lines.contains(&address) || app.client.state.focus_item.as_ref() == Some(&address);
+    for (index, image) in tool.images.iter().enumerate() {
+        let source = crate::images::ImageSource::Target(key.target.clone(), image.upload_id.clone());
+        parts.push(json!({ "kind": "image", "id": format!("image:{index}"), "label": image.name,
+            "preview": expanded.then(|| app.images.wire_preview(&source)).flatten(),
+            "action": sidebar_view::action(&format!("openImage:{index}"), &image.name, true),
+            "request": sidebar_view::action(&format!("previewImage:{index}"), &image.name, true) }));
     }
 }
 
@@ -708,7 +728,6 @@ fn answer(r: &RequestItem, id: &str, p: &Value) -> Option<RequestResponse> {
             let fallback = permission::parse(&r.body)?.budget;
             let budget = BudgetFields {
                 agent_turns: budget_value(p, "turns", fallback.agent_turns),
-                threads: budget_value(p, "threads", fallback.threads),
                 hours: budget_value(p, "hours", fallback.hours),
             };
             Some(permission::response(decision, budget))
@@ -785,6 +804,31 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
         return Ok(());
     };
     let act = string(p, "action");
+    if let Some((verb, index)) = act.split_once(':')
+        && matches!(verb, "openImage" | "previewImage" | "openAttachment")
+        && let Ok(index) = index.parse::<usize>()
+        && let Some(entry) = app.client.state.transcripts.get(&k).and_then(|t| t.item(&item))
+    {
+        let image = match &entry.body {
+            ItemBody::ToolCall(tool) if verb != "openAttachment" => tool.images.get(index)
+                .map(|image| (image.upload_id.clone(), image.name.clone())),
+            ItemBody::UserMessage(message) if verb == "openAttachment" => match message.parts.get(index) {
+                Some(InputPart::Image(image)) => Some((image.upload_id.clone(), image.name.clone().unwrap_or_else(|| "Image attachment".to_owned()))),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((id, label)) = image {
+            let source = crate::images::ImageSource::Target(k.target.clone(), id);
+            if verb == "previewImage" {
+                app.images.preview(source);
+            } else {
+                app.images.open(source, label);
+            }
+        }
+        return Ok(());
+    }
+
     let action = match act {
         "toggleRun" => {
             app.ui.expansion.toggle_run(&k, &item);
@@ -1025,7 +1069,17 @@ mod tests {
         assert_eq!(row["parts"][0]["text"], command);
         assert_eq!(row["parts"][1]["text"], "Hello\n");
         assert_eq!(row["parts"][2]["text"], "Output is longer (4096 bytes). The rest is on the target.");
-        assert_eq!(row["parts"][3]["text"], "exit 0");
+        assert_eq!(row["parts"][3], json!({ "kind": "text", "text": "Success", "tone": "success" }));
+
+        let ItemBody::ToolCall(tool) = &mut item.body else { unreachable!() };
+        tool.exit_code = Some(2);
+        tool.images.push(yaac_protocol::ToolImage { upload_id: yaac_protocol::UploadId::new("u_tool_image"), name: "Result image".into() });
+        item.status = ItemStatus::Failed;
+        let row = render(&app, &map, &key, transcript, &item, &mut markdown, false).unwrap();
+        assert_eq!(row["parts"][3], json!({ "kind": "text", "text": "Failed (exit 2)", "tone": "error" }));
+        assert_eq!(row["parts"][4]["kind"], "image");
+        assert_eq!(row["parts"][4]["action"]["id"], "openImage:0");
+        assert_eq!(row["parts"][4]["request"]["id"], "previewImage:0");
     }
 
     #[test]

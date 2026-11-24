@@ -147,9 +147,9 @@ Details that matter:
   types come from the thread's effective capabilities when the harness reports them. The MVP
   sends PNG, JPEG, GIF, and WebP as-is and rejects oversized images — by bytes and by pixel
   count — with a clear message. Downscaling on the host before upload is a later optimisation.
-- **Thumbnails.** The transcript shows a thumbnail decoded at display size on the host. The
-  original pixels are not kept in memory. A host that did not upload the image fetches a
-  bounded read of it over the same connection (`upload/read`).
+- **Thumbnails.** The composer and expanded tool calls show thumbnails decoded at display size
+  on the host. The viewer requests missing image bytes in bounded chunks over the same
+  connection (`upload/read`).
 
 ### How file parts are presented to the agent
 
@@ -220,6 +220,21 @@ report dropped files on Wayland.
 - **Send** is plain, not filled, while anything holds the message back, and says why: "Waiting
   for 1 upload", "trace.log was not uploaded — remove it or retry", "Choose how to send
   sketch.png".
+
+### Viewing images
+
+Click a draft image's thumbnail or name to open YAAC's image viewer in egui or WPF.
+Expanded tool calls show a clickable preview when the harness supplies an image result.
+A sent image attachment can also open in the viewer while its bytes remain on the target.
+The viewer opens fitted to the available space. Use the zoom controls or mouse wheel to zoom,
+drag to pan, select **Reset** to restore the fitted view, or use **Close** or Escape to leave.
+
+Image results use the target's private temporary upload store. The transcript keeps references
+and the window reads the image in bounded chunks on the existing connection. Codex's native
+image-view calls supply a target path, so an older call can show the file only if it is still
+readable on that target. YAAC does not fetch external image URLs. Images are decoded on a
+worker thread. The viewer bounds decoding and scales very large images to a 4,096-pixel
+long edge.
 
 ### Drafts across a restart
 

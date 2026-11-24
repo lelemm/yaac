@@ -98,6 +98,11 @@ export class ClientSession implements SessionHandler, ClientLink {
         await Promise.all(targets.map((i) => core.scanInstance(i)));
         return {};
       }
+      case METHODS.PROVIDER_MODEL_BEST_USE_SET:
+        return core.ops.run(method, p.opId, async () => {
+          core.registry.setModelBestUse(str(p, "instance"), str(p, "model"), str(p, "expectedModel"), p.summary);
+          return {};
+        });
       case METHODS.PROVIDER_INSTANCE_LIST:
         return { instances: core.registry.configs() };
       case METHODS.PROVIDER_INSTANCE_ADD:

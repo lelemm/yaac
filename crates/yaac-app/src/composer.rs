@@ -350,12 +350,15 @@ fn chips(ui: &mut egui::Ui, app: &mut YaacApp, d: &DraftRef, chips: &[ChipView],
             egui::Frame::NONE.fill(p.raised).corner_radius(5).inner_margin(Margin { left: 6, right: 2, top: 3, bottom: 3 }).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
+                    let mut open_image = false;
+                    let previewable = c.image || thumb.is_some();
                     match &thumb {
                         Some(t) => {
                             let sz = t.size_vec2();
                             let h = 24.0;
                             let w = (sz.x / sz.y.max(1.0) * h).clamp(16.0, 40.0);
-                            ui.add(egui::Image::new((t.id(), egui::vec2(w, h))).corner_radius(3));
+                            open_image = ui.add(egui::Image::new((t.id(), egui::vec2(w, h))).corner_radius(3).sense(egui::Sense::click()))
+                                .on_hover_text("Open image").clicked();
                         }
                         None => {
                             let image = c.image;
@@ -363,7 +366,19 @@ fn chips(ui: &mut egui::Ui, app: &mut YaacApp, d: &DraftRef, chips: &[ChipView],
                         }
                     }
                     let failed = matches!(c.status, ChipStatus::Failed { .. });
-                    ui.label(egui::RichText::new(&c.name).color(if failed { p.text2 } else { p.text }));
+                    let name = egui::RichText::new(&c.name).color(if failed { p.text2 } else { p.text });
+                    if previewable {
+                        open_image |= ui.add(egui::Label::new(name).sense(egui::Sense::click())).on_hover_text("Open image").clicked();
+                    } else {
+                        ui.label(name);
+                    }
+                    if open_image {
+                        let source = match &key {
+                            ThumbKey::Path(path) => crate::images::ImageSource::Path(path.clone()),
+                            ThumbKey::Chip(draft, id) => crate::images::ImageSource::Draft(draft.clone(), *id),
+                        };
+                        actions.push(Action::OpenImage(source, c.name.clone()));
+                    }
                     match &c.status {
                         ChipStatus::Storing => {
                             ui.label(widgets::secondary("saving…", &p));

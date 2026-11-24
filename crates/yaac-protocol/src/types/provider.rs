@@ -176,11 +176,17 @@ impl ModeAutonomy {
 pub struct ModelInfo {
     /// What the harness expects back.
     pub id: ModelId,
+    /// The specific model behind an alias, when the harness reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_model: Option<ModelId>,
     /// Label to show.
     pub display_name: String,
     /// Longer description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// YAAC’s guidance for choosing this model, when documented or set by the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_use: Option<ModelBestUse>,
     /// Whether this is the harness's default model.
     #[serde(default)]
     pub is_default: bool,
@@ -200,6 +206,32 @@ pub struct ModelInfo {
     /// Context window in tokens, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u32>,
+}
+
+/// A short model recommendation and its provenance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelBestUse {
+    /// The text shown in Settings and in agent model lists.
+    pub summary: String,
+    /// A user edit takes precedence over generated guidance.
+    pub custom: bool,
+}
+
+/// Set (or clear) the recommendation override for a model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelBestUseSetParams {
+    /// Operation id.
+    pub op_id: OpId,
+    /// An instance that advertises the model.
+    pub instance: InstanceId,
+    /// The harness’s stable model id.
+    pub model: ModelId,
+    /// The specific model ID displayed while editing, to catch aliases changing.
+    pub expected_model: ModelId,
+    /// A user edit, or null to restore the generated guidance.
+    pub summary: Option<String>,
 }
 
 /// Everything the host knows about one provider instance.

@@ -696,6 +696,7 @@ mod tests {
             cwd: None,
             agent_call: None,
             skill: skill.map(|n| SkillLoad { name: n.to_owned() }),
+            images: vec![],
         };
         let key = ThreadKey::new(TargetId::new("local"), ThreadId::new("t"));
         let mut t = crate::transcript::Transcript::new();

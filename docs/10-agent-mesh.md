@@ -127,10 +127,10 @@ One MCP server, named `yaac`. Few tools, each doing one thing.
 | --- | --- |
 | `whoami` | The caller's own address, title, provider, model, working directory, who spawned it, and its children. |
 | `list_targets` | The machines in this mesh: name, whether each is reachable, and how many threads are active there. Names and counts only — never the threads themselves. |
-| `list_models` | For a target: the provider instances there, the models each offers, and each instance's permission modes (the never-ask one marked) — the same live data as the model picker. Nothing is hardcoded, so "spawn it on Opus" is resolved against what actually exists. |
+| `list_models` | For a target: the provider instances, their models and effort levels, and their permission modes. Codex and Claude models show **Best used as** from official guidance or a user edit. The tool omits GPT‑5.x and earlier GPT models. Worker creation resolves the selected ID against the live catalog. |
 | `list_threads` | A **small, scoped** list of threads — by default only the caller's own orchestration. See [listing is scoped and bounded](#listing-is-scoped-and-bounded). |
 | `find_thread` | Find a specific thread **across all targets**, either by **id** or by a **fuzzy match on its title**. Needs a query; ten matches per page. |
-| `read_thread` | The recent messages, or just the last answer, of another thread — to check on a worker without interrupting it. |
+| `read_thread` | The recent messages, or just the last answer, of a thread on any reachable YAAC target. Use `find_thread` to get its address. |
 | `spawn_thread` | Start a **new thread** on any target, provider instance, and model, with a first message. Returns its address. The new thread is a child of the caller. |
 | `send_message` | Send a message to a thread, either **queued** (the default: it reaches the recipient at its next supported boundary without interrupting work) or **now** (it reaches the recipient at once, even mid-turn). Returns a delivery receipt. See [queued or now](#queued-or-now). |
 | `wait` | Block until something happens: a message arrives for the caller, or one of the named threads finishes its turn, needs attention, or fails. **Bounded at 45 seconds** — it then returns "nothing yet" with a cursor, and is called again. Harnesses time tool calls out (Codex defaults to 300 s; YAAC configures 60 s for this server), and a long silent call is indistinguishable from a hung one. |
@@ -389,9 +389,8 @@ a thread. It is handed over with the recipient's next turn or its next `wait`.
   is calling (Codex sends the thread id in the call's metadata), that must match too.
 - `from` is stamped by `yaacd` from the bound ticket. Nothing the agent writes can change it,
   and text inside a message body that *looks* like a YAAC header is just text.
-- Reading another thread is authorised separately from messaging it. By default an agent may
-  `read_thread` only within its own orchestration — its ancestors, its workers, and threads it
-  has exchanged messages with. Reading anything else follows the mesh policy.
+- An attached agent can call `read_thread` on any addressable thread on a reachable YAAC
+  target (D183). A read returns a bounded transcript excerpt and does not interrupt the thread.
 
 ## Delivery
 
@@ -599,7 +598,6 @@ that root's id. The root has a **budget**, counted across all targets:
 | Allowance, per root | Default |
 | --- | --- |
 | Turns started by agents (not by a person) | 100 |
-| Threads spawned in total | 20 |
 | Wall-clock time since a person last acted on it | 12 hours |
 
 When a budget runs out, nothing is cancelled: turns in progress finish, further messages are
@@ -644,7 +642,6 @@ is not looping, just working longer and wider than anyone intended.
 
 | Limit | Default | Why |
 | --- | --- | --- |
-| Workers per thread | 8 | A fan-out mistake should cost eight threads, not eighty. |
 | Depth of spawning | 3 | Workers of workers of workers is enough. |
 | Messages between the same two threads | 30 per 10 minutes | Catches the simplest ping-pong early. |
 | A message waiting undelivered | notice to the sender after 15 minutes | Silence is not an answer. The message is not cancelled, and the notice does not start a turn. |
@@ -652,8 +649,11 @@ is not looping, just working longer and wider than anyone intended.
 Hitting a limit is never hidden: the tool call fails with a reason the agent can read, and the
 thread shows a notice the user can see.
 
-The mesh places no cap on the target's number of active turns (D180). The legacy
-`runningThreads` policy field remains readable and writable for older builds.
+YAAC budgets the turns that workers start and the time since the last human action (D184).
+The mesh places no cap on worker count or on a target’s number of active turns (D180).
+The legacy `workersPerThread`, `runningThreads`, and budget `threadsSpawned` allowance fields
+remain readable and writable for older builds. The `threadsSpawned` usage counter reports
+how many workers the orchestration started.
 
 ### A worker that is blocked must be seen
 

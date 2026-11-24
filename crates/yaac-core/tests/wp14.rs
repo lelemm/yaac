@@ -288,7 +288,7 @@ fn the_needs_you_button_cycles_drops_resolved_threads_and_disappears() {
 // ── D118: the agents panel's relations ───────────────────────────────────────────────────
 
 #[test]
-fn card_docked_and_pill_share_one_grouping_by_relation() {
+fn docked_and_pill_share_one_grouping_by_relation() {
     use yaac_core::agents::{Relation, SpawnedBy, agents_panel, clusters, pill};
     let (c, _) = boot();
     let map = AttentionMap::compute(&c.state);
@@ -320,6 +320,39 @@ fn card_docked_and_pill_share_one_grouping_by_relation() {
     // The orchestrator was started by the user: no "Spawned by" cluster in the pill.
     let panel = agents_panel(&c.state, &map, &threads::orchestrator()).unwrap();
     assert!(clusters(&panel).iter().all(|c| c.relation != Relation::SpawnedBy));
+}
+
+#[test]
+fn floating_card_groups_cross_target_siblings_even_when_the_parent_is_missing() {
+    use yaac_core::ThreadKey;
+    use yaac_core::agents::{Relation, agents_panel, card_groups, clusters, pill};
+
+    let (mut c, _) = common::boot_with_independent_threads();
+    let selected = threads::users();
+    let billing = threads::billing();
+    let search = threads::search();
+    assert_ne!(selected.target, billing.target);
+    let parent = ThreadKey::new("remote", "unindexed-parent");
+    for member in [&selected, &billing, &search] {
+        c.state.threads.get_mut(member).unwrap().summary.spawned_by = Some(parent.address());
+    }
+    let map = AttentionMap::compute(&c.state);
+    let mut panel = agents_panel(&c.state, &map, &selected).unwrap();
+    assert_eq!(panel.siblings.len(), 2);
+    let billing_row = panel.siblings.iter().find(|row| row.key.as_ref() == Some(&billing)).unwrap().clone();
+    panel.contacts.retain(|row| row.key.as_ref() != Some(&billing));
+    panel.contacts.push(billing_row);
+
+    let card = card_groups(&panel);
+    assert_eq!(card[0].0, "Siblings");
+    assert_eq!(card[1].0, "Spawned by");
+    assert!(card[1].1[0].key.is_none(), "the unindexed parent retains its placeholder");
+    assert_eq!(card[0].1.iter().filter_map(|row| row.key.as_ref()).collect::<Vec<_>>(), [&search, &billing]);
+    assert_eq!(card.iter().flat_map(|(_, rows)| rows).filter(|row| row.key.as_ref() == Some(&billing)).count(), 1);
+    assert!(clusters(&panel).iter().any(|group| group.relation == Relation::InContact
+        && group.rows.iter().any(|row| row.key.as_ref() == Some(&billing))));
+    assert!(pill(&panel, usize::MAX).clusters.iter().flat_map(|group| &group.rows)
+        .all(|row| row.key.as_ref() != Some(&search)));
 }
 
 // ── D129: show only running ──────────────────────────────────────────────────────────────

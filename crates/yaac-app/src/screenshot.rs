@@ -96,6 +96,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("83", "markdown-table"),
     ("84", "tool-open"),
     ("85", "silent-reasoning"),
+    ("86", "markdown-parity"),
     ("90", "agent-calls"),
     ("91", "agent-calls-open"),
     ("92", "subagents"),
@@ -314,6 +315,40 @@ fn setup(app: &mut YaacApp, id: &str) {
             let k = threads::users();
             app.open(&k, None);
             app.ui.scroll_to = Some("u5".into());
+            app.ui.scroll_end = false;
+        }
+        "86" => {
+            // Keep a single reference transcript for comparing Markdown across renderers.
+            let key = threads::users();
+            app.open(&key, None);
+            let id = yaac_protocol::ItemId::from("u5");
+            if let Some(transcript) = app.client.state.transcripts.get_mut(&key)
+                && let Some(mut item) = transcript.item(&id).cloned()
+                && let yaac_protocol::ItemBody::AgentMessage(message) = &mut item.body
+            {
+                message.text = r#"## Session checks
+
+**Claude history loads** from the configured directory. The *fallback* uses `~/.claude`.
+Read the [provider notes](https://example.com/providers) for background.
+
+- Read the project's sessions.
+- Expand a command to see its result.
+  - Click the image to inspect it.
+
+> The preview opens fitted to the available space.
+
+```sh
+git status --short
+git diff --check
+```
+
+| Check | Result |
+| --- | --- |
+| Build | **Passed** |
+| Warnings | `0` |"#.to_owned();
+                transcript.upsert(item, transcript.revision.saturating_add(1));
+            }
+            app.ui.scroll_to = Some(id);
             app.ui.scroll_end = false;
         }
         "85" => {

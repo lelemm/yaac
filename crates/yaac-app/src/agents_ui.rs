@@ -1,11 +1,11 @@
 //! The agents panel in its three states: a pill floating over the thread's right edge (the
 //! default), a card on hover, or docked as a fixed panel. Every state groups the related
 //! agents by relation (D118) — *Spawned by*, *Workers*, *In contact with* — from one grouping
-//! in core (`yaac_core::agents::clusters`). Arrows show only while a message is in flight,
+//! in core. The card adds Siblings. Arrows show only while a message is in flight,
 //! and are static: an idle fleet costs no CPU.
 
 use eframe::egui::{self, Align2, Margin, Rect, Sense, Stroke, pos2, vec2};
-use yaac_core::agents::{AgentRow, AgentsPanel, BudgetLine, Cluster, DockEntry, Flow, Overflow, PanelInput, PanelMode, PillLayout, Relation, clusters, docked_entries, pill, pill_cap};
+use yaac_core::agents::{AgentRow, AgentsPanel, BudgetLine, DockEntry, Flow, Overflow, PanelInput, PanelMode, PillLayout, Relation, card_groups, clusters, docked_entries, pill, pill_cap};
 use yaac_core::attention::Mark;
 use yaac_core::hover::Region;
 
@@ -91,15 +91,15 @@ pub(crate) fn pill_cap_for(thread: Rect) -> usize {
 
 /// The card's height: a heading per cluster and every row, but never taller than the thread
 /// view less a margin (the list scrolls then).
-fn card_height(cl: &[Cluster<'_>], thread: Rect) -> f32 {
-    let rows: usize = cl.iter().map(|c| c.rows.len()).sum();
-    (rows as f32 * CARD_ROW + cl.len() as f32 * CARD_HEAD + CARD_CHROME).min((thread.height() - 2.0 * CARD_MARGIN).max(CARD_CHROME + CARD_ROW))
+fn card_height(groups: &[(&str, Vec<&AgentRow>)], thread: Rect) -> f32 {
+    let rows: usize = groups.iter().map(|(_, rows)| rows.len()).sum();
+    (rows as f32 * CARD_ROW + groups.len() as f32 * CARD_HEAD + CARD_CHROME).min((thread.height() - 2.0 * CARD_MARGIN).max(CARD_CHROME + CARD_ROW))
 }
 
 /// The pill and card regions for a panel in a thread view (what the hover rule uses).
 #[cfg(test)]
 pub(crate) fn regions_for(thread: Rect, panel: &AgentsPanel) -> (Rect, Rect) {
-    floating_regions(thread, pill_height(&pill(panel, pill_cap_for(thread))), card_height(&clusters(panel), thread), 0.0)
+    floating_regions(thread, pill_height(&pill(panel, pill_cap_for(thread))), card_height(&card_groups(panel), thread), 0.0)
 }
 
 /// The pill's "more" item (D168), in `r`.
@@ -128,11 +128,14 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
     let p = app.p;
     let card = app.ui.panel == PanelMode::Card;
     let now = app.now();
+    let all = card_groups(panel);
     if card {
-        schedule_activity_ages(ctx, app, panel, now);
+        schedule_activity_ages(ctx, app, all.iter().flat_map(|(_, rows)| rows.iter().copied()), now);
     }
     let pl = pill(panel, pill_cap_for(thread));
-    let all = clusters(panel);
+    let first_hidden = app.ui.card_to_hidden.then(|| {
+        clusters(panel).into_iter().flat_map(|cluster| cluster.rows).find(|row| !pl.shows(row))
+    }).flatten();
     let spent = panel.budget.as_ref().is_some_and(|b| b.exhausted);
     let (pill_extra, card_extra) = if spent { (BUDGET_H, BUDGET_H + 4.0) } else { (0.0, 0.0) };
     let pill_h = pill_height(&pl) + pill_extra;
@@ -173,7 +176,7 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                         if d.clicked() {
                             actions.push(Action::Panel(PanelInput::Dock));
                         }
-                        any_focus |= mark_all_as_read(ui, &p, panel, actions);
+                        any_focus |= mark_all_as_read(ui, &p, all.iter().flat_map(|(_, rows)| rows.iter().copied()), actions);
                     });
                 });
                 ui.add_space(4.0);
@@ -181,17 +184,18 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                     budget_continue(ui, &p, b, actions);
                     ui.add_space(4.0);
                 }
-                // Everyone, by last activity within each relation. The list scrolls when taller than the
-                // card (D168).
+                // The list uses the shared relation order and scrolls when taller than the card (D168).
                 let rest = (card_rect.bottom() - 10.0 - ui.cursor().top()).max(CARD_ROW);
                 egui::ScrollArea::vertical().id_salt("agents-card").max_height(rest).min_scrolled_height(rest).auto_shrink([false, true]).show(ui, |ui| {
-                    for c in &all {
+                    for (heading, rows) in &all {
                         let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), CARD_HEAD), Sense::hover());
-                        let g = ui.fonts_mut(|f| f.layout_no_wrap(c.relation.heading().to_owned(), theme::bold(size::SMALL), p.text2));
+                        let g = ui.fonts_mut(|f| f.layout_no_wrap((*heading).to_owned(), theme::bold(size::SMALL), p.text2));
                         ui.painter().galley(pos2(r.left() + 4.0, r.bottom() - g.size().y - 3.0), g, p.text2);
-                        for row in &c.rows {
+                        for &row in rows {
                             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), CARD_ROW), Sense::click());
-                            if to_hidden && !pl.shows(row) {
+                            if to_hidden && first_hidden.is_some_and(|hidden| {
+                                std::ptr::eq(hidden, row) || (row.key.is_some() && row.key == hidden.key)
+                            }) {
                                 // Opened from "more": the first agent the pill hides at the top.
                                 ui.scroll_to_rect(r.expand2(vec2(0.0, 6.0)), Some(egui::Align::TOP));
                                 to_hidden = false;
@@ -318,11 +322,11 @@ fn draw_activity_age(ui: &egui::Ui, row: &AgentRow, now: i64, right: f32, y: f32
     left - 6.0
 }
 
-pub(crate) fn schedule_activity_ages(ctx: &egui::Context, app: &YaacApp, panel: &AgentsPanel, now: i64) {
+pub(crate) fn schedule_activity_ages<'a>(ctx: &egui::Context, app: &YaacApp, rows: impl Iterator<Item = &'a AgentRow>, now: i64) {
     if matches!(app.clock, crate::app::Clock::Story { frozen: true, .. }) {
         return;
     }
-    let next = panel.all().filter(|row| row.updated != 0).map(|row| {
+    let next = rows.filter(|row| row.updated != 0).map(|row| {
         let elapsed = now.saturating_sub(row.updated);
         if elapsed < 60 {
             60 - elapsed
@@ -457,14 +461,14 @@ fn budget_continue(ui: &mut egui::Ui, p: &Palette, b: &BudgetLine, actions: &mut
     });
 }
 
-fn mark_all_as_read(ui: &mut egui::Ui, p: &Palette, panel: &AgentsPanel, actions: &mut Vec<Action>) -> bool {
-    let unseen = || panel.all().filter(|row| row.display.unseen).filter_map(|row| row.key.as_ref());
-    if unseen().next().is_none() {
+fn mark_all_as_read<'a>(ui: &mut egui::Ui, p: &Palette, rows: impl Iterator<Item = &'a AgentRow>, actions: &mut Vec<Action>) -> bool {
+    let unseen: Vec<_> = rows.filter(|row| row.display.unseen).filter_map(|row| row.key.as_ref()).collect();
+    if unseen.is_empty() {
         return false;
     }
     let button = widgets::plain(ui, p, "Mark all as read", None);
     if button.clicked() {
-        actions.push(Action::MarkRead(unseen().cloned().collect()));
+        actions.push(Action::MarkRead(unseen.into_iter().cloned().collect()));
     }
     button.has_focus()
 }
@@ -474,7 +478,7 @@ fn mark_all_as_read(ui: &mut egui::Ui, p: &Palette, panel: &AgentsPanel, actions
 pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, actions: &mut Vec<Action>) {
     let p = app.p;
     let now = app.now();
-    schedule_activity_ages(ui.ctx(), app, panel, now);
+    schedule_activity_ages(ui.ctx(), app, panel.all(), now);
     ui.spacing_mut().interact_size.y = 16.0;
     ui.spacing_mut().item_spacing.y = 2.0;
     let w = ui.available_width();
@@ -488,7 +492,7 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
             }
         });
     });
-    mark_all_as_read(ui, &p, panel, actions);
+    mark_all_as_read(ui, &p, panel.all(), actions);
     if let Some(b) = &panel.budget {
         ui.horizontal(|ui| {
             if b.exhausted {

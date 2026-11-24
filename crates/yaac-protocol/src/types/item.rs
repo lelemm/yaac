@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use super::{
     Address, ForkKind, InputPart, ItemId, MeshMessage, MessageId, ModelId, OpId, Receipt, RequestBody, RequestId,
-    RequestResolution, RequestState, TargetPath, ThreadId, ThreadState, Timestamp, TurnId,
+    RequestResolution, RequestState, TargetPath, ThreadId, ThreadState, Timestamp, TurnId, UploadId,
 };
 use crate::macros::{open_enum, open_union};
 
@@ -114,6 +114,19 @@ pub struct ToolCallItem {
     /// instructions". Absent for every other tool, and for a call that failed or is not done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skill: Option<SkillLoad>,
+    /// Image results stored on this target and read on demand through `upload/read`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ToolImage>,
+}
+
+/// A tool image result, with its bytes kept out of the transcript stream.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolImage {
+    /// Identifies the stored image on this target.
+    pub upload_id: UploadId,
+    /// Display label.
+    pub name: String,
 }
 
 /// A skill whose instructions a tool call loaded.

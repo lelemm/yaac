@@ -129,8 +129,9 @@ export interface StateFile {
 export const DEFAULT_POLICY: MeshPolicyState = {
   mode: "allow",
   acceptFromOtherTargets: true,
+  // Keep the legacy threadsSpawned allowance on the wire. It does not gate spawning.
   budget: { agentTurns: 100, threadsSpawned: 20, wallClockSecs: 12 * 3600 },
-  // Keep runningThreads in persisted and wire policy for clients and daemons on older builds.
+  // Keep workersPerThread and runningThreads in persisted and wire policy for older builds.
   limits: { workersPerThread: 8, spawnDepth: 3, runningThreads: 6, pairMessages: 30, pairWindowSecs: 600, undeliveredNoticeSecs: 900 },
 };
 

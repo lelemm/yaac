@@ -44,6 +44,7 @@ import type {
   MeshRosterParams,
   MeshUsageParams,
   MeshUsageResult,
+  ModelBestUseSetParams,
   ProjectCreateParams,
   ProjectDeleteParams,
   ProjectListParams,
@@ -143,6 +144,7 @@ export const METHODS = {
   DIAGNOSTICS_GET: "diagnostics/get",
   PROVIDER_LIST: "provider/list",
   PROVIDER_REFRESH: "provider/refresh",
+  PROVIDER_MODEL_BEST_USE_SET: "provider/modelBestUse/set",
   PROVIDER_INSTANCE_LIST: "providerInstance/list",
   PROVIDER_INSTANCE_ADD: "providerInstance/add",
   PROVIDER_INSTANCE_UPDATE: "providerInstance/update",
@@ -281,6 +283,8 @@ export interface RequestMap {
   "provider/list": { params: Empty; result: ProviderListResult };
   /** Force a re-probe of one instance or all. */
   "provider/refresh": { params: ProviderRefreshParams; result: Empty };
+  /** Store or reset a user’s model recommendation override. */
+  "provider/modelBestUse/set": { params: ModelBestUseSetParams; result: Empty };
   /** The stored instance configurations, including implicit defaults. */
   "providerInstance/list": { params: Empty; result: ProviderInstanceListResult };
   /** Add a provider instance. */
@@ -454,6 +458,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "diagnostics/get": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "provider/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "provider/refresh": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "provider/modelBestUse/set": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "providerInstance/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "providerInstance/add": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "providerInstance/update": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },

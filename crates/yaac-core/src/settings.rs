@@ -362,6 +362,42 @@ pub struct InstanceRow {
     /// The "Harness home" setting (P300): shown only when the instance reports
     /// `configurableHome`.
     pub home: Option<HomeField>,
+    /// Available model guidance editors on this instance.
+    pub model_guidance: Vec<ModelGuidanceRow>,
+}
+
+/// The model identity and current guidance shown in Settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelGuidanceRow {
+    /// The model alias or ID displayed by the harness.
+    pub id: yaac_protocol::ModelId,
+    /// Its stable identity for an override.
+    pub specific: yaac_protocol::ModelId,
+    /// The model name.
+    pub name: String,
+    /// Generated or user-edited recommendation.
+    pub best_use: Option<yaac_protocol::ModelBestUse>,
+}
+
+impl ModelGuidanceRow {
+    /// The current recommendation, including the empty state.
+    pub fn summary(&self) -> &str {
+        self.best_use.as_ref().map_or("No guidance yet", |hint| &hint.summary)
+    }
+
+    /// Whether a manual edit is active.
+    pub fn custom(&self) -> bool {
+        self.best_use.as_ref().is_some_and(|hint| hint.custom)
+    }
+
+    /// Where the displayed guidance came from.
+    pub fn provenance(&self) -> &str {
+        match &self.best_use {
+            Some(hint) if hint.custom => "User-edited",
+            Some(_) => "Generated",
+            None => "",
+        }
+    }
 }
 
 /// An instance's harness home on the Providers page (P300).
@@ -499,6 +535,16 @@ pub fn providers_view(state: &AppState, target: &TargetId) -> Option<ProvidersVi
                     set: config.and_then(|c| c.home.as_ref()).map(ToString::to_string),
                     effective: p.store.home.as_ref().map(ToString::to_string),
                 }),
+                model_guidance: if p.capabilities.contains(&Capability::ModelBestUse) {
+                    p.models.iter().map(|model| ModelGuidanceRow {
+                        id: model.id.clone(),
+                        specific: model.resolved_model.as_ref().unwrap_or(&model.id).clone(),
+                        name: model.display_name.clone(),
+                        best_use: model.best_use.clone(),
+                    }).collect()
+                } else {
+                    Vec::new()
+                },
             }
         })
         .collect();

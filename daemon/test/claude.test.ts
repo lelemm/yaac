@@ -13,6 +13,7 @@ import type { AgentEntry, ClaudeCli, ClaudeSdk, SdkQuery } from "../src/provider
 import { historyItems } from "../src/providers/claude/translate.js";
 import { InputOutcomeUnknown, PeerInputDenied, type ProviderEvent, type ProviderInput } from "../src/providers/types.js";
 import type { Item } from "../src/protocol/generated/types.js";
+import { UploadStore } from "../src/session/uploads.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 // Compiled to dist/test-build/test/; the fixtures stay in the source tree.
@@ -458,6 +459,61 @@ test("a streamed turn with thinking and a tool call becomes reasoning, text, and
   assert.ok(!r.events.some((e) => "item" in e && (e.item as Item).kind === "userMessage"));
   assert.ok(!items.some((i) => JSON.stringify(i).includes("inside a subagent")));
   await r.provider.dispose();
+});
+
+test("Claude Read image results match between live events and paged history", async () => {
+  const uploads = new UploadStore(tmp("yaac-claude-images-"));
+  let writes = 0;
+  const r = rig({ storeToolImage: (bytes, name) => {
+    writes++;
+    return uploads.storeToolImage(bytes, name);
+  } });
+  try {
+    const { thread, q } = await startedThread(r);
+    const data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+XBBkAAAAASUVORK5CYII=";
+    const use = {
+      type: "assistant",
+      uuid: "use",
+      session_id: thread,
+      parent_tool_use_id: null,
+      message: { id: "read-image", role: "assistant", content: [{ type: "tool_use", id: "pixel", name: "Read", input: { file_path: "/fixture/pixel.png" } }] },
+    };
+    const toolResult = {
+      type: "user",
+      uuid: "result",
+      session_id: thread,
+      parent_tool_use_id: null,
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "pixel", content: [
+        { type: "text", text: "Image details" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data } },
+      ] }] },
+    };
+    q.push(use, toolResult, result());
+    const live = await until(() => completedItems(r.events).find((item) => item.id === "pixel"), "image tool result");
+    assert.equal(live.kind, "toolCall");
+    assert.equal(live.output, "Image details\n[image]");
+    assert.equal(live.images?.length, 1);
+    assert.equal(writes, 1);
+    assert.ok(!JSON.stringify(live).includes(data));
+
+    r.sdk.messages[thread] = [
+      { ...toolResult, uuid: "prompt", message: { role: "user", content: "Read the image" } },
+      use,
+      toolResult,
+    ] as SessionMessage[];
+    const first = await r.provider.readThread(thread, { limit: 1 });
+    assert.equal(first.items[0]?.kind, "userMessage");
+    assert.equal(writes, 1);
+    const page = await r.provider.readThread(thread, { cursor: first.cursor, limit: 1 });
+    const historical = page.items[0];
+    assert.equal(historical?.kind, "toolCall");
+    assert.deepEqual(historical?.images, live.images);
+    assert.equal(historical?.output, live.output);
+    assert.equal(writes, 2);
+    assert.equal(uploads.read(live.images![0]!.uploadId, 0, 1024).dataBase64, data);
+  } finally {
+    await r.provider.dispose();
+  }
 });
 
 test("a recorded turn (Bash, then AskUserQuestion) replays into items whose ids match its stored history", async () => {

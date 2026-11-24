@@ -98,7 +98,7 @@
               </Grid.ColumnDefinitions>
               <Grid>
                 <TextBox x:Name="Editor" AcceptsReturn="True" TextWrapping="Wrap"
-                         MinLines="2" MaxLines="5" Padding="4,3" BorderThickness="0"
+                         MinLines="3" MaxLines="5" Padding="4,3" BorderThickness="0"
                          Background="Transparent" Foreground="{DynamicResource YaacText}"
                          VerticalScrollBarVisibility="Auto"
                          HorizontalScrollBarVisibility="Disabled" InputMethod.IsInputMethodEnabled="True"

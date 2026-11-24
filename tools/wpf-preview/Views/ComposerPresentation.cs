@@ -305,6 +305,8 @@ public partial class ComposerView
         private readonly ProgressBar? progress;
         private readonly TextBlock? imageMark;
         private readonly Image? thumbnail;
+        private readonly Button? attachmentCaption;
+        private bool imageAttachment;
         private (int Width, int Height, string Pixels) thumbnailFrame = (0, 0, "");
 
         public ComposerRow(ComposerView owner, string id, RowKind kind)
@@ -347,8 +349,23 @@ public partial class ComposerView
                     };
                     progress = new ProgressBar { Width = 44, Height = 4, Maximum = 1, Margin = new Thickness(5, 0, 0, 0) };
                     AutomationProperties.SetName(progress, "Upload progress");
-                    AddDocked(imageMark, Dock.Left);
-                    AddDocked(thumbnail, Dock.Left);
+                    var caption = new DockPanel();
+                    SetDock(imageMark, Dock.Left);
+                    SetDock(thumbnail, Dock.Left);
+                    caption.Children.Add(imageMark);
+                    caption.Children.Add(thumbnail);
+                    caption.Children.Add(label);
+                    attachmentCaption = new Button
+                    {
+                        Style = (Style)owner.FindResource("YaacQuietButton"),
+                        HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                        Padding = new Thickness(0), Content = caption,
+                    };
+                    attachmentCaption.Click += (_, _) =>
+                    {
+                        if (imageAttachment)
+                            owner.Command?.Invoke("composer.action", new { key = owner.key, id = $"previewAttachment:{id}" });
+                    };
                     AddDocked(actions, Dock.Bottom);
                     AddDocked(progress, Dock.Right);
                     AddDocked(detail, Dock.Right);
@@ -362,7 +379,7 @@ public partial class ComposerView
                     break;
             }
 
-            Children.Add(label);
+            Children.Add(attachmentCaption is { } captionButton ? captionButton : label);
         }
 
         public void Update(JsonElement model)
@@ -388,9 +405,16 @@ public partial class ComposerView
                     if (detailText.Length == 0)
                         detailText = progress.Value.ToString("P0", CultureInfo.CurrentCulture);
                 }
-                var image = Field(model, "image").ComposerFlag();
-                imageMark.Text = image ? "▧" : "▤";
-                imageMark.ToolTip = image ? "Image" : "File";
+                imageAttachment = Field(model, "image").ComposerFlag();
+                imageMark.Text = imageAttachment ? "▧" : "▤";
+                imageMark.ToolTip = imageAttachment ? "Image" : "File";
+                if (attachmentCaption is { } preview)
+                {
+                    preview.IsHitTestVisible = preview.Focusable = preview.IsTabStop = imageAttachment;
+                    var openLabel = imageAttachment ? $"Open {title}" : title;
+                    preview.ToolTip = imageAttachment ? openLabel : null;
+                    AutomationProperties.SetName(preview, openLabel);
+                }
                 UpdateThumbnail(Field(model, "thumbnail"));
             }
             DisplayText(detail, detailText);

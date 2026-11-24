@@ -2,7 +2,7 @@
 //! docked panel's fold.
 
 use yaac_core::agents::{
-    AgentRow, AgentsPanel, DOCK_FOLD_MIN, DockEntry, Liveness, PILL_MAX, Rail, Relation, Role, SpawnedBy, clusters, docked_entries, more_label, pill, pill_cap,
+    AgentRow, AgentsPanel, DOCK_FOLD_MIN, DockEntry, Liveness, PILL_MAX, Rail, Relation, Role, SpawnedBy, card_groups, clusters, docked_entries, more_label, pill, pill_cap,
 };
 use yaac_core::attention::{Mark, ThreadDisplay};
 
@@ -33,6 +33,7 @@ fn panel(parent: Option<AgentRow>, workers: Vec<AgentRow>, contacts: Vec<AgentRo
     AgentsPanel {
         budget: None,
         root: None,
+        siblings: Vec::new(),
         spawned_by: parent.map_or(SpawnedBy::You, |p| SpawnedBy::Agent(Box::new(p))),
         rail: Rail { count: direct_workers + contacts.len() },
         workers,
@@ -168,11 +169,11 @@ fn related_agent_rows_use_activity_order_and_fold_only_the_inactive_tail() {
     );
     let cl = clusters(&p);
     assert_eq!(titles(&cl[0].rows), [
-        "recent finished", "recent running", "older running", "inactive",
+        "recent running", "older running", "inactive", "recent finished",
         "finished", "older finished", "oldest finished",
     ]);
-    assert_eq!(cl[0].rows[0].activity_age(70).as_deref(), Some("1m"));
-    assert_eq!(cl[0].rows[1].activity_age(8).as_deref(), Some("now"));
+    assert_eq!(cl[0].rows[3].activity_age(70).as_deref(), Some("1m"));
+    assert_eq!(cl[0].rows[0].activity_age(8).as_deref(), Some("now"));
     let mut rows = Vec::new();
     let mut fold = None;
     for entry in docked_entries(&cl[0]) {
@@ -181,9 +182,43 @@ fn related_agent_rows_use_activity_order_and_fold_only_the_inactive_tail() {
             DockEntry::Fold { rows, word } => fold = Some((titles(&rows), word)),
         }
     }
-    assert_eq!(rows, ["recent finished", "recent running", "older running"]);
-    assert_eq!(fold, Some((vec!["inactive".to_owned(), "finished".into(), "older finished".into(), "oldest finished".into()], "inactive")));
+    assert_eq!(rows, ["recent running", "older running"]);
+    assert_eq!(fold, Some((vec!["inactive".to_owned(), "recent finished".into(), "finished".into(), "older finished".into(), "oldest finished".into()], "inactive")));
     assert_eq!(DOCK_FOLD_MIN, 4);
+}
+
+#[test]
+fn expanded_groups_move_a_completed_agent_to_the_read_tier_without_changing_recency() {
+    let mut older_unread = row("older unread", Role::Worker, Mark::Done, 10, 0);
+    let mut newer_unread = row("newer unread", Role::Worker, Mark::Done, 80, 0);
+    older_unread.display.unseen = true;
+    newer_unread.display.unseen = true;
+    let mut p = panel(
+        None,
+        vec![
+            newer_unread,
+            row("read", Role::Worker, Mark::Done, 50, 0),
+            row("running", Role::Worker, Mark::Running, 95, 0),
+            older_unread,
+            row("idle", Role::Worker, Mark::Idle, 85, 0),
+            row("needs attention", Role::Worker, Mark::NeedsYou, 90, 0),
+        ],
+        Vec::new(),
+    );
+    p.siblings = p.workers.clone();
+    let expected = ["newer unread", "older unread", "running", "needs attention", "idle", "read"];
+    assert_eq!(titles(&clusters(&p)[0].rows), expected);
+    assert_eq!(card_groups(&p)[0].0, "Siblings");
+    assert_eq!(titles(&card_groups(&p)[0].1), expected);
+
+    p.workers[0].display.unseen = false;
+    p.siblings[0].display.unseen = false;
+    let expected = ["older unread", "running", "needs attention", "idle", "newer unread", "read"];
+    assert_eq!(titles(&clusters(&p)[0].rows), expected);
+    assert_eq!(titles(&card_groups(&p)[0].1), expected);
+    assert_eq!(titles(&pill(&p, PILL_MAX).clusters[0].rows), [
+        "needs attention", "running", "older unread", "newer unread", "read", "idle",
+    ]);
 }
 
 mod common;
@@ -211,5 +246,8 @@ fn the_demo_orchestrator_with_thirty_agents() {
         DockEntry::Fold { rows, .. } => rows,
     }).collect();
     assert_eq!(docked, workers.rows);
-    assert!(docked.windows(2).all(|pair| pair[0].updated >= pair[1].updated));
+    // Completed read agents go after all non-completed rows, even when a completion is newer.
+    let first_read_completion = docked.iter().position(|row| row.display.mark == Mark::Done && !row.display.unseen).unwrap();
+    assert!(docked[first_read_completion..].iter().all(|row| row.display.mark == Mark::Done && !row.display.unseen));
+    assert!(docked[first_read_completion..].windows(2).all(|pair| pair[0].updated >= pair[1].updated));
 }

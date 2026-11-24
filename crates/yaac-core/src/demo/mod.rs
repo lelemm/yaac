@@ -1750,7 +1750,7 @@ impl Inner {
                 self.emit_now(&orch, ThreadEvent::ItemCompleted(ItemEvent { item: done("p1", t, agent("I'll split this across three workers.")) }));
                 let body = crate::permission::body(
                     &["Start 3 threads · Claude · opus-5.5 on local, devbox, and gpu-box", "Message CI integration · Codex · devbox"],
-                    crate::permission::BudgetFields { agent_turns: 100, threads: 20, hours: 12 },
+                    crate::permission::BudgetFields { agent_turns: 100, hours: 12 },
                 );
                 let req = ItemBody::Request(yaac_protocol::RequestItem {
                     request_id: "r-perm".into(),

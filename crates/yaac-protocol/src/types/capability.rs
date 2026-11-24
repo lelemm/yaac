@@ -50,6 +50,8 @@ open_enum! {
         /// and sign-in — can be set (`ProviderInstanceConfig.home`, P300); `yaacd` maps it to
         /// the provider's own variable. Without it Settings does not offer the field.
         ConfigurableHome = "configurableHome",
+        /// YAAC can show and edit guidance for models offered by this instance.
+        ModelBestUse = "modelBestUse",
         // Turn control
         /// Incremental agent text.
         StreamText = "streamText",

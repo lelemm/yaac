@@ -43,6 +43,7 @@ public partial class MainWindow : Window
         SidebarPane.SettingsButton.Click += SettingsClicked;
         SidebarPane.ScenesButton.Click += ScenesClicked;
         TranscriptPane.Command += Send;
+        ImageOverlay.CloseRequested += () => Send("image.close");
         ChatSurface.AddHandler(MouseLeftButtonDownEvent, new MouseButtonEventHandler(ChatBackgroundClicked),
             handledEventsToo: true);
         ComposerPane.Command += Send;
@@ -126,8 +127,12 @@ public partial class MainWindow : Window
             Send("shell.ready", new { tray = tray is not null });
             UpdateVisibility();
             await Task.Run(() => session.RunAsync(
-                frame => Dispatcher.InvokeAsync(() => Receive(frame),
-                    System.Windows.Threading.DispatcherPriority.Background).Task));
+                frame =>
+                {
+                    var image = ImageViewerFrame.Read(frame.Value("imageViewer"));
+                    return Dispatcher.InvokeAsync(() => Receive(frame, image),
+                        System.Windows.Threading.DispatcherPriority.Background).Task;
+                }));
         }
         catch (Exception error) when (!closed)
         {
@@ -140,9 +145,11 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Receive(JsonElement frame)
+    private void Receive(JsonElement frame, ImageViewerFrame? image)
     {
         if (closed) return;
+        if (image is { } viewer)
+            ImageOverlay.Render(viewer);
         if (frame.TryGetProperty("window", out var command))
         {
             switch (command.GetString())
@@ -421,8 +428,19 @@ public partial class MainWindow : Window
 
     private void WindowKey(object sender, KeyEventArgs args)
     {
-        if (SettingsPane.IsRecordingShortcut) return;
         var key = args.Key == Key.System ? args.SystemKey : args.Key;
+        if (ImageOverlay.IsVisible)
+        {
+            if (key == Key.Escape)
+            {
+                ImageOverlay.CloseViewer();
+                args.Handled = true;
+            }
+            else if (!ImageOverlay.IsKeyboardFocusWithin)
+                args.Handled = true;
+            return;
+        }
+        if (SettingsPane.IsRecordingShortcut) return;
         var logical = Views.SettingsView.CanonicalKey(key, Keyboard.Modifiers) ?? key.ToString();
         if (CommanderOverlay.IsVisible)
         {
@@ -458,7 +476,7 @@ public partial class MainWindow : Window
 
     private void WindowMouse(object sender, MouseButtonEventArgs args)
     {
-        if (SettingsPane.IsRecordingShortcut || CommanderOverlay.IsVisible) return;
+        if (SettingsPane.IsRecordingShortcut || CommanderOverlay.IsVisible || ImageOverlay.IsVisible) return;
         var logical = args.ChangedButton switch
         {
             MouseButton.XButton1 => "MouseBack",

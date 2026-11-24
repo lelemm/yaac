@@ -637,7 +637,7 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
             // live on through its updates.
             let r = ui.scope_builder(UiBuilder::new().max_rect(rect).id_salt(("block", idents[i])), |ui| {
                 ui.set_width(width);
-                render_block(ui, View { p, state: &app.client.state, ui: &mut app.ui, md: &mut app.md }, key, t, b, unit, now, &mut actions_local);
+                render_block(ui, View { p, state: &app.client.state, ui: &mut app.ui, md: &mut app.md, images: &mut app.images }, key, t, b, unit, now, &mut actions_local);
             });
             let h = r.response.rect.height();
             // Its time, while it is hovered, in the line kept free under it (D154).
@@ -812,6 +812,7 @@ pub(crate) struct View<'a> {
     pub state: &'a yaac_core::state::AppState,
     pub ui: &'a mut crate::app::UiState,
     pub md: &'a mut markdown::Cache,
+    pub images: &'a mut crate::images::Images,
 }
 
 impl View<'_> {
@@ -854,7 +855,7 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
             let plain = context.is_empty() && pieces.len() == 1 && !u.parts.iter().any(|x| matches!(x, InputPart::File(_) | InputPart::Image(_)));
             let natural = match pieces.first() {
                 Some(yaac_core::message::Piece::Typed(text)) if plain => {
-                    let parsed = v.md.get(&item.id, text, true).clone();
+                    let parsed = v.md.get_typed(&item.id, text).clone();
                     let refs: Vec<&markdown::Block> = parsed.blocks().collect();
                     markdown::natural_width(ui, &refs, &p, size::PROSE)
                 }
@@ -901,7 +902,14 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
                             let gone = t.missing_uploads.contains(up);
                             // The file's own name when the part carries it.
                             let name = name.cloned().unwrap_or_else(|| upload_name(up.as_str()));
-                            chip(ui, &p, &name, image, gone);
+                            if image && !gone {
+                                let source = crate::images::ImageSource::Target(key.target.clone(), up.clone());
+                                if ui.button(&name).on_hover_text("Open image").clicked() {
+                                    actions.push(Action::OpenImage(source, name));
+                                }
+                            } else {
+                                chip(ui, &p, &name, image, gone);
+                            }
                         }
                     });
                 }
@@ -1311,6 +1319,7 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
         egui::Frame::NONE.fill(fill).corner_radius(4).inner_margin(Margin { left: 22, right: 8, top: 2, bottom: 8 }).show(ui, |ui| {
             ui.set_width(ui.available_width());
             toggle_raw = call_detail(ui, v, unit, t, item, tc, ac, call, raw_open, actions);
+            tool_images(ui, v.images, key, &tc.images, actions);
         });
         if toggle_raw {
             v.ui.expansion.toggle_raw(key, &l.id);
@@ -1348,8 +1357,11 @@ fn activity_line(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Trans
                     sc.text(ui, &format!("Output is longer ({} bytes); the rest is on the target.", tc.output_bytes.unwrap_or(0)), small.clone(), p.text2);
                 }
                 if let Some(c) = tc.exit_code {
-                    sc.text(ui, &format!("exit {c}"), small.clone(), p.text2);
+                    let (label, color) = if c == 0 { ("Success".to_owned(), p.done) }
+                        else { (format!("Failed (exit {c})"), p.failed) };
+                    sc.text(ui, &label, small.clone(), color);
                 }
+                tool_images(ui, v.images, key, &tc.images, actions);
             }
             ItemBody::MeshSent(s) => {
                 let gone = s.receipt.status == ReceiptStatus::Failed
@@ -1663,6 +1675,15 @@ fn call_detail(
     clicked
 }
 
+fn tool_images(ui: &mut egui::Ui, images: &mut crate::images::Images, key: &ThreadKey, entries: &[yaac_protocol::ToolImage], actions: &mut Vec<Action>) {
+    for (index, image) in entries.iter().enumerate() {
+        let source = crate::images::ImageSource::Target(key.target.clone(), image.upload_id.clone());
+        if ui.push_id(index, |ui| images.inline(ui, source.clone(), &image.name)).inner {
+            actions.push(Action::OpenImage(source, image.name.clone()));
+        }
+    }
+}
+
 fn first_nonempty_line(text: &str) -> Option<&str> {
     text.lines().map(str::trim).find(|line| !line.is_empty())
 }
@@ -1777,6 +1798,26 @@ mod tests {
     use yaac_core::demo::{Scene, threads};
 
     #[test]
+    fn a_single_typed_part_keeps_line_breaks_when_the_bubble_is_measured() {
+        let text = "First line\nSecond line\nThird line";
+        let item = serde_json::from_value(serde_json::json!({
+            "id": "typed-lines", "turnId": "turn", "status": "completed", "kind": "userMessage",
+            "parts": [{ "type": "text", "text": text }],
+        })).expect("a user message");
+        let mut transcript = Transcript::new();
+        transcript.upsert(item, 1);
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let view = View { p: Palette::DARK, state: &app.client.state, ui: &mut app.ui, md: &mut app.md, images: &mut app.images };
+            render_block(ui, view, &threads::users(), &transcript, &Block::User { index: 0 }, Unit::new(0, 0), 0, &mut Vec::new());
+        });
+        output.textures_delta.clear();
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(line)
+            if line.galley.text() == text && line.galley.rows.len() == 3)));
+    }
+
+    #[test]
     fn failed_agent_call_keeps_the_tool_label_and_wraps_one_error_summary() {
         let reason = "The directory service could not finish this request. ".repeat(20);
         let raw_output = format!("{}\n{}", reason.trim(), "More diagnostic information\n".repeat(160));
@@ -1804,7 +1845,7 @@ mod tests {
             }
             let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 2000.0))), ..Default::default() };
             let mut output = ctx.run_ui(input, |ui| {
-                let mut view = View { p: Palette::DARK, state: &app.client.state, ui: &mut app.ui, md: &mut app.md };
+                let mut view = View { p: Palette::DARK, state: &app.client.state, ui: &mut app.ui, md: &mut app.md, images: &mut app.images };
                 activity_line(ui, &mut view, &key, &t, line, 0, 0.0, &mut Vec::new());
             });
             output.textures_delta.clear();

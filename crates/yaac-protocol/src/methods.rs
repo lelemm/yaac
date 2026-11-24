@@ -256,6 +256,9 @@ catalogue! {
         /// Force a re-probe of one instance or all.
         ProviderRefresh = "provider/refresh" as PROVIDER_REFRESH:
             t::ProviderRefreshParams => t::Empty, HostToDaemon, request Control, response Control;
+        /// Store or reset a user’s model recommendation override.
+        ModelBestUseSet = "provider/modelBestUse/set" as PROVIDER_MODEL_BEST_USE_SET:
+            t::ModelBestUseSetParams => t::Empty, HostToDaemon, request Control, response Control, op;
         /// The stored instance configurations, including implicit defaults.
         ProviderInstanceList = "providerInstance/list" as PROVIDER_INSTANCE_LIST:
             t::ProviderInstanceListParams => t::ProviderInstanceListResult, HostToDaemon, request Control, response Control;

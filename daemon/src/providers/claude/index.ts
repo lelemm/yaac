@@ -71,6 +71,7 @@ import { previewText } from "./markup.js";
 import { claudeSkills } from "../skills.js";
 import { ClaudeRateLimits, readWithOwnQuery } from "./ratelimits.js";
 import type { RateLimitReport } from "../ratelimits.js";
+import type { StoreToolImage } from "../tool-images.js";
 
 /** A refresh of the rate limits starts a query only after this long without news (D161). */
 const CLAUDE_LIMITS_QUIET_MS = 15 * 60 * 1000;
@@ -274,12 +275,13 @@ class Live {
     readonly dirs: Set<string>,
     settings: ThreadSettings,
     emit: (ev: ItemEvent) => void,
+    storeImage?: StoreToolImage,
   ) {
     this.model = settings.model ?? null;
     this.effort = settings.effort ?? null;
     this.mode = settings.mode ?? "default";
     this.fast = settings.fast === true;
-    this.translator = new LiveTranslator(emit, cwd);
+    this.translator = new LiveTranslator(emit, cwd, storeImage);
   }
 
   hasQueuedPeer(): boolean {
@@ -307,6 +309,7 @@ export interface ClaudeProviderOptions {
   env: NodeJS.ProcessEnv;
   /** Where the per-thread settings are kept. */
   stateDir: string;
+  storeToolImage?: StoreToolImage;
   /** Close a live query after this long without a turn, an open request, or background work. 0: never. */
   idleMs?: number;
   /** At most this many live queries; the least recently used idle one is closed first. */
@@ -607,6 +610,7 @@ export class ClaudeProvider implements HarnessProvider {
       const isDefault = m === defaultModel;
       return {
         id: m.value,
+        ...(m.resolvedModel ? { resolvedModel: m.resolvedModel } : {}),
         displayName: m.displayName,
         description: m.description ?? null,
         isDefault,
@@ -750,9 +754,13 @@ export class ClaudeProvider implements HarnessProvider {
     const sdk = await this.sdk();
     const sub = parseSubagentNative(thread);
     const messages = sub ? await sdk.getSubagentMessages(sub.sessionId, sub.agentId) : await sdk.getSessionMessages(thread);
-    const items = historyItems(messages, this.settings[sub?.sessionId ?? thread]?.cwd ?? null, { subagent: !!sub });
-    const start = Number.parseInt(page.cursor ?? "0", 10) || 0;
+    const start = Math.max(0, Number.parseInt(page.cursor ?? "0", 10) || 0);
     const size = Math.max(1, page.limit ?? 200);
+    const items = historyItems(messages, this.settings[sub?.sessionId ?? thread]?.cwd ?? null, {
+      subagent: !!sub,
+      storeImage: this.options.storeToolImage,
+      imageRange: { start, end: start + size },
+    });
     return { items: items.slice(start, start + size), cursor: start + size < items.length ? String(start + size) : null };
   }
 
@@ -882,7 +890,7 @@ export class ClaudeProvider implements HarnessProvider {
     const sdk = await this.sdk();
     const s = await this.threadSettings(native);
     this.makeRoom();
-    const live = new Live(native, s.cwd, dirs, s, (ev) => this.emit({ ...ev, thread: native } as ProviderEvent));
+    const live = new Live(native, s.cwd, dirs, s, (ev) => this.emit({ ...ev, thread: native } as ProviderEvent), this.options.storeToolImage);
     const resumed = s.stored === true;
     const extras = (await this.extrasHook?.({ native, cwd: s.cwd, resumed })) ?? {};
     // Allowed (never entered unless the thread's mode is bypass), so that switching to bypass
@@ -1160,7 +1168,7 @@ export class ClaudeProvider implements HarnessProvider {
         prompt: str(t.prompt),
         turnId: `task:${str(t.run_id) ?? taskId}`,
         createdAt: new Date().toISOString(),
-        translator: new LiveTranslator((ev) => this.emit({ ...ev, thread: native } as ProviderEvent), live.cwd),
+        translator: new LiveTranslator((ev) => this.emit({ ...ev, thread: native } as ProviderEvent), live.cwd, this.options.storeToolImage),
         running: false,
       };
       if (known) {
@@ -1971,6 +1979,7 @@ export const claudeProviderFactory: ProviderFactory = {
       executable: findExecutable({ ...base, ...cfg }, cfg[EXECUTABLE_VAR] ?? null),
       env: childEnv(base, cfg),
       stateDir: ctx.stateDir,
+      storeToolImage: ctx.storeToolImage,
       idleMs: intVar(cfg[IDLE_MS_VAR] ?? base[IDLE_MS_VAR], DEFAULT_IDLE_MS),
       maxLive: intVar(cfg[MAX_LIVE_VAR] ?? base[MAX_LIVE_VAR], DEFAULT_MAX_LIVE) || DEFAULT_MAX_LIVE,
       log: ctx.log,

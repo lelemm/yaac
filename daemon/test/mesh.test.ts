@@ -61,6 +61,32 @@ test("the fake provider declares meshTools once the mesh is attached", async () 
   }
 });
 
+test("agent model lists include custom guidance and omit only legacy GPT entries", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const parent = await idleThread(d, c);
+    const instance = d.core.registry.all()[0]!;
+    const original = instance.descriptor;
+    // Use this fake harness's tool ticket with a representative Codex catalog.
+    instance.descriptor = {
+      ...original, kind: "codex", models: [
+        { id: "gpt-5.4", displayName: "GPT-5.4" },
+        { id: "gpt-6.2-sol", displayName: "GPT-6.2 Sol", efforts: [{ id: "high" }],
+          bestUse: { summary: "Focused repository changes", custom: true } },
+        { id: "gpt-6.2-astra", displayName: "GPT-6.2 Astra" },
+      ],
+    };
+    const result = await call(d, parent, "list_models");
+    assert.match(result.text, /gpt-6\.2-sol.*efforts: high\n\s+Best used as: Focused repository changes/);
+    assert.match(result.text, /gpt-6\.2-astra.*\n\s+Best used as: No guidance yet/);
+    assert.doesNotMatch(result.text, /gpt-5\.4/i);
+    const catalog = await c.request("provider/list");
+    assert.ok(catalog.providers[0].models.some((model: { id: string }) => model.id === "gpt-5.4"));
+  } finally {
+    await done();
+  }
+});
+
 test("a worker spawned on this target returns its result to its parent exactly once", async () => {
   const { d, c, done } = await setup();
   try {
@@ -534,16 +560,34 @@ test("a budget's exhaustion and its freeing are both notified (mesh/budget/chang
   }
 });
 
-test("each local limit trips with a readable reason and a visible notice", async () => {
+test("worker count allowances are ignored and the turn budget still gates spawning", async () => {
   const { d, c, done } = await setup();
   try {
-    await c.request("mesh/policy", { opId: opId(), update: { limits: { workersPerThread: 1, spawnDepth: 1, pairMessages: 2 } } });
-    // Workers per thread.
-    const { threadId: a } = await startAllowed(c, "/fake mesh-spawn | /fake say one\n/fake mesh-spawn | /fake say two");
-    const spawns = await untilTool(c, a, "spawn_thread", 2);
-    assert.equal(spawns[0]!.failed, false, spawns[0]!.output);
-    assert.equal(spawns[1]!.failed, true);
-    assert.match(spawns[1]!.output, /at most 1 workers/);
+    await c.request("mesh/policy", {
+      opId: opId(),
+      update: { budget: { agentTurns: 9, threadsSpawned: 1 }, limits: { workersPerThread: 1 } },
+    });
+    const parent = await idleThread(d, c);
+    for (let i = 0; i < 9; i++) {
+      const worker = await call(d, parent, "spawn_thread", { text: "/fake say worker", detached: true });
+      assert.equal(worker.isError, false, worker.text);
+    }
+    assert.equal(d.mesh.store.peekThread(parent)?.children.length, 9);
+    const extra = await call(d, parent, "spawn_thread", { text: "/fake say extra", detached: true });
+    assert.equal(extra.isError, true);
+    assert.match(extra.text, /orchestration's budget is used up.*9 agent-started turns/);
+    const budget = await c.request("mesh/budget", { root: addressOf(d, parent) });
+    assert.equal(budget.exhausted, true);
+    assert.equal(budget.used.threadsSpawned, 9);
+  } finally {
+    await done();
+  }
+});
+
+test("depth and message-rate limits trip with a readable reason and a visible notice", async () => {
+  const { d, c, done } = await setup();
+  try {
+    await c.request("mesh/policy", { opId: opId(), update: { limits: { spawnDepth: 1, pairMessages: 2 } } });
     // Depth: the worker (depth 1) may not spawn.
     const { threadId: b } = await startAllowed(c, "/fake mesh-spawn | /fake mesh-spawn | /fake say too deep");
     const child = await childOf(d, b);
@@ -658,14 +702,14 @@ test("without any hub: same-target send, spawn, wait, read and stop work; cross-
   }
 });
 
-test("read_thread and stop_thread are limited to one's own orchestration", async () => {
+test("read_thread can read an unrelated thread, while stop_thread requires a worker", async () => {
   const { d, c, done } = await setup();
   try {
     const a = await idleThread(d, c);
-    const stranger = await idleThread(d, c, "/fake say secret plans");
-    const r = await call(d, a, "read_thread", { thread: addressOf(d, stranger) });
-    assert.equal(r.isError, true);
-    assert.match(r.text, /only threads in your own orchestration/);
+    const stranger = await idleThread(d, c, "/fake say independent answer");
+    const r = await call(d, a, "read_thread", { thread: addressOf(d, stranger), lastAnswerOnly: true });
+    assert.equal(r.isError, false);
+    assert.match(r.text, /\[agent\] independent answer/);
     const s = await call(d, a, "stop_thread", { thread: addressOf(d, stranger) });
     assert.equal(s.isError, true);
     assert.match(s.text, /only on threads beneath you/);

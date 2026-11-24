@@ -39,6 +39,7 @@ import type {
   TurnOrigin,
 } from "../protocol/generated/types.js";
 import { RpcError } from "../protocol/rpc.js";
+import { hasModelBestUse, listForAgents } from "../providers/model-best-use.js";
 import { PeerInputDenied } from "../providers/types.js";
 import type { MeshAttachment, MeshHooks, MeshInputMessage, MeshToolCall, MeshToolResult, NativeId } from "../providers/types.js";
 import type { ClientSession, MethodHandler } from "../session/client.js";
@@ -631,9 +632,12 @@ export class Mesh implements CoreMeshHooks {
         continue;
       }
       lines.push(`- instance ${d.instance} "${d.displayName}"${d.modelsComplete ? "" : " (model list may be incomplete)"}`);
-      for (const m of d.models ?? []) {
+      const models = (d.models ?? []).filter((model) => listForAgents(d.kind, model));
+      for (const m of models) {
         const efforts = (m.efforts ?? []).map((e) => e.id).join(", ");
         lines.push(`  - model ${m.id} "${m.displayName}"${m.isDefault ? " (default)" : ""}${efforts ? ` — efforts: ${efforts}` : ""}`);
+        if (hasModelBestUse(d.kind)) lines.push(`    Best used as: ${m.bestUse?.summary ?? "No guidance yet"}`);
+
       }
       const modes = (d.modes ?? []).map((m) => `${m.id} "${m.displayName}"${m.isDefault ? " (default)" : ""}${m.skipsApprovals ? " (never asks for approval)" : ""}`);
       if (modes.length > 0) lines.push(`  - modes (for every model of this instance): ${modes.join(", ")}`);
@@ -649,7 +653,10 @@ export class Mesh implements CoreMeshHooks {
 
   private async listModels(rt: ThreadRuntime, a: Record<string, unknown>): Promise<string> {
     const target = typeof a.target === "string" && a.target.trim() ? a.target.trim() : null;
-    if (!target || this.isSelfTarget(target)) return this.describeModels(this.localDescriptors(), this.selfName());
+    if (!target || this.isSelfTarget(target)) {
+      await this.core.registry.waitForModelBestUses();
+      return this.describeModels(this.localDescriptors(), this.selfName());
+    }
     const id = this.targetIdOf(target);
     if (!id) throw new ToolError(`There is no machine called ${target} in this mesh.`);
     const r = (await this.hubQuery(this.addressOf(rt.id), id, { tool: "listModels" })) as { providers?: ProviderDescriptor[] };
@@ -904,33 +911,6 @@ export class Mesh implements CoreMeshHooks {
 
   // ── Reading ────────────────────────────────────────────────────────────────────────
 
-  /** Whether `caller` may read `rt`: ancestors, workers (and theirs), and message partners. */
-  private mayRead(caller: Address, rt: ThreadRuntime): boolean {
-    const c = this.normalise(caller);
-    const target = this.addressOf(rt.id);
-    if (c === target) return true;
-    const tm = this.store.peekThread(rt.id);
-    if ((tm?.peers ?? []).map((p) => this.normalise(p)).includes(c)) return true;
-    if ((tm?.children ?? []).map((p) => this.normalise(p)).includes(c)) return true;
-    // `rt` is a descendant of the caller.
-    let cur: ThreadRuntime | undefined = rt;
-    for (let i = 0; cur && i < 10; i++) {
-      const p = this.store.peekThread(cur.id)?.spawnedBy;
-      if (!p) break;
-      if (this.normalise(p) === c) return true;
-      cur = this.localOf(p);
-    }
-    // `rt` is an ancestor of a local caller.
-    let me = this.localOf(c);
-    for (let i = 0; me && i < 10; i++) {
-      const p = this.store.peekThread(me.id)?.spawnedBy;
-      if (!p) break;
-      if (this.normalise(p) === target) return true;
-      me = this.localOf(p);
-    }
-    return false;
-  }
-
   async transcript(rt: ThreadRuntime, lastAnswerOnly: boolean, maxBytes: number): Promise<{ entries: TranscriptEntry[]; truncated: boolean }> {
     const projection = await this.core.ensureProjection(rt);
     const entries: TranscriptEntry[] = [];
@@ -981,7 +961,6 @@ export class Mesh implements CoreMeshHooks {
     const maxBytes = Math.max(500, Math.min(typeof a.maxBytes === "number" ? a.maxBytes : 8000, 32000));
     const caller = this.addressOf(rt.id);
     if (r.kind === "local") {
-      if (!this.mayRead(caller, r.rt)) throw new ToolError(`You may read only threads in your own orchestration (your parent and ancestors, your workers, and threads you have exchanged messages with). ${this.labelOf(r.address)} is not one of them.`);
       const t = await this.transcript(r.rt, lastAnswerOnly, maxBytes);
       return this.renderTranscript(this.labelOf(r.address), this.core.summaryOf(r.rt).state, t);
     }
@@ -1018,7 +997,7 @@ export class Mesh implements CoreMeshHooks {
   }
 
   /** Why a root's budget is used up, or null. */
-  private exhaustedReason(root: Address | null | undefined, extraThread = false): string | null {
+  private exhaustedReason(root: Address | null | undefined): string | null {
     if (!root) return null;
     const key = this.normalise(root);
     if (this.isLocalAddress(key)) {
@@ -1026,7 +1005,6 @@ export class Mesh implements CoreMeshHooks {
       if (!rs) return null;
       const used = this.usedOf(rs);
       if (used.agentTurns >= rs.allowance.agentTurns) return `its ${rs.allowance.agentTurns} agent-started turns are used`;
-      if (extraThread ? used.threadsSpawned + 1 > rs.allowance.threadsSpawned : used.threadsSpawned > rs.allowance.threadsSpawned) return `its ${rs.allowance.threadsSpawned} spawned threads are used`;
       if (used.wallClockSecs >= rs.allowance.wallClockSecs) return `more than ${Math.round(rs.allowance.wallClockSecs / 3600)} hours have passed since a person last acted on it`;
       return null;
     }
@@ -1349,10 +1327,6 @@ export class Mesh implements CoreMeshHooks {
       this.limitNotice(rt, `spawning is limited to a depth of ${limits.spawnDepth}`);
       throw new ToolError(`Limit reached: workers can be nested at most ${limits.spawnDepth} deep, and this thread is already at depth ${tm.depth}. Do the work yourself or report back.`);
     }
-    if (tm.children.length >= limits.workersPerThread) {
-      this.limitNotice(rt, `a thread may start at most ${limits.workersPerThread} workers`);
-      throw new ToolError(`Limit reached: a thread may start at most ${limits.workersPerThread} workers, and this one has started ${tm.children.length}.`);
-    }
     const targetIn = typeof a.target === "string" && a.target.trim() ? a.target.trim() : null;
     const targetId = targetIn ? this.targetIdOf(targetIn) : this.selfId();
     if (targetIn && !targetId) {
@@ -1377,7 +1351,7 @@ export class Mesh implements CoreMeshHooks {
       summary: `Start a thread on ${local ? this.selfName() : this.targetNameOf(targetId!)}${instanceIn ? ` (${instanceIn}${modelIn ? `, ${modelIn}` : ""})` : ""}: "${title}"`,
       threads: [{ count: 1, ...(instanceIn ? { instance: instanceIn } : {}), ...(modelIn ? { model: modelIn } : {}), ...(local ? {} : { target: targetId!, targetName: this.targetNameOf(targetId!) }) }],
     });
-    const why = this.exhaustedReason(root, true);
+    const why = this.exhaustedReason(root);
     if (why) {
       this.budgetNotice(root, why);
       throw new ToolError(`This orchestration's budget is used up (${why}). Nothing was cancelled; the user can choose Continue to grant more.`);
@@ -1451,7 +1425,7 @@ export class Mesh implements CoreMeshHooks {
   }): Promise<{ thread: MeshPeer; turnId: TurnId; modeNote: string }> {
     const limits = this.store.state.policy.limits;
     if (p.depth > limits.spawnDepth) throw new RpcError("limit_exceeded", `Limit reached: workers can be nested at most ${limits.spawnDepth} deep.`);
-    const why = this.exhaustedReason(p.root, true);
+    const why = this.exhaustedReason(p.root);
     if (why) throw new RpcError("limit_exceeded", `The orchestration's budget is used up (${why}).`);
     const d = this.resolveInstance(this.localDescriptors(), p.instance, p.callerRt?.record.instance ?? null);
     const model = this.resolveModel(d, p.model);
@@ -2589,6 +2563,7 @@ export class Mesh implements CoreMeshHooks {
     if (this.isLocalAddress(caller)) throw new RpcError("policy_denied", "a query from another target cannot name a caller on this one");
     switch (q.tool) {
       case "listModels":
+        await this.core.registry.waitForModelBestUses();
         return { tool: "listModels", providers: this.localDescriptors() };
       case "listThreads":
         return { tool: "listThreads", ...this.listForQuery(caller, (q.filter as MeshThreadFilter) ?? {}) };
@@ -2603,7 +2578,6 @@ export class Mesh implements CoreMeshHooks {
       case "readThread": {
         const rt = this.localOf(String(q.thread ?? ""));
         if (!rt) throw new RpcError("thread_not_found", `no thread ${String(q.thread)} on ${this.selfName()}`);
-        if (!this.mayRead(caller, rt)) throw new RpcError("policy_denied", "only threads in the caller's own orchestration may be read");
         const t = await this.transcript(rt, q.lastAnswerOnly === true, Math.max(500, Math.min(Number(q.maxBytes) || 8000, 32000)));
         return { tool: "readThread", ...t };
       }
@@ -2700,7 +2674,7 @@ export class Mesh implements CoreMeshHooks {
       const used = this.usedOf(rs);
       const base = this.store.state.policy.budget;
       // Another allowance on top of what is used, and a person has acted now.
-      rs.allowance = { agentTurns: Math.max(rs.allowance.agentTurns, used.agentTurns + base.agentTurns), threadsSpawned: Math.max(rs.allowance.threadsSpawned, used.threadsSpawned + base.threadsSpawned), wallClockSecs: Math.max(rs.allowance.wallClockSecs, base.wallClockSecs) };
+      rs.allowance = { ...rs.allowance, agentTurns: Math.max(rs.allowance.agentTurns, used.agentTurns + base.agentTurns), wallClockSecs: Math.max(rs.allowance.wallClockSecs, base.wallClockSecs) };
       rs.lastHumanAt = Date.now();
       rs.exhaustedNoticed = false;
       this.store.save();

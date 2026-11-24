@@ -198,6 +198,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
     });
     let mut app = YaacApp::from_ctx(&ctx, launch);
     app.display.first_frame();
+    app.images.use_wpf();
     let mut previous = Map::new();
     let mut selected_settings_target = None;
     let mut once = true;
@@ -265,6 +266,9 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                 },
             );
             app.persist_prefs();
+            if let Some(image) = app.images.take_wpf() {
+                write_frame(&mut stdout, &json!({ "imageViewer": image }))?;
+            }
             output.textures_delta.clear();
             let mut window = None;
             for viewport in output.viewport_output.values() {
@@ -515,6 +519,10 @@ fn dispatch(
     payload: &Value,
 ) -> Result<(), String> {
     let action = match command {
+        "image.close" => {
+            app.images.close();
+            None
+        }
         "sidebar.open" | "agents.open" => key(app, string(payload, "id")).map(Action::Open),
         "pr.action" => pull_requests::action(app, ctx, payload),
         "header.action" => {
@@ -641,13 +649,13 @@ fn dispatch(
                 )
             });
             rows.map(|panel| {
-                Action::MarkRead(
-                    panel
-                        .all()
-                        .filter(|row| row.display.unseen)
-                        .filter_map(|row| row.key.clone())
-                        .collect(),
-                )
+                let unseen = |row: &yaac_core::agents::AgentRow| row.display.unseen.then(|| row.key.clone()).flatten();
+                let keys = if payload["floating"] == true {
+                    yaac_core::agents::card_groups(&panel).into_iter().flat_map(|(_, rows)| rows).filter_map(unseen).collect()
+                } else {
+                    panel.all().filter_map(unseen).collect()
+                };
+                Action::MarkRead(keys)
             })
         }
         "agents.continue" | "agents.action"

@@ -14,12 +14,18 @@ internal static class TranscriptSyntax
         "interface", "export",
     };
 
-    internal static void Append(Paragraph paragraph, string text)
+    internal static void Append(Paragraph paragraph, string text, object? lineNumberTag)
     {
         var lines = text.Split('\n');
+        var digits = lines.Length.ToString(System.Globalization.CultureInfo.InvariantCulture).Length;
         for (int i = 0; i < lines.Length; i++)
         {
             if (i != 0) paragraph.Inlines.Add(new LineBreak());
+            if (lineNumberTag is not null)
+            {
+                var number = (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(digits);
+                paragraph.Inlines.Add(new Run(number + "  ") { Foreground = TranscriptColors.Muted, Tag = lineNumberTag });
+            }
             AppendLine(paragraph, lines[i]);
         }
     }
@@ -63,13 +69,13 @@ internal static class TranscriptSyntax
 
             if (color is not null)
             {
-                if (plain < start) paragraph.Inlines.Add(new Run(line[plain..start]));
+                if (plain < start) paragraph.Inlines.Add(new Run(line[plain..start]) { Foreground = TranscriptColors.Text });
                 paragraph.Inlines.Add(new Run(line[start..end]) { Foreground = color });
                 plain = end;
             }
             start = end;
         }
-        if (plain < line.Length) paragraph.Inlines.Add(new Run(line[plain..]));
+        if (plain < line.Length) paragraph.Inlines.Add(new Run(line[plain..]) { Foreground = TranscriptColors.Text });
     }
 
     private static bool Word(char c) => char.IsAsciiLetterOrDigit(c) || c == '_';

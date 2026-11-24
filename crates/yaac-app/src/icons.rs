@@ -80,9 +80,7 @@ fn mark_with_speed(p: &Painter, c: Pos2, d: f32, m: Mark, speed: Speed, pal: &Pa
     }
 }
 
-/// How often a visible spinner is redrawn: about 30 frames a second, so the slow turn stays smooth, only while one is on
-/// screen and the window has focus. Unfocused (or hidden, or minimised) it stands still and
-/// costs nothing.
+/// A visible spinner redraws at about 30 frames a second.
 const SPINNER_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
 
 /// Seconds per turn: slow and calm, but visibly moving.
@@ -90,6 +88,19 @@ const SPINNER_TURN: f64 = 2.5;
 
 /// Seconds per turn of a running turn in fast mode (D125): a little quicker.
 pub(crate) const SPINNER_TURN_FAST: f64 = 1.8;
+
+/// Tray visibility is tracked by YAAC. The viewport reports minimization and occlusion.
+pub(crate) fn set_spinner_window_hidden(ctx: &egui::Context, hidden: bool) {
+    ctx.data_mut(|data| data.insert_temp(spinner_visibility_id(), hidden));
+}
+
+fn spinner_visibility_id() -> egui::Id {
+    egui::Id::unique("spinner-window-hidden")
+}
+
+fn spinner_window_visible(viewport: &egui::ViewportInfo, tray_hidden: bool) -> bool {
+    !tray_hidden && viewport.visible() != Some(false)
+}
 
 /// Running: a three-quarter arc turning once every [`SPINNER_TURN`] seconds. Drawing it asks for the next frame, so
 /// the window repaints only while a running mark is actually painted.
@@ -103,7 +114,8 @@ pub(crate) fn spinner_turning(p: &Painter, c: Pos2, d: f32, col: Color32, turn: 
     let r = d * 0.38;
     let w = (d * 0.12).max(1.5);
     let ctx = p.ctx();
-    let (t, focused) = ctx.input(|i| (i.time, i.focused));
+    let tray_hidden = ctx.data(|data| data.get_temp(spinner_visibility_id())).unwrap_or(false);
+    let (t, window_visible) = ctx.input(|i| (i.time, spinner_window_visible(i.viewport(), tray_hidden)));
     #[allow(clippy::cast_possible_truncation, reason = "a phase in 0..1")]
     let start = ((t / turn).fract() as f32) * TAU;
     let n = 24;
@@ -114,7 +126,8 @@ pub(crate) fn spinner_turning(p: &Painter, c: Pos2, d: f32, col: Color32, turn: 
         })
         .collect();
     p.add(Shape::line(pts, Stroke::new(w, col)));
-    if focused {
+    let bounds = Rect::from_center_size(c, Vec2::splat(2.0 * r + w));
+    if window_visible && p.is_visible() && p.clip_rect().intersects(bounds) {
         ctx.request_repaint_after(SPINNER_FRAME);
     }
 }
@@ -677,4 +690,23 @@ pub(crate) fn download(p: &Painter, c: Pos2, d: f32, col: Color32) {
 pub(crate) fn stop_square(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let p = &soft(p);
     p.rect_filled(Rect::from_center_size(c, Vec2::splat(d * 0.5)), 2.0, col);
+}
+
+#[cfg(test)]
+mod spinner_tests {
+    use super::*;
+
+    #[test]
+    fn spinner_uses_window_visibility_independent_of_focus() {
+        let mut viewport = egui::ViewportInfo { focused: Some(false), ..Default::default() };
+        assert!(spinner_window_visible(&viewport, false));
+        assert!(!spinner_window_visible(&viewport, true));
+        viewport.minimized = Some(true);
+        assert!(!spinner_window_visible(&viewport, false));
+        viewport.minimized = Some(false);
+        viewport.occluded = Some(true);
+        assert!(!spinner_window_visible(&viewport, false));
+        viewport.occluded = Some(false);
+        assert!(spinner_window_visible(&viewport, false));
+    }
 }

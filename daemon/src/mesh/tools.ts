@@ -89,7 +89,7 @@ const MESH_TOOLS: ToolDef[] = [
   },
   {
     name: "read_thread",
-    description: "Read another thread's recent messages, or only its last answer, without interrupting it — to check on a worker or see what a collaborator said. Allowed for threads in your own orchestration (your parent and ancestors, your workers, and threads you have exchanged messages with).",
+    description: "Read the recent messages or last answer of a YAAC thread on this machine or another connected target, without interrupting it. Use find_thread to look up its address.",
     inputSchema: {
       type: "object",
       properties: {

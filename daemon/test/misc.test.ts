@@ -27,7 +27,7 @@ test("before initialize only the frozen calls work; the mesh methods the daemon 
   for (const m of ["mesh/deliver", "mesh/query", "mesh/roster", "mesh/budget", "mesh/receipt", "mesh/usage"]) {
     await assert.rejects(c.request(m, {}), code("invalid_params"));
   }
-  assert.ok(((await c.request("mesh/policy", {})) as any).policy.limits.workersPerThread > 0);
+  assert.ok(((await c.request("mesh/policy", {})) as any).policy.limits.spawnDepth > 0);
   await assert.rejects(c.request("no/such"), code("method_not_found"));
   // item/read exists now; without its params it is invalid, not unknown.
   await assert.rejects(c.request("item/read", {}), code("invalid_params"));

@@ -17,6 +17,8 @@ import type {
 import { canonical } from "../protocol/json.js";
 import { RpcError } from "../protocol/rpc.js";
 import { ensureDir, randomId, readJson, writeJsonAtomic } from "../util/fsx.js";
+import { hasModelBestUse, ModelBestUses, modelUseId } from "./model-best-use.js";
+import type { StoreToolImage } from "./tool-images.js";
 import type { HarnessHome, HarnessProvider, MeshHooks, ProbeResult, ProviderEvent, ProviderFactory } from "./types.js";
 
 export interface Instance {
@@ -48,6 +50,7 @@ export class ProviderRegistry {
   private eventListeners = new Set<(instance: string, event: ProviderEvent) => void>();
   private descriptorListeners = new Set<(descriptor: ProviderDescriptor) => void>();
   private readonly file: string;
+  private readonly bestUses: ModelBestUses;
   /** The agent mesh's hooks, per instance id (WP7); offered to every provider that takes them. */
   private meshHooks: ((instanceId: string) => MeshHooks) | null = null;
 
@@ -56,8 +59,14 @@ export class ProviderRegistry {
     private readonly env: NodeJS.ProcessEnv,
     private readonly log: (line: string) => void,
     private readonly providerRemoved?: (id: string) => void,
+    private readonly storeToolImage?: StoreToolImage,
   ) {
     this.file = path.join(home, "instances.json");
+    this.bestUses = new ModelBestUses(home, (kind) => {
+      for (const instance of this.byId.values()) {
+        if (instance.config.kind === kind) this.setDescriptor(instance, instance.descriptor, false);
+      }
+    }, log);
   }
 
   /** The agent mesh: offer the `yaac` tools to every provider instance, now and when created. */
@@ -124,7 +133,10 @@ export class ProviderRegistry {
 
   /** Capabilities that come from the kind and yaacd, not from a probe. */
   private ownCapabilities(kind: string): Capability[] {
-    return this.homeOf(kind) ? ["configurableHome"] : [];
+    const caps: Capability[] = [];
+    if (this.homeOf(kind)) caps.push("configurableHome");
+    if (hasModelBestUse(kind)) caps.push("modelBestUse");
+    return caps;
   }
 
   /**
@@ -208,7 +220,14 @@ export class ProviderRegistry {
     } else {
       const stateDir = path.join(this.home, "providers", config.id);
       ensureDir(stateDir);
-      provider = factory.create({ config: this.applied(config), stateDir, home: this.home, env: this.env, log: (l) => this.log(`[${config.id}] ${l}`) });
+      provider = factory.create({
+        config: this.applied(config),
+        stateDir,
+        home: this.home,
+        env: this.env,
+        log: (l) => this.log(`[${config.id}] ${l}`),
+        storeToolImage: this.storeToolImage,
+      });
       if (this.meshHooks) provider.attachMesh?.(this.meshHooks(config.id));
       descriptor = this.placeholder(config, "probing");
     }
@@ -296,7 +315,15 @@ export class ProviderRegistry {
     });
   }
 
-  private setDescriptor(instance: Instance, next: ProviderDescriptor): void {
+  private setDescriptor(instance: Instance, next: ProviderDescriptor, observe = true): void {
+    const kind = instance.config.kind;
+    if (hasModelBestUse(kind) && (next.models?.length ?? 0) > 0) {
+      if (observe) this.bestUses.observe(kind, next.models ?? []);
+      next = { ...next, models: next.models?.map(({ bestUse: _bestUse, ...model }) => {
+        const bestUse = this.bestUses.model(kind, modelUseId(model));
+        return bestUse ? { ...model, bestUse } : model;
+      }) };
+    }
     const same = canonical({ ...next, revision: 0 }) === canonical({ ...instance.descriptor, revision: 0 });
     if (same && instance.descriptor.revision > 0) return;
     const revision = (this.revisions[instance.config.id] ?? 0) + 1;
@@ -304,6 +331,20 @@ export class ProviderRegistry {
     this.save();
     instance.descriptor = { ...next, revision };
     for (const l of [...this.descriptorListeners]) l(instance.descriptor);
+  }
+
+  waitForModelBestUses(): Promise<void> {
+    return this.bestUses.waitForCurrent();
+  }
+
+  setModelBestUse(instanceId: string, modelId: string, expectedId: string, summary: unknown): void {
+    const instance = this.require(instanceId);
+    if (!hasModelBestUse(instance.config.kind)) throw new RpcError("capability_missing", "This provider has no model guidance");
+    const model = instance.descriptor.models?.find((entry) => entry.id === modelId);
+    if (!model || modelUseId(model) !== expectedId) {
+      throw new RpcError("invalid_params", "The model changed while you were editing. Reopen its current guidance.");
+    }
+    this.bestUses.set(instance.config.kind, modelUseId(model), summary);
   }
 
   // ── providerInstance/* ─────────────────────────────────────────────────────────────────

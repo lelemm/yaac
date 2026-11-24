@@ -183,10 +183,10 @@ impl PillLayout<'_> {
 /// order across all relations fill what is left; finished and idle agents are never drawn
 /// then, only counted in the "more" item.
 pub fn pill(panel: &AgentsPanel, cap: usize) -> PillLayout<'_> {
-    let mut all = clusters(panel);
-    for cluster in &mut all {
+    let all = relation_clusters(panel).map(|mut cluster| {
         cluster.rows.sort_by_key(|row| order_key(row));
-    }
+        cluster
+    }).collect::<Vec<_>>();
     let total: usize = all.iter().map(|c| c.rows.len()).sum();
     if total <= cap {
         return PillLayout { clusters: all, more: Overflow::default() };
@@ -245,12 +245,11 @@ impl Relation {
 pub struct Cluster<'a> {
     /// Which relation.
     pub relation: Relation,
-    /// Its rows, newest activity first.
+    /// Its rows in the presentation's order.
     pub rows: Vec<&'a AgentRow>,
 }
 
-/// Rows grouped by relation, newest activity first within each group.
-pub fn clusters(panel: &AgentsPanel) -> Vec<Cluster<'_>> {
+fn relation_clusters(panel: &AgentsPanel) -> impl Iterator<Item = Cluster<'_>> {
     let parent: Vec<&AgentRow> = match &panel.spawned_by {
         SpawnedBy::Agent(p) => vec![&**p],
         SpawnedBy::You => Vec::new(),
@@ -258,11 +257,44 @@ pub fn clusters(panel: &AgentsPanel) -> Vec<Cluster<'_>> {
     [(Relation::SpawnedBy, parent), (Relation::Workers, panel.workers.iter().collect()), (Relation::InContact, panel.contacts.iter().collect())]
         .into_iter()
         .filter(|(_, rows)| !rows.is_empty())
-        .map(|(relation, mut rows)| {
-            rows.sort_by_key(|row| std::cmp::Reverse(row.updated));
-            Cluster { relation, rows }
-        })
-        .collect()
+        .map(|(relation, rows)| Cluster { relation, rows })
+}
+
+/// Completed and unread first, other states next, completed and read last.
+fn list_order_key(row: &AgentRow) -> (u8, std::cmp::Reverse<i64>) {
+    let group = match (row.display.mark, row.display.unseen) {
+        (Mark::Done, true) => 0,
+        (Mark::Done, false) => 2,
+        _ => 1,
+    };
+    (group, std::cmp::Reverse(row.updated))
+}
+
+/// Rows grouped by relation in card and dock order, newest activity first within each tier.
+pub fn clusters(panel: &AgentsPanel) -> Vec<Cluster<'_>> {
+    relation_clusters(panel).map(|mut cluster| {
+        cluster.rows.sort_by_key(|row| list_order_key(row));
+        cluster
+    }).collect()
+}
+
+/// The floating card adds siblings before the usual groups. A sibling who is also a contact
+/// appears once in this view, under Siblings.
+pub fn card_groups(panel: &AgentsPanel) -> Vec<(&'static str, Vec<&AgentRow>)> {
+    let mut siblings: Vec<_> = panel.siblings.iter().collect();
+    siblings.sort_by_key(|row| list_order_key(row));
+    let sibling_keys: BTreeSet<_> = siblings.iter().filter_map(|row| row.key.as_ref()).collect();
+    let mut groups = Vec::new();
+    if !siblings.is_empty() {
+        groups.push(("Siblings", siblings));
+    }
+    for mut cluster in clusters(panel) {
+        cluster.rows.retain(|row| row.key.as_ref().is_none_or(|key| !sibling_keys.contains(key)));
+        if !cluster.rows.is_empty() {
+            groups.push((cluster.relation.heading(), cluster.rows));
+        }
+    }
+    groups
 }
 
 /// One entry of the docked panel's list under a heading.
@@ -283,7 +315,7 @@ pub enum DockEntry<'a> {
 /// The docked panel folds the quiet rows of a heading once there are at least this many.
 pub const DOCK_FOLD_MIN: usize = 4;
 
-/// Keep the activity order when collapsing an inactive tail of the list.
+/// Keep the list order when collapsing an inactive tail.
 pub fn docked_entries<'a>(cluster: &Cluster<'a>) -> Vec<DockEntry<'a>> {
     let rows = &cluster.rows;
     let tail = rows.iter().rposition(|row| prominent(row)).map_or(0, |i| i + 1);
@@ -374,7 +406,7 @@ pub enum SpawnedBy {
 /// The orchestration's budget line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BudgetLine {
-    /// "14 of 100 agent turns · 4 of 20 threads".
+    /// "14 of 100 agent turns".
     pub text: String,
     /// The budget ran out: "Agent budget reached" and **Continue** (D164).
     pub exhausted: bool,
@@ -398,6 +430,8 @@ pub struct AgentsPanel {
     pub root: Option<(String, Option<ThreadKey>)>,
     /// Spawned by.
     pub spawned_by: SpawnedBy,
+    /// Other indexed children of the same parent, shown in the floating card.
+    pub siblings: Vec<AgentRow>,
     /// Workers, as a flattened tree.
     pub workers: Vec<AgentRow>,
     /// Direct workers.
@@ -493,7 +527,7 @@ impl AgentsPanel {
             SpawnedBy::Agent(p) => Some(&mut **p),
             SpawnedBy::You => None,
         };
-        parent.into_iter().chain(self.workers.iter_mut()).chain(self.contacts.iter_mut())
+        parent.into_iter().chain(self.workers.iter_mut()).chain(self.contacts.iter_mut()).chain(self.siblings.iter_mut())
     }
 
     /// Whether any arrow is showing (the only reason the panel asks for repaints).
@@ -593,6 +627,14 @@ pub fn agents_panel(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Op
         ))),
     };
 
+    // The parent address still identifies siblings while the parent's own thread is missing.
+    // Exclude ourselves, the parent and our workers even if the index contains cyclic links.
+    let siblings: Vec<_> = s.spawned_by.as_ref().and_then(|parent| children.get(parent))
+        .into_iter().flatten()
+        .filter(|sibling| !seen.contains(*sibling) && Some(*sibling) != parent_key.as_ref())
+        .filter_map(|sibling| row_for(state, map, sibling, 0))
+        .collect();
+
     // Contacts: peers in mesh items that are neither the parent nor a worker, and that exist.
     let mut contacts: Vec<AgentRow> = Vec::new();
     let mut known: BTreeSet<Address> = BTreeSet::new();
@@ -631,10 +673,7 @@ pub fn agents_panel(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Op
 
     let root_addr = root_of(state, key);
     let budget = root_addr.as_ref().and_then(|r| state.budgets.get(r)).map(|b| BudgetLine {
-        text: format!(
-            "{} of {} agent turns · {} of {} threads",
-            b.used.agent_turns, b.allowance.agent_turns, b.used.threads_spawned, b.allowance.threads_spawned
-        ),
+        text: format!("{} of {} agent turns", b.used.agent_turns, b.allowance.agent_turns),
         exhausted: b.exhausted,
         root: b.root.clone(),
     });
@@ -645,14 +684,14 @@ pub fn agents_panel(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Op
     });
 
     let rail = Rail { count: usize::from(s.spawned_by.is_some()) + direct_workers + contacts.len() };
-    let mut panel = AgentsPanel { budget, root, spawned_by, workers, direct_workers, contacts, rail };
+    let flows = flows(state, key);
+    let mut panel = AgentsPanel { budget, root, spawned_by, siblings, workers, direct_workers, contacts, rail };
     if let SpawnedBy::Agent(p) = &mut panel.spawned_by {
         p.role = Role::Parent;
     }
     for c in &mut panel.contacts {
         c.role = Role::Contact;
     }
-    let flows = flows(state, key);
     for row in panel.rows_mut() {
         if let Some(k) = &row.key {
             row.flow = flows.iter().find(|(a, _)| a == &k.address()).map(|(_, f)| *f);

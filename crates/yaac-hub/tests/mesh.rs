@@ -404,13 +404,13 @@ fn with_the_hub_stopped_cross_target_messages_wait_in_the_outbox_and_same_target
 
 /// `find_thread` searches every target from the hub's index (by fuzzy title and by id
 /// prefix); `list_targets` gives names and counts; `list_threads` on another target is paged;
-/// `read_thread` and `stop_thread` reach a worker on another target and are refused for a
-/// stranger there.
+/// `read_thread` reaches unrelated threads and workers on another target.
+/// `stop_thread` reaches the caller's worker.
 #[test]
 fn finding_listing_reading_and_stopping_across_targets() {
     let Some(m) = Mesh::new(&["alpha", "beta"]) else { return };
     let ci = m.start("beta", "CI integration nightly\n/fake say ci");
-    let stranger = m.start("beta", "Stranger thread\n/fake say private");
+    let stranger = m.start("beta", "Stranger thread\n/fake say independent answer");
     for i in 0..22 {
         let t = m.start("beta", &format!("/fake say filler {i}"));
         m.idle("beta", &t);
@@ -448,7 +448,8 @@ fn finding_listing_reading_and_stopping_across_targets() {
     assert!(listed[0].0.starts_with("20 of "), "paged: {}", listed[0].0);
     assert!(listed[0].0.contains("pass cursor"), "{}", listed[0].0);
     let reads = m.until_tool("alpha", &a, "read_thread", 2);
-    assert!(reads[0].1, "a stranger cannot be read: {}", reads[0].0);
+    assert!(!reads[0].1, "an unrelated thread can be read: {}", reads[0].0);
+    assert!(reads[0].0.contains("[agent] independent answer"), "{}", reads[0].0);
     assert!(!reads[1].1, "its own worker can: {}", reads[1].0);
     assert!(reads[1].0.contains("working"), "{}", reads[1].0);
     let stops = m.until_tool("alpha", &a, "stop_thread", 1);

@@ -278,7 +278,7 @@ export type BackendPreference = "auto" | "daemon" | "sdk";
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -2408,6 +2408,46 @@ export interface ModeInfo {
 }
 
 /**
+ * A short model recommendation and its provenance.
+ */
+export interface ModelBestUse {
+  /**
+   * A user edit takes precedence over generated guidance.
+   */
+  custom: boolean;
+  /**
+   * The text shown in Settings and in agent model lists.
+   */
+  summary: string;
+}
+
+/**
+ * Set (or clear) the recommendation override for a model.
+ */
+export interface ModelBestUseSetParams {
+  /**
+   * The specific model ID displayed while editing, to catch aliases changing.
+   */
+  expectedModel: ModelId;
+  /**
+   * An instance that advertises the model.
+   */
+  instance: InstanceId;
+  /**
+   * The harness’s stable model id.
+   */
+  model: ModelId;
+  /**
+   * Operation id.
+   */
+  opId: OpId;
+  /**
+   * A user edit, or null to restore the generated guidance.
+   */
+  summary?: string | null;
+}
+
+/**
  * A model-level capability with its three-valued support.
  */
 export interface ModelCapability {
@@ -2430,6 +2470,10 @@ export type ModelId = string;
  * A model, exactly as the harness listed it. Never hardcoded.
  */
 export interface ModelInfo {
+  /**
+   * YAAC’s guidance for choosing this model, when documented or set by the user.
+   */
+  bestUse?: ModelBestUse | null;
   /**
    * Model-level capabilities, each supported, unsupported, or unknown. A capability not
    * listed is unknown.
@@ -2467,6 +2511,10 @@ export interface ModelInfo {
    * Whether this is the harness's default model.
    */
   isDefault?: boolean;
+  /**
+   * The specific model behind an alias, when the harness reports it.
+   */
+  resolvedModel?: ModelId | null;
 }
 
 /**
@@ -5277,6 +5325,10 @@ export interface ToolCallItem {
    */
   exitCode?: number | null;
   /**
+   * Image results stored on this target and read on demand through `upload/read`.
+   */
+  images?: ToolImage[];
+  /**
    * The tool's input, as structured data.
    */
   input?: unknown;
@@ -5308,6 +5360,20 @@ export interface ToolCallItem {
    * What kind of tool.
    */
   tool: ToolKind;
+}
+
+/**
+ * A tool image result, with its bytes kept out of the transcript stream.
+ */
+export interface ToolImage {
+  /**
+   * Display label.
+   */
+  name: string;
+  /**
+   * Identifies the stored image on this target.
+   */
+  uploadId: UploadId;
 }
 
 /**

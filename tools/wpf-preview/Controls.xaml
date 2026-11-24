@@ -156,6 +156,23 @@
     <Setter Property="MinHeight" Value="22" />
     <Setter Property="Padding" Value="6,2" />
   </Style>
+  <Style x:Key="YaacTranscriptChevron" TargetType="Button" BasedOn="{StaticResource YaacQuietButton}">
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="Button">
+          <Border Background="{TemplateBinding Background}">
+            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+          </Border>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+
+  <ControlTemplate x:Key="YaacTranscriptText" TargetType="TextBoxBase">
+    <ScrollViewer x:Name="PART_ContentHost" Focusable="False" Background="Transparent" />
+  </ControlTemplate>
+
   <Style x:Key="YaacLinkButton" TargetType="Button" BasedOn="{StaticResource YaacQuietButton}">
     <Setter Property="Foreground" Value="{DynamicResource YaacLink}" />
   </Style>

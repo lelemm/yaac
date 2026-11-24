@@ -425,6 +425,20 @@ fn a_drafts_clipboard_image_survives_a_hub_restart_and_follows_a_retarget() {
     let blobs = listed["blobs"].as_array().unwrap();
     assert_eq!(blobs.len(), 1, "{listed}");
     assert_eq!(blobs[0]["blobId"], blob_id.as_str());
+    use base64::Engine as _;
+    let mut preview = Vec::new();
+    loop {
+        let chunk = c.call(ext::BLOB_READ, json!({ "blobId": blob_id, "offset": preview.len() })).unwrap();
+        assert_eq!(chunk["present"], true);
+        assert_eq!(chunk["mediaType"], "image/png");
+        let bytes = base64::engine::general_purpose::STANDARD.decode(chunk["dataBase64"].as_str().unwrap()).unwrap();
+        assert!(bytes.len() <= 512 * 1024);
+        preview.extend(bytes);
+        if chunk["more"] == false {
+            break;
+        }
+    }
+    assert_eq!(preview, shot);
     let a = connect(&c, "alpha");
     let b = connect(&c, "beta");
     let mut seen = Seen::default();

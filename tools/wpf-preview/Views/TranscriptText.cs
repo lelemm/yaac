@@ -61,6 +61,7 @@ internal sealed class TranscriptText : ContentControl
             IsUndoEnabled = false,
         };
         InitializeBox(box);
+        BindingOperations.SetBinding(box.Document, TextElement.ForegroundProperty, new Binding(nameof(Foreground)) { Source = this });
         BindingOperations.SetBinding(box.Document, TextElement.FontFamilyProperty, new Binding(nameof(FontFamily)) { Source = this });
         BindingOperations.SetBinding(box.Document, TextElement.FontSizeProperty, new Binding(nameof(FontSize)) { Source = this });
         CommandManager.AddPreviewExecutedHandler(box, (_, e) =>
@@ -234,7 +235,7 @@ internal sealed class TranscriptText : ContentControl
                 {
                     "markdown" => markdown.ValueKind == JsonValueKind.Array
                         ? markdown.Elements().Select(block => new Piece(block.Value("kind").Text(), block.Value("text").Text(),
-                            block.Value("language").OptionalText(), block.Value("kind").Text() == "code" ? default : block)).ToList()
+                            block.Value("language").OptionalText(), block)).ToList()
                         : [new Piece("paragraph", value)],
                     "diff" => [new Piece("diff", value, Data: markdown)],
                     _ => [new Piece("code", value)],
@@ -276,6 +277,8 @@ internal sealed class TranscriptText : ContentControl
         box.IsReadOnly = true;
         box.IsInactiveSelectionHighlightEnabled = true;
         box.IsReadOnlyCaretVisible = false;
+        box.Template = (ControlTemplate)FindResource("YaacTranscriptText");
+        box.FocusVisualStyle = null;
         box.BorderThickness = new Thickness(0);
         box.Background = Brushes.Transparent;
         box.Padding = new Thickness(0);
@@ -335,27 +338,25 @@ internal sealed class TranscriptText : ContentControl
         }
     }
 
-    private static Block BlockFor(Piece piece)
+    private Block BlockFor(Piece piece)
     {
         if (piece.Kind is "code" or "diff") return CodeBlock(piece);
         if (piece.Kind == "table") return TableFor(piece.Data);
 
-        var paragraph = new Paragraph { Margin = new Thickness(0, 0, 0, 5) };
+        var paragraph = new Paragraph { Margin = new Thickness(0, 0, 0, 6), Foreground = Foreground, FontSize = FontSize };
         if (piece.Kind == "heading")
         {
-            paragraph.FontWeight = FontWeights.SemiBold;
-            paragraph.FontSize = piece.Data.Value("level").GetInt32() switch { 1 => 18, 2 => 16, _ => 14 };
+            paragraph.FontWeight = FontWeights.Bold;
+            paragraph.FontSize = FontSize + (piece.Data.Value("level").GetInt32() switch { 1 => 5, 2 => 3, _ => 1 });
         }
         else if (piece.Kind == "quote")
         {
             paragraph.Foreground = TranscriptColors.Muted;
-            paragraph.BorderBrush = TranscriptColors.Rule;
-            paragraph.BorderThickness = new Thickness(2, 0, 0, 0);
-            paragraph.Padding = new Thickness(9, 0, 0, 0);
+            paragraph.Padding = new Thickness(12, 0, 0, 0);
         }
         else if (piece.Kind == "item")
         {
-            paragraph.Margin = new Thickness(6 + 18 * piece.Data.Value("depth").GetInt32(), 0, 0, 2);
+            paragraph.Margin = new Thickness(6 + 18 * piece.Data.Value("depth").GetInt32(), 0, 0, 6);
             paragraph.Inlines.Add(new Run(piece.Data.Value("marker").Text() + "  ") { Foreground = TranscriptColors.Muted });
         }
         else if (piece.Kind == "rule")
@@ -364,13 +365,18 @@ internal sealed class TranscriptText : ContentControl
             paragraph.BorderThickness = new Thickness(0, 1, 0, 0);
             paragraph.LineHeight = 4;
         }
+        if (piece.Kind != "rule")
+        {
+            paragraph.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
+            paragraph.LineHeight = paragraph.FontSize * 1.45;
+        }
         AddSpans(paragraph, piece.Data.Value("spans"));
         if (piece.Text.Length > 0)
-            paragraph.Inlines.Add(new Run(piece.Text));
+            paragraph.Inlines.Add(new Run(piece.Text) { Foreground = paragraph.Foreground });
         return paragraph;
     }
 
-    private static Table TableFor(JsonElement data)
+    private Table TableFor(JsonElement data)
     {
         var table = new Table { CellSpacing = 0, Margin = new Thickness(0, 3, 0, 6) };
         var group = new TableRowGroup();
@@ -380,21 +386,29 @@ internal sealed class TranscriptText : ContentControl
             .ToArray();
         if (rows.Length == 0) return table;
         var columns = rows.Max(row => row.GetArrayLength());
-        for (var i = 0; i < columns; i++)
-            table.Columns.Add(new TableColumn { Width = new GridLength(1, GridUnitType.Star) });
+        var columnLimit = Math.Max(28, Math.Min(220, 360.0 / Math.Max(1, columns - 1)));
+        for (var i = 0; i < columns - 1; i++)
+        {
+            var column = i;
+            var longest = rows.Where(row => column < row.GetArrayLength())
+                .Max(row => row[column].Elements().Sum(span => span.Value("text").Text().Length));
+            var width = Math.Clamp(longest * FontSize * 0.58 + 18, 28, columnLimit);
+            table.Columns.Add(new TableColumn { Width = new GridLength(width) });
+        }
+        table.Columns.Add(new TableColumn { Width = GridLength.Auto });
         for (var i = 0; i < rows.Length; i++)
         {
             var row = new TableRow();
             group.Rows.Add(row);
             for (var column = 0; column < columns; column++)
             {
-                var paragraph = new Paragraph { Margin = new Thickness(0) };
+                var paragraph = new Paragraph { Margin = new Thickness(0), Foreground = Foreground, LineHeight = FontSize * 1.45 };
                 if (column < rows[i].GetArrayLength())
                     AddSpans(paragraph, rows[i][column]);
                 var cell = new TableCell(paragraph) { Padding = new Thickness(0, 3, 9, 3) };
                 if (i == 0)
                 {
-                    cell.FontWeight = FontWeights.SemiBold;
+                    cell.FontWeight = FontWeights.Bold;
                     cell.BorderBrush = TranscriptColors.Rule;
                     cell.BorderThickness = new Thickness(0, 0, 0, 1);
                 }
@@ -408,14 +422,13 @@ internal sealed class TranscriptText : ContentControl
     {
         var diff = piece.Kind == "diff";
         var copyText = piece.Data.Value("copyText").OptionalText() ?? piece.Text;
-        var copyLabel = diff ? "Copy diff" : "Copy code";
+        var copyLabel = diff ? "Copy diff" : piece.Language is { Length: > 0 } language ? $"Copy {language} code" : "Copy code";
         var section = new Section
         {
             Background = TranscriptColors.Code,
-            Margin = new Thickness(0, 0, 0, 5),
-            Padding = new Thickness(8, 3, 8, 6),
+            Margin = new Thickness(0, 0, 0, 6),
+            Padding = new Thickness(10, 6, 10, 7),
         };
-        var header = new DockPanel { LastChildFill = false };
         var button = new Button
         {
             Content = "Copy",
@@ -425,14 +438,6 @@ internal sealed class TranscriptText : ContentControl
             FontSize = 11,
         };
         AutomationProperties.SetName(button, copyLabel);
-        DockPanel.SetDock(button, Dock.Right);
-        header.Children.Add(button);
-        if (piece.Language is { Length: > 0 } language)
-            header.Children.Add(new TextBlock
-            {
-                Text = language, Foreground = TranscriptColors.Muted, FontFamily = Mono,
-                FontSize = 11, VerticalAlignment = VerticalAlignment.Center,
-            });
         var reset = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
         reset.Tick += (_, _) =>
         {
@@ -448,13 +453,18 @@ internal sealed class TranscriptText : ContentControl
             reset.Start();
         };
 
-        section.Blocks.Add(new BlockUIContainer(header) { Margin = new Thickness(0) });
         var paragraph = new Paragraph
         {
             Margin = new Thickness(0),
             FontFamily = Mono,
+            FontSize = 13,
+            LineHeight = 20,
+            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
             Tag = copyText,
         };
+        var copy = new Floater { HorizontalAlignment = HorizontalAlignment.Right, Width = 58, Padding = new Thickness(0) };
+        copy.Blocks.Add(new BlockUIContainer(button) { Margin = new Thickness(0) });
+        paragraph.Inlines.Add(copy);
         if (diff)
         {
             var width = piece.Data.Value("prefixWidth");
@@ -476,7 +486,8 @@ internal sealed class TranscriptText : ContentControl
         }
         else
         {
-            TranscriptSyntax.Append(paragraph, piece.Text);
+            TranscriptSyntax.Append(paragraph, piece.Text,
+                piece.Data.Value("kind").Text() == "code" ? CodePadding : null);
         }
 
         section.Blocks.Add(paragraph);
@@ -492,8 +503,8 @@ internal sealed class TranscriptText : ContentControl
             {
                 if (i > 0) paragraph.Inlines.Add(new LineBreak());
                 if (lines[i].Length == 0) continue;
-                var run = new Run(lines[i]);
-                if (span.Value("bold").Flag()) run.FontWeight = FontWeights.SemiBold;
+                var run = new Run(lines[i]) { Foreground = paragraph.Foreground };
+                if (span.Value("bold").Flag()) run.FontWeight = FontWeights.Bold;
                 if (span.Value("italic").Flag()) run.FontStyle = FontStyles.Italic;
                 Inline inline = span.Value("code").Flag() ? InlineCode(run) : run;
                 var target = span.Value("link").OptionalText();
@@ -523,6 +534,7 @@ internal sealed class TranscriptText : ContentControl
     {
         if (!Uri.TryCreate(target, UriKind.Absolute, out var uri) || uri.Scheme is not ("https" or "http"))
             { label.ToolTip = target; return label; }
+        label.Foreground = TranscriptColors.Link;
         var link = new Hyperlink(label) { Foreground = TranscriptColors.Link, ToolTip = target };
         link.Click += (_, _) =>
         {

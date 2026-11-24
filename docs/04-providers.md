@@ -776,3 +776,22 @@ No Rust change is required unless the provider needs a capability that does not 
 **Decided:** ACP comes to YAAC as a provider, after the MVP — one generic adapter that can drive
 any agent speaking the Agent Client Protocol. It is also the best test of whether this contract
 is really provider-neutral.
+
+
+## Model guidance
+
+Settings → Providers shows **Best used as** under **Model guidance** for each model, with
+its generated or user-edited status. An edit is stored on the selected target by provider
+kind and specific model ID. Instances of that kind on the same target share the edit.
+When the harness reports the model behind an alias, changing which model the alias
+selects leaves the edit with the original model. **Reset to generated** restores the
+last generated summary.
+
+The target fingerprints the set of model identities it has seen. A newly reported model
+causes it to fetch the official Markdown selection guide for that provider and extract
+recommendations of up to 15 words for its unedited models. The previous guidance stays
+available when a refresh fails. Models with no recommendation yet show **No guidance yet**.
+
+The [OpenAI model selection guide](https://developers.openai.com/api/docs/guides/model-selection.md)
+and [Claude model selection guide](https://platform.claude.com/docs/en/about-claude/models/choosing-a-model.md)
+provide the source text. The live provider catalog determines model availability.

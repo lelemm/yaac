@@ -186,9 +186,11 @@ public sealed class TranscriptRowView : UserControl
         if (!Same("taskPeer", data))
             UpdateTaskHeader(data.Value("taskPeer"));
         taskHeader.Visibility = kind == "task" ? Visibility.Visible : Visibility.Collapsed;
+        var activityWasOpen = activityRow?.IsExpanded == true;
         activityRow?.Render(data);
         var format = data.Value("markdown").Flag(kind is "agent" or "task" or "handoff") ? "markdown" : "text";
         body.Foreground = kind == "handoff" ? TranscriptColors.Muted : tone;
+        if (kind is "agent" or "task") body.FontSize = 15;
         body.Show(data.Value("text").Text(), format, data.Value("textBlocks"));
         cursor.Visibility = data.Value("streaming").Flag() ? Visibility.Visible : Visibility.Collapsed;
 
@@ -205,7 +207,7 @@ public sealed class TranscriptRowView : UserControl
         actions.HorizontalAlignment = user ? HorizontalAlignment.Right : HorizontalAlignment.Left;
 
         if (activityRow?.IsExpanded != false)
-            UpdateDetails(data);
+            UpdateDetails(data, force: activityRow is not null && !activityWasOpen);
         if (!Same("attachments", data))
             UpdateAttachments(data.Value("attachments"));
         if (!Same("questions", data))
@@ -361,6 +363,26 @@ public sealed class TranscriptRowView : UserControl
         if (state is null)
             return;
         var kind = part.Value("kind").Text();
+        if (kind == "image")
+        {
+            if (slot.Host.Content is not TranscriptImage image)
+            {
+                if (slot.Host.Content is Expander old)
+                    old.Content = null;
+                var bound = row;
+                image = new TranscriptImage(descriptor =>
+                {
+                    if (ReferenceEquals(bound, row))
+                        Submit(descriptor, includeDraft: false);
+                });
+                slot.Host.Content = image;
+                slot.Text = null;
+            }
+            image.Render(part);
+            return;
+        }
+        if (slot.Host.Content is TranscriptImage)
+            slot.Host.Content = null;
         var value = part.Value("text").Text();
         var label = part.Value("label").OptionalText();
         slot.Value = value;
@@ -379,6 +401,7 @@ public sealed class TranscriptRowView : UserControl
             label ??= part.Value("language").OptionalText();
 
         var text = slot.Text ??= CreateText("part:" + slot.Id);
+        if (row?.Kind == "user" && kind == "markdown") text.FontSize = 15;
         text.Foreground = TranscriptColors.Tone(part.Value("tone").Text(),
             kind == "detail" ? TranscriptColors.Muted : TranscriptColors.Text);
         void Show() => text.Show(slot.Value, slot.Format, slot.Blocks);

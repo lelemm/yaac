@@ -45,6 +45,7 @@ pub(crate) fn tool(kind: ToolKind, title: &str, exit: Option<i32>, output: &str)
         cwd: None,
         agent_call: None,
         skill: None,
+        images: vec![],
     })
 }
 
@@ -61,6 +62,7 @@ pub(crate) fn agent_tool(kind: ToolKind, title: &str, input: serde_json::Value, 
         cwd: None,
         agent_call: Some(call),
         skill: None,
+        images: vec![],
     })
 }
 

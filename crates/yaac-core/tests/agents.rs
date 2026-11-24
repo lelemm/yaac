@@ -2,7 +2,7 @@
 mod common;
 
 use common::{boot, settle};
-use yaac_core::agents::{SpawnedBy, agents_panel};
+use yaac_core::agents::{Relation, SpawnedBy, agents_panel, card_groups, clusters};
 use yaac_core::attention::{AttentionMap, Mark};
 use yaac_core::demo::{Scene, threads};
 use yaac_core::header::{LinkLine, header};
@@ -12,7 +12,7 @@ fn orchestrator_panel_has_three_sections_and_a_budget() {
     let (c, _) = boot();
     let map = AttentionMap::compute(&c.state);
     let p = agents_panel(&c.state, &map, &threads::orchestrator()).unwrap();
-    assert_eq!(p.budget.unwrap().text, "14 of 100 agent turns · 4 of 20 threads");
+    assert_eq!(p.budget.unwrap().text, "14 of 100 agent turns");
     assert_eq!(p.spawned_by, SpawnedBy::You);
     let workers: Vec<_> = p.workers.iter().map(|w| (w.depth, w.title.as_str(), w.display.mark)).collect();
     assert_eq!(
@@ -33,9 +33,32 @@ fn worker_panel_and_hidden_panel() {
     let p = agents_panel(&c.state, &map, &threads::billing()).unwrap();
     assert!(matches!(&p.spawned_by, SpawnedBy::Agent(r) if r.title == "Migrate auth module · orchestrator" && r.display.mark == Mark::Running));
     assert!(p.workers.is_empty() && p.contacts.is_empty(), "the parent is not a contact");
+    let card = card_groups(&p);
+    assert_eq!(card.iter().map(|(label, _)| *label).collect::<Vec<_>>(), ["Siblings", "Spawned by"]);
+    assert_eq!(card[0].1.iter().filter_map(|row| row.key.clone()).collect::<std::collections::BTreeSet<_>>(),
+        [threads::users(), threads::search()].into_iter().collect());
+    assert_eq!(clusters(&p).len(), 1, "siblings only appear in the floating card");
     assert!(agents_panel(&c.state, &map, &threads::fix()).is_none(), "no relationships: hidden");
     let p = agents_panel(&c.state, &map, &threads::index()).unwrap();
     assert_eq!(p.root.unwrap().0, "Migrate auth module · orchestrator");
+}
+
+#[test]
+fn reading_a_completed_worker_moves_it_after_active_workers() {
+    let (c, _) = boot();
+    let map = AttentionMap::compute(&c.state);
+    let mut panel = agents_panel(&c.state, &map, &threads::orchestrator()).unwrap();
+    for (row, (updated, unseen)) in panel.workers.iter_mut().zip([(10, true), (5, false), (100, false), (90, false)]) {
+        row.updated = updated;
+        row.display.unseen = unseen;
+    }
+    let ordered = |panel: &yaac_core::agents::AgentsPanel| {
+        clusters(panel).into_iter().find(|group| group.relation == Relation::Workers).unwrap()
+            .rows.into_iter().map(|row| row.title.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(ordered(&panel), ["users-service", "search-service", "index-rebuild", "billing-service"]);
+    panel.workers[0].display.unseen = false;
+    assert_eq!(ordered(&panel), ["search-service", "index-rebuild", "users-service", "billing-service"]);
 }
 
 #[test]

@@ -51,8 +51,14 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, ctx: Option<&egui::Context
         return json!({ "visible": false, "threadId": thread.address() });
     };
     let now = app.now();
+    let docked = app.ui.panel == PanelMode::Docked;
+    let card_groups = agents::card_groups(&panel);
     if let Some(ctx) = ctx {
-        crate::agents_ui::schedule_activity_ages(ctx, app, &panel, now);
+        if docked {
+            crate::agents_ui::schedule_activity_ages(ctx, app, panel.all(), now);
+        } else {
+            crate::agents_ui::schedule_activity_ages(ctx, app, card_groups.iter().flat_map(|(_, rows)| rows.iter().copied()), now);
+        }
     }
     let groups: Vec<_> = agents::clusters(&panel)
         .iter()
@@ -100,12 +106,17 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, ctx: Option<&egui::Context
         })
     });
     let root = panel.root.as_ref().map(|(title, key)| json!({ "id": key.as_ref().map(ThreadKey::address), "title": title, "canOpen": key.is_some() }));
-    let docked = app.ui.panel == PanelMode::Docked;
+    let can_mark_read_card = card_groups.iter().flat_map(|(_, rows)| rows).any(|r| r.display.unseen && r.key.is_some());
+    let card_groups: Vec<_> = card_groups.into_iter().map(|(label, rows)| {
+        json!({ "label": label, "rowIds": rows.into_iter().map(row_id).collect::<Vec<_>>() })
+    }).collect();
     json!({
         "visible": !groups.is_empty() || budget.is_some() || matches!(panel.spawned_by, SpawnedBy::Agent(_)),
         "threadId": thread.address(), "mode": if docked { "docked" } else { "pill" },
         "canDock": !docked, "canUndock": docked, "canMarkRead": panel.all().any(|r| r.display.unseen && r.key.is_some()),
         "groups": groups, "budget": budget, "root": root,
+        "cardGroups": card_groups, "canMarkReadCard": can_mark_read_card,
+        "siblings": panel.siblings.iter().map(|r| row(app, r, now)).collect::<Vec<_>>(),
         "pill": { "rowIds": pill_rows, "hidden": pill.more.hidden, "alive": pill.more.alive,
             "needsYou": pill.more.needs_you, "firstHiddenId": first_hidden },
     })

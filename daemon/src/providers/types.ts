@@ -42,6 +42,7 @@ import type {
 } from "../protocol/generated/types.js";
 import type { EventSource } from "../util/emitter.js";
 import type { RateLimitReport } from "./ratelimits.js";
+import type { StoreToolImage } from "./tool-images.js";
 
 /** Whatever the harness uses to resume that exact conversation (Codex: `Thread.id`). */
 export type NativeId = string;
@@ -471,6 +472,8 @@ export interface ProviderContext {
    * from (the instance's own `config.env` goes on top). Providers never read `process.env`.
    */
   env: NodeJS.ProcessEnv;
+  /** Stores a harness result image on this target and supplies a transcript reference. */
+  storeToolImage?: StoreToolImage;
   /** Diagnostic log. Never message content. */
   log(line: string): void;
 }

@@ -471,7 +471,7 @@ export class CodexProvider implements HarnessProvider {
     if (!turn || turn.status === "inProgress") return;
     for (const raw of turn.items ?? []) {
       if (raw.type === "userMessage" || isYaacPeerOutput(raw)) continue;
-      this.emit({ type: "itemCompleted", thread: st.native, item: mapItem(raw, turnId, "completed", this.skillPaths) });
+      this.emit({ type: "itemCompleted", thread: st.native, item: mapItem(raw, turnId, "completed", this.skillPaths, this.ctx.storeToolImage) });
     }
     this.finishTurn(st, turn, "own");
   }
@@ -815,14 +815,14 @@ export class CodexProvider implements HarnessProvider {
         sortDirection: "asc",
         ...(page.cursor ? { cursor: page.cursor } : {}),
       })) as Paged<ThreadItemEntry>;
-      return { items: (res.data ?? []).filter((e) => !isYaacPeerOutput(e.item)).map((e) => mapItem(e.item, e.turnId, "completed", this.skillPaths)), cursor: res.nextCursor ?? null };
+      return { items: (res.data ?? []).filter((e) => !isYaacPeerOutput(e.item)).map((e) => mapItem(e.item, e.turnId, "completed", this.skillPaths, this.ctx.storeToolImage)), cursor: res.nextCursor ?? null };
     } catch (e) {
       if (page.cursor) throw e;
       // Older history without item paging: one full read.
       const r = (await conn.request("thread/read", { threadId: thread, includeTurns: true })) as { thread: Thread };
       const items: Item[] = [];
       for (const turn of r.thread.turns ?? []) for (const raw of turn.items ?? []) {
-        if (!isYaacPeerOutput(raw)) items.push(mapItem(raw, turn.id, turn.status === "inProgress" ? "inProgress" : "completed", this.skillPaths));
+        if (!isYaacPeerOutput(raw)) items.push(mapItem(raw, turn.id, turn.status === "inProgress" ? "inProgress" : "completed", this.skillPaths, this.ctx.storeToolImage));
       }
       return { items, cursor: null };
     }
@@ -1603,7 +1603,7 @@ export class CodexProvider implements HarnessProvider {
           const output = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : undefined;
           this.commands.item(native, item.id, turnId, method === "item/started", output);
         }
-        const mapped = mapItem(item, turnId, method === "item/started" ? "inProgress" : "completed", this.skillPaths);
+        const mapped = mapItem(item, turnId, method === "item/started" ? "inProgress" : "completed", this.skillPaths, this.ctx.storeToolImage);
         if (st.compact && item.type === "contextCompaction") {
           // The composer already shows progress. Wait for the native turn outcome before
           // journaling success, as a completed item may arrive during a failed turn.

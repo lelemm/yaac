@@ -118,6 +118,7 @@ enum Call {
     TakeOver(ThreadKey),
     Compact { key: ThreadKey, command: Option<String> },
     FsSearch(u64),
+    ImageChunk(u64),
     /// One `thread/archive` of a bulk Archive (D138).
     BulkArchive { batch: u64, key: ThreadKey },
     /// One `thread/move` (D144); `before`: the summary to put back if it is refused.
@@ -208,6 +209,8 @@ pub struct Client {
     pub errors: Vec<ClientError>,
     /// The composer’s most recent file lookup.
     pub composer_files: Option<ComposerFiles>,
+    /// Bounded image reads returned by the hub.
+    pub image_chunks: Vec<(u64, Result<yaac_protocol::UploadReadResult, String>)>,
     /// The command log the user has opened in the composer.
     pub command_log: Option<crate::running_commands::CommandLog>,
     /// The last attachment id handed out.
@@ -278,6 +281,7 @@ impl Client {
             warm: Vec::new(),
             errors: Vec::new(),
             composer_files: None,
+            image_chunks: Vec::new(),
             command_log: None,
             attach_ids: 0,
             dirty: std::collections::BTreeSet::new(),
@@ -331,6 +335,17 @@ impl Client {
         let env = RoutedRequest { target: target.clone(), method: method.to_owned(), params };
         let value = serde_json::to_value(env).unwrap_or(Value::Null);
         self.request(attach::names::REQUEST, value, call);
+    }
+
+    /// Fetch one bounded chunk of an image stored on a connected target.
+    pub fn read_image_chunk(&mut self, token: u64, target: &TargetId, id: &yaac_protocol::UploadId, offset: u64) {
+        let params = yaac_protocol::UploadReadParams { upload_id: id.clone(), offset, max_bytes: 512 * 1024 };
+        self.routed(target, m::UPLOAD_READ, json!(params), Call::ImageChunk(token));
+    }
+
+    /// Fetch one bounded chunk of a clipboard image stored with the local draft.
+    pub fn read_draft_image_chunk(&mut self, token: u64, id: &str, offset: u64) {
+        self.request("hub/drafts/blob/read", json!({ "blobId": id, "offset": offset }), Call::ImageChunk(token));
     }
 
     fn apply_session_discovery(&mut self, target: &TargetId, result: Value) {
@@ -660,6 +675,7 @@ impl Client {
                     self.draft_changed(&DraftRef::Thread(key));
                 }
             }
+            Call::ImageChunk(id) => self.image_chunks.push((id, serde_json::from_value(result).map_err(|e| e.to_string()))),
             Call::FsSearch(id) => self.finish_composer_search(id, serde_json::from_value(result).map_err(|e| e.to_string())),
             Call::TakeOver(key) => {
                 if let Some(t) = self.state.transcripts.get_mut(&key) {
@@ -928,6 +944,7 @@ impl Client {
                 };
                 self.error(Some(key), message);
             }
+            Call::ImageChunk(id) => self.image_chunks.push((id, Err(error.message.clone()))),
             Call::FsSearch(id) => self.finish_composer_search(id, Err(error.message.clone())),
             Call::TakeOver(key) => {
                 // Shown on the banner, never retried on its own.
@@ -2258,6 +2275,14 @@ impl Client {
             c.trust_folders = if on { None } else { Some(false) };
         }
         self.routed(target, m::PROVIDER_INSTANCE_UPDATE, json!({ "opId": op, "id": id, "trustFolders": on }), Call::InstanceChanged(target.clone()));
+    }
+
+    /// Set a model recommendation on this target, or restore the generated value.
+    pub fn set_model_best_use(&mut self, target: &TargetId, instance: InstanceId, model: yaac_protocol::ModelId,
+        expected_model: yaac_protocol::ModelId, summary: Option<String>) {
+        let op_id = self.op_id();
+        let params = yaac_protocol::ModelBestUseSetParams { op_id, instance, model, expected_model, summary };
+        self.routed(target, m::PROVIDER_MODEL_BEST_USE_SET, json!(params), Call::Ignore);
     }
 
     /// Set an instance's harness home (P300); `None` or empty: back to the harness default.

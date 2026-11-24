@@ -51,10 +51,8 @@ internal sealed class TranscriptActivity : StackPanel
         line.MouseLeftButtonUp += (_, _) => Toggle();
         disclosure = new Button
         {
-            Style = (Style)FindResource("YaacQuietButton"),
+            Style = (Style)FindResource("YaacTranscriptChevron"),
             Width = 22,
-            MinHeight = 22,
-            Padding = new Thickness(0),
             FontFamily = YaacFonts.Ui,
         };
         disclosure.Click += (_, _) => Toggle();
@@ -110,7 +108,8 @@ internal sealed class TranscriptActivity : StackPanel
         groupError.Text = data.Value("groupError").Text();
         groupError.Visibility = groupError.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         canExpand = groupToggle.Value("enabled").Flag() || data.Value("activityToggle").Value("enabled").Flag()
-            || pills.Length > 0 || data.Value("parts").Elements().Any(part => part.Value("text").OptionalText() is not null)
+            || pills.Length > 0 || data.Value("parts").Elements().Any(part =>
+                part.Value("kind").Text() == "image" || part.Value("text").OptionalText() is not null)
             || new[] { "detail", "message", "result", "receipt" }.Any(field => data.Value(field).OptionalText() is not null);
         disclosure.Foreground = tone;
         staticMark.Foreground = tone;
