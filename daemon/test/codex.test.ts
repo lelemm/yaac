@@ -1168,10 +1168,9 @@ test("Codex tracks process lifetime and late output separately from the turn", a
     assert.equal(await r.provider.stopCommand("another-owner", cmd.id), false);
     assert.equal(await r.provider.stopCommand(THREAD_ID, cmd.id), true);
     assert.deepEqual(stops, [{ threadId: THREAD_ID, processId: terminal.processId }]);
-    await until(() => {
-      const latest = last();
-      return latest?.type === "runningCommands" && !latest.commands.length;
-    });
+    const latest = last();
+    assert.equal(latest?.type, "runningCommands");
+    if (latest?.type === "runningCommands") assert.deepEqual(latest.commands, []);
     assert.equal(await r.provider.stopCommand(THREAD_ID, cmd.id), false);
     assert.equal(started().length, 1);
   } finally {

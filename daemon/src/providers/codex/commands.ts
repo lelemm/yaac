@@ -37,6 +37,7 @@ export class CodexCommands {
   private discoverAt = 0;
   private canStop = true;
   private dirty = new Set<string>();
+  private polls = new Map<string, symbol>();
   private running = new Map<string, RunningTerminal[]>();
   private executions = new Map<string, Execution>();
 
@@ -55,6 +56,7 @@ export class CodexCommands {
     this.timer = undefined;
     this.discoverAt = 0;
     this.dirty.clear();
+    this.polls.clear();
     for (const thread of this.running.keys()) this.publish(thread, []);
     this.executions.clear();
   }
@@ -117,7 +119,15 @@ export class CodexCommands {
     if (this.conn !== conn || !this.canStop || !live.some((c) => c?.itemId === terminal.itemId && c.processId === terminal.processId)) return false;
     try {
       const reply = await conn.request(STOP, { threadId: thread, processId: terminal.processId }, 5_000) as { terminated?: unknown };
-      this.dirty.add(thread);
+      if (this.conn === conn) {
+        this.dirty.add(thread);
+        if (reply.terminated === true) {
+          // A list already in flight could still report the process that just stopped.
+          this.polls.delete(thread);
+          const commands = this.running.get(thread) ?? [];
+          this.publish(thread, commands.filter((command) => command.view.id !== terminal.view.id));
+        }
+      }
       return reply.terminated === true;
     } catch (error) {
       if (!(error instanceof CodexRpcError) || error.code !== -32601) throw error;
@@ -171,14 +181,18 @@ export class CodexCommands {
     const threads = [...watch];
     for (let at = 0; at < threads.length && this.conn === conn; at += 8) {
       const results = await Promise.all(threads.slice(at, at + 8).map(async (thread) => {
+        const poll = Symbol();
+        this.polls.set(thread, poll);
         try {
           // Only a list requested after the turn completed can confirm it outlived the turn.
           const settled = new Set([...this.executions.values()].filter((e) => e.thread === thread && e.turnSettled));
           const listed = await this.pages<Terminal>(conn, LIST, { threadId: thread });
-          if (this.conn === conn) this.replace(thread, listed, settled);
+          if (this.conn === conn && this.polls.get(thread) === poll) this.replace(thread, listed, settled);
         } catch (error) {
-          if (this.conn === conn) this.publish(thread, []);
+          if (this.conn === conn && this.polls.get(thread) === poll) this.publish(thread, []);
           if (error instanceof CodexRpcError && error.code === -32601) return false;
+        } finally {
+          if (this.polls.get(thread) === poll) this.polls.delete(thread);
         }
         return true;
       }));
