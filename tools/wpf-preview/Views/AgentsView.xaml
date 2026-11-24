@@ -133,7 +133,7 @@
               </Grid>
               <StackPanel Grid.Column="1">
                 <DockPanel>
-                  <TextBlock DockPanel.Dock="Right" Text="{Binding Data.Age}" Style="{StaticResource AgentsMeta}"
+                  <TextBlock x:Name="RowAge" DockPanel.Dock="Right" Text="{Binding Data.Age}" Style="{StaticResource AgentsMeta}"
                              Margin="6,0,0,0" VerticalAlignment="Center" ToolTip="Last activity"
                              Visibility="{Binding Data.HasAge, Converter={StaticResource AgentsVisible}}" />
                   <TextBlock DockPanel.Dock="Right" Text="{Binding Data.Flow}" FontWeight="SemiBold"
@@ -179,6 +179,8 @@
       </Border>
       <DataTemplate.Triggers>
         <DataTrigger Binding="{Binding Kind}" Value="dockRow">
+          <Setter TargetName="OpenRow" Property="ToolTipService.IsEnabled" Value="False" />
+          <Setter TargetName="RowAge" Property="ToolTipService.IsEnabled" Value="False" />
           <Setter TargetName="CardLogo" Property="Visibility" Value="Collapsed" />
           <Setter TargetName="DockMark" Property="Visibility" Value="Visible" />
           <Setter TargetName="MarkWord" Property="Visibility" Value="Visible" />

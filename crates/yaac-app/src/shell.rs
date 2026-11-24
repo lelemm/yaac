@@ -4,7 +4,6 @@ use eframe::egui::{self, Align2, Margin, vec2};
 use yaac_core::agents::{PanelMode, agents_panel};
 use yaac_core::attention::AttentionMap;
 use yaac_core::state::Selection;
-use yaac_protocol::attach::{ConnectionStatus, TargetTransport};
 
 use crate::app::{Action, YaacApp};
 use crate::theme::{self, size};
@@ -106,6 +105,29 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     crate::dialogs::update_now(ui.ctx(), app, actions);
     crate::dialogs::bulk_archive(ui.ctx(), app, actions);
     crate::dialogs::move_dialog(ui.ctx(), app, actions);
+}
+
+pub(crate) fn window_error_notice(ctx: &egui::Context, app: &YaacApp, width: f32, actions: &mut Vec<Action>) {
+    let Some(error) = app.client.errors.iter().rfind(|e| e.key.is_none()) else { return };
+    egui::Area::new(egui::Id::unique("window-error")).order(egui::Order::Foreground)
+        .anchor(Align2::CENTER_BOTTOM, vec2(0.0, -5.0)).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(app.p.bg).show(ui, |ui| {
+                ui.set_max_width(600.0_f32.min(width));
+                error_notice(ui, app, error, actions);
+            });
+        });
+}
+
+pub(crate) fn error_notice(ui: &mut egui::Ui, app: &YaacApp, error: &yaac_core::client::ClientError, actions: &mut Vec<Action>) {
+    let p = app.p;
+    ui.push_id(error.id, |ui| {
+        ui.horizontal(|ui| {
+            if widgets::icon_button(ui, &p, 12.0, "Dismiss notice", crate::icons::close).clicked() {
+                actions.push(Action::DismissError(error.id, error.key.clone()));
+            }
+            ui.label(egui::RichText::new(&error.text).font(theme::ui(size::SMALL)).color(p.failed));
+        });
+    });
 }
 
 pub(crate) fn empty_workspace(app: &YaacApp) -> String {
@@ -299,31 +321,26 @@ pub(crate) fn stopped_wsl_notifications(app: &YaacApp) -> Vec<(yaac_protocol::Ta
         .state
         .targets
         .iter()
-        .filter(|t| {
-            matches!(t.entry.transport, TargetTransport::Wsl(_))
-                && t.entry.enabled
-                && t.entry.state.status == ConnectionStatus::Disabled
-                && !app.ui.dismissed.contains(&t.entry.id)
-        })
-        .map(|t| {
-            let distro = match &t.entry.transport {
-                TargetTransport::Wsl(w) => w.distro.clone(),
-                _ => String::new(),
-            };
-            (t.entry.id.clone(), distro)
+        .filter_map(|t| {
+            let id = &t.entry.id;
+            if app.ui.dismissed.contains(id) {
+                return None;
+            }
+            app.client.state.stopped_distro(id)?;
+            yaac_core::header::composer_connection_notice(&app.client.state, id).map(|notice| (id.clone(), notice))
         })
         .collect()
 }
 
 fn wsl_notification(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Action>) {
     let p = app.p;
-    for (id, distro) in stopped_wsl_notifications(app) {
+    for (id, notice) in stopped_wsl_notifications(app) {
         egui::Area::new(egui::Id::unique(("wsl", id.as_str()))).order(egui::Order::Foreground).anchor(Align2::RIGHT_BOTTOM, vec2(-16.0, -16.0)).show(ctx, |ui| {
             egui::Frame::popup(ui.style()).fill(p.raised).inner_margin(Margin::same(14)).show(ui, |ui| {
                 ui.set_width(300.0);
                 ui.horizontal(|ui| {
                     widgets::icon(ui, 16.0, |pa, c, d| crate::icons::warning(pa, c, d, p.needs, p.raised));
-                    ui.label(format!("WSL distro {distro} is not running."));
+                    ui.label(notice);
                 });
                 ui.add_space(8.0);
                 // One action (D96): starting it asks the hub to connect, which boots the distro.

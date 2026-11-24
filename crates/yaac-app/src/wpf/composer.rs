@@ -232,12 +232,20 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
     match draft.clone() {
         DraftRef::Thread(key) => {
             v["runningCommands"] = command_strip(app, &key);
-            if let Some(distro) = state.stopped_distro(&key.target) {
+            notices.extend(
+                app.client.errors.iter().filter(|e| e.key.as_ref() == Some(&key)).map(|e| {
+                    let id = format!("error:{}", e.id);
+                    json!({ "id": id, "text": e.text, "error": true, "actions": [action(&id, "Dismiss", true)] })
+                }),
+            );
+            if let Some(notice) = header::composer_connection_notice(state, &key.target) {
+                let stopped = state.stopped_distro(&key.target).is_some();
                 v["showEditor"] = json!(false);
-                v["notices"] = json!([{
-                    "id": "wslStopped", "text": format!("{distro} is not running"),
-                    "actions": [action("startWsl", "Start it", true)]
-                }]);
+                notices.push(json!({
+                    "id": "targetConnection", "text": notice,
+                    "actions": stopped.then(|| action("startWsl", "Start it", true)).into_iter().collect::<Vec<_>>()
+                }));
+                v["notices"] = json!(notices);
                 return v;
             }
             let compacting = app.client.compacting(&key);
@@ -250,14 +258,6 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
             if compacting {
                 notices.push(json!({ "id": "compacting", "text": "Compacting context…" }));
             }
-            notices.extend(
-                app.client
-                    .errors
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| e.key.as_ref() == Some(&key))
-                    .map(|(index, e)| json!({ "id": format!("error:{index}"), "text": e.text })),
-            );
             match header::composer(state, map, &key) {
                 ComposerView::Absent { .. } => {
                     v["showEditor"] = json!(false);
@@ -528,6 +528,10 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
     let can_write = thread.as_ref().is_none_or(|k| app.client.state.may_act(k));
     let id = string(p, "id");
     if name == "composer.action" && let Some(key) = &thread {
+        if let Some(id) = id.strip_prefix("error:").and_then(|id| id.parse().ok()) {
+            app.apply(vec![Action::DismissError(id, Some(key.clone()))]);
+            return Ok(());
+        }
         if id == "startWsl" && app.client.state.stopped_distro(&key.target).is_some() {
             app.ui.dismissed.insert(key.target.clone());
             app.apply(vec![Action::Retry(key.target.clone())]);
@@ -556,7 +560,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
         return Ok(());
     }
     if !can_write
-        && !(name == "composer.action" && (id == "takeOver" || id.starts_with("openRequest:")))
+        && !(name == "composer.action" && (matches!(id, "takeOver" | "dismissNotice") || id.starts_with("openRequest:")))
     {
         return Ok(());
     }
@@ -761,6 +765,39 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
 mod tests {
     use super::*;
     use yaac_core::demo::threads;
+
+    #[test]
+    fn dismissing_a_thread_notice_works_while_its_composer_is_read_only() {
+        use yaac_core::client::ClientError;
+        use yaac_protocol::attach::ConnectionStatus;
+
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.client.open(&key);
+        app.client.pump();
+        let target = app.client.state.targets.iter_mut().find(|target| target.entry.id == key.target).unwrap();
+        target.entry.state.update = Some(yaac_protocol::attach::DaemonUpdate {
+            from: "old".into(), to: "new".into(), phase: yaac_protocol::attach::DaemonUpdatePhase::Updating,
+            forced: false, detail: None,
+        });
+        target.entry.state.status = ConnectionStatus::Offline;
+        app.client.errors.extend([
+            ClientError { id: 1, key: None, text: "Window error".into() },
+            ClientError { id: 2, key: Some(key.clone()), text: "History error".into() },
+        ]);
+        let draft = DraftRef::Thread(key).store_key();
+        let map = AttentionMap::compute(&app.client.state);
+        let before = view(&app, &map, None);
+        assert_eq!(before["showEditor"], false);
+        assert!(before["notices"].as_array().unwrap().iter().any(|n| n["actions"][0]["id"] == "error:2"));
+        for id in ["error:1", "error:2", "error:2"] {
+            command(&mut app, "composer.action", &json!({ "key": draft, "id": id })).unwrap();
+        }
+        assert_eq!(app.client.errors.iter().map(|e| e.id).collect::<Vec<_>>(), [1]);
+        super::super::dispatch(&mut app, &ctx, &mut None, "shell.dismissStatus", &json!({ "id": 1 })).unwrap();
+        assert!(app.client.errors.is_empty());
+    }
 
     #[test]
     fn composer_markdown_ranges_use_utf16_offsets() {

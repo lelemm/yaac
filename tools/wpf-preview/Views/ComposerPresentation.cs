@@ -387,6 +387,13 @@ public partial class ComposerView
         public void Update(JsonElement model)
         {
             var title = Field(model, kind == RowKind.Notice ? "text" : "label").String();
+            if (kind == RowKind.Notice)
+            {
+                if (Field(model, "error").ComposerFlag())
+                    label.SetResourceReference(TextBlock.ForegroundProperty, "YaacFailure");
+                else
+                    label.ClearValue(TextBlock.ForegroundProperty);
+            }
             label.Text = kind is RowKind.Queue or RowKind.Command ? title.Split(['\r', '\n'], 2)[0] : title;
             label.ToolTip = title.Length > 0 ? title : null;
             var busy = Field(model, "busy").ComposerFlag();

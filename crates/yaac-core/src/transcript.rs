@@ -435,14 +435,16 @@ impl Transcript {
             remaining -= group.len();
             dropping.extend(group);
         }
+        // Optimistic sends have local IDs. Only target items can anchor the next page.
+        let can_anchor = |item: &&Item| !crate::sending::is_echo(&item.id);
         if !newest && !dropping.is_empty()
             && self.older_cursor.as_deref().is_none_or(|c| c.starts_with("history:"))
+            && let Some(anchor) = dropping.last().and_then(|i| self.items[i + 1..].iter().find(can_anchor))
         {
-            self.older_cursor = dropping.last().and_then(|i| self.items.get(i + 1))
-                .map(|item| format!("history:{}", item.id));
+            self.older_cursor = Some(format!("history:{}", anchor.id));
         }
         if newest && self.prompts.is_some()
-            && let Some(anchor) = dropping.first().and_then(|i| i.checked_sub(1)).and_then(|i| self.items.get(i))
+            && let Some(anchor) = dropping.first().and_then(|&i| self.items[..i].iter().rev().find(can_anchor))
         {
             self.newer_cursor = Some(format!("history-newer:{}", anchor.id));
         }

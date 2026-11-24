@@ -63,14 +63,19 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key
         .show(ui, |ui| {
             if let Some(width) = composer_column(ui, app.ui.chat_width, &p, |ui| {
                 crate::composer::running_commands(ui, app, key, actions);
+                for error in app.client.errors.iter().filter(|e| e.key.as_ref() == Some(key)) {
+                    crate::shell::error_notice(ui, app, error, actions);
+                }
                 match app.client.state.stopped_distro(&key.target) {
                     // A stopped WSL distro: the composer and control row give way to one line (D96).
-                    Some(distro) => {
+                    Some(_) => {
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
                             widgets::icon(ui, 16.0, |pa, c, d| icons::warning(pa, c, d, p.needs, p.bg));
-                            ui.label(format!("{distro} is not running ·"));
+                            if let Some(notice) = yaac_core::header::composer_connection_notice(&app.client.state, &key.target) {
+                                ui.label(notice);
+                            }
                             if widgets::link(ui, &p, "Start it", theme::ui(size::UI)).clicked() {
                                 actions.push(Action::Retry(key.target.clone()));
                             }

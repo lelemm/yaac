@@ -125,6 +125,33 @@ fn trimming_history_keeps_boundary_turns_whole() {
 }
 
 #[test]
+fn trimming_history_skips_pending_sends_when_choosing_cursors() {
+    for newer in [false, true] {
+        let mut t = Transcript::new();
+        t.prompts = Some(vec![]);
+        t.history_away = newer;
+        let boundary = if newer { 359 } else { 1 };
+        for i in 0..360 {
+            if i == boundary {
+                t.add_pending(yaac_core::sending::Pending::new(
+                    "send".into(), vec![], Default::default(), "turn/start", serde_json::Value::Null,
+                ), 1);
+            }
+            let id = format!("row-{i}");
+            t.upsert(Item { turn_id: TurnId::new(&id), ..agent(&id, "", ItemStatus::Completed) }, 1);
+        }
+        t.trim_history();
+        assert_eq!(t.items().len(), 360);
+        assert_eq!(t.pending().len(), 1);
+        if newer {
+            assert_eq!(t.newer_cursor.as_deref(), Some("history-newer:row-358"));
+        } else {
+            assert_eq!(t.older_cursor.as_deref(), Some("history:row-1"));
+        }
+    }
+}
+
+#[test]
 fn reset_pages_then_replay_after_reconnect_through_the_client() {
     let (mut c, hub) = boot();
     let key = threads::billing();

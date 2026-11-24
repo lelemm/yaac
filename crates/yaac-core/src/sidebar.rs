@@ -301,6 +301,9 @@ fn connection(state: &AppState, target: &TargetId) -> (Option<(Mark, String)>, b
     let Some(t) = state.target(target) else { return (None, false, false) };
     let st = &t.entry.state;
     let older = st.daemon.as_ref().is_some_and(|d| d.older);
+    if t.daemon_updating() && st.status != ConnectionStatus::Stopped {
+        return (Some((Mark::Running, crate::header::DAEMON_UPDATING.to_owned())), older, false);
+    }
     if t.entry.enabled && st.status == ConnectionStatus::Connected {
         return (None, older, false);
     }

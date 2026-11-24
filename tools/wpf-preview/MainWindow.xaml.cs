@@ -136,7 +136,7 @@ public partial class MainWindow : Window
         }
         catch (Exception error) when (!closed)
         {
-            Status.Text = $"Controller disconnected · {error.Message}";
+            SetLocalStatus($"Controller disconnected · {error.Message}");
             Workspace.IsEnabled = false;
             SettingsPane.IsEnabled = false;
         }
@@ -163,7 +163,7 @@ public partial class MainWindow : Window
         if (frame.TryGetProperty("error", out var error))
         {
             if (dialog is { IsVisible: true }) MessageBox.Show(dialog, error.GetString(), "YAAC");
-            else Status.Text = error.GetString();
+            else SetLocalStatus(error.GetString());
         }
         if (frame.TryGetProperty("copy", out var copy)) Send("shell.copy", copy.GetString());
         if (!frame.TryGetProperty("views", out var views)) return;
@@ -231,7 +231,11 @@ public partial class MainWindow : Window
         tray?.Update(count, Text(shell, "trayTooltip"));
         SidebarPane.NeedsButton.Content = RailNeeds.Content = $"!  {count}";
         SidebarPane.NeedsButton.Visibility = RailNeeds.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
-        Status.Text = Text(shell, "status");
+        var status = shell.Value("status");
+        var id = status.Value("id");
+        statusId = id.ValueKind == JsonValueKind.Number ? id.GetUInt64() : null;
+        controllerStatus = Text(status, "text");
+        RenderStatusNotice();
         if (shell.TryGetProperty("stoppedWsl", out var stoppedWsl)) RenderWslNotifications(stoppedWsl);
         if (shell.TryGetProperty("commander", out var commands)) RenderCommander(commands);
         Palette.SetTheme(Text(shell, "theme"));
@@ -251,12 +255,41 @@ public partial class MainWindow : Window
             if (payload is string text)
             {
                 try { Clipboard.SetText(text); }
-                catch (System.Runtime.InteropServices.ExternalException) { Status.Text = "Clipboard is busy."; }
+                catch (System.Runtime.InteropServices.ExternalException) { SetLocalStatus("Clipboard is busy."); }
             }
             return;
         }
 
         controller?.Send(command, payload);
+    }
+
+    private ulong? statusId;
+    private string? controllerStatus;
+    private string? localStatus;
+
+    private void SetLocalStatus(string? text)
+    {
+        localStatus = text;
+        RenderStatusNotice();
+    }
+
+    private void RenderStatusNotice()
+    {
+        Status.Text = localStatus ?? controllerStatus ?? "";
+        StatusNotice.Visibility = Status.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void DismissStatusClicked(object sender, RoutedEventArgs args)
+    {
+        if (localStatus is not null)
+            localStatus = null;
+        else if (statusId is { } id)
+        {
+            statusId = null;
+            controllerStatus = null;
+            Send("shell.dismissStatus", new { id });
+        }
+        RenderStatusNotice();
     }
 
     private void RenderHistory(Button button, JsonElement shell, string key)

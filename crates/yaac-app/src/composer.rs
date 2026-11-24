@@ -479,9 +479,6 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
         });
         ui.add_space(4.0);
     }
-    for e in app.client.errors.iter().filter(|e| e.key.as_ref() == Some(key)) {
-        ui.label(egui::RichText::new(&e.text).font(theme::ui(size::SMALL)).color(p.failed));
-    }
     let compacting = app.client.compacting(key);
     if compacting {
         ui.label(widgets::secondary("Compacting context…", &p));

@@ -299,6 +299,9 @@ pub fn chips(draft: Option<&Draft>, support: &Support, target: Option<&yaac_prot
 
 /// The composer of a started thread.
 pub fn composer(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> ComposerView {
+    if let Some(holder_line) = composer_connection_notice(state, &key.target) {
+        return ComposerView::Absent { holder_line };
+    }
     if let Some(why) = state.store_away(key) {
         return ComposerView::Absent { holder_line: why };
     }
@@ -338,6 +341,28 @@ pub fn composer(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Compos
         ready,
         blocked,
     }
+}
+
+/// The composer and sidebar label during a daemon handover.
+pub const DAEMON_UPDATING: &str = "Updating YAAC daemon…";
+
+/// Why the composer is waiting for a target connection.
+pub fn composer_connection_notice(state: &AppState, id: &yaac_protocol::TargetId) -> Option<String> {
+    let target = state.target(id)?;
+    if let Some(distro) = state.stopped_distro(id) {
+        return Some(if target.daemon_updating() {
+            format!("Start {distro} to finish updating the YAAC daemon.")
+        } else {
+            format!("{distro} is not running.")
+        });
+    }
+    if target.daemon_updating() {
+        return Some(DAEMON_UPDATING.to_owned());
+    }
+    state.wsl_disconnected(id).then(|| match target.entry.state.status {
+        ConnectionStatus::Connecting | ConnectionStatus::Offline => format!("Reconnecting to {}…", target.entry.name),
+        _ => target.entry.state.detail.clone().unwrap_or_else(|| format!("{} is unavailable.", target.entry.name)),
+    })
 }
 
 /// A receipt in words (docs/07-ui.md: "A receipt says what it means").

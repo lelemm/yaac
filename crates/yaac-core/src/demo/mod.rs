@@ -1778,7 +1778,7 @@ impl Inner {
             Scene::Notices => {
                 self.target_state("devbox", ConnectionStatus::Connected, None, None, Some("0.7"));
                 self.target_state("staging", ConnectionStatus::Offline, Some("retrying in 20s"), None, None);
-                self.target_state("wsl-ubuntu", ConnectionStatus::Disabled, Some("not running"), Some(true), None);
+                self.target_state("wsl-ubuntu", ConnectionStatus::Stopped, Some("not running"), Some(true), None);
                 let fix = k(FIX);
                 let mut first = self.fleet.threads[&fix].items[0].clone();
                 if let ItemBody::UserMessage(u) = &mut first.body {

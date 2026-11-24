@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use yaac_protocol::attach::{ConnectionStatus, TargetEntry, TargetStateParams, TargetTransport};
+use yaac_protocol::attach::{ConnectionStatus, DaemonUpdatePhase, TargetEntry, TargetStateParams, TargetTransport};
 use yaac_protocol::{
     Address, ClientId, Control, EffortId, InstanceId, ItemId, MeshBudgetResult, ModeId, ModelId,
     FsListResult, ProviderDescriptor, ProviderInstanceConfig, SyncToken,
@@ -59,6 +59,11 @@ impl TargetRecord {
     /// Whether the target is connected now.
     pub fn connected(&self) -> bool {
         self.entry.state.status == ConnectionStatus::Connected
+    }
+
+    /// Whether the hub is restarting this target's daemon for an update.
+    pub fn daemon_updating(&self) -> bool {
+        self.entry.enabled && self.entry.state.update.as_ref().is_some_and(|u| u.phase == DaemonUpdatePhase::Updating)
     }
 
     /// "SSH", "WSL", or nothing for the local machine — for the origin row.
@@ -464,7 +469,7 @@ impl AppState {
 
     /// Whether this window may send, steer, and answer on a thread.
     pub fn may_act(&self, key: &ThreadKey) -> bool {
-        self.control(key).may_act() && self.stopped_distro(&key.target).is_none() && self.store_away(key).is_none()
+        self.control(key).may_act() && !self.target_temporarily_unavailable(&key.target) && self.store_away(key).is_none()
     }
 
     /// Why the thread cannot be used while its instance leads to another store (P10, P300),
@@ -482,21 +487,28 @@ impl AppState {
             (Some(_), Some(parent)) => match self.key_of(parent) {
                 Some(p) => self.may_act(&p),
                 // Its parent is not listed here: nothing says another writer holds it.
-                None => self.stopped_distro(&key.target).is_none(),
+                None => !self.target_temporarily_unavailable(&key.target),
             },
             _ => self.may_act(key),
         }
     }
 
-    /// A WSL distro that is down (D96): its name, while the target is a WSL connection that is
-    /// turned on but not connected. Its threads stay listed and readable from the cache, but
-    /// every state-changing action on them is unavailable until it is started again — which
-    /// asks the hub to connect (booting the distro); when the connection comes up the threads
-    /// are responsive again by themselves.
+    /// Whether a WSL target is enabled and has no working daemon connection.
+    pub fn wsl_disconnected(&self, target: &TargetId) -> bool {
+        self.target(target).is_some_and(|t| {
+            t.entry.enabled && !t.connected() && matches!(t.entry.transport, TargetTransport::Wsl(_))
+        })
+    }
+
+    fn target_temporarily_unavailable(&self, target: &TargetId) -> bool {
+        self.wsl_disconnected(target) || self.target(target).is_some_and(TargetRecord::daemon_updating)
+    }
+
+    /// The distro name when the hub has confirmed that an enabled WSL target is stopped (D96).
     pub fn stopped_distro(&self, target: &TargetId) -> Option<String> {
         let t = self.target(target)?;
         match &t.entry.transport {
-            TargetTransport::Wsl(w) if t.entry.enabled && t.entry.state.status != ConnectionStatus::Connected => Some(w.distro.clone()),
+            TargetTransport::Wsl(w) if t.entry.enabled && t.entry.state.status == ConnectionStatus::Stopped => Some(w.distro.clone()),
             _ => None,
         }
     }

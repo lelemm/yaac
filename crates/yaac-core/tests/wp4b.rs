@@ -594,7 +594,10 @@ fn thought_has_a_duration_from_the_item_times() {
 }
 
 #[test]
-fn a_stopped_wsl_distro_disables_its_threads_until_started() {
+fn a_wsl_daemon_update_preserves_cached_threads_and_only_offers_start_when_stopped() {
+    use yaac_core::header::{composer, ComposerView, DAEMON_UPDATING};
+    use yaac_protocol::attach::{ConnectionStatus, DaemonUpdate, DaemonUpdatePhase};
+
     let (mut c, hub) = boot();
     hub.play(yaac_core::demo::Scene::Notices);
     settle(&mut c, &hub);
@@ -607,6 +610,29 @@ fn a_stopped_wsl_distro_disables_its_threads_until_started() {
     c.state.threads.insert(key.clone(), rec);
     assert!(!c.state.may_act(&key));
     assert!(c.state.may_act(&threads::fix()), "other machines are not affected");
+    let target = c.state.targets.iter_mut().find(|t| t.entry.id == wsl).unwrap();
+    let stopped = target.entry.state.clone();
+    target.entry.state.status = ConnectionStatus::Offline;
+    target.entry.state.update = Some(DaemonUpdate {
+        from: "0.1.0+1018".into(),
+        to: "0.1.0+1019".into(),
+        phase: DaemonUpdatePhase::Updating,
+        forced: false,
+        detail: None,
+    });
+    assert_eq!(c.state.stopped_distro(&wsl), None);
+    assert!(!c.state.may_act(&key));
+    let map = yaac_core::attention::AttentionMap::compute(&c.state);
+    assert_eq!(composer(&c.state, &map, &key), ComposerView::Absent { holder_line: DAEMON_UPDATING.into() });
+
+    let target = c.state.targets.iter_mut().find(|t| t.entry.id == wsl).unwrap();
+    target.entry.state.status = ConnectionStatus::Stopped;
+    assert_eq!(c.state.stopped_distro(&wsl).as_deref(), Some("Ubuntu"));
+    assert_eq!(
+        composer(&c.state, &map, &key),
+        ComposerView::Absent { holder_line: "Start Ubuntu to finish updating the YAAC daemon.".into() },
+    );
+    c.state.targets.iter_mut().find(|t| t.entry.id == wsl).unwrap().entry.state = stopped;
     // Start it: the hub connects (booting the distro); the threads come back by themselves.
     c.retry_target(&wsl);
     settle(&mut c, &hub);

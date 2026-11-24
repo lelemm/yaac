@@ -265,9 +265,13 @@
       <Button Style="{StaticResource CaptionButton}" Content="&#xEAB8;" Click="CloseClicked"
               AutomationProperties.Name="Close" ToolTip="Close" />
     </StackPanel>
-    <TextBlock x:Name="Status" Panel.ZIndex="4" VerticalAlignment="Bottom" HorizontalAlignment="Center"
-               Background="{DynamicResource YaacCanvas}" TextTrimming="CharacterEllipsis"
-               Foreground="{DynamicResource YaacFailure}" Margin="5" />
+    <DockPanel x:Name="StatusNotice" Panel.ZIndex="4" VerticalAlignment="Bottom" HorizontalAlignment="Center"
+               Background="{DynamicResource YaacCanvas}" Margin="5" MaxWidth="640" Visibility="Collapsed">
+      <Button DockPanel.Dock="Right" Style="{StaticResource YaacQuietButton}" Content="&#x00D7;" Padding="6,1"
+              Click="DismissStatusClicked" AutomationProperties.Name="Dismiss notice" ToolTip="Dismiss notice" />
+      <TextBlock x:Name="Status" Foreground="{DynamicResource YaacFailure}" TextWrapping="Wrap"
+                 VerticalAlignment="Center" Margin="5,1" />
+    </DockPanel>
     <StackPanel x:Name="WslNotifications" Panel.ZIndex="4" HorizontalAlignment="Right"
                 VerticalAlignment="Bottom" Margin="16" MaxWidth="330" />
     <Grid x:Name="CommanderOverlay" Panel.ZIndex="5" Visibility="Collapsed"

@@ -484,6 +484,7 @@ pub(crate) enum Action {
     EditSend(ThreadKey, ItemId),
     RetrySend(ThreadKey, ItemId),
     DismissSend(ThreadKey, ItemId),
+    DismissError(u64, Option<ThreadKey>),
     Stop(ThreadKey),
     StartDraft(u64),
     Compact(ThreadKey),
@@ -1191,6 +1192,7 @@ impl YaacApp {
                 Action::DismissSend(k, item) => {
                     self.client.dismiss_send(&k, &item);
                 }
+                Action::DismissError(id, key) => self.client.dismiss_error(id, key.as_ref()),
                 Action::Stop(k) => self.client.interrupt(&k),
                 Action::Compact(k) => {
                     if self.client.compact(&k) {
@@ -1841,6 +1843,7 @@ impl eframe::App for YaacApp {
         } else {
             crate::shell::show(ui, self, &map, now, &mut actions, frame);
         }
+        crate::shell::window_error_notice(&ctx, self, window.width(), &mut actions);
         crate::titlebar::buttons(ui, window, &p);
         match crate::titlebar::update(ui, window, &p, &self.updater) {
             Some(crate::updater::CaptionAction::Download) => self.updater.download(),

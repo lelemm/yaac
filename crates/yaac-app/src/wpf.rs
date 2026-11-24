@@ -448,10 +448,10 @@ fn view(
         "canBack": !back.is_empty(), "canForward": !forward.is_empty(),
         "back": back, "forward": forward,
         "needs": needs, "trayTooltip": yaac_core::display::tray_tooltip(needs),
-        "status": app.client.errors.last().map(|e| e.text.as_str()),
+        "status": app.client.errors.iter().rfind(|e| e.key.is_none()).map(|e| json!({ "id": e.id, "text": e.text })),
         "stoppedWsl": if app.ui.settings { vec![] } else {
             crate::shell::stopped_wsl_notifications(app).into_iter()
-                .map(|(target, distro)| json!({ "id": target, "label": format!("WSL distro {distro} is not running.") })).collect::<Vec<_>>()
+                .map(|(target, notice)| json!({ "id": target, "label": notice })).collect::<Vec<_>>()
         },
         "theme": theme_name(app.ui.theme),
         "fontScale": app.ui.font_size / crate::theme::size::UI,
@@ -543,6 +543,7 @@ fn dispatch(
         "sidebar.new" | "shell.new" => Some(Action::NewThread),
         "settings.start" => Some(Action::StartFirstThread),
         "shell.settings" => Some(Action::Settings(true)),
+        "shell.dismissStatus" => payload["id"].as_u64().map(|id| Action::DismissError(id, None)),
         "shell.startWsl" => {
             let id = yaac_protocol::TargetId::from(string(payload, "id"));
             if app.client.state.stopped_distro(&id).is_some() {

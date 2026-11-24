@@ -186,6 +186,8 @@ mod wsl;
 /// A problem to show the user (as a notice, never a dialog).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientError {
+    /// Stable for this notice's lifetime, even when other notices are dismissed.
+    pub id: u64,
     /// What it concerns.
     pub key: Option<ThreadKey>,
     /// Text.
@@ -205,8 +207,9 @@ pub struct Client {
     run: String,
     build: String,
     warm: Vec<ThreadKey>,
-    /// Errors not yet shown.
+    /// Errors that have not been dismissed.
     pub errors: Vec<ClientError>,
+    next_error: u64,
     /// The composer’s most recent file lookup.
     pub composer_files: Option<ComposerFiles>,
     /// Bounded image reads returned by the hub.
@@ -280,6 +283,7 @@ impl Client {
             build: build.into(),
             warm: Vec::new(),
             errors: Vec::new(),
+            next_error: 0,
             composer_files: None,
             image_chunks: Vec::new(),
             command_log: None,
@@ -392,7 +396,17 @@ impl Client {
     }
 
     fn error(&mut self, key: Option<ThreadKey>, text: impl Into<String>) {
-        self.errors.push(ClientError { key, text: text.into() });
+        let text = text.into();
+        if self.errors.iter().any(|error| error.key == key && error.text == text) {
+            return;
+        }
+        self.next_error += 1;
+        self.errors.push(ClientError { id: self.next_error, key, text });
+    }
+
+    /// Dismiss one local notice. Stale clicks cannot remove another notice.
+    pub fn dismiss_error(&mut self, id: u64, key: Option<&ThreadKey>) {
+        self.errors.retain(|error| error.id != id || error.key.as_ref() != key);
     }
 
     // ── incoming ────────────────────────────────────────────────────────────────────────
@@ -1001,7 +1015,18 @@ impl Client {
                 };
                 if edge.as_deref() != Some(&cursor) || !std::mem::take(loading) { return; }
                 *edge = None;
-                self.error(Some(key), format!("Could not load this page of messages: {}", error.message));
+                let stale_anchor = matches!(
+                    (&error.code, error.message.as_str()),
+                    (ErrorCode::InvalidParams, "this message is no longer in the thread" | "The thread changed while loading history.")
+                        | (ErrorCode::InternalError, "the message is not cached")
+                );
+                if stale_anchor {
+                    // The cursor belongs to the previous view of the history. Refresh it once
+                    // from the live end, without asking for the same page again.
+                    self.latest_history(&key);
+                } else {
+                    self.error(Some(key), format!("Could not load this page of messages: {}", error.message));
+                }
             }
             Call::Subscribe(key) | Call::Read(key) | Call::ReadAround(key, _) => {
                 let rev = self.state.next_stamp();
@@ -2429,6 +2454,40 @@ mod history_tests {
     use super::*;
     use crate::transcript::Transcript;
     use yaac_protocol::{Epoch, JournalPosition, Seq};
+
+    #[test]
+    fn a_stale_page_cursor_refreshes_the_history_without_showing_an_error() {
+        for cursor in ["history:missing", "history-newer:missing"] {
+            let mut client = Client::new(Box::new(crate::link::DetachedLink), "test", ClientId::new("window"));
+            client.pending.clear();
+            let key = ThreadKey::new(TargetId::new("local"), ThreadId::new("chat"));
+            let message = |id: &str| json!({
+                "id": id, "turnId": "turn", "status": "completed", "kind": "agentMessage", "text": id
+            });
+            let mut transcript = Transcript::new();
+            transcript.replace_all(vec![serde_json::from_value(message("missing")).unwrap()], 1);
+            let newer = cursor.starts_with("history-newer:");
+            if newer {
+                transcript.newer_cursor = Some(cursor.into());
+            } else {
+                transcript.older_cursor = Some(cursor.into());
+            }
+            client.state.transcripts.insert(key.clone(), transcript);
+            if newer { client.newer_history(&key); } else { client.older_history(&key); }
+            let read = client.pending.drain().next().unwrap().1;
+            client.on_error(read, &ErrorObject::new(ErrorCode::InvalidParams, "this message is no longer in the thread"));
+            assert!(client.errors.is_empty());
+            assert!(client.state.transcripts[&key].item(&ItemId::new("missing")).is_some());
+            let refresh = client.pending.drain().next().unwrap().1;
+            assert!(matches!(&refresh, Call::Read(k) if k == &key));
+            client.on_result(refresh, json!({
+                "items": [message("latest")], "position": { "epoch": 3, "seq": 1 }, "prompts": [],
+            }));
+            assert!(client.state.transcripts[&key].item(&ItemId::new("latest")).is_some());
+            assert!(client.errors.is_empty());
+            assert!(client.pending.is_empty());
+        }
+    }
 
     #[test]
     fn an_older_turn_stays_out_of_the_visible_window_until_its_last_chunk_arrives() {
