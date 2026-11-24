@@ -25,7 +25,21 @@ if ! (printf '%s  %s\n' "$sum" "$archive" | sha256sum --status -c) 2>/dev/null; 
 fi
 tmp=$(mktemp -d "$(dirname "$dest")/cef-stage.XXXXXXXX")
 trap 'rm -rf "$tmp"' EXIT
-tar -xjf "$archive" -C "$tmp" "$name/Release" "$name/Resources" "$name/LICENSE.txt"
+# Some bzip2 builds fail at random on this 330 MB archive ("I/O or other error … Success")
+# although its checksum is right; Python's decoder is used when tar's bzip2 fails.
+if ! tar -xjf "$archive" -C "$tmp" "$name/Release" "$name/Resources" "$name/LICENSE.txt"; then
+  echo "tar/bzip2 failed; extracting with Python" >&2
+  rm -rf "${tmp:?}/$name"
+  python3 - "$archive" "$tmp" "$name" <<'PY'
+import sys, tarfile
+archive, out, name = sys.argv[1:]
+keep = (f"{name}/Release", f"{name}/Resources", f"{name}/LICENSE.txt")
+with tarfile.open(archive, "r|bz2") as t:
+    for m in t:
+        if m.name in keep or m.name.startswith((keep[0] + "/", keep[1] + "/")):
+            t.extract(m, out, filter="tar")
+PY
+fi
 mv "$tmp/$name/Release" "$tmp/runtime"
 cp -R "$tmp/$name/Resources/." "$tmp/runtime/"
 cp "$tmp/$name/LICENSE.txt" "$tmp/runtime/LICENSE-CEF.txt"
