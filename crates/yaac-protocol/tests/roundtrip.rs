@@ -204,13 +204,16 @@ fn merge(parts: Vec<Value>) -> Value {
     out
 }
 
-/// Removes `null` members (an absent optional and a `null` one mean the same) and the
-/// injected unknown fields (which must be ignored).
+/// Removes explicit representations of absent fields and the injected unknown fields.
 fn normalise(value: &Value) -> Value {
     match value {
         Value::Object(map) => Value::Object(
             map.iter()
-                .filter(|(key, v)| !v.is_null() && key.as_str() != "zzIgnoredField")
+                .filter(|(key, v)| {
+                    let empty_tool_images = key.as_str() == "images" && v.as_array().is_some_and(Vec::is_empty)
+                        && map.get("kind").and_then(Value::as_str) == Some("toolCall");
+                    !v.is_null() && key.as_str() != "zzIgnoredField" && !empty_tool_images
+                })
                 .map(|(key, v)| (key.clone(), normalise(v)))
                 .collect(),
         ),
