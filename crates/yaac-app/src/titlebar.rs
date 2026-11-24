@@ -120,7 +120,9 @@ pub(crate) fn update(ui: &mut egui::Ui, full: Rect, p: &Palette, u: &crate::upda
         None => {
             let track = Rect::from_center_size(c, vec2(w - 16.0, 4.0));
             ui.painter().rect_filled(track, 2.0, p.border);
-            let fill = Rect::from_min_size(track.min, vec2(track.width() * caption.progress as f32, track.height()));
+            #[allow(clippy::cast_possible_truncation, reason = "a fraction in 0..=1")]
+            let progress = caption.progress as f32;
+            let fill = Rect::from_min_size(track.min, vec2(track.width() * progress, track.height()));
             ui.painter().rect_filled(fill, 2.0, p.text2);
         }
     }

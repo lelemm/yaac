@@ -65,8 +65,17 @@ internal sealed class TranscriptSelection
         rows.Unloaded += (_, _) => Clear();
     }
 
+    // Mouse events from a context menu or other popup over the transcript route through the
+    // transcript as well (a popup's events reach its placement target). They are not presses on
+    // the text: they must neither clear nor restart the selection, or the menu's Copy finds
+    // nothing to copy.
+    private bool FromTranscript(RoutedEventArgs e) => e.OriginalSource is DependencyObject source
+        && PresentationSource.FromDependencyObject(source) is { } origin
+        && ReferenceEquals(origin, PresentationSource.FromVisual(rows));
+
     private void MouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (!FromTranscript(e)) return;
         if (e.ClickCount != 1 || Keyboard.Modifiers != ModifierKeys.None)
         {
             Clear();
@@ -99,6 +108,7 @@ internal sealed class TranscriptSelection
     private void MouseMove(object sender, MouseEventArgs e)
     {
         if (anchor is null || e.LeftButton != MouseButtonState.Pressed || viewport() is not { } area) return;
+        if (!dragging && !FromTranscript(e)) return;
         var point = e.GetPosition(area);
         if (!dragging)
         {
@@ -121,6 +131,7 @@ internal sealed class TranscriptSelection
     {
         if (!dragging)
         {
+            if (!FromTranscript(e)) return;
             anchor = null;
             pressedEditor = null;
             return;

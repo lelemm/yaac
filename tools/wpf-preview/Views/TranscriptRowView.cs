@@ -73,10 +73,17 @@ public sealed class TranscriptRowView : UserControl
         KeyboardNavigation.SetTabNavigation(this, KeyboardNavigationMode.Continue);
 
         var menu = new ContextMenu();
+        // Copy the transcript selection (handled by TranscriptSelection), shown while there is one.
+        var selection = new MenuItem { Header = "Copy", Command = ApplicationCommands.Copy, CommandTarget = plate };
         var copy = new MenuItem { Header = "Copy message" };
         copy.Click += (_, _) => TranscriptText.Copy(CopyMessage());
+        menu.Items.Add(selection);
         menu.Items.Add(copy);
-        menu.Opened += (_, _) => copy.IsEnabled = CopyMessage() is not null;
+        menu.Opened += (_, _) =>
+        {
+            selection.Visibility = ApplicationCommands.Copy.CanExecute(null, plate) ? Visibility.Visible : Visibility.Collapsed;
+            copy.IsEnabled = CopyMessage() is not null;
+        };
         plate.ContextMenu = menu;
 
         MouseEnter += (_, _) => ShowStamp();

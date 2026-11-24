@@ -1691,7 +1691,7 @@ fn call_detail(
 fn tool_images(ui: &mut egui::Ui, images: &mut crate::images::Images, key: &ThreadKey, entries: &[yaac_protocol::ToolImage], actions: &mut Vec<Action>) {
     for (index, image) in entries.iter().enumerate() {
         let source = crate::images::ImageSource::Target(key.target.clone(), image.upload_id.clone());
-        if ui.push_id(index, |ui| images.inline(ui, source.clone(), &image.name)).inner {
+        if ui.push_id(index, |ui| images.inline(ui, &source, &image.name)).inner {
             actions.push(Action::OpenImage(source, image.name.clone()));
         }
     }
@@ -1959,6 +1959,62 @@ mod tests {
         app.ui.expansion.toggle_pasted(&key, &"um1".into(), 1);
         app.ui.expansion.toggle_context(&key, &"um1".into());
         assert!((draw(&mut app, &ctx)["um1"] - closed).abs() < 0.5);
+    }
+
+    #[test]
+    fn the_menu_copy_copies_the_selection() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        if let Some(h) = &app.demo {
+            h.play(Scene::HarnessMarkup);
+            h.drain();
+        }
+        app.pump_demo();
+        let key = threads::users();
+        app.open(&key, None);
+        let frame = |app: &mut YaacApp, events: Vec<egui::Event>| {
+            let mut actions = Vec::new();
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 4000.0))), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                let map = AttentionMap::compute(&app.client.state);
+                transcript(ui, app, &map, &key, 0, &mut actions);
+            });
+            out.textures_delta.clear();
+            out.platform_output.commands.iter().find_map(|c| match c {
+                egui::OutputCommand::CopyText(s) => Some(s.clone()),
+                _ => None,
+            })
+        };
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        let t = &app.client.state.transcripts[&key];
+        let index = t.items().iter().position(|i| i.id.as_str() == "um1").expect("um1");
+        let unit = Unit::new(index, 0);
+        let r = app.ui.textsel.drawn(unit).expect("um1 is drawn");
+        let button = |pos, button, pressed| egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE };
+        // Drag across part of the first line.
+        let (a, b) = (pos2(r.left() + 1.0, r.top() + 6.0), pos2(r.left() + 120.0, r.top() + 6.0));
+        frame(&mut app, vec![egui::Event::PointerMoved(a), button(a, egui::PointerButton::Primary, true)]);
+        frame(&mut app, vec![egui::Event::PointerMoved(b)]);
+        frame(&mut app, vec![button(b, egui::PointerButton::Primary, false)]);
+        let sel = app.ui.textsel.selection().expect("a selection");
+        let want: String = "The migration drops the last batch.".chars().take(sel.focus.ch).collect();
+        assert!(want.len() > 5, "{want:?}");
+        // Right-click on it: the message menu opens over the transcript.
+        frame(&mut app, vec![button(b, egui::PointerButton::Secondary, true)]);
+        frame(&mut app, vec![button(b, egui::PointerButton::Secondary, false)]);
+        frame(&mut app, Vec::new());
+        assert!(app.ui.textsel.selection().is_some(), "a right-click keeps the selection");
+        let menu = ctx
+            .memory(|m| m.layer_ids().filter(|l| l.order == egui::Order::Foreground).find_map(|l| m.area_rect(l.id)))
+            .expect("the menu is open");
+        // Its first row is "Copy".
+        let at = pos2(menu.center().x, menu.top() + 4.0 + 13.0);
+        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let pressed = frame(&mut app, vec![button(at, egui::PointerButton::Primary, true)]);
+        let released = frame(&mut app, vec![button(at, egui::PointerButton::Primary, false)]);
+        assert_eq!(pressed.or(released).as_deref(), Some(want.as_str()), "Copy copies the selection");
     }
 
     #[test]
