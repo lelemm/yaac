@@ -102,7 +102,8 @@ internal sealed record AgentsData
     public Brush MarkColor { get; init; } = Palette.Brush("YaacMuted");
     public bool Fast { get; init; }
     public bool Ultrafast { get; init; }
-    public string Traits { get; init; } = "";
+    public bool HasSpeed => Fast || Ultrafast;
+    public bool ReadOnly { get; init; }
     public string Branch { get; init; } = "";
     public string Changes { get; init; } = "";
     public string Ahead { get; init; } = "";
@@ -144,10 +145,13 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, Agents
         if (subagent)
             last = Joined(" · ", origin, last);
 
+        bool fast = row.BoolField("fast");
+        bool ultrafast = row.BoolField("ultrafast");
+        bool readOnly = row.BoolField("readOnly");
         var (symbol, label, brush) = row.StringField("mark") switch
         {
             "needsYou" => ("!", "needs you", Red),
-            "running" => ("", "running", RunningSpinner.Ink(row.BoolField("fast"), row.BoolField("ultrafast"))),
+            "running" => ("", "running", RunningSpinner.Ink(fast, ultrafast)),
             "paused" => ("Ⅱ", "paused", Yellow),
             "waiting" => ("⌛", "waiting", Muted),
             "done" => ("✓", "done", Green),
@@ -166,11 +170,10 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, Agents
 
         var actions = row.Array("actions").Select(AgentsAction.Read).OfType<AgentsAction>().ToArray();
         var git = row.Field("git");
-        var traits = Joined(" ", row.BoolField("readOnly") ? "🔒" : "", row.BoolField("fast") ? "ϟ" : "");
         bool unseen = row.BoolField("unseen");
         string attention = row.StringField("attention");
         string info = Joined(" · ", label, transfer, attention, unseen ? "unread" : "",
-            row.BoolField("readOnly") ? "read-only" : "", row.BoolField("fast") ? "fast" : "");
+            readOnly ? "read-only" : "", ultrafast ? "Ultrafast" : fast ? "Fast" : "");
         var data = new AgentsData
         {
             CanOpen = id != "" && row.BoolField("canOpen"),
@@ -191,9 +194,9 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, Agents
             Mark = symbol,
             MarkLabel = label,
             MarkColor = brush,
-            Fast = row.BoolField("fast"),
-            Ultrafast = row.BoolField("ultrafast"),
-            Traits = traits,
+            Fast = fast,
+            Ultrafast = ultrafast,
+            ReadOnly = readOnly,
             Flow = flow,
             Branch = git.StringField("branch"),
             Changes = git.CountText("changes"),

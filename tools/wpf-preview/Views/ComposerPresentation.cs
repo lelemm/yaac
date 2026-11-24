@@ -165,15 +165,13 @@ public partial class ComposerView
             });
     }
 
-    // The six corners of the egui bolt, in a 10 × 16 design space.
-    private static readonly Geometry BoltOutline = Geometry.Parse("M8,0 L0,8.96 4.8,8.96 2,16 10,7.04 5.2,7.04 Z");
     private static readonly Geometry SpeedChevron = Geometry.Parse("M0,0 L3,3 6,0");
 
-    private static void SetSpeedIcon(OptionButton button, bool menu)
+    private void SetSpeedIcon(OptionButton button, bool menu)
     {
         var bolt = new Path
         {
-            Data = BoltOutline, Stretch = Stretch.Uniform, Width = 12, Height = 18,
+            Data = (Geometry)FindResource("YaacSpeedBolt"), Stretch = Stretch.Uniform, Width = 12, Height = 18,
             StrokeThickness = 1.3, StrokeLineJoin = PenLineJoin.Round,
             VerticalAlignment = VerticalAlignment.Center,
         };
