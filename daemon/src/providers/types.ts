@@ -137,6 +137,8 @@ export interface StartThreadParams {
   model?: ModelId | null;
   effort?: EffortId | null;
   mode?: ModeId | null;
+  /** Once the native IDs are known, await this before sending any input to a mesh worker. */
+  beforeFirstPrompt?: (nativeThreadId: NativeId, sessionId: string) => Promise<void>;
   /**
    * Fast mode for this turn (D125), resolved by yaacd: `true` only when the model has
    * `fastMode`. The provider maps it to its harness's own option.
@@ -381,6 +383,8 @@ export interface HarnessProvider {
    * (a lookup by id that missed the index). Null: the harness has no such conversation.
    */
   lookupThread?(native: NativeId): Promise<NativeThreadInfo | null>;
+  /** Session identity for a known conversation. Providers with this method also honor beforeFirstPrompt. */
+  workerSessionId?(native: NativeId): Promise<string>;
   /** One page of a conversation's stored history, oldest first. */
   readThread(thread: NativeId, page: PageRequest): Promise<ItemPage>;
 

@@ -1582,9 +1582,14 @@ export class ClaudeProvider implements HarnessProvider {
     return turnId;
   }
 
+  async workerSessionId(native: NativeId): Promise<string> {
+    return parseSubagentNative(native)?.sessionId ?? native;
+  }
+
   async startThread(params: StartThreadParams, input: ProviderInput): Promise<{ thread: NativeId; turn: TurnId }> {
     this.requireExecutable();
     const native = randomUUID();
+    if (params.beforeFirstPrompt) await params.beforeFirstPrompt(native, native);
     this.settings[native] = {
       cwd: params.cwd,
       model: params.model ?? null,

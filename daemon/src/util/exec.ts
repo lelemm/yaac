@@ -18,15 +18,17 @@ export interface RunOptions {
   env: NodeJS.ProcessEnv;
   timeoutMs: number;
   maxBytes?: number;
+  input?: string;
+  killSignal?: NodeJS.Signals;
 }
 
 export function run(program: string, args: string[], opts: RunOptions): Promise<RunResult> {
   return new Promise((resolve) => {
     try {
-      execFile(
+      const child = execFile(
         program,
         args,
-        { cwd: opts.cwd, env: opts.env, timeout: opts.timeoutMs, maxBuffer: opts.maxBytes ?? 4 * 1024 * 1024, windowsHide: true, encoding: "utf8" },
+        { cwd: opts.cwd, env: opts.env, timeout: opts.timeoutMs, maxBuffer: opts.maxBytes ?? 4 * 1024 * 1024, killSignal: opts.killSignal ?? "SIGTERM", windowsHide: true, encoding: "utf8" },
         (err, stdout, stderr) => {
           if (!err) {
             resolve({ code: 0, stdout, stderr });
@@ -37,6 +39,11 @@ export function run(program: string, args: string[], opts: RunOptions): Promise<
           else resolve({ code: null, stdout: stdout ?? "", stderr: stderr ?? "", failure: e.killed ? "timeout" : String(e.code ?? e.signal ?? e.message) });
         },
       );
+      if (opts.input !== undefined && child.stdin) {
+        // The helper can close stdin early; its exit status remains authoritative.
+        child.stdin.on("error", () => {});
+        child.stdin.end(opts.input, "utf8");
+      }
     } catch (e) {
       resolve({ code: null, stdout: "", stderr: "", failure: (e as Error).message });
     }

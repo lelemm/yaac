@@ -61,7 +61,7 @@ import type {
 import { canonical } from "../protocol/json.js";
 import { RpcError } from "../protocol/rpc.js";
 import { InputOutcomeUnknown, PeerInputDenied } from "../providers/types.js";
-import type { ExternalControl, HarnessProvider, MeshInputMessage, RaisedRequest, NativeId, NativeThreadInfo, ProviderEvent, ProviderFactory, ProviderInput, TurnOverrides } from "../providers/types.js";
+import type { ExternalControl, HarnessProvider, MeshInputMessage, RaisedRequest, NativeId, NativeThreadInfo, ProviderEvent, ProviderFactory, ProviderInput, StartThreadParams, TurnOverrides } from "../providers/types.js";
 import { CompactionUnconfirmed } from "../providers/types.js";
 import { ProviderRegistry, type Instance } from "../providers/registry.js";
 import { Emitter } from "../util/emitter.js";
@@ -78,6 +78,7 @@ import { GitStatusStore, gitRunner, resolveRepo, type GitRunner } from "./git.js
 import { ProjectStore, matchProject, projectRefFor, userProjectRef } from "./projects.js";
 import { FolderTrust } from "./trust.js";
 import { Limiter } from "../util/exec.js";
+import { loadWorkerLaunchHook, type WorkerLaunchIdentity } from "./worker-launch.js";
 
 export const PAGE_MAX_BYTES = 64 * 1024;
 export const ITEM_READ_MAX = 512 * 1024;
@@ -910,8 +911,7 @@ export class Core {
     return `${instance}\u0000${native}`;
   }
 
-  private createThread(instance: Instance, native: NativeId, fields: Partial<ThreadRecord> & { cwd: string; originKind: ThreadRecord["originKind"] }, fresh: boolean): ThreadRuntime {
-    const storeKey = instance.descriptor.store.key ?? null;
+  private createThread(instance: Instance, native: NativeId, fields: Partial<ThreadRecord> & { cwd: string; originKind: ThreadRecord["originKind"] }, fresh: boolean, storeKey = instance.descriptor.store.key ?? null): ThreadRuntime {
     const id = threadIdFor(instance.config.kind, storeKey, instance.config.id, native);
     const existing = this.threads.get(id);
     if (existing && !existing.deleted) {
@@ -2781,6 +2781,8 @@ export class Core {
     journalItems: Item[];
     mesh: MeshInputMessage[];
     spawnedBy: string;
+    /** Resolved by the local mesh attachment. A caller on another target has no local runtime. */
+    parent?: ThreadRuntime | null;
     agents?: ThreadRecord["agents"] | null;
   }): Promise<{ threadId: string; turnId: TurnId }> {
     const { instance, provider } = this.registry.usable(p.instance);
@@ -2794,8 +2796,17 @@ export class Core {
     const key = instance.config.id;
     this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
     let started: { thread: NativeId; turn: TurnId };
+    let launchStoreKey: string | null | undefined;
     try {
-      started = await provider.startThread({ cwd: p.cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null }, input);
+      launchStoreKey = instance.descriptor.store.key ?? null;
+      const beforeFirstPrompt = p.parent
+        ? await this.workerLaunchCallback(p.parent, instance, provider, launchStoreKey)
+        : undefined;
+      if (!beforeFirstPrompt) launchStoreKey = undefined;
+      started = await provider.startThread({
+        cwd: p.cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null,
+        ...(beforeFirstPrompt ? { beforeFirstPrompt } : {}),
+      }, input);
     } catch (e) {
       this.finishPendingStart(key);
       throw rpc("provider_unavailable", `${instance.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
@@ -2814,11 +2825,39 @@ export class Core {
         ...(p.agents ? { agents: p.agents } : {}),
       },
       true,
+      launchStoreKey,
     );
     this.turnBegan(rt, started.turn, "mesh", p.parts, null, p.journalItems);
     this.trustNotice(rt, trusted);
     this.finishPendingStart(key);
     return { threadId: rt.id, turnId: started.turn };
+  }
+
+  private async workerLaunchCallback(
+    parent: ThreadRuntime, instance: Instance, provider: HarnessProvider, storeKey: string | null,
+  ): Promise<StartThreadParams["beforeFirstPrompt"]> {
+    const hook = loadWorkerLaunchHook(this.opts.home, this.opts.env);
+    if (!hook) return undefined;
+    const source = this.provider(parent);
+    if (!source.workerSessionId || !provider.workerSessionId) {
+      throw new Error("The configured worker launch hook needs session identities from both providers.");
+    }
+    const parentSession = await source.workerSessionId(parent.record.native);
+    const sourceRef: WorkerLaunchIdentity = {
+      harness: parent.record.kind, instanceId: parent.record.instance,
+      yaacThreadId: parent.id, nativeThreadId: parent.record.native,
+      ...(parentSession === parent.record.native ? {} : { sessionId: parentSession }),
+    };
+    return (nativeThreadId, sessionId) => hook({
+      event: "worker.beforeFirstPrompt",
+      parent: sourceRef,
+      child: {
+        harness: instance.config.kind, instanceId: instance.config.id,
+        yaacThreadId: threadIdFor(instance.config.kind, storeKey, instance.config.id, nativeThreadId),
+        nativeThreadId,
+        ...(sessionId === nativeThreadId ? {} : { sessionId }),
+      },
+    });
   }
 
   /** Interrupts a thread's running turn on an agent's behalf (`stop_thread`, own workers only). */

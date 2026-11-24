@@ -393,8 +393,13 @@ export class FakeProvider implements HarnessProvider {
     };
   }
 
+  async workerSessionId(native: NativeId): Promise<string> {
+    return native;
+  }
+
   async startThread(params: StartThreadParams, input: ProviderInput): Promise<{ thread: NativeId; turn: TurnId }> {
     const native = this.next("fk-");
+    if (params.beforeFirstPrompt) await params.beforeFirstPrompt(native, native);
     const now = nowIso();
     const firstText = input.text.split("\n").find((l) => l.trim() && !l.startsWith("/fake")) ?? input.text;
     this.store.threads[native] = {

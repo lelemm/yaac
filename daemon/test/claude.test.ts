@@ -281,6 +281,26 @@ async function startedThread(r: Rig, text = "hello") {
 
 // ── Tests ────────────────────────────────────────────────────────────────────────────────
 
+test("Claude gives the worker launch hook its UUID before opening the SDK session", async () => {
+  const r = rig();
+  try {
+    let hookSession: string | undefined;
+    const started = await r.provider.startThread({
+      cwd: r.dir,
+      beforeFirstPrompt: async (native, session) => {
+        assert.equal(r.sdk.queries.length, 0);
+        assert.equal(native, session);
+        hookSession = session;
+      },
+    }, input("worker task"));
+    assert.ok(hookSession);
+    assert.equal(started.thread, hookSession);
+    assert.equal(r.sdk.queries.at(-1)?.options.sessionId, hookSession);
+  } finally {
+    await r.provider.dispose();
+  }
+});
+
 test("Claude peer delivery uses next priority, waits for acknowledgement, and can wake an idle session", async () => {
   const r = rig();
   try {

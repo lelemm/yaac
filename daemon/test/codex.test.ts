@@ -87,6 +87,34 @@ function idleThread(fake: FakeCodex, id = THREAD_ID, status: unknown = { type: "
   fake.handlers.set("thread/resume", (p) => ({ thread: { id: p.threadId, status, cwd: "/work/fixture" }, model: "model-1" }));
 }
 
+test("Codex resolves a fork's session and waits for the worker launch hook", async () => {
+  const r = await rig();
+  let allow!: () => void;
+  const permitted = new Promise<void>((resolve) => { allow = resolve; });
+  try {
+    r.fake.handlers.set("thread/read", (p) => ({ thread: { id: p.threadId, sessionId: "root-session" } }));
+    assert.equal(await r.provider.workerSessionId("parent-fork"), "root-session");
+    r.fake.handlers.set("thread/start", () => ({ thread: { id: THREAD_ID, sessionId: THREAD_ID, status: { type: "idle" } } }));
+    r.fake.handlers.set("turn/start", () => ({ turn: { id: TURN_ID, status: "inProgress" } }));
+    let ids: [string, string] | undefined;
+    const spawned = r.provider.startThread({
+      cwd: "/work/fixture",
+      beforeFirstPrompt: async (native, session) => {
+        ids = [native, session];
+        await permitted;
+      },
+    }, input("worker task"));
+    await until(() => !!ids);
+    assert.deepEqual(ids, [THREAD_ID, THREAD_ID]);
+    assert.equal(r.fake.requests("turn/start").length, 0);
+    allow();
+    assert.deepEqual(await spawned, { thread: THREAD_ID, turn: TURN_ID });
+  } finally {
+    allow();
+    await r.done();
+  }
+});
+
 test("codex peer output keeps a busy turn, wakes an idle thread, and distinguishes rejection from a lost reply", async () => {
   const r = await rig();
   try {

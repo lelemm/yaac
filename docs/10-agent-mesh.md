@@ -259,6 +259,52 @@ directory, a title, and the first message.
 - By default the parent is told when the child finishes: the child's final answer comes back as
   a message ([delivery](#delivery)). `spawn_thread { detached: true }` turns that off.
 
+### Worker launch hook
+
+A target can configure one executable to run when it starts a mesh worker from a local
+parent. Put `worker-launch-hook.json` in that target's YAAC home, normally `~/.yaac`.
+Use an absolute executable path and an optional argument list. YAAC runs it directly from
+the YAAC home with a limited OS environment.
+
+```json
+{
+  "command": "/home/me/bin/worker-hook",
+  "args": []
+}
+```
+
+YAAC sends one JSON object on stdin after the child's native ID is available and before its
+first prompt. The parent and child can use different provider kinds or instances.
+
+```json
+{
+  "event": "worker.beforeFirstPrompt",
+  "parent": {
+    "harness": "codex",
+    "instanceId": "work-codex",
+    "yaacThreadId": "t_parent",
+    "nativeThreadId": "codex-fork",
+    "sessionId": "codex-session-root"
+  },
+  "child": {
+    "harness": "claude",
+    "instanceId": "work-claude",
+    "yaacThreadId": "t_child",
+    "nativeThreadId": "claude-session"
+  }
+}
+```
+
+The IDs are opaque strings. When `sessionId` is omitted, the provider verified that it
+equals `nativeThreadId`. The mesh supplies the parent identity from the verified caller.
+The event contains conversation identifiers only.
+
+Exit with status zero to allow the first prompt. A nonzero exit, failure to start, or a
+timeout blocks the launch. A failing hook can return `{"reason":"A short, public explanation"}`
+on stdout. YAAC never surfaces stderr or unstructured stdout. The process has a 15-second
+deadline and a 16 KiB output limit on each stream. User-initiated threads, native harness
+subagents, and spawns between targets use their existing launch paths.
+
 ### The worker's permission mode
 
 **Decided (D146); the rules below are Proposed (P150–P155).** A worker inherits the

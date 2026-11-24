@@ -804,6 +804,15 @@ export class CodexProvider implements HarnessProvider {
     return read;
   }
 
+  private requireSessionId(thread: Thread): string {
+    if (typeof thread.sessionId !== "string" || !thread.sessionId) throw new Error("Codex did not report a session ID for the worker launch hook.");
+    return thread.sessionId;
+  }
+
+  async workerSessionId(native: NativeId): Promise<string> {
+    return this.requireSessionId(await this.readThreadMeta(native));
+  }
+
   // ── History ──────────────────────────────────────────────────────────────────────────────
 
   async readThread(thread: NativeId, page: PageRequest): Promise<ItemPage> {
@@ -845,6 +854,15 @@ export class CodexProvider implements HarnessProvider {
       reasoningEffort?: string | null;
     } & ReportedSettings;
     const native = r.thread.id;
+    if (params.beforeFirstPrompt) {
+      try {
+        await params.beforeFirstPrompt(native, this.requireSessionId(r.thread));
+      } catch (e) {
+        // No prompt was sent. Discard the empty Codex conversation when possible.
+        await conn.request("thread/delete", { threadId: native }).catch(() => {});
+        throw e;
+      }
+    }
     // The mesh's ticket is bound to the thread before its first turn runs.
     bind?.(native);
     const st = this.state(native);
@@ -858,6 +876,9 @@ export class CodexProvider implements HarnessProvider {
       const turn = await this.beginTurn(st, input, { model: null, effort: params.effort ?? null, mode: null, fast: params.fast ?? null, ultrafast: params.ultrafast });
       return { thread: native, turn };
     } catch (e) {
+      if (params.beforeFirstPrompt && e instanceof InputOutcomeUnknown) {
+        throw new InputOutcomeUnknown(`The first turn for Codex thread ${native} was not confirmed. ${e.message}`);
+      }
       // Nothing was sent: do not leave an empty conversation behind.
       await conn.request("thread/delete", { threadId: native }).catch(() => {});
       throw e;

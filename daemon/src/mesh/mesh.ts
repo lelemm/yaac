@@ -1473,6 +1473,7 @@ export class Mesh implements CoreMeshHooks {
       journalItems: [received, modeNotice],
       mesh: [input],
       spawnedBy: message.from,
+      parent: p.callerRt,
     });
     const child = this.core.thread(started.threadId)!;
     const childAddress = this.addressOf(child.id);
