@@ -62,7 +62,7 @@ fn thirty() -> AgentsPanel {
 }
 
 #[test]
-fn needs_you_then_running_then_waiting_then_finished_most_recent_first() {
+fn the_pill_orders_needs_you_then_running_then_waiting_then_finished() {
     let p = panel(
         None,
         vec![
@@ -79,8 +79,8 @@ fn needs_you_then_running_then_waiting_then_finished_most_recent_first() {
         ],
         Vec::new(),
     );
-    let cl = clusters(&p);
-    assert_eq!(titles(&cl[0].rows), ["paused", "needs", "run-new", "run-old", "waiting", "new-done", "failed", "old-done", "idle", "off"]);
+    let layout = pill(&p, p.workers.len());
+    assert_eq!(titles(&layout.clusters[0].rows), ["paused", "needs", "run-new", "run-old", "waiting", "new-done", "failed", "old-done", "idle", "off"]);
     assert!(Liveness::Waiting.alive() && !Liveness::Finished.alive());
 }
 
@@ -90,7 +90,7 @@ fn unseen_finished_come_before_seen_ones() {
     let mut unseen = row("unseen", Role::Worker, Mark::Done, 1, 0);
     unseen.display.unseen = true;
     let p = panel(None, vec![seen, unseen], Vec::new());
-    assert_eq!(titles(&clusters(&p)[0].rows), ["unseen", "seen"]);
+    assert_eq!(titles(&pill(&p, PILL_MAX).clusters[0].rows), ["unseen", "seen"]);
 }
 
 #[test]
@@ -152,42 +152,38 @@ fn the_cap_scales_with_the_room() {
 }
 
 #[test]
-fn the_docked_panel_keeps_the_tree_alive_first_and_folds_the_finished() {
+fn related_agent_rows_use_activity_order_and_fold_only_the_inactive_tail() {
     let p = panel(
         None,
         vec![
-            row("a-done", Role::Worker, Mark::Done, 1, 0),
-            row("a-kid-run", Role::Worker, Mark::Running, 1, 1),
-            row("b-done", Role::Worker, Mark::Done, 2, 0),
-            row("c-run", Role::Worker, Mark::Running, 9, 0),
-            row("c-kid-done", Role::Worker, Mark::Done, 1, 1),
-            row("c-kid-wait", Role::Worker, Mark::Waiting, 1, 1),
-            row("d-done", Role::Worker, Mark::Done, 3, 0),
-            row("e-done", Role::Worker, Mark::Done, 4, 0),
-            row("f-done", Role::Worker, Mark::Done, 5, 0),
+            row("older running", Role::Worker, Mark::Running, 6, 1),
+            row("oldest finished", Role::Worker, Mark::Done, 1, 0),
+            row("recent finished", Role::Worker, Mark::Done, 9, 0),
+            row("older finished", Role::Worker, Mark::Done, 2, 0),
+            row("recent running", Role::Worker, Mark::Running, 8, 0),
+            row("finished", Role::Worker, Mark::Done, 3, 1),
+            row("inactive", Role::Worker, Mark::Idle, 4, 0),
         ],
         Vec::new(),
     );
     let cl = clusters(&p);
+    assert_eq!(titles(&cl[0].rows), [
+        "recent finished", "recent running", "older running", "inactive",
+        "finished", "older finished", "oldest finished",
+    ]);
+    assert_eq!(cl[0].rows[0].activity_age(70).as_deref(), Some("1m"));
+    assert_eq!(cl[0].rows[1].activity_age(8).as_deref(), Some("now"));
     let mut rows = Vec::new();
     let mut fold = None;
-    for x in docked_entries(&cl[0], &p) {
-        match x {
-            DockEntry::Row(r) => rows.push(r.title.clone()),
+    for entry in docked_entries(&cl[0]) {
+        match entry {
+            DockEntry::Row(row) => rows.push(row.title.as_str()),
             DockEntry::Fold { rows, word } => fold = Some((titles(&rows), word)),
         }
     }
-    // Subtrees with someone alive first (by their most urgent agent: running before running
-    // that is older), children under their parent and ordered the same way; the quiet ones
-    // folded, most recent first.
-    assert_eq!(rows, ["c-run", "c-kid-wait", "c-kid-done", "a-done", "a-kid-run"]);
-    assert_eq!(fold, Some((vec!["f-done".to_owned(), "e-done".into(), "d-done".into(), "b-done".into()], "finished")));
+    assert_eq!(rows, ["recent finished", "recent running", "older running"]);
+    assert_eq!(fold, Some((vec!["inactive".to_owned(), "finished".into(), "older finished".into(), "oldest finished".into()], "inactive")));
     assert_eq!(DOCK_FOLD_MIN, 4);
-    // Fewer than that: listed after the alive ones, not folded.
-    let q = panel(None, vec![row("x-done", Role::Worker, Mark::Done, 1, 0), row("y-run", Role::Worker, Mark::Running, 1, 0)], Vec::new());
-    let cl = clusters(&q);
-    let e = docked_entries(&cl[0], &q);
-    assert!(matches!(&e[..], [DockEntry::Row(a), DockEntry::Row(b)] if a.title == "y-run" && b.title == "x-done"));
 }
 
 mod common;
@@ -208,12 +204,12 @@ fn the_demo_orchestrator_with_thirty_agents() {
     assert_eq!((pl.icons(), pl.more.hidden, pl.more.alive), (7, 23, 0));
     assert!(pl.clusters.iter().flat_map(|c| c.rows.iter()).all(|r| Liveness::of(r).alive()));
     assert_eq!(pl.clusters[0].rows[0].title, "index-rebuild", "needs you first");
-    // The docked Workers heading folds its finished subtrees.
-    let cl = clusters(&p);
-    let w = cl.iter().find(|c| c.relation == Relation::Workers).unwrap();
-    let fold = docked_entries(w, &p).into_iter().find_map(|e| match e {
-        DockEntry::Fold { rows, word } => Some((rows.len(), word)),
-        DockEntry::Row(_) => None,
-    });
-    assert_eq!(fold, Some((17, "inactive")), "billing-service and 16 Codex subagents; one is stopped");
+    let clusters = clusters(&p);
+    let workers = clusters.iter().find(|c| c.relation == Relation::Workers).unwrap();
+    let docked: Vec<_> = docked_entries(workers).into_iter().flat_map(|entry| match entry {
+        DockEntry::Row(row) => vec![row],
+        DockEntry::Fold { rows, .. } => rows,
+    }).collect();
+    assert_eq!(docked, workers.rows);
+    assert!(docked.windows(2).all(|pair| pair[0].updated >= pair[1].updated));
 }

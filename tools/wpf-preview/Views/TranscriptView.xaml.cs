@@ -41,13 +41,13 @@ public partial class TranscriptView : UserControl
     private ScrollViewer? scroll;
     private double chatGutter = 28;
     private ScrollContentPresenter? viewport;
-    private VirtualizingStackPanel? panel;
+    private TranscriptPanel? panel;
     private ScrollPin? pendingPin;
-    private int pinPasses;
     private bool pinQueued;
     private bool reportAfterPin;
     private bool follow = true;
     private bool scrollingBar;
+    private string? pageDirection;
     private bool selectingThread;
     private int messages;
     private int seen;
@@ -72,6 +72,7 @@ public partial class TranscriptView : UserControl
             Interval = TimeSpan.FromMilliseconds(120),
         };
         reportTimer.Tick += (_, _) => ReportAnchor();
+        Rows.AddHandler(ScrollBar.ScrollEvent, new ScrollEventHandler(ScrollbarScrolled), handledEventsToo: true);
         Rows.PreviewMouseLeftButtonUp += (_, _) => EndScrollbarScroll();
         Rows.LostMouseCapture += (_, _) =>
         {
@@ -86,7 +87,8 @@ public partial class TranscriptView : UserControl
             scroll?.ApplyTemplate();
             ApplyChatPadding();
             viewport = scroll is null ? null : FindVisual<ScrollContentPresenter>(scroll);
-            panel = viewport is null ? null : FindVisual<VirtualizingStackPanel>(viewport);
+            panel = viewport is null ? null : FindVisual<TranscriptPanel>(viewport);
+            PinPanel();
             RebuildTimeline();
             QueuePin();
         };
@@ -138,7 +140,7 @@ public partial class TranscriptView : UserControl
             anchorToken = null;
             requestedPin = null;
             promptIndex = null;
-            timelineTarget = requestedPage = null;
+            timelineTarget = requestedPage = pageDirection = null;
             jumpingLatest = false;
             byId.Clear();
             items.Clear();
@@ -281,6 +283,7 @@ public partial class TranscriptView : UserControl
         else if (!focusApplied && FindRow(focusId) is { } requestedFocusRow)
         {
             focusApplied = true;
+            pageDirection = null;
             requestedPin = null;
             seen = messages;
             var fromTimeline = requestedFocusRow.ActionId == timelineTarget;
@@ -290,6 +293,7 @@ public partial class TranscriptView : UserControl
         else if (requestedPin is { } toRestore && FindRow(toRestore.Id) is { } anchorRow)
         {
             requestedPin = null;
+            pageDirection = null;
             seen = messages;
             SetPin(toRestore with { Id = anchorRow.Id }, report: true);
         }
@@ -356,6 +360,7 @@ public partial class TranscriptView : UserControl
 
     public void JumpToBottom()
     {
+        pageDirection = null;
         if (historyAway)
         {
             jumpingLatest = true;
@@ -393,6 +398,7 @@ public partial class TranscriptView : UserControl
     private void ScrollToPrompt(Prompt prompt)
     {
         jumpingLatest = false;
+        pageDirection = null;
         if (promptRows.TryGetValue(prompt.Id, out var row))
         {
             SetPin(new ScrollPin(row.Id, 10, 0, false), report: true);
@@ -413,16 +419,17 @@ public partial class TranscriptView : UserControl
     {
         if (scroll is null || pendingPin is not null || selectingThread || jumpingLatest || page.Value("loading").Flag())
             return;
-        var top = scroll.VerticalOffset;
-        var bottom = scroll.ScrollableHeight - top;
-        var older = page.Value("older").OptionalText();
-        var newer = page.Value("newer").OptionalText();
         const double prefetch = 220;
-        var direction = newer is not null && bottom < prefetch && (top >= prefetch || top > bottom || older is null)
-            ? "newer" : older is not null && top < prefetch ? "older" : null;
-        var cursor = direction == "newer" ? newer : direction == "older" ? older : null;
+        var direction = pageDirection;
+        var cursor = direction switch
+        {
+            "older" when scroll.VerticalOffset < prefetch => page.Value("older").OptionalText(),
+            "newer" when scroll.ScrollableHeight - scroll.VerticalOffset < prefetch => page.Value("newer").OptionalText(),
+            _ => null,
+        };
         if (cursor is null || cursor == requestedPage)
             return;
+        pageDirection = null;
         requestedPage = cursor;
         Command?.Invoke("transcript.page", new { id = direction, threadId });
     }
@@ -432,10 +439,18 @@ public partial class TranscriptView : UserControl
     private void SetPin(ScrollPin pin, bool report = false)
     {
         pendingPin = pin;
-        pinPasses = 0;
         follow = pin.Bottom;
         reportAfterPin |= report;
+        PinPanel();
         QueuePin();
+    }
+
+    private void PinPanel()
+    {
+        if (panel is null || pendingPin is not { } pin)
+            return;
+        var row = pin.Id is null ? null : byId.GetValueOrDefault(pin.Id);
+        panel.Pin(row, pin.Top, pin.Offset, pin.Bottom);
     }
 
     private void QueuePin()
@@ -451,50 +466,11 @@ public partial class TranscriptView : UserControl
         pinQueued = false;
         if (scroll is null || pendingPin is not { } pin)
             return;
-        pinPasses++;
         if (pin.Bottom)
-        {
-            if (!AtBottom())
-            {
-                scroll.ScrollToBottom();
-                if (pinPasses < 4)
-                {
-                    QueuePin();
-                    return;
-                }
-            }
             seen = messages;
-        }
-        else if (pin.Id is not null && byId.TryGetValue(pin.Id, out var row))
-        {
-            if (Rows.ItemContainerGenerator.ContainerFromItem(row) is FrameworkElement container
-                && container.IsArrangeValid && viewport is not null)
-            {
-                var top = container.TranslatePoint(new Point(), viewport).Y;
-                var offset = Math.Clamp(scroll.VerticalOffset + top - pin.Top, 0, scroll.ScrollableHeight);
-                if (Math.Abs(offset - scroll.VerticalOffset) > 0.75)
-                {
-                    scroll.ScrollToVerticalOffset(offset);
-                    if (pinPasses < 5)
-                    {
-                        QueuePin();
-                        return;
-                    }
-                }
-                if (pin.Focus)
-                    FindVisual<TranscriptRowView>(container)?.FocusAction();
-            }
-            else if (pinPasses < 5)
-            {
-                Rows.ScrollIntoView(row);
-                QueuePin();
-                return;
-            }
-        }
-        else
-        {
-            scroll.ScrollToVerticalOffset(pin.Offset);
-        }
+        if (pin.Focus && FindRow(pin.Id) is { } row
+            && Rows.ItemContainerGenerator.ContainerFromItem(row) is FrameworkElement container)
+            FindVisual<TranscriptRowView>(container)?.FocusAction();
         pendingPin = null;
         if (reportAfterPin)
         {
@@ -515,19 +491,27 @@ public partial class TranscriptView : UserControl
         // Remember the user's follow intent independently of the current offset.
         if (items.Count == 0 || follow && !historyAway)
             return new ScrollPin(null, 0, offset, true);
-        foreach (var (row, top, bottom) in RealizedRows())
-        {
-            if (bottom > 0)
-                return new ScrollPin(row.Id, top, offset, false);
-        }
+        if (FirstVisibleRow() is { } visible)
+            return new ScrollPin(visible.Row.Id, visible.Top, offset, false);
         return new ScrollPin(null, 0, offset, false);
+    }
+
+    private (TranscriptRow Row, double Top, double Bottom)? FirstVisibleRow()
+    {
+        var height = panel?.ViewportHeight ?? 0;
+        foreach (var visible in RealizedRows())
+        {
+            if (visible.Bottom > 0 && visible.Top < height)
+                return visible;
+        }
+        return null;
     }
 
     private IEnumerable<(TranscriptRow Row, double Top, double Bottom)> RealizedRows()
     {
         foreach (var (row, item) in RealizedContainers())
         {
-            var top = item.TranslatePoint(new Point(), viewport).Y;
+            var top = item.TranslatePoint(new Point(), panel).Y;
             yield return (row, top, top + item.ActualHeight);
         }
     }
@@ -536,7 +520,7 @@ public partial class TranscriptView : UserControl
     {
         if (viewport is null)
             yield break;
-        panel ??= FindVisual<VirtualizingStackPanel>(viewport);
+        panel ??= FindVisual<TranscriptPanel>(viewport);
         if (panel is null)
             yield break;
         var count = VisualTreeHelper.GetChildrenCount(panel);
@@ -548,16 +532,12 @@ public partial class TranscriptView : UserControl
         }
     }
 
-    private void ScrollSelectionBy(double delta)
-    {
-        if (scroll is null) return;
-        BeginManualScroll();
-        scroll.ScrollToVerticalOffset(Math.Clamp(scroll.VerticalOffset + delta, 0, scroll.ScrollableHeight));
-    }
+    private void ScrollSelectionBy(double delta) => ScrollManuallyBy(delta, resumeAtBottom: false);
 
     private void BeginManualScroll()
     {
         pendingPin = null;
+        panel?.CancelPin();
         requestedPin = null;
         reportAfterPin = false;
         follow = false;
@@ -588,18 +568,28 @@ public partial class TranscriptView : UserControl
         e.Handled = true;
     }
 
-    private void ScrollManuallyBy(double delta)
+    private void ScrollManuallyBy(double delta, bool resumeAtBottom = true)
     {
         if (scroll is null || delta == 0)
             return;
+        pageDirection = delta < 0 ? "older" : "newer";
         var offset = Math.Clamp(scroll.VerticalOffset + delta, 0, scroll.ScrollableHeight);
-        if (!historyAway && (delta > 0 && offset >= scroll.ScrollableHeight - 1 || scroll.ScrollableHeight < 1))
+        if (resumeAtBottom && !historyAway && (delta > 0 && offset >= scroll.ScrollableHeight - 1 ||
+            scroll.ScrollableHeight < 1 && page.Value("older").OptionalText() is null))
             SetPin(new ScrollPin(null, 0, 0, true), report: true);
         else
         {
             BeginManualScroll();
             scroll.ScrollToVerticalOffset(offset);
+            if (offset == scroll.VerticalOffset)
+                MaybePage();
         }
+    }
+
+    private void ScrollbarScrolled(object sender, ScrollEventArgs e)
+    {
+        if (scrollingBar && scroll is not null && e.NewValue != scroll.VerticalOffset)
+            pageDirection = e.NewValue < scroll.VerticalOffset ? "older" : "newer";
     }
 
     private void EndScrollbarScroll()
@@ -626,7 +616,7 @@ public partial class TranscriptView : UserControl
         {
             if (follow && !historyAway && !AtBottom())
                 SetPin(new ScrollPin(null, 0, 0, true));
-            if (e.VerticalChange != 0 && e.ExtentHeightChange == 0 && e.ViewportHeightChange == 0)
+            if (e.VerticalChange != 0)
                 QueueAnchorReport();
         }
         if (follow)
@@ -656,17 +646,14 @@ public partial class TranscriptView : UserControl
             }
             return;
         }
-        foreach (var (row, top, bottom) in RealizedRows())
-        {
-            if (bottom <= 0)
-                continue;
-            var offset = Math.Max(0, top * -1);
-            if (thread.LastReported is { } last && row.Id == last.Id && Math.Abs(offset - last.Offset) < 1)
-                break;
-            thread.LastReported = (row.Id, offset);
-            Command?.Invoke("transcript.anchor", new { id = row.Id, itemId = row.ActionId, offset, threadId });
-            break;
-        }
+        if (FirstVisibleRow() is not { } visible)
+            return;
+        var (row, top, _) = visible;
+        var offset = Math.Max(0, -top);
+        if (thread.LastReported is { } last && row.Id == last.Id && Math.Abs(offset - last.Offset) < 1)
+            return;
+        thread.LastReported = (row.Id, offset);
+        Command?.Invoke("transcript.anchor", new { id = row.Id, itemId = row.ActionId, offset, threadId });
     }
 
     private void UpdateLatest()
@@ -738,7 +725,7 @@ public partial class TranscriptView : UserControl
         var lastVisible = -1;
         foreach (var (row, top, bottom) in RealizedRows())
         {
-            if (bottom <= 0 || top >= (viewport?.ActualHeight ?? 0))
+            if (bottom <= 0 || top >= (panel?.ViewportHeight ?? 0))
                 continue;
             var index = row.Index;
             if (firstVisible < 0)

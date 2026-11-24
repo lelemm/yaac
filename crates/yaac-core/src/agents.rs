@@ -183,7 +183,10 @@ impl PillLayout<'_> {
 /// order across all relations fill what is left; finished and idle agents are never drawn
 /// then, only counted in the "more" item.
 pub fn pill(panel: &AgentsPanel, cap: usize) -> PillLayout<'_> {
-    let all = clusters(panel);
+    let mut all = clusters(panel);
+    for cluster in &mut all {
+        cluster.rows.sort_by_key(|row| order_key(row));
+    }
     let total: usize = all.iter().map(|c| c.rows.len()).sum();
     if total <= cap {
         return PillLayout { clusters: all, more: Overflow::default() };
@@ -242,14 +245,11 @@ impl Relation {
 pub struct Cluster<'a> {
     /// Which relation.
     pub relation: Relation,
-    /// Its rows, in D168's order.
+    /// Its rows, newest activity first.
     pub rows: Vec<&'a AgentRow>,
 }
 
-/// The panel's rows grouped by relation (D118) — the one grouping the card, the docked
-/// panel and the pill all draw — each relation's rows in D168's order: needs you, running,
-/// waiting, then finished, idle and stopped; unseen first and then most recent first within
-/// each. Empty groups are left out.
+/// Rows grouped by relation, newest activity first within each group.
 pub fn clusters(panel: &AgentsPanel) -> Vec<Cluster<'_>> {
     let parent: Vec<&AgentRow> = match &panel.spawned_by {
         SpawnedBy::Agent(p) => vec![&**p],
@@ -258,7 +258,10 @@ pub fn clusters(panel: &AgentsPanel) -> Vec<Cluster<'_>> {
     [(Relation::SpawnedBy, parent), (Relation::Workers, panel.workers.iter().collect()), (Relation::InContact, panel.contacts.iter().collect())]
         .into_iter()
         .filter(|(_, rows)| !rows.is_empty())
-        .map(|(relation, rows)| Cluster { relation, rows: by_liveness(rows) })
+        .map(|(relation, mut rows)| {
+            rows.sort_by_key(|row| std::cmp::Reverse(row.updated));
+            Cluster { relation, rows }
+        })
         .collect()
 }
 
@@ -280,48 +283,18 @@ pub enum DockEntry<'a> {
 /// The docked panel folds the quiet rows of a heading once there are at least this many.
 pub const DOCK_FOLD_MIN: usize = 4;
 
-/// A heading's entries in the docked panel (D168). Workers keep their tree: siblings are
-/// ordered by the most urgent agent in their subtree (D168's key), so alive work comes first
-/// without losing who started whom. Subtrees with nobody prominent (alive, or finished unseen)
-/// come last, and fold under one "N finished" entry once they hold [`DOCK_FOLD_MIN`] rows.
-pub fn docked_entries<'a>(cluster: &Cluster<'a>, panel: &'a AgentsPanel) -> Vec<DockEntry<'a>> {
-    let mut trees: Vec<Vec<&AgentRow>> = if cluster.relation == Relation::Workers {
-        subtrees(&panel.workers.iter().collect::<Vec<_>>())
-    } else {
-        cluster.rows.iter().map(|r| vec![*r]).collect()
-    };
-    trees.sort_by_key(|t| t.iter().map(|r| order_key(r)).min());
-    let (loud, quiet): (Vec<_>, Vec<_>) = trees.into_iter().partition(|t| t.iter().any(|r| prominent(r)));
-    let mut out: Vec<DockEntry<'a>> = loud.into_iter().flatten().map(DockEntry::Row).collect();
-    let quiet: Vec<&AgentRow> = quiet.into_iter().flatten().collect();
-    if quiet.len() >= DOCK_FOLD_MIN {
-        let word = if quiet.iter().all(|r| Liveness::of(r) == Liveness::Finished) { "finished" } else { "inactive" };
-        out.push(DockEntry::Fold { rows: quiet, word });
-    } else {
-        out.extend(quiet.into_iter().map(DockEntry::Row));
+/// Keep the activity order when collapsing an inactive tail of the list.
+pub fn docked_entries<'a>(cluster: &Cluster<'a>) -> Vec<DockEntry<'a>> {
+    let rows = &cluster.rows;
+    let tail = rows.iter().rposition(|row| prominent(row)).map_or(0, |i| i + 1);
+    if rows.len() - tail < DOCK_FOLD_MIN {
+        return rows.iter().copied().map(DockEntry::Row).collect();
     }
-    out
-}
-
-/// A flattened tree (depth-first, a depth per row) as its subtrees, each one's children
-/// ordered the same way, recursively.
-fn subtrees<'a>(rows: &[&'a AgentRow]) -> Vec<Vec<&'a AgentRow>> {
-    let Some(top) = rows.first().map(|r| r.depth) else { return Vec::new() };
-    let mut groups: Vec<(&AgentRow, Vec<&AgentRow>)> = Vec::new();
-    for r in rows {
-        match groups.last_mut() {
-            Some(g) if r.depth > top => g.1.push(r),
-            _ => groups.push((r, Vec::new())),
-        }
-    }
-    groups
-        .into_iter()
-        .map(|(head, below)| {
-            let mut kids = subtrees(&below);
-            kids.sort_by_key(|t| t.iter().map(|r| order_key(r)).min());
-            std::iter::once(head).chain(kids.into_iter().flatten()).collect()
-        })
-        .collect()
+    let mut entries: Vec<_> = rows[..tail].iter().copied().map(DockEntry::Row).collect();
+    let inactive = rows[tail..].to_vec();
+    let word = if inactive.iter().all(|row| Liveness::of(row) == Liveness::Finished) { "finished" } else { "inactive" };
+    entries.push(DockEntry::Fold { rows: inactive, word });
+    entries
 }
 
 /// One row of the panel (always a link when `key` is known).
@@ -360,9 +333,15 @@ pub struct AgentRow {
     pub origin: Option<String>,
     /// One of the harness's own sub-agents (D151), not a YAAC worker.
     pub subagent: bool,
-    /// When it last changed (seconds since the epoch; 0 when unknown): most recent first
-    /// within a liveness (D168).
+    /// When it last changed (seconds since the epoch; 0 when unknown).
     pub updated: i64,
+}
+
+impl AgentRow {
+    /// Compact last-activity age, shared by the Related agents views.
+    pub fn activity_age(&self, now: i64) -> Option<String> {
+        (self.updated != 0).then(|| crate::time::short_age(now.saturating_sub(self.updated)))
+    }
 }
 
 /// "Claude subagent · Explore" for a harness's own sub-agent (D151), "YAAC worker" for one

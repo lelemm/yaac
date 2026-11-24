@@ -7,6 +7,7 @@ public partial class MainWindow
 {
     private DispatcherOperation? pendingPrVisibility;
     private string[] visiblePrRows = [];
+    private bool agentRowsVisible;
 
     private void QueueVisiblePrRows()
     {
@@ -21,18 +22,21 @@ public partial class MainWindow
             return;
 
         string[] rows = [];
+        bool agentsVisible = false;
         if (IsVisible && WindowState != WindowState.Minimized && !settingsOpen && !firstRun)
         {
             var visible = new SortedSet<string>(SidebarPane.VisiblePrRows(), StringComparer.Ordinal);
             visible.UnionWith(AgentsPane.VisiblePrRows());
+            agentsVisible = AgentsPane.AreRowsVisible;
             if (SidebarRail.IsVisible && VisibleRailHoverThreadId is { } railThread)
                 visible.Add(railThread);
             rows = visible.ToArray();
         }
-        if (visiblePrRows.SequenceEqual(rows))
+        if (agentRowsVisible == agentsVisible && visiblePrRows.SequenceEqual(rows))
             return;
 
         visiblePrRows = rows;
-        Send("shell.prVisible", new { ids = rows });
+        agentRowsVisible = agentsVisible;
+        Send("shell.prVisible", new { ids = rows, agentsVisible });
     }
 }

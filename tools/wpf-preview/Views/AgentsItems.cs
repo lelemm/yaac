@@ -92,6 +92,7 @@ internal sealed record AgentsData
     public string LastAction { get; init; } = "";
     public string Metadata { get; init; } = "";
     public string Activity { get; init; } = "";
+    public string Age { get; init; } = "";
     public string Flow { get; init; } = "";
     public string Initial { get; init; } = "?";
     public Geometry? Logo { get; init; }
@@ -113,10 +114,10 @@ internal sealed record AgentsData
     public bool Finished { get; init; }
     public bool HasActions { get; init; }
     public bool CanOpen { get; init; }
-    public Thickness Indent { get; init; }
     public bool HasLogo => Logo is not null;
     public bool HasLastAction => LastAction.Length > 0;
     public bool HasMetadata => Metadata.Length > 0;
+    public bool HasAge => Age.Length > 0;
     public bool HasActivity => Activity.Length > 0;
     public bool HasGit => Branch.Length + Changes.Length + Ahead.Length + Behind.Length > 0;
 }
@@ -124,7 +125,7 @@ internal sealed record AgentsData
 internal sealed record AgentsGroup(string Id, string Label, string Glyph, int? Count,
     IReadOnlyList<AgentsRow> Rows, JsonElement Docked);
 
-internal sealed record AgentsRow(string Id, string CommandId, string Raw, int Depth, AgentsData Data,
+internal sealed record AgentsRow(string Id, string CommandId, string Raw, AgentsData Data,
     IReadOnlyList<AgentsAction> Actions)
 {
     private static Brush Muted => Palette.Brush("YaacMuted");
@@ -178,6 +179,7 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, int De
             LastAction = last,
             Metadata = metadata,
             Activity = row.StringField("activity"),
+            Age = row.StringField("age"),
             Running = row.StringField("mark") == "running",
             Finished = row.BoolField("finished"),
             Attention = row.BoolField("attention") || attention != "" || row.StringField("mark") == "needsYou",
@@ -199,7 +201,7 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, int De
             Behind = WithArrow(git.CountText("behind"), '↓'),
             Badge = PullRequestBadgeState.Read(row.Field("badge"))
         };
-        return new(identity, id, raw, Math.Max(0, row.Number("depth")), data, actions);
+        return new(identity, id, raw, data, actions);
     }
 
     private static string Joined(string delimiter, params string[] values) =>

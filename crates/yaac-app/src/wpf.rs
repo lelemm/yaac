@@ -206,6 +206,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
     let mut paste_sequence = 0;
     let mut window_shown = false;
     let mut visible_pr_rows = Vec::new();
+    let mut agent_rows_visible = false;
     let mut next_pr_check = None;
     let mut selection_epoch = 0;
     let mut markdown = markdown_view::MarkdownView::default();
@@ -319,6 +320,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                 insert.as_ref().map(|(_, v)| v),
                 selection_epoch,
                 &mut markdown,
+                (window_shown && !app.ui.settings && agent_rows_visible).then_some(&ctx),
             );
             let mut changes: Map<String, Value> = current
                 .iter()
@@ -350,9 +352,11 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                     window_shown = payload["shown"] == true;
                     if !window_shown {
                         visible_pr_rows.clear();
+                        agent_rows_visible = false;
                     }
                 }
                 if command == "shell.prVisible" {
+                    agent_rows_visible = payload["agentsVisible"] == true;
                     visible_pr_rows = payload["ids"]
                         .as_array()
                         .into_iter()
@@ -408,6 +412,7 @@ fn view(
     insert: Option<&Value>,
     selection_epoch: u64,
     markdown: &mut markdown_view::MarkdownView,
+    agent_ages_ctx: Option<&egui::Context>,
 ) -> Map<String, Value> {
     let state = &app.client.state;
     let attention = AttentionMap::compute(state);
@@ -458,7 +463,7 @@ fn view(
         ("shortcuts".into(), json!(navigation::shortcuts(app))),
         ("transcript".into(), transcript::view(app, &attention, markdown)),
         ("composer".into(), composer::view(app, &attention, insert)),
-        ("agents".into(), agents::view(app, &attention)),
+        ("agents".into(), agents::view(app, &attention, agent_ages_ctx)),
         ("settings".into(), settings::view(app, settings_target)),
     ])
 }

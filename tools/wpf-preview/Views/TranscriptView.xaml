@@ -40,13 +40,11 @@
              VirtualizingPanel.IsVirtualizing="True"
              VirtualizingPanel.ScrollUnit="Pixel"
              VirtualizingPanel.VirtualizationMode="Recycling"
-             VirtualizingPanel.CacheLengthUnit="Page"
-             VirtualizingPanel.CacheLength="0.5,0.5"
              PreviewMouseWheel="ScrollInput" PreviewMouseDown="ScrollInput" PreviewKeyDown="ScrollKey"
              AutomationProperties.Name="Transcript">
       <ListBox.ItemsPanel>
         <ItemsPanelTemplate>
-          <VirtualizingStackPanel />
+          <local:TranscriptPanel ClipToBounds="True" />
         </ItemsPanelTemplate>
       </ListBox.ItemsPanel>
       <ListBox.ItemTemplate>

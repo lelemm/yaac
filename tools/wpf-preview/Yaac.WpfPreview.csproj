@@ -11,7 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets/yaac.ico" />
-    <Resource Include="../../crates/yaac-app/assets/fonts/CaskaydiaCoveNerdFont*.ttf"
+    <Resource Include="../../crates/yaac-app/assets/fonts/*NerdFont*.ttf"
               Link="Assets/Fonts/%(Filename)%(Extension)" />
     <Content Include="../../crates/yaac-app/assets/fonts/LICENSE-*.txt"
              Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

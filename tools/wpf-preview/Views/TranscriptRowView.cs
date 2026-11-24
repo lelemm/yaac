@@ -81,7 +81,7 @@ public sealed class TranscriptRowView : UserControl
 
         MouseEnter += (_, _) => ShowStamp();
         MouseLeave += (_, _) => ShowStamp();
-        DataContextChanged += (_, _) => { if (IsLoaded) Bind(); };
+        DataContextChanged += (_, _) => Bind();
         Loaded += (_, _) => Bind();
         Unloaded += (_, _) => Unbind();
         PreviewKeyDown += CardKeyDown;

@@ -78,12 +78,14 @@ public partial class AgentsView : UserControl
 
     internal IEnumerable<string> VisiblePrRows()
     {
-        if (!IsVisible || (!IsDocked && !Floating.IsOpen))
+        if (!AreRowsVisible)
             return [];
         return VisibleListRows.Read(IsDocked ? DockRows : CardRows).OfType<AgentsEntry>()
             .Where(entry => entry.Kind is "dockRow" or "cardRow" && entry.Data.CanOpen)
             .Select(entry => entry.CommandId);
     }
+
+    internal bool AreRowsVisible => IsVisible && (IsDocked || Floating.IsOpen);
 
     internal bool IsDocked => _mode == "docked" && !_dockFolded;
 
@@ -245,13 +247,15 @@ public partial class AgentsView : UserControl
             result.Add(Entry("pill", "pillLabel", "budget", new() { Title = "Ⅱ", Tooltip = "Agent budget reached · Continue in this card", MarkColor = Palette.Brush("YaacFailure") }, used));
 
         var all = groups.SelectMany(group => group.Rows).ToArray();
-        var displayed = view.Field("rowIds").ValueKind == JsonValueKind.Array
-            ? view.Ids("rowIds").ToHashSet(StringComparer.Ordinal)
-            : all.Take(7).Select(row => row.Id).ToHashSet(StringComparer.Ordinal);
+        var displayed = (view.Field("rowIds").ValueKind == JsonValueKind.Array
+            ? view.Ids("rowIds") : all.Take(7).Select(row => row.Id))
+            .Distinct(StringComparer.Ordinal)
+            .Select((id, index) => (id, index))
+            .ToDictionary(row => row.id, row => row.index, StringComparer.Ordinal);
         bool hasGroup = false;
         foreach (AgentsGroup group in groups)
         {
-            var visible = group.Rows.Where(row => displayed.Contains(row.Id)).ToArray();
+            var visible = group.Rows.Where(row => displayed.ContainsKey(row.Id)).OrderBy(row => displayed[row.Id]).ToArray();
             if (visible.Length == 0)
                 continue;
             if (hasGroup)
@@ -263,9 +267,9 @@ public partial class AgentsView : UserControl
                 result.Add(RowEntry("pill", "pillRow", row, used));
         }
 
-        int hidden = view.Number("hidden", all.Count(row => !displayed.Contains(row.Id)));
+        int hidden = view.Number("hidden", all.Count(row => !displayed.ContainsKey(row.Id)));
         int alive = view.Number("alive");
-        _firstHidden = view.StringField("firstHiddenId", all.FirstOrDefault(row => !displayed.Contains(row.Id))?.Id ?? "");
+        _firstHidden = view.StringField("firstHiddenId", all.FirstOrDefault(row => !displayed.ContainsKey(row.Id))?.Id ?? "");
         if (hidden > 0)
         {
             if (hasGroup)
@@ -359,8 +363,7 @@ public partial class AgentsView : UserControl
 
     private AgentsEntry RowEntry(string surface, string kind, AgentsRow row, HashSet<string> used)
     {
-        var data = kind == "dockRow" ? row.Data with { Indent = new Thickness(Math.Min(4, row.Depth) * 12, 0, 0, 0) } : row.Data;
-        var entry = Entry(surface, kind, row.Id, data, used);
+        var entry = Entry(surface, kind, row.Id, row.Data, used);
         entry.CommandId = row.CommandId;
         entry.RowId = row.Id;
         entry.Actions = row.Actions;

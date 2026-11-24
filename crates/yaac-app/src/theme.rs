@@ -293,8 +293,8 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
     let bold = FontFamily::Name("bold".into());
     fonts.families.insert(bold.clone(), bold_family);
     for (family, name, data) in [
-        (FontFamily::Proportional, "caskaydia-ui", &include_bytes!("../assets/fonts/CaskaydiaCoveNerdFontPropo-Regular.ttf")[..]),
-        (bold, "caskaydia-bold", &include_bytes!("../assets/fonts/CaskaydiaCoveNerdFontPropo-Bold.ttf")[..]),
+        (FontFamily::Proportional, "ubuntu-sans-ui", &include_bytes!("../assets/fonts/UbuntuSansNerdFontPropo-Regular.ttf")[..]),
+        (bold, "ubuntu-sans-bold", &include_bytes!("../assets/fonts/UbuntuSansNerdFontPropo-Bold.ttf")[..]),
         (FontFamily::Monospace, "caskaydia-mono", &include_bytes!("../assets/fonts/CaskaydiaCoveNerdFontMono-Regular.ttf")[..]),
     ] {
         fonts.font_data.insert(name.to_owned(), std::sync::Arc::new(egui::FontData::from_static(data)));
@@ -314,13 +314,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_primary_faces_render_nerd_font_glyphs() {
+    fn the_primary_nerd_fonts_have_the_expected_letter_widths() {
         let ctx = egui::Context::default();
         install_fonts(&ctx);
         let mut output = ctx.run_ui(egui::RawInput::default(), |root| {
             root.fonts_mut(|fonts| {
                 for font in [ui(14.0), bold(14.0), mono(14.0)] {
                     assert!(fonts.has_glyphs(&font, "YAAC \u{e0b0}\u{eab9}\u{f0c6}\u{f0001}"), "{font:?}");
+                    let narrow = fonts.glyph_width(&font, 'i');
+                    let wide = fonts.glyph_width(&font, 'W');
+                    if font.family == FontFamily::Monospace {
+                        assert!((narrow - wide).abs() < 0.01);
+                    } else {
+                        assert!(wide > narrow * 1.5, "{font:?}");
+                    }
                 }
             });
         });

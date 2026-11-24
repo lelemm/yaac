@@ -127,6 +127,10 @@ fn more_item(painter: &egui::Painter, r: Rect, m: &Overflow, p: &Palette) {
 pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, panel: &AgentsPanel, actions: &mut Vec<Action>) {
     let p = app.p;
     let card = app.ui.panel == PanelMode::Card;
+    let now = app.now();
+    if card {
+        schedule_activity_ages(ctx, app, panel, now);
+    }
     let pl = pill(panel, pill_cap_for(thread));
     let all = clusters(panel);
     let spent = panel.budget.as_ref().is_some_and(|b| b.exhausted);
@@ -177,7 +181,7 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                     budget_continue(ui, &p, b, actions);
                     ui.add_space(4.0);
                 }
-                // Everyone, in the pill's order; the list scrolls when it is taller than the
+                // Everyone, by last activity within each relation. The list scrolls when taller than the
                 // card (D168).
                 let rest = (card_rect.bottom() - 10.0 - ui.cursor().top()).max(CARD_ROW);
                 egui::ScrollArea::vertical().id_salt("agents-card").max_height(rest).min_scrolled_height(rest).auto_shrink([false, true]).show(ui, |ui| {
@@ -193,7 +197,7 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                                 to_hidden = false;
                             }
                             any_focus |= resp.has_focus();
-                            card_row(ui, r, &resp, row, &p);
+                            card_row(ui, r, &resp, row, &p, now);
                             if resp.clicked()
                                 && let Some(k) = &row.key
                             {
@@ -284,7 +288,7 @@ fn hairline(ui: &mut egui::Ui, p: &Palette) {
 }
 
 /// One row of the card: icon, name, and one line with the last thing it did.
-fn card_row(ui: &egui::Ui, r: Rect, resp: &egui::Response, row: &AgentRow, p: &Palette) {
+fn card_row(ui: &egui::Ui, r: Rect, resp: &egui::Response, row: &AgentRow, p: &Palette, now: i64) {
     if resp.hovered() || resp.has_focus() {
         ui.painter().rect_filled(r, 6.0, p.faint);
     }
@@ -294,13 +298,41 @@ fn card_row(ui: &egui::Ui, r: Rect, resp: &egui::Response, row: &AgentRow, p: &P
     harness_icon(ui.painter(), pos2(r.left() + 16.0, r.center().y), 20.0, row, p);
     let text_w = r.width() - 60.0;
     let name_color = if row.finished { p.text2 } else { p.text };
-    let g = widgets::elided(ui, &row.title, &theme::bold(size::UI), name_color, text_w);
+    let right = r.right() - if row.flow.is_some() { 24.0 } else { 8.0 };
+    let title_right = draw_activity_age(ui, row, now, right, r.top() + 13.0, p);
+    let g = widgets::elided(ui, &row.title, &theme::bold(size::UI), name_color, (title_right - r.left() - 34.0).max(1.0));
     ui.painter().galley(pos2(r.left() + 34.0, r.top() + 5.0), g, name_color);
     let second = row.origin.as_ref().filter(|_| row.subagent).map_or_else(|| row.last_action.clone(), |o| format!("{o} · {}", row.last_action));
     let g = widgets::elided(ui, &second, &theme::ui(size::SMALL), p.text2, text_w);
     ui.painter().galley(pos2(r.left() + 34.0, r.top() + 24.0), g, p.text2);
     if let Some(f) = row.flow {
         arrow(ui.painter(), pos2(r.right() - 12.0, r.center().y), f, p);
+    }
+}
+
+fn draw_activity_age(ui: &egui::Ui, row: &AgentRow, now: i64, right: f32, y: f32, p: &Palette) -> f32 {
+    let Some(age) = row.activity_age(now) else { return right };
+    let label = ui.fonts_mut(|fonts| fonts.layout_no_wrap(age, theme::ui(size::SMALL), p.text2));
+    let left = right - label.size().x;
+    ui.painter().galley(pos2(left, y - label.size().y / 2.0), label, p.text2);
+    left - 6.0
+}
+
+pub(crate) fn schedule_activity_ages(ctx: &egui::Context, app: &YaacApp, panel: &AgentsPanel, now: i64) {
+    if matches!(app.clock, crate::app::Clock::Story { frozen: true, .. }) {
+        return;
+    }
+    let next = panel.all().filter(|row| row.updated != 0).map(|row| {
+        let elapsed = now.saturating_sub(row.updated);
+        if elapsed < 60 {
+            60 - elapsed
+        } else {
+            let unit = if elapsed < 3600 { 60 } else if elapsed < 86_400 { 3600 } else { 86_400 };
+            unit - elapsed % unit
+        }
+    }).min();
+    if let Some(seconds) = next.and_then(|n| u64::try_from(n).ok()) {
+        ctx.request_repaint_after(std::time::Duration::from_secs(seconds));
     }
 }
 
@@ -343,9 +375,8 @@ fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, ac
     let p = app.p;
     let lines = 2 + usize::from(!row.activity.is_empty()) + usize::from(row.git.is_some());
     let h = lines as f32 * DOCK_LINE + 10.0;
-    let indent = f32::from(row.depth) * 14.0;
     let (outer, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
-    let rect = Rect::from_min_max(pos2(outer.left() + indent, outer.top()), pos2(outer.right(), outer.bottom() - 2.0));
+    let rect = Rect::from_min_max(outer.min, pos2(outer.right(), outer.bottom() - 2.0));
     let menu_open = row.key.as_ref().is_some_and(|k| app.ui.menu == Some(Menu::Context(k.clone())));
     if row.key.is_some() && (resp.hovered() || menu_open) {
         ui.painter().rect_filled(rect, 5.0, p.faint);
@@ -358,7 +389,7 @@ fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, ac
     let mut y = rect.top() + 5.0 + DOCK_LINE / 2.0;
     // Line 1: state mark, title, then the state word and the arrow at the right.
     icons::thread_mark(ui.painter(), pos2(left + 7.0, y), 14.0, &row.display, &p);
-    let mut rx = right;
+    let mut rx = draw_activity_age(ui, row, now, right, y, &p);
     if let Some(f) = row.flow {
         arrow(ui.painter(), pos2(rx - 5.0, y), f, &p);
         rx -= 14.0;
@@ -443,6 +474,7 @@ fn mark_all_as_read(ui: &mut egui::Ui, p: &Palette, panel: &AgentsPanel, actions
 pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, actions: &mut Vec<Action>) {
     let p = app.p;
     let now = app.now();
+    schedule_activity_ages(ui.ctx(), app, panel, now);
     ui.spacing_mut().interact_size.y = 16.0;
     ui.spacing_mut().item_spacing.y = 2.0;
     let w = ui.available_width();
@@ -492,8 +524,7 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
             {
                 ui.label(widgets::secondary(format!("root: {title}"), &p));
             }
-            // Alive first, the tree kept; the quiet rest folded once it is long (D168).
-            for e in docked_entries(c, panel) {
+            for e in docked_entries(c) {
                 match e {
                     DockEntry::Row(row) => docked_row(ui, app, row, now, actions),
                     DockEntry::Fold { rows, word } => {
@@ -563,7 +594,9 @@ mod tests {
             tray: false,
             updater: crate::updater::Updater::off("tests"),
         };
-        YaacApp::from_ctx(ctx, launch)
+        let mut app = YaacApp::from_ctx(ctx, launch);
+        app.clock = crate::app::Clock::Story { base: app.now(), frozen: true };
+        app
     }
 
     /// One frame with the pointer at `p`; returns the panel mode after it and the repaint

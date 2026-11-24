@@ -15,7 +15,7 @@ fn row_id(row: &AgentRow) -> String {
     )
 }
 
-fn row(app: &YaacApp, row: &AgentRow) -> Value {
+fn row(app: &YaacApp, row: &AgentRow, now: i64) -> Value {
     let git = row.git.as_ref().map(|git| {
         let changes = [
             (git.added, "+"), (git.modified, "~"), (git.deleted, "−"),
@@ -34,22 +34,26 @@ fn row(app: &YaacApp, row: &AgentRow) -> Value {
     json!({
         "id": row_id(row), "title": row.title, "canOpen": row.key.is_some(), "provider": row.provider,
         "model": row.model, "target": row.target, "origin": row.origin, "subagent": row.subagent,
-        "lastAction": row.last_action, "activity": row.activity, "mark": sidebar_view::tone(row.display.mark),
+        "lastAction": row.last_action, "activity": row.activity, "age": row.activity_age(now), "mark": sidebar_view::tone(row.display.mark),
         "markLabel": row.display.mark.word(), "attention": row.display.attention.map(|a| a.word()),
         "unseen": row.display.unseen, "finished": row.finished, "readOnly": row.display.read_only,
-        "fast": row.display.fast, "ultrafast": row.display.ultrafast, "depth": row.depth, "git": git, "actions": actions,
+        "fast": row.display.fast, "ultrafast": row.display.ultrafast, "git": git, "actions": actions,
         "logo": logo.map(|(logo, _)| crate::logos::source(logo).0), "logoColor": logo_color, "badge": badge,
         "flow": row.flow.map(|flow| match flow { Flow::Sending => "sending", Flow::Receiving => "receiving" }),
     })
 }
 
-pub(super) fn view(app: &YaacApp, map: &AttentionMap) -> Value {
+pub(super) fn view(app: &YaacApp, map: &AttentionMap, ctx: Option<&egui::Context>) -> Value {
     let Some(thread) = selected_thread(app) else {
         return json!({ "visible": false });
     };
     let Some(panel) = agents_panel(&app.client.state, map, thread) else {
         return json!({ "visible": false, "threadId": thread.address() });
     };
+    let now = app.now();
+    if let Some(ctx) = ctx {
+        crate::agents_ui::schedule_activity_ages(ctx, app, &panel, now);
+    }
     let groups: Vec<_> = agents::clusters(&panel)
         .iter()
         .map(|cluster| {
@@ -61,7 +65,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap) -> Value {
             let mut rows = Vec::new();
             let mut folded = Vec::new();
             let mut fold_label = None;
-            for entry in agents::docked_entries(cluster, &panel) {
+            for entry in agents::docked_entries(cluster) {
                 match entry {
                     DockEntry::Row(r) => rows.push(row_id(r)),
                     DockEntry::Fold { rows, word } => {
@@ -72,7 +76,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap) -> Value {
             }
             json!({
                 "id": id, "label": cluster.relation.heading(), "glyph": glyph, "count": count,
-                "rows": cluster.rows.iter().map(|r| row(app, r)).collect::<Vec<_>>(),
+                "rows": cluster.rows.iter().map(|r| row(app, r, now)).collect::<Vec<_>>(),
                 "docked": { "rowIds": rows, "foldIds": folded, "foldLabel": fold_label },
             })
         })
