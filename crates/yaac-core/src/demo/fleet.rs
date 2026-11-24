@@ -485,7 +485,8 @@ impl Fleet {
 
     /// The many agents of `Scene::ManyAgents` (D168): the orchestrator's own Codex subagents
     /// and users-service's Claude Code subagents, 24 in all, three running and one waiting.
-    /// With the fleet's six that is 30 related agents, 7 of them alive.
+    /// With the fleet's six that is 30 related agents, 8 of them alive: users-service, idle
+    /// in the fleet, waits on its running subagents here (D188).
     pub(super) fn add_many_agents(&mut self) -> Vec<ThreadKey> {
         let (orch, users) = (k(ORCH), k(USERS));
         let codex: [(&str, SubagentStatus, ThreadState, &str); 18] = [
@@ -554,7 +555,11 @@ impl Fleet {
             out.push(key);
         }
         self.set(&orch, |s| s.children += 18);
-        self.set(&users, |s| s.children += 6);
+        // Its own turn is over but two of its subagents still work: it waits on them (D188).
+        self.set(&users, |s| {
+            s.children += 6;
+            s.state = ThreadState::Waiting;
+        });
         out
     }
 

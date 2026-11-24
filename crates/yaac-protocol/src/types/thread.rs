@@ -21,7 +21,8 @@ open_enum! {
         NeedsAttention = "needsAttention",
         /// The last turn failed.
         Failed = "failed",
-        /// Blocked on another agent: a `wait` on other threads is in progress.
+        /// Blocked on another agent: a `wait` on other threads is in progress, or the thread
+        /// has no turn of its own while its harness sub-agents still work (D188).
         Waiting = "waiting",
         /// A thread started by an agent whose last turn completed normally: its work is done.
         Done = "done",

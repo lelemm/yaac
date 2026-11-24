@@ -1257,22 +1257,42 @@ export class Core {
     return this.subagentReadOnly(rt) ? this.subagentParent(rt) : rt;
   }
 
+  /**
+   * What a thread is doing (`ThreadSummary.state`). A thread with no turn of its own whose
+   * harness sub-agents still work (D151) — an orchestrator that ended its turn while its
+   * background agents run — is waiting on them, as on mesh workers (D188), until they end
+   * and the harness resumes it.
+   */
+  private stateOf(rt: ThreadRuntime, depth = 0): ThreadSummary["state"] {
+    const r = rt.record;
+    if (rt.pendingRequestCount() > 0) return "needsAttention";
+    if (r.hold) return "stopped";
+    if (rt.waiting.size > 0) return "waiting";
+    if (rt.activeTurn) return "running";
+    if (this.subagentsWorking(rt, depth)) return "waiting";
+    if (rt.lastStatus === "failed") return "failed";
+    return (r.subagent ? subagentState(r.subagent.status) : null) ??
+      (rt.lastStatus === "completed" && (r.spawnedBy || r.subagent) ? "done" : "idle");
+  }
+
+  /** Whether any of a thread's harness sub-agents is running, waiting, or needs the user. */
+  private subagentsWorking(rt: ThreadRuntime, depth: number): boolean {
+    if (depth > 8 || !rt.record.native) return false;
+    const kids = this.subagentKids.get(this.nativeKey(rt.record.instance, rt.record.native));
+    if (!kids) return false;
+    for (const id of kids) {
+      const k = this.threads.get(id);
+      if (!k || k.deleted || k === rt) continue;
+      const st = this.stateOf(k, depth + 1);
+      if (st === "running" || st === "waiting" || st === "needsAttention") return true;
+    }
+    return false;
+  }
+
   /** The sidebar summary of a thread, with `control: "free"` (applied per client). */
   summaryOf(rt: ThreadRuntime): ThreadSummary {
     const r = rt.record;
-    const state: ThreadSummary["state"] =
-      rt.pendingRequestCount() > 0
-        ? "needsAttention"
-        : r.hold
-          ? "stopped"
-        : rt.waiting.size > 0
-          ? "waiting"
-          : rt.activeTurn
-            ? "running"
-            : rt.lastStatus === "failed"
-              ? "failed"
-              : (r.subagent ? subagentState(r.subagent.status) : null) ??
-                (rt.lastStatus === "completed" && (r.spawnedBy || r.subagent) ? "done" : "idle");
+    const state = this.stateOf(rt);
     const s: ThreadSummary = {
       id: r.id,
       instance: r.instance,
@@ -1411,6 +1431,11 @@ export class Core {
     const token = this.index.token;
     for (const c of this.clients) c.notify("thread/updated", { thread: this.renderSummary(summary, holder, c.key), token });
     this.mesh?.stateChanged(rt);
+    // A sub-agent's state decides whether its parent waits on it (D188).
+    if (rt.record.subagent) {
+      const parent = this.subagentParent(rt);
+      if (parent && parent !== rt) this.updateIndex(parent);
+    }
   }
 
   broadcast(method: string, params: unknown): void {
