@@ -196,6 +196,8 @@ export class FakeProvider implements HarnessProvider {
   private requests = new Map<string, PendingRequest>();
   private external = new Map<NativeId, ExternalControl>();
   private timers = new Set<NodeJS.Timeout>();
+  /** Background sub-agents still running (`/fake subagent … | background`), stopped on dispose. */
+  private backgroundRuns = new Set<AbortController>();
   private disposed = false;
   /** Conversations deleted here (a shared store must not bring them back). */
   private removed = new Set<NativeId>();
@@ -617,7 +619,8 @@ export class FakeProvider implements HarnessProvider {
             this.addOutsideThread(step.title);
             break;
           case "subagent":
-            await this.runSubagent(native, step, pace, signal);
+            if (step.background === null) await this.runSubagent(native, step, pace, signal);
+            else this.runBackgroundSubagent(native, step, pace);
             break;
           case "usage":
             this.emit({ type: "usageUpdated", thread: native, tokens: { input: 100, output: 50, total: 150 }, context: { used: 150, window: 100000 } });
@@ -922,6 +925,7 @@ export class FakeProvider implements HarnessProvider {
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
     for (const live of this.live.values()) live.abort.abort();
+    for (const a of this.backgroundRuns) a.abort();
   }
 
   // ── The agent mesh ─────────────────────────────────────────────────────────────────────
@@ -1109,6 +1113,31 @@ export class FakeProvider implements HarnessProvider {
     return native;
   }
 
+  /**
+   * A background sub-agent (`| background <ms>`), as Claude Code's `run_in_background` Agent
+   * call: it starts in the turn, keeps running after the turn ends, and when it finishes the
+   * harness resumes the parent with a turn of its own (Claude Code's task notification).
+   */
+  private runBackgroundSubagent(parent: NativeId, step: Extract<Step, { k: "subagent" }>, pace: number): void {
+    const abort = new AbortController();
+    this.backgroundRuns.add(abort);
+    void this.runSubagent(parent, step, pace, abort.signal)
+      .then(
+        () => {
+          if (this.disposed || this.live.has(parent)) return;
+          const t = this.thread(parent);
+          t.turns += 1;
+          const turnId = `turn-${t.turns}`;
+          t.turnLog.push(turnId);
+          const live: LiveTurn = { turnId, abort: new AbortController(), steered: [], done: Promise.resolve() };
+          this.live.set(parent, live);
+          live.done = this.runTurn(parent, live, [{ k: "say", text: `Background agent finished: ${step.reply}` }], "external");
+        },
+        () => {},
+      )
+      .finally(() => this.backgroundRuns.delete(abort));
+  }
+
   /** A fake sub-agent's description; its agent id is the part of its native id after the parent's (`agent-N`). */
   private subagentInfo(native: NativeId, agentType: string, status: SubagentStatus): HarnessSubagent {
     return { agentId: native.slice(native.lastIndexOf(":") + 1), agentType, status, readOnly: SUBAGENT_READ_ONLY };
@@ -1150,6 +1179,7 @@ export class FakeProvider implements HarnessProvider {
         const ok = answer?.requestKind === "approval" && (answer.decision === "allow" || answer.decision === "allowSession");
         if (ok) await this.tool(native, turnId, `${native}-c1`, step.approve, `ran ${step.approve}`, 0, pace, signal);
       }
+      if (step.background !== null) await sleep(step.background, signal);
       await this.stream(native, turnId, `${native}-a1`, "agentMessage", step.reply, pace, signal);
     } catch (e) {
       status = "interrupted";

@@ -149,3 +149,30 @@ test("sub-agents: stored ones are listed under their parent, outside the number 
   await c.close();
   await daemon.stop("test");
 });
+
+test("sub-agents: a parent whose turn ended while its background sub-agents run is waiting, then running when the harness resumes it", async () => {
+  const home = tmpHome();
+  const daemon = await startDaemon(home);
+  const c = await client(daemon);
+  const { threadId, turnId } = await startThread(c, "/fake say dispatched\n/fake subagent general-purpose | Review the branch | Looks good. | background 600");
+  await c.request("thread/subscribe", { threadId, epoch: 1, afterSeq: 0 });
+  await waitTurnDone(c, threadId, turnId);
+  const parentUpdates = () => c.notifications.filter((n) => n.method === "thread/updated" && n.params.thread.id === threadId).map((n) => n.params.thread);
+
+  // Its own turn is over, but its background sub-agent still works: it waits on it, not idle.
+  const kid = await until(async () => (await summaries(c)).find((s) => s.subagent?.status === "running"), "the running background sub-agent");
+  assert.equal(kid.state, "running");
+  const parent = (await summaries(c)).find((s) => s.id === threadId);
+  assert.equal(parent.state, "waiting", "waiting on its sub-agent, not shown as stopped");
+  assert.equal(daemon.core.thread(threadId)!.activeTurn, null, "no turn of its own runs");
+
+  // The sub-agent finishes; the harness resumes the parent with a turn of its own, then it ends.
+  await until(() => parentUpdates().some((s) => s.state === "running"), "the parent resumed");
+  await until(async () => (await summaries(c)).find((s) => s.id === threadId)?.state === "idle", "the parent idle once all is over");
+  const states = parentUpdates().map((s) => s.state).filter((s, i, a) => s !== a[i - 1]);
+  const afterWait = states.slice(states.indexOf("waiting"));
+  assert.deepEqual(afterWait.filter((s) => s !== "idle").slice(0, 2), ["waiting", "running"], `states: ${states.join(", ")}`);
+  assert.equal((await summaries(c)).find((s) => s.id === kid.id).state, "done");
+  await c.close();
+  await daemon.stop("test");
+});

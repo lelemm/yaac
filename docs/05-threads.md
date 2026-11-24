@@ -155,7 +155,12 @@ thread that started it. *Proposed* (P190–P194):
   newest first; a running one is never cut.
 - **Live.** It appears as soon as the harness reports it (Claude Code: the `task_started` of
   the parent's query; Codex: `thread/started`), runs a turn while it works, and its state
-  follows the harness (running, done, failed, stopped). Its transcript streams while YAAC runs
+  follows the harness (running, done, failed, stopped). While any of a thread's sub-agents is
+  running, waiting or needs the user and the thread has no turn of its own — an orchestrator
+  that ended its turn while its background agents work — the thread's state is `waiting`, as
+  on mesh workers (D188), not `idle`; a mesh `wait` on it is not over either. When they end
+  and the harness resumes it (Claude Code's task notification turn), it runs as usual.
+  Its transcript streams while YAAC runs
   the parent (Claude Code forwards the subagent's own messages); otherwise it is read again
   from the harness each time it is opened, like a thread in use elsewhere.
 - **What the user can do.** Open and read it, always. It is **read-only**: neither harness

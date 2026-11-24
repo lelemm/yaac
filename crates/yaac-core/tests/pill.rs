@@ -235,8 +235,9 @@ fn the_demo_orchestrator_with_thirty_agents() {
     let p = agents_panel(&c.state, &map, &threads::orchestrator()).unwrap();
     assert_eq!(p.all().count(), 30);
     let pl = pill(&p, PILL_MAX);
-    // Seven alive agents fill the cap; the 23 others are "more".
-    assert_eq!((pl.icons(), pl.more.hidden, pl.more.alive), (7, 23, 0));
+    // Seven of the eight alive agents fill the cap; the 23 others are "more", one of them
+    // alive (users-service, waiting on its subagents, D188).
+    assert_eq!((pl.icons(), pl.more.hidden, pl.more.alive), (7, 23, 1));
     assert!(pl.clusters.iter().flat_map(|c| c.rows.iter()).all(|r| Liveness::of(r).alive()));
     assert_eq!(pl.clusters[0].rows[0].title, "index-rebuild", "needs you first");
     let clusters = clusters(&p);
@@ -250,4 +251,27 @@ fn the_demo_orchestrator_with_thirty_agents() {
     let first_read_completion = docked.iter().position(|row| row.display.mark == Mark::Done && !row.display.unseen).unwrap();
     assert!(docked[first_read_completion..].iter().all(|row| row.display.mark == Mark::Done && !row.display.unseen));
     assert!(docked[first_read_completion..].windows(2).all(|pair| pair[0].updated >= pair[1].updated));
+}
+
+/// D188: a thread whose turn ended while its harness subagents still work shows as waiting
+/// (the hourglass and "Waiting"), not idle with no mark, wherever it is drawn.
+#[test]
+fn a_parent_waiting_on_its_harness_subagents_shows_as_waiting() {
+    use yaac_core::attention::{AttentionMap, display};
+    use yaac_core::demo::{Scene, threads};
+    use yaac_core::header::header;
+    let (mut c, hub) = common::boot();
+    hub.play(Scene::ManyAgents);
+    common::settle(&mut c, &hub);
+    let users = threads::users();
+    let running = c.state.threads.keys().filter(|k| c.state.summary(k).is_some_and(|s| {
+        s.subagent.as_ref().is_some_and(|a| a.status == yaac_protocol::SubagentStatus::Running) && s.spawned_by.as_ref() == Some(&users.address())
+    })).count();
+    assert!(running > 0, "users-service has running subagents");
+    let map = AttentionMap::compute(&c.state);
+    assert_eq!(display(&c.state, &map, &users).mark, Mark::Waiting);
+    assert_eq!(header(&c.state, &map, &users).unwrap().tag.map(|t| t.0).as_deref(), Some("Waiting"));
+    let p = yaac_core::agents::agents_panel(&c.state, &map, &threads::orchestrator()).unwrap();
+    let row = p.all().find(|r| r.key.as_ref() == Some(&users)).unwrap();
+    assert_eq!(Liveness::of(row), Liveness::Waiting);
 }
