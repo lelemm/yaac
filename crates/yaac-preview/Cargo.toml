@@ -1,0 +1,23 @@
+[package]
+name = "yaac-preview"
+description = "Windowless web preview for the YAAC egui window"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
+egui = { version = "0.37.0", default-features = false }
+
+libloading = "0.8"
+memmap2 = "0.9"
+tempfile = "3"
+serde.workspace = true
+serde_json.workspace = true
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

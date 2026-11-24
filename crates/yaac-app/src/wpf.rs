@@ -5,6 +5,7 @@ use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
 #[cfg(windows)]
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,7 @@ use crate::app::{Action, YaacApp};
 use crate::theme::ThemeChoice;
 
 mod agents;
+mod browser;
 mod composer;
 mod dialogs;
 mod header;
@@ -155,6 +157,7 @@ pub(super) fn controller_main(scenario: Option<&str>, theme: Option<&str>) -> Ex
 enum Input {
     Command(Value),
     Wake,
+    BrowserWake,
     Closed,
 }
 
@@ -184,6 +187,16 @@ impl Connection {
 
 fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) -> io::Result<()> {
     let Connection { sender, receiver } = commands;
+    let browser_dirty = Arc::new(AtomicBool::new(false));
+    let wake_browser = {
+        let sender = sender.clone();
+        let dirty = browser_dirty.clone();
+        move || {
+            if !dirty.swap(true, Ordering::AcqRel) {
+                let _ = sender.try_send(Input::BrowserWake);
+            }
+        }
+    };
     let ctx = egui::Context::default();
     let deadline = Arc::new(Mutex::new(None::<Instant>));
     let repaint = deadline.clone();
@@ -212,6 +225,9 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
     let mut selection_epoch = 0;
     let mut markdown = markdown_view::MarkdownView::default();
     let mut preview_markdown = markdown_view::MarkdownView::default();
+    let mut browser = browser::BrowserPipe::default();
+    let mut refresh_browser = true;
+    let mut browser_deadline = None;
     let result = (|| loop {
         let due = deadline
             .lock()
@@ -219,6 +235,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
             .is_some_and(|at| at <= Instant::now());
         if once || due {
             once = false;
+            refresh_browser = true;
             let mut next = deadline.lock().expect("repaint deadline");
             if next.is_some_and(|at| at <= Instant::now()) {
                 *next = None;
@@ -349,7 +366,19 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                 previous = current;
             }
         }
-        let next = *deadline.lock().expect("repaint deadline");
+        let browser_woke = browser_dirty.swap(false, Ordering::AcqRel);
+        if std::mem::take(&mut refresh_browser)
+            || browser_woke
+            || browser_deadline.is_some_and(|at| at <= Instant::now())
+        {
+            browser_deadline = browser
+                .update(&mut app, window_shown, wake_browser.clone(), &mut stdout)?
+                .and_then(|delay| Instant::now().checked_add(delay));
+        }
+        let next = (*deadline.lock().expect("repaint deadline"))
+            .into_iter()
+            .chain(browser_deadline)
+            .min();
         let input = match next {
             Some(at) => receiver.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => receiver
@@ -360,6 +389,13 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
             Ok(Input::Command(frame)) => {
                 let command = string(&frame, "command");
                 let payload = &frame["payload"];
+                if command.starts_with("browser.") {
+                    match browser.command(&mut app, window_shown, command, payload) {
+                        Ok(changed) => refresh_browser |= changed,
+                        Err(message) => write_frame(&mut stdout, &json!({ "error": message }))?,
+                    }
+                    continue;
+                }
                 if command == "shell.visible" {
                     window_shown = payload["shown"] == true;
                     if !window_shown {
@@ -405,7 +441,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                 // changes in their original order.
                 once = true;
             }
-            Ok(Input::Wake) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(Input::Wake | Input::BrowserWake) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Ok(Input::Closed) | Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
         }
     })();

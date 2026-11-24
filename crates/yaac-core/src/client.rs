@@ -156,6 +156,7 @@ enum Call {
     RateLimits,
     /// A `hub/ssh/*` step: the answer goes to the setup backend under this id.
     Ssh(RpcId),
+    Preview(RpcId),
     /// `hub/ssh/records`.
     SshRecords,
     /// `hub/wsl/distros`.
@@ -226,6 +227,10 @@ pub struct Client {
     /// The threads last reported to the hub as shown (`hub/view/showing`, D114); `None`
     /// until the first report after attaching.
     showing: Option<Vec<ThreadKey>>,
+    /// Preview proxy, forward and discovery results for the window.
+    preview_replies: Vec<(RpcId, Result<Value, String>)>,
+    /// Agent browser calls from the hub (`hub/browser/call`), not yet taken by the window.
+    browser_calls: Vec<(RpcId, attach::BrowserCallParams)>,
     /// Answers to `hub/ssh/*` steps, for the setup backend.
     ssh_replies: Vec<(RpcId, Result<Value, ErrorObject>)>,
     /// The hub's SSH records, once it has answered `hub/ssh/records`.
@@ -291,6 +296,8 @@ impl Client {
             dirty: std::collections::BTreeSet::new(),
             orphans: std::collections::VecDeque::new(),
             showing: None,
+            preview_replies: Vec::new(),
+            browser_calls: Vec::new(),
             ssh_replies: Vec::new(),
             ssh_wire: None,
             ssh_zone: crate::time::Zone::UTC,
@@ -333,6 +340,31 @@ impl Client {
         self.pending.insert(id.clone(), call);
         self.link.send(Message::request(id.clone(), method, params));
         id
+    }
+
+    /// Queue a preview attach request on the existing hub link.
+    pub fn preview_request(&mut self, method: &str, params: Value) -> RpcId {
+        self.request(method, params, Call::Preview(RpcId::Number(self.next_id)))
+    }
+
+    /// Collect completed preview attach requests without waiting for the hub.
+    pub fn take_preview_replies(&mut self) -> Vec<(RpcId, Result<Value, String>)> {
+        std::mem::take(&mut self.preview_replies)
+    }
+
+    /// Agent browser calls the hub offered this window (docs/11-preview.md#agents). Each
+    /// must be answered once with [`Client::answer_browser_call`].
+    pub fn take_browser_calls(&mut self) -> Vec<(RpcId, attach::BrowserCallParams)> {
+        std::mem::take(&mut self.browser_calls)
+    }
+
+    /// Answer an agent browser call. `method_not_found` makes the hub offer the call to
+    /// another window.
+    pub fn answer_browser_call(&mut self, id: RpcId, outcome: Result<yaac_protocol::BrowserCallResult, ErrorObject>) {
+        self.link.send(match outcome {
+            Ok(result) => Message::Response { id, result: serde_json::to_value(result).unwrap_or(Value::Null) },
+            Err(error) => Message::Error { id: Some(id), error },
+        });
     }
 
     fn routed(&mut self, target: &TargetId, method: &str, params: Value, call: Call) {
@@ -426,6 +458,15 @@ impl Client {
                 }
             }
             Message::Notification { method, params } => self.on_notification(&method, params),
+            Message::Request { id, method, params } if method == attach::names::BROWSER_CALL => {
+                match serde_json::from_value::<attach::BrowserCallParams>(params) {
+                    Ok(call) => self.browser_calls.push((id, call)),
+                    Err(e) => {
+                        let error = ErrorObject::new(ErrorCode::InvalidParams, format!("bad {method}: {e}"));
+                        self.link.send(Message::Error { id: Some(id), error });
+                    }
+                }
+            }
             Message::Request { id, method, .. } => {
                 let err = ErrorObject::new(ErrorCode::MethodNotFound, format!("the window does not serve {method}"));
                 self.link.send(Message::Error { id: Some(id), error: err });
@@ -606,6 +647,7 @@ impl Client {
             }
             // The update's progress arrives with the target's state.
             Call::Respond { .. } | Call::Ignore | Call::UpdateDaemon(_) => {}
+            Call::Preview(id) => self.preview_replies.push((id, Ok(result))),
             Call::Ssh(id) => self.ssh_replies.push((id, Ok(result))),
             Call::SshRecords => self.on_ssh_records(&result),
             Call::WslDistros => self.on_wsl_distros(result),
@@ -1071,6 +1113,7 @@ impl Client {
                     self.error(None, format!("The harness home was not changed: {}", error.message));
                 }
             }
+            Call::Preview(id) => self.preview_replies.push((id, Err(error.message.clone()))),
             Call::Ssh(id) => self.ssh_replies.push((id, Err(error.clone()))),
             Call::WslDistros => self.on_wsl_distros_error(error),
             c @ (Call::ForgePrs(_) | Call::ForgePrepare(_) | Call::ForgeCreate(_) | Call::ForgeAsk(_)) => self.on_forge_error(c, error),

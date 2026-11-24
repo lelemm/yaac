@@ -57,6 +57,20 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key
         // The first line sits in the window's title row (D104); room is left for its buttons.
         .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 28, right: 127, top: 7, bottom: 6 }))
         .show(ui, |ui| header_view(ui, app, map, key, actions));
+    if app.browsers.areas.contains_key(key) {
+        if let Some(chat) = crate::preview_ui::layout(ui, app, key) {
+            ui.scope_builder(egui::UiBuilder::new().max_rect(chat), |ui| {
+                ui.set_clip_rect(chat);
+                body(ui, app, map, key, now, actions);
+            });
+        }
+    } else {
+        body(ui, app, map, key, now, actions);
+    }
+}
+
+fn body(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
+    let p = app.p;
     Panel::bottom("thread-composer")
         .show_separator_line(false)
         .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 10 }))
@@ -119,7 +133,7 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
         }
         ui.add_space(2.0);
         // The tag, and the update item when the title row shows one (D136).
-        let tag_w = if h.tag.is_some() { 230.0 } else { 0.0 } + if h.budget.is_some() { 190.0 } else { 0.0 } + app.updater.title_width();
+        let tag_w = if h.tag.is_some() { 230.0 } else { 0.0 } + if h.budget.is_some() { 190.0 } else { 0.0 } + 44.0 + app.updater.title_width();
         ui.scope(|ui| {
             ui.set_max_width((ui.available_width() - tag_w).max(80.0));
             // Not selectable: the title is part of the title row, which drags the window.

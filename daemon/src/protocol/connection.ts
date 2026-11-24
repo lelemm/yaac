@@ -56,6 +56,9 @@ export interface ConnectionView {
   backlogBytes(): number;
   /** Calls `listener` once, when the outbound backlog is below the low-water mark. */
   whenWritable(listener: () => void): void;
+  openStream(stream: number, credit: number): void;
+  sendData(stream: number, bytes: Buffer, drained: () => void): void;
+  cancelStream(stream: number): void;
   grantCredit(stream: number, bytes: number): void;
   /**
    * A request this daemon originates (the mesh: `mesh/relay`, `mesh/query`, `mesh/usage`).
@@ -327,6 +330,7 @@ export class ServerConnection implements ConnectionView {
     this.clientInfo = client;
     const result = {
       protocol: negotiated.answer(),
+      features: this.dialect.features().fold(["portForward"]),
       schemaHash: this.dialect.schemaHash(),
       daemon: this.host.daemonInfo(),
       target: this.host.targetFacts(),
@@ -362,6 +366,19 @@ export class ServerConnection implements ConnectionView {
 
   sendEvent(params: ThreadEventParams): void {
     this.notify(NOTIFICATIONS.THREAD_EVENT, params);
+  }
+
+  openStream(stream: number, credit: number): void {
+    this.scheduler.openStream(stream, credit);
+  }
+
+  sendData(stream: number, bytes: Buffer, drained: () => void): void {
+    this.scheduler.sendData(stream, bytes, drained);
+    this.flush();
+  }
+
+  cancelStream(stream: number): void {
+    this.scheduler.cancelStream(stream);
   }
 
   grantCredit(stream: number, bytes: number): void {

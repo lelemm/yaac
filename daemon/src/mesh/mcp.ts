@@ -43,7 +43,7 @@ export function createMeshServer(call: ToolCaller, version = "1"): McpServer {
     } catch (e) {
       result = { text: readable(e), isError: true };
     }
-    return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) };
+    return { content: result.image ? [result.image] : [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) };
   });
   return mcp;
 }
@@ -122,7 +122,7 @@ export function serveBridge(socket: Socket, handle: (ticket: string, call: MeshT
           .catch((e): MeshToolResult => ({ text: readable(e), isError: true }))
           .then((r) => {
             inflight.delete(id);
-            write({ t: "result", id, text: r.text, isError: r.isError });
+            write({ t: "result", id, ...r });
           });
       }
     }

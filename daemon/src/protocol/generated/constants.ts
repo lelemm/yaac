@@ -4,6 +4,8 @@
 // Protocol constants and the method catalogue.
 
 import type {
+  BrowserCallParams,
+  BrowserCallResult,
   CommandLogsParams,
   CommandLogsResult,
   CommandStopParams,
@@ -45,6 +47,7 @@ import type {
   MeshUsageParams,
   MeshUsageResult,
   ModelBestUseSetParams,
+  PreviewPortsResult,
   ProjectCreateParams,
   ProjectDeleteParams,
   ProjectListParams,
@@ -100,6 +103,9 @@ import type {
   ThreadUpdateParams,
   ThreadUpdateResult,
   ThreadUpdatedParams,
+  TunnelCloseParams,
+  TunnelOpenParams,
+  TunnelOpenResult,
   TurnInterruptParams,
   TurnQueueCancelParams,
   TurnQueueEditParams,
@@ -180,6 +186,9 @@ export const METHODS = {
   TURN_QUEUE_CANCEL: "turn/queueCancel",
   TURN_QUEUE_PROMOTE: "turn/queuePromote",
   REQUEST_RESPOND: "request/respond",
+  BROWSER_CALL: "browser/call",
+  TUNNEL_OPEN: "tunnel/open",
+  PREVIEW_PORTS: "preview/ports",
   UPLOAD_BEGIN: "upload/begin",
   UPLOAD_END: "upload/end",
   UPLOAD_CANCEL: "upload/cancel",
@@ -216,6 +225,7 @@ export const NOTIFICATIONS = {
   THREAD_EVENT: "thread/event",
   PROJECT_UPDATED: "project/updated",
   DISCOVERY_UPDATED: "discovery/updated",
+  TUNNEL_CLOSE: "tunnel/close",
   STREAM_CREDIT: "stream/credit",
   FORGE_PRS_CHANGED: "forge/prs/changed",
   PROVIDER_RATE_LIMITS_UPDATED: "provider/rateLimits/updated",
@@ -263,6 +273,8 @@ export const ERROR_CODES = {
   PARSE_ERROR: "parse_error",
   INVALID_REQUEST: "invalid_request",
   METHOD_NOT_FOUND: "method_not_found",
+  CONNECTION_REFUSED: "connection_refused",
+  NO_WINDOW: "no_window",
   INVALID_PARAMS: "invalid_params",
   INTERNAL_ERROR: "internal_error",
 } as const;
@@ -355,6 +367,12 @@ export interface RequestMap {
   "turn/queuePromote": { params: TurnQueueCancelParams; result: TurnStartResult };
   /** Answer a pending approval, question, or form. */
   "request/respond": { params: RequestRespondParams; result: Empty };
+  /** Inspect the calling thread’s browser. */
+  "browser/call": { params: BrowserCallParams; result: BrowserCallResult };
+  /** Connect a loopback preview socket and exchange initial receive windows. */
+  "tunnel/open": { params: TunnelOpenParams; result: TunnelOpenResult };
+  /** Discover preview servers owned by the target user. */
+  "preview/ports": { params: Empty; result: PreviewPortsResult };
   /** Declare an upload; returns its id and data stream, or that the content exists. */
   "upload/begin": { params: UploadBeginParams; result: UploadBeginResult };
   /** All bytes sent: verify the hash. */
@@ -423,6 +441,8 @@ export interface NotificationMap {
   "project/updated": ProjectListResult;
   /** The discovery caps changed. */
   "discovery/updated": DiscoveryCapsResult;
+  /** Either peer closed its preview socket. */
+  "tunnel/close": TunnelCloseParams;
   /** The receiver of a data stream grants more credit. */
   "stream/credit": StreamCreditParams;
   /** A branch's pull requests changed (or were asked again after a push or commit). */
@@ -494,6 +514,9 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "turn/queueCancel": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "turn/queuePromote": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "request/respond": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "browser/call": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
+  "tunnel/open": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "preview/ports": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "upload/begin": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "upload/end": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "upload/cancel": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
@@ -536,6 +559,7 @@ export const NOTIFICATION_INFO: { readonly [N in keyof NotificationMap]: Notific
   "thread/event": { direction: "daemonToHost", class: "control" },
   "project/updated": { direction: "daemonToHost", class: "control" },
   "discovery/updated": { direction: "daemonToHost", class: "control" },
+  "tunnel/close": { direction: "both", class: "control" },
   "stream/credit": { direction: "both", class: "control" },
   "forge/prs/changed": { direction: "daemonToHost", class: "control" },
   "provider/rateLimits/updated": { direction: "daemonToHost", class: "control" },

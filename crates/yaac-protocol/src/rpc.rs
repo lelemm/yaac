@@ -93,6 +93,10 @@ open_enum! {
         InvalidRequest = "invalid_request",
         /// The method is not known.
         MethodNotFound = "method_not_found",
+        /// No server accepted the TCP connection on this loopback port.
+        ConnectionRefused = "connection_refused",
+        /// No window can service the browser request.
+        NoWindow = "no_window",
         /// The params did not decode.
         InvalidParams = "invalid_params",
         /// Something went wrong on the other side.

@@ -704,6 +704,8 @@ struct Cc {
 /// The window.
 pub(crate) struct YaacApp {
     pub client: Client,
+    pub browsers: crate::preview_controller::Browsers,
+    pub preview_ui: crate::preview_ui::Renderer,
     pub demo: Option<DemoHub>,
     pub scenario: Scenario,
     pub ui: UiState,
@@ -879,6 +881,8 @@ impl YaacApp {
             debug_copy: std::env::var("YAAC_DEBUG_COPY").ok().filter(|t| !t.is_empty()),
             shell,
             display: launch.display,
+            browsers: Default::default(),
+            preview_ui: Default::default(),
             updater: launch.updater,
             ctx: cc.egui_ctx,
         };
@@ -899,6 +903,8 @@ impl YaacApp {
 
     pub(crate) fn reset_demo(&mut self, scenario: Scenario) {
         let (c, h) = demo_client(scenario);
+        self.browsers = Default::default();
+        self.preview_ui = Default::default();
         self.client = c;
         self.demo = Some(h);
         self.scenario = scenario;
@@ -1541,6 +1547,8 @@ impl YaacApp {
                     let attach = Arc::new(Mutex::new(HubAttach::restart(h.config.clone(), waker(&self.ctx))));
                     h.attach = attach.clone();
                     h.restarted = true;
+                    self.browsers = Default::default();
+                    self.preview_ui = Default::default();
                     self.client = hub_client(&attach);
                 }
             }
@@ -1551,6 +1559,8 @@ impl YaacApp {
                 // Attach to nothing: this window is older than the hub.
                 let mut c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
                 c.state.hub.outcome = HelloOutcome::WindowOutdated { message };
+                self.browsers = Default::default();
+                self.preview_ui = Default::default();
                 self.client = c;
                 self.hub = None;
             }
@@ -1778,6 +1788,13 @@ impl eframe::App for YaacApp {
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.upkeep(ctx);
+        let repaint = ctx.clone();
+        self.browsers.check_runtime(move || repaint.request_repaint());
+        let visible = self.client.state.selected_thread().filter(|_| !self.ui.settings && !self.shell.hidden && ctx.input(|i| i.viewport().visible() != Some(false))).cloned();
+        if let Some(delay) = self.browsers.tick(&mut self.client, visible.as_ref(), std::time::Instant::now()) {
+            ctx.request_repaint_after(delay);
+        }
+        self.preview_ui.sync(&self.browsers, visible.as_ref());
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
@@ -1822,7 +1839,7 @@ impl eframe::App for YaacApp {
             if escape {
                 self.ui.ultrafast_confirm = None;
             }
-        } else if !self.images.is_open() {
+        } else if !self.images.is_open() && !self.preview_ui.page_focus.is_some_and(|id| ctx.memory(|m| m.has_focus(id))) {
             self.keyboard(&ctx, &mut actions);
         }
         let map = AttentionMap::compute(&self.client.state);
@@ -1844,6 +1861,7 @@ impl eframe::App for YaacApp {
             crate::shell::show(ui, self, &map, now, &mut actions, frame);
         }
         crate::shell::window_error_notice(&ctx, self, window.width(), &mut actions);
+        crate::titlebar::panes(ui, window, self);
         crate::titlebar::buttons(ui, window, &p);
         match crate::titlebar::update(ui, window, &p, &self.updater) {
             Some(crate::updater::CaptionAction::Download) => self.updater.download(),

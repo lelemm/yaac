@@ -226,6 +226,7 @@ export interface MeshToolCall {
 }
 
 export interface MeshToolResult {
+  image?: { type: "image"; mimeType: "image/png"; data: string };
   text: string;
   isError: boolean;
 }

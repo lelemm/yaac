@@ -727,6 +727,17 @@ Design choices that serve the budget:
   and a `wgpu` backend; both are GPU-accelerated. Both are built in, and the user picks one
   ([the renderer](#the-renderer)); *Automatic* is OpenGL through wgpu (D132): the lowest memory and near-lowest CPU while things move.
 
+**Web preview.** The optional `preview` feature loads Chromium in a dedicated browser host on
+the first tab. The Rust controller releases that process after the last tab closes. The hub
+and ordinary window do not load the CEF library. On Linux the helper uses the YAAC executable
+with a subprocess flag. On Windows the CEF sandbox bootstrap loads the matching YAAC adapter
+DLL. The pinned minimal x64 downloads are 333 MB for Linux and 175 MB for Windows (compressed,
+decimal). The staged Windows runtime occupies approximately 441 MB. Runtime files are excluded
+from the stripped YAAC executable budget. Active-preview memory belongs in whole-tree
+measurements. The helper publishes premultiplied BGRA through shared memory and sends a pipe
+notification when a surface changes. The egui adapter updates the showing viewport's texture
+through the common texture API for glow, wgpu and software. [Web preview](11-preview.md#the-browser-host)
+
 ### The renderer
 
 D128. The window can draw with OpenGL through `glow`, or with `wgpu` on Direct3D 12, Vulkan or

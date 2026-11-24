@@ -46,7 +46,7 @@ fi
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$root/target}"
 # shellcheck disable=SC2086 # $features is a list of words
-cargo build --release --locked --target "$target" -p yaac-app $features
+cargo build --release --locked --target "$target" -p yaac-app --features preview $features
 
 mkdir -p "$out"
 cp "$CARGO_TARGET_DIR/$target/release/yaac.exe" "$out/yaac.exe"

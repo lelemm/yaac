@@ -1,0 +1,60 @@
+<UserControl x:Class="Yaac.WpfPreview.Views.BrowserView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ClipToBounds="True" Background="{DynamicResource YaacCanvas}">
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+    </Grid.RowDefinitions>
+    <Border Background="{DynamicResource YaacPanel}" BorderBrush="{DynamicResource YaacRule}"
+            BorderThickness="0,0,0,1">
+      <ScrollViewer x:Name="TabScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                    Focusable="False">
+        <StackPanel x:Name="TabStrip" Orientation="Horizontal" Margin="3,3,3,2" />
+      </ScrollViewer>
+    </Border>
+    <Border Grid.Row="1" Background="{DynamicResource YaacPanel}" Padding="4"
+            BorderBrush="{DynamicResource YaacRule}" BorderThickness="0,0,0,1">
+      <StackPanel>
+        <DockPanel>
+          <Button x:Name="Back" Style="{StaticResource YaacQuietButton}" Content="‹" ToolTip="Back"
+                  AutomationProperties.Name="Back" Padding="6,2" />
+          <Button x:Name="Forward" Style="{StaticResource YaacQuietButton}" Content="›" ToolTip="Forward"
+                  AutomationProperties.Name="Forward" Padding="6,2" />
+          <Button x:Name="Reload" Style="{StaticResource YaacQuietButton}" Content="⟳" ToolTip="Reload"
+                  AutomationProperties.Name="Reload" Padding="6,2" />
+          <TextBox x:Name="AddressField" Margin="4,0,0,0" VerticalContentAlignment="Center"
+                   AutomationProperties.Name="Address" />
+        </DockPanel>
+        <WrapPanel Margin="0,2,0,0">
+          <Button x:Name="External" Content="Open in browser" Style="{StaticResource YaacQuietButton}" Padding="6,2" />
+          <Button x:Name="Inspect" Content="Inspect" ToolTip="Inspect (F12)"
+                  Style="{StaticResource YaacQuietButton}" Padding="6,2" />
+          <Button x:Name="Fullscreen" Content="Full screen" Style="{StaticResource YaacQuietButton}" Padding="6,2" />
+        </WrapPanel>
+        <TextBlock x:Name="ErrorBanner" TextWrapping="Wrap" Visibility="Collapsed"
+                   Foreground="{DynamicResource YaacFailure}" Margin="4,3" />
+      </StackPanel>
+    </Border>
+    <Grid Grid.Row="2">
+      <Grid x:Name="Surface" Background="{DynamicResource YaacCanvas}" ClipToBounds="True"
+            Visibility="Collapsed" AutomationProperties.Name="Browser page">
+        <Image x:Name="Page" Stretch="Fill" IsHitTestVisible="False" />
+        <Canvas IsHitTestVisible="False">
+          <Image x:Name="PopupImage" Stretch="Fill" Visibility="Collapsed" />
+        </Canvas>
+        <TextBox x:Name="PageInput" Width="1" Height="1" Padding="0" Opacity="0" IsHitTestVisible="False"
+                 HorizontalAlignment="Left" VerticalAlignment="Top" AutomationProperties.Name="Browser page input" />
+      </Grid>
+      <ScrollViewer x:Name="Landing" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="16">
+          <TextBlock x:Name="LandingStatus" TextWrapping="Wrap" Margin="0,0,0,8"
+                     Foreground="{DynamicResource YaacMuted}" />
+          <StackPanel x:Name="PortList" />
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
+  </Grid>
+</UserControl>

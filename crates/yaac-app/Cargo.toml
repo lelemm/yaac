@@ -20,6 +20,7 @@ default = ["glow", "wgpu", "hub"]
 # The real hub: `yaac hub` and attaching to it. Without it the binary runs only `--demo`
 # (a window-only build for UI work).
 hub = ["dep:yaac-hub"]
+preview = ["dep:yaac-preview"]
 # Both renderers are built in and chosen at start (D128, docs/02-architecture.md#the-renderer):
 # OpenGL through glow, the default (smaller and lighter);
 glow = ["eframe/glow"]
@@ -28,10 +29,12 @@ glow = ["eframe/glow"]
 wgpu = ["eframe/wgpu"]
 
 [dependencies]
+yaac-preview = { path = "../yaac-preview", optional = true }
 yaac-core = { path = "../yaac-core" }
 yaac-protocol = { path = "../yaac-protocol" }
 yaac-hub = { path = "../yaac-hub", optional = true }
 serde_json.workspace = true
+url = "2.5"
 # `clipboard`: the system clipboard for copy and plain-text paste (egui-winit's arboard and,
 # on Wayland, smithay-clipboard).
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "accesskit", "wayland", "x11", "clipboard"] }

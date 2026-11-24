@@ -274,11 +274,378 @@ export type BackendOrigin = "foundRunning" | "startedByYaac";
 export type BackendPreference = "auto" | "daemon" | "sdk";
 
 /**
+ * Browser request on the calling thread's tabs.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type BrowserAction = ({
+  kind: "list";
+} & Empty) | ({
+  kind: "screenshot";
+} & BrowserScreenshotParams) | ({
+  kind: "snapshot";
+} & BrowserTabParams) | ({
+  kind: "console";
+} & BrowserLogParams) | ({
+  kind: "network";
+} & BrowserLogParams) | ({
+  kind: "open";
+} & BrowserOpenParams) | ({
+  kind: "close";
+} & BrowserTabParams) | ({
+  kind: "navigate";
+} & BrowserNavigateParams) | ({
+  kind: "click";
+} & BrowserClickParams) | ({
+  kind: "type";
+} & BrowserTypeParams) | ({
+  kind: "press";
+} & BrowserPressParams) | ({
+  kind: "eval";
+} & BrowserEvalParams);
+
+/**
+ * A request from the thread authenticated by yaacd.
+ */
+export interface BrowserCallParams {
+  /**
+   * Operation on this thread’s tabs.
+   */
+  action: BrowserAction;
+  /**
+   * Derived from the harness attachment ticket.
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * Browser response; `kind` matches the request.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type BrowserCallResult = ({
+  kind: "list";
+} & BrowserTabs) | ({
+  kind: "screenshot";
+} & BrowserScreenshot) | ({
+  kind: "snapshot";
+} & BrowserSnapshot) | ({
+  kind: "console";
+} & BrowserConsole) | ({
+  kind: "network";
+} & BrowserNetwork) | ({
+  kind: "open";
+} & BrowserTab) | ({
+  kind: "close";
+} & Empty) | ({
+  kind: "navigate";
+} & BrowserTab) | ({
+  kind: "click";
+} & Empty) | ({
+  kind: "type";
+} & Empty) | ({
+  kind: "press";
+} & Empty) | ({
+  kind: "eval";
+} & BrowserEvalResult);
+
+/**
+ * Click an element (snapshot reference or CSS selector) or a point in CSS pixels.
+ */
+export interface BrowserClickParams {
+  /**
+   * Element reference from the latest snapshot.
+   */
+  ref?: string | null;
+  /**
+   * CSS selector; the first match is used.
+   */
+  selector?: string | null;
+  /**
+   * Opaque identifier scoped to the calling thread.
+   */
+  tab: string;
+  /**
+   * Horizontal page position, with `y`.
+   */
+  x?: number | null;
+  /**
+   * Vertical page position, with `x`.
+   */
+  y?: number | null;
+}
+
+/**
+ * Console entries since the requested cursor.
+ */
+export interface BrowserConsole {
+  /**
+   * Next read position.
+   */
+  cursor: number;
+  /**
+   * Recorded messages.
+   */
+  entries: BrowserConsoleEntry[];
+}
+
+/**
+ * Console message or uncaught exception.
+ */
+export interface BrowserConsoleEntry {
+  /**
+   * Console severity or exception.
+   */
+  level: string;
+  /**
+   * Message text.
+   */
+  text: string;
+}
+
+/**
+ * Evaluate JavaScript in the page.
+ */
+export interface BrowserEvalParams {
+  /**
+   * An expression; a promise is awaited.
+   */
+  expression: string;
+  /**
+   * Opaque identifier scoped to the calling thread.
+   */
+  tab: string;
+}
+
+/**
+ * The JSON value of an evaluated expression.
+ */
+export interface BrowserEvalResult {
+  /**
+   * JSON result; `null` for `undefined` and values JSON cannot hold.
+   */
+  value?: unknown;
+}
+
+/**
+ * A history step or reload.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type BrowserHistory = "back" | "forward" | "reload";
+
+/**
+ * Read a tab’s bounded diagnostics buffer.
+ */
+export interface BrowserLogParams {
+  /**
+   * Resume position returned by the preceding read.
+   */
+  cursor?: number | null;
+  /**
+   * Opaque identifier scoped to the calling thread.
+   */
+  tab: string;
+}
+
+/**
+ * Load an address or move in history; exactly one of `url` and `history`.
+ */
+export interface BrowserNavigateParams {
+  /**
+   * History step or reload.
+   */
+  history?: BrowserHistory | null;
+  /**
+   * Opaque identifier scoped to the calling thread.
+   */
+  tab: string;
+  /**
+   * Address to load, as for `open`.
+   */
+  url?: string | null;
+}
+
+/**
+ * Requests since the requested cursor.
+ */
+export interface BrowserNetwork {
+  /**
+   * Next read position.
+   */
+  cursor: number;
+  /**
+   * Recorded requests.
+   */
+  entries: BrowserNetworkEntry[];
+}
+
+/**
+ * Metadata for a request observed by the tab.
+ */
+export interface BrowserNetworkEntry {
+  /**
+   * Elapsed milliseconds if known.
+   */
+  durationMs?: number | null;
+  /**
+   * Failure description if the request failed.
+   */
+  error?: string | null;
+  /**
+   * HTTP method.
+   */
+  method: string;
+  /**
+   * HTTP response status if received.
+   */
+  status?: number | null;
+  /**
+   * Request URL.
+   */
+  url: string;
+}
+
+/**
+ * Open a tab in the calling thread's browser area.
+ */
+export interface BrowserOpenParams {
+  /**
+   * Address: a URL, `host:port`, or a bare port (`5173` means `http://localhost:5173/`).
+   */
+  url: string;
+}
+
+/**
+ * Press a key, optionally with modifiers (`Enter`, `Tab`, `Control+a`).
+ */
+export interface BrowserPressParams {
+  /**
+   * Key name, `+`-joined with modifiers.
+   */
+  key: string;
+  /**
+   * Element to focus first, by snapshot reference.
+   */
+  ref?: string | null;
+  /**
+   * Element to focus first, by CSS selector.
+   */
+  selector?: string | null;
+  /**
+   * Opaque identifier scoped to the calling thread.
+   */
+  tab: string;
+}
+
+/**
+ * A PNG suitable for MCP image content.
+ */
+export interface BrowserScreenshot {
+  /**
+   * Base64 encoded PNG.
+   */
+  data: string;
+}
+
+/**
+ * Capture a tab or an element.
+ */
+export interface BrowserScreenshotParams {
+  /**
+   * CSS selector to capture.
+   */
+  selector?: string | null;
+  /**
+   * Opaque identifier scoped to the calling thread.
+   */
+  tab: string;
+}
+
+/**
+ * Accessible text tree with element references.
+ */
+export interface BrowserSnapshot {
+  /**
+   * Serialized accessible tree.
+   */
+  tree: string;
+}
+
+/**
+ * State of one open tab.
+ */
+export interface BrowserTab {
+  /**
+   * Whether navigation is in progress.
+   */
+  loading: boolean;
+  /**
+   * Opaque identifier scoped to the calling thread.
+   */
+  tab: string;
+  /**
+   * Page title.
+   */
+  title: string;
+  /**
+   * Current page URL.
+   */
+  url: string;
+}
+
+/**
+ * Identify a tab.
+ */
+export interface BrowserTabParams {
+  /**
+   * Opaque identifier scoped to the calling thread.
+   */
+  tab: string;
+}
+
+/**
+ * Open tabs in the calling thread.
+ */
+export interface BrowserTabs {
+  /**
+   * Tabs in display order.
+   */
+  tabs: BrowserTab[];
+}
+
+/**
+ * Type text into an element, or into the focused element when none is named.
+ */
+export interface BrowserTypeParams {
+  /**
+   * Replace the element's current value instead of appending.
+   */
+  clear?: boolean | null;
+  /**
+   * Element reference from the latest snapshot.
+   */
+  ref?: string | null;
+  /**
+   * CSS selector; the first match is used.
+   */
+  selector?: string | null;
+  /**
+   * Opaque identifier scoped to the calling thread.
+   */
+  tab: string;
+  /**
+   * Text to insert.
+   */
+  text: string;
+}
+
+/**
  * A flag the UI checks before offering a feature. Branch on these, never on provider kind.
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "portForward" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -635,7 +1002,7 @@ export type Epoch = number;
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type ErrorCode = "protocol_unsupported" | "provider_unavailable" | "store_change" | "needs_auth" | "capability_missing" | "thread_not_found" | "thread_in_use" | "turn_in_progress" | "turn_mismatch" | "outcome_unknown" | "upload_mismatch" | "upload_not_found" | "instance_not_found" | "model_unavailable" | "request_not_found" | "request_not_pending" | "limit_exceeded" | "policy_denied" | "target_unknown" | "target_offline" | "not_initialized" | "parse_error" | "invalid_request" | "method_not_found" | "invalid_params" | "internal_error";
+export type ErrorCode = "protocol_unsupported" | "provider_unavailable" | "store_change" | "needs_auth" | "capability_missing" | "thread_not_found" | "thread_in_use" | "turn_in_progress" | "turn_mismatch" | "outcome_unknown" | "upload_mismatch" | "upload_not_found" | "instance_not_found" | "model_unavailable" | "request_not_found" | "request_not_pending" | "limit_exceeded" | "policy_denied" | "target_unknown" | "target_offline" | "not_initialized" | "parse_error" | "invalid_request" | "method_not_found" | "connection_refused" | "no_window" | "invalid_params" | "internal_error";
 
 /**
  * The error object: `code`, `message`, `data`. Frozen core.
@@ -1302,6 +1669,10 @@ export interface InitializeResult {
    * Build and state format.
    */
   daemon: DaemonInfo;
+  /**
+   * Additive target features announced by the daemon.
+   */
+  features?: Capability[] | null;
   /**
    * The daemon's range and the agreed version.
    */
@@ -2696,6 +3067,42 @@ export interface PrSummary {
    * Its web page (what the badge opens).
    */
   url: string;
+}
+
+/**
+ * A listening socket owned by the target user.
+ */
+export interface PreviewPort {
+  /**
+   * Listening process command.
+   */
+  command?: string | null;
+  /**
+   * Working directory of the listening process.
+   */
+  cwd?: string | null;
+  /**
+   * Listening address, including wildcard binds.
+   */
+  host: string;
+  /**
+   * Listening process id.
+   */
+  pid?: number | null;
+  /**
+   * Target TCP port.
+   */
+  port: number;
+}
+
+/**
+ * Listeners discovered on request.
+ */
+export interface PreviewPortsResult {
+  /**
+   * Ports.
+   */
+  ports: PreviewPort[];
 }
 
 /**
@@ -5419,6 +5826,52 @@ export interface TranscriptEntry {
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
 export type TranscriptRole = "user" | "agent" | "peer" | "notice";
+
+/**
+ * Close the socket at the other end of a tunnel.
+ */
+export interface TunnelCloseParams {
+  /**
+   * Optional diagnostic when a socket failed.
+   */
+  reason?: string | null;
+  /**
+   * Bidirectional data stream.
+   */
+  stream: StreamId;
+}
+
+/**
+ * Open a TCP connection to any host the target reaches (P323).
+ */
+export interface TunnelOpenParams {
+  /**
+   * Host name or address, resolved on the target; defaults to 127.0.0.1.
+   */
+  host?: string | null;
+  /**
+   * Bytes granted to the peer for this direction.
+   */
+  initialCredit: number;
+  /**
+   * Target TCP port.
+   */
+  port: number;
+}
+
+/**
+ * The connected tunnel and the initial allowance for host-to-target bytes.
+ */
+export interface TunnelOpenResult {
+  /**
+   * Bytes granted to the peer for this direction.
+   */
+  initialCredit: number;
+  /**
+   * Bidirectional data stream.
+   */
+  stream: StreamId;
+}
 
 /**
  * `turnCompleted`: carries status and token usage.

@@ -317,25 +317,38 @@ impl DialectError {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FeatureSet {
     withheld: &'static [Capability],
+    missing_port_forward: bool,
 }
 
 impl FeatureSet {
     /// Every feature present.
-    pub const FULL: FeatureSet = FeatureSet { withheld: &[] };
+    pub const FULL: FeatureSet = FeatureSet { withheld: &[], missing_port_forward: false };
 
     /// A version that lacks the wire support for `withheld`.
     pub const fn withholding(withheld: &'static [Capability]) -> Self {
-        Self { withheld }
+        Self { withheld, missing_port_forward: false }
+    }
+
+    pub(crate) fn advertised(mut self, features: &[Capability]) -> Self {
+        self.missing_port_forward = !features.contains(&Capability::PortForward);
+        self
+    }
+
+    /// Refine additive features from the methods actually implemented by this peer.
+    pub(crate) fn observe_missing(&mut self, method: &str) {
+        if matches!(method, crate::methods::names::TUNNEL_OPEN | crate::methods::names::PREVIEW_PORTS) {
+            self.missing_port_forward = true;
+        }
     }
 
     /// Removes the capabilities this version cannot carry.
     pub fn fold(&self, capabilities: &mut Vec<Capability>) {
-        capabilities.retain(|c| !self.withheld.contains(c));
+        capabilities.retain(|c| self.allows(c));
     }
 
     /// Whether this version can carry `capability`.
     pub fn allows(&self, capability: &Capability) -> bool {
-        !self.withheld.contains(capability)
+        !(self.withheld.contains(capability) || self.missing_port_forward && *capability == Capability::PortForward)
     }
 }
 
@@ -357,6 +370,8 @@ pub enum Inbound {
     ThreadRemoved(ThreadRemovedParams),
     /// `provider/updated`.
     ProviderUpdated(ProviderUpdatedParams),
+    /// A tunnel socket closed.
+    TunnelClose(crate::TunnelCloseParams),
     /// `stream/credit`.
     StreamCredit(StreamCreditParams),
     /// `project/updated`: every project on the target.
@@ -373,6 +388,8 @@ pub enum Inbound {
 /// A typed request originated by the daemon (the mesh exception), decoded by the dialect.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PeerRequest {
+    /// Inspect a thread’s browser.
+    BrowserCall(crate::BrowserCallParams),
     /// `mesh/relay`.
     MeshRelay(MeshRelayParams),
     /// `mesh/deliveryReceipt`.

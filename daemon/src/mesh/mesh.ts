@@ -49,6 +49,7 @@ import { gitRunner } from "../session/git.js";
 import { normaliseRemote } from "../session/fsinfo.js";
 import { nowIso, randomId } from "../util/fsx.js";
 import { clip, frameMessages } from "./format.js";
+import { BROWSER_TOOLS, inspectBrowser } from "./browser.js";
 import { createMeshServer, readable } from "./mcp.js";
 import { MeshStore, type MessageRecord, type RootState } from "./store.js";
 import { chooseWorkerMode, ModeRefused, type ParentMode } from "./modes.js";
@@ -553,6 +554,13 @@ export class Mesh implements CoreMeshHooks {
           text = await this.stopAllTool(rt);
           break;
         default:
+          const browser = BROWSER_TOOLS.find(t => t.name === call.tool);
+          if (browser) {
+            const hub = this.hub;
+            return await inspectBrowser(browser, a, rt.id,
+              hub && !hub.isClosed ? params => hub.requestHost("browser/call", params, 30_000) : null,
+              async () => (await this.core.computeEffective(rt)).imageInput === "supported");
+          }
           // The pull-request tools (D121), served by the forge.
           if (this.prTools && PR_TOOL_NAMES.has(call.tool)) {
             try {

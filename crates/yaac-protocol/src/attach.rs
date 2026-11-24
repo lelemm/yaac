@@ -20,6 +20,18 @@ use crate::types::{ClientId, Empty, TargetId, TargetName};
 
 /// Every attach method name.
 pub mod names {
+    /// Hub → window browser request.
+    pub const BROWSER_CALL: &str = "hub/browser/call";
+    /// Preview listener management.
+    pub const PREVIEW_PROXY: &str = "hub/preview/proxy";
+    /// Preview listener management.
+    pub const PREVIEW_PROXY_CLOSE: &str = "hub/preview/proxyClose";
+    /// Preview listener management.
+    pub const PREVIEW_OPEN: &str = "hub/preview/open";
+    /// Preview listener management.
+    pub const PREVIEW_CLOSE: &str = "hub/preview/close";
+    /// Preview listener management.
+    pub const PREVIEW_LIST: &str = "hub/preview/list";
     /// Window → hub, first message: exchange builds.
     pub const HELLO: &str = "hub/hello";
     /// Window → hub: ask an older hub to checkpoint its relay queue and exit.
@@ -147,6 +159,9 @@ open_enum! {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonSummary {
+    /// Whether the daemon supports loopback preview tunnels.
+    #[serde(default)]
+    pub port_forward: bool,
     /// The daemon's build.
     pub build: String,
     /// The daemon is older than this build: show "will be updated when idle" and offer
@@ -390,3 +405,103 @@ pub struct RateLimitsResult {
     /// One entry per account that reports at least one window.
     pub accounts: Vec<AccountRateLimits>,
 }
+
+/// Start or reuse the target’s SOCKS5 proxy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewProxyParams {
+    /// Target id.
+    pub target: TargetId,
+}
+
+/// The loopback listener of the target’s SOCKS5 proxy.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewProxyResult {
+    /// Local SOCKS5 port.
+    pub socks_port: u16,
+}
+
+/// Start or reuse a plain forward for the system browser.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewOpenParams {
+    /// Target id.
+    pub target: TargetId,
+    /// Target TCP port.
+    pub port: u16,
+    /// Target listen or loopback address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+}
+
+/// A local forward ready for the system browser.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewOpenResult {
+    /// URL the system browser can open.
+    pub url: String,
+    /// Local port.
+    pub local_port: u16,
+}
+
+/// Close a single forwarded port.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewCloseParams {
+    /// Target id.
+    pub target: TargetId,
+    /// Target TCP port.
+    pub port: u16,
+}
+
+/// An open hub preview listener.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewListener {
+    /// Target id.
+    pub target: TargetId,
+    /// Kind.
+    pub kind: PreviewKind,
+    /// Target TCP port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+    /// Local port.
+    pub local_port: u16,
+    /// Current connection count.
+    pub connections: u32,
+}
+
+/// Kind of local listener.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PreviewKind {
+    /// Target-wide SOCKS5 listener.
+    Proxy,
+    /// A single forwarded port.
+    Forward,
+}
+/// Close a proxy on the target.
+pub type PreviewProxyCloseParams = PreviewProxyParams;
+/// Every open listener.
+pub type PreviewListResult = Vec<PreviewListener>;
+/// Closing a proxy has no result fields.
+pub type PreviewProxyCloseResult = Empty;
+/// Closing a forward has no result fields.
+pub type PreviewCloseResult = Empty;
+/// Listing listeners takes no arguments.
+pub type PreviewListParams = Empty;
+
+/// Hub → window. The hub supplies the source connection’s target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserCallParams {
+    /// Source target.
+    pub target: TargetId,
+    /// Thread and action from its daemon.
+    #[serde(flatten)]
+    pub call: crate::BrowserCallParams,
+}
+
+/// The window’s reply passes through the hub.
+pub type BrowserCallResult = crate::BrowserCallResult;

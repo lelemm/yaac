@@ -511,6 +511,7 @@ impl FakeDaemon {
                 let p: InitializeParams = serde_json::from_value(params).map_err(bad)?;
                 let negotiated = negotiate(dialect::SUPPORTED, p.protocol).map_err(|e| e.to_error_object())?;
                 let result = InitializeResult {
+                    features: None,
                     protocol: negotiated.answer(),
                     schema_hash: CURRENT.schema_hash().to_owned(),
                     daemon: DaemonInfo { build: format!("fake-{}", self.name), state_format: 1 },

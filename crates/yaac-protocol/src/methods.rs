@@ -369,7 +369,16 @@ catalogue! {
         RequestRespond = "request/respond" as REQUEST_RESPOND:
             t::RequestRespondParams => t::Empty, HostToDaemon, request Control, response Control, op;
 
-        // ── Uploads ────────────────────────────────────────────────────────────────────
+        // ── Previews and uploads ────────────────────────────────────────────────────────────────────
+        /// Inspect the calling thread’s browser.
+        BrowserCall = "browser/call" as BROWSER_CALL:
+            t::BrowserCallParams => t::BrowserCallResult, DaemonToHost, request Control, response Bulk;
+        /// Connect a loopback preview socket and exchange initial receive windows.
+        TunnelOpen = "tunnel/open" as TUNNEL_OPEN:
+            t::TunnelOpenParams => t::TunnelOpenResult, HostToDaemon, request Control, response Control;
+        /// Discover preview servers owned by the target user.
+        PreviewPorts = "preview/ports" as PREVIEW_PORTS:
+            t::Empty => t::PreviewPortsResult, HostToDaemon, request Control, response Bulk;
         /// Declare an upload; returns its id and data stream, or that the content exists.
         UploadBegin = "upload/begin" as UPLOAD_BEGIN:
             t::UploadBeginParams => t::UploadBeginResult, HostToDaemon, request Control, response Control;
@@ -481,6 +490,9 @@ catalogue! {
         /// The discovery caps changed.
         DiscoveryUpdated = "discovery/updated" as DISCOVERY_UPDATED:
             t::DiscoveryCapsResult, DaemonToHost, Control;
+        /// Either peer closed its preview socket.
+        TunnelClose = "tunnel/close" as TUNNEL_CLOSE:
+            t::TunnelCloseParams, Both, Control;
         /// The receiver of a data stream grants more credit.
         StreamCredit = "stream/credit" as STREAM_CREDIT:
             t::StreamCreditParams, Both, Control;

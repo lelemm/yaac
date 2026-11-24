@@ -71,11 +71,11 @@ class DaemonLink {
       const line = this.buf.slice(0, nl);
       this.buf = this.buf.slice(nl + 1);
       try {
-        const m = JSON.parse(line) as { t?: string; id?: number; text?: string; isError?: boolean };
+        const m = JSON.parse(line) as { t?: string; id?: number; text?: string; isError?: boolean; image?: MeshToolResult["image"] };
         if (m.t === "result" && typeof m.id === "number") {
           const p = this.pending.get(m.id);
           this.pending.delete(m.id);
-          p?.resolve({ text: String(m.text ?? ""), isError: !!m.isError });
+          p?.resolve({ text: String(m.text ?? ""), isError: !!m.isError, image: m.image });
         }
       } catch {
         /* ignore a garbled line */

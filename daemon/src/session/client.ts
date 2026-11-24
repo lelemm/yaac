@@ -6,7 +6,9 @@
 // names the last event it replaces (docs/03-protocol.md#backpressure).
 
 import type { JournalPosition, ThreadEventParams } from "../protocol/generated/types.js";
-import { METHODS } from "../protocol/generated/constants.js";
+import { discoverPorts } from "./preview-ports.js";
+import { Tunnels } from "./tunnels.js";
+import { METHODS, NOTIFICATIONS } from "../protocol/generated/constants.js";
 import { RpcError } from "../protocol/rpc.js";
 import type { ConnectionView, SessionHandler } from "../protocol/connection.js";
 import type { ClientLink, Core } from "./core.js";
@@ -57,6 +59,7 @@ const MESH_PREFIX = "mesh/";
 export class ClientSession implements SessionHandler, ClientLink {
   readonly key: string;
   readonly host: string | null;
+  private readonly tunnels: Tunnels;
   private subs = new Map<string, Subscription>();
   private pumping = false;
   private pumpScheduled = false;
@@ -71,6 +74,7 @@ export class ClientSession implements SessionHandler, ClientLink {
     private readonly hooks: DaemonHooks,
     private readonly opts: ClientOptions = DEFAULT_CLIENT_OPTIONS,
   ) {
+    this.tunnels = new Tunnels(view, () => core.uploads.allocateStream());
     this.key = view.client.id ?? `conn-${connectionNumber}`;
     this.host = view.client.host ?? null;
     core.clients.add(this);
@@ -225,6 +229,10 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.REQUEST_RESPOND:
         await core.requestRespond(this, p as never);
         return {};
+      case METHODS.TUNNEL_OPEN:
+        return this.tunnels.open(p);
+      case METHODS.PREVIEW_PORTS:
+        return { ports: await discoverPorts() };
       case METHODS.UPLOAD_BEGIN:
         return core.uploads.begin(p as never, this);
       case METHODS.UPLOAD_END:
@@ -254,7 +262,14 @@ export class ClientSession implements SessionHandler, ClientLink {
   }
 
   onData(stream: number, bytes: Buffer): void {
+    if (this.tunnels.receive(stream, bytes)) return;
     this.core.uploads.onData(stream, bytes, this, (s, n) => this.view.grantCredit(s, n));
+  }
+
+  onNotification(method: string, params: unknown): void {
+    if (method !== NOTIFICATIONS.TUNNEL_CLOSE) return;
+    const stream = (params as { stream?: unknown } | null)?.stream;
+    if (typeof stream === "number") this.tunnels.close(stream);
   }
 
   /** Mesh (WP7): called once when this client goes away. */
@@ -281,6 +296,7 @@ export class ClientSession implements SessionHandler, ClientLink {
       }
     }
     this.closed = true;
+    this.tunnels.drop();
     this.core.clients.delete(this);
     this.core.uploads.dropOwner(this);
     this.subs.clear();

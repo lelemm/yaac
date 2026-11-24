@@ -4,6 +4,7 @@
 // other agents: they say when each tool is the right one. They are shared by every attachment
 // (the in-process server for the Claude Agent SDK, and the `yaacd mcp` bridge for Codex).
 
+import { BROWSER_TOOLS } from "./browser.js";
 import { PR_INSTRUCTIONS, PR_TOOLS } from "../forge/tools.js";
 
 export const SERVER_NAME = "yaac";
@@ -184,7 +185,7 @@ const MESH_TOOLS: ToolDef[] = [
 ];
 
 /** Every tool: the mesh's, then the pull-request tools (D121). */
-export const TOOLS: ToolDef[] = [...MESH_TOOLS, ...PR_TOOLS];
+export const TOOLS: ToolDef[] = [...MESH_TOOLS, ...PR_TOOLS, ...BROWSER_TOOLS];
 
 export const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
 

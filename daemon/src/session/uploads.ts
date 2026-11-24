@@ -86,6 +86,12 @@ export class UploadStore {
   private partials = new Map<string, Partial>();
   private byStream = new Map<number, Partial>();
   private nextStream = 1;
+
+  /** Uploads and tunnels share the wire's stream-number space. */
+  allocateStream(): number {
+    if (this.nextStream > 0xffffffff) throw new RpcError("limit_exceeded", "data stream numbers exhausted");
+    return this.nextStream++;
+  }
   private ready = false;
 
   constructor(tempDir: string = os.tmpdir(), user: string = os.userInfo().username) {
@@ -168,7 +174,7 @@ export class UploadStore {
         `unfinished uploads are limited to ${UPLOAD_MAX_IN_PROGRESS} bytes together; wait for one to finish`,
       );
     }
-    const stream = this.nextStream++;
+    const stream = this.allocateStream();
     const file = path.join(this.root, "partial", uploadId);
     const fd = fs.openSync(file, "w", 0o600);
     const partial: Partial = {

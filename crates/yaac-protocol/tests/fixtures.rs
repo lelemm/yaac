@@ -361,3 +361,30 @@ fn attach_hello_carries_the_client_id_and_target_state_enabled() {
     let older: TargetStateParams = serde_json::from_value(json!({ "id": "tg", "state": { "status": "connected" } })).unwrap();
     assert!(older.enabled);
 }
+
+#[test]
+fn preview_wire_shapes() {
+    exact::<TunnelOpenParams>(json!({"port": 5173, "initialCredit": 123}));
+    exact::<TunnelOpenResult>(json!({"stream": 21, "initialCredit": 456}));
+    exact::<TunnelCloseParams>(json!({"stream": 21, "reason": "socket closed"}));
+    exact::<PreviewPortsResult>(json!({"ports":[{"port":5173,"host":"::1","pid":4,"cwd":"/dev"}]}));
+    exact::<attach::PreviewProxyResult>(json!({"socksPort":12345}));
+    exact::<attach::PreviewListResult>(json!([{"target":"local","kind":"proxy","localPort":12345,"connections":1}]));
+}
+
+#[test]
+fn browser_inspection_wire_shapes() {
+    for (action, reply) in [
+        (json!({"kind":"list"}), json!({"kind":"list","tabs":[{"tab":"a","url":"about:blank","title":"","loading":false}]})),
+        (json!({"kind":"snapshot","tab":"a"}), json!({"kind":"snapshot","tree":"document"})),
+        (json!({"kind":"screenshot","tab":"a","selector":"h1"}), json!({"kind":"screenshot","data":"aQ=="})),
+        (json!({"kind":"console","tab":"a","cursor":1}), json!({"kind":"console","entries":[{"level":"log","text":"ok"}],"cursor":2})),
+        (json!({"kind":"network","tab":"a"}), json!({"kind":"network","entries":[{"url":"/","method":"GET","status":200,"durationMs":1}],"cursor":1})),
+        (json!({"kind":"future","extra":1}), json!({"kind":"future","value":true})),
+    ] {
+        exact::<BrowserCallParams>(json!({"threadId":"t","action":action}));
+        exact::<attach::BrowserCallParams>(json!({"target":"tg","threadId":"t","action":action}));
+        exact::<BrowserCallResult>(reply);
+    }
+    exact::<rpc::ErrorCode>(json!("no_window"));
+}

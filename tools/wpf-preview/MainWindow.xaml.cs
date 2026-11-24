@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         InitializeRail();
+        InitializeBrowser();
         Title = demo ? "YAAC · WPF demo" : "YAAC";
         if (tray) this.tray = WindowTray.TryCreate(ShowFromTray, QuitWindow);
         SidebarPane.Command += (command, payload) =>
@@ -130,7 +131,8 @@ public partial class MainWindow : Window
                 frame =>
                 {
                     var image = ImageViewerFrame.Read(frame.Value("imageViewer"));
-                    return Dispatcher.InvokeAsync(() => Receive(frame, image),
+                    var browserFrame = BrowserFrame.Read(frame.Value("browserFrame"));
+                    return Dispatcher.InvokeAsync(() => Receive(frame, image, browserFrame),
                         System.Windows.Threading.DispatcherPriority.Background).Task;
                 }));
         }
@@ -145,9 +147,11 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Receive(JsonElement frame, ImageViewerFrame? image)
+    private void Receive(JsonElement frame, ImageViewerFrame? image, BrowserFrame? browserFrame)
     {
         if (closed) return;
+        if (browserFrame is { } browserPixels) BrowserPane.Paint(browserPixels);
+        if (frame.TryGetProperty("browserEvent", out var browserEvent)) BrowserPane.ReceiveEvent(browserEvent);
         if (image is { } viewer)
             ImageOverlay.Render(viewer);
         if (frame.TryGetProperty("window", out var command))
@@ -170,6 +174,7 @@ public partial class MainWindow : Window
         if (views.TryGetProperty("paneSizing", out var panes)) RenderPaneSizing(panes);
         bool hasShell = views.TryGetProperty("shell", out var shell);
         if (hasShell) RenderShell(shell);
+        if (views.TryGetProperty("browser", out var browser)) RenderBrowser(browser);
         if (views.TryGetProperty("captionUpdate", out var update)) RenderCaptionUpdate(update);
         if (views.TryGetProperty("shortcuts", out var bindings)) RenderShortcuts(bindings);
         if (views.TryGetProperty("sidebar", out var sidebar))
@@ -322,6 +327,7 @@ public partial class MainWindow : Window
         if (!shown)
             visiblePrRows = [];
         Send("shell.visible", new { shown, hidden = !IsVisible });
+        BrowserPane.SetWindowShown(shown);
         QueueVisiblePrRows();
     }
 
@@ -359,16 +365,15 @@ public partial class MainWindow : Window
 
     private void ThreadContentSizeChanged(object sender, SizeChangedEventArgs e)
     {
-        ApplyChatWidth(e.NewSize.Width);
         AgentsPane?.SetFloatingViewport(e.NewSize.Height);
     }
 
     private void ComposerResize(object sender, System.Windows.Controls.Primitives.DragDeltaEventArgs e)
     {
-        var max = ThreadContent.ActualWidth * .95;
+        var max = BrowserChat.ActualWidth * .95;
         if (max <= 0) return;
         preferredChatWidth = Math.Clamp(ComposerColumn.ActualWidth + e.HorizontalChange * 2, Math.Min(360, max), max);
-        ApplyChatWidth(ThreadContent.ActualWidth);
+        ApplyChatWidth(BrowserChat.ActualWidth);
     }
 
     private void ApplyChatWidth(double viewport)
@@ -395,7 +400,7 @@ public partial class MainWindow : Window
     {
         var visible = update.ValueKind == JsonValueKind.Object;
         CaptionUpdate.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        CaptionThreadHeader.Margin = new Thickness(28, 0, 132 + (visible ? CaptionUpdate.Width : 0), 0);
+        CaptionThreadHeader.Margin = new Thickness(28, 0, 176 + (visible ? CaptionUpdate.Width : 0), 0);
         if (!visible) return;
 
         var action = Text(update, "action");
@@ -485,7 +490,8 @@ public partial class MainWindow : Window
                 args.Handled = true;
             return;
         }
-        if (SettingsPane.IsRecordingShortcut) return;
+        if (SettingsPane.IsRecordingShortcut || BrowserPane.OwnsKeyboard ||
+            (key == Key.F12 && BrowserPane.IsKeyboardFocusWithin)) return;
         var logical = Views.SettingsView.CanonicalKey(key, Keyboard.Modifiers) ?? key.ToString();
         if (CommanderOverlay.IsVisible)
         {
@@ -520,7 +526,8 @@ public partial class MainWindow : Window
 
     private void WindowMouse(object sender, MouseButtonEventArgs args)
     {
-        if (SettingsPane.IsRecordingShortcut || CommanderOverlay.IsVisible || ImageOverlay.IsVisible) return;
+        if (SettingsPane.IsRecordingShortcut || CommanderOverlay.IsVisible || ImageOverlay.IsVisible ||
+            BrowserPane.IsMouseOver) return;
         var logical = args.ChangedButton switch
         {
             MouseButton.XButton1 => "MouseBack",

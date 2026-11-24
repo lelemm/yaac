@@ -66,6 +66,7 @@ RestartApplications=no
 Name: desktopicon; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
+Source: "{#SourceDir}\cef\*"; DestDir: "{app}\cef"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\yaac.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\yaacd.mjs"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\runtime\node.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion

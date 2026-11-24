@@ -132,7 +132,7 @@ enum Phase {
     /// `initialize` sent; waiting for its answer.
     Handshake { id: RpcId },
     /// Ready: every message goes through `dialect`.
-    Ready { dialect: &'static Dialect, negotiated: Negotiated },
+    Ready { dialect: &'static Dialect, negotiated: Negotiated, features: FeatureSet },
     /// No common version: only the frozen calls.
     Failed,
 }
@@ -195,7 +195,10 @@ impl ClientSession {
 
     /// The wire features of the agreed version, once ready.
     pub fn features(&self) -> Option<FeatureSet> {
-        self.dialect().map(Dialect::features)
+        match self.phase {
+            Phase::Ready { features, .. } => Some(features),
+            _ => None,
+        }
     }
 
     /// Removes capabilities the agreed version cannot carry. Apply to every capability set
@@ -249,14 +252,15 @@ impl ClientSession {
 
     /// Answers a request the daemon originated, with a current-shape result or an error.
     pub fn respond(&mut self, id: RpcId, method: &str, outcome: Result<Value, ErrorObject>) -> Result<(), SessionError> {
-        let message = match outcome {
+        let (class, message) = match outcome {
             Ok(result) => {
                 let dialect = self.ready_dialect("response")?;
-                Message::Response { id, result: dialect.encode_peer_result(method, result)? }
+                let class = methods::request_info(method).map_or(Class::Control, |info| info.response_class);
+                (class, Message::Response { id, result: dialect.encode_peer_result(method, result)? })
             }
-            Err(error) => Message::Error { id: Some(id), error },
+            Err(error) => (Class::Control, Message::Error { id: Some(id), error }),
         };
-        self.out.push_message(Class::Control, &message)?;
+        self.out.push_message(class, &message)?;
         Ok(())
     }
 
@@ -367,6 +371,12 @@ impl ClientSession {
         {
             return self.on_initialize(outcome, events);
         }
+        if let Err(error) = &outcome
+            && error.code == ErrorCode::MethodNotFound
+            && let Phase::Ready { features, .. } = &mut self.phase
+        {
+            features.observe_missing(method);
+        }
         events.push(SessionEvent::Response { id, method, outcome });
         Ok(())
     }
@@ -394,7 +404,7 @@ impl ClientSession {
             }
         };
         let dialect = dialect::select(&negotiated).ok_or(SessionError::NoDialect)?;
-        self.phase = Phase::Ready { dialect, negotiated };
+        self.phase = Phase::Ready { dialect, negotiated, features: dialect.features().advertised(result.features.as_deref().unwrap_or_default()) };
         events.push(SessionEvent::Ready(ReadyInfo {
             daemon: result.daemon,
             target: result.target,

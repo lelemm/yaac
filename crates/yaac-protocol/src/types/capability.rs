@@ -9,6 +9,8 @@ use crate::macros::open_enum;
 open_enum! {
     /// A flag the UI checks before offering a feature. Branch on these, never on provider kind.
     pub enum Capability fallback Unknown {
+        /// This target supports loopback web previews.
+        PortForward = "portForward",
         // Thread lifecycle
         /// Can enumerate existing conversations on the target.
         ThreadList = "threadList",

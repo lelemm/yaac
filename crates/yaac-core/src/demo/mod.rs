@@ -1688,7 +1688,7 @@ impl Inner {
         t.state = ConnectionState {
             status,
             detail: detail.map(str::to_owned),
-            daemon: older.map(|b| DaemonSummary { build: b.to_owned(), older: true, schema_hash_matches: true, can_update: true }),
+            daemon: older.map(|b| DaemonSummary { build: b.to_owned(), older: true, schema_hash_matches: true, can_update: true, port_forward: false }),
             update: None,
         };
         if let Some(e) = enabled {

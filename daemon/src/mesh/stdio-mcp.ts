@@ -89,7 +89,7 @@ export function serveStdioMcp(o: StdioMcpOptions): void {
             inflight.delete(id);
             // A cancelled request gets no response (MCP: the receiver should not answer it).
             if (abort.signal.aborted) return;
-            reply(id, { content: [{ type: "text", text: r.text }], ...(r.isError ? { isError: true } : {}) });
+            reply(id, { content: r.image ? [r.image] : [{ type: "text", text: r.text }], ...(r.isError ? { isError: true } : {}) });
           });
         return;
       }

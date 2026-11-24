@@ -26,7 +26,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     let narrow = full.width() < NARROW;
     let selected = app.client.state.selected_thread().cloned();
     // No related agent known in the index: no panel (not an empty pill).
-    let panel = selected.as_ref().and_then(|k| agents_panel(&app.client.state, map, k)).filter(|p| p.all().next().is_some());
+    let full_browser = selected.as_ref().and_then(|k| app.browsers.areas.get(k)).is_some_and(|a| a.full_screen);
+    let panel = selected.as_ref().filter(|_| !full_browser).and_then(|k| agents_panel(&app.client.state, map, k)).filter(|p| p.all().next().is_some());
     let docked = panel.is_some() && app.ui.panel == PanelMode::Docked && !narrow;
     // The sidebar's own width, or the strip (collapsed, or a window too narrow for it).
     let side_w = app.ui.sidebar.shown(narrow);
@@ -43,7 +44,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     // What this window shows, for the hub's unseen mark (D114): the open thread, while the
     // thread view is on screen.
     let showing: Vec<yaac_core::ThreadKey> = match &app.client.state.selection {
-        Selection::Thread(k) if !app.ui.settings => vec![k.clone()],
+        Selection::Thread(k) if !app.ui.settings && !full_browser => vec![k.clone()],
         _ => Vec::new(),
     };
     app.client.set_showing(showing);
@@ -78,7 +79,15 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             }
         }
     });
-    drop_target(ui, app, below(center), actions);
+    let mut chat = below(center);
+    let browser = selected.as_ref().and_then(|k| app.browsers.areas.get(k));
+    if let Some(area) = browser {
+        chat.max.x = chat.left() + chat.width() * area.ratio;
+    }
+    if !full_browser && (browser.is_none()
+        || ui.input(|i| i.pointer.hover_pos().is_some_and(|p| chat.contains(p)))) {
+        drop_target(ui, app, chat, actions);
+    }
     // The hairlines, painted after the thread view (whose panels fill their own background)
     // and snapped to one pixel column, so each is one unbroken line the full height.
     let snap = |x: f32| ui.painter().round_to_pixel_center(x);

@@ -179,11 +179,9 @@
       <Grid Grid.Column="2" x:Name="ThreadContent" SizeChanged="ThreadContentSizeChanged">
         <Grid.RowDefinitions>
           <RowDefinition Height="42" />
-          <RowDefinition Height="Auto" />
           <RowDefinition Height="*" />
-          <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
-        <Grid x:Name="CaptionThreadHeader" Margin="28,0,132,0">
+        <Grid x:Name="CaptionThreadHeader" Margin="28,0,176,0">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto" />
             <ColumnDefinition Width="Auto" MaxWidth="560" />
@@ -206,39 +204,63 @@
             <Button Content="Continue" Click="ContinueClicked" shell:WindowChrome.IsHitTestVisibleInChrome="True" />
           </StackPanel>
         </Grid>
-        <StackPanel Grid.Row="1" x:Name="HeaderDetails" Margin="60,3,26,6">
-          <TextBlock x:Name="ThreadLocation" Foreground="{DynamicResource YaacMuted}" TextTrimming="CharacterEllipsis" />
-          <StackPanel x:Name="HeaderLinks" Orientation="Horizontal" />
-          <StackPanel x:Name="HeaderBanners" />
-        </StackPanel>
-        <Grid Grid.Row="2" x:Name="ChatSurface" Background="Transparent">
-          <views:TranscriptView x:Name="TranscriptPane" HorizontalAlignment="Center" />
-          <DockPanel x:Name="TranscriptPreview" Background="{DynamicResource YaacCanvas}"
-                     Visibility="Collapsed" IsHitTestVisible="False" KeyboardNavigation.TabNavigation="None">
-            <TextBlock x:Name="TranscriptPreviewTitle" DockPanel.Dock="Top" HorizontalAlignment="Center"
-                       Foreground="{DynamicResource YaacMuted}" Margin="8,4" />
-            <views:TranscriptView x:Name="TranscriptPreviewPane" HorizontalAlignment="Center" />
-          </DockPanel>
-        </Grid>
-        <Grid Grid.Row="3" x:Name="ComposerColumn" HorizontalAlignment="Center" Margin="0,0,0,10">
-          <views:ComposerView x:Name="ComposerPane" />
-          <Thumb HorizontalAlignment="Right" VerticalAlignment="Bottom" Width="10" Height="44"
-                 Margin="0,0,-6,8" Cursor="SizeWE" DragDelta="ComposerResize"
-                 ToolTip="Resize chat and composer" AutomationProperties.Name="Resize chat and composer">
-            <Thumb.Template>
-              <ControlTemplate TargetType="Thumb">
-                <Grid Background="Transparent">
-                  <Border Width="2" Height="21" CornerRadius="1" Background="{DynamicResource YaacMuted}" Opacity=".45" />
-                </Grid>
-              </ControlTemplate>
-            </Thumb.Template>
-          </Thumb>
-        </Grid>
-        <Grid x:Name="ComposerDropOverlay" Grid.RowSpan="4" Visibility="Collapsed" IsHitTestVisible="False">
-          <Border Background="{DynamicResource YaacSelected}" BorderBrush="{DynamicResource YaacAccent}"
-                  BorderThickness="1" Opacity=".84" />
-          <TextBlock Text="Drop to attach" HorizontalAlignment="Center" VerticalAlignment="Center"
-                     FontSize="17" FontWeight="SemiBold" />
+        <Grid Grid.Row="1">
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition x:Name="BrowserChatColumn" Width="*" />
+            <ColumnDefinition x:Name="BrowserDividerColumn" Width="0" />
+            <ColumnDefinition x:Name="BrowserColumn" Width="0" />
+          </Grid.ColumnDefinitions>
+          <Grid x:Name="BrowserChat" SizeChanged="BrowserChatSizeChanged">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+              <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+            <StackPanel x:Name="HeaderDetails" Margin="60,3,26,6">
+              <TextBlock x:Name="ThreadLocation" Foreground="{DynamicResource YaacMuted}" TextTrimming="CharacterEllipsis" />
+              <StackPanel x:Name="HeaderLinks" Orientation="Horizontal" />
+              <Button x:Name="BrowserExternalFallback" HorizontalAlignment="Left" Visibility="Collapsed"
+                      Style="{StaticResource YaacQuietButton}" Content="Open in browser"
+                      Click="BrowserExternalClicked" />
+              <StackPanel x:Name="HeaderBanners" />
+            </StackPanel>
+            <Grid Grid.Row="1" x:Name="ChatSurface" Background="Transparent">
+              <views:TranscriptView x:Name="TranscriptPane" HorizontalAlignment="Center" />
+              <DockPanel x:Name="TranscriptPreview" Background="{DynamicResource YaacCanvas}"
+                         Visibility="Collapsed" IsHitTestVisible="False" KeyboardNavigation.TabNavigation="None">
+                <TextBlock x:Name="TranscriptPreviewTitle" DockPanel.Dock="Top" HorizontalAlignment="Center"
+                           Foreground="{DynamicResource YaacMuted}" Margin="8,4" />
+                <views:TranscriptView x:Name="TranscriptPreviewPane" HorizontalAlignment="Center" />
+              </DockPanel>
+            </Grid>
+            <Grid Grid.Row="2" x:Name="ComposerColumn" HorizontalAlignment="Center" Margin="0,0,0,10">
+              <views:ComposerView x:Name="ComposerPane" />
+              <Thumb HorizontalAlignment="Right" VerticalAlignment="Bottom" Width="10" Height="44"
+                     Margin="0,0,-6,8" Cursor="SizeWE" DragDelta="ComposerResize"
+                     ToolTip="Resize chat and composer" AutomationProperties.Name="Resize chat and composer">
+                <Thumb.Template>
+                  <ControlTemplate TargetType="Thumb">
+                    <Grid Background="Transparent">
+                      <Border Width="2" Height="21" CornerRadius="1" Background="{DynamicResource YaacMuted}" Opacity=".45" />
+                    </Grid>
+                  </ControlTemplate>
+                </Thumb.Template>
+              </Thumb>
+            </Grid>
+            <Grid x:Name="ComposerDropOverlay" Grid.RowSpan="3" Visibility="Collapsed" IsHitTestVisible="False">
+              <Border Background="{DynamicResource YaacSelected}" BorderBrush="{DynamicResource YaacAccent}"
+                      BorderThickness="1" Opacity=".84" />
+              <TextBlock Text="Drop to attach" HorizontalAlignment="Center" VerticalAlignment="Center"
+                         FontSize="17" FontWeight="SemiBold" />
+            </Grid>
+          </Grid>
+          <GridSplitter x:Name="BrowserDivider" Grid.Column="1" HorizontalAlignment="Stretch"
+                        VerticalAlignment="Stretch" Background="{DynamicResource YaacRule}"
+                        ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"
+                        Visibility="Collapsed" DragStarted="BrowserDragStarted" DragCompleted="BrowserDragCompleted"
+                        PreviewKeyUp="BrowserDividerKeyUp"
+                        AutomationProperties.Name="Resize chat and browser" />
+          <views:BrowserView x:Name="BrowserPane" Grid.Column="2" Visibility="Collapsed" />
         </Grid>
       </Grid>
       <views:AgentsView Grid.Column="2" x:Name="AgentsPane" Panel.ZIndex="2"
@@ -258,6 +280,8 @@
                      VerticalAlignment="Center" HorizontalAlignment="Center" Visibility="Collapsed"
                      Foreground="{DynamicResource YaacMuted}" Background="{DynamicResource YaacRule}" />
       </Grid>
+      <Button x:Name="CaptionAddPane" Style="{StaticResource CaptionButton}" Content="+"
+              Click="CaptionAddClicked" AutomationProperties.Name="Add pane" ToolTip="Add pane" />
       <Button Style="{StaticResource CaptionButton}" Content="&#xEABA;" Click="MinimizeClicked"
               AutomationProperties.Name="Minimize" ToolTip="Minimize" />
       <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}" Content="&#xEAB9;" Click="MaximizeClicked"

@@ -68,6 +68,9 @@ pub struct TargetFacts {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResult {
+    /// Additive target features announced by the daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub features: Option<Vec<super::Capability>>,
     /// The daemon's range and the agreed version.
     pub protocol: AgreedProtocol,
     /// Hash of the frozen baseline schema of the agreed version. A diagnostic: a mismatch

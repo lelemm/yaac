@@ -59,6 +59,7 @@ pub(super) fn decode_notification(d: &Dialect, method: &str, params: Value) -> R
         }
         names::THREAD_REMOVED => Inbound::ThreadRemoved(decode("thread/removed", params)?),
         names::PROVIDER_UPDATED => Inbound::ProviderUpdated(decode("provider/updated", params)?),
+        names::TUNNEL_CLOSE => Inbound::TunnelClose(decode("tunnel/close", params)?),
         names::STREAM_CREDIT => Inbound::StreamCredit(decode("stream/credit", params)?),
         names::PROJECT_UPDATED => Inbound::ProjectUpdated(decode("project/updated", params)?),
         other => Inbound::Other { method: other.to_owned(), params },
@@ -77,6 +78,7 @@ pub(super) fn decode_peer_request(_: &Dialect, method: &str, params: Value) -> R
     Ok(match method {
         names::MESH_RELAY => PeerRequest::MeshRelay(decode("mesh/relay", params)?),
         names::MESH_DELIVERY_RECEIPT => PeerRequest::MeshDeliveryReceipt(decode("mesh/deliveryReceipt", params)?),
+        names::BROWSER_CALL => PeerRequest::BrowserCall(decode("browser/call", params)?),
         names::MESH_QUERY => PeerRequest::MeshQuery(decode("mesh/query", params)?),
         names::MESH_USAGE => PeerRequest::MeshUsage(decode("mesh/usage", params)?),
         other => PeerRequest::Other { method: other.to_owned(), params },

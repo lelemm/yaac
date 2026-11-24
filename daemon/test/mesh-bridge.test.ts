@@ -10,6 +10,8 @@ import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { client, fakeOf, startDaemon, startThread, tmpHome, until } from "./helpers.js";
+import { encodeMessage } from "../src/protocol/rpc.js";
+import { encodeMessageFrame } from "../src/protocol/frame.js";
 import { untilIdle } from "./mesh-helpers.js";
 
 const BUNDLE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../yaacd.mjs");
@@ -91,13 +93,62 @@ test(`the stdio bridge (${label}) serves the yaac tools as the ticket's thread, 
     assert.equal(unknown.error.code, -32601);
     const list = await mcp.request("tools/list", {});
     const names = list.result.tools.map((x: any) => x.name).sort();
-    assert.deepEqual(names, ["find_thread", "list_models", "list_targets", "list_threads", "notify_when_done", "pr_checks", "pr_comments", "pr_create", "pr_get", "pr_list", "pr_reply", "pr_rerun_checks", "read_thread", "send_message", "spawn_thread", "stop_all", "stop_thread", "wait", "whoami"]);
+    assert.deepEqual(names, ["browser_click", "browser_close", "browser_console", "browser_eval", "browser_list", "browser_navigate", "browser_network", "browser_open", "browser_press", "browser_screenshot", "browser_snapshot", "browser_type", "find_thread", "list_models", "list_targets", "list_threads", "notify_when_done", "pr_checks", "pr_comments", "pr_create", "pr_get", "pr_list", "pr_reply", "pr_rerun_checks", "read_thread", "send_message", "spawn_thread", "stop_all", "stop_thread", "wait", "whoami"]);
     const who = await mcp.request("tools/call", { name: "whoami", arguments: {}, _meta: { threadId: native } });
     assert.equal(who.result.isError, undefined);
     assert.match(who.result.content[0].text, new RegExp(`Address: local/${threadId}`));
     const forged = await mcp.request("tools/call", { name: "whoami", arguments: {}, _meta: { threadId: "someone-else" } });
     assert.equal(forged.result.isError, true);
     assert.match(forged.result.content[0].text, /does not match/);
+    const browser = (name: string, args = {}) => mcp!.request("tools/call", { name, arguments: args });
+    const offline = await browser("browser_list");
+    assert.equal(offline.result.isError, true);
+    assert.match(offline.result.content[0].text, /No YAAC window is open/);
+    await c.request("mesh/roster", { selfId: "target", selfName: "test", targets: [] });
+    const spoof = await browser("browser_list", { threadId: "other" });
+    assert.equal(spoof.result.isError, true);
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jQp8AAAAASUVORK5CYII=";
+    for (const [kind, fields, result] of [
+      ["list", {}, { tabs: [] }],
+      ["snapshot", { tab: "a" }, { tree: "document" }],
+      ["screenshot", { tab: "a", selector: "main" }, { data: png }],
+      ["console", { tab: "a", cursor: 2 }, { entries: [], cursor: 2 }],
+      ["network", { tab: "a" }, { entries: [], cursor: 0 }],
+      ["open", { url: "5173" }, { tab: "t1", url: "http://localhost:5173/", title: "App", loading: false }],
+      ["close", { tab: "a" }, {}],
+      ["navigate", { tab: "a", history: "back" }, { tab: "a", url: "http://localhost:5173/", title: "", loading: true }],
+      ["navigate", { tab: "a", url: "http://example.com/" }, { tab: "a", url: "http://example.com/", title: "", loading: false }],
+      ["click", { tab: "a", ref: "12" }, {}],
+      ["click", { tab: "a", x: 10, y: 20 }, {}],
+      ["type", { tab: "a", text: "hi", selector: "#q", clear: true }, {}],
+      ["press", { tab: "a", key: "Enter" }, {}],
+      ["eval", { tab: "a", expression: "1+1" }, { value: 2 }],
+    ] as const) {
+      const start = c.messages.length;
+      const pending = browser("browser_" + kind, fields);
+      const req = await until(() => c.messages.slice(start).find(m => m.type === "request" && m.method === "browser/call"));
+      assert.ok(req.type === "request");
+      assert.deepEqual(req.params, { threadId, action: { kind, ...fields } });
+      c.sendRaw(encodeMessageFrame(encodeMessage({ type: "response", id: req.id, result: { kind, ...result } })));
+      const response = (await pending).result;
+      if (kind === "screenshot") assert.deepEqual(response.content, [{ type: "image", mimeType: "image/png", data: png }]);
+      else if (kind === "snapshot") assert.equal(response.content[0].text, result.tree);
+      else if (kind === "eval") assert.equal(response.content[0].text, "2");
+      else if (kind === "close" || kind === "click" || kind === "type" || kind === "press") assert.equal(response.content[0].text, "Done.");
+      else assert.deepEqual(JSON.parse(response.content[0].text), { kind, ...result });
+    }
+    // Malformed actions never reach the window, and a tool cannot name another thread.
+    for (const [name, args] of [
+      ["browser_open", {}], ["browser_navigate", { tab: "a" }], ["browser_navigate", { tab: "a", url: "x", history: "back" }],
+      ["browser_navigate", { tab: "a", history: "sideways" }], ["browser_click", { tab: "a" }], ["browser_click", { tab: "a", x: 1 }],
+      ["browser_click", { tab: "a", ref: "1", selector: "b" }], ["browser_type", { tab: "a" }], ["browser_press", { tab: "a", key: "" }],
+      ["browser_eval", { tab: "a", expression: "1", threadId: "other" }],
+    ] as const) {
+      const start = c.messages.length;
+      const r = await browser(name, args);
+      assert.equal(r.result.isError, true, name + JSON.stringify(args));
+      assert.ok(!c.messages.slice(start).some(m => m.type === "request" && m.method === "browser/call"));
+    }
     // A wait cut off by the harness consumes nothing.
     const w = mcp.request("tools/call", { name: "wait", arguments: { timeoutSecs: 1 }, _meta: { threadId: native } });
     const r = await w;

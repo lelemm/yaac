@@ -154,6 +154,12 @@ and keeping the UI informed. The catalogue (`mesh/relay`, `mesh/deliver`, `mesh/
 `mesh/roster`, `mesh/policy`) and its guarantees are in
 [10 Agent mesh](10-agent-mesh.md#in-the-protocol). All of it is additive.
 
+### Tunnels and ports
+
+`tunnel/open`, `tunnel/close`, and `preview/ports` forward a TCP port on the target over this
+connection for the web preview. Shapes and rules are in [11 Web preview](11-preview.md#tunnel-yaac-protocol).
+All of it is additive.
+
 ### Later additions
 
 Methods and fields added after this document was drafted — projects, `thread/update`,

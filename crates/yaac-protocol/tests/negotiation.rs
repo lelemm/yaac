@@ -389,3 +389,35 @@ fn open_thread_flow_reads_a_snapshot_after_a_reset() {
     let err = flow.on_response(&mut session, Err(ErrorObject::new(ErrorCode::ThreadNotFound, "gone"))).unwrap_err();
     assert!(matches!(err, flows::FlowError::Remote(e) if e.code == ErrorCode::ThreadNotFound));
 }
+
+#[test]
+fn preview_advertisement_and_duplex_credit() {
+    let (legacy, _) = ready_session();
+    assert!(!legacy.features().unwrap().allows(&Capability::PortForward));
+
+    let mut session = ClientSession::new(client());
+    let mut daemon = Daemon::new();
+    let (init, _) = daemon.take(&mut session);
+    let Message::Request { id, .. } = &init[0] else { panic!() };
+    let n = negotiate(SUPPORTED, SUPPORTED).unwrap();
+    let mut hello = initialize_result(answer_json(&n), codegen::SCHEMA_HASH_V1);
+    hello["features"] = json!(["portForward"]);
+    send(&mut session, &Message::Response { id: id.clone(), result: hello });
+    assert!(session.features().unwrap().allows(&Capability::PortForward));
+
+    let stream = StreamId(5);
+    session.open_stream(stream, 0).unwrap();
+    session.send_data(stream, b"abc".to_vec()).unwrap();
+    let mut inbound = Vec::new();
+    encode_data_frame(stream, b"xyz", &mut inbound).unwrap();
+    assert!(matches!(&session.receive(&inbound).unwrap()[..],
+        [SessionEvent::Data { stream: StreamId(5), bytes }] if bytes == b"xyz"));
+    session.notify::<methods::StreamCredit>(&StreamCreditParams { stream, bytes: 3 }).unwrap();
+    assert!(daemon.take(&mut session).1.is_empty());
+    send(&mut session, &Message::notification("stream/credit", json!({"stream":5,"bytes":3})));
+    assert_eq!(daemon.take(&mut session).1, vec![(stream, b"abc".to_vec())]);
+
+    let id = session.request::<methods::PreviewPorts>(&Empty {}).unwrap();
+    send(&mut session, &Message::Error { id: Some(id), error: ErrorObject::new(ErrorCode::MethodNotFound, "missing") });
+    assert!(!session.features().unwrap().allows(&Capability::PortForward));
+}

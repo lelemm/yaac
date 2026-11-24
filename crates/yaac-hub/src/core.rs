@@ -2,7 +2,9 @@
 //! window, and the routing between them. Everything that can block runs on the store worker;
 //! the core never waits for it — finished jobs come back as [`CoreEvent`]s.
 
+mod browser;
 mod limits;
+mod preview;
 mod ssh;
 mod uploads;
 
@@ -33,7 +35,7 @@ use yaac_protocol::session::{ClientSession, ReadyInfo, SessionEvent};
 use yaac_protocol::{
     ClientInfo, Control, DaemonHandoverParams, Epoch, HandoverState, HandoverWhen, Item, ItemBody, JournalPosition, MeshDeliverParams, MeshUsageParams, MeshMessage, MeshQueryParams, MeshReceiptParams,
     MeshRosterParams, MessageId, OpId, PageCursor, Receipt, ReceiptReason, ReceiptStatus, RequestState, RosterEntry, Seq,
-    StreamCreditParams, SubscribeMode, SubscribeReplay, SubscribeReset, SyncToken, TargetId, TargetName, ThreadAckParams,
+    StreamCreditParams, StreamId, SubscribeMode, SubscribeReplay, SubscribeReset, SyncToken, TargetId, TargetName, ThreadAckParams,
     ThreadEvent, ThreadEventParams, ThreadId, ThreadReadParams, ThreadReadResult, ThreadState, ThreadSubscribeParams,
     ThreadSubscribeResult, ThreadSyncParams, ThreadSyncResult, ThreadUnsubscribeParams, ThreadUpdatedParams,
 };
@@ -118,6 +120,8 @@ pub(crate) enum CoreEvent {
     Ssh(ssh::SshEvent),
     /// A pool worker read the next chunk of an upload's file.
     UploadChunk { handle: String, offset: u64, result: Result<Vec<u8>, ErrorObject> },
+    /// A loopback listener or browser socket reported progress.
+    Preview(preview::Event),
 }
 
 /// Why the hub stopped.
@@ -181,6 +185,7 @@ enum Pending {
     UploadBegin { handle: String },
     UploadEnd { handle: String },
     UploadCancel { handle: String },
+    PreviewOpen { socket: u64 },
     /// `daemon/handover`; **Update now** answers the window that asked.
     Handover { reply: Option<(ClientKey, RpcId)> },
     /// `provider/rateLimits` (D161).
@@ -227,6 +232,7 @@ struct Conn {
     kill: Option<oneshot::Sender<()>>,
     ready: bool,
     pending: HashMap<RpcId, Pending>,
+    preview_streams: HashMap<StreamId, u64>,
     subs: HashMap<ThreadId, Sub>,
     delivering: HashSet<MessageId>,
     last_rx: Instant,
@@ -406,6 +412,8 @@ pub(crate) struct Core {
     /// Uploads in progress, by handle ([`uploads`]).
     uploads: HashMap<String, uploads::Upload>,
     upload_seq: u64,
+    previews: preview::Previews,
+    browser: browser::BrowserCalls,
     /// File reads and hashing.
     pool: Pool,
     /// `hub/targets/start` requests waiting for their target to end connected or not.
@@ -503,6 +511,8 @@ impl Core {
             unseen: loaded.unseen.into_iter().collect(),
             uploads: HashMap::new(),
             upload_seq: 0,
+            previews: preview::Previews::default(),
+            browser: browser::BrowserCalls::default(),
             pool,
             starts: HashMap::new(),
             ssh: ssh::SshState::default(),
@@ -601,6 +611,7 @@ impl Core {
             CoreEvent::UploadSource { handle, result } => self.on_upload_source(&handle, result),
             CoreEvent::UploadHashed { handle, result } => self.on_upload_hashed(&handle, result),
             CoreEvent::UploadChunk { handle, offset, result } => self.on_upload_chunk(&handle, offset, result),
+            CoreEvent::Preview(event) => self.preview_event(event),
             CoreEvent::Ssh(event) => self.on_ssh(event),
         }
         self.flush_batches();
@@ -639,6 +650,7 @@ impl Core {
 
     fn on_detached(&mut self, client: ClientKey) {
         let Some(c) = self.clients.remove(&client) else { return };
+        self.browser_window_closed(client);
         for key in c.subs {
             self.release(client, &key);
         }
@@ -657,6 +669,8 @@ impl Core {
             {
                 self.on_client_notification(params);
             }
+            Message::Response { id, result } => self.browser_answer(client, &id, Ok(result)),
+            Message::Error { id: Some(id), error } => self.browser_answer(client, &id, Err(error)),
             _ => {}
         }
     }
@@ -668,6 +682,9 @@ impl Core {
         }
         let Ok(credit) = serde_json::from_value::<StreamCreditParams>(n.params) else { return };
         if let Some(conn) = self.targets.get_mut(&n.target).and_then(Target::ready_conn) {
+            if conn.preview_streams.contains_key(&credit.stream) {
+                return; // The hub is the receiver on this stream.
+            }
             let _ = conn.session.notify::<methods::StreamCredit>(&credit);
         }
         self.flush(&n.target);
@@ -846,6 +863,11 @@ impl Core {
             ext::names::UPLOAD_START => Some(parse::<ext::UploadStartParams>(params).and_then(|p| self.upload_start(p))),
             ext::names::UPLOAD_CANCEL => Some(parse::<ext::UploadHandleParams>(params).map(|p| self.upload_cancel(&p.handle))),
             ext::names::UPLOAD_LIST => Some(Ok(self.upload_list())),
+            attach::names::PREVIEW_PROXY => Some(parse(params).and_then(|p| self.preview_proxy(p))),
+            attach::names::PREVIEW_PROXY_CLOSE => Some(parse(params).and_then(|p| self.preview_proxy_close(p))),
+            attach::names::PREVIEW_OPEN => Some(parse(params).and_then(|p| self.preview_open(p))),
+            attach::names::PREVIEW_CLOSE => Some(parse(params).and_then(|p| self.preview_close(p))),
+            attach::names::PREVIEW_LIST => Some(Ok(self.preview_list())),
             ext::names::BLOB_BEGIN => match parse::<ext::BlobBeginParams>(params) {
                 Ok(p) => {
                     let max = self.cfg.uploads.max_blob;
@@ -1332,6 +1354,7 @@ impl Core {
             return Err(e);
         }
         self.stop_target(&p.id, state(ConnectionStatus::Disabled, None));
+        self.preview_removed(&p.id);
         self.targets.remove(&p.id);
         let id = p.id.clone();
         self.open.retain(|(t, _), _| *t != id);
@@ -1407,6 +1430,7 @@ impl Core {
                     kill: Some(kill),
                     ready: false,
                     pending: HashMap::new(),
+                    preview_streams: HashMap::new(),
                     subs: HashMap::new(),
                     delivering: HashSet::new(),
                     last_rx: now,
@@ -1460,6 +1484,8 @@ impl Core {
     /// stay open and are resubscribed on reconnect).
     fn on_closed(&mut self, id: &TargetId, _reason: String) {
         let Some(conn) = self.targets.get_mut(id).and_then(|t| t.conn.take()) else { return };
+        self.preview_disconnected(id);
+        self.browser_target_closed(id);
         let was_ready = conn.ready;
         // Batched events of this connection are still valid: commit them.
         self.flush_batches();
@@ -1506,6 +1532,7 @@ impl Core {
             self.upload_pump(id);
         }
         let Some(conn) = self.targets.get_mut(id).and_then(|t| t.conn.as_mut()) else { return };
+        self.previews.grant_reads(conn);
         loop {
             let control = conn.session.scheduler().pending_control() > 0;
             if !control && conn.bulk_in_writer {
@@ -1516,6 +1543,9 @@ impl Core {
             conn.bulk_in_writer |= bulk;
             if conn.writer.send(Outgoing { bytes, bulk }).is_err() {
                 break;
+            }
+            if bulk {
+                self.previews.grant_reads(conn);
             }
         }
     }
@@ -1537,7 +1567,7 @@ impl Core {
             }
             SessionEvent::Notification(inbound) => self.on_inbound(id, inbound),
             SessionEvent::PeerRequest { id: peer_id, request, .. } => self.on_peer_request(id, peer_id, request),
-            SessionEvent::Data { .. } => {}
+            SessionEvent::Data { stream, bytes } => self.preview_data(id, stream, bytes),
             SessionEvent::OrphanError(e) => log(format!("{id}: daemon error without id: {}", e.code)),
         }
     }
@@ -1560,6 +1590,7 @@ impl Core {
         let Some(t) = self.targets.get_mut(id) else { return };
         let Some(conn) = t.conn.as_mut() else { return };
         conn.ready = true;
+        let port_forward = self.preview_check(id).is_ok();
         let can_update = self.handover_on_ready(id, &info.daemon.build);
         let new = ConnectionState {
             status: ConnectionStatus::Connected,
@@ -1570,6 +1601,7 @@ impl Core {
                 older: can_update || info.daemon_is_older || daemon_build_older(&info.daemon.build, &self.cfg.build),
                 schema_hash_matches: info.schema_hash_matches,
                 can_update,
+                port_forward,
             }),
             update: None,
         };
@@ -1740,6 +1772,20 @@ impl Core {
     }
 
     fn on_response(&mut self, id: &TargetId, pending: Pending, method: &'static str, outcome: Result<Value, ErrorObject>) {
+        let outcome = if matches!(method, names::TUNNEL_OPEN | names::PREVIEW_PORTS)
+            && outcome.as_ref().is_err_and(|e| e.code == ErrorCode::MethodNotFound)
+        {
+            if let Some(t) = self.targets.get(id) {
+                let mut state = t.state.clone();
+                if let Some(daemon) = state.daemon.as_mut() {
+                    daemon.port_forward = false;
+                    self.set_state(id, state);
+                }
+            }
+            self.preview_check(id).and(outcome)
+        } else {
+            outcome
+        };
         match pending {
             Pending::Routed { client, id: rid, method: m, op } => {
                 let outcome = outcome.and_then(|wire| self.decode_current(id, m, wire));
@@ -1803,6 +1849,7 @@ impl Core {
             Pending::UploadBegin { handle } => self.on_upload_begun(id, &handle, outcome),
             Pending::UploadEnd { handle } => self.on_upload_ended(id, &handle, outcome),
             Pending::UploadCancel { handle } => self.on_upload_cancelled(&handle),
+            Pending::PreviewOpen { socket } => self.preview_opened(id, socket, outcome),
             Pending::Receipt { message_id, receipt } => {
                 if outcome.is_ok() {
                     self.worker.submit(move |s| {
@@ -1899,6 +1946,7 @@ impl Core {
                 });
             }
             Inbound::StreamCredit(_) => {}
+            Inbound::TunnelClose(p) => self.preview_remote_close(id, p.stream),
             Inbound::Other { method, params } if method == names::PROVIDER_RATE_LIMITS_UPDATED => self.limits_updated(id, params),
             Inbound::Other { method, params } if method == names::DISCOVERY_UPDATED => {
                 if let Ok(p) = serde_json::from_value::<yaac_protocol::DiscoveryCapsResult>(params.clone()) {
@@ -2317,8 +2365,13 @@ impl Core {
         }
         let method = request.method.as_str();
         match method {
-            names::INITIALIZE | names::MESH_RELAY | names::MESH_DELIVER | names::MESH_RECEIPT | names::MESH_DELIVERY_RECEIPT | names::MESH_ROSTER => {
+            names::INITIALIZE | names::MESH_RELAY | names::MESH_DELIVER | names::MESH_RECEIPT | names::MESH_DELIVERY_RECEIPT | names::MESH_ROSTER | names::TUNNEL_OPEN => {
                 return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, format!("{method} is handled by the hub itself"))));
+            }
+            names::PREVIEW_PORTS => {
+                if let Err(error) = self.preview_check(&target) {
+                    return Some(Err(error));
+                }
             }
             names::THREAD_SUBSCRIBE => {
                 let outcome = self.window_subscribe(client, rid, &target, request.params);
@@ -2432,6 +2485,7 @@ impl Core {
             }
             PeerRequest::MeshQuery(params) => self.route_query(source, generation, peer_id, &params),
             PeerRequest::MeshUsage(params) => self.route_usage(source, generation, peer_id, &params),
+            PeerRequest::BrowserCall(params) => self.route_browser(source, generation, peer_id, params),
             PeerRequest::Other { .. } => {} // the session already answered method_not_found
         }
     }
@@ -2845,6 +2899,7 @@ impl Core {
 
     pub(crate) fn tick(&mut self) {
         let now = Instant::now();
+        self.expire_browser_calls(now);
         // Acknowledge what is committed.
         if now.duration_since(self.last_ack) >= self.cfg.ack_interval {
             self.last_ack = now;

@@ -24,6 +24,7 @@ interface OutStream {
   pendingBytes: number;
   credit: number;
   closing: boolean;
+  drained?: () => void;
 }
 
 export interface ScheduledFrame {
@@ -56,9 +57,10 @@ export class Scheduler {
     this.streams.set(stream, { pending: [], offset: 0, pendingBytes: 0, credit: initialCredit, closing: false });
   }
 
-  sendData(stream: number, bytes: Buffer): void {
+  sendData(stream: number, bytes: Buffer, drained?: () => void): void {
     const out = this.streams.get(stream);
     if (!out) throw new Error(`data stream ${stream} is not open`);
+    if (drained) out.drained = drained;
     out.pendingBytes += bytes.length;
     if (bytes.length > 0) out.pending.push(bytes);
   }
@@ -66,7 +68,7 @@ export class Scheduler {
   /** `stream/credit` from the receiver. Unknown streams are ignored (may cross a cancel). */
   grantCredit(stream: number, bytes: number): void {
     const out = this.streams.get(stream);
-    if (out) out.credit += bytes;
+    if (out && Number.isSafeInteger(bytes) && bytes > 0) out.credit = Math.min(Number.MAX_SAFE_INTEGER, out.credit + bytes);
   }
 
   closeStream(stream: number): void {
@@ -156,6 +158,10 @@ export class Scheduler {
     }
     out.credit -= taken;
     out.pendingBytes -= taken;
+    if (out.pendingBytes === 0 && out.drained) {
+      queueMicrotask(out.drained);
+      out.drained = undefined;
+    }
     if (out.closing && out.pendingBytes === 0) this.streams.delete(pick);
     this.lastStream = pick;
     return encodeDataFrame(pick, Buffer.concat(parts));

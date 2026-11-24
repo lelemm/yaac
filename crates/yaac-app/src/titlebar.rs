@@ -20,7 +20,7 @@ const GRIP: f32 = 5.0;
 /// The row's draggable part. Called before the content, so the content's own widgets in the
 /// strip take precedence; [`buttons`] is called after it, so the buttons are on top.
 pub(crate) fn drag_area(ui: &mut egui::Ui, full: Rect) {
-    let bar = Rect::from_min_size(full.min, vec2(full.width() - 3.0 * BUTTON_W, HEIGHT));
+    let bar = Rect::from_min_size(full.min, vec2(full.width() - 4.0 * BUTTON_W, HEIGHT));
     let resp = ui.interact(bar, egui::Id::unique("title-drag"), Sense::click_and_drag());
     let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
     if resp.double_clicked() {
@@ -105,7 +105,7 @@ pub(crate) fn update(ui: &mut egui::Ui, full: Rect, p: &Palette, u: &crate::upda
     use crate::updater::CaptionAction;
     let caption = u.phase.caption()?;
     let w = u.title_width();
-    let r = Rect::from_min_size(pos2(full.right() - 3.0 * BUTTON_W - w, full.top()), vec2(w, HEIGHT));
+    let r = Rect::from_min_size(pos2(full.right() - 4.0 * BUTTON_W - w, full.top()), vec2(w, HEIGHT));
     let clickable = caption.action.is_some();
     let resp = ui.interact(r, egui::Id::unique("title-update"), if clickable { Sense::click() } else { Sense::hover() }).on_hover_text(caption.tooltip);
     let hot = clickable && (resp.hovered() || resp.has_focus());
@@ -127,4 +127,30 @@ pub(crate) fn update(ui: &mut egui::Ui, full: Rect, p: &Palette, u: &crate::upda
         }
     }
     if resp.clicked() { caption.action } else { None }
+}
+
+/// Pane menu immediately before the native-style caption controls.
+pub(crate) fn panes(ui: &mut egui::Ui, full: Rect, app: &mut crate::app::YaacApp) {
+    let rect = Rect::from_min_size(pos2(full.right() - 4.0 * BUTTON_W, full.top()), vec2(BUTTON_W, HEIGHT));
+    let plus = ui.put(rect, egui::Button::new("+").frame(false)).on_hover_text("Add pane");
+    crate::widgets::menu_popup(egui::Popup::menu(&plus), &app.p).show(|ui| {
+        let key = app.client.state.selected_thread().filter(|_| !app.ui.settings).cloned();
+        let reason = app.browsers.reason(&app.client, key.as_ref());
+        if ui.add_enabled(reason.is_none(), egui::Button::new("Browser"))
+            .on_disabled_hover_text(reason.as_deref().unwrap_or_default()).clicked()
+            && let Some(key) = &key {
+            app.preview_ui.focus_address = app.browsers.new_tab(&app.client, key).ok();
+            ui.close();
+        }
+        if reason.is_some() && let Some(key) = key.filter(|k| crate::preview_controller::supported(&app.client, k)) {
+            ui.add(egui::TextEdit::singleline(&mut app.preview_ui.external_address).hint_text("URL or port"));
+            if ui.button("Open in browser").clicked() {
+                match app.browsers.external_address(&mut app.client, &key, &app.preview_ui.external_address) {
+                    Ok(()) => ui.close(),
+                    Err(e) => app.browsers.notice = Some(e),
+                }
+            }
+        }
+        if let Some(e) = &app.browsers.notice { ui.label(e); }
+    });
 }
