@@ -413,7 +413,7 @@ impl Transcript {
         let protected = |item: &Item| {
             item.status == yaac_protocol::ItemStatus::InProgress
                 || matches!(&item.body, ItemBody::Request(r) if matches!(r.state, RequestState::Pending | RequestState::Submitted))
-                || self.pending.iter().any(|p| &p.item == &item.id)
+                || self.pending.iter().any(|p| p.item == item.id)
         };
         let mut start = 0;
         let mut groups: Vec<_> = self.items.chunk_by(|left, right| left.turn_id == right.turn_id)

@@ -899,7 +899,7 @@ impl Core {
                         let mut file = std::fs::File::open(path)?;
                         let offset = p.offset.min(blob.size);
                         file.seek(SeekFrom::Start(offset))?;
-                        let mut bytes = vec![0; (blob.size - offset).min(ext::BLOB_CHUNK_MAX as u64) as usize];
+                        let mut bytes = vec![0; usize::try_from(blob.size - offset).map_or(ext::BLOB_CHUNK_MAX, |n| n.min(ext::BLOB_CHUNK_MAX))];
                         file.read_exact(&mut bytes)?;
                         Ok(json!({ "present": true, "size": blob.size, "mediaType": blob.media_type,
                             "more": offset + (bytes.len() as u64) < blob.size,

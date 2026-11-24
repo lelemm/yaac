@@ -472,7 +472,8 @@ user messages, agent prose, code, activity lines and their expanded detail, card
 can **run across several items** — drag from the middle of one message to the middle of
 another three items down — and copies as plain text in reading order, with a blank line
 between items and code blocks kept as they are. The same holds for text in the agents panel,
-settings, and dialogs. Right-clicking a message also offers "Copy message".
+settings, and dialogs. Right-clicking a message offers "Copy" for the selection, while there is
+one, and "Copy message"; clicking the menu leaves the selection as it was.
 
 ### Code blocks and diffs
 

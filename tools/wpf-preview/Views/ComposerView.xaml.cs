@@ -190,25 +190,30 @@ public partial class ComposerView : UserControl
         serverText = value;
         pendingEdits.Clear();
 
+        var before = Editor.Text;
         var start = Editor.SelectionStart;
-        var length = Editor.SelectionLength;
+        var end = start + Editor.SelectionLength;
         var verticalOffset = Editor.VerticalOffset;
         applyingText = true;
         try
         {
             if (reset)
                 Editor.IsUndoEnabled = false;
-            if (Normalize(Editor.Text) != value)
+            var replaced = Normalize(before) != value;
+            if (replaced)
                 Editor.Text = value;
             if (reset)
             {
                 Editor.Select(0, 0);
                 Editor.ScrollToHome();
             }
-            else
+            else if (replaced)
             {
-                start = Math.Min(start, Editor.Text.Length);
-                Editor.Select(start, Math.Min(length, Editor.Text.Length - start));
+                // The controller changed the text: the caret and selection keep their place in
+                // the text around them (after a paste stays after it), not their old index.
+                var from = MapThroughChange(before, Editor.Text, start);
+                var to = Math.Max(from, MapThroughChange(before, Editor.Text, end));
+                Editor.Select(from, to - from);
                 if (Editor.Text.Length > 0 && double.IsFinite(verticalOffset))
                     Editor.ScrollToVerticalOffset(verticalOffset);
             }
@@ -222,6 +227,25 @@ public partial class ComposerView : UserControl
     }
 
     private static string Normalize(string value) => value.Replace("\r\n", "\n");
+
+    // Where index `at` of `before` lies in `after`: unchanged in the common prefix, the same
+    // distance from the end in the common suffix, and the end of the changed span otherwise.
+    internal static int MapThroughChange(string before, string after, int at)
+    {
+        at = Math.Clamp(at, 0, before.Length);
+        var prefix = 0;
+        var most = Math.Min(before.Length, after.Length);
+        while (prefix < most && before[prefix] == after[prefix])
+            prefix++;
+        var suffix = 0;
+        while (suffix < most - prefix && before[before.Length - 1 - suffix] == after[after.Length - 1 - suffix])
+            suffix++;
+        if (at <= prefix)
+            return at;
+        if (at >= before.Length - suffix)
+            return after.Length - (before.Length - at);
+        return after.Length - suffix;
+    }
 
     private void EditorTextChanged(object sender, TextChangedEventArgs e)
     {
@@ -401,16 +425,25 @@ public partial class ComposerView : UserControl
     private void InsertText(string text)
     {
         var start = Editor.SelectionStart;
+        var kept = Editor.Text.Length - Editor.SelectionLength;
+        var end = start;
         Editor.BeginChange();
         try
         {
             Editor.SelectedText = text;
-            Editor.Select(Math.Min(start + text.Length, Editor.Text.Length), 0);
+            // After the inserted text, measured by how much the text grew (the editor's own
+            // line endings, not the inserted string's), with the replaced selection gone.
+            end = Math.Clamp(start + Editor.Text.Length - kept, 0, Editor.Text.Length);
+            Editor.Select(end, 0);
         }
         finally
         {
             Editor.EndChange();
         }
+        // Closing the change block raises TextChanged; nothing it runs may leave the caret
+        // anywhere but after the insertion.
+        if (Editor.SelectionStart != end || Editor.SelectionLength != 0)
+            Editor.Select(end, 0);
         QueueCaretScroll();
     }
 

@@ -91,6 +91,12 @@ impl TextSel {
         }
     }
 
+    /// Where `unit`'s first part was drawn this frame (tests drive the pointer there).
+    #[cfg(test)]
+    pub(crate) fn drawn(&self, unit: Unit) -> Option<Rect> {
+        self.frame.iter().find(|g| g.unit == unit && g.part == 0).map(Placed::rect)
+    }
+
     fn exact(&self, p: Pos2) -> Option<TextPos> {
         self.frame.iter().find(|g| g.rect().expand2(egui::vec2(0.0, 1.0)).contains(p)).map(|g| g.at(p))
     }
@@ -113,7 +119,11 @@ impl TextSel {
                 i.key_pressed(egui::Key::Escape),
             )
         });
-        if pressed {
+        // A press on something drawn over the transcript (its right-click menu, a popup, a
+        // dialog) is not a press on the text: it neither starts nor clears a selection, so the
+        // menu's Copy still has one to copy.
+        let over = pos.and_then(|p| ui.ctx().layer_id_at(p)).is_some_and(|l| l != ui.layer_id());
+        if pressed && !over {
             let on_text = pos.filter(|p| area.contains(*p)).and_then(|p| self.exact(p));
             self.drag.press(on_text);
             if on_text.is_some() {

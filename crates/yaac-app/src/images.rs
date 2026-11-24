@@ -184,11 +184,11 @@ impl Images {
         self.previews.get(source).map(|preview| &preview.wire)
     }
 
-    pub(crate) fn inline(&mut self, ui: &mut egui::Ui, source: ImageSource, name: &str) -> bool {
+    pub(crate) fn inline(&mut self, ui: &mut egui::Ui, source: &ImageSource, name: &str) -> bool {
         if ui.is_rect_visible(egui::Rect::from_min_size(ui.cursor().min, vec2(24.0, 22.0))) {
             self.preview(source.clone());
         }
-        if let Some(preview) = self.previews.get_mut(&source) {
+        if let Some(preview) = self.previews.get_mut(source) {
             if let Some(pixels) = &preview.pixels {
                 let texture = preview.texture.get_or_insert_with(|| {
                     self.ctx.load_texture(
@@ -306,7 +306,7 @@ impl Images {
         match &transfer.source {
             ReadSource::Blob(id) => client.read_draft_image_chunk(transfer.token, id, offset),
             ReadSource::Target(target, id) => {
-                client.read_image_chunk(transfer.token, target, id, offset)
+                client.read_image_chunk(transfer.token, target, id, offset);
             }
         }
     }

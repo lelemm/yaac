@@ -610,6 +610,7 @@ fn dispatch(
         }
         "shell.resizeSidebar" => {
             if let Some(width) = payload["width"].as_f64() {
+                #[allow(clippy::cast_possible_truncation, reason = "a width in points")]
                 app.ui.sidebar.drag_to(width as f32);
             }
             None
@@ -649,7 +650,9 @@ fn dispatch(
         "agents.undock" => Some(Action::Panel(PanelInput::Undock)),
         "agents.resizeDock" => {
             if let Some(width) = payload["width"].as_f64() {
-                app.ui.agents_width = yaac_core::prefs::agents_width(width as f32);
+                #[allow(clippy::cast_possible_truncation, reason = "a width in points")]
+                let width = width as f32;
+                app.ui.agents_width = yaac_core::prefs::agents_width(width);
             }
             None
         }

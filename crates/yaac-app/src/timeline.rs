@@ -161,6 +161,7 @@ pub(crate) fn show(ui: &mut egui::Ui, ui_state: &mut TimelineUi, p: &Palette, ar
 
 /// The hover card: the prompt's first line and when it was sent; "and N more" for a dash
 /// that stands for several.
+#[allow(clippy::too_many_arguments, reason = "the drawing context of one card")]
 fn card(ui: &egui::Ui, p: &Palette, at: egui::Pos2, title: &str, stamp: Option<i64>, more: usize, now: i64, zone: Zone) {
     let ctx = ui.ctx().clone();
     egui::Area::new(egui::Id::unique("timeline-card")).order(egui::Order::Tooltip).fixed_pos(pos2(at.x, at.y - 24.0)).interactable(false).show(&ctx, |ui| {
