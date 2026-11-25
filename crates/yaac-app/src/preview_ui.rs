@@ -404,7 +404,9 @@ pub(crate) fn pane_menu(ui: &mut egui::Ui, app: &mut YaacApp, key: Option<&Threa
         Some(k) => crate::terminal::unavailable(&app.client, k),
         None => Some("Open a thread first".to_owned()),
     };
+    // As wide as its rows need, not as wide as the space it opens in.
     ui.set_min_width(200.);
+    ui.set_max_width(220.);
     let mut pick = None;
     if pane_row(ui, &p, "Browser", browser.as_deref(), false, |pa, c, ink| icons::globe(pa, c, 16., ink)).clicked() {
         pick = Some(PaneChoice::Browser);
@@ -426,6 +428,7 @@ pub(crate) fn pane_menu(ui: &mut egui::Ui, app: &mut YaacApp, key: Option<&Threa
     if terminal.is_none() && shells.len() > 1 {
         egui::containers::menu::SubMenu::new().show(ui, &r, |ui| {
             ui.set_min_width(220.);
+            ui.set_max_width(260.);
             for (i, shell) in shells.iter().enumerate() {
                 let label = if i == 0 { format!("{} (default)", shell.name) } else { shell.name.clone() };
                 if pane_row(ui, &p, &label, None, false, |pa, c, ink| icons::prompt(pa, c, 16., ink)).on_hover_text(&shell.path).clicked() {

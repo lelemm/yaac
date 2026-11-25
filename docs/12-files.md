@@ -12,7 +12,8 @@ The window and target implement P326–P329.
 The browser area becomes the thread's **side pane**. Its tabs have a kind — **Browser**,
 **Files**, **File**, **Diff** — and share the tab strip, the split with the chat, **Full
 screen** and **Restore** ([11](11-preview.md#the-browser-area)). The title bar's **+** menu
-lists **Browser** and **Files**. Each kind brings its own toolbar under the tabs. Tabs belong
+lists **Browser**, **Files** and **Terminal**, as wide as its rows; the **+** is shown only
+while a thread is open, since a tab belongs to a thread. Each kind brings its own toolbar under the tabs. Tabs belong
 to the thread and are not restored after a restart, like browser tabs. Files appears for connected targets advertising fileView and works in a build without the embedded browser. The tab-strip **+** also offers both kinds.
 
 ## Visual design of the side pane

@@ -131,6 +131,11 @@ pub(crate) fn update(ui: &mut egui::Ui, full: Rect, p: &Palette, u: &crate::upda
 
 /// Pane menu immediately before the native-style caption controls.
 pub(crate) fn panes(ui: &mut egui::Ui, full: Rect, app: &mut crate::app::YaacApp) {
+    // Side pane tabs belong to a thread: with none open (a fresh start, Settings) there is
+    // nothing to add one to, so the button is not shown.
+    if app.client.state.selected_thread().is_none() || app.ui.settings {
+        return;
+    }
     let rect = Rect::from_min_size(pos2(full.right() - 4.0 * BUTTON_W, full.top()), vec2(BUTTON_W, HEIGHT));
     let plus = ui.interact(rect, egui::Id::unique("title-panes"), Sense::click()).on_hover_text("Add a side pane tab");
     let hot = plus.hovered() || plus.has_focus();

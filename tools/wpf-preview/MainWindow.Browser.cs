@@ -31,6 +31,8 @@ public partial class MainWindow
         var thread = Text(state, "thread");
         if (browserThread != thread) browserDragThread = null;
         browserThread = thread;
+        // Side pane tabs belong to a thread: without one open there is nothing to add a tab to.
+        CaptionAddPane.Visibility = string.IsNullOrEmpty(thread) ? Visibility.Collapsed : Visibility.Visible;
         BrowserExternalFallback.Visibility = Flag(state, "external") ? Visibility.Visible : Visibility.Collapsed;
         var active = state.Value("active").ValueKind == JsonValueKind.Number;
         var full = active && Flag(state, "fullScreen");
