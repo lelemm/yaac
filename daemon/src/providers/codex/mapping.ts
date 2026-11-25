@@ -542,7 +542,7 @@ export function mapServerRequest(method: string, params: unknown): MappedRequest
         request: {
           requestKind: "approval",
           approvalKind: "command",
-          title: stdin ? "Send input to a running command" : command ? `Run \`${command}\`` : "Run a command",
+          title: stdin ? "Send input to a running command" : "Run a command",
           command,
           cwd: str(p.cwd),
           reason: str(p.reason),
@@ -655,7 +655,7 @@ export function mapServerRequest(method: string, params: unknown): MappedRequest
         turnId,
         blocking: true,
         request: exec
-          ? { requestKind: "approval", approvalKind: "command", title: cmd ? `Run \`${cmd}\`` : "Run a command", command: cmd, cwd: str(p.cwd), reason: str(p.reason), decisions: ds }
+          ? { requestKind: "approval", approvalKind: "command", title: "Run a command", command: cmd, cwd: str(p.cwd), reason: str(p.reason), decisions: ds }
           : { requestKind: "approval", approvalKind: "fileChange", title: "Apply file changes", changes, reason: str(p.reason), scope: str(p.grantRoot), decisions: ds },
         encode: (a) => {
           const d = pickDecision(raw, a, method);

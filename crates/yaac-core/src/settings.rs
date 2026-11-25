@@ -27,6 +27,9 @@ pub enum Page {
     Keyboard,
     /// Terminal: copy on select, Ctrl+V, the multi-line paste question (P339).
     Terminal,
+    /// Desktop request notifications.
+    Notifications,
+    Approvals,
     /// Advanced.
     Advanced,
     /// About: this YAAC's version and build, its components, the latest release.
@@ -35,7 +38,7 @@ pub enum Page {
 
 impl Page {
     /// Every page, in navigation order.
-    pub const ALL: [Page; 8] = [Page::Targets, Page::Providers, Page::Appearance, Page::Window, Page::Keyboard, Page::Terminal, Page::Advanced, Page::About];
+    pub const ALL: [Page; 10] = [Page::Targets, Page::Providers, Page::Approvals, Page::Appearance, Page::Window, Page::Keyboard, Page::Terminal, Page::Notifications, Page::Advanced, Page::About];
 
     /// The navigation label.
     pub fn label(self) -> &'static str {
@@ -46,6 +49,8 @@ impl Page {
             Page::Window => "Window",
             Page::Keyboard => "Keyboard",
             Page::Terminal => "Terminal",
+            Page::Approvals => "Approvals",
+            Page::Notifications => "Notifications",
             Page::Advanced => "Advanced",
             Page::About => "About",
         }
@@ -384,6 +389,8 @@ pub struct ModelGuidanceRow {
     pub guidance_editable: bool,
     /// Whether the model is on, when the target supports the switch.
     pub enabled: Option<bool>,
+    /// Whether the model explains approvals, when this choice is offered.
+    pub explains_approvals: Option<bool>,
 }
 
 impl ModelGuidanceRow {
@@ -529,8 +536,9 @@ pub fn providers_view(state: &AppState, target: &TargetId) -> Option<ProvidersVi
             };
             let guidance_editable = p.capabilities.contains(&Capability::ModelBestUse);
             let availability = p.capabilities.contains(&Capability::ModelAvailability);
+            let explanations = p.capabilities.contains(&Capability::CommandExplanations);
             let mut model_guidance = Vec::new();
-            if guidance_editable || availability {
+            if guidance_editable || availability || explanations {
                 model_guidance.extend(p.models.iter().map(|model| (model, true))
                     .chain(p.disabled_models.iter().map(|model| (model, false)))
                     .map(|(model, enabled)| ModelGuidanceRow {
@@ -540,6 +548,7 @@ pub fn providers_view(state: &AppState, target: &TargetId) -> Option<ProvidersVi
                         best_use: model.best_use.clone(),
                         guidance_editable,
                         enabled: availability.then_some(enabled),
+                        explains_approvals: (explanations && !model.hidden).then(|| p.approval_explanation_model.as_ref() == Some(&model.id)),
                     }));
                 if availability {
                     model_guidance.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
@@ -623,4 +632,22 @@ pub fn diagnostics(state: &AppState, target: &TargetId) -> Vec<(String, String)>
         out.push((p.display_name.clone(), v));
     }
     out
+}
+
+/// Explanations run on the card's target. An instance/model pair appears once across
+/// connected targets that currently offer it.
+pub fn explanation_choices(state: &AppState) -> Vec<(yaac_protocol::ExplanationModel, String)> {
+    let mut choices = Vec::new();
+    for target in state.targets.iter().filter(|t| t.connected()) {
+        for provider in &target.providers {
+            if provider.status != ProviderStatus::Ready || !provider.capabilities.contains(&Capability::CommandExplanations) { continue; }
+            for model in provider.models.iter().filter(|m| !m.hidden) {
+                let value = yaac_protocol::ExplanationModel { instance: provider.instance.clone(), model: model.id.clone() };
+                if !choices.iter().any(|(v, _)| v == &value) {
+                    choices.push((value, format!("{} · {}", provider.display_name, model.display_name)));
+                }
+            }
+        }
+    }
+    choices
 }

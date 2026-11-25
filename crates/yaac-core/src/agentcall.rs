@@ -12,7 +12,7 @@
 //! `meshSpawn`, `meshWait`). Those that are a call's own echo are folded into the call's line
 //! ([`Echoes`]) so the conversation between agents reads once.
 
-use std::collections::BTreeSet;
+use std::{borrow::Cow, collections::BTreeSet};
 
 use yaac_protocol::{
     AgentCall, AgentCallKind, AgentCallOutcome, AgentRef, Item, ItemBody, ItemId, ItemStatus, MessageId, ReceiptStatus, ToolCallItem,
@@ -95,6 +95,15 @@ impl Pill {
             Some(m) => format!("{} · {m}", self.label),
             None => self.label.clone(),
         }
+    }
+}
+
+/// In a compact label, show spaced title separators using the same dot as machine names.
+pub fn compact_label(title: &str) -> Cow<'_, str> {
+    if title.contains(" — ") || title.contains(" – ") {
+        Cow::Owned(title.replace(" — ", " · ").replace(" – ", " · "))
+    } else {
+        Cow::Borrowed(title)
     }
 }
 
@@ -330,6 +339,11 @@ pub fn line(state: &AppState, map: &AttentionMap, caller: &ThreadKey, t: Option<
             l.lead = k.clone();
             l.preview = preview;
             l.status = status_of(&call.outcome);
+        }
+    }
+    for pill in &mut pills {
+        if let Cow::Owned(label) = compact_label(&pill.label) {
+            pill.label = label;
         }
     }
     l.pills = pills;

@@ -188,7 +188,7 @@ pub fn block_turn<'a>(b: &Block, t: &'a Transcript) -> Option<&'a TurnId> {
     let of = |i: usize| t.items().get(i).map(|x| &x.turn_id);
     match b {
         Block::User { index } | Block::Task { index } | Block::Prose { index } | Block::Card { index } => of(*index),
-        Block::Handoff { .. } => None,
+        Block::Handoff { .. } | Block::Copy { .. } => None,
         Block::Run { lines } => lines.first().and_then(|l| of(l.index)),
         Block::Folded { first, .. } => t.index_of(first).and_then(of),
         Block::TurnChanges { turn, .. } => t.items().iter().find(|i| &i.turn_id == turn).map(|i| &i.turn_id),
@@ -205,7 +205,7 @@ fn block_ids<'a>(b: &'a Block, t: &'a Transcript) -> Vec<&'a ItemId> {
         Block::Run { lines } => lines.iter().map(|l| &l.id).collect(),
         Block::Folded { first, .. } => vec![first],
         Block::TurnChanges { items, .. } => items.iter().collect(),
-        Block::Worked { .. } => Vec::new(),
+        Block::Worked { .. } | Block::Copy { .. } => Vec::new(),
     }
 }
 
@@ -342,6 +342,7 @@ mod tests {
                 Block::Folded { .. } => "folded".to_owned(),
                 Block::Task { .. } => "task".to_owned(),
                 Block::Handoff { .. } => "handoff".to_owned(),
+                Block::Copy { .. } => "copy".to_owned(),
             })
             .collect()
     }

@@ -342,6 +342,7 @@ internal sealed class TranscriptText : ContentControl
 
     private Block BlockFor(Piece piece)
     {
+        if (piece.Kind == "mermaid") return new BlockUIContainer(new MermaidDiagram(piece.Text));
         if (piece.Kind is "code" or "diff") return CodeBlock(piece);
         if (piece.Kind == "table") return TableFor(piece.Data);
 

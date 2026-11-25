@@ -1,3 +1,5 @@
+import { chooseWorkerMode, rankOf } from "../mesh/modes.js";
+import type { ThreadSetModeParams } from "../protocol/generated/types.js";
 import { Terminals } from "./terminals.js";
 // The session core: threads, journals, requests, control, the dispatcher, and the index —
 // everything between the providers and the connected clients. It knows no protocol version
@@ -69,6 +71,7 @@ import { ProviderRegistry, type Instance } from "../providers/registry.js";
 import { Emitter } from "../util/emitter.js";
 import { ensureDir, nowIso, randomId, readJson, sha256Hex, writeJsonAtomic } from "../util/fsx.js";
 import { OUTPUT_HEAD_BYTES, Projection, applyDelta, clone, utf8Head } from "./items.js";
+import { CommandExplanations } from "./command-explanations.js";
 import { lastSeqOf, type JournalEntry, type JournalOptions } from "./journal.js";
 import { NotActed, OpLog } from "./ops.js";
 import { ThreadIndex, type Holder } from "./thread-index.js";
@@ -331,6 +334,7 @@ function notActed(code: string, message: string, data?: unknown): NotActed {
 export class Core {
   readonly terminals = new Terminals(() => this.uploads.allocateStream(), () => this.activity.emit());
   readonly registry: ProviderRegistry;
+  readonly commandExplanations: CommandExplanations;
   readonly index: ThreadIndex;
   readonly ops: OpLog;
   readonly uploads: UploadStore;
@@ -386,6 +390,7 @@ export class Core {
     this.gitLimiter = new Limiter(Math.max(1, opts.gitConcurrency ?? 2));
     this.gitStatus = new GitStatusStore(path.join(opts.home, "git-status.json"), this.git, this.gitLimiter, (root) => this.onGitChanged(root));
     this.registry.onEvent((instance, event) => this.onProviderEvent(instance, event));
+    this.commandExplanations = new CommandExplanations(this.registry);
     this.registry.onDescriptor((d) => this.broadcast("provider/updated", { provider: d }));
     this.capsFile = path.join(opts.home, "discovery.json");
     let stored: Partial<DiscoveryCaps> | undefined;
@@ -1306,6 +1311,8 @@ export class Core {
       cwd: r.cwd,
       state,
       control: "free",
+      turnActive: !!rt.activeTurn,
+      permissionMode: r.selectedMode ?? rt.effective?.applied?.mode ?? null,
       originKind: r.originKind,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
@@ -1331,6 +1338,7 @@ export class Core {
     }
     if (r.forkedFrom) s.forkedFrom = r.forkedFrom;
     if (r.linkedChildren?.length) s.linkedChildren = r.linkedChildren;
+    if (r.artifacts?.length) s.artifacts = [...r.artifacts];
     if (r.spawnedBy) s.spawnedBy = r.spawnedBy;
     this.mesh?.decorate(rt, s);
     // A harness's own sub-agent (D151) is listed under its parent like a worker; a parent
@@ -1836,6 +1844,7 @@ export class Core {
     }
     const declared = new Set(inst.descriptor.capabilities ?? []);
     const needs: Partial<Record<Capability, keyof HarnessProvider>> = {
+      modeChangeLive: "setModeLive",
       threadFork: "forkThread",
       steer: "steer",
       threadRename: "rename",
@@ -1856,6 +1865,7 @@ export class Core {
     }
     // A read-only harness sub-agent (D151) can be read and watched, nothing more.
     if (rt.record.metadataPending || this.subagentReadOnly(rt)) eff.capabilities = eff.capabilities.filter((c) => !SUBAGENT_WRITES.has(c));
+    if (rt.record.selectedMode) eff.applied = { ...eff.applied, mode: rt.record.selectedMode };
     rt.effective = eff;
     return eff;
   }
@@ -2204,6 +2214,86 @@ export class Core {
     this.mesh?.turnStarted(rt, turnId, origin);
   }
 
+  async threadSetMode(client: ClientLink, p: ThreadSetModeParams): Promise<Record<string, never>> {
+    return this.ops.run("thread/setMode", p.opId, async () => {
+      const rt = this.requireThread(p.threadId);
+      const provider = this.provider(rt);
+      const effective = await this.computeEffective(rt);
+      await this.refreshExternal(rt);
+      this.checkWriter(rt, client, true);
+      if (this.subagentReadOnly(rt)) throw notActed("thread_in_use", "The harness controls this sub-agent's permissions.");
+      if (rt.claimed || rt.dispatching || rt.compactDriver) throw notActed("turn_in_progress", "Another change is in progress.");
+      const modes = effective.modes ?? [];
+      const instance = rt.record.instance;
+      const target = this.addressHere(rt.id).split("/")[0];
+      const choice = chooseWorkerMode(
+        { id: p.mode.id, info: p.mode, instance: p.sourceTarget === target ? p.sourceInstance : null },
+        { instance, displayName: this.registry.require(instance).descriptor.displayName, modes }, null,
+      );
+      const mode = modes.find(m => m.id === choice.mode);
+      const ceiling = rankOf(p.mode);
+      const permission = rankOf(mode);
+      if (!mode || (mode.skipsApprovals && p.mode.skipsApprovals !== true) || (ceiling !== null && (permission === null || permission > ceiling))) throw notActed("capability_missing", "No equivalent permission mode is available.");
+      const turn = rt.activeTurn;
+      const live = effective.capabilities?.includes("modeChangeLive") && provider.setModeLive;
+      const interrupt = !!turn && !live && mode.id !== effective.applied?.mode;
+      if (interrupt && p.allowInterrupt !== true) throw notActed("turn_in_progress", "This worker started running after confirmation. Confirm its interruption first.");
+      const notice = (text: string, turnId: string, suffix: string): Item => ({
+        id: `notice:mode:${p.opId}:${suffix}`, turnId, status: "completed", kind: "notice", noticeKind: "info", text,
+      });
+      rt.claimed = true;
+      let ownsClaim = true;
+      try {
+        if (interrupt && [...rt.requests.values()].some(r => (r.state === "pending" || r.state === "submitted") &&
+            !(r.state === "pending" && r.approval && this.automaticApproval(rt, r.approval, mode.id, null)))) {
+          throw notActed("awaiting_user", "Answer the outstanding request before interrupting this worker.");
+        }
+        if (turn && live && mode.id !== effective.applied?.mode) await live.call(provider, rt.record.native, mode.id);
+        for (const r of rt.requests.values()) {
+          if (!r.approval || r.state !== "pending") continue;
+          const auto = this.automaticApproval(rt, r.approval, mode.id, null);
+          if (!auto) continue;
+          r.automatic = auto.automatic;
+          this.setRequestState(rt, r, "submitted", { by: "yaacd", answer: auto.answer, automatic: auto.automatic, at: nowIso() });
+          try { await provider.respond(rt.record.native, r.requestId, auto.answer); }
+          catch (e) { this.automaticFailed(rt, r, (e as Error).message); throw e; }
+        }
+        let resume = false;
+        if (interrupt && rt.activeTurn === turn) {
+          if (rt.pendingRequestCount()) throw rpc("awaiting_user", "A request is still waiting. Confirm the change again after it is resolved.");
+          const deadline = Date.now() + NOW_INTERRUPT_WAIT_MS;
+          await Promise.race([provider.interrupt(rt.record.native, turn), sleepMs(NOW_INTERRUPT_WAIT_MS)]);
+          while (rt.activeTurn === turn && Date.now() < deadline) await sleepMs(20);
+          if (rt.activeTurn) throw rpc("outcome_unknown", "Interruption was requested but the worker has not confirmed it stopped.");
+          resume = rt.lastStatus === "interrupted";
+          if (resume) this.append(rt, { type: "itemCompleted", item: notice("Interrupted to change its mode", turn, "stop") });
+        }
+        rt.record.selectedMode = mode.id;
+        rt.record.modeSelectionId = p.opId;
+        rt.saveRecord();
+        effective.applied = { ...effective.applied, mode: mode.id };
+        rt.effective = effective;
+        this.updateIndex(rt);
+        this.append(rt, { type: "settingsChanged", effective });
+        this.append(rt, { type: "itemCompleted", item: notice(`Mode changed to ${mode.displayName} from ${p.sourceTitle} by you`, turn ?? "", "changed") });
+        if (resume) {
+          const text = "[YAAC notice] Your permission mode changed. Continue where you left off.";
+          rt.claimed = ownsClaim = false;
+          try {
+            await this.submit(rt, { origin: "yaac", parts: [{ type: "text", text }], overrides: { mode: mode.id },
+              driver: { key: client.key, host: client.host }, journalItems: [notice(text, "", "resume")] }, "now");
+          } catch (e) {
+            throw rpc("outcome_unknown", `Mode changed, but YAAC could not confirm the continuation: ${(e as Error).message}`);
+          }
+        }
+        return {};
+      } finally {
+        if (ownsClaim) rt.claimed = false;
+        if (rt.canDispatch()) this.afterIdle(rt);
+      }
+    });
+  }
+
   /** Compact in place, using the same writer and dispatch checks as a message. */
   async threadCompact(client: ClientLink, p: ThreadCompactParams): Promise<Record<string, never>> {
     return this.ops.run("thread/compact", p.opId, async () => {
@@ -2344,7 +2434,7 @@ export class Core {
   // ── Queued user messages, and `now` ────────────────────────────────────────────────────
 
   private publicEntry(e: QueuedEntry): QueuedMessage {
-    const { driver: _d, dispatching: _x, opId: _o, ...pub } = e;
+    const { driver: _d, dispatching: _x, opId: _o, modeSelectionId: _s, ...pub } = e;
     return clone(pub) as QueuedMessage;
   }
 
@@ -2357,6 +2447,7 @@ export class Core {
   private enqueueUser(rt: ThreadRuntime, parts: InputPart[], overrides: TurnOverrides, driver: Driver | null, opId?: string, shellCommand?: string): QueuedEntry {
     const entry: QueuedEntry = {
       ...(shellCommand ? { shellCommand } : {}),
+      ...(rt.record.modeSelectionId ? { modeSelectionId: rt.record.modeSelectionId } : {}),
       queueId: randomId("q_", 10),
       input: parts,
       queuedAt: nowIso(),
@@ -2475,7 +2566,7 @@ export class Core {
       this.queueEvent(rt, "removed", e);
       rt.queuePaused = false;
       if (rt.record.hold) this.releaseHold(rt, false);
-      const overrides = { model: e.model ?? null, effort: e.effort ?? null, mode: e.mode ?? null, fast: e.fast ?? null, ultrafast: e.ultrafast ?? null };
+      const overrides = { model: e.model ?? null, effort: e.effort ?? null, mode: this.queuedMode(rt, e), fast: e.fast ?? null, ultrafast: e.ultrafast ?? null };
       const driver: Driver = { key: client.key, host: client.host };
       if (e.shellCommand) {
         const turnId = await this.submit(rt, { origin: "user", parts: e.input, overrides, driver, shellCommand: e.shellCommand, ...(e.opId ? { opId: e.opId } : {}) }, "now");
@@ -2586,6 +2677,10 @@ export class Core {
     }
   }
 
+  private queuedMode(rt: ThreadRuntime, entry: QueuedEntry): string | null {
+    return rt.record.modeSelectionId === entry.modeSelectionId ? entry.mode ?? null : rt.record.selectedMode ?? null;
+  }
+
   /** Dispatches the first queued user message (the queue goes ahead of agent input). */
   private dispatchQueued(rt: ThreadRuntime): void {
     const entry = rt.userQueue[0]!;
@@ -2598,7 +2693,7 @@ export class Core {
     const work: Work = {
       origin: "user",
       parts: entry.input,
-      overrides: { model: entry.model ?? null, effort: entry.effort ?? null, mode: entry.mode ?? null, fast: entry.fast ?? null, ultrafast: entry.ultrafast ?? null },
+      overrides: { model: entry.model ?? null, effort: entry.effort ?? null, mode: this.queuedMode(rt, entry), fast: entry.fast ?? null, ultrafast: entry.ultrafast ?? null },
       driver: entry.driver ?? null,
       ...(entry.opId ? { opId: entry.opId } : {}),
       ...(entry.shellCommand ? { shellCommand: entry.shellCommand } : {}),
@@ -2744,7 +2839,7 @@ export class Core {
       if (ext.external) {
         rt.dispatching = false;
         this.setExternal(rt, raw);
-        if (work.origin === "user") work.reject(notActed("thread_in_use", `this thread is in use in ${ext.holder ?? "another program"}; it can only be watched`));
+        if (work.origin !== "mesh") work.reject(notActed("thread_in_use", `this thread is in use in ${ext.holder ?? "another program"}; it can only be watched`));
         else rt.queue.unshift(work);
         return;
       }
@@ -2769,7 +2864,7 @@ export class Core {
         && this.modelSupportsSpeed(descriptor, model, "fastMode");
       // A thread a `thread/move` moved (D144): every turn names its folder, and the first one
       // after the move begins with a short fixed note saying so. Only the harness sees it.
-      const overrides: TurnOverrides = { ...work.overrides, fast, ultrafast };
+      const overrides: TurnOverrides = { ...work.overrides, mode: work.overrides.mode ?? rt.record.selectedMode ?? null, fast, ultrafast };
       if (rt.record.cwdMoved) overrides.cwd = rt.record.cwd;
       // A `!command` (P344) carries no text of the user's for the note: it waits for a message.
       const note = work.shellCommand === undefined ? rt.record.cwdNote : undefined;
@@ -2789,6 +2884,10 @@ export class Core {
         if (e instanceof InputOutcomeUnknown) throw rpc("outcome_unknown", e.message);
         if (e instanceof PeerInputDenied) throw rpc("policy_denied", e.message);
         throw rpc("provider_unavailable", `the harness did not start the turn: ${(e as Error).message}`);
+      }
+      if (rt.record.selectedMode && overrides.mode && rt.record.selectedMode !== overrides.mode) {
+        rt.record.selectedMode = overrides.mode;
+        rt.saveRecord();
       }
       if (note) delete rt.record.cwdNote;
       const speedChanged = (rt.record.fast ?? false) !== fast || (rt.record.ultrafast ?? false) !== ultrafast;
@@ -3797,6 +3896,7 @@ export class Core {
         const itemId = `request:${ev.requestId}`;
         const secret = req.requestKind === "question" ? (req.questions ?? []).filter((q) => q.secret).map((q) => q.id) : [];
         const rec: RequestRecord = { requestId: ev.requestId, itemId, turnId: ev.turnId, requestKind: req.requestKind, state: "pending", secretQuestions: secret };
+        if (req.requestKind === "approval" && !ev.userRule) rec.approval = req;
         rt.requests.set(ev.requestId, rec);
         // Journaled — durably — before anything else happens to it.
         rt.saveRequests();

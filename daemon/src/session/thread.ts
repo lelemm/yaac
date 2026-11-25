@@ -2,6 +2,7 @@
 
 import * as path from "node:path";
 import type {
+  GeneratedArtifact,
   AgentsPolicy,
   ContextUsage,
   HarnessSubagent,
@@ -49,6 +50,10 @@ export interface ThreadRecord {
   handoffTranscript?: string | null;
   title?: string | null;
   titleOverride?: string | null;
+  /** The user's persistent orchestration mode selection. */
+  selectedMode?: string;
+  /** Queue entries created before the selection inherit it when dispatched. */
+  modeSelectionId?: string;
   preview?: string | null;
   model?: string | null;
   archived?: boolean;
@@ -63,6 +68,8 @@ export interface ThreadRecord {
   repo?: RepoLocation | null;
   /** Whether `repo` has been looked up. */
   repoResolved?: boolean;
+  /** Immutable generated document/image references, projected in ancestor windows. */
+  artifacts?: GeneratedArtifact[];
   /** The agent that started this thread (set by the mesh). */
   spawnedBy?: string | null;
   /** Existing children linked by a fork. Their original ownership stays with their parent. */
@@ -138,6 +145,7 @@ export interface TakenOver {
 
 /** A user message waiting for the running turn to end (`queue.json`). */
 export interface QueuedEntry extends QueuedMessage {
+  modeSelectionId?: string;
   driver: Driver | null;
   /** The `turn/start` that queued it: stamped on the user message when it is delivered (D165). */
   opId?: string;
@@ -169,6 +177,8 @@ export interface RequestRecord {
   requestKind: string;
   state: RequestState;
   secretQuestions: string[];
+  /** Only stored when the original tool approval was eligible for P342. */
+  approval?: Extract<import("../providers/types.js").RaisedRequest, { requestKind: "approval" }>;
   submittedBy?: Driver | null;
   /** Set while yaacd answers it itself (P342): the never-ask mode that made it automatic. */
   automatic?: AutomaticResolution | null;

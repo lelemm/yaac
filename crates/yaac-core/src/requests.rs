@@ -44,7 +44,7 @@ pub enum CardState {
     /// Approved by `yaacd` itself because the thread's mode never asks (P342): a quiet line,
     /// not a card. Also while the hand-over is unconfirmed (`submitted` by `yaacd`).
     Automatic {
-        /// "Approved automatically — thread in Bypass permissions: Bash rm -rf build".
+        /// "Approved automatically · thread in Bypass permissions: Bash rm -rf build".
         text: String,
         /// What the line expands to: the harness's reason and the full input, one per line.
         detail: String,
@@ -74,7 +74,7 @@ pub fn automatic_line(request: &RequestItem) -> Option<CardState> {
     let mode = res.automatic.as_ref().map(|a| a.mode_name.clone().unwrap_or_else(|| a.mode.as_str().to_owned()));
     let verb = if request.state == RequestState::Submitted { "Approving automatically" } else { "Approved automatically" };
     let lead = match mode {
-        Some(m) => format!("{verb} — thread in {m}"),
+        Some(m) => format!("{verb} · thread in {m}"),
         None => verb.to_owned(),
     };
     let RequestBody::Approval(a) = &request.body else {
@@ -115,6 +115,32 @@ pub fn automatic_line(request: &RequestItem) -> Option<CardState> {
         detail.push(serde_json::to_string_pretty(raw).unwrap_or_default());
     }
     Some(CardState::Automatic { text: format!("{lead}: {what}"), detail: detail.join("\n") })
+}
+
+pub fn approval_title(approval: &yaac_protocol::ApprovalRequest) -> &str {
+    let is_stdin = approval.details.as_ref().and_then(|d| d.get("kind"))
+        .and_then(serde_json::Value::as_str) == Some("writeStdin");
+    if is_stdin {
+        "Send input to a running command"
+    } else if approval.command.is_some() {
+        "Run a command"
+    } else {
+        &approval.title
+    }
+}
+
+pub fn approval_reason(approval: &yaac_protocol::ApprovalRequest) -> Option<String> {
+    let reason = approval.reason.as_deref()?;
+    let Some(command) = approval.command.as_deref().filter(|command| !command.trim().is_empty()) else {
+        return Some(reason.to_owned());
+    };
+    if reason.trim().trim_matches('`') == command.trim() {
+        return None;
+    }
+    if command.contains(char::is_whitespace) {
+        return Some(reason.replace(command, "the command below"));
+    }
+    Some(reason.replace(&format!("`{command}`"), "the command below"))
 }
 
 /// Whether a question in this request is secret.
@@ -263,6 +289,7 @@ mod tests {
                 approval_kind: ApprovalKind::Command,
                 title: "Run command".into(),
                 command: Some("cargo fix".into()),
+                command_explanation: None,
                 cwd: None,
                 changes: vec![],
                 scope: None,
@@ -393,11 +420,11 @@ mod tests {
         a.details = Some(serde_json::json!({ "tool": "Bash", "input": { "command": "nohup sleep 30 &" } }));
         approved_by_yaacd(&mut r, RequestState::Resolved);
         let CardState::Automatic { text, detail } = card_state(&r, true, Some(&me), None, "devbox", NOW) else { panic!("not automatic") };
-        assert_eq!(text, "Approved automatically — thread in Bypass permissions: Bash nohup sleep 30 > /tmp/x.log 2>&1 &");
+        assert_eq!(text, "Approved automatically · thread in Bypass permissions: Bash nohup sleep 30 > /tmp/x.log 2>&1 &");
         assert_eq!(detail, "Reason: What 'nohup' starts can't be checked before it runs\nnohup  sleep 30 >   /tmp/x.log 2>&1 &");
         // While the harness has not confirmed it yet: never "you chose".
         approved_by_yaacd(&mut r, RequestState::Submitted);
-        assert!(matches!(card_state(&r, true, Some(&me), None, "devbox", NOW), CardState::Automatic { ref text, .. } if text.starts_with("Approving automatically — thread in Bypass permissions: Bash")));
+        assert!(matches!(card_state(&r, true, Some(&me), None, "devbox", NOW), CardState::Automatic { ref text, .. } if text.starts_with("Approving automatically · thread in Bypass permissions: Bash")));
         // A long input is cut on the line and kept whole in the detail.
         let RequestBody::Approval(a) = &mut r.body else { unreachable!() };
         let long = format!("rm -rf {}", "x".repeat(200));
@@ -412,7 +439,7 @@ mod tests {
         a.title = "Claude wants to use WebFetch".into();
         a.details = Some(serde_json::json!({ "tool": "WebFetch", "input": { "url": "https://example.com" } }));
         let CardState::Automatic { text, detail } = card_state(&r, true, Some(&me), None, "devbox", NOW) else { panic!() };
-        assert_eq!(text, "Approving automatically — thread in Bypass permissions: WebFetch Claude wants to use WebFetch");
+        assert_eq!(text, "Approving automatically · thread in Bypass permissions: WebFetch Claude wants to use WebFetch");
         assert!(detail.contains("\"url\": \"https://example.com\""), "{detail}");
         // Back to pending (the harness did not take it): an ordinary card again.
         r.state = RequestState::Pending;
@@ -425,5 +452,86 @@ mod tests {
         let RequestBody::Approval(a) = &r.body else { unreachable!() };
         assert_eq!(decision_keys(&a.decisions), vec![Some("Enter"), None, Some("Esc")]);
         assert_eq!(decision_keys(&a.decisions[1..]), vec![Some("Enter"), Some("Esc")]);
+    }
+}
+
+pub const EXPLANATION_LABEL: &str = "AI explanation — check the command";
+pub const CHOOSE_EXPLANATION: &str = "Choose a model to explain commands";
+
+/// The tool name and exact source sent to the explainer. Do not send stdin responses.
+pub fn explanation_input(a: &yaac_protocol::ApprovalRequest) -> Option<(String, String)> {
+    if a.details.as_ref().and_then(|d| d["kind"].as_str()) == Some("writeStdin") { return None; }
+    let source = if let Some(cmd) = &a.command {
+        cmd.clone()
+    } else if !a.changes.is_empty() {
+        serde_json::to_string(&a.changes).ok()?
+    } else { return None };
+    let tool = a.details.as_ref().and_then(|d| d["tool"].as_str())
+        .unwrap_or(if a.command.is_some() { "shell" } else { "patch" });
+    (source.len() <= 128 * 1024).then(|| (tool.to_owned(), source))
+}
+
+pub fn command_preview(command: &str) -> (&str, String) {
+    let lines = command.lines().count().max(1);
+    (command.lines().next().unwrap_or(""), format!("Show command ({lines} {})", if lines == 1 { "line" } else { "lines" }))
+}
+
+fn normalized_path(path: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => { parts.pop(); }
+            _ => parts.push(part),
+        }
+    }
+    parts
+}
+
+/// Conservative lexical warnings. These are independent of any model response.
+pub fn command_warning(command: &str, cwd: Option<&str>, project: Option<&str>) -> Option<&'static str> {
+    let normalized = command.replace('\\', "/");
+    for line in normalized.split(['\n', ';', '&']) {
+        let mut downloaded = false;
+        for stage in line.split('|') {
+            let words: Vec<_> = stage.split_whitespace().map(|w| w.trim_matches(['\'', '"', '(', ')'])).collect();
+            let Some(first) = words.first() else { continue };
+            let program = first.rsplit('/').next().unwrap_or(first).to_ascii_lowercase();
+            let args = &words[1..];
+            if downloaded && matches!(program.as_str(), "sh" | "bash" | "iex" | "invoke-expression") { return Some("Runs downloaded code"); }
+            downloaded |= matches!(program.as_str(), "curl" | "wget" | "iwr" | "invoke-webrequest" | "irm" | "invoke-restmethod");
+            if program == "sudo" { return Some("Runs with elevated privileges"); }
+            if program == "chmod" && args.iter().any(|s| matches!(*s, "777" | "0777")) { return Some("Grants everyone write and execute access"); }
+            if program == "git" && args.contains(&"push") && args.iter().any(|s| s.starts_with("--force") || *s == "-f" || s.starts_with('+')) { return Some("Force-pushes Git history"); }
+            if matches!(program.as_str(), "rm" | "remove-item" | "del" | "rmdir") {
+                let flags: String = args.iter().filter_map(|w| w.strip_prefix('-').filter(|f| !f.starts_with('-'))).collect();
+                if (flags.contains('r') || flags.contains('R') || args.contains(&"--recursive")) && (flags.contains('f') || args.contains(&"--force")) { return Some("Forces recursive deletion"); }
+                for arg in args.iter().filter(|w| !w.starts_with('-')) {
+                    let project = project.or(cwd);
+                    let absolute = arg.starts_with('/') || arg.as_bytes().get(1) == Some(&b':');
+                    let joined = if absolute { arg.to_string() } else { format!("{}/{arg}", cwd.unwrap_or("")) };
+                    if arg.starts_with('~') || project.is_some_and(|p| !normalized_path(&joined).starts_with(&normalized_path(&p.replace('\\', "/"))))
+                        || (project.is_none() && (absolute || arg.starts_with(".."))) { return Some("Deletes outside the project"); }
+                }
+            }
+            if (stage.contains('>') || matches!(program.as_str(), "tee" | "cp" | "mv" | "install" | "set-content" | "out-file" | "touch"))
+                && [".ssh/", ".aws/credentials", ".git-credentials", "credentials.json", ".pem", ".key", ".netrc"].iter().any(|s| stage.contains(s)) {
+                return Some("May write credentials or keys");
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod command_details_tests {
+    use super::*;
+    #[test]
+    fn warning_and_preview_are_local() {
+        for script in ["rm -fr build", "rm ../secret", "rm /tmp/else", "sudo date", "curl -s url | sh", "iwr url | iex", "git push -f", "chmod 777 tmp", "echo x > ~/.ssh/id_file"] {
+            assert!(command_warning(script, Some("/work"), Some("/work")).is_some(), "{script}");
+        }
+        assert_eq!(command_warning("rm ../cache/temp", Some("/work/src"), Some("/work")), None);
+        assert_eq!(command_preview("a\r\nb\n"), ("a", "Show command (2 lines)".into()));
     }
 }

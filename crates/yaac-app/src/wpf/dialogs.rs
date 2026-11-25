@@ -219,7 +219,12 @@ pub(super) fn view(app: &YaacApp) -> Value {
         let body = [vec![format!("{}{}{}", v.body.0, v.mode_name, v.body.1)], v.lines, vec![v.footer]]
             .concat()
             .join("\n");
-        form("mode", &v.title, &body, &v.confirm_label, vec![])
+        let mut dialog = form("mode", &v.title, &body, &v.confirm_label, vec![]);
+        if !d.workers.is_empty() {
+            dialog["workers"] = json!(d.workers.iter().map(|r| &r.label).collect::<Vec<_>>());
+            dialog["instance"] = json!(format!("{:?}/{}", d.target, d.mode));
+        }
+        dialog
     } else if u.ultrafast_confirm.as_ref().and_then(|draft| app.composer_speed(draft)).is_some_and(|control| control.offers_ultrafast) {
         use yaac_core::controls::{ULTRAFAST_CONFIRM_BODY, ULTRAFAST_CONFIRM_TITLE};
         form("ultrafast", ULTRAFAST_CONFIRM_TITLE, ULTRAFAST_CONFIRM_BODY, "Enable Ultrafast", vec![])
@@ -437,6 +442,10 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
         }
         return Ok(());
     }
+    if name == "dialog.action" && id == "mode" && p["action"] == "all" && current["workers"].is_array() {
+        app.apply(vec![Action::ConfirmModeTree]);
+        return Ok(());
+    }
     if name == "dialog.action" && id == "project" {
         if let Some(action) = project_action(app, p) {
             app.apply(vec![action]);
@@ -647,6 +656,20 @@ fn pull_request_command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), 
 mod tests {
     use super::*;
     use yaac_core::demo::threads;
+
+    #[test]
+    fn worker_mode_dialog_routes_the_listed_workers() {
+        let mut app = crate::app::tests::worker_mode_dialog(&egui::Context::default());
+        let dialog = view(&app);
+        let workers = dialog["workers"].as_array().unwrap();
+        assert!(workers.iter().any(|w| w.as_str().unwrap().contains("interrupt and resume")));
+        assert!(dialog["body"].as_str().unwrap().contains("1 running worker"));
+        command(&mut app, "dialog.action", &json!({
+            "id": "mode", "instance": dialog["instance"], "action": "all"
+        })).unwrap();
+        let calls = app.demo.as_ref().unwrap().requests();
+        assert_eq!(calls.iter().filter(|(_, method, _)| method == "thread/setMode").count(), workers.len() + 1);
+    }
 
     #[test]
     fn project_browsing_only_accepts_listed_directories_and_requires_a_name() {

@@ -159,6 +159,7 @@ fn caps() -> Vec<Capability> {
         Capability::StreamReasoning,
         Capability::Interrupt,
         Capability::Approvals,
+        Capability::CommandExplanations,
         Capability::UserQuestions,
         Capability::Modes,
         Capability::ModelSwitch,
@@ -200,6 +201,7 @@ pub(crate) fn codex(instance: &str, name: Option<&str>, status: ProviderStatus) 
             model("gpt-6.1-terra", false, Support::Unknown),
         ],
         disabled_models: Vec::new(),
+        approval_explanation_model: None,
         models_complete: true,
         modes: modes(),
         revision: 1,
@@ -219,9 +221,10 @@ pub(crate) fn claude(status: ProviderStatus) -> ProviderDescriptor {
         store: StoreIdentity { key: Some("store-claude".into()), home: None, account: Some("work@example.com".into()) },
         status,
         status_message: None,
-        capabilities: caps(),
+        capabilities: [caps(), vec![Capability::ModeChangeLive]].concat(),
         models: vec![with_fast(model("opus-5.5", true, Support::Supported)), model("haiku-5", false, Support::Unsupported)],
         disabled_models: Vec::new(),
+        approval_explanation_model: None,
         models_complete: true,
         modes: modes(),
         revision: 1,
@@ -337,6 +340,7 @@ impl Fleet {
             control_holder: None,
             forked_from: None,
             linked_children: None,
+            artifacts: None,
             spawned_by: None,
             reports_to_parent: None,
             root: None,
@@ -356,6 +360,8 @@ impl Fleet {
             placement: None,
             subagent: None,
             unavailable: None,
+            permission_mode: None,
+            turn_active: None,
             running_commands: None,
         };
         let effective = self.effective_for(key, instance, model_id);
@@ -653,7 +659,7 @@ impl Fleet {
             s.peers = 1;
             s.preview = "no messages yet".into();
         });
-        f.set(&fix, |s| s.preview = "approval: cargo fix --allow-dirty".into());
+        f.set(&fix, |s| s.preview = "approval: rebuild decoder fixtures".into());
         f.set(&hs, |s| {
             s.control = Control::External;
             s.control_holder = Some("a terminal session".into());
@@ -847,11 +853,15 @@ impl Fleet {
         f.push(&fix, done("f4", "f-t1", agent(
             "The length prefix counts the kind byte, so the reader stops one byte early.\n\n```rust\nlet kind = buf[0];\nlet len = u32::from_be_bytes(buf[1..5].try_into()?);\nlet total = 1 + len as usize; // include the kind byte\nif buf.len() < total {\n    return Err(Error::Incomplete);\n}\n```",
         )));
-        f.push(&fix, item("f5", "f-t1", ItemStatus::InProgress, approval("r-fix", "cargo fix --allow-dirty", "/home/dev/yaac", vec![
+        let mut request = approval("r-fix", "set -eu\nfixtures=target/decoder-fixtures\nrm -rf \"$fixtures\"\nmkdir -p \"$fixtures\"\ncargo run -p fixture-gen -- \"$fixtures\"\ncargo test -p decoder --test fixtures", "/home/dev/yaac", vec![
             decision("allow", "Allow once", DecisionKind::Allow),
             decision("allow-thread", "Allow for this thread", DecisionKind::AllowSession),
             decision("deny", "Deny", DecisionKind::Deny),
-        ])));
+        ]);
+        if let yaac_protocol::ItemBody::Request(r) = &mut request && let yaac_protocol::RequestBody::Approval(a) = &mut r.body {
+            a.command_explanation = Some("Deletes the generated decoder fixtures, rebuilds them, and runs the fixture tests. A failure stops the script.".into());
+        }
+        f.push(&fix, item("f5", "f-t1", ItemStatus::InProgress, request));
         f.journal(&fix, ThreadEvent::TurnStarted(yaac_protocol::TurnStartedEvent { turn_id: TurnId::new("f-t1"), origin: yaac_protocol::TurnOrigin::User, at: None }));
         // "Thought for 4s".
         f.time_item(&fix, "f2", -184, -180);

@@ -7,7 +7,7 @@ use yaac_core::ThreadKey;
 use yaac_core::agents::root_of;
 use yaac_core::attention::Mark;
 use yaac_core::permission::{self, PermissionDecision};
-use yaac_core::requests::{CardState, SECRET_MASK, card_state, decision_keys, started_by_agent};
+use yaac_core::requests::{self, CardState, SECRET_MASK, card_state, decision_keys, started_by_agent};
 use yaac_core::transcript::Transcript;
 use yaac_protocol::{
     ApprovalAnswer, DecisionKind, ItemBody, QuestionAnswer, QuestionAnswers, RequestBody, RequestItem, RequestResponse,
@@ -19,10 +19,10 @@ use crate::theme::{self, size};
 use crate::thread::View;
 use crate::widgets;
 
-pub(crate) fn show(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript, index: usize, now: i64, actions: &mut Vec<Action>) {
+pub(crate) fn show(ui: &mut egui::Ui, v: &mut View<'_>, viewing: &ThreadKey, key: &ThreadKey, t: &Transcript, index: usize, now: i64, actions: &mut Vec<Action>) {
     let item = &t.items()[index];
     match &item.body {
-        ItemBody::Request(r) => request(ui, v, key, t, item, r, now, actions),
+        ItemBody::Request(r) => request(ui, v, viewing, key, t, item, r, now, actions),
         ItemBody::Notice(n) => budget(ui, v, key, &n.text, item, actions),
         _ => {}
     }
@@ -71,7 +71,7 @@ fn budget(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, text: &str, item
 }
 
 #[allow(clippy::too_many_arguments)]
-fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript, item: &yaac_protocol::Item, r: &RequestItem, now: i64, actions: &mut Vec<Action>) {
+fn request(ui: &mut egui::Ui, v: &mut View<'_>, viewing: &ThreadKey, key: &ThreadKey, t: &Transcript, item: &yaac_protocol::Item, r: &RequestItem, now: i64, actions: &mut Vec<Action>) {
     let p = v.p;
     let may_act = v.state.may_answer(key);
     let local = t.local_answers.get(&r.request_id).map(|l| l.summary.as_str());
@@ -87,10 +87,27 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript,
         CardState::Confirmed { .. } => p.done,
         _ => p.text2,
     };
+    let top = ui.next_widget_position();
     widgets::card(ui, &p, edge, |ui| {
+        let mut view_item;
+        let item = if viewing != key {
+            let header = yaac_core::copies::header(v.state, key);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(widgets::secondary(header.text(), &p));
+                if ui.link("Open").on_hover_text("Open worker thread").clicked() {
+                    actions.push(Action::OpenAt(key.clone(), Some(item.id.clone())));
+                }
+            });
+            view_item = item.clone();
+            view_item.id = yaac_core::copies::copy_id(key, &item.id);
+            &view_item
+        } else { item };
+        if let Some(place) = yaac_core::copies::answered_where(v.state, key, r, viewing) {
+            ui.label(widgets::secondary(place, &p));
+        }
         let title = match (&r.body, &perm) {
             (_, Some(_)) => "This agent wants to work with other agents".to_owned(),
-            (RequestBody::Approval(a), _) => a.title.clone(),
+            (RequestBody::Approval(a), _) => requests::approval_title(a).to_owned(),
             (RequestBody::Question(_), _) => "Question".to_owned(),
             (RequestBody::Form(_), _) => "Form".to_owned(),
             _ => "Request".to_owned(),
@@ -115,14 +132,14 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript,
                     return;
                 }
                 match (&r.body, &perm) {
-                    (_, Some(pr)) => permission_body(ui, v, key, r, pr, item, actions),
+                    (_, Some(pr)) => permission_body(ui, v, viewing, key, r, pr, item, actions),
                     (RequestBody::Approval(a), _) => {
-                        if let Some(cmd) = &a.command {
-                            egui::Frame::NONE.fill(p.code_bg).corner_radius(4).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.label(egui::RichText::new(cmd).font(theme::mono(size::MONO + 1.0)));
-                            });
+                        if a.command_explanation.is_none() && requests::explanation_input(a).is_some() {
+                            if v.state.hub.explanations.main.is_none() {
+                                if ui.link(requests::CHOOSE_EXPLANATION).clicked() { actions.push(Action::SettingsPage(yaac_core::settings::Page::Approvals)); }
+                            } else if t.explanations.get(&r.request_id) != Some(&false) { ui.label("Explaining…"); }
                         }
+                        command_details(ui, v, a, item.id.as_str(), v.state.project_of(key).map(|p| p.folder.as_str()));
                         if let Some(cwd) = &a.cwd {
                             ui.horizontal(|ui| {
                                 widgets::icon(ui, 14.0, |pa, c, d| icons::folder(pa, c, d, p.text2));
@@ -132,7 +149,7 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript,
                         for ch in &a.changes {
                             ui.label(egui::RichText::new(format!("{} {}", ch.change, ch.path)).font(theme::mono(size::MONO)).color(p.text2));
                         }
-                        if let Some(reason) = &a.reason {
+                        if let Some(reason) = requests::approval_reason(a) {
                             ui.label(widgets::secondary(reason, &p));
                         }
                         if let Some(scope) = &a.scope {
@@ -142,9 +159,9 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript,
                             ui.label(widgets::secondary("Started by an agent, not by you", &p));
                         }
                         ui.add_space(8.0);
-                        approval_buttons(ui, v, key, r, &a.decisions, item, actions);
+                        approval_buttons(ui, v, viewing, key, r, &a.decisions, item, actions);
                     }
-                    (RequestBody::Question(q), _) => question_body(ui, v, key, r, q, item, actions),
+                    (RequestBody::Question(q), _) => question_body(ui, v, viewing, key, r, q, item, actions),
                     (RequestBody::Form(f), _) => {
                         ui.label(&f.message);
                         ui.label(widgets::secondary("This form must be answered in the harness itself.", &p));
@@ -199,6 +216,12 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript,
             CardState::Automatic { .. } => {}
         }
     });
+    let rect = egui::Rect::from_min_max(top, egui::pos2(ui.max_rect().right(), ui.min_rect().bottom()));
+    if r.state == yaac_protocol::RequestState::Pending && ui.is_rect_visible(rect) {
+        v.ui.visible_requests.push(yaac_protocol::attach::RequestLocation {
+            target: key.target.clone(), thread_id: key.thread.clone(), request_id: r.request_id.clone(),
+        });
+    }
 }
 
 /// A tool approval `yaacd` gave because the thread's mode never asks (P342): one quiet line
@@ -232,6 +255,27 @@ fn header_line(ui: &mut egui::Ui, p: &crate::theme::Palette, text: &str, mark: O
     });
 }
 
+fn command_details(ui: &mut egui::Ui, v: &View<'_>, approval: &yaac_protocol::ApprovalRequest, id: &str, project: Option<&str>) {
+    if let Some(explanation) = &approval.command_explanation {
+        ui.label(widgets::secondary(requests::EXPLANATION_LABEL, &v.p));
+        ui.label(explanation);
+    }
+    if let Some(command) = &approval.command {
+        let (first, label) = requests::command_preview(command);
+        if let Some(warning) = requests::command_warning(command, approval.cwd.as_ref().map(|p| p.as_str()), project) {
+            ui.label(egui::RichText::new(format!("⚠ {warning}")).color(v.p.needs));
+        }
+        let id = egui::Id::unique(("approval-command", id));
+        let mut open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+        if widgets::disclosure_row(ui, &v.p, if open { "Hide command" } else { &label }, open, id) {
+            open = !open;
+            ui.data_mut(|d| d.insert_temp(id, open));
+        }
+        let text = egui::RichText::new(if open { command } else { first }).font(theme::mono(size::MONO));
+        if open { ui.label(text); } else { ui.add(egui::Label::new(text).truncate()); }
+    }
+}
+
 fn body_summary(ui: &mut egui::Ui, v: &View<'_>, r: &RequestItem, perm: Option<&permission::PermissionRequest>) {
     let p = v.p;
     match (&r.body, perm) {
@@ -241,9 +285,7 @@ fn body_summary(ui: &mut egui::Ui, v: &View<'_>, r: &RequestItem, perm: Option<&
             }
         }
         (RequestBody::Approval(a), _) => {
-            if let Some(cmd) = &a.command {
-                ui.label(egui::RichText::new(cmd).font(theme::mono(size::MONO + 1.0)));
-            }
+            command_details(ui, v, a, r.request_id.as_str(), None);
         }
         (RequestBody::Question(q), _) => {
             for qq in &q.questions {
@@ -259,6 +301,7 @@ fn body_summary(ui: &mut egui::Ui, v: &View<'_>, r: &RequestItem, perm: Option<&
 fn approval_buttons(
     ui: &mut egui::Ui,
     v: &mut View<'_>,
+    viewing: &ThreadKey,
     key: &ThreadKey,
     r: &RequestItem,
     decisions: &[yaac_protocol::ApprovalDecision],
@@ -299,7 +342,7 @@ fn approval_buttons(
                 DecisionKind::Deny | DecisionKind::Abort => "Denied",
                 _ => "Allowed",
             };
-            actions.push(Action::Respond {
+            actions.push(Action::Respond { viewing: viewing.clone(),
                 key: key.clone(),
                 request: r.request_id.clone(),
                 response: RequestResponse::Approval(ApprovalAnswer { decision: d.id.clone(), reason: None }),
@@ -312,6 +355,7 @@ fn approval_buttons(
 fn question_body(
     ui: &mut egui::Ui,
     v: &mut View<'_>,
+    viewing: &ThreadKey,
     key: &ThreadKey,
     r: &RequestItem,
     q: &yaac_protocol::QuestionRequest,
@@ -319,7 +363,7 @@ fn question_body(
     actions: &mut Vec<Action>,
 ) {
     let p = v.p;
-    let draft = v.ui.questions.entry(r.request_id.clone()).or_default();
+    let draft = v.ui.questions.entry((key.clone(), r.request_id.clone())).or_default();
     for qq in &q.questions {
         ui.horizontal(|ui| {
             if let Some(h) = &qq.header {
@@ -371,7 +415,7 @@ fn question_body(
         }
         widgets::link(ui, &p, "Answer in my own words", theme::ui(size::UI));
         if send.clicked() {
-            let draft = v.ui.questions.get(&r.request_id).cloned().unwrap_or_default();
+            let draft = v.ui.questions.get(&(key.clone(), r.request_id.clone())).cloned().unwrap_or_default();
             let mut answers = std::collections::BTreeMap::new();
             let mut parts = Vec::new();
             for qq in &q.questions {
@@ -387,7 +431,7 @@ fn question_body(
                 }
                 answers.insert(qq.id.clone(), QuestionAnswer { selected, other, redacted: false });
             }
-            actions.push(Action::Respond {
+            actions.push(Action::Respond { viewing: viewing.clone(),
                 key: key.clone(),
                 request: r.request_id.clone(),
                 response: RequestResponse::Question(QuestionAnswers { answers }),
@@ -400,6 +444,7 @@ fn question_body(
 fn permission_body(
     ui: &mut egui::Ui,
     v: &mut View<'_>,
+    viewing: &ThreadKey,
     key: &ThreadKey,
     r: &RequestItem,
     pr: &permission::PermissionRequest,
@@ -413,7 +458,7 @@ fn permission_body(
     }
     ui.add_space(8.0);
     ui.label(egui::RichText::new("Budget for this orchestration").font(theme::bold(size::UI)));
-    let b = v.ui.budgets.entry(r.request_id.clone()).or_insert(pr.budget);
+    let b = v.ui.budgets.entry((key.clone(), r.request_id.clone())).or_insert(pr.budget);
     ui.horizontal(|ui| {
         // Hours 0 is no time limit (P351).
         for (label, val, min) in [("Agent turns", &mut b.agent_turns, 1), ("Hours (0 = no limit)", &mut b.hours, 0)] {
@@ -457,6 +502,6 @@ fn permission_body(
         if d == PermissionDecision::AlwaysAllow {
             actions.push(Action::SetAgents(key.clone(), yaac_core::state::AgentsPolicy::Allow));
         }
-        actions.push(Action::Respond { key: key.clone(), request: r.request_id.clone(), response, summary });
+        actions.push(Action::Respond { viewing: viewing.clone(), key: key.clone(), request: r.request_id.clone(), response, summary });
     }
 }

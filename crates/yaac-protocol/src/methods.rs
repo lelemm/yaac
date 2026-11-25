@@ -312,6 +312,9 @@ catalogue! {
         /// holder's evidence no longer makes it read-only, until a different holder appears.
         ThreadTakeOver = "thread/takeOver" as THREAD_TAKE_OVER:
             t::ThreadTakeOverParams => t::Empty, HostToDaemon, request Control, response Control, op;
+        /// Apply a confirmed permission mode to one recipient.
+        ThreadSetMode = "thread/setMode" as THREAD_SET_MODE:
+            t::ThreadSetModeParams => t::Empty, HostToDaemon, request Control, response Control, op;
         /// Run the harness’s manual context compaction (under `compact`).
         ThreadCompact = "thread/compact" as THREAD_COMPACT:
             t::ThreadCompactParams => t::Empty, HostToDaemon, request Control, response Control, op;
@@ -371,6 +374,9 @@ catalogue! {
         /// Send a queued user message now ("Send now"): out of the queue, with `now` mechanics.
         TurnQueuePromote = "turn/queuePromote" as TURN_QUEUE_PROMOTE:
             t::TurnQueueCancelParams => t::TurnStartResult, HostToDaemon, request Control, response Control, op;
+        /// Explain a proposed tool action without changing the approval.
+        ApprovalExplain = "approval/explain" as APPROVAL_EXPLAIN:
+            t::ApprovalExplainParams => t::ApprovalExplainResult, HostToDaemon, request Control, response Control;
         /// Answer a pending approval, question, or form.
         RequestRespond = "request/respond" as REQUEST_RESPOND:
             t::RequestRespondParams => t::Empty, HostToDaemon, request Control, response Control, op;

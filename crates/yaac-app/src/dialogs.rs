@@ -73,7 +73,7 @@ pub(crate) fn mode_confirm(ctx: &egui::Context, app: &mut YaacApp, actions: &mut
     scrim(ctx, &p, "mode");
     // Esc cancels; Enter is swallowed so it can never confirm.
     let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-    ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+    if pending.workers.is_empty() { ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)); }
     if esc {
         actions.push(Action::CancelMode);
         return;
@@ -96,6 +96,13 @@ pub(crate) fn mode_confirm(ctx: &egui::Context, app: &mut YaacApp, actions: &mut
             ui.label(widgets::secondary(l, &p));
         }
         ui.add_space(8.0);
+        if !pending.workers.is_empty() {
+            ui.collapsing("Show workers", |ui| {
+                egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                    for worker in &pending.workers { ui.label(&worker.label); }
+                });
+            });
+        }
         ui.label(widgets::secondary(&v.footer, &p));
         ui.add_space(14.0);
         ui.horizontal(|ui| {
@@ -107,6 +114,12 @@ pub(crate) fn mode_confirm(ctx: &egui::Context, app: &mut YaacApp, actions: &mut
             let confirm = danger(ui, &p, &v.confirm_label);
             if confirm.clicked() {
                 actions.push(Action::ConfirmMode);
+            }
+            if !pending.workers.is_empty() {
+                let all = widgets::plain(ui, &p, "Apply to all", None);
+                if all.clicked() { actions.push(Action::ConfirmModeTree); }
+                if !cancel.has_focus() && !all.has_focus() && !confirm.has_focus() { confirm.request_focus(); }
+                return;
             }
             // Cancel is the default: it holds the focus unless the user tabbed to the other.
             if !confirm.has_focus() {

@@ -94,6 +94,7 @@ pub mod hub_names {
 /// What an outstanding request was for.
 #[derive(Clone, Debug, PartialEq)]
 enum Call {
+    ModeChanged { key: ThreadKey, root: ThreadKey, batch: OpId },
     Hello,
     View,
     Targets,
@@ -119,6 +120,8 @@ enum Call {
     Compact { key: ThreadKey, command: Option<String> },
     FsSearch(u64),
     ImageChunk(u64),
+    /// Generated artifact transfer.
+    ArtifactChunk(u64),
     /// One `thread/archive` of a bulk Archive (D138).
     BulkArchive { batch: u64, key: ThreadKey },
     /// One `thread/move` (D144); `before`: the summary to put back if it is refused.
@@ -133,6 +136,7 @@ enum Call {
     /// `skills/list` for a composer's scope.
     Skills(crate::skills::SkillScopeKey),
     HubSettings,
+    Explain(ThreadKey, ItemId, RequestId),
     Projects(TargetId),
     ProjectCreate { target: TargetId, for_draft: Option<u64> },
     Find { query: String },
@@ -195,6 +199,15 @@ pub struct ClientError {
     pub text: String,
 }
 
+/// Replies can arrive out of order, including replies from different targets.
+#[derive(Default)]
+struct ModeChangeResults {
+    remaining: usize,
+    applied: usize,
+    failed: usize,
+    offline: Vec<String>,
+}
+
 /// The window's attach-protocol client.
 pub struct Client {
     /// The state everything is drawn from.
@@ -202,6 +215,7 @@ pub struct Client {
     link: Box<dyn HubLink>,
     next_id: i64,
     pending: HashMap<RpcId, Call>,
+    mode_results: HashMap<OpId, ModeChangeResults>,
     ops: u64,
     /// This window run's own part of every operation id (D159): ids must never repeat across
     /// runs, because `yaacd` remembers them and answers a repeated id with the old outcome.
@@ -215,6 +229,8 @@ pub struct Client {
     pub composer_files: Option<ComposerFiles>,
     /// Bounded image reads returned by the hub.
     pub image_chunks: Vec<(u64, Result<yaac_protocol::UploadReadResult, String>)>,
+    /// Generated artifact transfer.
+    pub artifact_chunks: Vec<(u64, Result<yaac_protocol::UploadReadResult, String>)>,
     /// The command log the user has opened in the composer.
     pub command_log: Option<crate::running_commands::CommandLog>,
     /// The last attachment id handed out.
@@ -227,6 +243,8 @@ pub struct Client {
     /// The threads last reported to the hub as shown (`hub/view/showing`, D114); `None`
     /// until the first report after attaching.
     showing: Option<Vec<ThreadKey>>,
+    visible_requests: Option<Vec<attach::RequestLocation>>,
+    pub notification_open: std::collections::VecDeque<attach::NotificationOpen>,
     /// Preview proxy, forward and discovery results for the window.
     preview_replies: Vec<(RpcId, Result<Value, String>)>,
     terminal_notes: Vec<(String, Value)>,
@@ -290,13 +308,17 @@ impl Client {
             warm: Vec::new(),
             errors: Vec::new(),
             next_error: 0,
+            mode_results: HashMap::new(),
             composer_files: None,
             image_chunks: Vec::new(),
+            artifact_chunks: Vec::new(),
             command_log: None,
             attach_ids: 0,
             dirty: std::collections::BTreeSet::new(),
             orphans: std::collections::VecDeque::new(),
             showing: None,
+            visible_requests: None,
+            notification_open: Default::default(),
             preview_replies: Vec::new(),
             terminal_notes: Vec::new(),
             browser_calls: Vec::new(),
@@ -332,6 +354,7 @@ impl Client {
         if any {
             // Targets may have been added or changed: show the hub's SSH records on them.
             self.map_ssh_records();
+            if self.state.copies.dirty { self.follow_copies(); }
         }
         any
     }
@@ -403,8 +426,17 @@ impl Client {
 
     /// Fetch one bounded chunk of an image stored on a connected target.
     pub fn read_image_chunk(&mut self, token: u64, target: &TargetId, id: &yaac_protocol::UploadId, offset: u64) {
+        self.read_upload_chunk(target, id, offset, Call::ImageChunk(token));
+    }
+
+    /// Read a published snapshot over its originating target connection.
+    pub fn read_artifact_chunk(&mut self, token: u64, target: &TargetId, id: &yaac_protocol::UploadId, offset: u64) {
+        self.read_upload_chunk(target, id, offset, Call::ArtifactChunk(token));
+    }
+
+    fn read_upload_chunk(&mut self, target: &TargetId, id: &yaac_protocol::UploadId, offset: u64, recipient: Call) {
         let params = yaac_protocol::UploadReadParams { upload_id: id.clone(), offset, max_bytes: 512 * 1024 };
-        self.routed(target, m::UPLOAD_READ, json!(params), Call::ImageChunk(token));
+        self.routed(target, m::UPLOAD_READ, json!(params), recipient);
     }
 
     /// Fetch one bounded chunk of a clipboard image stored with the local draft.
@@ -523,6 +555,7 @@ impl Client {
                 self.request(hub_names::SETTINGS_GET, json!({}), Call::HubSettings);
                 self.request(hub_names::VIEW_GET, json!({}), Call::View);
                 // Tell the (new) hub what this window shows again.
+                if let Some(cards) = self.visible_requests.take() { self.set_visible_requests(cards); }
                 if let Some(keys) = self.showing.take() {
                     self.set_showing(keys);
                 }
@@ -583,11 +616,14 @@ impl Client {
                 };
                 self.state.skills.insert(key, state);
             }
+            Call::Explain(key, item, request) => self.finish_explanation(key, item, request, result.get("text").and_then(Value::as_str)),
             Call::View => {
                 self.state.apply_view(&result);
                 self.clear_shown_unseen();
             }
             Call::HubSettings => {
+                self.state.hub.explanations = result.pointer("/settings/explanations").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+                self.state.hub.notifications = result.pointer("/settings/notifications").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
                 self.state.hub.always = result.get("settings").and_then(|s| s.get("always")).and_then(Value::as_bool);
             }
             Call::Projects(t) => {
@@ -637,6 +673,8 @@ impl Client {
                 }
             }
             Call::Subscribe(key) => {
+                // The user may have left the ancestor before the worker subscription replied.
+                if self.state.copies.detached.contains(&key) { return; }
                 let Ok(r) = serde_json::from_value::<ThreadSubscribeResult>(result) else { return };
                 let Some(t) = self.state.transcripts.get_mut(&key) else { return };
                 t.control = Some(r.control);
@@ -674,6 +712,11 @@ impl Client {
                 }
             }
             // The update's progress arrives with the target's state.
+            Call::ModeChanged { key, root, batch } => {
+                if let Some(s) = self.state.next_settings.get_mut(&key) { s.mode = None; }
+                let offline = result.get("pending").and_then(Value::as_bool) == Some(true);
+                self.mode_reply(batch, root, &key, offline, false);
+            }
             Call::Respond { .. } | Call::Ignore | Call::UpdateDaemon(_) => {}
             Call::Preview(id) => self.preview_replies.push((id, Ok(result))),
             Call::Ssh(id) => self.ssh_replies.push((id, Ok(result))),
@@ -725,6 +768,7 @@ impl Client {
                         control_holder: None,
                         forked_from: None,
                         linked_children: None,
+                        artifacts: None,
                         spawned_by: None,
                         reports_to_parent: None,
                         root: None,
@@ -744,6 +788,8 @@ impl Client {
                         placement: None,
                         subagent: None,
                         unavailable: None,
+                        permission_mode: None,
+                        turn_active: None,
                         running_commands: None,
                     };
                     self.state.upsert_summary(&target, summary);
@@ -764,6 +810,7 @@ impl Client {
                 }
             }
             Call::ImageChunk(id) => self.image_chunks.push((id, serde_json::from_value(result).map_err(|e| e.to_string()))),
+            Call::ArtifactChunk(id) => self.artifact_chunks.push((id, serde_json::from_value(result).map_err(|e| e.to_string()))),
             Call::FsSearch(id) => self.finish_composer_search(id, serde_json::from_value(result).map_err(|e| e.to_string())),
             Call::TakeOver(key) => {
                 if let Some(t) = self.state.transcripts.get_mut(&key) {
@@ -912,6 +959,7 @@ impl Client {
                 }
                 let buffered = load.buffered.clone();
                 t.finish_reset(r.position, rev);
+                self.state.copies.dirty = true;
                 let items = t.items().to_vec();
                 let stamp = self.state.next_stamp();
                 let hints = self.state.hints.entry(key.clone()).or_default();
@@ -970,6 +1018,12 @@ impl Client {
                     format!("yaacd on {name} was not updated: {}", error.message)
                 };
                 self.error(None, text);
+            }
+            Call::ModeChanged { key, root, batch } => {
+                let title = self.state.summary(&key).map_or(key.thread.as_str(), |s| &s.title);
+                let message = format!("Mode change for {title}: {}", error.message);
+                self.error(Some(root.clone()), message);
+                self.mode_reply(batch, root, &key, false, true);
             }
             Call::Respond { key, request_id } => {
                 let rev = self.state.next_stamp();
@@ -1033,6 +1087,7 @@ impl Client {
                 self.error(Some(key), message);
             }
             Call::ImageChunk(id) => self.image_chunks.push((id, Err(error.message.clone()))),
+            Call::ArtifactChunk(id) => self.artifact_chunks.push((id, Err(error.message.clone()))),
             Call::FsSearch(id) => self.finish_composer_search(id, Err(error.message.clone())),
             Call::TakeOver(key) => {
                 // Shown on the banner, never retried on its own.
@@ -1125,6 +1180,7 @@ impl Client {
             Call::Skills(key) => {
                 self.state.skills.insert(key, crate::skills::SkillsState::Failed(error.message.clone()));
             }
+            Call::Explain(key, item, request) => self.finish_explanation(key, item, request, None),
             Call::HubSettings | Call::Projects(_) | Call::SshRecords => {}
             Call::InstanceHome { target, instance, home } => {
                 if error.code == ErrorCode::StoreChange {
@@ -1158,7 +1214,25 @@ impl Client {
     }
 
     fn on_notification(&mut self, method: &str, params: Value) {
+        if method == "hub/modeChange/result" {
+            if let (Some(target), Some(thread), Some(error)) = (params["target"].as_str(), params["thread"].as_str(), params["error"].as_str()) {
+                self.error(None, format!("Mode change for {target}/{thread}: {error}"));
+            }
+            return;
+        }
         match method {
+            "hub/approvals/settings" => {
+                if let Ok(models) = serde_json::from_value(params) { self.state.hub.explanations = models; }
+            }
+            "hub/notifications/settings" => {
+                if let Ok(settings) = serde_json::from_value(params) { self.state.hub.notifications = settings; }
+            }
+            attach::names::NOTIFICATIONS_OPEN => {
+                if let Ok(open) = serde_json::from_value::<attach::NotificationOpen>(params) {
+                    if let Some(text) = &open.error { self.error(None, text.clone()); }
+                    self.notification_open.push_back(open);
+                }
+            }
             attach::names::TARGET_STATE => {
                 let Ok(p) = serde_json::from_value::<TargetStateParams>(params) else { return };
                 let was = self.state.target(&p.id).map(|t| t.connected());
@@ -1167,6 +1241,9 @@ impl Client {
                 self.state.apply_target_state(p);
                 if now_connected && was == Some(false) {
                     self.load_target(&id);
+                    let missing: Vec<_> = self.state.copies.sources.iter().filter(|k| k.target == id
+                        && self.state.transcripts.get(*k).is_some_and(|t| !t.is_loaded())).cloned().collect();
+                    for worker in missing { self.subscribe(&worker); }
                     self.resume_offline_uploads(&id);
                 }
                 // The entry (enabled, transport) may have changed with the state: refresh it.
@@ -1300,7 +1377,10 @@ impl Client {
     }
 
     fn read_page(&mut self, key: &ThreadKey, cursor: Option<String>) {
-        let mut params = json!({ "threadId": key.thread, "maxBytes": 262_144, "maxItems": 120, "wholeTurns": true });
+        // A copy needs the outstanding requests and turn origin for the normal card.
+        // thread/read includes older outstanding items alongside this newest whole turn.
+        let max_items = if cursor.is_none() && self.state.copies.following.contains(key) { 1 } else { 120 };
+        let mut params = json!({ "threadId": key.thread, "maxBytes": 262_144, "maxItems": max_items, "wholeTurns": true });
         let call = if let Some(cursor) = cursor {
             params["cursor"] = json!(cursor);
             if cursor.starts_with("history-newer:") { Call::ReadNewer(key.clone(), cursor) } else { Call::ReadOlder(key.clone(), cursor) }
@@ -1386,9 +1466,50 @@ impl Client {
         self.routed(&target, m::MESH_BUDGET, params, Call::Budget);
     }
 
+    /// Report pending requests whose cards are visible in the focused window.
+    pub fn set_visible_requests(&mut self, mut cards: Vec<attach::RequestLocation>) {
+        cards.sort();
+        cards.dedup();
+        if self.state.hub.explanations.main.is_some() {
+            for location in &cards {
+                let key = ThreadKey::new(location.target.clone(), location.thread_id.clone());
+                let Some(transcript) = self.state.transcripts.get_mut(&key) else { continue };
+                if transcript.explanations.contains_key(&location.request_id) { continue; }
+                let Some((id, tool, input)) = transcript.items().iter().find_map(|item| {
+                    let ItemBody::Request(r) = &item.body else { return None };
+                    if r.request_id != location.request_id || r.state != RequestState::Pending { return None; }
+                    let yaac_protocol::RequestBody::Approval(a) = &r.body else { return None };
+                    if a.command_explanation.is_some() { return None; }
+                    let (tool, input) = crate::requests::explanation_input(a)?;
+                    Some((item.id.clone(), tool, input))
+                }) else { continue };
+                transcript.explanations.insert(location.request_id.clone(), true);
+                self.routed(&location.target, m::APPROVAL_EXPLAIN,
+                    json!({"tool":tool,"input":input,"models":self.state.hub.explanations}),
+                    Call::Explain(key, id, location.request_id.clone()));
+            }
+        }
+        if self.visible_requests.as_ref() != Some(&cards) {
+            self.request(attach::names::NOTIFICATIONS_VISIBLE, json!(cards), Call::Ignore);
+            self.visible_requests = Some(cards);
+        }
+    }
+
     /// Which threads this window shows now (the open thread, when the thread view is on
     /// screen). Reported to the hub when it changes (`hub/view/showing`), so a turn that ends
     /// in a thread no window shows is marked unseen (D114); a shown thread's mark is cleared.
+    fn finish_explanation(&mut self, key: ThreadKey, id: ItemId, request: RequestId, text: Option<&str>) {
+        let rev = self.state.next_stamp();
+        let Some(t) = self.state.transcripts.get_mut(&key) else { return };
+        let Some(mut item) = t.item(&id).cloned() else { return };
+        let ItemBody::Request(r) = &mut item.body else { return };
+        if r.request_id != request || r.state != RequestState::Pending { return; }
+        let yaac_protocol::RequestBody::Approval(a) = &mut r.body else { return };
+        a.command_explanation = text.map(str::to_owned);
+        t.explanations.insert(request, false);
+        t.upsert(item, rev);
+    }
+
     pub fn set_showing(&mut self, keys: Vec<ThreadKey>) {
         if self.showing.as_ref() == Some(&keys) {
             return;
@@ -1396,7 +1517,37 @@ impl Client {
         let threads: Vec<Value> = keys.iter().map(|k| json!({ "target": k.target, "threadId": k.thread })).collect();
         self.request(hub_names::VIEW_SHOWING, json!({ "threads": threads }), Call::Ignore);
         self.showing = Some(keys);
+        self.follow_copies();
         self.clear_shown_unseen();
+    }
+
+    fn follow_copies(&mut self) {
+        self.state.copies.dirty = false;
+        let workers = self.showing.iter().flatten()
+            .flat_map(|ancestor| crate::copies::sources(&self.state, ancestor))
+            .map(|(key, _)| key).collect();
+        let previous = std::mem::replace(&mut self.state.copies.sources, workers);
+        let added: Vec<_> = self.state.copies.sources.difference(&previous).cloned().collect();
+        for worker in previous.difference(&self.state.copies.sources).cloned().collect::<Vec<_>>() {
+            if self.state.copies.following.remove(&worker) {
+                self.routed(&worker.target, m::THREAD_UNSUBSCRIBE, json!({"threadId": worker.thread}), Call::Ignore);
+                if self.state.transcripts.contains_key(&worker) {
+                    self.state.copies.detached.insert(worker);
+                }
+            }
+        }
+        for worker in added {
+            if !self.state.transcripts.contains_key(&worker) || self.state.copies.detached.contains(&worker) {
+                self.watch_transcript(&worker);
+                self.state.copies.following.insert(worker);
+            }
+        }
+        for worker in &self.state.copies.sources {
+            if let Some(hints) = self.state.hints.get(worker) {
+                self.state.copies.shown.extend(hints.requests.iter().filter(|(_, r)| crate::hints::request_is_open(&r.state))
+                    .map(|(id, _)| (worker.clone(), id.clone())));
+            }
+        }
     }
 
     /// A thread on screen is seen: its unseen mark goes (here and in the hub).
@@ -1456,12 +1607,14 @@ impl Client {
 
     /// Load and follow a transcript while leaving selection and read state alone.
     pub fn watch_transcript(&mut self, key: &ThreadKey) {
+        self.state.copies.following.remove(key);
+        let detached = self.state.copies.detached.remove(key);
         let fresh = !self.state.transcripts.contains_key(key);
         if fresh {
             self.state.transcripts.insert(key.clone(), crate::transcript::Transcript::new());
         }
         self.state.touch(key);
-        if fresh {
+        if fresh || detached {
             self.subscribe(key);
         }
     }
@@ -1485,12 +1638,38 @@ impl Client {
         self.request(attach::names::TARGETS_ENABLE, params, Call::Ignore);
     }
 
+    /// Refresh the hub's component snapshot and skip the backoff for enabled,
+    /// disconnected targets. The hub keeps ownership of their existing connections.
+    pub fn refresh_components(&mut self) {
+        use attach::ConnectionStatus;
+        if !self.state.hub.attached {
+            return;
+        }
+        let retry: Vec<_> = self.state.targets.iter()
+            .filter(|t| t.entry.enabled && matches!(t.entry.state.status, ConnectionStatus::Offline | ConnectionStatus::Stopped))
+            .map(|t| t.entry.id.clone())
+            .collect();
+        for id in retry {
+            self.request(hub_names::TARGETS_RECONNECT, json!({ "id": id }), Call::Ignore);
+        }
+        self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
+    }
+
     /// Answer a request. The card shows "submitted" at once; a lost answer becomes "outcome
     /// unknown" and is never re-sent.
     pub fn respond(&mut self, key: &ThreadKey, request_id: &RequestId, response: &RequestResponse, summary: String) {
-        if !self.state.may_answer(key) {
+        self.respond_from(key, key, request_id, response, summary);
+    }
+
+    /// Answer a worker's request from the card in `view`.
+    pub fn respond_from(&mut self, view: &ThreadKey, key: &ThreadKey, request_id: &RequestId, response: &RequestResponse, summary: String) {
+        if !self.state.may_answer(key) { return; }
+        // Two views can deliver actions for the same card before either view redraws.
+        if self.state.transcripts.get(key).is_some_and(|t| t.items().iter().any(|item|
+            matches!(&item.body, ItemBody::Request(r) if &r.request_id == request_id && r.state != RequestState::Pending))) {
             return;
         }
+        self.state.copies.answered_in.insert((key.clone(), request_id.clone()), view.clone());
         let rev = self.state.next_stamp();
         if let Some(t) = self.state.transcripts.get_mut(key) {
             t.set_request_state(request_id, RequestState::Submitted, rev);
@@ -2316,6 +2495,16 @@ impl Client {
         self.request(attach::names::SHUTDOWN, json!({}), Call::Shutdown);
     }
 
+    pub fn set_explanations(&mut self, models: yaac_protocol::ExplanationModels) {
+        self.request(hub_names::SETTINGS_UPDATE, json!({ "explanations": models }), Call::HubSettings);
+        self.state.hub.explanations = models;
+    }
+
+    pub fn set_notifications(&mut self, settings: attach::NotificationSettings) {
+        self.state.hub.notifications = settings;
+        self.request(hub_names::SETTINGS_UPDATE, json!({ "notifications": settings }), Call::HubSettings);
+    }
+
     /// Whether the hub keeps running and starts at login.
     pub fn set_always(&mut self, always: bool) {
         self.state.hub.always = Some(always);
@@ -2440,6 +2629,12 @@ impl Client {
         self.routed(target, m::PROVIDER_INSTANCE_SET_MODEL_ENABLED, json!(params), Call::Ignore);
     }
 
+    pub fn set_approval_explanation_model(&mut self, target: &TargetId, instance: &InstanceId, model: Option<yaac_protocol::ModelId>) {
+        let op = self.op_id();
+        self.routed(target, m::PROVIDER_INSTANCE_UPDATE,
+            json!({ "opId": op, "id": instance, "approvalExplanationModel": model }), Call::InstanceChanged(target.clone()));
+    }
+
     /// Set an instance's harness home (P300); `None` or empty: back to the harness default.
     /// Editing an implicit default instance stores its configuration on the target. A home
     /// that leads to another store is refused until the user confirms it
@@ -2491,6 +2686,10 @@ impl Client {
     /// waits in [`AppState::mode_confirm`] for the user's confirmation.
     pub fn choose_mode(&mut self, target: ModeTarget, mode: yaac_protocol::ModeId) {
         let modes = crate::mode_confirm::modes_for(&self.state, &target);
+        if let Some(tree) = crate::mode_confirm::tree(&self.state, &target, &mode, &modes) {
+            self.state.mode_confirm = Some(tree);
+            return;
+        }
         match crate::mode_confirm::pick(&modes, target, mode) {
             ModePick::Apply(t, m) => {
                 self.state.mode_confirm = None;
@@ -2502,8 +2701,48 @@ impl Client {
 
     /// "Bypass permissions": apply the pending mode. The confirmation is not remembered.
     pub fn confirm_mode(&mut self) {
-        if let Some(p) = self.state.mode_confirm.take() {
-            self.apply_mode(p.target, p.mode);
+        self.confirm_mode_scope(false);
+    }
+
+    /// Apply the snapshot the user confirmed, with one operation id per recipient.
+    pub fn confirm_mode_scope(&mut self, all: bool) {
+        let Some(p) = self.state.mode_confirm.take() else { return };
+        let ModeTarget::Thread(root) = &p.target else { self.apply_mode(p.target, p.mode); return };
+        if p.workers.is_empty() { self.apply_mode(p.target, p.mode); return }
+        let Some(source) = self.state.summary(root).cloned() else { return };
+        let Some(mode) = p.chosen else { return };
+        let batch = self.op_id();
+        self.mode_results.insert(batch.clone(), ModeChangeResults {
+            remaining: if all { 1 + p.workers.len() } else { 1 },
+            ..Default::default()
+        });
+        for (key, interrupt) in std::iter::once((root, p.interrupt_root))
+            .chain(p.workers.iter().filter(|_| all).map(|r| (&r.key, r.interrupt))) {
+            let params = yaac_protocol::ThreadSetModeParams { op_id: self.op_id(), thread_id: key.thread.clone(),
+                source_target: root.target.clone(), source_instance: source.instance.clone(),
+                source_title: source.title.clone(), mode: mode.clone(), allow_interrupt: interrupt };
+            self.routed(&key.target, m::THREAD_SET_MODE, json!(params), Call::ModeChanged { key: key.clone(), root: root.clone(), batch: batch.clone() });
+        }
+    }
+
+    fn mode_reply(&mut self, batch: OpId, root: ThreadKey, key: &ThreadKey, offline: bool, failed: bool) {
+        let Some(result) = self.mode_results.get_mut(&batch) else { return };
+        if offline {
+            let title = self.state.summary(key).map_or(key.thread.as_str(), |s| &s.title);
+            result.offline.push(format!("{title} on {}", self.state.target_name(&key.target)));
+        } else if failed {
+            result.failed += 1;
+        } else {
+            result.applied += 1;
+        }
+        result.remaining -= 1;
+        if result.remaining == 0 {
+            let mut result = self.mode_results.remove(&batch).unwrap();
+            if !result.offline.is_empty() {
+                result.offline.sort();
+                self.error(Some(root), format!("Mode change: {} applied, {} pending offline ({}), {} failed.",
+                    result.applied, result.offline.len(), result.offline.join(", "), result.failed));
+            }
         }
     }
 
@@ -2539,6 +2778,27 @@ struct FindPage {
 struct FindHit {
     target: TargetId,
     thread: ThreadSummary,
+}
+
+#[cfg(test)]
+mod mode_results_tests {
+    use super::*;
+
+    #[test]
+    fn offline_replies_are_summarized_once_at_the_root() {
+        let mut client = Client::new(Box::new(crate::link::DetachedLink), "test", ClientId::new("window"));
+        let root = ThreadKey::new("local", "root");
+        let remote = ThreadKey::new("remote", "leaf");
+        let batch = client.op_id();
+        client.mode_results.insert(batch.clone(), ModeChangeResults { remaining: 2, ..Default::default() });
+        let call = |key| Call::ModeChanged { key, root: root.clone(), batch: batch.clone() };
+        client.on_result(call(remote), json!({ "pending": true }));
+        assert!(client.errors.is_empty());
+        client.on_result(call(root.clone()), json!({}));
+        assert!(client.mode_results.is_empty());
+        assert_eq!(client.errors[0].key.as_ref(), Some(&root));
+        assert!(client.errors[0].text.contains("1 applied, 1 pending offline (leaf on remote), 0 failed"));
+    }
 }
 
 #[cfg(test)]

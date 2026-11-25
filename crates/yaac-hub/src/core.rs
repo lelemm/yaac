@@ -3,6 +3,7 @@
 //! the core never waits for it — finished jobs come back as [`CoreEvent`]s.
 
 mod browser;
+mod notifications;
 mod limits;
 mod preview;
 mod terminal;
@@ -59,11 +60,17 @@ pub(crate) type ClientKey = u64;
 
 type Key = (TargetId, ThreadId);
 
+/// Internal holder of a blocked thread subscription. Attach clients are numbered from zero.
+const NOTIFICATION_CLIENT: ClientKey = u64::MAX;
+
 /// Everything the core reacts to. Moved once through a channel; boxing the large variants
 /// would only make every match clumsier.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum CoreEvent {
+    NotificationAction(u64, String),
+    NotificationDestination(attach::NotificationOpen, Vec<Key>),
+    PendingModes(TargetId, u64, Vec<yaac_protocol::ThreadSetModeParams>),
     /// A window connected.
     Attached { client: ClientKey, tx: crate::attach_writer::Sender },
     /// Raw interactive input from a window.
@@ -165,15 +172,18 @@ struct Client {
     subs: HashSet<Key>,
     /// What the window shows (`hub/view/showing`, D114).
     showing: HashSet<Key>,
+    visible_requests: Option<HashSet<attach::RequestLocation>>,
 }
 
 // ── Per-target state ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 enum Pending {
+    Mode { op: OpId, thread: ThreadId },
     Routed { client: ClientKey, id: RpcId, method: &'static str, op: Option<OpId> },
     Open { thread: ThreadId, serial: u64, flow: Box<OpenThreadFlow> },
     Page { thread: ThreadId, serial: u64 },
+    RequiredRequests { thread: ThreadId, serial: u64 },
     ProviderList,
     Sync,
     MeshQuery { source: TargetId, generation: u64, peer_id: RpcId },
@@ -215,6 +225,7 @@ struct Sub {
     command: OpenThread,
     epoch: Option<Epoch>,
     snapshot: Vec<Item>,
+    required_requests: Vec<Item>,
     snapshot_bytes: u64,
     snapshot_position: Option<JournalPosition>,
     buffered: Vec<ThreadEventParams>,
@@ -236,6 +247,8 @@ struct Conn {
     kill: Option<oneshot::Sender<()>>,
     ready: bool,
     pending: HashMap<RpcId, Pending>,
+    /// Newer choices received while the store reads the previous connection's offline choices.
+    modes_during_reconnect: Option<HashSet<ThreadId>>,
     terminal_streams: HashMap<StreamId, StreamId>,
     preview_streams: HashMap<StreamId, u64>,
     subs: HashMap<ThreadId, Sub>,
@@ -399,6 +412,7 @@ pub(crate) struct Core {
     /// The position the cache holds now.
     committed: HashMap<Key, JournalPosition>,
     tokens: HashMap<TargetId, SyncToken>,
+    notifications: notifications::Notifications,
     thread_states: HashMap<Key, ThreadState>,
     batch: BTreeMap<Key, Vec<ThreadEventParams>>,
     in_flight: u64,
@@ -504,6 +518,7 @@ impl Core {
             applied: HashMap::new(),
             committed: HashMap::new(),
             tokens: loaded.tokens.into_iter().collect(),
+            notifications: Default::default(),
             thread_states: loaded.states.into_iter().map(|(t, th, s)| ((t, th), s)).collect(),
             batch: BTreeMap::new(),
             in_flight: loaded.in_flight,
@@ -562,8 +577,10 @@ impl Core {
 
     pub(crate) fn handle(&mut self, event: CoreEvent) {
         match event {
+            CoreEvent::NotificationAction(group, action) => self.notification_action(group, &action),
+            CoreEvent::NotificationDestination(open, lineage) => self.show_notification_destination(open, &lineage),
             CoreEvent::Attached { client, tx } => {
-                self.clients.insert(client, Client { tx, hello: Hello::None, subs: HashSet::new(), showing: HashSet::new() });
+                self.clients.insert(client, Client { tx, hello: Hello::None, subs: HashSet::new(), showing: HashSet::new(), visible_requests: None });
             }
             CoreEvent::ClientData { client, stream, bytes } => self.terminal_input(client, stream, bytes),
             CoreEvent::FromClient { client, message } => self.on_client(client, message),
@@ -611,6 +628,28 @@ impl Core {
             CoreEvent::FindReady { client, id, params, threads } => self.on_find_ready(client, id, &params, &threads),
             CoreEvent::MeshIndexReady { source, generation, peer_id, query, threads, labels } => {
                 self.on_mesh_index(&source, generation, peer_id, &query, &threads, &labels);
+            }
+            CoreEvent::PendingModes(target, generation, changes) => {
+                let conn = self.targets.get_mut(&target).and_then(|t| t.conn.as_mut());
+                let superseded = conn.filter(|c| c.generation == generation)
+                    .and_then(|c| c.modes_during_reconnect.take()).unwrap_or_default();
+                for change in changes {
+                    if superseded.contains(&change.thread_id) {
+                        self.worker.submit(move |s| s.drafts.op_done(&change.op_id).err().map(|e| CoreEvent::StoreError(e.to_string())));
+                        continue;
+                    }
+                    let receipt = Pending::Mode { op: change.op_id.clone(), thread: change.thread_id.clone() };
+                    if !self.send::<methods::ThreadSetMode>(&target, &change, receipt) {
+                        let t = target.clone();
+                        let keep = self.targets.contains_key(&target);
+                        self.worker.submit(move |s| {
+                            let result = if keep { s.drafts.restore_unsent_mode(&t, &change) }
+                                else { s.drafts.op_done(&change.op_id) };
+                            result.err().map(|e| CoreEvent::StoreError(e.to_string()))
+                        });
+                    }
+                }
+                self.flush(&target);
             }
             CoreEvent::InFlight(n) => self.in_flight = n,
             CoreEvent::ViewsChanged { reply, views } => self.on_views_changed(reply, views),
@@ -662,6 +701,7 @@ impl Core {
 
     fn on_detached(&mut self, client: ClientKey) {
         let Some(c) = self.clients.remove(&client) else { return };
+        if c.visible_requests.is_some_and(|cards| !cards.is_empty()) { self.notifications.reconsider(Instant::now()); }
         self.terminal_window_closed(client);
         self.browser_window_closed(client);
         for key in c.subs {
@@ -789,6 +829,14 @@ impl Core {
                 }
                 Err(e) => Some(Err(e)),
             },
+            attach::names::NOTIFICATIONS_VISIBLE => Some(parse::<HashSet<attach::RequestLocation>>(params).map(|visible| {
+                self.clients.get_mut(&client).unwrap().visible_requests = Some(visible);
+                self.notifications.reconsider(Instant::now());
+                while let Some(open) = self.notifications.open.pop_front() {
+                    self.send_to(client, Message::notification(attach::names::NOTIFICATIONS_OPEN, to_value(&open)));
+                }
+                json!({})
+            })),
             ext::names::VIEW_SHOWING => match parse::<ext::ViewShowingParams>(params) {
                 Ok(p) => {
                     if let Some(c) = self.clients.get_mut(&client) {
@@ -823,13 +871,26 @@ impl Core {
             },
             ext::names::SETTINGS_GET => Some(Ok(to_value(&SettingsResult { settings: self.settings.hub.clone() }))),
             ext::names::SETTINGS_UPDATE => Some(parse::<SettingsUpdateParams>(params).and_then(|p| {
+                let previous = self.settings.hub.clone();
+                if let Some(settings) = &p.explanations { self.settings.hub.explanations = settings.clone(); }
+                if let Some(settings) = p.notifications { self.settings.hub.notifications = settings; }
                 if let Some(always) = p.always {
                     self.settings.hub.always = always;
                 }
                 if let Some(secs) = p.idle_exit_secs {
                     self.settings.hub.idle_exit_secs = secs;
                 }
-                self.save_settings()?;
+                if let Err(e) = self.save_settings() {
+                    self.settings.hub = previous;
+                    return Err(e);
+                }
+                if p.explanations.is_some() {
+                    self.broadcast(&Message::notification("hub/approvals/settings", to_value(&self.settings.hub.explanations)));
+                }
+                if p.notifications.is_some() {
+                    self.broadcast(&Message::notification("hub/notifications/settings", to_value(&self.settings.hub.notifications)));
+                    self.notifications.reconsider(Instant::now());
+                }
                 Ok(to_value(&SettingsResult { settings: self.settings.hub.clone() }))
             })),
             ext::names::CACHE_CLEAR => {
@@ -1158,6 +1219,10 @@ impl Core {
 
     /// A thread is gone from its target: its pin and mute go with it.
     fn view_thread_removed(&mut self, target: &TargetId, thread: &ThreadId) {
+        let key = (target.clone(), thread.clone());
+        self.notifications.labels.remove(&key);
+        self.notifications.snapshot(&key, &[]);
+        self.release(NOTIFICATION_CLIENT, &key);
         if !self.kept.get(target).is_some_and(|s| s.contains(thread)) && !self.unseen.contains(&(target.clone(), thread.clone())) {
             return;
         }
@@ -1374,6 +1439,7 @@ impl Core {
         self.preview_removed(&p.id);
         self.targets.remove(&p.id);
         let id = p.id.clone();
+        self.notifications.remove_target(&id);
         self.open.retain(|(t, _), _| *t != id);
         for c in self.clients.values_mut() {
             c.subs.retain(|(t, _)| *t != id);
@@ -1446,6 +1512,7 @@ impl Core {
                     writer_busy: false,
                     kill: Some(kill),
                     ready: false,
+                    modes_during_reconnect: Some(HashSet::new()),
                     pending: HashMap::new(),
                     terminal_streams: HashMap::new(),
                     preview_streams: HashMap::new(),
@@ -1521,7 +1588,12 @@ impl Core {
                     } else {
                         err(ErrorCode::TargetOffline, "the connection to the target dropped")
                     };
-                    self.reply(client, rid, Err(error));
+                    if client == NOTIFICATION_CLIENT { self.notification_answer(&rid, Some(error)); }
+                    else { self.reply(client, rid, Err(error)); }
+                }
+                Pending::Mode { op, thread } => {
+                    self.broadcast(&Message::notification("hub/modeChange/result", json!({ "target": id, "thread": thread, "error": "Connection lost. The mode change outcome is unknown." })));
+                    self.worker.submit(move |s| s.drafts.op_uncertain(&op).err().map(|e| CoreEvent::StoreError(e.to_string())));
                 }
                 Pending::Terminal { client, id, .. } => self.reply(client, id, Err(err(ErrorCode::OutcomeUnknown, "target disconnected before answering terminal request"))),
                 Pending::MeshQuery { source, generation, peer_id } => {
@@ -1611,6 +1683,7 @@ impl Core {
         let Some(t) = self.targets.get_mut(id) else { return };
         let Some(conn) = t.conn.as_mut() else { return };
         conn.ready = true;
+        let generation = conn.generation;
         let terminal = conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::Terminal));
         let file_view = conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::FileView));
         let budget_time_limit = conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::BudgetTimeLimit));
@@ -1639,6 +1712,19 @@ impl Core {
         self.worker.submit(move |s| s.cache.put_target(&target, Some(&facts), &stored).err().map(|e| CoreEvent::StoreError(e.to_string())));
         self.set_state(id, new);
         self.send_kept(id);
+        let dest = id.clone();
+        self.worker.submit(move |s| Some(match s.drafts.claim_modes(&dest) {
+            Ok(changes) => CoreEvent::PendingModes(dest, generation, changes),
+            Err(e) => CoreEvent::StoreError(e.to_string()),
+        }));
+        if self.cfg.notifier.is_some() {
+            // An incremental index sync need not repeat threads still blocked since last exit.
+            for (key, state) in &self.thread_states {
+                if &key.0 == id && *state == ThreadState::NeedsAttention {
+                    self.open.entry(key.clone()).or_default().insert(NOTIFICATION_CLIENT);
+                }
+            }
+        }
         self.refresh_target(id);
         self.send_rosters();
         // The relay: deliver what waited for this target, and hand back receipts owed to it.
@@ -1775,7 +1861,8 @@ impl Core {
         self.send::<ThreadSync>(id, &ThreadSyncParams { token, max_bytes: Some(256 * 1024) }, Pending::Sync);
         let open: Vec<ThreadId> = self.open.keys().filter(|(t, _)| t == id).map(|(_, th)| th.clone()).collect();
         for thread in open {
-            self.start_open(id, &thread, fresh);
+            let watched = self.open.get(&(id.clone(), thread.clone())).is_some_and(|h| h.contains(&NOTIFICATION_CLIENT));
+            self.start_open(id, &thread, fresh || watched);
         }
     }
 
@@ -1845,6 +1932,10 @@ impl Core {
                 if let Some(op) = op {
                     self.worker.submit(move |s| s.drafts.op_done(&op).err().map(|e| CoreEvent::StoreError(e.to_string())));
                 }
+                if client == NOTIFICATION_CLIENT {
+                    self.notification_answer(&rid, outcome.err());
+                    return;
+                }
                 if methods::request_info(m).is_some_and(|info| info.response_class == yaac_protocol::schedule::Class::Bulk)
                     && let Ok(result) = outcome
                 {
@@ -1856,6 +1947,16 @@ impl Core {
                 }
             }
             Pending::Open { thread, serial, flow } => self.on_open_response(id, thread, serial, *flow, outcome),
+            Pending::RequiredRequests { thread, serial } => {
+                let page = outcome.and_then(|wire| self.decode_typed::<methods::ThreadRead>(id, wire)).ok();
+                if let Some(sub) = self.sub_mut(id, &thread).filter(|s| s.serial == serial) {
+                    if let Some(page) = page {
+                        sub.required_requests = page.required_items.unwrap_or_default();
+                        sub.required_requests.extend(page.items.into_iter().filter(|i| matches!(i.body, ItemBody::Request(_))));
+                    }
+                    self.finish_rebuild(id, &thread);
+                }
+            }
             Pending::Page { thread, serial } => {
                 if self.sub_mut(id, &thread).is_some_and(|s| s.serial == serial) {
                     self.on_page(id, &thread, outcome);
@@ -1905,6 +2006,12 @@ impl Core {
                 self.lookup_answered(lookup, id, found);
             }
             Pending::Handover { reply } => self.on_handover_answer(id, reply, outcome),
+            Pending::Mode { op, thread } => {
+                if let Err(e) = outcome {
+                    self.broadcast(&Message::notification("hub/modeChange/result", json!({ "target": id, "thread": thread, "error": e.message })));
+                }
+                self.worker.submit(move |s| s.drafts.op_done(&op).err().map(|e| CoreEvent::StoreError(e.to_string())));
+            }
             Pending::RateLimits => self.limits_answered(id, outcome),
             Pending::Deliver { message_id } => self.on_delivered(id, message_id, outcome),
             Pending::UploadBegin { handle } => self.on_upload_begun(id, &handle, outcome),
@@ -2048,6 +2155,7 @@ impl Core {
                         command,
                         epoch: None,
                         snapshot: Vec::new(),
+                        required_requests: Vec::new(),
                         snapshot_bytes: 0,
                         snapshot_position: None,
                         buffered: Vec::new(),
@@ -2143,8 +2251,18 @@ impl Core {
 
     fn next_page_or_finish(&mut self, id: &TargetId, thread: &ThreadId, cursor: Option<PageCursor>) {
         let cap = self.cfg.rebuild_cap_bytes;
+        let watching = self.open.get(&(id.clone(), thread.clone())).is_some_and(|h| h.contains(&NOTIFICATION_CLIENT));
         let Some(conn) = self.targets.get_mut(id).and_then(Target::ready_conn) else { return };
         let Some(sub) = conn.subs.get_mut(thread) else { return };
+        // A bounded cache rebuild can stop before reaching an old, still-open card.
+        // An interactive read returns requiredItems independently of the history page size.
+        if watching && cursor.is_some() && sub.snapshot_bytes >= cap {
+            let serial = sub.serial;
+            let p = ThreadReadParams { thread_id: thread.clone(), cursor: None, max_bytes: Some(4096), max_items: Some(1), around: None, whole_turns: None };
+            if self.send::<methods::ThreadRead>(id, &p, Pending::RequiredRequests { thread: thread.clone(), serial }) { return; }
+            self.finish_rebuild(id, thread);
+            return;
+        }
         if let Some(cursor) = cursor
             && sub.snapshot_bytes < cap
         {
@@ -2186,12 +2304,16 @@ impl Core {
         self.flush_batch(&key);
         let Some(sub) = self.sub_mut(id, thread) else { return };
         let Some(position) = sub.snapshot_position else { return };
+        let required_requests = std::mem::take(&mut sub.required_requests);
         let mut items = std::mem::take(&mut sub.snapshot);
         items.reverse(); // pages are newest first
         let live = sub.subscribed.as_ref().map(LiveState::from_subscribed).unwrap_or_default();
         sub.phase = Phase::Live;
         let buffered = std::mem::take(&mut sub.buffered);
         let (target, th) = (key.0.clone(), key.1.clone());
+        if self.cfg.notifier.is_some() {
+            self.notifications.snapshot(&key, items.iter().chain(&required_requests));
+        }
         self.worker.submit(move |s| match s.cache.replace_thread(&target, &th, &items, position, &live) {
             Ok(()) => Some(CoreEvent::Rebuilt { target, thread: th, position }),
             Err(e) => Some(CoreEvent::StoreError(e.to_string())),
@@ -2268,6 +2390,16 @@ impl Core {
                 self.send::<methods::ThreadUnsubscribe>(id, &params, Pending::Ignore);
                 self.start_open(id, &key.1, false);
                 return;
+            }
+        }
+        if self.cfg.notifier.is_some() {
+            match &event.event {
+                ThreadEvent::ItemStarted(e) | ThreadEvent::ItemCompleted(e) => self.notifications.observe(&key, &e.item, Instant::now()),
+                ThreadEvent::ItemUpdated(e) => self.notifications.observe(&key, &e.item, Instant::now()),
+                ThreadEvent::RequestChanged(e) if e.state != RequestState::Pending => self.notifications.resolve(&attach::RequestLocation {
+                    target: key.0.clone(), thread_id: key.1.clone(), request_id: e.request_id.clone()
+                }),
+                _ => {}
             }
         }
         self.applied.insert(key.clone(), after);
@@ -2459,6 +2591,14 @@ impl Core {
         };
         let connected = self.targets.get(&target).is_some_and(|t| t.conn.as_ref().is_some_and(|c| c.ready));
         if !connected {
+            if method == names::THREAD_SET_MODE {
+                let change = match parse::<yaac_protocol::ThreadSetModeParams>(request.params) {
+                    Ok(p) => p, Err(e) => return Some(Err(e)),
+                };
+                self.store_reply(client, rid, move |s| s.drafts.queue_mode(&target, &change)
+                    .map(|()| json!({ "pending": true })).map_err(|e| e.to_string()));
+                return None;
+            }
             if let Some(outcome) = self.answer_offline(client, rid, &target, info.name, request.params.clone()) {
                 return outcome;
             }
@@ -2478,6 +2618,10 @@ impl Core {
             && !conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::FileView))
         {
             return Some(Err(file_view_missing()));
+        }
+        if method == names::THREAD_SET_MODE
+            && let (Some(newer), Some(thread)) = (conn.modes_during_reconnect.as_mut(), thread.as_ref()) {
+            newer.insert(thread.clone());
         }
         match conn.session.request_value(info.name, request.params) {
             Ok(id) => {
@@ -2907,24 +3051,23 @@ impl Core {
         });
     }
 
-    /// Records a thread's state; one that has just come to need the user while no window is
-    /// attached raises a desktop notification (docs/10-agent-mesh.md#a-worker-that-is-blocked-must-be-seen).
+    /// Watch the journal of every blocked thread, including while its window is closed.
     fn note_state(&mut self, target: &TargetId, summary: &yaac_protocol::ThreadSummary) {
         let key = (target.clone(), summary.id.clone());
         let before = self.thread_states.insert(key.clone(), summary.state.clone());
         if before.as_ref().is_some_and(turn_going) && !turn_going(&summary.state) {
-            self.turn_ended(key);
+            self.turn_ended(key.clone());
         }
-        if summary.state != ThreadState::NeedsAttention || before == Some(ThreadState::NeedsAttention) {
-            return;
-        }
-        let windows = self.clients.values().any(|c| c.hello == Hello::Attached);
-        if windows {
-            return;
-        }
-        if let Some(n) = &self.cfg.notifier {
-            let place = self.targets.get(target).map_or_else(|| target.as_str().to_owned(), |t| t.def.name.as_str().to_owned());
-            n.notify("YAAC: a thread needs you", &format!("\"{}\" on {place} is waiting for your answer.", summary.title));
+        if self.cfg.notifier.is_none() { return; }
+        if summary.state == ThreadState::NeedsAttention {
+            let target_name = self.targets.get(target).map_or(target.as_str(), |t| t.def.name.as_str());
+            self.notifications.labels.insert(key.clone(), format!("{} on {target_name}", summary.title));
+            self.open.entry(key).or_default().insert(NOTIFICATION_CLIENT);
+            if self.sub_mut(target, &summary.id).is_none() { self.start_open(target, &summary.id, true); }
+        } else if self.open.get(&key).is_some_and(|holders| holders.contains(&NOTIFICATION_CLIENT)) {
+            self.notifications.labels.remove(&key);
+            self.notifications.snapshot(&key, &[]);
+            self.release(NOTIFICATION_CLIENT, &key);
         }
     }
 
@@ -2970,6 +3113,11 @@ impl Core {
 
     pub(crate) fn tick(&mut self) {
         let now = Instant::now();
+        if let Some(notifier) = &self.cfg.notifier {
+            self.notifications.flush(now, self.settings.hub.notifications,
+                |loc| self.clients.values().any(|c| c.visible_requests.as_ref().is_some_and(|v| v.contains(loc))),
+                notifier.as_ref(), &self.tx);
+        }
         self.expire_browser_calls(now);
         // Acknowledge what is committed.
         if now.duration_since(self.last_ack) >= self.cfg.ack_interval {

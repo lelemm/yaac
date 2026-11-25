@@ -279,6 +279,9 @@ pub struct ProviderDescriptor {
     /// Models turned off in Settings, retained for Settings and existing threads.
     #[serde(default)]
     pub disabled_models: Vec<ModelInfo>,
+    /// The model this instance uses for command approval explanations, if configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_explanation_model: Option<ModelId>,
     /// Whether `models` is a complete listing. A model is only ever declared gone after a
     /// complete listing.
     #[serde(default)]
@@ -355,6 +358,9 @@ pub struct ProviderInstanceConfig {
     /// Model IDs turned off for this instance. New IDs are on by default.
     #[serde(default)]
     pub disabled_model_ids: Vec<ModelId>,
+    /// Model selected for command approval explanations on this instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_explanation_model: Option<ModelId>,
 }
 
 /// `provider/list` — no parameters.
@@ -468,6 +474,10 @@ pub struct ProviderInstanceUpdateParams {
     /// that leads to another store is refused with `store_change` and nothing changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirm_store_change: Option<bool>,
+    /// New explanation model. Absent leaves it unchanged and null clears it.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::types::double_option")]
+    #[schemars(with = "Option<ModelId>")]
+    pub approval_explanation_model: Option<Option<ModelId>>,
 }
 
 /// The `data` of a `store_change` error (P300): the instance's home now and the one asked

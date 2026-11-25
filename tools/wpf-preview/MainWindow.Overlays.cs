@@ -235,6 +235,14 @@ public partial class MainWindow
                 MinWidth = 80, Margin = new Thickness(0, 10, 0, 0) };
             dialogCancel = cancel;
             cancel.Click += (_, _) => Send("dialog.cancel", new { id, instance });
+            bool modeTree = id == "mode" && data.TryGetProperty("workers", out _);
+            if (modeTree)
+            {
+                dialogSubmit.IsDefault = true;
+                var all = new Button { Content = "Apply to all", Margin = new Thickness(0, 10, 8, 0) };
+                all.Click += (_, _) => Send("dialog.action", new { id, instance, action = "all" });
+                buttons.Children.Add(all);
+            }
             buttons.Children.Add(dialogSubmit);
             buttons.Children.Add(cancel);
             content.Children.Add(buttons);
@@ -260,7 +268,7 @@ public partial class MainWindow
             var window = dialog;
             window.PreviewKeyDown += (_, e) =>
             {
-                if (id is "mode" or "ultrafast" && e.Key == Key.Enter)
+                if (!modeTree && id is ("mode" or "ultrafast") && e.Key == Key.Enter)
                     e.Handled = true;
                 if (id == "updateNotice" && e.Key == Key.Escape)
                 {
@@ -278,8 +286,8 @@ public partial class MainWindow
                 }
             };
             dialog.Show();
-            if (id is "mode" or "ultrafast")
-                cancel.Focus();
+            if (modeTree) dialogSubmit.Focus();
+            else if (id is "mode" or "ultrafast") cancel.Focus();
         }
         dialogBody!.Text = Text(data, "body");
         var submit = Text(data, "submit");
@@ -374,10 +382,17 @@ public partial class MainWindow
     {
         bool hasActions = data.TryGetProperty("auxiliaryActions", out var actions);
         bool hasFolders = data.TryGetProperty("folders", out var folders);
-        var signature = (hasActions ? actions.GetRawText() : "") + (hasFolders ? folders.GetRawText() : "");
+        bool hasWorkers = data.TryGetProperty("workers", out var workers);
+        var signature = (hasWorkers ? workers.GetRawText() : "") + (hasActions ? actions.GetRawText() : "") + (hasFolders ? folders.GetRawText() : "");
         if (signature == dialogExtrasSignature) return;
         dialogExtrasSignature = signature;
         dialogExtras!.Children.Clear();
+
+        if (hasWorkers)
+        {
+            var labels = new TextBlock { Text = string.Join("\n", workers.EnumerateArray().Select(w => w.GetString())), TextWrapping = TextWrapping.Wrap };
+            dialogExtras.Children.Add(new Expander { Header = "Show workers", Content = labels });
+        }
 
         void AddActions(Panel host, JsonElement descriptors)
         {

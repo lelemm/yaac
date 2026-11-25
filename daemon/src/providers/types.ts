@@ -385,6 +385,8 @@ export class PeerInputDenied extends Error {}
 
 /** What a provider implements inside yaacd. */
 export interface HarnessProvider {
+  /** A one-shot text explanation with no durable harness conversation. */
+  explainCommand?(model: string, command: string, signal?: AbortSignal): Promise<string | null>;
   /** Install, sign-in, backend, models. Called at start, on `provider/refresh`, on `descriptorChanged`. */
   probe(): Promise<ProbeResult>;
   /** One page of the conversation listing, for the thread index (see `ScanRequest`). */
@@ -424,6 +426,8 @@ export interface HarnessProvider {
   deliverPeer?(thread: NativeId, turn: TurnId, input: ProviderInput, beforeSend: () => boolean, beforeFollowOn: () => void): Promise<TurnId | null>;
   /** Runs manual compaction and waits for native confirmation. */
   compact?(thread: NativeId): Promise<void>;
+  /** Apply a permission mode to an already running turn. */
+  setModeLive?(thread: NativeId, mode: string): Promise<void>;
   interrupt(thread: NativeId, turn: TurnId): Promise<void>;
   commandLogs?(thread: NativeId, id: string): Promise<CommandLogsResult>;
   /** False when the command is no longer running or the harness refuses to stop it. */

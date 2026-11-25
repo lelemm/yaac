@@ -68,6 +68,8 @@ export type SessionSource = string | { [k: string]: unknown };
 
 export interface Thread {
   id: string;
+  ephemeral?: boolean;
+  threadSource?: string | null;
   sessionId?: string;
   forkedFromId?: string | null;
   parentThreadId?: string | null;

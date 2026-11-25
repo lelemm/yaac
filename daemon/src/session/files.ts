@@ -300,6 +300,16 @@ async function workingBytes(loc: WorktreePath, limit: number): Promise<FileBytes
   }
 }
 
+/** Snapshot bytes under the authenticated caller's worktree using the ordinary confined reader. */
+export function artifactBytes(root: string, relative: string): Promise<Buffer> {
+  return schedule(async () => {
+    const limit = 16 * 1024 * 1024;
+    const { size, bytes } = await workingBytes(await locate(root, relative), limit);
+    if (!size || size > limit) throw invalid("present a nonempty artifact of at most 16 MiB");
+    return bytes;
+  });
+}
+
 function isBinary(bytes: Buffer): boolean {
   return bytes.subarray(0, SAMPLE_BYTES).includes(0);
 }

@@ -217,6 +217,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
     app.display.first_frame();
     app.images.use_wpf();
     let mut previous = Map::new();
+    let mut composer_history = Arc::<[String]>::default();
     let mut selected_settings_target = None;
     let mut once = true;
     let mut paste_for: Option<String> = None;
@@ -248,7 +249,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
             // Drive the existing async workers and timers without creating any egui widgets.
             app.client.set_showing(
                 (window_shown && !app.ui.settings)
-                    .then(|| selected_thread(&app).cloned())
+                    .then(|| selected_thread(&app).filter(|key| app.browsers.chat_visible(key)).cloned())
                     .flatten()
                     .into_iter()
                     .collect(),
@@ -355,6 +356,10 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                 .filter(|(key, value)| previous.get(*key) != Some(*value))
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect();
+            if !Arc::ptr_eq(&composer_history, &app.ui.composer_history) {
+                composer_history = app.ui.composer_history.clone();
+                changes.insert("composerMessageHistory".into(), json!(composer_history.as_ref()));
+            }
             if let Some(view) = changes.get_mut("transcript")
                 && let Some(old) = previous.get("transcript")
             {
@@ -410,6 +415,12 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
                         agent_rows_visible = false;
                         crate::agents_ui::dock_hover(&mut app, &ctx, false, None);
                     }
+                }
+                if command == "shell.visibleRequests" {
+                    if let Ok(cards) = serde_json::from_value(payload["cards"].clone()) {
+                        app.client.set_visible_requests(cards);
+                    }
+                    continue;
                 }
                 if command == "shell.prVisible" {
                     agent_rows_visible = payload["agentsVisible"] == true;
@@ -590,7 +601,10 @@ fn dispatch(
             app.images.close();
             None
         }
-        "sidebar.open" | "agents.open" => key(app, string(payload, "id")).map(Action::Open),
+        "sidebar.open" => key(app, string(payload, "id")).map(|k| {
+            if AttentionMap::compute(&app.client.state).of(&k).is_some() { Action::OpenRequest(k) } else { Action::Open(k) }
+        }),
+        "agents.open" => key(app, string(payload, "id")).map(Action::Open),
         "pr.action" => pull_requests::action(app, ctx, payload),
         "header.action" => {
             header::command(app, payload);

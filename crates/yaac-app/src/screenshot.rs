@@ -21,6 +21,7 @@ use crate::theme::ThemeChoice;
 /// The screens, by brief number and file name.
 pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("01", "approval"),
+    ("01e", "approval-expanded"),
     ("02", "orchestrator"),
     ("03", "worker-side"),
     ("04", "blocked-worker"),
@@ -50,6 +51,7 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("28", "agents-card"),
     ("29", "create-project"),
     ("30", "bypass-confirm"),
+    ("30a", "worker-mode-confirm"),
     ("31", "history-list"),
     ("32", "ssh-form"),
     ("33", "mute-dialog"),
@@ -276,6 +278,7 @@ impl Shots {
             // Scenes may depend on the theme (a terminal replays vim's light or dark colours).
             app.ui.theme = if dark { ThemeChoice::Dark } else { ThemeChoice::Light };
             setup(app, id);
+            if id == "01e" { ctx.data_mut(|d| d.insert_temp(egui::Id::unique(("approval-command", "f5")), true)); }
             // This display cannot resize the window reliably, so screen 21 lays the shell out in
             // 960 × 720 points and the picture is cropped to it.
             app.ui.layout_size = if id == "21" {
@@ -332,8 +335,8 @@ fn setup(app: &mut YaacApp, id: &str) {
         return;
     }
     match id {
-        "01" | "10" => {
-            let k = if id == "01" { threads::fix() } else { threads::handshake() };
+        "01" | "01e" | "10" => {
+            let k = if id != "10" { threads::fix() } else { threads::handshake() };
             app.open(&k, None);
         }
         "02" | "27" | "28" => {
@@ -646,6 +649,12 @@ git diff --check
             app.open(&threads::fix(), None);
             let cp = crate::sidebar::create_project_for(app, &"devbox".into(), "~/scratch/spike-7");
             app.ui.create_project = Some(cp);
+        }
+        "30a" => {
+            play(app, Scene::ModeChange);
+            let root = threads::orchestrator();
+            app.open(&root, None);
+            app.client.choose_mode(ModeTarget::Thread(root), "bypass".into());
         }
         "30" => {
             let fix = threads::fix();

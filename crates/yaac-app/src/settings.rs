@@ -204,8 +204,36 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
                     Page::Window => window(ui, app),
                     Page::Keyboard => crate::keyboard::page(ui, app),
                     Page::Terminal => terminal(ui, app),
+                    Page::Approvals => {
+                        ui.heading("Explain commands with");
+                        let options = yaac_core::settings::explanation_choices(&app.client.state);
+                        let mut models = app.client.state.hub.explanations.clone();
+                        for (label, slot) in [("Main model", &mut models.main), ("Fallback model", &mut models.fallback)] {
+                            let selected = options.iter().find(|(v, _)| Some(v) == slot.as_ref()).map(|(_, name)| name.clone())
+                                .or_else(|| slot.as_ref().map(|v| format!("{} · {}", v.instance, v.model)));
+                            egui::ComboBox::from_label(label).selected_text(selected.as_deref().unwrap_or("None")).show_ui(ui, |ui| {
+                                ui.selectable_value(slot, None, "None");
+                                for (v, name) in &options { ui.selectable_value(slot, Some(v.clone()), name); }
+                            });
+                        }
+                        if models != app.client.state.hub.explanations { app.client.set_explanations(models); }
+                    }
+                    Page::Notifications => {
+                        use yaac_protocol::attach::NotificationSound;
+                        title_row(ui, "Notifications", |_| {});
+                        let mut prefs = app.client.state.hub.notifications;
+                        ui.checkbox(&mut prefs.enabled, "Show desktop request notifications");
+                        ui.checkbox(&mut prefs.include_questions, "Include questions");
+                        ui.checkbox(&mut prefs.sound, "Play a sound");
+                        ui.horizontal(|ui| {
+                            ui.label("Sound");
+                            ui.radio_value(&mut prefs.sound_choice, NotificationSound::Reminder, "Reminder");
+                            ui.radio_value(&mut prefs.sound_choice, NotificationSound::Default, "Default");
+                        });
+                        if prefs != app.client.state.hub.notifications { app.client.set_notifications(prefs); }
+                    }
                     Page::Advanced => advanced(ui, app, actions),
-                    Page::About => about(ui, app),
+                    Page::About => about(ui, app, actions),
                 }
             });
         });
@@ -1404,7 +1432,7 @@ const REPOSITORY: &str = "https://github.com/lelemm/yaac";
 
 /// About: this YAAC's version and build (D135), the hub's, the latest release, and every
 /// component checked as YAAC started.
-fn about(ui: &mut egui::Ui, app: &mut YaacApp) {
+fn about(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     let p = app.p;
     title_row(ui, "About", |_| {});
     ui.add_space(6.0);
@@ -1428,7 +1456,17 @@ fn about(ui: &mut egui::Ui, app: &mut YaacApp) {
     });
     // Every component against this window's build (D135): checked as YAAC starts — the hub at
     // `hub/hello`, each target's yaacd when the hub connects to it.
-    widgets::heading(ui, "Components");
+    ui.add_space(18.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Components").font(theme::bold(size::SECTION)));
+        if widgets::plain(ui, &p, "Refresh", None)
+            .on_hover_text("Check target connections and the latest release now")
+            .clicked()
+        {
+            actions.push(Action::RefreshComponents);
+        }
+    });
+    ui.add_space(6.0);
     egui::Grid::new("components").num_columns(3).spacing(vec2(18.0, 6.0)).show(ui, |ui| {
         for c in yaac_core::components::components(&app.client.state, crate::BUILD) {
             ui.label(widgets::secondary(&c.name, &p));
@@ -1449,7 +1487,9 @@ fn about(ui: &mut egui::Ui, app: &mut YaacApp) {
                 ComponentStatus::Outdated(why) => ui.label(RichText::new(why).color(p.failed)),
                 ComponentStatus::Unknown(why) => ui.label(widgets::secondary(why, &p)),
             };
-            if let Some(checked_at) = app.updater.last_checked {
+            if app.updater.refreshing {
+                ui.label(widgets::secondary("Checking for a release…", &p));
+            } else if let Some(checked_at) = app.updater.last_checked {
                 let local = chrono::DateTime::<chrono::Local>::from(checked_at);
                 ui.label(widgets::secondary(format!("Last checked {}", local.format("%Y-%m-%d %H:%M")), &p));
             }

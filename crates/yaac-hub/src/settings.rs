@@ -44,6 +44,10 @@ pub struct HubSettings {
     /// How long the hub waits, idle and with no window attached, before exiting.
     #[serde(default = "default_idle_exit_secs")]
     pub idle_exit_secs: u64,
+    #[serde(default)]
+    pub explanations: yaac_protocol::ExplanationModels,
+    #[serde(default)]
+    pub notifications: yaac_protocol::attach::NotificationSettings,
     /// Fields this build does not know.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -62,7 +66,7 @@ fn default_idle_exit_secs() -> u64 {
 
 impl Default for HubSettings {
     fn default() -> Self {
-        Self { always: true, idle_exit_secs: DEFAULT_IDLE_EXIT_SECS, extra: Map::new() }
+        Self { always: true, idle_exit_secs: DEFAULT_IDLE_EXIT_SECS, explanations: Default::default(), notifications: Default::default(), extra: Map::new() }
     }
 }
 

@@ -9,6 +9,7 @@
 // one it does not own, that others can read, or that is a link. Bytes arrive on a data
 // stream under credit; credit is returned only once bytes are on disk.
 
+import { artifactFormat } from "./artifact-format.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -120,9 +121,20 @@ export class UploadStore {
   storeToolImage(bytes: Buffer, label: string): { uploadId: string; name: string } | null {
     const mediaType = sniffMediaType(bytes);
     if (!mediaType?.startsWith("image/")) return null;
-    this.prepare();
+    return this.storeSnapshot(bytes, label, mediaType, "tool");
+  }
+
+  storeArtifact(bytes: Buffer, name: string, accept: (uploadId: string) => void): { uploadId: string; name: string } {
+    const ext = path.extname(name).slice(1).toLowerCase();
+    const type = artifactFormat(ext, bytes, sniffMediaType(bytes));
+    return this.storeSnapshot(bytes, sanitiseName(name), type, `artifact_${ext}`, accept);
+  }
+
+  private storeSnapshot(bytes: Buffer, label: string, mediaType: string, kind: string, accept?: (uploadId: string) => void) {
     const sha256 = sha256Hex(bytes);
-    const uploadId = `u_tool_${sha256}`;
+    const uploadId = `u_${kind}_${sha256}`;
+    accept?.(uploadId);
+    this.prepare();
     const blob = this.blobPath(sha256);
     if (!fs.existsSync(blob)) {
       const temp = path.join(this.root, "partial", randomId("tool_", 12));

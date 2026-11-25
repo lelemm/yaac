@@ -550,3 +550,30 @@ fn secret_answers_are_never_written_to_the_cache() {
     assert!(!has("hunter2"), "the secret answer reached the cache file");
     assert!(has("Ada"), "non-secret answers are cached");
 }
+
+#[test]
+fn confirmed_modes_reach_online_and_reconnected_workers() {
+    let home = Home::new();
+    let first = FakeDaemon::new("alpha");
+    let second = FakeDaemon::new("beta");
+    home.fakes.add(&first);
+    home.fakes.add(&second);
+    let hub = home.start();
+    let c = hub.client();
+    let a = c.add_target("alpha").id;
+    let b = c.add_target("beta").id;
+    c.wait_status(&a, ConnectionStatus::Connected);
+    c.wait_status(&b, ConnectionStatus::Connected);
+    second.set_offline(true);
+    c.wait_status(&b, ConnectionStatus::Offline);
+    let change = |thread: &str| json!({ "threadId": thread, "opId": format!("change-{thread}"), "sourceTarget": a,
+        "sourceInstance": "instance", "sourceTitle": "Coordinator", "mode": {"id": "ask", "displayName":"Ask"}, "allowInterrupt": false });
+    c.routed(&a, "thread/setMode", change("root")).unwrap();
+    assert_eq!(c.routed(&b, "thread/setMode", change("worker")).unwrap()["pending"], true);
+    assert!(second.mode_changes().is_empty());
+    second.set_offline(false);
+    wait_until("confirmed change reached worker", || second.mode_changes().len() == 1);
+    assert_eq!(second.mode_changes()[0].op_id.as_str(), "change-worker");
+    assert_eq!(first.mode_changes()[0].thread_id.as_str(), "root");
+    hub.shutdown();
+}

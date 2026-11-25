@@ -84,7 +84,8 @@ fn parse_with(text: &str, typed: bool) -> Vec<Block> {
                 Event::Text(t) => buf.push_str(&t),
                 Event::End(TagEnd::CodeBlock) => {
                     if let Some((lang, text)) = code.take() {
-                        out.push(Block::Code { lang, text: text.trim_end_matches('\n').to_owned() });
+                        let text = if crate::mermaid::language(&lang) { text } else { text.trim_end_matches('\n').to_owned() };
+                        out.push(Block::Code { lang, text });
                     }
                 }
                 _ => {}
@@ -507,6 +508,10 @@ pub(crate) fn show(ui: &mut egui::Ui, sc: &mut SelCx<'_>, blocks: &[&Block], p: 
             }
             Block::Rule => {
                 ui.add_space(4.0);
+            }
+            Block::Code { lang, text } if crate::mermaid::language(lang) => {
+                sc.diagram(text);
+                crate::mermaid::show(ui, text, p.dark);
             }
             Block::Code { text, .. } => code_block(ui, sc, text, p),
             Block::Table { head, rows } => table(ui, sc, head, rows, p, color, &font, width, n),

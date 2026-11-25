@@ -37,6 +37,7 @@ public sealed class TranscriptRowView : UserControl
     private TranscriptActivity? activityRow;
     private TranscriptShell? shellBlock;
     private Expander? detailExpander;
+    private MermaidDiagram? diagram;
     private JsonElement previous;
     private JsonElement escape;
     private bool card;
@@ -123,8 +124,8 @@ public sealed class TranscriptRowView : UserControl
             Refresh();
             return;
         }
-        content.Children.Add(title);
         content.Children.Add(taskHeader);
+        content.Children.Add(title);
         content.Children.Add(body);
         content.Children.Add(handoffRule);
         content.Children.Add(cursor);
@@ -159,6 +160,7 @@ public sealed class TranscriptRowView : UserControl
         previous = default;
         escape = default;
         content.Children.Clear();
+        diagram = null;
         activityRow?.DetachDetails(details);
         activityRow = null;
         shellBlock = null;
@@ -195,14 +197,14 @@ public sealed class TranscriptRowView : UserControl
             return;
         }
         var user = kind == "user";
-        card = kind is "request" or "approval" or "permission" or "question" or "form" or "budget";
+        card = kind is "artifact" or "request" or "approval" or "permission" or "question" or "form" or "budget";
         var activity = kind is "activity" or "tool" or "file" or "call" or "notice" or "worked" or "changes";
         var tone = TranscriptColors.Tone(data.Value("tone").Text(), activity ? TranscriptColors.Muted : TranscriptColors.Text);
 
         plate.HorizontalAlignment = user ? HorizontalAlignment.Right : HorizontalAlignment.Stretch;
         plate.Margin = user ? new Thickness(42, 0, 0, 0) : new Thickness(0);
         plate.Background = user ? TranscriptColors.User : card || kind == "task" ? TranscriptColors.Panel : Brushes.Transparent;
-        plate.BorderBrush = card ? TranscriptColors.Tone(data.Value("tone").Text(), TranscriptColors.Warning) : TranscriptColors.Rule;
+        plate.BorderBrush = kind == "artifact" ? TranscriptColors.Rule : card ? TranscriptColors.Tone(data.Value("tone").Text(), TranscriptColors.Warning) : TranscriptColors.Rule;
         plate.BorderThickness = card ? new Thickness(3, 0, 0, 0) : user || kind == "task" ? new Thickness(1) : new Thickness(0);
         plate.Padding = user || card || kind == "task" ? new Thickness(12, 8, 12, 8) : new Thickness(2, activity ? 2 : 3, 2, 0);
         Margin = new Thickness(0, 0, 0, activityRow is null ? 9 : 0);
@@ -212,7 +214,7 @@ public sealed class TranscriptRowView : UserControl
         handoffRule.Visibility = kind == "handoff" ? Visibility.Visible : Visibility.Collapsed;
         if (!Same("taskPeer", data))
             UpdateTaskHeader(data.Value("taskPeer"));
-        taskHeader.Visibility = kind == "task" ? Visibility.Visible : Visibility.Collapsed;
+        taskHeader.Visibility = data.Value("taskPeer").ValueKind == JsonValueKind.Object ? Visibility.Visible : Visibility.Collapsed;
         var activityWasOpen = activityRow?.IsExpanded == true;
         activityRow?.Render(data);
         var format = data.Value("markdown").Flag(kind is "agent" or "task" or "handoff") ? "markdown" : "text";
@@ -221,6 +223,12 @@ public sealed class TranscriptRowView : UserControl
         body.Show(data.Value("text").Text(), format, data.Value("textBlocks"));
         cursor.Visibility = data.Value("streaming").Flag() ? Visibility.Visible : Visibility.Collapsed;
 
+        if (kind == "artifact" && !Same("mermaidSource", data))
+        {
+            if (diagram is not null) content.Children.Remove(diagram);
+            diagram = data.Value("mermaidSource").OptionalText() is { } source ? new MermaidDiagram(source) : null;
+            if (diagram is not null) content.Children.Insert(content.Children.IndexOf(body) + 1, diagram);
+        }
         var statusText = data.Value("status").OptionalText();
         var statusTone = TranscriptColors.Tone(data.Value("tone").Text(), TranscriptColors.Muted);
         showStatusStamp = user && statusText is not null && !data.Value("actions").Elements().Any();
@@ -278,7 +286,7 @@ public sealed class TranscriptRowView : UserControl
         taskHeader.Children.Clear();
         if (peer.ValueKind != JsonValueKind.Object)
             return;
-        var from = Label("From", color: TranscriptColors.Muted);
+        var from = Label(peer.Value("heading").OptionalText() ?? "From", color: TranscriptColors.Muted);
         from.Margin = new Thickness(0, 0, 5, 0);
         taskHeader.Children.Add(from);
         if (peer.Value("enabled").Flag())
@@ -485,18 +493,20 @@ public sealed class TranscriptRowView : UserControl
             if (slot.Host.Content is StackPanel layout)
                 layout.Children.Remove(text);
             slot.Host.Content = null;
-            expander = Disclosure(label, "part:" + slot.Id, part.Value("expanded").Flag(kind == "code"), text, Show);
+            expander = Disclosure(label, "part:" + slot.Id, part.Value("expanded").Flag(kind == "code"), text, Show, part.Value("preview").OptionalText());
             slot.Host.Content = expander;
         }
         else
         {
-            expander.Header = label;
+            expander.Header = expander.IsExpanded ? label : PreviewHeader(label, part.Value("preview").OptionalText());
         }
         if (expander.IsExpanded)
             Show();
     }
 
-    private Expander Disclosure(string label, string key, bool expanded, FrameworkElement element, Action show)
+    private static string PreviewHeader(string label, string? preview) => preview is null ? label : $"{label}   {preview}";
+
+    private Expander Disclosure(string label, string key, bool expanded, FrameworkElement element, Action show, string? preview = null)
     {
         var saved = state!;
         var expander = new Expander
@@ -506,17 +516,22 @@ public sealed class TranscriptRowView : UserControl
             Content = element,
             IsExpanded = saved.Expanded.GetValueOrDefault(key, expanded),
         };
+        if (!expander.IsExpanded) expander.Header = PreviewHeader(label, preview);
         expander.Expanded += (_, e) =>
         {
             if (e.OriginalSource != expander)
                 return;
+            if (preview is not null) expander.Header = "Hide command";
             saved.Expanded[key] = true;
             show();
         };
         expander.Collapsed += (_, e) =>
         {
             if (e.OriginalSource == expander)
+            {
+                if (preview is not null) expander.Header = PreviewHeader(label, preview);
                 saved.Expanded[key] = false;
+            }
         };
         return expander;
     }

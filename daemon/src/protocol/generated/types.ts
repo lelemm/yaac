@@ -203,6 +203,19 @@ export interface ApprovalDecision {
 }
 
 /**
+ * An isolated, read-only description of untrusted tool input.
+ */
+export interface ApprovalExplainParams {
+  input: string;
+  models: ExplanationModels;
+  tool: string;
+}
+
+export interface ApprovalExplainResult {
+  text?: string | null;
+}
+
+/**
  * What an approval is for.
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
@@ -225,6 +238,10 @@ export interface ApprovalRequest {
    * The command, for a command approval.
    */
   command?: string | null;
+  /**
+   * A short, model-generated description of the command's likely effects.
+   */
+  commandExplanation?: string | null;
   /**
    * The directory it would run in.
    */
@@ -659,7 +676,7 @@ export interface BrowserTypeParams {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -1034,6 +1051,22 @@ export interface ErrorObject {
    * Human-readable; shown as-is.
    */
   message: string;
+}
+
+/**
+ * One live model selection for optional explanations.
+ */
+export interface ExplanationModel {
+  instance: InstanceId;
+  model: ModelId;
+}
+
+/**
+ * Shared window preferences, stored in hub settings.
+ */
+export interface ExplanationModels {
+  fallback?: ExplanationModel | null;
+  main?: ExplanationModel | null;
 }
 
 /**
@@ -1639,6 +1672,28 @@ export interface FsTreeResult {
    * The listing was cut short.
    */
   truncated: boolean;
+}
+
+/**
+ * An immutable generated document or image published by this thread (P358).
+ */
+export interface GeneratedArtifact {
+  /**
+   * Suggested filename on download.
+   */
+  name: string;
+  /**
+   * Byte size of the published snapshot.
+   */
+  size: number;
+  /**
+   * Display title.
+   */
+  title: string;
+  /**
+   * Content-addressed snapshot, readable with upload/read on the originating target.
+   */
+  uploadId: UploadId;
 }
 
 /**
@@ -3543,6 +3598,10 @@ export type ProtocolVersion = number;
  */
 export interface ProviderDescriptor {
   /**
+   * The model this instance uses for command approval explanations, if configured.
+   */
+  approvalExplanationModel?: ModelId | null;
+  /**
    * The backend in use.
    */
   backend: BackendKind;
@@ -3667,6 +3726,10 @@ export interface ProviderInstanceAddParams {
  */
 export interface ProviderInstanceConfig {
   /**
+   * Model selected for command approval explanations on this instance.
+   */
+  approvalExplanationModel?: ModelId | null;
+  /**
    * Backend preference.
    */
   backend: BackendPreference;
@@ -3769,6 +3832,10 @@ export interface ProviderInstanceSetModelEnabledParams {
  * erases settings it does not know about.
  */
 export interface ProviderInstanceUpdateParams {
+  /**
+   * New explanation model. Absent leaves it unchanged and null clears it.
+   */
+  approvalExplanationModel?: ModelId | null;
   /**
    * New backend preference.
    */
@@ -5738,6 +5805,40 @@ export interface ThreadRenameParams {
 }
 
 /**
+ * A confirmed mode change for one destination in an orchestration.
+ */
+export interface ThreadSetModeParams {
+  /**
+   * The confirmation identified this recipient as needing an interruption.
+   */
+  allowInterrupt: boolean;
+  /**
+   * Mode selected by the user.
+   */
+  mode: ModeInfo;
+  /**
+   * Operation identity, retained across handoff.
+   */
+  opId: OpId;
+  /**
+   * Source instance on that target.
+   */
+  sourceInstance: InstanceId;
+  /**
+   * Target and provider that described the chosen mode.
+   */
+  sourceTarget: TargetId;
+  /**
+   * Source conversation title for the transcript.
+   */
+  sourceTitle: string;
+  /**
+   * Destination conversation.
+   */
+  threadId: ThreadId;
+}
+
+/**
  * `thread/start`: create a thread **and** send its first message, as one operation.
  */
 export interface ThreadStartParams {
@@ -5912,6 +6013,10 @@ export interface ThreadSummary {
    */
   archived?: boolean;
   /**
+   * Published documents and images. Ancestors project cards from this one record.
+   */
+  artifacts?: GeneratedArtifact[] | null;
+  /**
    * Branch.
    */
   branch?: string | null;
@@ -5990,6 +6095,10 @@ export interface ThreadSummary {
    */
   peers?: number;
   /**
+   * The mode reported for this thread, including a durable next-turn selection.
+   */
+  permissionMode?: ModeId | null;
+  /**
    * Where the user moved the thread in YAAC (`thread/move`, D144). Absent: it is listed
    * where its folder puts it.
    */
@@ -6037,6 +6146,10 @@ export interface ThreadSummary {
    * Harness title, or first prompt, or user override.
    */
   title: string;
+  /**
+   * Whether the thread itself has a running turn, including when waiting for input.
+   */
+  turnActive?: boolean | null;
   /**
    * Ultrafast mode is active for this session.
    */
@@ -6439,7 +6552,7 @@ export interface TurnInterruptParams {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type TurnOrigin = "user" | "mesh" | "external";
+export type TurnOrigin = "user" | "mesh" | "yaac" | "external";
 
 /**
  * `turn/queueCancel`: remove a queued message before it is delivered.

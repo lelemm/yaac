@@ -127,9 +127,8 @@
                     <Thickness x:Key="TextControlBorderThemeThicknessFocused">0</Thickness>
                   </TextBox.Resources>
                 </TextBox>
-                <views:ComposerMarkdown x:Name="Markdown" IsHitTestVisible="False" Focusable="False"
-                                        InputBrush="{DynamicResource YaacInput}" TextBrush="{DynamicResource YaacText}"
-                                        MarkerBrush="{DynamicResource YaacMuted}" CodeBrush="{DynamicResource YaacRaised}" />
+                <views:ComposerMarkdown x:Name="Markdown" Panel.ZIndex="-1" IsHitTestVisible="False" Focusable="False"
+                                        AccentBrush="{DynamicResource YaacMuted}" CodeBrush="{DynamicResource YaacRaised}" />
                 <Popup x:Name="FilePopup" Placement="Top" PlacementTarget="{Binding ElementName=Editor}">
                   <Border Background="{DynamicResource YaacRaised}" BorderBrush="{DynamicResource YaacMuted}"
                           BorderThickness="1" CornerRadius="5" Padding="5">

@@ -418,7 +418,7 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
             if let Some((key, request, d)) = picked {
                 let verb = if cmd == Cmd::Deny { "Denied" } else { "Allowed" };
                 actions.push(Action::Respond {
-                    key,
+                    viewing: thread.clone().unwrap_or_else(|| key.clone()), key,
                     request,
                     response: yaac_protocol::RequestResponse::Approval(yaac_protocol::ApprovalAnswer { decision: d.id.clone(), reason: None }),
                     summary: format!("{} ({verb})", d.label),
@@ -426,16 +426,9 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
             }
         }
         Cmd::AnswerQuestion => {
-            if let Some(k) = &thread
-                && let Some(t) = st.transcripts.get(k)
-            {
-                let q = t.items().iter().rev().find(|i| {
-                    matches!(&i.body, yaac_protocol::ItemBody::Request(r) if r.state == yaac_protocol::RequestState::Pending && matches!(r.body, yaac_protocol::RequestBody::Question(_)))
-                });
-                if let Some(q) = q {
-                    app.ui.scroll_to = Some(q.id.clone());
-                    app.ui.focus_card = Some(q.id.clone());
-                }
+            if let Some(id) = with_ctx(app, None, |ctx| cmds::question_card(ctx)) {
+                app.ui.scroll_to = Some(id.clone());
+                app.ui.focus_card = Some(id);
             }
         }
         Cmd::OpenPr | Cmd::CopyPrLink => {

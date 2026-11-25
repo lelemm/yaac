@@ -716,3 +716,32 @@ fn a_thread_of_another_store_is_read_only_with_the_reason() {
     let h = yaac_core::header::header(&c.state, &map, &fix).expect("header");
     assert!(h.banners.contains(&yaac_core::header::Banner::StoreAway { text: why }));
 }
+
+#[test]
+fn subtree_confirmation_snapshots_recipients_on_both_directions() {
+    let (mut c, hub) = boot();
+    hub.play(Scene::ModeChange);
+    settle(&mut c, &hub);
+    let root = threads::orchestrator();
+    c.open(&root);
+    settle(&mut c, &hub);
+    let target = ModeTarget::Thread(root.clone());
+    c.choose_mode(target.clone(), "bypass".into());
+    let p = c.state.mode_confirm.as_ref().unwrap();
+    assert!(p.workers.iter().any(|r| r.key.target != root.target));
+    let view = yaac_core::mode_confirm::view(&c.state, p);
+    assert_eq!(view.confirm_label, "Only this thread");
+    let interrupted: Vec<_> = p.workers.iter().filter(|r| r.interrupt).map(|r| r.key.clone()).collect();
+    assert_eq!(interrupted, vec![threads::ci()]);
+    assert!(view.lines.iter().any(|l| l.contains("CI integration") && l.contains("resumed")));
+    let destinations = p.workers.len() + 1;
+    c.confirm_mode_scope(true);
+    settle(&mut c, &hub);
+    assert_eq!(hub.requests().iter().filter(|(_, m, _)| m == "thread/setMode").count(), destinations);
+    c.cancel_mode();
+    c.state.next_settings.entry(root.clone()).or_default().mode = Some("bypass".into());
+    c.choose_mode(target, "ask".into());
+    assert!(!c.state.mode_confirm.as_ref().unwrap().workers.is_empty());
+    c.cancel_mode();
+    assert_eq!(c.state.next_settings[&root].mode.as_ref().unwrap().as_str(), "bypass");
+}

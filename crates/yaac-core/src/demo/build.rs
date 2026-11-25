@@ -160,6 +160,7 @@ pub(crate) fn approval(request: &str, command: &str, cwd: &str, decisions: Vec<A
             approval_kind: ApprovalKind::Command,
             title: "Run command".to_owned(),
             command: Some(command.to_owned()),
+            command_explanation: None,
             cwd: Some(TargetPath::new(cwd)),
             changes: vec![],
             scope: None,

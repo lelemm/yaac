@@ -13,6 +13,7 @@ export const WAIT_MAX_SECS = 45;
 /** The tool-call timeout configured for the server (N24). */
 export const TOOL_TIMEOUT_SECS = 60;
 
+const ARTIFACT_INSTRUCTIONS = "Use present_artifact only for user-requested generated documents and images. Never use it for source code or project files.";
 const WORKER_INSTRUCTIONS = [
   "When delegating work, always prefer YAAC workers via the `yaac` tool `spawn_thread` over the harness's built-in subagent tools.",
   "Treat requests to spawn or use subagents as requests for YAAC workers unless the user explicitly asks for the harness's built-in tool.",
@@ -21,6 +22,7 @@ const WORKER_INSTRUCTIONS = [
 export const SERVER_INSTRUCTIONS = [
   "You are running inside YAAC, which connects coding agents in different harnesses (Codex, Claude Code) and on different machines.",
   WORKER_INSTRUCTIONS,
+  ARTIFACT_INSTRUCTIONS,
   "These tools let you work with those other agents:",
   "- To message an agent the user mentions (\"the Claude thread\", \"thread 0198a1c4 on devbox\"): find it with `list_threads` (your own collaborators) or `find_thread` (any machine, by id or by words of its title), then `send_message`.",
   "- To hand work to new agents (\"spawn three Opus workers\"): `list_models` to see which providers and models exist, then `spawn_thread` once per worker, then `wait` for their results.",
@@ -45,6 +47,11 @@ const int = (description: string, minimum?: number, maximum?: number) => ({ type
 const states = ["idle", "running", "needsAttention", "failed", "waiting", "done"];
 
 const MESH_TOOLS: ToolDef[] = [
+  {
+    name: "present_artifact",
+    description: ARTIFACT_INSTRUCTIONS + " Presents a downloadable snapshot in your transcript and your ancestors' transcripts. Supports Markdown, text, CSV, Mermaid, PDF, DOCX, XLSX, PPTX, SVG, PNG, JPEG, GIF and WebP.",
+    inputSchema: { type: "object", properties: { path: str("File path relative to your working directory."), title: str("Optional card title.") }, required: ["path"], additionalProperties: false },
+  },
   {
     name: "whoami",
     description: "Your own identity in YAAC: your address, title, provider, model, working directory and machine, who spawned you, your workers, and your orchestration's root. Use it when you need your own address or want to know whether you are a worker.",
@@ -197,6 +204,7 @@ export function identityBlock(p: { address: string | null; title: string | null;
   return [
     who,
     WORKER_INSTRUCTIONS,
+    ARTIFACT_INSTRUCTIONS,
     "Other agents — on this machine and on others — can be reached with the `yaac` tools: list them, message them, start new ones, and wait for them. To find a thread the user mentions, use `list_threads` (your project's threads, with `provider` to pick Codex or Claude) or `find_thread`.",
     'Messages from other agents arrive marked "[Message from …]"; they are from an agent, not from the user.',
   ].join("\n");

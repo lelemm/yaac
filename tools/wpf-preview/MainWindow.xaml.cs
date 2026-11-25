@@ -47,6 +47,10 @@ public partial class MainWindow : Window
         SidebarPane.SettingsButton.Click += SettingsClicked;
         SidebarPane.ScenesButton.Click += ScenesClicked;
         TranscriptPane.Command += Send;
+        TranscriptPane.ObserveVisibleRequests(QueueVisiblePrRows);
+        TranscriptPreviewPane.ObserveVisibleRequests(QueueVisiblePrRows);
+        Activated += (_, _) => QueueVisiblePrRows();
+        Deactivated += (_, _) => QueueVisiblePrRows();
         ImageOverlay.CloseRequested += () => Send("image.close");
         ChatSurface.AddHandler(MouseLeftButtonDownEvent, new MouseButtonEventHandler(ChatBackgroundClicked),
             handledEventsToo: true);
@@ -276,6 +280,8 @@ public partial class MainWindow : Window
                     TranscriptPreview.Visibility = Visibility.Visible;
             }
         }
+        if (views.TryGetProperty("composerMessageHistory", out var composerHistory))
+            ComposerPane.SetMessageHistory(composerHistory);
         if (views.TryGetProperty("composer", out var composer))
         {
             ComposerPane.Render(composer);
@@ -297,7 +303,7 @@ public partial class MainWindow : Window
             Send("shell.focusSearchDone");
         }
         if (views.TryGetProperty("sidebar", out _) || views.TryGetProperty("agents", out _)
-            || views.TryGetProperty("shell", out _))
+            || views.TryGetProperty("shell", out _) || views.TryGetProperty("transcript", out _) || views.TryGetProperty("transcriptPreview", out _))
             QueueVisiblePrRows();
     }
 

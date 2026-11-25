@@ -301,6 +301,40 @@ fn file_text_box(ui: &mut egui::Ui, app: &mut YaacApp, draft: &DraftRef, text: &
     submit
 }
 
+fn message_history_keys(ui: &mut egui::Ui, app: &mut YaacApp, draft: &DraftRef, id: egui::Id, text: &mut String) {
+    let history = &app.ui.composer_history;
+    let mut index = app.ui.composer_history_walk.take().and_then(|(source, index)| {
+        (source == *draft && history.get(index).map(String::as_str) == Some(text.as_str())).then_some(index)
+    });
+    track_ime(ui, &mut app.ui.ime_composing);
+    if !app.ui.ime_composing && ui.memory(|m| m.has_focus(id)) && !history.is_empty() {
+        let mut changed = false;
+        ui.input_mut(|input| input.events.retain(|event| {
+            let egui::Event::Key { key, pressed: true, modifiers, .. } = event else { return true };
+            if !modifiers.is_none() {
+                return true;
+            }
+            let next = match (key, index) {
+                (Key::ArrowUp, None) if text.is_empty() => Some(0),
+                (Key::ArrowUp, Some(i)) => Some((i + 1).min(history.len() - 1)),
+                (Key::ArrowDown, Some(i)) => i.checked_sub(1),
+                _ => return true,
+            };
+            index = next;
+            *text = index.map_or_else(String::new, |i| history[i].clone());
+            changed = true;
+            false
+        }));
+        if changed {
+            let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            let end = egui::text::CCursor::new(text.chars().count());
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
+            state.store(ui.ctx(), id);
+        }
+    }
+    app.ui.composer_history_walk = index.map(|i| (draft.clone(), i));
+}
+
 /// The focus id of a composer's text box.
 pub(crate) fn composer_id(d: &DraftRef) -> egui::Id {
     match d {
@@ -713,6 +747,7 @@ const STACK_BELOW: f32 = 500.0;
 #[allow(clippy::too_many_arguments, reason = "the two layouts of one composer share it")]
 fn text_column(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, d: &DraftRef, id: egui::Id, placeholder: &str, dimmed: bool, editing: bool, actions: &mut Vec<Action>) -> Submit {
     if editing && let Some(edit) = app.client.state.queue_edits.get_mut(key) {
+        app.ui.composer_history_walk = None;
         let mut text = std::mem::take(&mut edit.text);
         let submit = file_text_box(ui, app, d, &mut text, id, "The queued message…", true);
         if let Some(edit) = app.client.state.queue_edits.get_mut(key) {
@@ -727,6 +762,7 @@ fn text_column(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, d: &DraftR
     let mut text = std::mem::take(&mut app.client.state.drafts.entry(key.clone()).or_default().text);
     let had = text.clone();
     if shell {
+        app.ui.composer_history_walk = None;
         let history = compose::shell_history(&app.client.state, key);
         let mut field = compose::shell_field(&text).to_owned();
         let leave = if dimmed { None } else { shell_keys(ui, id, &mut field, &history) };
@@ -741,6 +777,9 @@ fn text_column(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, d: &DraftR
         }
         app.client.state.drafts.entry(key.clone()).or_default().text = text;
         return submit;
+    }
+    if !dimmed {
+        message_history_keys(ui, app, d, id, &mut text);
     }
     if let Some(c) = &comp && !dimmed {
         skills_ui::keys(ui, &mut app.ui.skills, id, c, &mut text, &mut app.ui.focus_composer);
@@ -1350,6 +1389,7 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
                 ui.vertical(|ui| {
                     ui.set_width(ui.available_width() - 130.0);
                     let mut text = d.draft.text.clone();
+                    message_history_keys(ui, app, &dref, eid, &mut text);
                     if let Some(c) = &comp {
                         skills_ui::keys(ui, &mut app.ui.skills, eid, c, &mut text, &mut app.ui.focus_composer);
                     }
@@ -1696,5 +1736,39 @@ mod tests {
         run(&mut text, &mut picker, vec![]);
         let (sent, _) = run(&mut text, &mut picker, vec![key(Key::Enter, Modifiers::NONE)]);
         assert_eq!((sent, text.as_str()), (Submit::Send, "/home/me"));
+    }
+    #[test]
+    fn message_history_reaches_older_messages_then_returns_to_an_empty_composer() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        app.ui.composer_history = vec!["newest".into(), "oldest\nsecond line".into()].into();
+        let draft = DraftRef::New(1);
+        let id = composer_id(&draft);
+        let mut text = String::new();
+        let mut press = |text: &mut String, key, modifiers| {
+            let input = egui::RawInput { events: vec![egui::Event::Key {
+                key, physical_key: None, pressed: true, repeat: false, modifiers,
+            }], ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                ui.memory_mut(|memory| memory.request_focus(id));
+                message_history_keys(ui, &mut app, &draft, id, text);
+            });
+            output.textures_delta.clear();
+        };
+        press(&mut text, Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(text, "newest");
+        press(&mut text, Key::ArrowUp, Modifiers::NONE);
+        press(&mut text, Key::ArrowUp, Modifiers::NONE);
+        assert_eq!(text, "oldest\nsecond line");
+        press(&mut text, Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(text, "newest");
+        press(&mut text, Key::ArrowDown, Modifiers::NONE);
+        assert!(text.is_empty());
+        press(&mut text, Key::ArrowUp, Modifiers::SHIFT);
+        assert!(text.is_empty());
+        press(&mut text, Key::ArrowUp, Modifiers::NONE);
+        text.push('!');
+        press(&mut text, Key::ArrowDown, Modifiers::NONE);
+        assert_eq!(text, "newest!");
     }
 }

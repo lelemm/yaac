@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 yaac-protocol = { path = "../yaac-protocol" }
 yaac-transport = { path = "../yaac-transport" }
+chrono = { version = "0.4.42", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -22,6 +23,9 @@ zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
 
 [target.'cfg(windows)'.dependencies]
 yaac-winsys = { path = "../yaac-winsys" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4.11"
 
 [dev-dependencies]
 tokio = { version = "1.43", default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros"] }

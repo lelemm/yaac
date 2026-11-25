@@ -71,6 +71,7 @@ struct State {
     subscribes: Vec<(ThreadId, Subscribed)>,
     acks: Vec<ThreadAckParams>,
     deliver_calls: Vec<MeshMessage>,
+    mode_changes: Vec<yaac_protocol::ThreadSetModeParams>,
     mailbox: Vec<MeshMessage>,
     receipts: Vec<MeshReceiptParams>,
     rosters: Vec<MeshRosterParams>,
@@ -91,6 +92,7 @@ struct State {
     /// `provider/rateLimits`'s instances, and the `refresh` of each ask.
     rate_limits: Vec<Value>,
     rate_limit_asks: Vec<bool>,
+    request_answers: Vec<yaac_protocol::RequestRespondParams>,
 }
 
 /// A fake daemon. Cheap to clone; clones share state.
@@ -126,6 +128,7 @@ pub fn summary(id: &str) -> ThreadSummary {
         control_holder: None,
         forked_from: None,
         linked_children: None,
+        artifacts: None,
         spawned_by: None,
         reports_to_parent: None,
         root: None,
@@ -142,6 +145,8 @@ pub fn summary(id: &str) -> ThreadSummary {
         placement: None,
         subagent: None,
         unavailable: None,
+        permission_mode: None,
+        turn_active: None,
         running_commands: None,
     }
 }
@@ -275,6 +280,10 @@ impl FakeDaemon {
         }
     }
 
+    pub fn mode_changes(&self) -> Vec<yaac_protocol::ThreadSetModeParams> {
+        self.lock().mode_changes.clone()
+    }
+
     pub fn set_deliver_fails(&self, fails: bool) {
         self.lock().deliver_fails = fails;
     }
@@ -285,6 +294,10 @@ impl FakeDaemon {
 
     pub fn connects(&self) -> u64 {
         self.lock().connects
+    }
+
+    pub fn request_answers(&self) -> Vec<yaac_protocol::RequestRespondParams> {
+        self.lock().request_answers.clone()
     }
 
     pub fn subscribes(&self) -> Vec<(ThreadId, Subscribed)> {
@@ -619,6 +632,10 @@ impl FakeDaemon {
                 let result = ThreadReadResult { items: items[offset..end].to_vec(), position, cursor, newer_cursor: None, continues_turn: None, prompts: None, required_items: None, uploads: vec![], context: None };
                 Ok(serde_json::to_value(result).unwrap())
             }
+            names::REQUEST_RESPOND => {
+                s.request_answers.push(serde_json::from_value(params).map_err(bad)?);
+                Ok(json!({}))
+            }
             names::THREAD_ACK => {
                 let p: ThreadAckParams = serde_json::from_value(params).map_err(bad)?;
                 s.acks.push(p);
@@ -645,6 +662,10 @@ impl FakeDaemon {
                 Ok(json!({ "receipt": receipt }))
             }
             names::PROJECT_LIST => Ok(json!({ "projects": s.projects })),
+            names::THREAD_SET_MODE => {
+                s.mode_changes.push(serde_json::from_value(params).map_err(bad)?);
+                Ok(json!({}))
+            }
             names::THREAD_KEEP => {
                 let p: yaac_protocol::ThreadKeepParams = serde_json::from_value(params).map_err(bad)?;
                 s.keeps.push(p.thread_ids);

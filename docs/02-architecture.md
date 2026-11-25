@@ -32,6 +32,20 @@ The host runs up to two processes from one binary:
   only hides it in the system tray (D127, [07](07-ui.md#the-tray)); Quit in the tray menu ends
   the window process, never the hub.
 
+The hub owns desktop request notifications (P355). It retains a subscription on the existing
+target connection for each thread that needs attention. The journal supplies the request id,
+item id, offered decisions and resolution. Each window reports the request identities actually
+visible in its focused transcript through `hub/notifications/visible`, including copies with the
+originating worker's identity. Desktop actions return to the hub. Open uses the attach link
+to navigate to the item, starting the window if needed. A decision uses the originating
+thread's ordinary `request/respond` path with a fresh operation id. Notification preferences
+live in `hub.json` and apply while every window is closed. The hub keeps a single ordered list of unseen target, thread and request ids,
+and updates one native reminder as the list changes. The same WinRT tag/group or freedesktop
+replacement id survives the transition between a single approval and a fleet summary.
+The journal creation time orders known requests, with arrival order breaking ties.
+Every rendered set of actions carries a revision so a late click cannot answer a different
+request. Open consumes the oldest entry without answering it.
+
 Inside the window the UI thread never blocks on I/O: it reads an in-memory state snapshot and
 paints. Inside the hub one I/O thread owns every connection and decodes frames; anything that
 can block — SQLite writes, hashing a pasted file, decoding an image — runs on a small bounded
@@ -598,7 +612,9 @@ The start-up step runs in `yaac_app::run` before the window is created.
   worker fetches the release's `manifest.json` from GitHub's download host with the existing
   10 s timeouts. Requests carry a generic `User-Agent: yaac-updater` and no personal data.
   Failures are silent, and rate limits postpone the next check until GitHub's reset time or
-  retry delay if either is later than the normal interval. The hub never makes these
+  retry delay if either is later than the normal interval. **Refresh** in About checks
+  on demand using the same worker. It honors an active server retry delay and pauses for an
+  installer download or a verified installer waiting for restart. The hub never makes these
   requests. Targets get the new `yaacd` from the updated hub over their existing connection
   (invariant #1, [install](install.md#how-targets-get-the-new-daemon)).
 - **Downloading** the installer happens only on a click, on a worker; progress repaints are

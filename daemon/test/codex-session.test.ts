@@ -9,6 +9,62 @@ import { codexProviderFactory } from "../src/providers/codex/index.js";
 import { client, opId, readAll, startDaemon, text, tmpHome, until } from "./helpers.js";
 import { FakeCodex, fixture, type Step } from "./fixtures/codex/fake-codex.js";
 
+test("command approval is delivered immediately and updated from an ephemeral Codex turn", async () => {
+  const home = tmpHome("yaac-approval-explanation-");
+  const fake = await FakeCodex.start(path.join(home, "codex.sock"));
+  const model = "fixture-explanation-model";
+  const command = "printf 'hello\\n'";
+  const threadId = "normal-thread";
+  const explanationId = "ephemeral-explanation";
+  fake.handlers.set("account/read", () => ({ account: { type: "apiKey" } }));
+  fake.handlers.set("model/list", () => ({ data: [{ id: model, model, displayName: "Explanation fixture" }], nextCursor: null }));
+  fake.handlers.set("thread/list", () => ({ data: [], nextCursor: null }));
+  fake.handlers.set("thread/start", (params) => {
+    const thread = { id: params.ephemeral ? explanationId : threadId, status: { type: "idle" }, cwd: home,
+      ephemeral: params.ephemeral ?? false, threadSource: params.threadSource };
+    fake.push({ method: "thread/started", params: { thread } });
+    return { thread };
+  });
+  fake.handlers.set("turn/start", (params) => ({ turn: { id: `${params.threadId}-turn` } }));
+  fake.handlers.set("thread/unsubscribe", () => ({ status: "unsubscribed" }));
+  const daemon = await startDaemon(home, { factories: [codexProviderFactory], env: { YAAC_FAKE_PROVIDER: "0", YAAC_CODEX_PROVIDER: "0" } });
+  try {
+    const c = await client(daemon);
+    const { instance } = await c.request("providerInstance/add", {
+      opId: opId(), kind: "codex", endpoint: { socket: fake.socket },
+    });
+    const started = await c.request("thread/start", { opId: opId(), instance: instance.id, cwd: home, input: text("Say hello") });
+    await c.request("thread/subscribe", { threadId: started.threadId, epoch: 1, afterSeq: 0 });
+    fake.push({ id: 123, method: "item/commandExecution/requestApproval", params: {
+      threadId, turnId: started.turnId, itemId: "command", command, cwd: home,
+    } });
+    const first = await c.waitEvent((entry) => entry.event.type === "itemStarted" &&
+      entry.event.item.kind === "request", "approval before explanation");
+    const item = (first.event as any).item;
+    assert.equal(item.title, "Run a command");
+    assert.equal(item.commandExplanation, undefined);
+    const explaining = c.request("approval/explain", { tool: "shell", input: command, models: { main: { instance: instance.id, model } } });
+    const start = await until(() => fake.requests("turn/start").find((entry) => entry.params.threadId === explanationId),
+      "ephemeral turn start");
+    assert.equal(JSON.parse(start.params.input[0].text).input, command);
+    const explainStart = fake.requests("thread/start").find((entry) => entry.params.ephemeral)!;
+    assert.equal(explainStart.params.model, model);
+    assert.equal(explainStart.params.sandbox, "read-only");
+    fake.push({ method: "item/completed", params: { threadId: explanationId,
+      item: { id: "text", type: "agentMessage", text: "Prints hello followed by a newline." },
+    } });
+    fake.push({ method: "turn/completed", params: { threadId: explanationId,
+      turn: { id: `${explanationId}-turn`, status: "completed" },
+    } });
+    assert.deepEqual(await explaining, { text: "Prints hello followed by a newline." });
+    assert.equal(daemon.core.allThreads().length, 1, "the ephemeral turn never becomes a YAAC thread");
+    assert.equal(fake.replies.has(123), false, "only the user answers the original request");
+  } finally {
+    await daemon.stop("test");
+    await fake.close();
+  }
+});
+
 test("codex + session layer: a recorded turn with an approval, journaled and answered over the protocol", async () => {
   const home = tmpHome("yaac-cxs-");
   const fake = await FakeCodex.start(path.join(home, "codex.sock"));

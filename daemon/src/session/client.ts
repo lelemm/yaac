@@ -223,6 +223,8 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.THREAD_DELETE:
         await core.threadDelete(this, p as never);
         return {};
+      case METHODS.THREAD_SET_MODE:
+        return core.threadSetMode(this, p as never);
       case METHODS.THREAD_COMPACT:
         return core.threadCompact(this, p as never);
       case METHODS.THREAD_TAKE_OVER:
@@ -235,6 +237,8 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.TURN_STEER:
         await core.turnSteer(this, p as never);
         return {};
+      case METHODS.APPROVAL_EXPLAIN:
+        return { text: await core.commandExplanations.explain(p as never) };
       case METHODS.REQUEST_RESPOND:
         await core.requestRespond(this, p as never);
         return {};

@@ -11,6 +11,8 @@ pub enum Action {
     Open {
         url: String,
         socks: Option<u16>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot: Option<std::path::PathBuf>,
     },
     Close,
     Shutdown,

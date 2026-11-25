@@ -177,6 +177,17 @@ impl BrowserHost {
         socks: Option<u16>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Tab {
+        self.open_document(url, socks, None, wake)
+    }
+
+    /// Opens a tab, optionally serving a host-prepared snapshot in this tab's own context.
+    pub fn open_document(
+        &mut self,
+        url: &str,
+        socks: Option<u16>,
+        snapshot: Option<std::path::PathBuf>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Tab {
         self.next += 1;
         let id = self.next;
         let (events, updates) = mpsc::channel();
@@ -235,6 +246,7 @@ impl BrowserHost {
             action: Action::Open {
                 url: url.into(),
                 socks,
+                snapshot,
             },
         });
         tab

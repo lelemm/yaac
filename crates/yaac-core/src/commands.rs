@@ -476,14 +476,30 @@ fn pending<'a>(ctx: &Ctx<'a>) -> Vec<&'a yaac_protocol::Item> {
     })
 }
 
+/// The question the user can navigate to in this chat, including its worker cards.
+pub fn question_card(ctx: &Ctx<'_>) -> Option<ItemId> {
+    let here = pending(ctx).into_iter().rev().find(|item| {
+        matches!(&item.body, ItemBody::Request(r) if matches!(r.body, yaac_protocol::RequestBody::Question(_)))
+    });
+    here.map(|item| item.id.clone()).or_else(|| {
+        crate::copies::pending(ctx.state, ctx.thread?).into_iter()
+            .find(|(worker, _, r)| ctx.state.may_answer(worker) && matches!(r.body, yaac_protocol::RequestBody::Question(_)))
+            .map(|(_, id, _)| id)
+    })
+}
+
 /// The decision of the focused card a request command picks: its id, label and whether one is
 /// there.
 pub fn card_decision(ctx: &Ctx<'_>, cmd: Cmd) -> Option<(ThreadKey, yaac_protocol::RequestId, yaac_protocol::ApprovalDecision)> {
     use yaac_protocol::{DecisionKind, RequestBody};
     let k = ctx.thread?;
     let id = ctx.focused_card?;
-    let item = pending(ctx).into_iter().find(|i| &i.id == id)?;
+    let copy = crate::copies::find(ctx.state, k, id);
+    let (k, id) = copy.as_ref().map_or((k, id), |c| (&c.worker, &c.item));
+    if !ctx.state.may_answer(k) { return None; }
+    let item = ctx.state.transcripts.get(k)?.item(id)?;
     let ItemBody::Request(r) = &item.body else { return None };
+    if r.state != RequestState::Pending { return None; }
     let RequestBody::Approval(a) = &r.body else { return None };
     let want: &[DecisionKind] = match cmd {
         Cmd::AllowOnce => &[DecisionKind::Allow],
@@ -660,14 +676,14 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
             Some(r) => when(r.fast.is_some_and(|speed| speed.offers_fast || speed.ultrafast_on), "This model has no fast mode"),
         },
         Cmd::AllowOnce | Cmd::AllowSession | Cmd::Deny => {
-            if pending(ctx).is_empty() {
+            if pending(ctx).is_empty() && ctx.thread.is_none_or(|k| crate::copies::pending(ctx.state, k).is_empty()) {
                 off("No request is waiting here")
             } else {
                 when(card_decision(ctx, cmd).is_some(), "Focus the request card first (Ctrl+J)")
             }
         }
         Cmd::AnswerQuestion => when(
-            pending(ctx).iter().any(|i| matches!(&i.body, ItemBody::Request(r) if matches!(r.body, yaac_protocol::RequestBody::Question(_)))),
+            question_card(ctx).is_some(),
             "No question is waiting here",
         ),
         Cmd::OpenPr | Cmd::CopyPrLink => match key.as_ref().and_then(|k| crate::pr::badge_of(st, k)) {

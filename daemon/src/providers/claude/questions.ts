@@ -120,7 +120,7 @@ export function approvalRequest(ctx: ToolPermissionContext): RaisedRequest {
   }
   decisions.push({ id: "deny", label: "Deny", kind: "deny", acceptsReason: true });
   decisions.push({ id: "abort", label: "Deny and stop", kind: "abort", acceptsReason: true });
-  const title = ctx.title ?? (command ? `Run \`${command}\`` : `${ctx.displayName ?? toolName}`);
+  const title = approvalKind === "command" ? "Run a command" : ctx.title ?? ctx.displayName ?? toolName;
   return {
     requestKind: "approval",
     approvalKind,

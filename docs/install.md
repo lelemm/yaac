@@ -149,6 +149,8 @@ with a numeric build id checks for updates. Development builds leave the updater
    and HTTP failures are shown only in Settings → About → Components. A failed check keeps
    any existing update offer. After a rate limit the worker waits for the latest of the
    regular 10-minute interval, GitHub's reset time, and its `Retry-After` delay, when supplied.
+   Click **Refresh** next to **Components** to check before the regular interval. A server
+   retry delay or an installer already downloading or ready can defer that release check.
    The hub, command-line commands, and demo never make these checks.
 2. **A newer build** (`build` above this one's) puts an **update icon** in the title row
    beside Minimize in both WPF and egui: *"YAAC <version>+<id> is available · Download"*.
@@ -220,3 +222,19 @@ YAAC-Setup-<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /CURRENTUSER /DIR=<tmp>\a
 with its own hub pipe and window events (both follow the runtime directory). The Start menu
 shortcut and the *Apps & features* entry cannot be redirected: they are the real user's, and
 the uninstall removes them again.
+
+Setup registers the per-user AppUserModelID `YAAC.Desktop` and puts that identity on the
+Start menu shortcut. Windows uses it for the hub’s native request reminders and their
+notification preferences. Uninstall removes the registration.
+
+### Mermaid diagram runtime
+
+Windows Setup stages the pinned Mermaid JavaScript bundle, resvg WebAssembly converter and
+Ubuntu Sans faces in `runtime/mermaid`. Both windows use the private Node executable and the
+host's Edge or Chrome in a temporary headless profile. Each diagram is laid out locally with
+network loads disabled. The renderer uses native SVG labels and converts text to paths before
+rasterization. Additional scripts such as Han use available host fonts during conversion.
+
+For a Linux development checkout run `npm ci --prefix tools/mermaid`. Put Node 22 on PATH and
+install Chromium, or set `YAAC_MERMAID_BROWSER` to its executable. Run
+`node --test tools/mermaid/render.test.cjs` to check themes, exports and parser errors.

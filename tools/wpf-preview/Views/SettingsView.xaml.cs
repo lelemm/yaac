@@ -20,7 +20,7 @@ public partial class SettingsView : UserControl
     public bool IsRecordingShortcut => capturing is not null;
 
     private static readonly string[] PageIds =
-        ["targets", "providers", "appearance", "window", "keyboard", "terminal", "advanced", "about"];
+        ["targets", "providers", "approvals", "appearance", "window", "keyboard", "terminal", "advanced", "about"];
 
     private readonly Dictionary<string, Surface> surfaces = new(StringComparer.Ordinal);
     private Surface? current;

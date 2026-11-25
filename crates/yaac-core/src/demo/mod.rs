@@ -87,11 +87,13 @@ pub enum Scene {
     QueueWhileRunning,
     /// 130–133: the orchestrator with 30 related agents, most of them finished (D168).
     ManyAgents,
+    /// A running CI worker under search-service (P356).
+    ModeChange,
 }
 
 impl Scene {
     /// Every scene, for the demo menu.
-    pub const ALL: [Scene; 15] = [
+    pub const ALL: [Scene; 16] = [
         Scene::RequestStates,
         Scene::Permission,
         Scene::Notices,
@@ -107,6 +109,7 @@ impl Scene {
         Scene::HarnessSubagents,
         Scene::QueueWhileRunning,
         Scene::ManyAgents,
+        Scene::ModeChange,
     ];
 
     /// Menu label.
@@ -126,6 +129,7 @@ impl Scene {
             Scene::AgentCalls => "Agents talking to agents: spawn, message, wait, Claude Code subagents",
             Scene::HarnessSubagents => "Claude Code's own subagents under search-service",
             Scene::QueueWhileRunning => "billing-service is working; two messages wait in its queue",
+            Scene::ModeChange => "Permission modes across running workers",
             Scene::ManyAgents => "An orchestrator with 30 agents, most of them finished",
         }
     }
@@ -169,7 +173,9 @@ enum Pending {
 }
 
 struct Inner {
+    explanations: yaac_protocol::ExplanationModels,
     always: bool,
+    notifications: yaac_protocol::attach::NotificationSettings,
     fleet: Fleet,
     ready: VecDeque<Message>,
     scheduled: VecDeque<(u32, Pending)>,
@@ -233,7 +239,7 @@ impl DemoHub {
             Scenario::Fleet => Fleet::standard(now),
             Scenario::Fresh => Fleet::fresh(now),
         };
-        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new(), lose_next: false, terminals: terminal::Terminals::default() })) }
+        Self { inner: Rc::new(RefCell::new(Inner { explanations: Default::default(), always: true, notifications: Default::default(), fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new(), lose_next: false, terminals: terminal::Terminals::default() })) }
     }
 
     /// Every thread of the scenario — the window's "recently used" set, so their hints are
@@ -562,13 +568,15 @@ impl Inner {
                 }
                 self.ready.push_back(result(id, json!({ "views": [] })));
             }
-            crate::client::hub_names::VIEW_SHOWING => self.ready.push_back(result(id, json!({}))),
+            "hub/notifications/visible" | crate::client::hub_names::VIEW_SHOWING => self.ready.push_back(result(id, json!({}))),
             crate::client::hub_names::THREADS_FIND => self.find(id, &params),
             crate::client::hub_names::SETTINGS_GET | crate::client::hub_names::SETTINGS_UPDATE => {
+                if let Some(e) = params.get("explanations").and_then(|v| serde_json::from_value(v.clone()).ok()) { self.explanations = e; }
+                if let Some(n) = params.get("notifications").and_then(|v| serde_json::from_value(v.clone()).ok()) { self.notifications = n; }
                 if let Some(a) = params.get("always").and_then(Value::as_bool) {
                     self.always = a;
                 }
-                self.ready.push_back(result(id, json!({ "settings": { "always": self.always, "idleExitSecs": 300 } })));
+                self.ready.push_back(result(id, json!({ "settings": { "always": self.always, "explanations": self.explanations, "notifications":self.notifications, "idleExitSecs": 300 } })));
             }
             attach::names::TARGETS_ADD => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("new").to_owned();
@@ -1080,6 +1088,32 @@ impl Inner {
                 self.fleet.view.remove(&key);
                 self.ready.push_back(result(id, json!({})));
                 self.ready.push_back(routed(target, m::THREAD_REMOVED, json!({ "threadId": key.thread, "token": "tok-3" })));
+            }
+            m::THREAD_SET_MODE => {
+                let Ok(change) = serde_json::from_value::<yaac_protocol::ThreadSetModeParams>(p.clone()) else {
+                    self.ready.push_back(error(id, ErrorCode::InvalidParams, "invalid mode change"));
+                    return;
+                };
+                let key = ThreadKey::new(target.clone(), change.thread_id);
+                if self.fleet.targets.iter().any(|t| &t.id == target && t.state.status != ConnectionStatus::Connected) {
+                    self.ready.push_back(result(id, json!({ "pending": true })));
+                    return;
+                }
+                let Some(t) = self.fleet.threads.get(&key) else {
+                    self.ready.push_back(error(id, ErrorCode::ThreadNotFound, "no such thread"));
+                    return;
+                };
+                let same_instance = target == &change.source_target && t.summary.instance == change.source_instance;
+                let Some(mode) = crate::mode_confirm::equivalent(&change.mode, &t.effective.modes, same_instance) else {
+                    self.ready.push_back(error(id, ErrorCode::CapabilityMissing, "No equivalent permission mode is available."));
+                    return;
+                };
+                let mut effective = t.effective.clone();
+                effective.applied.mode = Some(mode.id.clone());
+                let line = format!("Mode changed to {} from {} by you", mode.display_name, change.source_title);
+                self.emit_now(&key, ThreadEvent::SettingsChanged(SettingsChangedEvent { effective }));
+                self.emit_now(&key, ThreadEvent::ItemCompleted(ItemEvent { item: done(p["opId"].as_str().unwrap_or_default(), "", notice(NoticeKind::Info, &line, None)) }));
+                self.ready.push_back(result(id, json!({})));
             }
             m::THREAD_UPDATE => {
                 let Some(key) = thread(p, "threadId") else { return };
@@ -1760,6 +1794,14 @@ impl Inner {
     fn play(&mut self, scene: Scene) {
         let base = self.fleet.base;
         match scene {
+            Scene::ModeChange => {
+                let ci = k(CI);
+                if let Some(t) = self.fleet.threads.get_mut(&ci) {
+                    t.summary.spawned_by = Some(k(SEARCH).address());
+                    t.summary.root = Some(k(ORCH).address());
+                    self.set_state_now(&ci, ThreadState::Running);
+                }
+            }
             Scene::AgentCalls => self.play_agent_calls(),
             Scene::RequestStates => {
                 let fix = k(FIX);

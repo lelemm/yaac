@@ -32,7 +32,7 @@ pub(crate) fn disclosure_row(ui: &mut Ui, p: &Palette, label: &str, open: bool, 
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
-fn text_size(ui: &Ui, text: &str, font: &egui::FontId) -> Vec2 {
+pub(crate) fn text_size(ui: &Ui, text: &str, font: &egui::FontId) -> Vec2 {
     ui.fonts_mut(|f| f.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE)).size()
 }
 

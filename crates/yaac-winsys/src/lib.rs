@@ -20,3 +20,8 @@ mod win;
 
 #[cfg(windows)]
 pub use win::*;
+
+#[cfg(windows)]
+mod toast;
+#[cfg(windows)]
+pub use toast::{RequestToast, ToastSound, request_toast};

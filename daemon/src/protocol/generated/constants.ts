@@ -4,6 +4,8 @@
 // Protocol constants and the method catalogue.
 
 import type {
+  ApprovalExplainParams,
+  ApprovalExplainResult,
   BrowserCallParams,
   BrowserCallResult,
   CommandLogsParams,
@@ -112,6 +114,7 @@ import type {
   ThreadReadResult,
   ThreadRemovedParams,
   ThreadRenameParams,
+  ThreadSetModeParams,
   ThreadStartParams,
   ThreadStartResult,
   ThreadSubscribeParams,
@@ -189,6 +192,7 @@ export const METHODS = {
   THREAD_ARCHIVE: "thread/archive",
   THREAD_DELETE: "thread/delete",
   THREAD_TAKE_OVER: "thread/takeOver",
+  THREAD_SET_MODE: "thread/setMode",
   THREAD_COMPACT: "thread/compact",
   THREAD_MOVE: "thread/move",
   THREAD_UPDATE: "thread/update",
@@ -208,6 +212,7 @@ export const METHODS = {
   COMMAND_STOP: "command/stop",
   TURN_QUEUE_CANCEL: "turn/queueCancel",
   TURN_QUEUE_PROMOTE: "turn/queuePromote",
+  APPROVAL_EXPLAIN: "approval/explain",
   REQUEST_RESPOND: "request/respond",
   TERMINAL_SHELLS: "terminal/shells",
   TERMINAL_OPEN: "terminal/open",
@@ -368,6 +373,8 @@ export interface RequestMap {
   "thread/delete": { params: ThreadDeleteParams; result: Empty };
   /** Continue here a thread another program holds (under `threadTakeOver`, D140): the */
   "thread/takeOver": { params: ThreadTakeOverParams; result: Empty };
+  /** Apply a confirmed permission mode to one recipient. */
+  "thread/setMode": { params: ThreadSetModeParams; result: Empty };
   /** Run the harness’s manual context compaction (under `compact`). */
   "thread/compact": { params: ThreadCompactParams; result: Empty };
   /** List a thread under another project or worktree on the same target (D144); with */
@@ -406,6 +413,8 @@ export interface RequestMap {
   "turn/queueCancel": { params: TurnQueueCancelParams; result: Empty };
   /** Send a queued user message now ("Send now"): out of the queue, with `now` mechanics. */
   "turn/queuePromote": { params: TurnQueueCancelParams; result: TurnStartResult };
+  /** Explain a proposed tool action without changing the approval. */
+  "approval/explain": { params: ApprovalExplainParams; result: ApprovalExplainResult };
   /** Answer a pending approval, question, or form. */
   "request/respond": { params: RequestRespondParams; result: Empty };
   /** Terminal shells. */
@@ -565,6 +574,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "thread/archive": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/delete": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/takeOver": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "thread/setMode": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/compact": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/move": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "thread/update": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
@@ -584,6 +594,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "command/stop": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "turn/queueCancel": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "turn/queuePromote": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "approval/explain": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "request/respond": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "terminal/shells": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/open": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },

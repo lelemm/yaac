@@ -377,6 +377,12 @@ enum Msg {
     Checked(Result<Found, CheckError>, Option<Pending>, SystemTime),
     Progress(u64, u64),
     Downloaded(Result<Pending, String>),
+    RefreshDeferred,
+}
+
+enum Request {
+    Refresh,
+    Download(Found),
 }
 
 /// The window's updater: what the title row and Settings show, and the workers behind them.
@@ -390,7 +396,8 @@ pub(crate) struct Updater {
     build: &'static str,
     tx: mpsc::Sender<Msg>,
     rx: mpsc::Receiver<Msg>,
-    downloads: Option<mpsc::Sender<Found>>,
+    requests: Option<mpsc::Sender<Request>>,
+    pub(crate) refreshing: bool,
 }
 
 impl std::fmt::Debug for Updater {
@@ -403,7 +410,7 @@ impl Updater {
     /// An updater that never checks, and why (shown in Components).
     pub(crate) fn off(why: &str) -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { cfg: None, check: ReleaseCheck::Off(why.to_owned()), last_checked: None, phase: Phase::Idle, notice: None, build: crate::BUILD, tx, rx, downloads: None }
+        Self { cfg: None, check: ReleaseCheck::Off(why.to_owned()), last_checked: None, phase: Phase::Idle, notice: None, build: crate::BUILD, tx, rx, requests: None, refreshing: false }
     }
 
     /// An updater for this build that will check `cfg` once the window is up ([`Self::start`]).
@@ -430,7 +437,7 @@ impl Updater {
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         let build = self.build;
-        let (downloads, requests) = mpsc::channel();
+        let (send, requests) = mpsc::channel();
         match std::thread::Builder::new().name("yaac-updater".into()).spawn(move || {
             run_worker(&cfg, build, &requests, now, |msg| {
                 if tx.send(msg).is_ok() {
@@ -438,7 +445,7 @@ impl Updater {
                 }
             });
         }) {
-            Ok(_) => self.downloads = Some(downloads),
+            Ok(_) => self.requests = Some(send),
             Err(e) => self.check = ReleaseCheck::Unavailable(format!("could not start the update worker: {e}")),
         }
     }
@@ -448,6 +455,7 @@ impl Updater {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::Checked(result, ready, checked_at) => {
+                    self.refreshing = false;
                     self.last_checked = Some(checked_at);
                     match result {
                         Ok(found) => {
@@ -475,16 +483,29 @@ impl Updater {
                         self.phase = Phase::Failed { found: found.clone(), message };
                     }
                 }
+                Msg::RefreshDeferred => self.refreshing = false,
             }
+        }
+    }
+
+    /// Check now on the existing worker, subject to the server's retry delay.
+    pub(crate) fn refresh(&mut self) {
+        if self.refreshing || matches!(self.phase, Phase::Downloading { .. } | Phase::Ready(_))
+            || matches!(self.check, ReleaseCheck::Checking)
+        {
+            return;
+        }
+        if let Some(send) = &self.requests {
+            self.refreshing = send.send(Request::Refresh).is_ok();
         }
     }
 
     /// Queues the offered installer on the updater worker.
     pub(crate) fn download(&mut self) {
-        let (Some(downloads), Phase::Available(found) | Phase::Failed { found, .. }) = (&self.downloads, &self.phase) else { return };
+        let (Some(requests), Phase::Available(found) | Phase::Failed { found, .. }) = (&self.requests, &self.phase) else { return };
         let found = found.clone();
         let total = found.manifest.installer().map_or(0, |i| i.size);
-        if downloads.send(found.clone()).is_ok() {
+        if requests.send(Request::Download(found.clone())).is_ok() {
             self.phase = Phase::Downloading { found, done: 0, total };
         } else {
             self.phase = Phase::Failed { found, message: "the update worker has stopped".into() };
@@ -508,7 +529,7 @@ impl Updater {
 fn run_worker(
     cfg: &Config,
     build: &str,
-    requests: &mpsc::Receiver<Found>,
+    requests: &mpsc::Receiver<Request>,
     mut now: impl FnMut() -> Instant,
     notify: impl Fn(Msg),
 ) {
@@ -518,14 +539,15 @@ fn run_worker(
     let mut rate_limit = Duration::ZERO;
     let mut pending = false;
     loop {
-        let schedule = next_check(build, now(), last_check, pending, rate_limit);
+        let time = now();
+        let schedule = next_check(build, time, last_check, pending, rate_limit);
         let request = match schedule {
             CheckSchedule::Paused => requests.recv().map_err(|_| Disconnected),
             CheckSchedule::Wait(remaining) => requests.recv_timeout(remaining),
             CheckSchedule::Due => requests.recv_timeout(Duration::ZERO),
         };
         match request {
-            Ok(found) => {
+            Ok(Request::Download(found)) => {
                 let started = Instant::now();
                 let mut throttle = Throttle::default();
                 let result = download(cfg, &found, &mut |done, total| {
@@ -535,22 +557,28 @@ fn run_worker(
                 });
                 pending = result.is_ok();
                 notify(Msg::Downloaded(result));
+                continue;
             }
-            Err(Timeout) if schedule == CheckSchedule::Due => {
-                let found = check(cfg);
-                let ready = match &found {
-                    Ok(f) if offer(build, f.manifest.build) == Offer::Newer => already_downloaded(&cfg.dir, &f.manifest),
-                    _ => None,
-                };
-                pending = ready.is_some();
-                let checked_at = SystemTime::now();
-                last_check = Some(now());
-                rate_limit = found.as_ref().err().map_or(Duration::ZERO, |e| e.rate_limit_delay(checked_at));
-                notify(Msg::Checked(found, ready, checked_at));
+            Ok(Request::Refresh) if pending || (rate_limit > Duration::ZERO
+                && last_check.is_some_and(|last| now().saturating_duration_since(last) < rate_limit)) => {
+                notify(Msg::RefreshDeferred);
+                continue;
             }
-            Err(Timeout) => {}
+            Ok(Request::Refresh) => {}
+            Err(Timeout) if schedule == CheckSchedule::Due => {}
+            Err(Timeout) => continue,
             Err(Disconnected) => break,
         }
+        let found = check(cfg);
+        let ready = match &found {
+            Ok(f) if offer(build, f.manifest.build) == Offer::Newer => already_downloaded(&cfg.dir, &f.manifest),
+            _ => None,
+        };
+        pending = ready.is_some();
+        let checked_at = SystemTime::now();
+        last_check = Some(now());
+        rate_limit = found.as_ref().err().map_or(Duration::ZERO, |e| e.rate_limit_delay(checked_at));
+        notify(Msg::Checked(found, ready, checked_at));
     }
 }
 
@@ -815,6 +843,37 @@ mod tests {
     }
 
     #[test]
+    fn manual_refresh_checks_without_waiting_for_the_schedule() {
+        let t = tempfile::tempdir().unwrap();
+        let server = fake_host(BYTES, None);
+        let ctx = egui::Context::default();
+        let mut u = Updater::new(config(&server, &t.path().join("updates")), "0.1.0+7", None);
+        let now = Instant::now();
+        u.start_with_clock(&ctx, move || now);
+        let wait = |u: &mut Updater, build| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !matches!(u.check, ReleaseCheck::Latest { build: n, .. } if n == build) {
+                assert!(Instant::now() < deadline, "timed out: {u:?}");
+                std::thread::sleep(Duration::from_millis(10));
+                u.poll();
+            }
+        };
+        wait(&mut u, 7);
+        {
+            let mut routes = server.routes.lock().unwrap();
+            let (_, _, body) = routes.iter_mut().find(|(path, _, _)| path == "/download/manifest.json").unwrap();
+            *body = manifest(&server.base, 8, BYTES.len(), &sha(BYTES)).into_bytes();
+        }
+        u.refresh();
+        assert!(u.refreshing);
+        u.refresh();
+        wait(&mut u, 8);
+        assert!(!u.refreshing);
+        assert!(matches!(u.phase, Phase::Available(_)));
+        assert_eq!(server.log.lock().unwrap().len(), 4, "one startup check and one manual check");
+    }
+
+    #[test]
     fn the_window_picks_up_a_new_release_on_schedule_and_downloads_it() {
         let t = tempfile::tempdir().unwrap();
         let dir = t.path().join("updates");
@@ -883,7 +942,7 @@ mod tests {
         let mut dev = Updater::new(config(&server, &dir), "0.1.0+dev.ab", None);
         dev.start(&ctx);
         assert!(matches!(dev.check, ReleaseCheck::Off(_)));
-        assert!(dev.downloads.is_none());
+        assert!(dev.requests.is_none());
         assert!(dev.last_checked.is_none());
     }
 }

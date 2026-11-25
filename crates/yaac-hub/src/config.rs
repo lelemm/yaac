@@ -187,7 +187,7 @@ pub struct HubConfig {
     pub undelivered_notice: Duration,
     /// How often the relay is swept for such messages.
     pub notice_sweep: Duration,
-    /// Desktop notifications when a thread needs the user and no window is attached. `None`:
+    /// Desktop notifications for pending requests outside the focused window. `None`:
     /// off (the default of [`HubConfig::new`], and so of tests).
     pub notifier: Option<Arc<dyn Notifier>>,
     /// Upload limits (docs/06-attachments.md).

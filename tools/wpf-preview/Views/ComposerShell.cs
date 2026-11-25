@@ -66,8 +66,10 @@ public partial class ComposerView
         ShellBar.Visibility = VisibleWhen(on);
         ShellTint.Visibility = VisibleWhen(on);
         Markdown.Visibility = VisibleWhen(!on);
-        Editor.FontFamily = on ? YaacFonts.Mono : normalEditorFont;
-        Editor.FontSize = on ? 13.5 : 14.5;
+        var font = on ? YaacFonts.Mono : normalEditorFont;
+        var size = on ? 13.5 : 14.5;
+        if (Editor.FontFamily != font) Editor.FontFamily = font;
+        if (Editor.FontSize != size) Editor.FontSize = size;
         if (on)
             EditorPlate.SetResourceReference(Border.BorderBrushProperty, "YaacShell");
         else

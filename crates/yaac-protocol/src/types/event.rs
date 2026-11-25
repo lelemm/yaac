@@ -30,6 +30,8 @@ open_enum! {
         User = "user",
         /// A message from another agent (the mesh dispatcher).
         Mesh = "mesh",
+        /// YAAC resumed work after an explicitly confirmed mode change.
+        Yaac = "yaac",
         /// Outside YAAC (a terminal, another app).
         External = "external",
     }

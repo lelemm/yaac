@@ -299,6 +299,8 @@ pub struct SettingsUpdateParams {
     /// Idle period before exit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_exit_secs: Option<u64>,
+    pub explanations: Option<yaac_protocol::ExplanationModels>,
+    pub notifications: Option<yaac_protocol::attach::NotificationSettings>,
 }
 
 /// `hub/settings/get` and `hub/settings/update` result.

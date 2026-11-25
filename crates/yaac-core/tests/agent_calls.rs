@@ -99,6 +99,7 @@ fn a_harness_subagent_that_is_a_thread_resolves_through_the_one_lookup() {
     if let Some(rec) = c.state.threads.get_mut(&child) {
         rec.summary.spawned_by = Some(users.address());
         rec.summary.native_id = Some("f00dbabe12".into());
+        rec.summary.title = "billing-service — iteration 1–2 – review".into();
     }
     let r = AgentRef { agent_id: Some("f00dbabe12".into()), ..AgentRef::default() };
     assert_eq!(agentcall::resolve_subagent(&c.state, &users, "f00dbabe12"), Some(child.clone()));
@@ -107,7 +108,7 @@ fn a_harness_subagent_that_is_a_thread_resolves_through_the_one_lookup() {
     let ls = lines(&c, &users);
     let pill = &line(&ls, "ua2").call.as_ref().unwrap().pills[0];
     assert_eq!(pill.key.as_ref(), Some(&child), "the Agent call's pill now opens the subagent's thread");
-    assert_eq!(pill.label, "billing-service", "with that thread's title");
+    assert_eq!(pill.label, "billing-service · iteration 1–2 · review", "spaced separators use dots in the pill");
     // "Its parent" resolves to the caller's own parent.
     let parent = AgentRef { parent: true, ..AgentRef::default() };
     assert_eq!(agentcall::resolve(&c.state, &child, &parent), Some(users));

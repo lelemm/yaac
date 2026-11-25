@@ -119,6 +119,9 @@ pub struct ApprovalRequest {
     /// The command, for a command approval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// A short, model-generated description of the command's likely effects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_explanation: Option<String>,
     /// The directory it would run in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<TargetPath>,
@@ -419,4 +422,32 @@ pub struct RequestRespondParams {
     pub request_id: RequestId,
     /// The answer.
     pub response: RequestResponse,
+}
+
+/// One live model selection for optional explanations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ExplanationModel {
+    pub instance: InstanceId,
+    pub model: ModelId,
+}
+
+/// Shared window preferences, stored in hub settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ExplanationModels {
+    pub main: Option<ExplanationModel>,
+    pub fallback: Option<ExplanationModel>,
+}
+
+/// An isolated, read-only description of untrusted tool input.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ApprovalExplainParams {
+    pub tool: String,
+    pub input: String,
+    pub models: ExplanationModels,
+}
+
+/// Plain-language description, absent when both chosen models were unavailable.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ApprovalExplainResult {
+    pub text: Option<String>,
 }

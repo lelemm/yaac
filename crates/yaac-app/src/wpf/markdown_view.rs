@@ -63,6 +63,7 @@ fn block(block: &Block) -> Value {
     match block {
         Block::Para(s) => json!({ "kind": "paragraph", "spans": spans(s) }),
         Block::Heading(level, s) => json!({ "kind": "heading", "level": level, "spans": spans(s) }),
+        Block::Code { lang, text } if crate::mermaid::language(lang) => json!({ "kind": "mermaid", "text": text }),
         Block::Code { lang, text } => json!({ "kind": "code", "language": lang, "text": text }),
         Block::Item { depth, marker, spans: s } => json!({ "kind": "item", "depth": depth, "marker": marker, "spans": spans(s) }),
         Block::Quote(s) => json!({ "kind": "quote", "spans": spans(s) }),

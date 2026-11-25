@@ -865,3 +865,47 @@ a successful SDK result as confirmation of `/compact`.
   for that thread and process id. The next inventory was empty. The 0.170.0
   source also shows the inventory includes live processes during initial output
   collection, before they have yielded.
+
+### Changing permissions during an active turn (P356, 2026-11-25)
+
+The Claude Agent SDK 0.3.329 accepted `Query.setPermissionMode` between two
+Bash calls in the same query. With `allowDangerouslySkipPermissions`, switching
+from default to bypass removed the second approval. Switching back to default
+invoked `canUseTool` for the second call. Both probes used a loopback fixture
+and a temporary Claude configuration directory. YAAC advertises
+`modeChangeLive` where it opens queries with the opt-in.
+
+Codex app-server 0.163.0 was probed over private stdio, with a temporary
+`CODEX_HOME` and a loopback Responses server. A busy `turn/start` with new
+overrides returned the active turn ID and added its text to that turn. The
+running turn still raised a command approval. The next turn inherited the new
+policy. A `thread/resume` during a turn returned the original approval and
+sandbox settings, and both the active and following turn still asked. The
+installed `turn/steer` schema has no approval or sandbox override. YAAC
+therefore interrupts and starts a continuation with explicit turn overrides
+when a user confirms a change on a running Codex thread.
+
+A private 0.172.0 stdio probe with the same loopback fixture also tested the
+experimental settings methods. During the held turn, `turn/settings/update`
+rejected `approvalPolicy` as an unknown field. Its generated schema also
+excludes `sandboxPolicy`. `thread/settings/update` accepted both fields, but
+the running turn still asked once. The next turn asked zero times and rejected
+the fixture's explicit escalation under its new never-ask policy.
+
+A separate `turn/start` with empty input and retained `toolOutput` from
+`yaac.mode_changed` started a continuation on both 0.163.0 and 0.172.0. The captured Responses
+payload had a named `function_call_output` and no new user message. YAAC uses
+this form for Codex mode-change continuations.
+
+### Approval explanations (P357, rechecked 2026-11-25)
+
+A private Codex 0.172.0 stdio app-server, with fresh HOME and CODEX_HOME and a loopback
+Responses fixture, returned `thread.ephemeral: true` for `thread/start { ephemeral: true }`.
+One text turn completed, was unsubscribed, and a subsequent `thread/list` returned no entries.
+No rollout JSONL existed under the temporary sessions directory. The server created its
+ordinary SQLite service databases. The request exposed only the built-in question tool.
+
+Claude Code 2.1.330, driven by the installed Agent SDK with a temporary CLAUDE_CONFIG_DIR,
+a loopback Anthropic fixture, `persistSession: false`, `maxTurns: 1`, and empty tools,
+returned the fixture result. The request carried zero tools. No project JSONL was written,
+and SDK `listSessions` for the temporary working directory returned an empty list.

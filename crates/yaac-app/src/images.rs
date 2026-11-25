@@ -460,19 +460,19 @@ impl Images {
     }
 }
 
-fn append_chunk(reply: UploadReadResult, bytes: &mut Vec<u8>) -> Result<bool, String> {
+pub(crate) fn append_chunk(reply: UploadReadResult, bytes: &mut Vec<u8>) -> Result<bool, String> {
     if !reply.present {
-        return Err("The image is no longer available.".into());
+        return Err("The file is no longer available.".into());
     }
     if reply.size > MAX_BYTES as u64 {
-        return Err("This image exceeds the 64 MiB preview limit.".into());
+        return Err("This file exceeds the 64 MiB preview limit.".into());
     }
     let chunk = STANDARD
         .decode(reply.data_base64)
-        .map_err(|_| "The target returned invalid image data.")?;
+        .map_err(|_| "The target returned invalid file data.")?;
     let total = bytes.len() + chunk.len();
     if chunk.is_empty() || total as u64 > reply.size || reply.more == (total as u64 == reply.size) {
-        return Err("The target returned an incomplete image.".into());
+        return Err("The target returned an incomplete file.".into());
     }
     bytes.extend_from_slice(&chunk);
     Ok(reply.more)
@@ -499,7 +499,7 @@ fn decode(input: Input, big: bool, wpf: bool) -> Result<Decoded, String> {
         }
     };
     if bytes.len() > MAX_BYTES {
-        return Err("This image exceeds the 64 MiB preview limit.".into());
+        return Err("This file exceeds the 64 MiB preview limit.".into());
     }
     let mut reader = image::ImageReader::new(Cursor::new(&bytes))
         .with_guessed_format()

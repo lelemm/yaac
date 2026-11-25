@@ -128,6 +128,7 @@ One MCP server, named `yaac`. Few tools, each doing one thing.
 
 | Tool | What it does |
 | --- | --- |
+| `present_artifact` | Present a user-requested generated document or image from this thread's working directory in the thread and its ancestors ([P358](#presenting-generated-files-p358-proposed)). |
 | `whoami` | The caller's own address, title, provider, model, working directory, who spawned it, and its children. |
 | `list_targets` | The machines in this mesh: name, whether each is reachable, and how many threads are active there. Names and counts only — never the threads themselves. |
 | `list_models` | For a target: the provider instances, their enabled models and effort levels, and their permission modes. Codex and Claude models show **Best used as** from official guidance or a user edit. The tool omits models turned off in Settings, GPT‑5.x and earlier GPT models, Claude 4.x, and the 5.0 releases of Sonnet, Opus, and Fable. Worker creation resolves the selected ID against the live catalog. |
@@ -746,6 +747,62 @@ That request is journaled like any other and never answered by an agent. It appe
 gets a notice at its next turn or `wait`, and with the window closed the hub raises a desktop
 notification.
 
+**The request travels up to the root (P354).** The same request also shows as a card in its
+parent's transcript, and in that parent's parent, all the way up to the root — for YAAC workers
+on any target and for a harness's own sub-agents (D151). It is **one request**: every copy is a
+view of the worker's request, headed "From <worker> · <harness> on <target>" with a link to
+open the worker. Answering it on **any** level answers the worker's request (the same
+`request/respond` to the worker's thread, by the user — invariant 13 still holds: no agent
+answers it), and every copy turns *resolved* at once, saying where it was answered. A copy never
+opens a turn on the ancestor and never blocks its composer (D162 still holds). Several pending
+requests from deeper threads stack at the end of the transcript, nearest descendant first and
+then by arrival. The window follows workers through the hub when an ancestor is visible and
+the merged index or live request hints indicate that the worker needs attention. It uses the
+usual subscription and requests just the newest whole turn. The snapshot also carries
+outstanding request items outside that turn. Copies use the worker’s existing card controls,
+including the harness instructions for a form that YAAC cannot answer directly. A request that the window showed open stays visible as
+resolved while its transcript is cached. Its answer time places it among the ancestor’s later
+messages. For an answer made in this window, each card names the thread where the user answered.
+For an answer made in another client, the card shows the resolution reported by the harness.
+
+### Changing the mode of a whole orchestration (P356)
+
+Changing a thread's permission mode **to or from a never-ask mode** (`skipsApprovals`: Claude Code
+bypass, Codex full access) while it has workers asks whether to apply the change to every thread
+under it. The dialog names the thread, says how many workers (all levels, on every target) the
+change would reach, and lists them; **Apply to all** and **Only this thread** (default **Only
+this thread**). It merges with the existing confirmation for a mode that bypasses approvals, so
+the user answers once. **The dialog says up front which running workers will be briefly
+interrupted** — those whose harness cannot change the mode of a running turn — e.g. "3 running
+workers will be interrupted for a moment and resumed in the new mode", and marks them in the
+list; workers that change in place or are idle are listed without the mark.
+
+**Apply to all** changes each descendant to the **equivalent mode on its own harness** — the same
+mapping `spawn_thread` uses (never-ask ⇄ never-ask; back to the harness's default asking mode) —
+never anything more permissive than what the user chose. For each descendant:
+
+- **Idle:** the mode is set for its next turn.
+- **Running, and its harness can change the mode of a running turn** (a capability, e.g. Claude
+  Code's `setPermissionMode`): changed in place, nothing interrupted.
+- **Running, and it cannot:** the turn is interrupted (marked *interrupted to change its mode*),
+  the mode is set, and the turn is resumed with a YAAC notice — never presented as the user's
+  words (invariant 13) — telling the agent its permission mode changed and to continue where it
+  left off.
+
+Pending approvals of descendants that the new never-ask mode covers are approved as P342 says;
+going back to an asking mode never cancels anything. Each thread's transcript shows a line "Mode
+changed to <mode> from <root/parent> by you". Descendants on other targets are reached through
+the hub; a target that is offline gets the change when it reconnects (shown as pending in the
+dialog's result).
+
+The window snapshots the recipients and their interruption warnings when the dialog opens.
+Each recipient gets its own operation id. A worker that starts running after confirmation
+reports that interruption needs confirmation. The daemon preserves outstanding questions
+and user-enforced approvals by refusing an interruption that would expire them. A
+harness-owned, read-only sub-agent reports its owner as a blocker. For an offline target
+the hub keeps the latest unsent mode per thread in the durable drafts database. Once
+handed off, an uncertain operation follows the normal in-flight receipt rules.
+
 ### Permission: a toggle in the chat
 
 **Decided.** Each chat has a toggle under its composer — **Agents: ask / allow** — and a new
@@ -844,3 +901,24 @@ a `meshWait` in the same turn — are folded into the call's line; the line read
 receipt from the `meshSent`. Invariant 13 holds: every message is still in both transcripts,
 attributed.
 
+
+### Presenting generated files (P358, Proposed)
+
+Root agents and workers can call `present_artifact({path, title?})` for a document or image
+generated at the user's request. The tool and each thread's instructions exclude source code
+and project files. Supply a path relative to the calling thread's working directory.
+The confined worktree reader takes a snapshot and the target upload store keeps its bytes.
+DOCX, XLSX and PPTX require a matching Office package and exclude macro-enabled documents.
+SVG must begin with an SVG root. PDF, PNG, JPEG, GIF and WebP require matching signatures.
+Markdown, CSV, plain text and Mermaid
+(`.mmd`, `.mermaid`) require UTF-8 text. Each file must be nonempty and at most 16 MiB.
+
+The thread index carries the card metadata (up to 32 distinct snapshots per thread). Presenting
+identical content with the same extension in the same thread returns its existing card. The
+window uses the cached parent graph to display each published card at the end of the publisher's
+and each listed ancestor's transcript, above pinned worker requests. Copies name their originating thread and target.
+After reconnect the same identities are available from the index. **Download…** asks for a
+host destination. **Open** uses the host's associated viewer. When the browser runtime and
+target support integrated browsing, **Open in integrated browser** serves text documents, PDF
+and raster images from an isolated tab origin. SVG and Office documents use Download or Open. File actions fetch and verify the published
+bytes through the originating target's existing connection.

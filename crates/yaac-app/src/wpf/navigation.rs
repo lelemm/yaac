@@ -84,7 +84,7 @@ fn focused_card(app: &YaacApp, payload: &Value) -> Option<(ThreadKey, ItemId)> {
     if app.ui.settings || thread.address().as_str() != payload["threadId"].as_str()? {
         return None;
     }
-    Some((thread.clone(), selected_item(app, card)?))
+    Some((thread.clone(), selected_item(app, card).or_else(|| yaac_core::copies::find(&app.client.state, thread, &card.into()).map(|c| c.id()))?))
 }
 
 pub(super) fn places(app: &YaacApp, forward: bool) -> Vec<Value> {

@@ -1200,7 +1200,7 @@ fn page_ui(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, id: u64) {
     }
     if let Some(p) = app.preview_ui.pages.get_mut(&id) {
         p.devtools_title = format!(
-            "DevTools — {} · {}",
+            "DevTools · {} · {}",
             p.state.title,
             app.client.state.target_name(&key.target)
         );

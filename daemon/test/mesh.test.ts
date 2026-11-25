@@ -4,6 +4,8 @@
 // The two-target cases, with the real hub, are in crates/yaac-hub/tests/mesh.rs.
 
 import { test } from "node:test";
+import { zipSync } from "fflate";
+import { artifactFormat } from "../src/session/artifact-format.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { client, fakeOf, opId, sleep, startDaemon, startThread, TestClient, text, tmpHome, until } from "./helpers.js";
@@ -59,6 +61,67 @@ test("the fake provider declares meshTools once the mesh is attached", async () 
     assert.ok(providers[0].capabilities.includes("meshTools"));
   } finally {
     await done();
+  }
+});
+
+test("present_artifact validates Office, SVG, CSV and Mermaid formats", () => {
+  for (const [ext, part, main] of [
+    ["docx", "word/document.xml", "wordprocessingml.document"],
+    ["xlsx", "xl/workbook.xml", "spreadsheetml.sheet"],
+    ["pptx", "ppt/presentation.xml", "presentationml.presentation"],
+  ] as const) {
+    const manifest = Buffer.from(`<Types><Override PartName="/${part}" ContentType="application/vnd.openxmlformats-officedocument.${main}.main+xml"/></Types>`);
+    const parts = { "[Content_Types].xml": manifest, [part]: Buffer.from("<root/>") };
+    assert.ok(artifactFormat(ext, Buffer.from(zipSync(parts)), null).endsWith(main));
+    assert.throws(() => artifactFormat(ext, Buffer.from(zipSync({ ...parts, "word/vbaProject.bin": Buffer.from("macro") })), null));
+    assert.throws(() => artifactFormat(ext, Buffer.from(zipSync({ [part]: parts[part]! })), null));
+  }
+  assert.equal(artifactFormat("svg", Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'), null), "image/svg+xml");
+  assert.throws(() => artifactFormat("svg", Buffer.from("<html/>"), null));
+  assert.equal(artifactFormat("csv", Buffer.from("x,y"), null), "text/csv");
+  assert.equal(artifactFormat("mermaid", Buffer.from("graph TD"), null), "text/plain");
+  assert.throws(() => artifactFormat("mmd", Buffer.from([255]), null));
+});
+
+test("present_artifact snapshots a confined document once and rejects invalid files", async () => {
+  const home = tmpHome("artifact-");
+  let d = await startDaemon(home, { mesh: MESH_OPTS });
+  let c = await client(d);
+  try {
+    const cwd = home + "/project";
+    fs.mkdirSync(cwd);
+    const id = await idleThread(d, c, "/fake say ready", { cwd });
+    fs.writeFileSync(cwd + "/report.md", "# Original");
+    const publish = (path: string) => call(d, id, "present_artifact", { path, title: "My report" });
+    assert.ok(!(await publish("report.md")).isError);
+    assert.ok(!(await publish("report.md")).isError);
+    fs.writeFileSync(cwd + "/report.md", "# Changed");
+    const cards = d.core.summaryOf(d.core.thread(id)!).artifacts!;
+    assert.equal(cards.length, 1);
+    assert.equal(cards[0]!.title, "My report");
+    const bytes = await c.request("upload/read", { uploadId: cards[0]!.uploadId, offset: 0, maxBytes: 64 });
+    assert.equal(Buffer.from(bytes.dataBase64, "base64").toString(), "# Original");
+    fs.writeFileSync(cwd + "/script.js", "alert(1)");
+    fs.writeFileSync(cwd + "/fake.png", "plain text");
+    assert.ok((await publish("script.js")).isError);
+    assert.ok((await publish("fake.png")).isError);
+    assert.ok((await publish("../report.md")).isError);
+    assert.ok((await publish(cwd + "/report.md")).isError);
+    if (process.platform !== "win32") {
+      fs.symlinkSync(home, cwd + "/escape");
+      assert.ok((await publish("escape/project/report.md")).isError);
+    }
+    await c.close();
+    await d.stop("test restart");
+    d = await startDaemon(home, { mesh: MESH_OPTS });
+    c = await client(d);
+    assert.deepEqual(d.core.summaryOf(d.core.thread(id)!).artifacts, cards);
+    const restored = await c.request("upload/read", { uploadId: cards[0]!.uploadId, offset: 2, maxBytes: 4 });
+    assert.equal(Buffer.from(restored.dataBase64, "base64").toString(), "Orig");
+  } finally {
+    await c.close();
+    await d.stop("test");
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 

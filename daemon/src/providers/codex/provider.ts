@@ -28,6 +28,7 @@ import type {
 } from "../../protocol/generated/types.js";
 import { RpcError } from "../../protocol/rpc.js";
 import { Emitter } from "../../util/emitter.js";
+import { EXPLANATION_SOURCE, explainCommand } from "./explanation.js";
 import { randomId, readJson, sha256Hex, writeJsonAtomic } from "../../util/fsx.js";
 import type {
   ExternalControl,
@@ -285,6 +286,7 @@ export class CodexProvider implements HarnessProvider {
   private init: InitializeResponse | null = null;
   private lastFailure: { status: ProbeResult["status"]; message: string } | null = null;
   private threads = new Map<NativeId, ThreadState>();
+  private readonly explanationThreads = new Set<NativeId>();
   private requests = new Map<string, LiveRequest>();
   private models: ModelInfo[] = [];
   /** Each listed model's fast service tier id (D125), by model id. */
@@ -778,7 +780,7 @@ export class CodexProvider implements HarnessProvider {
       this.sourceKinds = this.sourceKinds.filter((k) => allowed.includes(k));
       res = (await conn.request("thread/list", { ...params, sourceKinds: this.sourceKinds })) as Paged<Thread>;
     }
-    let threads = (res.data ?? []).map((t) => {
+    let threads = (res.data ?? []).filter((t) => !this.isExplanationThread(t)).map((t) => {
       const st = this.state(t.id);
       if (t.status && !st.subscribed) st.status = t.status;
       const info = threadInfo(t, state.archived, this.subagentStatus.get(t.id) ?? null);
@@ -817,9 +819,11 @@ export class CodexProvider implements HarnessProvider {
   }
 
   lookupThread(native: NativeId): Promise<NativeThreadInfo | null> {
+    if (this.explanationThreads.has(native)) return Promise.resolve(null);
     const pending = this.threadLookups.get(native);
     if (pending) return pending;
     const read = this.readThreadMeta(native).then((t) => {
+      if (this.isExplanationThread(t)) return null;
       // `thread/read` does not say whether the thread is archived.
       const info = threadInfo(t, false, this.subagentStatus.get(native) ?? null);
       if (info.parent) this.subagentIds.add(native);
@@ -864,6 +868,21 @@ export class CodexProvider implements HarnessProvider {
   }
 
   // ── Turns ────────────────────────────────────────────────────────────────────────────────
+
+  private isExplanationThread(thread: Thread): boolean {
+    return thread.threadSource === EXPLANATION_SOURCE || this.explanationThreads.has(thread.id) ||
+      (thread.ephemeral === true && thread.cwd === this.ctx.stateDir);
+  }
+
+  private rememberExplanationThread(id: string): void {
+    this.explanationThreads.add(id);
+    if (this.explanationThreads.size > 256) this.explanationThreads.delete(this.explanationThreads.values().next().value!);
+  }
+
+  async explainCommand(model: string, command: string, signal?: AbortSignal): Promise<string | null> {
+    const conn = await this.ensure();
+    return explainCommand(conn, this.ctx.stateDir, model, command, (id) => this.rememberExplanationThread(id), signal);
+  }
 
   async startThread(params: StartThreadParams, input: ProviderInput): Promise<{ thread: NativeId; turn: TurnId }> {
     const conn = await this.ensure();
@@ -989,6 +1008,9 @@ export class CodexProvider implements HarnessProvider {
   }
 
   private peerOutput(input: ProviderInput) {
+    if (input.origin === "yaac") {
+      return { name: "mode_changed", namespace: "yaac", output: input.text, retain: true };
+    }
     const source = input.mesh?.find((m) => m.kind !== "notice");
     if (!source || input.mesh?.some((m) => m.task) || !supportsPeerInput(serverVersion(this.init?.userAgent), [0, 170, 0])) return null;
     const messages = input.mesh!;
@@ -1066,7 +1088,7 @@ export class CodexProvider implements HarnessProvider {
       } catch (e) {
         // Unsupported experimental fields can be explicitly rejected. No fallback after a
         // timeout or disconnect, which could have happened after acceptance.
-        if (!peer || !(e instanceof CodexRpcError) || ![-32600, -32601, -32602].includes(e.code ?? 0)) throw e;
+        if (input.origin === "yaac" || !peer || !(e instanceof CodexRpcError) || ![-32600, -32601, -32602].includes(e.code ?? 0)) throw e;
         peer = null;
         response = await send(null);
       }
@@ -1298,6 +1320,10 @@ export class CodexProvider implements HarnessProvider {
 
   private onServerRequest(conn: CodexConnection, r: ServerRequest): void {
     const mapped = mapServerRequest(r.method, r.params);
+    if (mapped && this.explanationThreads.has(mapped.threadId)) {
+      conn.replyError(r.id, -32601, "Command explanations use no tools.");
+      return;
+    }
     if (!mapped) {
       // item/tool/call (yaacd registers no dynamic tools), auth refresh, attestation, or a
       // method newer than this adapter: not a question for the user.
@@ -1605,6 +1631,12 @@ export class CodexProvider implements HarnessProvider {
 
   private handleNotification(method: string, raw: unknown): void {
     const p = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    const thread = p.thread as Thread | undefined;
+    if (thread?.id && this.isExplanationThread(thread)) {
+      this.rememberExplanationThread(thread.id);
+      return;
+    }
+    if (typeof p.threadId === "string" && this.explanationThreads.has(p.threadId)) return;
     switch (method) {
       case "skills/changed":
         this.skillDiscovery.clear();

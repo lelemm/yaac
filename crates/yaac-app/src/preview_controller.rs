@@ -29,6 +29,7 @@ pub(crate) struct BrowserTab {
     /// harness logo beside the title (docs/11-preview.md#the-browser-area).
     pub(crate) agent: Option<String>,
     /// Set once per renderer handle, only after the hub supplies a target proxy.
+    snapshot: Option<std::path::PathBuf>,
     socks: Option<u16>,
     started: bool,
 }
@@ -359,6 +360,14 @@ impl Browsers {
         }
     }
 
+    /// Open only a snapshot prepared by the host; normal navigation still validates user input.
+    pub(crate) fn artifact(&mut self, client: &mut Client, key: &ThreadKey, file: &std::path::Path) -> Result<(), String> {
+        let url = Url::parse("https://artifact.invalid/document").expect("static document URL");
+        let id = self.new_tab(client, key)?;
+        self.tab_mut(key, id).expect("new tab").snapshot = Some(file.to_owned());
+        self.load_url(client, key, id, url)
+    }
+
     pub(crate) fn navigate(
         &mut self,
         client: &mut Client,
@@ -369,7 +378,10 @@ impl Browsers {
         if !supported(client, key) {
             return Err("Target port forwarding unavailable".into());
         }
-        let url = address(input)?;
+        self.load_url(client, key, id, address(input)?)
+    }
+
+    fn load_url(&mut self, client: &mut Client, key: &ThreadKey, id: u64, url: Url) -> Result<(), String> {
         let tab = self.tab_mut(key, id).ok_or("Tab closed")?;
         tab.url = url.to_string();
         tab.error = None;
@@ -398,7 +410,8 @@ impl Browsers {
         let socks = tab.socks.take()?;
         tab.started = true;
         let url = tab.url.clone();
-        Some(self.host.open(&url, Some(socks), wake))
+        let snapshot = tab.snapshot.take();
+        Some(self.host.open_document(&url, Some(socks), snapshot, wake))
     }
 
     pub(crate) fn external(

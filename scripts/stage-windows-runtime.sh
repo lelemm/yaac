@@ -30,5 +30,7 @@ node "$root/daemon/scripts/stage-pty.mjs"
 mkdir -p "$dest/pty-1.2.0-beta.18"
 tar xzf "$root/daemon/dist/pty/win32-x64.tgz" --strip-components=1 --exclude='*.pdb' -C "$dest/pty-1.2.0-beta.18"
 
+sh "$root/scripts/stage-mermaid.sh" "$dest/mermaid"
+
 # CEF is loaded only by the browser host, from its own runtime directory.
 sh "$(dirname "$0")/build-preview-runtime.sh" windows64 "$1/cef"

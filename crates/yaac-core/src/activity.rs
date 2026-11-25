@@ -192,6 +192,8 @@ pub struct DiffPart {
 /// A block of the transcript.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Block {
+    /// A request owned by a descendant thread.
+    Copy { worker: ThreadKey, item: ItemId },
     /// The user's message, full size — or a `!command` the user ran (P346): its user message,
     /// or a user-run command item no such message took over. [`crate::shell_block::block`]
     /// tells them apart.
@@ -266,7 +268,7 @@ pub enum Block {
 }
 
 fn peer_title(p: &MeshPeer) -> String {
-    p.title.clone().unwrap_or_else(|| p.address.to_string())
+    crate::agentcall::compact_label(p.title.as_deref().unwrap_or(p.address.as_str())).into_owned()
 }
 
 fn clip(text: &str, max: usize) -> String {

@@ -240,7 +240,17 @@ pub fn open_url(url: &str) -> io::Result<()> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err(io::Error::other("only http and https URLs are opened"));
     }
-    let (verb, target) = (wide("open"), wide(url));
+    shell_open(url)
+}
+
+/// Open a user-selected snapshot through its registered file association.
+pub fn open_document(path: &std::path::Path) -> io::Result<()> {
+    if !path.is_absolute() || !path.is_file() { return Err(io::Error::other("missing document")); }
+    shell_open(path.to_str().ok_or_else(|| io::Error::other("invalid document path"))?)
+}
+
+fn shell_open(value: &str) -> io::Result<()> {
+    let (verb, target) = (wide("open"), wide(value));
     // SAFETY: both strings are NUL-terminated and outlive the call; no window handle, no
     // parameters, no directory.
     let rc = unsafe { ShellExecuteW(ptr::null_mut(), verb.as_ptr(), target.as_ptr(), ptr::null(), ptr::null(), SW_SHOWNORMAL) };
@@ -286,11 +296,16 @@ pub fn claim_window_instance(name: &str) -> io::Result<InstanceClaim> {
     }
     // The running window is a background process: let it come to the front, since the user
     // just asked for it by starting this one.
-    // SAFETY: no preconditions; failure only means the foreground stays where it is.
-    unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+    allow_window_foreground();
     // SAFETY: an open event handle owned here.
     check(unsafe { SetEvent(event.0) })?;
     Ok(InstanceClaim::Signalled)
+}
+
+/// Transfer foreground permission following an explicit Show or notification Open.
+pub(crate) fn allow_window_foreground() {
+    // SAFETY: no preconditions; failure only means the foreground stays where it is.
+    unsafe { AllowSetForegroundWindow(ASFW_ANY) };
 }
 
 impl WindowInstance {

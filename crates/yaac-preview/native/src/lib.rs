@@ -584,18 +584,51 @@ fn context_proxy(ctx: &RequestContext, socks: u16) -> Result<(), String> {
         Ok(())
     }
 }
+// Only the private controller pipe supplies this path. No part of a browser URL
+// is interpreted as a host filename, and other tabs have separate request contexts.
+wrap_scheme_handler_factory! {
+    struct SnapshotResource { path: String, mime: String }
+    impl SchemeHandlerFactory {
+        fn create(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>,
+            _scheme: Option<&CefString>, request: Option<&mut cef::Request>) -> Option<ResourceHandler> {
+            use cef::wrapper::stream_resource_handler::StreamResourceHandler;
+            if CefString::from(&request?.url()).to_string() != "https://artifact.invalid/document" {
+                return Some(StreamResourceHandler::new(404, "Not Found".into(), "text/plain".into(), None, None));
+            }
+            let stream = stream_reader_create_for_file(Some(&self.path.as_str().into()))?;
+            let mut headers = CefStringMultimap::new();
+            headers.append("X-Content-Type-Options", "nosniff");
+            headers.append("Cache-Control", "no-store");
+            Some(StreamResourceHandler::new(
+                200, "OK".into(), self.mime.clone(), Some(headers), Some(stream)))
+        }
+    }
+}
 wrap_request_context_handler! {
     struct ContextReady {
         id: u64,
         url: String,
         socks: Option<u16>,
+        snapshot: Option<PathBuf>,
     }
     impl RequestContextHandler {
         fn on_request_context_initialized(&self, ctx: Option<&mut RequestContext>) {
+            let Some(ctx) = ctx else { emit(self.id, Event::Error("Missing browser context".into())); return; };
+            if let Some(path) = &self.snapshot {
+                let mime = match path.extension().and_then(|s| s.to_str()) {
+                    Some("txt") => "text/plain", Some("pdf") => "application/pdf",
+                    Some("png") => "image/png", Some("gif") => "image/gif",
+                    Some("webp") => "image/webp", Some("jpg" | "jpeg") => "image/jpeg",
+                    _ => { emit(self.id, Event::Error("Unsupported document type".into())); return; }
+                };
+                let mut factory = SnapshotResource::new(path.to_string_lossy().into_owned(), mime.into());
+                if ctx.register_scheme_handler_factory(Some(&"https".into()), Some(&"artifact.invalid".into()), Some(&mut factory)) == 0 {
+                    emit(self.id, Event::Error("Cannot display this document".into()));
+                    return;
+                }
+            }
             if let Some(port) = self.socks {
-                if let Err(e) = ctx
-                    .ok_or_else(|| "missing context".to_owned())
-                    .and_then(|c| context_proxy(c, port))
+                if let Err(e) = context_proxy(ctx, port)
                 {
                     emit(self.id, Event::Error(e));
                     enqueue(Request {
@@ -610,10 +643,10 @@ wrap_request_context_handler! {
         }
     }
 }
-fn open(id: u64, url: String, socks: Option<u16>) -> Result<(), String> {
+fn open(id: u64, url: String, socks: Option<u16>, snapshot: Option<PathBuf>) -> Result<(), String> {
     let mut ctx = request_context_create_context(
         Some(&RequestContextSettings::default()),
-        Some(&mut ContextReady::new(id, url, socks)),
+        Some(&mut ContextReady::new(id, url, socks, snapshot)),
     )
     .ok_or("request context unavailable")?;
     let state = Shared::new(State {
@@ -722,8 +755,8 @@ fn handle(req: Request) {
     use Action::*;
     let id = req.tab;
     match req.action {
-        Open { url, socks } => {
-            if let Err(e) = open(id, url, socks) {
+        Open { url, socks, snapshot } => {
+            if let Err(e) = open(id, url, socks, snapshot) {
                 emit(id, Event::Error(e))
             }
             return;

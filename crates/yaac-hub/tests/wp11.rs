@@ -1,12 +1,11 @@
 //! The hub's part of the discovery, dismiss, and diagnostics follow-ups: `dismissed` and the
 //! discovery caps in the cache, an id lookup that misses the index routed to the targets
 //! (`hub/threads/lookup`, and `hub/threads/find` falling through to it), the connection-step
-//! log, and the desktop notification when a thread needs the user and no window is attached.
+//! log, and desktop notifications for requests outside the focused window.
 
 mod support;
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde_json::json;
 use support::{FakeDaemon, Home, wait_until};
@@ -15,11 +14,30 @@ use yaac_protocol::attach::ConnectionStatus;
 use yaac_protocol::{DiscoveryCaps, ThreadState};
 
 #[derive(Default)]
-struct Recorder(Mutex<Vec<(String, String)>>);
+struct Recorder(Mutex<Vec<(yaac_hub::notify::Notification, yaac_hub::notify::Activate, yaac_hub::notify::Updates)>>, std::sync::atomic::AtomicUsize);
 
 impl Notifier for Recorder {
-    fn notify(&self, title: &str, body: &str) {
-        self.0.lock().unwrap().push((title.to_owned(), body.to_owned()));
+    fn launch_window(&self) { self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+    fn show(&self, notice: yaac_hub::notify::Notification, activate: yaac_hub::notify::Activate, updates: yaac_hub::notify::Updates) {
+        self.0.lock().unwrap().push((notice, activate, updates));
+    }
+}
+
+impl Recorder {
+    fn current(&self, title: &str) -> yaac_hub::notify::Notification {
+        let mut result = None;
+        wait_until("expected reminder contents", || {
+            let mut posted = self.0.lock().unwrap();
+            let Some((notice, _, updates)) = posted.last_mut() else { return false };
+            while let Ok(next) = updates.try_recv() { *notice = next; }
+            if notice.title == title { result = Some(notice.clone()); }
+            result.is_some()
+        });
+        result.unwrap()
+    }
+
+    fn hit(&self, revision: u64, action: &str) {
+        (self.0.lock().unwrap().last().unwrap().1)(revision, action);
     }
 }
 
@@ -173,42 +191,179 @@ fn the_hub_keeps_a_log_of_connection_steps() {
 }
 
 #[test]
-fn a_thread_that_needs_the_user_raises_a_desktop_notification_only_with_no_window() {
+fn a_pending_request_on_a_closed_thread_notifies_even_with_an_attached_window() {
     let home = Home::new();
     let alpha = FakeDaemon::new("alpha");
     alpha.add_thread("t1");
-    alpha.add_thread("t2");
     home.fakes.add(&alpha);
     let recorder = Arc::new(Recorder::default());
     let mut config = home.config();
     config.notifier = Some(recorder.clone());
     let hub = home.start_with(config);
-    let a = {
-        let c = hub.client();
-        let a = c.add_target("alpha").id;
-        c.wait_status(&a, ConnectionStatus::Connected);
-        // With a window attached: no desktop notification.
-        let mut s = support::fake_daemon::summary("t1");
-        s.state = ThreadState::NeedsAttention;
-        alpha.originate_notification_thread_updated(&s);
-        wait_until("t1 cached as needing the user", || {
-            home.cache().threads(&a).unwrap().iter().any(|t| t.id.as_str() == "t1" && t.state == ThreadState::NeedsAttention)
-        });
-        a
+    let c = hub.client();
+    let target = c.add_target("alpha").id;
+    c.wait_status(&target, ConnectionStatus::Connected);
+    for req in ["first", "second"] {
+        let item = serde_json::from_value(json!({"kind":"request","id":req,"turnId":"turn","status":"completed",
+            "requestId":req,"state":"pending","requestKind":"question","questions":[]})).unwrap();
+        alpha.emit("t1", yaac_protocol::ThreadEvent::ItemStarted(yaac_protocol::ItemEvent { item }));
+    }
+    let mut summary = support::fake_daemon::summary("t1");
+    summary.state = ThreadState::NeedsAttention;
+    alpha.originate_notification_thread_updated(&summary);
+    let summary = recorder.current("2 requests need you");
+    drop(c);
+    recorder.hit(summary.revision, "default");
+    wait_until("Open starts a window", || recorder.1.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    let single = recorder.current("YAAC needs you");
+    recorder.hit(single.revision, "default");
+    let next = hub.client();
+    next.call("hub/notifications/visible", json!([])).unwrap();
+    let mut opened = Vec::new();
+    wait_until("new window receives both queued destinations", || {
+        for m in next.drain() {
+            if let yaac_protocol::rpc::Message::Notification { method, params } = m {
+                if method == "hub/notifications/open" {
+                    assert_eq!(params["itemId"], params["location"]["requestId"]);
+                    opened.push(params["itemId"].as_str().unwrap().to_owned());
+                }
+            }
+        }
+        opened.len() == 2
+    });
+    assert_eq!(opened, ["first", "second"]);
+    assert_eq!(recorder.1.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn toast_buttons_use_the_original_thread_request_and_offered_decision_once() {
+    use yaac_protocol::{ItemEvent, ThreadEvent, RequestResponse};
+    let home = Home::new();
+    let alpha = FakeDaemon::new("alpha");
+    alpha.add_thread("worker");
+    home.fakes.add(&alpha);
+    let desktop = Arc::new(Recorder::default());
+    let mut config = home.config();
+    config.notifier = Some(desktop.clone());
+    let hub = home.start_with(config);
+    let c = hub.client();
+    let target = c.add_target("alpha").id;
+    c.wait_status(&target, ConnectionStatus::Connected);
+    let prefs = json!({"enabled":true,"sound":false,"soundChoice":"default","includeQuestions":true});
+    let result = c.call("hub/settings/update", json!({"notifications":prefs})).unwrap();
+    assert_eq!(result["settings"]["notifications"], prefs);
+    let saved = yaac_hub::settings::Settings::load(&home.paths().settings_file()).unwrap().unwrap();
+    assert_eq!(serde_json::to_value(saved.hub.notifications).unwrap(), prefs);
+    c.call("hub/notifications/visible", json!([{"target": target,"threadId":"worker","requestId":"visible-copy"}])).unwrap();
+    for request in ["visible-copy", "open-this", "outside-viewport"] {
+        let item = serde_json::from_value(json!({"kind":"request","id":request,"turnId":"turn","status":"completed",
+            "requestId":request,"state":"pending","requestKind":"approval","approvalKind":"fileChange","title":request,
+            "decisions":[{"kind":"allow","id":"provider-permit","label":"Allow once"},{"kind":"deny","id":"provider-refuse","label":"Deny"}]})).unwrap();
+        alpha.emit("worker", ThreadEvent::ItemStarted(ItemEvent { item }));
+    }
+    let mut summary = support::fake_daemon::summary("worker");
+    summary.state = ThreadState::NeedsAttention;
+    alpha.originate_notification_thread_updated(&summary);
+    let summary = desktop.current("2 requests need you");
+    assert!(!summary.decisions);
+    assert_eq!(summary.settings, saved.hub.notifications);
+    assert!(!summary.play_sound);
+    desktop.hit(summary.revision, "deny");
+    desktop.hit(summary.revision, "default");
+    let single = desktop.current("YAAC needs you");
+    assert!(single.body.contains("outside-viewport"));
+    assert!(single.decisions);
+    desktop.hit(summary.revision, "deny");
+    desktop.hit(single.revision, "allow");
+    desktop.hit(single.revision, "allow");
+    wait_until("native Open routes to the exact request item", || c.drain().iter().any(|m|
+        matches!(m, yaac_protocol::rpc::Message::Notification {method,params}
+        if method == "hub/notifications/open" && params["location"]["threadId"] == "worker" && params["itemId"] == "open-this")));
+    wait_until("native Allow reaches the daemon", || !alpha.request_answers().is_empty());
+    let answers = alpha.request_answers();
+    assert_eq!(answers.len(),1);
+    assert_eq!(answers[0].thread_id.as_str(), "worker");
+    assert_eq!(answers[0].request_id.as_str(), "outside-viewport");
+    assert!(matches!(&answers[0].response, RequestResponse::Approval(a) if a.decision == "provider-permit"));
+    assert!(!answers[0].op_id.as_str().is_empty());
+}
+
+/// One native handle covers independent requests, even when targets reuse request ids.
+#[test]
+fn one_summary_walks_workers_oldest_first_and_restores_the_last_approvals_buttons() {
+    use yaac_protocol::{ItemEvent, ThreadEvent};
+    let home = Home::new();
+    let a = FakeDaemon::new("alpha");
+    let b = FakeDaemon::new("beta");
+    a.add_thread("same");
+    a.add_thread("other");
+    b.add_thread("same");
+    home.fakes.add(&a);
+    home.fakes.add(&b);
+    let desktop = Arc::new(Recorder::default());
+    let mut cfg = home.config();
+    cfg.notifier = Some(desktop.clone());
+    let hub = home.start_with(cfg);
+    let c = hub.client();
+    let alpha = c.add_target("alpha").id;
+    let beta = c.add_target("beta").id;
+    c.wait_status(&alpha, ConnectionStatus::Connected);
+    c.wait_status(&beta, ConnectionStatus::Connected);
+    c.call("hub/notifications/visible",json!([])).unwrap();
+    c.subscribe(&alpha,"same");
+    c.subscribe(&alpha,"other");
+    c.subscribe(&beta,"same");
+
+    let members = [(&a,&alpha,"same","one"),(&a,&alpha,"same","two"),(&a,&alpha,"other","one"),(&b,&beta,"same","one")];
+    let raise = |daemon:&FakeDaemon, thread:&str, req:&str| {
+        let item = serde_json::from_value(json!({"kind":"request","id":req,"turnId":"turn","status":"completed",
+            "requestId":req,"state":"pending","requestKind":"approval","approvalKind":"fileChange","title":req,
+            "decisions":[{"kind":"allow","id":"yes","label":"Allow once"},{"kind":"deny","id":"no","label":"Deny"}]})).unwrap();
+        daemon.emit(thread,ThreadEvent::ItemStarted(ItemEvent{item}));
     };
-    std::thread::sleep(Duration::from_millis(200)); // the window has gone
-    assert!(recorder.0.lock().unwrap().is_empty());
-    let mut s = support::fake_daemon::summary("t2");
-    s.state = ThreadState::NeedsAttention;
-    s.title = "Deploy".into();
-    alpha.originate_notification_thread_updated(&s);
-    wait_until("the notification", || !recorder.0.lock().unwrap().is_empty());
-    let (title, body) = recorder.0.lock().unwrap()[0].clone();
-    assert!(title.contains("needs you"), "{title}");
-    assert!(body.contains("Deploy") && body.contains("alpha"), "{body}");
-    // The same state again is not a new notification.
-    alpha.originate_notification_thread_updated(&s);
-    std::thread::sleep(Duration::from_millis(200));
-    assert_eq!(recorder.0.lock().unwrap().len(), 1);
-    let _ = a;
+    let resolve = |daemon:&FakeDaemon, thread:&str, req:&str| {
+        daemon.emit(thread,ThreadEvent::RequestChanged(serde_json::from_value(json!({
+            "itemId":req,"requestId":req,"state":"resolved"})).unwrap()));
+    };
+    let mut revisions = Vec::new();
+    for (i,(daemon,_,thread,req)) in members.iter().enumerate() {
+        raise(daemon, thread, req);
+        let title = if i == 0 { "YAAC needs you".into() } else { format!("{} requests need you", i+1) };
+        let n = desktop.current(&title);
+        assert_eq!(n.decisions, i == 0);
+        revisions.push(n.revision);
+    }
+    assert_eq!(desktop.0.lock().unwrap().len(), 1);
+    resolve(&a,"same","two");
+    let mut n = desktop.current("3 requests need you");
+    assert!(!n.play_sound);
+    desktop.hit(revisions[0], "allow");
+    for (target, thread, count) in [(&alpha,"same",2),(&alpha,"other",1)] {
+        desktop.hit(n.revision,"deny");
+        desktop.hit(n.revision,"default");
+        wait_until("Open reaches the oldest unseen survivor",|| c.drain().iter().any(|m| {
+            let yaac_protocol::rpc::Message::Notification{method,params}=m else{return false};
+            if method!="hub/notifications/open" {return false;}
+            let loc=&params["location"];
+            assert_eq!(loc["target"],target.as_str());
+            assert_eq!(loc["threadId"],thread);
+            assert_eq!(loc["requestId"],"one");
+            assert_eq!(params["itemId"],"one");
+            true
+        }));
+        let title=if count==1 {"YAAC needs you".into()} else {format!("{count} requests need you")};
+        n=desktop.current(&title);
+        assert!(!n.play_sound);
+    }
+    assert!(n.decisions);
+    desktop.hit(revisions[0],"deny");
+    desktop.hit(n.revision,"deny");
+    desktop.hit(n.revision,"allow");
+    wait_until("only the last approval is answered", || b.request_answers().len()==1);
+    assert_eq!(b.request_answers()[0].thread_id.as_str(),"same");
+    assert_eq!(b.request_answers()[0].request_id.as_str(),"one");
+    assert!(a.request_answers().is_empty());
+    wait_until("zero unseen requests withdraws the reminder",||
+        matches!(desktop.0.lock().unwrap()[0].2.try_recv(),Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)));
+    assert_eq!(desktop.0.lock().unwrap().len(),1);
 }

@@ -94,6 +94,21 @@ public partial class TranscriptView : UserControl
         };
     }
 
+    internal void ObserveVisibleRequests(Action changed)
+    {
+        Rows.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => changed()));
+        IsVisibleChanged += (_, _) => changed();
+        SizeChanged += (_, _) => changed();
+    }
+
+    internal IEnumerable<JsonElement> VisibleRequests()
+    {
+        if (!IsVisible || viewport is null) yield break;
+        foreach (var (row, top, bottom) in RealizedRows())
+            if (bottom > 0 && top < viewport.ActualHeight && row.Data.TryGetProperty("requestLocation", out var location) && location.ValueKind == JsonValueKind.Object)
+                yield return location;
+    }
+
     internal void FocusBackground() => Rows.Focus();
 
     internal TranscriptRow? FocusedApproval => IsVisible && IsKeyboardFocusWithin

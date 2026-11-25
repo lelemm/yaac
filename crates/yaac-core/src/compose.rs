@@ -193,6 +193,9 @@ pub fn shell_key(key: FieldKey, sel_start: usize, sel_end: usize, field_chars: u
     ShellKey::Pass
 }
 
+/// The number of submitted message drafts the window remembers across conversations.
+pub const MESSAGE_HISTORY_LIMIT: usize = 10;
+
 /// ↑ and ↓ through a thread's earlier `!` commands in the composer (P346), newest first. The
 /// text typed before the first ↑ comes back when ↓ goes past the newest.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

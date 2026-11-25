@@ -45,6 +45,7 @@ import type { MeshAttachment, MeshHooks, MeshInputMessage, MeshToolCall, MeshToo
 import type { ClientSession, MethodHandler } from "../session/client.js";
 import type { ClientLink, Core, CoreMeshHooks, DispatchHandle } from "../session/core.js";
 import type { RequestRecord, ThreadRuntime } from "../session/thread.js";
+import { artifactBytes } from "../session/files.js";
 import { gitRunner } from "../session/git.js";
 import { normaliseRemote } from "../session/fsinfo.js";
 import { nowIso, randomId } from "../util/fsx.js";
@@ -520,6 +521,26 @@ export class Mesh implements CoreMeshHooks {
     try {
       let text: string;
       switch (call.tool) {
+        case "present_artifact": {
+          if (typeof a.path !== "string") throw new ToolError("provide a relative file path");
+          const name = path.basename(a.path);
+          const title = a.title ?? name;
+          if (typeof title !== "string" || !title.trim() || Buffer.byteLength(title) > 160) throw new ToolError("provide a title of 1–160 bytes");
+          const bytes = await artifactBytes(rt.record.cwd, a.path);
+          if (rt.deleted) throw new ToolError("this thread no longer exists");
+          const previous = rt.record.artifacts ?? [];
+          const snapshot = this.core.uploads.storeArtifact(bytes, name, id => {
+            // Bound index metadata before writing any new blob.
+            if (previous.length >= 32 && !previous.some(row => row.uploadId === id)) throw new ToolError("this thread has presented 32 artifacts");
+          });
+          if (!previous.some(row => row.uploadId === snapshot.uploadId)) {
+            rt.record.artifacts = [...previous, { ...snapshot, title, size: bytes.length }];
+            try { rt.saveRecord(); } catch (error) { rt.record.artifacts = previous; throw error; }
+          }
+          this.core.updateIndex(rt);
+          text = `Presented ${snapshot.name} (${snapshot.uploadId}).`;
+          break;
+        }
         case "whoami":
           text = this.whoami(rt);
           break;

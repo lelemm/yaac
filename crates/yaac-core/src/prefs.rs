@@ -70,6 +70,8 @@ pub struct UiPrefs {
     pub terminal_commands: std::collections::BTreeMap<String, bool>,
     /// The Commander's recently used commands, most recent first (D130).
     pub recent: Vec<String>,
+    /// Recent composer messages, newest first.
+    pub composer_history: std::sync::Arc<[String]>,
     /// Settings → Terminal (P339) and the terminal panel's height (P338).
     pub terminal: TerminalPrefs,
 }
@@ -108,7 +110,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), terminal: TerminalPrefs::default() }
+        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), composer_history: Default::default(), terminal: TerminalPrefs::default() }
     }
 }
 
@@ -142,6 +144,8 @@ pub mod keys {
     pub const KEY_BINDINGS: &str = "keyBindings";
     /// The Commander's recently used commands (D130).
     pub const COMMANDER_RECENT: &str = "commanderRecent";
+    /// Recently submitted message drafts.
+    pub const COMPOSER_HISTORY: &str = "composerHistory";
     /// Side-by-side layout in diff tabs.
     pub const DIFF_SIDE_BY_SIDE: &str = "diffSideBySide";
     /// Settings → Terminal and the panel's height (P338, P339).
@@ -149,7 +153,7 @@ pub mod keys {
     /// Commands whose "Works in the terminal" differs from the default (P338).
     pub const TERMINAL_COMMANDS: &str = "terminalCommands";
     /// Every key.
-    pub const ALL: [&str; 17] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, PILL_POSITION, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS];
+    pub const ALL: [&str; 18] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, PILL_POSITION, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS, COMPOSER_HISTORY];
 }
 
 impl UiPrefs {
@@ -195,6 +199,18 @@ impl UiPrefs {
                 "panelShare": self.terminal.panel_share,
             }),
             keys::COMMANDER_RECENT => json!(self.recent),
+            keys::COMPOSER_HISTORY => {
+                // The attach frame also carries the method and request id. Keep the newest
+                // whole messages when unusually large drafts would exceed that frame.
+                let mut remaining = yaac_protocol::frame::MAX_MESSAGE_PAYLOAD - 256;
+                let texts: Vec<_> = self.composer_history.iter().take_while(|text| {
+                    let bytes = serde_json::to_vec(text).map_or(usize::MAX, |json| json.len() + 1);
+                    let Some(left) = remaining.checked_sub(bytes) else { return false };
+                    remaining = left;
+                    true
+                }).collect();
+                json!(texts)
+            }
             keys::SEND_KEY => json!(match self.send_key {
                 SendKey::Enter => "enter",
                 SendKey::CtrlEnter => "ctrlEnter",
@@ -251,6 +267,13 @@ impl UiPrefs {
             keys::COMMANDER_RECENT => {
                 if let Some(list) = v.as_array() {
                     self.recent = list.iter().filter_map(Value::as_str).filter(|id| crate::commands::by_id(id).is_some()).take(crate::commands::RECENT_MAX).map(str::to_owned).collect();
+                }
+            }
+            keys::COMPOSER_HISTORY => {
+                if let Some(list) = v.as_array() {
+                    self.composer_history = list.iter().filter_map(Value::as_str)
+                        .filter(|text| !text.trim().is_empty()).take(crate::compose::MESSAGE_HISTORY_LIMIT)
+                        .map(str::to_owned).collect::<Vec<_>>().into();
                 }
             }
             keys::THEME => {

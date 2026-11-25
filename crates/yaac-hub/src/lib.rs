@@ -20,7 +20,7 @@
 //! | [`cache`] | The disposable SQLite cache; items and position commit together. |
 //! | [`drafts`] | The durable draft store (own file, own migrations). |
 //! | [`relay`] | The durable mesh relay queue (own file, own migrations). |
-//! | [`notify`] | Desktop notifications when a thread needs the user and no window is attached. |
+//! | [`notify`] | Desktop notifications for pending requests outside the focused window. |
 //!
 //! Threads: one tokio current-thread runtime on the calling thread does all I/O and owns all
 //! protocol state; one store thread does all SQLite work, in submission order. Nothing else.

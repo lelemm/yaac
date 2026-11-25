@@ -14,13 +14,15 @@ use crate::theme::Palette;
 /// The title row's height.
 pub(crate) const HEIGHT: f32 = 42.0;
 const BUTTON_W: f32 = 44.0;
+/// The panes button and the three window controls next to it.
+pub(crate) const THREAD_CONTROLS_WIDTH: f32 = 4.0 * BUTTON_W;
 /// How far in from the window's edge a drag resizes it.
 const GRIP: f32 = 5.0;
 
 /// The row's draggable part. Called before the content, so the content's own widgets in the
 /// strip take precedence; [`buttons`] is called after it, so the buttons are on top.
 pub(crate) fn drag_area(ui: &mut egui::Ui, full: Rect) {
-    let bar = Rect::from_min_size(full.min, vec2(full.width() - 4.0 * BUTTON_W, HEIGHT));
+    let bar = Rect::from_min_size(full.min, vec2(full.width() - THREAD_CONTROLS_WIDTH, HEIGHT));
     let resp = ui.interact(bar, egui::Id::unique("title-drag"), Sense::click_and_drag());
     let maximized = ui.input(|i| i.viewport().maximized.unwrap_or(false));
     if resp.double_clicked() {
@@ -105,7 +107,7 @@ pub(crate) fn update(ui: &mut egui::Ui, full: Rect, p: &Palette, u: &crate::upda
     use crate::updater::CaptionAction;
     let caption = u.phase.caption()?;
     let w = u.title_width();
-    let r = Rect::from_min_size(pos2(full.right() - 4.0 * BUTTON_W - w, full.top()), vec2(w, HEIGHT));
+    let r = Rect::from_min_size(pos2(full.right() - THREAD_CONTROLS_WIDTH - w, full.top()), vec2(w, HEIGHT));
     let clickable = caption.action.is_some();
     let resp = ui.interact(r, egui::Id::unique("title-update"), if clickable { Sense::click() } else { Sense::hover() }).on_hover_text(caption.tooltip);
     let hot = clickable && (resp.hovered() || resp.has_focus());
@@ -136,7 +138,7 @@ pub(crate) fn panes(ui: &mut egui::Ui, full: Rect, app: &mut crate::app::YaacApp
     if app.client.state.selected_thread().is_none() || app.ui.settings {
         return;
     }
-    let rect = Rect::from_min_size(pos2(full.right() - 4.0 * BUTTON_W, full.top()), vec2(BUTTON_W, HEIGHT));
+    let rect = Rect::from_min_size(pos2(full.right() - THREAD_CONTROLS_WIDTH, full.top()), vec2(BUTTON_W, HEIGHT));
     let plus = ui.interact(rect, egui::Id::unique("title-panes"), Sense::click()).on_hover_text("Add a side pane tab");
     let hot = plus.hovered() || plus.has_focus();
     if hot {

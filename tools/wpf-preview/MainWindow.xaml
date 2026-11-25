@@ -180,29 +180,25 @@
           <RowDefinition Height="42" />
           <RowDefinition Height="*" />
         </Grid.RowDefinitions>
-        <Grid x:Name="CaptionThreadHeader" Margin="28,0,176,0">
-          <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="Auto" />
-            <ColumnDefinition Width="Auto" MaxWidth="560" />
-            <ColumnDefinition Width="Auto" />
-            <ColumnDefinition Width="*" />
-          </Grid.ColumnDefinitions>
-          <Grid x:Name="ThreadMarkSlot" Width="25" Margin="0,0,4,0" VerticalAlignment="Center">
+        <DockPanel x:Name="CaptionThreadHeader" Margin="28,0,176,0" HorizontalAlignment="Left">
+          <Grid x:Name="ThreadMarkSlot" DockPanel.Dock="Left" Width="25" Margin="0,0,4,0" VerticalAlignment="Center">
             <TextBlock x:Name="ThreadMark" FontSize="21" VerticalAlignment="Center" />
             <preview:RunningSpinner x:Name="ThreadSpinner" Width="20" Height="20" Visibility="Collapsed" />
           </Grid>
-          <TextBlock x:Name="ThreadTitle" Grid.Column="1" VerticalAlignment="Center"
-                     FontSize="19" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
-          <Border x:Name="ThreadTag" Grid.Column="2" Visibility="Collapsed" Background="{DynamicResource YaacRaised}"
-                  CornerRadius="4" Padding="7,3" Margin="8,0,0,0" VerticalAlignment="Center">
-            <TextBlock x:Name="ThreadTagText" />
-          </Border>
-          <StackPanel x:Name="HeaderBudget" Grid.Column="3" Visibility="Collapsed" Orientation="Horizontal"
-                      VerticalAlignment="Center" Margin="8,0,0,0">
-            <TextBlock Text="Agent budget reached" VerticalAlignment="Center" Foreground="{DynamicResource YaacMuted}" />
-            <Button Content="Continue" Click="ContinueClicked" shell:WindowChrome.IsHitTestVisibleInChrome="True" />
+          <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+            <Border x:Name="ThreadTag" Visibility="Collapsed" Background="{DynamicResource YaacRaised}"
+                    CornerRadius="4" Padding="7,3" Margin="8,0,0,0" VerticalAlignment="Center">
+              <TextBlock x:Name="ThreadTagText" />
+            </Border>
+            <StackPanel x:Name="HeaderBudget" Visibility="Collapsed" Orientation="Horizontal"
+                        VerticalAlignment="Center" Margin="8,0,0,0">
+              <TextBlock Text="Agent budget reached" VerticalAlignment="Center" Foreground="{DynamicResource YaacMuted}" />
+              <Button Content="Continue" Click="ContinueClicked" shell:WindowChrome.IsHitTestVisibleInChrome="True" />
+            </StackPanel>
           </StackPanel>
-        </Grid>
+          <TextBlock x:Name="ThreadTitle" VerticalAlignment="Center"
+                     FontSize="19" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
+        </DockPanel>
         <Grid Grid.Row="1" x:Name="ThreadColumns" SizeChanged="ChatRegionSizeChanged">
           <Grid.ColumnDefinitions>
             <ColumnDefinition x:Name="BrowserChatColumn" Width="*" />

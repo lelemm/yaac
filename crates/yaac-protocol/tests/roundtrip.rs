@@ -521,3 +521,10 @@ fn a_user_message_may_carry_its_op_id_and_interrupted_is_a_notice_kind() {
     let k: NoticeKind = serde_json::from_value(json!("interrupted")).unwrap();
     assert_eq!(k, NoticeKind::Interrupted);
 }
+
+#[test]
+fn approval_explain_carries_an_ordered_model_pair_and_inert_input() {
+    let wire = serde_json::json!({"tool":"shell","input":"echo \n","models":{"main":{"instance":"one","model":"fixture"},"fallback":null}});
+    let p: yaac_protocol::ApprovalExplainParams = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(p).unwrap(), wire);
+}

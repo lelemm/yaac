@@ -103,6 +103,7 @@ pub(crate) struct ForkDialog {
 /// View state that is not application state.
 #[derive(Debug)]
 pub(crate) struct UiState {
+    pub visible_requests: Vec<yaac_protocol::attach::RequestLocation>,
     pub grouping: Grouping,
     pub collapsed_groups: BTreeSet<String>,
     pub search: String,
@@ -225,8 +226,8 @@ pub(crate) struct UiState {
     pub tray_on_close: bool,
     /// Settings → Terminal and the terminal panel's height (P338, P339).
     pub terminal: yaac_core::prefs::TerminalPrefs,
-    pub questions: HashMap<RequestId, QuestionDraft>,
-    pub budgets: HashMap<RequestId, BudgetFields>,
+    pub questions: HashMap<(ThreadKey, RequestId), QuestionDraft>,
+    pub budgets: HashMap<(ThreadKey, RequestId), BudgetFields>,
     pub dismissed: BTreeSet<TargetId>,
     pub focus_search: bool,
     pub focus_composer: bool,
@@ -287,6 +288,8 @@ pub(crate) struct UiState {
     pub bindings: yaac_core::commands::Bindings,
     /// The Commander's recently used commands, most recent first.
     pub recent: Vec<String>,
+    pub(crate) composer_history: Arc<[String]>,
+    pub(crate) composer_history_walk: Option<(DraftRef, usize)>,
     /// The request card whose button has keyboard focus (set while drawing it).
     pub card_focus: Option<ItemId>,
     /// "Quit YAAC?" is asked (Quit with the tray off).
@@ -300,6 +303,7 @@ pub(crate) struct UiState {
 impl UiState {
     fn new(theme: ThemeChoice) -> Self {
         Self {
+            visible_requests: Vec::new(),
             grouping: Grouping::default(),
             collapsed_groups: BTreeSet::new(),
             search: String::new(),
@@ -396,6 +400,8 @@ impl UiState {
             textsel: crate::seltext::TextSel::default(),
             diffs: crate::thread::DiffCache::default(),
             history: yaac_core::history::History::default(),
+            composer_history: Default::default(),
+            composer_history_walk: None,
             restore: None,
             nav_menu: None,
             nav_sel: 0,
@@ -441,6 +447,7 @@ impl UiState {
             bindings: self.bindings.overrides.clone(),
             terminal_commands: self.bindings.in_terminal.clone(),
             recent: self.recent.clone(),
+            composer_history: self.composer_history.clone(),
             terminal: self.terminal,
         }
     }
@@ -466,6 +473,8 @@ impl UiState {
         self.bindings.overrides = p.bindings.clone();
         self.bindings.in_terminal = p.terminal_commands.clone();
         self.recent = p.recent.clone();
+        self.composer_history = p.composer_history.clone();
+        self.composer_history_walk = None;
         self.terminal = p.terminal;
     }
 }
@@ -489,6 +498,7 @@ pub(crate) struct CreateProject {
 /// What the user did this frame.
 #[derive(Clone, Debug)]
 pub(crate) enum Action {
+    Artifact(ThreadKey, crate::artifacts::ArtifactCard, crate::artifacts::Command),
     OpenImage(crate::images::ImageSource, String),
     OlderHistory(ThreadKey),
     NewerHistory(ThreadKey),
@@ -500,7 +510,7 @@ pub(crate) enum Action {
     TypeHere,
     OpenAt(ThreadKey, Option<ItemId>),
     OpenRequest(ThreadKey),
-    Respond { key: ThreadKey, request: RequestId, response: RequestResponse, summary: String },
+    Respond { viewing: ThreadKey, key: ThreadKey, request: RequestId, response: RequestResponse, summary: String },
     Send(ThreadKey),
     /// Send now while a turn runs: steered or interrupting (D166).
     SendNow(ThreadKey),
@@ -595,6 +605,7 @@ pub(crate) enum Action {
     ConfirmUltrafast,
     ChooseMode(ModeTarget, ModeId),
     ConfirmMode,
+    ConfirmModeTree,
     CancelMode,
     SetAgents(ThreadKey, AgentsPolicy),
     DraftModel(u64, InstanceId, yaac_protocol::ModelId),
@@ -602,6 +613,7 @@ pub(crate) enum Action {
     /// Fast mode on or off for a new-thread draft (D125).
     DraftFast(u64, bool),
     Retry(TargetId),
+    RefreshComponents,
     /// **Update now** on a target's older `yaacd`: asks first when turns would be interrupted.
     UpdateDaemon(TargetId),
     /// The confirmation's Update now.
@@ -636,6 +648,7 @@ pub(crate) enum Action {
     TrustFolders(TargetId, InstanceId, bool),
     ModelBestUse(TargetId, InstanceId, yaac_protocol::ModelId, yaac_protocol::ModelId, Option<String>),
     ModelEnabled(TargetId, InstanceId, yaac_protocol::ModelId, bool),
+    ApprovalExplanationModel(TargetId, InstanceId, Option<yaac_protocol::ModelId>),
     SetAlways(bool),
     ClearCache,
     FsList(TargetId, String),
@@ -762,6 +775,7 @@ pub(crate) struct YaacApp {
     pub ssh: Box<dyn SshSetupBackend>,
     /// The file picker, the clipboard, and thumbnails, on worker threads.
     pub files: crate::files::Files,
+    pub artifacts: crate::artifacts::Artifacts,
     pub images: crate::images::Images,
     /// When drafts were last stored in the hub (seconds of egui time).
     drafts_flushed: f64,
@@ -908,6 +922,7 @@ impl YaacApp {
             started: std::time::Instant::now(),
             shots: launch.shots,
             files: crate::files::Files::new(&cc.egui_ctx),
+            artifacts: Default::default(),
             images: crate::images::Images::new(&cc.egui_ctx),
             drafts_flushed: 0.0,
             #[cfg(feature = "hub")]
@@ -1176,6 +1191,7 @@ impl YaacApp {
     pub(crate) fn apply(&mut self, actions: Vec<Action>) {
         for a in actions {
             match a {
+                Action::Artifact(key, card, command) => self.artifacts.start(&self.ctx, &mut self.client, key, card, command),
                 Action::OpenImage(source, name) => self.images.open(source, name),
                 Action::OlderHistory(k) => self.client.older_history(&k),
                 Action::NewerHistory(k) => self.client.newer_history(&k),
@@ -1191,25 +1207,25 @@ impl YaacApp {
                 Action::TypeHere => self.type_here(),
                 Action::OpenAt(k, i) => self.open(&k, i),
                 Action::OpenRequest(k) => {
-                    self.open(&k, None);
-                    let item = self.pending_card(&k);
+                    let copy = self.client.state.selected_thread()
+                        .filter(|a| !self.ui.settings && self.browsers.chat_visible(a))
+                        .and_then(|a| yaac_core::copies::open_copy_of(&self.client.state, a, &k));
+                    let item = if let Some(copy) = copy {
+                        self.ui.restore = None;
+                        Some(copy.id())
+                    } else {
+                        self.open(&k, None);
+                        self.pending_card(&k)
+                    };
                     self.ui.scroll_to = item.clone();
                     self.ui.focus_card = item;
                 }
-                Action::Respond { key, request, response, summary } => {
-                    self.client.respond(&key, &request, &response, summary);
-                    self.ui.questions.remove(&request);
+                Action::Respond { viewing, key, request, response, summary } => {
+                    self.client.respond_from(&viewing, &key, &request, &response, summary);
+                    self.ui.questions.remove(&(key, request));
                 }
-                Action::Send(k) => {
-                    if self.client.send(&k) {
-                        self.ui.scroll_end = true;
-                    }
-                }
-                Action::SendNow(k) => {
-                    if self.client.send_now(&k) {
-                        self.ui.scroll_end = true;
-                    }
-                }
+                Action::Send(k) => self.send_composer_message(&k, false),
+                Action::SendNow(k) => self.send_composer_message(&k, true),
                 Action::QueueEdit(k, q) => {
                     self.client.begin_queue_edit(&k, &q);
                     self.ui.focus_composer = true;
@@ -1249,7 +1265,10 @@ impl YaacApp {
                     }
                 }
                 Action::StartDraft(id) => {
-                    self.client.start_thread(id);
+                    let message = self.client.draft(&DraftRef::New(id)).map(|draft| draft.text.clone());
+                    if self.client.start_thread(id) {
+                        self.remember_composer_message(message);
+                    }
                 }
                 Action::NewThread => self.new_thread(),
                 Action::StartFirstThread => self.start_first_thread(),
@@ -1407,6 +1426,7 @@ impl YaacApp {
                     self.client.state.next_settings.entry(k).or_default().effort = Some(e);
                 }
                 Action::ChooseMode(t, m) => self.client.choose_mode(t, m),
+                Action::ConfirmModeTree => self.client.confirm_mode_scope(true),
                 Action::ConfirmMode => self.client.confirm_mode(),
                 Action::CancelMode => self.client.cancel_mode(),
                 Action::SetAgents(k, pol) => self.client.set_agents_policy(&k, pol),
@@ -1418,6 +1438,10 @@ impl YaacApp {
                     self.client.draft_changed(&DraftRef::New(id));
                 }
                 Action::Retry(t) => self.client.retry_target(&t),
+                Action::RefreshComponents => {
+                    self.client.refresh_components();
+                    self.updater.refresh();
+                }
                 Action::UpdateDaemon(t) => match yaac_core::components::update_now_dialog(&self.client.state, &t) {
                     Some(d) => self.ui.update_now = Some(d),
                     None => self.client.update_daemon(&t),
@@ -1496,6 +1520,9 @@ impl YaacApp {
                 Action::ModelEnabled(target, instance, model, enabled) => {
                     self.client.set_model_enabled(&target, instance, model, enabled);
                 }
+                Action::ApprovalExplanationModel(target, instance, model) => {
+                    self.client.set_approval_explanation_model(&target, &instance, model);
+                }
                 Action::SetAlways(on) => {
                     self.client.set_always(on);
                     #[cfg(feature = "hub")]
@@ -1573,6 +1600,26 @@ impl YaacApp {
                 }
             }
         }
+    }
+
+    fn send_composer_message(&mut self, key: &ThreadKey, now: bool) {
+        let message = self.client.draft(&DraftRef::Thread(key.clone()))
+            .filter(|draft| !yaac_core::compose::is_compact_command(&draft.text)
+                && !self.client.state.queue_edits.contains_key(key)
+                && yaac_core::header::shell_mode(&self.client.state, key).is_none())
+            .map(|draft| draft.text.clone());
+        let sent = if now { self.client.send_now(key) } else { self.client.send(key) };
+        if sent {
+            self.remember_composer_message(message);
+            self.ui.scroll_end = true;
+        }
+    }
+
+    fn remember_composer_message(&mut self, message: Option<String>) {
+        self.ui.composer_history_walk = None;
+        let Some(text) = message.filter(|text| !text.trim().is_empty()) else { return };
+        self.ui.composer_history = std::iter::once(text).chain(self.ui.composer_history.iter().cloned())
+            .take(yaac_core::compose::MESSAGE_HISTORY_LIMIT).collect::<Vec<_>>().into();
     }
 
     /// The hello outcomes, the old hub's replacement, and the persisted choices.
@@ -1760,6 +1807,32 @@ impl YaacApp {
         // repaint. Arrivals from a real hub wake the window through the link's waker.
         self.updater.poll();
         let arrived = self.pump_demo();
+        if let Some(open) = self.client.notification_open.pop_front() {
+            if !self.client.notification_open.is_empty() { ctx.request_repaint(); }
+            let (loc, item) = (open.location, open.item_id);
+            let worker = ThreadKey::new(loc.target, loc.thread_id);
+            let copy = self.client.state.selected_thread().and_then(|ancestor| {
+                yaac_core::copies::copies(&self.client.state, ancestor).into_iter()
+                    .find(|copy| copy.open && copy.worker == worker && copy.request == loc.request_id)
+                    .map(|copy| (ancestor.clone(), copy.id()))
+            });
+            let (key, focus) = if let Some(copy) = copy {
+                // Copy ids exist only in the renderer. The worker owns the journal item.
+                self.ui.settings = false;
+                self.ui.restore = None;
+                copy
+            } else {
+                self.open(&worker, Some(item.clone()));
+                (worker, item)
+            };
+            self.ui.scroll_to = Some(focus.clone());
+            self.ui.focus_card = Some(focus);
+            if !self.browsers.chat_visible(&key) { self.browsers.select_chat(&key); }
+            self.shell.hidden = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
         #[cfg(feature = "hub")]
         self.hub_upkeep();
         #[cfg(feature = "hub")]
@@ -1770,6 +1843,7 @@ impl YaacApp {
         let ssh_changed = self.ui.set.pump_ssh(self.ssh.as_mut());
         let t = ctx.input(|i| i.time);
         let files_changed = self.pump_files();
+        self.artifacts.pump(ctx, &mut self.client, &mut self.browsers);
         self.images.pump(&mut self.client);
         // Drafts go to the hub's store at a calm pace, not on every key.
         if self.client.drafts_dirty() {
@@ -1839,6 +1913,9 @@ impl eframe::App for YaacApp {
 
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.upkeep(ctx);
+        if self.shell.hidden || !ctx.input(|i| i.focused) || ctx.input(|i| i.viewport().minimized == Some(true)) {
+            self.client.set_visible_requests(Vec::new());
+        }
         let repaint = ctx.clone();
         let file_repaint = ctx.clone();
         self.browsers.set_file_wake(move || file_repaint.request_repaint());
@@ -1987,6 +2064,50 @@ pub(crate) mod tests {
             updater: crate::updater::Updater::off("tests"),
         };
         YaacApp::from_ctx(ctx, launch)
+    }
+
+    #[test]
+    fn composer_history_keeps_the_latest_ten_submissions_across_targets() {
+        let ctx = egui::Context::default();
+        let mut app = demo_app(&ctx);
+        let keys = [threads::parser(), threads::orchestrator()];
+        assert_ne!(keys[0].target, keys[1].target);
+        for i in 0..12 {
+            let key = &keys[i % keys.len()];
+            app.client.state.drafts.entry(key.clone()).or_default().text = format!("message {i}");
+            app.apply(vec![Action::Send(key.clone())]);
+        }
+        let expected: Vec<_> = (2..12).rev().map(|i| format!("message {i}")).collect();
+        assert_eq!(app.ui.composer_history.as_ref(), expected.as_slice());
+        let mut loaded = UiPrefs::default();
+        let key = yaac_core::prefs::keys::COMPOSER_HISTORY;
+        loaded.load(key, &app.ui.prefs().value(key));
+        assert_eq!(loaded.composer_history.as_ref(), expected.as_slice());
+    }
+
+    pub(crate) fn worker_mode_dialog(ctx: &egui::Context) -> YaacApp {
+        let mut app = demo_app(ctx);
+        let hub = app.demo.clone().unwrap();
+        hub.play(yaac_core::demo::Scene::ModeChange);
+        hub.drain();
+        app.pump_demo();
+        let root = threads::orchestrator();
+        app.open(&root, None);
+        app.client.choose_mode(yaac_core::mode_confirm::ModeTarget::Thread(root), "bypass".into());
+        assert!(app.client.state.mode_confirm.as_ref().is_some_and(|p| !p.workers.is_empty()));
+        app
+    }
+
+    #[test]
+    fn worker_mode_dialog_enter_applies_only_to_this_thread() {
+        let ctx = egui::Context::default();
+        let mut app = worker_mode_dialog(&ctx);
+        keys(&ctx, &mut app, vec![]);
+        keys(&ctx, &mut app, vec![]);
+        keys(&ctx, &mut app, vec![press(Key::Enter, Modifiers::NONE)]);
+        assert!(app.client.state.mode_confirm.is_none());
+        let calls = app.demo.as_ref().unwrap().requests();
+        assert_eq!(calls.iter().filter(|(_, method, _)| method == "thread/setMode").count(), 1);
     }
 
     #[test]

@@ -100,6 +100,8 @@ pub struct Transcript {
     pending: Vec<crate::sending::Pending>,
     /// Bumped on every change, for UI caches.
     pub revision: u64,
+    /// A requested explanation, true while its response is pending.
+    pub explanations: BTreeMap<RequestId, bool>,
 }
 
 impl Transcript {

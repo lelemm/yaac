@@ -202,3 +202,73 @@ test("P342: in a never-ask thread, an approval the user's own ask rule forced an
     await done();
   }
 });
+
+test("P356 applies an idle mode once, refuses an unconfirmed interruption and resumes with a YAAC notice", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const { threadId, turnId } = await startThread(c, "/fake sleep 3000", { mode: "f-ask" });
+    const params = { opId: opId(), threadId, sourceTarget: "another", sourceInstance: "different", sourceTitle: "Coordinator",
+      mode: MODES[1], allowInterrupt: false };
+    await assert.rejects(c.request("thread/setMode", params), /interrupt/i);
+    assert.equal(d.core.requireThread(threadId).activeTurn, turnId);
+    const confirmed = { ...params, opId: opId(), allowInterrupt: true };
+    await c.request("thread/setMode", confirmed);
+    await c.request("thread/setMode", confirmed);
+    const rt = d.core.requireThread(threadId);
+    assert.equal(rt.record.selectedMode, "f-bypass");
+    const events = rt.journal!.entries().map(e => e.event);
+    assert.equal(events.filter(e => e.type === "turnStarted" && e.origin === "yaac").length, 1);
+    assert.ok(events.some(e => e.type === "itemCompleted" && e.item.kind === "notice" && e.item.text.includes("from Coordinator by you")));
+    assert.ok(events.some(e => e.type === "itemCompleted" && e.item.kind === "notice" && e.item.text.includes("[YAAC notice]")));
+    await until(() => !rt.activeTurn, "the resumed turn to finish");
+    await c.request("thread/setMode", { ...params, opId: opId(), mode: MODES[0] });
+    assert.equal(rt.activeTurn, null);
+    assert.equal(rt.record.selectedMode, "f-ask");
+  } finally {
+    await done();
+  }
+});
+
+test("P356 resolves an eligible existing approval when the user selects never-ask", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const { threadId } = await startThread(c, "/fake approve echo ok", { mode: "f-ask" });
+    await until(() => d.busy().pendingRequests === 1, "approval");
+    await c.request("thread/setMode", { threadId, opId: opId(), sourceTarget: "local", sourceInstance: FAKE,
+      sourceTitle: "Coordinator", mode: MODES[1], allowInterrupt: true });
+    const [request] = await requestsOf(c, threadId);
+    assert.equal(request.resolution.by, "yaacd");
+    assert.equal(request.resolution.automatic.mode, "f-bypass");
+  } finally {
+    await done();
+  }
+});
+
+test("P356 changes a live worker in place and rejects a cross-instance mode above the ceiling", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const { threadId, turnId } = await startThread(c, "/fake ask Continue?", { mode: "f-ask" });
+    await until(() => d.busy().pendingRequests === 1, "the live worker's question");
+    const fake = fakeOf(d);
+    const effective = fake.effective.bind(fake);
+    fake.effective = async thread => {
+      const settings = await effective(thread);
+      return { ...settings, capabilities: [...(settings.capabilities ?? []), "modeChangeLive"] };
+    };
+    const descriptor = d.core.registry.require(FAKE).descriptor;
+    descriptor.capabilities = [...(descriptor.capabilities ?? []), "modeChangeLive"];
+    const changes: string[] = [];
+    Object.assign(fake, { setModeLive: async (_thread: string, mode: string) => { changes.push(mode); } });
+    const change = (mode: object) => c.request("thread/setMode", {
+      opId: opId(), threadId, sourceTarget: "remote", sourceInstance: "other", sourceTitle: "Parent", mode,
+    });
+    await change(MODES[1]!);
+    await change(MODES[0]!);
+    await assert.rejects(change({ id: "read", displayName: "Read only", autonomy: "readOnly" }), /equivalent/i);
+    assert.deepEqual(changes, ["f-bypass", "f-ask"]);
+    assert.equal(d.core.requireThread(threadId).activeTurn, turnId);
+    assert.equal(d.busy().pendingRequests, 1);
+  } finally {
+    await done();
+  }
+});

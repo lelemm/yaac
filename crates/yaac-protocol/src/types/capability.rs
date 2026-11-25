@@ -18,6 +18,8 @@ open_enum! {
         /// This target's `yaacd` can set or remove an orchestration's time limit
         /// (`mesh/budget` `setTimeLimit`, P352).
         BudgetTimeLimit = "budgetTimeLimit",
+        /// Permission mode can change during a running turn.
+        ModeChangeLive = "modeChangeLive",
         // Thread lifecycle
         /// Can enumerate existing conversations on the target.
         ThreadList = "threadList",
@@ -65,6 +67,8 @@ open_enum! {
         ModelBestUse = "modelBestUse",
         /// Settings can turn models off for this provider instance.
         ModelAvailability = "modelAvailability",
+        /// Settings can select a model for ephemeral command approval explanations.
+        CommandExplanations = "commandExplanations",
         // Turn control
         /// Incremental agent text.
         StreamText = "streamText",

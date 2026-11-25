@@ -243,3 +243,12 @@ restart brings them back: finished uploads keep their `uploadId`, an upload that
 is checked against `hub/upload/list` and asked again if the hub no longer has it, and clipboard
 bytes come back from their draft blob. Sending deletes the message's blobs and the stored
 draft. Moving a new-thread draft to a project on another target uploads every chip again there.
+
+### Generated documents and images (P358, Proposed)
+
+A published artifact card shows a snapshot from the agent's working directory. The thread
+record keeps its name and upload ID. Download and Open read the snapshot from the originating
+target's private upload store. Removing or editing the working file leaves the snapshot intact.
+If the target's temporary store was cleaned, the card reports the missing bytes on the next
+attempt. The agent can publish the same file again to restore that snapshot. See the
+[supported formats and worker card behavior](10-agent-mesh.md#presenting-generated-files-p358-proposed).

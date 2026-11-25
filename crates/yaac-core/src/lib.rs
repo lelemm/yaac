@@ -27,6 +27,7 @@ pub mod bulk;
 pub mod client;
 pub mod compose;
 pub mod commands;
+pub mod copies;
 pub mod components;
 pub mod controls;
 pub mod demo;

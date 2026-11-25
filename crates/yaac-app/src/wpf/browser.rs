@@ -280,7 +280,7 @@ impl BrowserPipe {
                             self.native.send(
                                 id,
                                 yaac_preview::wire::Action::Inspect {
-                                    title: format!("DevTools — {name} · {target}"),
+                                    title: format!("DevTools · {name} · {target}"),
                                     at: serde_json::from_value(data["at"].clone()).ok(),
                                 },
                             );

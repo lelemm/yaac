@@ -14,6 +14,7 @@ use crate::widgets;
 pub(crate) const NARROW: f32 = 1000.0;
 
 pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, actions: &mut Vec<Action>, _frame: &mut eframe::Frame) -> bool {
+    app.ui.visible_requests.clear();
     let p = app.p;
     // Fixed regions, split by hand so the layout is exact: sidebar | thread | docked panel.
     // The screenshot runner can pin the layout to a smaller window (screen 21) when the
@@ -76,14 +77,26 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         crate::agents_ui::dock_hover(app, ui.ctx(), inside, hovered);
     };
     if docked && !pane && let Some(panel) = &panel {
-        draw_dock(ui, app, panel, right, below(right), actions);
+        draw_dock(ui, app, panel, below(right), below(right), actions);
+    }
+    let header = selected.as_ref().and_then(|key| yaac_core::header::header(&app.client.state, map, key));
+    if let Some(header) = &header {
+        let caption = egui::Rect::from_min_max(
+            center.min + vec2(28.0, 0.0),
+            egui::pos2(full.right() - crate::titlebar::THREAD_CONTROLS_WIDTH - app.updater.title_width(), full.top() + crate::titlebar::HEIGHT),
+        );
+        ui.scope_builder(egui::UiBuilder::new().max_rect(caption).id_salt("thread-title"), |ui| {
+            ui.set_clip_rect(caption);
+            crate::thread::title_row(ui, &p, header, actions);
+        });
     }
     let preview_target = |app: &YaacApp| selected.as_ref().and_then(|key| app.ui.dock_preview.target(key)).cloned();
     let drawn_target = preview_target(app);
-    let previewing = ui.scope_builder(egui::UiBuilder::new().max_rect(center).id_salt("center"), |ui| {
-        ui.set_clip_rect(center);
+    let content = if selected.is_some() { below(center) } else { center };
+    let previewing = ui.scope_builder(egui::UiBuilder::new().max_rect(content).id_salt("center"), |ui| {
+        ui.set_clip_rect(content);
         match app.client.state.selection.clone() {
-            Selection::Thread(key) => return crate::thread::show(ui, app, map, &key, now, actions),
+            Selection::Thread(key) => return crate::thread::show(ui, app, map, &key, header.as_ref(), now, actions),
             Selection::NewThread(id) => crate::composer::draft_view(ui, app, id, actions),
             _ if yaac_core::first_run::is_first_run(&app.client.state) => crate::first_run::show(ui, app, actions),
             _ => {
@@ -113,8 +126,8 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     let snap = |x: f32| ui.painter().round_to_pixel_center(x);
     ui.painter().vline(snap(side.right()), full.y_range(), hair);
     if docked && !pane {
-        ui.painter().vline(snap(right.left()), full.y_range(), hair);
-        agents_edge(ui, app, right);
+        ui.painter().vline(snap(right.left()), below(right).y_range(), hair);
+        agents_edge(ui, app, below(right));
     }
     if let Some(dock) = dock {
         let x = ui.painter().round_to_pixel_center(dock.left());
@@ -161,6 +174,10 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     crate::dialogs::update_now(ui.ctx(), app, actions);
     crate::dialogs::bulk_archive(ui.ctx(), app, actions);
     crate::dialogs::move_dialog(ui.ctx(), app, actions);
+    if app.ui.settings || !ui.input(|i| i.focused) || ui.input(|i| i.viewport().minimized == Some(true)) {
+        app.ui.visible_requests.clear();
+    }
+    app.client.set_visible_requests(std::mem::take(&mut app.ui.visible_requests));
     previewing
 }
 

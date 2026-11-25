@@ -67,6 +67,7 @@ import { CompactionUnconfirmed, InputOutcomeUnknown, PeerInputDenied } from "../
 import { peerXml, supportsPeerInput } from "../../mesh/format.js";
 import { ASK_TOOL, answeredInput, approvalRequest, approvalResult, normaliseQuestions, type ToolPermissionContext } from "./questions.js";
 import { EXECUTABLE_VAR, findExecutable, loadRealSdk, realCli, subagentFiles, type AgentEntry, type ClaudeCli, type ClaudeSdk, type SdkQuery, type SubagentFile } from "./sdk.js";
+import { COMMAND_EXPLANATION_INSTRUCTIONS } from "../command-explanation.js";
 import { flagsOf, historyItems, isToolResultMessage, LiveTranslator, type ItemEvent } from "./translate.js";
 import { previewText } from "./markup.js";
 import { bashMarkup, runUserShell } from "../user-shell.js";
@@ -536,6 +537,7 @@ export class ClaudeProvider implements HarnessProvider {
       // `!command` from the composer (P344): yaacd runs it and sends Claude Code's own bash
       // markup with `shouldQuery: true` (docs/research/user-shell-commands-claude.md).
       "userShellCommand",
+      ...(!runsAsRoot() ? ["modeChangeLive" as const] : []),
       "nativeFileMentions",
       // accountInfo(), the usage report, and the stream's rate_limit_event (D161).
       "rateLimits",
@@ -556,6 +558,49 @@ export class ClaudeProvider implements HarnessProvider {
       modes: [],
       ...extra,
     };
+  }
+
+  async explainCommand(model: string, command: string, signal?: AbortSignal): Promise<string | null> {
+    const exe = this.options.executable;
+    if (!exe) return null;
+    const sdk = await this.sdk();
+    const abortController = new AbortController();
+    const abort = () => abortController.abort();
+    if (signal?.aborted) return null;
+    signal?.addEventListener("abort", abort, { once: true });
+    const timeout = setTimeout(() => abortController.abort(), 20_000).unref();
+    const input = new InputQueue();
+    input.push({ type: "user", message: { role: "user", content: command }, parent_tool_use_id: null });
+    let query: SdkQuery | undefined;
+    try {
+      query = sdk.query({
+        prompt: input,
+        options: {
+          cwd: this.options.stateDir,
+          env: this.options.env,
+          pathToClaudeCodeExecutable: exe,
+          model,
+          abortController,
+          persistSession: false,
+          maxTurns: 1,
+          systemPrompt: COMMAND_EXPLANATION_INSTRUCTIONS,
+          settingSources: [],
+          settings: { disableAllHooks: true },
+          strictMcpConfig: true,
+          tools: [],
+          canUseTool: async () => ({ behavior: "deny", message: "Command explanations use no tools." }),
+        },
+      });
+      for await (const message of query) {
+        if (message.type === "result") return message.subtype === "success" ? message.result : null;
+      }
+      return null;
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+      input.end();
+      query?.close();
+    }
   }
 
   async probe(): Promise<ProbeResult> {
@@ -1805,6 +1850,16 @@ export class ClaudeProvider implements HarnessProvider {
       /* report what was asked for */
     }
     return out;
+  }
+
+  async setModeLive(thread: NativeId, mode: string): Promise<void> {
+    const live = this.live.get(thread);
+    if (!live?.turn) throw new Error("The active turn has ended");
+    const settings = await this.threadSettings(thread);
+    await live.query.setPermissionMode(mode as PermissionMode);
+    live.mode = settings.mode = mode;
+    this.save();
+    this.emit({ type: "settingsChanged", thread, applied: await this.applied(live) });
   }
 
   async interrupt(thread: NativeId, turn: TurnId): Promise<void> {

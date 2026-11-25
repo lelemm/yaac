@@ -293,6 +293,40 @@ pub struct RunningCommand {
     pub controller: Option<ThreadId>,
 }
 
+/// A confirmed mode change for one destination in an orchestration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadSetModeParams {
+    /// Operation identity, retained across handoff.
+    pub op_id: OpId,
+    /// Destination conversation.
+    pub thread_id: ThreadId,
+    /// Target and provider that described the chosen mode.
+    pub source_target: super::TargetId,
+    /// Source instance on that target.
+    pub source_instance: InstanceId,
+    /// Source conversation title for the transcript.
+    pub source_title: String,
+    /// Mode selected by the user.
+    pub mode: ModeInfo,
+    /// The confirmation identified this recipient as needing an interruption.
+    pub allow_interrupt: bool,
+}
+
+/// An immutable generated document or image published by this thread (P358).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedArtifact {
+    /// Content-addressed snapshot, readable with upload/read on the originating target.
+    pub upload_id: super::UploadId,
+    /// Byte size of the published snapshot.
+    pub size: u64,
+    /// Suggested filename on download.
+    pub name: String,
+    /// Display title.
+    pub title: String,
+}
+
 /// What the sidebar needs, and what the host cache stores, per thread.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -347,6 +381,9 @@ pub struct ThreadSummary {
     /// Existing children linked by a fork, distinct from the threads it spawned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked_children: Option<Vec<Address>>,
+    /// Published documents and images. Ancestors project cards from this one record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<Vec<GeneratedArtifact>>,
     /// The agent that started this thread, possibly on another target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawned_by: Option<Address>,
@@ -404,6 +441,12 @@ pub struct ThreadSummary {
     /// leads back to its store. Absent: usable as far as the store goes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable: Option<String>,
+    /// The mode reported for this thread, including a durable next-turn selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<ModeId>,
+    /// Whether the thread itself has a running turn, including when waiting for input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_active: Option<bool>,
     /// Live shell processes belonging to this thread, independent of its turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub running_commands: Option<Vec<RunningCommand>>,

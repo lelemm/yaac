@@ -9,6 +9,7 @@ publish.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 tokio = { version = "1.43", default-features = false, features = ["net"] }
+windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications", "Foundation"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",

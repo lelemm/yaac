@@ -335,8 +335,14 @@ export class ProviderRegistry {
       if (disabled) disabledModels.push({ ...entry, isDefault: false });
       else models.push(fallback ? { ...entry, isDefault: model.id === fallback } : entry);
     }
-    const { disabledModels: _previous, ...descriptor } = next;
-    next = { ...descriptor, models, ...(disabledModels.length ? { disabledModels } : {}) };
+    const { disabledModels: _previous, approvalExplanationModel: _explanationModel, ...descriptor } = next;
+    const capabilities = descriptor.capabilities ?? [];
+    next = {
+      ...descriptor, models, ...(disabledModels.length ? { disabledModels } : {}),
+      ...(instance.provider?.explainCommand && !capabilities.includes("commandExplanations")
+        ? { capabilities: [...capabilities, "commandExplanations" as const] } : {}),
+      ...(config.approvalExplanationModel ? { approvalExplanationModel: config.approvalExplanationModel } : {}),
+    };
     const same = canonical({ ...next, revision: 0 }) === canonical({ ...instance.descriptor, revision: 0 });
     if (same && instance.descriptor.revision > 0 && config === instance.config) return;
     const revision = (this.revisions[config.id] ?? 0) + 1;
@@ -462,6 +468,20 @@ export class ProviderRegistry {
     // "Trust folders YAAC works in" (D147): absent in the stored configuration means on.
     if (params.trustFolders === true) delete config.trustFolders;
     else if (params.trustFolders === false) config.trustFolders = false;
+    if (params.approvalExplanationModel !== undefined) {
+      if (!instance.provider?.explainCommand) {
+        throw new RpcError("capability_missing", "this provider cannot explain command approvals");
+      }
+      const model = params.approvalExplanationModel;
+      if (model === null) delete config.approvalExplanationModel;
+      else if (instance.descriptor.models?.some((m) => m.id === model && !m.hidden)) config.approvalExplanationModel = model;
+      else throw new RpcError("invalid_params", "choose an enabled explanation model from this instance");
+      // This preference lives in yaacd, so changing it alone does not reconnect the harness.
+      if (canonical({ ...config, approvalExplanationModel: null }) === canonical({ ...instance.config, approvalExplanationModel: null })) {
+        this.setDescriptor(instance, instance.descriptor, false, config);
+        return config;
+      }
+    }
     const idx = this.stored.findIndex((c) => c.id === config.id);
     if (idx >= 0) this.stored[idx] = config;
     else this.stored.push(config);

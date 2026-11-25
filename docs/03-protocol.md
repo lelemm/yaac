@@ -306,6 +306,14 @@ scope of the grant — and the **decisions the harness actually offers**. These 
 once, allow for the session, allow and remember, deny, deny with a reason. The UI renders the
 offered decisions; it does not assume a fixed Allow/Deny pair.
 
+For a command approval (P357), the initial request is journaled and delivered immediately.
+The window sends `approval/explain { tool, input, models: { main, fallback } }` through the
+request target's existing connection. Each selection identifies a provider instance and model.
+The result is `{ text }`, with null on unavailability or timeout. The daemon bounds the input
+to 128 KiB and caches successful results in memory by the hash of the tool and input. The
+window displays the result only while the matching request is pending. This RPC has no
+approval response or journal side effects.
+
 ### Questions
 
 "Which of these approaches do you want?" Both harnesses support structured questions, with

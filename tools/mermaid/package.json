@@ -1,0 +1,8 @@
+{
+  "name": "yaac-mermaid",
+  "private": true,
+  "dependencies": {
+    "@resvg/resvg-wasm": "2.6.2",
+    "mermaid": "11.17.2"
+  }
+}

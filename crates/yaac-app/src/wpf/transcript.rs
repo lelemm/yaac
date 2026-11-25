@@ -14,15 +14,12 @@ use yaac_protocol::{
     QuestionAnswers, RequestBody, RequestItem, RequestResponse, RequestState, TextRole, ToolKind, TurnId,
 };
 
-fn peer(peer: &MeshPeer) -> &str {
-    peer.title.as_deref().unwrap_or(peer.address.as_str())
-}
-
 fn peer_action(app: &YaacApp, peer_data: &MeshPeer, gone: bool) -> Value {
     let peer_key = key(app, peer_data.address.as_str());
+    let title = yaac_core::agentcall::compact_label(peer_data.title.as_deref().unwrap_or(peer_data.address.as_str()));
     let mut action = sidebar_view::action(
         &format!("openPeer:{}", peer_data.address),
-        peer(peer_data),
+        &title,
         peer_key.is_some() && !gone,
     );
     action["machine"] = json!(peer_data.target_name);
@@ -49,7 +46,7 @@ fn budget_card(app: &YaacApp, key: &ThreadKey, text: &str) -> Value {
         "tone": if exhausted { "warning" } else { "muted" }, "actions": actions })
 }
 
-fn card(app: &YaacApp, key: &ThreadKey, transcript: &Transcript, item: &Item, request: &RequestItem) -> Value {
+fn card(app: &YaacApp, viewing: &ThreadKey, key: &ThreadKey, transcript: &Transcript, item: &Item, request: &RequestItem) -> Value {
     let state = &app.client.state;
     let local = transcript.local_answers.get(&request.request_id);
     let status = requests::card_state(
@@ -90,12 +87,19 @@ fn card(app: &YaacApp, key: &ThreadKey, transcript: &Transcript, item: &Item, re
     let (kind, title, text) = match &request.body {
         RequestBody::Approval(a) => {
             if let Some(cmd) = &a.command {
-                parts.push(json!({ "kind": "command", "text": cmd, "label": a.cwd }));
+                if let Some(warning) = requests::command_warning(cmd, a.cwd.as_ref().map(|v| v.as_str()), state.project_of(key).map(|p| p.folder.as_str())) {
+                    parts.push(json!({ "kind": "text", "text": format!("⚠ {warning}"), "tone": "warning" }));
+                }
+                let (preview, label) = requests::command_preview(cmd);
+                parts.push(json!({ "kind": "code", "text": cmd, "preview": preview, "label": label, "expanded": false }));
             }
             for f in &a.changes {
                 parts.push(json!({ "kind": "diff", "text": f.diff.as_deref().unwrap_or(f.path.as_str()), "label": f.path }));
             }
             if pending {
+                if a.command_explanation.is_none() && requests::explanation_input(a).is_some() && state.hub.explanations.main.is_none() {
+                    actions.push(json!({"id":"chooseExplanation","label":requests::CHOOSE_EXPLANATION,"enabled":true}));
+                }
                 let keys = requests::decision_keys(&a.decisions);
                 for (d, key) in a.decisions.iter().zip(keys) {
                     let key = key.map(|k| if k == "Esc" { "Escape" } else { k });
@@ -107,9 +111,11 @@ fn card(app: &YaacApp, key: &ThreadKey, transcript: &Transcript, item: &Item, re
             }
             (
                 "approval",
-                a.title.clone(),
-                [a.reason.as_deref(), a.scope.as_deref(),
-                    (pending && requests::started_by_agent(transcript, &item.turn_id)).then_some("Started by an agent, not by you")]
+                requests::approval_title(a).to_owned(),
+                [a.command_explanation.as_ref().map(|text| format!("{}\n{text}", requests::EXPLANATION_LABEL)),
+                    (pending && a.command_explanation.is_none() && requests::explanation_input(a).is_some() && state.hub.explanations.main.is_some() && transcript.explanations.get(&request.request_id) != Some(&false)).then(|| "Explaining…".to_owned()),
+                    requests::approval_reason(a), a.cwd.as_ref().map(|cwd| format!("Working directory · {}", cwd.as_str())), a.scope.clone(),
+                    (pending && requests::started_by_agent(transcript, &item.turn_id)).then(|| "Started by an agent, not by you".to_owned())]
                     .into_iter()
                     .flatten()
                     .collect::<Vec<_>>()
@@ -174,7 +180,9 @@ fn card(app: &YaacApp, key: &ThreadKey, transcript: &Transcript, item: &Item, re
             true,
         ));
     }
-    json!({ "kind": kind, "title": title, "text": text, "tone": tone, "status": label,
+    let label = yaac_core::copies::answered_where(state, key, request, viewing)
+        .map_or_else(|| label.clone(), |place| format!("{label}\n{place}"));
+    json!({ "requestLocation": (request.state == RequestState::Pending).then(|| json!({ "target":key.target,"threadId":key.thread,"requestId":request.request_id })), "kind": kind, "title": title, "text": text, "tone": tone, "status": label,
         "actions": actions, "parts": parts, "questions": questions, "fields": fields })
 }
 
@@ -299,7 +307,7 @@ fn render(app: &YaacApp, map: &AttentionMap, key: &ThreadKey, transcript: &Trans
             json!({ "kind": "activity", "mark": "•", "lead": line.text, "detail": detail,
                 "disclosureName": "plan", "copyText": line.text })
         }
-        ItemBody::Request(r) => card(app, key, transcript, item, r),
+        ItemBody::Request(r) => card(app, key, key, transcript, item, r),
         ItemBody::Notice(n) if n.notice_kind != yaac_protocol::NoticeKind::BudgetExhausted => {
             let line = yaac_core::activity::line_of(&app.client.state, map, key, 0, item)?;
             let mark = match line.mark {
@@ -536,6 +544,20 @@ impl Projection<'_> {
     fn block(&mut self, block: Block, open_runs: &mut BTreeMap<ItemId, (String, bool, usize)>) {
         let items = self.transcript.items();
         match block {
+            Block::Copy { worker, item } => {
+                let state = &self.app.client.state;
+                let Some(t) = state.transcripts.get(&worker) else { return };
+                let Some(i) = t.item(&item) else { return };
+                let ItemBody::Request(request) = &i.body else { return };
+                let mut row = card(self.app, self.key, &worker, t, i, request);
+                let header = yaac_core::copies::header(state, &worker);
+                let id = yaac_core::copies::copy_id(&worker, &item);
+                row["id"] = json!(id);
+                row["actionId"] = json!(id);
+                row["taskPeer"] = sidebar_view::action("openWorker", "Open", true);
+                row["taskPeer"]["heading"] = json!(header.text());
+                self.rows.push(row);
+            }
             Block::User { index } => match yaac_core::shell_block::block(self.transcript, index) {
                 Some(command) => {
                     let row = shell_row(self.app, self.map, self.key, self.transcript, index, &command, self.markdown);
@@ -678,10 +700,11 @@ fn conversation(app: &YaacApp, map: &AttentionMap, markdown: &mut super::markdow
     let state = &app.client.state;
     let transcript = state.transcripts.get(key);
     let focus = (!preview).then(|| app.ui.focus_card.as_ref().or(app.ui.scroll_to.as_ref())).flatten();
-    let (rows, anchor) = if let Some(t) = transcript {
+    let (mut rows, anchor) = if let Some(t) = transcript {
         let expansion = &app.ui.expansion;
         let blocks = activity::blocks(state, map, key, expansion);
         let blocks = turns::collapse(t, key, &blocks, &app.ui.worked, expansion, work_focus(app, key));
+        let blocks = yaac_core::copies::with_copies(state, key, blocks);
         // Core emits the constituent lines when a run is open. WPF also retains the
         // disclosure for explicitly opened groups, so the user can close one in place.
         let mut open_runs = BTreeMap::new();
@@ -705,12 +728,24 @@ fn conversation(app: &YaacApp, map: &AttentionMap, markdown: &mut super::markdow
     } else {
         (Vec::new(), None)
     };
+    let insertion = rows.iter().rposition(|row| !string(row, "id").starts_with("~copy:")).map_or(0, |i| i + 1);
+    let pinned = rows.split_off(insertion);
+    for card in crate::artifacts::cards(state, key) {
+        let id = card.id();
+        let browser = app.browsers.reason(&app.client, Some(key)).is_none();
+        let actions = card.actions(browser).into_iter().map(|(command,label)| sidebar_view::action(&format!("artifact{command:?}"), label, true)).collect::<Vec<_>>();
+        let from = (card.worker != *key).then(|| yaac_core::copies::header(state, &card.worker).text());
+        let text = [from.as_deref(), (card.artifact.name != card.artifact.title).then_some(card.artifact.name.as_str())].into_iter().flatten().collect::<Vec<_>>().join("\n");
+        rows.push(json!({"id": id, "kind":"artifact", "title":card.artifact.title, "text":text, "filename":card.artifact.name,
+            "mermaidSource":app.artifacts.diagrams.get(&id), "status":app.artifacts.status.get(&id), "actions":actions}));
+    }
+    rows.extend(pinned);
     if preview {
         let Some(summary) = state.summary(key) else { return Value::Null };
         return json!({ "threadId": key.address(), "rows": rows, "loading": transcript.is_none_or(|t| !t.is_loaded()),
             "emptyText": "No messages yet", "previewTitle": summary.title });
     }
-    let focus = focus.and_then(|id| transcript?.item(id)).map(row_id);
+    let focus = focus.and_then(|id| transcript?.item(id).map(row_id).or_else(|| yaac_core::copies::find(state, key, id).map(|c| c.id())));
     let anchor_token = app.ui.restore.as_ref().map(|a| format!("{}:{}", a.offset, a.item));
     let page = transcript.map(|t| json!({
         "older": t.older_cursor, "newer": t.newer_cursor,
@@ -862,10 +897,31 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
     if name != "transcript.action" {
         return Ok(());
     }
-    let Some(item) = selected_item(app, string(p, "id")) else {
-        return Ok(());
-    };
     let act = string(p, "action");
+    let id = ItemId::from(string(p, "id"));
+    if act == "chooseExplanation" { app.apply(vec![Action::SettingsPage(yaac_core::settings::Page::Approvals)]); return Ok(()); }
+    if act.starts_with("artifact") {
+        if let Some(card) = crate::artifacts::cards(&app.client.state, &k).into_iter().find(|card| card.id() == id.as_str()) {
+            let browser = app.browsers.reason(&app.client, Some(&k)).is_none();
+            if let Some((command, _)) = card.actions(browser).into_iter().find(|(c,_)| format!("artifact{c:?}") == act) {
+                app.apply(vec![Action::Artifact(k, card, command)]);
+            }
+        }
+        return Ok(());
+    }
+    let viewing = k.clone();
+    let (k, item) = if let Some(copy) = yaac_core::copies::find(&app.client.state, &k, &id) {
+        if act == "openWorker" {
+            app.apply(vec![Action::OpenAt(copy.worker, Some(copy.item))]);
+            return Ok(());
+        }
+        if !matches!(act, "checkLatest" | "answerQuestions") && !act.starts_with("approval:") && !act.starts_with("permission:") {
+            return Ok(());
+        }
+        (copy.worker, copy.item)
+    } else if let Some(item) = selected_item(app, id.as_str()) {
+        (k, item)
+    } else { return Ok(()) };
     if let Some((verb, index)) = act.split_once(':')
         && matches!(verb, "openImage" | "previewImage" | "openAttachment")
         && let Ok(index) = index.parse::<usize>()
@@ -1032,7 +1088,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             };
             let summary = requests::answer_summary(&r.body, &response);
             Action::Respond {
-                key: k,
+                viewing, key: k,
                 request: r.request_id.clone(),
                 response,
                 summary,
@@ -1077,6 +1133,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn artifact_cards_route_to_the_original_worker_from_each_ancestor() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let root = yaac_core::demo::threads::orchestrator();
+        let parent = yaac_core::demo::threads::search();
+        let worker = yaac_core::demo::threads::index();
+        app.apply(vec![Action::Open(root.clone())]);
+        app.pump_demo();
+        let artifact = yaac_protocol::GeneratedArtifact {
+            upload_id: "u_artifact_md_test".into(), size: 8, name: "report.md".into(), title: "Report".into()
+        };
+        app.client.state.threads.get_mut(&worker).unwrap().summary.artifacts = Some(vec![artifact]);
+        let mut md = super::super::markdown_view::MarkdownView::default();
+        let map = AttentionMap::compute(&app.client.state);
+        let mut ids = Vec::new();
+        for key in [&worker, &parent, &root] {
+            let view = conversation(&app, &map, &mut md, key, false);
+            let rows: Vec<_> = view["rows"].as_array().unwrap().iter().filter(|row| row["kind"] == "artifact").collect();
+            assert_eq!(rows.len(), 1);
+            let row = rows[0];
+            ids.push(row["id"].clone());
+            assert_eq!(row["actions"][0]["id"], "artifactDownload");
+            assert_eq!(row["actions"][1]["id"], "artifactOpen");
+            if key != &worker { assert!(row["text"].as_str().unwrap().contains("index-rebuild")); }
+        }
+        assert!(ids.windows(2).all(|pair| pair[0] == pair[1]));
+        command(&mut app, "transcript.action", &json!({"threadId": root.address(), "id": ids[0], "action": "artifactDownload"})).unwrap();
+        assert!(app.demo.as_ref().unwrap().requests().iter().any(|(target, method, p)| target.as_ref() == Some(&worker.target)
+            && method == "upload/read" && p["uploadId"] == "u_artifact_md_test"));
+    }
+
+    #[test]
+    fn mirrored_approval_action_uses_worker_and_returns_focus_to_copy() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let root = yaac_core::demo::threads::orchestrator();
+        let worker = yaac_core::demo::threads::index();
+        app.apply(vec![Action::Open(root.clone())]);
+        app.client.set_showing(vec![root.clone()]);
+        app.pump_demo();
+        app.apply(vec![Action::OpenRequest(worker.clone())]);
+        let map = AttentionMap::compute(&app.client.state);
+        let mut md = super::super::markdown_view::MarkdownView::default();
+        let view = view(&app, &map, &mut md);
+        let id = yaac_core::copies::copy_id(&worker, &"i3".into());
+        let row = view["rows"].as_array().unwrap().iter().find(|row| row["id"] == id.as_str()).unwrap();
+        assert_eq!(row["requestLocation"]["target"], worker.target.as_str());
+        assert_eq!(row["taskPeer"]["heading"], "From index-rebuild · Claude on gpu-box");
+        assert_eq!(row["taskPeer"]["label"], "Open");
+        assert_eq!(view["focusId"], id.as_str());
+        assert_eq!(app.ui.focus_card.as_ref(), Some(&id));
+        command(&mut app, "transcript.action", &json!({"threadId":root.address(),"id":id,"action":"approval:allow"})).unwrap();
+        let request = app.client.state.transcripts[&worker].item(&"i3".into()).unwrap();
+        assert!(matches!(&request.body, ItemBody::Request(r) if r.state == RequestState::Submitted || r.state == RequestState::Resolved));
+        assert_eq!(app.client.state.selected_thread(), Some(&root));
+    }
+
+    #[test]
     fn streamed_item_patches_preserve_row_identity_and_order() {
         let old = json!({ "threadId": "local/a", "rows": [
             { "id": "user", "text": "hello" }, { "id": "agent", "text": "hel" },
@@ -1110,6 +1224,7 @@ mod tests {
             resolution: None,
             body: RequestBody::Approval(ApprovalRequest {
                 approval_kind: ApprovalKind::Command,
+                command_explanation: Some("Starts a 30-second wait in the background.".into()),
                 title: "Run `setsid sleep 30 &`".into(),
                 command: Some("setsid sleep 30 &".into()),
                 cwd: None,
@@ -1125,6 +1240,11 @@ mod tests {
         let mut markdown = super::super::markdown_view::MarkdownView::default();
         let card = render(&app, &map, &key, transcript, &item, &mut markdown, false).unwrap();
         assert_eq!(card["kind"], "approval");
+        assert_eq!(card["title"], "Run a command");
+        assert_eq!(card["parts"][0]["label"], "Show command (1 line)");
+        assert_eq!(card["parts"][0]["expanded"], false);
+        assert_eq!(card["parts"][0]["text"], "setsid sleep 30 &");
+        assert!(card["text"].as_str().unwrap().contains("AI explanation — check the command\nStarts a 30-second wait in the background."));
         assert!(card["text"].as_str().unwrap().contains("What 'setsid' starts can't be checked before it runs"), "{card}");
 
         request.state = RequestState::Resolved;
@@ -1139,7 +1259,7 @@ mod tests {
         item.body = ItemBody::Request(request);
         let row = render(&app, &map, &key, transcript, &item, &mut markdown, false).unwrap();
         assert_eq!(row["kind"], "activity");
-        assert_eq!(row["lead"], "Approved automatically — thread in Bypass permissions: Bash setsid sleep 30 &");
+        assert_eq!(row["lead"], "Approved automatically · thread in Bypass permissions: Bash setsid sleep 30 &");
         assert_eq!(row["detail"], "Reason: What 'setsid' starts can't be checked before it runs\nsetsid sleep 30 &");
         assert!(row.get("actions").is_none(), "no buttons");
     }

@@ -8,7 +8,7 @@ use yaac_core::activity::{ActivityLine, Block, LineMark, blocks, thought_text};
 use yaac_core::diff::{FileDiff, LineKind};
 use yaac_core::selection::Unit;
 use yaac_core::attention::{AttentionMap, Mark};
-use yaac_core::header::{Banner, LinkLine, Tone, header};
+use yaac_core::header::{Banner, HeaderView, LinkLine, Tone};
 use yaac_core::transcript::Transcript;
 use yaac_core::ThreadKey;
 use yaac_protocol::{InputPart, ItemBody, ReceiptReason, ReceiptStatus};
@@ -50,13 +50,14 @@ pub(crate) fn composer_column(ui: &mut egui::Ui, preferred: f32, p: &Palette, co
     }
 }
 
-pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) -> bool {
+pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, header: Option<&HeaderView>, now: i64, actions: &mut Vec<Action>) -> bool {
     let p = app.p;
-    Panel::top("thread-header")
-        .show_separator_line(false)
-        // The first line sits in the window's title row (D104); room is left for its buttons.
-        .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 28, right: 127, top: 7, bottom: 6 }))
-        .show(ui, |ui| header_view(ui, app, map, key, actions));
+    if let Some(header) = header {
+        Panel::top("thread-header")
+            .show_separator_line(false)
+            .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 28, right: 28, top: 0, bottom: 6 }))
+            .show(ui, |ui| header_view(ui, &p, key, header, actions));
+    }
     if app.browsers.areas.contains_key(key) {
         if let Some(chat) = crate::preview_ui::layout(ui, app, map, key) {
             // The chat column: the transcript and composer, then a docked Related agents
@@ -189,43 +190,53 @@ fn tone_color(p: &Palette, t: Tone) -> egui::Color32 {
     }
 }
 
-fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, actions: &mut Vec<Action>) {
-    let p = app.p;
-    let Some(h) = header(&app.client.state, map, key) else { return };
-    ui.horizontal(|ui| {
-        widgets::icon(ui, 22.0, |pa, c, d| icons::thread_mark(pa, c, d * 0.95, &h.display, &p));
+pub(crate) fn title_row(ui: &mut egui::Ui, p: &Palette, h: &HeaderView, actions: &mut Vec<Action>) {
+    const BUDGET: &str = "Agent budget reached";
+    const CONTINUE: &str = "Continue";
+    const TAG_PADDING: i8 = 7;
+    ui.horizontal_centered(|ui| {
+        let gap = ui.spacing().item_spacing.x;
+        widgets::icon(ui, 22.0, |pa, c, d| icons::thread_mark(pa, c, d * 0.95, &h.display, p));
         if h.display.read_only {
             widgets::icon(ui, 18.0, |pa, c, d| icons::lock(pa, c, d, p.text2));
         }
         ui.add_space(2.0);
-        // The tag, and the update item when the title row shows one (D136).
-        let tag_w = if h.tag.is_some() { 230.0 } else { 0.0 } + if h.budget.is_some() { 190.0 } else { 0.0 } + 44.0 + app.updater.title_width();
+        let font = theme::ui(size::SMALL);
+        let tag_width = h.tag.as_ref().map_or(0.0, |(tag, _)| {
+            widgets::text_size(ui, tag, &font).x + 2.0 * f32::from(TAG_PADDING) + gap
+        });
+        let budget_width = if h.budget.is_some() {
+            widgets::text_size(ui, BUDGET, &font).x
+                + widgets::text_size(ui, CONTINUE, &theme::bold(size::SMALL)).x + 2.0 * gap
+        } else {
+            0.0
+        };
         ui.scope(|ui| {
-            ui.set_max_width((ui.available_width() - tag_w).max(80.0));
+            ui.set_max_width((ui.available_width() - tag_width - budget_width).max(0.0));
             // Not selectable: the title is part of the title row, which drags the window.
             ui.add(egui::Label::new(egui::RichText::new(&h.title).font(theme::bold(size::TITLE))).truncate().selectable(false));
         });
         if let Some((tag, tone)) = &h.tag {
-            ui.add_space(4.0);
-            let c = tone_color(&p, *tone);
-            egui::Frame::NONE.fill(p.wash(c)).corner_radius(4).inner_margin(Margin::symmetric(7, 2)).show(ui, |ui| {
-                ui.add(egui::Label::new(egui::RichText::new(tag).font(theme::ui(size::SMALL)).color(c)).selectable(false));
+            let c = tone_color(p, *tone);
+            egui::Frame::NONE.fill(p.wash(c)).corner_radius(4).inner_margin(Margin::symmetric(TAG_PADDING, 2)).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(tag).font(font).color(c)).extend().selectable(false));
             });
         }
         // The budget never hides what the thread does (D164): a quiet note beside its state.
         if let Some(root) = &h.budget {
-            ui.add_space(6.0);
-            ui.add(egui::Label::new(widgets::secondary("Agent budget reached", &p)).selectable(false))
+            ui.add(egui::Label::new(widgets::secondary(BUDGET, p)).extend().selectable(false))
                 .on_hover_text("Agents working for this chat have used their budget: what they start is held back until you choose Continue. Your own turns are not affected.");
-            if widgets::link(ui, &p, "Continue", theme::ui(size::SMALL)).clicked() {
+            if widgets::link(ui, p, CONTINUE, theme::ui(size::SMALL)).clicked() {
                 actions.push(Action::ContinueBudget(root.clone()));
             }
         }
     });
-    ui.add_space(2.0);
+}
+
+fn header_view(ui: &mut egui::Ui, p: &Palette, key: &ThreadKey, h: &HeaderView, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
         ui.add_space(32.0);
-        ui.label(widgets::secondary(h.breadcrumb.join(" · "), &p));
+        ui.label(widgets::secondary(h.breadcrumb.join(" · "), p));
     });
     match &h.links {
         LinkLine::None => {}
@@ -233,10 +244,10 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
             ui.horizontal(|ui| {
                 ui.add_space(32.0);
                 ui.spacing_mut().item_spacing.x = 4.0;
-                ui.label(widgets::secondary("Spawned by", &p));
-                link_part(ui, &p, &parent.title, parent.key.as_ref(), actions);
+                ui.label(widgets::secondary("Spawned by", p));
+                link_part(ui, p, &parent.title, parent.key.as_ref(), actions);
                 widgets::icon(ui, 12.0, |pa, c, d| icons::arrow_out(pa, c, d, p.text2));
-                ui.label(widgets::secondary(format!("on {target}"), &p));
+                ui.label(widgets::secondary(format!("on {target}"), p));
             });
         }
         LinkLine::Ancestry(parts) => {
@@ -248,7 +259,7 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                         widgets::icon(ui, 10.0, |pa, c, d| icons::chevron(pa, c, d, false, p.text2));
                     }
                     match &part.key {
-                        Some(_) => link_part(ui, &p, &part.title, part.key.as_ref(), actions),
+                        Some(_) => link_part(ui, p, &part.title, part.key.as_ref(), actions),
                         None => {
                             ui.label(egui::RichText::new(&part.title).font(theme::bold(size::SMALL)));
                         }
@@ -260,10 +271,10 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
             ui.horizontal(|ui| {
                 ui.add_space(32.0);
                 ui.spacing_mut().item_spacing.x = 4.0;
-                ui.label(widgets::secondary("Forked from", &p));
-                link_part(ui, &p, &source.title, source.key.as_ref(), actions);
+                ui.label(widgets::secondary("Forked from", p));
+                link_part(ui, p, &source.title, source.key.as_ref(), actions);
                 widgets::icon(ui, 12.0, |pa, c, d| icons::arrow_out(pa, c, d, p.text2));
-                ui.label(widgets::secondary(detail.clone(), &p));
+                ui.label(widgets::secondary(detail.clone(), p));
             });
         }
     }
@@ -280,22 +291,22 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                             Some(t) => {
                                 if t.busy {
                                     // In flight: progress, and nothing to click twice.
-                                    let _ = widgets::primary(ui, &p, "Taking over…", None).on_hover_text(&t.tooltip);
+                                    let _ = widgets::primary(ui, p, "Taking over…", None).on_hover_text(&t.tooltip);
                                     ui.add(egui::Spinner::new().size(14.0).color(p.text2));
                                 } else if t.enabled {
-                                    if widgets::primary_with_id(ui, &p, "Take over", egui::Id::unique(TAKE_OVER_BUTTON)).on_hover_text(&t.tooltip).clicked() {
+                                    if widgets::primary_with_id(ui, p, "Take over", egui::Id::unique(TAKE_OVER_BUTTON)).on_hover_text(&t.tooltip).clicked() {
                                         actions.push(Action::TakeOver(key.clone()));
                                     }
                                 } else {
                                     // The reason is the line under the sentence.
-                                    widgets::unavailable(ui, &p, "Take over", "");
+                                    widgets::unavailable(ui, p, "Take over", "");
                                 }
-                                if widgets::plain(ui, &p, "Fork to continue here", None).clicked() {
+                                if widgets::plain(ui, p, "Fork to continue here", None).clicked() {
                                     actions.push(Action::OpenFork(key.clone()));
                                 }
                             }
                             None => {
-                                if widgets::primary(ui, &p, "Fork to continue here", None).clicked() {
+                                if widgets::primary(ui, p, "Fork to continue here", None).clicked() {
                                     actions.push(Action::OpenFork(key.clone()));
                                 }
                             }
@@ -308,7 +319,7 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                                 if let Some(why) = &t.failure {
                                     ui.add(egui::Label::new(egui::RichText::new(format!("Not taken over: {why}")).font(theme::ui(size::SMALL)).color(p.failed)).wrap());
                                 } else if !t.enabled && !t.busy {
-                                    ui.add(egui::Label::new(widgets::secondary(t.tooltip.clone(), &p)).wrap());
+                                    ui.add(egui::Label::new(widgets::secondary(t.tooltip.clone(), p)).wrap());
                                 }
                             }
                         });
@@ -319,14 +330,14 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // The one to message instead (D151).
                         if let Some(k) = parent.as_ref().and_then(|p| p.key.clone())
-                            && widgets::plain(ui, &p, "Open parent", None).clicked()
+                            && widgets::plain(ui, p, "Open parent", None).clicked()
                         {
                             actions.push(Action::Open(k));
                         }
                         ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                             ui.add(egui::Label::new(text.as_str()).wrap());
                             if let Some(why) = reason {
-                                ui.add(egui::Label::new(widgets::secondary(why.clone(), &p)).wrap());
+                                ui.add(egui::Label::new(widgets::secondary(why.clone(), p)).wrap());
                             }
                         });
                     });
@@ -336,7 +347,7 @@ fn header_view(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &T
                     ui.label(text);
                     if let Some(target) = update_now {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if widgets::plain(ui, &p, "Update now", None).clicked() {
+                            if widgets::plain(ui, p, "Update now", None).clicked() {
                                 actions.push(Action::UpdateDaemon(target.clone()));
                             }
                         });
@@ -387,6 +398,7 @@ fn block_ident(b: &Block, t: &Transcript) -> u64 {
                 l.diff.map(|d| d.file).hash(&mut h);
             }
         }
+        Block::Copy { worker, item } => (worker, item).hash(&mut h),
         Block::Folded { first, .. } => first.hash(&mut h),
         Block::TurnChanges { turn, .. } => turn.hash(&mut h),
         Block::Worked { turn, .. } => turn.hash(&mut h),
@@ -398,7 +410,7 @@ fn block_items(b: &Block) -> Vec<usize> {
     match b {
         Block::User { index } | Block::Task { index } | Block::Prose { index } | Block::Card { index } | Block::Handoff { index } => vec![*index],
         Block::Run { lines } => lines.iter().map(|l| l.index).collect(),
-        Block::Folded { .. } | Block::TurnChanges { .. } | Block::Worked { .. } => vec![],
+        Block::Copy { .. } | Block::Folded { .. } | Block::TurnChanges { .. } | Block::Worked { .. } => vec![],
     }
 }
 
@@ -407,6 +419,7 @@ fn block_unit(b: &Block, t: &Transcript) -> Unit {
     match b {
         Block::User { index } | Block::Task { index } | Block::Prose { index } | Block::Card { index } | Block::Handoff { index } => Unit::new(*index, 0),
         Block::Run { lines } => lines.first().map_or(Unit::new(0, 0), |l| Unit::new(l.index, l.diff.map_or(0, |d| d.file))),
+        Block::Copy { .. } => Unit::new(t.items().len(), 0),
         Block::Folded { first, .. } => Unit::new(t.index_of(first).unwrap_or(0), 0),
         Block::TurnChanges { turn, .. } => Unit::new(t.items().iter().rposition(|i| &i.turn_id == turn).unwrap_or(0), Unit::END_OF_TURN),
         // Right after the turn's prompt; the line itself is not selectable text.
@@ -533,7 +546,7 @@ fn guess(cache: &mut std::collections::HashMap<u64, (u64, f32, f32)>, ident: u64
         }
         Block::Folded { .. } | Block::TurnChanges { .. } => return 22.0,
         Block::Worked { .. } => return crate::messages::WORKED_LINE,
-        Block::Card { .. } => return 60.0,
+        Block::Copy { .. } | Block::Card { .. } => return 60.0,
         _ if flat => return 60.0,
         Block::User { index } | Block::Task { index } | Block::Prose { index } | Block::Handoff { index } => *index,
     };
@@ -603,6 +616,7 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     // Finished turns fold into "Worked for …" and their final message (D156).
     let focus = state.focus_item.as_ref().filter(|(k, _)| k == key).map(|(_, id)| id);
     let bl = yaac_core::turns::collapse(t, key, &bl, &app.ui.worked, &app.ui.expansion, focus);
+    let bl = yaac_core::copies::with_copies(state, key, bl);
     let avail = ui.available_width();
     if std::env::var_os("YAAC_DEBUG_LAYOUT").is_some() {
         eprintln!("transcript rect {:?} avail {avail}", ui.max_rect());
@@ -638,7 +652,20 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     }
     // The same room under the last block whatever it is, so the newest line does not move
     // when a message (with its time line, D154) gives way to an activity line.
-    let total = y + 20.0 + bl.last().map_or(0.0, |b| crate::messages::STAMP_LINE - crate::messages::stamp_space(b));
+    let cards = crate::artifacts::cards(state, key);
+    let artifact_browser = !cards.is_empty() && app.browsers.reason(&app.client, Some(key)).is_none();
+    // Keep waiting worker requests visible at the end (P354).
+    let insertion = bl.iter().rposition(|b| !matches!(b, Block::Copy { .. })).map_or(0, |i| i + 1);
+    let start = tops.get(insertion).copied().unwrap_or(y);
+    let mut card_y = start;
+    let card_tops: Vec<_> = cards.iter().map(|card| {
+        let top = card_y;
+        let hash = egui::Id::unique(card.id()).value();
+        card_y += app.ui.heights.get(&hash).copied().unwrap_or(80.0) + GAP;
+        (top, hash)
+    }).collect();
+    for top in &mut tops[insertion..] { *top += card_y - start; }
+    let total = y + (card_y - start) + 20.0 + bl.last().map_or(0.0, |b| crate::messages::STAMP_LINE - crate::messages::stamp_space(b));
     let mut sa = egui::ScrollArea::vertical().id_salt(("transcript", key.to_string())).auto_shrink([false, false]).stick_to_bottom(!t.history_away);
     if preview {
         sa = sa.vertical_scroll_offset((total - ui.available_height()).max(0.0));
@@ -666,9 +693,10 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
             app.ui.timeline.go_to = Some(item);
         }
     } else if let Some(item) = app.ui.scroll_to.take() {
-        if let Some(i) = t.index_of(&item)
-            && let Some(bi) = bl.iter().position(|b| block_items(b).contains(&i))
-        {
+        if let Some(bi) = bl.iter().position(|b| match b {
+            Block::Copy { worker, item: source } => yaac_core::copies::copy_id(worker, source) == item,
+            _ => t.index_of(&item).is_some_and(|i| block_items(b).contains(&i)),
+        }) {
             sa = sa.vertical_scroll_offset((tops[bi] - 80.0).max(0.0));
         } else if !t.is_loaded() || t.loading_older {
             app.ui.scroll_to = Some(item);
@@ -779,6 +807,31 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
                 app.ui.heights.insert(idents[i], h);
             }
             changed |= moved;
+        }
+        for (card, &(top, hash)) in cards.iter().zip(&card_tops) {
+            let est = app.ui.heights.get(&hash).copied().unwrap_or(80.0);
+            if top + est < view.top() || top > view.bottom() { continue; }
+            let rect = Rect::from_min_size(pos2(x0, origin + top), vec2(width, est));
+            let response = ui.scope_builder(UiBuilder::new().max_rect(rect).id_salt(hash), |ui| {
+                ui.set_width(width);
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.strong(&card.artifact.title);
+                    if card.worker != *key { ui.label(yaac_core::copies::header(state, &card.worker).text()); }
+                    if card.artifact.name != card.artifact.title { ui.label(&card.artifact.name); }
+                    ui.horizontal_wrapped(|ui| {
+                        for (cmd, label) in card.actions(artifact_browser) {
+                            if ui.button(label).clicked() {
+                                actions_local.push(Action::Artifact(key.clone(), card.clone(), cmd));
+                            }
+                        }
+                    });
+                    if let Some(status) = app.artifacts.status.get(&card.id()).filter(|s| !s.is_empty()) { ui.label(status); }
+                    if let Some(source) = app.artifacts.diagrams.get(&card.id()) { crate::mermaid::show(ui, source, p.dark); }
+                });
+            });
+            let height = response.response.rect.height();
+            changed |= (est - height).abs() > 0.5;
+            app.ui.heights.insert(hash, height);
         }
         app.ui.textsel.autoscroll(ui, ui.clip_rect());
         // Where the user is reading: the first block reaching into the view.
@@ -1069,9 +1122,14 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
                 ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(7.0, 17.0)), 1.0, p.text2);
             }
         }
+        Block::Copy { worker, item } => {
+            let Some(source) = v.state.transcripts.get(worker) else { return };
+            let Some(index) = source.index_of(item) else { return };
+            ui.push_id((worker, item), |ui| crate::cards::show(ui, &mut v, key, worker, source, index, now, actions));
+        }
         Block::Card { index } => {
             let top = ui.cursor().min;
-            crate::cards::show(ui, &mut v, key, t, *index, now, actions);
+            crate::cards::show(ui, &mut v, key, key, t, *index, now, actions);
             let rect = Rect::from_min_max(top, pos2(ui.max_rect().right(), ui.min_rect().bottom()));
             v.sel(unit).whole(ui, rect);
         }
@@ -1361,7 +1419,7 @@ fn peer_link(
     gone: bool,
     actions: &mut Vec<Action>,
 ) {
-    let title = peer.title.clone().unwrap_or_else(|| peer.address.to_string());
+    let title = yaac_core::agentcall::compact_label(peer.title.as_deref().unwrap_or(peer.address.as_str()));
     let key = state.key_of(&peer.address);
     match key.filter(|_| !gone) {
         Some(k) => {
@@ -1993,6 +2051,72 @@ fn bounded(s: &str) -> String {
 mod tests {
     use super::*;
     use yaac_core::demo::{Scene, threads};
+
+    #[test]
+    fn thread_title_uses_the_caption_width_left_by_the_status() {
+        let ctx = egui::Context::default();
+        let app = crate::app::tests::demo_app(&ctx);
+        let mut header = yaac_core::header::header(
+            &app.client.state, &AttentionMap::compute(&app.client.state), &threads::orchestrator(),
+        ).expect("orchestrator header");
+        header.title = "Complete the orchestration permission-mode rollout".into();
+        header.tag = Some(("Running".into(), Tone::Running));
+        for (width, elided) in [(620.0, false), (250.0, true)] {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(width, crate::titlebar::HEIGHT))),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| title_row(ui, &Palette::DARK, &header, &mut Vec::new()));
+            output.textures_delta.clear();
+            let text = output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == header.title => Some(&text.galley),
+                _ => None,
+            }).expect("the title is drawn");
+            assert_eq!(text.elided, elided, "caption width {width}");
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "Running" && text.visual_bounding_rect().right() <= width)));
+        }
+    }
+
+    #[test]
+    fn artifact_card_draws_explicit_host_actions_in_egui() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::users();
+        app.apply(vec![Action::Open(key.clone())]);
+        app.pump_demo();
+        app.client.state.threads.get_mut(&key).unwrap().summary.artifacts = Some(vec![yaac_protocol::GeneratedArtifact {
+            upload_id: "u_artifact_md_test".into(), name: "report.md".into(), size: 12, title: "Generated report".into(),
+        }]);
+        let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 8000.0))), ..Default::default() };
+        let map = AttentionMap::compute(&app.client.state);
+        let mut out = ctx.run_ui(input, |ui| transcript(ui, &mut app, &map, &key, 0, &mut Vec::new()));
+        out.textures_delta.clear();
+        for label in ["Generated report", "Download…", "Open"] {
+            assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(line) if line.galley.text() == label)), "{label}");
+        }
+        assert!(!app.demo.as_ref().unwrap().requests().iter().any(|(_, method, _)| method == "upload/read"));
+    }
+
+    #[test]
+    fn mirrored_approval_has_worker_header_and_reports_worker_visibility() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let root = threads::orchestrator();
+        let worker = threads::index();
+        app.apply(vec![Action::Open(root.clone())]);
+        app.client.set_showing(vec![root.clone()]);
+        app.pump_demo();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let view = View { p: Palette::DARK, state: &app.client.state, ui: &mut app.ui, md: &mut app.md, images: &mut app.images };
+            render_block(ui, view, &root, &app.client.state.transcripts[&root],
+                &Block::Copy { worker: worker.clone(), item: "i3".into() }, Unit::new(0, 0), 0, &mut Vec::new());
+        });
+        output.textures_delta.clear();
+        let header = yaac_core::copies::header(&app.client.state, &worker).text();
+        assert!(output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(line) if line.galley.text() == header)));
+        assert!(app.ui.visible_requests.iter().any(|r| r.target == worker.target && r.thread_id == worker.thread));
+    }
 
     #[test]
     fn a_single_typed_part_keeps_line_breaks_when_the_bubble_is_measured() {

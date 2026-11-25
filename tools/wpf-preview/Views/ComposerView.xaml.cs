@@ -26,6 +26,8 @@ public partial class ComposerView : UserControl
     private bool? submitReady;
     private bool submitWithoutText;
     private bool caretScrollQueued;
+    private string[] messageHistory = [];
+    private int messageHistoryIndex = -1;
     private Window? dropHost;
     private bool wasAllowDrop;
     private PasteSelection? pasteSelection;
@@ -67,6 +69,7 @@ public partial class ComposerView : UserControl
         var nextKey = Field(view, "key").Identifier();
         if (nextKey.Length == 0)
         {
+            messageHistoryIndex = -1;
             Visibility = Visibility.Collapsed;
             editingEnabled = false;
             CloseFiles();
@@ -83,6 +86,7 @@ public partial class ComposerView : UserControl
         textKey = nextTextKey;
         if (editorChanged)
         {
+            messageHistoryIndex = -1;
             CloseFiles();
             pasteSelection = null;
             SetComposing(false);
@@ -214,7 +218,10 @@ public partial class ComposerView : UserControl
                 Editor.IsUndoEnabled = false;
             var replaced = Normalize(before) != value;
             if (replaced)
+            {
+                messageHistoryIndex = -1;
                 Editor.Text = value;
+            }
             if (reset)
             {
                 Editor.Select(0, 0);
@@ -267,6 +274,7 @@ public partial class ComposerView : UserControl
         if (applyingText || !editingEnabled)
             return;
 
+        messageHistoryIndex = -1;
         EnterShellIfTyped();
         ShellFieldEdited();
         ReportEditorEdit();
@@ -305,6 +313,12 @@ public partial class ComposerView : UserControl
     {
         if (imeComposing || e.Key is Key.ImeProcessed or Key.DeadCharProcessed)
             return;
+
+        if (Keyboard.Modifiers == ModifierKeys.None && MessageHistoryKey(e.Key))
+        {
+            e.Handled = true;
+            return;
+        }
 
         if (SkillKeyDown(e))
         {
@@ -389,10 +403,47 @@ public partial class ComposerView : UserControl
 
     private void SubmitMessage(bool now)
     {
+        messageHistoryIndex = -1;
         if (now && sendNowOffered && !shellMode)
             Submit(SendNowButton, "composer.sendNow");
         else
             Submit(SendButton, "composer.send");
+    }
+
+    internal void SetMessageHistory(JsonElement history)
+    {
+        messageHistory = history.EnumerateArray().Select(item => item.GetString() ?? "").ToArray();
+        messageHistoryIndex = -1;
+    }
+
+    private bool MessageHistoryKey(Key key)
+    {
+        if (!editingEnabled || shellMode || textKey.Length != 0 || messageHistory.Length == 0)
+            return false;
+        if (key == Key.Up && (messageHistoryIndex >= 0 || Editor.Text.Length == 0))
+            messageHistoryIndex = Math.Min(messageHistoryIndex + 1, messageHistory.Length - 1);
+        else if (key == Key.Down && messageHistoryIndex >= 0)
+            messageHistoryIndex--;
+        else
+            return false;
+
+        var text = messageHistoryIndex < 0 ? "" : messageHistory[messageHistoryIndex];
+        if (Normalize(Editor.Text) != text)
+        {
+            applyingText = true;
+            try
+            {
+                Editor.Text = text;
+                Editor.Select(Editor.Text.Length, 0);
+                Editor.ScrollToEnd();
+            }
+            finally
+            {
+                applyingText = false;
+            }
+            ReportEditorEdit();
+        }
+        return true;
     }
 
     private void Submit(Button button, string command)

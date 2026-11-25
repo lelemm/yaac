@@ -189,6 +189,8 @@ public partial class SettingsView
         private readonly bool card;
         private readonly TextBlock title = Heading(17);
         private readonly TextBlock detail = Text(13);
+        private readonly StackPanel titleRow = new();
+        private readonly StackPanel sectionActions = new();
         private readonly StackPanel rowHost = new();
         private readonly Dictionary<string, Row> rows = new(StringComparer.Ordinal);
         private readonly Row header;
@@ -208,11 +210,13 @@ public partial class SettingsView
 
             title.Margin = new Thickness(0, 0, 0, 5);
             detail.Margin = new Thickness(0, 0, 0, 6);
-            stack.Children.Add(title);
+            titleRow.Children.Add(title);
+            stack.Children.Add(titleRow);
             stack.Children.Add(detail);
             stack.Children.Add(rowHost);
             header = new Row(owner);
-            stack.Children.Add(header.Root);
+            stack.Children.Add(sectionActions);
+            sectionActions.Children.Add(header.Root);
         }
 
         public void Apply(JsonElement section)
@@ -228,6 +232,17 @@ public partial class SettingsView
             Say(title, Str(section, "title"));
             Say(detail, Str(section, "detail"));
             detail.Foreground = owner.Tone(Str(section, "tone"));
+            var inlineActions = Flag(section, "inlineActions");
+            titleRow.Orientation = inlineActions ? Orientation.Horizontal : Orientation.Vertical;
+            title.Margin = inlineActions ? new Thickness() : new Thickness(0, 0, 0, 5);
+            title.VerticalAlignment = inlineActions ? VerticalAlignment.Center : VerticalAlignment.Stretch;
+            var actionParent = inlineActions ? titleRow : sectionActions;
+            if (!actionParent.Children.Contains(header.Root))
+            {
+                (inlineActions ? sectionActions : titleRow).Children.Remove(header.Root);
+                actionParent.Children.Add(header.Root);
+                header.Root.Margin = inlineActions ? new Thickness(12, 0, 0, 0) : new Thickness();
+            }
             header.Apply(section, true);
             Arrange(rowHost, rows, Items(section, "rows"), item => Str(item, "id"),
                 _ => new Row(owner), (row, item) => row.Apply(item), row => row.Root, row => row.Detach());

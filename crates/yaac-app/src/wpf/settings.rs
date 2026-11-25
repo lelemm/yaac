@@ -170,6 +170,31 @@ pub(super) fn view(app: &YaacApp, target: Option<&TargetId>) -> Value {
         Page::Window => window(app),
         Page::Terminal => terminal_settings(app),
         Page::Keyboard => keyboard(app),
+        Page::Approvals => {
+            let choices = model::explanation_choices(&app.client.state);
+            let models = &app.client.state.hub.explanations;
+            let fields: Vec<_> = [("main", "Main model", &models.main), ("fallback", "Fallback model", &models.fallback)].into_iter().map(|(slot, label, selected)| {
+                let value = serde_json::to_string(selected).unwrap();
+                let mut options = vec![action("null", "None", true)];
+                options.extend(choices.iter().map(|(v, name)| action(&serde_json::to_string(v).unwrap(), name, true)));
+                if let Some(v) = selected && !choices.iter().any(|(c, _)| c == v) {
+                    options.push(action(&value, &format!("{} · {}", v.instance, v.model), false));
+                }
+                choice(slot, label, Some(&value), &format!("approvals.{slot}"), options)
+            }).collect();
+            json!({ "sections": [section("models", "Explain commands with", vec![json!({"id":"models","fields":fields})])] })
+        }
+        Page::Notifications => {
+            let prefs = app.client.state.hub.notifications;
+            json!({ "sections": [section("notifications", "Notifications", vec![
+                json!({"id":"options","actions":[
+                    toggle("notifications.enabled","Show desktop request notifications",prefs.enabled,true),
+                    toggle("notifications.questions","Include questions",prefs.include_questions,true),
+                    toggle("notifications.sound","Play a sound",prefs.sound,true)]}),
+                json!({"id":"sound","label":"Sound","fields":[{"id":"soundChoice","type":"radio","action":"notifications.choice",
+                    "value":prefs.sound_choice,"options":[action("reminder","Reminder",true),action("default","Default",true)]}]})
+            ])] })
+        }
         Page::Advanced => advanced(app),
         Page::About => about(app),
     };
@@ -1003,10 +1028,12 @@ fn about(app: &YaacApp) -> Value {
         .enumerate()
         .map(|(i, c)| component_row(c, &format!("component-{i}"), false, None))
         .collect();
-    let last_checked = app.updater.last_checked.map(|when| {
+    let last_checked = if app.updater.refreshing {
+        Some("Checking for a release…".into())
+    } else { app.updater.last_checked.map(|when| {
         let local = chrono::DateTime::<chrono::Local>::from(when);
         format!("Last checked {}", local.format("%Y-%m-%d %H:%M"))
-    });
+    }) };
     components.push(component_row(
         components::release(&app.updater.check, crate::BUILD),
         "release",
@@ -1035,7 +1062,12 @@ fn about(app: &YaacApp) -> Value {
     if let Some(notice) = &app.updater.notice {
         components.push(json!({ "id": "updateNotice", "status": notice, "tone": "warning" }));
     }
-    json!({ "sections": [info, section("components", "Components", components)] })
+    let components = with(section("components", "Components", components), json!({
+        "inlineActions": true,
+        "actions": [with(action("about.refresh", "Refresh", true),
+            json!({ "detail": "Check target connections and the latest release now" }))]
+    }));
+    json!({ "sections": [info, components] })
 }
 
 pub(super) fn command(
@@ -1202,6 +1234,13 @@ pub(super) fn command(
             let enabled = values["checked"].as_bool().ok_or_else(|| "Expected a model switch value.".to_owned())?;
             Action::ModelEnabled(target, instance, model, enabled)
         }
+        "provider.explainsApprovals" => {
+            let target = connected_target(app, values)?;
+            let instance = instance_id(app, &target, values)?;
+            let model = yaac_protocol::ModelId::new(string(values, "model"));
+            let enabled = values["checked"].as_bool().ok_or_else(|| "Expected an explanation model switch value.".to_owned())?;
+            Action::ApprovalExplanationModel(target, instance, enabled.then_some(model))
+        }
         "provider.bestUseEdit" | "provider.bestUseSave" | "provider.bestUseReset" => {
             let target = connected_target(app, values)?;
             let instance = instance_id(app, &target, values)?;
@@ -1317,6 +1356,15 @@ pub(super) fn command(
             app.display.choose(renderer);
             return Ok(());
         }
+        "approvals.main" | "approvals.fallback" => {
+            let slot = id.trim_start_matches("approvals.");
+            let value: Option<yaac_protocol::ExplanationModel> = serde_json::from_str(string(values, slot)).map_err(|_| "Unknown model.")?;
+            if value.as_ref().is_some_and(|v| !model::explanation_choices(&app.client.state).iter().any(|(c, _)| c == v)) { return Err("Model unavailable.".into()); }
+            let mut models = app.client.state.hub.explanations.clone();
+            if slot == "main" { models.main = value; } else { models.fallback = value; }
+            app.client.set_explanations(models);
+            return Ok(());
+        }
         "advanced.sendKey" => {
             app.ui.send_key = match string(values, "sendKey") {
                 "enter" => SendKey::Enter,
@@ -1325,10 +1373,22 @@ pub(super) fn command(
             };
             return Ok(());
         }
+        "notifications.enabled" | "notifications.questions" | "notifications.sound" | "notifications.choice" => {
+            let mut prefs = app.client.state.hub.notifications;
+            match id {
+                "notifications.enabled" => prefs.enabled = checked(values)?,
+                "notifications.questions" => prefs.include_questions = checked(values)?,
+                "notifications.sound" => prefs.sound = checked(values)?,
+                _ => prefs.sound_choice = serde_json::from_value(json!(string(values, "soundChoice"))).map_err(|_| "Unknown sound.")?,
+            }
+            app.client.set_notifications(prefs);
+            return Ok(());
+        }
         "advanced.always" => Action::SetAlways(checked(values)?),
         "advanced.clearCache" => Action::ClearCache,
         "about.releases" => Action::OpenUrl(format!("{REPOSITORY}/releases")),
         "about.source" => Action::OpenUrl(REPOSITORY.to_owned()),
+        "about.refresh" => Action::RefreshComponents,
         "update.download" => {
             app.updater.download();
             return Ok(());
@@ -1866,6 +1926,36 @@ mod tests {
         app.client.pump();
         assert_eq!(toggle(&app, &local)["checked"], false);
         assert_eq!(toggle(&app, &remote)["checked"], true);
+    }
+
+    #[test]
+    fn about_refresh_rechecks_enabled_offline_targets_without_enabling_others() {
+        use yaac_protocol::attach::{self, ConnectionStatus};
+        let mut app = crate::app::tests::demo_app(&egui::Context::default());
+        let offline = TargetId::new("devbox");
+        for target in &mut app.client.state.targets {
+            target.entry.state.status = if target.entry.id.as_str() == "local" {
+                ConnectionStatus::Connected
+            } else {
+                target.entry.enabled = target.entry.id == offline;
+                ConnectionStatus::Offline
+            };
+        }
+
+        let view = about(&app);
+        let section = &view["sections"][1];
+        assert_eq!(section["inlineActions"], true);
+        let refresh = &section["actions"][0];
+        assert_eq!(refresh["id"], "about.refresh");
+        let before = app.demo.as_ref().unwrap().requests().len();
+        command(&mut app, &mut None, "settings.action", refresh).unwrap();
+        let requests = app.demo.as_ref().unwrap().requests();
+        let messages: Vec<_> = requests[before..].iter()
+            .map(|(_, method, params)| (method.as_str(), params.clone())).collect();
+        assert_eq!(messages, [
+            (yaac_core::client::hub_names::TARGETS_RECONNECT, json!({ "id": offline })),
+            (attach::names::TARGETS_LIST, json!({})),
+        ]);
     }
 
     #[test]

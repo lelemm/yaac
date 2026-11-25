@@ -18,8 +18,51 @@ use serde_json::Value;
 use crate::macros::{open_enum, open_union};
 use crate::types::{ClientId, Empty, TargetId, TargetName};
 
+/// A pending request as identified across targets and windows.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestLocation {
+    pub target: TargetId,
+    pub thread_id: crate::ThreadId,
+    pub request_id: crate::RequestId,
+}
+
+/// Destination for a desktop action. A rejected or uncertain answer opens the card with
+/// the original error so that no answer is silently retried.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationOpen {
+    pub location: RequestLocation,
+    pub item_id: crate::ItemId,
+    pub error: Option<String>,
+}
+
+/// Hub-owned desktop notification preferences.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct NotificationSettings {
+    pub enabled: bool,
+    pub sound: bool,
+    pub sound_choice: NotificationSound,
+    pub include_questions: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self { enabled: true, sound: true, sound_choice: NotificationSound::Reminder, include_questions: true }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NotificationSound { Reminder, Default }
+
 /// Every attach method name.
 pub mod names {
+    /// Window → hub. The pending cards actually visible in this focused window.
+    pub const NOTIFICATIONS_VISIBLE: &str = "hub/notifications/visible";
+    /// Hub → window. Open a notification at its exact request.
+    pub const NOTIFICATIONS_OPEN: &str = "hub/notifications/open";
     /// Terminal open on the selected target.
     pub const TERMINAL_OPEN: &str = "hub/terminal/open";
     /// Terminal attach on the selected target.

@@ -70,6 +70,8 @@ const MIGRATIONS: &[&str] = &[
     r"
     ALTER TABLE thread_view ADD COLUMN unseen INTEGER NOT NULL DEFAULT 0;
     ",
+    // 5: confirmed orchestration mode changes that have never been sent.
+    "CREATE TABLE pending_modes (target TEXT NOT NULL, thread TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(target, thread));",
 ];
 
 /// A draft-store error.
@@ -204,6 +206,40 @@ impl DraftStore {
         rows.map(|r| finish_draft(r?)).collect()
     }
 
+    /// Save the latest unsent choice for this destination.
+    pub fn queue_mode(&mut self, target: &TargetId, change: &yaac_protocol::ThreadSetModeParams) -> Result<(), DraftsError> {
+        self.conn.execute("INSERT OR REPLACE INTO pending_modes VALUES (?1, ?2, ?3)",
+            params![target.as_str(), change.thread_id.as_str(), serde_json::to_string(change)?])?;
+        Ok(())
+    }
+
+    /// A connection disappeared before handoff. Keep a newer outstanding choice, if any.
+    pub fn restore_unsent_mode(&mut self, target: &TargetId, change: &yaac_protocol::ThreadSetModeParams) -> Result<(), DraftsError> {
+        let tx = self.conn.transaction()?;
+        tx.execute("INSERT OR IGNORE INTO pending_modes VALUES (?1, ?2, ?3)",
+            params![target.as_str(), change.thread_id.as_str(), serde_json::to_string(change)?])?;
+        tx.execute("DELETE FROM operations WHERE op_id=?1", [change.op_id.as_str()])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Move unsent changes to ordinary in-flight receipts before handing them to the transport.
+    pub fn claim_modes(&mut self, target: &TargetId) -> Result<Vec<yaac_protocol::ThreadSetModeParams>, DraftsError> {
+        let tx = self.conn.transaction()?;
+        let changes: Vec<yaac_protocol::ThreadSetModeParams> = {
+            let mut stmt = tx.prepare("SELECT payload FROM pending_modes WHERE target=?1 ORDER BY rowid")?;
+            let rows = stmt.query_map([target.as_str()], |r| r.get::<_, String>(0))?;
+            rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect::<Result<_, DraftsError>>()?
+        };
+        for p in &changes {
+            tx.execute("INSERT INTO operations VALUES (?1, ?2, 'thread/setMode', ?3, 'sent', ?4)",
+                params![p.op_id.as_str(), target.as_str(), p.thread_id.as_str(), now_ms()])?;
+        }
+        tx.execute("DELETE FROM pending_modes WHERE target=?1", [target.as_str()])?;
+        tx.commit()?;
+        Ok(changes)
+    }
+
     /// Records a routed state-changing operation as sent. Only identifiers are stored — never
     /// the params, which may carry a secret answer.
     pub fn op_sent(&mut self, op: &OpId, target: &TargetId, method: &str, thread: Option<&ThreadId>) -> Result<(), DraftsError> {
@@ -331,6 +367,7 @@ impl DraftStore {
 
     /// A target was removed: every entry of it goes.
     pub fn view_remove_target(&mut self, target: &TargetId) -> Result<(), DraftsError> {
+        self.conn.execute("DELETE FROM pending_modes WHERE target = ?1", [target.as_str()])?;
         self.conn.execute("DELETE FROM thread_view WHERE target_id = ?1", params![target.as_str()])?;
         Ok(())
     }
@@ -516,4 +553,30 @@ fn view_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadView> {
         dismissed: r.get::<_, i64>(5)? != 0,
         unseen: r.get::<_, i64>(6)? != 0,
     })
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+    #[test]
+    fn offline_modes_survive_restart_and_leave_only_uncertain_receipts_after_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("drafts.db");
+        let target = TargetId::new("remote");
+        let mut change: yaac_protocol::ThreadSetModeParams = serde_json::from_value(serde_json::json!({
+            "opId": "first", "threadId": "child", "sourceTarget": "local", "sourceInstance":"src",
+            "sourceTitle":"Coordinator", "mode":{"id":"ask","displayName":"Ask"}, "allowInterrupt":false
+        })).unwrap();
+        let mut db = DraftStore::open(&path).unwrap();
+        db.queue_mode(&target, &change).unwrap();
+        change.op_id = OpId::new("newer");
+        db.queue_mode(&target, &change).unwrap();
+        drop(db);
+        let mut db = DraftStore::open(&path).unwrap();
+        assert!(db.claim_modes(&TargetId::new("other")).unwrap().is_empty());
+        assert_eq!(db.claim_modes(&target).unwrap(), vec![change.clone()]);
+        db.mark_all_uncertain().unwrap();
+        assert!(db.claim_modes(&target).unwrap().is_empty());
+        assert_eq!(db.operations().unwrap()[0].op_id, change.op_id);
+    }
 }

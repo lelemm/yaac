@@ -203,6 +203,11 @@ pub(crate) struct SelCx<'a> {
 }
 
 impl SelCx<'_> {
+    /// Keep a diagram's source in a selection that spans its preview.
+    pub(crate) fn diagram(&mut self, source: &str) {
+        self.ts.frame_texts.entry(self.unit).or_default().push(source.to_owned());
+    }
+
     /// Paint `galley` at `pos` with its share of the selection, and register it.
     pub(crate) fn paint(&mut self, ui: &Ui, pos: Pos2, galley: Arc<Galley>, fallback: Color32) {
         let parts = self.ts.frame_texts.entry(self.unit).or_default();

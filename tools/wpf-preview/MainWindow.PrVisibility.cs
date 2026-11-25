@@ -8,6 +8,7 @@ public partial class MainWindow
     private DispatcherOperation? pendingPrVisibility;
     private string[] visiblePrRows = [];
     private bool agentRowsVisible;
+    private string? requestVisibility;
 
     private void QueueVisiblePrRows()
     {
@@ -21,6 +22,14 @@ public partial class MainWindow
         if (closed || controller is null)
             return;
 
+        var cards = IsActive && IsVisible && WindowState != WindowState.Minimized && !settingsOpen
+            ? (TranscriptPreview.IsVisible ? TranscriptPreviewPane : TranscriptPane).VisibleRequests().ToArray() : [];
+        var fingerprint = System.Text.Json.JsonSerializer.Serialize(cards);
+        if (requestVisibility != fingerprint)
+        {
+            requestVisibility = fingerprint;
+            Send("shell.visibleRequests", new { cards });
+        }
         string[] rows = [];
         bool agentsVisible = false;
         if (IsVisible && WindowState != WindowState.Minimized && !settingsOpen && !firstRun)

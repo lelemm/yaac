@@ -294,6 +294,8 @@ pub struct HubState {
     pub shutdown_answered: bool,
     /// Whether the hub keeps running and starts at login (`hub/settings/get`), once known.
     pub always: Option<bool>,
+    pub explanations: yaac_protocol::ExplanationModels,
+    pub notifications: yaac_protocol::attach::NotificationSettings,
 }
 
 /// A `thread/forkPreview` in flight or answered.
@@ -392,6 +394,8 @@ pub struct AppState {
     pub create_pr: Option<crate::pr::CreatePr>,
     /// Plan rate limits of every account on any target (D161), from the hub.
     pub rate_limits: crate::limits::Accounts,
+    /// Request copies (P354): what [`crate::copies`] follows for the open thread.
+    pub copies: crate::copies::CopyState,
     stamp: u64,
 }
 
@@ -658,13 +662,19 @@ impl AppState {
     pub fn upsert_summary(&mut self, target: &TargetId, summary: ThreadSummary) {
         let stamp = self.next_stamp();
         let key = ThreadKey::new(target.clone(), summary.id.clone());
+        self.copies.dirty = true;
         self.threads.insert(key, ThreadRecord { summary, stamp });
     }
 
     /// A thread is gone.
     pub fn remove_thread(&mut self, key: &ThreadKey) {
+        self.copies.dirty = true;
         self.threads.remove(key);
         self.hints.remove(key);
+        // follow_copies releases any window subscription after the index changes.
+        self.copies.detached.remove(key);
+        self.copies.shown.retain(|(k, _)| k != key);
+        self.copies.answered_in.retain(|(k, _), _| k != key);
         self.transcripts.remove(key);
         self.recent.retain(|k| k != key);
     }
@@ -708,6 +718,12 @@ impl AppState {
     pub fn apply_thread_event(&mut self, target: &TargetId, event: &ThreadEventParams) {
         let key = ThreadKey::new(target.clone(), event.thread_id.clone());
         let stamp = self.next_stamp();
+        self.copies.dirty |= match &event.event {
+            yaac_protocol::ThreadEvent::RequestChanged(_) => true,
+            yaac_protocol::ThreadEvent::ItemStarted(e) | yaac_protocol::ThreadEvent::ItemCompleted(e) => matches!(e.item.body, yaac_protocol::ItemBody::Request(_)),
+            yaac_protocol::ThreadEvent::ItemUpdated(e) => matches!(e.item.body, yaac_protocol::ItemBody::Request(_)),
+            _ => false,
+        };
         let change: HintChange = self.hints.entry(key.clone()).or_default().apply(event, stamp);
         if let Some(kind) = change.arrived
             && self.selected_thread() != Some(&key)
@@ -731,12 +747,13 @@ impl AppState {
         self.recent.retain(|k| k != key);
         self.recent.push_front(key.clone());
         while self.recent.len() > self.transcript_capacity + 1 {
-            if let Some(old) = self.recent.pop_back() {
-                if self.selected_thread() == Some(&old) {
-                    self.recent.push_front(old);
-                    break;
-                }
+            let Some(index) = self.recent.iter().rposition(|k| self.selected_thread() != Some(k)
+                && !self.copies.sources.contains(k) && k != key) else { break };
+            if let Some(old) = self.recent.remove(index) {
                 self.transcripts.remove(&old);
+                self.copies.shown.retain(|(k, _)| k != &old);
+                self.copies.answered_in.retain(|(k, _), _| k != &old);
+                self.copies.detached.remove(&old);
             }
         }
     }

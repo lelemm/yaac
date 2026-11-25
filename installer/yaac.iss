@@ -70,12 +70,17 @@ Source: "{#SourceDir}\cef\*"; DestDir: "{app}\cef"; Flags: ignoreversion recurse
 Source: "{#SourceDir}\yaac.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\yaacd.mjs"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\runtime\node.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion
+Source: "{#SourceDir}\runtime\mermaid\*"; DestDir: "{app}\runtime\mermaid"; Flags: ignoreversion
 Source: "{#SourceDir}\runtime\pty-1.2.0-beta.18\*"; DestDir: "{app}\runtime\pty-1.2.0-beta.18"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\runtime\LICENSE-Node.js.txt"; DestDir: "{app}\runtime"; Flags: ignoreversion
 Source: "{#SourceDir}\wpf\*"; DestDir: "{app}\wpf"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 
+[Registry]
+; Identity used by the unpackaged hub when it posts a WinRT reminder.
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\YAAC.Desktop"; ValueType: string; ValueName: "DisplayName"; ValueData: "YAAC"; Flags: uninsdeletekey
+
 [Icons]
-Name: "{autoprograms}\YAAC"; Filename: "{app}\yaac.exe"
+Name: "{autoprograms}\YAAC"; Filename: "{app}\yaac.exe"; AppUserModelID: "YAAC.Desktop"
 Name: "{autodesktop}\YAAC"; Filename: "{app}\yaac.exe"; Tasks: desktopicon
 
 [Run]
