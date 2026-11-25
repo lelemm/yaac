@@ -1493,13 +1493,26 @@ mod tests {
             let id = app.browsers.terms.insert(&key, None, "/work".into());
             app.browsers.terms.detach_demo(id);
             let mut rig = Self { ctx, app, id };
-            rig.frame(); // fonts and layout settle
+            // Fonts and layout settle; the first frame sizes the grid, which the terminal's
+            // own thread applies, so a second frame draws the settled grid.
+            rig.frame();
+            rig.frame();
             rig
+        }
+
+        /// Waits until the terminal's thread has parsed everything fed to it and applied any
+        /// resize, so a test frame never races it (CI machines are slower than a laptop).
+        fn settle(&mut self) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !self.session().term.idle() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
 
         /// One frame: run the grid, then tessellate (what a real frame costs on the CPU).
         /// Returns the meshes painted and the time it took.
         fn frame(&mut self) -> (usize, Duration) {
+            self.settle();
             let start = Instant::now();
             let id = self.id;
             let app = &mut self.app;
