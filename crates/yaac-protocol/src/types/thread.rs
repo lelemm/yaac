@@ -325,6 +325,9 @@ pub struct GeneratedArtifact {
     pub name: String,
     /// Display title.
     pub title: String,
+    /// When the publishing thread first presented the snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<Timestamp>,
 }
 
 /// What the sidebar needs, and what the host cache stores, per thread.

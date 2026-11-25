@@ -14,7 +14,9 @@ public sealed class TranscriptRowView : UserControl
     private const double UserBubbleShare = 0.8;
     private readonly Border plate = new() { CornerRadius = new CornerRadius(7) };
     private readonly StackPanel content = new();
+    private readonly Grid heading = new();
     private readonly TextBlock title = Label(semiBold: true);
+    private readonly TextBlock publicationTime = Label(color: TranscriptColors.Muted);
     private readonly TextBlock cursor = Label("▌", color: TranscriptColors.Muted);
     private readonly TextBlock status = Label(color: TranscriptColors.Muted);
     private readonly TextBlock stamp = Label(color: TranscriptColors.Muted);
@@ -58,6 +60,14 @@ public sealed class TranscriptRowView : UserControl
         stamp.Margin = new Thickness(1, 2, 1, 0);
         status.FontSize = 12;
         status.Margin = new Thickness(0, 2, 0, 1);
+        publicationTime.FontSize = 11;
+        publicationTime.Margin = new Thickness(8, 0, 0, 0);
+        publicationTime.TextWrapping = TextWrapping.NoWrap;
+        heading.ColumnDefinitions.Add(new ColumnDefinition());
+        heading.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        heading.Children.Add(title);
+        Grid.SetColumn(publicationTime, 1);
+        heading.Children.Add(publicationTime);
         handoffDivider.HorizontalAlignment = HorizontalAlignment.Center;
         handoffDivider.Margin = new Thickness(9, 0, 9, 0);
         handoffRule.ColumnDefinitions.Add(new ColumnDefinition());
@@ -125,7 +135,7 @@ public sealed class TranscriptRowView : UserControl
             return;
         }
         content.Children.Add(taskHeader);
-        content.Children.Add(title);
+        content.Children.Add(heading);
         content.Children.Add(body);
         content.Children.Add(handoffRule);
         content.Children.Add(cursor);
@@ -210,6 +220,7 @@ public sealed class TranscriptRowView : UserControl
         Margin = new Thickness(0, 0, 0, activityRow is null ? 9 : 0);
 
         SetLabel(title, user || kind == "task" ? "" : data.Value("title").Text(), tone);
+        SetLabel(publicationTime, kind == "artifact" ? data.Value("publishedAt").Text() : "");
         SetLabel(handoffDivider, data.Value("divider").Text(), TranscriptColors.Muted);
         handoffRule.Visibility = kind == "handoff" ? Visibility.Visible : Visibility.Collapsed;
         if (!Same("taskPeer", data))

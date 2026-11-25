@@ -100,7 +100,7 @@ public partial class BrowserView : UserControl
         {
             if (!browserActive) return;
             var key = e.Key == Key.System ? e.SystemKey : e.Key;
-            if (key == Key.L && Keyboard.Modifiers == ModifierKeys.Control)
+            if (key == Key.L && Keyboard.Modifiers == ModifierKeys.Control && !AddressField.IsReadOnly)
             {
                 AddressField.Focus();
                 AddressField.SelectAll();
@@ -133,7 +133,7 @@ public partial class BrowserView : UserControl
         AddressField.TextChanged += (_, _) => addressDirty |= !updatingAddress;
         AddressField.PreviewKeyDown += (_, e) =>
         {
-            if (e.Key == Key.Enter)
+            if (e.Key == Key.Enter && !AddressField.IsReadOnly)
             {
                 focusWhenConnected = !Surface.IsVisible;
                 Send("navigate", new { url = AddressField.Text });
@@ -258,6 +258,15 @@ public partial class BrowserView : UserControl
         files.Clear();
         var tab = active!.Value;
         var url = Text(current, "url");
+        var artifact = Flag(current, "artifact");
+        var addressModeChanged = AddressField.IsReadOnly != artifact;
+        if (addressModeChanged || switched)
+        {
+            AddressField.IsReadOnly = artifact;
+            AddressField.Focusable = !artifact;
+            AddressField.ToolTip = artifact ? url : "Address (Ctrl+L)";
+            AutomationProperties.SetName(AddressField, artifact ? "Document name" : "Address");
+        }
         if (switched || !addressDirty || displayedUrl != url) SetAddress(url);
         displayedUrl = url;
         busy = Flag(current, "loading");
@@ -269,15 +278,15 @@ public partial class BrowserView : UserControl
         Surface.Visibility = hasSurface ? Visibility.Visible : Visibility.Collapsed;
         Landing.Visibility = hasSurface ? Visibility.Collapsed : Visibility.Visible;
         Reload.IsEnabled = hasSurface;
-        if ((string?)Reload.ToolTip != (busy ? "Stop (F5 or Ctrl+R)" : "Reload (F5 or Ctrl+R)"))
+        if (addressModeChanged || (string?)Reload.ToolTip != (busy ? "Stop (F5 or Ctrl+R)" : "Reload (F5 or Ctrl+R)"))
         {
             PaneIcon.Set(Reload, busy ? "Stop" : "Reload", busy ? "Stop (F5 or Ctrl+R)" : "Reload (F5 or Ctrl+R)");
-            AddressIcon.Content = busy ? new RunningSpinner { Width = 16, Height = 16 } : PaneIcon.Draw("Browser");
+            AddressIcon.Content = busy ? new RunningSpinner { Width = 16, Height = 16 } : PaneIcon.Draw(artifact ? "File" : "Browser");
         }
         ProgressLine.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         Back.IsEnabled = Flag(current, "back");
         Forward.IsEnabled = Flag(current, "forward");
-        External.IsEnabled = url.Length > 0;
+        External.IsEnabled = !artifact && url.Length > 0;
         Inspect.IsEnabled = hasSurface;
 
         if (!hasSurface)

@@ -17,7 +17,7 @@ public partial class BrowserView
         var signature = JsonSerializer.Serialize(new { thread, active, full, chat, chatTitle, chatLogo, chatLogoColor, chatMarked, chatTone,
             reason, filesReason, terminalReason, tabs = tabs.EnumerateArray().Select(t => new[] { Text(t, "title"), Text(t, "kind"),
                 Text(t, "url"), Text(t, "agentLogo"), Text(t, "agentLogoColor"), Text(t, "path"), Text(t, "mark"), t.Value("bell").ToString(), Flag(t, "unread").ToString(),
-                t.GetProperty("id").ToString(), Flag(t, "loading").ToString() }) });
+                t.GetProperty("id").ToString(), Flag(t, "loading").ToString(), Flag(t, "artifact").ToString() }) });
         if (signature == tabSignature) return;
         tabSignature = signature;
         object? focused = TabStrip.IsKeyboardFocusWithin && Keyboard.FocusedElement is Button old ? old.Tag : null;
@@ -91,6 +91,7 @@ public partial class BrowserView
                     "files" => PaneIcon.Draw("Files"), "file" => PaneIcon.Draw("File"),
                     "diff" => GitMark(Text(tab, "mark")),
                     _ when Flag(tab, "loading") => new RunningSpinner(),
+                    _ when Flag(tab, "artifact") => PaneIcon.Draw("File"),
                     _ when icons.TryGetValue(id.Value, out var image) => new Image { Source = image },
                     _ => PaneIcon.Draw("Browser"),
                 };

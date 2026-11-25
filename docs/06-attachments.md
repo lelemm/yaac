@@ -101,6 +101,8 @@ message references them there.
 The trade-off of this location is accepted and made visible: a temp directory can be emptied —
 typically at reboot — while the conversation that referenced a file lives on.
 
+- The daemon recreates missing upload directories when preparing an upload or a turn, even
+  if the cleanup happened while it was running.
 - When a thread is opened, `yaacd` reports which of its attachments still exist. A chip whose
   file is gone is shown as *no longer on the target*; the message text is unaffected.
 - If the user resumes such a thread, the agent may be told about a file it can no longer open.

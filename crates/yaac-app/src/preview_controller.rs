@@ -11,6 +11,13 @@ use crate::file_pane::{Document, FileRequest, FileTree, TabKind, Work};
 use std::sync::Arc;
 
 const PORT_INTERVAL: Duration = Duration::from_secs(5);
+const ARTIFACT_URL: &str = "https://artifact.invalid/document";
+
+struct ArtifactSnapshot {
+    #[cfg_attr(not(feature = "preview"), allow(dead_code))]
+    path: std::path::PathBuf,
+    name: String,
+}
 
 #[derive(Default)]
 pub(crate) struct BrowserTab {
@@ -28,8 +35,8 @@ pub(crate) struct BrowserTab {
     /// Provider kind of the agent acting on this tab, only while it acts; renderers draw its
     /// harness logo beside the title (docs/11-preview.md#the-browser-area).
     pub(crate) agent: Option<String>,
+    snapshot: Option<ArtifactSnapshot>,
     /// Set once per renderer handle, only after the hub supplies a target proxy.
-    snapshot: Option<std::path::PathBuf>,
     socks: Option<u16>,
     started: bool,
     #[cfg(feature = "preview")]
@@ -41,6 +48,16 @@ pub(crate) struct BrowserTab {
 }
 
 impl BrowserTab {
+    pub(crate) fn artifact_name(&self) -> Option<&str> {
+        let snapshot = self.snapshot.as_ref()?;
+        let page = self.url.split('#').next().unwrap_or_default();
+        matches!(page, ARTIFACT_URL | "about:blank" | "").then_some(snapshot.name.as_str())
+    }
+
+    pub(crate) fn display_address(&self) -> &str {
+        self.artifact_name().unwrap_or(self.url.as_str())
+    }
+
     /// Whether a renderer has taken the engine handle for this tab.
     #[cfg(feature = "preview")]
     pub(crate) fn started(&self) -> bool {
@@ -410,10 +427,10 @@ impl Browsers {
     }
 
     /// Open only a snapshot prepared by the host; normal navigation still validates user input.
-    pub(crate) fn artifact(&mut self, client: &mut Client, key: &ThreadKey, file: &std::path::Path) -> Result<(), String> {
-        let url = Url::parse("https://artifact.invalid/document").expect("static document URL");
+    pub(crate) fn artifact(&mut self, client: &mut Client, key: &ThreadKey, file: &std::path::Path, name: String) -> Result<(), String> {
+        let url = Url::parse(ARTIFACT_URL).expect("static document URL");
         let id = self.new_tab(client, key)?;
-        self.tab_mut(key, id).expect("new tab").snapshot = Some(file.to_owned());
+        self.tab_mut(key, id).expect("new tab").snapshot = Some(ArtifactSnapshot { path: file.to_owned(), name });
         self.load_url(client, key, id, url)
     }
 
@@ -464,7 +481,7 @@ impl Browsers {
         tab.started_at = Some(now);
         tab.error = None;
         let url = tab.url.clone();
-        let snapshot = tab.snapshot.clone();
+        let snapshot = tab.snapshot.as_ref().map(|snapshot| snapshot.path.clone());
         Some(self.host.open_document(&url, Some(socks), snapshot, wake))
     }
 
@@ -778,6 +795,23 @@ mod tests {
         for input in ["0", "65536", "file:///etc", ""] {
             assert!(address(input).is_err());
         }
+    }
+
+    #[test]
+    fn generated_document_displays_its_original_filename() {
+        let mut tab = BrowserTab {
+            snapshot: Some(ArtifactSnapshot {
+                path: "YAAC-document-123.txt".into(),
+                name: "runbook.md".into(),
+            }),
+            ..BrowserTab::default()
+        };
+        for page in ["about:blank".into(), ARTIFACT_URL.into(), format!("{ARTIFACT_URL}#overview")] {
+            tab.url = page;
+            assert_eq!(tab.display_address(), "runbook.md");
+        }
+        tab.url = "https://example.com/guide".into();
+        assert_eq!(tab.display_address(), "https://example.com/guide");
     }
 
     #[test]

@@ -93,20 +93,17 @@ export class UploadStore {
     if (this.nextStream > 0xffffffff) throw new RpcError("limit_exceeded", "data stream numbers exhausted");
     return this.nextStream++;
   }
-  private ready = false;
-
   constructor(tempDir: string = os.tmpdir(), user: string = os.userInfo().username) {
     this.root = path.join(tempDir, `yaac-${sanitiseName(user)}`, "uploads");
   }
 
   private prepare(): void {
-    if (this.ready) return;
+    // The system can remove temporary directories while yaacd is still running.
     const top = path.dirname(this.root);
     fs.mkdirSync(path.dirname(top), { recursive: true });
     ensurePrivateDir(top);
     ensurePrivateDir(this.root);
     for (const d of ["blobs", "meta", "threads", "partial"]) ensurePrivateDir(path.join(this.root, d));
-    this.ready = true;
   }
 
   private blobPath(sha: string): string {

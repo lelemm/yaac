@@ -419,3 +419,29 @@ test("a thread has one attachment folder for its whole life, and parts carry the
   await c.close();
   await daemon.stop("test");
 });
+
+test("a running daemon recreates a cleaned upload directory before sending text", async () => {
+  const daemon = await startDaemon(tmpHome());
+  const c = await client(daemon);
+  try {
+    const thread = await startThread(c, "/fake say before cleanup");
+    await c.request("thread/subscribe", { threadId: thread.threadId, epoch: 1, afterSeq: 0 });
+    await waitTurnDone(c, thread.threadId, thread.turnId);
+    const folder = fakeOf(daemon).received[0]!.input.uploadsDir!;
+    assert.ok(fs.statSync(folder).isDirectory());
+
+    const root = daemon.core.uploads.root;
+    for (const removed of [path.dirname(folder), path.join(root, "partial"), root]) {
+      fs.rmSync(removed, { recursive: true });
+      const result = await c.request("turn/start", {
+        opId: opId(), threadId: thread.threadId, input: text("/fake say after cleanup"),
+      });
+      await waitTurnDone(c, thread.threadId, result.turnId);
+      assert.ok(fs.statSync(folder).isDirectory());
+      assert.ok(fs.statSync(removed).isDirectory());
+    }
+  } finally {
+    await c.close();
+    await daemon.stop("test");
+  }
+});

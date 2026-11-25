@@ -141,11 +141,12 @@ impl BrowserPipe {
             "tabSwitcher": thread.and_then(|thread| browsers.switch_tab_index(thread)).zip(area).map(|(index, area)| json!({
                 "index": index,
                 "tabs": std::iter::once("Chat").chain(area.tabs.iter().map(|tab| {
-                    if !tab.title.is_empty() { tab.title.as_str() } else if !tab.url.is_empty() { tab.url.as_str() } else { "New tab" }
+                    if !tab.title.is_empty() { tab.title.as_str() } else if !tab.display_address().is_empty() { tab.display_address() } else { "New tab" }
                 })).collect::<Vec<_>>(),
             })),
             "tabs": area.map(|area| area.tabs.iter().map(|tab| json!({
-                "id": tab.id, "url": tab.url, "title": tab.title, "loading": tab.loading,
+                "id": tab.id, "url": tab.display_address(), "title": tab.title, "loading": tab.loading,
+                "artifact": tab.artifact_name().is_some(),
                 "kind": files::kind(tab), "path": tab.kind.path(),
                 "mark": tab.kind.path().and_then(|path| {
                     let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));

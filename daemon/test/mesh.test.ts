@@ -98,11 +98,14 @@ test("present_artifact snapshots a confined document once and rejects invalid fi
     fs.writeFileSync(cwd + "/report.md", "# Original");
     const publish = (path: string) => call(d, id, "present_artifact", { path, title: "My report" });
     assert.ok(!(await publish("report.md")).isError);
+    const first = d.core.summaryOf(d.core.thread(id)!).artifacts![0]!.publishedAt;
+    assert.ok(Number.isFinite(Date.parse(first ?? "")));
     assert.ok(!(await publish("report.md")).isError);
     fs.writeFileSync(cwd + "/report.md", "# Changed");
     const cards = d.core.summaryOf(d.core.thread(id)!).artifacts!;
     assert.equal(cards.length, 1);
     assert.equal(cards[0]!.title, "My report");
+    assert.equal(cards[0]!.publishedAt, first);
     const bytes = await c.request("upload/read", { uploadId: cards[0]!.uploadId, offset: 0, maxBytes: 64 });
     assert.equal(Buffer.from(bytes.dataBase64, "base64").toString(), "# Original");
     const html = "<!doctype html><title>Runbook</title><h1>Rotação</h1>";

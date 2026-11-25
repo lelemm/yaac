@@ -353,8 +353,8 @@ fn tab_info(app: &YaacApp, area: &crate::preview_controller::BrowserArea, tab: &
     }
     let title = if !tab.title.is_empty() {
         tab.title.clone()
-    } else if !tab.url.is_empty() {
-        tab.url.clone()
+    } else if !tab.display_address().is_empty() {
+        tab.display_address().to_owned()
     } else {
         "New tab".to_owned()
     };
@@ -362,10 +362,11 @@ fn tab_info(app: &YaacApp, area: &crate::preview_controller::BrowserArea, tab: &
         .kind
         .path()
         .map(str::to_owned)
-        .or_else(|| (!tab.url.is_empty()).then(|| format!("{title}\n{}", tab.url)))
+        .or_else(|| (!tab.display_address().is_empty()).then(|| format!("{title}\n{}", tab.display_address())))
         .unwrap_or_else(|| title.clone());
     let icon = match &tab.kind {
         _ if tab.loading => Icon::Spinner,
+        TabKind::Browser if tab.artifact_name().is_some() => Icon::File,
         TabKind::Browser => {
             #[cfg(feature = "preview")]
             if let Some(tex) = app.preview_ui.favicons.get(&tab.id) {
@@ -951,7 +952,7 @@ pub(crate) fn toolbar<R>(ui: &mut egui::Ui, p: &Palette, add: impl FnOnce(&mut e
 /// A rounded address field: a leading globe (the spinner while loading), the URL, a 2 px
 /// progress line along its bottom while loading. Focusing it selects the whole text.
 #[allow(clippy::too_many_arguments)]
-fn address_field(ui: &mut egui::Ui, p: &Palette, edit: &mut String, id: egui::Id, size: egui::Vec2, font: egui::FontId, hint: &str, loading: bool) -> egui::Response {
+fn address_field(ui: &mut egui::Ui, p: &Palette, edit: &mut String, id: egui::Id, size: egui::Vec2, font: egui::FontId, hint: &str, loading: bool, document: bool) -> egui::Response {
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let radius = size.y / 2.;
     let focused = ui.memory(|m| m.has_focus(id));
@@ -963,6 +964,8 @@ fn address_field(ui: &mut egui::Ui, p: &Palette, edit: &mut String, id: egui::Id
     let ic = egui::pos2(rect.left() + radius.max(14.), rect.center().y);
     if loading {
         icons::spinner(ui.painter(), ic, 15., p.text2);
+    } else if document {
+        icons::file(ui.painter(), ic, 15., p.text2, false);
     } else {
         icons::globe(ui.painter(), ic, 15., p.text2);
     }
@@ -975,6 +978,7 @@ fn address_field(ui: &mut egui::Ui, p: &Palette, edit: &mut String, id: egui::Id
         inner,
         egui::TextEdit::singleline(edit)
             .id(id)
+            .interactive(!document)
             .frame(egui::Frame::NONE)
             .margin(egui::Margin::ZERO)
             .font(font)
@@ -1009,7 +1013,7 @@ fn address_field(ui: &mut egui::Ui, p: &Palette, edit: &mut String, id: egui::Id
         }
         // The leading spinner already asks for the next frame while it is drawn.
     }
-    r
+    if document { r.on_hover_text(edit.as_str()) } else { r }
 }
 
 fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
@@ -1035,10 +1039,12 @@ fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
     let mut external = false;
     let address_id = ui.scope_id().with(("address", id));
     let big_id = ui.scope_id().with(("address-big", id));
+    let document = tab.artifact_name().is_some();
     let edit = app.preview_ui.edits.entry(id).or_default();
     let editing = ui.memory(|m| m.has_focus(address_id) || m.has_focus(big_id));
-    if !editing {
-        edit.clone_from(&tab.url);
+    if document || !editing {
+        edit.clear();
+        edit.push_str(tab.display_address());
     }
     let new_tab = tab.url.is_empty();
     // Shortcuts while the page or its address field has focus.
@@ -1049,7 +1055,7 @@ fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
             back = i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowLeft);
             forward = i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowRight);
             reload = i.consume_key(egui::Modifiers::NONE, egui::Key::F5) | i.consume_key(egui::Modifiers::COMMAND, egui::Key::R);
-            if i.consume_key(egui::Modifiers::COMMAND, egui::Key::L) {
+            if !document && i.consume_key(egui::Modifiers::COMMAND, egui::Key::L) {
                 app.preview_ui.focus_address = Some(id);
             }
         });
@@ -1071,17 +1077,17 @@ fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
         let w = (ui.available_width() - 2. * 28. - 2. * 2. - 6.).max(40.);
         // On the New tab page the hint is in the large field only.
         let hint = if new_tab { "" } else { "Enter a URL or a port" };
-        let r = address_field(ui, &p, edit, address_id, egui::vec2(w, 28.), theme::ui(size::UI), hint, tab.loading);
+        let r = address_field(ui, &p, edit, address_id, egui::vec2(w, 28.), theme::ui(size::UI), hint, tab.loading, document);
         ui.add_space(4.);
-        external = widgets::tool_button(ui, &p, p.bg, "Open in browser", !tab.url.is_empty(), false, icons::open_external).clicked();
+        external = widgets::tool_button(ui, &p, p.bg, "Open in browser", !document && !tab.url.is_empty(), false, icons::open_external).clicked();
         inspect |= widgets::tool_button(ui, &p, p.bg, "Inspect (F12)", has_page, false, icons::code).clicked();
         r
     });
-    if app.preview_ui.focus_address == Some(id) && !new_tab {
+    if app.preview_ui.focus_address == Some(id) && !new_tab && !document {
         address.request_focus();
         app.preview_ui.focus_address = None;
     }
-    if address.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+    if !document && address.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
         navigate = Some(edit.clone());
     }
     #[cfg(feature = "preview")]
@@ -1192,7 +1198,7 @@ fn new_tab_page(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, id: u64, 
     let edit = app.preview_ui.edits.entry(id).or_default();
     let mut field = None;
     column(ui, &mut y, 36., &mut |ui| {
-        field = Some(address_field(ui, &p, edit, big_id, egui::vec2(width, 36.), theme::ui(size::PROSE), "Enter a URL or a port", false));
+        field = Some(address_field(ui, &p, edit, big_id, egui::vec2(width, 36.), theme::ui(size::PROSE), "Enter a URL or a port", false, false));
     });
     let field = field.unwrap();
     if app.preview_ui.focus_address == Some(id) {

@@ -815,7 +815,17 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
             let response = ui.scope_builder(UiBuilder::new().max_rect(rect).id_salt(hash), |ui| {
                 ui.set_width(width);
                 egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.strong(&card.artifact.title);
+                    if let Some(at) = card.publication_time(app.zone) {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                            ui.label(widgets::secondary(at, &p).size(size::SMALL));
+                            ui.add_space(8.0);
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                                ui.add(egui::Label::new(egui::RichText::new(&card.artifact.title).strong()).wrap());
+                            });
+                        });
+                    } else {
+                        ui.strong(&card.artifact.title);
+                    }
                     if card.worker != *key { ui.label(yaac_core::copies::header(state, &card.worker).text()); }
                     if card.artifact.name != card.artifact.title { ui.label(&card.artifact.name); }
                     ui.horizontal_wrapped(|ui| {
@@ -2085,8 +2095,10 @@ mod tests {
         let key = threads::users();
         app.apply(vec![Action::Open(key.clone())]);
         app.pump_demo();
+        app.zone = yaac_core::time::Zone::new(-3 * 3600);
         app.client.state.threads.get_mut(&key).unwrap().summary.artifacts = Some(vec![yaac_protocol::GeneratedArtifact {
             upload_id: "u_artifact_md_test".into(), name: "report.md".into(), size: 12, title: "Generated report".into(),
+            published_at: Some("2026-11-25T18:34:00Z".into()),
         }]);
         let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1000.0, 8000.0))), ..Default::default() };
         let map = AttentionMap::compute(&app.client.state);
@@ -2095,6 +2107,13 @@ mod tests {
         for label in ["Generated report", "Download…", "Open", "Dismiss"] {
             assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(line) if line.galley.text() == label)), "{label}");
         }
+        let label_at = |label: &str| out.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos),
+            _ => None,
+        }).unwrap();
+        let title = label_at("Generated report");
+        let published = label_at("2026-11-25 · 15:34");
+        assert!(published.x > title.x && (published.y - title.y).abs() < 5.0);
         assert!(!app.demo.as_ref().unwrap().requests().iter().any(|(_, method, _)| method == "upload/read"));
     }
 

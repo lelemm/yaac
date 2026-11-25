@@ -191,12 +191,15 @@
         <DataTrigger Binding="{Binding IsMenuOpen}" Value="True">
           <Setter TargetName="Plate" Property="Background" Value="{DynamicResource YaacRaised}" />
         </DataTrigger>
+        <DataTrigger Binding="{Binding IsKeyboardFocused, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+          <Setter TargetName="Plate" Property="Background" Value="{DynamicResource YaacRaised}" />
+        </DataTrigger>
         <DataTrigger Binding="{Binding State.Unseen}" Value="True">
           <Setter TargetName="Plate" Property="BorderBrush" Value="{DynamicResource YaacUnread}" />
         </DataTrigger>
         <DataTrigger Binding="{Binding State.Selected}" Value="True">
           <Setter TargetName="Plate" Property="Background" Value="{DynamicResource YaacSelected}" />
-          <Setter TargetName="Plate" Property="BorderBrush" Value="{DynamicResource YaacRule}" />
+          <Setter TargetName="Plate" Property="BorderBrush" Value="Transparent" />
         </DataTrigger>
         <DataTrigger Binding="{Binding IsMulti}" Value="True">
           <Setter TargetName="Plate" Property="Background" Value="{DynamicResource YaacSelected}" />
@@ -260,16 +263,11 @@
           <ControlTemplate TargetType="ListBoxItem">
             <Grid Background="Transparent">
               <ContentPresenter x:Name="Content" VerticalAlignment="Stretch" HorizontalAlignment="Stretch" />
-              <Border x:Name="FocusOutline" CornerRadius="5" BorderThickness="1" Margin="1"
-                      IsHitTestVisible="False" />
             </Grid>
             <ControlTemplate.Triggers>
               <DataTrigger Binding="{Binding GappedHeader}" Value="True">
                 <Setter TargetName="Content" Property="Margin" Value="0,12,0,0" />
               </DataTrigger>
-              <Trigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOutline" Property="BorderBrush" Value="{DynamicResource YaacUnread}" />
-              </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
         </Setter.Value>

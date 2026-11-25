@@ -917,11 +917,14 @@ The thread index carries the card metadata (up to 32 distinct snapshots per thre
 identical content with the same extension in the same thread returns its existing card. The
 window uses the cached parent graph to display each published card at the end of the publisher's
 and each listed ancestor's transcript, above pinned worker requests. Copies name their originating thread and target.
+The top right of each card shows the first publication date and time in the window's local
+time zone. Cards created before publication times were recorded have no timestamp.
 After reconnect the same identities are available from the index. **Download…** asks for a
 host destination. **Open** uses the host's associated viewer. When the browser runtime and
 target support integrated browsing, **Open in integrated browser** serves text documents,
 HTML, PDF and raster images from an isolated tab origin. HTML is rendered as a standalone
-document with inline CSS and embedded data images. SVG and Office documents use Download
+document with inline CSS and embedded data images. The browser toolbar shows the original
+filename in a read-only field. SVG and Office documents use Download
 or Open. File actions fetch and verify the published bytes in ranges through the originating
 target's existing connection. **Dismiss** hides the card in the current conversation and
 remembers that choice on this host. Worker and ancestor copies can be dismissed independently.

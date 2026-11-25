@@ -1686,6 +1686,10 @@ export interface GeneratedArtifact {
    */
   name: string;
   /**
+   * When the publishing thread first presented the snapshot.
+   */
+  publishedAt?: Timestamp | null;
+  /**
    * Byte size of the published snapshot.
    */
   size: number;

@@ -737,6 +737,7 @@ fn conversation(app: &YaacApp, map: &AttentionMap, markdown: &mut super::markdow
         let from = (card.worker != *key).then(|| yaac_core::copies::header(state, &card.worker).text());
         let text = [from.as_deref(), (card.artifact.name != card.artifact.title).then_some(card.artifact.name.as_str())].into_iter().flatten().collect::<Vec<_>>().join("\n");
         rows.push(json!({"id": id, "kind":"artifact", "title":card.artifact.title, "text":text, "filename":card.artifact.name,
+            "publishedAt":card.publication_time(app.zone),
             "mermaidSource":app.artifacts.diagrams.get(&id), "status":app.artifacts.status.get(&id), "actions":actions}));
     }
     rows.extend(pinned);
@@ -1141,8 +1142,10 @@ mod tests {
         let worker = yaac_core::demo::threads::index();
         app.apply(vec![Action::Open(root.clone())]);
         app.pump_demo();
+        app.zone = yaac_core::time::Zone::new(-3 * 3600);
         let artifact = yaac_protocol::GeneratedArtifact {
-            upload_id: "u_artifact_md_test".into(), size: 8, name: "report.md".into(), title: "Report".into()
+            upload_id: "u_artifact_md_test".into(), size: 8, name: "report.md".into(), title: "Report".into(),
+            published_at: Some("2026-11-25T18:34:00Z".into()),
         };
         app.client.state.threads.get_mut(&worker).unwrap().summary.artifacts = Some(vec![artifact]);
         let mut md = super::super::markdown_view::MarkdownView::default();
@@ -1153,6 +1156,7 @@ mod tests {
             let rows: Vec<_> = view["rows"].as_array().unwrap().iter().filter(|row| row["kind"] == "artifact").collect();
             assert_eq!(rows.len(), 1);
             let row = rows[0];
+            assert_eq!(row["publishedAt"], "2026-11-25 · 15:34");
             ids.push(row["id"].clone());
             assert_eq!(row["actions"][0]["id"], "artifactDownload");
             assert_eq!(row["actions"][1]["id"], "artifactOpen");

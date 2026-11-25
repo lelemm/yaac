@@ -23,6 +23,12 @@ pub(crate) struct ArtifactCard {
 }
 
 impl ArtifactCard {
+    pub(crate) fn publication_time(&self, zone: yaac_core::time::Zone) -> Option<String> {
+        use yaac_core::time::{clock_in, date_in, secs};
+        let at = secs(self.artifact.published_at.as_ref()?)?;
+        Some(format!("{} · {}", date_in(at, zone), clock_in(at, zone)))
+    }
+
     pub(crate) fn id(&self) -> String {
         format!(
             "artifact:{}:{}",
@@ -130,7 +136,7 @@ enum ResultFile {
     Saved,
     Cancelled,
     Opened(NamedTempFile),
-    Browser(ThreadKey, NamedTempFile),
+    Browser(ThreadKey, NamedTempFile, String),
     Diagram(String),
 }
 
@@ -214,8 +220,8 @@ impl Artifacts {
                     self.opened.push(file.into_temp_path());
                     "Opened".into()
                 }
-                Ok(ResultFile::Browser(key, file)) => {
-                    match browsers.artifact(client, &key, file.path()) {
+                Ok(ResultFile::Browser(key, file, name)) => {
+                    match browsers.artifact(client, &key, file.path(), name) {
                         Ok(()) => {
                             self.opened.push(file.into_temp_path());
                             String::new()
@@ -291,14 +297,8 @@ fn materialize(t: Transfer) -> Result<ResultFile, String> {
             .map(ResultFile::Diagram)
             .map_err(|e| e.to_string());
     }
+    let name = t.card.artifact.name.split(['/', '\\']).next_back().unwrap_or("artifact");
     if t.command == Command::Download {
-        let name = t
-            .card
-            .artifact
-            .name
-            .split(['/', '\\'])
-            .next_back()
-            .unwrap_or("artifact");
         let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() else {
             return Ok(ResultFile::Cancelled);
         };
@@ -326,7 +326,7 @@ fn materialize(t: Transfer) -> Result<ResultFile, String> {
     }
     file.write_all(&t.bytes).map_err(|e| e.to_string())?;
     if t.command == Command::Browser {
-        return Ok(ResultFile::Browser(t.viewing, file));
+        return Ok(ResultFile::Browser(t.viewing, file, name.to_owned()));
     }
     open(file.path()).map_err(|e| e.to_string())?;
     Ok(ResultFile::Opened(file))
@@ -370,6 +370,7 @@ mod tests {
                 upload_id: "test".into(),
                 title: "Report".into(),
                 size: 10,
+                published_at: None,
             },
         };
         for (name, size, browser, diagram) in [
@@ -409,6 +410,7 @@ mod tests {
             title: "Report".into(),
             name: "report.md".into(),
             size: bytes.len() as u64,
+            published_at: None,
         };
         let transfer = |bytes| Transfer {
             token: 1,
@@ -422,9 +424,10 @@ mod tests {
             deadline: Instant::now(),
         };
         assert!(materialize(transfer(vec![1])).is_err());
-        let Ok(ResultFile::Browser(_, file)) = materialize(transfer(bytes.clone())) else {
+        let Ok(ResultFile::Browser(_, file, name)) = materialize(transfer(bytes.clone())) else {
             panic!("expected browser document")
         };
+        assert_eq!(name, "report.md");
         assert_eq!(file.path().extension().unwrap(), "txt");
         assert_eq!(
             std::fs::read(file.path()).unwrap(),

@@ -534,7 +534,7 @@ export class Mesh implements CoreMeshHooks {
             if (previous.length >= 32 && !previous.some(row => row.uploadId === id)) throw new ToolError("this thread has presented 32 artifacts");
           });
           if (!previous.some(row => row.uploadId === snapshot.uploadId)) {
-            rt.record.artifacts = [...previous, { ...snapshot, title, size: bytes.length }];
+            rt.record.artifacts = [...previous, { ...snapshot, title, size: bytes.length, publishedAt: nowIso() }];
             try { rt.saveRecord(); } catch (error) { rt.record.artifacts = previous; throw error; }
           }
           this.core.updateIndex(rt);
