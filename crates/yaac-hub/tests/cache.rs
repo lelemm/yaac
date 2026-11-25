@@ -80,6 +80,12 @@ fn crash_writer_child() {
         let position = batch.last().unwrap().position_after();
         cache.commit_events(&x, &t, &batch, position).unwrap();
         seq += 3;
+        if seq == 8 {
+            // Two batches are in: tell the parent, which may kill us from now on.
+            use std::io::Write;
+            println!("committed");
+            std::io::stdout().flush().ok();
+        }
     }
 }
 
@@ -91,11 +97,24 @@ fn a_writer_killed_at_any_moment_leaves_items_and_position_in_step() {
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "crash_writer_child", "--ignored", "--nocapture", "--test-threads=1"])
             .env("YAAC_CRASH_DB", &path)
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        std::thread::sleep(Duration::from_millis(150 + round * 70));
+        // Wait until the writer says it has committed (a fixed sleep failed on a loaded CI
+        // runner, where the child had not started writing yet), then let it run a little longer,
+        // differently each round, so the kill lands at an arbitrary moment.
+        {
+            use std::io::BufRead;
+            let out = child.stdout.take().unwrap();
+            let mut lines = std::io::BufReader::new(out).lines();
+            while let Some(Ok(line)) = lines.next() {
+                if line.contains("committed") {
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20 + round * 35));
         child.kill().unwrap(); // SIGKILL, mid-transaction or between
         child.wait().unwrap();
         let mut cache = Cache::open(&path).unwrap();
