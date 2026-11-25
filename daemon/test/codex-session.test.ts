@@ -144,6 +144,8 @@ test("Codex tool images are journaled as references and read from the daemon's c
     const { threadId } = await c.request("thread/start", { opId: opId(), instance: added.instance.id, cwd: home, input: text("Inspect images") });
     await c.request("thread/subscribe", { threadId, epoch: 1, afterSeq: 0 });
     const url = `data:image/png;base64,${data}`;
+    const generatedFromPath = { type: "imageGeneration", id: "generated-path", status: "completed", savedPath: imagePath, fileId: "file-fixture" };
+    const generatedInline = { type: "imageGeneration", id: "generated-inline", status: "completed", result: data };
     const items = [
       { type: "imageView", id: "view", path: imagePath },
       { type: "mcpToolCall", id: "mcp", server: "fixture", tool: "photo", status: "completed", result: { content: [
@@ -161,20 +163,42 @@ test("Codex tool images are journaled as references and read from the daemon's c
         { type: "input_text", text: "Output" },
         { type: "input_image", image_url: url },
       ] },
+      generatedFromPath,
+      generatedInline,
     ];
     const emit = (method: string, item: (typeof items)[number]) => fake.push({ method, params: { threadId: thread.id, turnId: turn.id, item } });
     emit("item/started", items[0]!);
-    for (const item of items) emit("item/completed", item);
-    await c.waitEvent((ev) => ev.event.type === "itemCompleted" && ev.event.item.id === "function", "all image results to arrive");
+    for (const item of items) {
+      if (item.id === generatedInline.id) emit("item/started", { ...generatedInline, status: "generating" });
+      emit("item/completed", item);
+    }
+    const completion = await c.waitEvent((ev) => ev.event.type === "itemCompleted" && ev.event.item.id === generatedInline.id, "all image results to arrive");
+    assert.ok(completion.event.type === "itemCompleted" && completion.event.item.kind === "toolCall");
+    assert.equal(completion.event.item.images?.[0]?.name, "Generated image");
+    assert.ok(!JSON.stringify(completion).includes(data));
     const viewStart = c.events(threadId).find((e) => e.event.type === "itemStarted" && e.event.item.id === "view")?.event;
     assert.ok(viewStart?.type === "itemStarted" && viewStart.item.kind === "toolCall");
     assert.equal(viewStart.item.images, undefined);
+    const genStart = c.events(threadId).find((e) => e.event.type === "itemStarted" && e.event.item.id === generatedInline.id)?.event;
+    assert.ok(genStart?.type === "itemStarted" && genStart.item.kind === "toolCall");
+    assert.equal(genStart.item.status, "inProgress");
+    assert.equal(genStart.item.images, undefined);
+    assert.ok(!JSON.stringify(genStart).includes(data));
+
+    const rt = daemon.core.thread(threadId)!;
+    const legacy = rt.journal!.append({ type: "itemCompleted", item: { id: "legacy", turnId: turn.id,
+      kind: "toolCall", tool: "other", title: "imageGeneration", status: "completed", input: generatedInline } });
+    const replay = daemon.core.renderEvent(legacy, "image-test");
+    assert.ok(replay.type === "itemCompleted" && replay.item.kind === "toolCall");
+    assert.equal(replay.item.title, "Generate image");
+    assert.equal(replay.item.images?.length, 1);
+    rt.projection = null;
 
     fs.unlinkSync(imagePath);
     const page = await c.request("thread/read", { threadId });
     const tools = page.items.filter((item: { kind: string }) => item.kind === "toolCall").reverse();
-    assert.deepEqual(tools.map((item: { id: string }) => item.id), items.map((item) => item.id));
-    assert.deepEqual(tools.map((item: { images: unknown[] }) => item.images.length), [1, 2, 1, 1]);
+    assert.deepEqual(tools.map((item: { id: string }) => item.id), [...items.map((item) => item.id), "legacy"]);
+    assert.deepEqual(tools.map((item: { images: unknown[] }) => item.images.length), [1, 2, 1, 1, 1, 1, 1]);
     assert.equal(tools[0].images[0].name, "pixel.png");
     assert.equal(tools[1].output, "Two views\n[image]\n[image]\n[image]");
     assert.equal(tools[2].output, "Screenshot\n[image]\n[image]");

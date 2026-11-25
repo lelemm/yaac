@@ -20,7 +20,7 @@ import type {
 } from "../../protocol/generated/types.js";
 import type { NativeThreadInfo, RaisedRequest } from "../types.js";
 import { userItem } from "../markup.js";
-import { imagePath, isImageBlock, resultImages, type StoreToolImage } from "../tool-images.js";
+import { base64Image, imagePath, isImageBlock, resultImages, type StoreToolImage } from "../tool-images.js";
 import { CODEX_MARKUP, textWithElements } from "./markup.js";
 import { agentCallTitle, codexAgentCall, meshAgentCall, MESH_SERVER } from "../agentcalls.js";
 import { INTERACTIVE_SOURCES, type Model, type Thread, type ThreadItem, type ThreadTokenUsage, type TokenUsageBreakdown } from "./wire.js";
@@ -339,6 +339,17 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus, skil
       return { ...base, status: final, kind: "toolCall", tool: "other", title: "View image",
         output: str(it.path) ?? "", ...(image ? { images: [image] } : {}) };
     }
+    case "imageGeneration": {
+      const status = itemStatus(it.status, it.status === "generating" ? "inProgress" : final);
+      const image = status === "completed"
+        ? imagePath(storeImage, it.savedPath) ?? base64Image(storeImage, it.result, "Generated image")
+        : null;
+      return { ...base, status, kind: "toolCall", tool: "other", title: "Generate image",
+        ...(image ? { images: [image] } : {}),
+        ...(status === "completed" && !image ? { output: "Image preview unavailable." } : {}),
+        input: { revisedPrompt: it.revisedPrompt ?? null, failure: it.failure ?? null },
+      };
+    }
     case "dynamicToolCall": {
       const content = arr(it.contentItems);
       const images = resultImages(storeImage, content);
@@ -392,6 +403,14 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus, skil
         input: { type, ...rest }, ...(images.length ? { images } : {}) };
     }
   }
+}
+
+/** Older YAAC builds journaled the Codex item as an unstructured tool call. */
+export function restoreGeneratedImage(item: Item, store: StoreToolImage): Item {
+  if (item.kind !== "toolCall" || item.tool !== "other" || item.title !== "imageGeneration") return item;
+  const raw = obj(item.input);
+  if (raw.type !== "imageGeneration") return item;
+  return { ...item, ...mapItem({ ...raw, type: raw.type, id: item.id }, item.turnId, item.status, undefined, store) };
 }
 
 export function planState(v: unknown): PlanStepState {

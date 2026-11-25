@@ -13,8 +13,8 @@ function save(store: StoreToolImage, bytes: Buffer, name: string): ToolImage | n
   }
 }
 
-function base64Image(store: StoreToolImage, data: unknown, name: string): ToolImage | null {
-  if (typeof data !== "string" || data.length > Math.ceil(MAX_BYTES / 3) * 4) return null;
+export function base64Image(store: StoreToolImage | undefined, data: unknown, name: string): ToolImage | null {
+  if (!store || typeof data !== "string" || data.length > Math.ceil(MAX_BYTES / 3) * 4) return null;
   if (data.length % 4 === 1 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return null;
   const bytes = Buffer.from(data, "base64");
   return bytes.length <= MAX_BYTES ? save(store, bytes, name) : null;

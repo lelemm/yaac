@@ -149,7 +149,10 @@ Details that matter:
   count — with a clear message. Downscaling on the host before upload is a later optimisation.
 - **Thumbnails.** The composer and expanded tool calls show thumbnails decoded at display size
   on the host. The viewer requests missing image bytes in bounded chunks over the same
-  connection (`upload/read`).
+  connection (`upload/read`). Codex's **Generate image** tool uses the same viewer in egui
+  and WPF. `yaacd` snapshots the image when Codex supplies a saved path or inline image bytes,
+  and keeps the reference in the transcript. Older recorded calls can recover their preview
+  from the saved file or inline result that is still available.
 
 ### How file parts are presented to the agent
 

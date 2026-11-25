@@ -68,6 +68,7 @@ import { InputOutcomeUnknown, PeerInputDenied } from "../providers/types.js";
 import type { ExternalControl, HarnessProvider, MeshInputMessage, RaisedRequest, NativeId, NativeThreadInfo, ProviderEvent, ProviderFactory, ProviderInput, StartThreadParams, TurnOverrides } from "../providers/types.js";
 import { CompactionUnconfirmed } from "../providers/types.js";
 import { ProviderRegistry, type Instance } from "../providers/registry.js";
+import { restoreGeneratedImage } from "../providers/codex/mapping.js";
 import { Emitter } from "../util/emitter.js";
 import { ensureDir, nowIso, randomId, readJson, sha256Hex, writeJsonAtomic } from "../util/fsx.js";
 import { OUTPUT_HEAD_BYTES, Projection, applyDelta, clone, utf8Head } from "./items.js";
@@ -1505,9 +1506,15 @@ export class Core {
     this.append(rt, ev, { driver: driver?.key ?? null, external: !!external });
   }
 
+  private restoreJournalEvent(event: ThreadEvent): ThreadEvent {
+    if (event.type !== "itemStarted" && event.type !== "itemCompleted") return event;
+    const item = restoreGeneratedImage(event.item, (bytes, name) => this.uploads.storeToolImage(bytes, name));
+    return item === event.item ? event : { ...event, item };
+  }
+
   /** Renders a journal entry's event for one client (control is relative to the receiver). */
   renderEvent(entry: JournalEntry, clientKey: string): ThreadEvent {
-    if (entry.event.type !== "controlChanged" || !entry.meta) return entry.event;
+    if (entry.event.type !== "controlChanged" || !entry.meta) return this.restoreJournalEvent(entry.event);
     const c = controlFor({ driver: entry.meta.driver ?? null, external: entry.meta.external ? entry.event.holder ?? "another program" : null }, clientKey);
     const ev: ThreadEvent = { ...entry.event, control: c.control };
     return ev;
@@ -1578,7 +1585,7 @@ export class Core {
           if (ev.item?.id) inJournal.add(ev.item.id);
         }
         for (const item of base) if (!inJournal.has(item.id)) p.upsert(this.boundItem(rt, clone(item), false));
-        for (const e of journal.entries()) p.apply(e.event);
+        for (const e of journal.entries()) p.apply(this.restoreJournalEvent(e.event));
         // Requests: yaacd's own records are the authority on their state.
         for (const r of rt.requests.values()) {
           const item = p.get(r.itemId) as (Item & { state?: string; resolution?: unknown }) | undefined;
