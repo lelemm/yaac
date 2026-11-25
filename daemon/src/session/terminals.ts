@@ -8,7 +8,7 @@ import type { ConnectionView } from "../protocol/connection.js";
 import type { TerminalInfo } from "../protocol/generated/types.js";
 import { ReceiveWindow } from "../protocol/scheduler.js";
 import { RpcError } from "../protocol/rpc.js";
-import { shellArgs, shells } from "./terminal-shells.js";
+import { findShell, shellArgs, shells } from "./terminal-shells.js";
 
 const require = createRequire(import.meta.url);
 const VERSION = "1.2.0-beta.18";
@@ -103,7 +103,7 @@ export class Terminals {
     const [cols, rows] = dimensions(p);
     if (typeof p.cwd !== "string" || !p.cwd || !statSync(p.cwd, { throwIfNoEntry: false })?.isDirectory()) throw new RpcError("invalid_params", "worktree folder does not exist");
     const available = shells();
-    const shell = p.shell === undefined ? available[0] : available.find(s => s.path === p.shell);
+    const shell = p.shell === undefined ? available[0] : typeof p.shell === "string" ? findShell(available, p.shell) : undefined;
     if (!shell) throw new RpcError("invalid_params", "shell is unavailable");
     const cwd = resolve(p.cwd);
     const terminal = randomUUID();

@@ -16,10 +16,16 @@ function bytes(peer: TestClient, stream: number) {
 
 test("Unix and Windows shell discovery and invocation", () => {
   const unix = { platform: "darwin" as const, env: { PATH: "/bin", SHELL: "/bin/zsh" },
-    login: () => "/bin/fish", listed: () => ["/bin/ksh", "/missing"], executable: (p: string) => p.startsWith("/bin/") };
+    login: () => "/bin/fish", listed: () => ["/bin/ksh", "/missing"], executable: (p: string) => p.startsWith("/bin/"), real: (p: string) => p };
   assert.deepEqual(shells(unix).map(s => s.name), ["fish", "zsh", "bash", "sh", "ksh"]);
   assert.equal(shells({ ...unix, login: () => "/missing" })[0]?.name, "zsh");
   assert.equal(shells({ ...unix, login: () => null, env: { PATH: "/bin" } })[0]?.name, "bash");
+  // A merged /usr lists every shell twice in /etc/shells, and rbash is a link to bash: one each.
+  const merged = { platform: "linux" as const, env: { PATH: "/usr/bin:/bin", SHELL: "/bin/bash" }, login: () => "/bin/bash",
+    listed: () => ["/bin/sh", "/usr/bin/sh", "/bin/bash", "/usr/bin/bash", "/bin/rbash", "/usr/bin/rbash", "/usr/bin/dash", "/usr/bin/tmux", "/bin/pwsh", "/usr/bin/pwsh"],
+    executable: () => true,
+    real: (p: string) => { const f = p.replace(/^\/bin\//, "/usr/bin/"); return f === "/usr/bin/rbash" ? "/usr/bin/bash" : f; } };
+  assert.deepEqual(shells(merged).map(s => s.name), ["bash", "sh", "dash", "tmux", "pwsh"]);
   assert.deepEqual(shellArgs("/bin/fish", "darwin"), ["-l", "-i"]);
   const windows = { ...unix, platform: "win32" as const, env: { PATH: "C:\\bin", ProgramFiles: "C:\\Programs" }, executable: (p: string) => !p.endsWith("git.exe") };
   assert.deepEqual(shells(windows).map(s => s.name), ["PowerShell 7", "Windows PowerShell", "Command Prompt", "Git Bash"]);

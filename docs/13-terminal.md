@@ -17,7 +17,9 @@ Status: **Proposed** (P331–P337), asked for on 2026-11-25.
   `TERM_PROGRAM=YAAC`, and the user's own environment otherwise.
 - The **+** menu's **Terminal** opens the default shell. Its submenu lists the other shells
   found on that target (Windows: PowerShell 7, Windows PowerShell, Command Prompt, and Git Bash
-  when installed; Linux/macOS: the shells in `/etc/shells` that exist).
+  when installed; Linux/macOS: the shells in `/etc/shells` that exist), each **once**: paths that name the same
+  file — `/bin/bash` and `/usr/bin/bash` on a merged `/usr`, `rbash` linked to `bash` — are one
+  entry, and `terminal/open` accepts any of them.
 - The same emulator handles all of them: PowerShell's PSReadLine, `cmd`, `bash`, `zsh`, `fish`,
   and full-screen programs (`vim`, `htop`, `less`, `tmux`) behave as in Windows Terminal or a
   Linux terminal.
