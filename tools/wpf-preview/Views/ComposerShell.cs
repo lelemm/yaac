@@ -17,7 +17,6 @@ public partial class ComposerView
     private int shellHistoryIndex = -1;
     private string shellHistoryDraft = "";
     private bool browsingHistory;
-    private FontFamily? normalEditorFont;
     private string normalPlaceholder = "Message…";
     private string normalHint = "";
     private string shellHint = "";
@@ -60,15 +59,15 @@ public partial class ComposerView
     /// Frame, prompt row, font and buttons follow the mode.
     private void ApplyShellLook()
     {
-        normalEditorFont ??= Editor.FontFamily;
         var on = shellMode;
         ShellRow.Visibility = VisibleWhen(on);
         ShellBar.Visibility = VisibleWhen(on);
         ShellTint.Visibility = VisibleWhen(on);
         Markdown.Visibility = VisibleWhen(!on);
-        var font = on ? YaacFonts.Mono : normalEditorFont;
+        var font = on ? YaacFonts.CodeResource : YaacFonts.UiResource;
         var size = on ? 13.5 : 14.5;
-        if (Editor.FontFamily != font) Editor.FontFamily = font;
+        if (!Equals(Editor.FontFamily, Application.Current.Resources[font]))
+            Editor.SetResourceReference(Control.FontFamilyProperty, font);
         if (Editor.FontSize != size) Editor.FontSize = size;
         if (on)
             EditorPlate.SetResourceReference(Border.BorderBrushProperty, "YaacShell");

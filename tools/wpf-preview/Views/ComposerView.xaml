@@ -67,7 +67,7 @@
             </DockPanel>
             <TextBlock x:Name="CommandLogStatus" Style="{StaticResource ComposerQuietText}" />
             <TextBox x:Name="CommandOutput" MaxHeight="145" VerticalScrollBarVisibility="Auto"
-                     HorizontalScrollBarVisibility="Auto" IsReadOnly="True" FontFamily="{x:Static yaac:YaacFonts.Mono}"
+                     HorizontalScrollBarVisibility="Auto" IsReadOnly="True" FontFamily="{DynamicResource YaacCodeFont}"
                      Background="{DynamicResource YaacInput}" Foreground="{DynamicResource YaacMuted}" FontSize="11"
                      AutomationProperties.Name="Command output" />
           </StackPanel>

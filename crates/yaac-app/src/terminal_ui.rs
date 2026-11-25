@@ -140,7 +140,10 @@ impl Atlas {
         if self.key != Some(key) || self.metrics.is_none() {
             self.key = Some(key);
             self.glyphs.clear();
-            let (cw, row_h, galley) = ui.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font), f.layout_no_wrap("M".into(), font.clone(), Color32::WHITE)));
+            let (cw, row_h, galley) = ui.fonts_mut(|f| {
+                let width = (' '..='~').map(|ch| f.glyph_width(&font, ch)).fold(0.0, f32::max);
+                (width, f.row_height(&font), f.layout_no_wrap("M".into(), font.clone(), Color32::WHITE))
+            });
             let rh = (row_h * ppp).ceil() / ppp;
             let baseline = galley.rows.first().and_then(|r| r.row.glyphs.first().map(|g| r.pos.y + g.pos.y)).unwrap_or(row_h * 0.8);
             let top = ((rh - galley.size().y) / 2. * ppp).round() / ppp;

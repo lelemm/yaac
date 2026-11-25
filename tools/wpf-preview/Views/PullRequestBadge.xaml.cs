@@ -254,11 +254,11 @@ public partial class PullRequestBadge : UserControl
                 Padding = new Thickness(5, 1, 5, 1),
                 MinHeight = 20,
                 HorizontalContentAlignment = HorizontalAlignment.Left,
-                FontFamily = YaacFonts.Ui,
                 IsEnabled = other.Enabled,
                 ToolTip = other.Label,
                 Content = new TextBlock { Text = other.Label, TextTrimming = TextTrimming.CharacterEllipsis }
             };
+            link.SetResourceReference(Control.FontFamilyProperty, YaacFonts.UiResource);
             AutomationProperties.SetName(link, other.Label);
             link.Click += (_, e) =>
             {

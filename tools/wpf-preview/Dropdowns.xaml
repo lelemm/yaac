@@ -18,7 +18,7 @@
 
   <Style x:Key="YaacContextMenu" TargetType="ContextMenu">
     <Setter Property="OverridesDefaultStyle" Value="True" />
-    <Setter Property="FontFamily" Value="{x:Static local:YaacFonts.Ui}" />
+    <Setter Property="FontFamily" Value="{DynamicResource YaacUiFont}" />
     <Setter Property="Foreground" Value="{DynamicResource YaacText}" />
     <Setter Property="MinWidth" Value="140" />
     <Setter Property="MaxHeight" Value="360" />

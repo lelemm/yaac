@@ -29,7 +29,6 @@ internal sealed class TranscriptText : ContentControl
             && TranscriptJson.Same(Data, other.Data);
     }
 
-    private static readonly FontFamily Mono = YaacFonts.Mono;
     private static readonly object CodePadding = new();
 
     public TranscriptText(string key, TranscriptRowState state, Func<string?> copyMessage)
@@ -252,7 +251,7 @@ internal sealed class TranscriptText : ContentControl
             {
                 var editor = plain ??= CreatePlain();
                 Content = editor;
-                editor.FontFamily = FontFamily;
+                editor.SetResourceReference(Control.FontFamilyProperty, YaacFonts.UiResource);
                 if (value.StartsWith(editor.Text, StringComparison.Ordinal) && editor.Text.Length > 0)
                     editor.AppendText(value[editor.Text.Length..]);
                 else
@@ -438,9 +437,9 @@ internal sealed class TranscriptText : ContentControl
             Content = "Copy",
             Style = (Style)Application.Current.FindResource("YaacQuietButton"),
             ToolTip = copyLabel,
-            FontFamily = YaacFonts.Ui,
             FontSize = 11,
         };
+        button.SetResourceReference(Control.FontFamilyProperty, YaacFonts.UiResource);
         AutomationProperties.SetName(button, copyLabel);
         var reset = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
         reset.Tick += (_, _) =>
@@ -460,12 +459,12 @@ internal sealed class TranscriptText : ContentControl
         var paragraph = new Paragraph
         {
             Margin = new Thickness(0),
-            FontFamily = Mono,
             FontSize = 13,
             LineHeight = 20,
             LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
             Tag = copyText,
         };
+        paragraph.SetResourceReference(TextElement.FontFamilyProperty, YaacFonts.CodeResource);
         var copy = new Floater { HorizontalAlignment = HorizontalAlignment.Right, Width = 58, Padding = new Thickness(0) };
         copy.Blocks.Add(new BlockUIContainer(button) { Margin = new Thickness(0) });
         paragraph.Inlines.Add(copy);
@@ -522,13 +521,18 @@ internal sealed class TranscriptText : ContentControl
     private static Span InlineCode(Run text)
     {
         var background = TranscriptColors.Code;
-        text.FontFamily = Mono;
+        text.SetResourceReference(TextElement.FontFamilyProperty, YaacFonts.CodeResource);
         text.Foreground = TranscriptColors.Text;
         text.Background = background;
 
         // Narrow no-break spaces give the background room at either edge while keeping
         // the code itself in the document as selectable, wrappable text.
-        Run Padding() => new("\u202f") { FontFamily = YaacFonts.Ui, Background = background, Tag = CodePadding };
+        Run Padding()
+        {
+            var padding = new Run("\u202f") { Background = background, Tag = CodePadding };
+            padding.SetResourceReference(TextElement.FontFamilyProperty, YaacFonts.UiResource);
+            return padding;
+        }
         var code = new Span();
         code.Inlines.Add(Padding());
         code.Inlines.Add(text);

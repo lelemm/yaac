@@ -221,6 +221,7 @@ pub(crate) struct UiState {
     pub settings_page: Page,
     pub theme: ThemeChoice,
     pub font_size: f32,
+    pub fonts: yaac_core::prefs::FontPrefs,
     pub send_key: SendKey,
     /// D127: closing the window hides it to the tray.
     pub tray_on_close: bool,
@@ -370,6 +371,7 @@ impl UiState {
             settings_page: Page::Targets,
             theme,
             font_size: theme::size::UI,
+            fonts: Default::default(),
             send_key: SendKey::Enter,
             tray_on_close: true,
             terminal: yaac_core::prefs::TerminalPrefs::default(),
@@ -441,6 +443,7 @@ impl UiState {
             },
             muted_open: self.muted_open,
             font_size: self.font_size,
+            fonts: self.fonts.clone(),
             send_key: self.send_key,
             sidebar: self.sidebar,
             agents_width: self.agents_width,
@@ -468,6 +471,7 @@ impl UiState {
         };
         self.muted_open = p.muted_open;
         self.font_size = p.font_size;
+        self.fonts = p.fonts.clone();
         self.send_key = p.send_key;
         self.sidebar = p.sidebar;
         self.agents_width = p.agents_width;
@@ -780,6 +784,7 @@ pub(crate) struct YaacApp {
     /// The file picker, the clipboard, and thumbnails, on worker threads.
     pub files: crate::files::Files,
     pub artifacts: crate::artifacts::Artifacts,
+    pub fonts: crate::fonts::Fonts,
     pub images: crate::images::Images,
     /// When drafts were last stored in the hub (seconds of egui time).
     drafts_flushed: f64,
@@ -927,6 +932,7 @@ impl YaacApp {
             shots: launch.shots,
             files: crate::files::Files::new(&cc.egui_ctx),
             artifacts: Default::default(),
+            fonts: Default::default(),
             images: crate::images::Images::new(&cc.egui_ctx),
             drafts_flushed: 0.0,
             #[cfg(feature = "hub")]
@@ -1812,6 +1818,10 @@ impl YaacApp {
         }
     }
 
+    pub(crate) fn import_font(&mut self, role: crate::fonts::Role) {
+        self.fonts.import(role, &self.ctx);
+    }
+
     pub(crate) fn upkeep(&mut self, ctx: &egui::Context) {
         // Apply everything that arrived since the last frame: a burst of events becomes one
         // repaint. Arrivals from a real hub wake the window through the link's waker.
@@ -1849,6 +1859,13 @@ impl YaacApp {
         if let Some(h) = &self.hub {
             self.client.ssh_zone = self.zone;
             crate::ssh_hub::SshBridge::exchange(&h.ssh, &mut self.client);
+        }
+        if self.ui.settings || self.ui.fonts != Default::default() {
+            self.fonts.start(ctx);
+        }
+        if self.fonts.pump(&mut self.ui.fonts, ctx) {
+            self.md.clear();
+            self.ui.heights.clear();
         }
         let ssh_changed = self.ui.set.pump_ssh(self.ssh.as_mut());
         let t = ctx.input(|i| i.time);

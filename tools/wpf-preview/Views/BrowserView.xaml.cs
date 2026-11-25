@@ -419,7 +419,9 @@ public partial class BrowserView : UserControl
             var chevron = PaneIcon.Draw("Chevron",12);
             DockPanel.SetDock(chevron, Dock.Right);
             row.Children.Add(chevron);
-            row.Children.Add(new TextBlock { Text = label, FontFamily = YaacFonts.Mono, VerticalAlignment = VerticalAlignment.Center });
+            var portLabel = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center };
+            portLabel.SetResourceReference(TextBlock.FontFamilyProperty, YaacFonts.CodeResource);
+            row.Children.Add(portLabel);
             row.Children.Add(new TextBlock { Text = string.Join("  ·  ", new[]{command, cwd}.Where(x => x.Length > 0)),
                 Margin = new Thickness(12,0,6,0), VerticalAlignment = VerticalAlignment.Center,
                 Foreground = Palette.Brush("YaacMuted"), TextTrimming = TextTrimming.CharacterEllipsis });

@@ -40,7 +40,7 @@ public partial class SettingsView
                 {
                     var run = new Run(spans[i]);
                     if (i % 2 != 0)
-                        run.FontFamily = YaacFonts.Mono;
+                        run.SetResourceReference(TextElement.FontFamilyProperty, YaacFonts.CodeResource);
                     block.Inlines.Add(run);
                 }
             }
@@ -270,13 +270,13 @@ public partial class SettingsView
         private readonly StackPanel lines = new();
         private readonly WrapPanel fieldHost = new();
         private readonly WrapPanel actionHost = new();
+        private readonly TextBlock fontSample = Text(14);
         private readonly Dictionary<string, Field> fields = new(StringComparer.Ordinal);
         private readonly Dictionary<string, ActionControl> actions = new(StringComparer.Ordinal);
         private readonly TextBox code = new()
         {
             IsReadOnly = true,
             IsUndoEnabled = false,
-            FontFamily = YaacFonts.Mono,
             TextWrapping = TextWrapping.Wrap,
             Padding = new Thickness(9, 6, 9, 6),
             Visibility = Visibility.Collapsed
@@ -296,7 +296,7 @@ public partial class SettingsView
             Root.ColumnDefinitions.Add(new ColumnDefinition());
             Root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             Root.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            for (var index = 0; index < 3; index++)
+            for (var index = 0; index < 4; index++)
                 Root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
             detail.Margin = new Thickness(0, 2, 0, 0);
@@ -309,6 +309,11 @@ public partial class SettingsView
             Grid.SetColumnSpan(fieldHost, 3);
             Root.Children.Add(fieldHost);
             Root.Children.Add(actionHost);
+            Grid.SetRow(fontSample, 3);
+            Grid.SetColumnSpan(fontSample, 3);
+            fontSample.Margin = new Thickness(0, 3, 0, 5);
+            Root.Children.Add(fontSample);
+            code.SetResourceReference(Control.FontFamilyProperty, YaacFonts.CodeResource);
         }
 
         public void Apply(JsonElement row, bool actionsOnly = false, bool reverseActions = false)
@@ -333,6 +338,14 @@ public partial class SettingsView
                         item => new Field(owner, DraftChanged, Str(item, "id")), (field, item) => field.Apply(item, reset),
                         field => field.Root, field => field.Detach());
                     PositionActions(layout);
+                    var sample = Str(row, "fontSample");
+                    Say(fontSample, sample);
+                    var fontKey = Flag(row, "codeFontSample") ? YaacFonts.CodeResource : YaacFonts.UiResource;
+                    if (sample.Length > 0 && !Equals(fontSample.Tag, fontKey))
+                    {
+                        fontSample.Tag = fontKey;
+                        fontSample.SetResourceReference(TextBlock.FontFamilyProperty, fontKey);
+                    }
                 }
                 else
                 {

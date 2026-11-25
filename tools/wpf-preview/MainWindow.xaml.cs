@@ -309,6 +309,7 @@ public partial class MainWindow : Window
 
     private void RenderShell(JsonElement shell)
     {
+        YaacFonts.Apply(shell.Value("fonts"));
         ApplyFontScale(shell);
         RenderHeader(shell);
         settingsOpen = Flag(shell, "settings");

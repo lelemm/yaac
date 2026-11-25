@@ -273,6 +273,10 @@ pub(crate) fn visuals(p: &Palette) -> Visuals {
 
 /// Use the bundled Nerd Font for text, bold labels, and code, with fallback for other scripts.
 pub(crate) fn install_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(base_fonts());
+}
+
+pub(crate) fn base_fonts() -> egui::FontDefinitions {
     use std::path::PathBuf;
     let mut fonts = egui::FontDefinitions::default();
     let mut candidates: Vec<(PathBuf, PathBuf)> = Vec::new();
@@ -312,7 +316,9 @@ pub(crate) fn install_fonts(ctx: &egui::Context) {
         fonts.font_data.insert(name.to_owned(), std::sync::Arc::new(egui::FontData::from_static(data)));
         fonts.families.entry(family).or_default().insert(0, name.to_owned());
     }
-    ctx.set_fonts(fonts);
+    let picker_family = fonts.families[&FontFamily::Proportional].clone();
+    fonts.families.insert(FontFamily::Name("picker-sample".into()), picker_family);
+    fonts
 }
 
 /// WCAG contrast ratio (tests).

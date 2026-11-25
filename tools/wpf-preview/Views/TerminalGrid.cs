@@ -10,7 +10,11 @@ namespace Yaac.WpfPreview.Views;
 internal sealed partial class TerminalGrid : FrameworkElement
 {
     private const double Em = 13;
-    private readonly GlyphTypeface face = new(new Uri("pack://application:,,,/Yaac.WpfPreview;component/Assets/Fonts/CaskaydiaCoveNerdFontMono-Regular.ttf"));
+    private static readonly GlyphTypeface BundledFace = new(new Uri("pack://application:,,,/Yaac.WpfPreview;component/Assets/Fonts/CaskaydiaCoveNerdFontMono-Regular.ttf"));
+    private GlyphTypeface face = BundledFace;
+    private static readonly DependencyProperty CodeFontProperty = DependencyProperty.Register(
+        "TerminalFont", typeof(FontFamily), typeof(TerminalGrid), new PropertyMetadata(null, (owner, args) =>
+            ((TerminalGrid)owner).ApplyFont(args.NewValue as FontFamily)));
     private readonly Dictionary<int, SolidColorBrush> colors = new();
     private readonly VisualCollection lines;
     private readonly DrawingVisual cursor = new();
@@ -27,16 +31,14 @@ internal sealed partial class TerminalGrid : FrameworkElement
     private string preedit = "";
     internal event Action<string, object?>? Command;
     internal event Action<ulong>? Painted;
-    private double Cell { get; }
-    private double Line { get; }
+    private double Cell { get; set; }
+    private double Line { get; set; }
     private readonly ushort[] ascii = new ushort[128];
     private readonly Dictionary<(int Count, double Width), double[]> advanceCache = new();
 
     internal TerminalGrid()
     {
-        Cell = Em * face.AdvanceWidths[face.CharacterToGlyphMap['0']];
-        Line = Math.Ceiling(Em * face.Height);
-        for (int i = 32; i < 127; i++) ascii[i] = face.CharacterToGlyphMap[i];
+        MeasureFont();
         Focusable = true;
         ClipToBounds = true;
         lines = new(this) { cursor };
@@ -61,6 +63,38 @@ internal sealed partial class TerminalGrid : FrameworkElement
         };
         Palette.Brush("YaacCanvas").Changed += (_, _) => { if (IsVisible) ResizeGrid(); };
         InitializeInput();
+        SetResourceReference(CodeFontProperty, YaacFonts.TerminalResource);
+    }
+
+    private void ApplyFont(FontFamily? family)
+    {
+        var chosen = BundledFace;
+        if (family is not null && new Typeface(family, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal).TryGetGlyphTypeface(out var candidate)
+            && Enumerable.Range(32, 95).All(candidate.CharacterToGlyphMap.ContainsKey))
+            chosen = candidate;
+        if (ReferenceEquals(face, chosen)) return;
+        face = chosen;
+        MeasureFont();
+        advanceCache.Clear();
+        fallback.Clear();
+        Reset();
+        if (IsVisible)
+        {
+            ResizeGrid();
+            Command?.Invoke("refresh", null);
+        }
+    }
+
+    private void MeasureFont()
+    {
+        double widest = 0;
+        for (int i = 32; i < 127; i++)
+        {
+            ascii[i] = face.CharacterToGlyphMap[i];
+            widest = Math.Max(widest, face.AdvanceWidths[ascii[i]]);
+        }
+        Cell = Em * widest;
+        Line = Math.Ceiling(Em * face.Height);
     }
 
     internal void ResizeGrid()
@@ -145,6 +179,7 @@ internal sealed partial class TerminalGrid : FrameworkElement
     private GlyphTypeface Font(int cp)
     {
         if (cp is >= 32 and <= 126 || face.CharacterToGlyphMap.ContainsKey(cp)) return face;
+        if (BundledFace.CharacterToGlyphMap.ContainsKey(cp)) return BundledFace;
         if (fallback.TryGetValue(cp, out var cached)) return cached;
         if (!loadedFallbackFaces)
         {

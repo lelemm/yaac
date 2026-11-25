@@ -11,6 +11,7 @@ public partial class App : Application
     {
         RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
         base.OnStartup(args);
+        YaacFonts.Initialize();
 
         string? Option(string name)
         {

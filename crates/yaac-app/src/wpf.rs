@@ -509,6 +509,7 @@ fn view(
         },
         "theme": theme_name(app.ui.theme),
         "fontScale": app.ui.font_size / crate::theme::size::UI,
+        "fonts": app.fonts.native,
         "commander": navigation::command_view(app),
     });
     if let (Some(shell), Value::Object(header)) =

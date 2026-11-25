@@ -53,14 +53,13 @@ internal sealed class TranscriptActivity : StackPanel
         {
             Style = (Style)FindResource("YaacTranscriptChevron"),
             Width = 22,
-            FontFamily = YaacFonts.Ui,
         };
         disclosure.Click += (_, _) => Toggle();
         disclosure.IsKeyboardFocusWithinChanged += (_, _) => UpdateMark();
         staticMark.Width = 22;
         staticMark.Margin = new Thickness(0);
         staticMark.TextAlignment = TextAlignment.Center;
-        staticMark.FontFamily = disclosure.FontFamily;
+        staticMark.SetResourceReference(TextBlock.FontFamilyProperty, YaacFonts.UiResource);
         var rule = new Border
         {
             Width = 1, Margin = new Thickness(0, 1, 0, 2),

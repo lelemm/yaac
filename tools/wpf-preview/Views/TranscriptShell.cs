@@ -17,7 +17,7 @@ internal sealed class TranscriptShell : StackPanel
     private readonly Action<JsonElement> submit;
     private readonly TextBlock command = new()
     {
-        FontFamily = YaacFonts.Mono, FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis,
+        FontSize = 13, TextTrimming = TextTrimming.CharacterEllipsis,
         VerticalAlignment = VerticalAlignment.Center,
     };
     private readonly TextBlock mark = new() { FontSize = 13, Margin = new Thickness(0, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
@@ -34,6 +34,7 @@ internal sealed class TranscriptShell : StackPanel
         this.state = state;
         this.output = output;
         this.submit = submit;
+        command.SetResourceReference(TextBlock.FontFamilyProperty, YaacFonts.CodeResource);
         Focusable = false;
 
         var header = new DockPanel { LastChildFill = true };

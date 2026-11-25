@@ -92,10 +92,11 @@ internal sealed class FilesEditor : Grid
     {
         var editor = new TextEditor
         {
-            IsReadOnly = true, FontFamily = YaacFonts.Mono, FontSize = CodeSize,
+            IsReadOnly = true, FontSize = CodeSize,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
+        editor.SetResourceReference(Control.FontFamilyProperty, YaacFonts.CodeResource);
         editor.SetResourceReference(BackgroundProperty, "YaacCanvas");
         editor.SetResourceReference(Control.ForegroundProperty, "YaacText");
         editor.SetResourceReference(TextEditor.LineNumbersForegroundProperty, "YaacMuted");

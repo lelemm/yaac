@@ -37,7 +37,7 @@
               KeyboardNavigation.TabNavigation="Cycle">
         <StackPanel>
           <TextBlock Text="Also from this branch" FontSize="11" Margin="5,2"
-                     FontFamily="{x:Static preview:YaacFonts.Ui}" Foreground="{DynamicResource YaacMuted}" />
+                     FontFamily="{DynamicResource YaacUiFont}" Foreground="{DynamicResource YaacMuted}" />
           <ScrollViewer MaxHeight="240" VerticalScrollBarVisibility="Auto"
                         HorizontalScrollBarVisibility="Disabled" Focusable="False">
             <StackPanel x:Name="OtherLinks" />

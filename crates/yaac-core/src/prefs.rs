@@ -34,6 +34,14 @@ pub enum SendKey {
     CtrlEnter,
 }
 
+/// Empty selections use the fonts bundled with YAAC.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct FontPrefs {
+    pub normal: String,
+    pub code: String,
+}
+
 /// The persisted choices.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UiPrefs {
@@ -53,6 +61,7 @@ pub struct UiPrefs {
     pub muted_open: bool,
     /// Base UI font size in points.
     pub font_size: f32,
+    pub fonts: FontPrefs,
     /// The send key.
     pub send_key: SendKey,
     /// The sidebar's width, and whether it is collapsed to the strip.
@@ -112,7 +121,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), composer_history: Default::default(), dismissed_artifacts: BTreeSet::new(), terminal: TerminalPrefs::default() }
+        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, fonts: FontPrefs::default(), send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), composer_history: Default::default(), dismissed_artifacts: BTreeSet::new(), terminal: TerminalPrefs::default() }
     }
 }
 
@@ -129,6 +138,7 @@ pub mod keys {
     /// Collapsed sidebar groups.
     pub const COLLAPSED_GROUPS: &str = "collapsedGroups";
     /// Font size.
+    pub const FONTS: &str = "fonts";
     pub const FONT_SIZE: &str = "fontSize";
     /// Send key.
     pub const SEND_KEY: &str = "sendKey";
@@ -157,7 +167,7 @@ pub mod keys {
     /// Commands whose "Works in the terminal" differs from the default (P338).
     pub const TERMINAL_COMMANDS: &str = "terminalCommands";
     /// Every key.
-    pub const ALL: [&str; 19] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, PILL_POSITION, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS, COMPOSER_HISTORY, DISMISSED_ARTIFACTS];
+    pub const ALL: [&str; 20] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, PILL_POSITION, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS, COMPOSER_HISTORY, DISMISSED_ARTIFACTS, FONTS];
 }
 
 impl UiPrefs {
@@ -189,6 +199,7 @@ impl UiPrefs {
             keys::COLLAPSED => json!({ "muted": !self.muted_open }),
             keys::COLLAPSED_GROUPS => json!(self.collapsed_groups),
             keys::FONT_SIZE => json!(self.font_size),
+            keys::FONTS => json!(self.fonts),
             keys::SIDEBAR => json!({ "width": self.sidebar.width, "collapsed": self.sidebar.collapsed }),
             keys::PILL_POSITION => json!(self.pill_position),
             keys::AGENTS_WIDTH => json!(self.agents_width),
@@ -301,6 +312,9 @@ impl UiPrefs {
                 }
             }
             #[allow(clippy::cast_possible_truncation, reason = "font sizes are small")]
+            keys::FONTS => {
+                if let Ok(fonts) = serde_json::from_value(v.clone()) { self.fonts = fonts; }
+            }
             keys::FONT_SIZE => {
                 if let Some(f) = v.as_f64().filter(|f| (9.0..=24.0).contains(f)) {
                     self.font_size = f as f32;

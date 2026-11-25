@@ -811,6 +811,14 @@ fn theme_id(theme: ThemeChoice) -> &'static str {
 fn appearance(app: &YaacApp) -> Value {
     let theme = theme_id(app.ui.theme);
     let default_size = crate::theme::size::UI;
+    let mut choices = vec![action("default", "YAAC default", true)];
+    choices.extend(app.fonts.choices.iter().map(|choice| json!({
+        "id": choice.id, "label": choice.label, "enabled": true, "fontPreview": choice.native
+    })));
+    let value = |role: crate::fonts::Role| {
+        let current = role.get(&app.ui.fonts);
+        if app.fonts.choices.iter().any(|choice| choice.id == current) { current } else { "default" }
+    };
     json!({ "sections": [
         { "id": "theme", "title": "Theme", "rows": [
             { "id": "theme", "fields": [{ "id": "theme", "type": "radio", "value": theme, "action": "appearance.theme",
@@ -822,6 +830,17 @@ fn appearance(app: &YaacApp) -> Value {
                 action("appearance.larger", "Larger", app.ui.font_size < 18.0),
                 action("appearance.reset", "Reset", (app.ui.font_size - default_size).abs() > 0.01)
             ] }
+        ] },
+        { "id": "font-families", "title": "Fonts", "detail": (!app.fonts.catalog_ready).then_some("Loading installed fonts…"), "rows": [
+            { "id": "normal-font", "layout": "inline", "fontSample": format!("{}\n{}", crate::fonts::SAMPLE, crate::fonts::NERD_SAMPLE),
+                "fields": [{"id": "font", "label": "Normal font", "type": "choice", "sample": format!("{}\n{}", crate::fonts::SAMPLE, crate::fonts::NERD_SAMPLE), "value": value(crate::fonts::Role::Normal), "action": "appearance.normalFont", "options": choices}],
+                "actions": [action("appearance.importNormal", "Import font…", true)]
+            },
+            { "id": "code-font", "layout": "inline", "fontSample": format!("{}\n{}", crate::fonts::CODE_SAMPLE, crate::fonts::NERD_SAMPLE), "codeFontSample": true,
+                "fields": [{"id": "font", "label": "Code font", "type": "choice", "sample": format!("{}\n{}", crate::fonts::CODE_SAMPLE, crate::fonts::NERD_SAMPLE), "codeFont": true, "value": value(crate::fonts::Role::Code), "action": "appearance.codeFont", "options": choices}],
+                "actions": [action("appearance.importCode", "Import font…", true)]
+            },
+            { "id": "font-error", "label": app.fonts.error }
         ] }
     ] })
 }
@@ -1324,6 +1343,19 @@ pub(super) fn command(
             "system" => ThemeChoice::System,
             _ => return Err("Choose a theme.".into()),
         }),
+        "appearance.normalFont" | "appearance.codeFont" => {
+            let choice = string(values, "font");
+            let role = if id == "appearance.normalFont" { crate::fonts::Role::Normal } else { crate::fonts::Role::Code };
+            if choice == "default" || app.fonts.choices.iter().any(|font| font.id == choice) {
+                role.set(&mut app.ui.fonts, if choice == "default" { String::new() } else { choice.to_owned() });
+            }
+            return Ok(());
+        }
+        "appearance.importNormal" | "appearance.importCode" => {
+            let role = if id == "appearance.importNormal" { crate::fonts::Role::Normal } else { crate::fonts::Role::Code };
+            app.import_font(role);
+            return Ok(());
+        }
         "appearance.smaller" | "appearance.larger" | "appearance.reset" => {
             app.ui.font_size = match id {
                 "appearance.smaller" => (app.ui.font_size - 0.5).max(11.0),

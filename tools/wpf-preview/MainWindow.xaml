@@ -8,7 +8,7 @@
         ResizeMode="CanResize" WindowState="Maximized"
         WindowStartupLocation="CenterScreen"
         Background="{DynamicResource YaacCanvas}" Foreground="{DynamicResource YaacText}"
-        FontFamily="{x:Static preview:YaacFonts.Ui}" FontSize="13.5"
+        FontFamily="{DynamicResource YaacUiFont}" FontSize="13.5"
         UseLayoutRounding="True" SnapsToDevicePixels="True"
         PreviewKeyDown="WindowKey" PreviewMouseDown="WindowMouse">
   <shell:WindowChrome.WindowChrome>
@@ -165,7 +165,7 @@
             <Border x:Name="RailHoverCard" Width="300" Padding="5" CornerRadius="8" BorderThickness="1"
                     Background="{DynamicResource YaacRaised}" BorderBrush="{DynamicResource YaacRule}"
                     MouseEnter="RailHoverEnter" MouseLeave="RailHoverLeave">
-              <ContentControl x:Name="RailHoverHost" FontFamily="{x:Static preview:YaacFonts.Ui}"
+              <ContentControl x:Name="RailHoverHost" FontFamily="{DynamicResource YaacUiFont}"
                               FontSize="13.5" Foreground="{DynamicResource YaacText}" />
             </Border>
           </Popup>

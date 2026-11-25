@@ -340,7 +340,7 @@ public partial class ComposerView
                 case RowKind.Command:
                     label.SetResourceReference(TextBlock.ForegroundProperty, "YaacMuted");
                     label.FontSize = 11;
-                    label.FontFamily = YaacFonts.Mono;
+                    label.SetResourceReference(TextBlock.FontFamilyProperty, YaacFonts.CodeResource);
                     detail.FontSize = 11;
                     goto case RowKind.Queue;
                 case RowKind.Queue:
@@ -422,7 +422,7 @@ public partial class ComposerView
                 var shell = Field(model, "shell").ComposerFlag();
                 shellMark.Visibility = VisibleWhen(shell);
                 if (shell)
-                    label.FontFamily = YaacFonts.Mono;
+                    label.SetResourceReference(TextBlock.FontFamilyProperty, YaacFonts.CodeResource);
                 else
                     label.ClearValue(TextBlock.FontFamilyProperty);
             }

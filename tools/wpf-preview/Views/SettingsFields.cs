@@ -25,6 +25,8 @@ public partial class SettingsView
         private readonly Dictionary<string, ContentControl> options = new(StringComparer.Ordinal);
         private string type = "";
         private string remote = "";
+        private string fontSample = "";
+        private bool codeFont;
         private string shortcutLabel = "";
         private readonly string radioGroup = Guid.NewGuid().ToString();
         private bool initialized;
@@ -128,6 +130,8 @@ public partial class SettingsView
                 if (reveal is not null)
                     AutomationProperties.SetName(reveal, name);
 
+                fontSample = Str(field, "sample");
+                codeFont = Flag(field, "codeFont");
                 required = Flag(field, "required");
                 clearOnSubmit = Flag(field, "clear", type is "text" or "file");
                 enabled = Flag(field, "enabled", true);
@@ -247,9 +251,9 @@ public partial class SettingsView
             {
                 MinHeight = 29,
                 Padding = new Thickness(8, 4, 8, 4),
-                FontFamily = YaacFonts.Mono
             };
             text.TextChanged += (_, _) => Edited();
+            text.SetResourceReference(Control.FontFamilyProperty, YaacFonts.CodeResource);
             var browse = new Button
             {
                 Content = "Browse…",
@@ -414,9 +418,21 @@ public partial class SettingsView
                 var content = combo is not null && notes.Length > 0 ? optionLabel + " · " + notes : optionLabel;
                 if (!Equals(option.Content, content))
                     option.Content = content;
+                if (combo is not null && fontSample.Length > 0)
+                {
+                    option.ToolTip ??= new TextBlock
+                    {
+                        Text = fontSample,
+                        FontFamily = YaacFonts.Preview(item.Value("fontPreview"), codeFont),
+                        FontSize = 15,
+                        Margin = new Thickness(5, 3, 5, 3),
+                    };
+                    ToolTipService.SetInitialShowDelay(option, 250);
+                }
+                else
+                    Describe(option, notes);
                 option.IsEnabled = Flag(item, "enabled", true);
                 AutomationProperties.SetName(option, optionLabel);
-                Describe(option, notes);
                 if (checkedOption is null && Flag(item, "checked"))
                     checkedOption = id;
 

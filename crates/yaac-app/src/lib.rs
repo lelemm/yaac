@@ -39,6 +39,7 @@ mod composer;
 mod dialogs;
 mod display;
 mod files;
+mod fonts;
 mod images;
 mod artifacts;
 mod first_run;

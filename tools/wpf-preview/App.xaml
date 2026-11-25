@@ -19,7 +19,7 @@
       <Style TargetType="ComboBox" BasedOn="{StaticResource YaacChoice}" />
       <Style TargetType="ComboBoxItem" BasedOn="{StaticResource YaacChoiceItem}" />
       <Style TargetType="ToolTip">
-        <Setter Property="FontFamily" Value="{x:Static local:YaacFonts.Ui}" />
+        <Setter Property="FontFamily" Value="{DynamicResource YaacUiFont}" />
         <Setter Property="LayoutTransform" Value="{DynamicResource YaacUiScale}" />
       </Style>
     </ResourceDictionary>

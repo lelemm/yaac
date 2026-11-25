@@ -1298,6 +1298,53 @@ fn appearance(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         }
     });
     ui.label(widgets::secondary("Scales the whole window; agent prose stays the largest text.", &p));
+    widgets::heading(ui, "Fonts");
+    if !app.fonts.catalog_ready {
+        ui.label(widgets::secondary("Loading installed fonts…", &p));
+    }
+    use crate::fonts::{Role, SAMPLE, CODE_SAMPLE, NERD_SAMPLE};
+    for (role, id, label, sample, font) in [
+        (Role::Normal, "normal-font", "Normal font", SAMPLE, theme::ui(size::UI)),
+        (Role::Code, "code-font", "Code font", CODE_SAMPLE, theme::mono(size::MONO)),
+    ] {
+        let current = role.get(&app.ui.fonts);
+        let selected = app.fonts.choices.iter().find(|choice| choice.id == current);
+        ui.label(label);
+        let (choice, import, hover) = ui.horizontal(|ui| {
+            let mut choice = current.to_owned();
+            let mut hover = None;
+            egui::ComboBox::from_id_salt(id).width(235.0).selected_text(selected.map_or("YAAC default", |choice| &choice.label))
+                .show_ui(ui, |ui| {
+                    let mut option = |ui: &mut egui::Ui, key: &str, label: &str| {
+                        let response = ui.selectable_value(&mut choice, key.to_owned(), label);
+                        if response.hovered() {
+                            hover = Some(key.to_owned());
+                            if let Some(preview) = app.fonts.preview_font(role, key, font.size) {
+                                response.on_hover_ui(|ui| {
+                                    ui.label(egui::RichText::new(format!("{sample}\n{NERD_SAMPLE}")).font(preview));
+                                });
+                            }
+                        }
+                    };
+                    option(ui, "", "YAAC default");
+                    for item in &app.fonts.choices { option(ui, &item.id, &item.label); }
+                });
+            (choice, ui.button("Import font…").clicked(), hover)
+        }).inner;
+        if choice != current {
+            role.set(&mut app.ui.fonts, choice);
+            ui.ctx().request_repaint();
+        }
+        if import { app.import_font(role); }
+        if let Some(key) = hover { app.fonts.preview(role, &key, ui.ctx()); }
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.label(egui::RichText::new(format!("{sample}\n{NERD_SAMPLE}")).font(font));
+        });
+    }
+    if let Some(error) = &app.fonts.error {
+        ui.label(egui::RichText::new(error).color(p.failed));
+    }
+
 }
 
 // ── Window: the tray and the renderer ──────────────────────────────────────────────────
