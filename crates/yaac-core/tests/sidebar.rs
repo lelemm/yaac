@@ -169,7 +169,7 @@ fn search_filters_title_and_preview() {
         .flat_map(|s| s.rows)
         .map(|r| r.title)
         .collect();
-    assert_eq!(found, ["index-rebuild", "search-service"], "the one that needs the user first");
+    assert_eq!(found, ["index-rebuild", "search-service", "Fix frame decoder"], "matches titles and previews across projects");
 }
 
 #[test]
