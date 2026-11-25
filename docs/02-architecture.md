@@ -458,6 +458,14 @@ ssh/wsl/local child ──► yaacd connect   (a small stdio ⇄ socket bridge)
 `yaacd connect` attaches to the running daemon, starting it first if needed. This is the same
 shape Codex itself uses.
 
+**Umask.** Stage 0 runs under `umask 077`, so what it installs stays private, and passes the
+user's previous umask on in `YAAC_USER_UMASK`. `yaacd serve` restores it before it starts
+anything, so the harnesses, terminals and `!` commands it launches create files as the user's
+own shell would (644/755 under the usual 022) — before this, every file an agent wrote through
+YAAC came out 600/700. `yaacd`'s own state stays private regardless: its directories are made
+with an explicit 0700 and its socket, pid file and uploads with an explicit 0600. A Codex daemon
+that was already running keeps the umask it started with until Codex restarts it (invariant 11).
+
 ### While no host is attached
 
 `yaacd` behaves exactly as if a host were watching:

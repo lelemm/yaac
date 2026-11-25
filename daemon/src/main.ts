@@ -25,6 +25,9 @@ function flag(args: string[], name: string): string | undefined {
 }
 
 async function serve(args: string[]): Promise<void> {
+  // Before anything is started: harnesses, terminals and `!` commands get the user's umask,
+  // not stage 0's private 077 (yaacd's own directories set their modes explicitly).
+  (await import("./util/umask.js")).restoreUserUmask();
   const { Daemon, DEFAULT_IDLE_TIMEOUT_MS, defaultHome } = await import("./session/daemon.js");
   const { AlreadyServing } = await import("./session/server.js");
   const env = process.env;

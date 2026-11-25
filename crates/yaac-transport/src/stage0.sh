@@ -7,6 +7,10 @@
 #             PUT daemon <build> <bytes> <sha256>  (then exactly <bytes> bytes)
 #             RUN <runtime> <build>
 # Replies:    OK runtime | OK daemon | OK run (the next byte is the YAAC protocol) | ERR <reason>
+# The user's own umask, for what yaacd starts on their behalf (harnesses, terminals, `!` commands):
+# yaacd restores it once its private directories exist. Stage 0 itself writes privately.
+YAAC_USER_UMASK=$(umask)
+export YAAC_USER_UMASK
 umask 077
 for kv in "$@"; do
   case $kv in
