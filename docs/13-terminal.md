@@ -256,8 +256,8 @@ grid 4,610 times, sending 100,012,843 bytes. Each redraw in that workload used
 - **Add to composer** on a selection (as in File tabs, [12](12-files.md#add-to-composer)):
   sends the selected output to the agent as a fenced `console` block.
 - A click focuses the terminal. Settings → Keyboard has a **Works in the terminal**
-  switch for each command. It defaults on for terminal commands. While the terminal
-  has focus, other bindings, including the Commander's Ctrl+Space, reach the shell.
+  switch for each command. It defaults on for terminal commands and the full-screen tab
+  switcher. While the terminal has focus, other bindings, including Ctrl+Space, reach the shell.
 
 ### Clipboard and selection
 

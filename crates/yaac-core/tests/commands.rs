@@ -104,6 +104,7 @@ const CATALOGUE: &[(&str, &[&str])] = &[
     ("Create a pull request…", &["create-pr"]),
     ("Copy the PR link", &["copy-pr-link"]),
     ("Toggle the sidebar", &["toggle-sidebar"]),
+    ("Cycle full-screen tabs", &["cycle-fullscreen-tabs"]),
     ("Dock / undock the agents panel", &["dock"]),
     ("Grouping: machine / project / worktree", &["grouping"]),
     ("Order: last message / A → Z / Z → A", &["order"]),
@@ -335,10 +336,10 @@ fn expand_and_collapse_all_tool_lines() {
 }
 
 #[test]
-fn only_terminal_commands_work_in_a_focused_terminal_until_the_user_says_otherwise() {
+fn terminal_commands_and_full_screen_switcher_work_in_a_focused_terminal_by_default() {
     use yaac_core::commands::{Bindings, in_terminal_default};
     for d in COMMANDS {
-        let terminal = matches!(d.cmd, Cmd::ToggleTerminalPanel | Cmd::NewTerminal | Cmd::MaximiseTerminalPanel | Cmd::NextTerminal | Cmd::PrevTerminal);
+        let terminal = matches!(d.cmd, Cmd::ToggleTerminalPanel | Cmd::NewTerminal | Cmd::MaximiseTerminalPanel | Cmd::NextTerminal | Cmd::PrevTerminal | Cmd::CycleFullscreenTabs);
         assert_eq!(in_terminal_default(d.cmd), terminal, "{}", d.id);
     }
     let mut b = Bindings::default();

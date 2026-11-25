@@ -107,6 +107,7 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 | Command | Does | Key |
 | --- | --- | --- |
 | Toggle the sidebar | Collapse to the strip and back (D94). | Ctrl+B |
+| Cycle full-screen tabs | Highlight the next tab while the shortcut modifier is held. Release to switch. | Ctrl+Tab |
 | Dock / undock the agents panel | D105. | Ctrl+Shift+B **new** |
 | Grouping: machine / project / worktree | Toggle each (sub-list). | — |
 | Order: last message / A → Z / Z → A | D116. | — |
