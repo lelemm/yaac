@@ -95,13 +95,17 @@ releases are read without a token.
 | Job | Runs on | Does | Produces |
 | --- | --- | --- | --- |
 | `checks` | `ubuntu-latest` | Two parallel jobs run the full Rust workspace suite and the daemon and manifest suites. Rust test builds restore cached dependencies and use a profile without debug symbols. | test results |
-| `build` | `ubuntu-latest` | Runs alongside the checks. Builds the daemon bundle and runs `scripts/build-windows.sh` with MinGW-w64 and the `x86_64-pc-windows-gnu` Rust target. | `yaac.exe` (window and hub, with `yaacd` embedded), `yaacd.mjs`, `yaacd-mcp.mjs`, the exe's `yaac.ico` |
+| `build` | `ubuntu-latest` | Runs alongside the checks. Builds the daemon bundle and runs `scripts/build-windows.sh` with MinGW-w64 and the `x86_64-pc-windows-gnu` Rust target. It caches Cargo's release dependencies separately from the Linux test cache. | `yaac.exe` (window and hub, with `yaacd` embedded), `yaacd.mjs`, `yaacd-mcp.mjs`, the exe's `yaac.ico` |
 | `installer` | `windows-latest` | `ISCC.exe installer\yaac.iss` with the same `/D` defines as `scripts/build-installer.sh`. Inno Setup 6 is preinstalled on GitHub's Windows images (actions/runner-images lists it); the job installs it with Chocolatey only if it is missing | `YAAC-Setup-<version>+<id>.exe` |
 | `release` | `ubuntu-latest` | After the checks and installer succeed, runs `scripts/make-manifest.mjs`, then `gh release create <tag> … --latest` with the job's `GITHUB_TOKEN` (`contents: write`, this job only) | the release |
 
 A release holds `YAAC-Setup-<version>-build.<id>.exe` (asset names keep to letters, digits,
 `.`, `-` and `_`, which GitHub never renames), `yaac.exe`, `yaacd.mjs`, `yaacd-mcp.mjs`, and
 `manifest.json`. Actions are pinned to commit SHAs.
+
+When the dependency hash changes, each Cargo cache can restore from a compatible runner and
+toolchain. Cargo checks which entries are still valid. Release executables and manifests
+are collected from the current build after it runs with its own build id.
 
 **Build ids.** Every artefact of a release carries `<version>+<id>` with
 **id = 1000 + the workflow's run number** (`RELEASE_BASE` in the workflow), passed to the

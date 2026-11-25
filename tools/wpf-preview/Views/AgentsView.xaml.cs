@@ -219,7 +219,7 @@ public partial class AgentsView : UserControl
         JsonElement budget = view.Field("budget");
         _budgetId = budget.StringField("id");
         _continueBudget = AgentsAction.Read(budget.Field("action"));
-        _timeMenu = budget.Field("timeMenu").Clone();
+        _timeMenu = budget.Field("timeMenu").Snapshot();
         bool exhausted = budget.BoolField("exhausted");
 
         List<AgentsGroup> groups = ReadGroups(view);

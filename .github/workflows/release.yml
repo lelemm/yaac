@@ -73,6 +73,8 @@ jobs:
             target/debug/build
             target/debug/deps
           key: rust-tests-v1-${{ runner.arch }}-${{ steps.rust.outputs.image }}-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+          restore-keys: |
+            rust-tests-v1-${{ runner.arch }}-${{ steps.rust.outputs.image }}-${{ steps.rust.outputs.version }}-
 
       - name: Daemon dependencies
         working-directory: daemon
@@ -136,6 +138,7 @@ jobs:
           cache-dependency-path: daemon/package-lock.json
 
       - name: Rust and the MinGW-w64 cross toolchain
+        id: cross-rust
         shell: bash
         run: |
           set -eu
@@ -146,6 +149,28 @@ jobs:
           rustup target add x86_64-pc-windows-gnu
           rustc --version
           x86_64-w64-mingw32-gcc --version | head -n 1
+          echo "rust=$(rustc -Vv | sed -n 's/^commit-hash: //p')" >> "$GITHUB_OUTPUT"
+          echo "image=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+          mingw=$({ x86_64-w64-mingw32-gcc -v 2>&1; x86_64-w64-mingw32-ld --version; dpkg-query -W mingw-w64-x86-64-dev; } | sha256sum | cut -c1-16)
+          echo "mingw=$mingw" >> "$GITHUB_OUTPUT"
+
+      - name: Rust Windows cross-build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: "2"
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            target/release/.fingerprint
+            target/release/build
+            target/release/deps
+            target/x86_64-pc-windows-gnu/release/.fingerprint
+            target/x86_64-pc-windows-gnu/release/build
+            target/x86_64-pc-windows-gnu/release/deps
+          key: rust-windows-gnu-v1-${{ runner.arch }}-${{ steps.cross-rust.outputs.image }}-${{ steps.cross-rust.outputs.rust }}-${{ steps.cross-rust.outputs.mingw }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            rust-windows-gnu-v1-${{ runner.arch }}-${{ steps.cross-rust.outputs.image }}-${{ steps.cross-rust.outputs.rust }}-${{ steps.cross-rust.outputs.mingw }}-
 
       - name: Daemon dependencies
         working-directory: daemon
