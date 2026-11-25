@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use yaac_protocol::frame::{Frame, FrameDecoder};
+use yaac_protocol::frame::Frame;
+use yaac_protocol::message_chunks;
 use yaac_protocol::rpc::Message;
 
 use crate::core::{ClientKey, CoreEvent};
@@ -144,7 +145,7 @@ pub(crate) async fn serve(listener: &Listener, core: mpsc::UnboundedSender<CoreE
 }
 
 async fn read_loop(client: ClientKey, mut reader: impl AsyncRead + Unpin, core: mpsc::UnboundedSender<CoreEvent>) {
-    let mut decoder = FrameDecoder::new();
+    let mut decoder = message_chunks::Decoder::new(true);
     let mut buf = vec![0u8; 64 * 1024];
     'outer: loop {
         let n = match reader.read(&mut buf).await {
@@ -176,8 +177,9 @@ async fn read_loop(client: ClientKey, mut reader: impl AsyncRead + Unpin, core: 
 async fn write_loop(mut writer: impl AsyncWrite + Unpin, mut rx: crate::attach_writer::Receiver) {
     let mut frame = Vec::new();
     while let Some(message) = rx.recv().await {
-        if message.encode(&mut frame).is_err() {
-            continue; // larger than a frame: a hub bug; drop it rather than the window
+        if let Err(error) = message.encode(&mut frame) {
+            crate::core::log(format!("cannot send a hub message: {error}"));
+            continue;
         }
         if writer.write_all(&frame).await.is_err() || writer.flush().await.is_err() {
             break;

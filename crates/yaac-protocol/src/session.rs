@@ -22,7 +22,8 @@ use serde_json::Value;
 use crate::dialect::{
     self, Dialect, DialectError, FeatureSet, Inbound, Negotiated, OlderSide, PeerRequest, ProtocolRange,
 };
-use crate::frame::{Frame, FrameDecoder, FrameError};
+use crate::frame::{Frame, FrameError};
+use crate::message_chunks;
 use crate::methods::{self, Method, Notification, names};
 use crate::rpc::{ErrorCode, ErrorObject, Message, MessageError, RpcId};
 use crate::schedule::{Class, FlowError, Scheduler};
@@ -147,29 +148,37 @@ pub struct ClientSession {
     next_id: i64,
     pending: HashMap<RpcId, &'static str>,
     out: Scheduler,
-    decoder: FrameDecoder,
+    decoder: message_chunks::Decoder,
+    offered_message_chunks: bool,
+    message_chunks: bool,
 }
 
 impl ClientSession {
     /// A session speaking this build's supported range. Queues `initialize` immediately: it is
     /// the first message on the wire.
     pub fn new(client: ClientInfo) -> Self {
-        Self::with_range(dialect::SUPPORTED, client)
+        Self::start(dialect::SUPPORTED, client, true)
     }
 
     /// A session speaking `local` (tests and fixtures).
     pub fn with_range(local: ProtocolRange, client: ClientInfo) -> Self {
+        Self::start(local, client, false)
+    }
+
+    fn start(local: ProtocolRange, client: ClientInfo, offer_chunks: bool) -> Self {
         let mut session = Self {
             local,
             phase: Phase::Failed,
             next_id: 1,
             pending: HashMap::new(),
             out: Scheduler::new(),
-            decoder: FrameDecoder::new(),
+            decoder: message_chunks::Decoder::new(false),
+            offered_message_chunks: offer_chunks,
+            message_chunks: false,
         };
-        let params = InitializeParams { protocol: local, client };
+        let params = InitializeParams { protocol: local, client, message_chunks: offer_chunks.then_some(true) };
         let params = serde_json::to_value(params).unwrap_or(Value::Null);
-        let id = session.queue_request(names::INITIALIZE, params, Class::Control);
+        let id = session.queue_request(names::INITIALIZE, params, Class::Control).expect("initialize fits a frame");
         session.phase = Phase::Handshake { id };
         session
     }
@@ -228,7 +237,7 @@ impl ClientSession {
     /// Sends a request whose params are already **wire** JSON produced by a dialect step.
     pub(crate) fn request_wire(&mut self, method: &'static str, wire: Value) -> Result<RpcId, SessionError> {
         self.ready_dialect(method)?;
-        Ok(self.queue_request(method, wire, Class::Control))
+        self.queue_request(method, wire, Class::Control)
     }
 
     fn request_raw(&mut self, method: &'static str, params: Value, class: Class) -> Result<RpcId, SessionError> {
@@ -240,7 +249,7 @@ impl ClientSession {
         } else {
             self.ready_dialect(method)?.encode_request(method, params)?
         };
-        Ok(self.queue_request(method, wire, class))
+        self.queue_request(method, wire, class)
     }
 
     /// Sends a notification (for example `stream/credit` for a stream this side receives).
@@ -248,7 +257,7 @@ impl ClientSession {
         let dialect = self.ready_dialect(N::NAME)?;
         let params = serde_json::to_value(params).map_err(|source| SessionError::Result { method: N::NAME, source })?;
         let wire = dialect.encode_notification(N::NAME, params)?;
-        self.out.push_message(N::INFO.class, &Message::notification(N::NAME, wire))?;
+        self.push_message(N::INFO.class, &Message::notification(N::NAME, wire))?;
         Ok(())
     }
 
@@ -262,7 +271,7 @@ impl ClientSession {
             }
             Err(error) => (Class::Control, Message::Error { id: Some(id), error }),
         };
-        self.out.push_message(class, &message)?;
+        self.push_message(class, &message)?;
         Ok(())
     }
 
@@ -411,6 +420,10 @@ impl ClientSession {
             }
         };
         let dialect = dialect::select(&negotiated).ok_or(SessionError::NoDialect)?;
+        self.message_chunks = self.offered_message_chunks && result.message_chunks == Some(true);
+        if self.message_chunks {
+            self.decoder.enable();
+        }
         self.phase = Phase::Ready { dialect, negotiated, features: dialect.features().advertised(result.features.as_deref().unwrap_or_default()) };
         events.push(SessionEvent::Ready(ReadyInfo {
             terminal_unavailable_reason: result.terminal_unavailable_reason,
@@ -426,16 +439,17 @@ impl ClientSession {
         self.dialect().ok_or(SessionError::NotReady(method))
     }
 
-    fn queue_request(&mut self, method: &'static str, params: Value, class: Class) -> RpcId {
+    fn push_message(&mut self, class: Class, message: &Message) -> Result<(), FrameError> {
+        if self.message_chunks { self.out.push_chunkable_message(class, message) }
+        else { self.out.push_message(class, message) }
+    }
+
+    fn queue_request(&mut self, method: &'static str, params: Value, class: Class) -> Result<RpcId, SessionError> {
         let id = RpcId::Number(self.next_id);
         self.next_id += 1;
+        self.push_message(class, &Message::request(id.clone(), method, params))?;
         self.pending.insert(id.clone(), method);
-        // A request that does not fit in a frame is a caller bug (pages are bounded by bytes);
-        // it is dropped from `pending` so no response is awaited.
-        if self.out.push_message(class, &Message::request(id.clone(), method, params)).is_err() {
-            self.pending.remove(&id);
-        }
-        id
+        Ok(id)
     }
 }
 

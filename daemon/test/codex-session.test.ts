@@ -186,12 +186,19 @@ test("Codex tool images are journaled as references and read from the daemon's c
     assert.ok(!JSON.stringify(genStart).includes(data));
 
     const rt = daemon.core.thread(threadId)!;
+    const bigImage = Buffer.concat([image, Buffer.alloc(1_520_000)]);
+    const bigResult = bigImage.toString("base64");
     const legacy = rt.journal!.append({ type: "itemCompleted", item: { id: "legacy", turnId: turn.id,
-      kind: "toolCall", tool: "other", title: "imageGeneration", status: "completed", input: generatedInline } });
+      kind: "toolCall", tool: "other", title: "imageGeneration", status: "completed", input: { ...generatedInline, result: bigResult } } });
     const replay = daemon.core.renderEvent(legacy, "image-test");
     assert.ok(replay.type === "itemCompleted" && replay.item.kind === "toolCall");
     assert.equal(replay.item.title, "Generate image");
     assert.equal(replay.item.images?.length, 1);
+    const bigUpload = replay.item.images![0]!.uploadId;
+    await c.request("thread/subscribe", { threadId, epoch: 1, afterSeq: legacy.seq - 1 });
+    const replayed = await c.waitEvent((ev) => ev.event.type === "itemCompleted" && ev.event.item.id === "legacy", "legacy image to replay");
+    assert.ok(JSON.stringify(replayed).length < 1024);
+    assert.deepEqual(await c.request("ping"), {});
     rt.projection = null;
 
     fs.unlinkSync(imagePath);
@@ -203,15 +210,27 @@ test("Codex tool images are journaled as references and read from the daemon's c
     assert.equal(tools[1].output, "Two views\n[image]\n[image]\n[image]");
     assert.equal(tools[2].output, "Screenshot\n[image]\n[image]");
     assert.ok(!JSON.stringify(page).includes(data));
+    assert.ok(!JSON.stringify(page).includes(bigResult));
     const { uploadId } = tools[0].images[0];
-    assert.ok(tools.every((item: { images: Array<{ uploadId: string }> }) => item.images.every((image) => image.uploadId === uploadId)));
-    assert.deepEqual(page.uploads, [{ uploadId, present: true }]);
+    assert.ok(tools.slice(0, -1).every((item: { images: Array<{ uploadId: string }> }) => item.images.every((image) => image.uploadId === uploadId)));
+    assert.deepEqual(page.uploads, [{ uploadId: bigUpload, present: true }, { uploadId, present: true }]);
     const head = await c.request("upload/read", { uploadId, maxBytes: 12 });
     const tail = await c.request("upload/read", { uploadId, offset: 12, maxBytes: 1024 });
     assert.equal(head.mediaType, "image/png");
     assert.equal(head.more, true);
     assert.equal(tail.more, false);
     assert.deepEqual(Buffer.concat([Buffer.from(head.dataBase64, "base64"), Buffer.from(tail.dataBase64, "base64")]), image);
+    let offset = 0;
+    const chunks: Buffer[] = [];
+    while (offset < bigImage.length) {
+      const part = await c.request("upload/read", { uploadId: bigUpload, offset, maxBytes: 512 * 1024 });
+      const bytes = Buffer.from(part.dataBase64, "base64");
+      assert.ok(bytes.length > 0);
+      offset += bytes.length;
+      chunks.push(bytes);
+    }
+    assert.ok(chunks.length > 1);
+    assert.deepEqual(Buffer.concat(chunks), bigImage);
     await c.close();
   } finally {
     await daemon.stop("test");

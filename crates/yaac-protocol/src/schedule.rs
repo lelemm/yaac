@@ -165,6 +165,15 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Queues one logical message using the negotiated extension when needed.
+    pub(crate) fn push_chunkable_message(&mut self, class: Class, message: &Message) -> Result<(), FrameError> {
+        let lane = match class { Class::Control => 0, Class::Bulk => 1 };
+        for frame in crate::message_chunks::encode(&message.to_json(), Some(lane))? {
+            self.push_frame(class, frame);
+        }
+        Ok(())
+    }
+
     /// Opens an outbound data stream with the receiver's initial credit.
     pub fn open_stream(&mut self, stream: StreamId, initial_credit: u64) -> Result<(), FlowError> {
         if self.streams.contains_key(&stream) {

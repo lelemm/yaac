@@ -5,7 +5,7 @@
 // run of deltas for one item is collapsed into one `itemUpdated` snapshot whose `throughSeq`
 // names the last event it replaces (docs/03-protocol.md#backpressure).
 
-import type { JournalPosition, ThreadEventParams } from "../protocol/generated/types.js";
+import type { JournalPosition } from "../protocol/generated/types.js";
 import { discoverPorts } from "./preview-ports.js";
 import { shells } from "./terminal-shells.js";
 import { Tunnels } from "./tunnels.js";
@@ -41,6 +41,7 @@ interface Subscription {
   epoch: number;
   mode: "replay" | "reset";
   snapshotSeen: boolean;
+  blocked?: boolean;
 }
 
 function obj(params: unknown): Record<string, unknown> {
@@ -388,6 +389,7 @@ export class ClientSession implements SessionHandler, ClientLink {
 
   /** Sends the next event (or collapsed run) of one thread. Returns whether it sent one. */
   private sendNext(threadId: string, sub: Subscription): boolean {
+    if (sub.blocked) return false;
     const thread = this.core.thread(threadId);
     if (!thread || thread.deleted) {
       this.subs.delete(threadId);
@@ -405,19 +407,19 @@ export class ClientSession implements SessionHandler, ClientLink {
       if (id && j - start >= 2) {
         const through = lastSeqOf(entries[j - 1]!);
         const item = this.core.itemStateAt(threadId, id, through);
-        if (item) {
-          this.send({ threadId, epoch, seq: first.seq, event: { type: "itemUpdated", item, throughSeq: through } });
+        if (item && this.view.sendEvent({ threadId, epoch, seq: first.seq, event: { type: "itemUpdated", item, throughSeq: through } })) {
           sub.cursor = through;
           return true;
         }
       }
     }
-    this.send({ threadId, epoch, seq: first.seq, event: this.core.renderEvent(first, this.key) });
+    if (!this.view.sendEvent({ threadId, epoch, seq: first.seq, event: this.core.renderEvent(first, this.key) })) {
+      // Keep this entry in the replay. Other subscriptions can continue on the connection.
+      sub.blocked = true;
+      return false;
+    }
     sub.cursor = lastSeqOf(first);
     return true;
   }
 
-  private send(params: ThreadEventParams): void {
-    this.view.sendEvent(params);
-  }
 }

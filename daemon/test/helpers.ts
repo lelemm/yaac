@@ -6,6 +6,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { FrameDecoder, encodeMessageFrame, encodeDataFrame, type Frame } from "../src/protocol/frame.js";
+import { encodeMessageFrames, MessageChunks } from "../src/protocol/message-chunks.js";
 import { decodeMessage, encodeMessage, type Message } from "../src/protocol/rpc.js";
 import type { ErrorObject, Item, ThreadEventParams } from "../src/protocol/generated/types.js";
 import { Daemon, type DaemonConfig } from "../src/session/daemon.js";
@@ -64,6 +65,7 @@ export class TestClient {
   readonly notifications: Array<{ method: string; params: any }> = [];
   readonly rawIn: Buffer[] = [];
   private decoder = new FrameDecoder();
+  private messageChunks: MessageChunks | null = null;
   private nextId = 1;
   private waiters = new Map<number | string, (m: Message) => void>();
   closed = false;
@@ -72,7 +74,10 @@ export class TestClient {
   constructor(readonly socket: net.Socket) {
     socket.on("data", (chunk: Buffer) => {
       this.rawIn.push(Buffer.from(chunk));
-      for (const f of this.decoder.decode(chunk)) this.onFrame(f);
+      for (const physical of this.decoder.decode(chunk)) {
+        const frame = this.messageChunks ? this.messageChunks.accept(physical) : physical;
+        if (frame) this.onFrame(frame);
+      }
     });
     socket.on("close", () => {
       this.closed = true;
@@ -118,7 +123,9 @@ export class TestClient {
   async call(method: string, params: unknown = {}): Promise<Message> {
     const id = this.nextId++;
     const p = new Promise<Message>((resolve) => this.waiters.set(id, resolve));
-    this.socket.write(encodeMessageFrame(encodeMessage({ type: "request", id, method, params })));
+    for (const frame of encodeMessageFrames(encodeMessage({ type: "request", id, method, params }), this.messageChunks ? 0 : null)) {
+      this.socket.write(frame);
+    }
     return p;
   }
 
@@ -128,8 +135,11 @@ export class TestClient {
     return (m as { result: T }).result;
   }
 
-  async initialize(id = "c_test", host = "test-host"): Promise<any> {
-    return this.request("initialize", { protocol: { min: 1, max: 1 }, client: { name: "yaac-test", version: "0.0.0", id, host } });
+  async initialize(id = "c_test", host = "test-host", messageChunks = false): Promise<any> {
+    const result = await this.request("initialize", { protocol: { min: 1, max: 1 },
+      client: { name: "yaac-test", version: "0.0.0", id, host }, ...(messageChunks ? { messageChunks } : {}) });
+    if (messageChunks && result.messageChunks === true) this.messageChunks = new MessageChunks();
+    return result;
   }
 
   events(threadId?: string): ThreadEventParams[] {

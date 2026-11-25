@@ -61,10 +61,30 @@ and they apply in **both** directions:
 - **Credit.** The receiver of a data stream grants credit in bytes; the sender stops when it
   runs out. A slow disk on the target cannot fill memory, and a slow link cannot be flooded.
 
-Anything that can be large is paged **by bytes**, not by count. A history page is capped at
-64 KiB — a page cannot be split across frames, so a larger one would hold up control traffic
-for as long as it takes to send. A single item is bounded too: a 20 MB tool output arrives as
-a head and a tail with its true size, and the rest is fetched on demand with `item/read`.
+Known bulk content is paged **by bytes**. History pages target 64 KiB, allowing a single larger
+item through so the cursor can advance. A large tool output carries a bounded head and its
+true size, with the rest fetched on demand with `item/read`. Image bytes are fetched over
+`upload/read`.
+
+### Oversized JSON messages
+
+`initialize` can include `messageChunks: true`. The daemon confirms it in the initialize
+result. Once both peers have agreed, a JSON message above the single-frame limit travels in
+16 KiB pieces over reserved data stream `0`. The same-build window and hub support this on
+their attach link. The framing header and the 1 MiB per-frame limit are unchanged.
+
+After the data frame's stream number, each fragment has a one-byte lane (`0` for control,
+`1` for bulk), a four-byte total message size and a four-byte offset, both little-endian,
+followed by the UTF-8 message bytes. Fragments in each lane are consecutive and in order.
+Each lane can reassemble one message at a time, up to 32 MiB. The receiver parses JSON only
+after the last fragment. All fragments of one journal event retain its original position.
+Regular data streams and the other lane can interleave with fragments. A reconnect resumes
+from the last complete event applied by the receiver.
+
+A peer without the extension still uses one-frame JSON. Oversize RPC results return a size
+error. If a journal event exceeds the negotiated size limit, its subscription pauses at
+that sequence and records a diagnostic. The original entry remains in the journal, and
+other subscriptions stay connected.
 
 ## Messages
 

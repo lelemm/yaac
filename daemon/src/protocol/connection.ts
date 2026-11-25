@@ -15,7 +15,8 @@ import type {
 } from "./generated/types.js";
 import { FROZEN_CORE_METHODS, METHODS, METHOD_INFO, NOTIFICATIONS, NOTIFICATION_INFO } from "./generated/constants.js";
 import type { MethodInfo } from "./generated/constants.js";
-import { FrameDecoder, FrameError, encodeMessageFrame, type Frame } from "./frame.js";
+import { FrameDecoder, FrameError, MAX_FRAME_LEN, encodeMessageFrame, type Frame } from "./frame.js";
+import { encodeMessageFrames, MessageChunks } from "./message-chunks.js";
 import { decodeMessage, encodeMessage, MessageDecodeError, RpcError, type Message } from "./rpc.js";
 import { Scheduler, type TrafficClass } from "./scheduler.js";
 import { negotiate, NegotiationError, parseRange, select, supportedRange, type Negotiated } from "./negotiation.js";
@@ -53,7 +54,7 @@ export interface ConnectionView {
   /** Diagnostics only. */
   readonly label: string;
   notify(method: string, params: unknown): void;
-  sendEvent(params: ThreadEventParams): void;
+  sendEvent(params: ThreadEventParams): boolean;
   /** Bytes queued but not yet handed to the transport, plus the transport's own buffer. */
   backlogBytes(): number;
   /** Calls `listener` once, when the outbound backlog is below the low-water mark. */
@@ -78,6 +79,7 @@ function info(method: string): MethodInfo | undefined {
 
 export class ServerConnection implements ConnectionView {
   private readonly decoder = new FrameDecoder();
+  private messageChunks: MessageChunks | null = null;
   private readonly scheduler = new Scheduler();
   private dialect: Dialect | null = null;
   private negotiated: Negotiated | null = null;
@@ -165,8 +167,17 @@ export class ServerConnection implements ConnectionView {
       this.destroy();
       return;
     }
-    for (const frame of frames) {
+    for (const physical of frames) {
       if (this.closed) return;
+      let frame: Frame | null;
+      try {
+        frame = this.messageChunks ? this.messageChunks.accept(physical) : physical;
+      } catch (e) {
+        this.log(`fatal message-fragment error: ${(e as Error).message}`);
+        this.destroy();
+        return;
+      }
+      if (!frame) continue;
       if (frame.kind === "data") {
         if (this.session?.onData) {
           try {
@@ -236,7 +247,11 @@ export class ServerConnection implements ConnectionView {
       timer?.unref?.();
       this.outgoing.set(id, { method, resolve, reject, timer });
       const cls = info(method)?.requestClass ?? "control";
-      this.reply({ type: "request", id, method, params: this.dialect!.encodeRequestParams(method, params ?? {}) }, cls);
+      if (!this.reply({ type: "request", id, method, params: this.dialect!.encodeRequestParams(method, params ?? {}) }, cls)) {
+        this.outgoing.delete(id);
+        if (timer) clearTimeout(timer);
+        reject(new RpcError("limit_exceeded", "request exceeds the connection's message limit"));
+      }
     });
   }
 
@@ -307,7 +322,7 @@ export class ServerConnection implements ConnectionView {
       this.reply({ type: "error", id, error: { code: "invalid_request", message: "already initialized" } }, "control");
       return;
     }
-    const p = (params ?? {}) as { protocol?: unknown; client?: unknown };
+    const p = (params ?? {}) as { protocol?: unknown; client?: unknown; messageChunks?: unknown };
     const remote = parseRange(p.protocol);
     const client = p.client as ClientInfo | undefined;
     if (!remote || !client || typeof client.name !== "string" || typeof client.version !== "string") {
@@ -333,6 +348,7 @@ export class ServerConnection implements ConnectionView {
     const terminal = this.host.terminalSupport?.();
     const result = {
       protocol: negotiated.answer(),
+      ...(p.messageChunks === true ? { messageChunks: true } : {}),
       features: this.dialect.features().fold(terminal && !terminal.unavailableReason ? ["portForward", "fileView", "terminal", "budgetTimeLimit"] : ["portForward", "fileView", "budgetTimeLimit"]),
       terminalUnavailableReason: terminal?.unavailableReason,
       schemaHash: this.dialect.schemaHash(),
@@ -340,36 +356,45 @@ export class ServerConnection implements ConnectionView {
       target: this.host.targetFacts(),
     };
     this.reply({ type: "response", id, result }, "control");
+    if (p.messageChunks === true) this.messageChunks = new MessageChunks();
     this.session = this.openSession(this);
   }
 
   // ── Outbound ───────────────────────────────────────────────────────────────────────────
 
-  private reply(message: Message, cls: TrafficClass): void {
-    if (this.closed) return;
-    let frame: Buffer;
+  private reply(message: Message, cls: TrafficClass): boolean {
+    if (this.closed) return false;
+    let frames: Buffer[];
     try {
-      frame = encodeMessageFrame(encodeMessage(message));
+      const lane = this.messageChunks ? (cls === "control" ? 0 : 1) : null;
+      frames = encodeMessageFrames(encodeMessage(message), lane);
     } catch (e) {
-      if (e instanceof FrameError && message.type === "response") {
-        // A result too large for one frame is a bug in paging; say so instead of hanging.
-        frame = encodeMessageFrame(
-          encodeMessage({ type: "error", id: message.id, error: { code: "internal_error", message: "result exceeds the frame limit" } }),
-        );
-      } else throw e;
+      if (!(e instanceof FrameError)) throw e;
+      if (message.type !== "response" && message.type !== "error") {
+        this.log(`cannot send ${message.method}: ${e.message}`);
+        return false;
+      }
+      const error: Message = { type: "error", id: message.id, error: { code: "limit_exceeded", message: "result exceeds the connection's message limit" } };
+      const payload = encodeMessage(error);
+      if (Buffer.byteLength(payload) >= MAX_FRAME_LEN) {
+        this.log("cannot send an error with an oversized request id");
+        return false;
+      }
+      frames = [encodeMessageFrame(payload)];
     }
-    this.scheduler.pushFrame(cls, frame);
+    for (const frame of frames) this.scheduler.pushFrame(cls, frame);
     this.flush();
+    return true;
   }
 
-  notify(method: string, params: unknown): void {
-    if (!this.dialect || this.closed) return;
+  notify(method: string, params: unknown): boolean {
+    if (!this.dialect || this.closed) return false;
     const cls = (NOTIFICATION_INFO as Record<string, { class: TrafficClass }>)[method]?.class ?? "control";
-    this.reply({ type: "notification", method, params: this.dialect.encodeNotification(method, params) }, cls);
+    return this.reply({ type: "notification", method, params: this.dialect.encodeNotification(method, params) }, cls);
   }
 
-  sendEvent(params: ThreadEventParams): void {
-    this.notify(NOTIFICATIONS.THREAD_EVENT, params);
+  sendEvent(params: ThreadEventParams): boolean {
+    return this.notify(NOTIFICATIONS.THREAD_EVENT, params);
   }
 
   openStream(stream: number, credit: number, interactive = false): void {

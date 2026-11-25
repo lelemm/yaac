@@ -531,6 +531,7 @@ impl FakeDaemon {
                 let p: InitializeParams = serde_json::from_value(params).map_err(bad)?;
                 let negotiated = negotiate(dialect::SUPPORTED, p.protocol).map_err(|e| e.to_error_object())?;
                 let result = InitializeResult {
+                    message_chunks: None,
                     terminal_unavailable_reason: None,
                     features: s.features.clone(),
                     protocol: negotiated.answer(),

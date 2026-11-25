@@ -1,8 +1,9 @@
 //! Outbound attach frames. One writer holds at most one encoded frame outside the queues.
 use tokio::sync::mpsc;
 use yaac_protocol::StreamId;
-use yaac_protocol::frame::{FrameError, encode_data_frame, encode_message_frame};
-use yaac_protocol::rpc::Message;
+use yaac_protocol::frame::{FrameError, encode_data_frame};
+use yaac_protocol::message_chunks;
+use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message};
 
 #[derive(Debug)]
 pub(crate) enum Packet {
@@ -14,7 +15,24 @@ impl Packet {
     pub(crate) fn encode(self, buffer: &mut Vec<u8>) -> Result<(), FrameError> {
         buffer.clear();
         match self {
-            Self::Rpc(msg) => encode_message_frame(&msg.to_json(), buffer),
+            Self::Rpc(msg) => {
+                let frames = match message_chunks::encode(&msg.to_json(), Some(0)) {
+                    Ok(frames) => frames,
+                    Err(error) => {
+                        let id = match msg {
+                            Message::Response { id, .. } => Some(id),
+                            Message::Error { id, .. } => id,
+                            _ => return Err(error),
+                        };
+                        let response = Message::Error { id, error: ErrorObject::new(ErrorCode::LimitExceeded, "result exceeds the attach message limit") };
+                        message_chunks::encode(&response.to_json(), None)?
+                    }
+                };
+                for frame in frames {
+                    buffer.extend_from_slice(&frame);
+                }
+                Ok(())
+            }
             Self::Data(stream, bytes) => encode_data_frame(stream, &bytes, buffer),
         }
     }

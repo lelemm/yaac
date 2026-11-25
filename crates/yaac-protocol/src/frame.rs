@@ -83,6 +83,9 @@ pub enum FrameError {
     /// A data frame too short to hold its stream number.
     #[error("data frame of {0} payload bytes is too short for a stream number")]
     ShortData(usize),
+    /// A negotiated message fragment could not be reassembled.
+    #[error("invalid message fragment")]
+    InvalidMessageFragment,
 }
 
 /// Appends the encoding of `frame` to `out`. Fails (and appends nothing) when it would exceed

@@ -211,6 +211,9 @@ export interface ApprovalExplainParams {
   tool: string;
 }
 
+/**
+ * Plain-language description, absent when both chosen models were unavailable.
+ */
 export interface ApprovalExplainResult {
   text?: string | null;
 }
@@ -1917,6 +1920,10 @@ export interface InitializeParams {
    */
   client: ClientInfo;
   /**
+   * Whether the client accepts the optional oversized-message extension.
+   */
+  messageChunks?: boolean | null;
+  /**
    * The protocol versions the client speaks.
    */
   protocol: ProtocolRange;
@@ -1934,6 +1941,10 @@ export interface InitializeResult {
    * Additive target features announced by the daemon.
    */
   features?: Capability[] | null;
+  /**
+   * True when the client and daemon can both send message fragments.
+   */
+  messageChunks?: boolean | null;
   /**
    * The daemon's range and the agreed version.
    */

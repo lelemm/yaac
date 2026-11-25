@@ -22,6 +22,7 @@ import {
   until,
   waitTurnDone,
   RpcFailure,
+  TestClient,
 } from "./helpers.js";
 import { threadDirName } from "../src/session/thread.js";
 
@@ -32,6 +33,48 @@ const SCRIPT = [
   "/fake tool ls -la => total 0",
   "/fake say Done.",
 ].join("\n");
+
+test("oversized journal items are replayed in frames, and legacy connections remain usable", async () => {
+  const home = tmpHome();
+  const daemon = await startDaemon(home);
+  try {
+    const legacy = await client(daemon);
+    const { threadId, turnId } = await startThread(legacy, "/fake say small turn");
+    await until(() => !daemon.core.thread(threadId)!.activeTurn, "turn to finish");
+    const rt = daemon.core.thread(threadId)!;
+    const journal = rt.journal!;
+    const before = daemon.core.position(threadId);
+    const input = "\"🎨\n".repeat(280_000);
+    journal.append({ type: "itemCompleted", item: { id: "large", turnId,
+      kind: "toolCall", tool: "other", title: "Large tool result", status: "completed", input } });
+    journal.append({ type: "itemCompleted", item: { id: "after-large", turnId,
+      kind: "agentMessage", status: "completed", text: "Still here" } });
+    rt.projection = null;
+
+    await subscribeAndCollect(legacy, threadId, before);
+    assert.deepEqual(await legacy.request("ping"), {});
+    assert.ok(!legacy.closed);
+    assert.ok(!legacy.events(threadId).some((entry) => entry.seq > before.seq));
+
+    const current = await TestClient.connect(daemon.socketPath);
+    assert.equal((await current.initialize("chunks", "test-host", true)).messageChunks, true);
+    await subscribeAndCollect(current, threadId, before);
+    const oversized = await current.waitEvent((e) => e.event.type === "itemCompleted" && e.event.item.id === "large");
+    assert.ok(oversized.event.type === "itemCompleted" && oversized.event.item.kind === "toolCall");
+    assert.equal(oversized.seq, before.seq + 1);
+    assert.equal(oversized.event.item.input, input);
+    const after = await current.waitEvent((e) => e.event.type === "itemCompleted" && e.event.item.id === "after-large");
+    assert.equal(after.seq, oversized.seq + 1);
+    assert.ok((await readAll(current, threadId)).flatMap((page) => page.items)
+      .some((item) => item.id === "large" && item.kind === "toolCall" && item.input === input));
+    assert.deepEqual(await current.request("ping", { ignored: input }), {});
+    await current.close();
+    await legacy.close();
+  } finally {
+    await daemon.stop("test");
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
 
 async function subscribeAndCollect(c: Awaited<ReturnType<typeof client>>, threadId: string, from: { epoch: number; seq: number } | null) {
   const sub: any = await c.request("thread/subscribe", { threadId, ...(from ? { epoch: from.epoch, afterSeq: from.seq } : {}) });

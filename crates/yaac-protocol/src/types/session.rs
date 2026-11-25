@@ -36,6 +36,9 @@ pub struct InitializeParams {
     pub protocol: ProtocolRange,
     /// Who the client is.
     pub client: ClientInfo,
+    /// Whether the client accepts the optional oversized-message extension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_chunks: Option<bool>,
 }
 
 /// The daemon's build and on-disk state format.
@@ -68,6 +71,9 @@ pub struct TargetFacts {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResult {
+    /// True when the client and daemon can both send message fragments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_chunks: Option<bool>,
     /// Reason the native terminal backend could not load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_unavailable_reason: Option<String>,

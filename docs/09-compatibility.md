@@ -74,6 +74,11 @@ The frozen core is pinned by a **byte-level fixture**: a recorded exchange of bo
 frames, `initialize`, a failed negotiation, and the two calls permitted after it. Every build,
 forever, must reproduce it exactly.
 
+Optional initialize fields can negotiate extensions after that response. For example,
+[`messageChunks`](03-protocol.md#oversized-json-messages) uses ordinary data frames for
+oversized JSON only when both peers opt in. A peer that omits the field still receives the
+original one-frame messages.
+
 The [stage-0 bootstrap line](02-architecture.md#stage-0) is frozen in the same spirit: it is a
 list of `key=value` tokens, new keys may be added, and unknown keys are ignored.
 

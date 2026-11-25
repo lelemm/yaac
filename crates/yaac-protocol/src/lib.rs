@@ -29,6 +29,7 @@ pub mod codegen;
 pub mod dialect;
 pub mod flows;
 pub mod frame;
+pub mod message_chunks;
 pub mod methods;
 pub mod rpc;
 pub mod schedule;

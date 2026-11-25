@@ -29,7 +29,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use yaac_protocol::StreamId;
-use yaac_protocol::frame::{Frame, FrameDecoder};
+use yaac_protocol::frame::Frame;
+use yaac_protocol::message_chunks;
 use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
 
 /// Sending failed: the connection to the hub is gone.
@@ -120,7 +121,7 @@ impl HubClient {
             runtime.block_on(async move {
                 let (mut reader, mut writer) = tokio::io::split(pipe);
                 let read = async {
-                    let mut decoder = FrameDecoder::new();
+                    let mut decoder = message_chunks::Decoder::new(true);
                     let mut buf = vec![0u8; 64 * 1024];
                     loop {
                         let n = match reader.read(&mut buf).await {
@@ -195,7 +196,7 @@ impl HubClient {
         })?;
         let alive = connected.clone();
         std::thread::Builder::new().name("yaac-hub-client-read".into()).spawn(move || {
-            let mut decoder = FrameDecoder::new();
+            let mut decoder = message_chunks::Decoder::new(true);
             let mut buf = vec![0u8; 64 * 1024];
             loop {
                 let n = match reader.read(&mut buf) {
@@ -316,7 +317,7 @@ impl HubClient {
 
 /// Hands every complete message in `decoder` to the reader side. False when the connection
 /// should end (garbage from the hub, or nobody listening any more).
-fn deliver(decoder: &mut FrameDecoder, in_tx: &mpsc::Sender<Message>, data_tx: &mpsc::Sender<(StreamId, Vec<u8>)>, waker: &impl Fn()) -> bool {
+fn deliver(decoder: &mut message_chunks::Decoder, in_tx: &mpsc::Sender<Message>, data_tx: &mpsc::Sender<(StreamId, Vec<u8>)>, waker: &impl Fn()) -> bool {
     loop {
         match decoder.next_frame() {
             Ok(Some(Frame::Message(payload))) => {

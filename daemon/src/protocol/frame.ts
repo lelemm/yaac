@@ -20,7 +20,7 @@ export type Frame =
 
 export class FrameError extends Error {
   constructor(
-    readonly reason: "oversize" | "empty" | "unknownKind" | "shortData",
+    readonly reason: "oversize" | "empty" | "unknownKind" | "shortData" | "invalidMessageFragment",
     message: string,
   ) {
     super(message);

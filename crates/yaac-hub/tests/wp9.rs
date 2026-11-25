@@ -122,6 +122,34 @@ fn connect(c: &Client, name: &str) -> TargetId {
     }
 }
 
+#[test]
+fn large_json_round_trips_through_window_hub_and_daemon() {
+    let Some(rig) = Rig::new(&["alpha"]) else { return };
+    let hub = rig.home.start_with(rig.config());
+    let c = hub.client();
+    let target = connect(&c, "alpha");
+    let providers = c.routed(&target, "provider/list", json!({})).unwrap();
+    let instance = providers["providers"][0]["instance"].as_str().unwrap();
+    let prompt = "\"🎨\n".repeat(220_000);
+    let started = c.routed(&target, "thread/start", json!({
+        "opId": "large-json", "instance": instance, "cwd": rig.homes["alpha"],
+        "model": "fake-large", "input": [{ "type": "text", "text": prompt }]
+    })).expect("thread start reaches the daemon through both links");
+    let thread = &started["threadId"];
+    let mut cursor = Value::Null;
+    loop {
+        let page = c.routed(&target, "thread/read", json!({ "threadId": thread, "cursor": cursor })).unwrap();
+        if let Some(user) = page["items"].as_array().unwrap().iter().find(|item| item["kind"] == "userMessage") {
+            assert_eq!(user["parts"][0]["text"].as_str(), Some(prompt.as_str()));
+            break;
+        }
+        cursor = page["cursor"].clone();
+        assert!(!cursor.is_null(), "expected the user message in the thread's history");
+    }
+    drop(c);
+    hub.shutdown();
+}
+
 fn sha(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }

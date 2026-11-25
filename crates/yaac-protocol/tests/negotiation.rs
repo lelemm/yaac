@@ -143,7 +143,35 @@ fn nothing_but_the_frozen_calls_is_sent_before_the_handshake() {
     let params = TurnInterruptParams { thread_id: ThreadId::new("t"), turn_id: TurnId::new("u"), hold: None };
     assert!(matches!(session.request::<methods::TurnInterrupt>(&params), Err(SessionError::NotReady(_))));
     assert!(session.request::<methods::DaemonStatus>(&Empty {}).is_ok(), "daemon/status is always allowed");
-    assert!(session.request::<methods::Initialize>(&InitializeParams { protocol: SUPPORTED, client: client() }).is_err());
+    assert!(session.request::<methods::Initialize>(&InitializeParams { protocol: SUPPORTED, client: client(), message_chunks: None }).is_err());
+}
+
+#[test]
+fn only_a_daemon_that_accepts_chunks_gets_large_requests() {
+    let large = "💬\n".repeat(250_000);
+    let (mut legacy, _) = ready_session();
+    assert!(matches!(legacy.request_value("ping", json!({ "large": large })), Err(SessionError::Frame(_))));
+    assert!(legacy.poll_transmit().is_none());
+
+    let mut session = ClientSession::new(client());
+    let (messages, _) = Daemon::new().take(&mut session);
+    let Message::Request { id, params, .. } = &messages[0] else { panic!() };
+    assert_eq!(params["messageChunks"], true);
+    let negotiated = negotiate(SUPPORTED, SUPPORTED).unwrap();
+    let mut init = initialize_result(answer_json(&negotiated), codegen::SCHEMA_HASH_V1);
+    init["messageChunks"] = json!(true);
+    send(&mut session, &Message::Response { id: id.clone(), result: init });
+    let id = session.request_value("ping", json!({ "large": large })).unwrap();
+    let mut decoder = yaac_protocol::message_chunks::Decoder::new(true);
+    let mut count = 0;
+    while let Some(bytes) = session.poll_transmit() {
+        count += 1;
+        assert!(bytes.len() <= 17 * 1024);
+        decoder.push(&bytes);
+    }
+    assert!(count > 1);
+    let Some(Frame::Message(payload)) = decoder.next_frame().unwrap() else { panic!() };
+    assert_eq!(Message::from_json(&payload).unwrap(), Message::request(id, "ping", json!({ "large": large })));
 }
 
 #[test]
