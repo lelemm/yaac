@@ -1377,6 +1377,15 @@ impl Client {
         self.routed(&target, m::MESH_BUDGET, params, Call::Budget);
     }
 
+    /// Set, extend or remove the orchestration's time limit (P352): `None` removes it. Not a
+    /// person acting: the clock runs on. Sent only where the root's target can do it.
+    pub fn set_time_limit(&mut self, root: &Address, wall_clock_secs: Option<u64>) {
+        let Some(target) = root.target() else { return };
+        let op = self.op_id();
+        let params = json!({ "opId": op, "root": root, "action": MeshBudgetAction::SetTimeLimit, "wallClockSecs": wall_clock_secs });
+        self.routed(&target, m::MESH_BUDGET, params, Call::Budget);
+    }
+
     /// Which threads this window shows now (the open thread, when the thread view is on
     /// screen). Reported to the hub when it changes (`hub/view/showing`), so a turn that ends
     /// in a thread no window shows is marked unseen (D114); a shown thread's mark is cleared.

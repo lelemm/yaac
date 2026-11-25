@@ -514,6 +514,7 @@ mod tests {
             port_forward: true,
             file_view: true,
             terminal: false,
+            budget_time_limit: false,
             terminal_unavailable_reason: None,
         });
     }

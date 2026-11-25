@@ -293,7 +293,7 @@
                     ToolTip="Pin to the side" Padding="8,2" />
             <Thumb x:Name="FloatingGrip" DockPanel.Dock="Left" Width="18" Margin="0,0,4,0" Cursor="SizeNS"
                    ToolTip="Move Related agents" AutomationProperties.Name="Move Related agents"
-                   DragDelta="OnFloatingDrag" DragCompleted="OnFloatingDragCompleted">
+                   DragDelta="OnFloatingDrag">
               <Thumb.Template>
                 <ControlTemplate TargetType="Thumb">
                   <Grid Background="Transparent">
@@ -311,11 +311,17 @@
           </DockPanel>
           <Button x:Name="MarkCard" DockPanel.Dock="Top" Content="Mark all as read" Click="OnMarkRead"
                   Style="{StaticResource AgentsLink}" HorizontalAlignment="Left" Margin="0,0,0,3" />
-          <WrapPanel x:Name="CardBudget" DockPanel.Dock="Top" Margin="5,0,0,5">
-            <TextBlock Text="Agent budget reached" Foreground="{DynamicResource YaacFailure}" VerticalAlignment="Center" />
-            <Button x:Name="ContinueCard" Click="OnContinue" Style="{StaticResource AgentsLink}"
-                    Margin="3,0,0,0" ToolTipService.ShowOnDisabled="True" />
-          </WrapPanel>
+          <!-- The budget (P352): both limits; the duration's context menu sets or extends the time limit. -->
+          <StackPanel x:Name="CardBudget" DockPanel.Dock="Top" Margin="5,0,2,5">
+            <TextBlock x:Name="CardBudgetTurns" FontSize="11" TextTrimming="CharacterEllipsis" />
+            <TextBlock x:Name="CardBudgetTime" FontSize="11" TextTrimming="CharacterEllipsis" Focusable="True"
+                       Background="Transparent" ContextMenuOpening="OnBudgetTimeMenu" />
+            <WrapPanel x:Name="CardBudgetReached">
+              <TextBlock x:Name="CardBudgetReachedText" FontSize="11" Foreground="{DynamicResource YaacFailure}" VerticalAlignment="Center" />
+              <Button x:Name="ContinueCard" Click="OnContinue" Style="{StaticResource AgentsLink}"
+                      Margin="3,0,0,0" ToolTipService.ShowOnDisabled="True" />
+            </WrapPanel>
+          </StackPanel>
           <ListBox x:Name="CardRows" Style="{StaticResource AgentsList}" />
         </DockPanel>
       </Border>
@@ -332,13 +338,16 @@
         </DockPanel>
         <Button x:Name="MarkDock" DockPanel.Dock="Top" Content="Mark all as read" Click="OnMarkRead"
                 Style="{StaticResource AgentsLink}" HorizontalAlignment="Left" Margin="0,0,0,3" />
-        <TextBlock x:Name="DockBudgetText" DockPanel.Dock="Top" TextWrapping="Wrap"
-                   FontSize="11" Margin="5,0,2,4" />
-        <WrapPanel x:Name="DockBudget" DockPanel.Dock="Top" Margin="5,0,0,5">
-          <TextBlock Text="Agent budget reached" Foreground="{DynamicResource YaacFailure}" VerticalAlignment="Center" />
-          <Button x:Name="ContinueDock" Click="OnContinue" Style="{StaticResource AgentsLink}"
-                  Margin="3,0,0,0" ToolTipService.ShowOnDisabled="True" />
-        </WrapPanel>
+        <StackPanel x:Name="DockBudget" DockPanel.Dock="Top" Margin="5,0,2,5">
+          <TextBlock x:Name="DockBudgetTurns" FontSize="11" TextWrapping="Wrap" />
+          <TextBlock x:Name="DockBudgetTime" FontSize="11" TextWrapping="Wrap" Focusable="True"
+                     Background="Transparent" ContextMenuOpening="OnBudgetTimeMenu" />
+          <WrapPanel x:Name="DockBudgetReached">
+            <TextBlock x:Name="DockBudgetReachedText" FontSize="11" Foreground="{DynamicResource YaacFailure}" VerticalAlignment="Center" />
+            <Button x:Name="ContinueDock" Click="OnContinue" Style="{StaticResource AgentsLink}"
+                    Margin="3,0,0,0" ToolTipService.ShowOnDisabled="True" />
+          </WrapPanel>
+        </StackPanel>
         <ListBox x:Name="DockParent" DockPanel.Dock="Bottom" Style="{StaticResource AgentsList}"
                  Margin="0,8,0,0" ScrollViewer.VerticalScrollBarVisibility="Disabled" />
         <ListBox x:Name="DockRows" Style="{StaticResource AgentsList}" />

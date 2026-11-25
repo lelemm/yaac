@@ -420,15 +420,158 @@ pub enum SpawnedBy {
     Agent(Box<AgentRow>),
 }
 
-/// The orchestration's budget line.
+/// The orchestration's budget line (P352): both limits, and which one ran out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BudgetLine {
-    /// "14 of 100 agent turns".
-    pub text: String,
-    /// The budget ran out: "Agent budget reached" and **Continue** (D164).
+    /// Agent-started turns used.
+    pub turns_used: u32,
+    /// Agent-started turns allowed.
+    pub turn_limit: u32,
+    /// Seconds since a person last acted, as the root's target last reported it.
+    pub since_acted_secs: u64,
+    /// When a person last acted (seconds since the epoch), when the target says; the time
+    /// since is then counted from it, so it stays current between reports.
+    pub acted_at: Option<i64>,
+    /// The time limit in seconds since a person last acted; `None` = no time limit (P351).
+    pub time_limit_secs: Option<u64>,
+    /// The budget ran out (D164): what ran out ([`BudgetLine::reached`]) and **Continue**.
     pub exhausted: bool,
-    /// The orchestration's root, which **Continue** acts on.
+    /// The root's target can change the time limit (`Capability::BudgetTimeLimit`).
+    pub can_set_time_limit: bool,
+    /// The orchestration's root, which **Continue** and the time limit act on.
     pub root: yaac_protocol::Address,
+}
+
+/// Which of a budget's limits ran out (P352).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RanOut {
+    /// The agent-started turns.
+    Turns,
+    /// The time since a person last acted.
+    Time,
+    /// Exhausted, though neither limit is met here (an older target, a report in between).
+    Unknown,
+}
+
+/// One choice of the duration's menu (P352).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimeLimitChoice {
+    /// "+4 h".
+    pub label: String,
+    /// What it makes the limit: "limit 18 h" or "no time limit".
+    pub detail: String,
+    /// The new limit to send; `None` removes it.
+    pub wall_clock_secs: Option<u64>,
+}
+
+/// The menu on the budget line's duration (P352).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimeLimitMenu {
+    /// "Set time limit…" without a limit, "Extend time limit…" with one.
+    pub title: &'static str,
+    /// +1 h, +4 h, +12 h, +24 h, and "Remove time limit" when there is one.
+    pub choices: Vec<TimeLimitChoice>,
+    /// Why the menu cannot change anything (an older `yaacd` on the root's target).
+    pub unavailable: Option<&'static str>,
+}
+
+/// The hours the duration's menu offers to add (P352).
+pub const TIME_LIMIT_STEPS: [u32; 4] = [1, 4, 12, 24];
+
+/// "3 h", "25 min", "< 1 min": a span, for the budget line.
+pub fn span(secs: u64) -> String {
+    match secs {
+        0..60 => "< 1 min".to_owned(),
+        60..3600 => format!("{} min", secs / 60),
+        _ if secs.is_multiple_of(3600) || secs >= 10 * 3600 => format!("{} h", secs / 3600),
+        _ => format!("{} h {} min", secs / 3600, secs % 3600 / 60),
+    }
+}
+
+impl BudgetLine {
+    /// Seconds since a person last acted, at `now` (seconds since the epoch).
+    pub fn since_acted(&self, now: i64) -> u64 {
+        self.acted_at
+            .and_then(|at| u64::try_from(now.saturating_sub(at)).ok())
+            .map_or(self.since_acted_secs, |since| since.max(self.since_acted_secs))
+    }
+
+    /// Seconds until the duration's text next changes, when it counts on by itself (the
+    /// target said when a person acted): when to draw it again, and not before.
+    pub fn next_change(&self, now: i64) -> Option<u64> {
+        self.acted_at?;
+        let since = self.since_acted(now);
+        let step = if since < 10 * 3600 { 60 } else { 3600 };
+        Some(step - since % step)
+    }
+
+    /// "41 of 100 agent turns".
+    pub fn turns_text(&self) -> String {
+        format!("{} of {} agent turns", self.turns_used, self.turn_limit)
+    }
+
+    /// The duration, which has the time-limit menu: "14 h since you acted (limit 12 h)" or
+    /// "14 h since you acted · no time limit".
+    pub fn time_text(&self, now: i64) -> String {
+        let since = span(self.since_acted(now));
+        match self.time_limit_secs {
+            Some(limit) => format!("{since} since you acted (limit {})", span(limit)),
+            None => format!("{since} since you acted · no time limit"),
+        }
+    }
+
+    /// The whole line: "41 of 100 agent turns · 14 h since you acted (limit 12 h)".
+    pub fn text(&self, now: i64) -> String {
+        format!("{} · {}", self.turns_text(), self.time_text(now))
+    }
+
+    /// Which limit ran out, when the budget has, in the order the root's target checks them.
+    pub fn ran_out(&self) -> Option<RanOut> {
+        if !self.exhausted {
+            None
+        } else if self.turns_used >= self.turn_limit {
+            Some(RanOut::Turns)
+        } else if self.time_limit_secs.is_some() {
+            Some(RanOut::Time)
+        } else {
+            Some(RanOut::Unknown)
+        }
+    }
+
+    /// Which limit ran out, in words: "100 of 100 turns used" or "Paused: 12 h without you";
+    /// "Agent budget reached" when it cannot be told which.
+    pub fn reached(&self) -> Option<String> {
+        Some(match (self.ran_out()?, self.time_limit_secs) {
+            (RanOut::Turns, _) => format!("{} of {} turns used", self.turns_used, self.turn_limit),
+            (RanOut::Time, Some(limit)) => format!("Paused: {} without you", span(limit)),
+            _ => "Agent budget reached".to_owned(),
+        })
+    }
+
+    /// The limit `hours` more gives: on top of the limit, or of the time already passed when
+    /// that is more (or there is no limit), counted from the next whole hour.
+    pub fn added(&self, now: i64, hours: u32) -> u64 {
+        let base = self.time_limit_secs.unwrap_or(0).max(self.since_acted(now)).div_ceil(3600) * 3600;
+        base.saturating_add(u64::from(hours) * 3600).min(yaac_protocol::MeshBudget::NO_TIME_LIMIT - 1)
+    }
+
+    /// The menu on the duration (P352). Changing the limit is not a person acting: the
+    /// clock runs on (only **Continue** resets it).
+    pub fn time_menu(&self, now: i64) -> TimeLimitMenu {
+        let title = if self.time_limit_secs.is_some() { "Extend time limit…" } else { "Set time limit…" };
+        let mut choices: Vec<_> = TIME_LIMIT_STEPS
+            .iter()
+            .map(|&h| {
+                let secs = self.added(now, h);
+                TimeLimitChoice { label: format!("+{h} h"), detail: format!("limit {}", span(secs)), wall_clock_secs: Some(secs) }
+            })
+            .collect();
+        if self.time_limit_secs.is_some() {
+            choices.push(TimeLimitChoice { label: "Remove time limit".to_owned(), detail: "no time limit".to_owned(), wall_clock_secs: None });
+        }
+        let unavailable = (!self.can_set_time_limit).then_some("The yaacd that keeps this budget is too old to change its time limit. Update it to change the limit.");
+        TimeLimitMenu { title, choices, unavailable }
+    }
 }
 
 /// The collapsed rail: the relationship count, nothing else.
@@ -699,8 +842,18 @@ pub fn agents_panel(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Op
 
     let root_addr = root_of(state, key);
     let budget = root_addr.as_ref().and_then(|r| state.budgets.get(r)).map(|b| BudgetLine {
-        text: format!("{} of {} agent turns", b.used.agent_turns, b.allowance.agent_turns),
+        turns_used: b.used.agent_turns,
+        turn_limit: b.allowance.agent_turns,
+        since_acted_secs: b.used.wall_clock_secs,
+        acted_at: b.acted_at.as_ref().and_then(crate::time::secs),
+        time_limit_secs: b.allowance.time_limited().then_some(b.allowance.wall_clock_secs),
         exhausted: b.exhausted,
+        can_set_time_limit: b
+            .root
+            .target()
+            .and_then(|t| state.target(&t))
+            .and_then(|t| t.entry.state.daemon.as_ref())
+            .is_some_and(|d| d.budget_time_limit),
         root: b.root.clone(),
     });
     let root = root_addr.filter(|r| r != &me && Some(r) != s.spawned_by.as_ref()).map(|r| {

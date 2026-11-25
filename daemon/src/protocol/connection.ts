@@ -333,7 +333,7 @@ export class ServerConnection implements ConnectionView {
     const terminal = this.host.terminalSupport?.();
     const result = {
       protocol: negotiated.answer(),
-      features: this.dialect.features().fold(terminal && !terminal.unavailableReason ? ["portForward", "fileView", "terminal"] : ["portForward", "fileView"]),
+      features: this.dialect.features().fold(terminal && !terminal.unavailableReason ? ["portForward", "fileView", "terminal", "budgetTimeLimit"] : ["portForward", "fileView", "budgetTimeLimit"]),
       terminalUnavailableReason: terminal?.unavailableReason,
       schemaHash: this.dialect.schemaHash(),
       daemon: this.host.daemonInfo(),

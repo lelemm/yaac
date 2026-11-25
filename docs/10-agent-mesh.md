@@ -665,7 +665,7 @@ that root's id. The root has a **budget**, counted across all targets:
 | Allowance, per root | Default |
 | --- | --- |
 | Turns started by agents (not by a person) | 100 |
-| Wall-clock time since a person last acted on it | 12 hours |
+| Wall-clock time since a person last acted on it | no limit (P351) |
 
 When a budget runs out, nothing is cancelled: turns in progress finish, further messages are
 stored but not dispatched, and the root thread shows a notice with one button — **Continue** —
@@ -689,8 +689,24 @@ the agents pill). Only when the root is idle and a turn an agent would start is 
 it show ❚❚ **Paused · budget reached** and count as needing the user.
 
 The budget is set where permission is given: in the
-[permission prompt](#permission-a-toggle-in-the-chat), or from defaults when the chat is set to
-*allow*.
+[permission prompt](#permission-a-toggle-in-the-chat) (hours 0 = no time limit), or from
+defaults when the chat is set to *allow*.
+
+**The time limit can be set or extended at any time** (P352), from the budget line in
+*Related agents*: right-click the time since you acted — **Set time limit…** when there is
+none, **Extend time limit…** when there is one, before it runs out or after. It adds hours
+(+1, +4, +12, +24 or any number) on top of the limit, or of the time already passed when that
+is more, or removes the limit. It is `mesh/budget` with `action: "setTimeLimit"` and
+`wallClockSecs` (a number of seconds, or `null` for no limit) and an operation id, sent to the
+root's target like **Continue** (through the hub for a root on another target), and only to a
+`yaacd` that advertises the `budgetTimeLimit` feature. Changing the limit is not a person
+acting: the clock runs on; only **Continue** starts it again (and keeps the time limit as it is). A limit that frees the root
+dispatches what it held back, as **Continue** does. On the wire "no time limit" is
+`wallClockSecs` 4294967295 (`MeshBudget::NO_TIME_LIMIT`), which every build reads as a number;
+a target's state written before P351 turns the old 12-hour default into no limit, once.
+
+A `mesh/budget` result also says when a person last acted (`actedAt`), so the window counts
+the time since on its own between reports.
 
 **Who keeps count.** The target that holds the root thread owns its budget. Other targets report
 what they spend against that root through the hub, and are told when the root is paused. A

@@ -659,7 +659,7 @@ export interface BrowserTypeParams {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "portForward" | "terminal" | "fileView" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -2204,7 +2204,8 @@ export interface MeshBudget {
    */
   threadsSpawned: number;
   /**
-   * Wall-clock seconds since a person last acted on the root.
+   * Wall-clock seconds since a person last acted on the root;
+   * [`MeshBudget::NO_TIME_LIMIT`] (the default) means no time limit.
    */
   wallClockSecs: number;
 }
@@ -2214,7 +2215,7 @@ export interface MeshBudget {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type MeshBudgetAction = "status" | "continue";
+export type MeshBudgetAction = "status" | "continue" | "setTimeLimit";
 
 /**
  * `mesh/budget`: read or continue an orchestration's budget. Sent to the target of the root.
@@ -2232,6 +2233,12 @@ export interface MeshBudgetParams {
    * The orchestration root.
    */
   root: Address;
+  /**
+   * `setTimeLimit`: the new limit, in seconds since a person last acted on the root;
+   * `null` removes the limit. Required (as a number or `null`) for `setTimeLimit`, absent
+   * otherwise.
+   */
+  wallClockSecs?: number | null;
 }
 
 /**
@@ -2256,6 +2263,12 @@ export interface MeshBudgetPatch {
  * `mesh/budget` result, and `mesh/budget/changed` (D164).
  */
 export interface MeshBudgetResult {
+  /**
+   * When a person last acted on the root, so a window can show the time since without
+   * asking again (P352). Absent from an older target (then `used.wallClockSecs` says it,
+   * as of the report).
+   */
+  actedAt?: Timestamp | null;
   /**
    * The current allowance.
    */

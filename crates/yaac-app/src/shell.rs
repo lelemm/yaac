@@ -36,8 +36,9 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     app.ui.chat_dock_width = (docked && pane).then_some(app.ui.agents_width);
     app.ui.chat_dock = None;
     app.ui.chat_column = None;
+    app.ui.chat_gutter = panel.is_some() && !docked;
+    app.ui.terminal_top = None;
     app.ui.chat_agents = pane && panel.is_some();
-    app.ui.pill_floating = panel.is_some() && !docked;
     // The sidebar's own width, or the strip (collapsed, or a window too narrow for it).
     let side_w = app.ui.sidebar.shown(narrow);
     let strip = side_w <= yaac_core::strip::STRIP_WIDTH;
@@ -128,7 +129,14 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         && dock.is_none()
     {
         // Inside the chat column when a side pane is open (never over the pane).
-        let column = if pane { app.ui.chat_column.map(|c| egui::Rect::from_min_max(egui::pos2(c.left(), center.top()), c.max)) } else { Some(center) };
+        let column = if pane { app.ui.chat_column } else { Some(below(center)) };
+        // Above the terminal panel under the composer, never over it.
+        let column = column.map(|mut c| {
+            if let Some(top) = app.ui.terminal_top.filter(|t| *t > c.top()) {
+                c.max.y = c.max.y.min(top);
+            }
+            c
+        });
         if let Some(column) = column {
             crate::agents_ui::floating(ui.ctx(), app, column, panel, actions);
         }

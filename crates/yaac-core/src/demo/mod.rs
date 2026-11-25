@@ -63,6 +63,10 @@ pub enum Scene {
     Notices,
     /// 20: the orchestration ran out of budget.
     BudgetReached,
+    /// 151: the orchestration has a 12-hour time limit, 3 hours of it gone (P352).
+    BudgetTimeLimit,
+    /// 152: the orchestration ran out of time: 14 hours without a person, a 12-hour limit (P352).
+    BudgetOutOfTime,
     /// 23/24: staging reconnects; the queued message is delivered and answered.
     StagingReconnects,
     /// 13: WSL connections on this PC (the Targets page).
@@ -87,11 +91,13 @@ pub enum Scene {
 
 impl Scene {
     /// Every scene, for the demo menu.
-    pub const ALL: [Scene; 13] = [
+    pub const ALL: [Scene; 15] = [
         Scene::RequestStates,
         Scene::Permission,
         Scene::Notices,
         Scene::BudgetReached,
+        Scene::BudgetTimeLimit,
+        Scene::BudgetOutOfTime,
         Scene::StagingReconnects,
         Scene::WslConnections,
         Scene::LocalSignedOut,
@@ -110,6 +116,8 @@ impl Scene {
             Scene::Permission => "The orchestrator asks to work with other agents",
             Scene::Notices => "Notices: old daemon, retrying, stopped distro",
             Scene::BudgetReached => "The orchestration runs out of budget",
+            Scene::BudgetTimeLimit => "The orchestration has a 12-hour time limit",
+            Scene::BudgetOutOfTime => "The orchestration runs out of time",
             Scene::StagingReconnects => "staging reconnects; the queued message arrives",
             Scene::WslConnections => "WSL connections on this PC",
             Scene::LocalSignedOut => "Claude on this computer is signed out",
@@ -866,6 +874,17 @@ impl Inner {
                     b.allowance.agent_turns += 100;
                     b.exhausted = false;
                     b.held = Some(0);
+                    b.used.wall_clock_secs = 0;
+                }
+                if action == "setTimeLimit" {
+                    // P352: the limit only; the clock runs on.
+                    let secs = p.get("wallClockSecs").and_then(Value::as_u64);
+                    b.allowance.wall_clock_secs = secs.unwrap_or(yaac_protocol::MeshBudget::NO_TIME_LIMIT);
+                    let turns = b.used.agent_turns >= b.allowance.agent_turns;
+                    b.exhausted = turns || b.allowance.time_limited() && b.used.wall_clock_secs >= b.allowance.wall_clock_secs;
+                    if !b.exhausted {
+                        b.held = Some(0);
+                    }
                 }
                 let b = b.clone();
                 self.ready.push_back(result(id, json!(b)));
@@ -1728,7 +1747,7 @@ impl Inner {
         t.state = ConnectionState {
             status,
             detail: detail.map(str::to_owned),
-            daemon: older.map(|b| DaemonSummary { build: b.to_owned(), older: true, schema_hash_matches: true, can_update: true, port_forward: false, file_view: false, terminal: false, terminal_unavailable_reason: None }),
+            daemon: older.map(|b| DaemonSummary { build: b.to_owned(), older: true, schema_hash_matches: true, can_update: true, port_forward: false, file_view: false, terminal: false, budget_time_limit: false, terminal_unavailable_reason: None }),
             update: None,
         };
         if let Some(e) = enabled {
@@ -1859,6 +1878,40 @@ impl Inner {
                     s.updated_at = crate::time::timestamp(base);
                     s.state = ThreadState::Idle;
                 });
+            }
+            Scene::BudgetTimeLimit | Scene::BudgetOutOfTime => {
+                let orch = k(ORCH);
+                let root = orch.address();
+                let out = scene == Scene::BudgetOutOfTime;
+                if let Some(b) = self.fleet.budgets.get_mut(&root) {
+                    b.allowance.wall_clock_secs = 12 * 3600;
+                    b.used.agent_turns = 41;
+                    b.used.wall_clock_secs = if out { 14 * 3600 } else { 3 * 3600 };
+                    b.exhausted = out;
+                    b.held = Some(if out { 2 } else { 0 });
+                }
+                // This yaacd can change the time limit (Capability::BudgetTimeLimit).
+                if let Some(t) = self.fleet.targets.iter_mut().find(|t| Some(&t.id) == root.target().as_ref()) {
+                    t.state.daemon = Some(DaemonSummary { build: "demo".to_owned(), older: false, schema_hash_matches: true, can_update: false, port_forward: false, file_view: false, terminal: false, budget_time_limit: true, terminal_unavailable_reason: None });
+                }
+                self.targets_changed();
+                // What the root's target says when its budget changes (D164).
+                if let (Some(b), Some(target)) = (self.fleet.budgets.get(&root).cloned(), root.target()) {
+                    self.ready.push_back(routed(&target, m::MESH_BUDGET_CHANGED, json!(b)));
+                }
+                if out {
+                    self.emit_now(&orch, ThreadEvent::ItemCompleted(ItemEvent {
+                        item: done("o-budget", "o-t1", notice(
+                            NoticeKind::BudgetExhausted,
+                            "The agents working for this chat have used their budget (more than 12 hours have passed since a person last acted on it). Nothing was cancelled. 2 messages are waiting to be delivered.",
+                            Some(budget_details(2)),
+                        )),
+                    }));
+                    self.summary_now(&orch, |s| {
+                        s.updated_at = crate::time::timestamp(base);
+                        s.state = ThreadState::Idle;
+                    });
+                }
             }
             Scene::WslConnections => {
                 if let Some(t) = self.fleet.targets.iter_mut().find(|t| t.id.as_str() == "wsl-ubuntu") {

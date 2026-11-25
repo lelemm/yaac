@@ -1613,6 +1613,7 @@ impl Core {
         conn.ready = true;
         let terminal = conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::Terminal));
         let file_view = conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::FileView));
+        let budget_time_limit = conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::BudgetTimeLimit));
         let port_forward = self.preview_check(id).is_ok();
         let can_update = self.handover_on_ready(id, &info.daemon.build);
         let new = ConnectionState {
@@ -1627,6 +1628,7 @@ impl Core {
                 port_forward,
                 file_view,
                 terminal,
+                budget_time_limit,
                 terminal_unavailable_reason: info.terminal_unavailable_reason.clone(),
             }),
             update: None,

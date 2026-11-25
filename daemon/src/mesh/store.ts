@@ -124,13 +124,21 @@ export interface StateFile {
   seqs: Record<string, number>;
   /** Labels of threads on other targets, as last seen. */
   labels: Record<string, MeshPeer & { state?: ThreadState | null; seenAt?: string }>;
+  /** The old 12-hour default time limit has been made no time limit (P351), once. */
+  noTimeLimitDefault?: boolean;
 }
+
+/** `wallClockSecs` meaning "no time limit" (P351); MeshBudget::NO_TIME_LIMIT in yaac-protocol. */
+export const NO_TIME_LIMIT = 4294967295;
+/** The time limit every budget had by default before P351. */
+const OLD_DEFAULT_WALL_CLOCK = 12 * 3600;
 
 export const DEFAULT_POLICY: MeshPolicyState = {
   mode: "allow",
   acceptFromOtherTargets: true,
   // Keep the legacy threadsSpawned allowance on the wire. It does not gate spawning.
-  budget: { agentTurns: 100, threadsSpawned: 20, wallClockSecs: 12 * 3600 },
+  // No time limit by default (P351): NO_TIME_LIMIT, the largest value every build reads.
+  budget: { agentTurns: 100, threadsSpawned: 20, wallClockSecs: NO_TIME_LIMIT },
   // Keep workersPerThread and runningThreads in persisted and wire policy for older builds.
   limits: { workersPerThread: 8, spawnDepth: 3, runningThreads: 6, pairMessages: 30, pairWindowSecs: 600, undeliveredNoticeSecs: 900 },
 };
@@ -173,7 +181,17 @@ export class MeshStore {
       tickets: loaded.tickets ?? {},
       seqs: loaded.seqs ?? {},
       labels: loaded.labels ?? {},
+      noTimeLimitDefault: true,
     };
+    // P351, once per state file: the old 12-hour default becomes no time limit, for the
+    // target's default budget and for every root that took it from there (before P351 a
+    // 12-hour limit cannot be told apart from the default). A 12-hour limit chosen later stays.
+    if (!loaded.noTimeLimitDefault) {
+      if (this.state.policy.budget.wallClockSecs === OLD_DEFAULT_WALL_CLOCK) this.state.policy.budget.wallClockSecs = NO_TIME_LIMIT;
+      for (const rs of Object.values(this.state.roots)) {
+        if (rs?.allowance?.wallClockSecs === OLD_DEFAULT_WALL_CLOCK) rs.allowance.wallClockSecs = NO_TIME_LIMIT;
+      }
+    }
     this.load();
     this.fd = fs.openSync(this.logFile, "a", 0o600);
     if (this.lines > 2 * this.records.size + 1000) this.compact();

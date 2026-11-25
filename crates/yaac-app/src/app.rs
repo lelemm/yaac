@@ -109,7 +109,9 @@ pub(crate) struct UiState {
     pub muted_open: bool,
     pub commands_collapsed: BTreeSet<ThreadKey>,
     pub chat_width: f32,
-    pub agents_offset: f32,
+    pub pill_position: f32,
+    pub pill_drag: Option<f32>,
+    pub pill_wait_for_exit: bool,
     pub ultrafast_confirm: Option<DraftRef>,
     /// The Archived section is open.
     pub archived_open: bool,
@@ -141,6 +143,8 @@ pub(crate) struct UiState {
     pub dock_folds_open: [bool; 3],
     /// Scroll the docked panel to its first fold once (screenshots).
     pub dock_to_fold: bool,
+    /// Open the budget duration's time-limit menu once (screenshots, P352).
+    pub open_budget_menu: bool,
     pub menu: Option<Menu>,
     /// The sidebar's ordering (D116).
     pub ordering: yaac_core::sidebar::Ordering,
@@ -245,8 +249,11 @@ pub(crate) struct UiState {
     pub chat_column: Option<egui::Rect>,
     /// The thread has Related agents to show beside the side pane (pill or docked panel).
     pub chat_agents: bool,
-    /// The floating Related agents pill is shown: the terminal panel keeps its gutter.
-    pub pill_floating: bool,
+    /// Reserve the floating pill’s gutter beside the transcript, composer or maximised terminal.
+    pub chat_gutter: bool,
+    /// The top of the terminal panel under the composer this frame, when it is open and not
+    /// maximised: the floating pill stays above it.
+    pub terminal_top: Option<f32>,
     /// The settings pages' own state.
     pub set: crate::settings::SettingsUi,
     /// Transcript block heights as last drawn, keyed by block identity, not content (D152, P200).
@@ -299,7 +306,9 @@ impl UiState {
             muted_open: false,
             commands_collapsed: BTreeSet::new(),
             chat_width: 860.0,
-            agents_offset: 0.0,
+            pill_position: 0.5,
+            pill_drag: None,
+            pill_wait_for_exit: false,
             ultrafast_confirm: None,
             archived_open: false,
             mute: None,
@@ -319,6 +328,7 @@ impl UiState {
             card_to_hidden: false,
             dock_folds_open: [false; 3],
             dock_to_fold: false,
+            open_budget_menu: false,
             menu: None,
             ordering: yaac_core::sidebar::Ordering::default(),
             steady: yaac_core::sidebar::Steady::default(),
@@ -372,7 +382,8 @@ impl UiState {
             layout_size: None,
             chat_dock_width: None,
             chat_dock: None,
-            pill_floating: false,
+            chat_gutter: false,
+            terminal_top: None,
             chat_column: None,
             chat_agents: false,
             set: crate::settings::SettingsUi::default(),
@@ -425,6 +436,7 @@ impl UiState {
             send_key: self.send_key,
             sidebar: self.sidebar,
             agents_width: self.agents_width,
+            pill_position: self.pill_position,
             tray_on_close: self.tray_on_close,
             bindings: self.bindings.overrides.clone(),
             terminal_commands: self.bindings.in_terminal.clone(),
@@ -449,6 +461,7 @@ impl UiState {
         self.send_key = p.send_key;
         self.sidebar = p.sidebar;
         self.agents_width = p.agents_width;
+        self.pill_position = p.pill_position;
         self.tray_on_close = p.tray_on_close;
         self.bindings.overrides = p.bindings.clone();
         self.bindings.in_terminal = p.terminal_commands.clone();
@@ -525,6 +538,8 @@ pub(crate) enum Action {
     /// **Take over** a thread another program holds (D140).
     TakeOver(ThreadKey),
     ContinueBudget(Address),
+    /// Set, extend or remove an orchestration's time limit (P352); `None` removes it.
+    SetTimeLimit(Address, Option<u64>),
     OpenFork(ThreadKey),
     /// Fork; a handoff carries its first message.
     Fork(ThreadKey, ForkChoice, Option<String>, bool),
@@ -1245,6 +1260,7 @@ impl YaacApp {
                 Action::CheckLatest(k) => self.client.check_latest(&k),
                 Action::TakeOver(k) => self.client.take_over(&k),
                 Action::ContinueBudget(r) => self.client.continue_budget(&r),
+                Action::SetTimeLimit(r, secs) => self.client.set_time_limit(&r, secs),
                 Action::OpenFork(k) => {
                     if let Some(choice) = yaac_core::fork::default_choice(&self.client.state, &k) {
                         if self.client.state.selected_thread() != Some(&k) {

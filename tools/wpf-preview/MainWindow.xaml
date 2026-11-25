@@ -175,7 +175,7 @@
              Margin="-3,0,-3,0" HorizontalAlignment="Center" IsHitTestVisible="False"
              DragStarted="PaneDragStarted" DragDelta="PaneDragDelta" DragCompleted="PaneDragCompleted"
              AutomationProperties.Name="Resize sidebar" />
-      <Grid Grid.Column="2" x:Name="ThreadContent" SizeChanged="ThreadContentSizeChanged">
+      <Grid Grid.Column="2" x:Name="ThreadContent">
         <Grid.RowDefinitions>
           <RowDefinition Height="42" />
           <RowDefinition Height="*" />
@@ -215,7 +215,7 @@
               <RowDefinition x:Name="TerminalDividerRow" Height="0"/>
               <RowDefinition x:Name="TerminalPanelRow" Height="0"/>
             </Grid.RowDefinitions>
-            <Grid x:Name="ChatWork" ClipToBounds="True">
+            <Grid x:Name="ChatWork" SizeChanged="ThreadContentSizeChanged" Panel.ZIndex="1" ClipToBounds="True">
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
               <ColumnDefinition x:Name="DockColumn" Width="0"/>

@@ -565,6 +565,19 @@ fn caption_update_tracks_the_shared_update_phases() {
     assert!(ready["tooltip"].as_str().unwrap().contains("Restart to update"));
 }
 
+#[cfg(test)]
+#[test]
+fn a_wpf_pill_move_updates_the_window_preference_and_agents_view() {
+    let ctx = egui::Context::default();
+    let mut app = crate::app::tests::demo_app(&ctx);
+    for (input, expected) in [(-1.0, 0.0), (0.25, 0.25), (2.0, 1.0)] {
+        dispatch(&mut app, &ctx, &mut None, "agents.movePill", &json!({ "fraction": input })).unwrap();
+        assert_eq!(app.ui.prefs().pill_position, expected);
+        let map = AttentionMap::compute(&app.client.state);
+        assert_eq!(agents::view(&app, &map, None)["pillPosition"], json!(expected));
+    }
+}
+
 fn dispatch(
     app: &mut YaacApp,
     ctx: &egui::Context,
@@ -699,6 +712,12 @@ fn dispatch(
             }
             None
         }
+        "agents.movePill" => {
+            if let Some(fraction) = payload["fraction"].as_f64() {
+                app.ui.pill_position = fraction.clamp(0.0, 1.0) as f32;
+            }
+            None
+        }
         "agents.hover" => {
             if let Some(owner) = selected_thread(app)
                 && owner.address().as_str() == string(payload, "owner")
@@ -725,6 +744,24 @@ fn dispatch(
                 };
                 Action::MarkRead(keys)
             })
+        }
+        // The budget line's time-limit menu (P352): a listed choice, or any number of hours.
+        "agents.timeLimit" => {
+            let now = app.now();
+            selected_thread(app)
+                .and_then(|key| agents_panel(&app.client.state, &AttentionMap::compute(&app.client.state), key))
+                .and_then(|panel| panel.budget)
+                .filter(|budget| budget.can_set_time_limit && budget.root.as_str() == string(payload, "id"))
+                .and_then(|budget| {
+                    let secs = match payload.get("hours").and_then(serde_json::Value::as_u64) {
+                        Some(hours) => Some(budget.added(now, u32::try_from(hours).ok().filter(|h| (1..=10_000).contains(h))?)),
+                        None => {
+                            let index = usize::try_from(payload.get("choice")?.as_u64()?).ok()?;
+                            budget.time_menu(now).choices.into_iter().nth(index)?.wall_clock_secs
+                        }
+                    };
+                    Some(Action::SetTimeLimit(budget.root, secs))
+                })
         }
         "agents.continue" | "agents.action"
             if command == "agents.continue" || string(payload, "action") == "continueBudget" =>

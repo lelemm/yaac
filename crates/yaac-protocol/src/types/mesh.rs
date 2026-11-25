@@ -673,14 +673,27 @@ pub struct MeshBudget {
     pub agent_turns: u32,
     /// Threads spawned in total.
     pub threads_spawned: u32,
-    /// Wall-clock seconds since a person last acted on the root.
+    /// Wall-clock seconds since a person last acted on the root;
+    /// [`MeshBudget::NO_TIME_LIMIT`] (the default) means no time limit.
     pub wall_clock_secs: u64,
 }
 
+impl MeshBudget {
+    /// `wall_clock_secs` meaning "no time limit" (P351): the largest value every build reads
+    /// as a plain number, as `threads_spawned` already uses `u32::MAX` for "unlimited".
+    pub const NO_TIME_LIMIT: u64 = u32::MAX as u64;
+
+    /// Whether the budget has a time limit at all.
+    pub fn time_limited(&self) -> bool {
+        self.wall_clock_secs < Self::NO_TIME_LIMIT
+    }
+}
+
 impl Default for MeshBudget {
-    /// The documented defaults (docs/10-agent-mesh.md#every-orchestration-has-a-root-and-a-budget).
+    /// The documented defaults (docs/10-agent-mesh.md#every-orchestration-has-a-root-and-a-budget):
+    /// 100 agent-started turns, no time limit (P351).
     fn default() -> Self {
-        Self { agent_turns: 100, threads_spawned: 20, wall_clock_secs: 12 * 60 * 60 }
+        Self { agent_turns: 100, threads_spawned: 20, wall_clock_secs: Self::NO_TIME_LIMIT }
     }
 }
 
@@ -795,6 +808,10 @@ open_enum! {
         Status = "status",
         /// "Continue": grant another allowance and reset the clock.
         Continue = "continue",
+        /// Set the root's time limit to `wallClockSecs` (P352): a person adding hours, or
+        /// removing the limit (`null`). Unlike **Continue** it does not reset the clock. Only
+        /// sent to a target that advertises [`Capability::BudgetTimeLimit`](super::Capability).
+        SetTimeLimit = "setTimeLimit",
     }
 }
 
@@ -808,6 +825,12 @@ pub struct MeshBudgetParams {
     pub root: Address,
     /// What to do.
     pub action: MeshBudgetAction,
+    /// `setTimeLimit`: the new limit, in seconds since a person last acted on the root;
+    /// `null` removes the limit. Required (as a number or `null`) for `setTimeLimit`, absent
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::types::double_option")]
+    #[schemars(with = "Option<u64>")]
+    pub wall_clock_secs: Option<Option<u64>>,
 }
 
 /// How much of a budget is used.
@@ -838,6 +861,11 @@ pub struct MeshBudgetResult {
     /// waiting for **Continue**. Absent from an older target (then `exhausted` alone says it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held: Option<u32>,
+    /// When a person last acted on the root, so a window can show the time since without
+    /// asking again (P352). Absent from an older target (then `used.wallClockSecs` says it,
+    /// as of the report).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acted_at: Option<Timestamp>,
 }
 
 /// `mesh/usage` (target → hub → the root's target): what this target has spent against an

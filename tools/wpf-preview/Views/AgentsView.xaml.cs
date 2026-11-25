@@ -30,13 +30,16 @@ public partial class AgentsView : UserControl
     private string _firstHidden = "";
     private string _budgetId = "";
     private AgentsAction? _continueBudget;
+    private JsonElement _timeMenu;
     private ContextMenu? _menu;
     private bool _suppressPillFocus;
     private bool _focusCard;
     private bool _scrollHidden;
     private bool _keyboardCard;
     private double? _heightLimit;
-    private double _floatingOffset;
+    private double _pillFraction = .5;
+    private bool _draggingPill;
+    private bool _waitForExit;
     private double _floatingViewport;
     private readonly TranslateTransform _pillPosition = new();
 
@@ -58,8 +61,23 @@ public partial class AgentsView : UserControl
         Pill.RenderTransform = _pillPosition;
         Floating.CustomPopupPlacementCallback = (size, target, _) =>
         [
-            new(new Point(target.Width - size.Width, (target.Height - size.Height) / 2), PopupPrimaryAxis.Vertical)
+            new(new Point(target.Width - size.Width, (target.Height - size.Height) / 2 + CardOffset(size.Height)), PopupPrimaryAxis.Vertical)
         ];
+        FloatingAnchor.MouseMove += (_, _) => { if (_draggingPill) UpdatePillDrag(); };
+        FloatingAnchor.MouseLeftButtonUp += (_, _) =>
+        {
+            if (!_draggingPill) return;
+            UpdatePillDrag();
+            FloatingAnchor.ReleaseMouseCapture();
+        };
+        FloatingAnchor.LostMouseCapture += (_, _) =>
+        {
+            if (!_draggingPill || FloatingAnchor.IsMouseCaptured) return;
+            _draggingPill = false;
+            // Mouse capture was on the anchor. Its child may receive MouseEnter as capture ends.
+            _waitForExit = new Rect(Pill.RenderSize).Contains(Mouse.GetPosition(Pill));
+            Command?.Invoke("agents.movePill", new { fraction = _pillFraction });
+        };
         Pill.SizeChanged += (_, _) => PositionFloating();
         Card.SizeChanged += (_, _) => PositionFloating();
         _closeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
@@ -127,30 +145,42 @@ public partial class AgentsView : UserControl
     private void UpdateFloatingHeight()
     {
         var height = _floatingViewport > 0 ? _floatingViewport : 600;
-        Card.MaxHeight = Math.Min(_heightLimit ?? double.PositiveInfinity, Math.Max(170, height - 100));
+        Card.MaxHeight = Math.Min(_heightLimit ?? double.PositiveInfinity, Math.Max(1, height - 24));
     }
 
-    private double FloatingTravel => Math.Max(0, (_floatingViewport - Math.Max(Card.ActualHeight, Pill.ActualHeight)) / 2 - 4);
+    private double FloatingTravel => Math.Max(0, (_floatingViewport - Pill.ActualHeight) / 2 - 4);
+
+    private double CardOffset(double height)
+    {
+        double travel = Math.Max(0, (_floatingViewport - height) / 2 - 12);
+        return Math.Clamp(_pillPosition.Y, -travel, travel);
+    }
 
     private void PositionFloating()
     {
         var travel = FloatingTravel;
-        var offset = Math.Clamp(_floatingOffset, -travel, travel);
+        var offset = (2 * _pillFraction - 1) * travel;
         _pillPosition.Y = offset;
         Floating.VerticalOffset = offset;
     }
 
     private void OnFloatingDrag(object sender, DragDeltaEventArgs e)
     {
-        var travel = FloatingTravel;
-        _floatingOffset = Math.Clamp(Floating.VerticalOffset + e.VerticalChange, -travel, travel);
-        PositionFloating();
+        _draggingPill = true;
+        CloseCard(force: true);
+        if (FloatingAnchor.CaptureMouse())
+            UpdatePillDrag();
+        else
+            _draggingPill = false;
     }
 
-    private void OnFloatingDragCompleted(object sender, DragCompletedEventArgs e)
+    private void UpdatePillDrag()
     {
-        if (!Card.IsMouseOver)
-            _closeTimer.Start();
+        double travel = FloatingTravel;
+        if (travel <= 0) return;
+        double top = Mouse.GetPosition(FloatingAnchor).Y - FloatingAnchor.ActualHeight / 2 - 20;
+        _pillFraction = Math.Clamp(.5 + (top + Pill.ActualHeight / 2) / (2 * travel), 0, 1);
+        PositionFloating();
     }
 
     public void Render(JsonElement view)
@@ -160,6 +190,11 @@ public partial class AgentsView : UserControl
             return;
 
         _snapshot = snapshot;
+        if (!_draggingPill && view.Field("pillPosition") is { ValueKind: JsonValueKind.Number } position)
+        {
+            _pillFraction = Math.Clamp(position.GetDouble(), 0, 1);
+            PositionFloating();
+        }
         string threadId = view.StringField("threadId");
         if (threadId != _threadId)
         {
@@ -184,6 +219,7 @@ public partial class AgentsView : UserControl
         JsonElement budget = view.Field("budget");
         _budgetId = budget.StringField("id");
         _continueBudget = AgentsAction.Read(budget.Field("action"));
+        _timeMenu = budget.Field("timeMenu").Clone();
         bool exhausted = budget.BoolField("exhausted");
 
         List<AgentsGroup> groups = ReadGroups(view);
@@ -203,10 +239,24 @@ public partial class AgentsView : UserControl
         bool canMark = view.BoolField("canMarkRead");
         MarkCard.Visibility = Show(view.BoolField("canMarkReadCard", canMark));
         MarkDock.Visibility = Show(canMark);
-        DockBudgetText.Text = budget.StringField("text");
-        DockBudgetText.Foreground = (Brush)FindResource(exhausted ? "YaacFailure" : "YaacMuted");
-        DockBudgetText.Visibility = Show(DockBudgetText.Text.Length > 0);
-        CardBudget.Visibility = DockBudget.Visibility = Show(exhausted);
+        // Both limits, and which one ran out (P352).
+        bool hasBudget = budget.StringField("turns").Length > 0;
+        string reached = budget.StringField("reached");
+        // The limit that ran out in the failure colour, the other one quiet.
+        string ranOut = budget.StringField("ranOut");
+        Brush Ink(string limit) => (Brush)FindResource(ranOut == limit || ranOut == "unknown" ? "YaacFailure" : "YaacMuted");
+        string timeTip = $"Right-click: {_timeMenu.StringField("title").TrimEnd('…')}";
+        foreach (var (turns, time) in new[] { (CardBudgetTurns, CardBudgetTime), (DockBudgetTurns, DockBudgetTime) })
+        {
+            turns.Text = budget.StringField("turns");
+            time.Text = budget.StringField("time");
+            turns.Foreground = Ink("turns");
+            time.Foreground = Ink("time");
+            time.ToolTip = timeTip;
+        }
+        CardBudgetReachedText.Text = DockBudgetReachedText.Text = reached.Length > 0 ? $"{reached} ·" : "";
+        CardBudget.Visibility = DockBudget.Visibility = Show(hasBudget);
+        CardBudgetReached.Visibility = DockBudgetReached.Visibility = Show(exhausted);
         foreach (Button button in new[] { ContinueCard, ContinueDock })
         {
             button.Content = _continueBudget?.Label ?? "Continue";
@@ -215,7 +265,7 @@ public partial class AgentsView : UserControl
         }
 
         HashSet<string> used = new(StringComparer.Ordinal);
-        var pill = BuildPill(view.Field("pill"), groups, exhausted, DockBudgetText.Text.Length > 0, used);
+        var pill = BuildPill(view.Field("pill"), groups, exhausted, hasBudget, used);
         var card = BuildCard(view.Field("cardGroups"), groups, rows, used);
         var dock = BuildDock(view.Array("siblings").Select(s => s.StringField("id")), groups, rows, used);
         var dockParent = BuildDockParent(view.Field("root"), groups, used);
@@ -502,7 +552,7 @@ public partial class AgentsView : UserControl
 
     private void OpenCard(bool focus = false, bool hidden = false)
     {
-        if (!IsLoaded || !IsVisible || IsDocked)
+        if (!IsLoaded || !IsVisible || IsDocked || _draggingPill || _waitForExit)
             return;
 
         _closeTimer.Stop();
@@ -608,7 +658,11 @@ public partial class AgentsView : UserControl
         CancelHoverPreview();
         _closeTimer.Start();
     }
-    private void OnPillLeave(object sender, MouseEventArgs e) => _closeTimer.Start();
+    private void OnPillLeave(object sender, MouseEventArgs e)
+    {
+        _waitForExit = false;
+        _closeTimer.Start();
+    }
 
     private void OnPillFocus(object sender, KeyboardFocusChangedEventArgs e)
     {
@@ -691,6 +745,89 @@ public partial class AgentsView : UserControl
     private void OnMarkRead(object sender, RoutedEventArgs e) =>
         Command?.Invoke("agents.markRead", new { floating = ReferenceEquals(sender, MarkCard) });
     private void OnContinue(object sender, RoutedEventArgs e) => InvokeAction(_budgetId, _continueBudget);
+
+    /// <summary>The budget duration's menu (P352): add hours, any number of them, or remove the limit.</summary>
+    private void OnBudgetTimeMenu(object sender, ContextMenuEventArgs e)
+    {
+        e.Handled = true;
+        if (sender is FrameworkElement anchor)
+            OpenBudgetTimeMenu(anchor);
+    }
+
+    private void OpenBudgetTimeMenu(FrameworkElement anchor)
+    {
+        if (_budgetId.Length == 0 || _timeMenu.ValueKind != JsonValueKind.Object)
+            return;
+        if (_menu is not null)
+            _menu.IsOpen = false;
+        var menu = new ContextMenu { PlacementTarget = anchor, Placement = PlacementMode.Bottom };
+        menu.Items.Add(new MenuItem { Header = _timeMenu.StringField("title"), IsEnabled = false, FontWeight = FontWeights.SemiBold });
+        string unavailable = _timeMenu.StringField("unavailable");
+        if (unavailable.Length > 0)
+        {
+            menu.Items.Add(new MenuItem { Header = new TextBlock { Text = unavailable, TextWrapping = TextWrapping.Wrap, MaxWidth = 260 }, IsEnabled = false });
+        }
+        else
+        {
+            string root = _budgetId;
+            JsonElement? remove = null;
+            foreach (JsonElement choice in _timeMenu.Array("choices"))
+            {
+                if (choice.BoolField("remove"))
+                {
+                    remove = choice.Clone();
+                    continue;
+                }
+                int index = choice.Number("index");
+                var item = new MenuItem { Header = choice.StringField("label"), InputGestureText = choice.StringField("detail") };
+                item.Click += (_, _) => Command?.Invoke("agents.timeLimit", new { id = root, choice = index });
+                menu.Items.Add(item);
+            }
+            // Any number of hours.
+            var hours = new TextBox { Text = _timeMenu.Number("customDefault", 2).ToString(System.Globalization.CultureInfo.InvariantCulture), Width = 44, VerticalContentAlignment = VerticalAlignment.Center };
+            System.Windows.Automation.AutomationProperties.SetName(hours, "Hours to add");
+            var add = new Button { Content = "Add", Padding = new Thickness(8, 1, 8, 1), Margin = new Thickness(6, 0, 0, 0), IsDefault = true };
+            void Submit()
+            {
+                if (int.TryParse(hours.Text.Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int n) && n is >= 1 and <= 10_000)
+                {
+                    Command?.Invoke("agents.timeLimit", new { id = root, hours = n });
+                    menu.IsOpen = false;
+                }
+            }
+            add.Click += (_, _) => Submit();
+            hours.KeyDown += (_, k) =>
+            {
+                if (k.Key == Key.Enter)
+                {
+                    k.Handled = true;
+                    Submit();
+                }
+            };
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            row.Children.Add(new TextBlock { Text = "+", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) });
+            row.Children.Add(hours);
+            row.Children.Add(new TextBlock { Text = "h", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0) });
+            row.Children.Add(add);
+            menu.Items.Add(new MenuItem { Header = row, StaysOpenOnClick = true, Focusable = false });
+            if (remove is JsonElement r)
+            {
+                int index = r.Number("index");
+                menu.Items.Add(new Separator());
+                var item = new MenuItem { Header = r.StringField("label") };
+                item.Click += (_, _) => Command?.Invoke("agents.timeLimit", new { id = root, choice = index });
+                menu.Items.Add(item);
+            }
+        }
+        menu.Closed += (_, _) =>
+        {
+            if (_menu == menu)
+                _menu = null;
+            _closeTimer.Start();
+        };
+        _menu = menu;
+        menu.IsOpen = true;
+    }
 
     private void OpenAgent(object sender, RoutedEventArgs e)
     {

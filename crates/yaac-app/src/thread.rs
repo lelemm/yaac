@@ -70,8 +70,10 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key
                 text.max.x = chat.right() - w;
                 app.ui.chat_dock = Some(egui::Rect::from_min_max(egui::pos2(text.right(), chat.top()), chat.max));
             } else if app.ui.chat_agents {
-                // The floating pill keeps its own gutter at the column's right edge.
-                text.max.x = (chat.right() - crate::agents_ui::PILL_GUTTER).max(chat.left());
+                // The floating pill keeps its own gutter at the column's right edge — beside the
+                // transcript and composer only: the terminal panel under them takes the full
+                // width (the pill stays above it).
+                app.ui.chat_gutter = true;
             }
             return ui.scope_builder(egui::UiBuilder::new().max_rect(text), |ui| {
                 ui.set_clip_rect(text);
@@ -84,10 +86,9 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key
     }
 }
 
-/// The terminal panel stops short of the floating Related agents pill (P338: the pill keeps its
-/// place).
+/// Leave space for the floating Related agents pill.
 fn pill_gutter(app: &YaacApp, mut rect: egui::Rect) -> egui::Rect {
-    if app.ui.pill_floating {
+    if app.ui.chat_gutter {
         rect.max.x = (rect.right() - crate::agents_ui::PILL_GUTTER).max(rect.left());
     }
     rect
@@ -116,12 +117,24 @@ fn body(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKe
             app.ui.terminal.panel_share = ((column.bottom() - pos.y) / column.height().max(1.0)).clamp(0.05, 0.95);
         }
         Panel::bottom("thread-terminal").exact_size(h).resizable(false).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| {
-            let r = pill_gutter(app, ui.max_rect());
+            // The full width of the column: the floating pill is kept above the panel.
+            let r = ui.max_rect();
             crate::terminal_ui::panel(ui, app, key, r);
         });
+        app.ui.terminal_top = Some(top);
         let y = ui.painter().round_to_pixel_center(top - 0.5);
         ui.painter().hline(column.x_range(), y, egui::Stroke::new(1.0, p.border));
     }
+    let rest = pill_gutter(app, ui.available_rect_before_wrap());
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rest), |ui| {
+        ui.set_clip_rect(rest.intersect(ui.clip_rect()));
+        transcript_and_composer(ui, app, map, key, now, actions)
+    })
+    .inner
+}
+
+fn transcript_and_composer(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) -> bool {
+    let p = app.p;
     Panel::bottom("thread-composer")
         .show_separator_line(false)
         .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 10 }))

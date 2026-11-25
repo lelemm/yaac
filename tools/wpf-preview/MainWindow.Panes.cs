@@ -111,6 +111,8 @@ public partial class MainWindow
         DockColumn.Width = new GridLength(AgentsPane.Visibility != Visibility.Visible ? 0 : docked
             ? Math.Min(width, Math.Min(Workspace.ActualWidth * .4, Math.Max(DockMinWidth, available - minimumChat)))
             : Math.Min(pillGutter, available));
+        ChatWork.Visibility = panelMaximised && docked ? Visibility.Collapsed : Visibility.Visible;
+        TerminalPanelHost.Margin = new Thickness(0, 0, panelMaximised && !docked ? DockColumn.Width.Value : 0, 0);
         DockSplitter.Visibility = docked ? Visibility.Visible : Visibility.Collapsed;
         DockSplitter.IsHitTestVisible = paneSizingReady;
         AgentsPane.HorizontalAlignment = docked ? HorizontalAlignment.Stretch : HorizontalAlignment.Center;

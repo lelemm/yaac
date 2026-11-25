@@ -306,6 +306,23 @@ fn capabilities_are_folded_through_the_dialect_features() {
     assert_eq!(caps, vec![Capability::MeshTools, Capability::Unknown("zz".into())]);
 }
 
+/// P352: only a `yaacd` that advertises `budgetTimeLimit` is sent `setTimeLimit`.
+#[test]
+fn the_budget_time_limit_is_a_negotiated_feature() {
+    let (session, _) = ready_session();
+    assert!(!session.features().unwrap().allows(&Capability::BudgetTimeLimit), "an older yaacd does not advertise it");
+    let mut session = ClientSession::new(client());
+    let mut daemon = Daemon::new();
+    let (messages, _) = daemon.take(&mut session);
+    let Message::Request { id, params, .. } = &messages[0] else { panic!() };
+    let params: InitializeParams = serde_json::from_value(params.clone()).unwrap();
+    let n = negotiate(SUPPORTED, params.protocol).unwrap();
+    let mut result = initialize_result(answer_json(&n), codegen::SCHEMA_HASH_V1);
+    result["features"] = json!(["portForward", "fileView", "budgetTimeLimit"]);
+    send(&mut session, &Message::Response { id: id.clone(), result });
+    assert!(session.features().unwrap().allows(&Capability::BudgetTimeLimit));
+}
+
 #[test]
 fn start_thread_flow() {
     let (mut session, mut daemon) = ready_session();

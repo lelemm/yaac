@@ -5,7 +5,7 @@
 //! and are static: an idle fleet costs no CPU.
 
 use eframe::egui::{self, Align2, Margin, Pos2, Rect, Sense, Stroke, pos2, vec2};
-use yaac_core::agents::{AgentRow, AgentsPanel, BudgetLine, DockEntry, Flow, Overflow, PanelInput, PanelMode, PillLayout, Relation, card_groups, clusters, docked_clusters, docked_entries, pill, pill_cap, sibling_rows};
+use yaac_core::agents::{AgentRow, AgentsPanel, BudgetLine, DockEntry, RanOut, Flow, Overflow, PanelInput, PanelMode, PillLayout, Relation, card_groups, clusters, docked_clusters, docked_entries, pill, pill_cap, sibling_rows};
 use yaac_core::attention::Mark;
 use yaac_core::hover::Region;
 
@@ -173,7 +173,8 @@ fn card_height(groups: &[(&str, Vec<&AgentRow>)], thread: Rect) -> f32 {
 /// The pill and card regions for a panel in a thread view (what the hover rule uses).
 #[cfg(test)]
 pub(crate) fn regions_for(thread: Rect, panel: &AgentsPanel) -> (Rect, Rect) {
-    floating_regions(thread, pill_height(&pill(panel, pill_cap_for(thread))), card_height(&card_groups(panel), thread), 0.0)
+    let (pill_extra, card_extra) = budget_extra(panel);
+    floating_regions(thread, pill_height(&pill(panel, pill_cap_for(thread))) + pill_extra, card_height(&card_groups(panel), thread) + card_extra, 0.5)
 }
 
 /// The pill's "more" item (D168), in `r`.
@@ -211,12 +212,26 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
         clusters(panel).into_iter().flat_map(|cluster| cluster.rows).find(|row| !pl.shows(row))
     }).flatten();
     let spent = panel.budget.as_ref().is_some_and(|b| b.exhausted);
-    let (pill_extra, card_extra) = if spent { (BUDGET_H, BUDGET_H + 4.0) } else { (0.0, 0.0) };
+    let mut open_budget_menu = card && panel.budget.is_some() && std::mem::take(&mut app.ui.open_budget_menu);
+    let (pill_extra, card_extra) = budget_extra(panel);
     let pill_h = pill_height(&pl) + pill_extra;
     let card_h = card_height(&all, thread) + card_extra;
-    let travel = ((thread.height() - pill_h.max(card_h)) / 2.0 - 4.0).max(0.0);
-    let offset = app.ui.agents_offset.clamp(-travel, travel);
-    let (strip, card_rect) = floating_regions(thread, pill_h, card_h, offset);
+    if let Some(mut fraction) = app.ui.pill_drag {
+        let travel = thread.height() - pill_h - 8.0;
+        if travel > 0.0 && let Some(pointer) = ctx.pointer_interact_pos() {
+            // Keep the top of the collapsed pill under the former header grip.
+            fraction = ((pointer.y - 20.0 - thread.top() - 4.0) / travel).clamp(0.0, 1.0);
+        }
+        if ctx.input(|i| i.pointer.primary_down() && i.focused) {
+            app.ui.pill_drag = Some(fraction);
+            ctx.set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        } else {
+            app.ui.pill_position = fraction;
+            app.ui.pill_drag = None;
+            app.ui.pill_wait_for_exit = true;
+        }
+    }
+    let (strip, card_rect) = floating_regions(thread, pill_h, card_h, app.ui.pill_drag.unwrap_or(app.ui.pill_position));
     let width = if card { CARD_W } else { PILL_W };
     let pos = if card { card_rect.min } else { strip.min };
     let mut any_focus = false;
@@ -239,9 +254,10 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                         let center = grip.center() + vec2(0.0, y);
                         ui.painter().hline((center.x - 4.0)..=(center.x + 4.0), center.y, Stroke::new(1.0, ink));
                     }
-                    if drag.dragged() {
-                        any_focus = true;
-                        app.ui.agents_offset = (offset + drag.drag_delta().y).clamp(-travel, travel);
+                    if drag.drag_started() {
+                        app.ui.pill_drag = Some(app.ui.pill_position);
+                        app.ui.hover.close();
+                        actions.push(Action::Panel(PanelInput::Leave));
                         ctx.request_repaint();
                     }
                     ui.label(egui::RichText::new("Related agents").font(theme::bold(size::UI)));
@@ -255,8 +271,8 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                     });
                 });
                 ui.add_space(4.0);
-                if let Some(b) = panel.budget.as_ref().filter(|b| b.exhausted) {
-                    budget_continue(ui, &p, b, actions);
+                if let Some(b) = &panel.budget {
+                    any_focus |= budget_block(ui, &p, b, now, false, &mut open_budget_menu, actions);
                     ui.add_space(4.0);
                 }
                 // The list uses the shared relation order and scrolls when taller than the card (D168).
@@ -332,6 +348,13 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
     if !card {
         app.ui.pill_icons = pl.icons();
         app.ui.pill_more = more_rect;
+    }
+    if app.ui.pill_wait_for_exit && !ctx.pointer_hover_pos().is_some_and(|p| strip.contains(p)) {
+        app.ui.pill_wait_for_exit = false;
+    }
+    if app.ui.pill_drag.is_some() || app.ui.pill_wait_for_exit {
+        dock_hover(app, ctx, false, None);
+        return;
     }
     if app.shots.is_some() {
         return;
@@ -465,11 +488,15 @@ const CARD_MARGIN: f32 = 12.0;
 
 /// The pill's strip and the card's region, from the layout alone: both share the thread's
 /// right edge (less a 12 pt margin) and are centred on the same line.
-fn floating_regions(thread: Rect, pill_h: f32, card_h: f32, offset: f32) -> (Rect, Rect) {
+fn floating_regions(thread: Rect, pill_h: f32, card_h: f32, fraction: f32) -> (Rect, Rect) {
     let right = thread.right() - 12.0;
-    let cy = thread.center().y + offset;
+    let travel = (thread.height() - pill_h - 8.0).max(0.0);
+    let cy = thread.center().y + (fraction - 0.5) * travel;
+    let card_h = card_h.min((thread.height() - 2.0 * CARD_MARGIN).max(1.0));
+    let card_travel = (thread.height() - card_h - 2.0 * CARD_MARGIN).max(0.0) / 2.0;
+    let card_y = thread.center().y + (cy - thread.center().y).clamp(-card_travel, card_travel);
     let strip = Rect::from_min_max(pos2(right - PILL_W, cy - pill_h / 2.0), pos2(right, cy + pill_h / 2.0));
-    let card = Rect::from_min_max(pos2(right - CARD_W, cy - card_h / 2.0), pos2(right, cy + card_h / 2.0));
+    let card = Rect::from_min_max(pos2(right - CARD_W, card_y - card_h / 2.0), pos2(right, card_y + card_h / 2.0));
     (strip, card)
 }
 
@@ -554,15 +581,111 @@ fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, ac
     resp.hovered().then(|| link.cloned()).flatten()
 }
 
-/// "Agent budget reached · Continue" (D164), under the budget in the card and the docked panel.
-fn budget_continue(ui: &mut egui::Ui, p: &Palette, b: &BudgetLine, actions: &mut Vec<Action>) {
-    if !b.exhausted {
-        return;
+/// The room the budget takes in the pill (its ❚❚ when spent) and in the card (its two lines,
+/// and what ran out with Continue, P352).
+fn budget_extra(panel: &AgentsPanel) -> (f32, f32) {
+    let Some(b) = &panel.budget else { return (0.0, 0.0) };
+    if b.exhausted { (BUDGET_H, 3.0 * BUDGET_H + 4.0) } else { (0.0, 2.0 * BUDGET_H + 4.0) }
+}
+
+/// The budget in the card and the docked panel (P352): both limits — "41 of 100 agent turns",
+/// "14 h since you acted (limit 12 h)", whose right-click menu sets or extends the time limit —
+/// and, when it has run out, which limit did with **Continue** (D164). Whether it holds focus.
+fn budget_block(ui: &mut egui::Ui, p: &Palette, b: &BudgetLine, now: i64, docked: bool, open_menu: &mut bool, actions: &mut Vec<Action>) -> bool {
+    // Each line exactly BUDGET_H tall: the card's height is laid out from it (budget_extra).
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = BUDGET_H;
+        budget_lines(ui, p, b, now, docked, open_menu, actions)
+    })
+    .inner
+}
+
+fn budget_lines(ui: &mut egui::Ui, p: &Palette, b: &BudgetLine, now: i64, docked: bool, open_menu: &mut bool, actions: &mut Vec<Action>) -> bool {
+    if let Some(secs) = b.next_change(now) {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(secs));
     }
+    // The limit that ran out in the needs-you colour, the other one quiet.
+    let ran_out = b.ran_out();
+    let ink = |limit: RanOut| if ran_out.is_some_and(|r| r == limit || r == RanOut::Unknown) { p.needs } else { p.text2 };
+    let font = theme::ui(size::SMALL);
+    let mut focus = false;
     ui.horizontal(|ui| {
-        ui.label(widgets::secondary("Agent budget reached", p));
-        if widgets::link(ui, p, "Continue", theme::ui(size::SMALL)).clicked() {
-            actions.push(Action::ContinueBudget(b.root.clone()));
+        ui.add(egui::Label::new(egui::RichText::new(b.turns_text()).font(font.clone()).color(ink(RanOut::Turns))).truncate().selectable(false));
+    });
+    ui.horizontal(|ui| {
+        let menu = b.time_menu(now);
+        let resp = ui
+            .add(egui::Label::new(egui::RichText::new(b.time_text(now)).font(font.clone()).color(ink(RanOut::Time))).truncate().selectable(false).sense(Sense::click()))
+            .on_hover_text(format!("Right-click: {}", menu.title.trim_end_matches('…')));
+        focus |= resp.has_focus();
+        time_limit_menu(&resp, p, b, &menu, now, std::mem::take(open_menu), actions);
+    });
+    if let Some(reached) = b.reached() {
+        ui.horizontal(|ui| {
+            if docked {
+                widgets::mark(ui, p, Mark::Paused, 14.0);
+            }
+            ui.label(egui::RichText::new(format!("{reached} ·")).font(font.clone()).color(p.needs));
+            let r = widgets::link(ui, p, "Continue", font.clone()).on_hover_text("Another allowance, and the clock starts again");
+            focus |= r.has_focus();
+            if r.clicked() {
+                actions.push(Action::ContinueBudget(b.root.clone()));
+            }
+        });
+    }
+    focus
+}
+
+/// The duration's right-click menu (P352): add hours (from a list, or any number), or remove
+/// the limit. Not a person acting: only **Continue** starts the clock again.
+fn time_limit_menu(resp: &egui::Response, p: &Palette, b: &BudgetLine, menu: &yaac_core::agents::TimeLimitMenu, now: i64, open: bool, actions: &mut Vec<Action>) {
+    let mut popup = egui::Popup::context_menu(resp);
+    if open {
+        // Opened without a right-click (screenshots).
+        popup = popup.open_memory(egui::SetOpenCommand::from(true));
+    }
+    if egui::Popup::position_of_id(&resp.ctx, egui::Popup::default_response_id(resp)).is_none() {
+        // No pointer to open at: under the duration.
+        popup = popup.at_position(resp.rect.left_bottom());
+    }
+    widgets::menu_popup(popup, p).show(|ui| {
+        ui.set_min_width(210.0);
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new(menu.title).font(theme::bold(size::UI)).color(p.text));
+        });
+        ui.add_space(4.0);
+        if let Some(why) = menu.unavailable {
+            ui.add(egui::Label::new(widgets::secondary(why, p)).wrap());
+            return;
+        }
+        for choice in menu.choices.iter().filter(|c| c.wall_clock_secs.is_some()) {
+            if widgets::menu_item(ui, p, &choice.label, Some(&choice.detail), widgets::ItemKind::Normal).clicked() {
+                actions.push(Action::SetTimeLimit(b.root.clone(), choice.wall_clock_secs));
+                ui.close();
+            }
+        }
+        // Any number of hours.
+        let id = egui::Id::unique(("budget-custom-hours", &b.root));
+        let mut hours = ui.data_mut(|d| *d.get_temp_mut_or(id, 2_u32));
+        ui.horizontal(|ui| {
+            ui.add_space(10.0);
+            ui.label(egui::RichText::new("+").color(p.text));
+            ui.add(egui::DragValue::new(&mut hours).range(1..=10_000).suffix(" h"));
+            let secs = b.added(now, hours);
+            if ui.add(egui::Button::new(egui::RichText::new(format!("Add · limit {}", yaac_core::agents::span(secs))).color(p.text))).clicked() {
+                actions.push(Action::SetTimeLimit(b.root.clone(), Some(secs)));
+                ui.close();
+            }
+        });
+        ui.data_mut(|d| d.insert_temp(id, hours));
+        if let Some(remove) = menu.choices.iter().find(|c| c.wall_clock_secs.is_none()) {
+            ui.separator();
+            if widgets::menu_item(ui, p, &remove.label, None, widgets::ItemKind::Normal).clicked() {
+                actions.push(Action::SetTimeLimit(b.root.clone(), None));
+                ui.close();
+            }
         }
     });
 }
@@ -600,15 +723,9 @@ pub(crate) fn docked(ui: &mut egui::Ui, app: &mut YaacApp, panel: &AgentsPanel, 
     });
     mark_all_as_read(ui, &p, panel.all().chain(&panel.siblings), actions);
     if let Some(b) = &panel.budget {
-        ui.horizontal(|ui| {
-            if b.exhausted {
-                widgets::mark(ui, &p, Mark::Paused, 14.0);
-            }
-            let c = if b.exhausted { p.needs } else { p.text2 };
-            // Wrapped, so a narrow panel never grows past its edge (D115).
-            ui.add(egui::Label::new(egui::RichText::new(&b.text).font(theme::ui(size::SMALL)).color(c)).wrap());
-        });
-        budget_continue(ui, &p, b, actions);
+        // Truncated, so a narrow panel never grows past its edge (D115); the full text on hover.
+        let mut open = std::mem::take(&mut app.ui.open_budget_menu);
+        budget_block(ui, &p, b, now, true, &mut open, actions);
     }
     ui.add_space(14.0);
     let groups = docked_clusters(panel);
@@ -735,6 +852,10 @@ mod tests {
             Some(_) => vec![],
             None => vec![Event::PointerGone],
         };
+        event_frame(ctx, app, thread, events, t)
+    }
+
+    fn event_frame(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, events: Vec<Event>, t: f64) -> (PanelMode, std::time::Duration) {
         let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1600.0, 1000.0))), events, time: Some(t), ..Default::default() };
         let mut actions = Vec::new();
         let mut out = ctx.run_ui(input, |ui| {
@@ -746,6 +867,41 @@ mod tests {
         out.textures_delta.clear();
         app.apply(actions);
         (app.ui.panel, out.viewport_output[&ViewportId::ROOT].repaint_delay)
+    }
+
+    #[test]
+    fn dragging_the_grip_moves_the_compact_pill_to_both_edges() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx);
+        let thread = Rect::from_min_max(pos2(280.0, 40.0), pos2(1600.0, 740.0));
+        let map = AttentionMap::compute(&app.client.state);
+        let panel = agents_panel(&app.client.state, &map, app.client.state.selected_thread().unwrap()).unwrap();
+        let (strip, card) = regions_for(thread, &panel);
+        let grip = card.min + vec2(18.0, 19.0);
+        for i in 0..5 {
+            frame(&ctx, &mut app, thread, Some(strip.center()), f64::from(i) / 10.0);
+        }
+        let button = |pressed, pos| Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame(&ctx, &mut app, thread, Some(grip), 0.5);
+        event_frame(&ctx, &mut app, thread, vec![button(true, grip)], 0.6);
+        let top = pos2(grip.x, thread.top());
+        frame(&ctx, &mut app, thread, Some(top), 0.7);
+        frame(&ctx, &mut app, thread, Some(top), 0.8);
+        assert_eq!(app.ui.panel, PanelMode::Pill);
+        assert_eq!(app.ui.pill_drag, Some(0.0));
+        let bottom = pos2(strip.center().x, thread.bottom() - 5.0);
+        frame(&ctx, &mut app, thread, Some(bottom), 0.9);
+        event_frame(&ctx, &mut app, thread, vec![button(false, bottom)], 1.0);
+        assert_eq!(app.ui.pill_position, 1.0);
+        assert_eq!(app.ui.panel, PanelMode::Pill);
+        for fraction in [0.0, 1.0] {
+            let (pill, card) = floating_regions(thread, 150.0, thread.height(), fraction);
+            assert_eq!(pill.top(), if fraction == 0.0 { 44.0 } else { 586.0 });
+            assert!(thread.contains_rect(card));
+        }
+        frame(&ctx, &mut app, thread, Some(grip), 1.1);
+        frame(&ctx, &mut app, thread, Some(bottom), 1.2);
+        assert_eq!(app.ui.panel, PanelMode::Card);
     }
 
     #[test]
@@ -1011,3 +1167,6 @@ mod tests {
         assert_eq!(app.ui.dock_preview.target(&owner), None);
     }
 }
+
+#[cfg(test)]
+mod budget_tests;

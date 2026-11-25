@@ -66,7 +66,9 @@ public partial class MainWindow
         ComposerPane.TerminalToggle.Background = panelOpen ? Palette.Brush("YaacSelected") : System.Windows.Media.Brushes.Transparent;
         UpdateTerminalTip();
         TerminalPanelHost.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
-        ChatWork.Visibility = panelMaximised ? Visibility.Collapsed : Visibility.Visible;
+        Grid.SetRowSpan(ChatWork, panelMaximised ? 3 : 1);
+        BrowserChat.Visibility = panelMaximised ? Visibility.Collapsed : Visibility.Visible;
+        UpdateDockLayout();
         TerminalDivider.Visibility = open && !maximised ? Visibility.Visible : Visibility.Collapsed;
         SizeTerminalPanel();
         if (open)

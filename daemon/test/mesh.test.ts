@@ -6,11 +6,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import { client, fakeOf, opId, sleep, startDaemon, startThread, text, tmpHome, until, type TestClient } from "./helpers.js";
+import { client, fakeOf, opId, sleep, startDaemon, startThread, TestClient, text, tmpHome, until } from "./helpers.js";
 import { meshAgentCall } from "../src/providers/agentcalls.js";
 import { addressOf, childOf, itemsOf, kinds, startAllowed, stateOf, toolOutputs, untilIdle, untilTool } from "./mesh-helpers.js";
 import { InputOutcomeUnknown, type HarnessProvider } from "../src/providers/types.js";
 import type { Daemon } from "../src/session/daemon.js";
+import { MeshStore } from "../src/mesh/store.js";
 
 const MESH_OPTS = { waitMaxMs: 3000, permissionWaitMs: 4000, remotePollMs: 200, tickMs: 0 };
 
@@ -517,6 +518,8 @@ test("a person's input resets the root's wall clock: queued, sent now, steered, 
     const root = await idleThread(d, c);
     const addr = addressOf(d, root);
     await c.request("mesh/budget", { action: "status", opId: opId(), root: addr });
+    // No time limit by default (P351): give this one the old 12 hours.
+    await c.request("mesh/budget", { action: "setTimeLimit", opId: opId(), root: addr, wallClockSecs: 12 * 3600 });
     const rs = () => d.mesh.store.state.roots[addr]!;
     const age = () => {
       rs().lastHumanAt = Date.now() - 13 * 3600_000;
@@ -545,6 +548,113 @@ test("a person's input resets the root's wall clock: queued, sent now, steered, 
     fresh("an answer");
     assert.ok(asked.turnId);
     await untilIdle(d, root);
+  } finally {
+    await done();
+  }
+});
+
+const NO_TIME_LIMIT = 4294967295;
+
+test("a budget has no time limit by default, and says when a person last acted (P351)", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const other = await TestClient.connect(d.socketPath);
+    const hello = await other.initialize("c_other");
+    await other.close();
+    assert.ok(hello.features.includes("budgetTimeLimit"), "setTimeLimit is advertised");
+    const root = await idleThread(d, c);
+    const addr = addressOf(d, root);
+    const st: any = await c.request("mesh/budget", { action: "status", opId: opId(), root: addr });
+    assert.equal(st.allowance.wallClockSecs, NO_TIME_LIMIT);
+    assert.equal(d.mesh.store.state.policy.budget.wallClockSecs, NO_TIME_LIMIT);
+    assert.ok(Math.abs(Date.parse(st.actedAt) - d.mesh.store.state.roots[addr]!.lastHumanAt) < 1000, "actedAt");
+    d.mesh.store.state.roots[addr]!.lastHumanAt = Date.now() - 30 * 24 * 3600_000;
+    const later: any = await c.request("mesh/budget", { action: "status", opId: opId(), root: addr });
+    assert.equal(later.exhausted, false, "a month without a person is not a used-up budget");
+    // The worker-facing tools still work after a month.
+    const sent = await call(d, root, "spawn_thread", { text: "/fake say worker", detached: true });
+    assert.equal(sent.isError, false, sent.text);
+  } finally {
+    await done();
+  }
+});
+
+test("the old 12-hour default becomes no time limit once; a limit chosen later stays (P351)", async () => {
+  const home = tmpHome("ym-");
+  try {
+    const dir = `${home}/mesh`;
+    fs.mkdirSync(dir, { recursive: true });
+    const allowance = (wallClockSecs: number) => ({ agentTurns: 100, threadsSpawned: 20, wallClockSecs });
+    const root = (wallClockSecs: number) => ({ allowance: allowance(wallClockSecs), agentTurns: 0, threadsSpawned: 0, lastHumanAt: Date.now(), remote: {} });
+    fs.writeFileSync(`${dir}/state.json`, JSON.stringify({
+      policy: { mode: "allow", acceptFromOtherTargets: true, budget: allowance(43200) },
+      roots: { "t_a/old": root(43200), "t_a/chosen": root(3600) },
+    }));
+    const s = new MeshStore(home);
+    assert.equal(s.state.policy.budget.wallClockSecs, NO_TIME_LIMIT);
+    assert.equal(s.state.roots["t_a/old"]!.allowance.wallClockSecs, NO_TIME_LIMIT);
+    assert.equal(s.state.roots["t_a/chosen"]!.allowance.wallClockSecs, 3600, "another limit is kept");
+    // After the migration, a person chooses 12 hours: it survives a restart.
+    s.state.roots["t_a/old"]!.allowance.wallClockSecs = 43200;
+    s.save();
+    s.close();
+    const again = new MeshStore(home);
+    assert.equal(again.state.roots["t_a/old"]!.allowance.wallClockSecs, 43200);
+    again.close();
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setTimeLimit sets, extends and removes the time limit without resetting the clock (P352)", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const root = await idleThread(d, c);
+    const addr = addressOf(d, root);
+    await c.request("mesh/budget", { action: "status", opId: opId(), root: addr });
+    const rs = () => d.mesh.store.state.roots[addr]!;
+    const acted = Date.now() - 14 * 3600_000;
+    rs().lastHumanAt = acted;
+    const changes = () => c.notifications.filter((n) => n.method === "mesh/budget/changed" && n.params.root === addr).map((n) => n.params);
+    const set = async (wallClockSecs: number | null, op = opId()) =>
+      (await c.request("mesh/budget", { action: "setTimeLimit", opId: op, root: addr, wallClockSecs })) as any;
+
+    const twelve = await set(12 * 3600);
+    assert.equal(twelve.allowance.wallClockSecs, 12 * 3600);
+    assert.equal(twelve.exhausted, true, "14 hours without a person, with a 12-hour limit");
+    assert.equal(rs().lastHumanAt, acted, "setting a limit is not a person acting");
+    await until(() => changes().find((b) => b.allowance.wallClockSecs === 12 * 3600 && b.exhausted), "told to every window");
+
+    // Spending is refused with the reason: which limit ran out.
+    const refused = await call(d, root, "spawn_thread", { text: "/fake say worker", detached: true });
+    assert.equal(refused.isError, true);
+    assert.match(refused.text, /more than 12 hours have passed since a person last acted on it \(its time limit\)/);
+
+    // Extended past the time passed: freed, and still not a person acting.
+    const op = opId();
+    const sixteen = await set(16 * 3600, op);
+    assert.equal(sixteen.exhausted, false);
+    assert.equal(rs().lastHumanAt, acted);
+    await until(() => changes().at(-1)?.exhausted === false && changes().at(-1)?.allowance.wallClockSecs === 16 * 3600, "freed, told");
+    // The same operation again is the same answer, not a second change (invariant 10).
+    await set(2 * 3600, op);
+    assert.equal(rs().allowance.wallClockSecs, 16 * 3600);
+
+    // Continue starts the clock again and keeps the limit a person set.
+    await set(12 * 3600);
+    const cont: any = await c.request("mesh/budget", { action: "continue", opId: opId(), root: addr });
+    assert.equal(cont.allowance.wallClockSecs, 12 * 3600);
+    assert.equal(cont.exhausted, false);
+    assert.ok(Date.now() - rs().lastHumanAt < 60_000, "Continue is a person acting");
+
+    const removed = await set(null);
+    assert.equal(removed.allowance.wallClockSecs, NO_TIME_LIMIT);
+    assert.equal(removed.exhausted, false);
+
+    for (const bad of [{}, { wallClockSecs: 0 }, { wallClockSecs: -5 }, { wallClockSecs: 1.5 }, { wallClockSecs: "1" }]) {
+      await assert.rejects(c.request("mesh/budget", { action: "setTimeLimit", opId: opId(), root: addr, ...bad }), /wallClockSecs/);
+    }
+    await assert.rejects(c.request("mesh/budget", { action: "setTimeLimit", root: addr, wallClockSecs: 3600 }), /opId/);
   } finally {
     await done();
   }

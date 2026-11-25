@@ -15,6 +15,9 @@ open_enum! {
         Terminal = "terminal",
         /// Worktree file browser.
         FileView = "fileView",
+        /// This target's `yaacd` can set or remove an orchestration's time limit
+        /// (`mesh/budget` `setTimeLimit`, P352).
+        BudgetTimeLimit = "budgetTimeLimit",
         // Thread lifecycle
         /// Can enumerate existing conversations on the target.
         ThreadList = "threadList",

@@ -879,6 +879,7 @@ mod tests {
             port_forward: true,
             file_view: true,
             terminal: true,
+            budget_time_limit: false,
             terminal_unavailable_reason: None,
         });
         (client, hub, Browsers::default(), key)

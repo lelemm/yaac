@@ -668,10 +668,12 @@ impl Fleet {
             root.clone(),
             MeshBudgetResult {
                 root: root.clone(),
-                allowance: MeshBudget { agent_turns: 100, threads_spawned: 20, wall_clock_secs: 12 * 3600 },
+                // The default budget: no time limit (P351).
+                allowance: MeshBudget { agent_turns: 100, threads_spawned: 20, wall_clock_secs: MeshBudget::NO_TIME_LIMIT },
                 used: MeshBudgetUsage { agent_turns: 14, threads_spawned: 4, wall_clock_secs: 3600 },
                 exhausted: false,
                 held: Some(0),
+                acted_at: None,
             },
         );
 

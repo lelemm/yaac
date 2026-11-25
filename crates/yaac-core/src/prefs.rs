@@ -60,6 +60,8 @@ pub struct UiPrefs {
     /// The docked agents panel's width (D105), between [`AGENTS_MIN_WIDTH`] and
     /// [`AGENTS_MAX_WIDTH`].
     pub agents_width: f32,
+    /// Fraction of the compact pill’s vertical travel, from top to bottom.
+    pub pill_position: f32,
     /// D127: closing the window hides it to the system tray (on by default).
     pub tray_on_close: bool,
     /// The user's key bindings, as differences from the defaults (D131).
@@ -106,7 +108,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), terminal: TerminalPrefs::default() }
+        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), terminal: TerminalPrefs::default() }
     }
 }
 
@@ -130,6 +132,8 @@ pub mod keys {
     pub const SIDEBAR: &str = "sidebar";
     /// The docked agents panel's width.
     pub const AGENTS_WIDTH: &str = "agentsPanelWidth";
+    /// Vertical position of the floating pill.
+    pub const PILL_POSITION: &str = "agentsPillPosition";
     /// The sidebar's ordering (D116).
     pub const ORDERING: &str = "ordering";
     /// Closing the window hides it to the tray (D127).
@@ -145,7 +149,7 @@ pub mod keys {
     /// Commands whose "Works in the terminal" differs from the default (P338).
     pub const TERMINAL_COMMANDS: &str = "terminalCommands";
     /// Every key.
-    pub const ALL: [&str; 16] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS];
+    pub const ALL: [&str; 17] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, PILL_POSITION, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS];
 }
 
 impl UiPrefs {
@@ -178,6 +182,7 @@ impl UiPrefs {
             keys::COLLAPSED_GROUPS => json!(self.collapsed_groups),
             keys::FONT_SIZE => json!(self.font_size),
             keys::SIDEBAR => json!({ "width": self.sidebar.width, "collapsed": self.sidebar.collapsed }),
+            keys::PILL_POSITION => json!(self.pill_position),
             keys::AGENTS_WIDTH => json!(self.agents_width),
             keys::TRAY_ON_CLOSE => json!(self.tray_on_close),
             keys::KEY_BINDINGS => self.bindings.value(),
@@ -275,6 +280,12 @@ impl UiPrefs {
                 }
                 self.sidebar.collapsed = b("collapsed", self.sidebar.collapsed);
             }
+            #[allow(clippy::cast_possible_truncation, reason = "fraction clamped to unit range")]
+            keys::PILL_POSITION => {
+                if let Some(n) = v.as_f64() {
+                    self.pill_position = n.clamp(0.0, 1.0) as f32;
+                }
+            }
             #[allow(clippy::cast_possible_truncation, reason = "widths are small")]
             keys::AGENTS_WIDTH => {
                 if let Some(w) = v.as_f64() {
@@ -315,6 +326,17 @@ mod tests {
         assert_eq!(p.agents_width, 410.0);
         p.load(keys::AGENTS_WIDTH, &json!(5000));
         assert_eq!(p.agents_width, AGENTS_MAX_WIDTH);
+    }
+
+    #[test]
+    fn pill_position_round_trips_and_clamps() {
+        let mut prefs = UiPrefs::default();
+        assert_eq!(prefs.pill_position, 0.5);
+        for (stored, expected) in [(0.375, 0.375), (-1.0, 0.0), (1.5, 1.0)] {
+            prefs.load(keys::PILL_POSITION, &json!(stored));
+            assert_eq!(prefs.value(keys::PILL_POSITION), json!(expected));
+            assert_eq!(prefs.changed(&UiPrefs::default()), [keys::PILL_POSITION]);
+        }
     }
 
     #[test]

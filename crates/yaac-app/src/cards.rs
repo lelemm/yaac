@@ -415,9 +415,10 @@ fn permission_body(
     ui.label(egui::RichText::new("Budget for this orchestration").font(theme::bold(size::UI)));
     let b = v.ui.budgets.entry(r.request_id.clone()).or_insert(pr.budget);
     ui.horizontal(|ui| {
-        for (label, val) in [("Agent turns", &mut b.agent_turns), ("Hours", &mut b.hours)] {
+        // Hours 0 is no time limit (P351).
+        for (label, val, min) in [("Agent turns", &mut b.agent_turns, 1), ("Hours (0 = no limit)", &mut b.hours, 0)] {
             ui.label(widgets::secondary(label, &p));
-            ui.add(egui::DragValue::new(val).range(1..=10_000));
+            ui.add(egui::DragValue::new(val).range(min..=10_000));
             ui.add_space(10.0);
         }
     });

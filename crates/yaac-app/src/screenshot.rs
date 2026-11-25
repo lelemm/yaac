@@ -122,6 +122,14 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("131", "many-agents-card"),
     ("132", "many-agents-docked"),
     ("133", "many-agents-alive-overflow"),
+    // The budget line (P351, P352): both limits, which ran out, the time-limit menu.
+    ("150", "budget-unlimited"),
+    ("151", "budget-limited"),
+    ("152", "budget-out-of-time"),
+    ("153", "budget-out-of-turns"),
+    ("154", "budget-menu-extend"),
+    ("155", "budget-menu-set"),
+    ("156", "budget-docked-out-of-time"),
     // The side pane (docs/12-files.md#visual-design-of-the-side-pane), with the WPF
     // renderer's fixture: written as <theme>-<width>-<scene>.png.
     ("pane-wide-browser", "pane"),
@@ -779,6 +787,27 @@ git diff --check
             app.ui.ordering.order = yaac_core::sidebar::Order::AToZ;
             app.ui.menu = Some(Menu::Ordering);
         }
+        "150" | "151" | "152" | "153" | "154" | "155" | "156" => {
+            // The budget in the card (150–155) and the docked panel (156), P352: no time
+            // limit (the default, P351), 12 hours, out of time, out of turns; the duration's
+            // right-click menu extending a limit (154) and setting one (155).
+            match id {
+                "151" | "154" => play(app, Scene::BudgetTimeLimit),
+                "152" | "156" => play(app, Scene::BudgetOutOfTime),
+                "153" => play(app, Scene::BudgetReached),
+                "155" => {
+                    // This yaacd can set a limit; there is none yet.
+                    play(app, Scene::BudgetTimeLimit);
+                    let root = threads::orchestrator().address();
+                    app.client.set_time_limit(&root, None);
+                    app.pump_demo();
+                }
+                _ => {}
+            }
+            app.open(&threads::orchestrator(), None);
+            app.ui.panel = if id == "156" { PanelMode::Docked } else { PanelMode::Card };
+            app.ui.open_budget_menu = matches!(id, "154" | "155");
+        }
         "130" | "131" | "132" | "133" => {
             // An orchestrator with 30 related agents (D168), 7 of them alive. 130: the pill —
             // the alive ones, then "more (23)". 131: the card opened from "more", scrolled to
@@ -1140,6 +1169,7 @@ fn pane(app: &mut YaacApp, scene: &str) {
             port_forward: true,
             file_view: true,
             terminal: false,
+            budget_time_limit: false,
             terminal_unavailable_reason: None,
         });
     }
@@ -1265,6 +1295,7 @@ fn terminal(app: &mut YaacApp, scene: &str) {
             port_forward: true,
             file_view: true,
             terminal: true,
+            budget_time_limit: false,
             terminal_unavailable_reason: None,
         });
     }

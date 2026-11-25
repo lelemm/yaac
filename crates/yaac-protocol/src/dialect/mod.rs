@@ -320,11 +320,12 @@ pub struct FeatureSet {
     missing_port_forward: bool,
     missing_file_view: bool,
     missing_terminal: bool,
+    missing_budget_time_limit: bool,
 }
 
 impl FeatureSet {
     /// Every feature present.
-    pub const FULL: FeatureSet = FeatureSet { withheld: &[], missing_port_forward: false, missing_file_view: false, missing_terminal: false };
+    pub const FULL: FeatureSet = FeatureSet { withheld: &[], missing_port_forward: false, missing_file_view: false, missing_terminal: false, missing_budget_time_limit: false };
 
     /// A version that lacks the wire support for `withheld`.
     pub const fn withholding(withheld: &'static [Capability]) -> Self {
@@ -335,6 +336,7 @@ impl FeatureSet {
         self.missing_port_forward = !features.contains(&Capability::PortForward);
         self.missing_terminal = !features.contains(&Capability::Terminal);
         self.missing_file_view = !features.contains(&Capability::FileView);
+        self.missing_budget_time_limit = !features.contains(&Capability::BudgetTimeLimit);
         self
     }
 
@@ -359,7 +361,8 @@ impl FeatureSet {
         !(self.withheld.contains(capability)
             || self.missing_port_forward && *capability == Capability::PortForward
             || self.missing_terminal && *capability == Capability::Terminal
-            || self.missing_file_view && *capability == Capability::FileView)
+            || self.missing_file_view && *capability == Capability::FileView
+            || self.missing_budget_time_limit && *capability == Capability::BudgetTimeLimit)
     }
 }
 

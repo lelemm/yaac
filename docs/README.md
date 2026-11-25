@@ -28,6 +28,8 @@ Reference:
   verified against installed versions.
 - [Codex design review](research/codex-review-2026-11-20.md) — an independent review of the
   first draft. Historical; the numbered docs are current.
+- [Original introduction](introduction.md) — the design-phase introduction that was the
+  project README before any code existed. Historical; the numbered docs are current.
 
 ## Conventions used in these docs
 

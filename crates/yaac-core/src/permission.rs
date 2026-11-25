@@ -13,7 +13,7 @@ use yaac_protocol::{
 pub struct BudgetFields {
     /// Agent-started turns.
     pub agent_turns: u32,
-    /// Hours without the user.
+    /// Hours without the user; 0 means no time limit (P351).
     pub hours: u32,
 }
 
@@ -38,12 +38,16 @@ pub enum PermissionDecision {
 }
 
 fn hours(secs: u64) -> u32 {
+    if secs >= MeshBudget::NO_TIME_LIMIT {
+        return 0;
+    }
     u32::try_from(secs.div_ceil(3600)).unwrap_or(u32::MAX)
 }
 
 fn budget_of(b: BudgetFields) -> MeshBudget {
     // Older daemons still read the legacy allowance. Send its maximum wire value.
-    MeshBudget { agent_turns: b.agent_turns, threads_spawned: u32::MAX, wall_clock_secs: u64::from(b.hours) * 3600 }
+    let wall_clock_secs = if b.hours == 0 { MeshBudget::NO_TIME_LIMIT } else { u64::from(b.hours) * 3600 };
+    MeshBudget { agent_turns: b.agent_turns, threads_spawned: u32::MAX, wall_clock_secs }
 }
 
 /// Read a permission request from a request body.
@@ -104,5 +108,18 @@ mod tests {
         assert_eq!(parse(&back), Some(PermissionRequest { actions: vec!["Start 3 threads".into()], budget: b }));
         let r = response(PermissionDecision::Deny, b);
         assert_eq!(summary(&r).as_deref(), Some("Denied"));
+    }
+
+    /// P351: hours 0 in the prompt is no time limit, both ways.
+    #[test]
+    fn zero_hours_is_no_time_limit() {
+        let none = BudgetFields { agent_turns: 100, hours: 0 };
+        let back: RequestBody = serde_json::from_value(serde_json::to_value(body(&["Start a thread"], none)).unwrap()).unwrap();
+        assert_eq!(parse(&back).unwrap().budget, none);
+        assert_eq!(budget_of(none).wall_clock_secs, MeshBudget::NO_TIME_LIMIT);
+        assert_eq!(budget_of(BudgetFields { agent_turns: 100, hours: 12 }).wall_clock_secs, 12 * 3600);
+        assert_eq!(hours(MeshBudget::NO_TIME_LIMIT), 0);
+        assert_eq!(hours(MeshBudget::default().wall_clock_secs), 0, "the default budget has no time limit");
+        assert_eq!(hours(5400), 2, "a part hour rounds up");
     }
 }

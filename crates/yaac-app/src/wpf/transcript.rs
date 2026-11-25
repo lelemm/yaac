@@ -142,7 +142,7 @@ fn card(app: &YaacApp, key: &ThreadKey, transcript: &Transcript, item: &Item, re
             if pending {
                 fields = [
                     ("turns", "Agent-started turns", prompt.budget.agent_turns),
-                    ("hours", "Hours without the user", prompt.budget.hours),
+                    ("hours", "Hours without the user (0 = no limit)", prompt.budget.hours),
                 ].into_iter().map(|(id, label, value)| json!({ "id": id, "label": label, "value": value, "min": 0, "max": u32::MAX })).collect();
                 actions = vec![
                     json!({ "id": "permission:allow", "label": "Allow", "enabled": true, "primary": true }),

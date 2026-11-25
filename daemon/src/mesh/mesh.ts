@@ -51,9 +51,12 @@ import { nowIso, randomId } from "../util/fsx.js";
 import { clip, frameMessages } from "./format.js";
 import { BROWSER_TOOLS, inspectBrowser } from "./browser.js";
 import { createMeshServer, readable } from "./mcp.js";
-import { MeshStore, type MessageRecord, type RootState } from "./store.js";
+import { MeshStore, NO_TIME_LIMIT, type MessageRecord, type RootState } from "./store.js";
 import { chooseWorkerMode, ModeRefused, type ParentMode } from "./modes.js";
 import { identityBlock, TOOL_TIMEOUT_SECS, WAIT_MAX_SECS } from "./tools.js";
+
+/** How long an orchestration counts as live for discovery after a person last acted on it. */
+const LIVE_WINDOW_MS = 12 * 3600 * 1000;
 
 /** The target part of addresses before the hub has told this target its id. */
 export const LOCAL_TARGET = "local";
@@ -1013,7 +1016,10 @@ export class Mesh implements CoreMeshHooks {
       if (!rs) return null;
       const used = this.usedOf(rs);
       if (used.agentTurns >= rs.allowance.agentTurns) return `its ${rs.allowance.agentTurns} agent-started turns are used`;
-      if (used.wallClockSecs >= rs.allowance.wallClockSecs) return `more than ${Math.round(rs.allowance.wallClockSecs / 3600)} hours have passed since a person last acted on it`;
+      if (rs.allowance.wallClockSecs < NO_TIME_LIMIT && used.wallClockSecs >= rs.allowance.wallClockSecs) {
+        const hours = Math.round(rs.allowance.wallClockSecs / 3600);
+        return `more than ${hours} ${hours === 1 ? "hour has" : "hours have"} passed since a person last acted on it (its time limit)`;
+      }
       return null;
     }
     return this.store.state.remoteRoots[key]?.paused ? "its owner's budget has run out" : null;
@@ -1046,7 +1052,7 @@ export class Mesh implements CoreMeshHooks {
     const key = this.normalise(root);
     const rs = this.rootState(key);
     const exhausted = !!this.exhaustedReason(key);
-    return { root: key, allowance: rs.allowance, used: this.usedOf(rs), exhausted, held: exhausted ? this.heldFor(key) : 0 };
+    return { root: key, allowance: rs.allowance, used: this.usedOf(rs), exhausted, held: exhausted ? this.heldFor(key) : 0, actedAt: new Date(rs.lastHumanAt).toISOString() };
   }
 
   /**
@@ -1059,7 +1065,9 @@ export class Mesh implements CoreMeshHooks {
     const key = this.normalise(root);
     if (!this.isLocalAddress(key) || !this.store.state.roots[key] || !this.localOf(key)) return;
     const status = this.budgetStatus(key);
-    const sig = `${status.exhausted}:${status.held}`;
+    // What a window shows of it (P352): both limits, what is used, and the hour since a person
+    // acted — so a person acting, an agent turn or a new time limit reaches every window.
+    const sig = `${status.exhausted}:${status.held}:${status.used.agentTurns}/${status.allowance.agentTurns}:${Math.floor(status.used.wallClockSecs / 3600)}/${status.allowance.wallClockSecs}`;
     const before = this.budgetReported.get(key);
     if (before === sig) return;
     this.budgetReported.set(key, sig);
@@ -2433,7 +2441,9 @@ export class Mesh implements CoreMeshHooks {
     const root = tm.currentRoot ?? tm.spawnRoot;
     if (!root) return false;
     const rs = this.store.state.roots[this.normalise(root)];
-    const windowMs = (rs?.allowance.wallClockSecs ?? this.store.state.policy.budget.wallClockSecs) * 1000;
+    // How long an orchestration stays "live" for discovery: its time limit, but never more than
+    // LIVE_WINDOW_MS — a budget without a time limit (P351) must not keep it live forever.
+    const windowMs = Math.min(LIVE_WINDOW_MS, (rs?.allowance.wallClockSecs ?? this.store.state.policy.budget.wallClockSecs) * 1000);
     if (rs) return Date.now() - rs.lastHumanAt < windowMs;
     // A root on another target: live while messages of it moved recently.
     return this.store.all().some((r) => (r.recipient === rt.id || r.sender === rt.id) && Date.now() - r.storedAt < windowMs);
@@ -2700,19 +2710,42 @@ export class Mesh implements CoreMeshHooks {
     if (!root) throw new RpcError("invalid_params", "root is required");
     if (!this.localOf(root)) throw new RpcError("thread_not_found", "the root is not a thread on this target");
     const status = () => this.budgetStatus(root);
+    if (p.action === "setTimeLimit") return this.setTimeLimit(root, p, status);
     if (p.action !== "continue") return status();
     if (typeof p.opId !== "string") throw new RpcError("invalid_params", "opId is required");
     return this.core.ops.run("mesh/budget", p.opId, async () => {
       const rs = this.rootState(root);
       const used = this.usedOf(rs);
       const base = this.store.state.policy.budget;
-      // Another allowance on top of what is used, and a person has acted now.
-      rs.allowance = { ...rs.allowance, agentTurns: Math.max(rs.allowance.agentTurns, used.agentTurns + base.agentTurns), wallClockSecs: Math.max(rs.allowance.wallClockSecs, base.wallClockSecs) };
+      // Another allowance of turns on top of what is used, and a person has acted now: the
+      // clock starts again. The root's time limit stays as it is — one a person set (P352)
+      // is theirs to change, and the default has none (P351).
+      rs.allowance = { ...rs.allowance, agentTurns: Math.max(rs.allowance.agentTurns, used.agentTurns + base.agentTurns) };
       rs.lastHumanAt = Date.now();
       rs.exhaustedNoticed = false;
       this.store.save();
       this.budgetChanged(root);
       for (const id of this.threadsWithMail()) this.kick(id);
+      return status();
+    });
+  }
+
+  /**
+   * `setTimeLimit` (P352): a person sets, extends or removes the root's time limit. Only the
+   * limit changes — it is not a person acting on the thread, so the clock runs on; a limit
+   * that frees the root dispatches what it held back.
+   */
+  private setTimeLimit(root: Address, p: Record<string, unknown>, status: () => MeshBudgetResult): unknown {
+    if (typeof p.opId !== "string") throw new RpcError("invalid_params", "opId is required");
+    const secs = p.wallClockSecs;
+    if (!(secs === null || (typeof secs === "number" && Number.isInteger(secs) && secs > 0))) {
+      throw new RpcError("invalid_params", "wallClockSecs must be a positive whole number of seconds, or null for no time limit");
+    }
+    return this.core.ops.run("mesh/budget", p.opId, async () => {
+      const rs = this.rootState(root);
+      rs.allowance = { ...rs.allowance, wallClockSecs: secs === null ? NO_TIME_LIMIT : Math.min(secs, NO_TIME_LIMIT) };
+      this.store.save();
+      this.budgetChanged(root);
       return status();
     });
   }

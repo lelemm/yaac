@@ -2,7 +2,7 @@
 mod common;
 
 use common::{boot, settle};
-use yaac_core::agents::{Relation, SpawnedBy, agents_panel, card_groups, clusters, sibling_rows};
+use yaac_core::agents::{BudgetLine, Relation, SpawnedBy, agents_panel, card_groups, clusters, sibling_rows, span};
 use yaac_core::attention::{AttentionMap, Mark};
 use yaac_core::demo::{Scene, threads};
 use yaac_core::header::{LinkLine, header};
@@ -12,7 +12,9 @@ fn orchestrator_panel_has_three_sections_and_a_budget() {
     let (c, _) = boot();
     let map = AttentionMap::compute(&c.state);
     let p = agents_panel(&c.state, &map, &threads::orchestrator()).unwrap();
-    assert_eq!(p.budget.unwrap().text, "14 of 100 agent turns");
+    let b = p.budget.unwrap();
+    assert_eq!(b.text(common::NOW), "14 of 100 agent turns · 1 h since you acted · no time limit");
+    assert_eq!(b.reached(), None);
     assert_eq!(p.spawned_by, SpawnedBy::You);
     let workers: Vec<_> = p.workers.iter().map(|w| (w.depth, w.title.as_str(), w.display.mark)).collect();
     assert_eq!(
@@ -161,4 +163,105 @@ fn the_panel_state_machine_and_the_pill() {
     // Nothing in flight: no arrows, no repaint.
     let p = agents_panel(&c.state, &map, &threads::billing()).unwrap();
     assert!(!p.in_flight());
+}
+
+fn line(turns_used: u32, since: u64, limit: Option<u64>, exhausted: bool) -> BudgetLine {
+    BudgetLine {
+        turns_used,
+        turn_limit: 100,
+        since_acted_secs: since,
+        acted_at: None,
+        time_limit_secs: limit,
+        exhausted,
+        can_set_time_limit: true,
+        root: threads::orchestrator().address(),
+    }
+}
+
+/// P352: the line shows both limits, and says which one ran out.
+#[test]
+fn the_budget_line_shows_both_limits_and_which_ran_out() {
+    let unlimited = line(41, 14 * 3600 + 100, None, false);
+    assert_eq!(unlimited.text(0), "41 of 100 agent turns · 14 h since you acted · no time limit");
+    assert_eq!(unlimited.reached(), None);
+    let limited = line(41, 3 * 3600, Some(12 * 3600), false);
+    assert_eq!(limited.text(0), "41 of 100 agent turns · 3 h since you acted (limit 12 h)");
+    let by_time = line(41, 14 * 3600, Some(12 * 3600), true);
+    assert_eq!(by_time.reached().as_deref(), Some("Paused: 12 h without you"));
+    let by_turns = line(100, 3600, Some(12 * 3600), true);
+    assert_eq!(by_turns.reached().as_deref(), Some("100 of 100 turns used"));
+    let both = line(100, 14 * 3600, Some(12 * 3600), true);
+    assert_eq!(both.reached().as_deref(), Some("100 of 100 turns used"), "turns first, as the target checks them");
+    // Exhausted without either limit met here (an older target, a report in between).
+    assert_eq!(line(3, 60, None, true).reached().as_deref(), Some("Agent budget reached"));
+    assert_eq!([span(0), span(59), span(25 * 60), span(90 * 60), span(14 * 3600 + 59)], ["< 1 min", "< 1 min", "25 min", "1 h 30 min", "14 h"]);
+}
+
+/// The time since a person acted counts on from the target's `actedAt` between reports.
+#[test]
+fn the_time_since_acting_counts_on_from_acted_at() {
+    let mut b = line(1, 3600, Some(12 * 3600), false);
+    b.acted_at = Some(1_000_000);
+    assert_eq!(b.since_acted(1_000_000 + 5 * 3600), 5 * 3600);
+    assert_eq!(b.since_acted(1_000_000), 3600, "never less than the target said");
+    assert_eq!(b.next_change(1_000_000 + 5 * 3600 + 15), Some(45), "the next minute");
+    assert_eq!(b.next_change(1_000_000 + 11 * 3600 + 15), Some(3585), "past 10 h, the next hour");
+    b.acted_at = None;
+    assert_eq!(b.since_acted(1_000_000 + 5 * 3600), 3600, "an older target: as of its report");
+    assert_eq!(b.next_change(1_000_000), None, "nothing to count on");
+}
+
+/// P352: right-click on the duration sets or extends the limit; it never resets the clock.
+#[test]
+fn the_time_limit_menu_sets_extends_and_removes() {
+    let unlimited = line(41, 14 * 3600 + 20 * 60, None, false);
+    let m = unlimited.time_menu(0);
+    assert_eq!(m.title, "Set time limit…");
+    let got: Vec<_> = m.choices.iter().map(|c| (c.label.as_str(), c.detail.as_str(), c.wall_clock_secs)).collect();
+    // From the next whole hour of the time already passed.
+    assert_eq!(got, [("+1 h", "limit 16 h", Some(16 * 3600)), ("+4 h", "limit 19 h", Some(19 * 3600)), ("+12 h", "limit 27 h", Some(27 * 3600)), ("+24 h", "limit 39 h", Some(39 * 3600))]);
+    assert_eq!(m.unavailable, None);
+
+    // Limited, not reached: on top of the limit, available before it is reached.
+    let limited = line(41, 3 * 3600, Some(12 * 3600), false);
+    let m = limited.time_menu(0);
+    assert_eq!(m.title, "Extend time limit…");
+    assert_eq!(m.choices[1].wall_clock_secs, Some(16 * 3600));
+    let last = m.choices.last().unwrap();
+    assert_eq!((last.label.as_str(), last.wall_clock_secs), ("Remove time limit", None));
+    assert_eq!(limited.added(0, 7), 19 * 3600, "custom hours");
+
+    // Reached by time: on top of the time passed, so +1 h really frees it.
+    let reached = line(41, 14 * 3600, Some(12 * 3600), true);
+    assert_eq!(reached.time_menu(0).choices[0].wall_clock_secs, Some(15 * 3600));
+
+    // An older yaacd on the root's target cannot do it: the menu says why.
+    let mut old = limited;
+    old.can_set_time_limit = false;
+    assert!(old.time_menu(0).unavailable.is_some());
+}
+
+/// P352 end to end in the demo: out of time, extended past it, then the limit removed.
+#[test]
+fn a_time_limit_set_from_the_window_reaches_the_roots_target() {
+    let (mut c, hub) = boot();
+    hub.play(Scene::BudgetOutOfTime);
+    settle(&mut c, &hub);
+    let orch = threads::orchestrator();
+    let budget = |c: &yaac_core::client::Client| agents_panel(&c.state, &AttentionMap::compute(&c.state), &orch).unwrap().budget.unwrap();
+    let b = budget(&c);
+    assert_eq!(b.reached().as_deref(), Some("Paused: 12 h without you"));
+    assert_eq!(b.text(0), "41 of 100 agent turns · 14 h since you acted (limit 12 h)");
+    assert!(b.can_set_time_limit, "this yaacd advertises budgetTimeLimit");
+    let extend = b.time_menu(0).choices[1].wall_clock_secs;
+    assert_eq!(extend, Some(18 * 3600), "+4 h on top of the 14 h passed");
+    c.set_time_limit(&b.root, extend);
+    settle(&mut c, &hub);
+    let b = budget(&c);
+    assert!(!b.exhausted, "freed");
+    assert_eq!(b.text(0), "41 of 100 agent turns · 14 h since you acted (limit 18 h)", "the clock ran on");
+    c.set_time_limit(&b.root, None);
+    settle(&mut c, &hub);
+    assert_eq!(budget(&c).text(0), "41 of 100 agent turns · 14 h since you acted · no time limit");
+    assert_eq!(budget(&c).time_menu(0).title, "Set time limit…");
 }

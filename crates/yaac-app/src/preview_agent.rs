@@ -1322,6 +1322,7 @@ mod tests {
                 port_forward: true,
                 file_view: false,
                 terminal: false,
+                budget_time_limit: false,
                 terminal_unavailable_reason: None,
             });
             let mut browsers = Browsers::default();

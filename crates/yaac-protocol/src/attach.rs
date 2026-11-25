@@ -198,6 +198,10 @@ pub struct DaemonSummary {
     /// Target supports interactive PTYs.
     #[serde(default)]
     pub terminal: bool,
+    /// The daemon can set or remove an orchestration's time limit (`mesh/budget`
+    /// `setTimeLimit`, P352).
+    #[serde(default)]
+    pub budget_time_limit: bool,
     /// Reason the native terminal backend could not load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_unavailable_reason: Option<String>,
