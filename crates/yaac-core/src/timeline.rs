@@ -62,6 +62,7 @@ pub fn entries(t: &Transcript, blocks: &[Block]) -> Vec<Entry> {
                 if typed.trim().is_empty() { "Attachments".to_owned() } else { typed }
             }
             ItemBody::MeshReceived(r) => r.message.text.clone(),
+            ItemBody::ToolCall(c) if c.source == Some(yaac_protocol::ToolCallSource::UserShell) => format!("!{}", c.title),
             _ => continue,
         };
         let at = item.started_at.as_ref().or(item.completed_at.as_ref()).and_then(crate::time::secs);

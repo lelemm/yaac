@@ -120,12 +120,14 @@ pub fn summary(id: &str) -> ThreadSummary {
         git: None,
         branch: None,
         model: None,
+        model_off: None,
         state: ThreadState::Idle,
         control: Control::Free,
         control_holder: None,
         forked_from: None,
         linked_children: None,
         spawned_by: None,
+        reports_to_parent: None,
         root: None,
         children: 0,
         peers: 0,
@@ -516,6 +518,7 @@ impl FakeDaemon {
                 let p: InitializeParams = serde_json::from_value(params).map_err(bad)?;
                 let negotiated = negotiate(dialect::SUPPORTED, p.protocol).map_err(|e| e.to_error_object())?;
                 let result = InitializeResult {
+                    terminal_unavailable_reason: None,
                     features: s.features.clone(),
                     protocol: negotiated.answer(),
                     schema_hash: CURRENT.schema_hash().to_owned(),

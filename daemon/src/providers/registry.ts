@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
   Capability,
+  ModelInfo,
   ProviderDescriptor,
   ProviderInstanceAddParams,
   ProviderInstanceConfig,
@@ -25,6 +26,8 @@ export interface Instance {
   config: ProviderInstanceConfig;
   provider: HarnessProvider | null;
   descriptor: ProviderDescriptor;
+  /** The harness catalog before applying instance settings. */
+  catalog: ModelInfo[];
   /** Unsubscribes from the provider's events. */
   off?: () => void;
 }
@@ -133,7 +136,7 @@ export class ProviderRegistry {
 
   /** Capabilities that come from the kind and yaacd, not from a probe. */
   private ownCapabilities(kind: string): Capability[] {
-    const caps: Capability[] = [];
+    const caps: Capability[] = ["modelAvailability"];
     if (this.homeOf(kind)) caps.push("configurableHome");
     if (hasModelBestUse(kind)) caps.push("modelBestUse");
     return caps;
@@ -231,7 +234,7 @@ export class ProviderRegistry {
       if (this.meshHooks) provider.attachMesh?.(this.meshHooks(config.id));
       descriptor = this.placeholder(config, "probing");
     }
-    const instance: Instance = { config, provider, descriptor };
+    const instance: Instance = { config, provider, descriptor, catalog: [] };
     if (provider) {
       instance.off = provider.events.on((event) => {
         if (event.type === "descriptorChanged") void this.probe(config.id);
@@ -290,6 +293,7 @@ export class ProviderRegistry {
       });
       return;
     }
+    instance.catalog = result.models;
     this.setDescriptor(instance, {
       instance: instance.config.id,
       kind: instance.config.kind,
@@ -315,20 +319,39 @@ export class ProviderRegistry {
     });
   }
 
-  private setDescriptor(instance: Instance, next: ProviderDescriptor, observe = true): void {
-    const kind = instance.config.kind;
-    if (hasModelBestUse(kind) && (next.models?.length ?? 0) > 0) {
-      if (observe) this.bestUses.observe(kind, next.models ?? []);
-      next = { ...next, models: next.models?.map(({ bestUse: _bestUse, ...model }) => {
-        const bestUse = this.bestUses.model(kind, modelUseId(model));
-        return bestUse ? { ...model, bestUse } : model;
-      }) };
+  private setDescriptor(instance: Instance, next: ProviderDescriptor, observe = true, config = instance.config): void {
+    // Ignore a probe finishing after its instance was replaced or removed.
+    if (this.byId.get(config.id) !== instance) return;
+    const off = new Set(config.disabledModelIds ?? []);
+    const fallback = this.needsModelFallback(instance.catalog, off)
+      ? instance.catalog.find((m) => !m.hidden && !off.has(m.id))?.id : undefined;
+    const models: ModelInfo[] = [];
+    const disabledModels: ModelInfo[] = [];
+    if (observe && hasModelBestUse(config.kind)) this.bestUses.observe(config.kind, instance.catalog);
+    for (const model of instance.catalog) {
+      const bestUse = this.bestUses.model(config.kind, modelUseId(model));
+      const disabled = off.has(model.id);
+      const entry = { ...model, ...(bestUse ? { bestUse } : {}) };
+      if (disabled) disabledModels.push({ ...entry, isDefault: false });
+      else models.push(fallback ? { ...entry, isDefault: model.id === fallback } : entry);
     }
+    const { disabledModels: _previous, ...descriptor } = next;
+    next = { ...descriptor, models, ...(disabledModels.length ? { disabledModels } : {}) };
     const same = canonical({ ...next, revision: 0 }) === canonical({ ...instance.descriptor, revision: 0 });
-    if (same && instance.descriptor.revision > 0) return;
-    const revision = (this.revisions[instance.config.id] ?? 0) + 1;
-    this.revisions[instance.config.id] = revision;
-    this.save();
+    if (same && instance.descriptor.revision > 0 && config === instance.config) return;
+    const revision = (this.revisions[config.id] ?? 0) + 1;
+    const revisions = { ...this.revisions, [config.id]: revision };
+    let instances = this.stored;
+    if (config !== instance.config) {
+      instances = [...this.stored];
+      const index = instances.findIndex((c) => c.id === config.id);
+      if (index < 0) instances.push(config);
+      else instances[index] = config;
+    }
+    writeJsonAtomic(this.file, { instances, revisions } satisfies InstancesFile);
+    this.revisions = revisions;
+    this.stored = instances;
+    instance.config = config;
     instance.descriptor = { ...next, revision };
     for (const l of [...this.descriptorListeners]) l(instance.descriptor);
   }
@@ -337,10 +360,48 @@ export class ProviderRegistry {
     return this.bestUses.waitForCurrent();
   }
 
+  private needsModelFallback(catalog: ModelInfo[], off: Set<string>): boolean {
+    if (!off.size) return false;
+    const advertised = catalog.find((m) => m.isDefault);
+    // When the harness does not identify a default, ask for a known enabled model explicitly.
+    return !advertised || off.has(advertised.id);
+  }
+
+  modelIsOff(instance: Instance, model: string): boolean {
+    return instance.config.disabledModelIds?.includes(model) ?? false;
+  }
+
+  /** Leave an unrestricted harness default implicit; otherwise use an enabled model. */
+  defaultModelOverride(instance: Instance): string | null {
+    const off = new Set(instance.config.disabledModelIds ?? []);
+    if (!this.needsModelFallback(instance.catalog, off)) return null;
+    const fallback = instance.descriptor.models?.find((m) => m.isDefault);
+    if (fallback) return fallback.id;
+    throw new RpcError("model_unavailable", `No enabled models are available for ${instance.descriptor.displayName}`);
+  }
+
+  setModelEnabled(instanceId: string, modelId: string, enabled: unknown): boolean {
+    if (typeof enabled !== "boolean") throw new RpcError("invalid_params", "enabled must be true or false");
+    const instance = this.require(instanceId);
+    const current = this.stored.find((c) => c.id === instanceId) ?? instance.config;
+    const disabled = new Set(current.disabledModelIds ?? []);
+    if (!instance.catalog.some((entry) => entry.id === modelId)) {
+      throw new RpcError("model_unavailable", `${modelId} is not offered by ${instance.descriptor.displayName} now`);
+    }
+    if (disabled.has(modelId) === !enabled) return false;
+    if (enabled) disabled.delete(modelId);
+    else disabled.add(modelId);
+    const config = { ...current };
+    if (disabled.size) config.disabledModelIds = [...disabled];
+    else delete config.disabledModelIds;
+    this.setDescriptor(instance, instance.descriptor, false, config);
+    return true;
+  }
+
   setModelBestUse(instanceId: string, modelId: string, expectedId: string, summary: unknown): void {
     const instance = this.require(instanceId);
     if (!hasModelBestUse(instance.config.kind)) throw new RpcError("capability_missing", "This provider has no model guidance");
-    const model = instance.descriptor.models?.find((entry) => entry.id === modelId);
+    const model = instance.catalog.find((entry) => entry.id === modelId);
     if (!model || modelUseId(model) !== expectedId) {
       throw new RpcError("invalid_params", "The model changed while you were editing. Reopen its current guidance.");
     }
@@ -413,11 +474,11 @@ export class ProviderRegistry {
     instance.off?.();
     this.providerRemoved?.(instance.config.id);
     await instance.provider?.dispose().catch(() => {});
-    const next = this.materialise(config);
+    const next = this.materialise(this.stored.find((c) => c.id === config.id) ?? config);
     next.descriptor = { ...next.descriptor, revision: instance.descriptor.revision };
     await this.probeOne(next);
     if (!next.provider) this.setDescriptor(next, { ...next.descriptor });
-    return config;
+    return next.config;
   }
 
   async remove(id: string): Promise<void> {

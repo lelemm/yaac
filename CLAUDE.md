@@ -34,7 +34,10 @@ harnesses and on different machines messaging, spawning, and waiting for each ot
    `docs/02-architecture.md`.
 8. **Nothing is lost while the host is away.** Turns keep running; `yaacd` journals every event
    on disk. A question or approval from an agent is journaled before anything else happens to
-   it and is never dropped, auto-answered, or timed out by YAAC.
+   it and is never dropped, auto-answered, or timed out by YAAC — except a tool approval in a
+   thread the user put in the provider's never-ask mode (bypass, full access): that one is
+   approved by YAAC, recorded as such, and shown (P342). Questions, forms and logins always
+   reach the user.
 9. **One writer per thread.** A thread that is known to be in use elsewhere is shown live and
    read-only until the user takes it over (**Take over**, D140). When it cannot be told whether
    a thread is in use, YAAC takes it over — only positive evidence of another user makes a

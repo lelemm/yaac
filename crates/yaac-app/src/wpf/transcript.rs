@@ -60,6 +60,11 @@ fn card(app: &YaacApp, key: &ThreadKey, transcript: &Transcript, item: &Item, re
         &state.target_name(&key.target),
         app.now(),
     );
+    if let CardState::Automatic { text, detail } = &status {
+        // P342: a quiet line, not a card; it opens to the harness's reason and the input.
+        return json!({ "kind": "activity", "mark": "✓", "lead": text, "detail": (!detail.is_empty()).then_some(detail),
+            "tone": "muted", "disclosureName": "approval", "copyText": text });
+    }
     let pending = matches!(status, CardState::Pending { actionable: true });
     let (label, tone) = match status {
         CardState::Pending { actionable: true } => ("Waiting for you".to_owned(), "warning"),
@@ -76,6 +81,7 @@ fn card(app: &YaacApp, key: &ThreadKey, transcript: &Transcript, item: &Item, re
         CardState::Expired => ("Expired\nNo longer needed · the turn ended before this was answered.".to_owned(), "muted"),
         CardState::OutcomeUnknown => ("Outcome unknown\nYAAC lost contact while sending your answer. It may or may not have arrived. Your answer will not be sent again.".to_owned(), "warning"),
         CardState::Other(s) => (s, "muted"),
+        CardState::Automatic { text, .. } => (text, "muted"),
     };
     let mut actions = vec![];
     let mut parts = vec![];
@@ -530,7 +536,14 @@ impl Projection<'_> {
     fn block(&mut self, block: Block, open_runs: &mut BTreeMap<ItemId, (String, bool, usize)>) {
         let items = self.transcript.items();
         match block {
-            Block::User { index } | Block::Task { index } | Block::Prose { index }
+            Block::User { index } => match yaac_core::shell_block::block(self.transcript, index) {
+                Some(command) => {
+                    let row = shell_row(self.app, self.map, self.key, self.transcript, index, &command, self.markdown);
+                    self.push(row, &items[index].turn_id);
+                }
+                None => self.render(index, None, None),
+            },
+            Block::Task { index } | Block::Prose { index }
             | Block::Card { index } | Block::Handoff { index } => self.render(index, None, None),
             Block::Run { lines } => {
                 let mut open_run: Option<(String, usize)> = None;
@@ -597,6 +610,39 @@ impl Projection<'_> {
         let worked = format!("~worked:{}", item.turn_id);
         visible(worked.as_str()).then(|| json!({ "id": worked, "offset": 0 }))
     }
+}
+
+/// A `!command` the user ran (P346): one block, not a bubble — the command in mono, a status
+/// badge, the output on a code surface folded to about 12 lines (WPF unfolds it in place).
+fn shell_row(app: &YaacApp, map: &AttentionMap, key: &ThreadKey, transcript: &Transcript, index: usize,
+    command: &yaac_core::shell_block::CommandBlock, markdown: &mut super::markdown_view::MarkdownView) -> Value {
+    use yaac_core::shell_block;
+    let item = &transcript.items()[index];
+    let fold = shell_block::fold(&command.output, false);
+    let state = &app.client.state;
+    let stop = command.running && state.may_act(key) && state.summary(key).is_some();
+    let mut row = json!({
+        "id": row_id(item), "actionId": item.id, "kind": "shell",
+        "command": command.command, "cwd": command.cwd, "running": command.running,
+        "ok": command.ok(), "badge": command.badge(), "output": command.output,
+        "truncated": command.truncated, "copyText": format!("!{}", command.command),
+        "stop": stop.then(|| sidebar_view::action("stopShell", "Stop", true)),
+    });
+    if fold.hidden > 0 {
+        row["shown"] = json!(fold.shown);
+        row["showAll"] = json!(shell_block::show_all_label(fold.total));
+    }
+    // A `!cmd` still being sent keeps its send state (Sending…, a failure with Retry).
+    if matches!(item.body, ItemBody::UserMessage(_))
+        && let Some(user) = render(app, map, key, transcript, item, markdown, false)
+    {
+        for field in ["status", "actions", "stamp"] {
+            if !user[field].is_null() {
+                row[field] = user[field].clone();
+            }
+        }
+    }
+    row
 }
 
 fn work_focus<'a>(app: &'a YaacApp, key: &ThreadKey) -> Option<&'a ItemId> {
@@ -913,6 +959,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             }
             return Ok(());
         }
+        "stopShell" => Action::Stop(k),
         "retrySend" => Action::RetrySend(k, item),
         "editSend" => Action::EditSend(k, item),
         "dismissSend" => Action::DismissSend(k, item),
@@ -1045,6 +1092,56 @@ mod tests {
             })
         );
         assert!(new.get("rows").is_none());
+    }
+
+    #[test]
+    fn approval_cards_show_the_reason_and_an_automatic_approval_is_a_quiet_line() {
+        use yaac_protocol::{ApprovalAnswer, ApprovalDecision, ApprovalKind, ApprovalRequest, AnsweredBy, AutomaticResolution, DecisionKind, ModeId, RequestId, RequestResolution};
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = yaac_core::demo::threads::parser();
+        app.apply(vec![Action::Open(key.clone())]);
+        let transcript = app.client.state.transcripts.get(&key).unwrap();
+        let mut item = transcript.items()[0].clone();
+        let mut request = RequestItem {
+            request_id: RequestId::new("r-auto"),
+            blocking: true,
+            state: RequestState::Pending,
+            resolution: None,
+            body: RequestBody::Approval(ApprovalRequest {
+                approval_kind: ApprovalKind::Command,
+                title: "Run `setsid sleep 30 &`".into(),
+                command: Some("setsid sleep 30 &".into()),
+                cwd: None,
+                changes: vec![],
+                scope: None,
+                reason: Some("What 'setsid' starts can't be checked before it runs".into()),
+                decisions: vec![ApprovalDecision { id: "allow".into(), label: "Allow once".into(), kind: DecisionKind::Allow, description: None, accepts_reason: false }],
+                details: Some(json!({ "tool": "Bash" })),
+            }),
+        };
+        item.body = ItemBody::Request(request.clone());
+        let map = AttentionMap::compute(&app.client.state);
+        let mut markdown = super::super::markdown_view::MarkdownView::default();
+        let card = render(&app, &map, &key, transcript, &item, &mut markdown, false).unwrap();
+        assert_eq!(card["kind"], "approval");
+        assert!(card["text"].as_str().unwrap().contains("What 'setsid' starts can't be checked before it runs"), "{card}");
+
+        request.state = RequestState::Resolved;
+        request.resolution = Some(RequestResolution {
+            by: AnsweredBy::Yaacd,
+            client_id: None,
+            client_host: None,
+            answer: Some(RequestResponse::Approval(ApprovalAnswer { decision: "allow".into(), reason: None })),
+            at: None,
+            automatic: Some(AutomaticResolution { mode: ModeId::new("bypassPermissions"), mode_name: Some("Bypass permissions".into()) }),
+        });
+        item.body = ItemBody::Request(request);
+        let row = render(&app, &map, &key, transcript, &item, &mut markdown, false).unwrap();
+        assert_eq!(row["kind"], "activity");
+        assert_eq!(row["lead"], "Approved automatically — thread in Bypass permissions: Bash setsid sleep 30 &");
+        assert_eq!(row["detail"], "Reason: What 'setsid' starts can't be checked before it runs\nsetsid sleep 30 &");
+        assert!(row.get("actions").is_none(), "no buttons");
     }
 
     #[test]

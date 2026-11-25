@@ -160,3 +160,18 @@ test("the frozen core is reproduced byte for byte (protocol/schema/frozen-core-v
   await until(() => exited, "the daemon to exit");
   assert.equal(exited, "handover now");
 });
+
+test("interactive data alternates with queued control, then bounds bulk while starved", () => {
+  const s = new Scheduler();
+  s.onWritten(CHUNK_MAX, 1);
+  s.openStream(1, CHUNK_MAX);
+  s.sendData(1, Buffer.alloc(CHUNK_MAX));
+  s.pushFrame("control", Buffer.of(7));
+  s.pushFrame("control", Buffer.of(8));
+  s.openStream(2, 1, true);
+  s.sendData(2, Buffer.of(1, 2));
+  assert.equal(s.next()?.class, "control");
+  assert.equal(s.next()?.class, "interactive");
+  assert.equal(s.next()?.class, "control");
+  assert.equal(s.next()?.bytes.length, CHUNK_MIN + 9);
+});

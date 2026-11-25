@@ -10,6 +10,9 @@ internal static class PaneIcon
 {
     private static readonly Dictionary<string, Geometry> Shapes = new()
     {
+        ["Terminal"] = Shape("M2.5 4 L6.5 8 L2.5 12 M8 12 H14"),
+        ["Clear"] = Shape("M3 9.5 L8 4.5 L12.5 9 L8.5 13 H6.5 Z M5.5 7 L10.5 11.5 M9 13 H14"),
+        ["Search"] = Shape("M11 11 L15 15 M12 7 A5 5 0 1 1 2 7 A5 5 0 1 1 12 7"),
         ["Browser"] = Shape("M8 1 A7 7 0 1 1 7.99 1 M1 8H15 M8 1 C4 4 4 12 8 15 C12 12 12 4 8 1"),
         ["Files"] = Shape("M1 4 Q1 3 2 3 H6 L8 5 H14 Q15 5 15 6 V13 H1 Z"),
         ["File"] = Shape("M3 1 H9 L13 5 V15 H3 Z M9 1 V5 H13"),

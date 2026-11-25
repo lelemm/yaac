@@ -330,6 +330,9 @@ pub struct ThreadSummary {
     /// The model last applied, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelId>,
+    /// The current model is turned off for new selections in this instance's Settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_off: Option<bool>,
     /// What it is doing.
     pub state: ThreadState,
     /// Who may act on it, relative to the receiving client.
@@ -347,6 +350,10 @@ pub struct ThreadSummary {
     /// The agent that started this thread, possibly on another target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawned_by: Option<Address>,
+    /// Whether this YAAC worker was spawned with automatic result delivery to its parent.
+    /// Absent for harness sub-agents and targets that do not report this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reports_to_parent: Option<bool>,
     /// The orchestration root this thread belongs to, when it was spawned or messaged by an
     /// agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -847,6 +854,29 @@ pub struct TurnStartParams {
     pub delivery: Option<Delivery>,
 }
 
+/// `turn/shellCommand` (P344, under `userShellCommand`): a `!command` the user typed in this
+/// thread's composer. `yaacd` runs it on the target in the thread's folder (through the harness
+/// where it can), records it in the conversation as the harness's own `!` does, and starts the
+/// turn in which the agent answers it — all as one turn. The transcript gets a `userMessage`
+/// whose one part is the text `!command` (role `command`, carrying `opId`), then a `toolCall`
+/// (`tool: command`, `source: userShell`) with the live output, then the answer. Refused for a
+/// thread without the capability (`capability_missing`). Only a client sends this; an agent's
+/// message that starts with `!` is plain text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnShellCommandParams {
+    /// Operation id.
+    pub op_id: OpId,
+    /// The thread.
+    pub thread_id: ThreadId,
+    /// The command line, without the leading `!`, as typed (quoting and operators kept).
+    pub command: String,
+    /// While a turn is running: absent refuses with `turn_in_progress`; `queue` keeps it in the
+    /// thread's queue (D166) and runs it when the turn ends. `now` is not accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<Delivery>,
+}
+
 open_enum! {
     /// What `turn/start` did.
     pub enum TurnStartOutcome fallback Unknown {
@@ -900,6 +930,10 @@ pub struct QueuedMessage {
     /// Use Ultrafast for the turn and subsequent turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ultrafast: Option<bool>,
+    /// Set when the entry is a `!command` (`turn/shellCommand`, P344): the command, without the
+    /// `!`. `input` then holds the text `!command` for display. Absent for a message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_command: Option<String>,
 }
 
 /// `turn/queueEdit`: replace a queued message's text and attachments before it is delivered.

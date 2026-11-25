@@ -239,6 +239,11 @@ impl HubConfig {
             if std::env::var_os("YAAC_RUNTIME").is_none_or(|v| v.is_empty()) && runtime.is_file() {
                 let dest = home.join("runtime").join(format!("node-{}", yaac_transport::runtime::PINNED_NODE)).join("node.exe");
                 local.install_files.push((runtime, dest.clone()));
+                let pty = "pty-1.2.0-beta.18";
+                let packaged = install.join("runtime").join(pty);
+                if packaged.is_dir() {
+                    local.install_files.push((packaged, dest.parent().unwrap().join(pty)));
+                }
                 local.runtime = dest.into_os_string();
             }
             let bundle = install.join("yaacd.mjs");

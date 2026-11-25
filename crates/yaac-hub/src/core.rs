@@ -5,6 +5,7 @@
 mod browser;
 mod limits;
 mod preview;
+mod terminal;
 mod ssh;
 mod uploads;
 
@@ -64,7 +65,9 @@ type Key = (TargetId, ThreadId);
 #[derive(Debug)]
 pub(crate) enum CoreEvent {
     /// A window connected.
-    Attached { client: ClientKey, tx: mpsc::UnboundedSender<Message> },
+    Attached { client: ClientKey, tx: crate::attach_writer::Sender },
+    /// Raw interactive input from a window.
+    ClientData { client: ClientKey, stream: StreamId, bytes: Vec<u8> },
     /// A message from a window.
     FromClient { client: ClientKey, message: Message },
     /// A window went away.
@@ -157,7 +160,7 @@ enum Hello {
 
 #[derive(Debug)]
 struct Client {
-    tx: mpsc::UnboundedSender<Message>,
+    tx: crate::attach_writer::Sender,
     hello: Hello,
     subs: HashSet<Key>,
     /// What the window shows (`hub/view/showing`, D114).
@@ -185,6 +188,7 @@ enum Pending {
     UploadBegin { handle: String },
     UploadEnd { handle: String },
     UploadCancel { handle: String },
+    Terminal { client: ClientKey, id: RpcId, terminal: Option<String> },
     PreviewOpen { socket: u64 },
     /// `daemon/handover`; **Update now** answers the window that asked.
     Handover { reply: Option<(ClientKey, RpcId)> },
@@ -227,11 +231,12 @@ struct Conn {
     generation: u64,
     session: ClientSession,
     writer: mpsc::UnboundedSender<Outgoing>,
-    /// A bulk frame is with the writer and not yet written: hand out no other bulk frame.
-    bulk_in_writer: bool,
+    /// The writer holds one frame. The scheduler selects again on completion.
+    writer_busy: bool,
     kill: Option<oneshot::Sender<()>>,
     ready: bool,
     pending: HashMap<RpcId, Pending>,
+    terminal_streams: HashMap<StreamId, StreamId>,
     preview_streams: HashMap<StreamId, u64>,
     subs: HashMap<ThreadId, Sub>,
     delivering: HashSet<MessageId>,
@@ -416,6 +421,7 @@ pub(crate) struct Core {
     /// Uploads in progress, by handle ([`uploads`]).
     uploads: HashMap<String, uploads::Upload>,
     upload_seq: u64,
+    terminals: terminal::Relays,
     previews: preview::Previews,
     browser: browser::BrowserCalls,
     /// File reads and hashing.
@@ -515,6 +521,7 @@ impl Core {
             unseen: loaded.unseen.into_iter().collect(),
             uploads: HashMap::new(),
             upload_seq: 0,
+            terminals: Default::default(),
             previews: preview::Previews::default(),
             browser: browser::BrowserCalls::default(),
             pool,
@@ -542,7 +549,7 @@ impl Core {
     }
 
     /// Stops every connection and hands back the worker so its queue can drain.
-    pub(crate) fn finish(mut self) -> (Worker, Vec<mpsc::UnboundedSender<Message>>) {
+    pub(crate) fn finish(mut self) -> (Worker, Vec<crate::attach_writer::Sender>) {
         for target in self.targets.values_mut() {
             if let Some((_, handle, _)) = target.supervisor.take() {
                 handle.abort();
@@ -558,6 +565,7 @@ impl Core {
             CoreEvent::Attached { client, tx } => {
                 self.clients.insert(client, Client { tx, hello: Hello::None, subs: HashSet::new(), showing: HashSet::new() });
             }
+            CoreEvent::ClientData { client, stream, bytes } => self.terminal_input(client, stream, bytes),
             CoreEvent::FromClient { client, message } => self.on_client(client, message),
             CoreEvent::Detached { client } => self.on_detached(client),
             CoreEvent::Conn { target, supervisor, generation, event } => self.on_conn(&target, supervisor, generation, event),
@@ -654,6 +662,7 @@ impl Core {
 
     fn on_detached(&mut self, client: ClientKey) {
         let Some(c) = self.clients.remove(&client) else { return };
+        self.terminal_window_closed(client);
         self.browser_window_closed(client);
         for key in c.subs {
             self.release(client, &key);
@@ -667,6 +676,9 @@ impl Core {
                 if let Some(outcome) = outcome {
                     self.reply(client, id, outcome);
                 }
+            }
+            Message::Notification { method, params } if method == names::STREAM_CREDIT => {
+                if let Ok(credit) = parse(params) { self.terminal_output_credit(client, &credit); }
             }
             Message::Notification { method, params }
                 if method == attach::names::NOTIFICATION && self.clients.get(&client).is_some_and(|c| c.hello == Hello::Attached) =>
@@ -686,7 +698,7 @@ impl Core {
         }
         let Ok(credit) = serde_json::from_value::<StreamCreditParams>(n.params) else { return };
         if let Some(conn) = self.targets.get_mut(&n.target).and_then(Target::ready_conn) {
-            if conn.preview_streams.contains_key(&credit.stream) {
+            if conn.preview_streams.contains_key(&credit.stream) || conn.terminal_streams.contains_key(&credit.stream) {
                 return; // The hub is the receiver on this stream.
             }
             let _ = conn.session.notify::<methods::StreamCredit>(&credit);
@@ -867,6 +879,7 @@ impl Core {
             ext::names::UPLOAD_START => Some(parse::<ext::UploadStartParams>(params).and_then(|p| self.upload_start(p))),
             ext::names::UPLOAD_CANCEL => Some(parse::<ext::UploadHandleParams>(params).map(|p| self.upload_cancel(&p.handle))),
             ext::names::UPLOAD_LIST => Some(Ok(self.upload_list())),
+            name if name.starts_with("hub/terminal/") => self.terminal_request(client, id, name, params),
             attach::names::PREVIEW_PROXY => Some(parse(params).and_then(|p| self.preview_proxy(p))),
             attach::names::PREVIEW_PROXY_CLOSE => Some(parse(params).and_then(|p| self.preview_proxy_close(p))),
             attach::names::PREVIEW_OPEN => Some(parse(params).and_then(|p| self.preview_open(p))),
@@ -1430,10 +1443,11 @@ impl Core {
                     generation,
                     session: ClientSession::new(client),
                     writer,
-                    bulk_in_writer: false,
+                    writer_busy: false,
                     kill: Some(kill),
                     ready: false,
                     pending: HashMap::new(),
+                    terminal_streams: HashMap::new(),
                     preview_streams: HashMap::new(),
                     subs: HashMap::new(),
                     delivering: HashSet::new(),
@@ -1462,10 +1476,12 @@ impl Core {
                 }
                 self.flush(id);
             }
-            ConnEvent::Written { bytes, elapsed } => {
+            ConnEvent::Written { bytes, elapsed, bulk } => {
                 let Some(conn) = t.conn.as_mut().filter(|c| c.generation == generation) else { return };
-                conn.bulk_in_writer = false;
-                conn.session.on_written(bytes, elapsed);
+                conn.writer_busy = false;
+                if bulk {
+                    conn.session.on_written(bytes, elapsed);
+                }
                 self.flush(id);
             }
             ConnEvent::Closed(reason) => {
@@ -1488,6 +1504,9 @@ impl Core {
     /// stay open and are resubscribed on reconnect).
     fn on_closed(&mut self, id: &TargetId, _reason: String) {
         let Some(conn) = self.targets.get_mut(id).and_then(|t| t.conn.take()) else { return };
+        for stream in conn.terminal_streams.values() {
+            self.terminals.streams.remove(stream);
+        }
         self.preview_disconnected(id);
         self.browser_target_closed(id);
         let was_ready = conn.ready;
@@ -1504,6 +1523,7 @@ impl Core {
                     };
                     self.reply(client, rid, Err(error));
                 }
+                Pending::Terminal { client, id, .. } => self.reply(client, id, Err(err(ErrorCode::OutcomeUnknown, "target disconnected before answering terminal request"))),
                 Pending::MeshQuery { source, generation, peer_id } => {
                     self.respond_peer(&source, generation, peer_id, names::MESH_QUERY, Err(err(ErrorCode::TargetOffline, "the target went offline")));
                 }
@@ -1527,10 +1547,8 @@ impl Core {
         }
     }
 
-    /// Hands the writer what the session has to send. Control frames all go; a bulk frame
-    /// goes only when the writer holds none, so control never waits behind more than one
-    /// bulk chunk (docs/03-protocol.md#scheduling-and-flow-control). The next bulk frame is
-    /// handed out when the writer reports this one written ([`ConnEvent::Written`]).
+    /// Select one frame when the writer becomes available. An interactive frame arriving
+    /// mid-write can take the next slot even when there is a backlog of bulk frames.
     fn flush(&mut self, id: &TargetId) {
         if !self.uploads.is_empty() {
             self.upload_pump(id);
@@ -1538,17 +1556,16 @@ impl Core {
         let Some(conn) = self.targets.get_mut(id).and_then(|t| t.conn.as_mut()) else { return };
         self.previews.grant_reads(conn);
         loop {
-            let control = conn.session.scheduler().pending_control() > 0;
-            if !control && conn.bulk_in_writer {
-                break;
-            }
+            let scheduler = conn.session.scheduler();
+            // Preserve the immediate control path on targets without active terminals.
+            // Once an interactive stream exists, pick again at every frame boundary.
+            let paced = !conn.terminal_streams.is_empty() || scheduler.pending_control() == 0;
+            if paced && conn.writer_busy { break; }
+            let bulk = scheduler.pending_control() == 0 && !scheduler.interactive_ready();
             let Some(bytes) = conn.session.poll_transmit() else { break };
-            let bulk = !control;
-            conn.bulk_in_writer |= bulk;
-            if conn.writer.send(Outgoing { bytes, bulk }).is_err() {
-                break;
-            }
-            if bulk {
+            if conn.writer.send(Outgoing { bytes, bulk, paced }).is_err() { break; }
+            if paced {
+                conn.writer_busy = true;
                 self.previews.grant_reads(conn);
             }
         }
@@ -1571,7 +1588,7 @@ impl Core {
             }
             SessionEvent::Notification(inbound) => self.on_inbound(id, inbound),
             SessionEvent::PeerRequest { id: peer_id, request, .. } => self.on_peer_request(id, peer_id, request),
-            SessionEvent::Data { stream, bytes } => self.preview_data(id, stream, bytes),
+            SessionEvent::Data { stream, bytes } => self.target_data(id, stream, bytes),
             SessionEvent::OrphanError(e) => log(format!("{id}: daemon error without id: {}", e.code)),
         }
     }
@@ -1594,6 +1611,7 @@ impl Core {
         let Some(t) = self.targets.get_mut(id) else { return };
         let Some(conn) = t.conn.as_mut() else { return };
         conn.ready = true;
+        let terminal = conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::Terminal));
         let file_view = conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::FileView));
         let port_forward = self.preview_check(id).is_ok();
         let can_update = self.handover_on_ready(id, &info.daemon.build);
@@ -1608,6 +1626,8 @@ impl Core {
                 can_update,
                 port_forward,
                 file_view,
+                terminal,
+                terminal_unavailable_reason: info.terminal_unavailable_reason.clone(),
             }),
             update: None,
         };
@@ -1789,6 +1809,20 @@ impl Core {
                 }
             }
             self.preview_check(id).and(outcome)
+        } else if method == names::TERMINAL_RENAME && outcome.as_ref().is_err_and(|e| e.code == ErrorCode::MethodNotFound) {
+            // An older yaacd without names (P343): terminals still work; the window keeps the
+            // name itself.
+            Err(err(ErrorCode::CapabilityMissing, "this machine's YAAC cannot name terminals yet"))
+        } else if method.starts_with("terminal/") && outcome.as_ref().is_err_and(|e| e.code == ErrorCode::MethodNotFound) {
+            if let Some(t) = self.targets.get(id) {
+                let mut state = t.state.clone();
+                if let Some(daemon) = state.daemon.as_mut() {
+                    daemon.terminal = false;
+                    daemon.terminal_unavailable_reason = Some(format!("the target does not implement {method}"));
+                    self.set_state(id, state);
+                }
+            }
+            Err(err(ErrorCode::CapabilityMissing, "terminal unavailable on this target"))
         } else if matches!(method, names::FS_TREE | names::FS_READ | names::GIT_FILE_DIFF)
             && outcome.as_ref().is_err_and(|e| e.code == ErrorCode::MethodNotFound)
         {
@@ -1809,7 +1843,15 @@ impl Core {
                 if let Some(op) = op {
                     self.worker.submit(move |s| s.drafts.op_done(&op).err().map(|e| CoreEvent::StoreError(e.to_string())));
                 }
-                self.reply(client, rid, outcome);
+                if methods::request_info(m).is_some_and(|info| info.response_class == yaac_protocol::schedule::Class::Bulk)
+                    && let Ok(result) = outcome
+                {
+                    if let Some(c) = self.clients.get(&client) {
+                        let _ = c.tx.bulk_reply(Message::Response { id: rid, result });
+                    }
+                } else {
+                    self.reply(client, rid, outcome);
+                }
             }
             Pending::Open { thread, serial, flow } => self.on_open_response(id, thread, serial, *flow, outcome),
             Pending::Page { thread, serial } => {
@@ -1866,6 +1908,7 @@ impl Core {
             Pending::UploadBegin { handle } => self.on_upload_begun(id, &handle, outcome),
             Pending::UploadEnd { handle } => self.on_upload_ended(id, &handle, outcome),
             Pending::UploadCancel { handle } => self.on_upload_cancelled(&handle),
+            Pending::Terminal { client, id: rid, terminal } => self.terminal_response(id, client, rid, method, terminal, outcome),
             Pending::PreviewOpen { socket } => self.preview_opened(id, socket, outcome),
             Pending::Receipt { message_id, receipt } => {
                 if outcome.is_ok() {
@@ -1962,7 +2005,10 @@ impl Core {
                     Err(e) => Some(CoreEvent::StoreError(e.to_string())),
                 });
             }
-            Inbound::StreamCredit(_) => {}
+            Inbound::StreamCredit(p) => self.terminal_input_credit(id, &p),
+            Inbound::Other { method, params } if matches!(method.as_str(), names::TERMINAL_TITLE | names::TERMINAL_EXITED | names::TERMINAL_RENAMED) => {
+                self.terminal_event(id, &method, params);
+            }
             Inbound::TunnelClose(p) => self.preview_remote_close(id, p.stream),
             Inbound::Other { method, params } if method == names::PROVIDER_RATE_LIMITS_UPDATED => self.limits_updated(id, params),
             Inbound::Other { method, params } if method == names::DISCOVERY_UPDATED => {
@@ -2382,6 +2428,7 @@ impl Core {
         }
         let method = request.method.as_str();
         match method {
+            name if name.starts_with("terminal/") => return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, "use the hub terminal methods"))),
             names::INITIALIZE | names::MESH_RELAY | names::MESH_DELIVER | names::MESH_RECEIPT | names::MESH_DELIVERY_RECEIPT | names::MESH_ROSTER | names::TUNNEL_OPEN => {
                 return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, format!("{method} is handled by the hub itself"))));
             }

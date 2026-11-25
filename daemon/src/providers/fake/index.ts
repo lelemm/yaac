@@ -11,6 +11,7 @@ import * as path from "node:path";
 import type {
   AppliedSettings,
   Capability,
+  InputPart,
   Item,
   ModeInfo,
   ModelInfo,
@@ -171,6 +172,8 @@ export interface FakeOptions {
   storeDir: string;
   /** Offer `steer` (FAKE_STEER=0: a harness that cannot steer). */
   steer: boolean;
+  /** Offer `userShellCommand` (P344; FAKE_USER_SHELL=0: a harness without it). */
+  userShell?: boolean;
   /** Offer `forceStop` (FAKE_FORCE_STOP=0: a shared harness process yaacd cannot end). */
   forceStop: boolean;
   /** Offer `threadMoveWorkingDirectory` (FAKE_MOVE_CWD=0: a harness that cannot change a conversation's folder). */
@@ -206,6 +209,8 @@ export class FakeProvider implements HarnessProvider {
   /** Every input handed to the harness, in order (tests read secrets back from here). */
   /** Every input handed to it; `fast`: the fast-mode flag the turn was started with (D125). */
   readonly received: Array<{ thread: NativeId; input: ProviderInput; fast?: boolean | null; cwd?: string | null }> = [];
+  /** Every `!command` handed to it (P344), with its operation id. */
+  readonly shellRuns: Array<{ thread: NativeId; command: string; opId: string }> = [];
   /** Every answer handed to the harness, in full (including secrets). */
   readonly answers: Array<{ thread: NativeId; requestId: string; response: RequestResponse }> = [];
   /** The next scan fails (the instance becomes stale; no thread is removed). */
@@ -326,6 +331,7 @@ export class FakeProvider implements HarnessProvider {
     ];
     if (this.options.nativeFork) caps.push("threadFork");
     if (this.options.steer) caps.push("steer");
+    if (this.options.userShell !== false) caps.push("userShellCommand");
     if (this.options.moveCwd !== false) caps.push("threadMoveWorkingDirectory");
     if (this.meshHooks) caps.push("meshTools");
     return {
@@ -444,7 +450,25 @@ export class FakeProvider implements HarnessProvider {
     return this.beginTurn(thread, input, input.origin, overrides.fast ?? null, overrides.cwd ?? null);
   }
 
-  private async beginTurn(native: NativeId, input: ProviderInput, origin: TurnOrigin, fast: boolean | null, cwd: string | null = null): Promise<TurnId> {
+  /**
+   * `!command` (P344): the fake "runs" it — a `userShell` command item whose output is
+   * `fake ran: <command>` (a command containing `fail` exits 1, one containing `slow` takes
+   * a second, so Stop can be tested) — then answers `Answered: <command>`, in one turn.
+   */
+  async shellCommand(thread: NativeId, command: string, _overrides: TurnOverrides, opId: string): Promise<TurnId> {
+    this.thread(thread);
+    if (this.live.has(thread)) throw new Error("fake: a turn is already running");
+    this.shellRuns.push({ thread, command, opId });
+    const steps: Step[] = [
+      ...(command.includes("slow") ? [{ k: "sleep", ms: 1000 } as Step] : []),
+      { k: "tool", command, output: `fake ran: ${command}\n`, exitCode: command.includes("fail") ? 1 : 0, userShell: true } as Step,
+      { k: "say", text: `Answered: ${command}` },
+    ];
+    const input: ProviderInput = { parts: [{ type: "text", text: `!${command}`, role: "command" } as InputPart], text: `!${command}`, images: [], files: [], origin: "user" };
+    return this.beginTurn(thread, input, "user", null, null, steps);
+  }
+
+  private async beginTurn(native: NativeId, input: ProviderInput, origin: TurnOrigin, fast: boolean | null, cwd: string | null = null, given?: Step[]): Promise<TurnId> {
     const t = this.thread(native);
     t.turns += 1;
     const turnId = `turn-${t.turns}`;
@@ -466,9 +490,9 @@ export class FakeProvider implements HarnessProvider {
     this.live.set(native, live);
     // `/fake inputs` answers with what this provider was handed, so a test can see whether an
     // attachment arrived as image input or as a file path.
-    const steps: Step[] = script.steps.map((s) => (s.k === "inputs" ? { k: "say", text: describeInputs(input) } : s));
+    const steps: Step[] = given ?? script.steps.map((s) => (s.k === "inputs" ? { k: "say", text: describeInputs(input) } : s));
     live.done = new Promise<void>((resolve) => setImmediate(resolve)).then(() =>
-      this.runTurn(native, live, script.plain ? [{ k: "say", text: `Echo: ${input.text}` }] : steps, origin),
+      this.runTurn(native, live, script.plain && !given ? [{ k: "say", text: `Echo: ${input.text}` }] : steps, origin),
     );
     return turnId;
   }
@@ -499,7 +523,7 @@ export class FakeProvider implements HarnessProvider {
             await this.stream(native, turnId, id("rsn"), "reasoning", step.text, pace, signal);
             break;
           case "tool":
-            await this.tool(native, turnId, id("tool"), step.command, step.output, step.exitCode, pace, signal);
+            await this.tool(native, turnId, id("tool"), step.command, step.output, step.exitCode, pace, signal, undefined, step.userShell === true);
             break;
           case "bigOutput": {
             const line = "0123456789abcdefghijklmnopqrstuvwxyz the quick brown fox jumps over the lazy dog\n";
@@ -728,8 +752,9 @@ export class FakeProvider implements HarnessProvider {
     pace: number,
     signal: AbortSignal,
     chunkSize?: number,
+    userShell = false,
   ): Promise<void> {
-    const start: Item = { id: itemId, turnId, status: "inProgress", kind: "toolCall", tool: "command", title: command, input: { command }, cwd: this.thread(native).info.cwd, output: "" };
+    const start: Item = { id: itemId, turnId, status: "inProgress", kind: "toolCall", tool: "command", title: command, input: { command }, cwd: this.thread(native).info.cwd, output: "", ...(userShell ? { source: "userShell" } : {}) } as Item;
     this.emit({ type: "itemStarted", thread: native, item: start });
     const pieces = chunkSize ? [] as string[] : chunks(output, 2);
     if (chunkSize) for (let i = 0; i < output.length; i += chunkSize) pieces.push(output.slice(i, i + chunkSize));
@@ -788,7 +813,7 @@ export class FakeProvider implements HarnessProvider {
           resolve(answer);
         },
       });
-      this.emit({ type: "requestRaised", thread: native, turnId, requestId, request, blocking: true });
+      this.emit({ type: "requestRaised", thread: native, turnId, requestId, request, blocking: true, mode: this.thread(native).settings.mode ?? this.defaultMode });
       if (mods.elsewhereMs !== null) this.later(mods.elsewhereMs, () => this.resolveElsewhere(native, requestId));
       if (mods.expireMs !== null) this.later(mods.expireMs, () => this.expireRequest(native, requestId));
     });
@@ -1242,6 +1267,7 @@ export const fakeProviderFactory: ProviderFactory = {
       status,
       storeDir: env.FAKE_STORE ? path.resolve(env.FAKE_STORE) : path.join(ctx.stateDir, "store"),
       steer: env.FAKE_STEER !== "0",
+      userShell: env.FAKE_USER_SHELL !== "0",
       forceStop: env.FAKE_FORCE_STOP !== "0",
       moveCwd: env.FAKE_MOVE_CWD !== "0",
       modes: modesFrom(env.FAKE_MODES),

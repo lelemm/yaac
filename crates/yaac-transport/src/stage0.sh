@@ -93,10 +93,13 @@ if [ -r "$H/run/yaacd.pid" ]; then
   fi
 fi
 
+pty_dir=$H/runtime/pty-1.2.0-beta.18
+pty=missing
+[ -f "$pty_dir/lib/index.js" ] && pty=installed
 runtime=none
 [ -n "$NODE" ] && runtime=node-$NODE_VERSION
-printf 'YAAC0 os=%s arch=%s libc=%s runtime=%s daemon=%s serving=%s found=%s private=%s fetch=%s\n' \
-  "$os" "$arch" "$libc" "$runtime" "${daemons:-none}" "$serving" "${FOUND:-none}" "${PRIVATE:-none}" "$fetch"
+printf 'YAAC0 os=%s arch=%s libc=%s runtime=%s daemon=%s serving=%s found=%s private=%s fetch=%s pty=%s\n' \
+  "$os" "$arch" "$libc" "$runtime" "${daemons:-none}" "$serving" "${FOUND:-none}" "${PRIVATE:-none}" "$fetch" "$pty"
 
 hash_of() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -278,6 +281,26 @@ put_runtime() { # name bytes sha256
   install_runtime "$1" "$f" "$3"
 }
 
+put_pty() {
+  # Always consume the announced bytes. A failed optional install still permits the
+  # ordinary daemon connection and initialize reports the native module load error.
+  case $1 in ''|*[!0-9]*) exit 1 ;; esac
+  mkdir -p "$H/runtime" && tmp=$(mktemp -d "$H/runtime/.pty.XXXXXX") || {
+    head -c "$1" >/dev/null
+    echo "OK pty"
+    return
+  }
+  head -c "$1" | (cat >"$tmp/archive" || cat >/dev/null)
+  if [ "$(hash_of "$tmp/archive")" = "$2" ] && tar xzf "$tmp/archive" -C "$tmp"; then
+    if take_lock "$H/runtime/.pty-lock"; then
+      [ -d "$pty_dir" ] || mv "$tmp/package" "$pty_dir"
+      rmdir "$H/runtime/.pty-lock"
+    fi
+  fi
+  rm -rf "$tmp"
+  echo "OK pty"
+}
+
 while read -r cmd a b c d; do
   case $cmd in
     GET)
@@ -288,6 +311,7 @@ while read -r cmd a b c d; do
       ;;
     PUT)
       case $a:$b:$c in
+        pty:*:*) put_pty "$b" "$c" ;;
         daemon:*:*) put_daemon "$b" "$c" "$d" ;;
         runtime:*:*) put_runtime "$b" "$c" "$d" ;;
         *) echo "ERR cannot PUT $a" ;;

@@ -50,7 +50,7 @@ pub(crate) fn composer_column(ui: &mut egui::Ui, preferred: f32, p: &Palette, co
     }
 }
 
-pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
+pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) -> bool {
     let p = app.p;
     Panel::top("thread-header")
         .show_separator_line(false)
@@ -73,18 +73,55 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key
                 // The floating pill keeps its own gutter at the column's right edge.
                 text.max.x = (chat.right() - crate::agents_ui::PILL_GUTTER).max(chat.left());
             }
-            ui.scope_builder(egui::UiBuilder::new().max_rect(text), |ui| {
+            return ui.scope_builder(egui::UiBuilder::new().max_rect(text), |ui| {
                 ui.set_clip_rect(text);
-                body(ui, app, map, key, now, actions);
-            });
+                body(ui, app, map, key, now, actions)
+            }).inner;
         }
+        false
     } else {
-        body(ui, app, map, key, now, actions);
+        body(ui, app, map, key, now, actions)
     }
 }
 
-fn body(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) {
+/// The terminal panel stops short of the floating Related agents pill (P338: the pill keeps its
+/// place).
+fn pill_gutter(app: &YaacApp, mut rect: egui::Rect) -> egui::Rect {
+    if app.ui.pill_floating {
+        rect.max.x = (rect.right() - crate::agents_ui::PILL_GUTTER).max(rect.left());
+    }
+    rect
+}
+
+fn body(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, now: i64, actions: &mut Vec<Action>) -> bool {
     let p = app.p;
+    if std::mem::take(&mut app.browsers.terms.focus_composer) {
+        app.ui.focus_composer = true;
+    }
+    // The terminal panel under the composer (P338): the whole column when maximised.
+    let column = ui.available_rect_before_wrap();
+    if app.browsers.terms.panel_open(key) {
+        if app.browsers.terms.panel(key).is_some_and(|t| t.maximised) {
+            // The floating Related agents pill keeps its gutter at the column's right edge.
+            crate::terminal_ui::panel(ui, app, key, pill_gutter(app, column));
+            return false;
+        }
+        let h = crate::terminal_ui::panel_height(app.ui.terminal.panel_share, column.height(), 130.0);
+        let top = column.bottom() - h;
+        let divider = egui::Rect::from_center_size(egui::pos2(column.center().x, top), egui::vec2(column.width(), 6.0));
+        let drag = ui.interact(divider, ui.scope_id().with(("terminal-divider", key)), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeVertical);
+        if drag.dragged()
+            && let Some(pos) = drag.interact_pointer_pos()
+        {
+            app.ui.terminal.panel_share = ((column.bottom() - pos.y) / column.height().max(1.0)).clamp(0.05, 0.95);
+        }
+        Panel::bottom("thread-terminal").exact_size(h).resizable(false).show_separator_line(false).frame(egui::Frame::NONE).show(ui, |ui| {
+            let r = pill_gutter(app, ui.max_rect());
+            crate::terminal_ui::panel(ui, app, key, r);
+        });
+        let y = ui.painter().round_to_pixel_center(top - 0.5);
+        ui.painter().hline(column.x_range(), y, egui::Stroke::new(1.0, p.border));
+    }
     Panel::bottom("thread-composer")
         .show_separator_line(false)
         .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 0, right: 0, top: 6, bottom: 10 }))
@@ -116,16 +153,18 @@ fn body(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKe
                 app.ui.chat_width = width;
             }
         });
+    let preview = app.ui.dock_preview.target(key).cloned();
     egui::CentralPanel::no_frame().show(ui, |ui| {
-        if let Some(preview) = app.ui.dock_preview.target(key).cloned() {
-            if let Some(summary) = app.client.state.summary(&preview) {
+        if let Some(preview) = &preview {
+            if let Some(summary) = app.client.state.summary(preview) {
                 ui.vertical_centered(|ui| ui.label(widgets::secondary(format!("Previewing {}", summary.title), &p)));
             }
-            ui.push_id("docked-agent-preview", |ui| transcript(ui, app, map, &preview, now, actions));
+            ui.push_id("docked-agent-preview", |ui| transcript(ui, app, map, preview, now, actions));
         } else {
             transcript(ui, app, map, key, now, actions);
         }
     });
+    preview.is_some()
 }
 
 fn tone_color(p: &Palette, t: Tone) -> egui::Color32 {
@@ -386,6 +425,10 @@ fn item_units(blocks: &[Block], t: &Transcript, index: usize) -> Vec<(Unit, Vec<
     for b in blocks {
         match b {
             // What the user typed keeps its line breaks (D157), as it is drawn.
+            Block::User { index: i } if *i == index && let Some(cb) = yaac_core::shell_block::block(t, index) => {
+                let f = yaac_core::shell_block::fold(&cb.output, false);
+                out.push((Unit::new(index, 0), [cb.command.clone(), f.shown.to_owned()].into_iter().filter(|s| !s.is_empty()).collect()));
+            }
             Block::User { index: i } if *i == index => {
                 let parsed = markdown::parse_typed(&message_text(item).unwrap_or_default());
                 out.push((Unit::new(index, 0), markdown::plain_parts(&parsed.iter().collect::<Vec<_>>())));
@@ -491,6 +534,12 @@ fn guess(cache: &mut std::collections::HashMap<u64, (u64, f32, f32)>, ident: u64
     let Some(item) = t.items().get(index) else { return 60.0 };
     let text = |w: f32, s: &str| markdown::guess_height(s, w, m.char_w, size::PROSE, m.gap);
     let h = match (b, &item.body) {
+        (Block::User { index }, _) if let Some(cb) = yaac_core::shell_block::block(t, *index) => {
+            let f = yaac_core::shell_block::fold(&cb.output, false);
+            #[allow(clippy::cast_precision_loss, reason = "a few lines")]
+            let rows = f.total - f.hidden;
+            34.0 + if f.total > 0 { 16.0 + lines(rows) * 17.0 + if f.hidden > 0 { 20.0 } else { 0.0 } } else { 0.0 }
+        }
         (Block::User { .. }, _) => {
             // In its bubble (D155): its share of the column, less the bubble's margins.
             let margin = crate::messages::BUBBLE_MARGIN;
@@ -884,6 +933,11 @@ fn render_block(ui: &mut egui::Ui, mut v: View<'_>, key: &ThreadKey, t: &Transcr
     match b {
         Block::User { index } => {
             let item = &t.items()[*index];
+            // A `!command` the user ran (P346): one command block, not a bubble.
+            if let Some(cb) = yaac_core::shell_block::block(t, *index) {
+                command_block(ui, &mut v, key, t, &cb, &item.id, unit, actions);
+                return;
+            }
             let ItemBody::UserMessage(u) = &item.body else { return };
             let context = yaac_core::message::context(u);
             let context_open = v.ui.expansion.context.contains(&(key.clone(), item.id.clone()));
@@ -1122,6 +1176,90 @@ fn chip(ui: &mut egui::Ui, p: &Palette, name: &str, image: bool, gone: bool) {
             }
         });
     });
+}
+
+/// A `!command` the user ran (P346): the prompt icon and the command in mono, a status badge
+/// at the right (a spinner and Stop while it runs; ✓ or ✗, the exit code and the duration
+/// once done), and its output below on a code surface, folded to about twelve lines.
+#[allow(clippy::too_many_arguments, reason = "one block of the transcript")]
+fn command_block(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript, cb: &yaac_core::shell_block::CommandBlock, anchor: &yaac_protocol::ItemId, unit: Unit, actions: &mut Vec<Action>) {
+    use yaac_core::shell_block::{fold, show_all_label};
+    let p = v.p;
+    let open = v.ui.expansion.lines.contains(&(key.clone(), anchor.clone()));
+    let can_stop = cb.running
+        && t.active_turn.as_ref() == Some(&cb.turn)
+        && t.effective.as_ref().is_some_and(|e| yaac_protocol::has_capability(&e.capabilities, &yaac_protocol::Capability::Interrupt));
+    let mono = theme::mono(size::MONO);
+    let mut toggle = false;
+    let mut output_rect = None;
+    egui::Frame::NONE.fill(p.bg).stroke(egui::Stroke::new(1.0, p.border)).corner_radius(6).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 0.0;
+        // The command row.
+        egui::Frame::NONE.inner_margin(Margin { left: 12, right: 8, top: 6, bottom: 6 }).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let shell = p.shell;
+                widgets::icon(ui, 15.0, |pa, c, d| icons::prompt(pa, c, d, shell)).on_hover_text("A command you ran");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    if cb.running {
+                        if can_stop && widgets::plain(ui, &p, "Stop", None).on_hover_text("Stop the command and its turn").clicked() {
+                            actions.push(Action::Stop(key.clone()));
+                        }
+                        ui.label(widgets::secondary("running", &p));
+                        widgets::icon(ui, 13.0, |pa, c, d| icons::spinner(pa, c, d, p.running));
+                    } else {
+                        if let Some(badge) = cb.badge() {
+                            let color = if cb.ok() == Some(false) { p.failed } else { p.text2 };
+                            ui.label(egui::RichText::new(badge).font(theme::ui(size::SMALL)).color(color));
+                        }
+                        match cb.ok() {
+                            Some(true) => {
+                                widgets::icon(ui, 13.0, |pa, c, d| icons::check(pa, c, d, p.done));
+                            }
+                            Some(false) => {
+                                widgets::icon(ui, 13.0, |pa, c, d| icons::close(pa, c, d, p.failed));
+                            }
+                            None => {}
+                        }
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let g = ui.fonts_mut(|f| f.layout(cb.command.clone(), mono.clone(), p.text, ui.available_width().max(40.0)));
+                        let r = v.sel(unit).label(ui, g, p.text);
+                        if let Some(cwd) = &cb.cwd {
+                            r.on_hover_text(format!("Ran in {cwd}"));
+                        }
+                    });
+                });
+            });
+        });
+        // The output, on a code surface.
+        let f = fold(&cb.output, open);
+        if f.total > 0 || cb.truncated {
+            let out = egui::Frame::NONE.fill(p.code_bg).corner_radius(egui::CornerRadius { nw: 0, ne: 0, sw: 6, se: 6 }).inner_margin(Margin::symmetric(12, 8)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.spacing_mut().item_spacing.y = 4.0;
+                v.sel(unit).text(ui, f.shown, theme::mono(size::MONO - 0.5), p.text);
+                if f.hidden > 0 {
+                    toggle = widgets::link(ui, &p, &show_all_label(f.total), theme::ui(size::SMALL)).clicked();
+                } else if open && fold(&cb.output, false).hidden > 0 {
+                    toggle = widgets::link(ui, &p, "Show less", theme::ui(size::SMALL)).clicked();
+                }
+                if cb.truncated {
+                    ui.label(widgets::secondary("Output truncated", &p));
+                }
+            });
+            output_rect = Some(out.response.rect);
+        }
+    });
+    if let Some(rect) = output_rect.filter(|_| !cb.output.is_empty()) {
+        markdown::copy_button(ui, &p, rect, &cb.output, ui.scope_id().with(("command-copy", anchor)));
+    }
+    if toggle {
+        v.ui.expansion.toggle_line(key, anchor);
+    }
 }
 
 /// A command the user ran ("/model opus", "!ls"): a compact monochrome chip, its text

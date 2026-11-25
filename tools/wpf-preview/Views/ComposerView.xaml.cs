@@ -101,12 +101,17 @@ public partial class ComposerView : UserControl
         Placeholder.Text = placeholder;
         System.Windows.Automation.AutomationProperties.SetName(Editor, placeholder);
         var text = Field(view, "text").String();
+        normalPlaceholder = placeholder;
+        RenderShell(view);
         UpdateText(text, editorChanged);
+        if (shellMode)
+            ApplyShellLook();
         Markdown.SetSpans(Normalize(text), Field(view, "markdown"), Field(view, "markdownBudget").ComposerInt());
         UpdatePlaceholder();
         RenderFileSearch(Field(view, "filePicker"), Field(view, "fileScope").String());
 
-        DisplayText(Hint, Field(view, "hint").String());
+        normalHint = Field(view, "hint").String();
+        ShowHint();
         DisplayText(UltrafastWarning, Field(view, "ultrafastWarning").String());
         RenderStatus(Field(view, "status"));
         RenderRows(Notices, Field(view, "notices"), RowKind.Notice);
@@ -151,20 +156,17 @@ public partial class ComposerView : UserControl
         System.Windows.Automation.AutomationProperties.SetHelpText(Editor,
             $"New line with {newlineKey}. Send or queue with {sendKey}. Send now with {nowKey}.");
 
-        var sendNow = ReadAction(Field(view, "sendNow"));
-        sendNowOffered = sendNow is not null;
+        sendNowAction = ReadAction(Field(view, "sendNow"));
+        sendNowOffered = sendNowAction is not null;
         attachAction = ReadAction(Field(view, "attach"));
         cancelEditAction = ReadAction(Field(view, "cancelEdit"));
         pasteAction = ReadAction(Field(view, "paste"));
         dropAction = ReadAction(Field(view, "drop"));
 
-        SetButton(AttachButton, attachAction, editingEnabled);
-        if (attachAction is not null)
-        {
-            AttachButton.Content = "\uF0C6";
-        }
-        SetButton(SendButton, ReadAction(Field(view, "send")), editingEnabled, sendKey, showShortcut: true);
-        SetButton(SendNowButton, sendNow, editingEnabled, nowKey);
+        normalSend = ReadAction(Field(view, "send"));
+        sendKeyLabel = sendKey;
+        nowKeyLabel = nowKey;
+        ShowSubmitButtons();
         SetButton(StopButton, ReadAction(Field(view, "stop")), editingEnabled, "Esc");
         SetButton(CancelEditButton, cancelEditAction, editingEnabled, "Esc");
         var ready = Field(view, "submitReady");
@@ -176,7 +178,8 @@ public partial class ComposerView : UserControl
     private void UpdateText(string value, bool reset)
     {
         value = Normalize(value);
-        if (!reset)
+        var shell = IsShellText(shellCapable, value);
+        if (!reset && shell == shellMode)
         {
             // A transcript redraw or an echo of an earlier keystroke must not replace the
             // local buffer, selection, scroll position, or undo history.
@@ -192,6 +195,13 @@ public partial class ComposerView : UserControl
         }
         serverText = value;
         pendingEdits.Clear();
+        if (shell != shellMode || reset)
+        {
+            shellMode = shell;
+            shellHistoryIndex = -1;
+            ApplyShellLook();
+        }
+        value = ShellField(shell, value);
 
         var before = Editor.Text;
         var start = Editor.SelectionStart;
@@ -257,17 +267,19 @@ public partial class ComposerView : UserControl
         if (applyingText || !editingEnabled)
             return;
 
+        EnterShellIfTyped();
+        ShellFieldEdited();
         ReportEditorEdit();
     }
 
     private void ReportEditorEdit()
     {
-        var text = Normalize(Editor.Text);
+        var text = DraftText(Normalize(Editor.Text));
         if (pendingEdits.Count == MaxPendingEdits)
             pendingEdits.RemoveAt(0);
         pendingEdits.Add(text);
         lastCaret = Editor.CaretIndex;
-        Command?.Invoke("composer.edit", new { key, text, caret = Editor.CaretIndex });
+        Command?.Invoke("composer.edit", new { key, text, caret = DraftCaret });
         RefreshFileToken();
         UpdateSendButtons();
     }
@@ -302,6 +314,11 @@ public partial class ComposerView : UserControl
 
         var modifiers = Keyboard.Modifiers;
         if (modifiers == ModifierKeys.None && HandleFileKey(e.Key))
+        {
+            e.Handled = true;
+            return;
+        }
+        if (ShellKeyDown(e))
         {
             e.Handled = true;
             return;
@@ -372,7 +389,7 @@ public partial class ComposerView : UserControl
 
     private void SubmitMessage(bool now)
     {
-        if (now && sendNowOffered)
+        if (now && sendNowOffered && !shellMode)
             Submit(SendNowButton, "composer.sendNow");
         else
             Submit(SendButton, "composer.send");
@@ -475,7 +492,7 @@ public partial class ComposerView : UserControl
         });
     }
 
-    private bool CanDrop => IsVisible && editingEnabled && dropAction?.Enabled == true;
+    private bool CanDrop => IsVisible && editingEnabled && !shellMode && dropAction?.Enabled == true;
 
     private void ComposerLoaded(object sender, RoutedEventArgs e)
     {

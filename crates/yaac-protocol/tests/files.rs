@@ -54,4 +54,6 @@ fn files_methods_have_additive_wire_shapes() {
 fn an_older_hub_summary_defaults_to_no_file_view() {
     let legacy: DaemonSummary = serde_json::from_value(json!({"build":"old","older":true,"schemaHashMatches":true})).unwrap();
     assert!(!legacy.file_view);
+    assert!(!legacy.terminal);
+    assert_eq!(legacy.terminal_unavailable_reason, None);
 }

@@ -15,6 +15,10 @@ public partial class MainWindow
 
     private void InitializeBrowser()
     {
+        PaneIcon.Set(ComposerPane.TerminalToggle, "Terminal");
+        ComposerPane.TerminalToggle.Click += (_, _) => Send("shell.shortcut", new { id = ToggleTerminal });
+        ChatRegion.SizeChanged += (_, e) => { if (e.HeightChanged) SizeTerminalPanel(); };
+        ComposerColumn.SizeChanged += (_, e) => { if (panelOpen && e.HeightChanged) SizeTerminalPanel(); };
         BrowserPane.Command += Send;
         BrowserPane.ComposerCaret = () => ComposerPane.CaretIndex;
         DpiChanged += (_, _) => Dispatcher.BeginInvoke(DispatcherPriority.Loaded, BrowserPane.UpdateViewport);
@@ -55,6 +59,7 @@ public partial class MainWindow
         ThreadLocation.Visibility = showChatTab ? Visibility.Collapsed : Visibility.Visible;
         UpdateDockLayout();
         BrowserPane.Render(state);
+        RenderTerminalPanel(state);
     }
 
     private void BrowserExternalClicked(object sender, RoutedEventArgs e)

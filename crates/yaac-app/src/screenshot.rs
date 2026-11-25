@@ -112,6 +112,12 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("111", "rate-limits-tooltip"),
     ("112", "rate-limits-strip"),
     ("120", "running-queue"),
+    // `!command` in the composer and its block in the transcript (P344, P346).
+    ("140", "bang-composer"),
+    ("141", "bang-composer-running"),
+    ("142", "bang-left"),
+    ("143", "bang-block-running"),
+    ("144", "bang-block-done"),
     ("130", "many-agents-pill"),
     ("131", "many-agents-card"),
     ("132", "many-agents-docked"),
@@ -136,6 +142,22 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("pane-narrow-full-browser", "pane"),
     ("pane-docked-split", "pane"),
     ("pane-docked-full-chat", "pane"),
+    // Terminals (docs/13-terminal.md), from the recorded fixtures in crates/yaac-term/fixtures
+    // at 69 × 28 cells, in the side pane at the pane-wide ratio; written as <theme>-<scene>.png.
+    ("term-bash-prompt", "term"),
+    ("term-vim", "term"),
+    ("term-htop", "term"),
+    ("term-powershell-prompt", "term"),
+    ("term-selection", "term"),
+    ("term-search", "term"),
+    ("term-exited", "term"),
+    ("term-vim-full", "term"),
+    ("term-htop-full", "term"),
+    // The terminal panel under the composer (P338).
+    ("term-panel-open", "term"),
+    ("term-panel-maximised", "term"),
+    ("term-panel-fullchat", "term"),
+    ("term-panel-rename", "term"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -201,7 +223,7 @@ impl Shots {
             let img = self.image.lock().ok().and_then(|mut g| g.take());
             if let Some(img) = img {
                 let theme = if dark { "dark" } else { "light" };
-                let file = match id.strip_prefix("pane-") {
+                let file = match id.strip_prefix("pane-").or_else(|| id.strip_prefix("term-")) {
                     Some(scene) => self.dir.join(format!("{theme}-{scene}.png")),
                     None => self.dir.join(format!("{id}-{name}-{theme}.png")),
                 };
@@ -209,7 +231,7 @@ impl Shots {
                     crop(&img, NARROW_SIZE[0] * 1.25, NARROW_SIZE[1] * 1.25)
                 } else if id.starts_with("pane-docked") {
                     crop(&img, DOCKED_SIZE[0] * 1.25, DOCKED_SIZE[1] * 1.25)
-                } else if id.starts_with("pane-") {
+                } else if id.starts_with("pane-") || id.starts_with("term-") {
                     crop(&img, PANE_SIZE[0] * PANE_ZOOM, PANE_SIZE[1] * PANE_ZOOM)
                 } else {
                     (*img).clone()
@@ -237,12 +259,14 @@ impl Shots {
                     ctx.input(|i| i.viewport().monitor_size)
                 );
             }
-            ctx.set_zoom_factor(if id.starts_with("pane-") && !id.starts_with("pane-docked") { PANE_ZOOM } else { 1.25 });
+            ctx.set_zoom_factor(if (id.starts_with("pane-") && !id.starts_with("pane-docked")) || id.starts_with("term-") { PANE_ZOOM } else { 1.25 });
             // Each screen starts from fresh widget memory (scroll positions from the screen
             // before must not carry over).
             ctx.data_mut(egui::util::IdTypeMap::clear);
             // Code blocks show their copy button as on hover.
             ctx.data_mut(|d| d.insert_temp(egui::Id::unique(crate::markdown::FORCE_COPY_BUTTONS), true));
+            // Scenes may depend on the theme (a terminal replays vim's light or dark colours).
+            app.ui.theme = if dark { ThemeChoice::Dark } else { ThemeChoice::Light };
             setup(app, id);
             // This display cannot resize the window reliably, so screen 21 lays the shell out in
             // 960 × 720 points and the picture is cropped to it.
@@ -250,7 +274,7 @@ impl Shots {
                 Some(egui::vec2(NARROW_SIZE[0], NARROW_SIZE[1]))
             } else if id.starts_with("pane-docked") {
                 Some(egui::vec2(DOCKED_SIZE[0], DOCKED_SIZE[1]))
-            } else if id.starts_with("pane-") {
+            } else if id.starts_with("pane-") || id.starts_with("term-") {
                 Some(egui::vec2(PANE_SIZE[0], PANE_SIZE[1]))
             } else {
                 None
@@ -293,6 +317,10 @@ fn setup(app: &mut YaacApp, id: &str) {
     app.ui.panel = if docked { PanelMode::Docked } else { PanelMode::Pill };
     if let Some(scene) = id.strip_prefix("pane-") {
         pane(app, scene);
+        return;
+    }
+    if let Some(scene) = id.strip_prefix("term-") {
+        terminal(app, scene);
         return;
     }
     match id {
@@ -339,6 +367,7 @@ fn setup(app: &mut YaacApp, id: &str) {
                 app.ui.scroll_end = false;
             }
         }
+        "140" | "141" | "142" | "143" | "144" => bang(app, id, &play),
         "120" => {
             // Queue or send now (D166): billing-service (Claude Code) is working; two messages
             // wait in the strip above the composer, and a third is being typed. Queue is the
@@ -1017,6 +1046,83 @@ git diff --check
     }
 }
 
+/// `!command` (P346): the composer in `!` mode idle (140) and while a turn runs (141, with a
+/// queued command in the strip), the normal composer after leaving it (142), and the command
+/// block running (143) and finished with folded output, then the answer (144).
+fn bang(app: &mut YaacApp, id: &str, play: &dyn Fn(&mut YaacApp, Scene)) {
+    use yaac_protocol::{Capability, InputPart, Item, ItemBody, ItemId, ItemStatus, TextPart, TextRole, ToolCallItem, ToolCallSource, ToolKind, TurnId, UserMessageItem};
+    let running = id == "141";
+    if running {
+        play(app, Scene::QueueWhileRunning);
+    }
+    let k = if running { threads::billing() } else { threads::users() };
+    app.open(&k, None);
+    let Some(t) = app.client.state.transcripts.get_mut(&k) else { return };
+    if let Some(e) = t.effective.as_mut()
+        && !e.capabilities.contains(&Capability::UserShellCommand)
+    {
+        e.capabilities.push(Capability::UserShellCommand);
+    }
+    let at = |s: i64| Some(yaac_core::time::timestamp(STORY_NOW - s));
+    let mk = |id: &str, turn: &str, status: ItemStatus, body: ItemBody, ago: i64| Item { id: ItemId::new(id), turn_id: TurnId::new(turn), status, started_at: at(ago), completed_at: at(ago - 1), body };
+    let bang_msg = |text: &str| ItemBody::UserMessage(UserMessageItem { parts: vec![InputPart::Text(TextPart { text: text.into(), role: Some(TextRole::Command), label: None })], op_id: None });
+    let call = |title: &str, output: &str, exit: Option<i32>, ms: Option<u64>| {
+        ItemBody::ToolCall(ToolCallItem {
+            tool: ToolKind::Command,
+            title: title.into(),
+            input: None,
+            output: output.into(),
+            output_truncated: false,
+            output_bytes: None,
+            exit_code: exit,
+            cwd: Some(yaac_protocol::TargetPath::new("/home/dev/users-service")),
+            agent_call: None,
+            skill: None,
+            images: Vec::new(),
+            source: Some(ToolCallSource::UserShell),
+            duration_ms: ms,
+        })
+    };
+    let mut rev = 1_000_000;
+    let mut add = |t: &mut yaac_core::transcript::Transcript, item: Item| {
+        rev += 1;
+        t.upsert(item, rev);
+    };
+    match id {
+        "143" => {
+            let out = "   Compiling users v0.4.2 (/home/dev/users-service)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.81s\n     Running unittests src/lib.rs\n\nrunning 38 tests\ntest auth::tests::rejects_expired_token ... ok\ntest auth::tests::refreshes_before_expiry ... ok\n";
+            add(t, mk("bang-u", "bang-t", ItemStatus::Completed, bang_msg("!cargo test -p users"), 8));
+            add(t, mk("bang-c", "bang-t", ItemStatus::InProgress, call("cargo test -p users", out, None, None), 7));
+            t.active_turn = Some(TurnId::new("bang-t"));
+        }
+        "144" => {
+            let mut out = String::from("   Compiling users v0.4.2 (/home/dev/users-service)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.81s\n     Running unittests src/lib.rs\n\nrunning 38 tests\n");
+            for name in ["rejects_expired_token", "refreshes_before_expiry", "hashes_with_argon2", "locks_after_five_failures", "unlocks_after_cooldown", "keeps_session_on_refresh", "drops_session_on_logout", "normalises_email_case", "rejects_duplicate_email", "lists_users_paginated", "filters_by_role", "sorts_by_created_at", "exports_csv", "imports_csv_with_header", "rejects_csv_without_header", "audits_role_change", "audits_password_reset"] {
+                out.push_str(&format!("test users::tests::{name} ... ok\n"));
+            }
+            out.push_str("test users::tests::sends_welcome_email ... FAILED\n\nfailures:\n    users::tests::sends_welcome_email\n\ntest result: FAILED. 37 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s\n");
+            add(t, mk("bang-u", "bang-t", ItemStatus::Completed, bang_msg("!cargo test -p users"), 60));
+            add(t, mk("bang-c", "bang-t", ItemStatus::Completed, call("cargo test -p users", &out, Some(101), Some(6_240)), 59));
+            add(t, mk("bang-a", "bang-t", ItemStatus::Completed, ItemBody::AgentMessage(yaac_protocol::AgentMessageItem { text: "One test fails: `sends_welcome_email` expects the mailer stub to be called once, but the signup path now queues the email instead of sending it. I can update the test to assert on the queue, or make signup send synchronously again — which do you prefer?".into() }), 50));
+        }
+        _ => {}
+    }
+    if running {
+        let entry = yaac_protocol::QueuedMessage { queue_id: "bang-q".into(), input: vec![InputPart::text("!cargo clippy -p billing")], queued_at: yaac_core::time::timestamp(STORY_NOW - 5), model: None, effort: None, mode: None, fast: None, ultrafast: None, shell_command: Some("cargo clippy -p billing".into()) };
+        t.queued.push(entry);
+    }
+    let draft = match id {
+        "140" => "!cargo test -p users -- --nocapture",
+        "141" => "!git status --short",
+        "142" => "cargo test -p users -- --nocapture",
+        _ => "",
+    };
+    app.client.state.drafts.entry(k).or_default().text = draft.into();
+    if matches!(id, "140" | "141" | "142") {
+        app.ui.focus_composer = true;
+    }
+}
+
 /// The side pane on Migrate auth module · orchestrator: New tab, Files, the app.rs diff and
 /// a page; `scene` is `<wide|narrow>-<browser|servers|empty|files|diff|many-tabs|full-chat|full-browser>`.
 fn pane(app: &mut YaacApp, scene: &str) {
@@ -1033,6 +1139,8 @@ fn pane(app: &mut YaacApp, scene: &str) {
             can_update: false,
             port_forward: true,
             file_view: true,
+            terminal: false,
+            terminal_unavailable_reason: None,
         });
     }
     app.preview_ui.demo_page = true;
@@ -1140,6 +1248,123 @@ fn pane(app: &mut YaacApp, scene: &str) {
         }
     }
     b.hold_requests(&app.client, &key);
+}
+
+/// A terminal scene: a session fed one of yaac-term's recorded fixtures (the same bytes the WPF
+/// renderer replays), pinned to the fixture's 69 × 28 grid.
+fn terminal(app: &mut YaacApp, scene: &str) {
+    use crate::terminal::SessionState;
+    let key = threads::orchestrator();
+    app.open(&key, None);
+    if let Some(t) = app.client.state.targets.iter_mut().find(|t| t.entry.id == key.target) {
+        t.entry.state.daemon = Some(yaac_protocol::attach::DaemonSummary {
+            build: "demo".into(),
+            older: false,
+            schema_hash_matches: true,
+            can_update: false,
+            port_forward: true,
+            file_view: true,
+            terminal: true,
+            terminal_unavailable_reason: None,
+        });
+    }
+    let fixture = |name: &str| -> &'static [u8] {
+        match name {
+            "vim" => include_bytes!("../../yaac-term/fixtures/vim.vt"),
+            "vim-light" => include_bytes!("../../yaac-term/fixtures/vim-light.vt"),
+            "htop" => include_bytes!("../../yaac-term/fixtures/htop.vt"),
+            "powershell-prompt" => include_bytes!("../../yaac-term/fixtures/powershell-prompt.vt"),
+            "search" => include_bytes!("../../yaac-term/fixtures/search.vt"),
+            "exited" => include_bytes!("../../yaac-term/fixtures/exited.vt"),
+            _ => include_bytes!("../../yaac-term/fixtures/bash-prompt.vt"),
+        }
+    };
+    let base = scene.trim_end_matches("-full");
+    let (stream, shell) = match base {
+        "powershell-prompt" => ("powershell-prompt", ("pwsh", "PowerShell")),
+        "selection" | "panel-open" | "panel-maximised" | "panel-fullchat" | "panel-rename" => ("bash-prompt", ("/bin/bash", "bash")),
+        // vim chooses its colours for the background it is told (it asks the terminal, OSC 11).
+        "vim" if app.ui.theme == crate::theme::ThemeChoice::Light => ("vim-light", ("/bin/bash", "bash")),
+        other => (other, ("/bin/bash", "bash")),
+    };
+    let cwd = "/home/dev/work/auth".to_owned();
+    let shell = Some(yaac_protocol::TerminalShell { path: shell.0.into(), name: shell.1.into() });
+    let terms = &mut app.browsers.terms;
+    let id = terms.insert(&key, shell, cwd);
+    terms.detach_demo(id);
+    let panel = scene.starts_with("panel-");
+    let s = terms.get_mut(id).expect("just inserted");
+    if !panel {
+        s.pinned = Some((69, 28));
+        s.term.resize(69, 28);
+    }
+    s.term.feed(fixture(stream));
+    while !s.term.idle() {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    match scene {
+        "selection" => {
+            s.term.select_start(8, 0, yaac_term::CellSide::Left, yaac_term::SelectKind::Simple);
+            s.term.select_to(14, 8, yaac_term::CellSide::Right);
+        }
+        "search" => {
+            s.term.search("denied");
+            s.search = Some("denied".into());
+        }
+        "exited" => s.state = SessionState::Exited(3),
+        _ => {}
+    }
+    if scene == "panel-rename" {
+        // A second terminal, named; the first being renamed in place (P343).
+        let other = terms.insert(&key, Some(yaac_protocol::TerminalShell { path: "/usr/bin/zsh".into(), name: "zsh".into() }), "/home/dev/work/auth".into());
+        terms.detach_demo(other);
+        if let Some(o) = terms.get_mut(other) {
+            o.name = Some("dev server".into());
+        }
+        terms.panels.entry(key.clone()).or_default().tabs.push(other);
+    }
+    if panel {
+        let p = terms.panels.entry(key.clone()).or_default();
+        p.tabs.push(id);
+        p.active = id;
+        p.open = true;
+        p.maximised = scene == "panel-maximised";
+        if scene == "panel-fullchat" {
+            let b = &mut app.browsers;
+            let tab = b.insert(&key);
+            if let Some(t) = b.tab_mut(&key, tab) {
+                t.url = "http://localhost:5173/".into();
+                t.title = "Project documentation".into();
+            }
+            b.set_full_screen(&key, true);
+            b.select_chat(&key);
+            app.preview_ui.demo_page = true;
+            b.hold_requests(&app.client, &key);
+        }
+    } else {
+        let b = &mut app.browsers;
+        let tab = b.terminal_tab(&key, id);
+        if let Some(area) = b.areas.get_mut(&key) {
+            area.ratio = 0.32;
+        }
+        if scene.ends_with("-full") {
+            b.set_full_screen(&key, true);
+        }
+        b.select(&key, tab);
+        b.hold_requests(&app.client, &key);
+    }
+    app.browsers.terms.focus = Some(id);
+    if let Some(s) = app.browsers.terms.get_mut(id) {
+        s.shown_focused = true;
+    }
+    if scene == "panel-rename" {
+        app.browsers.terms.begin_rename(id);
+        if let Some(r) = app.browsers.terms.renaming.as_mut() {
+            r.text = "build watch".into();
+        }
+    }
+    // Opening the thread put the caret in its composer; the terminal has it here.
+    app.ui.focus_composer = false;
 }
 
 fn write_png(path: &std::path::Path, img: &ColorImage) -> Result<(), String> {

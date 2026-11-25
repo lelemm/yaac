@@ -15,6 +15,7 @@ Read in order the first time; each doc stands alone afterwards.
     harnesses and machines. Read this one even if you read nothing else.
 11. [Web preview](11-preview.md) — see a dev server on a target live, through a tunnel on its one connection
 12. [Files and diffs](12-files.md) — the worktree tree with git marks, file and diff tabs, Add to composer
+13. [Terminal](13-terminal.md) — a fast terminal tab on the target: PowerShell on Windows, the login shell on Linux
 11. [Installing on Windows](install.md) — the per-user setup: where files go, what runs at
     login, upgrade and uninstall
 

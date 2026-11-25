@@ -2,6 +2,7 @@
 mod common;
 
 use common::{boot, settle};
+use yaac_core::agents::{SpawnedBy, agents_panel};
 use yaac_core::attention::{Attention, AttentionMap, BudgetMark, Mark, budget_mark, display};
 use yaac_core::demo::{Scene, threads};
 use yaac_core::header::{ComposerView, Tone, composer, header};
@@ -25,6 +26,47 @@ fn a_pending_request_is_the_threads_own_needs_you_and_parents_carry_nothing() {
     assert_eq!(h.tag, Some(("Needs you · approval".to_owned(), Tone::NeedsYou)));
     assert_eq!(display(&c.state, &map, &threads::billing()).mark, Mark::Done);
     assert_eq!(display(&c.state, &map, &threads::ci()).mark, Mark::Waiting);
+}
+
+#[test]
+fn waiting_for_result_workers_is_shared_across_surfaces_and_targets() {
+    let (mut c, _) = boot();
+    let parent = threads::orchestrator();
+    let local = threads::users();
+    let remote = threads::billing();
+    assert_eq!(parent.target, local.target);
+    assert_ne!(parent.target, remote.target);
+    let s = &mut c.state;
+
+    s.threads.get_mut(&parent).unwrap().summary.state = ThreadState::Idle;
+    let local_summary = &mut s.threads.get_mut(&local).unwrap().summary;
+    local_summary.state = ThreadState::Running;
+    local_summary.reports_to_parent = Some(true);
+    let map = AttentionMap::compute(s);
+    assert_eq!(display(s, &map, &parent).mark, Mark::Waiting);
+    assert_eq!(header(s, &map, &parent).unwrap().tag, Some(("Waiting".into(), Tone::Running)));
+    let sidebar = yaac_core::sidebar::sections(s, &map, Default::default(), Default::default(), "", Default::default(), common::NOW, yaac_core::time::Zone::UTC);
+    assert_eq!(sidebar.iter().flat_map(|s| &s.rows).find(|r| r.key == parent).unwrap().display.mark, Mark::Waiting);
+    let panel = agents_panel(s, &map, &local).unwrap();
+    assert!(matches!(panel.spawned_by, SpawnedBy::Agent(row) if row.display.mark == Mark::Waiting));
+
+    s.threads.get_mut(&local).unwrap().summary.reports_to_parent = Some(false);
+    assert_eq!(display(s, &AttentionMap::compute(s), &parent).mark, Mark::Idle, "detached");
+    let remote_summary = &mut s.threads.get_mut(&remote).unwrap().summary;
+    remote_summary.reports_to_parent = Some(true);
+    for status in [ThreadState::Running, ThreadState::Waiting, ThreadState::NeedsAttention] {
+        s.threads.get_mut(&remote).unwrap().summary.state = status;
+        assert_eq!(display(s, &AttentionMap::compute(s), &parent).mark, Mark::Waiting, "remote worker");
+    }
+
+    s.threads.get_mut(&parent).unwrap().summary.state = ThreadState::Running;
+    assert_eq!(display(s, &AttentionMap::compute(s), &parent).mark, Mark::Running, "the parent's own turn");
+    s.threads.get_mut(&parent).unwrap().summary.state = ThreadState::Idle;
+    s.threads.get_mut(&local).unwrap().summary.reports_to_parent = Some(true);
+    s.threads.get_mut(&remote).unwrap().summary.state = ThreadState::Done;
+    assert_eq!(display(s, &AttentionMap::compute(s), &parent).mark, Mark::Waiting, "one worker remains");
+    s.threads.get_mut(&local).unwrap().summary.state = ThreadState::Done;
+    assert_eq!(display(s, &AttentionMap::compute(s), &parent).mark, Mark::Idle, "the last worker ended");
 }
 
 #[test]

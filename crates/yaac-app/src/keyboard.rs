@@ -162,6 +162,13 @@ fn row(ui: &mut egui::Ui, app: &mut YaacApp, d: &'static cmds::CommandDef) {
                 app.ui.set.keys.recording = if recording { None } else { Some(cmd) };
                 app.ui.set.keys.conflict = None;
             }
+            // While a terminal has focus only commands with this on reach YAAC (P338).
+            ui.add_space(10.0);
+            let on = app.ui.bindings.works_in_terminal(cmd);
+            ui.label(widgets::secondary("In terminal", &p).font(theme::ui(size::SMALL)));
+            if widgets::switch(ui, &p, on).on_hover_text("Works in the terminal: its keys reach YAAC even while a terminal has focus").clicked() {
+                app.ui.bindings.set_in_terminal(cmd, !on);
+            }
         });
     });
     // The chord recorded for this row belongs to another command.

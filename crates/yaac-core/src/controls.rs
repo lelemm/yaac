@@ -21,6 +21,8 @@ pub struct PickerModel {
     pub is_default: bool,
     /// The current selection (ticked).
     pub selected: bool,
+    /// The thread is already using this model, which Settings has turned off.
+    pub off: bool,
     /// Whether it can see images.
     pub image: Support,
     /// "effort: low – high", when it reports effort levels.
@@ -213,6 +215,7 @@ fn picker_model(m: &ModelInfo, selected: Option<&ModelId>, enabled: bool) -> Pic
         name: m.display_name.clone(),
         is_default: m.is_default,
         selected: selected == Some(&m.id),
+        off: false,
         image: model_image_support(m),
         effort_range: effort_range(&m.efforts),
         enabled,
@@ -222,7 +225,7 @@ fn picker_model(m: &ModelInfo, selected: Option<&ModelId>, enabled: bool) -> Pic
 fn model_label(p: Option<&ProviderDescriptor>, id: Option<&ModelId>) -> String {
     match (p, id) {
         (Some(p), Some(id)) => {
-            p.models.iter().find(|m| &m.id == id).map_or_else(|| id.to_string(), |m| m.display_name.clone())
+            p.find_model(id).map_or_else(|| id.to_string(), |m| m.display_name.clone())
         }
         (None, Some(id)) => id.to_string(),
         (Some(p), None) => p.models.iter().find(|m| m.is_default).map_or_else(|| "default".to_owned(), |m| m.display_name.clone()),
@@ -270,7 +273,9 @@ pub fn draft_row(providers: &[ProviderDescriptor], target_name: &str, draft: &Ne
     let selected_p = instance.as_ref().and_then(|i| providers.iter().find(|p| &p.instance == i));
     let selected_model = draft
         .model
-        .clone()
+        .as_ref()
+        .filter(|id| !selected_p.is_some_and(|p| p.model_is_off(id)))
+        .cloned()
         .or_else(|| selected_p.and_then(|p| p.models.iter().find(|m| m.is_default)).map(|m| m.id.clone()));
     let groups = providers
         .iter()
@@ -330,6 +335,8 @@ pub struct StartedInputs<'a> {
     pub effective: Option<&'a ThreadEffective>,
     /// The model the summary last reported, used until `applied` is known.
     pub summary_model: Option<&'a ModelId>,
+    /// Whether the target reported its current model as off.
+    pub summary_model_off: bool,
     /// Fast mode as the summary reports it (the thread's setting on the target).
     pub summary_fast: bool,
     pub summary_ultrafast: bool,
@@ -355,11 +362,16 @@ pub fn started_row(input: StartedInputs<'_>) -> ControlRowView {
     }
     let caps: &[Capability] = input.effective.map_or(&[], |e| e.capabilities.as_slice());
     let own = input.providers.iter().find(|p| &p.instance == input.instance);
-    let applied_model = input
-        .next
-        .and_then(|n| n.model.as_ref())
-        .or_else(|| input.effective.and_then(|e| e.applied.model.as_ref()))
+    let current = input.effective.and_then(|e| e.applied.model.as_ref())
         .or(input.summary_model);
+    let current_off = current.filter(|id| {
+        own.is_some_and(|p| p.model_is_off(id))
+            || (input.summary_model_off && input.summary_model == Some(id)
+                && own.is_none_or(|p| p.find_model(id).is_none()))
+    });
+    let applied_model = input.next.and_then(|n| n.model.as_ref())
+        .filter(|id| !own.is_some_and(|p| p.model_is_off(id)))
+        .or(current);
     let can_switch = has_capability(caps, &Capability::ModelSwitch);
     let groups = input
         .providers
@@ -368,12 +380,27 @@ pub fn started_row(input: StartedInputs<'_>) -> ControlRowView {
             if &p.instance == input.instance {
                 let reason = unavailable_reason(p, input.target_name);
                 let enabled = reason.is_none() && can_switch;
+                let mut models: Vec<_> = p.models.iter().filter(|m| !m.hidden)
+                    .map(|m| picker_model(m, applied_model, enabled)).collect();
+                if let Some(id) = current_off {
+                    let name = model_label(Some(p), Some(id));
+                    models.insert(0, PickerModel {
+                        id: id.clone(),
+                        name: format!("{name} · off in Settings"),
+                        is_default: false,
+                        selected: applied_model == Some(id),
+                        off: true,
+                        image: Support::Unknown,
+                        effort_range: None,
+                        enabled: false,
+                    });
+                }
                 PickerGroup {
                     instance: p.instance.clone(),
                     name: p.display_name.clone(),
                     enabled,
                     reason,
-                    models: p.models.iter().filter(|m| !m.hidden).map(|m| picker_model(m, applied_model, enabled)).collect(),
+                    models,
                 }
             } else {
                 PickerGroup {
@@ -401,7 +428,7 @@ pub fn started_row(input: StartedInputs<'_>) -> ControlRowView {
     });
     // Fast mode: shown when the model the next message goes to has it (D125).
     let next_model = own.and_then(|p| match applied_model {
-        Some(id) => p.models.iter().find(|m| &m.id == id),
+        Some(id) => p.find_model(id),
         None => p.models.iter().find(|m| m.is_default),
     });
     let fast = next_model.and_then(|m| speed_control(m,
@@ -419,7 +446,14 @@ pub fn started_row(input: StartedInputs<'_>) -> ControlRowView {
     ControlRowView::Row(ControlRow {
         model: Some(ModelControl {
             instance_label: own.map_or_else(|| input.instance.to_string(), |p| p.display_name.clone()),
-            model_label: model_label(own, applied_model),
+            model_label: {
+                let name = model_label(own, applied_model);
+                if current_off.is_some() && current_off == applied_model {
+                    format!("{name} · off in Settings")
+                } else {
+                    name
+                }
+            },
             changeable: can_switch,
             groups,
         }),
@@ -475,6 +509,7 @@ pub fn thread_row(state: &crate::state::AppState, key: &crate::key::ThreadKey) -
         target_name: &target_name,
         effective: t.and_then(|t| t.effective.as_ref()),
         summary_model: s.model.as_ref(),
+        summary_model_off: s.model_off == Some(true),
         summary_fast: s.fast,
         summary_ultrafast: s.ultrafast == Some(true),
         next: state.next_settings.get(key),

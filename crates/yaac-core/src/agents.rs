@@ -294,7 +294,7 @@ pub fn card_groups(panel: &AgentsPanel) -> Vec<(&'static str, Vec<&AgentRow>)> {
 
 pub fn sibling_rows(panel: &AgentsPanel) -> Vec<&AgentRow> {
     let mut siblings: Vec<_> = panel.siblings.iter().collect();
-    siblings.sort_by_key(|row| list_order_key(row));
+    siblings.sort_by_key(|row| (list_order_key(row), row.key.as_ref()));
     siblings
 }
 
@@ -339,7 +339,7 @@ pub fn docked_entries<'a>(cluster: &Cluster<'a>) -> Vec<DockEntry<'a>> {
     entries
 }
 
-/// One row of the panel (always a link when `key` is known).
+/// One row of the panel.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentRow {
     /// Parent, worker, or contact.
@@ -354,6 +354,8 @@ pub struct AgentRow {
     pub finished: bool,
     /// The thread, when it is in the index.
     pub key: Option<ThreadKey>,
+    /// The open thread's own row in Siblings (P341).
+    pub is_self: bool,
     /// Title.
     pub title: String,
     /// Provider display name.
@@ -380,6 +382,11 @@ pub struct AgentRow {
 }
 
 impl AgentRow {
+    /// The thread this row can open.
+    pub fn open_key(&self) -> Option<&ThreadKey> {
+        self.key.as_ref().filter(|_| !self.is_self)
+    }
+
     /// Compact last-activity age, shared by the Related agents views.
     pub fn activity_age(&self, now: i64) -> Option<String> {
         (self.updated != 0).then(|| crate::time::short_age(now.saturating_sub(self.updated)))
@@ -479,6 +486,7 @@ pub fn row_for(state: &AppState, map: &AttentionMap, key: &ThreadKey, depth: u8)
         flow: None,
         finished: d.mark == Mark::Done,
         key: Some(key.clone()),
+        is_self: false,
         title: s.title.clone(),
         provider: state.provider_of(key).map(|p| p.display_name.clone()),
         model: model_label(state, key),
@@ -508,6 +516,7 @@ fn row_for_peer(state: &AppState, map: &AttentionMap, peer: &MeshPeer) -> AgentR
         flow: None,
         finished: false,
         key: None,
+        is_self: false,
         title: peer.title.clone().unwrap_or_else(|| peer.address.to_string()),
         provider: peer.provider.clone(),
         model: peer.model.as_ref().map(ToString::to_string),
@@ -641,12 +650,16 @@ pub fn agents_panel(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Op
     };
 
     // The parent address still identifies siblings while the parent's own thread is missing.
-    // Exclude ourselves, the parent and our workers even if the index contains cyclic links.
-    let siblings: Vec<_> = s.spawned_by.as_ref().and_then(|parent| children.get(parent))
+    // Exclude the parent and our workers even if the index contains cyclic links.
+    let mut siblings: Vec<_> = s.spawned_by.as_ref().and_then(|parent| children.get(parent))
         .into_iter().flatten()
         .filter(|sibling| !seen.contains(*sibling) && Some(*sibling) != parent_key.as_ref())
         .filter_map(|sibling| row_for(state, map, sibling, 0))
         .collect();
+    if !siblings.is_empty() && let Some(mut row) = row_for(state, map, key, 0) {
+        row.is_self = true;
+        siblings.push(row);
+    }
 
     // Contacts: peers in mesh items that are neither the parent nor a worker, and that exist.
     let mut contacts: Vec<AgentRow> = Vec::new();

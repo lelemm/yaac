@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ModelInfo as SdkModelInfo, Options, PermissionResult, PermissionUpdate, SDKMessage, SDKSessionInfo, SDKUserMessage, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
-import { ClaudeProvider, claudeProviderFactory, setRunsAsRootForTests, type ClaudeProviderOptions } from "../src/providers/claude/index.js";
+import { ClaudeProvider, claudeProviderFactory, opUuid, setRunsAsRootForTests, type ClaudeProviderOptions } from "../src/providers/claude/index.js";
 import type { AgentEntry, ClaudeCli, ClaudeSdk, SdkQuery } from "../src/providers/claude/sdk.js";
 import { historyItems } from "../src/providers/claude/translate.js";
 import { InputOutcomeUnknown, PeerInputDenied, type ProviderEvent, type ProviderInput } from "../src/providers/types.js";
@@ -1565,4 +1565,103 @@ test("Claude reports a subagent's Bash after the turn, tails output, and only st
   assert.equal(await r.provider.stopCommand(active.thread, cmd.id), false);
   const notices = r.events.filter((e) => e.type === "itemCompleted" && e.thread === active.thread && e.item.kind === "notice" && e.item.text === `Started background command: ${command}`);
   assert.equal(notices.length, 1);
+});
+
+test("P342: each request carries the mode the query was in and Claude Code's reason fields; an ask rule is marked", async () => {
+  const r = rig();
+  await r.provider.probe();
+  const { thread, q } = await startedThread(r);
+  // In the default mode: the reason Claude Code gives (setsid, as 2.1.330 sends it), with its
+  // undeclared category, and the mode the query is in.
+  const opts = { signal: signal(), toolUseID: "toolu_s", requestId: "c1", suggestions: [], decisionReason: "What 'setsid' starts can't be checked before it runs", decisionReasonType: "other", displayName: "Bash", description: "start a sleeper" };
+  void q.canUseTool("Bash", { command: "setsid sleep 30 &" }, opts as never);
+  const first = await until(() => of(r.events, "requestRaised")[0], "requestRaised");
+  assert.equal(first.mode, "default");
+  assert.equal(first.userRule, undefined);
+  const req = first.request as { reason: string; details: Record<string, unknown> };
+  assert.equal(req.reason, "What 'setsid' starts can't be checked before it runs");
+  assert.equal(req.details.decisionReason, "What 'setsid' starts can't be checked before it runs");
+  assert.equal(req.details.decisionReasonType, "other");
+  assert.equal(req.details.description, "start a sleeper");
+  await r.provider.respond(thread, "toolu_s", { requestKind: "approval", decision: "allow" });
+  q.push(result());
+  await until(() => of(r.events, "turnCompleted")[0], "first turn");
+
+  // After a switch to bypass the request says so; a path outside the folders carries blockedPath.
+  await r.provider.startTurn(thread, input("go"), { mode: "bypassPermissions" });
+  void q.canUseTool("Bash", { command: "rm -f /tmp/x/f.txt" }, { signal: signal(), toolUseID: "toolu_rm", requestId: "c2", blockedPath: "/tmp/x/f.txt" });
+  const second = await until(() => of(r.events, "requestRaised")[1], "second requestRaised");
+  assert.equal(second.mode, "bypassPermissions");
+  assert.equal((second.request as { scope: string }).scope, "/tmp/x/f.txt");
+  // A prompt the user's own ask rule forced is marked, so that yaacd leaves it to the user.
+  void q.canUseTool("Bash", { command: "rm -rf d" }, { signal: signal(), toolUseID: "toolu_rule", requestId: "c3", matchedAskRule: { source: "projectSettings", toolName: "Bash", ruleContent: "rm:*" } });
+  const third = await until(() => of(r.events, "requestRaised")[2], "third requestRaised");
+  assert.equal(third.mode, "bypassPermissions");
+  assert.equal(third.userRule, "Bash(rm:*) (projectSettings)");
+  // As 2.1.330 sends a rule-forced ask in bypass: only the undeclared category says so.
+  void q.canUseTool("Bash", { command: "rm -f f.txt" }, { signal: signal(), toolUseID: "toolu_rule2", requestId: "c4", decisionReasonType: "rule", serverPolicyAskOnly: false, displayName: "Bash" } as never);
+  const fourth = await until(() => of(r.events, "requestRaised")[3], "fourth requestRaised");
+  assert.equal(fourth.userRule, "a permission rule in the user's settings");
+  await r.provider.dispose();
+});
+
+// ── `!command` from the composer (P344) ────────────────────────────────────────────────
+
+test("P344: a `!command` runs in the session's folder, then one SDK message in Claude Code's bash markup asks for the answer", async () => {
+  const r = rig({ env: { PATH: process.env.PATH ?? "/usr/bin:/bin", SHELL: "/bin/sh" } });
+  const { thread, q } = await startedThread(r);
+  q.push(result());
+  await until(() => of(r.events, "turnCompleted").length === 1, "first turn");
+  assert.ok((await r.provider.effective(thread)).capabilities?.includes("userShellCommand"));
+  const command = "printf '<b>&x\\n'; pwd; echo err >&2; exit 3";
+  const turn = await r.provider.shellCommand!(thread, command, {}, "op-77");
+  assert.equal(turn, opUuid("op-77"), "the turn and the message uuid come from the operation id");
+  assert.match(turn, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  const msg = await q.nextUser(2);
+  assert.equal(msg.uuid, turn);
+  assert.equal((msg as { shouldQuery?: boolean }).shouldQuery, true);
+  assert.equal((msg as { priority?: string }).priority, undefined);
+  assert.equal((msg as { isSynthetic?: boolean }).isSynthetic, undefined, "a command the user ran is not marked as from a non-user source");
+  assert.deepEqual(msg.message.content, [
+    { type: "text", text: `<bash-input>${command}</bash-input>` },
+    { type: "text", text: `<bash-stdout>&lt;b&gt;&amp;x\n${fs.realpathSync(r.dir)}\n</bash-stdout><bash-stderr>err\n</bash-stderr><bash-exit-code>3</bash-exit-code>` },
+  ]);
+  const cmd = completedItems(r.events).find((i) => i.kind === "toolCall") as Item & Record<string, any>;
+  assert.equal(cmd.source, "userShell");
+  assert.equal(cmd.title, command);
+  assert.equal(cmd.turnId, turn);
+  assert.equal(cmd.exitCode, 3);
+  assert.equal(cmd.status, "failed");
+  assert.equal(typeof cmd.durationMs, "number");
+  assert.ok(of(r.events, "itemDelta").some((e) => e.itemId === cmd.id && e.field === "output"), "output streams live");
+  // A context-only result (no model turn) is not the answer: the turn goes on.
+  q.push(result({ num_turns: 0 }));
+  await tick();
+  assert.equal(of(r.events, "turnCompleted").length, 1);
+  q.push({ type: "assistant", message: { id: "msg_S", content: [{ type: "text", text: "Exit 3: it failed." }] }, parent_tool_use_id: null, uuid: "s1", session_id: thread });
+  q.push(result({ num_turns: 1 }));
+  await until(() => of(r.events, "turnCompleted").length === 2, "answer");
+  const done = of(r.events, "turnCompleted")[1]!;
+  assert.deepEqual([done.turnId, done.status], [turn, "completed"]);
+  assert.ok(completedItems(r.events).some((i) => i.kind === "agentMessage" && i.turnId === turn));
+  assert.deepEqual(of(r.events, "turnStarted").filter((e) => e.turnId === turn).map((e) => e.origin), ["user"]);
+  await r.provider.dispose();
+});
+
+test("P344: Stop on a running `!command` ends it; the record joins as context only and no answer is asked for", async () => {
+  const r = rig({ env: { PATH: process.env.PATH ?? "/usr/bin:/bin", SHELL: "/bin/sh" } });
+  const { thread, q } = await startedThread(r);
+  q.push(result());
+  await until(() => of(r.events, "turnCompleted").length === 1, "first turn");
+  const turn = await r.provider.shellCommand!(thread, "echo started; sleep 20", {}, "op-stop");
+  await until(() => of(r.events, "itemDelta").length > 0, "output");
+  await r.provider.interrupt(thread, turn);
+  const done = of(r.events, "turnCompleted")[1]!;
+  assert.deepEqual([done.turnId, done.status], [turn, "interrupted"]);
+  const msg = await q.nextUser(2);
+  assert.equal((msg as { shouldQuery?: boolean }).shouldQuery, false);
+  assert.equal((msg as { priority?: string }).priority, "later");
+  assert.match(((msg.message.content as Array<{ text: string }>)[1]!).text, /^<bash-stdout>started\n<\/bash-stdout><bash-stderr><\/bash-stderr><bash-exit-code>130<\/bash-exit-code>$/);
+  assert.equal(q.calls.some(([c]) => c === "interrupt"), false, "nothing of Claude Code's was running to interrupt");
+  await r.provider.dispose();
 });

@@ -52,9 +52,10 @@ One stream is one queue. At 1 Mbit/s a 256 KiB frame occupies the wire for about
 so an approval queued behind a few of them would wait far too long. Three rules prevent that,
 and they apply in **both** directions:
 
-- **Two classes.** Each side keeps a *control* queue (requests, responses, events) and a *bulk*
-  queue (data frames, history pages). Control always goes first. Bulk is only handed to the
-  writer in small amounts, so a control message never waits behind more than one bulk chunk.
+- **Three classes.** Control (requests, responses, events) and interactive data (terminal I/O)
+  alternate whenever both are ready. Both precede bulk (uploads and history pages). The
+  writer asks for one frame at a time. A keystroke waits behind at most one in-flight bulk
+  chunk. Pending interactive bytes cap bulk data chunks at 16 KiB even while awaiting credit.
 - **Small, adaptive chunks.** Data chunks start at 16 KiB and grow to at most 64 KiB while the
   link keeps up. The hard frame limit is 1 MiB.
 - **Credit.** The receiver of a data stream grants credit in bytes; the sender stops when it
@@ -99,6 +100,15 @@ requests. They are items in the thread, answered with `request/respond`
 | `ping` | Liveness and latency. |
 | `diagnostics/get` | Redacted daemon and provider diagnostics, for the "what is wrong with this target" view. Never contains message content. |
 
+### Terminal
+
+A target advertising `terminal` accepts `terminal/shells`, `open`, `attach`, `resize`,
+`close` and `list` under the same prefix. Terminal IDs survive connection loss. Each open or
+attach returns a fresh connection-local duplex stream and its initial input credit. Host
+output credit is granted with `stream/credit` after opening the stream. Output and keystrokes
+use raw data frames on the interactive lane. The notifications are `terminal/title` and
+`terminal/exited` from the daemon and `terminal/detach` from the host. [Terminal protocol](13-terminal.md#methods-yaac-protocol-additive-feature-terminal)
+
 ### Providers
 
 | Method / notification | Purpose |
@@ -133,6 +143,7 @@ requests. They are items in the thread, answered with `request/respond`
 | `command/logs` | `{ threadId, commandId }` → `{ output?, truncated }`. Reads a bounded output tail for a live command on its owner. Absent output means the harness has provided none to YAAC. |
 | `command/stop` | `{ opId, threadId, commandId }` → `{}`. Stops one command on its owner when supported and allowed by writer control. Liveness changes arrive through the index. |
 | `turn/start` | Send a user message to an existing thread with optional `model`, `effort`, `mode`, `fast`, and `ultrafast` overrides. Speed is validated against the model. It persists for later turns and is reported by `ThreadSummary.fast` and `ThreadSummary.ultrafast`. An explicit Fast or Standard selection clears Ultrafast. Returns the turn id. Rejected with `thread_in_use` when the thread is being driven elsewhere. |
+| `turn/shellCommand` | `{ opId, threadId, command, delivery? }` → like `turn/start` (`outcome` `started` or `queued`, `queueId`). Under `userShellCommand` (P344): runs a `!command` the user typed in the thread's composer on the target, in the thread's folder, records it as the harness's own `!` does, and has the agent answer it, as one turn — journaled as a `userMessage` with the one part `!command` (role `command`, `opId`), a `toolCall` with `source: userShell` (streamed output, `exitCode`, `durationMs`), then the answer. `delivery: queue` queues it while a turn runs (the `QueuedMessage` has `shellCommand`); absent, a running turn refuses it (`turn_in_progress`); `now` is `invalid_params`. Without the capability: `capability_missing`. Never reachable from an agent. [13 Terminal](13-terminal.md#command-in-the-composer--the-agent-answers) |
 | `turn/interrupt` | Stop a turn. Takes the **turn id**, so a late Stop can never hit the next turn. |
 | `turn/steer` | Add input to the running turn. Takes the turn id it expects to be running. Gated by capability. |
 | `request/respond` | Answer a pending approval or question. |
@@ -336,9 +347,60 @@ A request item is always in exactly one of these states:
 | --- | --- |
 | `pending` | Waiting for an answer. |
 | `submitted` | This UI answered; the harness has not confirmed yet. |
-| `resolved` | Answered. Records the answer and who gave it: this client, another YAAC client, or **elsewhere** (for example in a terminal). |
+| `resolved` | Answered. Records the answer and who gave it: this client, another YAAC client, **elsewhere** (for example in a terminal), or **`yaacd` automatically** — only a tool approval in a thread whose mode never asks (P342), with the mode and the harness's reason recorded. |
 | `expired` | No longer answerable: the turn ended, was interrupted, or the agent's process stopped. The question text remains in the transcript. |
 | `unknown` | `yaacd` cannot tell whether the answer reached the harness (a crash between sending and confirmation). Shown as such; never re-sent automatically. |
+
+### Tool approvals in a never-ask mode (P342)
+
+A harness can still ask for a tool approval while the thread is in its never-ask mode — Claude
+Code keeps some checks in `bypassPermissions`. `yaacd` answers those itself; nothing else.
+
+- **Which requests:** only `requestKind: "approval"` raised while the thread's mode — as the
+  provider says the harness was in when it asked — is one the provider marks `skipsApprovals`
+  (Claude Code `bypassPermissions`, Codex *Full access*). Never by provider kind. Questions
+  (`AskUserQuestion`, `request_user_input`), forms (elicitations), logins and mesh permission
+  requests always reach the user. A mode change back to an asking mode restores prompts from the
+  next request on; workers keep the mode they were given (D146).
+- **Not automatic even then:** an approval the user's own configuration forced (a Claude Code
+  `permissions.ask` rule: `matchedAskRule` in `sdk.d.ts` — "the user's stated intent is a human
+  prompt" — or, as 2.1.330 actually sends it, `decisionReasonType: "rule"`), one in a thread
+  another program holds, or one that offers no allow decision.
+- **The answer:** the narrowest grant offered — the first `allow` decision, else
+  `allowSession`; never `allowAlways`.
+- **Journaled first:** the request record is written to disk pending, then as `submitted` by
+  `yaacd`, before the answer is handed over; the item enters the transcript already in that
+  state (no window shows it waiting) and becomes `resolved` on the harness's confirmation. If the
+  harness refuses the answer, the request goes back to `pending` for the user; a crash between
+  hand-over and confirmation leaves it `unknown`, never re-sent.
+- **On the wire:** `resolution.by` is `"yaacd"` and `resolution.automatic` names the mode:
+
+```jsonc
+"resolution": { "by": "yaacd", "answer": { "requestKind": "approval", "decision": "allow" },
+                "automatic": { "mode": "bypassPermissions", "modeName": "Bypass permissions" } }
+```
+
+  The same resolution is already on the `submitted` item. Both fields are additive: an older
+  window decodes `yaacd` as an unknown answerer and shows the request as resolved elsewhere.
+
+**The harness's reason.** Every approval carries `reason` when the harness gives one, shown on
+the card and on the automatic line:
+
+| | Field | Also kept in `details` |
+| --- | --- | --- |
+| Claude Code | `canUseTool`'s `decisionReason` (else its `description`); `blockedPath` becomes `scope` | `decisionReason`, `decisionReasonType` (sent by 2.1.330, not in `sdk.d.ts`), `description`, `matchedAskRule`, `defaultToNo`, `tool`, `input` |
+| Codex | `reason` of `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, `item/permissions/requestApproval` (and the legacy `execCommandApproval` / `applyPatchApproval`); `grantRoot` becomes `scope` | `commandActions`, `networkApprovalContext` |
+
+Verified 2026-11-25 (Claude Code 2.1.330, SDK 0.3.329, isolated config and a fake API): a query
+*opened* in `bypassPermissions` never consults `canUseTool` for `nohup … &`, `setsid`, `sed -i`
+or `rm` (the SDK warns `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`); in `default` each asks — `setsid` with
+`decisionReason` "What 'setsid' starts can't be checked before it runs", the others with only
+`blockedPath` and `suggestions` (a path outside the working folders). `description` is the
+model's own Bash `description` input. The same holds for a query opened in `default` and moved
+into bypass with `setPermissionMode` (how YAAC switches) and for a subagent's Bash under bypass.
+Under bypass only a `permissions.ask` rule reached `canUseTool`, with `decisionReasonType:
+"rule"`, no `matchedAskRule` and no reason text. Codex fields: `codex app-server generate-ts`,
+CLI 0.170.0.
 
 Two facts about harness behaviour shape this:
 

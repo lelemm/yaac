@@ -338,7 +338,7 @@ fn floating_card_groups_cross_target_siblings_even_when_the_parent_is_missing() 
     }
     let map = AttentionMap::compute(&c.state);
     let mut panel = agents_panel(&c.state, &map, &selected).unwrap();
-    assert_eq!(panel.siblings.len(), 2);
+    assert_eq!(panel.siblings.len(), 3);
     let billing_row = panel.siblings.iter().find(|row| row.key.as_ref() == Some(&billing)).unwrap().clone();
     panel.contacts.retain(|row| row.key.as_ref() != Some(&billing));
     panel.contacts.push(billing_row);
@@ -347,7 +347,7 @@ fn floating_card_groups_cross_target_siblings_even_when_the_parent_is_missing() 
     assert_eq!(card[0].0, "Siblings");
     assert_eq!(card[1].0, "Spawned by");
     assert!(card[1].1[0].key.is_none(), "the unindexed parent retains its placeholder");
-    assert_eq!(card[0].1.iter().filter_map(|row| row.key.as_ref()).collect::<Vec<_>>(), [&search, &billing]);
+    assert_eq!(card[0].1.iter().filter_map(|row| row.key.as_ref()).collect::<Vec<_>>(), [&search, &billing, &selected]);
     assert_eq!(card.iter().flat_map(|(_, rows)| rows).filter(|row| row.key.as_ref() == Some(&billing)).count(), 1);
     assert!(clusters(&panel).iter().any(|group| group.relation == Relation::InContact
         && group.rows.iter().any(|row| row.key.as_ref() == Some(&billing))));

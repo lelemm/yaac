@@ -307,6 +307,10 @@ impl Transcript {
                     request.state = e.state.clone();
                     if e.resolution.is_some() {
                         request.resolution = e.resolution.clone();
+                    } else if e.state == RequestState::Pending {
+                        // Back to waiting (an automatic approval the harness did not take,
+                        // P342): nobody has answered it.
+                        request.resolution = None;
                     }
                     self.revs[i] = rev;
                 }

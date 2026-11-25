@@ -35,6 +35,9 @@ mod pull_requests;
 mod settings;
 mod sidebar_view;
 mod transcript;
+mod terminal;
+#[cfg(test)]
+mod shell_tests;
 
 #[cfg(windows)]
 fn executable() -> Option<std::path::PathBuf> {
@@ -390,11 +393,11 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
             Ok(Input::Command(frame)) => {
                 let command = string(&frame, "command");
                 let payload = &frame["payload"];
-                if command.starts_with("browser.") || command.starts_with("files.") {
+                if command.starts_with("browser.") || command.starts_with("files.") || command.starts_with("terminal.") {
                     match browser.command(&mut app, window_shown, command, payload) {
                         Ok(changed) => {
                             refresh_browser |= changed;
-                            once |= changed && matches!(command, "files.add" | "files.mode");
+                            once |= changed && matches!(command, "files.add" | "files.mode" | "terminal.add" | "terminal.pasteDecision" | "terminal.panelHeight");
                         }
                         Err(message) => write_frame(&mut stdout, &json!({ "error": message }))?,
                     }

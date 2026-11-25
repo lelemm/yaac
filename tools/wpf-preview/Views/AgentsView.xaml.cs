@@ -22,8 +22,9 @@ public partial class AgentsView : UserControl
     private string? _snapshot;
     private string _threadId = "";
     private string? _floatingDestination;
-    private bool _dockMouseInside;
-    private string _hoveredDockThread = "";
+    private bool _panelMouseInside;
+    internal string HoveredThread { get; private set; } = "";
+    internal event Action? HoverPreviewEnded;
     private string _mode = "pill";
     private bool _dockFolded;
     private string _firstHidden = "";
@@ -49,9 +50,11 @@ public partial class AgentsView : UserControl
         Docked.IsVisibleChanged += (_, _) =>
         {
             if (!Docked.IsVisible)
-                SetDockHover(false, "");
+                CancelHoverPreview();
         };
-        DockRows.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => TrackDockHover()));
+        foreach (var rows in new[] { CardRows, DockRows })
+            rows.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => TrackHover()));
+        Floating.Closed += (_, _) => CancelHoverPreview();
         Pill.RenderTransform = _pillPosition;
         Floating.CustomPopupPlacementCallback = (size, target, _) =>
         [
@@ -161,7 +164,7 @@ public partial class AgentsView : UserControl
         if (threadId != _threadId)
         {
             _threadId = threadId;
-            SetDockHover(false, "");
+            CancelHoverPreview();
             if (threadId != _floatingDestination)
             {
                 CloseCard(force: true);
@@ -225,7 +228,7 @@ public partial class AgentsView : UserControl
 
         Visibility = Show(view.BoolField("visible", rows.Count > 0));
         ApplyMode();
-        TrackDockHover();
+        TrackHover();
     }
 
     private List<AgentsGroup> ReadGroups(JsonElement view)
@@ -594,8 +597,17 @@ public partial class AgentsView : UserControl
         ScheduleCardPosition();
     }
     private void OnPillEnter(object sender, MouseEventArgs e) => OpenCard();
-    private void OnCardEnter(object sender, MouseEventArgs e) => _closeTimer.Stop();
-    private void OnCardLeave(object sender, MouseEventArgs e) => _closeTimer.Start();
+    private void OnCardEnter(object sender, MouseEventArgs e)
+    {
+        _closeTimer.Stop();
+        TrackHover();
+    }
+
+    private void OnCardLeave(object sender, MouseEventArgs e)
+    {
+        CancelHoverPreview();
+        _closeTimer.Start();
+    }
     private void OnPillLeave(object sender, MouseEventArgs e) => _closeTimer.Start();
 
     private void OnPillFocus(object sender, KeyboardFocusChangedEventArgs e)
@@ -636,33 +648,42 @@ public partial class AgentsView : UserControl
     }
 
     private void OnDock(object sender, RoutedEventArgs e) => Command?.Invoke("agents.dock", null);
-    private void OnDockHover(object sender, MouseEventArgs e) => TrackDockHover();
-    private void OnDockLeave(object sender, MouseEventArgs e) => SetDockHover(false, "");
+    private void OnAgentHover(object sender, MouseEventArgs e) => TrackHover();
+    private void OnDockLeave(object sender, MouseEventArgs e) => CancelHoverPreview();
+    internal void CancelHoverPreview() => SetHover(false, "");
 
-    private void TrackDockHover()
+    private void TrackHover()
     {
-        if (!Docked.IsVisible || !Docked.IsMouseOver)
+        if (Window.GetWindow(this)?.IsActive != true)
             return;
-        var list = DockParent.IsMouseOver ? DockParent : DockRows;
+        ListBox list;
+        if (Docked.IsVisible && Docked.IsMouseOver)
+            list = DockParent.IsMouseOver ? DockParent : DockRows;
+        else if (Floating.IsOpen && Card.IsMouseOver)
+            list = CardRows;
+        else
+            return;
         var source = list.IsMouseOver ? list.InputHitTest(Mouse.GetPosition(list)) as DependencyObject : null;
         while (source is not null && source != list)
         {
-            if (source is ListBoxItem { Content: AgentsEntry { Kind: "dockRow", Data.CanOpen: true } row })
+            if (source is ListBoxItem { Content: AgentsEntry { Kind: "dockRow" or "cardRow", Data.CanOpen: true } row })
             {
-                SetDockHover(true, row.CommandId);
+                SetHover(true, row.CommandId);
                 return;
             }
             source = source is Visual ? VisualTreeHelper.GetParent(source) : LogicalTreeHelper.GetParent(source);
         }
-        SetDockHover(true, "");
+        SetHover(true, "");
     }
 
-    private void SetDockHover(bool inside, string id)
+    private void SetHover(bool inside, string id)
     {
-        if (_dockMouseInside == inside && _hoveredDockThread == id)
+        if (_panelMouseInside == inside && HoveredThread == id)
             return;
-        _dockMouseInside = inside;
-        _hoveredDockThread = id;
+        _panelMouseInside = inside;
+        HoveredThread = id;
+        if (id.Length == 0)
+            HoverPreviewEnded?.Invoke();
         Command?.Invoke("agents.hover", new { owner = _threadId, inside, id });
     }
 

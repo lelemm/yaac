@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use yaac_protocol::frame::{Frame, FrameDecoder, encode_message_frame};
+use yaac_protocol::frame::{Frame, FrameDecoder};
 use yaac_protocol::rpc::Message;
 
 use crate::core::{ClientKey, CoreEvent};
@@ -134,7 +134,7 @@ pub(crate) async fn serve(listener: &Listener, core: mpsc::UnboundedSender<CoreE
         };
         next += 1;
         let client = next;
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = crate::attach_writer::channel();
         if core.send(CoreEvent::Attached { client, tx }).is_err() {
             return;
         }
@@ -162,7 +162,9 @@ async fn read_loop(client: ClientKey, mut reader: impl AsyncRead + Unpin, core: 
                     }
                     Err(_) => break 'outer, // a window that sends garbage is dropped
                 },
-                Ok(Some(Frame::Data { .. })) => {} // no data streams on the attach protocol yet
+                Ok(Some(Frame::Data { stream, bytes })) => {
+                    if core.send(CoreEvent::ClientData { client, stream, bytes }).is_err() { return; }
+                }
                 Ok(None) => break,
                 Err(_) => break 'outer,
             }
@@ -171,11 +173,10 @@ async fn read_loop(client: ClientKey, mut reader: impl AsyncRead + Unpin, core: 
     let _ = core.send(CoreEvent::Detached { client });
 }
 
-async fn write_loop(mut writer: impl AsyncWrite + Unpin, mut rx: mpsc::UnboundedReceiver<Message>) {
+async fn write_loop(mut writer: impl AsyncWrite + Unpin, mut rx: crate::attach_writer::Receiver) {
     let mut frame = Vec::new();
     while let Some(message) = rx.recv().await {
-        frame.clear();
-        if encode_message_frame(&message.to_json(), &mut frame).is_err() {
+        if message.encode(&mut frame).is_err() {
             continue; // larger than a frame: a hub bug; drop it rather than the window
         }
         if writer.write_all(&frame).await.is_err() || writer.flush().await.is_err() {

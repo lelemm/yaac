@@ -121,7 +121,7 @@ public partial class ComposerView
             ContextLabel.Text = ContextProgress.Value.ToString("0", CultureInfo.CurrentCulture) + "%";
         }
         DisplayText(ControlNote, Field(view, "note").String());
-        ControlActions.Visibility = VisibleWhen(actions.Length > 0 || hasPercent || ControlNote.Visibility == Visibility.Visible);
+        ControlActions.Visibility = VisibleWhen(actions.Length > 0 || hasPercent || ControlNote.Visibility == Visibility.Visible || TerminalToggle.Visibility == Visibility.Visible);
     }
 
     private void RenderActions(Panel panel, ComposerAction[] actions, bool available = true)
@@ -306,6 +306,7 @@ public partial class ComposerView
         private readonly TextBlock? imageMark;
         private readonly Image? thumbnail;
         private readonly Button? attachmentCaption;
+        private readonly FrameworkElement? shellMark;
         private bool imageAttachment;
         private (int Width, int Height, string Pixels) thumbnailFrame = (0, 0, "");
 
@@ -333,6 +334,15 @@ public partial class ComposerView
                     detail.TextTrimming = TextTrimming.CharacterEllipsis;
                     AddDocked(actions, Dock.Right);
                     AddDocked(detail, Dock.Right);
+                    if (kind == RowKind.Queue)
+                    {
+                        // A queued `!command` (P346): the terminal icon, the command in mono.
+                        shellMark = PaneIcon.Draw("Terminal", 12);
+                        shellMark.Margin = new Thickness(0, 0, 5, 0);
+                        shellMark.VerticalAlignment = VerticalAlignment.Center;
+                        shellMark.Visibility = Visibility.Collapsed;
+                        AddDocked(shellMark, Dock.Left);
+                    }
                     Margin = new Thickness(0, 0, 0, 1);
                     break;
                 case RowKind.Attachment:
@@ -393,6 +403,15 @@ public partial class ComposerView
                     label.ClearValue(TextBlock.ForegroundProperty);
             }
             label.Text = kind is RowKind.Queue or RowKind.Command ? title.Split(['\r', '\n'], 2)[0] : title;
+            if (shellMark is not null)
+            {
+                var shell = Field(model, "shell").ComposerFlag();
+                shellMark.Visibility = VisibleWhen(shell);
+                if (shell)
+                    label.FontFamily = YaacFonts.Mono;
+                else
+                    label.ClearValue(TextBlock.FontFamilyProperty);
+            }
             label.ToolTip = title.Length > 0 ? title : null;
             var busy = Field(model, "busy").ComposerFlag();
             Opacity = busy ? 0.65 : 1;

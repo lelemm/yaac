@@ -189,7 +189,7 @@ jobs:
           name: build
           path: dist/stage
 
-      - name: Test the native Windows daemon
+      - name: Test the native Windows daemon and staged ConPTY runtime
         run: ./dist/stage/runtime/node.exe scripts/test-windows-local.mjs dist/stage/yaacd.mjs
 
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0

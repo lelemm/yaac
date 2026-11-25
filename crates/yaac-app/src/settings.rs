@@ -203,6 +203,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
                     Page::Appearance => appearance(ui, app, actions),
                     Page::Window => window(ui, app),
                     Page::Keyboard => crate::keyboard::page(ui, app),
+                    Page::Terminal => terminal(ui, app),
                     Page::Advanced => advanced(ui, app, actions),
                     Page::About => about(ui, app),
                 }
@@ -1137,11 +1138,21 @@ fn model_guidance(ui: &mut egui::Ui, app: &mut YaacApp, target: &TargetId,
         if !expanded { return; }
         for model in &row.model_guidance {
             ui.push_id(&model.id, |ui| {
-                ui.label(RichText::new(&model.name).font(theme::bold(size::UI)));
+                let dimmed = model.enabled == Some(false);
+                ui.horizontal(|ui| {
+                    if let Some(on) = model.enabled {
+                        let toggle = ui.add_enabled_ui(!offline, |ui| widgets::switch(ui, &p, on)).inner;
+                        if toggle.on_hover_text(if on { "Turn model off" } else { "Turn model on" }).clicked() {
+                            actions.push(Action::ModelEnabled(target.clone(), row.instance.clone(), model.id.clone(), !on));
+                        }
+                    }
+                    ui.label(RichText::new(&model.name).font(theme::bold(size::UI)).color(if dimmed { p.text2 } else { p.text }));
+                });
+                if !model.guidance_editable { return; }
                 let editing = app.ui.set.model_guidance_edit.as_ref()
                     .is_some_and(|edit| edit.matches(target, &row.instance, model));
                 if !editing {
-                    ui.label(format!("Best used as: {}", model.summary()));
+                    ui.label(RichText::new(format!("Best used as: {}", model.summary())).color(if dimmed { p.text2 } else { p.text }));
                 }
                 ui.horizontal_wrapped(|ui| {
                     if !model.provenance().is_empty() {
@@ -1445,4 +1456,26 @@ fn about(ui: &mut egui::Ui, app: &mut YaacApp) {
         });
         ui.end_row();
     });
+}
+
+/// Settings → Terminal (P339, docs/13-terminal.md#clipboard-and-selection).
+fn terminal(ui: &mut egui::Ui, app: &mut YaacApp) {
+    let p = app.p;
+    widgets::heading(ui, "Clipboard");
+    let rows: [(&str, &str, fn(&mut yaac_core::prefs::TerminalPrefs) -> &mut bool); 3] = [
+        ("Copy on select", "Selecting text in a terminal copies it at once.", |t| &mut t.copy_on_select),
+        ("Ctrl+V goes to the shell", "Ctrl+V reaches the shell (bash's literal next); paste with Ctrl+Shift+V or right-click.", |t| &mut t.ctrl_v_to_shell),
+        ("Ask before pasting several lines", "Without bracketed paste each pasted line runs as it arrives; ask first.", |t| &mut t.confirm_multiline_paste),
+    ];
+    for (label, note, field) in rows {
+        ui.horizontal(|ui| {
+            let on = *field(&mut app.ui.terminal);
+            if widgets::switch(ui, &p, on).clicked() {
+                *field(&mut app.ui.terminal) = !on;
+            }
+            ui.label(label);
+        });
+        ui.label(widgets::secondary(note, &p));
+        ui.add_space(10.0);
+    }
 }

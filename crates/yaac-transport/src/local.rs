@@ -36,6 +36,32 @@ fn install_file(source: &Path, dest: &Path) -> std::io::Result<()> {
     if dest.is_file() { Ok(()) } else { result }
 }
 
+// Install native package directories atomically. Existing daemons can keep using an older
+// version while this hub installs the new one alongside its private node.exe.
+fn install_package(source: &Path, dest: &Path) -> std::io::Result<()> {
+    fn copy_tree(source: &Path, dest: &Path) -> std::io::Result<()> {
+        std::fs::create_dir(dest)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            let path = dest.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                copy_tree(&entry.path(), &path)?;
+            } else {
+                std::fs::copy(entry.path(), path)?;
+            }
+        }
+        Ok(())
+    }
+
+    if dest.is_dir() { return Ok(()); }
+    if let Some(parent) = dest.parent() { std::fs::create_dir_all(parent)?; }
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let part = dest.with_extension(format!("part-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let result = copy_tree(source, &part).and_then(|()| std::fs::rename(&part, dest));
+    if result.is_err() { let _ = std::fs::remove_dir_all(&part); }
+    if dest.is_dir() { Ok(()) } else { result }
+}
+
 /// Where the runtime and bundle are, and how the child is started.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalConfig {
@@ -143,6 +169,14 @@ impl Connector for LocalConnector {
                 let files = self.config.install_files.clone();
                 tokio::task::spawn_blocking(move || -> Result<(), ConnectError> {
                     for (source, dest) in files {
+                        if source.is_dir() {
+                            // PTY support is optional. The daemon reports a missing module
+                            // through initialize even if this installation failed.
+                            if let Err(e) = install_package(&source, &dest) {
+                                eprintln!("could not install native package {}: {e}", dest.display());
+                            }
+                            continue;
+                        }
                         install_file(&source, &dest).map_err(|e| ConnectError::NotInstalled(format!("could not install {}: {e}", dest.display())))?;
                     }
                     Ok(())

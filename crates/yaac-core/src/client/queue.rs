@@ -59,6 +59,11 @@ impl Client {
         if crate::compose::is_compact_command(&draft.text) {
             return self.compact(key);
         }
+        // A `!command` (P344): only where the thread can run one; elsewhere `!` is plain text.
+        if crate::header::shell_mode(&self.state, key).is_some() {
+            let Some(command) = crate::compose::shell_command(&draft.text).map(str::to_owned) else { return false };
+            return self.send_shell(key, draft, command);
+        }
         let support = crate::attachments::thread_image_support(&self.state, key);
         let message = draft.message_text();
         let Some(input) = crate::attachments::input_parts(&message, &draft.attachments, &support, Some(&key.target)) else { return false };
@@ -91,6 +96,26 @@ impl Client {
         // The message shows at once, "Sending…" (D165); queued, it moves to the strip instead.
         self.echo(key, &op, parts, &draft, m::TURN_START, &params);
         self.routed(&key.target, m::TURN_START, params, Call::TurnStart { key: key.clone(), draft, op });
+        true
+    }
+
+    /// `turn/shellCommand` (P344): run the command on the target, then the agent answers. While
+    /// a turn runs it is queued like a message (D166); there is no "now" for a command, so
+    /// Send now on a `!` draft does the same. Attachments are not sent with a command: they
+    /// stay in the composer.
+    fn send_shell(&mut self, key: &ThreadKey, draft: crate::state::Draft, command: String) -> bool {
+        let op = self.op_id();
+        let shown = crate::state::Draft { text: draft.text.clone(), ..Default::default() };
+        if draft.attachments.is_empty() {
+            self.state.drafts.remove(key);
+        } else {
+            self.state.drafts.insert(key.clone(), crate::state::Draft { attachments: draft.attachments, ..Default::default() });
+            self.dirty.insert(DraftRef::Thread(key.clone()));
+        }
+        let parts = vec![yaac_protocol::InputPart::text_as(format!("!{command}"), yaac_protocol::TextRole::Command, None)];
+        let params = json!({ "opId": op, "threadId": key.thread, "command": command, "delivery": Delivery::Queue });
+        self.echo(key, &op, parts, &shown, m::TURN_SHELL_COMMAND, &params);
+        self.routed(&key.target, m::TURN_SHELL_COMMAND, params, Call::TurnStart { key: key.clone(), draft: shown, op });
         true
     }
 

@@ -4,7 +4,7 @@
 export type Step =
   | { k: "say"; text: string }
   | { k: "reason"; text: string }
-  | { k: "tool"; command: string; output: string; exitCode: number }
+  | { k: "tool"; command: string; output: string; exitCode: number; userShell?: boolean }
   | { k: "bigOutput"; bytes: number }
   | { k: "approve"; command: string }
   | { k: "ask"; text: string; options: string[]; multi: boolean; secret: boolean }

@@ -101,7 +101,8 @@ pub(super) fn places(app: &YaacApp, forward: bool) -> Vec<Value> {
 
 pub(super) fn shortcuts(app: &YaacApp) -> Vec<Value> {
     use yaac_core::keys::{ChordKey, MouseButton};
-    commands::COMMANDS.iter().filter(|d| d.scope == commands::Scope::Global).flat_map(|d| {
+    commands::COMMANDS.iter().filter(|d| d.scope == commands::Scope::Global
+        || matches!(d.cmd, commands::Cmd::NextTerminal | commands::Cmd::PrevTerminal)).flat_map(|d| {
         app.ui.bindings.chords(d.cmd).into_iter().map(move |chord| {
             let in_text = chord.works_in_text();
             let key = match chord.key {
@@ -110,7 +111,7 @@ pub(super) fn shortcuts(app: &YaacApp) -> Vec<Value> {
                 ChordKey::Mouse(MouseButton::Forward) => "MouseForward".to_owned(),
             };
             let repeat = matches!(d.cmd, commands::Cmd::NextThread | commands::Cmd::PrevThread | commands::Cmd::ZoomIn | commands::Cmd::ZoomOut);
-            json!({ "id": d.id, "key": key, "ctrl": chord.ctrl, "shift": chord.shift, "alt": chord.alt, "inText": in_text, "repeat": repeat })
+            json!({ "id": d.id, "key": key, "ctrl": chord.ctrl, "shift": chord.shift, "alt": chord.alt, "inText": in_text, "inTerminal": app.ui.bindings.works_in_terminal(d.cmd), "repeat": repeat })
         })
     }).collect()
 }
@@ -119,7 +120,10 @@ pub(super) fn shortcut(app: &mut YaacApp, ctx: &egui::Context, payload: &Value) 
     let Some(def) = commands::by_id(string(payload, "id")) else {
         return;
     };
-    if def.scope != commands::Scope::Global {
+    if payload["terminalFocus"] == true && !app.ui.bindings.works_in_terminal(def.cmd) { return; }
+    if def.scope != commands::Scope::Global
+        && !(payload["terminalFocus"] == true
+            && matches!(def.cmd, commands::Cmd::NextTerminal | commands::Cmd::PrevTerminal)) {
         return;
     }
     if app.ui.commander.is_some() {

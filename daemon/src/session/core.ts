@@ -1,3 +1,4 @@
+import { Terminals } from "./terminals.js";
 // The session core: threads, journals, requests, control, the dispatcher, and the index —
 // everything between the providers and the connected clients. It knows no protocol version
 // and no wire encoding; client.ts turns its results into responses.
@@ -5,6 +6,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
+  AutomaticResolution,
   ControlChangedEvent,
   DiagnosticsGetResult,
   InputPart,
@@ -183,6 +185,7 @@ export interface CoreMeshHooks {
   holdReleased?(rt: ThreadRuntime): void;
   /** How the mesh names the thread's machine and the thread itself (a handoff's preamble). */
   whereIs?(rt: ThreadRuntime): { target: string; address: string };
+  selfName?(): string;
   /** The mesh address of a thread on this target (a harness sub-agent's `spawnedBy`, D151). */
   addressOf?(threadId: string): string;
   /** The source's direct mesh children, including children on other targets. */
@@ -326,6 +329,7 @@ function notActed(code: string, message: string, data?: unknown): NotActed {
 }
 
 export class Core {
+  readonly terminals = new Terminals(() => this.uploads.allocateStream(), () => this.activity.emit());
   readonly registry: ProviderRegistry;
   readonly index: ThreadIndex;
   readonly ops: OpLog;
@@ -1319,7 +1323,12 @@ export class Core {
     if (r.hold) s.hold = r.hold;
     if (r.fast) s.fast = true;
     if (r.ultrafast) s.ultrafast = true;
-    if (r.model) s.model = r.model;
+    const model = this.modelOf(rt);
+    if (model) {
+      s.model = model;
+      const instance = this.registry.get(r.instance);
+      if (instance && this.registry.modelIsOff(instance, model)) s.modelOff = true;
+    }
     if (r.forkedFrom) s.forkedFrom = r.forkedFrom;
     if (r.linkedChildren?.length) s.linkedChildren = r.linkedChildren;
     if (r.spawnedBy) s.spawnedBy = r.spawnedBy;
@@ -1394,6 +1403,13 @@ export class Core {
     await this.scanInstance(inst);
   }
 
+  setModelEnabled(instance: string, model: string, enabled: unknown): void {
+    if (!this.registry.setModelEnabled(instance, model, enabled)) return;
+    for (const rt of this.allThreads()) {
+      if (rt.record.instance === instance && this.modelOf(rt) === model) this.updateIndex(rt);
+    }
+  }
+
   holderOf(rt: ThreadRuntime): Holder {
     // Read-only ownership requires positive evidence of an external writer.
     const ext = rt.external.external ? rt.external.holder ?? "another program" : null;
@@ -1445,7 +1461,7 @@ export class Core {
   busy(): { runningTurns: number; pendingRequests: number; runningCommands: number } {
     let runningTurns = 0;
     let pendingRequests = 0;
-    let runningCommands = 0;
+    let runningCommands = this.terminals.list().length;
     for (const rt of this.threads.values()) {
       if (rt.deleted) continue;
       if (rt.activeTurn || rt.compactDriver) runningTurns++;
@@ -1976,6 +1992,23 @@ export class Core {
     }
   }
 
+  private checkModelEnabled(instance: Instance, model: ModelId | null | undefined): void {
+    if (model && this.registry.modelIsOff(instance, model)) {
+      throw notActed("model_unavailable", `${model} is turned off for ${instance.descriptor.displayName} on ${this.mesh?.selfName?.() ?? "this target"}`);
+    }
+  }
+
+  private newThreadModel(instance: Instance, model: ModelId | null | undefined): ModelId | null {
+    this.checkModelEnabled(instance, model);
+    this.checkModel(instance.descriptor, model);
+    if (model) return model;
+    try {
+      return this.registry.defaultModelOverride(instance);
+    } catch (e) {
+      throw new NotActed(e as RpcError);
+    }
+  }
+
   /** The model a thread's turns run on, as far as yaacd knows (null: the harness default). */
   private modelOf(rt: ThreadRuntime): ModelId | null {
     return rt.effective?.applied?.model ?? rt.record.model ?? null;
@@ -1987,7 +2020,8 @@ export class Core {
    */
   modelSupportsSpeed(descriptor: ProviderDescriptor, model: ModelId | null | undefined, speed: "fastMode" | "ultrafastMode"): boolean {
     const models = descriptor.models ?? [];
-    const m = model ? models.find((x) => x.id === model) : models.find((x) => x.isDefault) ?? models[0];
+    const m = model ? models.find((x) => x.id === model) ?? descriptor.disabledModels?.find((x) => x.id === model)
+      : models.find((x) => x.isDefault) ?? models[0];
     return m?.capabilities?.some((c) => c.capability === speed && c.support === "supported") ?? false;
   }
 
@@ -2002,7 +2036,8 @@ export class Core {
 
   private modelImageSupport(descriptor: ProviderDescriptor, model: ModelId | null | undefined): "supported" | "unsupported" | "unknown" {
     const models = descriptor.models ?? [];
-    const m = model ? models.find((x) => x.id === model) : models.find((x) => x.isDefault) ?? models[0];
+    const m = model ? models.find((x) => x.id === model) ?? descriptor.disabledModels?.find((x) => x.id === model)
+      : models.find((x) => x.isDefault) ?? models[0];
     const s = m?.capabilities?.find((c) => c.capability === "imageInput")?.support;
     return s === "supported" || s === "unsupported" ? s : "unknown";
   }
@@ -2083,7 +2118,7 @@ export class Core {
         throw notActed("invalid_params", `the working directory ${String(cwd)} does not exist on this target`);
       }
       if (p.agents !== undefined && p.agents !== null && typeof p.agents !== "string") throw notActed("invalid_params", "agents must be a string");
-      this.checkModel(instance.descriptor, p.model);
+      let model = this.newThreadModel(instance, p.model);
       const ultrafast = this.checkSpeed(instance.descriptor, p.model, "ultrafast", p.ultrafast);
       const fast = this.checkSpeed(instance.descriptor, p.model, "fast", p.fast) && !ultrafast;
       const parts = this.validateParts(p.input, this.modelImageSupport(instance.descriptor, p.model));
@@ -2092,11 +2127,13 @@ export class Core {
       const uploadsKey = `start:${p.opId}`;
       const input = this.buildInput(uploadsKey, parts, "user");
       const trusted = await this.trustProjectFolder(instance, cwd);
+      model = this.newThreadModel(instance, p.model);
+      const advertisedModel = model ?? instance.descriptor.models?.find((m) => m.isDefault)?.id ?? null;
       const key = instance.config.id;
       this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
       let started: { thread: NativeId; turn: TurnId };
       try {
-        started = await provider.startThread({ cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null, fast, ultrafast }, input);
+        started = await provider.startThread({ cwd, model, effort: p.effort ?? null, mode: p.mode ?? null, fast, ultrafast }, input);
       } catch (e) {
         this.finishPendingStart(key);
         throw rpc("provider_unavailable", `${instance.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
@@ -2110,7 +2147,7 @@ export class Core {
           originKind: "yaac",
           title: (firstText?.text ?? "").split("\n")[0]!.slice(0, 80) || "New thread",
           preview: (firstText?.text ?? "").slice(0, 120),
-          model: p.model ?? null,
+          model: advertisedModel,
           uploadsKey,
           ...(fast ? { fast: true } : {}),
           ...(ultrafast ? { ultrafast: true } : {}),
@@ -2225,8 +2262,11 @@ export class Core {
       await this.refreshExternal(rt);
       this.checkWriter(rt, client, true);
       if (rt.compactDriver && delivery !== "queue") throw notActed("turn_in_progress", "context is being compacted");
-      this.checkModel(inst.descriptor, p.model);
       const eff = rt.effective ?? (await this.computeEffective(rt));
+      if (p.model !== this.modelOf(rt)) {
+        this.checkModelEnabled(inst, p.model);
+        this.checkModel(inst.descriptor, p.model);
+      }
       this.checkSpeed(inst.descriptor, p.model ?? this.modelOf(rt), "fast", p.fast);
       this.checkSpeed(inst.descriptor, p.model ?? this.modelOf(rt), "ultrafast", p.ultrafast);
       const imageSupport = p.model ? this.modelImageSupport(inst.descriptor, p.model) : eff.imageInput;
@@ -2254,6 +2294,53 @@ export class Core {
     });
   }
 
+  /**
+   * `turn/shellCommand` (P344): a `!command` typed in this thread's composer. It runs through
+   * the provider (`shellCommand`), which records it as the harness's own `!` does and has the
+   * agent answer it, in one turn. With a turn running it is queued (`delivery: queue`, D166);
+   * there is no `now` for a command. Only a client reaches this: no agent tool or mesh
+   * message can run a command, and an agent's message that starts with `!` is plain text.
+   */
+  async turnShellCommand(client: ClientLink, p: { opId: string; threadId: string; command: string; delivery?: string | null }): Promise<TurnStartResult> {
+    return this.ops.run("turn/shellCommand", p.opId, async () => {
+      const rt = this.findThread(p.threadId);
+      if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
+      try {
+        this.checkStore(rt);
+        this.registry.usable(rt.record.instance);
+      } catch (e) {
+        throw new NotActed(e as RpcError);
+      }
+      const command = typeof p.command === "string" ? p.command.trim() : "";
+      if (!command) throw notActed("invalid_params", "the command is empty");
+      const delivery = p.delivery ?? null;
+      if (delivery !== null && delivery !== "queue") throw notActed("invalid_params", "a shell command can only be queued (delivery: queue)");
+      const provider = this.provider(rt);
+      const eff = rt.effective ?? (await this.computeEffective(rt));
+      if (typeof provider.shellCommand !== "function" || !(eff.capabilities ?? []).includes("userShellCommand")) {
+        throw notActed("capability_missing", "this thread cannot run shell commands from the composer");
+      }
+      await this.refreshExternal(rt);
+      this.checkWriter(rt, client, true);
+      if (rt.compactDriver && delivery !== "queue") throw notActed("turn_in_progress", "context is being compacted");
+      const parts = shellParts(command);
+      const driver: Driver = { key: client.key, host: client.host };
+      const busy = !!rt.activeTurn || rt.dispatching || rt.claimed;
+      this.mesh?.humanInput?.(rt);
+      if (!busy) {
+        if (rt.record.hold) this.releaseHold(rt, false);
+        rt.queuePaused = false;
+        const turnId = await this.submit(rt, { origin: "user", parts, overrides: {}, driver, opId: p.opId, shellCommand: command }, "now");
+        return { turnId, outcome: "started" as TurnStartOutcome };
+      }
+      if (delivery === null) {
+        throw notActed("turn_in_progress", "a turn is already running in this thread", rt.activeTurn ? { activeTurn: rt.activeTurn } : undefined);
+      }
+      const entry = this.enqueueUser(rt, parts, {}, driver, p.opId, command);
+      return { turnId: "", outcome: "queued" as TurnStartOutcome, queueId: entry.queueId };
+    });
+  }
+
   // ── Queued user messages, and `now` ────────────────────────────────────────────────────
 
   private publicEntry(e: QueuedEntry): QueuedMessage {
@@ -2267,8 +2354,9 @@ export class Core {
   }
 
   /** Queues a user message durably, ahead of queued agent input. */
-  private enqueueUser(rt: ThreadRuntime, parts: InputPart[], overrides: TurnOverrides, driver: Driver | null, opId?: string): QueuedEntry {
+  private enqueueUser(rt: ThreadRuntime, parts: InputPart[], overrides: TurnOverrides, driver: Driver | null, opId?: string, shellCommand?: string): QueuedEntry {
     const entry: QueuedEntry = {
+      ...(shellCommand ? { shellCommand } : {}),
       queueId: randomId("q_", 10),
       input: parts,
       queuedAt: nowIso(),
@@ -2307,6 +2395,18 @@ export class Core {
       const e = this.queuedEntry(rt, p.queueId);
       const eff = rt.effective ?? (await this.computeEffective(rt));
       e.input = this.validateParts(p.input, eff.imageInput);
+      if (e.shellCommand) {
+        // A queued `!command` edited: still a command while its text starts with `!` (P344);
+        // with the `!` removed it becomes an ordinary message.
+        const only = e.input.length === 1 && e.input[0]!.type === "text" ? (e.input[0] as { text: string }).text : null;
+        const command = only?.startsWith("!") ? only.slice(1).trim() : "";
+        if (command) {
+          e.shellCommand = command;
+          e.input = shellParts(command);
+        } else {
+          delete e.shellCommand;
+        }
+      }
       rt.saveQueue();
       this.queueEvent(rt, "updated", e);
       rt.queuePaused = false;
@@ -2365,6 +2465,10 @@ export class Core {
       const e = this.queuedEntry(rt, p.queueId);
       if (rt.compactDriver) throw notActed("turn_in_progress", "context is being compacted");
       if (rt.pendingRequestCount() > 0) throw notActed("awaiting_user", NOW_WHILE_ASKING);
+      if (e.shellCommand && (rt.activeTurn || rt.dispatching || rt.claimed)) {
+        // A command never joins or interrupts a running turn (P344): it waits for the turn's end.
+        throw notActed("turn_in_progress", "a shell command runs when the running turn ends; it stays queued");
+      }
       this.mesh?.humanInput?.(rt);
       rt.userQueue = rt.userQueue.filter((q) => q !== e);
       rt.saveQueue();
@@ -2373,6 +2477,10 @@ export class Core {
       if (rt.record.hold) this.releaseHold(rt, false);
       const overrides = { model: e.model ?? null, effort: e.effort ?? null, mode: e.mode ?? null, fast: e.fast ?? null, ultrafast: e.ultrafast ?? null };
       const driver: Driver = { key: client.key, host: client.host };
+      if (e.shellCommand) {
+        const turnId = await this.submit(rt, { origin: "user", parts: e.input, overrides, driver, shellCommand: e.shellCommand, ...(e.opId ? { opId: e.opId } : {}) }, "now");
+        return { turnId, outcome: "started" as TurnStartOutcome };
+      }
       if (!rt.activeTurn && !rt.dispatching && !rt.claimed) {
         const turnId = await this.submit(rt, { origin: "user", parts: e.input, overrides, driver, ...(e.opId ? { opId: e.opId } : {}) }, "now");
         return { turnId, outcome: "started" as TurnStartOutcome };
@@ -2493,6 +2601,7 @@ export class Core {
       overrides: { model: entry.model ?? null, effort: entry.effort ?? null, mode: entry.mode ?? null, fast: entry.fast ?? null, ultrafast: entry.ultrafast ?? null },
       driver: entry.driver ?? null,
       ...(entry.opId ? { opId: entry.opId } : {}),
+      ...(entry.shellCommand ? { shellCommand: entry.shellCommand } : {}),
       onStarted: (turnId) => {
         rt.userQueue = rt.userQueue.filter((q) => q !== entry);
         rt.saveQueue();
@@ -2645,29 +2754,38 @@ export class Core {
         }
       }
       await work.beforeStart?.();
+      const instance = this.registry.require(rt.record.instance);
+      if (work.overrides.model !== this.modelOf(rt)) this.checkModelEnabled(instance, work.overrides.model);
       const input = this.buildInput(rt.uploadsKey, work.parts, work.origin);
       if (work.mesh) input.mesh = work.mesh;
       rt.expectTurn = { origin: work.origin, parts: work.parts, driver: work.driver, ...(work.journalItems ? { items: work.journalItems } : {}), ...(work.opId ? { opId: work.opId } : {}) };
       const expected = rt.expectTurn;
       // A queued turn keeps its explicit choice; otherwise use the session's current speed.
-      const descriptor = this.registry.get(rt.record.instance)?.descriptor;
+      const descriptor = instance.descriptor;
       const model = work.overrides.model ?? this.modelOf(rt);
       const ultrafast = (work.overrides.ultrafast ?? (work.overrides.fast == null && rt.record.ultrafast)) === true
-        && !!descriptor && this.modelSupportsSpeed(descriptor, model, "ultrafastMode");
+        && this.modelSupportsSpeed(descriptor, model, "ultrafastMode");
       const fast = !ultrafast && (work.overrides.fast ?? rt.record.fast) === true
-        && !!descriptor && this.modelSupportsSpeed(descriptor, model, "fastMode");
+        && this.modelSupportsSpeed(descriptor, model, "fastMode");
       // A thread a `thread/move` moved (D144): every turn names its folder, and the first one
       // after the move begins with a short fixed note saying so. Only the harness sees it.
       const overrides: TurnOverrides = { ...work.overrides, fast, ultrafast };
       if (rt.record.cwdMoved) overrides.cwd = rt.record.cwd;
-      const note = rt.record.cwdNote;
+      // A `!command` (P344) carries no text of the user's for the note: it waits for a message.
+      const note = work.shellCommand === undefined ? rt.record.cwdNote : undefined;
       if (note) input.text = movedNote(note.from, note.to) + input.text;
       let turnId: TurnId;
       try {
-        turnId = await provider.startTurn(rt.record.native, input, overrides);
+        if (work.shellCommand !== undefined) {
+          if (work.origin !== "user" || !provider.shellCommand) throw notActed("capability_missing", "this thread cannot run shell commands from the composer");
+          turnId = await provider.shellCommand(rt.record.native, work.shellCommand, overrides, work.opId ?? randomId("op_", 12));
+        } else {
+          turnId = await provider.startTurn(rt.record.native, input, overrides);
+        }
         handedOver = true;
       } catch (e) {
         rt.expectTurn = null;
+        if (e instanceof NotActed) throw e;
         if (e instanceof InputOutcomeUnknown) throw rpc("outcome_unknown", e.message);
         if (e instanceof PeerInputDenied) throw rpc("policy_denied", e.message);
         throw rpc("provider_unavailable", `the harness did not start the turn: ${(e as Error).message}`);
@@ -2782,6 +2900,53 @@ export class Core {
     return requestId;
   }
 
+  /**
+   * Whether yaacd answers this request itself (P342), and with what: only a tool approval, only
+   * while the thread's mode — as the provider says the harness was in when it asked — is one
+   * the provider marks `skipsApprovals`, never one the user's own rule forced, never in a thread
+   * another program holds. Questions, forms, logins and mesh permissions always reach the user.
+   */
+  private automaticApproval(rt: ThreadRuntime, req: RaisedRequest, modeId: string | null, userRule: string | null): { answer: RequestResponse; automatic: AutomaticResolution } | null {
+    if (req.requestKind !== "approval" || !modeId || userRule) return null;
+    const descriptor = this.registry.get(rt.record.instance)?.descriptor;
+    const mode = [...(rt.effective?.modes ?? []), ...(descriptor?.modes ?? [])].find((m) => m.id === modeId);
+    if (!mode?.skipsApprovals) return null;
+    const writer = this.subagentReadOnly(rt) ? this.subagentParent(rt) : rt;
+    if (writer?.external.external) return null;
+    // The narrowest grant on offer: allow once, else for the session; never "always".
+    const decisions = req.decisions ?? [];
+    const pick = decisions.find((d) => d.kind === "allow") ?? decisions.find((d) => d.kind === "allowSession");
+    if (!pick) return null;
+    return { answer: { requestKind: "approval", decision: pick.id }, automatic: { mode: mode.id, ...(mode.displayName ? { modeName: mode.displayName } : {}) } };
+  }
+
+  /**
+   * Hands yaacd's own answer to a tool approval to the harness (P342); the request is already
+   * journaled `submitted` by yaacd. The harness's confirmation records it resolved `by: yaacd`.
+   * If the harness does not take it, the request goes back to the user — nothing is re-sent.
+   */
+  private approveAutomatically(rt: ThreadRuntime, rec: RequestRecord, answer: RequestResponse): void {
+    this.updateIndex(rt);
+    this.activity.emit();
+    let provider: HarnessProvider;
+    try {
+      provider = this.provider(rt);
+    } catch (e) {
+      this.automaticFailed(rt, rec, (e as Error).message);
+      return;
+    }
+    void provider.respond(rt.record.native, rec.requestId, answer).catch((e: Error) => this.automaticFailed(rt, rec, e.message));
+  }
+
+  private automaticFailed(rt: ThreadRuntime, rec: RequestRecord, why: string): void {
+    this.opts.log(`automatic approval of ${rec.requestId} in ${rt.id} was not taken (${why}); asking the user`);
+    if (rec.state !== "submitted") return;
+    delete rec.automatic;
+    delete rec.resolution;
+    this.setRequestState(rt, rec, "pending", null);
+    this.mesh?.requestRaised(rt, rec);
+  }
+
   /** Records the answer to a request yaacd raised itself. */
   resolveOwnRequest(rt: ThreadRuntime, rec: RequestRecord, answer: RequestResponse, client: ClientLink | null): void {
     const resolution: RequestResolution = { by: client ? "client" : "elsewhere", at: nowIso(), answer };
@@ -2815,6 +2980,7 @@ export class Core {
   }): Promise<{ threadId: string; turnId: TurnId }> {
     const { instance, provider } = this.registry.usable(p.instance);
     if (!fs.existsSync(p.cwd) || !fs.statSync(p.cwd).isDirectory()) throw rpc("invalid_params", `the working directory ${p.cwd} does not exist on this target`);
+    this.checkModelEnabled(instance, p.model);
     this.checkModel(instance.descriptor, p.model);
     const uploadsKey = `spawn:${randomId("s", 12)}`;
     const input = this.buildInput(uploadsKey, p.parts, "mesh");
@@ -2824,6 +2990,7 @@ export class Core {
     const key = instance.config.id;
     this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
     let started: { thread: NativeId; turn: TurnId };
+    let advertisedModel: ModelId | null;
     let launchStoreKey: string | null | undefined;
     try {
       launchStoreKey = instance.descriptor.store.key ?? null;
@@ -2831,12 +2998,15 @@ export class Core {
         ? await this.workerLaunchCallback(p.parent, instance, provider, launchStoreKey)
         : undefined;
       if (!beforeFirstPrompt) launchStoreKey = undefined;
+      const model = this.newThreadModel(instance, p.model);
+      advertisedModel = model ?? instance.descriptor.models?.find((m) => m.isDefault)?.id ?? null;
       started = await provider.startThread({
-        cwd: p.cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null,
+        cwd: p.cwd, model, effort: p.effort ?? null, mode: p.mode ?? null,
         ...(beforeFirstPrompt ? { beforeFirstPrompt } : {}),
       }, input);
     } catch (e) {
       this.finishPendingStart(key);
+      if (e instanceof NotActed) throw e.error;
       if (e instanceof InputOutcomeUnknown) {
         throw rpc("outcome_unknown", `${e.message} Check whether the worker started before trying again.`);
       }
@@ -2850,7 +3020,7 @@ export class Core {
         originKind: "yaac",
         title: p.title,
         preview: "",
-        model: p.model ?? null,
+        model: advertisedModel,
         uploadsKey,
         spawnedBy: p.spawnedBy,
         ...(p.agents ? { agents: p.agents } : {}),
@@ -3189,16 +3359,23 @@ export class Core {
     if (p.atTurn && !(srcInst.descriptor.capabilities ?? []).includes("threadForkAtTurn")) {
       throw notActed("capability_missing", "this provider forks only from the last completed turn");
     }
-    this.checkModel(plan.dest.descriptor, p.model);
-    const parts = withInput ? this.validateParts(p.input, this.modelImageSupport(plan.dest.descriptor, p.model)) : null;
+    const sourceModel = this.modelOf(src);
+    const forkModel = () => {
+      const model = this.newThreadModel(plan.dest, p.model);
+      if (model || !sourceModel || !this.registry.modelIsOff(plan.dest, sourceModel)) return model;
+      const models = plan.dest.descriptor.models ?? [];
+      return models.find((m) => m.isDefault)?.id ?? models.find((m) => !m.hidden)?.id ?? null;
+    };
+    const parts = withInput ? this.validateParts(p.input, this.modelImageSupport(plan.dest.descriptor, forkModel())) : null;
     const linkedChildren = this.retainedForkChildren(src, p.keepChildren);
     const trusted = await this.trustProjectFolder(plan.dest, src.record.cwd);
+    const model = forkModel();
     let native: NativeId;
     try {
       native = await srcInst.provider!.forkThread!(src.record.native, {
         atTurn: p.atTurn ?? null,
         cwd: src.record.cwd,
-        model: p.model ?? null,
+        model,
         effort: p.effort ?? null,
         mode: p.mode ?? null,
       });
@@ -3214,7 +3391,7 @@ export class Core {
         forkedFrom: src.id,
         ...(linkedChildren && { linkedChildren }),
         title: `${src.record.titleOverride ?? src.record.title ?? "Thread"} (fork)`,
-        model: p.model ?? src.record.model ?? null,
+        model: model ?? sourceModel,
       },
       false,
     );
@@ -3235,8 +3412,7 @@ export class Core {
   private async handoffFork(client: ClientLink, p: ThreadForkParams, src: ThreadRuntime, dest: Instance, unavailable: string | null): Promise<ThreadForkResult> {
     if (unavailable) throw notActed("capability_missing", unavailable);
     const { provider } = this.registry.usable(dest.config.id);
-    this.checkModel(dest.descriptor, p.model);
-    const parts = this.validateParts(p.input, this.modelImageSupport(dest.descriptor, p.model));
+    const parts = this.validateParts(p.input, this.modelImageSupport(dest.descriptor, this.newThreadModel(dest, p.model)));
     const linkedChildren = this.retainedForkChildren(src, p.keepChildren);
     // The new thread's attachment folder is keyed by this operation, for its whole life.
     const uploadsKey = `fork:${p.opId}`;
@@ -3251,11 +3427,13 @@ export class Core {
     input.text = preamble(file, { target: where?.target ?? "this machine", threadId: src.id, address: where?.address ?? null }, meshTools) + input.text;
     input.readable = [path.dirname(file), ...readable];
     const trusted = await this.trustProjectFolder(dest, src.record.cwd);
+    const model = this.newThreadModel(dest, p.model);
+    const advertisedModel = model ?? dest.descriptor.models?.find((m) => m.isDefault)?.id ?? null;
     const key = dest.config.id;
     this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
     let started: { thread: NativeId; turn: TurnId };
     try {
-      started = await provider.startThread({ cwd: src.record.cwd, model: p.model ?? null, effort: p.effort ?? null, mode: p.mode ?? null }, input);
+      started = await provider.startThread({ cwd: src.record.cwd, model, effort: p.effort ?? null, mode: p.mode ?? null }, input);
     } catch (e) {
       this.finishPendingStart(key);
       throw rpc("provider_unavailable", `${dest.descriptor.displayName} could not start the thread: ${(e as Error).message}`);
@@ -3276,7 +3454,7 @@ export class Core {
         // preamble: YAAC names it after its source instead.
         titleOverride: title,
         preview: (firstText?.text ?? "").slice(0, 120),
-        model: p.model ?? null,
+        model: advertisedModel,
         uploadsKey,
       },
       true,
@@ -3622,8 +3800,22 @@ export class Core {
         rt.requests.set(ev.requestId, rec);
         // Journaled — durably — before anything else happens to it.
         rt.saveRequests();
-        const item = { id: itemId, turnId: ev.turnId, status: "inProgress", startedAt: nowIso(), kind: "request", requestId: ev.requestId, state: "pending", blocking: ev.blocking ?? true, ...req } as Item;
+        const auto = this.automaticApproval(rt, req, ev.mode ?? null, ev.userRule ?? null);
+        if (auto) {
+          // A tool approval in a never-ask thread (P342): yaacd answers it. The hand-over is
+          // journaled (`submitted`, by yaacd) before it is made, and the item enters the
+          // transcript in that state — no window shows it as waiting for the user.
+          rec.automatic = auto.automatic;
+          rec.state = "submitted";
+          rec.resolution = { by: "yaacd", automatic: auto.automatic, answer: auto.answer, at: nowIso() };
+          rt.saveRequests();
+        }
+        const item = { id: itemId, turnId: ev.turnId, status: "inProgress", startedAt: nowIso(), kind: "request", requestId: ev.requestId, state: rec.state, ...(rec.resolution ? { resolution: rec.resolution } : {}), blocking: ev.blocking ?? true, ...req } as Item;
         this.append(rt, { type: "itemStarted", item }, undefined, true);
+        if (auto) {
+          this.approveAutomatically(rt, rec, auto.answer);
+          return;
+        }
         this.updateIndex(rt);
         this.activity.emit();
         this.mesh?.requestRaised(rt, rec);
@@ -3633,7 +3825,10 @@ export class Core {
         const rec = rt.requests.get(ev.requestId);
         if (!rec || rec.state === "resolved" || rec.state === "expired") return;
         const resolution: RequestResolution = { by: "elsewhere", at: nowIso() };
-        if (ev.by === "client" && rec.submittedBy) {
+        if (ev.by === "client" && rec.automatic) {
+          resolution.by = "yaacd";
+          resolution.automatic = rec.automatic;
+        } else if (ev.by === "client" && rec.submittedBy) {
           resolution.by = "client";
           resolution.clientId = rec.submittedBy.key;
           if (rec.submittedBy.host) resolution.clientHost = rec.submittedBy.host;
@@ -3664,7 +3859,9 @@ export class Core {
       case "settingsChanged": {
         if (ev.applied.model) rt.record.model = ev.applied.model;
         void this.computeEffective(rt).then((effective) => {
-          if (!rt.deleted) this.append(rt, { type: "settingsChanged", effective: { ...effective, applied: { ...effective.applied, ...ev.applied } } });
+          if (rt.deleted) return;
+          this.append(rt, { type: "settingsChanged", effective: { ...effective, applied: { ...effective.applied, ...ev.applied } } });
+          this.updateIndex(rt);
         });
         return;
       }
@@ -3810,6 +4007,7 @@ export class Core {
     if (!(await within(this.gitStatus.idle().catch(() => {}), CLOSE_GIT_WAIT_MS))) {
       this.opts.log(`stop: git status still computing after ${CLOSE_GIT_WAIT_MS} ms; not waiting for it`);
     }
+    this.terminals.shutdown();
     this.gitStatus.close();
     for (const rt of this.threads.values()) {
       this.flushDeltas(rt);
@@ -3830,3 +4028,8 @@ export class Core {
 }
 
 export { lastSeqOf, applyDelta };
+
+/** The user message a `!command` is journaled as (P344): the text `!command`, as a command. */
+function shellParts(command: string): InputPart[] {
+  return [{ type: "text", text: `!${command}`, role: "command" } as InputPart];
+}

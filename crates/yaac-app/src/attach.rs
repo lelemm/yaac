@@ -269,6 +269,21 @@ impl HubLink for HubAttach {
         let g = self.slot.lock().ok()?;
         g.client.as_ref()?.try_recv()
     }
+
+    fn send_data(&mut self, stream: yaac_protocol::StreamId, bytes: Vec<u8>) {
+        // Ordered after any control message already queued for the hub.
+        self.flush();
+        if let Ok(g) = self.slot.lock()
+            && let Some(c) = &g.client
+        {
+            let _ = c.send_data(stream, bytes);
+        }
+    }
+
+    fn poll_data(&mut self) -> Option<(yaac_protocol::StreamId, Vec<u8>)> {
+        let g = self.slot.lock().ok()?;
+        g.client.as_ref()?.try_recv_data()
+    }
 }
 
 /// A [`HubLink`] that shares one [`HubAttach`] with the window, which also needs to see the
@@ -285,5 +300,15 @@ impl HubLink for SharedAttach {
 
     fn poll(&mut self) -> Option<Message> {
         self.0.lock().ok()?.poll()
+    }
+
+    fn send_data(&mut self, stream: yaac_protocol::StreamId, bytes: Vec<u8>) {
+        if let Ok(mut a) = self.0.lock() {
+            a.send_data(stream, bytes);
+        }
+    }
+
+    fn poll_data(&mut self) -> Option<(yaac_protocol::StreamId, Vec<u8>)> {
+        self.0.lock().ok()?.poll_data()
     }
 }

@@ -27,6 +27,7 @@ async function probe(keepServing) {
   let buffered = Buffer.alloc(0);
   const frames = bridge.stdout[Symbol.asyncIterator]();
 
+  let terminalOutput = "";
   async function request(id, method, params = {}) {
     const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
     const header = Buffer.alloc(5);
@@ -36,6 +37,11 @@ async function probe(keepServing) {
     for (;;) {
       const length = buffered.length >= 4 ? buffered.readUInt32LE() : 0;
       if (length > 0 && buffered.length >= length + 4) {
+        if (buffered[4] === 2) {
+          terminalOutput += buffered.subarray(9, length + 4).toString();
+          buffered = buffered.subarray(length + 4);
+          continue;
+        }
         const response = JSON.parse(buffered.subarray(5, length + 4));
         buffered = buffered.subarray(length + 4);
         if (response.id !== id) continue;
@@ -56,6 +62,30 @@ async function probe(keepServing) {
     assert.equal(init.target.os, "windows");
     const { providers } = await request(2, "provider/list");
     assert.equal(providers.find((p) => p.kind === "fake")?.status, "ready");
+    if (keepServing) {
+      assert.ok(init.features.includes("terminal"), init.terminalUnavailableReason);
+      const { shells } = await request(4, "terminal/shells");
+      assert.match(shells[0].path, /(?:pwsh|powershell)\.exe$/i);
+      const { terminal, stream } = await request(5, "terminal/open", { cwd: home, cols: 100, rows: 30 });
+      const grant = Buffer.from(JSON.stringify({ method: "stream/credit", params: { stream, bytes: 1 << 20 } }));
+      const grantHeader = Buffer.alloc(5);
+      grantHeader.writeUInt32LE(grant.length + 1);
+      grantHeader[4] = 1;
+      bridge.stdin.write(Buffer.concat([grantHeader, grant]));
+      const command = Buffer.from("Write-Output ('PTY' + [Console]::OutputEncoding.CodePage + 'OK')\r");
+      const header = Buffer.alloc(9);
+      header.writeUInt32LE(command.length + 5);
+      header[4] = 2;
+      header.writeUInt32LE(stream, 5);
+      bridge.stdin.write(Buffer.concat([header, command]));
+      for (let attempt = 0; attempt < 100 && !terminalOutput.includes("PTY65001OK"); attempt++) {
+        await delay(100);
+        await request(6, "ping");
+      }
+      assert.ok(terminalOutput.includes("PTY65001OK"), terminalOutput);
+      await request(7, "terminal/close", { terminal });
+      console.log("ConPTY round trip and UTF-8 code page verified with " + shells[0].path);
+    }
     const pid = readFileSync(pidFile, "utf8");
     if (!keepServing) await request(3, "daemon/handover", { when: "now" });
     bridge.stdin.end();

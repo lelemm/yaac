@@ -382,7 +382,7 @@ pub fn screenshot_name(year: i32, month: u32, day: u32, hour: u32, minute: u32) 
 /// the next message when there is one (its descriptor), else the thread's effective support.
 pub fn thread_image_support(state: &AppState, key: &ThreadKey) -> Support {
     if let Some(model) = state.next_settings.get(key).and_then(|n| n.model.as_ref())
-        && let Some(info) = state.provider_of(key).and_then(|p| p.models.iter().find(|m| &m.id == model))
+        && let Some(info) = state.provider_of(key).and_then(|p| p.find_model(model))
     {
         return model_image_support(info);
     }

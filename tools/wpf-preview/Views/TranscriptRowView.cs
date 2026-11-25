@@ -35,6 +35,7 @@ public sealed class TranscriptRowView : UserControl
     private TranscriptText? body;
     private TranscriptText? detail;
     private TranscriptActivity? activityRow;
+    private TranscriptShell? shellBlock;
     private Expander? detailExpander;
     private JsonElement previous;
     private JsonElement escape;
@@ -114,6 +115,14 @@ public sealed class TranscriptRowView : UserControl
         row.Changed += Refresh;
         body = CreateText("body");
         detail = CreateText("detail");
+        if (row.Kind == "shell")
+        {
+            shellBlock = new TranscriptShell(state, body, descriptor => Submit(descriptor, false));
+            content.Children.Add(shellBlock);
+            content.Children.Add(actions);
+            Refresh();
+            return;
+        }
         content.Children.Add(title);
         content.Children.Add(taskHeader);
         content.Children.Add(body);
@@ -152,6 +161,7 @@ public sealed class TranscriptRowView : UserControl
         content.Children.Clear();
         activityRow?.DetachDetails(details);
         activityRow = null;
+        shellBlock = null;
         details.Children.Clear();
         taskHeader.Children.Clear();
         if (detailExpander is not null)
@@ -179,6 +189,11 @@ public sealed class TranscriptRowView : UserControl
         }
         var data = row.Data;
         var kind = row.Kind;
+        if (shellBlock is not null)
+        {
+            RefreshShell(data);
+            return;
+        }
         var user = kind == "user";
         card = kind is "request" or "approval" or "permission" or "question" or "form" or "budget";
         var activity = kind is "activity" or "tool" or "file" or "call" or "notice" or "worked" or "changes";
@@ -226,6 +241,26 @@ public sealed class TranscriptRowView : UserControl
             UpdateQuestions(data.Value("questions"));
         if (!Same("fields", data))
             UpdateFields(data.Value("fields"));
+        if (!Same("actions", data))
+            UpdateActions(data.Value("actions"));
+        previous = data;
+    }
+
+    // A `!command` block (P346): full width, no bubble, on the transcript's own background.
+    private void RefreshShell(JsonElement data)
+    {
+        plate.HorizontalAlignment = HorizontalAlignment.Stretch;
+        plate.Margin = new Thickness(0);
+        plate.Background = Brushes.Transparent;
+        plate.BorderThickness = new Thickness(0);
+        plate.Padding = new Thickness(2, 3, 2, 0);
+        Margin = new Thickness(0, 0, 0, 9);
+        reserveStamp = false;
+        showStatusStamp = false;
+        SetLabel(stamp, "");
+        ShowStamp();
+        shellBlock!.Render(data);
+        actions.HorizontalAlignment = HorizontalAlignment.Left;
         if (!Same("actions", data))
             UpdateActions(data.Value("actions"));
         previous = data;

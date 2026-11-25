@@ -1,10 +1,10 @@
 //! The agents panel in its three states: a pill floating over the thread's right edge (the
 //! default), a card on hover, or docked as a fixed panel. Every state groups the related
 //! agents by relation (D118) — *Spawned by*, *Workers*, *In contact with* — from one grouping
-//! in core. The card adds Siblings. Arrows show only while a message is in flight,
+//! in core. The card and docked panel add Siblings. Arrows show only while a message is in flight,
 //! and are static: an idle fleet costs no CPU.
 
-use eframe::egui::{self, Align2, Margin, Rect, Sense, Stroke, pos2, vec2};
+use eframe::egui::{self, Align2, Margin, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use yaac_core::agents::{AgentRow, AgentsPanel, BudgetLine, DockEntry, Flow, Overflow, PanelInput, PanelMode, PillLayout, Relation, card_groups, clusters, docked_clusters, docked_entries, pill, pill_cap, sibling_rows};
 use yaac_core::attention::Mark;
 use yaac_core::hover::Region;
@@ -54,7 +54,7 @@ impl DockPreview {
 /// Update only the preview. The normal open-thread path owns navigation and read marks.
 pub(crate) fn dock_hover(app: &mut YaacApp, ctx: &egui::Context, inside: bool, hovered: Option<yaac_core::ThreadKey>) {
     let before = app.ui.dock_preview.hovered.clone().filter(|_| app.ui.dock_preview.armed);
-    let owner = if inside && app.ui.panel == PanelMode::Docked && !app.ui.settings {
+    let owner = if inside && !app.ui.settings {
         app.client.state.selected_thread().cloned()
     } else {
         None
@@ -71,7 +71,7 @@ pub(crate) fn dock_hover(app: &mut YaacApp, ctx: &egui::Context, inside: bool, h
 
 pub(crate) fn poll_dock_hover(app: &mut YaacApp, ctx: &egui::Context) {
     let preview = &mut app.ui.dock_preview;
-    if app.ui.settings || app.ui.panel != PanelMode::Docked || preview.owner.as_ref() != app.client.state.selected_thread() {
+    if app.ui.settings || preview.owner.as_ref() != app.client.state.selected_thread() {
         *preview = DockPreview::default();
         return;
     }
@@ -84,17 +84,21 @@ pub(crate) fn poll_dock_hover(app: &mut YaacApp, ctx: &egui::Context) {
     }
 }
 
-/// A harness's logo (the table in `logos`), or its initial in a circle; the needs-you mark
+/// A harness's logo (the table in `logos`), or its initial in a circle; the state mark
 /// on its corner, and the unseen ring around it (D114).
 fn harness_icon(painter: &egui::Painter, c: egui::Pos2, d: f32, row: &AgentRow, p: &Palette) {
     if row.display.unseen {
         painter.circle_stroke(c, d * 0.62, Stroke::new(1.6, p.unseen));
     }
     harness_mark(painter, c, d, row.kind.as_deref(), row.provider.as_deref(), row.finished, p);
-    if row.display.attention.is_some() {
+    if row.display.attention.is_some() || row.display.mark == Mark::Waiting {
         let corner = c + vec2(d * 0.38, d * 0.32);
         painter.circle_filled(corner, d * 0.3, p.raised);
-        icons::exclaim(painter, corner, d * 0.5, p.failed);
+        if row.display.attention.is_some() {
+            icons::exclaim(painter, corner, d * 0.5, p.failed);
+        } else {
+            icons::hourglass(painter, corner, d * 0.5, p.mark(Mark::Waiting));
+        }
     }
 }
 
@@ -218,6 +222,7 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
     let mut any_focus = false;
     let mut to_hidden = app.ui.card_to_hidden && card;
     let mut more_rect = None;
+    let mut hovered = None;
     let resp = egui::Area::new(egui::Id::unique("agents-floating")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
         let radius = if card { 12 } else { 22 };
         egui::Frame::popup(ui.style()).fill(p.raised).corner_radius(radius).inner_margin(Margin::same(if card { 10 } else { 6 })).show(ui, |ui| {
@@ -262,7 +267,8 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                         let g = ui.fonts_mut(|f| f.layout_no_wrap((*heading).to_owned(), theme::bold(size::SMALL), p.text2));
                         ui.painter().galley(pos2(r.left() + 4.0, r.bottom() - g.size().y - 3.0), g, p.text2);
                         for &row in rows {
-                            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), CARD_ROW), Sense::click());
+                            let sense = if row.is_self { Sense::hover() } else { Sense::click() };
+                            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), CARD_ROW), sense);
                             if to_hidden && first_hidden.is_some_and(|hidden| {
                                 std::ptr::eq(hidden, row) || (row.key.is_some() && row.key == hidden.key)
                             }) {
@@ -272,8 +278,11 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
                             }
                             any_focus |= resp.has_focus();
                             card_row(ui, r, &resp, row, &p, now);
+                            if resp.hovered() {
+                                hovered = row.open_key().cloned();
+                            }
                             if resp.clicked()
-                                && let Some(k) = &row.key
+                                && let Some(k) = row.open_key()
                             {
                                 actions.push(Action::Open(k.clone()));
                             }
@@ -319,7 +328,6 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
             }
         });
     });
-    let _ = resp;
     app.ui.card_to_hidden = to_hidden;
     if !card {
         app.ui.pill_icons = pl.icons();
@@ -328,6 +336,8 @@ pub(crate) fn floating(ctx: &egui::Context, app: &mut YaacApp, thread: Rect, pan
     if app.shots.is_some() {
         return;
     }
+    let inside = card && resp.response.container_contains_pointer() && ctx.input(|i| i.focused);
+    dock_hover(app, ctx, inside, hovered);
     // Open and close from fixed regions and a short delay (yaac_core::hover), never from the
     // area's own outline, which grows and shrinks with the state.
     let pointer = ctx.pointer_hover_pos();
@@ -363,7 +373,9 @@ fn hairline(ui: &mut egui::Ui, p: &Palette) {
 
 /// One row of the card: icon, name, and one line with the last thing it did.
 fn card_row(ui: &egui::Ui, r: Rect, resp: &egui::Response, row: &AgentRow, p: &Palette, now: i64) {
-    if resp.hovered() || resp.has_focus() {
+    if row.is_self {
+        ui.painter().rect_filled(r, 6.0, p.selected);
+    } else if resp.hovered() || resp.has_focus() {
         ui.painter().rect_filled(r, 6.0, p.faint);
     }
     if row.display.unseen {
@@ -374,14 +386,32 @@ fn card_row(ui: &egui::Ui, r: Rect, resp: &egui::Response, row: &AgentRow, p: &P
     let name_color = if row.finished { p.text2 } else { p.text };
     let right = r.right() - if row.flow.is_some() { 24.0 } else { 8.0 };
     let title_right = draw_activity_age(ui, row, now, right, r.top() + 13.0, p);
-    let g = widgets::elided(ui, &row.title, &theme::bold(size::UI), name_color, (title_right - r.left() - 34.0).max(1.0));
-    ui.painter().galley(pos2(r.left() + 34.0, r.top() + 5.0), g, name_color);
+    let title = pos2(r.left() + 34.0, r.top() + 13.0);
+    draw_agent_title(ui, row, title, title_right, theme::bold(size::UI), name_color, p);
     let second = row.origin.as_ref().filter(|_| row.subagent).map_or_else(|| row.last_action.clone(), |o| format!("{o} · {}", row.last_action));
     let g = widgets::elided(ui, &second, &theme::ui(size::SMALL), p.text2, text_w);
     ui.painter().galley(pos2(r.left() + 34.0, r.top() + 24.0), g, p.text2);
     if let Some(f) = row.flow {
         arrow(ui.painter(), pos2(r.right() - 12.0, r.center().y), f, p);
     }
+}
+
+fn draw_agent_title(
+    ui: &egui::Ui, row: &AgentRow, pos: Pos2, right: f32, font: egui::FontId, color: egui::Color32, p: &Palette,
+) -> f32 {
+    let chip = row.is_self.then(|| ui.fonts_mut(|f| f.layout_no_wrap("self".into(), theme::ui(size::SMALL - 1.0), p.text2)));
+    let chip_room = chip.as_ref().map_or(0.0, |label| label.size().x + 14.0);
+    let title = widgets::elided(ui, &row.title, &font, color, (right - pos.x - chip_room).max(1.0));
+    let width = title.size().x;
+    let top = pos.y - title.size().y / 2.0;
+    ui.painter().galley(pos2(pos.x, top), title, color);
+    if let Some(label) = chip {
+        let chip_pos = pos2(pos.x + width + 9.0, pos.y - label.size().y / 2.0);
+        let rect = Rect::from_min_size(chip_pos, label.size()).expand2(vec2(4.0, 1.0));
+        ui.painter().rect_filled(rect, 4.0, p.faint);
+        ui.painter().galley(chip_pos, label, p.text2);
+    }
+    width
 }
 
 fn draw_activity_age(ui: &egui::Ui, row: &AgentRow, now: i64, right: f32, y: f32, p: &Palette) -> f32 {
@@ -452,10 +482,14 @@ fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, ac
     let p = app.p;
     let lines = 2 + usize::from(!row.activity.is_empty()) + usize::from(row.git.is_some());
     let h = lines as f32 * DOCK_LINE + 10.0;
-    let (outer, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
+    let sense = if row.is_self { Sense::hover() } else { Sense::click() };
+    let (outer, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), sense);
     let rect = Rect::from_min_max(outer.min, pos2(outer.right(), outer.bottom() - 2.0));
-    let menu_open = row.key.as_ref().is_some_and(|k| app.ui.menu == Some(Menu::Context(k.clone())));
-    if row.key.is_some() && (resp.hovered() || menu_open) {
+    let link = row.open_key();
+    let menu_open = link.is_some_and(|k| app.ui.menu == Some(Menu::Context(k.clone())));
+    if row.is_self {
+        ui.painter().rect_filled(rect, 5.0, p.selected);
+    } else if link.is_some() && (resp.hovered() || menu_open) {
         ui.painter().rect_filled(rect, 5.0, p.faint);
     }
     if row.display.unseen {
@@ -480,17 +514,15 @@ fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, ac
     let tx = left + 20.0;
     let color = if row.finished { p.text2 } else { p.text };
     // The PR badge (D119), before the state word; the title gives way.
-    if let Some(k) = row.key.clone() {
+    if let Some(k) = link {
         app.ui.pr_visible.push(k.clone());
-        if let Some(b) = yaac_core::pr::badge_of(&app.client.state, &k) {
-            rx = crate::pr_ui::badge(ui, app, &k, &b, rx, y, "dock", actions) - 6.0;
+        if let Some(b) = yaac_core::pr::badge_of(&app.client.state, k) {
+            rx = crate::pr_ui::badge(ui, app, k, &b, rx, y, "dock", actions) - 6.0;
         }
     }
     let room = yaac_core::sidebar::title_width(rx - tx, &[], 4.0);
-    let g = widgets::elided(ui, &row.title, &theme::ui(size::UI), color, room.max(1.0));
-    let tw = g.size().x;
-    ui.painter().galley(pos2(tx, y - g.size().y / 2.0), g, color);
-    if resp.hovered() && row.key.is_some() {
+    let tw = draw_agent_title(ui, row, pos2(tx, y), tx + room, theme::ui(size::UI), color, &p);
+    if resp.hovered() && link.is_some() {
         ui.painter().hline(tx..=tx + tw, y + 8.0, Stroke::new(1.0, color));
     }
     // Line 2: the harness logo, branch, and git counts, as in the sidebar.
@@ -513,13 +545,13 @@ fn docked_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &AgentRow, now: i64, ac
         let g = widgets::elided(ui, &row.activity, &theme::ui(size::SMALL), p.text2, (right - tx).max(1.0));
         ui.painter().galley(pos2(tx, y - g.size().y / 2.0), g, p.text2);
     }
-    if let Some(k) = row.key.clone() {
+    if let Some(k) = link {
         if resp.clicked() {
             actions.push(Action::Open(k.clone()));
         }
-        crate::sidebar::row_menu(ui, app, &k, &resp, now, actions);
+        crate::sidebar::row_menu(ui, app, k, &resp, now, actions);
     }
-    resp.hovered().then(|| row.key.clone()).flatten()
+    resp.hovered().then(|| link.cloned()).flatten()
 }
 
 /// "Agent budget reached · Continue" (D164), under the budget in the card and the docked panel.
@@ -747,18 +779,28 @@ mod tests {
             let (mode, _) = frame(&ctx, &mut app, thread, Some(p), t);
             assert_eq!(mode, PanelMode::Card, "closed at {p:?}");
         }
-        // Resting over the card: open, and idle (no repaint pending) once settled.
+        // Resting over a row starts the preview timer. The preview itself needs no timer.
         let mut d = std::time::Duration::ZERO;
         for k in 0..5 {
             let (mode, delay) = frame(&ctx, &mut app, thread, Some(card.center()), t + 0.1 * f64::from(k) + 0.1);
             assert_eq!(mode, PanelMode::Card);
             d = delay;
         }
-        assert!(d > std::time::Duration::from_secs(60), "{d:?}");
+        assert!(d <= std::time::Duration::from_secs(2), "{d:?}");
+        let owner = app.client.state.selected_thread().cloned().unwrap();
+        assert_eq!(app.ui.dock_preview.target(&owner), None);
         t += 0.6;
+        app.started -= std::time::Duration::from_secs(2);
+        for k in 0..3 {
+            d = frame(&ctx, &mut app, thread, Some(card.center()), t + 0.1 * f64::from(k)).1;
+        }
+        assert!(app.ui.dock_preview.target(&owner).is_some());
+        assert!(d > std::time::Duration::from_secs(60), "{d:?}");
+        t += 0.3;
         // Out: still open for a quarter of a second, with one scheduled repaint to close it.
         let (mode, _) = frame(&ctx, &mut app, thread, Some(pos2(600.0, 500.0)), t + 0.01);
         assert_eq!(mode, PanelMode::Card);
+        assert_eq!(app.ui.dock_preview.target(&owner), None);
         // (The frame of the move and egui's hover-out pass repaint for themselves; after that
         // the window is woken only by the pending close.)
         frame(&ctx, &mut app, thread, Some(pos2(600.0, 500.0)), t + 0.05);

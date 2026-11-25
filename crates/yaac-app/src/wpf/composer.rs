@@ -286,8 +286,11 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                     running,
                     send_now,
                     editing,
+                    shell,
                     ..
                 } => {
+                    // `!` mode (P346) only for the draft itself, never a queued message's edit.
+                    let shell = shell.filter(|_| !editing);
                     let running = running || compacting;
                     let send_now = send_now.filter(|_| !compacting);
                     let dim = dimmed_hint.is_some() && !running;
@@ -322,7 +325,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                     v["sendNow"] = json!(
                         send_now
                             .filter(|_| !editing)
-                            .map(|label| action("sendNow", label, allowed))
+                            .map(|what| now_action("sendNow", what, allowed))
                     );
                     v["stop"] = json!((stop && !editing).then(|| action("stop", "Stop", true)));
                     if let Some(e) = edit {
@@ -334,14 +337,30 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                         v["paste"] = Value::Null;
                     } else {
                         v["attachments"] = json!(chips(app, &draft, &chip_views));
+                        v["shellCapable"] = json!(shell_capable(state, &key));
+                        if let Some(mode) = &shell {
+                            // `send`, `hint`, Send now and attach stay those of a message: WPF
+                            // shows these instead while in the mode, and goes back to them the
+                            // moment the user leaves it, before this view is redrawn (P346).
+                            let mut view = shell_view(state, &key, mode);
+                            view["run"] = action("send", mode.run_label, allowed && mode.ready);
+                            view["hint"] = json!(dimmed_hint.as_deref().or(blocked.as_deref()).unwrap_or(&mode.hint));
+                            v["shell"] = view;
+                        }
                     }
+                    let queued = state.transcripts.get(&key).map_or(&[][..], |t| t.queued.as_slice());
                     let queue = yaac_core::queue::strip(state, &key).into_iter().map(|q| {
                         let mut actions = vec![
                             action(&format!("queueEdit:{}", q.queue_id), "Edit", !q.busy && !q.editing),
                             action(&format!("queueCancel:{}", q.queue_id), "Cancel", !q.busy),
                         ];
-                        if let Some(label) = send_now { actions.insert(0, action(&format!("queueNow:{}", q.queue_id), label, !q.busy)); }
-                        json!({ "id": q.queue_id, "label": q.preview, "detail": q.extra, "busy": q.busy, "actions": actions })
+                        if let Some(what) = send_now { actions.insert(0, now_action(&format!("queueNow:{}", q.queue_id), what, !q.busy)); }
+                        let command = queued.iter().find(|e| e.queue_id == q.queue_id).and_then(|e| e.shell_command.as_deref());
+                        let mut row = json!({ "id": q.queue_id, "label": command.unwrap_or(&q.preview), "detail": q.extra, "busy": q.busy, "actions": actions });
+                        if command.is_some() {
+                            row["shell"] = json!(true);
+                        }
+                        row
                     }).collect::<Vec<_>>();
                     v["queueLabel"] = json!("Queued messages");
                     v["queue"] = json!(queue);
@@ -448,7 +467,11 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
             v["skills"] = app.ui.wpf_skills.view(&draft_key, text, &c, state);
         }
     }
-    if let Some(text) = v["text"].as_str() {
+    if !v["shell"].is_null() {
+        // A command is not Markdown: the `!`-mode field is plain monospace.
+        v["markdown"] = json!([]);
+        v["markdownBudget"] = json!(MARKDOWN_BUDGET);
+    } else if let Some(text) = v["text"].as_str() {
         v["markdown"] = if text.contains("\r\n") {
             json!(markdown_spans(&text.replace("\r\n", "\n")))
         } else {
@@ -457,6 +480,22 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
         v["markdownBudget"] = json!(MARKDOWN_BUDGET);
     }
     v
+}
+
+/// Whether a leading `!` in this thread's composer runs a command (P344): WPF enters `!` mode
+/// the moment one is typed at the start, before the controller echoes the edit.
+fn shell_capable(state: &yaac_core::state::AppState, key: &ThreadKey) -> bool {
+    state.transcripts.get(key).and_then(|t| t.effective.as_ref()).is_some_and(|e| {
+        yaac_protocol::has_capability(&e.capabilities, &yaac_protocol::Capability::UserShellCommand)
+    })
+}
+
+/// The `!`-mode composer (P346): the prompt row, and the thread's earlier commands newest
+/// first for ↑. The draft text keeps its `!`; WPF shows the field without it.
+fn shell_view(state: &yaac_core::state::AppState, key: &ThreadKey, mode: &header::ShellMode) -> Value {
+    let mut history = yaac_core::compose::shell_history(state, key);
+    history.reverse();
+    json!({ "prompt": mode.prompt, "cwd": mode.cwd, "history": history })
 }
 
 fn command_strip(app: &YaacApp, key: &ThreadKey) -> Value {
@@ -975,4 +1014,12 @@ mod tests {
         edit(&mut app, "composer.edit", "/ré", 3);
         assert_eq!(skills_view(&app)["end"], 3);
     }
+}
+
+/// The Send now button: always labelled "Send now"; its tooltip says whether it steers the
+/// running turn or interrupts it.
+fn now_action(id: &str, what: &str, enabled: bool) -> Value {
+    let mut v = action(id, yaac_core::queue::SEND_NOW, enabled);
+    v["detail"] = json!(what);
+    v
 }

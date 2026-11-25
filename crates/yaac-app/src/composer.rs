@@ -48,6 +48,21 @@ fn layout(ui: &egui::Ui, text: &str, wrap: f32, p: &Palette) -> Arc<egui::Galley
     ui.fonts_mut(|f| f.layout_job(job))
 }
 
+/// The size of a `!`-mode command in the composer.
+const SHELL_MONO: f32 = size::MONO + 1.0;
+
+/// The `!`-mode layouter: the command in mono, as typed.
+fn layout_mono(ui: &egui::Ui, text: &str, wrap: f32, p: &Palette) -> Arc<egui::Galley> {
+    let mut job = LayoutJob::simple(text.to_owned(), theme::mono(SHELL_MONO), p.text, wrap);
+    job.wrap.max_width = wrap;
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
+/// Whether the text box `id` is a `!`-mode field this frame (set by [`text_column`]).
+fn shell_field_mono(ui: &egui::Ui, id: egui::Id) -> bool {
+    ui.data(|d| d.get_temp::<bool>(id.with("shell-mode"))).unwrap_or(false)
+}
+
 fn track_ime(ui: &egui::Ui, composing: &mut bool) {
     ui.input(|i| {
         for e in &i.events {
@@ -114,18 +129,22 @@ fn text_box(ui: &mut egui::Ui, text: &mut String, id: egui::Id, placeholder: &st
         });
     }
     let pp = *p;
-    let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| layout(ui, buf.as_str(), wrap, &pp);
+    // `!` mode (P346): the command in the monospace font, no markdown styling.
+    let mono = shell_field_mono(ui, id);
+    let lay = move |ui: &egui::Ui, text: &str, wrap: f32, p: &Palette| if mono { layout_mono(ui, text, wrap, p) } else { layout(ui, text, wrap, p) };
+    let mut layouter = move |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| lay(ui, buf.as_str(), wrap, &pp);
+    let font = if mono { theme::mono(SHELL_MONO) } else { theme::ui(size::PROSE - 0.5) };
     // Two lines empty; one more per line of text (wrapped lines counted) up to five; then the
     // text scrolls inside.
     let width = ui.available_width();
-    let lines = if text.is_empty() { 1 } else { layout(ui, text, width - 8.0, p).rows.len() };
+    let lines = if text.is_empty() { 1 } else { lay(ui, text, width - 8.0, p).rows.len() };
     let (rows, _) = compose::rows(lines);
-    let row_h = ui.fonts_mut(|f| f.row_height(&theme::ui(size::PROSE - 0.5)));
+    let row_h = ui.fonts_mut(|f| f.row_height(&font));
     let te = egui::TextEdit::multiline(text)
         .id(id)
         .frame(egui::Frame::NONE)
         .hint_text(placeholder)
-        .font(theme::ui(size::PROSE - 0.5))
+        .font(font)
         .desired_rows(rows)
         .desired_width(width)
         .return_key(newline)
@@ -174,9 +193,11 @@ fn caret_token(ui: &egui::Ui, id: egui::Id, text: &str) -> Option<(std::ops::Ran
 fn file_text_box(ui: &mut egui::Ui, app: &mut YaacApp, draft: &DraftRef, text: &mut String, id: egui::Id, placeholder: &str, enabled: bool) -> Submit {
     let state_id = id.with("file-picker");
     let mut picker = ui.data_mut(|data| data.get_temp::<FilePicker>(state_id)).unwrap_or_default();
+    // A `!` command is not a message: no `@` file picker (its references are markdown).
+    let enabled_picker = !shell_field_mono(ui, id);
     let mut choose = false;
     let mut scroll_selection = false;
-    if enabled && !app.ui.ime_composing && picker.token.is_some() && !picker.dismissed && ui.memory(|m| m.has_focus(id)) {
+    if enabled && enabled_picker && !app.ui.ime_composing && picker.token.is_some() && !picker.dismissed && ui.memory(|m| m.has_focus(id)) {
         ui.input_mut(|input| {
             input.events.retain(|event| {
                 let egui::Event::Key { key, pressed: true, modifiers, .. } = event else { return true };
@@ -202,7 +223,7 @@ fn file_text_box(ui: &mut egui::Ui, app: &mut YaacApp, draft: &DraftRef, text: &
     }
     let p = app.p;
     let submit = text_box(ui, text, id, placeholder, &p, &mut app.ui.ime_composing, enabled, &mut app.ui.focus_composer, app.ui.send_key);
-    let active = enabled && !app.ui.ime_composing && (ui.memory(|m| m.has_focus(id))
+    let active = enabled && enabled_picker && !app.ui.ime_composing && (ui.memory(|m| m.has_focus(id))
         || (picker.token.is_some() && ui.input(|i| i.pointer.any_down() || i.pointer.any_released())));
     let token = active.then(|| caret_token(ui, id, text)).flatten();
     let identity = token.as_ref().map(|(range, query)| (range.start, query.clone()));
@@ -497,9 +518,12 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                 });
             });
         }
-        ComposerView::Shown { placeholder, dimmed_hint, stop, chips: chip_views, blocked, running, send_now, editing, .. } => {
+        ComposerView::Shown { placeholder, dimmed_hint, stop, chips: chip_views, blocked, running, send_now, editing, shell, .. } => {
             let running = running || compacting;
-            let send_now = send_now.filter(|_| !compacting);
+            // `!` mode (P346): not while a queued message is being edited.
+            let shell = shell.filter(|_| !editing);
+            // A command runs and is answered; it is never sent into the running turn.
+            let send_now = send_now.filter(|_| !compacting && shell.is_none());
             // A request waiting on the user dims the composer only when no turn runs; while one
             // runs, a message can still be queued behind the answer (D166).
             let dimmed = dimmed_hint.is_some() && !running;
@@ -511,10 +535,22 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                 SendKey::Enter => ("Enter", "Ctrl+Enter"),
                 SendKey::CtrlEnter => ("Ctrl+Enter", "Ctrl+Shift+Enter"),
             };
-            let inner = widgets::faint_frame(&p).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
+            let mut frame = widgets::faint_frame(&p).inner_margin(Margin::symmetric(14, 10));
+            if shell.is_some() {
+                frame = frame.fill(widgets::blend(p.faint, p.shell, f32::from(p.shell_tint().a()) / 255.0)).stroke(egui::Stroke::new(1.0, p.shell));
+            }
+            let inner = frame.show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if dimmed {
                     ui.multiply_opacity(0.6);
+                }
+                if let Some(sh) = &shell
+                    && shell_prompt_row(ui, &p, &sh.prompt, &sh.cwd)
+                    && let Some(draft) = app.client.state.drafts.get_mut(key)
+                {
+                    draft.text = compose::leave_shell_mode(&draft.text);
+                    actions.push(Action::DraftEdited(d.clone()));
+                    app.ui.focus_composer = true;
                 }
                 if !editing {
                     chips(ui, app, &d, &chip_views, actions);
@@ -540,10 +576,12 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                     let font = if bold { theme::bold(size::UI) } else { theme::ui(size::UI) };
                     ui.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font, p.text).size().x) + 24.0
                 };
-                let btn_w = if editing {
+                let btn_w = if let Some(sh) = &shell {
+                    label_w(ui, sh.run_label, true) + 24.0 + 22.0 + if stop && running { label_w(ui, "Stop", false) } else { 0.0 } + 16.0
+                } else if editing {
                     label_w(ui, "Save", true) + 24.0 + label_w(ui, "Cancel edit", false) + 12.0
                 } else if running {
-                    32.0 + label_w(ui, "Queue", true) + 24.0 + send_now.map_or(0.0, |l| label_w(ui, l, false)) + if stop { label_w(ui, "Stop", false) } else { 0.0 } + 16.0
+                    32.0 + label_w(ui, "Queue", true) + 24.0 + send_now.map_or(0.0, |_| label_w(ui, yaac_core::queue::SEND_NOW, false)) + if stop { label_w(ui, "Stop", false) } else { 0.0 } + 16.0
                 } else {
                     130.0
                 };
@@ -559,6 +597,8 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                             ui.label(widgets::secondary("Editing a queued message", &p));
                         } else if let Some(h) = &dimmed_hint {
                             ui.label(widgets::secondary(h, &p));
+                        } else if let Some(sh) = &shell {
+                            ui.label(widgets::secondary(&sh.hint, &p));
                         } else if let Some(why) = blocked.as_ref().filter(|_| !chip_views.is_empty()) {
                             ui.label(widgets::secondary(why, &p));
                         }
@@ -578,6 +618,21 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                             }
                             return;
                         }
+                        if let Some(sh) = &shell {
+                            // Run (Queue run while a turn runs), with the terminal icon; no
+                            // Send now, no attachments.
+                            let tip = if running { "Runs when the running turn ends, then the agent answers" } else { "Run it here, then the agent answers" };
+                            let r = if sh.ready { widgets::primary(ui, &p, sh.run_label, Some(queue_key)) } else { widgets::plain(ui, &p, sh.run_label, Some(queue_key)) };
+                            if r.on_hover_text(tip).clicked() && sh.ready {
+                                submit = Submit::Send;
+                            }
+                            let shell_c = p.shell;
+                            widgets::icon(ui, 16.0, |pa, c, d| icons::prompt(pa, c, d, shell_c));
+                            if running && stop && widgets::plain(ui, &p, "Stop", None).on_hover_text("Stop the running turn; nothing is sent (Esc)").clicked() {
+                                actions.push(Action::Stop(key.clone()));
+                            }
+                            return;
+                        }
                         let has = app.client.state.drafts.get(key).is_some_and(|x| !x.text.trim().is_empty() || !x.attachments.is_empty());
                         if !running {
                             if send_button(ui, &p, has, blocked.as_deref()) {
@@ -589,9 +644,8 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                         if stop && widgets::plain(ui, &p, "Stop", None).on_hover_text("Stop the running turn; nothing is sent (Esc)").clicked() {
                             actions.push(Action::Stop(key.clone()));
                         }
-                        if let Some(label) = send_now {
-                            let what = if label == yaac_core::queue::SEND_NOW { "Add it to the running turn" } else { "Stop the running turn and start a new one with this message" };
-                            let r = widgets::plain(ui, &p, label, None).on_hover_text(format!("{what} ({now_key})"));
+                        if let Some(what) = send_now {
+                            let r = widgets::plain(ui, &p, yaac_core::queue::SEND_NOW, None).on_hover_text(format!("{what} ({now_key})"));
                             if r.clicked() && has && blocked.is_none() {
                                 submit = Submit::SendNow;
                             }
@@ -616,8 +670,18 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                     }
                 });
             });
+            if shell.is_some() {
+                // The 3 px shell bar on the left edge.
+                let r = inner.response.rect;
+                let bar = egui::Rect::from_min_max(r.left_top(), egui::pos2(r.left() + 3.0, r.bottom()));
+                ui.painter().rect_filled(bar, egui::CornerRadius { nw: 6, sw: 6, ne: 0, se: 0 }, p.shell);
+            }
             if ui.memory(|m| m.has_focus(id)) {
                 widgets::focus_ring(ui, inner.response.rect, &p);
+            }
+            let ready_shell = shell.as_ref().is_none_or(|sh| sh.ready);
+            if !ready_shell {
+                submit = Submit::None;
             }
             let compact_command = !editing && app.client.draft(&d).is_some_and(|draft| compose::is_compact_command(&draft.text));
             match submit {
@@ -625,7 +689,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                 _ if compact_command => actions.push(Action::Compact(key.clone())),
                 // Saving an edit, sending, or (while a turn runs) queueing.
                 Submit::Send => actions.push(Action::Send(key.clone())),
-                Submit::SendNow if running && !editing && send_now.is_some() => actions.push(Action::SendNow(key.clone())),
+                Submit::SendNow if running && !editing && send_now.is_some() && shell.is_none() => actions.push(Action::SendNow(key.clone())),
                 // Not offered (no turn, or a request waits): an ordinary send, or a queue.
                 Submit::SendNow => actions.push(Action::Send(key.clone())),
             }
@@ -656,9 +720,28 @@ fn text_column(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, d: &DraftR
         }
         return submit;
     }
-    let comp = yaac_core::skills::for_thread(&app.client.state, key);
+    // `!` mode (P346): the field shows the command without its bang, in mono.
+    let shell = yaac_core::header::shell_mode(&app.client.state, key).is_some();
+    ui.data_mut(|data| data.insert_temp(id.with("shell-mode"), shell));
+    let comp = if shell { None } else { yaac_core::skills::for_thread(&app.client.state, key) };
     let mut text = std::mem::take(&mut app.client.state.drafts.entry(key.clone()).or_default().text);
     let had = text.clone();
+    if shell {
+        let history = compose::shell_history(&app.client.state, key);
+        let mut field = compose::shell_field(&text).to_owned();
+        let leave = if dimmed { None } else { shell_keys(ui, id, &mut field, &history) };
+        let submit = file_text_box(ui, app, d, &mut field, id, placeholder, !dimmed);
+        text = match leave {
+            Some(ShellLeave::Keep) => field,
+            Some(ShellLeave::Clear) => String::new(),
+            None => compose::draft_from_field(&field, true),
+        };
+        if text != had {
+            actions.push(Action::DraftEdited(d.clone()));
+        }
+        app.client.state.drafts.entry(key.clone()).or_default().text = text;
+        return submit;
+    }
     if let Some(c) = &comp && !dimmed {
         skills_ui::keys(ui, &mut app.ui.skills, id, c, &mut text, &mut app.ui.focus_composer);
     }
@@ -667,11 +750,133 @@ fn text_column(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, d: &DraftR
         let p = app.p;
         skills_ui::show(ui, &mut app.ui.skills, id, c, &app.client.state, &mut text, &mut app.ui.focus_composer, &p, actions);
     }
+    // A `!` typed at the very start enters `!` mode: the field then shows the rest, so the
+    // caret steps back over the absorbed bang.
+    if compose::is_shell_draft(&text) && !compose::is_shell_draft(&had) && shell_capable(app, key) {
+        shift_caret(ui, id, -1);
+        ui.ctx().request_repaint();
+    }
     if text != had {
         actions.push(Action::DraftEdited(d.clone()));
     }
     app.client.state.drafts.entry(key.clone()).or_default().text = text;
     submit
+}
+
+/// How a `!`-mode field is left this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShellLeave {
+    /// Backspace at the start, or the prompt row's ×: the text stays.
+    Keep,
+    /// Select all and delete.
+    Clear,
+}
+
+/// The thread can run a `!command` (its composer then has `!` mode).
+fn shell_capable(app: &YaacApp, key: &ThreadKey) -> bool {
+    let caps = app.client.state.transcripts.get(key).and_then(|t| t.effective.as_ref()).map_or(&[][..], |e| e.capabilities.as_slice());
+    yaac_protocol::has_capability(caps, &yaac_protocol::Capability::UserShellCommand)
+}
+
+/// Move the caret of text box `id` by `by` characters.
+fn shift_caret(ui: &egui::Ui, id: egui::Id, by: isize) {
+    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id)
+        && let Some(range) = state.cursor.char_range()
+    {
+        let at = usize::from(range.primary.index).saturating_add_signed(by);
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(at))));
+        state.store(ui.ctx(), id);
+    }
+}
+
+/// The keys of a focused `!`-mode field, taken before the text box sees them (P346):
+/// Backspace at the very start (or deleting a whole-field selection) leaves the mode; ↑ on the
+/// first line and ↓ on the last walk through the thread's earlier commands.
+fn shell_keys(ui: &mut egui::Ui, id: egui::Id, field: &mut String, history: &[String]) -> Option<ShellLeave> {
+    if !ui.memory(|m| m.has_focus(id)) {
+        return None;
+    }
+    let hid = id.with("shell-history");
+    let mut walk = ui.data_mut(|d| d.get_temp::<compose::ShellHistory>(hid)).unwrap_or_default();
+    // The walk ends once the user edits what it put in the field.
+    if walk.walking() && ui.data(|d| d.get_temp::<String>(hid.with("shown"))).as_deref() != Some(field.as_str()) {
+        walk.reset();
+    }
+    let (a, b) = egui::TextEdit::load_state(ui.ctx(), id)
+        .and_then(|s| s.cursor.char_range())
+        .map_or((0, 0), |r| (usize::from(r.primary.index), usize::from(r.secondary.index)));
+    let chars = field.chars().count();
+    let first_line = field.find('\n').map_or(chars, |i| field[..i].chars().count());
+    let last_line_start = field.rfind('\n').map_or(0, |i| field[..=i].chars().count());
+    let mut leave = None;
+    let mut recalled = None;
+    ui.input_mut(|i| {
+        i.events.retain(|e| {
+            let egui::Event::Key { key, pressed: true, modifiers, .. } = e else { return true };
+            match key {
+                Key::Backspace | Key::Delete if leave.is_none() => {
+                    let k = if *key == Key::Backspace { compose::FieldKey::Backspace } else { compose::FieldKey::Delete };
+                    match compose::shell_key(k, a, b, chars) {
+                        compose::ShellKey::Pass => true,
+                        compose::ShellKey::LeaveKeep => {
+                            leave = Some(ShellLeave::Keep);
+                            false
+                        }
+                        compose::ShellKey::LeaveClear => {
+                            leave = Some(ShellLeave::Clear);
+                            false
+                        }
+                    }
+                }
+                Key::ArrowUp if modifiers.is_none() && a == b && a <= first_line && recalled.is_none() => match walk.up(history, field) {
+                    Some(c) => {
+                        recalled = Some(c);
+                        false
+                    }
+                    None => true,
+                },
+                Key::ArrowDown if modifiers.is_none() && a == b && a >= last_line_start && walk.walking() && recalled.is_none() => match walk.down(history) {
+                    Some(c) => {
+                        recalled = Some(c);
+                        false
+                    }
+                    None => true,
+                },
+                _ => true,
+            }
+        });
+    });
+    if let Some(c) = recalled {
+        *field = c;
+        let end = field.chars().count();
+        let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(end))));
+        state.store(ui.ctx(), id);
+        ui.data_mut(|d| d.insert_temp(hid.with("shown"), field.clone()));
+    }
+    if leave.is_some() {
+        walk.reset();
+        ui.ctx().request_repaint();
+    }
+    ui.data_mut(|d| d.insert_temp(hid, walk));
+    leave
+}
+
+/// The prompt row of a `!`-mode composer (P346): `>_`, where it runs, and × to leave the mode.
+/// True when × was clicked.
+fn shell_prompt_row(ui: &mut egui::Ui, p: &Palette, prompt: &str, cwd: &str) -> bool {
+    let mut leave = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let shell = p.shell;
+        widgets::icon(ui, 14.0, |pa, c, d| icons::prompt(pa, c, d, shell));
+        ui.add(egui::Label::new(widgets::secondary(prompt, p)).truncate()).on_hover_text(cwd);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            leave = widgets::icon_button(ui, p, 12.0, "Back to a message (Backspace at the start)", icons::close).clicked();
+        });
+    });
+    ui.add_space(2.0);
+    leave
 }
 
 /// The id of a queue strip button (`what`: "now", "edit", "cancel"), for tests.
@@ -790,8 +995,10 @@ fn queue_strip(ui: &mut egui::Ui, app: &YaacApp, key: &ThreadKey, send_now: Opti
                     } else if strip_button(ui, &p, "Edit", strip_button_id("edit", &r.queue_id), free).clicked() && free {
                         actions.push(Action::QueueEdit(key.clone(), r.queue_id.clone()));
                     }
-                    if let Some(label) = send_now
-                        && strip_button(ui, &p, label, strip_button_id("now", &r.queue_id), free).clicked()
+                    if let Some(what) = send_now
+                        && strip_button(ui, &p, yaac_core::queue::SEND_NOW, strip_button_id("now", &r.queue_id), free)
+                            .on_hover_text(what)
+                            .clicked()
                         && free
                     {
                         actions.push(Action::QueuePromote(key.clone(), r.queue_id.clone()));
@@ -801,7 +1008,13 @@ fn queue_strip(ui: &mut egui::Ui, app: &YaacApp, key: &ThreadKey, send_now: Opti
                         let extra_w = r.extra.as_ref().map_or(0.0, |x| ui.fonts_mut(|f| f.layout_no_wrap(x.clone(), theme::ui(size::SMALL), p.text2).size().x) + 8.0);
                         ui.scope(|ui| {
                             ui.set_max_width((ui.available_width() - extra_w).max(40.0));
-                            ui.add(egui::Label::new(egui::RichText::new(&r.preview).font(theme::ui(size::UI)).color(p.text)).truncate());
+                            if let Some(c) = &r.shell {
+                                let shell = p.shell;
+                                widgets::icon(ui, 13.0, |pa, ce, dd| icons::prompt(pa, ce, dd, shell));
+                                ui.add(egui::Label::new(egui::RichText::new(c).font(theme::mono(size::MONO)).color(p.text)).truncate());
+                            } else {
+                                ui.add(egui::Label::new(egui::RichText::new(&r.preview).font(theme::ui(size::UI)).color(p.text)).truncate());
+                            }
                         });
                         if let Some(x) = &r.extra {
                             ui.label(widgets::secondary(x, &p));
@@ -999,6 +1212,21 @@ fn control_row(ui: &mut egui::Ui, app: &mut YaacApp, row: &ControlRow, target: &
             ui.add_space(8.0);
             if widgets::plain(ui, &p, "Fork", None).clicked() {
                 actions.push(Action::OpenFork(k.clone()));
+            }
+        }
+        // Terminal: toggles the panel under the composer, as Ctrl+` does (P338). Hidden where
+        // the machine has no terminal feature.
+        if let Target::Thread(k) = target
+            && crate::terminal::unavailable(&app.client, k).is_none()
+        {
+            ui.add_space(2.0);
+            let on = app.browsers.terms.panel_open(k);
+            let keys = app.ui.bindings.label(yaac_core::commands::Cmd::ToggleTerminalPanel);
+            let hover = if keys.is_empty() { "Terminal".to_owned() } else { format!("Terminal ({keys})") };
+            if widgets::tool_button(ui, &p, p.bg, &hover, true, on, crate::icons::prompt).clicked()
+                && let Err(e) = app.browsers.toggle_terminal_panel(&app.client, k)
+            {
+                app.browsers.notice = Some(e);
             }
         }
     });
@@ -1263,6 +1491,107 @@ mod tests {
         draw(vec![], false);
         draw(vec![key(Key::Tab, Modifiers::NONE)], false);
         assert_eq!(text, format!("Read `{cwd}/docs/design notes.md` later"));
+    }
+
+    #[test]
+    fn bang_enters_shell_mode_and_backspace_at_the_start_leaves_it_keeping_the_text() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let k = yaac_core::demo::threads::users();
+        if let Some(e) = app.client.state.transcripts.get_mut(&k).and_then(|t| t.effective.as_mut()) {
+            e.capabilities.push(yaac_protocol::Capability::UserShellCommand);
+        }
+        let d = DraftRef::Thread(k.clone());
+        let id = composer_id(&d);
+        let mut at = 0.0;
+        let mut draw = |app: &mut YaacApp, events: Vec<Event>, caret: Option<usize>| {
+            at += 0.05;
+            let input = RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))), time: Some(at), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                ui.memory_mut(|m| m.request_focus(id));
+                if let Some(c) = caret {
+                    let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(c))));
+                    state.store(ui.ctx(), id);
+                }
+                text_column(ui, app, &k, &d, id, "Message", false, false, &mut Vec::new());
+            });
+            out.textures_delta.clear();
+        };
+        let text = |app: &YaacApp| app.client.state.drafts.get(&k).map(|x| x.text.clone()).unwrap_or_default();
+        let caret = |ctx: &egui::Context| egui::TextEdit::load_state(ctx, id).and_then(|s| s.cursor.char_range()).map(|r| usize::from(r.primary.index));
+        app.client.state.drafts.entry(k.clone()).or_default().text = "ls -la".into();
+        draw(&mut app, vec![], Some(0));
+        // `!` at the start enters the mode; the field drops the bang and the caret stays before `ls`.
+        draw(&mut app, vec![Event::Text("!".into())], None);
+        assert_eq!(text(&app), "!ls -la");
+        assert_eq!(caret(&ctx), Some(0));
+        draw(&mut app, vec![], None);
+        assert_eq!(ctx.data(|x| x.get_temp::<bool>(id.with("shell-mode"))), Some(true), "the field is in `!` mode");
+        // Typing in the mode writes after the bang.
+        draw(&mut app, vec![Event::Text("x".into())], Some(6));
+        assert_eq!(text(&app), "!ls -lax");
+        // Backspace mid-text edits; at the very start it leaves the mode, keeping the text.
+        draw(&mut app, vec![key(Key::Backspace, Modifiers::NONE)], Some(7));
+        assert_eq!(text(&app), "!ls -la");
+        draw(&mut app, vec![key(Key::Backspace, Modifiers::NONE)], Some(0));
+        assert_eq!(text(&app), "ls -la");
+        // And `!` again re-enters it; select all + delete clears and leaves.
+        draw(&mut app, vec![], Some(0));
+        draw(&mut app, vec![Event::Text("!".into())], None);
+        assert_eq!(text(&app), "!ls -la");
+        draw(&mut app, vec![], None);
+        let input = RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))), time: Some(9.0), ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| {
+            let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(6))));
+            state.store(ui.ctx(), id);
+        });
+        out.textures_delta.clear();
+        draw(&mut app, vec![key(Key::Delete, Modifiers::NONE)], None);
+        assert_eq!(text(&app), "");
+    }
+
+    #[test]
+    fn up_in_shell_mode_recalls_earlier_commands_newest_first() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let k = yaac_core::demo::threads::users();
+        let t = app.client.state.transcripts.get_mut(&k).unwrap();
+        if let Some(e) = t.effective.as_mut() {
+            e.capabilities.push(yaac_protocol::Capability::UserShellCommand);
+        }
+        for (n, c) in ["cargo build", "cargo test"].iter().enumerate() {
+            let body = yaac_protocol::ItemBody::UserMessage(yaac_protocol::UserMessageItem {
+                parts: vec![yaac_protocol::InputPart::Text(yaac_protocol::TextPart { text: format!("!{c}"), role: Some(yaac_protocol::TextRole::Command), label: None })],
+                op_id: None,
+            });
+            let item = yaac_protocol::Item { id: format!("h{n}").into(), turn_id: format!("ht{n}").into(), status: yaac_protocol::ItemStatus::Completed, started_at: None, completed_at: None, body };
+            t.upsert(item, 1_000_000 + n as u64);
+        }
+        app.client.state.drafts.entry(k.clone()).or_default().text = "!".into();
+        let d = DraftRef::Thread(k.clone());
+        let id = composer_id(&d);
+        let mut at = 0.0;
+        let mut draw = |app: &mut YaacApp, events: Vec<Event>| {
+            at += 0.05;
+            let input = RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))), time: Some(at), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                ui.memory_mut(|m| m.request_focus(id));
+                text_column(ui, app, &k, &d, id, "Message", false, false, &mut Vec::new());
+            });
+            out.textures_delta.clear();
+        };
+        let text = |app: &YaacApp| app.client.state.drafts.get(&k).map(|x| x.text.clone()).unwrap_or_default();
+        draw(&mut app, vec![]);
+        draw(&mut app, vec![key(Key::ArrowUp, Modifiers::NONE)]);
+        assert_eq!(text(&app), "!cargo test");
+        draw(&mut app, vec![key(Key::ArrowUp, Modifiers::NONE)]);
+        assert_eq!(text(&app), "!cargo build");
+        draw(&mut app, vec![key(Key::ArrowDown, Modifiers::NONE)]);
+        assert_eq!(text(&app), "!cargo test");
+        draw(&mut app, vec![key(Key::ArrowDown, Modifiers::NONE)]);
+        assert_eq!(text(&app), "!", "back to what was typed");
     }
 
     #[test]

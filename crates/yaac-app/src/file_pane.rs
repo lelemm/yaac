@@ -16,6 +16,8 @@ pub(crate) enum TabKind {
     Files,
     File(String),
     Diff(String),
+    /// A terminal session ([`crate::terminal::Terminals`]).
+    Terminal(u64),
 }
 
 impl TabKind {
@@ -133,7 +135,9 @@ fn root(client: &Client, key: &ThreadKey) -> Option<String> {
 impl Browsers {
     pub(crate) fn set_file_wake(&mut self, wake: impl Fn() + Send + Sync + 'static) {
         if self.file_wake.is_none() {
-            self.file_wake = Some(Arc::new(wake));
+            let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
+            self.terms.set_wake(wake.clone());
+            self.file_wake = Some(wake);
         }
     }
     pub(crate) fn open_file_tab(
@@ -509,6 +513,8 @@ mod tests {
             schema_hash_matches: true,
             port_forward: true,
             file_view: true,
+            terminal: false,
+            terminal_unavailable_reason: None,
         });
     }
     #[test]

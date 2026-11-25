@@ -227,7 +227,7 @@ internal sealed class TranscriptText : ContentControl
         var previous = Content;
         try
         {
-            if (format is "markdown" or "diff" or "code" or "command")
+            if (format is "markdown" or "diff" or "code" or "command" or "terminal")
             {
                 var editor = rich ??= CreateRich();
                 Content = editor;
@@ -238,6 +238,8 @@ internal sealed class TranscriptText : ContentControl
                             block.Value("language").OptionalText(), block)).ToList()
                         : [new Piece("paragraph", value)],
                     "diff" => [new Piece("diff", value, Data: markdown)],
+                    // A command's output (P346): the terminal's plain text, never highlighted.
+                    "terminal" => [new Piece("code", value, "terminal")],
                     _ => [new Piece("code", value)],
                 });
                 var begin = editor.Document.ContentStart;
@@ -422,7 +424,8 @@ internal sealed class TranscriptText : ContentControl
     {
         var diff = piece.Kind == "diff";
         var copyText = piece.Data.Value("copyText").OptionalText() ?? piece.Text;
-        var copyLabel = diff ? "Copy diff" : piece.Language is { Length: > 0 } language ? $"Copy {language} code" : "Copy code";
+        var copyLabel = diff ? "Copy diff" : piece.Language == "terminal" ? "Copy output"
+            : piece.Language is { Length: > 0 } language ? $"Copy {language} code" : "Copy code";
         var section = new Section
         {
             Background = TranscriptColors.Code,
@@ -484,6 +487,8 @@ internal sealed class TranscriptText : ContentControl
                 paragraph.Inlines.Add(new Run(body) { Foreground = color });
             }
         }
+        else if (piece.Language == "terminal")
+            paragraph.Inlines.Add(new Run(piece.Text) { Foreground = TranscriptColors.Text });
         else
         {
             TranscriptSyntax.Append(paragraph, piece.Text,

@@ -1321,6 +1321,8 @@ mod tests {
                 can_update: false,
                 port_forward: true,
                 file_view: false,
+                terminal: false,
+                terminal_unavailable_reason: None,
             });
             let mut browsers = Browsers::default();
             browsers.assume_host();

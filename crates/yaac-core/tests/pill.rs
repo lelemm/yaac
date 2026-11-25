@@ -14,6 +14,7 @@ fn row(title: &str, role: Role, mark: Mark, updated: i64, depth: u8) -> AgentRow
         flow: None,
         finished: mark == Mark::Done,
         key: None,
+        is_self: false,
         title: title.into(),
         provider: None,
         model: None,

@@ -466,7 +466,7 @@ impl AppState {
             .and_then(|n| n.model.as_ref())
             .or_else(|| self.transcripts.get(key).and_then(|t| t.effective.as_ref()).and_then(|e| e.applied.model.as_ref()))
             .or_else(|| self.summary(key).and_then(|s| s.model.as_ref()))?;
-        p.models.iter().find(|m| &m.id == id)
+        p.find_model(id)
     }
 
     /// Whether a thread's next turns run in fast mode (D125): the choice made here, else what
@@ -617,16 +617,39 @@ impl AppState {
 
     /// `provider/list` result, or `provider/updated`.
     pub fn apply_providers(&mut self, target: &TargetId, providers: Vec<ProviderDescriptor>, replace: bool) {
-        let Some(t) = self.target_mut(target) else { return };
+        let Some(t) = self.targets.iter_mut().find(|t| &t.entry.id == target) else { return };
         if replace {
             t.providers = providers;
-            return;
+        } else {
+            for p in providers {
+                match t.providers.iter_mut().find(|x| x.instance == p.instance) {
+                    Some(slot) if slot.revision <= p.revision => *slot = p,
+                    Some(_) => {}
+                    None => t.providers.push(p),
+                }
+            }
         }
-        for p in providers {
-            match t.providers.iter_mut().find(|x| x.instance == p.instance) {
-                Some(slot) if slot.revision <= p.revision => *slot = p,
-                Some(_) => {}
-                None => t.providers.push(p),
+        let is_off = |instance: &InstanceId, model: &ModelId| {
+            t.providers.iter().find(|p| &p.instance == instance).is_some_and(|p| p.model_is_off(model))
+        };
+        for draft in self.new_threads.iter_mut().filter(|d| d.target.as_ref() == Some(target)) {
+            if draft.instance.as_ref().zip(draft.model.as_ref()).is_some_and(|(i, m)| is_off(i, m)) {
+                draft.model = None;
+                draft.effort = None;
+                draft.fast = false;
+                draft.ultrafast = false;
+                draft.fast_note = None;
+            }
+        }
+        for (key, next) in self.next_settings.iter_mut().filter(|(key, _)| &key.target == target) {
+            if let Some(thread) = self.threads.get(key)
+                && next.model.as_ref().is_some_and(|m| is_off(&thread.summary.instance, m))
+            {
+                next.model = None;
+                next.effort = None;
+                next.fast = None;
+                next.ultrafast = None;
+                next.fast_note = None;
             }
         }
     }

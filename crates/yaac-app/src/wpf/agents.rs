@@ -26,13 +26,11 @@ fn row(app: &YaacApp, row: &AgentRow, now: i64) -> Value {
     let logo_color = logo
         .and_then(|(_, color)| color)
         .map(|c| format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b()));
-    let badge = row.key.as_ref().and_then(|key| pull_requests::badge(&app.client.state, key));
-    let actions = row
-        .key
-        .as_ref()
-        .map_or_else(Vec::new, |key| sidebar_view::menu(app, key));
+    let link = row.open_key();
+    let badge = link.and_then(|key| pull_requests::badge(&app.client.state, key));
+    let actions = link.map_or_else(Vec::new, |key| sidebar_view::menu(app, key));
     json!({
-        "id": row_id(row), "title": row.title, "canOpen": row.key.is_some(), "provider": row.provider,
+        "id": row_id(row), "title": row.title, "canOpen": link.is_some(), "self": row.is_self, "provider": row.provider,
         "model": row.model, "target": row.target, "origin": row.origin, "subagent": row.subagent,
         "lastAction": row.last_action, "activity": row.activity, "age": row.activity_age(now), "mark": sidebar_view::tone(row.display.mark),
         "markLabel": row.display.mark.word(), "attention": row.display.attention.map(|a| a.word()),

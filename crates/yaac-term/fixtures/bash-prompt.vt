@@ -1,0 +1,18 @@
+[?2004h[1;32mdev@devbox[0m:[1;34m~/work/auth[0m$ ls -F --color=always
+[?2004lCargo.toml  README.md  [0m[01;34mdocs[0m/  [01;34msrc[0m/  [01;34mtests[0m/
+[?2004h[1;32mdev@devbox[0m:[1;34m~/work/auth[0m$ git status -sb
+[?2004l## [32mmain[m
+ [31mM[m src/app.rs
+[31m??[m src/auth.rs
+[?2004h[1;32mdev@devbox[0m:[1;34m~/work/auth[0m$ git log --oneline
+[?2004l[33m6a17d51[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m Sessions expire after five minutes
+[?2004h[1;32mdev@devbox[0m:[1;34m~/work/auth[0m$ wc -l src/*.rs
+[?2004l 32 src/app.rs
+  1 src/auth.rs
+  2 src/lib.rs
+  3 src/main.rs
+  1 src/session.rs
+ 39 total
+[?2004h[1;32mdev@devbox[0m:[1;34m~/work/auth[0m$ grep -c denied docs/sessions.log
+[?2004l17
+[?2004h[1;32mdev@devbox[0m:[1;34m~/work/auth[0m$ cargo build --rel

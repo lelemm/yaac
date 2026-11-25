@@ -2,6 +2,15 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              ClipToBounds="True" Background="{DynamicResource YaacCanvas}">
+  <UserControl.Resources>
+    <ControlTemplate x:Key="TerminalTitleField" TargetType="TextBox">
+      <Border Background="{DynamicResource YaacInput}" BorderBrush="{DynamicResource YaacAccent}"
+              BorderThickness="1" CornerRadius="3" Padding="{TemplateBinding Padding}">
+        <ScrollViewer x:Name="PART_ContentHost" Focusable="False" VerticalAlignment="Center"
+                      HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"/>
+      </Border>
+    </ControlTemplate>
+  </UserControl.Resources>
   <Grid>
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
@@ -11,6 +20,7 @@
     <Grid Height="36" Background="{DynamicResource YaacPanel}" ClipToBounds="True">
       <Border VerticalAlignment="Bottom" Height="1" Background="{DynamicResource YaacRule}"/>
       <DockPanel Margin="4,0">
+        <Button x:Name="PanelClose" Visibility="Collapsed" DockPanel.Dock="Right"/>
         <Button x:Name="Fullscreen" DockPanel.Dock="Right" Margin="3,0,0,0"/>
         <Grid x:Name="TabAvailable" ClipToBounds="True">
         <DockPanel x:Name="TabGroup" HorizontalAlignment="Left" ClipToBounds="True">
@@ -96,6 +106,7 @@
       </Grid>
     </Grid>
     <ContentControl x:Name="ChatHost" Grid.Row="2" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"/>
+    <ContentControl x:Name="TerminalContent" Grid.Row="2" Visibility="Collapsed" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"/>
     <ContentControl x:Name="FilesContent" Grid.Row="2" Visibility="Collapsed"
                     HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
   </Grid>

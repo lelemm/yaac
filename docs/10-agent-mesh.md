@@ -130,7 +130,7 @@ One MCP server, named `yaac`. Few tools, each doing one thing.
 | --- | --- |
 | `whoami` | The caller's own address, title, provider, model, working directory, who spawned it, and its children. |
 | `list_targets` | The machines in this mesh: name, whether each is reachable, and how many threads are active there. Names and counts only — never the threads themselves. |
-| `list_models` | For a target: the provider instances, their models and effort levels, and their permission modes. Codex and Claude models show **Best used as** from official guidance or a user edit. The tool omits GPT‑5.x and earlier GPT models, Claude 4.x, and the 5.0 releases of Sonnet, Opus, and Fable. Worker creation resolves the selected ID against the live catalog. |
+| `list_models` | For a target: the provider instances, their enabled models and effort levels, and their permission modes. Codex and Claude models show **Best used as** from official guidance or a user edit. The tool omits models turned off in Settings, GPT‑5.x and earlier GPT models, Claude 4.x, and the 5.0 releases of Sonnet, Opus, and Fable. Worker creation resolves the selected ID against the live catalog. |
 | `list_threads` | A **small, scoped** list of threads — by default only the caller's own orchestration. See [listing is scoped and bounded](#listing-is-scoped-and-bounded). |
 | `find_thread` | Find a specific thread **across all targets**, either by **id** or by a **fuzzy match on its title**. Needs a query; ten matches per page. |
 | `read_thread` | The recent messages, or just the last answer, of a thread on any reachable YAAC target. Use `find_thread` to get its address. |
@@ -246,6 +246,10 @@ says the tools exist. It never lists the fleet.
 (as returned by `list_models`), an optional effort, an optional permission mode, a working
 directory, a title, and the first message.
 
+- A model turned off for the destination instance is refused with “<model> is turned off for
+  <instance> on <target>”. A spawn with no explicit model falls back to the first enabled
+  model when the harness default is off. See [Turning models off](04-providers.md#turning-models-off).
+
 - **The working directory must exist where the worker will run.** On the caller's own target
   it defaults to the caller's directory. On another target a path from here means nothing, so
   YAAC resolves "the same project over there": if exactly one checkout of the caller's
@@ -261,6 +265,18 @@ directory, a title, and the first message.
   never in a more permissive one.
 - By default the parent is told when the child finishes: the child's final answer comes back as
   a message ([delivery](#delivery)). `spawn_thread { detached: true }` turns that off.
+
+**Waiting for workers (P340).** Between turns, a parent shows the waiting hourglass while
+any worker that sends its result back is running, waiting, or needs the user. The mark
+clears when the last such worker ends. When a result starts a new parent turn, the parent
+shows its running mark. Detached workers still appear under Workers.
+
+Each worker's daemon publishes `reportsToParent` and `spawnedBy` in its thread summary.
+Both frontends derive the mark in `yaac-core` from the hub's merged thread index, which
+already carries state changes from every target. A daemon sees its own harness sub-agents
+and reports their waiting state directly (D188). Older daemon summaries omit
+`reportsToParent`, so the window leaves the parent's mark as reported until it has a
+worker summary that confirms automatic result delivery.
 
 ### Worker launch hook
 
@@ -764,7 +780,7 @@ item kinds, no version bump.
 | `mesh/policy` | Read and change limits and default budgets. |
 | `mesh/budget` (and a notice item) | An orchestration's budget ran out; **Continue** grants more. The result says what is used and how many messages are held back. |
 | `mesh/budget/changed` (target → host, relayed to every window) | A root's budget ran out, was freed, or started or stopped holding messages back (D164). |
-| `hub/*` | The UI ⇄ hub attach protocol: targets, connections, settings, and a routing envelope that carries ordinary YAAC protocol traffic to a named target. |
+| `hub/*` | The UI ⇄ hub attach protocol: targets, connections, settings, and a routing envelope that carries ordinary YAAC protocol traffic to a named target. The [terminal relay](13-terminal.md#methods-yaac-protocol-additive-feature-terminal) uses `hub/terminal/*` and interactive data frames. |
 
 ## What is deliberately not here
 

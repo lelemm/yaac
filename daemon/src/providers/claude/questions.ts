@@ -79,6 +79,12 @@ export interface ToolPermissionContext {
   suppressAlwaysAllowRule?: boolean;
   mcpServer?: { name: string; source: string };
   agentID?: string;
+  /** Claude Code's category for `decisionReason` (seen as "other" on 2.1.330; not in sdk.d.ts). */
+  decisionReasonType?: string;
+  /** A user-configured ask rule forced this prompt: never answered automatically (P342). */
+  matchedAskRule?: { source: string; toolName: string; ruleContent?: string };
+  /** The prompt should open on its decline option. */
+  defaultToNo?: boolean;
 }
 
 const FILE_TOOLS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
@@ -131,6 +137,11 @@ export function approvalRequest(ctx: ToolPermissionContext): RaisedRequest {
       ...(ctx.blockedPath ? { blockedPath: ctx.blockedPath } : {}),
       ...(ctx.mcpServer ? { mcpServer: ctx.mcpServer } : {}),
       ...(ctx.agentID ? { subagent: ctx.agentID } : {}),
+      ...(ctx.decisionReason ? { decisionReason: ctx.decisionReason } : {}),
+      ...(ctx.decisionReasonType ? { decisionReasonType: ctx.decisionReasonType } : {}),
+      ...(ctx.description ? { description: ctx.description } : {}),
+      ...(ctx.matchedAskRule ? { matchedAskRule: ctx.matchedAskRule } : {}),
+      ...(ctx.defaultToNo ? { defaultToNo: true } : {}),
     },
   };
 }

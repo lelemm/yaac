@@ -536,6 +536,7 @@ fn secret_answers_are_never_written_to_the_cache() {
                 client_host: None,
                 answer: Some(RequestResponse::Question(QuestionAnswers { answers })),
                 at: None,
+                automatic: None,
             }),
             body: RequestBody::Question(QuestionRequest { questions: vec![q("token", true), q("name", false)] }),
         }),

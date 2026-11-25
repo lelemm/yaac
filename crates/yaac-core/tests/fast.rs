@@ -19,6 +19,7 @@ fn row(c: &Client, key: &ThreadKey) -> yaac_core::controls::ControlRow {
         target_name: key.target.as_str(),
         effective: t.and_then(|t| t.effective.as_ref()),
         summary_model: s.model.as_ref(),
+        summary_model_off: s.model_off == Some(true),
         summary_fast: s.fast,
         summary_ultrafast: s.ultrafast == Some(true),
         next: c.state.next_settings.get(key),

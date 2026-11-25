@@ -246,3 +246,19 @@ fn receive_window_grants_after_consumption_and_detects_overruns() {
     let err = window.on_received(1).unwrap_err();
     assert!(matches!(err, FlowError::CreditExceeded { received: 1, credit: 0, .. }));
 }
+
+#[test]
+fn interactive_stream_overtakes_bulk_and_alternates_with_control() {
+    let mut scheduler = Scheduler::new();
+    scheduler.open_stream(StreamId(1), u64::MAX).unwrap();
+    scheduler.send_data(StreamId(1), vec![0; CHUNK_MAX]).unwrap();
+    scheduler.open_interactive_stream(StreamId(2), 1).unwrap();
+    scheduler.send_data(StreamId(2), vec![1, 2]).unwrap();
+    scheduler.push_frame(Class::Control, vec![7]);
+    scheduler.push_frame(Class::Control, vec![8]);
+    scheduler.on_written(CHUNK_MAX, Duration::from_millis(1));
+    assert_eq!(scheduler.next_frame().unwrap(), vec![7]);
+    assert!(matches!(decode_one(&scheduler.next_frame().unwrap()), Frame::Data { stream: StreamId(2), .. }));
+    assert_eq!(scheduler.next_frame().unwrap(), vec![8]);
+    assert!(matches!(decode_one(&scheduler.next_frame().unwrap()), Frame::Data { stream: StreamId(1), bytes } if bytes.len() == CHUNK_MIN));
+}

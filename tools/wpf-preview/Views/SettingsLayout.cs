@@ -309,6 +309,7 @@ public partial class SettingsView
                     var layout = Str(row, "layout");
                     var rowLabel = Str(row, "label");
                     var rowDetail = Str(row, "detail");
+                    lines.Opacity = Flag(row, "dimmed") ? 0.65 : 1.0;
                     Say(label, rowLabel);
                     SayStatus(Str(row, "status"), Str(row, "tone"));
                     owner.SayDetail(detail, layout == "code" ? "" : rowDetail);

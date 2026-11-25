@@ -25,6 +25,8 @@ pub enum Page {
     Window,
     /// Keyboard: every command's keys (D131).
     Keyboard,
+    /// Terminal: copy on select, Ctrl+V, the multi-line paste question (P339).
+    Terminal,
     /// Advanced.
     Advanced,
     /// About: this YAAC's version and build, its components, the latest release.
@@ -33,7 +35,7 @@ pub enum Page {
 
 impl Page {
     /// Every page, in navigation order.
-    pub const ALL: [Page; 7] = [Page::Targets, Page::Providers, Page::Appearance, Page::Window, Page::Keyboard, Page::Advanced, Page::About];
+    pub const ALL: [Page; 8] = [Page::Targets, Page::Providers, Page::Appearance, Page::Window, Page::Keyboard, Page::Terminal, Page::Advanced, Page::About];
 
     /// The navigation label.
     pub fn label(self) -> &'static str {
@@ -43,6 +45,7 @@ impl Page {
             Page::Appearance => "Appearance",
             Page::Window => "Window",
             Page::Keyboard => "Keyboard",
+            Page::Terminal => "Terminal",
             Page::Advanced => "Advanced",
             Page::About => "About",
         }
@@ -377,6 +380,10 @@ pub struct ModelGuidanceRow {
     pub name: String,
     /// Generated or user-edited recommendation.
     pub best_use: Option<yaac_protocol::ModelBestUse>,
+    /// Whether this provider supports editing model guidance.
+    pub guidance_editable: bool,
+    /// Whether the model is on, when the target supports the switch.
+    pub enabled: Option<bool>,
 }
 
 impl ModelGuidanceRow {
@@ -520,6 +527,24 @@ pub fn providers_view(state: &AppState, target: &TargetId) -> Option<ProvidersVi
                 (ProviderStatus::Ready, _) | (_, None) => status_word(&p.status).to_owned(),
                 (_, Some(m)) => format!("{} · {m}", status_word(&p.status)),
             };
+            let guidance_editable = p.capabilities.contains(&Capability::ModelBestUse);
+            let availability = p.capabilities.contains(&Capability::ModelAvailability);
+            let mut model_guidance = Vec::new();
+            if guidance_editable || availability {
+                model_guidance.extend(p.models.iter().map(|model| (model, true))
+                    .chain(p.disabled_models.iter().map(|model| (model, false)))
+                    .map(|(model, enabled)| ModelGuidanceRow {
+                        id: model.id.clone(),
+                        specific: model.resolved_model.as_ref().unwrap_or(&model.id).clone(),
+                        name: model.display_name.clone(),
+                        best_use: model.best_use.clone(),
+                        guidance_editable,
+                        enabled: availability.then_some(enabled),
+                    }));
+                if availability {
+                    model_guidance.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
+                }
+            }
             InstanceRow {
                 instance: p.instance.clone(),
                 name: p.display_name.clone(),
@@ -535,16 +560,7 @@ pub fn providers_view(state: &AppState, target: &TargetId) -> Option<ProvidersVi
                     set: config.and_then(|c| c.home.as_ref()).map(ToString::to_string),
                     effective: p.store.home.as_ref().map(ToString::to_string),
                 }),
-                model_guidance: if p.capabilities.contains(&Capability::ModelBestUse) {
-                    p.models.iter().map(|model| ModelGuidanceRow {
-                        id: model.id.clone(),
-                        specific: model.resolved_model.as_ref().unwrap_or(&model.id).clone(),
-                        name: model.display_name.clone(),
-                        best_use: model.best_use.clone(),
-                    }).collect()
-                } else {
-                    Vec::new()
-                },
+                model_guidance,
             }
         })
         .collect();

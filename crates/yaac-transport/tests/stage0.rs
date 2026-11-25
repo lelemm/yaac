@@ -387,8 +387,14 @@ async fn a_target_without_node_downloads_the_pinned_runtime_itself_then_reuses_i
     echo_works(&mut done.reader, &mut done.writer).await;
     assert!(home.join("runtime/node-22.99.0-test/bin/node").is_file());
     assert!(!dir.join("host-cache").exists(), "the host fetched nothing");
-    let entries: Vec<_> = std::fs::read_dir(home.join("runtime")).unwrap().map(|e| e.unwrap().file_name()).collect();
-    assert_eq!(entries, vec![std::ffi::OsString::from("node-22.99.0-test")], "no temporary, download, or lock left behind");
+    for entry in std::fs::read_dir(home.join("runtime")).unwrap() {
+        let entry = entry.unwrap();
+        match entry.file_name().to_str().unwrap() {
+            "node-22.99.0-test" => (),
+            "pty-1.2.0-beta.18" => assert!(entry.path().join("lib/index.js").is_file()),
+            name => panic!("unexpected download or lock left behind: {name}"),
+        }
+    }
     drop(done);
     let mut again = run_private(&home, &source).await.expect("second connection");
     assert_eq!(again.report.get("private"), Some("node-22.99.0-test"));

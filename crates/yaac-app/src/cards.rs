@@ -77,6 +77,10 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript,
     let local = t.local_answers.get(&r.request_id).map(|l| l.summary.as_str());
     let target = v.state.target_name(&key.target);
     let st = card_state(r, may_act, v.state.client_id.as_ref(), local, &target, now);
+    if let CardState::Automatic { text, detail } = &st {
+        automatic(ui, v, item, text, detail);
+        return;
+    }
     let perm = permission::parse(&r.body);
     let edge = match &st {
         CardState::Pending { .. } | CardState::OutcomeUnknown => p.needs,
@@ -130,6 +134,9 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript,
                         }
                         if let Some(reason) = &a.reason {
                             ui.label(widgets::secondary(reason, &p));
+                        }
+                        if let Some(scope) = &a.scope {
+                            ui.label(widgets::secondary(scope, &p));
                         }
                         if started_by_agent(t, &item.turn_id) {
                             ui.label(widgets::secondary("Started by an agent, not by you", &p));
@@ -188,8 +195,32 @@ fn request(ui: &mut egui::Ui, v: &mut View<'_>, key: &ThreadKey, t: &Transcript,
             CardState::Other(s) => {
                 header_line(ui, &p, s, None);
             }
+            // Drawn as a line above, never as a card.
+            CardState::Automatic { .. } => {}
         }
     });
+}
+
+/// A tool approval `yaacd` gave because the thread's mode never asks (P342): one quiet line
+/// that opens to the harness's reason and the full input.
+fn automatic(ui: &mut egui::Ui, v: &mut View<'_>, item: &yaac_protocol::Item, text: &str, detail: &str) {
+    let p = v.p;
+    let id = egui::Id::unique(("auto-approval", item.id.as_str()));
+    let open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+    if detail.is_empty() {
+        ui.label(widgets::secondary(text, &p));
+        return;
+    }
+    if widgets::disclosure_row(ui, &p, text, open, id) {
+        ui.data_mut(|d| d.insert_temp(id, !open));
+    }
+    if open {
+        ui.indent(id, |ui| {
+            for line in detail.lines() {
+                ui.label(egui::RichText::new(line).font(theme::mono(size::MONO)).color(p.text2));
+            }
+        });
+    }
 }
 
 fn header_line(ui: &mut egui::Ui, p: &crate::theme::Palette, text: &str, mark: Option<Mark>) {

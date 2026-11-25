@@ -1227,3 +1227,121 @@ test("Codex tracks process lifetime and late output separately from the turn", a
     await r.done();
   }
 });
+
+test("P342: a Codex request carries the thread's mode and Codex's reason", async () => {
+  const r = await rig();
+  try {
+    idleThread(r.fake);
+    r.fake.handlers.set("turn/start", () => ({ turn: { id: TURN_ID, status: "inProgress", items: [] } }));
+    await r.provider.startThread({ cwd: "/work/fixture", mode: "codex:full-access" }, input("go"));
+    const p = { kind: "command", threadId: THREAD_ID, turnId: TURN_ID, itemId: "exec-r", startedAtMs: 0, environmentId: null, command: "curl example.com", reason: "needs network access" };
+    r.fake.push({ id: 21, method: "item/commandExecution/requestApproval", params: p });
+    await until(() => r.events.some((e) => e.type === "requestRaised"));
+    const raised = r.events.find((e) => e.type === "requestRaised") as any;
+    assert.equal(raised.mode, "codex:full-access");
+    assert.equal(raised.request.reason, "needs network access");
+    r.fake.push({ method: "turn/completed", params: { threadId: THREAD_ID, turn: { id: TURN_ID, status: "completed", items: [], error: null } } });
+    await until(() => r.events.some((e) => e.type === "turnCompleted"));
+    r.fake.handlers.set("turn/start", () => ({ turn: { id: "turn-2", status: "inProgress", items: [] } }));
+    await r.provider.startTurn(THREAD_ID, input("again"), { mode: "codex:auto" });
+    r.fake.push({ id: 22, method: "item/fileChange/requestApproval", params: { threadId: THREAD_ID, turnId: "turn-2", itemId: "patch-r", startedAtMs: 0, grantRoot: "/etc", reason: "write outside the workspace" } });
+    await until(() => r.events.filter((e) => e.type === "requestRaised").length === 2);
+    const second = r.events.filter((e) => e.type === "requestRaised")[1] as any;
+    assert.equal(second.mode, "codex:auto");
+    assert.equal(second.request.reason, "write outside the workspace");
+  } finally {
+    await r.done();
+  }
+});
+
+// ── `!command` from the composer (P344) ────────────────────────────────────────────────
+
+/** A `!command`'s native item (codex-cli 0.172.0 shape, docs/research/user-shell-commands-codex.md). */
+function userShellItem(status: string, extra: Record<string, unknown> = {}) {
+  return { type: "commandExecution", id: "cmd-ush", command: "/bin/bash -lc 'ls -la'", cwd: "/work/fixture", processId: null, source: "userShell", status, commandActions: [{ type: "unknown", command: "ls -la" }], aggregatedOutput: null, exitCode: null, durationMs: null, ...extra };
+}
+
+test("P344 codex: thread/shellCommand, then turn/start with empty input once the shell turn ends; both reported as one turn", async () => {
+  const r = await rig();
+  try {
+    idleThread(r.fake);
+    const SHELL = "01a210f7-7100-71f2-8171-f8e97e9d4cdc";
+    const ANSWER = "01a210f7-7111-74e3-9cbf-3871dec2a241";
+    r.fake.handlers.set("thread/shellCommand", (p) => {
+      assert.deepEqual(p, { threadId: THREAD_ID, command: "ls -la" });
+      setImmediate(() => r.fake.push({ method: "turn/started", params: { threadId: THREAD_ID, turn: { id: SHELL, status: "inProgress" } } }));
+      return {};
+    });
+    let answer: any = null;
+    r.fake.handlers.set("turn/start", (p) => {
+      answer = p;
+      setImmediate(() => r.fake.push({ method: "turn/started", params: { threadId: THREAD_ID, turn: { id: ANSWER, status: "inProgress" } } }));
+      return { turn: { id: ANSWER, status: "inProgress", items: [] } };
+    });
+    const turn = await r.provider.shellCommand!(THREAD_ID, "ls -la", {}, "op-1");
+    assert.equal(turn, SHELL, "the YAAC turn is the shell turn");
+    r.fake.push({ method: "item/started", params: { threadId: THREAD_ID, turnId: SHELL, item: userShellItem("inProgress") } });
+    r.fake.push({ method: "item/commandExecution/outputDelta", params: { threadId: THREAD_ID, turnId: SHELL, itemId: "cmd-ush", delta: "total 0\n" } });
+    r.fake.push({ method: "item/completed", params: { threadId: THREAD_ID, turnId: SHELL, item: userShellItem("completed", { aggregatedOutput: "total 0\n", exitCode: 0, durationMs: 12 }) } });
+    assert.equal(answer, null, "no answer is asked for while the command runs");
+    r.fake.push({ method: "turn/completed", params: { threadId: THREAD_ID, turn: { id: SHELL, status: "completed" } } });
+    await until(() => answer !== null);
+    assert.deepEqual(answer, { threadId: THREAD_ID, input: [] }, "the verified mechanism: no text, nothing invented");
+    await until(() => r.events.some((e) => e.type === "turnStarted" && e.turnId === ANSWER) || r.fake.received.filter((m) => m.method === "turn/start").length === 1);
+    r.fake.push({ method: "item/completed", params: { threadId: THREAD_ID, turnId: ANSWER, item: { type: "agentMessage", id: "msg-ans", text: "The folder is empty." } } });
+    r.fake.push({ method: "turn/completed", params: { threadId: THREAD_ID, turn: { id: ANSWER, status: "completed" } } });
+    await until(() => r.events.some((e) => e.type === "turnCompleted"));
+    await new Promise((res) => setTimeout(res, 30));
+    assert.deepEqual(r.events.filter((e) => e.type === "turnStarted").map((e) => (e as any).turnId), [SHELL]);
+    assert.deepEqual(r.events.filter((e) => e.type === "turnCompleted").map((e) => [(e as any).turnId, (e as any).status]), [[SHELL, "completed"]]);
+    const done = r.events.filter((e) => e.type === "itemCompleted").map((e) => (e as any).item);
+    const cmd = done.find((i: any) => i.kind === "toolCall");
+    assert.deepEqual([cmd.source, cmd.title, cmd.exitCode, cmd.durationMs, cmd.turnId], ["userShell", "ls -la", 0, 12, SHELL]);
+    const msg = done.find((i: any) => i.kind === "agentMessage");
+    assert.equal(msg.turnId, SHELL, "the answer is reported under the same turn");
+    assert.equal(r.fake.received.filter((m) => m.method === "thread/shellCommand").length, 1);
+  } finally {
+    await r.done();
+  }
+});
+
+test("P344 codex: Stop interrupts the shell turn and no answer is asked for", async () => {
+  const r = await rig();
+  try {
+    idleThread(r.fake);
+    const SHELL = "01a210fd-3a64-7e82-ad1d-000000000001";
+    r.fake.handlers.set("thread/shellCommand", () => {
+      setImmediate(() => r.fake.push({ method: "turn/started", params: { threadId: THREAD_ID, turn: { id: SHELL, status: "inProgress" } } }));
+      return {};
+    });
+    let interrupted: any = null;
+    r.fake.handlers.set("turn/interrupt", (p) => {
+      interrupted = p;
+      setImmediate(() => {
+        r.fake.push({ method: "item/completed", params: { threadId: THREAD_ID, turnId: SHELL, item: userShellItem("failed", { aggregatedOutput: "command aborted by user", exitCode: -1, durationMs: 0 }) } });
+        r.fake.push({ method: "turn/completed", params: { threadId: THREAD_ID, turn: { id: SHELL, status: "interrupted" } } });
+      });
+      return {};
+    });
+    const turn = await r.provider.shellCommand!(THREAD_ID, "sleep 30", {}, "op-2");
+    await r.provider.interrupt(THREAD_ID, turn);
+    assert.deepEqual(interrupted, { threadId: THREAD_ID, turnId: SHELL });
+    await until(() => r.events.some((e) => e.type === "turnCompleted"));
+    await new Promise((res) => setTimeout(res, 30));
+    assert.equal(r.fake.received.filter((m) => m.method === "turn/start").length, 0);
+    assert.deepEqual(r.events.filter((e) => e.type === "turnCompleted").map((e) => [(e as any).turnId, (e as any).status]), [[SHELL, "interrupted"]]);
+  } finally {
+    await r.done();
+  }
+});
+
+test("P344 codex: an explicitly refused shell command ran nothing and is an error, not an unknown outcome", async () => {
+  const r = await rig();
+  try {
+    idleThread(r.fake);
+    r.fake.handlers.set("thread/shellCommand", () => rpcError(-32600, "command must not be empty"));
+    await assert.rejects(r.provider.shellCommand!(THREAD_ID, " ", {}, "op-3"), (e: Error) => !(e instanceof InputOutcomeUnknown) && /must not be empty/.test(e.message));
+  } finally {
+    await r.done();
+  }
+});

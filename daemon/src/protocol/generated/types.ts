@@ -142,7 +142,7 @@ export interface AgreedProtocol {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type AnsweredBy = "client" | "elsewhere";
+export type AnsweredBy = "client" | "elsewhere" | "yaacd";
 
 /**
  * The model / effort / mode the harness reports it is **actually** using.
@@ -249,6 +249,20 @@ export interface ApprovalRequest {
    * One-line description.
    */
   title: string;
+}
+
+/**
+ * Why `yaacd` answered a request itself (P342): the thread was in a mode that never asks.
+ */
+export interface AutomaticResolution {
+  /**
+   * The thread's mode when the harness asked (a mode the provider marks `skipsApprovals`).
+   */
+  mode: ModeId;
+  /**
+   * That mode's display name, as the provider reported it ("Bypass permissions").
+   */
+  modeName?: string | null;
 }
 
 /**
@@ -645,7 +659,7 @@ export interface BrowserTypeParams {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "portForward" | "fileView" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "portForward" | "terminal" | "fileView" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -1878,6 +1892,10 @@ export interface InitializeResult {
    * Target facts.
    */
   target: TargetFacts;
+  /**
+   * Reason the native terminal backend could not load.
+   */
+  terminalUnavailableReason?: string | null;
 }
 
 /**
@@ -3525,6 +3543,10 @@ export interface ProviderDescriptor {
    */
   capabilities?: Capability[];
   /**
+   * Models turned off in Settings, retained for Settings and existing threads.
+   */
+  disabledModels?: ModelInfo[];
+  /**
    * "Codex", or "Codex · work".
    */
   displayName: string;
@@ -3636,6 +3658,10 @@ export interface ProviderInstanceConfig {
    */
   backend: BackendPreference;
   /**
+   * Model IDs turned off for this instance. New IDs are on by default.
+   */
+  disabledModelIds?: ModelId[];
+  /**
    * Whether it is enabled.
    */
   enabled: boolean;
@@ -3710,6 +3736,19 @@ export interface ProviderInstanceResult {
    * The stored configuration after the change.
    */
   instance: ProviderInstanceConfig;
+}
+
+/**
+ * `providerInstance/setModelEnabled`.
+ */
+export interface ProviderInstanceSetModelEnabledParams {
+  enabled: boolean;
+  instance: InstanceId;
+  /**
+   * The model ID advertised by this instance.
+   */
+  model: ModelId;
+  opId: OpId;
 }
 
 /**
@@ -3998,6 +4037,11 @@ export interface QueuedMessage {
    */
   queuedAt: Timestamp;
   /**
+   * Set when the entry is a `!command` (`turn/shellCommand`, P344): the command, without the
+   * `!`. `input` then holds the text `!command` for display. Absent for a message.
+   */
+  shellCommand?: string | null;
+  /**
    * Use Ultrafast for the turn and subsequent turns.
    */
   ultrafast?: boolean | null;
@@ -4231,6 +4275,10 @@ export interface RequestResolution {
    * When.
    */
   at?: Timestamp | null;
+  /**
+   * Set when `by` is `yaacd`: the mode that made it automatic.
+   */
+  automatic?: AutomaticResolution | null;
   /**
    * Who answered.
    */
@@ -4819,6 +4867,240 @@ export type TargetName = string;
  * joins, or normalises it, and never stores it in a host `PathBuf`.
  */
 export type TargetPath = string;
+
+/**
+ * Attach a new stream to a running shell.
+ */
+export interface TerminalAttachParams {
+  /**
+   * Width in cells.
+   */
+  cols: number;
+  /**
+   * Height in cells.
+   */
+  rows: number;
+  /**
+   * Target-scoped terminal identifier.
+   */
+  terminal: string;
+}
+
+/**
+ * A new duplex attachment, with replay ahead of live output.
+ */
+export interface TerminalAttachResult {
+  /**
+   * Input bytes granted to the host.
+   */
+  initialCredit: number;
+  /**
+   * Connection-local bidirectional stream.
+   */
+  stream: StreamId;
+}
+
+/**
+ * End a running shell.
+ */
+export interface TerminalCloseParams {
+  /**
+   * Target-scoped terminal identifier.
+   */
+  terminal: string;
+}
+
+/**
+ * Release one attachment, retaining the shell.
+ */
+export interface TerminalDetachParams {
+  /**
+   * Connection-local attachment.
+   */
+  stream: StreamId;
+}
+
+/**
+ * Final status after a shell exits.
+ */
+export interface TerminalExitedParams {
+  /**
+   * Shell exit status.
+   */
+  code: number;
+  /**
+   * Target-scoped terminal identifier.
+   */
+  terminal: string;
+}
+
+/**
+ * A running target terminal.
+ */
+export interface TerminalInfo {
+  /**
+   * Working directory on the target.
+   */
+  cwd: string;
+  /**
+   * The name the user gave the terminal (`terminal/rename`), if any; it wins over `title`.
+   */
+  name?: string | null;
+  /**
+   * Shell executable.
+   */
+  shell: string;
+  /**
+   * Target-scoped terminal identifier.
+   */
+  terminal: string;
+  /**
+   * Thread that opened this terminal.
+   */
+  threadId?: ThreadId | null;
+  /**
+   * Most recent OSC title.
+   */
+  title: string;
+}
+
+/**
+ * The active terminals owned by this daemon.
+ */
+export interface TerminalListResult {
+  /**
+   * Active terminals.
+   */
+  terminals: TerminalInfo[];
+}
+
+/**
+ * Start a shell in a target working directory.
+ */
+export interface TerminalOpenParams {
+  /**
+   * Width in cells.
+   */
+  cols: number;
+  /**
+   * Working directory on the target.
+   */
+  cwd: string;
+  /**
+   * Height in cells.
+   */
+  rows: number;
+  /**
+   * Shell executable.
+   */
+  shell?: string | null;
+  /**
+   * Thread that opened this terminal.
+   */
+  threadId?: ThreadId | null;
+}
+
+/**
+ * The new shell and its first attachment.
+ */
+export interface TerminalOpenResult {
+  /**
+   * Input bytes granted to the host.
+   */
+  initialCredit: number;
+  /**
+   * Connection-local bidirectional stream.
+   */
+  stream: StreamId;
+  /**
+   * Target-scoped terminal identifier.
+   */
+  terminal: string;
+}
+
+/**
+ * Terminal Rename Params.
+ */
+export interface TerminalRenameParams {
+  /**
+   * The user's name for the terminal; absent or empty goes back to the automatic title.
+   */
+  name?: string | null;
+  /**
+   * Target-scoped terminal identifier.
+   */
+  terminal: string;
+}
+
+/**
+ * Terminal Renamed Params.
+ */
+export interface TerminalRenamedParams {
+  /**
+   * The user's name; absent when it went back to the automatic title.
+   */
+  name?: string | null;
+  /**
+   * Target-scoped terminal identifier.
+   */
+  terminal: string;
+}
+
+/**
+ * Set the shared PTY size.
+ */
+export interface TerminalResizeParams {
+  /**
+   * Width in cells.
+   */
+  cols: number;
+  /**
+   * Height in cells.
+   */
+  rows: number;
+  /**
+   * Target-scoped terminal identifier.
+   */
+  terminal: string;
+}
+
+/**
+ * An available shell on the target.
+ */
+export interface TerminalShell {
+  /**
+   * Shell display name.
+   */
+  name: string;
+  /**
+   * Executable path.
+   */
+  path: string;
+}
+
+/**
+ * Shell choices in preference order.
+ */
+export interface TerminalShellsResult {
+  /**
+   * Available executables, default first.
+   */
+  shells: TerminalShell[];
+}
+
+/**
+ * Title decoded from OSC 0 or 2.
+ */
+export interface TerminalTitleParams {
+  /**
+   * Target-scoped terminal identifier.
+   */
+  terminal: string;
+  /**
+   * Most recent OSC title.
+   */
+  title: string;
+}
 
 /**
  * Plain text.
@@ -5677,6 +5959,10 @@ export interface ThreadSummary {
    */
   model?: ModelId | null;
   /**
+   * The current model is turned off for new selections in this instance's Settings.
+   */
+  modelOff?: boolean | null;
+  /**
    * The harness's own conversation id (Codex `Thread.id`, the Claude session id): what a
    * user copies from a terminal. Opaque; for finding a thread, never for routing.
    */
@@ -5707,6 +5993,11 @@ export interface ThreadSummary {
    * Where the working directory sits in a git repository; absent outside git.
    */
   repo?: RepoLocation | null;
+  /**
+   * Whether this YAAC worker was spawned with automatic result delivery to its parent.
+   * Absent for harness sub-agents and targets that do not report this.
+   */
+  reportsToParent?: boolean | null;
   /**
    * The orchestration root this thread belongs to, when it was spawned or messaged by an
    * agent.
@@ -5932,6 +6223,10 @@ export interface ToolCallItem {
    */
   cwd?: TargetPath | null;
   /**
+   * How long it ran, in milliseconds, when the harness says.
+   */
+  durationMs?: number | null;
+  /**
    * Exit status, for a command.
    */
   exitCode?: number | null;
@@ -5964,6 +6259,10 @@ export interface ToolCallItem {
    */
   skill?: SkillLoad | null;
   /**
+   * Who ran it, when not the agent (`userShell`: a `!command`, P344). Absent: the agent.
+   */
+  source?: ToolCallSource | null;
+  /**
    * One-line title.
    */
   title: string;
@@ -5972,6 +6271,13 @@ export interface ToolCallItem {
    */
   tool: ToolKind;
 }
+
+/**
+ * Who ran a tool call, when it was not the agent.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type ToolCallSource = "userShell";
 
 /**
  * A tool image result, with its bytes kept out of the transcript stream.
@@ -6156,6 +6462,36 @@ export interface TurnQueueEditParams {
    * The queued message.
    */
   queueId: string;
+  /**
+   * The thread.
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * `turn/shellCommand` (P344, under `userShellCommand`): a `!command` the user typed in this
+ * thread's composer. `yaacd` runs it on the target in the thread's folder (through the harness
+ * where it can), records it in the conversation as the harness's own `!` does, and starts the
+ * turn in which the agent answers it — all as one turn. The transcript gets a `userMessage`
+ * whose one part is the text `!command` (role `command`, carrying `opId`), then a `toolCall`
+ * (`tool: command`, `source: userShell`) with the live output, then the answer. Refused for a
+ * thread without the capability (`capability_missing`). Only a client sends this; an agent's
+ * message that starts with `!` is plain text.
+ */
+export interface TurnShellCommandParams {
+  /**
+   * The command line, without the leading `!`, as typed (quoting and operators kept).
+   */
+  command: string;
+  /**
+   * While a turn is running: absent refuses with `turn_in_progress`; `queue` keeps it in the
+   * thread's queue (D166) and runs it when the turn ends. `now` is not accepted.
+   */
+  delivery?: Delivery | null;
+  /**
+   * Operation id.
+   */
+  opId: OpId;
   /**
    * The thread.
    */

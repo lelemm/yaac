@@ -262,6 +262,8 @@ catalogue! {
         /// The stored instance configurations, including implicit defaults.
         ProviderInstanceList = "providerInstance/list" as PROVIDER_INSTANCE_LIST:
             t::ProviderInstanceListParams => t::ProviderInstanceListResult, HostToDaemon, request Control, response Control;
+        ProviderInstanceSetModelEnabled = "providerInstance/setModelEnabled" as PROVIDER_INSTANCE_SET_MODEL_ENABLED:
+            t::ProviderInstanceSetModelEnabledParams => t::Empty, HostToDaemon, request Control, response Control, op;
         /// Add a provider instance.
         ProviderInstanceAdd = "providerInstance/add" as PROVIDER_INSTANCE_ADD:
             t::ProviderInstanceAddParams => t::ProviderInstanceResult, HostToDaemon, request Control, response Control, op;
@@ -346,6 +348,10 @@ catalogue! {
         /// Send a user message to an existing thread.
         TurnStart = "turn/start" as TURN_START:
             t::TurnStartParams => t::TurnStartResult, HostToDaemon, request Control, response Control, op;
+        /// Run a command the user typed as `!command` in the thread's composer, then let the agent
+        /// answer it (P344, under `userShellCommand`). Only from a client, never from an agent.
+        TurnShellCommand = "turn/shellCommand" as TURN_SHELL_COMMAND:
+            t::TurnShellCommandParams => t::TurnStartResult, HostToDaemon, request Control, response Control, op;
         /// Stop a turn, by turn id.
         TurnInterrupt = "turn/interrupt" as TURN_INTERRUPT:
             t::TurnInterruptParams => t::Empty, HostToDaemon, request Control, response Control;
@@ -370,6 +376,27 @@ catalogue! {
             t::RequestRespondParams => t::Empty, HostToDaemon, request Control, response Control, op;
 
         // ── Previews and uploads ────────────────────────────────────────────────────────────────────
+        /// Terminal shells.
+        TerminalShells = "terminal/shells" as TERMINAL_SHELLS:
+            t::Empty => t::TerminalShellsResult, HostToDaemon, request Control, response Control;
+        /// Terminal open.
+        TerminalOpen = "terminal/open" as TERMINAL_OPEN:
+            t::TerminalOpenParams => t::TerminalOpenResult, HostToDaemon, request Control, response Control;
+        /// Terminal attach.
+        TerminalAttach = "terminal/attach" as TERMINAL_ATTACH:
+            t::TerminalAttachParams => t::TerminalAttachResult, HostToDaemon, request Control, response Control;
+        /// Terminal resize.
+        TerminalResize = "terminal/resize" as TERMINAL_RESIZE:
+            t::TerminalResizeParams => t::Empty, HostToDaemon, request Control, response Control;
+        /// Terminal close.
+        TerminalClose = "terminal/close" as TERMINAL_CLOSE:
+            t::TerminalCloseParams => t::Empty, HostToDaemon, request Control, response Control;
+        /// Terminal list.
+        TerminalList = "terminal/list" as TERMINAL_LIST:
+            t::Empty => t::TerminalListResult, HostToDaemon, request Control, response Control;
+        /// Terminal rename: the user's name for a terminal (P343).
+        TerminalRename = "terminal/rename" as TERMINAL_RENAME:
+            t::TerminalRenameParams => t::Empty, HostToDaemon, request Control, response Control;
         /// Inspect the calling thread’s browser.
         BrowserCall = "browser/call" as BROWSER_CALL:
             t::BrowserCallParams => t::BrowserCallResult, DaemonToHost, request Control, response Bulk;
@@ -499,6 +526,18 @@ catalogue! {
         /// The discovery caps changed.
         DiscoveryUpdated = "discovery/updated" as DISCOVERY_UPDATED:
             t::DiscoveryCapsResult, DaemonToHost, Control;
+        /// Release one terminal attachment.
+        TerminalDetach = "terminal/detach" as TERMINAL_DETACH:
+            t::TerminalDetachParams, HostToDaemon, Control;
+        /// Terminal exited.
+        TerminalExited = "terminal/exited" as TERMINAL_EXITED:
+            t::TerminalExitedParams, DaemonToHost, Control;
+        /// Terminal title.
+        TerminalTitle = "terminal/title" as TERMINAL_TITLE:
+            t::TerminalTitleParams, DaemonToHost, Control;
+        /// Terminal renamed (P343), to every connection attached to it.
+        TerminalRenamed = "terminal/renamed" as TERMINAL_RENAMED:
+            t::TerminalRenamedParams, DaemonToHost, Control;
         /// Either peer closed its preview socket.
         TunnelClose = "tunnel/close" as TUNNEL_CLOSE:
             t::TunnelCloseParams, Both, Control;

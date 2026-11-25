@@ -469,7 +469,9 @@ shape Codex itself uses.
   sequence numbers ([protocol: journal and replay](03-protocol.md#journal-and-replay)). The
   journal is what makes "nothing is lost" true even if `yaacd` itself restarts.
 - Approvals and questions stay **pending**. The agent waits; `yaacd` never answers for the user
-  and never times a request out on its own. When the host returns, the thread shows as needing
+  and never times a request out on its own — the one exception is a tool approval in a thread
+  whose mode never asks, which `yaacd` approves and records as automatic
+  ([P342](03-protocol.md#tool-approvals-in-a-never-ask-mode-p342)). When the host returns, the thread shows as needing
   attention.
 - Thread-index changes (new sessions, renames, state changes) accumulate behind the sync token,
   so the sidebar catches up in one exchange.
@@ -673,7 +675,8 @@ object on Windows, a distro shutdown on WSL. Each is specified and tested on its
   keys, and deleted on Revoke. Protecting it with the operating system's credential store is a
   later hardening step.
 - Agents run tools. Approval prompts from a harness are surfaced to the user and are never
-  auto-answered by YAAC. "Skip approvals" modes are available only where the provider offers
+  auto-answered by YAAC — except a tool approval in a thread the user put in the provider's
+  never-ask mode, which YAAC approves, records and shows (P342). "Skip approvals" modes are available only where the provider offers
   them, and the active mode is always visible under the composer.
 - Uploaded file names are sanitised on the target. Uploads can only land inside the upload
   store.

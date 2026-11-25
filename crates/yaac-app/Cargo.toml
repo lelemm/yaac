@@ -30,6 +30,7 @@ wgpu = ["eframe/wgpu"]
 
 [dependencies]
 yaac-code = { path = "../yaac-code" }
+yaac-term = { path = "../yaac-term" }
 yaac-preview = { path = "../yaac-preview", optional = true }
 yaac-core = { path = "../yaac-core" }
 yaac-protocol = { path = "../yaac-protocol" }

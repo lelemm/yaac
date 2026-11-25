@@ -2,7 +2,7 @@
 mod common;
 
 use common::{boot, settle};
-use yaac_core::agents::{Relation, SpawnedBy, agents_panel, card_groups, clusters};
+use yaac_core::agents::{Relation, SpawnedBy, agents_panel, card_groups, clusters, sibling_rows};
 use yaac_core::attention::{AttentionMap, Mark};
 use yaac_core::demo::{Scene, threads};
 use yaac_core::header::{LinkLine, header};
@@ -36,11 +36,38 @@ fn worker_panel_and_hidden_panel() {
     let card = card_groups(&p);
     assert_eq!(card.iter().map(|(label, _)| *label).collect::<Vec<_>>(), ["Siblings", "Spawned by"]);
     assert_eq!(card[0].1.iter().filter_map(|row| row.key.clone()).collect::<std::collections::BTreeSet<_>>(),
-        [threads::users(), threads::search()].into_iter().collect());
-    assert_eq!(clusters(&p).len(), 1, "siblings only appear in the floating card");
+        [threads::users(), threads::search(), threads::billing()].into_iter().collect());
+    assert_eq!(clusters(&p).len(), 1, "siblings are outside the pill's relation clusters");
     assert!(agents_panel(&c.state, &map, &threads::fix()).is_none(), "no relationships: hidden");
     let p = agents_panel(&c.state, &map, &threads::index()).unwrap();
     assert_eq!(p.root.unwrap().0, "Migrate auth module · orchestrator");
+    assert!(p.siblings.is_empty(), "an only child has no Siblings section");
+}
+
+#[test]
+fn switching_siblings_keeps_the_same_order_and_moves_the_self_row() {
+    let (mut c, _) = boot();
+    let members = [threads::users(), threads::billing(), threads::search()];
+    let timestamp = c.state.summary(&members[0]).unwrap().updated_at.clone();
+    for key in &members {
+        // Force a tie to catch ordering that happens to put whichever thread is self last.
+        let summary = &mut c.state.threads.get_mut(key).unwrap().summary;
+        summary.state = yaac_protocol::ThreadState::Idle;
+        summary.updated_at = timestamp.clone();
+    }
+    let map = AttentionMap::compute(&c.state);
+    let mut expected = members.clone();
+    expected.sort();
+    for selected in &members {
+        let panel = agents_panel(&c.state, &map, selected).unwrap();
+        let siblings = sibling_rows(&panel);
+        assert_eq!(siblings, card_groups(&panel)[0].1);
+        assert_eq!(siblings.iter().map(|row| row.key.clone().unwrap()).collect::<Vec<_>>(), expected);
+        for row in siblings {
+            assert_eq!(row.is_self, row.key.as_ref() == Some(selected));
+            assert_eq!(row.open_key().is_none(), row.is_self);
+        }
+    }
 }
 
 #[test]

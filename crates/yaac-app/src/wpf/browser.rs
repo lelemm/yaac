@@ -16,6 +16,7 @@ mod native;
 pub(super) struct BrowserPipe {
     previous: Value,
     files: FilesPipe,
+    terminals: [super::terminal::TerminalPipe; 2],
     #[cfg(feature = "preview")]
     native: native::Surfaces,
 }
@@ -32,6 +33,9 @@ impl BrowserPipe {
             .then(|| selected_thread(app).cloned())
             .flatten();
         let visible = thread.as_ref().filter(|_| shown);
+        if let Some(key) = visible.filter(|key| crate::terminal::unavailable(&app.client,key).is_none()) {
+            app.browsers.terms.shells(&mut app.client, &key.target);
+        }
         app.browsers.check_runtime(wake.clone());
         app.browsers.set_file_wake(wake.clone());
         let next = app.browsers.tick(&mut app.client, visible, Instant::now());
@@ -43,7 +47,7 @@ impl BrowserPipe {
         let agent = app.browser_agent.step(&mut app.client, &mut app.browsers, &mut self.native, Instant::now());
         #[cfg(not(feature = "preview"))]
         let agent = app.browser_agent.step(&mut app.client, &mut app.browsers, Instant::now());
-        let next = match (next, agent) {
+        let mut next = match (next, agent) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
@@ -56,10 +60,31 @@ impl BrowserPipe {
             app.browsers.side_by_side,
             wake.clone(),
         )?;
-        let current = self.view(&app.browsers, &app.client, thread.as_ref());
+        let current = self.view(&app.browsers, &app.client, thread.as_ref(), &app.ui.terminal);
         if current != self.previous {
             write_frame(stdout, &json!({ "views": { "browser": current } }))?;
             self.previous = current;
+        }
+        if let Some(text) = app.browsers.terms.clipboard.take() {
+            write_frame(stdout,&json!({"terminalCopy":text,"terminalNotice":"Copied by the terminal"}))?;
+        }
+        for (index, pipe) in self.terminals.iter_mut().enumerate() {
+            let panel = index == 1;
+            let active = visible.and_then(|key| super::terminal::tabs::active(&app.browsers,key,panel));
+            if let Some((_, id)) = active { app.browsers.terms.mark_shown(id); }
+            let request_focus = active.is_some_and(|(_, id)| app.browsers.terms.focus == Some(id));
+            let session = active.and_then(|(tab,id)| Some((tab,app.browsers.terms.get_mut(id)?)));
+            pipe.surface(panel);
+            if let Some(wait) = pipe.update(session, app.ui.theme, stdout)? {
+                next = Some(next.map_or(wait, |existing| existing.min(wait)));
+            }
+            if request_focus && let Some((tab,_))=active {
+                app.browsers.terms.focus = None;
+                write_frame(stdout,&json!({"terminalFocus":{"tab":tab,"panel":panel}}))?;
+            }
+        }
+        if std::mem::take(&mut app.browsers.terms.focus_composer) {
+            write_frame(stdout,&json!({"terminalFocus":{"composer":true}}))?;
         }
         if let Some(message) = app.browsers.notice.take() {
             write_frame(stdout, &json!({ "error": message }))?;
@@ -75,6 +100,7 @@ impl BrowserPipe {
         browsers: &preview_controller::Browsers,
         client: &Client,
         thread: Option<&ThreadKey>,
+        prefs: &yaac_core::prefs::TerminalPrefs,
     ) -> Value {
         let reason = browsers.reason(client, thread);
         let area = thread.and_then(|thread| browsers.areas.get(thread));
@@ -88,7 +114,7 @@ impl BrowserPipe {
         let chat_logo = thread
             .and_then(|key| client.state.provider_of(key))
             .and_then(|provider| crate::logos::for_kind(provider.kind.as_str()));
-        json!({
+        let mut state = json!({
             "thread": thread.map(ThreadKey::address),
             "chat": area.is_some_and(|a| a.chat),
             "chatMarked": attention.is_some_and(|(marked, _)| marked),
@@ -124,7 +150,9 @@ impl BrowserPipe {
                 "url": preview_controller::listener_url(port),
             })).collect::<Vec<_>>()).unwrap_or_default(),
             "portsError": area.and_then(|area| area.ports_error.as_deref()),
-        })
+        });
+        super::terminal::tabs::decorate(&mut state,browsers,client,thread,prefs);
+        state
     }
 
     fn has_surface(&self, id: u64) -> bool {
@@ -147,6 +175,9 @@ impl BrowserPipe {
     ) -> Result<bool, String> {
         let id = payload["tab"].as_u64();
         let data = &payload["data"];
+        if command == "terminal.ack" {
+            return Ok(self.terminals[usize::from(payload["panel"]==true)].ack(payload["frame"].as_u64()));
+        }
         if command == "browser.frameAck" {
             #[cfg(feature = "preview")]
             if let (Some(tab), Some(frame)) = (id, data["id"].as_u64()) {
@@ -179,6 +210,10 @@ impl BrowserPipe {
             return Ok(false);
         };
 
+        if command.starts_with("terminal.") {
+            let pipe = &mut self.terminals[usize::from(payload["panel"]==true)];
+            return super::terminal::tabs::command(pipe,app,&thread,id,command,payload);
+        }
         if command.starts_with("files.") {
             return self.files.command(app, &thread, id, command, data, payload);
         }
@@ -283,7 +318,7 @@ mod tests {
         let browser = BrowserPipe::default();
         let mut browsers = Browsers::default();
         browsers.areas.insert(key.clone(), area);
-        let state = browser.view(&browsers, &client, Some(&key));
+        let state = browser.view(&browsers, &client, Some(&key), &Default::default());
 
         let mut pipe = Vec::new();
         write_frame(&mut pipe, &json!({ "views": { "browser": state } })).unwrap();
@@ -294,17 +329,17 @@ mod tests {
         assert_eq!(state["active"], 17);
         assert_eq!(state["tabs"][0]["title"], "Preview");
         assert_eq!(state["fullScreen"], true);
-        assert!(browser.view(&browsers, &client, None)["active"].is_null());
+        assert!(browser.view(&browsers, &client, None, &Default::default())["active"].is_null());
 
         browsers.select_chat(&key);
-        let chat = browser.view(&browsers, &client, Some(&key));
+        let chat = browser.view(&browsers, &client, Some(&key), &Default::default());
         assert_eq!(chat["chat"], true);
         assert_eq!(chat["active"], 17);
         assert_eq!(chat["chatTitle"], client.state.summary(&key).unwrap().title);
         assert!(chat["chatLogo"].as_str().is_some_and(|logo| !logo.is_empty()));
         assert_eq!(chat["chatMarked"], false);
         browsers.set_full_screen(&key, false);
-        let split = browser.view(&browsers, &client, Some(&key));
+        let split = browser.view(&browsers, &client, Some(&key), &Default::default());
         assert_eq!(split["chat"], false);
         assert_eq!(split["active"], 17);
         assert_eq!(split["ratio"], state["ratio"]);

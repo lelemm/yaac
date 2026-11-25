@@ -66,6 +66,7 @@ import type {
   ProviderInstanceListResult,
   ProviderInstanceRemoveParams,
   ProviderInstanceResult,
+  ProviderInstanceSetModelEnabledParams,
   ProviderInstanceUpdateParams,
   ProviderListResult,
   ProviderRateLimitsParams,
@@ -76,6 +77,19 @@ import type {
   SkillsListParams,
   SkillsListResult,
   StreamCreditParams,
+  TerminalAttachParams,
+  TerminalAttachResult,
+  TerminalCloseParams,
+  TerminalDetachParams,
+  TerminalExitedParams,
+  TerminalListResult,
+  TerminalOpenParams,
+  TerminalOpenResult,
+  TerminalRenameParams,
+  TerminalRenamedParams,
+  TerminalResizeParams,
+  TerminalShellsResult,
+  TerminalTitleParams,
   ThreadAckParams,
   ThreadArchiveParams,
   ThreadCompactParams,
@@ -115,6 +129,7 @@ import type {
   TurnInterruptParams,
   TurnQueueCancelParams,
   TurnQueueEditParams,
+  TurnShellCommandParams,
   TurnStartParams,
   TurnStartResult,
   TurnSteerParams,
@@ -158,6 +173,7 @@ export const METHODS = {
   PROVIDER_REFRESH: "provider/refresh",
   PROVIDER_MODEL_BEST_USE_SET: "provider/modelBestUse/set",
   PROVIDER_INSTANCE_LIST: "providerInstance/list",
+  PROVIDER_INSTANCE_SET_MODEL_ENABLED: "providerInstance/setModelEnabled",
   PROVIDER_INSTANCE_ADD: "providerInstance/add",
   PROVIDER_INSTANCE_UPDATE: "providerInstance/update",
   PROVIDER_INSTANCE_REMOVE: "providerInstance/remove",
@@ -184,6 +200,7 @@ export const METHODS = {
   THREAD_OLDER: "thread/older",
   DISCOVERY_CAPS: "discovery/caps",
   TURN_START: "turn/start",
+  TURN_SHELL_COMMAND: "turn/shellCommand",
   TURN_INTERRUPT: "turn/interrupt",
   TURN_STEER: "turn/steer",
   TURN_QUEUE_EDIT: "turn/queueEdit",
@@ -192,6 +209,13 @@ export const METHODS = {
   TURN_QUEUE_CANCEL: "turn/queueCancel",
   TURN_QUEUE_PROMOTE: "turn/queuePromote",
   REQUEST_RESPOND: "request/respond",
+  TERMINAL_SHELLS: "terminal/shells",
+  TERMINAL_OPEN: "terminal/open",
+  TERMINAL_ATTACH: "terminal/attach",
+  TERMINAL_RESIZE: "terminal/resize",
+  TERMINAL_CLOSE: "terminal/close",
+  TERMINAL_LIST: "terminal/list",
+  TERMINAL_RENAME: "terminal/rename",
   BROWSER_CALL: "browser/call",
   TUNNEL_OPEN: "tunnel/open",
   PREVIEW_PORTS: "preview/ports",
@@ -234,6 +258,10 @@ export const NOTIFICATIONS = {
   THREAD_EVENT: "thread/event",
   PROJECT_UPDATED: "project/updated",
   DISCOVERY_UPDATED: "discovery/updated",
+  TERMINAL_DETACH: "terminal/detach",
+  TERMINAL_EXITED: "terminal/exited",
+  TERMINAL_TITLE: "terminal/title",
+  TERMINAL_RENAMED: "terminal/renamed",
   TUNNEL_CLOSE: "tunnel/close",
   STREAM_CREDIT: "stream/credit",
   FORGE_PRS_CHANGED: "forge/prs/changed",
@@ -308,6 +336,8 @@ export interface RequestMap {
   "provider/modelBestUse/set": { params: ModelBestUseSetParams; result: Empty };
   /** The stored instance configurations, including implicit defaults. */
   "providerInstance/list": { params: Empty; result: ProviderInstanceListResult };
+  /**  */
+  "providerInstance/setModelEnabled": { params: ProviderInstanceSetModelEnabledParams; result: Empty };
   /** Add a provider instance. */
   "providerInstance/add": { params: ProviderInstanceAddParams; result: ProviderInstanceResult };
   /** Change a provider instance (a patch). */
@@ -360,6 +390,8 @@ export interface RequestMap {
   "discovery/caps": { params: DiscoveryCapsParams; result: DiscoveryCapsResult };
   /** Send a user message to an existing thread. */
   "turn/start": { params: TurnStartParams; result: TurnStartResult };
+  /** Run a command the user typed as `!command` in the thread's composer, then let the agent */
+  "turn/shellCommand": { params: TurnShellCommandParams; result: TurnStartResult };
   /** Stop a turn, by turn id. */
   "turn/interrupt": { params: TurnInterruptParams; result: Empty };
   /** Add input to the running turn (under `steer`). */
@@ -376,6 +408,20 @@ export interface RequestMap {
   "turn/queuePromote": { params: TurnQueueCancelParams; result: TurnStartResult };
   /** Answer a pending approval, question, or form. */
   "request/respond": { params: RequestRespondParams; result: Empty };
+  /** Terminal shells. */
+  "terminal/shells": { params: Empty; result: TerminalShellsResult };
+  /** Terminal open. */
+  "terminal/open": { params: TerminalOpenParams; result: TerminalOpenResult };
+  /** Terminal attach. */
+  "terminal/attach": { params: TerminalAttachParams; result: TerminalAttachResult };
+  /** Terminal resize. */
+  "terminal/resize": { params: TerminalResizeParams; result: Empty };
+  /** Terminal close. */
+  "terminal/close": { params: TerminalCloseParams; result: Empty };
+  /** Terminal list. */
+  "terminal/list": { params: Empty; result: TerminalListResult };
+  /** Terminal rename: the user's name for a terminal (P343). */
+  "terminal/rename": { params: TerminalRenameParams; result: Empty };
   /** Inspect the calling thread’s browser. */
   "browser/call": { params: BrowserCallParams; result: BrowserCallResult };
   /** Connect a loopback preview socket and exchange initial receive windows. */
@@ -456,6 +502,14 @@ export interface NotificationMap {
   "project/updated": ProjectListResult;
   /** The discovery caps changed. */
   "discovery/updated": DiscoveryCapsResult;
+  /** Release one terminal attachment. */
+  "terminal/detach": TerminalDetachParams;
+  /** Terminal exited. */
+  "terminal/exited": TerminalExitedParams;
+  /** Terminal title. */
+  "terminal/title": TerminalTitleParams;
+  /** Terminal renamed (P343), to every connection attached to it. */
+  "terminal/renamed": TerminalRenamedParams;
   /** Either peer closed its preview socket. */
   "tunnel/close": TunnelCloseParams;
   /** The receiver of a data stream grants more credit. */
@@ -495,6 +549,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "provider/refresh": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "provider/modelBestUse/set": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "providerInstance/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "providerInstance/setModelEnabled": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "providerInstance/add": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "providerInstance/update": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "providerInstance/remove": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
@@ -521,6 +576,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "thread/older": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "discovery/caps": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "turn/start": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "turn/shellCommand": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "turn/interrupt": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "turn/steer": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "turn/queueEdit": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
@@ -529,6 +585,13 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "turn/queueCancel": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "turn/queuePromote": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "request/respond": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "terminal/shells": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "terminal/open": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "terminal/attach": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "terminal/resize": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "terminal/close": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "terminal/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "terminal/rename": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "browser/call": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "tunnel/open": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "preview/ports": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
@@ -577,6 +640,10 @@ export const NOTIFICATION_INFO: { readonly [N in keyof NotificationMap]: Notific
   "thread/event": { direction: "daemonToHost", class: "control" },
   "project/updated": { direction: "daemonToHost", class: "control" },
   "discovery/updated": { direction: "daemonToHost", class: "control" },
+  "terminal/detach": { direction: "hostToDaemon", class: "control" },
+  "terminal/exited": { direction: "daemonToHost", class: "control" },
+  "terminal/title": { direction: "daemonToHost", class: "control" },
+  "terminal/renamed": { direction: "daemonToHost", class: "control" },
   "tunnel/close": { direction: "both", class: "control" },
   "stream/credit": { direction: "both", class: "control" },
   "forge/prs/changed": { direction: "daemonToHost", class: "control" },

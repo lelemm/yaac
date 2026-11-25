@@ -38,6 +38,8 @@ internal static class Palette
         ("YaacDiffDelWord", 0x663947, 0xF6BEC5),
         ("YaacFast",        0xF5C518, 0x9A7000),
         ("YaacUltrafast",   0x5BA8FF, 0x1764BA),
+        // `!command` mode and command blocks (P346); the same values as egui's Palette.shell.
+        ("YaacShell",       0x9DBF7A, 0x4A6E2C),
     ];
 
     private static readonly Dictionary<string, (SolidColorBrush Brush, Swatch Swatch)> Brushes = new(StringComparer.Ordinal);

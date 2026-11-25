@@ -16,7 +16,10 @@ Instance `env` options: `FAKE_STORE=<dir>` (conversation store; two instances wi
 store share conversations and allow native fork), `FAKE_SEED=0` (no pre-existing "outside"
 threads), `FAKE_NATIVE_FORK=0` (no `threadFork`), `FAKE_PACE_MS=<n>` (delay between deltas,
 default 5), `FAKE_STATUS=<providerStatus>` (e.g. `needsAuth`, to test status handling),
-`FAKE_STEER=0` (no `steer`: a harness that cannot steer), `FAKE_FORCE_STOP=0` (no `forceStop`:
+`FAKE_STEER=0` (no `steer`: a harness that cannot steer), `FAKE_USER_SHELL=0` (no
+`userShellCommand`; with it, a `!command` (P344) becomes one turn: a `userShell` command item with
+the output `fake ran: <command>` — exit 1 when the command contains `fail`, a second's wait when it
+contains `slow` — then the answer `Answered: <command>`; each is recorded in `shellRuns`), `FAKE_FORCE_STOP=0` (no `forceStop`:
 a shared harness process yaacd cannot end), `FAKE_MOVE_CWD=0` (no `threadMoveWorkingDirectory`: a
 harness that cannot change a conversation's folder, so a `thread/move` changes only where YAAC lists it;
 with it, the folder `yaacd` hands a turn is recorded in `received` as `cwd`), `FAKE_MODES=<json>`

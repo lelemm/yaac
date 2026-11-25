@@ -11,7 +11,9 @@ open_enum! {
     pub enum Capability fallback Unknown {
         /// This target supports loopback web previews.
         PortForward = "portForward",
-        /// This target supports the worktree browser, file view and file diffs.
+        /// This target supports interactive PTY sessions.
+        Terminal = "terminal",
+        /// Worktree file browser.
         FileView = "fileView",
         // Thread lifecycle
         /// Can enumerate existing conversations on the target.
@@ -58,6 +60,8 @@ open_enum! {
         ConfigurableHome = "configurableHome",
         /// YAAC can show and edit guidance for models offered by this instance.
         ModelBestUse = "modelBestUse",
+        /// Settings can turn models off for this provider instance.
+        ModelAvailability = "modelAvailability",
         // Turn control
         /// Incremental agent text.
         StreamText = "streamText",
@@ -69,6 +73,11 @@ open_enum! {
         Steer = "steer",
         /// Manual context compaction.
         Compact = "compact",
+        /// A `!command` from the composer (`turn/shellCommand`, P344): the command runs on the
+        /// target in the thread's folder, is recorded in the conversation as the harness's own
+        /// `!` records it, and the agent answers it. How (the harness runs it, or `yaacd` does
+        /// and writes the harness's own markup) is the provider's business, not the UI's.
+        UserShellCommand = "userShellCommand",
         /// Drop later turns from the conversation.
         RewindConversation = "rewindConversation",
         /// Restore files to an earlier point — a different act entirely.

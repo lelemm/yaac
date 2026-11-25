@@ -110,6 +110,8 @@ internal sealed record AgentsData
     public string Behind { get; init; } = "";
     public PullRequestBadgeState? Badge { get; init; }
     public bool Attention { get; init; }
+    public bool Waiting { get; init; }
+    public bool IsSelf { get; init; }
     public bool Unseen { get; init; }
     public bool Running { get; init; }
     public bool Finished { get; init; }
@@ -148,6 +150,7 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, Agents
         bool fast = row.BoolField("fast");
         bool ultrafast = row.BoolField("ultrafast");
         bool readOnly = row.BoolField("readOnly");
+        bool isSelf = row.BoolField("self");
         var (symbol, label, brush) = row.StringField("mark") switch
         {
             "needsYou" => ("!", "needs you", Red),
@@ -172,11 +175,12 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, Agents
         var git = row.Field("git");
         bool unseen = row.BoolField("unseen");
         string attention = row.StringField("attention");
-        string info = Joined(" · ", label, transfer, attention, unseen ? "unread" : "",
+        string info = Joined(" · ", isSelf ? "self" : "", label, transfer, attention, unseen ? "unread" : "",
             readOnly ? "read-only" : "", ultrafast ? "Ultrafast" : fast ? "Fast" : "");
         var data = new AgentsData
         {
             CanOpen = id != "" && row.BoolField("canOpen"),
+            IsSelf = isSelf,
             Title = title,
             Tooltip = Joined("\n", title, info, metadata, row.StringField("activity", last)),
             LastAction = last,
@@ -184,6 +188,7 @@ internal sealed record AgentsRow(string Id, string CommandId, string Raw, Agents
             Activity = row.StringField("activity"),
             Age = row.StringField("age"),
             Running = row.StringField("mark") == "running",
+            Waiting = row.StringField("mark") == "waiting",
             Finished = row.BoolField("finished"),
             Attention = row.BoolField("attention") || attention != "" || row.StringField("mark") == "needsYou",
             Unseen = unseen,

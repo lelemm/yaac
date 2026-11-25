@@ -56,6 +56,8 @@ mod strip;
 mod shell;
 mod sidebar;
 mod skills_ui;
+mod terminal;
+mod terminal_ui;
 mod theme;
 mod thread;
 mod timeline;

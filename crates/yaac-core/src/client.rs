@@ -229,6 +229,7 @@ pub struct Client {
     showing: Option<Vec<ThreadKey>>,
     /// Preview proxy, forward and discovery results for the window.
     preview_replies: Vec<(RpcId, Result<Value, String>)>,
+    terminal_notes: Vec<(String, Value)>,
     /// Agent browser calls from the hub (`hub/browser/call`), not yet taken by the window.
     browser_calls: Vec<(RpcId, attach::BrowserCallParams)>,
     /// Answers to `hub/ssh/*` steps, for the setup backend.
@@ -297,6 +298,7 @@ impl Client {
             orphans: std::collections::VecDeque::new(),
             showing: None,
             preview_replies: Vec::new(),
+            terminal_notes: Vec::new(),
             browser_calls: Vec::new(),
             ssh_replies: Vec::new(),
             ssh_wire: None,
@@ -345,6 +347,32 @@ impl Client {
     /// Queue a preview attach request on the existing hub link.
     pub fn preview_request(&mut self, method: &str, params: Value) -> RpcId {
         self.request(method, params, Call::Preview(RpcId::Number(self.next_id)))
+    }
+
+    /// Queue an attach-protocol notification for the hub (e.g. `stream/credit` for a terminal's
+    /// output stream).
+    pub fn notify(&mut self, method: &str, params: Value) {
+        self.link.send(Message::notification(method, params));
+    }
+
+    /// Terminal input on its data stream (docs/13-terminal.md). Never blocks.
+    pub fn send_terminal_data(&mut self, stream: yaac_protocol::StreamId, bytes: Vec<u8>) {
+        self.link.send_data(stream, bytes);
+    }
+
+    /// Terminal output that has arrived, in order.
+    pub fn take_terminal_data(&mut self) -> Vec<(yaac_protocol::StreamId, Vec<u8>)> {
+        let mut out = Vec::new();
+        while let Some(d) = self.link.poll_data() {
+            out.push(d);
+        }
+        out
+    }
+
+    /// Terminal notifications from the hub since the last call: `hub/terminal/title`,
+    /// `hub/terminal/exited`, and `stream/credit` (input credit for a terminal stream).
+    pub fn take_terminal_notes(&mut self) -> Vec<(String, Value)> {
+        std::mem::take(&mut self.terminal_notes)
     }
 
     /// Collect completed preview attach requests without waiting for the hub.
@@ -691,12 +719,14 @@ impl Client {
                         worktree: None,
                         branch: None,
                         model: draft.model.clone(),
+                        model_off: None,
                         state: ThreadState::Running,
                         control: Control::Mine,
                         control_holder: None,
                         forked_from: None,
                         linked_children: None,
                         spawned_by: None,
+                        reports_to_parent: None,
                         root: None,
                         children: 0,
                         peers: 0,
@@ -1173,6 +1203,9 @@ impl Client {
                 self.on_routed(n);
             }
             crate::attachments::names::UPLOAD_PROGRESS | crate::attachments::names::UPLOAD_DONE => self.on_upload_note(method, &params),
+            attach::names::TERMINAL_TITLE | attach::names::TERMINAL_EXITED | attach::names::TERMINAL_RENAMED | m::STREAM_CREDIT => {
+                self.terminal_notes.push((method.to_owned(), params));
+            }
             _ => {}
         }
     }
@@ -2389,6 +2422,13 @@ impl Client {
         let op_id = self.op_id();
         let params = yaac_protocol::ModelBestUseSetParams { op_id, instance, model, expected_model, summary };
         self.routed(target, m::PROVIDER_MODEL_BEST_USE_SET, json!(params), Call::Ignore);
+    }
+
+    /// Turn one model on or off for an instance on this target.
+    pub fn set_model_enabled(&mut self, target: &TargetId, instance: InstanceId, model: yaac_protocol::ModelId, enabled: bool) {
+        let op_id = self.op_id();
+        let params = yaac_protocol::ProviderInstanceSetModelEnabledParams { op_id, instance, model, enabled };
+        self.routed(target, m::PROVIDER_INSTANCE_SET_MODEL_ENABLED, json!(params), Call::Ignore);
     }
 
     /// Set an instance's harness home (P300); `None` or empty: back to the harness default.

@@ -3,11 +3,10 @@
 //! Needing the user outranks every other state. A thread's own attention comes from the
 //! requests still open on it (its hints, when they are fresher than its summary; otherwise
 //! the summary's `needsAttention`) or from its orchestration's budget holding back an
-//! agent-started turn while the thread is idle ([`budget_mark`], D164). It then
-//! climbs: every ancestor (through `spawnedBy`, across targets) counts the descendants that
-//! need the user.
+//! agent-started turn while the thread is idle ([`budget_mark`], D164). The merged thread
+//! index also tells us which threads are waiting for their YAAC workers (P340).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use yaac_protocol::attach::ConnectionStatus;
 use yaac_protocol::ThreadState;
@@ -149,18 +148,36 @@ pub fn budget_mark(state: &AppState, key: &ThreadKey) -> Option<BudgetMark> {
 pub struct AttentionMap {
     /// Threads that need the user.
     pub own: BTreeMap<ThreadKey, Attention>,
+    waiting_for_workers: BTreeSet<ThreadKey>,
 }
 
 impl AttentionMap {
-    /// Compute from the state (recomputed from the requests still open, every time).
+    /// Compute from current requests and thread summaries.
     pub fn compute(state: &AppState) -> Self {
         let mut own = BTreeMap::new();
-        for key in state.threads.keys() {
+        let mut waiting_for_workers = BTreeSet::new();
+        for (key, rec) in &state.threads {
             if let Some(a) = own_attention(state, key) {
                 own.insert(key.clone(), a);
             }
+            let mut worker = &rec.summary;
+            if !matches!(worker.state, ThreadState::Running | ThreadState::Waiting | ThreadState::NeedsAttention) {
+                continue;
+            }
+            // A worker waiting on its own workers also keeps its parent waiting. Visit
+            // each newly waiting ancestor once, including when several workers reach it.
+            while worker.reports_to_parent == Some(true) {
+                let Some(parent) = worker.spawned_by.as_ref().and_then(ThreadKey::from_address) else { break };
+                let Some(summary) = state.summary(&parent) else { break };
+                if !matches!(summary.state, ThreadState::Idle | ThreadState::Done | ThreadState::Failed)
+                    || !waiting_for_workers.insert(parent)
+                {
+                    break;
+                }
+                worker = summary;
+            }
         }
-        Self { own }
+        Self { own, waiting_for_workers }
     }
 
     /// The thread's own attention.
@@ -197,7 +214,10 @@ pub fn display(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> ThreadD
     let mark = match attention {
         Some(Attention::BudgetReached) => Mark::Paused,
         Some(_) => Mark::NeedsYou,
-        None => base_mark(state, key),
+        None => match base_mark(state, key) {
+            Mark::Idle | Mark::Done | Mark::Failed if map.waiting_for_workers.contains(key) => Mark::Waiting,
+            mark => mark,
+        },
     };
     let unseen = state.is_unseen(key) && unseen_shows(mark);
     let summary = state.summary(key).filter(|_| mark == Mark::Running);
@@ -224,8 +244,7 @@ fn base_mark(state: &AppState, key: &ThreadKey) -> Mark {
     }
     let Some(s) = state.summary(key) else { return Mark::Idle };
     let hints = state.hints.get(key);
-    // The target reports waiting (on another agent) and done (a spawned thread whose work
-    // completed) itself; the window does not derive them.
+    // The target reports explicit waits, waits for harness sub-agents, and completed work.
     match &s.state {
         ThreadState::Running => Mark::Running,
         ThreadState::NeedsAttention if hints.is_some_and(|h| h.running_turn.is_some()) => Mark::Running,

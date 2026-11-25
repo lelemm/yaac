@@ -64,8 +64,32 @@ pub struct UiPrefs {
     pub tray_on_close: bool,
     /// The user's key bindings, as differences from the defaults (D131).
     pub bindings: crate::keys::Overrides,
+    /// "Works in the terminal" per command, where it differs from the default (P338).
+    pub terminal_commands: std::collections::BTreeMap<String, bool>,
     /// The Commander's recently used commands, most recent first (D130).
     pub recent: Vec<String>,
+    /// Settings → Terminal (P339) and the terminal panel's height (P338).
+    pub terminal: TerminalPrefs,
+}
+
+/// Settings → Terminal (docs/13-terminal.md#clipboard-and-selection) and the panel's height.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TerminalPrefs {
+    /// Selecting text copies it (off by default).
+    pub copy_on_select: bool,
+    /// Ctrl+V goes to the shell (bash's literal-next) instead of pasting.
+    pub ctrl_v_to_shell: bool,
+    /// Ask before pasting several lines into a shell without bracketed paste ("Don't ask
+    /// again" turns it off).
+    pub confirm_multiline_paste: bool,
+    /// The terminal panel's height as a share of the chat column.
+    pub panel_share: f32,
+}
+
+impl Default for TerminalPrefs {
+    fn default() -> Self {
+        Self { copy_on_select: false, ctrl_v_to_shell: false, confirm_multiline_paste: true, panel_share: 1.0 / 3.0 }
+    }
 }
 
 /// The narrowest docked agents panel.
@@ -82,7 +106,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, tray_on_close: true, bindings: crate::keys::Overrides::default(), recent: Vec::new() }
+        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), terminal: TerminalPrefs::default() }
     }
 }
 
@@ -116,8 +140,12 @@ pub mod keys {
     pub const COMMANDER_RECENT: &str = "commanderRecent";
     /// Side-by-side layout in diff tabs.
     pub const DIFF_SIDE_BY_SIDE: &str = "diffSideBySide";
+    /// Settings → Terminal and the panel's height (P338, P339).
+    pub const TERMINAL: &str = "terminal";
+    /// Commands whose "Works in the terminal" differs from the default (P338).
+    pub const TERMINAL_COMMANDS: &str = "terminalCommands";
     /// Every key.
-    pub const ALL: [&str; 14] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE];
+    pub const ALL: [&str; 16] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS];
 }
 
 impl UiPrefs {
@@ -153,7 +181,14 @@ impl UiPrefs {
             keys::AGENTS_WIDTH => json!(self.agents_width),
             keys::TRAY_ON_CLOSE => json!(self.tray_on_close),
             keys::KEY_BINDINGS => self.bindings.value(),
+            keys::TERMINAL_COMMANDS => json!(self.terminal_commands),
             keys::DIFF_SIDE_BY_SIDE => json!(self.diff_side_by_side),
+            keys::TERMINAL => json!({
+                "copyOnSelect": self.terminal.copy_on_select,
+                "ctrlVToShell": self.terminal.ctrl_v_to_shell,
+                "confirmMultilinePaste": self.terminal.confirm_multiline_paste,
+                "panelShare": self.terminal.panel_share,
+            }),
             keys::COMMANDER_RECENT => json!(self.recent),
             keys::SEND_KEY => json!(match self.send_key {
                 SendKey::Enter => "enter",
@@ -194,6 +229,20 @@ impl UiPrefs {
                 }
             }
             keys::DIFF_SIDE_BY_SIDE => self.diff_side_by_side = v.as_bool().unwrap_or(self.diff_side_by_side),
+            keys::TERMINAL_COMMANDS => {
+                if let Some(m) = v.as_object() {
+                    self.terminal_commands = m.iter().filter(|(id, _)| crate::commands::by_id(id).is_some()).filter_map(|(id, on)| Some((id.clone(), on.as_bool()?))).collect();
+                }
+            }
+            keys::TERMINAL => {
+                let t = &mut self.terminal;
+                t.copy_on_select = b("copyOnSelect", t.copy_on_select);
+                t.ctrl_v_to_shell = b("ctrlVToShell", t.ctrl_v_to_shell);
+                t.confirm_multiline_paste = b("confirmMultilinePaste", t.confirm_multiline_paste);
+                #[allow(clippy::cast_possible_truncation)]
+                let share = v.get("panelShare").and_then(Value::as_f64).map(|f| f as f32);
+                t.panel_share = share.filter(|s| (0.05..=0.95).contains(s)).unwrap_or(t.panel_share);
+            }
             keys::COMMANDER_RECENT => {
                 if let Some(list) = v.as_array() {
                     self.recent = list.iter().filter_map(Value::as_str).filter(|id| crate::commands::by_id(id).is_some()).take(crate::commands::RECENT_MAX).map(str::to_owned).collect();

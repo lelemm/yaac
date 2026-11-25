@@ -21,6 +21,7 @@ mod provider;
 mod request;
 mod session;
 mod skill;
+mod terminal;
 mod thread;
 mod upload;
 
@@ -40,6 +41,7 @@ pub use provider::*;
 pub use request::*;
 pub use session::*;
 pub use skill::*;
+pub use terminal::*;
 pub use thread::*;
 pub use upload::*;
 

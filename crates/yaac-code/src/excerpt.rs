@@ -43,6 +43,35 @@ pub fn diff_excerpt<'a>(
     format_excerpt(path, "diff", lines, &diff, true)
 }
 
+/// Format terminal output (docs/13-terminal.md#the-tab) as a fenced `console` block. `source`
+/// names the terminal, e.g. "bash in auth".
+pub fn terminal_excerpt(source: &str, text: &str) -> Excerpt {
+    let text = text.trim_end_matches(['\n', '\r', ' ']);
+    let lines = text.lines().count().max(1);
+    let label = if lines == 1 { format!("{source} output") } else { format!("{source} output, {lines} lines") };
+    let fence = fence_for(text);
+    let mut output = format!("Terminal output ({source}):\n{fence}console\n{text}");
+    output.push('\n');
+    output.push_str(&fence);
+    output.push('\n');
+    Excerpt { label, text: output }
+}
+
+/// A backtick fence longer than any backtick run in `text`.
+fn fence_for(text: &str) -> String {
+    let mut longest = 0;
+    let mut run = 0;
+    for byte in text.bytes() {
+        if byte == b'`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    "`".repeat(3.max(longest + 1))
+}
+
 fn format_excerpt(
     path: &str,
     language: &str,
@@ -65,17 +94,7 @@ fn format_excerpt(
 
     // A selection can contain fenced code of its own. Choose a fence longer than any of
     // its backtick runs so the excerpt is still a single block.
-    let mut longest = 0;
-    let mut run = 0;
-    for byte in text.bytes() {
-        if byte == b'`' {
-            run += 1;
-            longest = longest.max(run);
-        } else {
-            run = 0;
-        }
-    }
-    let fence = "`".repeat(3.max(longest + 1));
+    let fence = fence_for(text);
     let language = language.split_whitespace().next().unwrap_or_default();
     let language = if language.contains('`') { "" } else { language };
     let mut output = format!("{path}:{range}\n{fence}{language}\n{text}");

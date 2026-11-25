@@ -1648,10 +1648,10 @@ D166. billing-service (Claude Code) is working: its answer so far and a running 
 Two messages wait; a third is being typed.
 
 - Above the composer, "Queued · 2 · sent when the turn ends", then the two messages in order,
-  each one line with **Send now — interrupts**, **Edit** and ✕ on the right. No frame: text on
+  each one line with **Send now** (hover: whether it interrupts), **Edit** and ✕ on the right. No frame: text on
   the panel, like the rest of the transcript's quiet lines.
 - The composer keeps its idle height: beside the text, the paperclip, **Queue ↵** filled
-  (the primary), then **Send now — interrupts** and **Stop**, plain and monochrome (their
+  (the primary), then **Send now** (hover: whether it interrupts) and **Stop**, plain and monochrome (their
   keys, Ctrl+Enter and Esc, in their tooltips). Claude Code cannot steer, so Send now says it
   interrupts; on a Codex thread it reads "Send now".
 

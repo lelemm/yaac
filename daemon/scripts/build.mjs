@@ -1,4 +1,5 @@
 // Bundles yaacd into one self-contained ES module: dist/yaacd.mjs.
+import "./stage-pty.mjs";
 import { build } from "esbuild";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,7 @@ const build_id = `${pkg.version}+${/^[0-9]+$/.test(id) ? id : "dev"}`;
 
 await build({
   entryPoints: [join(root, "src/main.ts")],
+  external: ["@lydell/node-pty*"],
   outfile: join(root, "dist/yaacd.mjs"),
   bundle: true,
   platform: "node",

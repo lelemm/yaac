@@ -116,6 +116,13 @@ pub enum Cmd {
     AddSsh,
     AddWsl,
     RefreshProviders,
+    // Terminal (P338)
+    ToggleTerminalPanel,
+    NewTerminal,
+    NewTerminalWithShell,
+    NextTerminal,
+    PrevTerminal,
+    MaximiseTerminalPanel,
     // Window
     HideToTray,
     Quit,
@@ -139,13 +146,15 @@ pub enum Group {
     View,
     /// Targets and providers.
     Targets,
+    /// Terminal (P338).
+    Terminal,
     /// Window.
     Window,
 }
 
 impl Group {
     /// Every group, in order.
-    pub const ALL: [Group; 8] = [Group::GoTo, Group::Threads, Group::Composer, Group::Requests, Group::PullRequests, Group::View, Group::Targets, Group::Window];
+    pub const ALL: [Group; 9] = [Group::GoTo, Group::Threads, Group::Composer, Group::Requests, Group::PullRequests, Group::View, Group::Targets, Group::Terminal, Group::Window];
 
     /// The heading.
     pub fn label(self) -> &'static str {
@@ -157,6 +166,7 @@ impl Group {
             Group::PullRequests => "Pull requests",
             Group::View => "View",
             Group::Targets => "Targets and providers",
+            Group::Terminal => "Terminal",
             Group::Window => "Window",
         }
     }
@@ -209,6 +219,8 @@ pub enum StepKind {
     RefreshProviders,
     /// A project (or a worktree of one) of the open thread's machine, to move it to (D144).
     MoveTo,
+    /// One of the open thread's machine's shells, for a new terminal (P338).
+    Shell,
 }
 
 /// One row of the table.
@@ -335,6 +347,13 @@ pub static COMMANDS: &[CommandDef] = &[
     def(Cmd::AddSsh, "add-ssh", "Add an SSH target…", "Open the add form.", &["server", "remote", "machine"], G::Targets, &[]),
     def(Cmd::AddWsl, "add-wsl", "Add WSL…", "Open the WSL form.", &["linux", "distribution"], G::Targets, &[]),
     step(def(Cmd::RefreshProviders, "refresh-providers", "Refresh providers and models…", "Read a target's harnesses again.", &["reload", "harness", "models"], G::Targets, &[]), StepKind::RefreshProviders),
+    // ── Terminal
+    def(Cmd::ToggleTerminalPanel, "toggle-terminal-panel", "Toggle terminal panel", "Open or close the terminal panel under the composer.", &["shell", "console", "bash", "powershell", "panel"], G::Terminal, &["Ctrl+`"]),
+    def(Cmd::NewTerminal, "new-terminal", "New terminal", "Add a terminal with the default shell to the panel.", &["shell", "console", "bash", "powershell"], G::Terminal, &["Ctrl+Shift+`"]),
+    step(def(Cmd::NewTerminalWithShell, "new-terminal-with-shell", "New terminal with shell…", "Choose one of the machine's shells; adds it to the panel.", &["shell", "console", "cmd", "zsh", "pwsh"], G::Terminal, &[]), StepKind::Shell),
+    local(def(Cmd::NextTerminal, "next-terminal", "Next terminal", "Switch to the panel's next terminal tab.", &["tab", "shell"], G::Terminal, &["Ctrl+PageDown"]), "in a terminal"),
+    local(def(Cmd::PrevTerminal, "prev-terminal", "Previous terminal", "Switch to the panel's previous terminal tab.", &["tab", "shell"], G::Terminal, &["Ctrl+PageUp"]), "in a terminal"),
+    def(Cmd::MaximiseTerminalPanel, "maximise-terminal-panel", "Maximise terminal panel", "The panel takes the chat column's height, or gives it back.", &["maximize", "full height", "restore"], G::Terminal, &[]),
     // ── Window
     def(Cmd::HideToTray, "hide-to-tray", "Hide to the tray", "Hide the window; the tray icon brings it back.", &["minimize", "minimise", "close"], G::Window, &["Ctrl+W"]),
     def(Cmd::Quit, "quit", "Quit YAAC", "Close the window (the hub keeps running).", &["exit", "close"], G::Window, &["Ctrl+Q"]),
@@ -386,6 +405,20 @@ pub struct Ctx<'a> {
     pub focused_card: Option<&'a ItemId>,
     /// How many rows are selected in the sidebar (D138).
     pub list_selected: usize,
+    /// The open thread's machine's shells, default first (empty until `terminal/shells`
+    /// answers), and whether its terminal panel is open and maximised.
+    pub terminal: TerminalCtx<'a>,
+}
+
+/// The terminal panel's part of [`Ctx`] (P338).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TerminalCtx<'a> {
+    /// `(path, name)` of each shell.
+    pub shells: &'a [(String, String)],
+    /// The panel is open.
+    pub open: bool,
+    /// The panel has terminals.
+    pub any: bool,
 }
 
 /// Whether a command can be used now.
@@ -668,6 +701,12 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
         Cmd::TargetEnable => when(!st.targets.is_empty(), "No targets yet"),
         Cmd::RefreshProviders => when(st.targets.iter().any(|t| t.connected()), "No target is connected"),
         Cmd::HideToTray => when(ctx.has_tray, "There is no tray icon on this system"),
+        Cmd::ToggleTerminalPanel | Cmd::NewTerminal | Cmd::NewTerminalWithShell => match key.as_ref() {
+            None => off("Open a thread first"),
+            Some(k) => terminal_avail(st, k),
+        },
+        Cmd::NextTerminal | Cmd::PrevTerminal => when(ctx.terminal.open && ctx.terminal.any, "The terminal panel is closed"),
+        Cmd::MaximiseTerminalPanel => when(ctx.terminal.open, "The terminal panel is closed"),
         Cmd::ArchiveSelected | Cmd::MuteSelected | Cmd::MoveSelected | Cmd::ClearSelection => when(ctx.list_selected > 0, "Nothing is selected in the sidebar (Ctrl+click rows)"),
         Cmd::Commander
         | Cmd::SearchThreads
@@ -686,6 +725,19 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
         | Cmd::AddSsh
         | Cmd::Quit
         | Cmd::Renderer => Avail::Enabled,
+    }
+}
+
+/// Whether a thread's machine can run terminals (its daemon's `terminal` feature).
+fn terminal_avail(st: &AppState, key: &ThreadKey) -> Avail {
+    let Some(t) = st.target(&key.target) else { return Avail::Disabled("Unknown machine".into()) };
+    if !t.connected() {
+        return Avail::Disabled("The machine is offline".into());
+    }
+    match t.entry.state.daemon.as_ref() {
+        Some(d) if d.terminal => Avail::Enabled,
+        Some(d) => Avail::Disabled(d.terminal_unavailable_reason.clone().unwrap_or_else(|| "This machine has no terminal support".into())),
+        None => Avail::Disabled("The machine is still connecting".into()),
     }
 }
 
@@ -709,10 +761,7 @@ pub fn title(cmd: Cmd, ctx: &Ctx<'_>) -> String {
             Some(_) => "Send".to_owned(),
             None => d.name.to_owned(),
         },
-        Cmd::SendNow => match k.and_then(|k| crate::queue::send_now(st, k)) {
-            Some(label) => label.to_owned(),
-            None => d.name.to_owned(),
-        },
+        Cmd::SendNow => d.name.to_owned(),
         Cmd::Fast => match control_row(ctx).and_then(|r| r.fast) {
             Some(f) if f.ultrafast_on => "Ultrafast mode off".to_owned(),
             Some(f) => pick(f.on, "Fast mode off", "Fast mode on"),
@@ -782,6 +831,8 @@ pub enum StepValue {
     TargetEnabled(TargetId, bool),
     /// Read this target's providers again.
     Refresh(TargetId),
+    /// A new terminal with this shell (`path`, `name`).
+    Shell(String, String),
 }
 
 /// One row of a step.
@@ -868,7 +919,7 @@ pub fn step_items(kind: StepKind, ctx: &Ctx<'_>, history: &[(isize, String, Opti
                     });
                     continue;
                 }
-                for pm in &g.models {
+                for pm in g.models.iter().filter(|model| !model.off) {
                     let mut detail = vec![g.name.clone()];
                     if pm.is_default {
                         detail.push("default".into());
@@ -943,6 +994,13 @@ pub fn step_items(kind: StepKind, ctx: &Ctx<'_>, history: &[(isize, String, Opti
             .targets
             .iter()
             .filter_map(|t| st.stopped_distro(&t.entry.id).map(|d| item(d, Some(t.entry.name.to_string()), StepValue::Retry(t.entry.id.clone()), false)))
+            .collect(),
+        StepKind::Shell => ctx
+            .terminal
+            .shells
+            .iter()
+            .enumerate()
+            .map(|(i, (path, name))| item(name.clone(), Some(if i == 0 { format!("{path} · default") } else { path.clone() }), StepValue::Shell(path.clone(), name.clone()), false))
             .collect(),
         StepKind::TargetEnable => st
             .targets
@@ -1128,6 +1186,14 @@ pub fn filter_step(items: Vec<StepItem>, query: &str) -> Vec<StepItem> {
 pub struct Bindings {
     /// What the user changed (stored).
     pub overrides: Overrides,
+    /// "Works in the terminal" where the user changed it from the default (command id → on).
+    pub in_terminal: std::collections::BTreeMap<String, bool>,
+}
+
+/// Whether a command's keys reach YAAC while a terminal has focus, by default (P338): only
+/// the terminal commands; everything else (the Commander's Ctrl+Space too) goes to the shell.
+pub fn in_terminal_default(cmd: Cmd) -> bool {
+    matches!(cmd, Cmd::ToggleTerminalPanel | Cmd::NewTerminal | Cmd::MaximiseTerminalPanel | Cmd::NextTerminal | Cmd::PrevTerminal)
 }
 
 /// The default chords of a command.
@@ -1136,6 +1202,22 @@ pub fn default_chords(d: &CommandDef) -> Vec<Chord> {
 }
 
 impl Bindings {
+    /// Whether this command's keys work while a terminal has focus (Settings → Keyboard's
+    /// "Works in the terminal").
+    pub fn works_in_terminal(&self, cmd: Cmd) -> bool {
+        self.in_terminal.get(def_of(cmd).id).copied().unwrap_or_else(|| in_terminal_default(cmd))
+    }
+
+    /// Set "Works in the terminal"; only a difference from the default is kept.
+    pub fn set_in_terminal(&mut self, cmd: Cmd, on: bool) {
+        let id = def_of(cmd).id.to_owned();
+        if on == in_terminal_default(cmd) {
+            self.in_terminal.remove(&id);
+        } else {
+            self.in_terminal.insert(id, on);
+        }
+    }
+
     /// The chords of a command now.
     pub fn chords(&self, cmd: Cmd) -> Vec<Chord> {
         let d = def_of(cmd);

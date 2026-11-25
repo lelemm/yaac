@@ -57,6 +57,10 @@ pub(crate) struct Palette {
     /// The user's message bubble (D155): a cool neutral clearly stronger than `faint`, so the
     /// user's messages stand out among long agent output.
     pub user_bg: Color32,
+    /// `!` mode (P346): the composer's frame and bar and the transcript's command blocks. A
+    /// muted terminal green, apart from the state, git and speed colours; reads as text on
+    /// every surface.
+    pub shell: Color32,
 }
 
 const fn hex(rgb: u32) -> Color32 {
@@ -93,6 +97,7 @@ impl Palette {
         scrim: Color32::from_black_alpha(140),
         code_bg: hex(0x1E2128),
         user_bg: hex(0x2D333E),
+        shell: hex(0x9DBF7A),
     };
 
     pub(crate) const LIGHT: Palette = Palette {
@@ -123,6 +128,7 @@ impl Palette {
         scrim: Color32::from_black_alpha(89),
         code_bg: hex(0xF3F4F7),
         user_bg: hex(0xE3E7EE),
+        shell: hex(0x4A6E2C),
     };
 
     /// A mark's colour.
@@ -158,8 +164,14 @@ impl Palette {
         vec![
             self.bg, self.panel, self.raised, self.faint, self.border, self.text, self.text2, self.unavailable, self.primary,
             self.on_primary, self.selected, self.multi, self.focus, self.running, self.needs, self.failed, self.done, self.git_added,
-            self.git_modified, self.git_deleted, self.unseen, self.fast, self.code_bg, self.user_bg, self.text_selection(),
+            self.git_modified, self.git_deleted, self.unseen, self.fast, self.code_bg, self.user_bg, self.shell, self.text_selection(),
         ]
+    }
+
+    /// The faint tint behind a `!`-mode field (P346).
+    pub(crate) fn shell_tint(&self) -> Color32 {
+        let a = if self.dark { 18 } else { 14 };
+        Color32::from_rgba_unmultiplied(self.shell.r(), self.shell.g(), self.shell.b(), a)
     }
 
     /// A translucent version of a colour, for tag fills.
@@ -410,6 +422,33 @@ mod tests {
                 let r = contrast(soft, s);
                 assert!(r >= 3.0, "{} fast on {sname}: {r:.2}", if p.dark { "dark" } else { "light" });
             }
+        }
+    }
+
+    #[test]
+    fn the_shell_colour_reads_and_stands_apart() {
+        for p in [Palette::DARK, Palette::LIGHT] {
+            let theme = if p.dark { "dark" } else { "light" };
+            let tinted = blend(p.shell, p.faint, f32::from(p.shell_tint().a()) / 255.0);
+            for (sname, s) in [("bg", p.bg), ("panel", p.panel), ("raised", p.raised), ("faint", p.faint), ("selected", p.selected), ("code_bg", p.code_bg), ("tint", tinted)] {
+                let r = contrast(p.shell, s);
+                assert!(r >= 4.5, "{theme} shell on {sname}: {r:.2}");
+            }
+            // The text inside the tinted field still reads.
+            assert!(contrast(p.text, tinted) >= 4.5, "{theme} text on the shell tint");
+            assert!(contrast(p.text2, tinted) >= 4.5, "{theme} text2 on the shell tint");
+            let dist = |a: Color32, b: Color32| {
+                let d = |x: u8, y: u8| (f32::from(x) - f32::from(y)).powi(2);
+                (d(a.r(), b.r()) + d(a.g(), b.g()) + d(a.b(), b.b())).sqrt()
+            };
+            for (name, c) in [("done", p.done), ("git_added", p.git_added), ("needs", p.needs), ("git_modified", p.git_modified), ("fast", p.fast), ("ultrafast", p.ultrafast), ("unseen", p.unseen), ("failed", p.failed)] {
+                let d = dist(p.shell, c);
+                assert!(d >= 40.0, "{theme} shell too close to {name}: {d:.0}");
+            }
+            // Muted: a hue, but not a saturated one.
+            let c = p.shell;
+            let spread = c.r().max(c.g()).max(c.b()) - c.r().min(c.g()).min(c.b());
+            assert!((24..=110).contains(&spread), "{theme} shell spread {spread}");
         }
     }
 

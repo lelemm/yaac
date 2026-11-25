@@ -192,7 +192,9 @@ pub struct DiffPart {
 /// A block of the transcript.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Block {
-    /// The user's message, full size.
+    /// The user's message, full size — or a `!command` the user ran (P346): its user message,
+    /// or a user-run command item no such message took over. [`crate::shell_block::block`]
+    /// tells them apart.
     User {
         /// Item index.
         index: usize,
@@ -498,6 +500,8 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
     let mut seen_prompt = false;
     // Mesh items that only echo an agent call's line.
     let echoes = crate::agentcall::Echoes::of(t.items());
+    // The items a `!command` block takes over: its toolCall and Claude Code's output (P346).
+    let absorbed = crate::shell_block::absorbed(t.items());
     // The turn being read, with the files it changed so far.
     let mut turn: Option<(TurnId, TurnTotals, Vec<ItemId>)> = None;
     let end_turn = |turn: &mut Option<(TurnId, TurnTotals, Vec<ItemId>)>, run: &mut Vec<ActivityLine>, out: &mut Vec<Block>| {
@@ -510,7 +514,7 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
         }
     };
     for (index, item) in t.items().iter().enumerate() {
-        if echoes.hides(item) {
+        if echoes.hides(item) || absorbed[index] {
             continue;
         }
         if turn.as_ref().is_none_or(|(id, _, _)| *id != item.turn_id) {
@@ -527,6 +531,12 @@ pub fn blocks(state: &AppState, map: &AttentionMap, key: &ThreadKey, expansion: 
             ItemBody::MeshReceived(_) if spawned && !seen_prompt => {
                 seen_prompt = true;
                 Some(Block::Task { index })
+            }
+            // A user-run command no `!command` message took over (Codex history): its own
+            // command block, where the user's message would be (P346).
+            ItemBody::ToolCall(c) if c.source == Some(yaac_protocol::ToolCallSource::UserShell) => {
+                seen_prompt = true;
+                Some(Block::User { index })
             }
             ItemBody::AgentMessage(_) => Some(Block::Prose { index }),
             ItemBody::Request(_) => Some(Block::Card { index }),
@@ -697,6 +707,8 @@ mod tests {
             agent_call: None,
             skill: skill.map(|n| SkillLoad { name: n.to_owned() }),
             images: vec![],
+            source: None,
+            duration_ms: None,
         };
         let key = ThreadKey::new(TargetId::new("local"), ThreadId::new("t"));
         let mut t = crate::transcript::Transcript::new();

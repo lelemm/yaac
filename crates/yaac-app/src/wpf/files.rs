@@ -23,6 +23,7 @@ const CHUNK_BYTES: usize = 24 * 1024;
 pub(super) fn kind(tab: &BrowserTab) -> &'static str {
     match tab.kind {
         TabKind::Browser => "browser",
+        TabKind::Terminal(_) => "terminal",
         TabKind::Files => "files",
         TabKind::File(_) => "file",
         TabKind::Diff(_) => "diff",
@@ -166,7 +167,7 @@ impl FilesPipe {
             return Value::Null;
         };
         match &tab.kind {
-            TabKind::Browser => Value::Null,
+            TabKind::Browser | TabKind::Terminal(_) => Value::Null,
             TabKind::Files => {
                 let tree = &area.tree;
                 let root = tree.folders.get("");
@@ -407,7 +408,7 @@ fn number(value: &Value, field: &str) -> Option<usize> {
     value[field].as_u64().and_then(|n| usize::try_from(n).ok())
 }
 
-fn scalar_caret(text: &str, utf16: usize) -> usize {
+pub(super) fn scalar_caret(text: &str, utf16: usize) -> usize {
     let mut end = 0;
     text.chars()
         .take_while(|c| {

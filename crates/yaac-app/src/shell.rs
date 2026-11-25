@@ -13,7 +13,7 @@ use crate::widgets;
 /// folds back to the pill (screen 21).
 pub(crate) const NARROW: f32 = 1000.0;
 
-pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, actions: &mut Vec<Action>, _frame: &mut eframe::Frame) {
+pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, actions: &mut Vec<Action>, _frame: &mut eframe::Frame) -> bool {
     let p = app.p;
     // Fixed regions, split by hand so the layout is exact: sidebar | thread | docked panel.
     // The screenshot runner can pin the layout to a smaller window (screen 21) when the
@@ -37,6 +37,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     app.ui.chat_dock = None;
     app.ui.chat_column = None;
     app.ui.chat_agents = pane && panel.is_some();
+    app.ui.pill_floating = panel.is_some() && !docked;
     // The sidebar's own width, or the strip (collapsed, or a window too narrow for it).
     let side_w = app.ui.sidebar.shown(narrow);
     let strip = side_w <= yaac_core::strip::STRIP_WIDTH;
@@ -70,15 +71,18 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             ui.set_clip_rect(rect);
             crate::agents_ui::docked(ui, app, panel, actions)
         }).inner;
-        crate::agents_ui::dock_hover(app, ui.ctx(), ui.rect_contains_pointer(content), hovered);
+        let inside = ui.rect_contains_pointer(content) && ui.input(|i| i.focused);
+        crate::agents_ui::dock_hover(app, ui.ctx(), inside, hovered);
     };
     if docked && !pane && let Some(panel) = &panel {
         draw_dock(ui, app, panel, right, below(right), actions);
     }
-    ui.scope_builder(egui::UiBuilder::new().max_rect(center).id_salt("center"), |ui| {
+    let preview_target = |app: &YaacApp| selected.as_ref().and_then(|key| app.ui.dock_preview.target(key)).cloned();
+    let drawn_target = preview_target(app);
+    let previewing = ui.scope_builder(egui::UiBuilder::new().max_rect(center).id_salt("center"), |ui| {
         ui.set_clip_rect(center);
         match app.client.state.selection.clone() {
-            Selection::Thread(key) => crate::thread::show(ui, app, map, &key, now, actions),
+            Selection::Thread(key) => return crate::thread::show(ui, app, map, &key, now, actions),
             Selection::NewThread(id) => crate::composer::draft_view(ui, app, id, actions),
             _ if yaac_core::first_run::is_first_run(&app.client.state) => crate::first_run::show(ui, app, actions),
             _ => {
@@ -87,13 +91,12 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
                 });
             }
         }
-    });
+        false
+    }).inner;
     // With a side pane, the docked panel goes where the thread view left room for it.
     let dock = app.ui.chat_dock.filter(|_| docked && pane);
-    match (&panel, dock) {
-        (Some(panel), Some(dock)) => draw_dock(ui, app, panel, dock, dock, actions),
-        _ if !(docked && !pane) => crate::agents_ui::dock_hover(app, ui.ctx(), false, None),
-        _ => {}
+    if let (Some(panel), Some(dock)) = (&panel, dock) {
+        draw_dock(ui, app, panel, dock, dock, actions);
     }
     let browser = selected.as_ref().and_then(|k| app.browsers.areas.get(k));
     let chat = match app.ui.chat_column {
@@ -120,7 +123,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     if !narrow {
         resize_edge(ui, app, side);
     }
-    if let Some(panel) = &panel
+    let floating_column = if let Some(panel) = &panel
         && !(docked && !pane)
         && dock.is_none()
     {
@@ -129,6 +132,16 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
         if let Some(column) = column {
             crate::agents_ui::floating(ui.ctx(), app, column, panel, actions);
         }
+        column
+    } else {
+        None
+    };
+    if !(docked && !pane) && dock.is_none() && floating_column.is_none() {
+        crate::agents_ui::dock_hover(app, ui.ctx(), false, None);
+    }
+    // Card and in-chat dock layout can resolve hover after drawing the transcript.
+    if preview_target(app) != drawn_target {
+        ui.ctx().request_repaint();
     }
 
     wsl_notification(ui.ctx(), app, actions);
@@ -140,6 +153,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     crate::dialogs::update_now(ui.ctx(), app, actions);
     crate::dialogs::bulk_archive(ui.ctx(), app, actions);
     crate::dialogs::move_dialog(ui.ctx(), app, actions);
+    previewing
 }
 
 pub(crate) fn window_error_notice(ctx: &egui::Context, app: &YaacApp, width: f32, actions: &mut Vec<Action>) {

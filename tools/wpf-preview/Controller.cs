@@ -11,7 +11,8 @@ internal sealed class Controller : IDisposable
     private readonly Process? process;
     private readonly StreamReader views;
     private readonly StreamWriter output;
-    private readonly Channel<string> commands = Channel.CreateUnbounded<string>(
+    private readonly record struct Command(string? Line, object? Paste);
+    private readonly Channel<Command> commands = Channel.CreateUnbounded<Command>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
     private readonly CancellationTokenSource stop = new();
 
@@ -46,7 +47,11 @@ internal sealed class Controller : IDisposable
 
     internal void Send(string command, object? payload)
     {
-        commands.Writer.TryWrite(JsonSerializer.Serialize(new { command, payload }));
+        // Clipboard text is immutable and can be large. Encode it on the ordered
+        // writer. Other commands may borrow a JsonElement from the current frame.
+        commands.Writer.TryWrite(command == "terminal.paste"
+            ? new(null, payload)
+            : new(JsonSerializer.Serialize(new { command, payload }), null));
     }
 
     internal async Task RunAsync(Func<JsonElement, Task> receive)
@@ -92,8 +97,9 @@ internal sealed class Controller : IDisposable
 
     private async Task WriteAsync(CancellationToken token)
     {
-        await foreach (var line in commands.Reader.ReadAllAsync(token).ConfigureAwait(false))
+        await foreach (var next in commands.Reader.ReadAllAsync(token).ConfigureAwait(false))
         {
+            var line = next.Line ?? JsonSerializer.Serialize(new { command = "terminal.paste", payload = next.Paste });
             await output.WriteLineAsync(line.AsMemory(), token).ConfigureAwait(false);
             await output.FlushAsync(token).ConfigureAwait(false);
         }

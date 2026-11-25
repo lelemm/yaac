@@ -249,6 +249,12 @@ interface ThreadState {
   plan: Item | null;
   notices: number;
   lastControl: string;
+  /**
+   * A `!command` (P344): Codex runs it in its own shell-only turn (`turn`), then YAAC starts
+   * the turn that answers it (`answer`, `turn/start` with empty input). YAAC shows both as the
+   * one turn `turn`: events of `answer` are reported under it.
+   */
+  shell?: { turn: TurnId; answer: TurnId | null; answering: boolean; stopped: boolean; overrides: TurnOverrides };
 }
 
 interface LiveRequest {
@@ -355,7 +361,25 @@ export class CodexProvider implements HarnessProvider {
   // ── Connection ───────────────────────────────────────────────────────────────────────────
 
   private emit(ev: ProviderEvent): void {
-    if (!this.disposed) this.events.emit(ev);
+    if (!this.disposed) this.events.emit(this.shellAlias(ev));
+  }
+
+  /** The answer turn of a `!command` is reported as the command's own turn (P344). */
+  private shellAlias(ev: ProviderEvent): ProviderEvent {
+    if (!("thread" in ev)) return ev;
+    const sh = this.threads.get(ev.thread)?.shell;
+    if (!sh?.answer) return ev;
+    switch (ev.type) {
+      case "turnCompleted":
+      case "requestRaised":
+        return ev.turnId === sh.answer ? { ...ev, turnId: sh.turn } : ev;
+      case "itemStarted":
+      case "itemUpdated":
+      case "itemCompleted":
+        return ev.item.turnId === sh.answer ? { ...ev, item: { ...ev.item, turnId: sh.turn } as Item } : ev;
+      default:
+        return ev;
+    }
   }
 
   private save(): void {
@@ -662,6 +686,8 @@ export class CodexProvider implements HarnessProvider {
       // `account/rateLimits/read` and `account/rateLimits/updated` (D161, codex-cli 0.170.0).
       "rateLimits",
     ];
+    // `thread/shellCommand` (P344, codex-cli 0.170.0 and 0.172.0).
+    if (this.offersShellCommand()) caps.push("userShellCommand");
     if (models.some((m) => m.capabilities?.some((c) => c.capability === "imageInput" && c.support !== "unsupported"))) caps.push("imageInput");
     if (this.meshAttached) caps.push("meshTools");
     return {
@@ -1103,12 +1129,25 @@ export class CodexProvider implements HarnessProvider {
 
   async interrupt(thread: NativeId, turn: TurnId): Promise<void> {
     const conn = await this.ensure();
+    const sh = this.threads.get(thread)?.shell;
+    if (sh && sh.turn === turn) {
+      // Stop on a `!command`: the command's turn while it runs (Codex then aborts the command),
+      // the answer turn once it has started; in between, the answer is not asked for.
+      sh.stopped = true;
+      if (sh.answering && !sh.answer) return;
+      turn = sh.answer ?? turn;
+    }
     await conn.request("turn/interrupt", { threadId: thread, turnId: turn });
   }
 
   async steer(thread: NativeId, turn: TurnId, input: ProviderInput): Promise<void> {
     const conn = await this.ensure();
     const st = this.state(thread);
+    if (st.shell && st.shell.turn === turn) {
+      // Input cannot join a `!command` while it runs; it can join the turn that answers it.
+      if (!st.shell.answer) throw new Error("a shell command is running in this Codex thread");
+      turn = st.shell.answer;
+    }
     if (st.ownTurn !== turn) throw new Error(`turn ${turn} is not the turn yaacd is running in this thread`);
     const clientId = randomId("yaac-", 12);
     st.sentClientIds.add(clientId);
@@ -1120,6 +1159,115 @@ export class CodexProvider implements HarnessProvider {
       st.ownInputsPending = Math.max(0, st.ownInputsPending - 1);
       throw e;
     }
+  }
+
+  /**
+   * `!command` (P344): `thread/shellCommand` on the existing daemon connection. Codex runs it
+   * in the thread's shell and folder, records the `<user_shell_command>` item itself and emits
+   * its `commandExecution` item (`source: userShell`) in a shell-only turn. When that turn ends,
+   * `answerShellCommand` starts the turn that answers it (verified mechanism:
+   * docs/research/user-shell-commands-codex.md#making-the-model-answer-a--command-p344).
+   */
+  async shellCommand(thread: NativeId, command: string, overrides: TurnOverrides, _opId?: string): Promise<TurnId> {
+    const st = this.state(thread);
+    if (st.ownTurn || st.foreignTurn || st.starting || st.compact) throw new Error("a turn is already running in this Codex thread");
+    if (overrides.cwd) st.cwd = overrides.cwd;
+    if (!st.subscribed) {
+      const t = await this.resume(thread, null);
+      if (this.isActive(t.status ?? null)) {
+        st.foreignSeen = true;
+        this.publishControl(st);
+        throw new ThreadInUseError("the Codex thread is running a turn started elsewhere");
+      }
+    }
+    if (this.isActive(st.status)) throw new ThreadInUseError("the Codex thread is busy");
+    const conn = await this.ensure();
+    const seenBefore = new Set(st.turnsSeen);
+    st.starting = true;
+    st.held = [];
+    const started = (): TurnId | null => {
+      for (const h of st.held) {
+        const t = h.method === "turn/started" ? (h.params.turn as Turn | undefined) : undefined;
+        if (t?.id && !seenBefore.has(t.id)) return t.id;
+      }
+      return null;
+    };
+    try {
+      // The acknowledgement carries no turn or item id: the turn is the next one that starts.
+      await conn.request("thread/shellCommand", { threadId: thread, command });
+      const deadline = Date.now() + 10_000;
+      while (!started() && Date.now() < deadline && conn.isOpen) await new Promise((r) => setTimeout(r, 10));
+    } catch (e) {
+      st.starting = false;
+      this.flushHeld(st);
+      // An explicit refusal (a JSON-RPC error code) ran nothing; a lost reply may have.
+      if (e instanceof CodexRpcError && e.code !== undefined) throw e;
+      throw new InputOutcomeUnknown((e as Error).message);
+    }
+    const turnId = started();
+    if (!turnId) {
+      st.starting = false;
+      this.flushHeld(st);
+      throw new InputOutcomeUnknown("Codex accepted the shell command but no turn was seen for it");
+    }
+    st.starting = false;
+    st.shell = { turn: turnId, answer: null, answering: false, stopped: false, overrides: { ...overrides } };
+    this.announceTurn(st, turnId, "user", 0);
+    this.flushHeld(st);
+    return turnId;
+  }
+
+  /**
+   * The shell-only turn of a `!command` ended: unless it was stopped or failed, start the turn
+   * that answers it — `turn/start` with empty input, so the model's input ends with the
+   * command's record and nothing invented — and report it as the same turn. True when the
+   * completion is held back for that.
+   */
+  private answerShellCommand(st: ThreadState, turn: Turn): boolean {
+    const sh = st.shell;
+    if (!sh || sh.turn !== turn.id || sh.answering) return false;
+    if (sh.stopped || turnStatus(turn.status) !== "completed") return false;
+    const conn = this.conn;
+    if (!conn?.isOpen) return false;
+    sh.answering = true;
+    st.starting = true;
+    st.held = [];
+    const o = sh.overrides;
+    let tier: string | null = null;
+    try {
+      tier = this.serviceTierFor(o.model ?? st.model, o.fast ?? null, o.ultrafast === true);
+    } catch {
+      tier = null;
+    }
+    const params = {
+      threadId: st.native,
+      input: [],
+      ...(o.model ? { model: o.model } : {}),
+      ...(o.effort ? { effort: o.effort } : {}),
+      ...(tier ? { serviceTierForTurn: tier } : {}),
+      ...(o.cwd ? { cwd: o.cwd } : {}),
+    };
+    void conn.request("turn/start", params).then(
+      (response) => {
+        const answer = (response as { turn?: Turn }).turn?.id;
+        if (!answer) throw new Error("Codex did not return a turn id");
+        sh.answer = answer;
+        st.ownTurn = answer;
+        st.turnsSeen.add(answer);
+        this.persisted.ownTurns[st.native] = answer;
+        this.save();
+        st.starting = false;
+        this.flushHeld(st);
+        if (sh.stopped) void conn.request("turn/interrupt", { threadId: st.native, turnId: answer }).catch(() => {});
+      },
+    ).catch((e: unknown) => {
+      // The command ran and is recorded; only the answer is missing. Said, never re-sent.
+      st.starting = false;
+      this.notice(st, { turnId: turn.id }, "error", `Codex did not start the answer to the shell command: ${(e as Error).message}`, null);
+      this.finishTurn(st, turn, "own");
+      this.flushHeld(st);
+    });
+    return true;
   }
 
   async runningTurn(thread: NativeId): Promise<TurnId | null> {
@@ -1169,7 +1317,7 @@ export class CodexProvider implements HarnessProvider {
     this.requests.set(requestId, { requestId, rpcId: r.id, gen: this.gen, mapped, answered: null });
     const st = this.state(mapped.threadId);
     const turnId = mapped.turnId || st.ownTurn || st.foreignTurn || "";
-    this.emit({ type: "requestRaised", thread: mapped.threadId, turnId, requestId, request: mapped.request, blocking: mapped.blocking });
+    this.emit({ type: "requestRaised", thread: mapped.threadId, turnId, requestId, request: mapped.request, blocking: mapped.blocking, mode: st.mode });
   }
 
   async respond(thread: NativeId, requestId: string, response: RequestResponse): Promise<void> {
@@ -1268,6 +1416,7 @@ export class CodexProvider implements HarnessProvider {
     ];
     if (efforts.length > 0) base.push("effortSwitch", "reasoning");
     if (image === "supported") base.push("imageInput");
+    if (this.offersShellCommand()) base.push("userShellCommand");
     return {
       capabilities: base,
       imageInput: image,
@@ -1552,6 +1701,11 @@ export class CodexProvider implements HarnessProvider {
     }
   }
 
+  /** `thread/shellCommand` exists from codex-cli 0.170.0 (verified on 0.170.0 and 0.172.0). */
+  private offersShellCommand(): boolean {
+    return supportsPeerInput(serverVersion(this.init?.userAgent), [0, 170, 0]);
+  }
+
   private turnOf(st: ThreadState, p: Record<string, unknown>): TurnId {
     return (typeof p.turnId === "string" && p.turnId) || st.ownTurn || st.foreignTurn || "";
   }
@@ -1611,6 +1765,7 @@ export class CodexProvider implements HarnessProvider {
         this.commands.turnCompleted(native, turn.id);
         const whose = turn.id === st.ownTurn ? "own" : turn.id === st.foreignTurn ? "foreign" : null;
         if (!whose) return;
+        if (whose === "own" && this.answerShellCommand(st, turn)) return;
         this.finishTurn(st, turn, whose);
         return;
       }
@@ -1776,6 +1931,7 @@ export class CodexProvider implements HarnessProvider {
       st.foreignTurn = null;
     }
     this.emit({ type: "turnCompleted", thread: native, turnId: turn.id, status, error, usage, at: new Date().toISOString() });
+    if (st.shell && (st.shell.turn === turn.id || st.shell.answer === turn.id)) delete st.shell;
     if (whose === "foreign" && st.subscribed && this.conn?.isOpen) {
       // Someone else has this thread open. Let go of it, so that Codex can unload it once they
       // do too; until then it is loaded-but-not-ours, which reads as in use.

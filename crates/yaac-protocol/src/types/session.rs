@@ -68,6 +68,9 @@ pub struct TargetFacts {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct InitializeResult {
+    /// Reason the native terminal backend could not load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_unavailable_reason: Option<String>,
     /// Additive target features announced by the daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub features: Option<Vec<super::Capability>>,

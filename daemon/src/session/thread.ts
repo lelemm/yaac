@@ -11,6 +11,7 @@ import type {
   TokenUsage,
   OriginKind,
   ProjectRef,
+  AutomaticResolution,
   RequestResolution,
   RequestState,
   RunningCommand,
@@ -169,6 +170,8 @@ export interface RequestRecord {
   state: RequestState;
   secretQuestions: string[];
   submittedBy?: Driver | null;
+  /** Set while yaacd answers it itself (P342): the never-ask mode that made it automatic. */
+  automatic?: AutomaticResolution | null;
   resolution?: RequestResolution | null;
 }
 
@@ -187,6 +190,11 @@ export interface Work {
   mesh?: MeshInputMessage[];
   /** The client's operation that sent it, stamped on the user message (D165). */
   opId?: string;
+  /**
+   * A `!command` from the thread's composer (P344): run through the provider's
+   * `shellCommand`, never `startTurn`. Only `turn/shellCommand` sets it (origin `user`).
+   */
+  shellCommand?: string;
   resolve: (turnId: TurnId) => void;
   reject: (error: Error) => void;
 }

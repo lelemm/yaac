@@ -386,6 +386,25 @@ where
     }
 
 
+    // Native terminal support is optional. Stage a locked npm archive once, even on
+    // targets using system Node. Older stage-0 programs omit the marker.
+    if report.get("pty") == Some("missing") {
+        let archive: &[u8] = match (report.get("os"), report.get("arch")) {
+            (Some("Linux"), Some("x86_64" | "amd64")) => include_bytes!(concat!(env!("OUT_DIR"), "/linux-x64.tgz")),
+            (Some("Linux"), Some("aarch64" | "arm64")) => include_bytes!(concat!(env!("OUT_DIR"), "/linux-arm64.tgz")),
+            (Some("Darwin"), Some("x86_64")) => include_bytes!(concat!(env!("OUT_DIR"), "/darwin-x64.tgz")),
+            (Some("Darwin"), Some("arm64")) => include_bytes!(concat!(env!("OUT_DIR"), "/darwin-arm64.tgz")),
+            _ => &[],
+        };
+        if !archive.is_empty() {
+            let header = format!("PUT pty {} {}\n", archive.len(), sha256_hex(archive));
+            writer.write_all(header.as_bytes()).await.map_err(|e| io(e, "sending terminal runtime"))?;
+            writer.write_all(archive).await.map_err(|e| io(e, "sending terminal runtime"))?;
+            writer.flush().await.map_err(|e| io(e, "sending terminal runtime"))?;
+            expect(&mut lines, "OK pty", what, "staging terminal runtime", timeouts.reply).await?;
+        }
+    }
+
     // 3. The daemon, in-band, only if this build is missing.
     let mut uploaded = false;
     if !report.daemons().contains(&bundle.build.as_str()) {

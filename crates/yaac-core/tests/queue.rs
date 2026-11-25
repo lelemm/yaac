@@ -91,7 +91,7 @@ fn send_now_asks_now_and_the_daemon_interrupts_where_it_cannot_steer() {
     let map = AttentionMap::compute(&c.state);
     let ComposerView::Shown { running, send_now, stop, .. } = composer(&c.state, &map, &k) else { panic!("composer") };
     assert!(running && stop);
-    assert_eq!(send_now, Some("Send now — interrupts"), "Claude Code cannot steer");
+    assert_eq!(send_now, Some(yaac_core::queue::SEND_NOW_INTERRUPTS), "Claude Code cannot steer");
     type_in(&mut c, &k, "Stop: use the shared retry helper instead.");
     assert!(c.send_now(&k));
     assert_eq!(sent(&hub, "turn/start").pop().unwrap()["delivery"], "now");
@@ -117,7 +117,7 @@ fn a_codex_thread_steers_and_says_send_now() {
     c.pump();
     let map = AttentionMap::compute(&c.state);
     let ComposerView::Shown { send_now, .. } = composer(&c.state, &map, &k) else { panic!() };
-    assert_eq!(send_now, Some("Send now"));
+    assert_eq!(send_now, Some(yaac_core::queue::SEND_NOW_STEERS));
     type_in(&mut c, &k, "Keep it under 200 words.");
     assert!(c.send_now(&k));
     c.pump();

@@ -47,11 +47,16 @@ async fn the_stream_is_binary_clean_and_dropping_it_kills_the_child() {
     let script = dir.join("echo.sh");
     // `$1` is "connect", as for the real bundle.
     std::fs::write(&script, "test \"$1\" = connect || exit 3\nexec cat\n").unwrap();
-    let config = LocalConfig { runtime: "sh".into(), bundle: script, env: vec![], inherit_stderr: true, build: None, install_files: vec![] };
+    let package = dir.join("package");
+    std::fs::create_dir_all(package.join("prebuilds")).unwrap();
+    std::fs::write(package.join("prebuilds/pty.node"), b"fixture").unwrap();
+    let installed = dir.join("private/runtime/pty");
+    let config = LocalConfig { runtime: "sh".into(), bundle: script, env: vec![], inherit_stderr: true, build: None, install_files: vec![(package, installed.clone())] };
     let connector = LocalConnector::new(config);
     assert!(connector.describe().starts_with("local: sh "));
 
     let mut stream = connector.connect(&ConnectCtx::default()).await.unwrap();
+    assert_eq!(std::fs::read(installed.join("prebuilds/pty.node")).unwrap(), b"fixture");
     let pid = stream.child.pid().expect("running");
     let bytes: Vec<u8> = (0..=255u8).cycle().take(70_000).collect();
     let writer = async {

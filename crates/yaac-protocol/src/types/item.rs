@@ -76,6 +76,15 @@ open_enum! {
     }
 }
 
+open_enum! {
+    /// Who ran a tool call, when it was not the agent.
+    pub enum ToolCallSource fallback Unknown {
+        /// The user ran it as `!command` in the composer (P344): shown as a command block, not
+        /// as one of the agent's tool calls.
+        UserShell = "userShell",
+    }
+}
+
 /// `toolCall`: a tool invocation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +126,12 @@ pub struct ToolCallItem {
     /// Image results stored on this target and read on demand through `upload/read`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<ToolImage>,
+    /// Who ran it, when not the agent (`userShell`: a `!command`, P344). Absent: the agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ToolCallSource>,
+    /// How long it ran, in milliseconds, when the harness says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 /// A tool image result, with its bytes kept out of the transcript stream.

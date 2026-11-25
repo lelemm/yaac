@@ -7,6 +7,7 @@
 
 import type { JournalPosition, ThreadEventParams } from "../protocol/generated/types.js";
 import { discoverPorts } from "./preview-ports.js";
+import { shells } from "./terminal-shells.js";
 import { Tunnels } from "./tunnels.js";
 import { METHODS, NOTIFICATIONS } from "../protocol/generated/constants.js";
 import { RpcError } from "../protocol/rpc.js";
@@ -110,6 +111,11 @@ export class ClientSession implements SessionHandler, ClientLink {
         });
       case METHODS.PROVIDER_INSTANCE_LIST:
         return { instances: core.registry.configs() };
+      case METHODS.PROVIDER_INSTANCE_SET_MODEL_ENABLED:
+        return core.ops.run(method, p.opId, async () => {
+          core.setModelEnabled(str(p, "instance"), str(p, "model"), p.enabled);
+          return {};
+        });
       case METHODS.PROVIDER_INSTANCE_ADD:
         return core.ops.run(method, p.opId, async () => ({ instance: await core.registry.add(p as never) }));
       case METHODS.PROVIDER_INSTANCE_UPDATE:
@@ -212,6 +218,8 @@ export class ClientSession implements SessionHandler, ClientLink {
         return {};
       case METHODS.TURN_QUEUE_PROMOTE:
         return core.queuePromote(this, p as never);
+      case METHODS.TURN_SHELL_COMMAND:
+        return core.turnShellCommand(this, p as never);
       case METHODS.THREAD_DELETE:
         await core.threadDelete(this, p as never);
         return {};
@@ -230,6 +238,13 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.REQUEST_RESPOND:
         await core.requestRespond(this, p as never);
         return {};
+      case METHODS.TERMINAL_SHELLS: return { shells: shells() };
+      case METHODS.TERMINAL_LIST: return { terminals: core.terminals.list() };
+      case METHODS.TERMINAL_OPEN: return core.terminals.open(this.view, p);
+      case METHODS.TERMINAL_ATTACH: return core.terminals.attach(this.view, p);
+      case METHODS.TERMINAL_RESIZE: core.terminals.resize(p); return {};
+      case METHODS.TERMINAL_CLOSE: core.terminals.close(p.terminal); return {};
+      case METHODS.TERMINAL_RENAME: core.terminals.rename(p); return {};
       case METHODS.TUNNEL_OPEN:
         return this.tunnels.open(p);
       case METHODS.PREVIEW_PORTS:
@@ -269,11 +284,16 @@ export class ClientSession implements SessionHandler, ClientLink {
   }
 
   onData(stream: number, bytes: Buffer): void {
+    if (this.core.terminals.receive(this.view, stream, bytes)) return;
     if (this.tunnels.receive(stream, bytes)) return;
     this.core.uploads.onData(stream, bytes, this, (s, n) => this.view.grantCredit(s, n));
   }
 
   onNotification(method: string, params: unknown): void {
+    if (method === NOTIFICATIONS.TERMINAL_DETACH) {
+      this.core.terminals.detach(this.view, (params as { stream: number }).stream);
+      return;
+    }
     if (method !== NOTIFICATIONS.TUNNEL_CLOSE) return;
     const stream = (params as { stream?: unknown } | null)?.stream;
     if (typeof stream === "number") this.tunnels.close(stream);
@@ -303,6 +323,7 @@ export class ClientSession implements SessionHandler, ClientLink {
       }
     }
     this.closed = true;
+    this.core.terminals.drop(this.view);
     this.tunnels.drop();
     this.core.clients.delete(this);
     this.core.uploads.dropOwner(this);

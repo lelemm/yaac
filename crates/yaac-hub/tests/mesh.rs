@@ -31,12 +31,11 @@ const LONG: Duration = Duration::from_secs(40);
 
 fn runtime_and_bundle() -> Option<(std::ffi::OsString, PathBuf)> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let bundle = LocalConfig::default_bundle(&root);
+    let LocalConfig { runtime, bundle, .. } = LocalConfig::from_env(&root);
     if !bundle.is_file() {
         eprintln!("SKIPPED: daemon/dist/yaacd.mjs does not exist (build the daemon to run this test)");
         return None;
     }
-    let runtime = std::env::var_os("YAAC_RUNTIME").unwrap_or_else(|| "node".into());
     if std::process::Command::new(&runtime).arg("--version").output().is_err() {
         eprintln!("SKIPPED: the runtime {runtime:?} does not run");
         return None;
@@ -312,6 +311,7 @@ fn an_agent_on_one_target_spawns_a_worker_on_another_waits_and_notifies_a_third_
     let sync = m.routed("beta", "thread/sync", json!({}));
     let ws = sync["changed"].as_array().unwrap().iter().find(|t| t["id"] == worker.as_str()).unwrap().clone();
     assert_eq!(ws["spawnedBy"], m.address("alpha", &orchestrator));
+    assert_eq!(ws["reportsToParent"], true);
     assert_eq!(ws["root"], m.address("alpha", &orchestrator));
 
     // The third thread heard the orchestrator's final answer, once, from the orchestrator.

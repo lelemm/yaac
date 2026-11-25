@@ -1,0 +1,8 @@
+[?2004h[1;32mdev@devbox[0m:[1;34m~/work/auth[0m$ ls -F --color=always
+[?2004lCargo.toml  README.md  [0m[01;34mdocs[0m/  [01;34msrc[0m/  [01;34mtests[0m/
+[?2004h[1;32mdev@devbox[0m:[1;34m~/work/auth[0m$ grep -n denied docs/sessions.log | head -3
+[?2004l7:Line   7: session closed auth=denied
+14:Line  14: session expired auth=denied
+21:Line  21: session refreshed auth=denied
+[?2004h[1;32mdev@devbox[0m:[1;34m~/work/auth[0m$ exit 3
+[?2004lexit

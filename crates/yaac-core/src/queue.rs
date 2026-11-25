@@ -12,10 +12,12 @@ use crate::ThreadKey;
 use crate::attention::{Attention, own_attention};
 use crate::state::AppState;
 
-/// "Send now" where the harness can steer: the message joins the running turn.
+/// The Send now button's label. What it does is said by its hover text ([`now_hint`]).
 pub const SEND_NOW: &str = "Send now";
-/// "Send now" where it cannot: the running turn is interrupted and a new one starts.
-pub const SEND_NOW_INTERRUPTS: &str = "Send now — interrupts";
+/// Send now where the harness can steer: the message joins the running turn.
+pub const SEND_NOW_STEERS: &str = "Add it to the running turn";
+/// Send now where it cannot: the running turn is interrupted and a new one starts.
+pub const SEND_NOW_INTERRUPTS: &str = "Stop the running turn and start a new one with this message";
 
 /// A queued message being edited in the composer: its text there, and what the text box
 /// cannot show (attachments, labelled text such as a paste) kept as it was.
@@ -67,6 +69,9 @@ pub struct QueuedView {
     pub busy: bool,
     /// It is open in the composer for editing.
     pub editing: bool,
+    /// A queued `!command` (P346): the command, shown in mono with the terminal icon instead
+    /// of the preview.
+    pub shell: Option<String>,
 }
 
 /// A turn is running on the thread.
@@ -84,19 +89,21 @@ fn has(state: &AppState, key: &ThreadKey, cap: &Capability) -> bool {
     state.transcripts.get(key).and_then(|t| t.effective.as_ref()).is_some_and(|e| has_capability(&e.capabilities, cap))
 }
 
-/// What the Send now button says: whether it steers or interrupts, from the `steer` capability.
-pub fn now_label(steer: bool) -> &'static str {
-    if steer { SEND_NOW } else { SEND_NOW_INTERRUPTS }
+/// What Send now does — its hover text: whether it steers or interrupts, from the `steer`
+/// capability. The label is always [`SEND_NOW`].
+pub fn now_hint(steer: bool) -> &'static str {
+    if steer { SEND_NOW_STEERS } else { SEND_NOW_INTERRUPTS }
 }
 
-/// The Send now button of a running thread, when it is offered: not while the thread waits on
-/// the user, and only where the message can reach the running turn (steered, or by stopping it).
+/// The Send now button of a running thread, when it is offered — its hover text ([`now_hint`]):
+/// not while the thread waits on the user, and only where the message can reach the running
+/// turn (steered, or by stopping it).
 pub fn send_now(state: &AppState, key: &ThreadKey) -> Option<&'static str> {
     if !running(state, key) || awaiting_user(state, key) {
         return None;
     }
     let steer = has(state, key, &Capability::Steer);
-    (steer || has(state, key, &Capability::Interrupt)).then(|| now_label(steer))
+    (steer || has(state, key, &Capability::Interrupt)).then(|| now_hint(steer))
 }
 
 /// The first line of a queued message, and its attachments counted.
@@ -129,7 +136,7 @@ pub fn strip(state: &AppState, key: &ThreadKey) -> Vec<QueuedView> {
         .iter()
         .map(|q| {
             let (preview, extra) = preview(&q.input);
-            QueuedView { queue_id: q.queue_id.clone(), preview, extra, busy: t.queue_busy.contains(&q.queue_id), editing: editing == Some(q.queue_id.as_str()) }
+            QueuedView { queue_id: q.queue_id.clone(), preview, extra, busy: t.queue_busy.contains(&q.queue_id), editing: editing == Some(q.queue_id.as_str()), shell: q.shell_command.clone() }
         })
         .collect()
 }
@@ -141,7 +148,7 @@ mod tests {
     use super::*;
 
     fn entry(id: &str, input: Vec<InputPart>) -> QueuedMessage {
-        QueuedMessage { queue_id: id.into(), input, queued_at: crate::time::timestamp(1_800_000_000), model: None, effort: None, mode: None, fast: None, ultrafast: None }
+        QueuedMessage { queue_id: id.into(), input, queued_at: crate::time::timestamp(1_800_000_000), model: None, effort: None, mode: None, fast: None, ultrafast: None, shell_command: None }
     }
 
     fn file(name: &str) -> InputPart {
@@ -149,9 +156,9 @@ mod tests {
     }
 
     #[test]
-    fn the_label_says_whether_it_steers_or_interrupts() {
-        assert_eq!(now_label(true), "Send now");
-        assert_eq!(now_label(false), "Send now — interrupts");
+    fn the_hint_says_whether_it_steers_or_interrupts() {
+        assert_eq!(now_hint(true), SEND_NOW_STEERS);
+        assert_eq!(now_hint(false), SEND_NOW_INTERRUPTS);
     }
 
     #[test]

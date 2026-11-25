@@ -340,6 +340,16 @@ export type ProviderEvent =
       requestId: RequestId;
       request: RaisedRequest;
       blocking?: boolean;
+      /**
+       * The thread's mode when the harness asked, as the provider knows it. yaacd answers a
+       * tool approval itself when this mode `skipsApprovals` (P342).
+       */
+      mode?: string | null;
+      /**
+       * The user's own configuration forced this prompt (Claude Code's `matchedAskRule`): the
+       * user's stated intent is a human prompt, so it is never answered automatically.
+       */
+      userRule?: string | null;
     }
   | {
       type: "requestResolved";
@@ -393,6 +403,19 @@ export interface HarnessProvider {
   startThread(params: StartThreadParams, input: ProviderInput): Promise<{ thread: NativeId; turn: TurnId }>;
   /** Starts a turn on an idle conversation yaacd holds. */
   startTurn(thread: NativeId, input: ProviderInput, overrides: TurnOverrides): Promise<TurnId>;
+  /**
+   * A `!command` the user typed in the thread's composer (P344; present exactly when the
+   * provider declares `userShellCommand`). Runs `command` on the target in the conversation's
+   * folder, records it in the conversation as the harness's own `!` does, and has the agent
+   * answer it — all as **one** turn, on an idle conversation, whose id this returns (emit
+   * `turnStarted` with it, as for `startTurn`). The command is emitted as a `toolCall` item
+   * (`tool: "command"`, `source: "userShell"`, the typed command as title) with streamed
+   * output, exit code and duration. `interrupt` on the turn stops the command (and then no
+   * answer is asked for), or stops the answer. `opId` identifies the operation to the harness
+   * where it can deduplicate. yaacd itself journals the `!command` user message; only ever
+   * called for input from the thread's own composer, never for an agent's message.
+   */
+  shellCommand?(thread: NativeId, command: string, overrides: TurnOverrides, opId: string): Promise<TurnId>;
   /**
    * Offer peer input without interrupting the turn. Null means no handoff was made (the
    * mailbox can wait for idle). Call beforeSend synchronously just before handing it over;

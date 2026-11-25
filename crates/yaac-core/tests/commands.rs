@@ -35,7 +35,22 @@ fn ctx<'a>(state: &'a AppState, thread: Option<&'a ThreadKey>) -> Ctx<'a> {
         host_windows: false,
         focused_card: None,
         list_selected: 0,
+        terminal: Default::default(),
     }
+}
+
+#[test]
+fn commander_omits_the_off_model_even_when_the_open_thread_uses_it() {
+    let (mut client, _) = boot();
+    let key = threads::fix();
+    let id = client.state.summary(&key).unwrap().model.clone().unwrap();
+    let mut provider = client.state.provider_of(&key).unwrap().clone();
+    let index = provider.models.iter().position(|m| m.id == id).unwrap();
+    provider.disabled_models.push(provider.models.remove(index));
+    client.state.apply_providers(&key.target, vec![provider], false);
+    let choices = step_items(StepKind::Model, &ctx(&client.state, Some(&key)), &[]);
+    assert!(choices.iter().any(|choice| choice.reason.is_none()));
+    assert!(!choices.iter().any(|choice| matches!(&choice.value, StepValue::Model(_, model) if *model == id)));
 }
 
 /// The catalogue's rows (docs/plan/commands.md) and the commands each stands for.
@@ -104,6 +119,11 @@ const CATALOGUE: &[(&str, &[&str])] = &[
     ("Enable / disable a target…", &["target-enable"]),
     ("Add an SSH target… / Add WSL…", &["add-ssh", "add-wsl"]),
     ("Refresh providers and models…", &["refresh-providers"]),
+    ("Toggle terminal panel", &["toggle-terminal-panel"]),
+    ("New terminal", &["new-terminal"]),
+    ("New terminal with shell…", &["new-terminal-with-shell"]),
+    ("Next / Previous terminal", &["next-terminal", "prev-terminal"]),
+    ("Maximise terminal panel", &["maximise-terminal-panel"]),
     ("Hide to the tray", &["hide-to-tray"]),
     ("Quit YAAC", &["quit"]),
     ("Renderer…", &["renderer"]),
@@ -311,4 +331,28 @@ fn expand_and_collapse_all_tool_lines() {
     assert!(!lines.is_empty() && lines.iter().all(|l| l.expanded));
     yaac_core::activity::collapse_all(&c.state, &k, &mut e);
     assert_eq!(e, yaac_core::activity::Expansion::default());
+}
+
+#[test]
+fn only_terminal_commands_work_in_a_focused_terminal_until_the_user_says_otherwise() {
+    use yaac_core::commands::{Bindings, in_terminal_default};
+    for d in COMMANDS {
+        let terminal = matches!(d.cmd, Cmd::ToggleTerminalPanel | Cmd::NewTerminal | Cmd::MaximiseTerminalPanel | Cmd::NextTerminal | Cmd::PrevTerminal);
+        assert_eq!(in_terminal_default(d.cmd), terminal, "{}", d.id);
+    }
+    let mut b = Bindings::default();
+    assert!(!b.works_in_terminal(Cmd::Commander), "Ctrl+Space goes to the shell (PSReadLine)");
+    b.set_in_terminal(Cmd::Commander, true);
+    assert!(b.works_in_terminal(Cmd::Commander));
+    b.set_in_terminal(Cmd::ToggleTerminalPanel, true);
+    assert_eq!(b.in_terminal.len(), 1, "only differences are kept");
+    // Stored and read back as `terminalCommands`.
+    let mut p = yaac_core::prefs::UiPrefs { terminal_commands: b.in_terminal.clone(), ..Default::default() };
+    let v = p.value(yaac_core::prefs::keys::TERMINAL_COMMANDS);
+    p.terminal_commands.clear();
+    p.load(yaac_core::prefs::keys::TERMINAL_COMMANDS, &v);
+    assert_eq!(p.terminal_commands, b.in_terminal);
+    let t = p.value(yaac_core::prefs::keys::TERMINAL);
+    assert_eq!(t["copyOnSelect"], false);
+    assert_eq!(t["confirmMultilinePaste"], true);
 }

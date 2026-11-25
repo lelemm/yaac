@@ -28,7 +28,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use yaac_protocol::frame::{Frame, FrameDecoder, encode_message_frame};
+use yaac_protocol::StreamId;
+use yaac_protocol::frame::{Frame, FrameDecoder};
 use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
 
 /// Sending failed: the connection to the hub is gone.
@@ -38,8 +39,9 @@ pub struct Disconnected;
 
 /// A connection to a hub.
 pub struct HubClient {
-    outgoing: tokio::sync::mpsc::UnboundedSender<Message>,
+    outgoing: crate::attach_writer::Sender,
     incoming: mpsc::Receiver<Message>,
+    data: mpsc::Receiver<(StreamId, Vec<u8>)>,
     held: Mutex<VecDeque<Message>>,
     connected: Arc<AtomicBool>,
     next_id: AtomicI64,
@@ -108,7 +110,8 @@ impl HubClient {
             return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the hub pipe belongs to another user"));
         }
         let connected = Arc::new(AtomicBool::new(true));
-        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+        let (out_tx, mut out_rx) = crate::attach_writer::channel();
+        let (data_tx, data) = mpsc::channel();
         let (in_tx, in_rx) = mpsc::channel::<Message>();
         let close = Arc::new(tokio::sync::Notify::new());
         let (alive, closed) = (connected.clone(), close.clone());
@@ -125,7 +128,7 @@ impl HubClient {
                             Ok(n) => n,
                         };
                         decoder.push(&buf[..n]);
-                        if !deliver(&mut decoder, &in_tx, &waker) {
+                        if !deliver(&mut decoder, &in_tx, &data_tx, &waker) {
                             break;
                         }
                     }
@@ -133,8 +136,7 @@ impl HubClient {
                 let write = async {
                     let mut frame = Vec::new();
                     while let Some(message) = out_rx.recv().await {
-                        frame.clear();
-                        if encode_message_frame(&message.to_json(), &mut frame).is_err() {
+                        if message.encode(&mut frame).is_err() {
                             continue;
                         }
                         if writer.write_all(&frame).await.is_err() || writer.flush().await.is_err() {
@@ -154,6 +156,7 @@ impl HubClient {
         Ok(Self {
             outgoing: out_tx,
             incoming: in_rx,
+            data,
             held: Mutex::new(VecDeque::new()),
             connected,
             next_id: AtomicI64::new(1),
@@ -173,14 +176,15 @@ impl HubClient {
         waker: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self> {
         let connected = Arc::new(AtomicBool::new(true));
-        let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
+        let (out_tx, mut out_rx) = crate::attach_writer::channel();
+        let (data_tx, data) = mpsc::channel();
         let (in_tx, in_rx) = mpsc::channel::<Message>();
         let alive = connected.clone();
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         std::thread::Builder::new().name("yaac-hub-client-write".into()).spawn(move || {
             let mut frame = Vec::new();
-            while let Some(message) = out_rx.blocking_recv() {
-                frame.clear();
-                if encode_message_frame(&message.to_json(), &mut frame).is_err() {
+            while let Some(message) = runtime.block_on(out_rx.recv()) {
+                if message.encode(&mut frame).is_err() {
                     continue;
                 }
                 if writer.write_all(&frame).and_then(|()| writer.flush()).is_err() {
@@ -199,7 +203,7 @@ impl HubClient {
                     Ok(n) => n,
                 };
                 decoder.push(&buf[..n]);
-                if !deliver(&mut decoder, &in_tx, &waker) {
+                if !deliver(&mut decoder, &in_tx, &data_tx, &waker) {
                     break;
                 }
             }
@@ -209,6 +213,7 @@ impl HubClient {
         Ok(Self {
             outgoing: out_tx,
             incoming: in_rx,
+            data,
             held: Mutex::new(VecDeque::new()),
             connected,
             next_id: AtomicI64::new(1),
@@ -221,7 +226,37 @@ impl HubClient {
         if !self.is_connected() {
             return Err(Disconnected);
         }
-        self.outgoing.send(message).map_err(|_| Disconnected)
+        if matches!(&message, Message::Response { .. }) {
+            // Replies to the hub's browser calls can carry screenshots and page snapshots.
+            self.outgoing.bulk_reply(message).map_err(|_| Disconnected)
+        } else {
+            self.outgoing.send(message).map_err(|_| Disconnected)
+        }
+    }
+
+    /// Queues terminal input within the stream's available credit.
+    pub fn send_data(&self, stream: StreamId, bytes: Vec<u8>) -> Result<(), Disconnected> {
+        use yaac_protocol::schedule::CHUNK_MIN;
+        if !self.is_connected() {
+            return Err(Disconnected);
+        }
+        if bytes.len() <= CHUNK_MIN {
+            return self.outgoing.data(stream, bytes).map_err(|_| Disconnected);
+        }
+        for chunk in bytes.chunks(CHUNK_MIN) {
+            self.outgoing.data(stream, chunk.to_vec()).map_err(|_| Disconnected)?;
+        }
+        Ok(())
+    }
+
+    /// Receives terminal output. Return credit once the consumer accepts these bytes.
+    pub fn try_recv_data(&self) -> Option<(StreamId, Vec<u8>)> {
+        self.data.try_recv().ok()
+    }
+
+    /// Waits for terminal bytes on a worker thread.
+    pub fn recv_data_timeout(&self, timeout: Duration) -> Result<(StreamId, Vec<u8>), mpsc::RecvTimeoutError> {
+        self.data.recv_timeout(timeout)
     }
 
     /// The next message from the hub, if one has arrived. Never blocks.
@@ -281,7 +316,7 @@ impl HubClient {
 
 /// Hands every complete message in `decoder` to the reader side. False when the connection
 /// should end (garbage from the hub, or nobody listening any more).
-fn deliver(decoder: &mut FrameDecoder, in_tx: &mpsc::Sender<Message>, waker: &impl Fn()) -> bool {
+fn deliver(decoder: &mut FrameDecoder, in_tx: &mpsc::Sender<Message>, data_tx: &mpsc::Sender<(StreamId, Vec<u8>)>, waker: &impl Fn()) -> bool {
     loop {
         match decoder.next_frame() {
             Ok(Some(Frame::Message(payload))) => {
@@ -291,7 +326,10 @@ fn deliver(decoder: &mut FrameDecoder, in_tx: &mpsc::Sender<Message>, waker: &im
                 }
                 waker();
             }
-            Ok(Some(Frame::Data { .. })) => {}
+            Ok(Some(Frame::Data { stream, bytes })) => {
+                if data_tx.send((stream, bytes)).is_err() { return false; }
+                waker();
+            }
             Ok(None) => return true,
             Err(_) => return false,
         }

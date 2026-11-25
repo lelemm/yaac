@@ -210,6 +210,12 @@
             <ColumnDefinition x:Name="BrowserColumn" Width="0" />
           </Grid.ColumnDefinitions>
           <Grid x:Name="ChatRegion" ClipToBounds="True" SizeChanged="ChatRegionSizeChanged">
+            <Grid.RowDefinitions>
+              <RowDefinition x:Name="ConversationRow" Height="*"/>
+              <RowDefinition x:Name="TerminalDividerRow" Height="0"/>
+              <RowDefinition x:Name="TerminalPanelRow" Height="0"/>
+            </Grid.RowDefinitions>
+            <Grid x:Name="ChatWork" ClipToBounds="True">
             <Grid.ColumnDefinitions>
               <ColumnDefinition Width="*"/>
               <ColumnDefinition x:Name="DockColumn" Width="0"/>
@@ -264,6 +270,12 @@
              Margin="-3.5,0,0,0" HorizontalAlignment="Left" Visibility="Collapsed"
              DragStarted="PaneDragStarted" DragDelta="PaneDragDelta" DragCompleted="PaneDragCompleted"
              AutomationProperties.Name="Resize docked agents panel" />
+          </Grid>
+            <GridSplitter x:Name="TerminalDivider" Grid.Row="1" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                          ResizeDirection="Rows" ResizeBehavior="PreviousAndNext" Background="{DynamicResource YaacRule}"
+                          DragCompleted="TerminalHeightChanged" Visibility="Collapsed" AutomationProperties.Name="Resize terminal panel"/>
+            <ContentControl Grid.Row="2" x:Name="TerminalPanelHost" HorizontalContentAlignment="Stretch"
+                            VerticalContentAlignment="Stretch" Visibility="Collapsed"/>
           </Grid>
           <GridSplitter x:Name="BrowserDivider" Grid.Column="1" HorizontalAlignment="Stretch"
                         VerticalAlignment="Stretch" Background="{DynamicResource YaacRule}"

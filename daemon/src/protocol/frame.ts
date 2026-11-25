@@ -46,10 +46,14 @@ export function encodeMessageFrame(payload: Buffer | string): Buffer {
 
 /** Encodes a 0x02 frame carrying `bytes` on `stream`. */
 export function encodeDataFrame(stream: number, bytes: Buffer): Buffer {
-  const head = prefix(1 + STREAM_PREFIX + bytes.length);
-  const sid = Buffer.allocUnsafe(STREAM_PREFIX);
-  sid.writeUInt32LE(stream >>> 0, 0);
-  return Buffer.concat([head, Buffer.of(KIND_DATA), sid, bytes]);
+  const length = 1 + STREAM_PREFIX + bytes.length;
+  if (length > MAX_FRAME_LEN) throw new FrameError("oversize", `frame of ${length} bytes exceeds the ${MAX_FRAME_LEN}-byte limit`);
+  const out = Buffer.allocUnsafe(LENGTH_PREFIX + length);
+  out.writeUInt32LE(length);
+  out[LENGTH_PREFIX] = KIND_DATA;
+  out.writeUInt32LE(stream >>> 0, LENGTH_PREFIX + 1);
+  bytes.copy(out, LENGTH_PREFIX + 1 + STREAM_PREFIX);
+  return out;
 }
 
 export function encodeFrame(frame: Frame): Buffer {

@@ -5,7 +5,7 @@ mod excerpt;
 mod highlight;
 
 pub use diff::{Diff, DiffInput, DiffResult, DiffRow, DiffView, MAX_FILE_BYTES, Notice};
-pub use excerpt::{DiffLineKind, Excerpt, diff_excerpt, file_excerpt};
+pub use excerpt::{DiffLineKind, Excerpt, diff_excerpt, file_excerpt, terminal_excerpt};
 pub use highlight::{Highlighted, Language, Line, MAX_LINE_BYTES, ScopeClass, Span};
 
 use std::io;

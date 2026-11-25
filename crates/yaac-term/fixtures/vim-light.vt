@@ -1,0 +1,27 @@
+[?1049h[22;0;0t[>4;2m[?1h=[?2004h[?1004h[1;28r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[28;1H"src/app.rs" 32L, 864B[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c]10;?]11;?[27m[23m[29m[m[H[2J[1;1H[38;5;130m  1 use[m [35mcrate[m[35m::[m[35msession[m[35m::[m{Session, Store};
+[38;5;130m  2 use[m [35mstd[m[35m::[m[35mtime[m[35m::[m{Duration, SystemTime};
+[38;5;130m  3 
+  4 [m[35m/// How long a session lives without activity.[m
+[38;5;130m  5 pub[m [32mconst[m IDLE_TIMEOUT: Duration [38;5;130m=[m [35mDuration[m[35m::[m[36mfrom_secs[m([31m600[m);
+[38;5;130m  6 
+  7 [m[35m#[derive([m[32mDebug[m[35m, [m[32mClone[m[35m)][m
+[38;5;130m  8 pub[m [38;5;130mstruct[m [36mApp[m {
+[38;5;130m  9 [m    store: Store,
+[38;5;130m 10 [m    name: [32mString[m,
+[38;5;130m 11 [m}
+[38;5;130m 12 
+ 13 impl[m App {
+[38;5;130m 14 [m    [38;5;130mpub[m [38;5;130mfn[m [36mnew[m(name: [32m&str[m) [38;5;130m->[m [32mSelf[m {
+[38;5;130m 15 [m[8C[32mSelf[m { store: [35mStore[m[35m::[m[36mdefault[m(), name: name.[36mto_owned[m() }
+[38;5;130m 16 [m    }
+[38;5;130m 17 
+ 18 [m    [35m/// Seconds until `session` expires, or zero.[m
+[38;5;130m 19 [m    [38;5;130mpub[m [38;5;130mfn[m [36mexpires_in[m([32m&[m[31mself[m, session: [32m&[mSession) [38;5;130m->[m [32mu64[m {
+[38;5;130m 20 [8Clet[m idle [38;5;130m=[m [35mSystemTime[m[35m::[m[36mnow[m()
+[38;5;130m 21 [m[12C.[36mduration_since[m(session.last_seen)
+[38;5;130m 22 [m[12C.[36munwrap_or_default[m();
+[38;5;130m 23 [m[8CIDLE_TIMEOUT.[36msaturating_sub[m(idle).[36mas_secs[m()
+[38;5;130m 24 [m    }
+[38;5;130m 25 
+ 26 [m    [38;5;130mpub[m [38;5;130mfn[m [36msign_in[m([32m&mut[m [31mself[m, user: [32m&str[m) [38;5;130m->[m [32mResult[m[38;5;130m<[mSession[38;5;130m>[m {
+[1m[7msrc/app.rs                                         20,9           Top[20;13H[?25h[?4mP+q436f\P+q6b75\P+q6b64\P+q6b72\P+q6b6c\P+q2332\P+q2334\P+q2569\P+q2a37\P+q6b31\P$q q\[?12$p

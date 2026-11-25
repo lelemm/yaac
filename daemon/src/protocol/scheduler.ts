@@ -1,10 +1,8 @@
 // Outbound scheduling and flow control (docs/03-protocol.md#scheduling-and-flow-control).
 //
 // Sans-I/O, mirroring the Rust `schedule` module:
-//   * Two classes. Control frames always go first; bulk (data chunks, large pages) is handed
-//     out one chunk at a time, only when no control frame waits. A control frame enqueued at
-//     any moment waits behind at most the one bulk frame already being written — provided the
-//     writer asks for a frame only when it is ready to write it.
+//   * Control frames alternate with interactive stream chunks. Both go before bulk; the
+//     transport writes at most one data chunk ahead of a new control or interactive frame.
 //   * Small, adaptive chunks: data chunks start at 16 KiB and grow (at most doubling) up to
 //     64 KiB while a chunk still leaves the wire within TARGET_CHUNK_MS; they shrink otherwise.
 //   * Credit: an outbound data stream sends only as many bytes as its receiver granted.
@@ -19,6 +17,7 @@ export const TARGET_CHUNK_MS = 50;
 export type TrafficClass = "control" | "bulk";
 
 interface OutStream {
+  interactive: boolean;
   pending: Buffer[];
   offset: number;
   pendingBytes: number;
@@ -29,11 +28,12 @@ interface OutStream {
 
 export interface ScheduledFrame {
   bytes: Buffer;
-  class: TrafficClass;
+  class: TrafficClass | "interactive";
 }
 
 export class Scheduler {
   private control: Buffer[] = [];
+  private lastControl = false;
   private controlBytes = 0;
   private bulkMessages: Buffer[] = [];
   private bulkBytes = 0;
@@ -52,9 +52,9 @@ export class Scheduler {
     }
   }
 
-  openStream(stream: number, initialCredit: number): void {
+  openStream(stream: number, initialCredit: number, interactive = false): void {
     if (this.streams.has(stream)) throw new Error(`data stream ${stream} is already open`);
-    this.streams.set(stream, { pending: [], offset: 0, pendingBytes: 0, credit: initialCredit, closing: false });
+    this.streams.set(stream, { interactive, pending: [], offset: 0, pendingBytes: 0, credit: initialCredit, closing: false });
   }
 
   sendData(stream: number, bytes: Buffer, drained?: () => void): void {
@@ -107,8 +107,16 @@ export class Scheduler {
 
   /** The next frame to write, or null. Call only when the transport can write it now. */
   next(): ScheduledFrame | null {
+    if (this.lastControl || this.control.length === 0) {
+      const frame = this.nextDataFrame(true);
+      if (frame) {
+        this.lastControl = false;
+        return { bytes: frame, class: "interactive" };
+      }
+    }
     const c = this.control.shift();
     if (c) {
+      this.lastControl = true;
       this.controlBytes -= c.length;
       return { bytes: c, class: "control" };
     }
@@ -122,7 +130,7 @@ export class Scheduler {
           frame = m;
         }
       } else {
-        frame = this.nextDataFrame();
+        frame = this.nextDataFrame(false);
       }
       if (frame) {
         this.turn = t === "message" ? "data" : "message";
@@ -132,16 +140,16 @@ export class Scheduler {
     return null;
   }
 
-  private nextDataFrame(): Buffer | null {
+  private nextDataFrame(interactive: boolean): Buffer | null {
     const ready = [...this.streams.entries()]
-      .filter(([, s]) => s.pendingBytes > 0 && s.credit > 0)
+      .filter(([, s]) => s.interactive === interactive && s.pendingBytes > 0 && s.credit > 0)
       .map(([id]) => id)
       .sort((a, b) => a - b);
     if (ready.length === 0) return null;
     const last = this.lastStream;
     const pick = (last === null ? undefined : ready.find((id) => id > last)) ?? ready[0]!;
     const out = this.streams.get(pick)!;
-    const allowed = Math.min(out.credit, this.chunk);
+    const allowed = Math.min(out.credit, interactive || [...this.streams.values()].some(s => s.interactive && s.pendingBytes > 0) ? CHUNK_MIN : this.chunk);
     const parts: Buffer[] = [];
     let taken = 0;
     while (taken < allowed && out.pending.length > 0) {
@@ -164,7 +172,7 @@ export class Scheduler {
     }
     if (out.closing && out.pendingBytes === 0) this.streams.delete(pick);
     this.lastStream = pick;
-    return encodeDataFrame(pick, Buffer.concat(parts));
+    return encodeDataFrame(pick, parts.length === 1 ? parts[0]! : Buffer.concat(parts, taken));
   }
 
   /** `bytes` were written in `elapsedMs`: adapt the data chunk size. */

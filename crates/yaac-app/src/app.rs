@@ -219,6 +219,8 @@ pub(crate) struct UiState {
     pub send_key: SendKey,
     /// D127: closing the window hides it to the tray.
     pub tray_on_close: bool,
+    /// Settings → Terminal and the terminal panel's height (P338, P339).
+    pub terminal: yaac_core::prefs::TerminalPrefs,
     pub questions: HashMap<RequestId, QuestionDraft>,
     pub budgets: HashMap<RequestId, BudgetFields>,
     pub dismissed: BTreeSet<TargetId>,
@@ -243,6 +245,8 @@ pub(crate) struct UiState {
     pub chat_column: Option<egui::Rect>,
     /// The thread has Related agents to show beside the side pane (pill or docked panel).
     pub chat_agents: bool,
+    /// The floating Related agents pill is shown: the terminal panel keeps its gutter.
+    pub pill_floating: bool,
     /// The settings pages' own state.
     pub set: crate::settings::SettingsUi,
     /// Transcript block heights as last drawn, keyed by block identity, not content (D152, P200).
@@ -353,6 +357,7 @@ impl UiState {
             font_size: theme::size::UI,
             send_key: SendKey::Enter,
             tray_on_close: true,
+            terminal: yaac_core::prefs::TerminalPrefs::default(),
             questions: HashMap::new(),
             budgets: HashMap::new(),
             dismissed: BTreeSet::new(),
@@ -367,6 +372,7 @@ impl UiState {
             layout_size: None,
             chat_dock_width: None,
             chat_dock: None,
+            pill_floating: false,
             chat_column: None,
             chat_agents: false,
             set: crate::settings::SettingsUi::default(),
@@ -421,7 +427,9 @@ impl UiState {
             agents_width: self.agents_width,
             tray_on_close: self.tray_on_close,
             bindings: self.bindings.overrides.clone(),
+            terminal_commands: self.bindings.in_terminal.clone(),
             recent: self.recent.clone(),
+            terminal: self.terminal,
         }
     }
 
@@ -443,7 +451,9 @@ impl UiState {
         self.agents_width = p.agents_width;
         self.tray_on_close = p.tray_on_close;
         self.bindings.overrides = p.bindings.clone();
+        self.bindings.in_terminal = p.terminal_commands.clone();
         self.recent = p.recent.clone();
+        self.terminal = p.terminal;
     }
 }
 
@@ -610,6 +620,7 @@ pub(crate) enum Action {
     OutsideTools(TargetId, InstanceId, bool),
     TrustFolders(TargetId, InstanceId, bool),
     ModelBestUse(TargetId, InstanceId, yaac_protocol::ModelId, yaac_protocol::ModelId, Option<String>),
+    ModelEnabled(TargetId, InstanceId, yaac_protocol::ModelId, bool),
     SetAlways(bool),
     ClearCache,
     FsList(TargetId, String),
@@ -1466,6 +1477,9 @@ impl YaacApp {
                 Action::ModelBestUse(target, instance, model, expected, summary) => {
                     self.client.set_model_best_use(&target, instance, model, expected, summary);
                 }
+                Action::ModelEnabled(target, instance, model, enabled) => {
+                    self.client.set_model_enabled(&target, instance, model, enabled);
+                }
                 Action::SetAlways(on) => {
                     self.client.set_always(on);
                     #[cfg(feature = "hub")]
@@ -1884,15 +1898,17 @@ impl eframe::App for YaacApp {
             None => ui.max_rect(),
         };
         crate::titlebar::drag_area(ui, window);
-        if let HelloOutcome::WindowOutdated { message } = &self.client.state.hub.outcome {
+        let previewing = if let HelloOutcome::WindowOutdated { message } = &self.client.state.hub.outcome {
             let rest = egui::Rect::from_min_max(egui::pos2(window.left(), window.top() + crate::titlebar::HEIGHT), window.max);
             ui.painter().rect_filled(window, 0.0, p.bg);
             ui.scope_builder(egui::UiBuilder::new().max_rect(rest), |ui| crate::first_run::update_needed(ui, &p, message));
+            false
         } else if self.ui.settings {
             crate::settings::show(ui, self, &mut actions);
+            false
         } else {
-            crate::shell::show(ui, self, &map, now, &mut actions, frame);
-        }
+            crate::shell::show(ui, self, &map, now, &mut actions, frame)
+        };
         crate::shell::window_error_notice(&ctx, self, window.width(), &mut actions);
         crate::titlebar::panes(ui, window, self);
         crate::titlebar::buttons(ui, window, &p);
@@ -1915,6 +1931,9 @@ impl eframe::App for YaacApp {
         crate::dialogs::quit(ui.ctx(), self);
         crate::commander::show(ui.ctx(), self, &mut actions);
         self.images.show(ui.ctx());
+        if previewing {
+            ctx.set_cursor_icon(egui::CursorIcon::ZoomIn);
+        }
         // Pull requests of the rows on screen (D119): asked when due, never polled; one calm
         // repaint when the next refresh is due.
         let visible = std::mem::take(&mut self.ui.pr_visible);

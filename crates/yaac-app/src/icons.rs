@@ -399,6 +399,26 @@ pub(crate) fn terminal(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.line_segment([pos2(c.x, r.center().y + s), pos2(c.x + d * 0.2, r.center().y + s)], stroke(col, w));
 }
 
+/// A shell prompt, `>_` (terminal tabs and the composer row's Terminal button). The same path
+/// as WPF's: M2 4 L6 8 L2 12 M8 12 H14 in a 16 × 16 box.
+pub(crate) fn prompt(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let w = (d * 0.09).max(1.2);
+    let at = |x: f32, y: f32| pos2(c.x + (x - 8.0) * d / 16.0, c.y + (y - 8.0) * d / 16.0);
+    p.line(vec![at(2.5, 4.0), at(6.5, 8.0), at(2.5, 12.0)], stroke(col, w));
+    p.line_segment([at(8.0, 12.0), at(14.0, 12.0)], stroke(col, w));
+}
+
+/// Clear: an eraser over a baseline. M3 9.5 L8 4.5 L12.5 9 L8.5 13 H6.5 Z, M9 13 H14.
+pub(crate) fn clear(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let w = (d * 0.08).max(1.1);
+    let at = |x: f32, y: f32| pos2(c.x + (x - 8.0) * d / 16.0, c.y + (y - 8.0) * d / 16.0);
+    p.add(eframe::egui::Shape::closed_line(vec![at(3.0, 9.5), at(8.0, 4.5), at(12.5, 9.0), at(8.5, 13.0), at(6.5, 13.0)], stroke(col, w)));
+    p.line_segment([at(5.5, 7.0), at(10.5, 11.5)], stroke(col, w));
+    p.line_segment([at(9.0, 13.0), at(14.0, 13.0)], stroke(col, w));
+}
+
 pub(crate) fn file(p: &Painter, c: Pos2, d: f32, col: Color32, broken: bool) {
     let p = &soft(p);
     let w = (d * 0.08).max(1.1);

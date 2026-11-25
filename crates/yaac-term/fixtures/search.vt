@@ -1,0 +1,26 @@
+[?2004h[1;32mdev@devbox[0m:[1;34m~/work/auth[0m$ tail -n 24 docs/sessions.log
+[?2004lLine  97: session refreshed ok
+Line  98: session expired auth=denied
+Line  99: session closed ok
+Line 100: session opened ok
+Line 101: session refreshed ok
+Line 102: session expired ok
+Line 103: session closed ok
+Line 104: session opened ok
+Line 105: session refreshed auth=denied
+Line 106: session expired ok
+Line 107: session closed ok
+Line 108: session opened ok
+Line 109: session refreshed ok
+Line 110: session expired ok
+Line 111: session closed ok
+Line 112: session opened auth=denied
+Line 113: session refreshed ok
+Line 114: session expired ok
+Line 115: session closed ok
+Line 116: session opened ok
+Line 117: session refreshed ok
+Line 118: session expired ok
+Line 119: session closed auth=denied
+Line 120: session opened ok
+[?2004h[1;32mdev@devbox[0m:[1;34m~/work/auth[0m$ 

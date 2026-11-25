@@ -22,12 +22,15 @@ public partial class MainWindow : Window
     private Window? dialog;
     private double fontScale = 1;
     private bool firstRun;
+    private readonly Cursor previewCursor;
     private readonly Dictionary<(string Key, ModifierKeys Modifiers), Shortcut> shortcuts = new();
-    private sealed record Shortcut(string Id, bool InText, bool Repeat);
+    private sealed record Shortcut(string Id, bool InText, bool Repeat, bool InTerminal);
 
     internal MainWindow(Func<Controller> connect, bool demo, bool tray)
     {
         InitializeComponent();
+        using (var stream = Application.GetResourceStream(new Uri("Assets/zoom-in.cur", UriKind.Relative)).Stream)
+            previewCursor = new Cursor(stream, scaleWithDpi: true);
         InitializeRail();
         InitializeBrowser();
         Title = demo ? "YAAC · WPF demo" : "YAAC";
@@ -51,6 +54,9 @@ public partial class MainWindow : Window
         ComposerPane.DropOverlayChanged += visible =>
             ComposerDropOverlay.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         AgentsPane.Command += Send;
+        AgentsPane.HoverPreviewEnded += () => TranscriptPreview.Visibility = Visibility.Collapsed;
+        TranscriptPreview.IsVisibleChanged += (_, _) => UpdatePreviewCursor();
+        Deactivated += (_, _) => AgentsPane.CancelHoverPreview();
         SettingsPane.Command += Send;
         SidebarPane.ObservePrRows(QueueVisiblePrRows);
         AgentsPane.ObservePrRows(QueueVisiblePrRows);
@@ -81,10 +87,20 @@ public partial class MainWindow : Window
         Closed += (_, _) =>
         {
             closed = true;
+            if (Mouse.OverrideCursor == previewCursor) Mouse.OverrideCursor = null;
+            previewCursor.Dispose();
             this.tray?.Dispose();
             this.tray = null;
             controller?.Dispose();
         };
+    }
+
+    private void UpdatePreviewCursor()
+    {
+        if (IsActive && TranscriptPreview.IsVisible)
+            Mouse.OverrideCursor = previewCursor;
+        else if (Mouse.OverrideCursor == previewCursor)
+            Mouse.OverrideCursor = null;
     }
 
     private void UpdateClientArea()
@@ -157,6 +173,17 @@ public partial class MainWindow : Window
             await Task.Run(() => session.RunAsync(
                 frame =>
                 {
+                    if (frame.TryGetProperty("terminalFrame", out var terminal))
+                    {
+                        var decoded = TerminalFrame.Read(terminal);
+                        return Dispatcher.InvokeAsync(() =>
+                        {
+                            var pane = decoded.Panel ? panelTabs : BrowserPane;
+                            if (pane != null) pane.ReceiveTerminal(decoded);
+                            else Send("terminal.ack", new { tab = decoded.Tab, panel = decoded.Panel, frame = decoded.Serial });
+                        },
+                            System.Windows.Threading.DispatcherPriority.Render).Task;
+                    }
                     if (frame.TryGetProperty("filesDocument", out var part))
                     {
                         if (fileDocuments.Accept(part) is { } data)
@@ -185,6 +212,21 @@ public partial class MainWindow : Window
     private void Receive(JsonElement frame, ImageViewerFrame? image, BrowserFrame? browserFrame)
     {
         if (closed) return;
+        if (frame.TryGetProperty("terminalPasteConfirm", out var pastePrompt)) ConfirmTerminalPaste(pastePrompt);
+        if (frame.TryGetProperty("terminalFocus", out var focus))
+        {
+            if (focus.Flag("composer")) ComposerPane.Editor.Focus();
+            else
+            {
+                var pane = focus.Flag("panel") ? panelTabs : BrowserPane;
+                if (pane?.DisplaysTerminal(focus.GetProperty("tab").GetUInt64()) == true) pane.FocusTerminal();
+            }
+        }
+        if (frame.TryGetProperty("terminalReadPaste", out var pasteRequest))
+            (pasteRequest.Flag("panel") ? panelTabs : BrowserPane)?.PasteTerminal(pasteRequest.GetProperty("tab").GetUInt64());
+        if (frame.TryGetProperty("terminalCopy", out var copied) && copied.GetString() is string text
+            && WriteClipboard(text) && frame.TryGetProperty("terminalNotice", out var notice))
+            SetLocalStatus(notice.GetString());
         if (browserFrame is { } browserPixels) BrowserPane.Paint(browserPixels);
         if (frame.TryGetProperty("browserEvent", out var browserEvent)) BrowserPane.ReceiveEvent(browserEvent);
         if (frame.TryGetProperty("filesChange", out var change))
@@ -224,12 +266,14 @@ public partial class MainWindow : Window
         if (views.TryGetProperty("transcript", out var transcript)) TranscriptPane.Render(transcript);
         if (views.TryGetProperty("transcriptPreview", out var preview))
         {
-            bool visible = preview.ValueKind == JsonValueKind.Object;
-            TranscriptPreview.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-            if (visible)
+            if (preview.ValueKind != JsonValueKind.Object)
+                TranscriptPreview.Visibility = Visibility.Collapsed;
+            else
             {
                 TranscriptPreviewTitle.Text = $"Previewing {preview.GetProperty("previewTitle").GetString()}";
                 TranscriptPreviewPane.Render(preview);
+                if (IsActive && preview.GetProperty("threadId").GetString() == AgentsPane.HoveredThread)
+                    TranscriptPreview.Visibility = Visibility.Visible;
             }
         }
         if (views.TryGetProperty("composer", out var composer))
@@ -295,15 +339,17 @@ public partial class MainWindow : Window
     {
         if (command == "shell.copy")
         {
-            if (payload is string text)
-            {
-                try { Clipboard.SetText(text); }
-                catch (System.Runtime.InteropServices.ExternalException) { SetLocalStatus("Clipboard is busy."); }
-            }
+            if (payload is string text) WriteClipboard(text);
             return;
         }
 
         controller?.Send(command, payload);
+    }
+
+    private bool WriteClipboard(string text)
+    {
+        try { Clipboard.SetText(text); return true; }
+        catch (System.Runtime.InteropServices.ExternalException) { SetLocalStatus("Clipboard is busy."); return false; }
     }
 
     private ulong? statusId;
@@ -515,8 +561,9 @@ public partial class MainWindow : Window
             if (Flag(binding, "alt")) modifiers |= ModifierKeys.Alt;
             if (Flag(binding, "shift")) modifiers |= ModifierKeys.Shift;
             shortcuts.TryAdd((Text(binding, "key"), modifiers),
-                new Shortcut(Text(binding, "id"), Flag(binding, "inText"), Flag(binding, "repeat")));
+                new Shortcut(Text(binding, "id"), Flag(binding, "inText"), Flag(binding, "repeat"), Flag(binding, "inTerminal")));
         }
+        UpdateTerminalTip();
     }
 
     private void WindowKey(object sender, KeyEventArgs args)
@@ -533,14 +580,21 @@ public partial class MainWindow : Window
                 args.Handled = true;
             return;
         }
-        if (!CommanderOverlay.IsVisible && (BrowserPane.IsKeyboardFocusWithin || Keyboard.FocusedElement is not (TextBoxBase or PasswordBox))
+        if (BrowserPane.IsRenamingTerminal || panelTabs?.IsRenamingTerminal == true) return;
+        if (key == Key.F2 && Keyboard.Modifiers == ModifierKeys.None && !CommanderOverlay.IsVisible
+            && (BrowserPane.RenameFocusedTab() || panelTabs?.RenameFocusedTab() == true))
+        {
+            args.Handled = true;
+            return;
+        }
+        if (!TerminalFocused && !CommanderOverlay.IsVisible && (BrowserPane.IsKeyboardFocusWithin || Keyboard.FocusedElement is not (TextBoxBase or PasswordBox))
             && BrowserPane.FilesShortcut(key, Keyboard.Modifiers))
         {
             args.Handled = true;
             return;
         }
         if (SettingsPane.IsRecordingShortcut || BrowserPane.OwnsKeyboard ||
-            (key == Key.F12 && BrowserPane.IsKeyboardFocusWithin)) return;
+            (key == Key.F12 && BrowserPane.IsKeyboardFocusWithin && !TerminalFocused)) return;
         var logical = Views.SettingsView.CanonicalKey(key, Keyboard.Modifiers) ?? key.ToString();
         if (CommanderOverlay.IsVisible)
         {
@@ -592,8 +646,9 @@ public partial class MainWindow : Window
             && ((modifiers & ModifierKeys.Shift) == 0
                 || !shortcuts.TryGetValue((key, modifiers & ~ModifierKeys.Shift), out shortcut)))
             return false;
-        var inText = Keyboard.FocusedElement is TextBoxBase or PasswordBox;
-        if (inText && !shortcut.InText) return false;
+        var inText = TerminalFocused || Keyboard.FocusedElement is TextBoxBase or PasswordBox;
+        if (shortcut.Id is "next-terminal" or "prev-terminal" && !TerminalFocused) return false;
+        if (TerminalFocused ? !shortcut.InTerminal : inText && !shortcut.InText) return false;
         if (repeat && !shortcut.Repeat) return true;
         if (shortcut.Id == "commander") { OpenCommander(); return true; }
         if (!settingsOpen)
@@ -608,7 +663,7 @@ public partial class MainWindow : Window
             }
         }
         var approval = TranscriptPane.FocusedApproval;
-        Send("shell.shortcut", new { id = shortcut.Id, inText, card = approval?.ActionId, threadId = approval?.ThreadId });
+        Send("shell.shortcut", new { id = shortcut.Id, inText, terminalFocus = TerminalFocused, card = approval?.ActionId, threadId = approval?.ThreadId });
         return true;
     }
 

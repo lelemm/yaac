@@ -26,6 +26,7 @@ import type {
 import type {
   AppliedSettings,
   Capability,
+  Item,
   ModeInfo,
   ModelInfo,
   RequestResponse,
@@ -68,6 +69,7 @@ import { ASK_TOOL, answeredInput, approvalRequest, approvalResult, normaliseQues
 import { EXECUTABLE_VAR, findExecutable, loadRealSdk, realCli, subagentFiles, type AgentEntry, type ClaudeCli, type ClaudeSdk, type SdkQuery, type SubagentFile } from "./sdk.js";
 import { flagsOf, historyItems, isToolResultMessage, LiveTranslator, type ItemEvent } from "./translate.js";
 import { previewText } from "./markup.js";
+import { bashMarkup, runUserShell } from "../user-shell.js";
 import { claudeSkills } from "../skills.js";
 import { ClaudeRateLimits, readWithOwnQuery } from "./ratelimits.js";
 import type { RateLimitReport } from "../ratelimits.js";
@@ -178,6 +180,11 @@ interface TurnState {
   origin: TurnOrigin;
   interrupting: boolean;
   compact?: { confirmed: boolean; error: string | null; connectionLost: boolean };
+  /**
+   * A `!command` (P344): yaacd runs it (`running`), then hands Claude Code the record with
+   * `shouldQuery: true` and the model answers in this same turn (`answering`).
+   */
+  shell?: { stop: AbortController; phase: "running" | "answering" };
   ended: Promise<void>;
   end: () => void;
 }
@@ -526,6 +533,9 @@ export class ClaudeProvider implements HarnessProvider {
       "webSearch",
       // `/name` at the start of a message runs a skill; the list is read from disk (`skills/list`).
       "skills",
+      // `!command` from the composer (P344): yaacd runs it and sends Claude Code's own bash
+      // markup with `shouldQuery: true` (docs/research/user-shell-commands-claude.md).
+      "userShellCommand",
       "nativeFileMentions",
       // accountInfo(), the usage report, and the stream's rate_limit_event (D161).
       "rateLimits",
@@ -1074,6 +1084,9 @@ export class ClaudeProvider implements HarnessProvider {
       case "result": {
         const turn = live.turn;
         if (!turn) return;
+        // A `!command`'s turn ends with the result of the answer it asked for. A result with
+        // no model turn (`num_turns: 0`: a context-only append) is not that one (P344).
+        if (turn.shell && (turn.shell.phase === "running" || (m as { num_turns?: number }).num_turns === 0)) return;
         const usage = usageOf(m.usage);
         // Asked for fast mode, and Claude Code says the turn did not get it (D125): said in
         // the transcript, with Claude Code's reason, never hidden.
@@ -1358,7 +1371,7 @@ export class ClaudeProvider implements HarnessProvider {
     return { thread: live.native, turnId: live.turn?.turnId ?? "" };
   }
 
-  private raise(live: Live, agentId: string | undefined, requestId: string, request: RaisedRequest, signal: AbortSignal, settle: (response: RequestResponse | null) => void): void {
+  private raise(live: Live, agentId: string | undefined, requestId: string, request: RaisedRequest, signal: AbortSignal, settle: (response: RequestResponse | null) => void, userRule: string | null = null): void {
     const home = this.requestHome(live, agentId);
     let open = true;
     const close = () => {
@@ -1389,8 +1402,9 @@ export class ClaudeProvider implements HarnessProvider {
     if (live.idleTimer) clearTimeout(live.idleTimer);
     live.idleTimer = null;
     signal.addEventListener("abort", onAbort, { once: true });
-    // Raised at once; it stays pending for as long as the user takes. yaacd never answers it.
-    this.emit({ type: "requestRaised", thread: home.thread, turnId: home.turnId, requestId, request, blocking: true });
+    // Raised at once, with the mode the query is in: yaacd answers a tool approval itself only
+    // in a mode that never asks (P342); anything else stays pending for as long as the user takes.
+    this.emit({ type: "requestRaised", thread: home.thread, turnId: home.turnId, requestId, request, blocking: true, mode: live.mode, ...(userRule ? { userRule } : {}) });
     if (signal.aborted) pending.expire();
   }
 
@@ -1400,6 +1414,8 @@ export class ClaudeProvider implements HarnessProvider {
     input: Record<string, unknown>,
     opts: Parameters<NonNullable<Options["canUseTool"]>>[2],
   ): Promise<PermissionResult> {
+    const extra = (opts as { decisionReasonType?: unknown }).decisionReasonType;
+    const reasonType = typeof extra === "string" ? extra : null;
     const ctx: ToolPermissionContext = {
       toolName,
       input,
@@ -1413,6 +1429,10 @@ export class ClaudeProvider implements HarnessProvider {
       ...(opts.suppressAlwaysAllowRule ? { suppressAlwaysAllowRule: true } : {}),
       ...(opts.mcpServer ? { mcpServer: opts.mcpServer } : {}),
       ...(opts.agentID ? { agentID: opts.agentID } : {}),
+      ...(opts.matchedAskRule ? { matchedAskRule: opts.matchedAskRule } : {}),
+      ...(opts.defaultToNo ? { defaultToNo: true } : {}),
+      // Sent by Claude Code 2.1.330 alongside `decisionReason`, not declared in sdk.d.ts.
+      ...(reasonType ? { decisionReasonType: reasonType } : {}),
     };
     // The tool_use id, so that the request item has the same id in history.
     const requestId = opts.toolUseID || opts.requestId || randomUUID();
@@ -1422,11 +1442,18 @@ export class ClaudeProvider implements HarnessProvider {
       );
     }
     const request = approvalRequest(ctx);
+    // Forced by the user's own `permissions.ask` rule: `matchedAskRule` per sdk.d.ts, but
+    // 2.1.330 was seen (in bypass) to send only the undeclared `decisionReasonType: "rule"`.
+    const rule = opts.matchedAskRule
+      ? `${opts.matchedAskRule.toolName}${opts.matchedAskRule.ruleContent ? `(${opts.matchedAskRule.ruleContent})` : ""} (${opts.matchedAskRule.source})`
+      : reasonType === "rule"
+        ? "a permission rule in the user's settings"
+        : null;
     return new Promise<PermissionResult>((resolve) => {
       this.raise(live, opts.agentID, requestId, request, opts.signal, (response) => {
         if (!response) resolve({ behavior: "deny", message: "The request was withdrawn before the user answered." });
         else resolve(approvalResult(ctx, response));
-      });
+      }, rule);
     });
   }
 
@@ -1620,6 +1647,64 @@ export class ClaudeProvider implements HarnessProvider {
     return this.send(live, input);
   }
 
+  /**
+   * `!command` (P344). Claude Code has no programmatic `!`, so yaacd runs the command in the
+   * session's folder with the target user's shell (120 s timeout, Stop), shows it live as a
+   * `userShell` command item, then pushes **one** user message in Claude Code's own `!` markup
+   * — `<bash-input>` and `<bash-stdout>…<bash-stderr>…<bash-exit-code>` as separate text
+   * blocks — with `shouldQuery: true`, so the model answers in the same turn, as the CLI's
+   * `!` does by default. Its uuid is derived from the operation id (the CLI skips a uuid it
+   * has seen). Stopped: the record is still appended, as context only (`shouldQuery: false`,
+   * `priority: "later"`), and no answer is asked for.
+   */
+  async shellCommand(thread: NativeId, command: string, overrides: TurnOverrides, opId: string): Promise<TurnId> {
+    const s = await this.threadSettings(thread);
+    const current = this.live.get(thread);
+    if (current?.turn || current?.hasQueuedPeer()) throw new Error("a turn or peer command is already running in this Claude Code session");
+    if (overrides.model) s.model = overrides.model;
+    if (overrides.effort) s.effort = overrides.effort;
+    if (overrides.mode) s.mode = overrides.mode;
+    if (typeof overrides.fast === "boolean") s.fast = overrides.fast;
+    this.save();
+    let live = await this.ensureLive(thread, []);
+    live = await this.applySettings(live, s);
+    if (live.turn || live.hasQueuedPeer()) throw new Error("a turn or peer command is already running in this Claude Code session");
+    const turnId = opUuid(opId);
+    if (live.ours.has(turnId)) throw new InputOutcomeUnknown("this shell command was already handed to Claude Code");
+    live.ours.add(turnId);
+    const turn = this.beginTurn(live, turnId, "user");
+    const stop = new AbortController();
+    turn.shell = { stop, phase: "running" };
+    const cwd = live.cwd ?? s.cwd;
+    const item = { id: `shell:${turnId}`, turnId, status: "inProgress", kind: "toolCall", tool: "command", title: command, input: { command }, cwd, output: "", source: "userShell", startedAt: new Date().toISOString() } as unknown as Item;
+    this.emit({ type: "itemStarted", thread, item });
+    void runUserShell({
+      command,
+      cwd,
+      env: this.options.env,
+      signal: stop.signal,
+      onOutput: (delta) => this.emit({ type: "itemDelta", thread, itemId: item.id, field: "output", delta }),
+    }).then((r) => {
+      const done = { ...item, status: r.exitCode === 0 ? "completed" : "failed", exitCode: r.exitCode, durationMs: r.durationMs, completedAt: new Date().toISOString() } as Item;
+      delete (done as { output?: string }).output;
+      this.emit({ type: "itemCompleted", thread, item: done });
+      const [input, output] = bashMarkup(command, r);
+      const content = [{ type: "text" as const, text: input }, { type: "text" as const, text: output }];
+      if (r.stopped || live.turn !== turn) {
+        // The record still joins the conversation, as context, like a stopped TUI `!`.
+        live.input.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: turnId as SDKUserMessage["uuid"], shouldQuery: false, priority: "later" } as SDKUserMessage);
+        if (live.turn === turn) this.finishTurn(live, "interrupted", null, null);
+        return;
+      }
+      turn.shell!.phase = "answering";
+      turn.interrupting = false;
+      if (!live.input.push({ type: "user", message: { role: "user", content }, parent_tool_use_id: null, uuid: turnId as SDKUserMessage["uuid"], shouldQuery: true } as SDKUserMessage)) {
+        this.finishTurn(live, "failed", "Claude Code closed its input stream before the shell command's output could be given to it", null);
+      }
+    });
+    return turnId;
+  }
+
   async compact(thread: NativeId): Promise<void> {
     const live = await this.ensureLive(thread, []);
     if (live.turn) throw new Error("a turn is already running in this Claude Code session");
@@ -1727,6 +1812,12 @@ export class ClaudeProvider implements HarnessProvider {
     if (!live?.turn || live.turn.turnId !== turn) return;
     const t = live.turn;
     t.interrupting = true;
+    if (t.shell?.phase === "running") {
+      // Stop on a running `!command`: the command ends; no answer is asked for.
+      t.shell.stop.abort();
+      await Promise.race([t.ended, new Promise((r) => setTimeout(r, 30000).unref())]);
+      return;
+    }
     for (const p of [...live.requests.values()]) if (p.turnId === turn) p.expire();
     try {
       await live.query.interrupt(live.cancelQueued && live.peerCommands.size ? { cancelQueued: true } : undefined);
@@ -2001,4 +2092,13 @@ export const claudeProviderFactory: ProviderFactory = {
 /** The store identity key of a Claude Code configuration folder (as the probe reports it). */
 export function claudeStoreKey(configDir: string): string {
   return `claude:${sha256Hex(path.resolve(configDir)).slice(0, 16)}`;
+}
+
+/**
+ * The SDK message uuid for an operation (P344): a UUID derived from the operation id, so the
+ * same operation always carries the same uuid and Claude Code skips a repeat.
+ */
+export function opUuid(opId: string): string {
+  const h = sha256Hex(`yaac-op\u0000${opId}`);
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${((parseInt(h.slice(16, 17), 16) & 0x3) | 0x8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }

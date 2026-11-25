@@ -33,6 +33,12 @@
                 BorderThickness="1.5" Visibility="{Binding Unseen, Converter={StaticResource AgentsVisible}}" />
         <Border HorizontalAlignment="Right" VerticalAlignment="Bottom"
                 Width="12" Height="12" CornerRadius="6" Background="{DynamicResource YaacRaised}"
+                Visibility="{Binding Waiting, Converter={StaticResource AgentsVisible}}">
+          <TextBlock Text="{Binding Mark}" FontSize="9" Foreground="{Binding MarkColor}"
+                     HorizontalAlignment="Center" VerticalAlignment="Center" />
+        </Border>
+        <Border HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                Width="12" Height="12" CornerRadius="6" Background="{DynamicResource YaacRaised}"
                 Visibility="{Binding Attention, Converter={StaticResource AgentsVisible}}">
           <TextBlock Text="!" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource YaacFailure}"
                      HorizontalAlignment="Center" VerticalAlignment="Center" />
@@ -147,8 +153,19 @@
                   <TextBlock x:Name="MarkWord" DockPanel.Dock="Right" Text="{Binding Data.MarkLabel}"
                              FontSize="11" Foreground="{Binding Data.MarkColor}" Margin="4,0,0,0"
                              Visibility="Collapsed" VerticalAlignment="Center" />
-                  <TextBlock x:Name="Title" Text="{Binding Data.Title}" FontWeight="SemiBold"
-                             Style="{StaticResource AgentsText}" />
+                  <Grid HorizontalAlignment="Left">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="*" />
+                      <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="Title" Text="{Binding Data.Title}" FontWeight="SemiBold"
+                               Style="{StaticResource AgentsText}" />
+                    <Border Grid.Column="1" Margin="5,0,0,0" Padding="4,0" CornerRadius="4"
+                            Background="{DynamicResource YaacRaised}" VerticalAlignment="Center"
+                            Visibility="{Binding Data.IsSelf, Converter={StaticResource AgentsVisible}}">
+                      <TextBlock Text="self" FontSize="10" Foreground="{DynamicResource YaacMuted}" />
+                    </Border>
+                  </Grid>
                 </DockPanel>
                 <TextBlock x:Name="LastAction" Text="{Binding Data.LastAction}" Style="{StaticResource AgentsMeta}"
                            Visibility="{Binding Data.HasLastAction, Converter={StaticResource AgentsVisible}}" />
@@ -199,6 +216,13 @@
         </DataTrigger>
         <DataTrigger Binding="{Binding MenuOpen}" Value="True">
           <Setter TargetName="Row" Property="Background" Value="{DynamicResource YaacRaised}" />
+        </DataTrigger>
+        <DataTrigger Binding="{Binding Data.IsSelf}" Value="True">
+          <Setter TargetName="Row" Property="Background" Value="{DynamicResource YaacSelected}" />
+          <Setter TargetName="OpenRow" Property="IsEnabled" Value="True" />
+          <Setter TargetName="OpenRow" Property="IsHitTestVisible" Value="False" />
+          <Setter TargetName="OpenRow" Property="Focusable" Value="False" />
+          <Setter TargetName="OpenRow" Property="IsTabStop" Value="False" />
         </DataTrigger>
         <DataTrigger Binding="{Binding Data.Finished}" Value="True">
           <Setter TargetName="Title" Property="Foreground" Value="{DynamicResource YaacMuted}" />
@@ -261,7 +285,7 @@
       <Border x:Name="Card" Width="300" Background="{DynamicResource YaacCard}" BorderBrush="{DynamicResource YaacRule}"
               BorderThickness="1" CornerRadius="9" Padding="9"
               TextElement.Foreground="{DynamicResource YaacText}" TextElement.FontSize="13"
-              KeyboardNavigation.TabNavigation="Cycle" MouseEnter="OnCardEnter" MouseLeave="OnCardLeave"
+              KeyboardNavigation.TabNavigation="Cycle" MouseEnter="OnCardEnter" MouseMove="OnAgentHover" MouseLeave="OnCardLeave"
               LostKeyboardFocus="OnPillFocusLost" PreviewKeyDown="OnFloatingKeyDown">
         <DockPanel>
           <DockPanel DockPanel.Dock="Top" Margin="2,0,0,4">
@@ -298,7 +322,7 @@
     </Popup>
 
     <Border x:Name="Docked" Background="{DynamicResource YaacPanel}" Padding="11,8" Visibility="Collapsed"
-            MouseEnter="OnDockHover" MouseMove="OnDockHover" MouseLeave="OnDockLeave">
+            MouseEnter="OnAgentHover" MouseMove="OnAgentHover" MouseLeave="OnDockLeave">
       <DockPanel>
         <DockPanel DockPanel.Dock="Top" Margin="2,0,0,5">
           <Button x:Name="UndockButton" DockPanel.Dock="Right" Click="OnUndock" Content="Undock"

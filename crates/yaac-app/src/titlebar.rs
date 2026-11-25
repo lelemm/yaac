@@ -141,14 +141,8 @@ pub(crate) fn panes(ui: &mut egui::Ui, full: Rect, app: &mut crate::app::YaacApp
     crate::widgets::menu_popup(egui::Popup::menu(&plus), &app.p).show(|ui| {
         let key = app.client.state.selected_thread().filter(|_| !app.ui.settings).cloned();
         let reason = app.browsers.reason(&app.client, key.as_ref());
-        match (crate::preview_ui::pane_menu(ui, app, key.as_ref()), &key) {
-            (Some(true), Some(key)) => {
-                let _ = app.browsers.open_file_tab(&mut app.client, key, crate::file_pane::TabKind::Files, false);
-            }
-            (Some(false), Some(key)) => {
-                app.preview_ui.focus_address = app.browsers.new_tab(&app.client, key).ok();
-            }
-            _ => {}
+        if let (Some(choice), Some(key)) = (crate::preview_ui::pane_menu(ui, app, key.as_ref()), &key) {
+            crate::preview_ui::add_pane_tab(app, key, choice);
         }
         if reason.is_some() && let Some(key) = key.filter(|k| crate::preview_controller::supported(&app.client, k)) {
             ui.add(egui::TextEdit::singleline(&mut app.preview_ui.external_address).hint_text("URL or port"));

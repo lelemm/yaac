@@ -1,5 +1,5 @@
 // One host connection, server role: framing, the frozen core, `initialize`, the dialect, and
-// two-class outbound scheduling. The session layer above sees only domain values: it never
+// priority scheduling. The session layer above sees only domain values: it never
 // learns the negotiated version (docs/09-compatibility.md#the-three-rules).
 
 import type { Duplex } from "node:stream";
@@ -23,6 +23,8 @@ import type { Dialect, FeatureSet } from "./dialect.js";
 
 /** What the daemon provides to the frozen core and to `initialize`. */
 export interface FrozenCoreHost {
+  /** Native PTY probe result, absent on hosts without a terminal backend. */
+  terminalSupport?(): { unavailableReason?: string };
   daemonInfo(): DaemonInfo;
   targetFacts(): TargetFacts;
   busy(): DaemonBusy;
@@ -56,7 +58,7 @@ export interface ConnectionView {
   backlogBytes(): number;
   /** Calls `listener` once, when the outbound backlog is below the low-water mark. */
   whenWritable(listener: () => void): void;
-  openStream(stream: number, credit: number): void;
+  openStream(stream: number, credit: number, interactive?: boolean): void;
   sendData(stream: number, bytes: Buffer, drained: () => void): void;
   cancelStream(stream: number): void;
   grantCredit(stream: number, bytes: number): void;
@@ -328,9 +330,11 @@ export class ServerConnection implements ConnectionView {
     this.negotiated = negotiated;
     this.dialect = select(negotiated);
     this.clientInfo = client;
+    const terminal = this.host.terminalSupport?.();
     const result = {
       protocol: negotiated.answer(),
-      features: this.dialect.features().fold(["portForward", "fileView"]),
+      features: this.dialect.features().fold(terminal && !terminal.unavailableReason ? ["portForward", "fileView", "terminal"] : ["portForward", "fileView"]),
+      terminalUnavailableReason: terminal?.unavailableReason,
       schemaHash: this.dialect.schemaHash(),
       daemon: this.host.daemonInfo(),
       target: this.host.targetFacts(),
@@ -368,8 +372,8 @@ export class ServerConnection implements ConnectionView {
     this.notify(NOTIFICATIONS.THREAD_EVENT, params);
   }
 
-  openStream(stream: number, credit: number): void {
-    this.scheduler.openStream(stream, credit);
+  openStream(stream: number, credit: number, interactive = false): void {
+    this.scheduler.openStream(stream, credit, interactive);
   }
 
   sendData(stream: number, bytes: Buffer, drained: () => void): void {
@@ -395,13 +399,13 @@ export class ServerConnection implements ConnectionView {
     while (!this.waitingDrain && !this.bulkInFlight) {
       const next = this.scheduler.next();
       if (!next) break;
-      if (next.class === "bulk") {
+      if (next.class !== "control") {
         this.bulkInFlight = true;
         const started = performance.now();
         const len = next.bytes.length;
         const ok = this.transport.write(next.bytes, () => {
           this.bulkInFlight = false;
-          this.scheduler.onWritten(len, performance.now() - started);
+          if (next.class === "bulk") this.scheduler.onWritten(len, performance.now() - started);
           this.flush();
         });
         if (!ok) this.waitingDrain = true;

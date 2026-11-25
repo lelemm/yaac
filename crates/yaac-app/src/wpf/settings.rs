@@ -168,6 +168,7 @@ pub(super) fn view(app: &YaacApp, target: Option<&TargetId>) -> Value {
         Page::Providers => providers(app, target),
         Page::Appearance => appearance(app),
         Page::Window => window(app),
+        Page::Terminal => terminal_settings(app),
         Page::Keyboard => keyboard(app),
         Page::Advanced => advanced(app),
         Page::About => about(app),
@@ -701,18 +702,26 @@ fn providers(app: &YaacApp, target: Option<&TargetId>) -> Value {
                     let context = json!({ "target": target, "instance": row.instance, "model": model.id,
                         "expectedModel": model.specific });
                     let id = format!("best-use:{target}:{}:{}", row.instance, model.id);
+                    let dimmed = model.enabled == Some(false);
+                    let mut acts = Vec::new();
+                    if let Some(on) = model.enabled {
+                        acts.push(args(toggle("provider.modelEnabled", "Model enabled", on, !v.offline), context.clone()));
+                    }
                     if let Some(edit) = app.ui.set.model_guidance_edit.as_ref().filter(|edit| edit.matches(target, &row.instance, model)) {
-                        rows.push(json!({ "id": format!("{id}:edit"), "label": model.name, "layout": "form",
+                        acts.push(submit(args(action("provider.bestUseSave", "Save", !v.offline), context), true));
+                        acts.push(cancel("provider.bestUseCancel", "Cancel"));
+                        rows.push(json!({ "id": format!("{id}:edit"), "label": model.name, "layout": "form", "dimmed": dimmed,
                             "fields": [with(field("bestUse", "Best used as", &edit.text, "Best used as"), json!({ "required": true }))],
-                            "actions": [submit(args(action("provider.bestUseSave", "Save", !v.offline), context), true),
-                                cancel("provider.bestUseCancel", "Cancel")] }));
+                            "actions": acts }));
                     } else {
-                        let mut acts = vec![args(action("provider.bestUseEdit", "Edit", !v.offline), context.clone())];
-                        if model.custom() {
-                            acts.push(args(action("provider.bestUseReset", "Reset to generated", !v.offline), context));
+                        if model.guidance_editable {
+                            acts.push(args(action("provider.bestUseEdit", "Edit", !v.offline), context.clone()));
+                            if model.custom() {
+                                acts.push(args(action("provider.bestUseReset", "Reset to generated", !v.offline), context));
+                            }
                         }
-                        rows.push(json!({ "id": id, "label": model.name, "status": model.provenance(),
-                            "detail": format!("Best used as: {}", model.summary()), "actions": acts }));
+                        rows.push(json!({ "id": id, "label": model.name, "status": model.provenance(), "dimmed": dimmed,
+                            "detail": model.guidance_editable.then(|| format!("Best used as: {}", model.summary())), "actions": acts }));
                     }
                 }
             }
@@ -836,6 +845,19 @@ fn window(app: &YaacApp) -> Value {
     })
 }
 
+fn terminal_settings(app: &YaacApp) -> Value {
+    let prefs = &app.ui.terminal;
+    let controls = [
+        ("copyOnSelect", "Copy on select", prefs.copy_on_select),
+        ("ctrlVToShell", "Ctrl+V goes to the shell", prefs.ctrl_v_to_shell),
+        ("confirmPaste", "Ask before pasting several lines", prefs.confirm_multiline_paste),
+    ];
+    let rows = controls.into_iter().map(|(id, label, enabled)| json!({
+        "id": id, "actions": [toggle(&format!("terminal.{id}"),label,enabled,true)]
+    })).collect();
+    json!({ "sections": [section("clipboard","Clipboard and selection",rows)] })
+}
+
 fn keyboard(app: &YaacApp) -> Value {
     let bindings = &app.ui.bindings;
     let conflict = &app.ui.set.keys.conflict;
@@ -859,6 +881,10 @@ fn keyboard(app: &YaacApp) -> Value {
                 shortcut["detail"] = json!(where_);
                 shortcut["placeholder"] = json!("—");
             }
+            if global || matches!(d.cmd, keys::Cmd::NextTerminal | keys::Cmd::PrevTerminal) {
+                actions.push(args(toggle("keys.inTerminal", "Works in the terminal", bindings.works_in_terminal(d.cmd), true),
+                    json!({ "command": d.id })));
+            }
             rows.push(json!({
                 "id": d.id, "label": d.name, "detail": d.explain, "fields": [shortcut], "actions": actions
             }));
@@ -881,7 +907,7 @@ fn keyboard(app: &YaacApp) -> Value {
     }).collect();
     json!({
         "detail": "Every command is also in the Commander. Click a key to record a new one. Esc cancels and Backspace clears. Keys without Ctrl or Alt act only when no text field has focus.",
-        "actions": [action("keys.resetAll", "Reset all", !bindings.overrides.0.is_empty())],
+        "actions": [action("keys.resetAll", "Reset all", !bindings.overrides.0.is_empty() || !bindings.in_terminal.is_empty())],
         "sections": sections
     })
 }
@@ -1162,6 +1188,20 @@ pub(super) fn command(
             app.ui.set.model_guidance_edit = None;
             return Ok(());
         }
+        "provider.modelEnabled" => {
+            let target = connected_target(app, values)?;
+            let instance = instance_id(app, &target, values)?;
+            let provider = app.client.state.target(&target)
+                .and_then(|t| t.providers.iter().find(|p| p.instance == instance))
+                .filter(|p| p.capabilities.contains(&yaac_protocol::Capability::ModelAvailability))
+                .ok_or_else(|| "This provider instance has no model switch.".to_owned())?;
+            let model = yaac_protocol::ModelId::new(string(values, "model"));
+            if provider.find_model(&model).is_none() {
+                return Err("This provider instance no longer lists that model.".into());
+            }
+            let enabled = values["checked"].as_bool().ok_or_else(|| "Expected a model switch value.".to_owned())?;
+            Action::ModelEnabled(target, instance, model, enabled)
+        }
         "provider.bestUseEdit" | "provider.bestUseSave" | "provider.bestUseReset" => {
             let target = connected_target(app, values)?;
             let instance = instance_id(app, &target, values)?;
@@ -1251,6 +1291,15 @@ pub(super) fn command(
                 "appearance.larger" => (app.ui.font_size + 0.5).min(18.0),
                 _ => crate::theme::size::UI,
             };
+            return Ok(());
+        }
+        "terminal.copyOnSelect" | "terminal.ctrlVToShell" | "terminal.confirmPaste" => {
+            let on = checked(values)?;
+            match id {
+                "terminal.copyOnSelect" => app.ui.terminal.copy_on_select = on,
+                "terminal.ctrlVToShell" => app.ui.terminal.ctrl_v_to_shell = on,
+                _ => app.ui.terminal.confirm_multiline_paste = on,
+            }
             return Ok(());
         }
         "window.tray" if app.shell.has_tray() => {
@@ -1415,6 +1464,10 @@ fn keyboard_command(app: &mut YaacApp, id: &str, values: &Value) -> Result<(), S
         return Ok(());
     }
     match id {
+        "keys.inTerminal" => {
+            let def = keys::by_id(string(values, "command")).ok_or("Unknown command.")?;
+            app.ui.bindings.set_in_terminal(def.cmd, checked(values)?);
+        }
         "keys.clear" | "keys.reset" => {
             let def = keys::by_id(string(values, "command"))
                 .filter(|d| d.scope == Scope::Global)
@@ -1717,6 +1770,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn keyboard_switch_updates_the_shortcut_dispatched_by_a_focused_terminal() {
+        let mut app = crate::app::tests::demo_app(&egui::Context::default());
+        let allows = |app: &YaacApp, id: &str| super::super::navigation::shortcuts(app).into_iter()
+            .find(|binding| binding["id"] == id).unwrap()["inTerminal"] == true;
+        assert!(!allows(&app, "commander"));
+        assert!(allows(&app, "toggle-terminal-panel"));
+        keyboard_command(&mut app, "keys.inTerminal", &json!({"command":"commander", "checked":true})).unwrap();
+        assert!(allows(&app, "commander"));
+    }
+
+    #[test]
     fn model_guidance_editor_sends_the_specific_model_and_preserves_the_text() {
         let mut app = crate::app::tests::demo_app(&egui::Context::default());
         let local = TargetId::new("local");
@@ -1744,6 +1808,42 @@ mod tests {
             target.as_ref() == Some(&local) && method == yaac_protocol::methods::names::PROVIDER_MODEL_BEST_USE_SET
                 && params["expectedModel"] == "specific-model" && params["summary"] == "Review focused changes"
                 && params["opId"].is_string()
+        }));
+    }
+
+    #[test]
+    fn off_model_stays_dimmed_and_can_be_turned_on_from_settings() {
+        let mut app = crate::app::tests::demo_app(&egui::Context::default());
+        let local = TargetId::new("local");
+        let target = app.client.state.targets.iter_mut().find(|target| target.entry.id == local).unwrap();
+        let provider = target.providers.iter_mut().find(|provider| !provider.models.is_empty()).unwrap();
+        provider.capabilities.push(yaac_protocol::Capability::ModelAvailability);
+        let off = provider.models.remove(0);
+        let identity = json!({ "target": local, "instance": provider.instance, "model": off.id });
+        provider.disabled_models.push(off);
+
+        let mut selected = Some(local.clone());
+        command(&mut app, &mut selected, "settings.action", &json!({
+            "id": "provider.bestUsePanel", "values": identity,
+        })).unwrap();
+        let view = providers(&app, Some(&local));
+        let rows = view["sections"].as_array().unwrap().iter()
+            .find(|section| section["id"] == "instances").unwrap()["rows"].as_array().unwrap();
+        let row = rows.iter().find(|row| row["dimmed"] == true).unwrap();
+        let toggle = &row["actions"][0];
+        assert_eq!(toggle["id"], "provider.modelEnabled");
+        assert_eq!(toggle["checked"], false);
+        assert_eq!(toggle["enabled"], true);
+
+        let mut values = identity;
+        values["checked"] = json!(true);
+        command(&mut app, &mut selected, "settings.action", &json!({
+            "id": "provider.modelEnabled", "values": values,
+        })).unwrap();
+        assert!(app.demo.as_ref().unwrap().requests().iter().any(|(target, method, params)| {
+            target.as_ref() == Some(&local) && method == yaac_protocol::methods::names::PROVIDER_INSTANCE_SET_MODEL_ENABLED
+                && params["instance"] == values["instance"] && params["model"] == values["model"]
+                && params["enabled"] == true && params["opId"].is_string()
         }));
     }
 

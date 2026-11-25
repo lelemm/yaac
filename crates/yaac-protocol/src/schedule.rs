@@ -10,11 +10,9 @@
 //!
 //! Three rules, in both directions:
 //!
-//! * **Two classes.** Control frames (requests, responses, events) always go first. Bulk (data
-//!   frames, history pages) is handed out one chunk at a time, only when no control frame is
-//!   waiting. So a control message enqueued at any moment waits behind **at most the one bulk
-//!   frame already being written** — provided the writer asks for a frame only when it is
-//!   ready to write it, and does not buffer frames ahead.
+//! * **Three classes.** Interactive stream chunks and control frames alternate when both
+//!   are ready. Either goes ahead of bulk. A writer asks for the next frame only when
+//!   it can write, so urgent traffic waits behind at most one in-flight bulk frame.
 //! * **Small, adaptive chunks.** Data chunks start at [`CHUNK_MIN`] (16 KiB) and grow, at most
 //!   doubling per step, up to [`CHUNK_MAX`] (64 KiB) while measured throughput says a chunk
 //!   still leaves the wire within [`TARGET_CHUNK_TIME`]. They shrink again when it does not.
@@ -40,10 +38,10 @@ pub const CHUNK_MAX: usize = 64 * 1024;
 /// wait behind the chunk in flight.
 pub const TARGET_CHUNK_TIME: Duration = Duration::from_millis(50);
 
-/// The scheduling class of an outbound frame.
+/// The scheduling class of an outbound message. Interactive data uses a dedicated stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Class {
-    /// Requests, responses, events. Always first.
+    /// Requests, responses and events.
     Control,
     /// Data frames and large pages. Handed out one chunk at a time.
     Bulk,
@@ -75,6 +73,7 @@ pub enum FlowError {
 
 #[derive(Debug, Default)]
 struct OutStream {
+    interactive: bool,
     pending: VecDeque<Vec<u8>>,
     /// Offset into `pending.front()`.
     offset: usize,
@@ -117,7 +116,7 @@ enum BulkTurn {
     Data,
 }
 
-/// The outbound two-class scheduler of one connection.
+/// The outbound scheduler of one connection.
 #[derive(Debug)]
 pub struct Scheduler {
     control: VecDeque<Vec<u8>>,
@@ -125,6 +124,7 @@ pub struct Scheduler {
     streams: BTreeMap<StreamId, OutStream>,
     /// The stream served last, for round-robin.
     last_stream: Option<StreamId>,
+    last_control: bool,
     turn: BulkTurn,
     chunk: usize,
 }
@@ -143,6 +143,7 @@ impl Scheduler {
             bulk_messages: VecDeque::new(),
             streams: BTreeMap::new(),
             last_stream: None,
+            last_control: false,
             turn: BulkTurn::Message,
             chunk: CHUNK_MIN,
         }
@@ -170,6 +171,13 @@ impl Scheduler {
             return Err(FlowError::StreamExists(stream));
         }
         self.streams.insert(stream, OutStream { credit: initial_credit, ..OutStream::default() });
+        Ok(())
+    }
+
+    /// Opens a credit-controlled stream scheduled alongside control and ahead of bulk.
+    pub fn open_interactive_stream(&mut self, stream: StreamId, initial_credit: u64) -> Result<(), FlowError> {
+        self.open_stream(stream, initial_credit)?;
+        self.streams.get_mut(&stream).unwrap().interactive = true;
         Ok(())
     }
 
@@ -221,6 +229,11 @@ impl Scheduler {
         self.chunk
     }
 
+    /// Whether an interactive stream has both queued bytes and credit.
+    pub fn interactive_ready(&self) -> bool {
+        self.streams.values().any(|s| s.interactive && s.ready())
+    }
+
     /// Control frames waiting.
     pub fn pending_control(&self) -> usize {
         self.control.len()
@@ -234,6 +247,14 @@ impl Scheduler {
     /// The next frame to write, or `None` when nothing can be sent now. Call this only when the
     /// transport is ready to write the frame; never buffer frames ahead.
     pub fn next_frame(&mut self) -> Option<Vec<u8>> {
+        if !self.last_control && let Some(frame) = self.control.pop_front() {
+            self.last_control = true;
+            return Some(frame);
+        }
+        if let Some(frame) = self.next_data_frame(true) {
+            self.last_control = false;
+            return Some(frame);
+        }
         if let Some(frame) = self.control.pop_front() {
             return Some(frame);
         }
@@ -245,7 +266,7 @@ impl Scheduler {
         for turn in order {
             let frame = match turn {
                 BulkTurn::Message => self.bulk_messages.pop_front(),
-                BulkTurn::Data => self.next_data_frame(),
+                BulkTurn::Data => self.next_data_frame(false),
             };
             if frame.is_some() {
                 self.turn = match turn {
@@ -258,17 +279,17 @@ impl Scheduler {
         None
     }
 
-    fn next_data_frame(&mut self) -> Option<Vec<u8>> {
+    fn next_data_frame(&mut self, interactive: bool) -> Option<Vec<u8>> {
         // Round-robin: the first ready stream after the one served last.
         let after = self.last_stream;
         let pick = self
             .streams
             .iter()
-            .filter(|(id, s)| s.ready() && after.is_none_or(|last| **id > last))
+            .filter(|(id, s)| s.interactive == interactive && s.ready() && after.is_none_or(|last| **id > last))
             .map(|(id, _)| *id)
             .next()
-            .or_else(|| self.streams.iter().find(|(_, s)| s.ready()).map(|(id, _)| *id))?;
-        let chunk = self.chunk;
+            .or_else(|| self.streams.iter().find(|(_, s)| s.interactive == interactive && s.ready()).map(|(id, _)| *id))?;
+        let chunk = if interactive || self.streams.values().any(|s| s.interactive && s.pending_bytes > 0) { CHUNK_MIN } else { self.chunk };
         let out = self.streams.get_mut(&pick)?;
         let bytes = out.take(chunk);
         let drained = out.closing && out.pending_bytes == 0;

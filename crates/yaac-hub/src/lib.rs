@@ -25,6 +25,7 @@
 //! Threads: one tokio current-thread runtime on the calling thread does all I/O and owns all
 //! protocol state; one store thread does all SQLite work, in submission order. Nothing else.
 
+mod attach_writer;
 pub mod autostart;
 pub mod cache;
 pub mod client;

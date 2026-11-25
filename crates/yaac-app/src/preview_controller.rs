@@ -102,6 +102,8 @@ pub(crate) struct Browsers {
     pub(crate) side_by_side: bool,
     pub(crate) file_wake: Option<Arc<dyn Fn() + Send + Sync>>,
     pub(crate) pending: HashMap<RpcId, Pending>,
+    /// Terminal sessions: side-pane Terminal tabs and the panel under the composer.
+    pub(crate) terms: crate::terminal::Terminals,
     next: u64,
     #[cfg(feature = "preview")]
     host: yaac_preview::BrowserHost,
@@ -213,6 +215,44 @@ impl Browsers {
         self.next
     }
 
+    /// **+ → Terminal** in the side pane: a Terminal tab with a new session (the default shell
+    /// unless one of `terminal/shells` is given).
+    pub(crate) fn open_terminal(&mut self, client: &Client, key: &ThreadKey, shell: Option<yaac_protocol::TerminalShell>) -> Result<u64, String> {
+        let session = self.terms.create(client, key, shell)?;
+        Ok(self.terminal_tab(key, session))
+    }
+
+    /// **Toggle terminal panel** for a thread. The panel lives in the chat column, so when a
+    /// non-Chat tab fills the window the Chat tab is shown with it.
+    pub(crate) fn toggle_terminal_panel(&mut self, client: &Client, key: &ThreadKey) -> Result<bool, String> {
+        let open = self.terms.toggle_panel(client, key)?;
+        if open {
+            self.show_chat_for_panel(key);
+        }
+        Ok(open)
+    }
+
+    /// **New terminal** in the panel (opening it), with a shell or the default.
+    pub(crate) fn new_panel_terminal(&mut self, client: &Client, key: &ThreadKey, shell: Option<yaac_protocol::TerminalShell>) -> Result<u64, String> {
+        let id = self.terms.panel_new(client, key, shell)?;
+        self.show_chat_for_panel(key);
+        Ok(id)
+    }
+
+    fn show_chat_for_panel(&mut self, key: &ThreadKey) {
+        if self.areas.get(key).is_some_and(|a| a.full_screen && !a.chat) {
+            self.select_chat(key);
+        }
+    }
+
+    /// A side-pane tab showing an existing session.
+    pub(crate) fn terminal_tab(&mut self, key: &ThreadKey, session: u64) -> u64 {
+        let id = self.insert(key);
+        let tab = self.tab_mut(key, id).expect("tab just inserted");
+        tab.kind = TabKind::Terminal(session);
+        id
+    }
+
     /// An agent's tab: added after the thread's tabs without changing the active tab (the
     /// user's view), except that a thread's first tab opens its browser area.
     #[cfg(feature = "preview")]
@@ -308,6 +348,9 @@ impl Browsers {
         let Some(index) = area.tabs.iter().position(|t| t.id == id) else {
             return;
         };
+        if let TabKind::Terminal(session) = area.tabs[index].kind {
+            self.terms.closing.push(session);
+        }
         area.tabs.remove(index);
         if area.tabs.is_empty() {
             self.areas.remove(key);
@@ -402,7 +445,18 @@ impl Browsers {
         Ok(())
     }
 
-    pub(crate) fn tick(
+    pub(crate) fn tick(&mut self, client: &mut Client, visible: Option<&ThreadKey>, now: Instant) -> Option<Duration> {
+        // Replies first (a terminal's stream becomes known), then the terminals' output, which
+        // may have arrived in the same batch.
+        let rest = self.tick_pane(client, visible, now);
+        let terms = self.terms.tick(client, now);
+        match (terms, rest) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn tick_pane(
         &mut self,
         client: &mut Client,
         visible: Option<&ThreadKey>,
@@ -415,7 +469,11 @@ impl Browsers {
             self.probe = None;
         }
         for (id, result) in client.take_preview_replies() {
-            match self.pending.remove(&id) {
+            let Some(pending) = self.pending.remove(&id) else {
+                self.terms.on_reply(client, &id, result);
+                continue;
+            };
+            match Some(pending) {
                 Some(Pending::File(request)) => self.file_reply(client, request, result),
                 Some(Pending::Proxy(k, id)) => {
                     if let Some(tab) = self.tab_mut(&k, id) {
@@ -592,6 +650,8 @@ mod tests {
                 can_update: false,
                 port_forward: supported,
                 file_view: false,
+                terminal: false,
+                terminal_unavailable_reason: None,
             });
         };
         daemon(&mut client, false);
@@ -630,6 +690,8 @@ mod tests {
             can_update: false,
             port_forward: true,
             file_view: false,
+            terminal: false,
+            terminal_unavailable_reason: None,
         });
         let mut draw = |events| {
             let mut frame = eframe::Frame::_new_kittest();

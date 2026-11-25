@@ -41,8 +41,80 @@ pub enum CardState {
     Expired,
     /// The answer may or may not have arrived. Never re-sent; one action: check the status.
     OutcomeUnknown,
+    /// Approved by `yaacd` itself because the thread's mode never asks (P342): a quiet line,
+    /// not a card. Also while the hand-over is unconfirmed (`submitted` by `yaacd`).
+    Automatic {
+        /// "Approved automatically — thread in Bypass permissions: Bash rm -rf build".
+        text: String,
+        /// What the line expands to: the harness's reason and the full input, one per line.
+        detail: String,
+    },
     /// A state this build does not know: shown as text, no buttons.
     Other(String),
+}
+
+/// The longest input shown on an automatic-approval line before it is cut.
+const SHORT_INPUT: usize = 80;
+
+fn shorten(s: &str) -> String {
+    let one = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() <= SHORT_INPUT {
+        return one;
+    }
+    let cut: String = one.chars().take(SHORT_INPUT - 1).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// The quiet line for a request `yaacd` approved itself (P342), or None when it was not.
+pub fn automatic_line(request: &RequestItem) -> Option<CardState> {
+    let res = request.resolution.as_ref().filter(|r| r.by == AnsweredBy::Yaacd)?;
+    if !matches!(request.state, RequestState::Resolved | RequestState::Submitted) {
+        return None;
+    }
+    let mode = res.automatic.as_ref().map(|a| a.mode_name.clone().unwrap_or_else(|| a.mode.as_str().to_owned()));
+    let verb = if request.state == RequestState::Submitted { "Approving automatically" } else { "Approved automatically" };
+    let lead = match mode {
+        Some(m) => format!("{verb} — thread in {m}"),
+        None => verb.to_owned(),
+    };
+    let RequestBody::Approval(a) = &request.body else {
+        return Some(CardState::Automatic { text: lead, detail: String::new() });
+    };
+    let details = a.details.as_ref();
+    let tool = details.and_then(|d| d.get("tool")).and_then(|t| t.as_str());
+    let input = a
+        .command
+        .clone()
+        .or_else(|| a.changes.first().map(|c| c.path.as_str().to_owned()))
+        .or_else(|| a.scope.clone())
+        .unwrap_or_else(|| a.title.clone());
+    let what = match tool {
+        Some(t) => format!("{t} {}", shorten(&input)),
+        None => shorten(&input),
+    };
+    let mut detail: Vec<String> = Vec::new();
+    if let Some(reason) = a.reason.as_deref().filter(|r| !r.trim().is_empty()) {
+        detail.push(format!("Reason: {reason}"));
+    }
+    if let Some(cmd) = &a.command {
+        detail.push(cmd.clone());
+    }
+    if let Some(cwd) = &a.cwd {
+        detail.push(format!("in {}", cwd.as_str()));
+    }
+    for ch in &a.changes {
+        detail.push(format!("{} {}", ch.change, ch.path));
+    }
+    if let Some(scope) = &a.scope {
+        detail.push(format!("Scope: {scope}"));
+    }
+    if a.command.is_none()
+        && a.changes.is_empty()
+        && let Some(raw) = details.and_then(|d| d.get("input"))
+    {
+        detail.push(serde_json::to_string_pretty(raw).unwrap_or_default());
+    }
+    Some(CardState::Automatic { text: format!("{lead}: {what}"), detail: detail.join("\n") })
 }
 
 /// Whether a question in this request is secret.
@@ -106,6 +178,9 @@ pub fn card_state(
     target_name: &str,
     now: i64,
 ) -> CardState {
+    if let Some(auto) = automatic_line(request) {
+        return auto;
+    }
     match &request.state {
         RequestState::Pending => CardState::Pending { actionable: may_act },
         RequestState::Submitted => CardState::Submitted {
@@ -244,6 +319,7 @@ mod tests {
             client_host: None,
             answer: Some(RequestResponse::Approval(ApprovalAnswer { decision: "a".into(), reason: None })),
             at: Some(Timestamp::new(crate::time::format_rfc3339(NOW - 12))),
+            automatic: None,
         });
         assert_eq!(
             card_state(&r, true, Some(&me), None, "devbox", NOW),
@@ -256,6 +332,7 @@ mod tests {
             client_host: None,
             answer: Some(RequestResponse::Approval(ApprovalAnswer { decision: "a".into(), reason: None })),
             at: Some(Timestamp::new(crate::time::format_rfc3339(NOW - 120))),
+            automatic: None,
         });
         assert_eq!(
             card_state(&r, true, Some(&me), None, "devbox", NOW),
@@ -269,6 +346,7 @@ mod tests {
             client_host: Some("laptop".into()),
             answer: Some(RequestResponse::Approval(ApprovalAnswer { decision: "d".into(), reason: None })),
             at: None,
+            automatic: None,
         });
         assert_eq!(card_state(&r, true, Some(&me), None, "devbox", NOW), CardState::ResolvedElsewhere { text: "Denied on laptop".into() });
 
@@ -289,8 +367,56 @@ mod tests {
         r.state = RequestState::Submitted;
         assert_eq!(card_state(&r, true, Some(&me), None, "x", NOW), CardState::Submitted { summary: SECRET_MASK.into() });
         r.state = RequestState::Resolved;
-        r.resolution = Some(RequestResolution { by: AnsweredBy::Client, client_id: Some(me.clone()), client_host: None, answer: Some(answer), at: None });
+        r.resolution = Some(RequestResolution { by: AnsweredBy::Client, client_id: Some(me.clone()), client_host: None, answer: Some(answer), at: None, automatic: None });
         assert_eq!(card_state(&r, true, Some(&me), None, "x", NOW), CardState::Confirmed { summary: SECRET_MASK.into(), when: None });
+    }
+
+    fn approved_by_yaacd(r: &mut RequestItem, state: RequestState) {
+        r.state = state;
+        r.resolution = Some(RequestResolution {
+            by: AnsweredBy::Yaacd,
+            client_id: None,
+            client_host: None,
+            answer: Some(RequestResponse::Approval(ApprovalAnswer { decision: "a".into(), reason: None })),
+            at: None,
+            automatic: Some(yaac_protocol::AutomaticResolution { mode: yaac_protocol::ModeId::new("bypassPermissions"), mode_name: Some("Bypass permissions".into()) }),
+        });
+    }
+
+    #[test]
+    fn an_automatic_approval_is_a_quiet_line_with_the_reason_and_input() {
+        let me = ClientId::new("me");
+        let mut r = approval();
+        let RequestBody::Approval(a) = &mut r.body else { unreachable!() };
+        a.command = Some("nohup  sleep 30 >   /tmp/x.log 2>&1 &".into());
+        a.reason = Some("What 'nohup' starts can't be checked before it runs".into());
+        a.details = Some(serde_json::json!({ "tool": "Bash", "input": { "command": "nohup sleep 30 &" } }));
+        approved_by_yaacd(&mut r, RequestState::Resolved);
+        let CardState::Automatic { text, detail } = card_state(&r, true, Some(&me), None, "devbox", NOW) else { panic!("not automatic") };
+        assert_eq!(text, "Approved automatically — thread in Bypass permissions: Bash nohup sleep 30 > /tmp/x.log 2>&1 &");
+        assert_eq!(detail, "Reason: What 'nohup' starts can't be checked before it runs\nnohup  sleep 30 >   /tmp/x.log 2>&1 &");
+        // While the harness has not confirmed it yet: never "you chose".
+        approved_by_yaacd(&mut r, RequestState::Submitted);
+        assert!(matches!(card_state(&r, true, Some(&me), None, "devbox", NOW), CardState::Automatic { ref text, .. } if text.starts_with("Approving automatically — thread in Bypass permissions: Bash")));
+        // A long input is cut on the line and kept whole in the detail.
+        let RequestBody::Approval(a) = &mut r.body else { unreachable!() };
+        let long = format!("rm -rf {}", "x".repeat(200));
+        a.command = Some(long.clone());
+        let CardState::Automatic { text, detail } = card_state(&r, true, Some(&me), None, "devbox", NOW) else { panic!() };
+        assert!(text.ends_with('…') && text.chars().count() < 160, "{text}");
+        assert!(detail.contains(&long));
+        // Without a command, the tool's input is shown in full.
+        let RequestBody::Approval(a) = &mut r.body else { unreachable!() };
+        a.command = None;
+        a.reason = None;
+        a.title = "Claude wants to use WebFetch".into();
+        a.details = Some(serde_json::json!({ "tool": "WebFetch", "input": { "url": "https://example.com" } }));
+        let CardState::Automatic { text, detail } = card_state(&r, true, Some(&me), None, "devbox", NOW) else { panic!() };
+        assert_eq!(text, "Approving automatically — thread in Bypass permissions: WebFetch Claude wants to use WebFetch");
+        assert!(detail.contains("\"url\": \"https://example.com\""), "{detail}");
+        // Back to pending (the harness did not take it): an ordinary card again.
+        r.state = RequestState::Pending;
+        assert_eq!(card_state(&r, true, Some(&me), None, "devbox", NOW), CardState::Pending { actionable: true });
     }
 
     #[test]

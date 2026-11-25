@@ -234,6 +234,17 @@ pub struct ModelBestUseSetParams {
     pub summary: Option<String>,
 }
 
+/// `providerInstance/setModelEnabled`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInstanceSetModelEnabledParams {
+    pub op_id: OpId,
+    pub instance: InstanceId,
+    /// The model ID advertised by this instance.
+    pub model: ModelId,
+    pub enabled: bool,
+}
+
 /// Everything the host knows about one provider instance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -265,6 +276,9 @@ pub struct ProviderDescriptor {
     /// Models, fetched from the harness.
     #[serde(default)]
     pub models: Vec<ModelInfo>,
+    /// Models turned off in Settings, retained for Settings and existing threads.
+    #[serde(default)]
+    pub disabled_models: Vec<ModelInfo>,
     /// Whether `models` is a complete listing. A model is only ever declared gone after a
     /// complete listing.
     #[serde(default)]
@@ -281,6 +295,17 @@ pub struct ProviderDescriptor {
     /// When `models` was last read from the harness on the target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models_read_at: Option<Timestamp>,
+}
+
+impl ProviderDescriptor {
+    /// Catalog metadata, including models an existing thread may still be using.
+    pub fn find_model(&self, id: &ModelId) -> Option<&ModelInfo> {
+        self.models.iter().chain(&self.disabled_models).find(|m| &m.id == id)
+    }
+
+    pub fn model_is_off(&self, id: &ModelId) -> bool {
+        self.disabled_models.iter().any(|m| &m.id == id)
+    }
 }
 
 /// Endpoint settings of an instance.
@@ -327,6 +352,9 @@ pub struct ProviderInstanceConfig {
     /// on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trust_folders: Option<bool>,
+    /// Model IDs turned off for this instance. New IDs are on by default.
+    #[serde(default)]
+    pub disabled_model_ids: Vec<ModelId>,
 }
 
 /// `provider/list` — no parameters.

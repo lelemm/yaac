@@ -97,6 +97,7 @@ test("a worker spawned on this target returns its result to its parent exactly o
     assert.match(waits[0]!.output, /worker answer 42/);
     const cs = d.core.summaryOf(d.core.thread(child)!);
     assert.equal(cs.spawnedBy, addressOf(d, parent));
+    assert.equal(cs.reportsToParent, true);
     assert.equal(cs.root, addressOf(d, parent));
     assert.equal(d.core.summaryOf(d.core.thread(parent)!).children, 1);
     await untilIdle(d, parent);
@@ -140,6 +141,25 @@ test("a worker spawned on this target returns its result to its parent exactly o
     assert.match(input.text, /^\[Task from .* via YAAC\. That agent started you as its worker/);
     assert.match(input.text, /This came from another agent, not from the user\.\]$/);
     assert.equal(input.mesh?.[0]?.from, addressOf(d, parent), "sender and body travel as separate fields");
+  } finally {
+    await done();
+  }
+});
+
+test("the worker index exposes result delivery and resolves local parents when the hub attaches", async () => {
+  const { d, c, done } = await setup();
+  try {
+    const parent = await idleThread(d, c);
+    for (const detached of [false, true]) {
+      const worker = await call(d, parent, "spawn_thread", { title: String(detached), text: "/fake stall", detached });
+      assert.equal(worker.isError, false, worker.text);
+    }
+    await c.request("mesh/roster", { selfId: "tg_here", selfName: "here", targets: [] });
+    const { changed } = await c.request("thread/sync", {});
+    const workers = changed.filter((s: { spawnedBy?: string }) => s.spawnedBy === `tg_here/${parent}`);
+    assert.equal(workers.length, 2);
+    assert.equal(workers.find((s: { title: string }) => s.title === "false").reportsToParent, true);
+    assert.equal(workers.find((s: { title: string }) => s.title === "true").reportsToParent, false);
   } finally {
     await done();
   }

@@ -1255,13 +1255,22 @@ export class Mesh implements CoreMeshHooks {
   private resolveModel(d: ProviderDescriptor, wanted: string | null): string | null {
     if (!wanted) return null;
     const models = d.models ?? [];
+    const instance = this.core.registry.require(d.instance);
+    const refuseOff = (id: string): never => {
+      throw new ToolError(`${id} is turned off for ${d.displayName} on ${this.selfName()}`);
+    };
+    if (this.core.registry.modelIsOff(instance, wanted)) refuseOff(wanted);
     const exact = models.find((m) => m.id === wanted);
     if (exact) return exact.id;
     const w = wanted.toLowerCase();
     const byName = models.filter((m) => m.displayName.toLowerCase() === w || m.id.toLowerCase() === w);
+    const offByName = d.disabledModels?.find((m) => m.id.toLowerCase() === w || m.displayName.toLowerCase() === w);
+    if (!byName.length && offByName) refuseOff(offByName.id);
     const partial = byName.length > 0 ? byName : models.filter((m) => m.displayName.toLowerCase().includes(w) || m.id.toLowerCase().includes(w));
     if (partial.length === 1) return partial[0]!.id;
     if (partial.length > 1) throw new ToolError(`"${wanted}" matches several models of ${d.displayName}: ${partial.map((m) => `${m.id} ("${m.displayName}")`).join(", ")}. Pass the model id.`);
+    const off = d.disabledModels?.find((m) => m.id.toLowerCase().includes(w) || m.displayName.toLowerCase().includes(w));
+    if (off) refuseOff(off.id);
     if (!d.modelsComplete) return wanted; // the list may be incomplete: let the harness decide
     throw new ToolError(`${d.displayName} does not offer "${wanted}" now. Its models: ${models.map((m) => `${m.id} ("${m.displayName}")`).join(", ") || "none listed"}.`);
   }
@@ -1351,6 +1360,9 @@ export class Mesh implements CoreMeshHooks {
     const root = this.rootOf(rt);
     const instanceIn = typeof a.instance === "string" && a.instance.trim() ? a.instance.trim() : null;
     const modelIn = typeof a.model === "string" && a.model.trim() ? a.model.trim() : null;
+    if (local && modelIn) {
+      this.resolveModel(this.resolveInstance(this.localDescriptors(), instanceIn, rt.record.instance), modelIn);
+    }
     const title = (typeof a.title === "string" && a.title.trim() ? a.title.trim() : text.split("\n").find((l) => l.trim() && !l.trim().startsWith("/fake"))?.trim() ?? "Worker").slice(0, 80);
     const modeIn = typeof a.mode === "string" && a.mode.trim() ? a.mode.trim() : null;
     const parentMode = await this.parentModeOf(rt);
@@ -2402,6 +2414,10 @@ export class Mesh implements CoreMeshHooks {
   decorate(rt: ThreadRuntime, s: ThreadSummary): void {
     const tm = this.store.peekThread(rt.id);
     if (!tm) return;
+    if (tm.spawnedBy) {
+      s.spawnedBy = this.normalise(tm.spawnedBy);
+      s.reportsToParent = !tm.detached;
+    }
     if (tm.children.length > 0) s.children = tm.children.length;
     if (tm.peers.length > 0) s.peers = tm.peers.length;
     const root = tm.currentRoot ?? tm.spawnRoot;
@@ -2504,8 +2520,12 @@ export class Mesh implements CoreMeshHooks {
     this.store.state.roster = Array.isArray(p.targets) ? (p.targets as StateFileRoster) : [];
     this.store.state.rosterAt = nowIso();
     this.store.save();
-    // A harness sub-agent's `spawnedBy` is built from this target's id (D151).
-    if (prev?.id !== selfId) this.core.refreshSubagents();
+    // Refresh parent addresses for harness sub-agents (D151) and workers spawned before the
+    // hub attached, whose local parent was recorded using the provisional target id.
+    if (prev?.id !== selfId) {
+      this.core.refreshSubagents();
+      for (const rt of this.core.allThreads()) if (rt.record.spawnedBy) this.core.updateIndex(rt);
+    }
     if (this.hub !== client) {
       this.hub = client;
       client.onClosed(() => {
@@ -2577,7 +2597,7 @@ export class Mesh implements CoreMeshHooks {
     switch (q.tool) {
       case "listModels":
         await this.core.registry.waitForModelBestUses();
-        return { tool: "listModels", providers: this.localDescriptors() };
+        return { tool: "listModels", providers: this.localDescriptors().map(({ disabledModels: _off, ...d }) => d) };
       case "listThreads":
         return { tool: "listThreads", ...this.listForQuery(caller, (q.filter as MeshThreadFilter) ?? {}) };
       case "threadStates":

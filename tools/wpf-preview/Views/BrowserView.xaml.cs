@@ -16,6 +16,8 @@ public partial class BrowserView : UserControl
 
     private string thread = "";
     private ulong? active;
+    internal bool IsTerminalPanel { get; set; }
+    private bool panelMaximised;
     private bool full, busy, focusNewTab, focusWhenConnected;
     private bool windowShown;
     private bool addressDirty, updatingAddress, composing;
@@ -25,19 +27,29 @@ public partial class BrowserView : UserControl
     private string chatTone = "";
     private Border? selectedTab;
     private string filesReason = "Open a thread to use Files.";
+    private TerminalPane? terminal;
+    private string terminalReason = "Open a thread to use Terminal.";
+    private JsonElement terminalShells;
     private readonly FilesPane files = new();
     private string displayedUrl = "";
     private string tabSignature = "", portSignature = "";
     private (ulong Tab, int Width, int Height, double Dpi)? viewport;
     private readonly Dictionary<ulong, BitmapImage> icons = new();
 
+    internal bool TerminalFocused => terminal?.GridFocused == true;
     internal bool OwnsKeyboard => PageInput.IsKeyboardFocused || AddressField.IsKeyboardFocused || LandingAddress.IsKeyboardFocused || files.OwnsKeyboard;
 
     public BrowserView()
     {
         InitializeComponent();
         PaneIcon.Set(AddTabButton, "New tab");
-        AddTabButton.Click += (_, _) => OpenAddMenu(AddTabButton);
+        PaneIcon.Set(PanelClose, "Close", "Close terminal panel");
+        PanelClose.Click += (_, _) => Command?.Invoke("terminal.panelHide", new { thread });
+        AddTabButton.Click += (_, _) =>
+        {
+            if (IsTerminalPanel) Command?.Invoke("terminal.panelNew", new { thread });
+            else OpenAddMenu(AddTabButton);
+        };
         PaneIcon.Set(Back, "Back", "Back (Alt+Left)");
         PaneIcon.Set(Forward, "Forward", "Forward (Alt+Right)");
         PaneIcon.Set(External, "Open in browser");
@@ -110,7 +122,11 @@ public partial class BrowserView : UserControl
         Reload.Click += (_, _) => SendInput(busy ? "Stop" : "Reload");
         External.Click += (_, _) => Send("external");
         Inspect.Click += (_, _) => Send("inspect");
-        Fullscreen.Click += (_, _) => Command?.Invoke("browser.fullScreen", new { thread, fullScreen = !full });
+        Fullscreen.Click += (_, _) =>
+        {
+            if (IsTerminalPanel) Command?.Invoke("terminal.panelMaximise", new { thread });
+            else Command?.Invoke("browser.fullScreen", new { thread, fullScreen = !full });
+        };
 
         AddressField.GotKeyboardFocus += (_, _) => AddressDisplay.Visibility = Visibility.Collapsed;
         AddressField.LostKeyboardFocus += (_, _) => AddressDisplay.Visibility = Visibility.Visible;
@@ -195,18 +211,24 @@ public partial class BrowserView : UserControl
         thread = nextThread;
         full = Flag(state, "fullScreen");
         chat = nextChat;
+        panelMaximised = Flag(state, "maximised");
+        PanelClose.Visibility = IsTerminalPanel ? Visibility.Visible : Visibility.Collapsed;
         chatTitle = Text(state, "chatTitle");
         chatLogo = Text(state, "chatLogo");
         chatLogoColor = Text(state, "chatLogoColor");
         chatMarked = Flag(state, "chatMarked");
         chatTone = Text(state, "chatTone");
         ChatHost.Visibility = chat ? Visibility.Visible : Visibility.Collapsed;
-        if ((string?)Fullscreen.ToolTip != (full ? "Restore" : "Full screen"))
-            PaneIcon.Set(Fullscreen, full ? "Restore" : "Full screen");
+        var expanded = IsTerminalPanel ? panelMaximised : full;
+        var buttonTip = expanded ? "Restore" : IsTerminalPanel ? "Maximise terminal panel" : "Full screen";
+        if ((string?)Fullscreen.ToolTip != buttonTip)
+            PaneIcon.Set(Fullscreen, expanded ? "Restore" : "Full screen", buttonTip);
         var tabs = state.GetProperty("tabs");
         tabState = tabs.Clone();
         tabReason = Text(state, "reason");
         filesReason = Text(state, "filesReason");
+        terminalReason = Text(state, "terminalReason");
+        terminalShells = state.TryGetProperty("shells", out var shells) ? shells.Clone() : default;
         RenderTabs(tabs, tabReason);
         var current = active is ulong tabId
             ? tabs.EnumerateArray().FirstOrDefault(t => t.GetProperty("id").GetUInt64() == tabId)
@@ -214,6 +236,15 @@ public partial class BrowserView : UserControl
         var kind = Text(current, "kind");
         browserActive = !chat && active is not null && (kind is "" or "browser");
         BrowserToolbar.Visibility = browserActive ? Visibility.Visible : Visibility.Collapsed;
+        bool isTerminal = !chat && kind == "terminal";
+        TerminalContent.Visibility = isTerminal ? Visibility.Visible : Visibility.Collapsed;
+        if (isTerminal)
+        {
+            FilesContent.Visibility = Landing.Visibility = Surface.Visibility = Visibility.Collapsed;
+            files.Clear();
+            EnsureTerminal().Bind(current, switched);
+            return;
+        }
         if (!browserActive)
         {
             Surface.Visibility = Landing.Visibility = Visibility.Collapsed;
@@ -282,6 +313,20 @@ public partial class BrowserView : UserControl
             Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
         Add("Browser", tabReason, OpenNewTab);
         Add("Files", filesReason, () => Command?.Invoke("files.new", new { thread }));
+        var shells = terminalShells;
+        if (shells.ValueKind == JsonValueKind.Array && shells.GetArrayLength() > 1 && terminalReason.Length == 0)
+        {
+            var item = new MenuItem { Header = "Terminal", Icon = PaneIcon.Draw("Terminal") };
+            foreach (var shell in shells.EnumerateArray())
+            {
+                string path = Text(shell, "path");
+                var choice = new MenuItem { Header = Text(shell, "name") };
+                choice.Click += (_, _) => Command?.Invoke("terminal.new", new { thread, shell = path });
+                item.Items.Add(choice);
+            }
+            menu.Items.Add(item);
+        }
+        else Add("Terminal", terminalReason, () => Command?.Invoke("terminal.new", new { thread }));
         menu.IsOpen = true;
 
         void Add(string title, string unavailable, Action choose)
@@ -294,6 +339,31 @@ public partial class BrowserView : UserControl
             item.Click += (_, _) => choose();
             menu.Items.Add(item);
         }
+    }
+
+    private TerminalPane EnsureTerminal()
+    {
+        if (terminal != null) return terminal;
+        terminal = new(IsTerminalPanel);
+        TerminalContent.Content = terminal;
+        terminal.Command += (name, data) =>
+        {
+            if (active is ulong tab && TerminalContent.IsVisible)
+                Command?.Invoke("terminal." + name, new { thread, tab, panel = IsTerminalPanel, data, caret = name == "add" ? ComposerCaret?.Invoke() : null });
+        };
+        terminal.Painted += frame => Command?.Invoke("terminal.ack", new { thread, tab = active, panel = IsTerminalPanel, frame });
+        return terminal;
+    }
+
+    internal bool DisplaysTerminal(ulong tab) => active == tab && TerminalContent.IsVisible;
+    internal void PasteTerminal(ulong tab) { if (DisplaysTerminal(tab)) terminal?.Paste(); }
+    internal void FocusTerminal() => terminal?.FocusScreen();
+
+    internal void ReceiveTerminal(TerminalFrame frame)
+    {
+        if (frame.Tab == active && TerminalContent.IsVisible)
+            EnsureTerminal().Frame(frame);
+        else Command?.Invoke("terminal.ack", new { tab = frame.Tab, panel = frame.Panel, frame = frame.Serial });
     }
 
     internal void ReceiveFileDocument(IncomingFileDocument document) => files.ReceiveDocument(document);
@@ -380,7 +450,7 @@ public partial class BrowserView : UserControl
     }
 
     private void SendFor(ulong tab, string command, object? data = null) =>
-        Command?.Invoke("browser." + command, new { thread, tab, data });
+        Command?.Invoke(IsTerminalPanel ? "terminal.panel" + char.ToUpperInvariant(command[0]) + command[1..] : "browser." + command, new { thread, tab, data });
 
     private void SendInput(object input) => Send("input", input);
 

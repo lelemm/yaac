@@ -1,0 +1,27 @@
+[?1049h[22;0;0t[>4;2m[?1h=[?2004h[?1004h[1;28r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[28;1H"src/app.rs" 32L, 864B[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c]10;?]11;?[27m[23m[29m[m[H[2J[1;1H[93m  1 [m[93muse[m [38;5;81mcrate[m[38;5;224m::[m[38;5;81msession[m[38;5;224m::[m{Session, Store};
+[93m  2 [m[93muse[m [38;5;81mstd[m[38;5;224m::[m[38;5;81mtime[m[38;5;224m::[m{Duration, SystemTime};
+[93m  3 
+  4 [m[38;5;224m/// How long a session lives without activity.[m
+[93m  5 [m[93mpub[m [38;5;121mconst[m IDLE_TIMEOUT: Duration [93m=[m [38;5;81mDuration[m[38;5;224m::[m[1m[96mfrom_secs[m([95m600[m);
+[93m  6 
+  7 [m[38;5;81m#[derive([m[38;5;121mDebug[m[38;5;81m, [m[38;5;121mClone[m[38;5;81m)][m
+[93m  8 [m[93mpub[m [93mstruct[m [1m[96mApp[m {
+[93m  9 [m    store: Store,
+[93m 10 [m    name: [38;5;121mString[m,
+[93m 11 [m}
+[93m 12 
+ 13 [m[93mimpl[m App {
+[93m 14 [m    [93mpub[m [93mfn[m [1m[96mnew[m(name: [38;5;121m&str[m) [93m->[m [38;5;121mSelf[m {
+[93m 15 [m[8C[38;5;121mSelf[m { store: [38;5;81mStore[m[38;5;224m::[m[1m[96mdefault[m(), name: name.[1m[96mto_owned[m() }
+[93m 16 [m    }
+[93m 17 
+ 18 [m    [38;5;224m/// Seconds until `session` expires, or zero.[m
+[93m 19 [m    [93mpub[m [93mfn[m [1m[96mexpires_in[m([38;5;121m&[m[95mself[m, session: [38;5;121m&[mSession) [93m->[m [38;5;121mu64[m {
+[93m 20 [m[8C[93mlet[m idle [93m=[m [38;5;81mSystemTime[m[38;5;224m::[m[1m[96mnow[m()
+[93m 21 [m[12C.[1m[96mduration_since[m(session.last_seen)
+[93m 22 [m[12C.[1m[96munwrap_or_default[m();
+[93m 23 [m[8CIDLE_TIMEOUT.[1m[96msaturating_sub[m(idle).[1m[96mas_secs[m()
+[93m 24 [m    }
+[93m 25 
+ 26 [m    [93mpub[m [93mfn[m [1m[96msign_in[m([38;5;121m&mut[m [95mself[m, user: [38;5;121m&str[m) [93m->[m [38;5;121mResult[m[93m<[mSession[93m>[m {
+[1m[7msrc/app.rs                                         20,9           Top[20;13H[?25h[?4mP+q436f\P+q6b75\P+q6b64\P+q6b72\P+q6b6c\P+q2332\P+q2334\P+q2569\P+q2a37\P+q6b31\P$q q\[?12$p

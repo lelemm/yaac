@@ -17,6 +17,7 @@ fn row(c: &yaac_core::client::Client, key: &yaac_core::ThreadKey, edit: impl FnO
         target_name: key.target.as_str(),
         effective: Some(&eff),
         summary_model: s.model.as_ref(),
+        summary_model_off: s.model_off == Some(true),
         summary_fast: s.fast,
         summary_ultrafast: s.ultrafast == Some(true),
         next: None,
@@ -95,6 +96,54 @@ fn a_draft_offers_every_instance_and_no_fork_or_meter() {
     assert!(!r.fork);
     assert_eq!(r.context_percent, None);
     assert!(r.target_and_folder);
+}
+
+#[test]
+fn off_models_are_hidden_from_new_choices_and_only_the_current_one_is_marked_in_the_composer() {
+    let (mut c, _) = boot();
+    let key = threads::fix();
+    let summary = c.state.summary(&key).unwrap();
+    let current = summary.model.clone().unwrap();
+    let instance = summary.instance.clone();
+    let mut provider = c.state.provider_of(&key).unwrap().clone();
+    let current_index = provider.models.iter().position(|m| m.id == current).unwrap();
+    let off = provider.models.remove(current_index);
+    let another_off = provider.models.pop().unwrap();
+    let name = off.display_name.clone();
+    let fallback = provider.models.first_mut().unwrap();
+    fallback.is_default = true;
+    let enabled = fallback.id.clone();
+    provider.disabled_models = vec![off, another_off];
+    c.state.apply_providers(&key.target, vec![provider], false);
+
+    let ControlRowView::Row(started) = row(&c, &key, |_| {}) else { panic!("hidden") };
+    let picker = started.model.unwrap();
+    assert_eq!(picker.model_label, format!("{name} · off in Settings"));
+    let own = picker.groups.iter().find(|g| g.instance == instance).unwrap();
+    assert_eq!(own.models.len(), 2);
+    let marked = &own.models[0];
+    assert_eq!(marked.id, current);
+    assert_eq!(marked.name, picker.model_label);
+    assert!(marked.selected && marked.off && !marked.enabled);
+    assert_eq!(own.models[1].id, enabled);
+
+    let draft_id = c.new_thread(key.target.clone(), Some("/work".into()));
+    let mut draft = c.state.new_threads.iter().find(|d| d.id == draft_id).unwrap().clone();
+    draft.instance = Some(instance.clone());
+    draft.model = Some(current);
+    let providers = &c.state.target(&key.target).unwrap().providers;
+    let picker = draft_row(providers, key.target.as_str(), &draft).model.unwrap();
+    let own = picker.groups.iter().find(|g| g.instance == instance).unwrap();
+    assert_eq!(own.models.len(), 1);
+    assert_eq!(own.models[0].id, enabled);
+    assert!(own.models[0].selected);
+
+    let choice = yaac_core::fork::default_choice(&c.state, &key).unwrap();
+    assert_eq!(choice.model, None);
+    let fork = yaac_core::fork::view(&c.state, &key, &choice).unwrap();
+    let dest = fork.destinations.iter().find(|d| d.instance == instance).unwrap();
+    assert_eq!(dest.models.len(), 1);
+    assert_eq!(dest.models[0].0, enabled);
 }
 
 #[test]

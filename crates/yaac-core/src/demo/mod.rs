@@ -9,6 +9,7 @@
 //! 06, 19, 20, 23) — and stream replies tick by tick.
 
 pub(crate) mod build;
+mod terminal;
 mod diffs;
 mod fleet;
 mod forge;
@@ -176,6 +177,8 @@ struct Inner {
     distros: Result<Value, String>,
     /// The next routed request is lost on the way: answered `outcome_unknown`, not acted on.
     lose_next: bool,
+    /// Demo terminals (`hub/terminal/*` and their data streams).
+    terminals: terminal::Terminals,
 }
 
 /// The demo hub. Clone it to keep a handle for [`DemoHub::play`] and [`DemoHub::tick`] after
@@ -197,7 +200,21 @@ impl HubLink for DemoHub {
     }
 
     fn poll(&mut self) -> Option<Message> {
-        self.inner.borrow_mut().ready.pop_front()
+        let mut inner = self.inner.borrow_mut();
+        if let Some((method, params)) = inner.terminals.events.pop_front() {
+            return Some(Message::notification(&method, params));
+        }
+        inner.ready.pop_front()
+    }
+
+    fn send_data(&mut self, stream: yaac_protocol::StreamId, bytes: Vec<u8>) {
+        let mut inner = self.inner.borrow_mut();
+        let target = inner.fleet.targets.first().map(|t| t.id.to_string()).unwrap_or_default();
+        inner.terminals.data(stream, &bytes, &target);
+    }
+
+    fn poll_data(&mut self) -> Option<(yaac_protocol::StreamId, Vec<u8>)> {
+        self.inner.borrow_mut().terminals.out.pop_front()
     }
 }
 
@@ -208,7 +225,7 @@ impl DemoHub {
             Scenario::Fleet => Fleet::standard(now),
             Scenario::Fresh => Fleet::fresh(now),
         };
-        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new(), lose_next: false })) }
+        Self { inner: Rc::new(RefCell::new(Inner { always: true, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new(), lose_next: false, terminals: terminal::Terminals::default() })) }
     }
 
     /// Every thread of the scenario — the window's "recently used" set, so their hints are
@@ -267,6 +284,16 @@ impl DemoHub {
     /// Release everything scheduled.
     pub fn drain(&self) {
         while self.tick() {}
+    }
+
+    /// Notifications the window sent (`stream/credit`), oldest first.
+    pub fn notifications(&self) -> Vec<(String, Value)> {
+        self.inner.borrow().terminals.notes.clone()
+    }
+
+    /// Terminal input received on a stream.
+    pub fn terminal_input(&self, stream: yaac_protocol::StreamId) -> Vec<u8> {
+        self.inner.borrow().terminals.input.get(&stream).cloned().unwrap_or_default()
     }
 
     /// The requests received so far, oldest first (at most the last 512): the target of a
@@ -451,7 +478,19 @@ impl Inner {
     }
 
     fn handle(&mut self, msg: Message) {
+        if let Message::Notification { method, params } = &msg {
+            self.terminals.notes.push((method.clone(), params.clone()));
+            return;
+        }
         let Message::Request { id, method, params } = msg else { return };
+        if method.starts_with("hub/terminal/") {
+            self.log.push_back((None, method.clone(), params.clone()));
+            match self.terminals.request(&method, &params) {
+                Ok(v) => self.ready.push_back(result(id, v)),
+                Err(e) => self.ready.push_back(error(id, ErrorCode::MethodNotFound, &e)),
+            }
+            return;
+        }
         let logged = match serde_json::from_value::<RoutedRequest>(params.clone()) {
             Ok(r) if method == attach::names::REQUEST => (Some(r.target), r.method, r.params),
             _ => (None, method.clone(), params.clone()),
@@ -1295,7 +1334,7 @@ impl Inner {
     fn deliver_while_running(&mut self, id: RpcId, key: &ThreadKey, running: &TurnId, p: &Value, input: Vec<InputPart>) {
         match p.get("delivery").and_then(Value::as_str) {
             Some("queue") => {
-                let entry = yaac_protocol::QueuedMessage { queue_id: self.next("q"), input, queued_at: crate::time::timestamp(self.fleet.base), model: None, effort: None, mode: None, fast: None, ultrafast: None };
+                let entry = yaac_protocol::QueuedMessage { queue_id: self.next("q"), input, queued_at: crate::time::timestamp(self.fleet.base), model: None, effort: None, mode: None, fast: None, ultrafast: None, shell_command: None };
                 self.emit_now(key, ThreadEvent::QueueChanged(QueueChangedEvent { change: QueueChange::Added, entry: entry.clone(), turn_id: None }));
                 self.ready.push_back(result(id, json!({ "turnId": "", "outcome": "queued", "queueId": entry.queue_id })));
             }
@@ -1452,6 +1491,7 @@ impl Inner {
             client_host: Some("this computer".into()),
             answer: Some(response.clone()),
             at: Some(crate::time::timestamp(base)),
+            automatic: None,
         };
         let denied = matches!(&response, RequestResponse::Approval(a) if a.decision.starts_with("deny"));
         let k2 = key.clone();
@@ -1688,7 +1728,7 @@ impl Inner {
         t.state = ConnectionState {
             status,
             detail: detail.map(str::to_owned),
-            daemon: older.map(|b| DaemonSummary { build: b.to_owned(), older: true, schema_hash_matches: true, can_update: true, port_forward: false, file_view: false }),
+            daemon: older.map(|b| DaemonSummary { build: b.to_owned(), older: true, schema_hash_matches: true, can_update: true, port_forward: false, file_view: false, terminal: false, terminal_unavailable_reason: None }),
             update: None,
         };
         if let Some(e) = enabled {
@@ -1716,6 +1756,7 @@ impl Inner {
                         client_host: None,
                         answer: Some(RequestResponse::Approval(yaac_protocol::ApprovalAnswer { decision: "allow".into(), reason: None })),
                         at: Some(at(-120)),
+                        automatic: None,
                     }),
                 }));
                 let approach = || q("approach", Some("Approach"), "Which fix do you want?", &["Patch the decoder", "Rewrite the reader", "Add a compatibility shim"], false, true, false);
@@ -1735,6 +1776,7 @@ impl Inner {
                     client_host: None,
                     answer: Some(a),
                     at: Some(at(o)),
+                    automatic: None,
                 };
                 let t = "f-t2";
                 let items = vec![
@@ -1873,7 +1915,7 @@ impl Inner {
                 self.emit_now(&billing, ThreadEvent::ItemStarted(ItemEvent { item: item("bq-test", t, ItemStatus::InProgress, tool(ToolKind::Command, "cargo test -p billing webhook", None, "running 12 tests\n")) }));
                 self.set_state_now(&billing, ThreadState::Running);
                 for (i, text) in ["Also log each retry at debug level, with the attempt number.", "When the tests pass, open a draft PR against main."].iter().enumerate() {
-                    let entry = yaac_protocol::QueuedMessage { queue_id: format!("bq-{}", i + 1), input: vec![InputPart::text(*text)], queued_at: crate::time::timestamp(base - 20 + i as i64 * 10), model: None, effort: None, mode: None, fast: None, ultrafast: None };
+                    let entry = yaac_protocol::QueuedMessage { queue_id: format!("bq-{}", i + 1), input: vec![InputPart::text(*text)], queued_at: crate::time::timestamp(base - 20 + i as i64 * 10), model: None, effort: None, mode: None, fast: None, ultrafast: None, shell_command: None };
                     self.emit_now(&billing, ThreadEvent::QueueChanged(QueueChangedEvent { change: QueueChange::Added, entry, turn_id: None }));
                 }
             }

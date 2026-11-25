@@ -23,5 +23,12 @@ version=22.22.3
 fetch node.exe "https://nodejs.org/dist/v$version/win-x64/node.exe" 780f44f2c53c108bae261ada21a525b4bfe733c020ac85e41bfe94479090ac9b
 fetch LICENSE-Node.js.txt "https://raw.githubusercontent.com/nodejs/node/v$version/LICENSE" c738ae413cf561f174e34f6961f8ca458aae2369a73640dda6234c629b98bcc4
 
+# Stage the locked ConPTY package beside node.exe (also when the local daemon
+# bundle is copied into its per-build folder under YAAC_HOME).
+root=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
+node "$root/daemon/scripts/stage-pty.mjs"
+mkdir -p "$dest/pty-1.2.0-beta.18"
+tar xzf "$root/daemon/dist/pty/win32-x64.tgz" --strip-components=1 --exclude='*.pdb' -C "$dest/pty-1.2.0-beta.18"
+
 # CEF is loaded only by the browser host, from its own runtime directory.
 sh "$(dirname "$0")/build-preview-runtime.sh" windows64 "$1/cef"

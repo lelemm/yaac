@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
-    Address, ClientId, InstanceId, MeshBudget, MeshPeer, ModelId, OpId, QuestionId, RequestId, TargetId, TargetPath, ThreadId,
+    Address, ClientId, InstanceId, MeshBudget, MeshPeer, ModeId, ModelId, OpId, QuestionId, RequestId, TargetId, TargetPath, ThreadId,
     Timestamp,
 };
 use crate::macros::{open_enum, open_union};
@@ -367,7 +367,21 @@ open_enum! {
         Client = "client",
         /// Somewhere YAAC cannot see — for example the harness's own terminal.
         Elsewhere = "elsewhere",
+        /// `yaacd` itself, automatically: a tool approval in a thread whose mode never asks
+        /// (P342). `automatic` says which mode.
+        Yaacd = "yaacd",
     }
+}
+
+/// Why `yaacd` answered a request itself (P342): the thread was in a mode that never asks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomaticResolution {
+    /// The thread's mode when the harness asked (a mode the provider marks `skipsApprovals`).
+    pub mode: ModeId,
+    /// That mode's display name, as the provider reported it ("Bypass permissions").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_name: Option<String>,
 }
 
 /// How a request was resolved.
@@ -388,6 +402,9 @@ pub struct RequestResolution {
     /// When.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Timestamp>,
+    /// Set when `by` is `yaacd`: the mode that made it automatic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub automatic: Option<AutomaticResolution>,
 }
 
 /// `request/respond`: answer a pending request.

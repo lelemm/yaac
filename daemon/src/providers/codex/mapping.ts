@@ -283,6 +283,14 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus, skil
         cwd: str(it.cwd),
         exitCode: num(it.exitCode),
       };
+      const duration = num(it.durationMs);
+      if (duration !== null && duration >= 0) (item as { durationMs?: number }).durationMs = duration;
+      if (it.source === "userShell") {
+        // A `!command` the user ran (P344): titled by the command as typed, not by Codex's
+        // `/bin/bash -lc "…"` wrapper (`commandActions` keeps the typed text).
+        const typed = arr(it.commandActions).map((a) => str(obj(a).command)).find((c): c is string => !!c);
+        Object.assign(item, { source: "userShell", ...(typed ? { title: typed } : {}) });
+      }
       if (output !== null) {
         (item as { output?: string }).output = output;
         (item as { outputBytes?: number }).outputBytes = Buffer.byteLength(output);

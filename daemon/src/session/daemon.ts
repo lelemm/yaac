@@ -1,3 +1,4 @@
+import { terminalUnavailableReason } from "./terminals.js";
 // `yaacd serve`: the persistent per-user daemon (docs/02-architecture.md#daemon-lifecycle).
 //
 // It keeps running turns going and journaling while no host is attached, and exits by itself
@@ -235,6 +236,8 @@ export class Daemon implements FrozenCoreHost {
   daemonInfo() {
     return { build: this.config.build, stateFormat: STATE_FORMAT };
   }
+
+  terminalSupport() { return { unavailableReason: terminalUnavailableReason }; }
 
   targetFacts(): TargetFacts {
     return targetFacts();

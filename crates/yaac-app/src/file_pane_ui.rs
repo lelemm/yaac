@@ -118,7 +118,7 @@ pub(crate) fn draw(ui: &mut Ui, app: &mut YaacApp, key: &ThreadKey, id: u64) {
                     }
                 }
             }
-            TabKind::Browser => {}
+            TabKind::Browser | TabKind::Terminal(_) => {}
         }
     });
     if app.browsers.side_by_side != initial_side {

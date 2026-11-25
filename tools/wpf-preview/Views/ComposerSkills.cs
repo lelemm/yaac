@@ -203,7 +203,7 @@ public partial class ComposerView
         if (applyingText || !editingEnabled || Editor.CaretIndex == lastCaret)
             return;
         lastCaret = Editor.CaretIndex;
-        Command?.Invoke("composer.caret", new { key, caret = lastCaret });
+        Command?.Invoke("composer.caret", new { key, caret = DraftCaret });
     }
 
     private void CloseSkills()

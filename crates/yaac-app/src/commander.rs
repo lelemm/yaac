@@ -101,6 +101,15 @@ pub(crate) fn with_ctx<R>(app: &YaacApp, card: Option<&ItemId>, f: impl FnOnce(&
         _ => None,
     };
     let exists = |p: &Place| app.place_exists(p);
+    let shells: Vec<(String, String)> = match thread.and_then(|k| app.browsers.terms.shells.get(&k.target)) {
+        Some(crate::terminal::Shells::Ready(list)) => list.iter().map(|s| (s.path.clone(), s.name.clone())).collect(),
+        _ => Vec::new(),
+    };
+    let terminal = yaac_core::commands::TerminalCtx {
+        shells: &shells,
+        open: thread.is_some_and(|k| app.browsers.terms.panel_open(k)),
+        any: thread.and_then(|k| app.browsers.terms.panel(k)).is_some_and(|p| !p.tabs.is_empty()),
+    };
     let ctx = Ctx {
         state: st,
         now: app.now(),
@@ -122,6 +131,7 @@ pub(crate) fn with_ctx<R>(app: &YaacApp, card: Option<&ItemId>, f: impl FnOnce(&
         host_windows: app.host_windows,
         focused_card: card,
         list_selected: app.ui.list_sel.len(),
+        terminal,
     };
     f(&ctx)
 }
@@ -145,8 +155,10 @@ pub(crate) fn dispatch(app: &mut YaacApp, ctx: &egui::Context, actions: &mut Vec
         crate::keyboard::capture(app, ctx);
         return;
     }
+    // A focused terminal gets every key except the terminal commands (docs/13-terminal.md#the-tab).
+    let in_terminal = crate::terminal_ui::focused(ctx);
     // Ctrl+V arrives as a key (`clipboard_shortcuts` is off): see `YaacApp::paste`.
-    let paste = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::V) || i.consume_key(Modifiers::NONE, Key::Paste) || (cfg!(windows) && i.consume_key(Modifiers::SHIFT, Key::Insert)));
+    let paste = !in_terminal && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::V) || i.consume_key(Modifiers::NONE, Key::Paste) || (cfg!(windows) && i.consume_key(Modifiers::SHIFT, Key::Insert)));
     if paste {
         app.paste(ctx);
     }
@@ -182,6 +194,9 @@ pub(crate) fn dispatch(app: &mut YaacApp, ctx: &egui::Context, actions: &mut Vec
             };
             let cmd = bindings.resolve(&chord).or_else(|| if chord.shift { bindings.resolve(&chord.without_shift()) } else { None });
             let Some(cmd) = cmd else { return true };
+            if in_terminal && !bindings.works_in_terminal(cmd) {
+                return true;
+            }
             if in_text && !chord.works_in_text() {
                 return true;
             }
@@ -221,6 +236,11 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
     let thread = app.client.state.selected_thread().cloned().filter(|_| !app.ui.settings);
     // Unmute needs no choice; every other step opens in the Commander.
     let muted = thread.as_ref().is_some_and(|k| app.client.state.is_muted(k, app.now()));
+    if cmd == Cmd::NewTerminalWithShell
+        && let Some(k) = &thread
+    {
+        app.browsers.terms.shells(&mut app.client, &k.target);
+    }
     if let Some(step) = d.step
         && !(cmd == Cmd::Mute && muted)
     {
@@ -479,6 +499,30 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
         Cmd::AddWsl => actions.push(Action::SettingsPage(yaac_core::settings::Page::Targets)),
         Cmd::Renderer => actions.push(Action::SettingsPage(yaac_core::settings::Page::Window)),
         Cmd::HideToTray => app.shell.hide(ctx),
+        Cmd::ToggleTerminalPanel => {
+            if let Some(k) = &thread
+                && let Err(e) = app.browsers.toggle_terminal_panel(&app.client, k)
+            {
+                app.browsers.notice = Some(e);
+            }
+        }
+        Cmd::NewTerminal => {
+            if let Some(k) = &thread
+                && let Err(e) = app.browsers.new_panel_terminal(&app.client, k, None)
+            {
+                app.browsers.notice = Some(e);
+            }
+        }
+        Cmd::NextTerminal | Cmd::PrevTerminal => {
+            if let Some(k) = &thread {
+                app.browsers.terms.panel_cycle(k, cmd == Cmd::NextTerminal);
+            }
+        }
+        Cmd::MaximiseTerminalPanel => {
+            if let Some(k) = &thread {
+                app.browsers.terms.panel_maximise(k);
+            }
+        }
         Cmd::Quit => {
             // With the tray in use, Quit is the tray's Quit. Without it, the window asks first.
             if app.shell.has_tray() && app.ui.tray_on_close {
@@ -502,7 +546,8 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
         | Cmd::Retry
         | Cmd::StartWsl
         | Cmd::TargetEnable
-        | Cmd::RefreshProviders => {}
+        | Cmd::RefreshProviders
+        | Cmd::NewTerminalWithShell => {}
     }
     // A command that went to a thread leaves the caret in its composer (D149).
     let navigates = matches!(cmd, Cmd::NeedsNext | Cmd::NextUnseen | Cmd::NextThread | Cmd::PrevThread | Cmd::Back | Cmd::Forward | Cmd::Parent);
@@ -577,6 +622,13 @@ pub(crate) fn run_step(app: &mut YaacApp, cmd: Cmd, value: StepValue, actions: &
         StepValue::Retry(t) => actions.push(Action::Retry(t)),
         StepValue::TargetEnabled(t, on) => actions.push(Action::TargetEnabled(t, on)),
         StepValue::Refresh(t) => actions.push(Action::RefreshProviders(t, None)),
+        StepValue::Shell(path, name) => {
+            if let Some(k) = thread
+                && let Err(e) = app.browsers.new_panel_terminal(&app.client, &k, Some(yaac_protocol::TerminalShell { path, name }))
+            {
+                app.browsers.notice = Some(e);
+            }
+        }
     }
     let _ = cmd;
 }

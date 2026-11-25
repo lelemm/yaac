@@ -19,11 +19,10 @@ use crate::core::CoreEvent;
 pub(crate) struct Outgoing {
     /// The encoded frame.
     pub(crate) bytes: Vec<u8>,
-    /// A bulk frame (an upload chunk): the pump reports when it has been written
-    /// ([`ConnEvent::Written`]), and the core hands out the next bulk frame only then — so a
-    /// control frame queued at any moment waits behind at most one bulk chunk
-    /// (docs/03-protocol.md#scheduling-and-flow-control).
+    /// Whether this write contributes to adaptive bulk chunk sizing.
     pub(crate) bulk: bool,
+    /// Wake the scheduler after writing a paced frame.
+    pub(crate) paced: bool,
 }
 
 /// How the core nudges a supervisor: retry now (never boots a stopped machine), or start —
@@ -62,8 +61,8 @@ pub(crate) enum ConnEvent {
     Opened { writer: mpsc::UnboundedSender<Outgoing>, kill: oneshot::Sender<()> },
     /// Bytes from the target.
     Bytes(Vec<u8>),
-    /// A bulk frame of `bytes` bytes was written, taking `elapsed`.
-    Written { bytes: usize, elapsed: Duration },
+    /// A frame of `bytes` bytes was written, taking `elapsed`.
+    Written { bytes: usize, elapsed: Duration, bulk: bool },
     /// The stream ended.
     Closed(String),
 }
@@ -163,7 +162,7 @@ async fn pump(
             if let Err(e) = writer.flush().await {
                 return format!("write failed: {e}");
             }
-            if frame.bulk && !on_event(ConnEvent::Written { bytes: frame.bytes.len(), elapsed: started.elapsed() }) {
+            if frame.paced && !on_event(ConnEvent::Written { bytes: frame.bytes.len(), elapsed: started.elapsed(), bulk: frame.bulk }) {
                 return "the hub is stopping".to_owned();
             }
         }

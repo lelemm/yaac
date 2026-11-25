@@ -270,8 +270,9 @@ pub enum ComposerView {
         steer: bool,
         /// A turn is running: the primary button queues (D166).
         running: bool,
-        /// The Send now button's label ("Send now" or "Send now — interrupts"), when offered:
-        /// a turn runs and the thread does not wait on the user.
+        /// The Send now button's hover text (whether it steers or interrupts; the label is
+        /// always "Send now"), when offered: a turn runs and the thread does not wait on the
+        /// user.
         send_now: Option<&'static str>,
         /// A queued message is open for editing: the primary button saves it.
         editing: bool,
@@ -281,7 +282,58 @@ pub enum ComposerView {
         ready: bool,
         /// Why the message cannot be sent yet (the send button says it).
         blocked: Option<String>,
+        /// The draft is a `!command` and the thread can run one (P344, P346): the composer
+        /// shows `!` mode. None for an ordinary message (and on a thread without
+        /// `userShellCommand`, where a leading `!` is plain text).
+        shell: Option<ShellMode>,
     },
+}
+
+/// The composer in `!` mode (P346): what the prompt row, the hint and the button say.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellMode {
+    /// Where it runs, for the prompt row: "devbox · yaac".
+    pub prompt: String,
+    /// The target's name.
+    pub target: String,
+    /// The thread's folder (its last component; the whole path when it has none).
+    pub folder: String,
+    /// The full working directory.
+    pub cwd: String,
+    /// "Runs here, then Codex answers".
+    pub hint: String,
+    /// The primary button: "Run" (idle) or "Queue run" (a turn is running: it waits, D166).
+    pub run_label: &'static str,
+    /// There is a command to run (the field is not empty).
+    pub ready: bool,
+}
+
+/// The `!` mode of a thread's composer, when its draft is in it and the thread can run one.
+pub fn shell_mode(state: &AppState, key: &ThreadKey) -> Option<ShellMode> {
+    let draft = state.drafts.get(key)?;
+    if !crate::compose::is_shell_draft(&draft.text) {
+        return None;
+    }
+    let transcript = state.transcripts.get(key)?;
+    let caps = transcript.effective.as_ref().map_or(&[][..], |e| e.capabilities.as_slice());
+    if !has_capability(caps, &Capability::UserShellCommand) {
+        return None;
+    }
+    let provider = state.provider_of(key);
+    let name = provider.map_or_else(|| "the agent".to_owned(), |p| short_provider(&p.display_name, p.name.as_deref()));
+    let cwd = state.summary(key).map(|s| s.cwd.to_string()).unwrap_or_default();
+    let folder = cwd.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().filter(|f| !f.is_empty()).unwrap_or(&cwd).to_owned();
+    let target = state.target_name(&key.target);
+    let running = transcript.active_turn.is_some();
+    Some(ShellMode {
+        prompt: if folder.is_empty() { target.clone() } else { format!("{target} · {folder}") },
+        target,
+        folder,
+        cwd,
+        hint: format!("Runs here, then {name} answers"),
+        run_label: if running { "Queue run" } else { "Run" },
+        ready: crate::compose::shell_command(&draft.text).is_some(),
+    })
 }
 
 /// The provider's name without the instance suffix, for "Message Codex…".
@@ -340,6 +392,7 @@ pub fn composer(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Compos
         chips,
         ready,
         blocked,
+        shell: shell_mode(state, key),
     }
 }
 

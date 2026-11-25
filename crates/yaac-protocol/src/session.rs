@@ -31,6 +31,8 @@ use crate::types::{Capability, ClientInfo, DaemonInfo, InitializeParams, Initial
 /// Facts available once the handshake succeeded. Contains no version number.
 #[derive(Clone, Debug)]
 pub struct ReadyInfo {
+    /// Native terminal load error, if reported.
+    pub terminal_unavailable_reason: Option<String>,
     /// The daemon's build and state format.
     pub daemon: DaemonInfo,
     /// Target facts.
@@ -270,7 +272,12 @@ impl ClientSession {
         serde_json::from_value(current).map_err(|source| SessionError::Result { method: M::NAME, source })
     }
 
-    /// Opens an outbound data stream (an upload) with the daemon's initial credit.
+    /// Opens a terminal input stream with the daemon's initial credit.
+    pub fn open_interactive_stream(&mut self, stream: StreamId, initial_credit: u64) -> Result<(), SessionError> {
+        Ok(self.out.open_interactive_stream(stream, initial_credit)?)
+    }
+
+    /// Opens a bulk stream.
     pub fn open_stream(&mut self, stream: StreamId, initial_credit: u64) -> Result<(), SessionError> {
         Ok(self.out.open_stream(stream, initial_credit)?)
     }
@@ -406,6 +413,7 @@ impl ClientSession {
         let dialect = dialect::select(&negotiated).ok_or(SessionError::NoDialect)?;
         self.phase = Phase::Ready { dialect, negotiated, features: dialect.features().advertised(result.features.as_deref().unwrap_or_default()) };
         events.push(SessionEvent::Ready(ReadyInfo {
+            terminal_unavailable_reason: result.terminal_unavailable_reason,
             daemon: result.daemon,
             target: result.target,
             daemon_is_older: negotiated.peer_is_older(),

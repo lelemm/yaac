@@ -792,6 +792,37 @@ causes it to fetch the official Markdown selection guide for that provider and e
 recommendations of up to 15 words for its unedited models. The previous guidance stays
 available when a refresh fails. Models with no recommendation yet show **No guidance yet**.
 
+### Turning models off
+
+Each model row under **Model guidance** has an **on/off switch** (P349). It belongs to the
+**provider instance** on that target — a work Claude account and a personal one are separate
+instances — so a model can be off for one account and on for another. The setting is stored on
+the target with the instance's other settings.
+
+A model that is off:
+
+- is left out of every model list the user or an agent sees: the composer's model picker, the
+  Commander's model step, a new thread's choices, the fork dialog's destinations, and the
+  agents' `list_models` tool;
+- cannot be chosen by an agent: `spawn_thread` with it is refused with "<model> is turned off
+  for <instance> on <target>";
+- is never picked as a default: if the instance's default model is off, the first model that is
+  on takes its place.
+
+A thread already using a model that is turned off keeps it — nothing changes under a running
+conversation — and its picker shows that model, marked *off in Settings*, so the user can move
+to another. Turning a model on again restores it everywhere at once. New models the harness
+reports later start **on**. Off models stay listed in Settings (dimmed) so they can be turned
+back on.
+
+The switch applies to the advertised model ID. The target stores off IDs in the instance's
+`disabledModelIds`, exposed by `providerInstance/list`. An operation-id-bearing
+`providerInstance/setModelEnabled` updates one model and publishes the revised descriptor.
+Instances that support the switch advertise `modelAvailability`. The descriptor's `models`
+contains enabled entries, and `disabledModels` supplies the rows for Settings and metadata for
+existing threads. A thread summary reports `modelOff: true` while its current model is off.
+When no enabled default can be selected, a start without an explicit model is refused.
+
 The [OpenAI model selection guide](https://developers.openai.com/api/docs/guides/model-selection.md)
 and [Claude model selection guide](https://platform.claude.com/docs/en/about-claude/models/choosing-a-model.md)
 provide the source text. The live provider catalog determines model availability.

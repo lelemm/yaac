@@ -120,7 +120,10 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 /// The default destination: the source's own instance and model (a native fork when possible).
 pub fn default_choice(state: &AppState, key: &ThreadKey) -> Option<ForkChoice> {
     let s = state.summary(key)?;
-    Some(ForkChoice { instance: s.instance.clone(), model: s.model.clone() })
+    let model = s.model.as_ref().filter(|id| {
+        s.model_off != Some(true) && !state.provider_of(key).is_some_and(|p| p.model_is_off(id))
+    }).cloned();
+    Some(ForkChoice { instance: s.instance.clone(), model })
 }
 
 /// The dialog for forking `key` into `choice`.
@@ -132,7 +135,7 @@ pub fn view(state: &AppState, key: &ThreadKey, choice: &ForkChoice) -> Option<Fo
     let dest = target.provider(&choice.instance);
     let model_name = |p: Option<&ProviderDescriptor>, id: Option<&ModelId>| -> String {
         match (p, id) {
-            (Some(p), Some(id)) => p.models.iter().find(|m| &m.id == id).map_or_else(|| id.to_string(), |m| m.display_name.clone()),
+            (Some(p), Some(id)) => p.find_model(id).map_or_else(|| id.to_string(), |m| m.display_name.clone()),
             (Some(p), None) => p.models.iter().find(|m| m.is_default).map_or_else(String::new, |m| m.display_name.clone()),
             (None, Some(id)) => id.to_string(),
             (None, None) => String::new(),
@@ -237,7 +240,10 @@ pub fn view(state: &AppState, key: &ThreadKey, choice: &ForkChoice) -> Option<Fo
             native: source.is_some_and(|s| is_native(s, p)),
         })
         .collect();
-    let unavailable = if source.is_some_and(|s| !has_capability(&s.capabilities, &Capability::ThreadRead)) {
+    let model_off = dest.zip(choice.model.as_ref()).is_some_and(|(p, id)| p.model_is_off(id));
+    let unavailable = if model_off {
+        Some("Choose an enabled model to fork.".to_owned())
+    } else if source.is_some_and(|s| !has_capability(&s.capabilities, &Capability::ThreadRead)) {
         Some("This provider cannot read its history, so YAAC will not fork it.".to_owned())
     } else {
         match preview_state {
@@ -251,7 +257,7 @@ pub fn view(state: &AppState, key: &ThreadKey, choice: &ForkChoice) -> Option<Fo
         from,
         at,
         destinations,
-        chosen: dest.map(|d| (d.display_name.clone(), model_name(Some(d), choice.model.as_ref()))),
+        chosen: dest.map(|d| (d.display_name.clone(), if model_off { String::new() } else { model_name(Some(d), choice.model.as_ref()) })),
         instance_line,
         result_word,
         result_text,

@@ -20,6 +20,26 @@ use crate::types::{ClientId, Empty, TargetId, TargetName};
 
 /// Every attach method name.
 pub mod names {
+    /// Terminal open on the selected target.
+    pub const TERMINAL_OPEN: &str = "hub/terminal/open";
+    /// Terminal attach on the selected target.
+    pub const TERMINAL_ATTACH: &str = "hub/terminal/attach";
+    /// Terminal resize on the selected target.
+    pub const TERMINAL_RESIZE: &str = "hub/terminal/resize";
+    /// Terminal close on the selected target.
+    pub const TERMINAL_CLOSE: &str = "hub/terminal/close";
+    /// Terminal shells on the selected target.
+    pub const TERMINAL_SHELLS: &str = "hub/terminal/shells";
+    /// Terminal list on the selected target.
+    pub const TERMINAL_LIST: &str = "hub/terminal/list";
+    /// Terminal title on the selected target.
+    pub const TERMINAL_TITLE: &str = "hub/terminal/title";
+    /// Terminal exited on the selected target.
+    pub const TERMINAL_EXITED: &str = "hub/terminal/exited";
+    /// Terminal rename on the selected target (P343).
+    pub const TERMINAL_RENAME: &str = "hub/terminal/rename";
+    /// Terminal renamed on the selected target (P343).
+    pub const TERMINAL_RENAMED: &str = "hub/terminal/renamed";
     /// Hub → window browser request.
     pub const BROWSER_CALL: &str = "hub/browser/call";
     /// Preview listener management.
@@ -63,6 +83,16 @@ pub mod names {
     pub const RATE_LIMITS_GET: &str = "hub/rateLimits/get";
     /// Hub → window notification: those accounts changed ([`RateLimitsResult`]).
     pub const RATE_LIMITS_CHANGED: &str = "hub/rateLimits/changed";
+}
+
+/// Terminal request or notification on the window–hub link.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TargetTerminal<P> {
+    /// Selected target.
+    pub target: TargetId,
+    /// Corresponding target-side terminal payload.
+    #[serde(flatten)]
+    pub params: P,
 }
 
 /// `hub/hello` params.
@@ -165,6 +195,12 @@ pub struct DaemonSummary {
     /// Whether the daemon supports the worktree browser and file diffs.
     #[serde(default)]
     pub file_view: bool,
+    /// Target supports interactive PTYs.
+    #[serde(default)]
+    pub terminal: bool,
+    /// Reason the native terminal backend could not load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_unavailable_reason: Option<String>,
     /// The daemon's build.
     pub build: String,
     /// The daemon is older than this build: show "will be updated when idle" and offer

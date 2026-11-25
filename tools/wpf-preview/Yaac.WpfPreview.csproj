@@ -13,6 +13,7 @@
     <PackageReference Include="AvalonEdit" Version="6.3.1.120" />
     <None Update="LICENSE-AvalonEdit.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Resource Include="Assets/yaac.ico" />
+    <Resource Include="Assets/zoom-in.cur" />
     <Resource Include="../../crates/yaac-app/assets/fonts/*NerdFont*.ttf"
               Link="Assets/Fonts/%(Filename)%(Extension)" />
     <Content Include="../../crates/yaac-app/assets/fonts/LICENSE-*.txt"

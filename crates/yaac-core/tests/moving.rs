@@ -250,6 +250,7 @@ fn the_commander_lists_the_machines_projects_with_the_current_one_ticked() {
         host_windows: false,
         focused_card: None,
         list_selected: 0,
+        terminal: Default::default(),
     };
     let items = yaac_core::commands::step_items(yaac_core::commands::StepKind::MoveTo, &ctx, &[]);
     assert_eq!(items.iter().map(|i| (i.label.as_str(), i.current)).collect::<Vec<_>>(), [("api", false), ("yaac", true)]);

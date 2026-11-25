@@ -204,7 +204,7 @@ pub(crate) fn layout(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Entry {
+pub(crate) enum Entry {
     Chat,
     Tab(u64),
 }
@@ -218,14 +218,20 @@ enum Icon {
     Folder,
     File,
     Diff(String, egui::Color32),
+    /// A terminal: `>_`.
+    Prompt,
 }
 
-struct TabInfo {
+pub(crate) struct TabInfo {
     entry: Entry,
     title: String,
     hover: String,
     icon: Icon,
     agent: Option<String>,
+    /// New output while not shown (terminals).
+    dot: bool,
+    /// The bell rang: the tab flashes.
+    flash: bool,
 }
 
 /// The git mark of a worktree path from the loaded tree, if its folder is loaded.
@@ -249,6 +255,9 @@ pub(crate) fn git_color(p: &Palette, g: &GitFileStatus) -> egui::Color32 {
 }
 
 fn tab_info(app: &YaacApp, area: &crate::preview_controller::BrowserArea, tab: &crate::preview_controller::BrowserTab) -> TabInfo {
+    if let TabKind::Terminal(sid) = tab.kind {
+        return terminal_info(app, Entry::Tab(tab.id), sid);
+    }
     let title = if !tab.title.is_empty() {
         tab.title.clone()
     } else if !tab.url.is_empty() {
@@ -267,7 +276,7 @@ fn tab_info(app: &YaacApp, area: &crate::preview_controller::BrowserArea, tab: &
         TabKind::Browser => {
             #[cfg(feature = "preview")]
             if let Some(tex) = app.preview_ui.favicons.get(&tab.id) {
-                return TabInfo { entry: Entry::Tab(tab.id), title, hover, icon: Icon::Favicon(tex.id()), agent: tab.agent.clone() };
+                return TabInfo { entry: Entry::Tab(tab.id), title, hover, icon: Icon::Favicon(tex.id()), agent: tab.agent.clone(), dot: false, flash: false };
             }
             Icon::Globe
         }
@@ -277,9 +286,29 @@ fn tab_info(app: &YaacApp, area: &crate::preview_controller::BrowserArea, tab: &
             let g = git_status(&area.tree, path).unwrap_or(GitFileStatus::Modified);
             Icon::Diff(g.as_str().to_owned(), git_color(&app.p, &g))
         }
+        TabKind::Terminal(_) => Icon::Prompt,
     };
     let _ = app;
-    TabInfo { entry: Entry::Tab(tab.id), title, hover, icon, agent: tab.agent.clone() }
+    TabInfo { entry: Entry::Tab(tab.id), title, hover, icon, agent: tab.agent.clone(), dot: false, flash: false }
+}
+
+/// A terminal session's tab: the program's title or the shell's name; the folder on hover.
+pub(crate) fn terminal_info(app: &YaacApp, entry: Entry, sid: u64) -> TabInfo {
+    let now = std::time::Instant::now();
+    let (title, hover, dot, flash) = match app.browsers.terms.get(sid) {
+        Some(s) => {
+            let title = s.title();
+            let state = match &s.state {
+                crate::terminal::SessionState::Exited(code) => format!("\nExited with code {code}"),
+                crate::terminal::SessionState::Failed(e) => format!("\n{e}"),
+                crate::terminal::SessionState::Reconnecting => "\nReconnecting…".to_owned(),
+                _ => String::new(),
+            };
+            (title.clone(), format!("{title}\n{} in {}{state}", s.shell_name(), s.cwd), s.unseen, s.bell(now))
+        }
+        None => ("Terminal".to_owned(), "Terminal".to_owned(), false, false),
+    };
+    TabInfo { entry, title, hover, icon: Icon::Prompt, agent: None, dot, flash }
 }
 
 /// Points of a rectangle's left, top and right edges with rounded top corners, open at the
@@ -315,6 +344,7 @@ fn draw_icon(painter: &egui::Painter, c: egui::Pos2, icon: &Icon, ink: egui::Col
         Icon::Folder => icons::folder(painter, c, 17., ink),
         Icon::File => icons::file(painter, c, 17., ink, false),
         Icon::Diff(letter, col) => icons::git_letter(painter, c, 16., *col, letter),
+        Icon::Prompt => icons::prompt(painter, c, 16., ink),
     }
 }
 
@@ -334,7 +364,35 @@ fn chat_mark(painter: &egui::Painter, c: egui::Pos2, app: &YaacApp, map: &Attent
 
 /// The pane's + menu rows (here and in the title bar): Browser and Files with their icons,
 /// unavailable ones disabled with the reason as hover text. Returns Some(true) for Files.
-pub(crate) fn pane_menu(ui: &mut egui::Ui, app: &YaacApp, key: Option<&ThreadKey>) -> Option<bool> {
+/// What the pane's **+** menu chose.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PaneChoice {
+    Browser,
+    Files,
+    /// A terminal with this shell (`None`: the default).
+    Terminal(Option<yaac_protocol::TerminalShell>),
+}
+
+/// One row of the + menu: icon, label, hover reason when unavailable.
+fn pane_row(ui: &mut egui::Ui, p: &Palette, label: &str, reason: Option<&str>, chevron: bool, icon: impl FnOnce(&egui::Painter, egui::Pos2, egui::Color32)) -> egui::Response {
+    let enabled = reason.is_none();
+    let (r, rect) = widgets::menu_row(ui, p, false, enabled);
+    let ink = if enabled { p.text } else { p.unavailable };
+    icon(ui.painter(), egui::pos2(rect.left() + 18., rect.center().y), ink);
+    let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), theme::ui(size::UI), ink));
+    ui.painter().galley(egui::pos2(rect.left() + 34., rect.center().y - g.size().y / 2.), g, ink);
+    if chevron {
+        icons::chevron(ui.painter(), egui::pos2(rect.right() - 14., rect.center().y), 14., false, p.text2);
+    }
+    match reason {
+        Some(reason) => r.on_hover_text(reason),
+        None => r,
+    }
+}
+
+/// The side pane's **+** menu: Browser, Files, Terminal (the default shell; the other shells in
+/// its submenu).
+pub(crate) fn pane_menu(ui: &mut egui::Ui, app: &mut YaacApp, key: Option<&ThreadKey>) -> Option<PaneChoice> {
     let p = app.p;
     let browser = app.browsers.reason(&app.client, key);
     let files = match key {
@@ -342,36 +400,66 @@ pub(crate) fn pane_menu(ui: &mut egui::Ui, app: &YaacApp, key: Option<&ThreadKey
         Some(_) => Some("The target is offline or does not offer its files".to_owned()),
         None => Some("Open a thread first".to_owned()),
     };
-    ui.set_min_width(180.);
+    let terminal = match key {
+        Some(k) => crate::terminal::unavailable(&app.client, k),
+        None => Some("Open a thread first".to_owned()),
+    };
+    ui.set_min_width(200.);
     let mut pick = None;
-    for (is_files, label, reason) in [(false, "Browser", browser), (true, "Files", files)] {
-        let enabled = reason.is_none();
-        let (r, rect) = widgets::menu_row(ui, &p, false, enabled);
-        let ink = if enabled { p.text } else { p.unavailable };
-        let c = egui::pos2(rect.left() + 18., rect.center().y);
-        if is_files {
-            icons::folder(ui.painter(), c, 17., ink);
-        } else {
-            icons::globe(ui.painter(), c, 16., ink);
-        }
-        let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), theme::ui(size::UI), ink));
-        ui.painter().galley(egui::pos2(rect.left() + 34., rect.center().y - g.size().y / 2.), g, ink);
-        let r = match &reason {
-            Some(reason) => r.on_hover_text(reason),
-            None => r,
-        };
-        if r.clicked() {
-            pick = Some(is_files);
-            ui.close();
-        }
+    if pane_row(ui, &p, "Browser", browser.as_deref(), false, |pa, c, ink| icons::globe(pa, c, 16., ink)).clicked() {
+        pick = Some(PaneChoice::Browser);
+    }
+    if pane_row(ui, &p, "Files", files.as_deref(), false, |pa, c, ink| icons::folder(pa, c, 17., ink)).clicked() {
+        pick = Some(PaneChoice::Files);
+    }
+    let shells = match (key, &terminal) {
+        (Some(k), None) => match app.browsers.terms.shells(&mut app.client, &k.target) {
+            crate::terminal::Shells::Ready(list) => list.clone(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    };
+    let r = pane_row(ui, &p, "Terminal", terminal.as_deref(), shells.len() > 1, |pa, c, ink| icons::prompt(pa, c, 16., ink));
+    if r.clicked() {
+        pick = Some(PaneChoice::Terminal(None));
+    }
+    if terminal.is_none() && shells.len() > 1 {
+        egui::containers::menu::SubMenu::new().show(ui, &r, |ui| {
+            ui.set_min_width(220.);
+            for (i, shell) in shells.iter().enumerate() {
+                let label = if i == 0 { format!("{} (default)", shell.name) } else { shell.name.clone() };
+                if pane_row(ui, &p, &label, None, false, |pa, c, ink| icons::prompt(pa, c, 16., ink)).on_hover_text(&shell.path).clicked() {
+                    pick = Some(PaneChoice::Terminal(Some(shell.clone())));
+                    ui.close();
+                }
+            }
+        });
+    }
+    if pick.is_some() {
+        ui.close();
     }
     pick
+}
+
+/// Act on the + menu's choice for a thread.
+pub(crate) fn add_pane_tab(app: &mut YaacApp, key: &ThreadKey, choice: PaneChoice) {
+    match choice {
+        PaneChoice::Files => {
+            let _ = app.browsers.open_file_tab(&mut app.client, key, TabKind::Files, false);
+        }
+        PaneChoice::Browser => app.preview_ui.focus_address = app.browsers.new_tab(&app.client, key).ok(),
+        PaneChoice::Terminal(shell) => {
+            if let Err(e) = app.browsers.open_terminal(&app.client, key, shell) {
+                app.browsers.notice = Some(e);
+            }
+        }
+    }
 }
 
 enum StripAction {
     Select(Entry),
     Close(u64),
-    Add(bool),
+    Add(PaneChoice),
     FullScreen(bool),
 }
 
@@ -382,10 +470,6 @@ fn strip_ui(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Thre
     let Some(area) = app.browsers.areas.get(key) else {
         return;
     };
-    ui.painter().rect_filled(strip, 0., p.panel);
-    let rule_y = ui.painter().round_to_pixel_center(strip.bottom() - 0.5);
-    ui.painter()
-        .hline(strip.x_range(), rule_y, egui::Stroke::new(1., p.border));
     let full = area.full_screen;
     let mut infos = Vec::new();
     if full {
@@ -397,25 +481,151 @@ fn strip_ui(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Thre
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| "Chat".to_owned());
         let kind = app.client.state.provider_of(key).map(|d| d.kind.as_str().to_owned());
-        infos.push(TabInfo { entry: Entry::Chat, hover: format!("{title}\nThe chat"), title, icon: Icon::Harness(kind), agent: None });
+        infos.push(TabInfo { entry: Entry::Chat, hover: format!("{title}\nThe chat"), title, icon: Icon::Harness(kind), agent: None, dot: false, flash: false });
     }
     infos.extend(area.tabs.iter().map(|t| tab_info(app, area, t)));
     let current = if full && area.chat { Entry::Chat } else { Entry::Tab(area.active) };
     let marked = full && app.browsers.chat_marked(&app.client, map, key);
-    let mut action = None;
-
-    // Full screen / Restore, always visible at the right end.
-    let fs = egui::Rect::from_center_size(egui::pos2(strip.right() - 22., strip.center().y), egui::Vec2::splat(28.));
     let hover = if full { "Restore" } else { "Full screen" };
-    if ui
-        .put(fs, |ui: &mut egui::Ui| {
-            widgets::tool_button(ui, &p, p.panel, hover, true, false, |pa, c, d, col| icons::maximize(pa, c, d, col, full))
-        })
-        .clicked()
+    let right: [StripButton<'_>; 1] = [(hover, &move |pa: &egui::Painter, c, d, col| icons::maximize(pa, c, d, col, full), false)];
+    // A terminal tab being renamed in place (P343): its entry here, and the edit itself.
+    let terminal_tabs: Vec<(u64, u64)> = area.tabs.iter().filter_map(|t| if let TabKind::Terminal(s) = t.kind { Some((t.id, s)) } else { None }).collect();
+    let mut renaming = app.browsers.terms.renaming.take();
+    let rename_entry = renaming.as_ref().and_then(|r| terminal_tabs.iter().find(|(_, s)| *s == r.session)).map(|(t, _)| Entry::Tab(*t));
+    let chat_mark_fn = |painter: &egui::Painter, c: egui::Pos2, under: egui::Color32| chat_mark(painter, c, app, map, key, under);
+    let out = tab_strip(
+        ui,
+        &p,
+        strip,
+        &infos,
+        current,
+        marked.then_some(&chat_mark_fn as &dyn Fn(&egui::Painter, egui::Pos2, egui::Color32)),
+        &right,
+        "New tab",
+        rename_entry.zip(renaming.as_mut()),
+    );
+    app.browsers.terms.renaming = renaming;
+    let session_of = |e: Entry| match e {
+        Entry::Tab(t) => terminal_tabs.iter().find(|(tab, _)| *tab == t).map(|(_, s)| *s),
+        Entry::Chat => None,
+    };
+    if let Some(sid) = out.rename.and_then(session_of) {
+        app.browsers.terms.begin_rename(sid);
+    }
+    match out.rename_done {
+        Some(true) => app.browsers.terms.commit_rename(&mut app.client),
+        Some(false) => app.browsers.terms.cancel_rename(),
+        None => {}
+    }
+    // A terminal tab's right-click menu: Rename, Close.
+    if let Some((entry, resp)) = &out.context
+        && let Some(sid) = session_of(*entry)
     {
+        let mut pick = None;
+        widgets::menu_popup(egui::Popup::context_menu(resp), &p).show(|ui| {
+            ui.set_min_width(180.);
+            for (label, n) in [("Rename", 0), ("Close tab", 1)] {
+                let (row, rr) = widgets::menu_row(ui, &p, false, true);
+                let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), theme::ui(size::UI), p.text));
+                ui.painter().galley(egui::pos2(rr.left() + 12., rr.center().y - g.size().y / 2.), g, p.text);
+                if row.clicked() {
+                    pick = Some(n);
+                    ui.close();
+                }
+            }
+        });
+        match (pick, entry) {
+            (Some(0), _) => app.browsers.terms.begin_rename(sid),
+            (Some(1), Entry::Tab(t)) => app.browsers.close(key, *t),
+            _ => {}
+        }
+    }
+    let mut action = None;
+    if out.right == Some(0) {
         action = Some(StripAction::FullScreen(!full));
     }
+    if let Some(id) = out.close {
+        action = Some(StripAction::Close(id));
+    } else if let Some(e) = out.select {
+        action = Some(StripAction::Select(e));
+    }
+    if let Some(Some(choice)) = widgets::menu_popup(egui::Popup::menu(&out.plus), &p)
+        .show(|ui| pane_menu(ui, app, Some(key)))
+        .map(|r| r.inner)
+    {
+        action = Some(StripAction::Add(choice));
+    }
 
+    let Some(action) = action else { return };
+    match action {
+        StripAction::Select(Entry::Chat) => app.browsers.select_chat(key),
+        StripAction::Select(Entry::Tab(id)) => app.browsers.select(key, id),
+        StripAction::Close(id) => app.browsers.close(key, id),
+        StripAction::FullScreen(on) => app.browsers.set_full_screen(key, on),
+        StripAction::Add(choice) => add_pane_tab(app, key, choice),
+    }
+    ui.ctx().request_repaint();
+}
+
+/// A button at the strip's right end: hover text, icon, selected.
+/// The Chat tab's attention mark painter.
+pub(crate) type ChatMark<'a> = &'a dyn Fn(&egui::Painter, egui::Pos2, egui::Color32);
+
+pub(crate) type StripButton<'a> = (&'a str, &'a dyn Fn(&egui::Painter, egui::Pos2, f32, egui::Color32), bool);
+
+/// What happened on a tab strip this frame.
+pub(crate) struct StripOut {
+    pub(crate) select: Option<Entry>,
+    pub(crate) close: Option<u64>,
+    /// A right-end button was clicked (its index).
+    pub(crate) right: Option<usize>,
+    /// A tab was right-clicked: its entry and response (for a context menu).
+    pub(crate) context: Option<(Entry, egui::Response)>,
+    /// The **+** button, for its menu or action.
+    pub(crate) plus: egui::Response,
+    /// Double click or F2 on a tab: rename it in place (P343).
+    pub(crate) rename: Option<Entry>,
+    /// The in-place rename ended: kept (Enter) or cancelled (Esc, click away).
+    pub(crate) rename_done: Option<bool>,
+}
+
+/// The tab strip shared by the side pane and the terminal panel: equal-width tabs that shrink
+/// together and then scroll, + after the last tab, buttons at the right end
+/// (docs/12-files.md#tab-strip).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn tab_strip(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    strip: egui::Rect,
+    infos: &[TabInfo],
+    current: Entry,
+    chat_mark: Option<ChatMark<'_>>,
+    right: &[StripButton<'_>],
+    plus_hover: &str,
+    mut renaming: Option<(Entry, &mut crate::terminal::Rename)>,
+) -> StripOut {
+    let p = *p;
+    ui.painter().rect_filled(strip, 0., p.panel);
+    let rule_y = ui.painter().round_to_pixel_center(strip.bottom() - 0.5);
+    ui.painter()
+        .hline(strip.x_range(), rule_y, egui::Stroke::new(1., p.border));
+    let mut out_select = None;
+    let mut out_close = None;
+    let mut out_right = None;
+    let mut out_context = None;
+    let mut out_rename = None;
+    let mut out_rename_done = None;
+
+    // Buttons at the right end, always visible.
+    let mut right_edge = strip.right() - 8.;
+    for (i, (hover, icon, on)) in right.iter().enumerate() {
+        let r = egui::Rect::from_center_size(egui::pos2(right_edge - 14., strip.center().y), egui::Vec2::splat(28.));
+        if ui.put(r, |ui: &mut egui::Ui| widgets::tool_button(ui, &p, p.panel, hover, true, *on, |pa, c, d, col| icon(pa, c, d, col))).clicked() {
+            out_right = Some(i);
+        }
+        right_edge = r.left() - 2.;
+    }
+    let fs = egui::Rect::from_min_max(egui::pos2(right_edge, strip.top()), egui::pos2(right_edge + 1., strip.bottom()));
     let left = strip.left() + 6.;
     let room = (fs.left() - 8. - 28. - 4. - left).max(TAB_MIN);
     let n = infos.len().max(1) as f32;
@@ -482,10 +692,16 @@ fn strip_ui(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Thre
         let hovered = resp.hovered() || close.as_ref().is_some_and(|c| c.hovered());
         if close.as_ref().is_some_and(|c| c.clicked()) || (closable && resp.middle_clicked()) {
             if let Entry::Tab(id) = info.entry {
-                action = Some(StripAction::Close(id));
+                out_close = Some(id);
             }
         } else if resp.clicked() {
-            action = Some(StripAction::Select(info.entry));
+            out_select = Some(info.entry);
+        }
+        if resp.secondary_clicked() || resp.context_menu_opened() {
+            out_context = Some((info.entry, resp.clone()));
+        }
+        if resp.double_clicked() || (resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::F2))) {
+            out_rename = Some(info.entry);
         }
         let focused = resp.has_focus();
         let resp = resp.on_hover_text(&info.hover);
@@ -519,22 +735,49 @@ fn strip_ui(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Thre
                 painter.vline(x, (rect.center().y - 8.)..=(rect.center().y + 7.), egui::Stroke::new(1., p.border));
             }
         }
+        if info.flash {
+            painter.rect_filled(rect.shrink2(egui::vec2(2., 0.)).with_max_y(rect.bottom() - 3.), 6., p.wash(p.needs));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
         let c = egui::pos2(rect.left() + 18., rect.center().y - 1.);
         let ink = if *active || *hovered { p.text } else { p.text2 };
         draw_icon(&painter, c, &info.icon, ink, &p);
+        if info.dot && !*active {
+            painter.circle_filled(c + egui::vec2(7., -6.), 4., under);
+            painter.circle_filled(c + egui::vec2(7., -6.), 2.8, p.unseen);
+        }
         if let Some(kind) = &info.agent {
             // An agent drives this tab: its harness mark on the icon's corner.
             let corner = c + egui::vec2(6., 6.);
             painter.circle_filled(corner, 6., under);
             crate::agents_ui::harness_mark(&painter, corner, 10., Some(kind.as_str()).filter(|k| !k.is_empty()), None, false, &p);
         }
-        if info.entry == Entry::Chat && marked {
-            chat_mark(&painter, c + egui::vec2(6., -6.), app, map, key, under);
+        if info.entry == Entry::Chat
+            && let Some(mark) = chat_mark
+        {
+            mark(&painter, c + egui::vec2(6., -6.), under);
         }
         let text_left = rect.left() + 34.;
         // Room for the × only where it shows (the active tab, a hovered one).
         let text_right = if close.is_some() { rect.right() - 30. } else { rect.right() - 10. };
-        if text_right > text_left + 8. {
+        if let Some((_, r)) = renaming.as_mut().filter(|(e, _)| *e == info.entry) {
+            // The title becomes a text field in place, all of it selected at first.
+            let field = egui::Rect::from_min_max(egui::pos2(text_left - 4., rect.top() + 4.), egui::pos2(text_right.max(text_left + 40.), rect.bottom() - 4.));
+            let id = ui.scope_id().with(("tab-rename", info.entry_id()));
+            let (enter, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+            let resp = ui.put(field, egui::TextEdit::singleline(&mut r.text).id(id).font(font.clone()).margin(egui::Margin::symmetric(4, 2)));
+            if r.fresh {
+                r.fresh = false;
+                resp.request_focus();
+                if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                    let n = r.text.chars().count();
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
+                    state.store(ui.ctx(), id);
+                }
+            } else if resp.lost_focus() {
+                out_rename_done = Some(enter && !esc);
+            }
+        } else if text_right > text_left + 8. {
             let g = widgets::elided(ui, &info.title, &font, ink, text_right - text_left);
             painter.galley(egui::pos2(text_left, rect.center().y - g.size().y / 2. - 1.), g, ink);
         }
@@ -572,30 +815,10 @@ fn strip_ui(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &Thre
 
     // + right after the last tab.
     let plus = egui::Rect::from_center_size(egui::pos2(view.right() + 4. + 14., strip.center().y), egui::Vec2::splat(28.));
-    let resp = ui.put(plus, |ui: &mut egui::Ui| {
-        widgets::tool_button(ui, &p, p.panel, "New tab", true, false, icons::plus)
+    let plus = ui.put(plus, |ui: &mut egui::Ui| {
+        widgets::tool_button(ui, &p, p.panel, plus_hover, true, false, icons::plus)
     });
-    if let Some(Some(files)) = widgets::menu_popup(egui::Popup::menu(&resp), &p)
-        .show(|ui| pane_menu(ui, app, Some(key)))
-        .map(|r| r.inner)
-    {
-        action = Some(StripAction::Add(files));
-    }
-
-    let Some(action) = action else { return };
-    match action {
-        StripAction::Select(Entry::Chat) => app.browsers.select_chat(key),
-        StripAction::Select(Entry::Tab(id)) => app.browsers.select(key, id),
-        StripAction::Close(id) => app.browsers.close(key, id),
-        StripAction::FullScreen(on) => app.browsers.set_full_screen(key, on),
-        StripAction::Add(true) => {
-            let _ = app.browsers.open_file_tab(&mut app.client, key, TabKind::Files, false);
-        }
-        StripAction::Add(false) => {
-            app.preview_ui.focus_address = app.browsers.new_tab(&app.client, key).ok();
-        }
-    }
-    ui.ctx().request_repaint();
+    StripOut { select: out_select, close: out_close, right: out_right, context: out_context, plus, rename: out_rename, rename_done: out_rename_done }
 }
 
 impl TabInfo {
@@ -700,6 +923,10 @@ fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
     let Some(tab) = area.tabs.iter_mut().find(|t| t.id == id) else {
         return;
     };
+    if let TabKind::Terminal(sid) = tab.kind {
+        ui.push_id(id, |ui| crate::terminal_ui::tab(ui, app, sid));
+        return;
+    }
     if tab.kind != TabKind::Browser {
         ui.push_id(id, |ui| crate::file_pane_ui::draw(ui, app, key, id));
         return;

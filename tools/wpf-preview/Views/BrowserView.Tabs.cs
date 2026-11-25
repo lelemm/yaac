@@ -10,18 +10,30 @@ namespace Yaac.WpfPreview.Views;
 
 public partial class BrowserView
 {
+    private readonly Dictionary<ulong, long> terminalBells = new();
+
     private void RenderTabs(JsonElement tabs, string reason)
     {
         var signature = JsonSerializer.Serialize(new { thread, active, full, chat, chatTitle, chatLogo, chatLogoColor, chatMarked, chatTone,
-            reason, filesReason, tabs = tabs.EnumerateArray().Select(t => new[] { Text(t, "title"), Text(t, "kind"),
-                Text(t, "url"), Text(t, "agentLogo"), Text(t, "agentLogoColor"), Text(t, "path"), Text(t, "mark"),
+            reason, filesReason, terminalReason, tabs = tabs.EnumerateArray().Select(t => new[] { Text(t, "title"), Text(t, "kind"),
+                Text(t, "url"), Text(t, "agentLogo"), Text(t, "agentLogoColor"), Text(t, "path"), Text(t, "mark"), t.Value("bell").ToString(), Flag(t, "unread").ToString(),
                 t.GetProperty("id").ToString(), Flag(t, "loading").ToString() }) });
         if (signature == tabSignature) return;
         tabSignature = signature;
         object? focused = TabStrip.IsKeyboardFocusWithin && Keyboard.FocusedElement is Button old ? old.Tag : null;
-        TabStrip.Children.Clear();
-        selectedTab = null;
         var ids = tabs.EnumerateArray().Select(t => t.GetProperty("id").GetUInt64()).ToHashSet();
+        if (rename is { } edit && (edit.Thread != thread || !ids.Contains(edit.Title.Tab)
+            || edit.Title.Selected != (!chat && edit.Title.Tab == active))) EndRename(false, false);
+        renameTabs.Clear();
+        // Keep the live TextBox parented. Recreating it would interrupt IME composition
+        // and reset its selection whenever an OSC title or an unread marker changed.
+        if (rename == null) TabStrip.Children.Clear();
+        else
+            for (int i = TabStrip.Children.Count - 1; i >= 0; i--)
+                if (TabStrip.Children[i] != rename.Title.Row) TabStrip.Children.RemoveAt(i);
+        int position = 0;
+        selectedTab = null;
+        foreach (var id in terminalBells.Keys.Where(id => !ids.Contains(id)).ToArray()) terminalBells.Remove(id);
         foreach (var id in icons.Keys.Where(id => !ids.Contains(id)).ToArray()) icons.Remove(id);
         if (full) AddTab(null, chatTitle.Length == 0 ? "Chat" : chatTitle, default, chat);
         foreach (var tab in tabs.EnumerateArray())
@@ -31,12 +43,21 @@ public partial class BrowserView
             if (title.Length == 0) title = Text(tab, "url");
             AddTab(id, title.Length == 0 ? "New tab" : title, tab, !chat && active == id);
         }
-        AddTabButton.IsEnabled = reason.Length == 0 || filesReason.Length == 0;
-        AddTabButton.ToolTip = AddTabButton.IsEnabled ? "New tab" : reason;
+        AddTabButton.IsEnabled = reason.Length == 0 || filesReason.Length == 0 || terminalReason.Length == 0;
+        AddTabButton.ToolTip = AddTabButton.IsEnabled ? (IsTerminalPanel ? "New terminal" : "New tab") : reason;
         SizeTabs();
 
         void AddTab(ulong? id, string title, JsonElement tab, bool selected)
         {
+            if (rename?.Title is { } existing && existing.Tab == id)
+            {
+                existing.Label.Text = title;
+                existing.Pick.ToolTip = TerminalTitleTip(tab, title);
+                renameTabs[existing.Tab] = existing;
+                if (selected) selectedTab = existing.Row;
+                position++;
+                return;
+            }
             var row = new Border { ClipToBounds = true, Height = 32, VerticalAlignment = VerticalAlignment.Bottom,
                 CornerRadius = new CornerRadius(5, 5, 0, 0), BorderThickness = new Thickness(1, 1, 1, 0),
                 BorderBrush = selected ? Palette.Brush("YaacRule") : Brushes.Transparent };
@@ -66,6 +87,7 @@ public partial class BrowserView
             FrameworkElement glyph = id is null && chatLogo.Length > 0 ? Logo(chatLogo, chatLogoColor) :
                 id is null ? PaneIcon.Draw("Chat") : Text(tab, "kind") switch
                 {
+                    "terminal" => PaneIcon.Draw("Terminal"),
                     "files" => PaneIcon.Draw("Files"), "file" => PaneIcon.Draw("File"),
                     "diff" => GitMark(Text(tab, "mark")),
                     _ when Flag(tab, "loading") => new RunningSpinner(),
@@ -73,6 +95,24 @@ public partial class BrowserView
                     _ => PaneIcon.Draw("Browser"),
                 };
             icon.Children.Add(glyph);
+            if (id is ulong termId && Text(tab, "kind") == "terminal")
+            {
+                var counter = tab.Value("bell");
+                long bells = counter.ValueKind == JsonValueKind.Number ? counter.GetInt64() : 0;
+                terminalBells.TryGetValue(termId, out long previous);
+                terminalBells[termId] = bells;
+                if (bells > previous)
+                {
+                    var flash = new Border { Background = Palette.Brush("YaacWarning"), CornerRadius = new CornerRadius(4) };
+                    icon.Children.Add(flash);
+                    flash.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(
+                        .85, 0, TimeSpan.FromMilliseconds(280)));
+                }
+                if (!selected && Flag(tab, "unread"))
+                    icon.Children.Add(new Border { Width = 6, Height = 6, CornerRadius = new CornerRadius(3),
+                        HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,
+                        Background = Palette.Brush("YaacUnread") });
+            }
             if (id is null && chatMarked)
                 icon.Children.Add(new Border { Width = 9, Height = 9, CornerRadius = new CornerRadius(5),
                     Child = chatTone == "running" ? new RunningSpinner() : null,
@@ -86,12 +126,15 @@ public partial class BrowserView
                     VerticalAlignment = VerticalAlignment.Bottom });
             }
             label.Children.Add(icon);
-            label.Children.Add(new TextBlock { Text = title, TextTrimming = TextTrimming.CharacterEllipsis,
-                Foreground = Palette.Brush(selected ? "YaacText" : "YaacMuted"), VerticalAlignment = VerticalAlignment.Center });
+            var caption = new TextBlock { Text = title, TextTrimming = TextTrimming.CharacterEllipsis,
+                Foreground = Palette.Brush(selected ? "YaacText" : "YaacMuted"), VerticalAlignment = VerticalAlignment.Center };
+            label.Children.Add(caption);
             var pick = QuietButton(label, id is null ? $"Chat · {title}" : title);
             pick.Tag = (id, false);
             pick.HorizontalContentAlignment = HorizontalAlignment.Stretch;
             if (Text(tab, "path") is { Length: > 0 } filePath) pick.ToolTip = filePath;
+            if (Text(tab, "kind") == "terminal")
+                pick.ToolTip = TerminalTitleTip(tab, title);
             if (Text(tab, "agentLogo").Length > 0)
             {
                 pick.ToolTip = $"{title} · Agent is using this tab";
@@ -102,8 +145,43 @@ public partial class BrowserView
                 if (id is ulong page) SendFor(page, "select");
                 else Command?.Invoke("browser.chat", new { thread });
             };
-            body.Children.Add(pick);
-            TabStrip.Children.Add(row);
+            if (id is ulong terminalId && Text(tab, "kind") == "terminal")
+            {
+                var menu = new ContextMenu();
+                var slot = new Grid();
+                slot.Children.Add(pick);
+                body.Children.Add(slot);
+                var terminalTitle = new TerminalTitle(terminalId, selected, row, slot, pick, caption);
+                renameTabs[terminalId] = terminalTitle;
+                pick.PreviewMouseDoubleClick += (_, e) =>
+                {
+                    if (e.ChangedButton != MouseButton.Left) return;
+                    e.Handled = true;
+                    BeginRename(terminalTitle);
+                };
+                var renameItem = new MenuItem { Header = "Rename", InputGestureText = "F2" };
+                renameItem.Click += (_, _) => Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+                {
+                    if (renameTabs.TryGetValue(terminalId, out var current)) BeginRename(current);
+                });
+                menu.Items.Add(renameItem);
+                row.ContextMenu = menu;
+            }
+            else body.Children.Add(pick);
+            if (IsTerminalPanel && terminalShells.ValueKind == JsonValueKind.Array && row.ContextMenu is { } panelMenu)
+            {
+                var choices = new MenuItem { Header = "New terminal with shell…" };
+                foreach (var shell in terminalShells.EnumerateArray())
+                {
+                    var shellPath = Text(shell, "path");
+                    var choice = new MenuItem { Header = Text(shell, "name") };
+                    choice.Click += (_, _) => Command?.Invoke("terminal.panelNew", new { thread, shell = shellPath });
+                    choices.Items.Add(choice);
+                }
+                choices.IsEnabled = choices.Items.Count > 0;
+                panelMenu.Items.Add(choices);
+            }
+            TabStrip.Children.Insert(position++, row);
             if (selected)
             {
                 selectedTab = row;
@@ -139,7 +217,7 @@ public partial class BrowserView
         TabGroup.Width = Math.Min(TabAvailable.ActualWidth, total + 32);
         foreach (var row in TabStrip.Children.OfType<Border>())
             row.Width = row == selectedTab ? selectedWidth : width;
-        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () => selectedTab?.BringIntoView());
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () => (rename?.Title.Row ?? selectedTab)?.BringIntoView());
     }
 
     private static FrameworkElement Logo(string data, string color) => new System.Windows.Shapes.Path
