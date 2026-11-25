@@ -21,6 +21,11 @@ YAAC does not mint its own conversation ids. The thread id on the wire is an opa
 same native id under a different Codex home is a different thread id. Because the identity *is* the harness
 conversation, the one-to-one rule cannot be broken by a bookkeeping bug.
 
+New conversations created by YAAC use a wire id of the form `yaac-<guid>`. The GUID is
+derived from the same immutable binding. Existing ids and ids of discovered conversations
+keep their original format. The native conversation id remains the one used to resume the
+conversation through its harness.
+
 What follows from that:
 
 - **The provider of a thread never changes.** There is no operation that could do it.

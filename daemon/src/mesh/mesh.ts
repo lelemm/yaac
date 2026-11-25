@@ -305,7 +305,7 @@ export class Mesh implements CoreMeshHooks {
   private split(address: string): { target: string; thread: string } | null {
     const a = address.trim();
     const i = a.indexOf("/");
-    if (i < 0) return a.startsWith("t_") ? { target: this.selfId(), thread: a } : null;
+    if (i < 0) return a.startsWith("t_") || a.startsWith("yaac-") ? { target: this.selfId(), thread: a } : null;
     const target = a.slice(0, i);
     const thread = a.slice(i + 1);
     return target && thread ? { target, thread } : null;

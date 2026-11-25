@@ -285,7 +285,7 @@ pub static COMMANDS: &[CommandDef] = &[
     def(Cmd::NewThread, "new-thread", "New thread", "Start a draft (choose target, project, model).", &["create", "start", "chat"], G::Threads, &["Ctrl+N"]),
     def(Cmd::NewInProject, "new-in-project", "New thread in this project", "Draft in this thread's project and target, same harness and model.", &["create", "start", "sibling"], G::Threads, &["Ctrl+Shift+N"]),
     def(Cmd::Rename, "rename", "Rename", "Rename this thread.", &["title"], G::Threads, &["F2"]),
-    def(Cmd::CopyId, "copy-id", "Copy thread ID", "Copy the harness's conversation id.", &["session", "clipboard"], G::Threads, &["Ctrl+Shift+C"]),
+    def(Cmd::CopyId, "copy-id", "Copy thread ID", "Copy the conversation's shareable thread id.", &["session", "clipboard"], G::Threads, &["Ctrl+Shift+C"]),
     def(Cmd::Pin, "pin", "Pin / Unpin", "Keep this thread in Pinned.", &["favourite", "favorite", "star"], G::Threads, &["Ctrl+Shift+P"]),
     step(def(Cmd::Mute, "mute", "Mute… / Unmute", "Mute for a duration or until a date.", &["silence", "snooze", "quiet"], G::Threads, &["Ctrl+Shift+M"]), StepKind::Mute),
     def(Cmd::Archive, "archive", "Archive… / Unarchive", "Move this thread to Archived, with confirmation.", &["hide"], G::Threads, &["Ctrl+Shift+E"]),

@@ -315,6 +315,9 @@ test("the journal survives a daemon restart", async () => {
   let daemon = await startDaemon(home);
   let c = await client(daemon, "c_r");
   const { threadId, turnId } = await startThread(c, SCRIPT);
+  assert.match(threadId, /^yaac-[a-f0-9]{8}-[a-f0-9]{4}-8[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+  const native = daemon.core.thread(threadId)!.record.native;
+  assert.notEqual(threadId, native);
   await c.request("thread/subscribe", { threadId, epoch: 1, afterSeq: 0 });
   await waitTurnDone(c, threadId, turnId);
   const head = daemon.core.position(threadId);
@@ -324,6 +327,10 @@ test("the journal survives a daemon restart", async () => {
 
   daemon = await startDaemon(home);
   c = await client(daemon, "c_r");
+  for (const id of [threadId, native]) {
+    const found = await c.request("thread/lookup", { id });
+    assert.deepEqual(found.threads.map((thread: { id: string; nativeId: string }) => [thread.id, thread.nativeId]), [[threadId, native]]);
+  }
   const sub: any = await c.request("thread/subscribe", { threadId, epoch: head.epoch, afterSeq: 0 });
   assert.equal(sub.mode, "replay");
   assert.equal(sub.headSeq, head.seq);

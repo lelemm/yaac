@@ -14,10 +14,18 @@ use crate::key::ThreadKey;
 use crate::state::AppState;
 use crate::transcript::TakeOverRequest;
 
+/// The ID this window shares for a conversation. Older threads keep their native copy value.
+pub fn copy_id(state: &AppState, key: &ThreadKey) -> String {
+    if key.thread.as_str().starts_with("yaac-") {
+        return key.thread.to_string();
+    }
+    state.summary(key).and_then(|summary| summary.native_id.clone()).unwrap_or_else(|| key.address().to_string())
+}
+
 /// What an entry does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
-    /// Copy the harness's own id (else YAAC's address).
+    /// Copy the conversation's shareable thread id.
     CopyId,
     /// Rename.
     Rename,

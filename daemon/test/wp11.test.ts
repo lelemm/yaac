@@ -103,7 +103,9 @@ test("the number cap: only the 50 most recent discovered conversations per insta
     fake.scannedCount = 0;
     await rescan(c);
     const listed = await sync(c);
-    const recent = listed.filter((t) => t.nativeId?.startsWith("recent-")).map((t) => t.nativeId);
+    const discovered = listed.filter((t) => t.nativeId?.startsWith("recent-"));
+    assert.ok(discovered.every((t) => t.id.startsWith("t_")));
+    const recent = discovered.map((t) => t.nativeId);
     assert.equal(recent.length, 50);
     assert.ok(recent.includes("recent-0") && recent.includes("recent-49") && !recent.includes("recent-50"), "the newest 50");
     assert.ok(!listed.some((t) => t.nativeId === "ext-terminal-1"), "an older outside conversation fell outside the 50");

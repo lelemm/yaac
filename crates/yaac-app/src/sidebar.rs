@@ -520,9 +520,7 @@ pub(crate) fn run_menu_action(app: &mut YaacApp, ctx: &egui::Context, key: &yaac
     let k = key.clone();
     match action {
         MenuAction::CopyId => {
-            // The harness's own id (what a terminal shows), else YAAC's address.
-            let id = app.client.state.summary(key).and_then(|s| s.native_id.clone()).unwrap_or_else(|| key.address().to_string());
-            ctx.copy_text(id);
+            ctx.copy_text(yaac_core::thread_menu::copy_id(&app.client.state, key));
         }
         MenuAction::Rename => {
             let title = app.client.state.summary(key).map(|s| s.title.clone()).unwrap_or_default();

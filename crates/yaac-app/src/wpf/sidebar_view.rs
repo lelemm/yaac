@@ -291,7 +291,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, selection_epoch: u64) -> V
                 .map(|c| format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b()));
             let badge = pull_requests::badge(state, &r.key);
             json!({
-                "id": r.key.address(), "copyId": state.summary(&r.key).and_then(|s| s.native_id.as_ref()),
+                "id": r.key.address(), "copyId": yaac_core::thread_menu::copy_id(state, &r.key),
                 "title": r.title, "right": right, "status": display.mark.word(),
                 "tone": tone(display.mark), "detail": display.attention.map(|a| a.word()),
                 "selected": r.selected, "unseen": display.unseen, "readOnly": display.read_only,

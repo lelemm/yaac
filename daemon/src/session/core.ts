@@ -324,6 +324,13 @@ export function threadIdFor(kind: string, storeKey: string | null, instance: str
   return `t_${sha256Hex(JSON.stringify(basis)).slice(0, 32)}`;
 }
 
+function createdThreadId(legacyId: string): string {
+  const hash = legacyId.slice(2);
+  // A UUIDv8 derived from the same immutable binding as the legacy id.
+  const variant = ((Number.parseInt(hash[16]!, 16) & 3) | 8).toString(16);
+  return `yaac-${hash.slice(0, 8)}-${hash.slice(8, 12)}-8${hash.slice(13, 16)}-${variant}${hash.slice(17, 20)}-${hash.slice(20)}`;
+}
+
 function rpc(code: string, message: string, data?: unknown): RpcError {
   return new RpcError(code, message, data);
 }
@@ -822,7 +829,8 @@ export class Core {
         const list = page.threads;
         for (let k = skip; k < list.length; k++) {
           const info = list[k]!;
-          const known = this.threadByNative(inst.config.id, info.native);
+          const legacyId = threadIdFor(inst.config.kind, inst.descriptor.store.key ?? null, inst.config.id, info.native);
+          const known = this.threadByNative(inst.config.id, info.native) ?? this.boundThread(legacyId);
           if (known && this.index.get(known.id)) continue;
           if (query && !(info.title ?? "").toLowerCase().includes(query) && !info.native.toLowerCase().startsWith(query)) continue;
           const rt = known ?? this.transientThread(inst, info);
@@ -923,19 +931,24 @@ export class Core {
     return `${instance}\u0000${native}`;
   }
 
+  private boundThread(legacyId: string): ThreadRuntime | undefined {
+    return [legacyId, createdThreadId(legacyId)].map(id => this.threads.get(id)).find(rt => rt && !rt.deleted);
+  }
+
   private createThread(instance: Instance, native: NativeId, fields: Partial<ThreadRecord> & { cwd: string; originKind: ThreadRecord["originKind"] }, fresh: boolean, storeKey = instance.descriptor.store.key ?? null): ThreadRuntime {
-    const id = threadIdFor(instance.config.kind, storeKey, instance.config.id, native);
-    const existing = this.threads.get(id);
-    if (existing && !existing.deleted) {
+    const legacyId = threadIdFor(instance.config.kind, storeKey, instance.config.id, native);
+    const existing = this.boundThread(legacyId);
+    if (existing) {
       if (existing.record.instance !== instance.config.id) {
         const also = new Set(existing.record.alsoVisibleTo ?? []);
         also.add(instance.config.id);
         existing.record.alsoVisibleTo = [...also];
         existing.saveRecord();
       }
-      this.byNative.set(instance.config.id, existing.record.storeKey, native, id);
+      this.byNative.set(instance.config.id, existing.record.storeKey, native, existing.id);
       return existing;
     }
+    const id = fields.originKind === "yaac" ? createdThreadId(legacyId) : legacyId;
     const now = nowIso();
     const record: ThreadRecord = {
       id,
@@ -3160,7 +3173,7 @@ export class Core {
       parent: sourceRef,
       child: {
         harness: instance.config.kind, instanceId: instance.config.id,
-        yaacThreadId: threadIdFor(instance.config.kind, storeKey, instance.config.id, nativeThreadId),
+        yaacThreadId: createdThreadId(threadIdFor(instance.config.kind, storeKey, instance.config.id, nativeThreadId)),
         nativeThreadId,
         ...(sessionId === nativeThreadId ? {} : { sessionId }),
       },
@@ -3476,37 +3489,40 @@ export class Core {
     const linkedChildren = this.retainedForkChildren(src, p.keepChildren);
     const trusted = await this.trustProjectFolder(plan.dest, src.record.cwd);
     const model = forkModel();
-    let native: NativeId;
+    const key = srcInst.config.id;
+    this.pendingStarts.set(key, (this.pendingStarts.get(key) ?? 0) + 1);
     try {
-      native = await srcInst.provider!.forkThread!(src.record.native, {
+      const native = await srcInst.provider!.forkThread!(src.record.native, {
         atTurn: p.atTurn ?? null,
         cwd: src.record.cwd,
         model,
         effort: p.effort ?? null,
         mode: p.mode ?? null,
+      }).catch(e => {
+        throw rpc("provider_unavailable", `the harness did not fork the thread: ${(e as Error).message}`);
       });
-    } catch (e) {
-      throw rpc("provider_unavailable", `the harness did not fork the thread: ${(e as Error).message}`);
+      const rt = this.createThread(
+        plan.dest,
+        native,
+        {
+          cwd: src.record.cwd,
+          originKind: "yaac",
+          forkedFrom: src.id,
+          ...(linkedChildren && { linkedChildren }),
+          title: `${src.record.titleOverride ?? src.record.title ?? "Thread"} (fork)`,
+          model: model ?? sourceModel,
+        },
+        false,
+      );
+      const cutoff = p.atTurn ?? this.lastCompletedTurn(src);
+      const handoff: Item = { id: `fork:${src.id}`, turnId: cutoff ?? "", status: "completed", kind: "handoff", forkKind: "native", forkedFrom: src.id, cutoffTurn: cutoff, startedAt: nowIso(), completedAt: nowIso() };
+      this.append(rt, { type: "itemStarted", item: handoff });
+      this.append(rt, { type: "itemCompleted", item: handoff });
+      this.trustNotice(rt, trusted);
+      return { rt, parts };
+    } finally {
+      this.finishPendingStart(key);
     }
-    const rt = this.createThread(
-      plan.dest,
-      native,
-      {
-        cwd: src.record.cwd,
-        originKind: "yaac",
-        forkedFrom: src.id,
-        ...(linkedChildren && { linkedChildren }),
-        title: `${src.record.titleOverride ?? src.record.title ?? "Thread"} (fork)`,
-        model: model ?? sourceModel,
-      },
-      false,
-    );
-    const cutoff = p.atTurn ?? this.lastCompletedTurn(src);
-    const handoff: Item = { id: `fork:${src.id}`, turnId: cutoff ?? "", status: "completed", kind: "handoff", forkKind: "native", forkedFrom: src.id, cutoffTurn: cutoff, startedAt: nowIso(), completedAt: nowIso() };
-    this.append(rt, { type: "itemStarted", item: handoff });
-    this.append(rt, { type: "itemCompleted", item: handoff });
-    this.trustNotice(rt, trusted);
-    return { rt, parts };
   }
 
   /**

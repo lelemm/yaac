@@ -260,7 +260,7 @@ test("a message to an idle thread starts a turn with it, marked as from an agent
   try {
     const b = await idleThread(d, c);
     const a = await idleThread(d, c);
-    const r = await call(d, a, "send_message", { to: addressOf(d, b), text: "/fake say got it" });
+    const r = await call(d, a, "send_message", { to: b, text: "/fake say got it" });
     assert.equal(r.isError, false, r.text);
     assert.match(r.text, /^Delivered to/);
     await until(async () => (await kinds(c, b, "meshReceived")).length === 1, "received");
@@ -879,7 +879,7 @@ test("list_threads is scoped and paged; find_thread finds by id prefix and fuzzy
     assert.match(byId.text, new RegExp(named));
     const byNative = await call(d, me, "find_thread", { query: native(d, named) });
     assert.match(byNative.text, new RegExp(named));
-    const ambiguous = await call(d, me, "find_thread", { query: "local/t_" });
+    const ambiguous = await call(d, me, "find_thread", { query: "local/yaac-" });
     assert.match(ambiguous.text, /matches several threads — ask the user/);
   } finally {
     await done();
@@ -906,7 +906,7 @@ test("without any hub: same-target send, spawn, wait, read and stop work; cross-
     // Same target: spawn a stalling worker, read it, stop it, wait for it.
     const s = await call(d, a, "spawn_thread", { text: "/fake say working on it\n/fake stall", title: "Staller" });
     assert.equal(s.isError, false, s.text);
-    const child = /Address: \S+\/(t_\S+)/.exec(s.text)![1]!;
+    const child = /Address: \S+\/(yaac-[a-f0-9-]+)/.exec(s.text)![1]!;
     await until(async () => (await itemsOf(c, child)).some((i) => i.kind === "agentMessage" && i.status === "completed"), "the worker to speak");
     const read = await call(d, a, "read_thread", { thread: addressOf(d, child) });
     assert.match(read.text, /working on it/);
@@ -942,7 +942,7 @@ test("a worker blocked on an approval is surfaced to its parent as a passive not
   try {
     const parent = await idleThread(d, c);
     const s = await call(d, parent, "spawn_thread", { text: "/fake approve make deploy" });
-    const child = /Address: \S+\/(t_\S+)/.exec(s.text)![1]!;
+    const child = /Address: \S+\/(yaac-[a-f0-9-]+)/.exec(s.text)![1]!;
     await until(() => stateOf(d, child) === "needsAttention", "blocked");
     const notice = await until(() => inboxOf(d, parent).find((r) => r.message.kind === "notice"), "the notice");
     assert.match(notice.message.text, /waiting for its user/);

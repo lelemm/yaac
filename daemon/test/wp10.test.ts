@@ -378,6 +378,7 @@ test("items carry timestamps; subscribe and read carry context usage; fork witho
 
   const fork: any = await c.request("thread/forkOnly", { opId: opId(), source: t.threadId, instance: FAKE });
   assert.equal(fork.forkKind, "native");
+  assert.match(fork.threadId, /^yaac-/);
   assert.equal(fork.turnId, undefined);
   const fakeProvider = fakeOf(daemon);
   const handed = fakeProvider.received.length;
