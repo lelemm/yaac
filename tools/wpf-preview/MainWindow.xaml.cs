@@ -113,6 +113,33 @@ public partial class MainWindow : Window
         CloseRailHover();
     }
 
+    private readonly FileDocumentReader fileDocuments = new();
+
+    private async Task DecodeFileDocument(ulong id, string data, CancellationToken cancel)
+    {
+        try
+        {
+            cancel.ThrowIfCancellationRequested();
+            var source = FileDocument.Read(data);
+            var layout = source.Layout(new HashSet<int>(), cancel);
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (!closed && !cancel.IsCancellationRequested)
+                    BrowserPane.ReceiveFileDocument(new IncomingFileDocument(id, source, layout));
+            }, System.Windows.Threading.DispatcherPriority.Background);
+        }
+        catch (OperationCanceledException) when (cancel.IsCancellationRequested)
+        {
+        }
+        catch (JsonException)
+        {
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (!closed) BrowserPane.FileDocumentFailed(id);
+            }, System.Windows.Threading.DispatcherPriority.Background);
+        }
+    }
+
     private async Task StartAsync(Func<Controller> connect)
     {
         try
@@ -130,6 +157,14 @@ public partial class MainWindow : Window
             await Task.Run(() => session.RunAsync(
                 frame =>
                 {
+                    if (frame.TryGetProperty("filesDocument", out var part))
+                    {
+                        if (fileDocuments.Accept(part) is { } data)
+                            _ = Task.Run(() => DecodeFileDocument(data.Id, data.Text, data.Cancel));
+                        return Task.CompletedTask;
+                    }
+                    if (frame.Value("views").Value("browser") is { ValueKind: JsonValueKind.Object } sidePane)
+                        fileDocuments.Retain(FileDocumentReader.Expected(sidePane));
                     var image = ImageViewerFrame.Read(frame.Value("imageViewer"));
                     var browserFrame = BrowserFrame.Read(frame.Value("browserFrame"));
                     return Dispatcher.InvokeAsync(() => Receive(frame, image, browserFrame),
@@ -152,6 +187,8 @@ public partial class MainWindow : Window
         if (closed) return;
         if (browserFrame is { } browserPixels) BrowserPane.Paint(browserPixels);
         if (frame.TryGetProperty("browserEvent", out var browserEvent)) BrowserPane.ReceiveEvent(browserEvent);
+        if (frame.TryGetProperty("filesChange", out var change))
+            BrowserPane.NavigateDiff(change.GetProperty("id").GetUInt64(), change.GetProperty("row").GetInt32());
         if (image is { } viewer)
             ImageOverlay.Render(viewer);
         if (frame.TryGetProperty("window", out var command))

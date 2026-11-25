@@ -322,7 +322,7 @@ mod engine {
                     let tabs = browsers
                         .areas
                         .get(&key)
-                        .map(|a| a.tabs.iter().map(wire_tab).collect())
+                        .map(|a| a.tabs.iter().filter(|t| t.kind == crate::file_pane::TabKind::Browser).map(wire_tab).collect())
                         .unwrap_or_default();
                     Some(Ok(BrowserCallResult::List(BrowserTabs { tabs })))
                 }
@@ -348,7 +348,7 @@ mod engine {
                 ))),
                 action => {
                     let name = action_tab(&action).unwrap_or_default().to_owned();
-                    let Some(id) = tab_id(&name).filter(|id| browsers.tab(&key, *id).is_some())
+                    let Some(id) = tab_id(&name).filter(|id| browsers.tab(&key, *id).is_some_and(|t| t.kind == crate::file_pane::TabKind::Browser))
                     else {
                         return Some(Err(no_tab(&name)));
                     };
@@ -1320,6 +1320,7 @@ mod tests {
                 schema_hash_matches: true,
                 can_update: false,
                 port_forward: true,
+                file_view: false,
             });
             let mut browsers = Browsers::default();
             browsers.assume_host();

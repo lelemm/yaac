@@ -90,8 +90,7 @@ The Rust window controller keeps the tab list, active tab, split ratio, and full
 
 ### Opening the browser
 
-- A **+** button in the title bar, just left of **Minimize**, opens a small menu. For now it has
-  one item, **Browser**; later items (other panes) go in the same menu.
+- A **+** button in the title bar, just left of **Minimize**, opens a small menu with **Browser** and, on targets that support it, [**Files**](12-files.md).
 - **Browser** splits the main area: the chat on the left, the browser on the right, a draggable
   divider between them. If the thread already has a browser area, it is shown and focused, and a
   new tab is added.
@@ -101,8 +100,7 @@ The Rust window controller keeps the tab list, active tab, split ratio, and full
 
 ### The browser area
 
-- **Tabs** along its top: favicon, title (ellipsised), close; a **+** after the last tab opens
-  another; there is no limit. Middle-click closes a tab. Closing the last tab closes the area
+- **Tabs** along its top: favicon, title (ellipsised), close; a **+** after the last tab offers Browser and Files; there is no limit. Middle-click closes a tab. Closing the last tab closes the area
   and the chat takes the whole width again.
 - **Toolbar** under the tabs: back, forward, reload (stop while loading), the address field
   (shows the page's own URL, e.g. `http://localhost:5173/`; editable; Enter navigates; a bare

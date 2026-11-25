@@ -1,0 +1,50 @@
+<UserControl x:Class="Yaac.WpfPreview.Views.FilesTree"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <TreeView x:Name="Tree" BorderThickness="0" Padding="5"
+            AutomationProperties.Name="Worktree files"
+            Background="{DynamicResource YaacCanvas}" Foreground="{DynamicResource YaacText}"
+            VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling"
+            VirtualizingPanel.ScrollUnit="Pixel" ScrollViewer.CanContentScroll="True">
+    <TreeView.ItemContainerStyle>
+      <Style TargetType="TreeViewItem" BasedOn="{StaticResource {x:Type TreeViewItem}}">
+        <Setter Property="IsExpanded" Value="{Binding Expanded, Mode=OneWay}" />
+        <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True" />
+        <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling" />
+        <Setter Property="Foreground" Value="{DynamicResource YaacText}" />
+        <Style.Triggers>
+          <DataTrigger Binding="{Binding Ignored}" Value="True">
+            <Setter Property="Foreground" Value="{DynamicResource YaacMuted}" />
+          </DataTrigger>
+        </Style.Triggers>
+      </Style>
+    </TreeView.ItemContainerStyle>
+    <TreeView.ItemTemplate>
+      <HierarchicalDataTemplate ItemsSource="{Binding Children}">
+        <StackPanel Orientation="Horizontal">
+          <Button Content="{Binding Name}" Style="{StaticResource YaacQuietButton}"
+                  Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=TreeViewItem}}"
+                  HorizontalContentAlignment="Left" Padding="3,1" ToolTip="{Binding Path}"
+                  IsEnabled="{Binding CanOpen}" Click="OpenName" PreviewMouseDown="MiddleName" />
+          <TextBlock Text="●" Foreground="{DynamicResource YaacWarning}" Margin="4,0"
+                     FontSize="8" VerticalAlignment="Center" ToolTip="Contains changes">
+            <TextBlock.Style>
+              <Style TargetType="TextBlock">
+                <Setter Property="Visibility" Value="Collapsed" />
+                <Style.Triggers>
+                  <DataTrigger Binding="{Binding ChangedFolder}" Value="True">
+                    <Setter Property="Visibility" Value="Visible" />
+                  </DataTrigger>
+                </Style.Triggers>
+              </Style>
+            </TextBlock.Style>
+          </TextBlock>
+          <Button Content="{Binding Mark}" Style="{StaticResource YaacQuietButton}"
+                  Visibility="{Binding MarkVisibility}" Foreground="{Binding MarkBrush}" Padding="4,1"
+                  ToolTip="{Binding MarkLabel}" AutomationProperties.Name="{Binding MarkLabel}"
+                  Click="OpenMark" PreviewMouseDown="MiddleMark" />
+        </StackPanel>
+      </HierarchicalDataTemplate>
+    </TreeView.ItemTemplate>
+  </TreeView>
+</UserControl>

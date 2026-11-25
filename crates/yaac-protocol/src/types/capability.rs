@@ -11,6 +11,8 @@ open_enum! {
     pub enum Capability fallback Unknown {
         /// This target supports loopback web previews.
         PortForward = "portForward",
+        /// This target supports the worktree browser, file view and file diffs.
+        FileView = "fileView",
         // Thread lifecycle
         /// Can enumerate existing conversations on the target.
         ThreadList = "threadList",

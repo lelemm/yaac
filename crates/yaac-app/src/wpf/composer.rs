@@ -152,8 +152,9 @@ fn markdown_spans(text: &str) -> Vec<Value> {
 }
 
 fn chips(app: &YaacApp, draft: &DraftRef, chips: &[ChipView]) -> Vec<Value> {
-    let attachments = app.client.draft(draft).map(|value| value.attachments.as_slice()).unwrap_or_default();
-    chips.iter().map(|chip| {
+    let current = app.client.draft(draft);
+    let attachments = current.map(|value| value.attachments.as_slice()).unwrap_or_default();
+    let uploads = chips.iter().map(|chip| {
         let id = chip.id;
         let source = attachments.iter().find(|attachment| attachment.id == id).and_then(|attachment| attachment.source.as_ref());
         let thumbnail = app.files.wire_thumb(&thumbnail_key(draft, id, source));
@@ -179,7 +180,14 @@ fn chips(app: &YaacApp, draft: &DraftRef, chips: &[ChipView]) -> Vec<Value> {
         let detail = [(!status.is_empty()).then_some(status.as_str()), route].into_iter().flatten().collect::<Vec<_>>().join(" · ");
         json!({ "id": id.to_string(), "label": chip.name, "detail": detail, "progress": progress,
             "image": chip.image || thumbnail.is_some(), "thumbnail": thumbnail, "actions": actions })
-    }).collect()
+    });
+    let excerpts = current.into_iter().flat_map(|value| {
+        value.excerpts.iter().filter(|excerpt| value.text.contains(&excerpt.token))
+    }).map(|excerpt| json!({
+        "id": excerpt.token, "label": excerpt.label,
+        "actions": [action(&format!("removeExcerpt:{}", excerpt.token), "Remove", true)],
+    }));
+    uploads.chain(excerpts).collect()
 }
 
 pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) -> Value {
@@ -585,7 +593,8 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
                         edit.text = text.to_owned();
                         return Ok(());
                     }
-                    app.client.state.drafts.entry(k.clone()).or_default().text = text.to_owned();
+                    let draft = app.client.state.drafts.entry(k.clone()).or_default();
+                    draft.text = text.to_owned();
                 }
                 DraftRef::New(id) => {
                     if let Some(d) = app
@@ -741,6 +750,15 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
                     "queueEdit" => thread.map(|k| Action::QueueEdit(k, value.to_owned())),
                     "queueCancel" => thread.map(|k| Action::QueueCancel(k, value.to_owned())),
                     "queueNow" => thread.map(|k| Action::QueuePromote(k, value.to_owned())),
+                    "removeExcerpt" => {
+                        if let Some(draft) = thread.as_ref()
+                            .filter(|key| !app.client.state.queue_edits.contains_key(*key))
+                            .and_then(|key| app.client.state.drafts.get_mut(key))
+                        {
+                            draft.remove_excerpt(value);
+                        }
+                        Some(Action::DraftEdited(draft))
+                    }
                     "remove" => value
                         .parse()
                         .ok()

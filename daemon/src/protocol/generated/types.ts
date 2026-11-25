@@ -645,7 +645,7 @@ export interface BrowserTypeParams {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "portForward" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "portForward" | "fileView" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * One check's (or policy's) state.
@@ -1475,6 +1475,58 @@ export interface FsListResult {
 }
 
 /**
+ * `fs/read`: read a file in a worktree.
+ */
+export interface FsReadParams {
+  /**
+   * Maximum file size to return, in bytes, subject to the daemon's limits.
+   */
+  maxBytes: number;
+  /**
+   * Raw byte offset returned by the previous page; absent for a first page.
+   */
+  offset?: number | null;
+  /**
+   * Path relative to the root.
+   */
+  path: TargetPath;
+  /**
+   * Absolute worktree root on the target.
+   */
+  root: TargetPath;
+}
+
+/**
+ * `fs/read` result.
+ */
+export interface FsReadResult {
+  /**
+   * A NUL occurs in the first 8 KiB.
+   */
+  binary?: true;
+  /**
+   * Opaque file revision; a changed value invalidates previously read pages.
+   */
+  etag: string;
+  /**
+   * Raw byte offset for the next page, if any.
+   */
+  nextOffset?: number | null;
+  /**
+   * Full file size in bytes.
+   */
+  size: number;
+  /**
+   * This page of decoded text when the file is neither binary nor over the limit.
+   */
+  text?: string | null;
+  /**
+   * The file exceeds the applicable byte limit.
+   */
+  truncated: boolean;
+}
+
+/**
  * `fs/search`: search for files relative to the working directory.
  */
 export interface FsSearchParams {
@@ -1501,6 +1553,146 @@ export interface FsSearchResult {
    */
   truncated: boolean;
 }
+
+/**
+ * One child in the worktree browser, including a deleted path if tracked by git.
+ */
+export interface FsTreeEntry {
+  /**
+   * This directory contains a changed entry.
+   */
+  changed: boolean;
+  /**
+   * Git mark for this entry, if changed.
+   */
+  git?: GitFileStatus | null;
+  /**
+   * Git ignores this entry.
+   */
+  ignored: boolean;
+  /**
+   * Entry kind.
+   */
+  kind: FsTreeEntryKind;
+  /**
+   * Last modified time in milliseconds since the Unix epoch, when available.
+   */
+  mtime?: number | null;
+  /**
+   * Base name relative to the listed directory.
+   */
+  name: string;
+  /**
+   * File size in bytes when available.
+   */
+  size?: number | null;
+}
+
+/**
+ * An entry in the worktree browser.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type FsTreeEntryKind = "dir" | "file" | "symlink";
+
+/**
+ * `fs/tree`: list one directory in a worktree.
+ */
+export interface FsTreeParams {
+  /**
+   * Path relative to the root, empty for the root itself.
+   */
+  path: TargetPath;
+  /**
+   * Absolute worktree root on the target.
+   */
+  root: TargetPath;
+}
+
+/**
+ * `fs/tree` result.
+ */
+export interface FsTreeResult {
+  /**
+   * Directories first, then files and links, each group sorted by name.
+   */
+  entries: FsTreeEntry[];
+  /**
+   * The worktree has a git repository.
+   */
+  repo: boolean;
+  /**
+   * The listing was cut short.
+   */
+  truncated: boolean;
+}
+
+/**
+ * `git/fileDiff`: compare the working copy with HEAD.
+ */
+export interface GitFileDiffParams {
+  /**
+   * Raw byte offset for working-copy text. On subsequent pages, omit an exhausted side.
+   */
+  newOffset?: number | null;
+  /**
+   * Raw byte offset for HEAD text. Omit both offsets to request the first page of each side.
+   */
+  oldOffset?: number | null;
+  /**
+   * Path relative to the root, using the destination name of a rename.
+   */
+  path: TargetPath;
+  /**
+   * Absolute worktree root on the target.
+   */
+  root: TargetPath;
+}
+
+/**
+ * `git/fileDiff` result.
+ */
+export interface GitFileDiffResult {
+  /**
+   * At least one version is binary.
+   */
+  binary: boolean;
+  /**
+   * Opaque diff revision; a changed value invalidates previously read pages.
+   */
+  etag: string;
+  /**
+   * This page of working-copy text, if requested, present and both versions are textual.
+   */
+  new?: string | null;
+  /**
+   * Raw byte offset for the next page of working-copy text, if any.
+   */
+  nextNewOffset?: number | null;
+  /**
+   * Raw byte offset for the next page of HEAD text, if any.
+   */
+  nextOldOffset?: number | null;
+  /**
+   * This page of HEAD text, if requested, present and both versions are textual.
+   */
+  old?: string | null;
+  /**
+   * Previous path for a rename, relative to the worktree root.
+   */
+  oldPath?: TargetPath | null;
+  /**
+   * Git mark for this file.
+   */
+  status: GitFileStatus;
+}
+
+/**
+ * The git mark for a worktree file.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type GitFileStatus = "M" | "A" | "D" | "R" | "U" | "!";
 
 /**
  * How a thread's checkout differs from origin (docs/07-ui.md#sidebar). Computed once per

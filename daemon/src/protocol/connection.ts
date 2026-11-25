@@ -330,7 +330,7 @@ export class ServerConnection implements ConnectionView {
     this.clientInfo = client;
     const result = {
       protocol: negotiated.answer(),
-      features: this.dialect.features().fold(["portForward"]),
+      features: this.dialect.features().fold(["portForward", "fileView"]),
       schemaHash: this.dialect.schemaHash(),
       daemon: this.host.daemonInfo(),
       target: this.host.targetFacts(),

@@ -15,6 +15,7 @@ import type { ClientLink, Core } from "./core.js";
 import { eventItemId } from "./items.js";
 import { lastSeqOf, type JournalEntry } from "./journal.js";
 import { fsList, fsSearch, projectResolve } from "./fsinfo.js";
+import { fsRead, fsTree, gitFileDiff } from "./files.js";
 
 export interface ClientOptions {
   /** Stop handing events to the connection above this many queued bytes. */
@@ -248,6 +249,12 @@ export class ClientSession implements SessionHandler, ClientLink {
         return fsList(p as never);
       case METHODS.FS_SEARCH:
         return fsSearch(p as never);
+      case METHODS.FS_TREE:
+        return fsTree(p as never);
+      case METHODS.FS_READ:
+        return fsRead(p as never);
+      case METHODS.GIT_FILE_DIFF:
+        return gitFileDiff(p as never);
       case METHODS.PROJECT_RESOLVE:
         return projectResolve(str(p, "path"));
       default: {

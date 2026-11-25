@@ -720,6 +720,16 @@ Design choices that serve the budget:
   the hub. The window links no async runtime at all beyond what its one local socket needs.
 - **One binary, two modes.** `yaac hub` loads no window, GPU, or font code, so the part that
   stays running is the small part.
+- **On-demand syntax colours.** The window's background jobs load `two-face`'s syntax set
+  on the first text job for a File or Diff tab. The compressed grammar asset is 959 011 bytes.
+  In five fresh WSL process runs with the release profile on an Intel Core i9-14900HX,
+  an empty Rust file loaded the syntax set in a median 1.68 ms and added 2.75 MiB of RSS.
+  Highlighting a 10 000-line, 538 kB Rust sample then took a median 1.09 s and added
+  11 MiB of RSS, including first-use Rust regex compilation and the returned spans.
+  A Windows GNU release size probe built the same `yaac.exe` with default features and
+  `preview` twice, using a temporary entry point to link the text engine in the second build.
+  It measured 31 142 400 bytes before and 33 733 120 bytes after (+2.59 MB).
+  Both builds exceeded the 20 MB host binary target above.
 - **Reactive repaint.** egui repaints on input or on an explicit request from the I/O thread.
 - **Bounded memory by construction.** Only open threads hold transcripts in memory; everything
   else is rows in SQLite. See [07 UI](07-ui.md#rendering-and-memory).

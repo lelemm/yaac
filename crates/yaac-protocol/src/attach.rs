@@ -162,6 +162,9 @@ pub struct DaemonSummary {
     /// Whether the daemon supports loopback preview tunnels.
     #[serde(default)]
     pub port_forward: bool,
+    /// Whether the daemon supports the worktree browser and file diffs.
+    #[serde(default)]
+    pub file_view: bool,
     /// The daemon's build.
     pub build: String,
     /// The daemon is older than this build: show "will be updated when idle" and offer

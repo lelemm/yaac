@@ -399,6 +399,15 @@ catalogue! {
         /// Find files under a working directory on the target.
         FsSearch = "fs/search" as FS_SEARCH:
             t::FsSearchParams => t::FsSearchResult, HostToDaemon, request Control, response Control;
+        /// List a worktree directory with its git marks.
+        FsTree = "fs/tree" as FS_TREE:
+            t::FsTreeParams => t::FsTreeResult, HostToDaemon, request Control, response Control;
+        /// Read a file inside a worktree.
+        FsRead = "fs/read" as FS_READ:
+            t::FsReadParams => t::FsReadResult, HostToDaemon, request Control, response Bulk;
+        /// Read both sides of a worktree file's diff against HEAD.
+        GitFileDiff = "git/fileDiff" as GIT_FILE_DIFF:
+            t::GitFileDiffParams => t::GitFileDiffResult, HostToDaemon, request Control, response Bulk;
         /// The git identity of a directory.
         ProjectResolve = "project/resolve" as PROJECT_RESOLVE:
             t::ProjectResolveParams => t::ProjectResolveResult, HostToDaemon, request Control, response Control;

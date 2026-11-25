@@ -108,9 +108,55 @@ pub struct Draft {
     pub text: String,
     /// Attachments.
     pub attachments: Vec<DraftAttachment>,
+    /// Inline selection tokens and the plain text to send for each.
+    pub excerpts: Vec<DraftExcerpt>,
+}
+
+/// A removable code or diff selection referenced by this draft.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DraftExcerpt {
+    /// Unique inline text shown at the insertion point.
+    pub token: String,
+    /// Compact source path and range.
+    pub label: String,
+    /// Fenced selection that replaces the token at send time.
+    pub formatted: String,
 }
 
 impl Draft {
+    /// Insert a selection at a Unicode scalar caret position.
+    pub fn insert_excerpt(&mut self, caret: usize, label: String, formatted: String) {
+        let mut token = format!("⟦{label}⟧");
+        let mut n = 1;
+        while self.text.contains(&token) || self.excerpts.iter().any(|e| e.token == token) {
+            n += 1;
+            token = format!("⟦{label} · {n}⟧");
+        }
+        let at = self.text.char_indices().nth(caret).map_or(self.text.len(), |(i, _)| i);
+        self.text.insert_str(at, &token);
+        self.excerpts.push(DraftExcerpt {token,label,formatted});
+    }
+
+    /// Expand tokens against the original draft only, so selected code stays literal.
+    pub fn message_text(&self) -> String {
+        let mut rest = self.text.as_str();
+        let mut out = String::new();
+        while let Some((at, excerpt)) = self.excerpts.iter().filter(|e| !e.token.is_empty())
+            .filter_map(|e| rest.find(&e.token).map(|at| (at, e))).min_by_key(|(at, _)| *at) {
+            out.push_str(&rest[..at]);
+            out.push_str(&excerpt.formatted);
+            rest = &rest[at + excerpt.token.len()..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Remove an excerpt and its references from the composer.
+    pub fn remove_excerpt(&mut self, token: &str) {
+        self.text = self.text.replace(token, "");
+        self.excerpts.retain(|e| e.token != token);
+    }
+
     /// No text and no attachments: nothing to keep.
     pub fn is_empty(&self) -> bool {
         self.text.is_empty() && self.attachments.is_empty()

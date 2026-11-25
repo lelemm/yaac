@@ -204,13 +204,18 @@ with the newest report's windows; `targets` lists every target that reported it;
 no connected target reports it now (the values are the last known, kept across hub restarts).
 `refresh` asks each connected target again, at most every five minutes per target.
 
-### Filesystem (read-only, for pickers)
+### Filesystem (read-only)
 
 | Method | Purpose |
 | --- | --- |
 | `fs/list` | List a directory on the target, for the working-directory picker. |
 | `fs/search` | `{ cwd, query }` → `{ entries, truncated }`. Case-insensitive search for files below an absolute target directory. Results carry relative display names and absolute paths. Includes tracked and unignored untracked git files, or searches a bounded directory tree outside a repository. |
 | `project/resolve` | For a directory: git root, common directory, worktree, branch, and origin URL. Used for sidebar grouping. |
+| `fs/tree` | List a worktree directory with git marks and ignored flags. Requires the target's `fileView` feature. |
+| `fs/read` | Read a page of a worktree file. Requires `fileView`. Bulk response. |
+| `git/fileDiff` | Read a page of a worktree file's `HEAD` and working-copy versions. Requires `fileView`. Bulk response. |
+
+See [12 Files and diffs](12-files.md#target-methods) for containment, limits, and byte cursors.
 
 ### Skills
 

@@ -63,6 +63,8 @@ pub struct Transcript {
     pub take_over: Option<TakeOverRequest>,
     /// The running turn, for Stop.
     pub active_turn: Option<TurnId>,
+    /// Latest completed turn observed by this subscription.
+    pub last_completed_turn: Option<TurnId>,
     /// Effective capabilities and applied settings.
     pub effective: Option<ThreadEffective>,
     /// Context usage, when reported.
@@ -283,6 +285,7 @@ impl Transcript {
                 self.turns.entry(e.turn_id.clone()).or_default().started = e.at.clone();
             }
             ThreadEvent::TurnCompleted(e) => {
+                self.last_completed_turn = Some(e.turn_id.clone());
                 self.turns.entry(e.turn_id.clone()).or_default().ended =
                     Some(crate::turns::TurnEnd { status: e.status.clone(), at: e.at.clone(), error: e.error.clone() });
                 if self.active_turn.as_ref() == Some(&e.turn_id) {

@@ -11,35 +11,22 @@ namespace Yaac.WpfPreview;
 public partial class MainWindow
 {
     private string browserThread = "";
-    private string browserReason = "Open a thread to use the browser.";
     private string? browserDragThread;
 
     private void InitializeBrowser()
     {
         BrowserPane.Command += Send;
+        BrowserPane.ComposerCaret = () => ComposerPane.CaretIndex;
         DpiChanged += (_, _) => Dispatcher.BeginInvoke(DispatcherPriority.Loaded, BrowserPane.UpdateViewport);
     }
 
-    private void CaptionAddClicked(object sender, RoutedEventArgs e)
-    {
-        var menu = new ContextMenu { PlacementTarget = CaptionAddPane, Placement = PlacementMode.Bottom };
-        var browser = new MenuItem
-        {
-            Header = "Browser",
-            ToolTip = browserReason.Length > 0 ? browserReason : null,
-            IsEnabled = browserReason.Length == 0,
-        };
-        browser.Click += (_, _) => BrowserPane.OpenNewTab();
-        menu.Items.Add(browser);
-        menu.IsOpen = true;
-    }
+    private void CaptionAddClicked(object sender, RoutedEventArgs e) => BrowserPane.OpenAddMenu(CaptionAddPane);
 
     private void RenderBrowser(JsonElement state)
     {
         var thread = Text(state, "thread");
         if (browserThread != thread) browserDragThread = null;
         browserThread = thread;
-        browserReason = Text(state, "reason");
         BrowserExternalFallback.Visibility = Flag(state, "external") ? Visibility.Visible : Visibility.Collapsed;
         var active = state.Value("active").ValueKind == JsonValueKind.Number;
         var full = active && Flag(state, "fullScreen");

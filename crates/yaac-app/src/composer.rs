@@ -518,6 +518,20 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                 }
                 if !editing {
                     chips(ui, app, &d, &chip_views, actions);
+                    let mut remove = None;
+                    if let Some(draft) = app.client.state.drafts.get(key) && !draft.excerpts.is_empty() {
+                        ui.horizontal_wrapped(|ui| {
+                            for e in &draft.excerpts {
+                                if ui.add_enabled(!dimmed, egui::Button::new(format!("{} ×", e.label))).on_hover_text("Remove selection").clicked() {
+                                    remove = Some(e.token.clone());
+                                }
+                            }
+                        });
+                    }
+                    if let Some(token) = remove && let Some(draft) = app.client.state.drafts.get_mut(key) {
+                        draft.remove_excerpt(&token);
+                        actions.push(Action::DraftEdited(d.clone()));
+                    }
                 }
                 // One row whatever runs: the text, and the buttons beside it, so the composer
                 // keeps its height when a turn starts or ends (the transcript keeps its place).

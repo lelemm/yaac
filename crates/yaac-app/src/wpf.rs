@@ -27,6 +27,7 @@ mod agents;
 mod browser;
 mod composer;
 mod dialogs;
+mod files;
 mod header;
 mod markdown_view;
 mod navigation;
@@ -389,9 +390,12 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
             Ok(Input::Command(frame)) => {
                 let command = string(&frame, "command");
                 let payload = &frame["payload"];
-                if command.starts_with("browser.") {
+                if command.starts_with("browser.") || command.starts_with("files.") {
                     match browser.command(&mut app, window_shown, command, payload) {
-                        Ok(changed) => refresh_browser |= changed,
+                        Ok(changed) => {
+                            refresh_browser |= changed;
+                            once |= changed && matches!(command, "files.add" | "files.mode");
+                        }
                         Err(message) => write_frame(&mut stdout, &json!({ "error": message }))?,
                     }
                     continue;

@@ -29,10 +29,13 @@ glow = ["eframe/glow"]
 wgpu = ["eframe/wgpu"]
 
 [dependencies]
+egui_ltreeview = "0.10"
+yaac-code = { path = "../yaac-code" }
 yaac-preview = { path = "../yaac-preview", optional = true }
 yaac-core = { path = "../yaac-core" }
 yaac-protocol = { path = "../yaac-protocol" }
 yaac-hub = { path = "../yaac-hub", optional = true }
+serde.workspace = true
 serde_json.workspace = true
 url = "2.5"
 # `clipboard`: the system clipboard for copy and plain-text paste (egui-winit's arboard and,

@@ -59,6 +59,7 @@ struct Conn {
 
 #[derive(Debug, Default)]
 struct State {
+    features: Option<Vec<yaac_protocol::Capability>>,
     threads: BTreeMap<ThreadId, FakeThread>,
     index_changes: u64,
     conns: BTreeMap<u64, Conn>,
@@ -169,6 +170,10 @@ impl FakeDaemon {
     }
 
     // ── Scripting ──────────────────────────────────────────────────────────────────────
+
+    pub fn set_features(&self, features: Vec<yaac_protocol::Capability>) {
+        self.lock().features = Some(features);
+    }
 
     /// Adds a thread (idle, empty).
     pub fn add_thread(&self, id: &str) {
@@ -511,7 +516,7 @@ impl FakeDaemon {
                 let p: InitializeParams = serde_json::from_value(params).map_err(bad)?;
                 let negotiated = negotiate(dialect::SUPPORTED, p.protocol).map_err(|e| e.to_error_object())?;
                 let result = InitializeResult {
-                    features: None,
+                    features: s.features.clone(),
                     protocol: negotiated.answer(),
                     schema_hash: CURRENT.schema_hash().to_owned(),
                     daemon: DaemonInfo { build: format!("fake-{}", self.name), state_format: 1 },
@@ -526,6 +531,9 @@ impl FakeDaemon {
                 Ok(serde_json::to_value(result).unwrap())
             }
             names::PING => Ok(json!({})),
+            names::FS_TREE if s.features.as_ref().is_some_and(|features| features.contains(&yaac_protocol::Capability::FileView)) => {
+                Ok(json!({ "entries": [], "repo": true, "truncated": false }))
+            }
             names::PROVIDER_LIST => Ok(json!({ "providers": s.providers })),
             names::PROVIDER_RATE_LIMITS => {
                 s.rate_limit_asks.push(params["refresh"].as_bool().unwrap_or(false));

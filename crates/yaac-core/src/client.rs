@@ -1503,7 +1503,7 @@ impl Client {
             *slot = draft;
         } else {
             if !draft.text.is_empty() {
-                slot.text = format!("{}\n\n{}", slot.text, draft.text);
+                slot.text = format!("{}\n\n{}", slot.text, draft.message_text());
             }
             slot.attachments.extend(draft.attachments);
         }

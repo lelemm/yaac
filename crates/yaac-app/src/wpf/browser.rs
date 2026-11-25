@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use yaac_core::{ThreadKey, client::Client};
 
 use super::{selected_thread, string, write_frame};
+use super::files::{self, FilesPipe};
 use crate::{app::YaacApp, preview_controller};
 
 #[cfg(feature = "preview")]
@@ -14,6 +15,7 @@ mod native;
 #[derive(Default)]
 pub(super) struct BrowserPipe {
     previous: Value,
+    files: FilesPipe,
     #[cfg(feature = "preview")]
     native: native::Surfaces,
 }
@@ -31,10 +33,11 @@ impl BrowserPipe {
             .flatten();
         let visible = thread.as_ref().filter(|_| shown);
         app.browsers.check_runtime(wake.clone());
+        app.browsers.set_file_wake(wake.clone());
         let next = app.browsers.tick(&mut app.client, visible, Instant::now());
 
         #[cfg(feature = "preview")]
-        let updates = self.native.pump(&mut app.browsers, visible, wake);
+        let updates = self.native.pump(&mut app.browsers, visible, wake.clone());
         // Agent browser calls (docs/11-preview.md#agents), on the calling thread's tabs.
         #[cfg(feature = "preview")]
         let agent = app.browser_agent.step(&mut app.client, &mut app.browsers, &mut self.native, Instant::now());
@@ -45,6 +48,11 @@ impl BrowserPipe {
             (a, b) => a.or(b),
         };
 
+        self.files.prepare(
+            thread.as_ref().and_then(|key| app.browsers.areas.get(key)),
+            app.browsers.side_by_side,
+            wake.clone(),
+        )?;
         let current = self.view(&app.browsers, &app.client, thread.as_ref());
         if current != self.previous {
             write_frame(stdout, &json!({ "views": { "browser": current } }))?;
@@ -56,7 +64,7 @@ impl BrowserPipe {
 
         #[cfg(feature = "preview")]
         self.native.write(updates, stdout)?;
-        Ok(next)
+        Ok(if self.files.write(stdout)? { Some(Duration::ZERO) } else { next })
     }
 
     fn view(
@@ -70,12 +78,15 @@ impl BrowserPipe {
         json!({
             "thread": thread.map(ThreadKey::address),
             "reason": reason,
+            "filesReason": files::reason(client, thread),
+            "files": self.files.view(area, browsers.side_by_side),
             "external": reason.is_some() && thread.is_some_and(|k| preview_controller::supported(client, k)),
             "active": area.map(|area| area.active),
             "ratio": area.map(|area| area.ratio),
             "fullScreen": area.is_some_and(|area| area.full_screen),
             "tabs": area.map(|area| area.tabs.iter().map(|tab| json!({
                 "id": tab.id, "url": tab.url, "title": tab.title, "loading": tab.loading,
+                "kind": files::kind(tab), "path": tab.kind.path(),
                 "back": tab.back, "forward": tab.forward, "error": tab.error,
                 "surface": self.has_surface(tab.id),
                 "agentLogo": tab.agent.as_deref().and_then(crate::logos::for_kind).map(|(logo, _)| crate::logos::source(logo).0),
@@ -142,6 +153,9 @@ impl BrowserPipe {
             return Ok(false);
         };
 
+        if command.starts_with("files.") {
+            return self.files.command(app, &thread, id, command, data, payload);
+        }
         let browsers = &mut app.browsers;
         match command {
             "browser.new" => {
@@ -175,6 +189,11 @@ impl BrowserPipe {
                     "browser.close" => browsers.close(&thread, id),
                     "browser.select" => {
                         browsers.areas.get_mut(&thread).expect("open area").active = id
+                    }
+                    "browser.navigate" | "browser.external" | "browser.inspect"
+                        if browsers.tab(&thread, id).is_none_or(|tab| tab.kind != crate::file_pane::TabKind::Browser) =>
+                    {
+                        return Ok(false);
                     }
                     "browser.navigate" => {
                         browsers.navigate(&mut app.client, &thread, id, string(data, "url"))?;

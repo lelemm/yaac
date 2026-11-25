@@ -44,6 +44,8 @@ public partial class ComposerView : UserControl
         {
             if (!IsVisible)
                 DropOverlayChanged?.Invoke(false);
+            else
+                ApplyFocus();
         };
         fileSearchTimer.Tick += (_, _) => RequestFiles();
         TextCompositionManager.AddPreviewTextInputStartHandler(Editor, (_, _) => SetComposing(true));
@@ -55,6 +57,7 @@ public partial class ComposerView : UserControl
 
     public event Action<string, object?>? Command;
     internal event Action<bool>? DropOverlayChanged;
+    internal int CaretIndex => Editor.CaretIndex;
 
     // Each render describes the complete composer for a selection. Action ids are opaque to
     // WPF. Picker and clipboard work run in the controller, which returns a single-use insert

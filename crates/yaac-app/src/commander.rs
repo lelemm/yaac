@@ -162,6 +162,7 @@ pub(crate) fn dispatch(app: &mut YaacApp, ctx: &egui::Context, actions: &mut Vec
         });
     }
     let commander_open = app.ui.commander.is_some();
+    let reading_file = !commander_open && app.preview_ui.file_focus.is_some_and(|id| ctx.memory(|m| m.has_focus(id)));
     let bindings = &app.ui.bindings;
     // Each command pressed, and whether its chord still works with the caret in a text field
     // (only then may it put the caret in the composer: a plain key pressed again must reach
@@ -169,6 +170,10 @@ pub(crate) fn dispatch(app: &mut YaacApp, ctx: &egui::Context, actions: &mut Vec
     let mut hits: Vec<(Cmd, bool)> = Vec::new();
     ctx.input_mut(|i| {
         i.events.retain(|e| {
+            // This chord acts on the focused file selection before the global attachment shortcut.
+            if reading_file && matches!(e, Event::Key { key: Key::A, modifiers, .. } if modifiers.ctrl && modifiers.shift && !modifiers.alt) {
+                return true;
+            }
             let (chord, repeat) = match e {
                 Event::Key { key, pressed: true, modifiers, repeat, .. } => (chord_of(*key, *modifiers), *repeat),
                 Event::PointerButton { button: egui::PointerButton::Extra1, pressed: true, .. } => (Chord::mouse(MouseButton::Back), false),

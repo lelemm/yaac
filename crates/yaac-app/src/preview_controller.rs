@@ -7,11 +7,18 @@ use url::Url;
 use yaac_core::{ThreadKey, client::Client};
 use yaac_protocol::{PreviewPort, PreviewPortsResult, attach, rpc::RpcId};
 
+use crate::file_pane::{Document, FileRequest, FileTree, TabKind, Work};
+use std::sync::Arc;
+
 const PORT_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 pub(crate) struct BrowserTab {
     pub(crate) id: u64,
+    pub(crate) kind: TabKind,
+    pub(crate) document: Option<Arc<Document>>,
+    pub(crate) work: Option<Work>,
+    pub(crate) generation: u64,
     pub(crate) url: String,
     pub(crate) title: String,
     pub(crate) loading: bool,
@@ -39,9 +46,10 @@ pub(crate) struct BrowserArea {
     pub(crate) active: u64,
     pub(crate) ratio: f32,
     pub(crate) full_screen: bool,
+    pub(crate) tree: FileTree,
     pub(crate) ports: Vec<PreviewPort>,
     pub(crate) ports_error: Option<String>,
-    epoch: u64,
+    pub(crate) epoch: u64,
     next_poll: Instant,
     polling: bool,
 }
@@ -53,6 +61,7 @@ impl Default for BrowserArea {
             active: 0,
             ratio: 0.5,
             full_screen: false,
+            tree: FileTree::default(),
             ports: vec![],
             ports_error: None,
             epoch: 0,
@@ -62,7 +71,8 @@ impl Default for BrowserArea {
     }
 }
 
-enum Pending {
+pub(crate) enum Pending {
+    File(FileRequest),
     Proxy(ThreadKey, u64),
     External(ThreadKey, u64, Url),
     Ports(ThreadKey, u64),
@@ -77,7 +87,9 @@ pub(crate) struct Browsers {
     #[cfg(feature = "preview")]
     checked: bool,
     pub(crate) host_error: Option<String>,
-    pending: HashMap<RpcId, Pending>,
+    pub(crate) side_by_side: bool,
+    pub(crate) file_wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub(crate) pending: HashMap<RpcId, Pending>,
     next: u64,
     #[cfg(feature = "preview")]
     host: yaac_preview::BrowserHost,
@@ -169,7 +181,7 @@ impl Browsers {
         Ok(self.insert(key))
     }
 
-    fn insert(&mut self, key: &ThreadKey) -> u64 {
+    pub(crate) fn insert(&mut self, key: &ThreadKey) -> u64 {
         self.next += 1;
         let area = self.areas.entry(key.clone()).or_default();
         if area.tabs.is_empty() {
@@ -203,7 +215,6 @@ impl Browsers {
         Ok(id)
     }
 
-    #[cfg(feature = "preview")]
     pub(crate) fn tab(&self, key: &ThreadKey, id: u64) -> Option<&BrowserTab> {
         self.areas.get(key)?.tabs.iter().find(|t| t.id == id)
     }
@@ -331,6 +342,7 @@ impl Browsers {
         }
         for (id, result) in client.take_preview_replies() {
             match self.pending.remove(&id) {
+                Some(Pending::File(request)) => self.file_reply(client, request, result),
                 Some(Pending::Proxy(k, id)) => {
                     if let Some(tab) = self.tab_mut(&k, id) {
                         match result.and_then(|v| {
@@ -395,6 +407,10 @@ impl Browsers {
                 }
                 _ => {}
             }
+        }
+        self.finish_file_jobs();
+        if let Some(key) = visible && self.areas.get(key).and_then(|a| self.tab(key,a.active)).is_some_and(|t| t.kind != TabKind::Browser) {
+            return self.tick_files(client,key,now);
         }
         let key = visible.filter(|k| supported(client, k))?;
         let area = self.areas.get_mut(key)?;
@@ -492,6 +508,7 @@ mod tests {
                 schema_hash_matches: true,
                 can_update: false,
                 port_forward: supported,
+                file_view: false,
             });
         };
         daemon(&mut client, false);
@@ -529,6 +546,7 @@ mod tests {
             schema_hash_matches: true,
             can_update: false,
             port_forward: true,
+            file_view: false,
         });
         let mut draw = |events| {
             let mut frame = eframe::Frame::_new_kittest();

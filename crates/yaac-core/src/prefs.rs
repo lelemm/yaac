@@ -45,6 +45,8 @@ pub struct UiPrefs {
     pub ordering: Ordering,
     /// The agents panel is docked.
     pub docked: bool,
+    /// Default layout for file diff tabs.
+    pub diff_side_by_side: bool,
     /// Theme.
     pub theme: ThemePref,
     /// The Muted section is expanded.
@@ -80,7 +82,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, tray_on_close: true, bindings: crate::keys::Overrides::default(), recent: Vec::new() }
+        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, tray_on_close: true, bindings: crate::keys::Overrides::default(), recent: Vec::new() }
     }
 }
 
@@ -112,8 +114,10 @@ pub mod keys {
     pub const KEY_BINDINGS: &str = "keyBindings";
     /// The Commander's recently used commands (D130).
     pub const COMMANDER_RECENT: &str = "commanderRecent";
+    /// Side-by-side layout in diff tabs.
+    pub const DIFF_SIDE_BY_SIDE: &str = "diffSideBySide";
     /// Every key.
-    pub const ALL: [&str; 13] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT];
+    pub const ALL: [&str; 14] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE];
 }
 
 impl UiPrefs {
@@ -149,6 +153,7 @@ impl UiPrefs {
             keys::AGENTS_WIDTH => json!(self.agents_width),
             keys::TRAY_ON_CLOSE => json!(self.tray_on_close),
             keys::KEY_BINDINGS => self.bindings.value(),
+            keys::DIFF_SIDE_BY_SIDE => json!(self.diff_side_by_side),
             keys::COMMANDER_RECENT => json!(self.recent),
             keys::SEND_KEY => json!(match self.send_key {
                 SendKey::Enter => "enter",
@@ -188,6 +193,7 @@ impl UiPrefs {
                     self.bindings = crate::keys::Overrides::from_value(v);
                 }
             }
+            keys::DIFF_SIDE_BY_SIDE => self.diff_side_by_side = v.as_bool().unwrap_or(self.diff_side_by_side),
             keys::COMMANDER_RECENT => {
                 if let Some(list) = v.as_array() {
                     self.recent = list.iter().filter_map(Value::as_str).filter(|id| crate::commands::by_id(id).is_some()).take(crate::commands::RECENT_MAX).map(str::to_owned).collect();

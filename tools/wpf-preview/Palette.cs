@@ -32,6 +32,10 @@ internal static class Palette
         ("YaacCodeComment", 0x7E9C6E, 0x4E7A3A),
         ("YaacCodeNumber",  0xF09A5C, 0xB35000),
         ("YaacCodeType",    0x6CC4FF, 0x1A5FB4),
+        ("YaacDiffAdded",   0x1B322C, 0xE7F5EB),
+        ("YaacDiffRemoved", 0x39252D, 0xFBEAEC),
+        ("YaacDiffAddWord", 0x285943, 0xB9E7C8),
+        ("YaacDiffDelWord", 0x663947, 0xF6BEC5),
         ("YaacFast",        0xF5C518, 0x9A7000),
         ("YaacUltrafast",   0x5BA8FF, 0x1764BA),
     ];

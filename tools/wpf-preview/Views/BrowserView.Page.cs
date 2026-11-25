@@ -134,7 +134,7 @@ public partial class BrowserView
     }
 
     private JsonElement? tabState;
-    private string tabReason = "";
+    private string tabReason = "Open a thread to use the browser.";
 
     private void ArrangePopup()
     {

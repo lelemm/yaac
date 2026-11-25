@@ -142,6 +142,11 @@ pub(crate) fn panes(ui: &mut egui::Ui, full: Rect, app: &mut crate::app::YaacApp
             app.preview_ui.focus_address = app.browsers.new_tab(&app.client, key).ok();
             ui.close();
         }
+        if let Some(key) = key.as_ref().filter(|k| crate::file_pane::supported(&app.client,k))
+            && ui.button("Files").clicked() {
+            let _ = app.browsers.open_file_tab(&mut app.client,key,crate::file_pane::TabKind::Files,false);
+            ui.close();
+        }
         if reason.is_some() && let Some(key) = key.filter(|k| crate::preview_controller::supported(&app.client, k)) {
             ui.add(egui::TextEdit::singleline(&mut app.preview_ui.external_address).hint_text("URL or port"));
             if ui.button("Open in browser").clicked() {

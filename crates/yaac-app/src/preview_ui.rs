@@ -11,6 +11,7 @@ pub(crate) struct Renderer {
     favicons: std::collections::HashMap<u64, egui::TextureHandle>,
     pub(crate) focus_address: Option<u64>,
     pub(crate) page_focus: Option<egui::Id>,
+    pub(crate) file_focus: Option<egui::Id>,
     edits: std::collections::HashMap<u64, String>,
     pub(crate) external_address: String,
 }
@@ -153,9 +154,11 @@ pub(crate) fn layout(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) -> O
 }
 
 fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
+    let browser_enabled = app.browsers.reason(&app.client,Some(key)).is_none();
+    let files_enabled = crate::file_pane::supported(&app.client,key);
     let area = app.browsers.areas.get_mut(key).unwrap();
     let mut close = None;
-    let mut add = false;
+    let mut add = None;
     egui::ScrollArea::horizontal()
         .id_salt("tabs")
         .show(ui, |ui| {
@@ -197,6 +200,7 @@ fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
                         );
                         mark.on_hover_text("An agent is using this tab");
                     }
+                    let r = if let Some(path) = tab.kind.path() {r.on_hover_text(path)} else {r};
                     if r.clicked() {
                         area.active = tab.id
                     }
@@ -206,7 +210,10 @@ fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
                         close = Some(tab.id)
                     }
                 }
-                add = ui.small_button("+").on_hover_text("New tab").clicked();
+                ui.menu_button("+", |ui| {
+                    if ui.add_enabled(browser_enabled,egui::Button::new("Browser")).clicked(){add=Some(false);ui.close();}
+                    if files_enabled && ui.button("Files").clicked(){add=Some(true);ui.close();}
+                });
             })
         });
     if let Some(id) = close {
@@ -214,8 +221,9 @@ fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
         ui.ctx().request_repaint();
         return;
     }
-    if add {
-        app.preview_ui.focus_address = app.browsers.new_tab(&app.client, key).ok();
+    if let Some(files) = add {
+        if files { let _=app.browsers.open_file_tab(&mut app.client,key,crate::file_pane::TabKind::Files,false); }
+        else { app.preview_ui.focus_address = app.browsers.new_tab(&app.client, key).ok(); }
         ui.ctx().request_repaint();
         return;
     }
@@ -223,6 +231,10 @@ fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
     let Some(tab) = area.tabs.iter_mut().find(|t| t.id == id) else {
         return;
     };
+    if tab.kind != crate::file_pane::TabKind::Browser {
+        ui.push_id(id, |ui| crate::file_pane_ui::draw(ui, app, key, id));
+        return;
+    }
     #[cfg(feature = "preview")]
     let page = app.preview_ui.pages.get(&id);
     let mut navigate = None;

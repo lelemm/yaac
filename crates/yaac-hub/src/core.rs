@@ -275,6 +275,10 @@ fn err(code: ErrorCode, message: impl Into<String>) -> ErrorObject {
     ErrorObject::new(code, message)
 }
 
+fn file_view_missing() -> ErrorObject {
+    err(ErrorCode::CapabilityMissing, "the target daemon does not support the worktree browser (fileView)")
+}
+
 fn hub_err(code: &str, message: impl Into<String>) -> ErrorObject {
     ErrorObject::new(ErrorCode::from_wire(code), message)
 }
@@ -1590,6 +1594,7 @@ impl Core {
         let Some(t) = self.targets.get_mut(id) else { return };
         let Some(conn) = t.conn.as_mut() else { return };
         conn.ready = true;
+        let file_view = conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::FileView));
         let port_forward = self.preview_check(id).is_ok();
         let can_update = self.handover_on_ready(id, &info.daemon.build);
         let new = ConnectionState {
@@ -1602,6 +1607,7 @@ impl Core {
                 schema_hash_matches: info.schema_hash_matches,
                 can_update,
                 port_forward,
+                file_view,
             }),
             update: None,
         };
@@ -1783,6 +1789,17 @@ impl Core {
                 }
             }
             self.preview_check(id).and(outcome)
+        } else if matches!(method, names::FS_TREE | names::FS_READ | names::GIT_FILE_DIFF)
+            && outcome.as_ref().is_err_and(|e| e.code == ErrorCode::MethodNotFound)
+        {
+            if let Some(t) = self.targets.get(id) {
+                let mut state = t.state.clone();
+                if let Some(daemon) = state.daemon.as_mut() {
+                    daemon.file_view = false;
+                    self.set_state(id, state);
+                }
+            }
+            Err(file_view_missing())
         } else {
             outcome
         };
@@ -2408,6 +2425,11 @@ impl Core {
         let Some(conn) = self.targets.get_mut(&target).and_then(|t| t.conn.as_mut()) else {
             return Some(Err(err(ErrorCode::TargetOffline, "the target is not connected")));
         };
+        if matches!(method, names::FS_TREE | names::FS_READ | names::GIT_FILE_DIFF)
+            && !conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::FileView))
+        {
+            return Some(Err(file_view_missing()));
+        }
         match conn.session.request_value(info.name, request.params) {
             Ok(id) => {
                 conn.pending.insert(id, Pending::Routed { client, id: rid.clone(), method: info.name, op: op.clone() });

@@ -318,19 +318,21 @@ impl DialectError {
 pub struct FeatureSet {
     withheld: &'static [Capability],
     missing_port_forward: bool,
+    missing_file_view: bool,
 }
 
 impl FeatureSet {
     /// Every feature present.
-    pub const FULL: FeatureSet = FeatureSet { withheld: &[], missing_port_forward: false };
+    pub const FULL: FeatureSet = FeatureSet { withheld: &[], missing_port_forward: false, missing_file_view: false };
 
     /// A version that lacks the wire support for `withheld`.
     pub const fn withholding(withheld: &'static [Capability]) -> Self {
-        Self { withheld, missing_port_forward: false }
+        Self { withheld, ..Self::FULL }
     }
 
     pub(crate) fn advertised(mut self, features: &[Capability]) -> Self {
         self.missing_port_forward = !features.contains(&Capability::PortForward);
+        self.missing_file_view = !features.contains(&Capability::FileView);
         self
     }
 
@@ -338,6 +340,9 @@ impl FeatureSet {
     pub(crate) fn observe_missing(&mut self, method: &str) {
         if matches!(method, crate::methods::names::TUNNEL_OPEN | crate::methods::names::PREVIEW_PORTS) {
             self.missing_port_forward = true;
+        }
+        if matches!(method, crate::methods::names::FS_TREE | crate::methods::names::FS_READ | crate::methods::names::GIT_FILE_DIFF) {
+            self.missing_file_view = true;
         }
     }
 
@@ -348,7 +353,9 @@ impl FeatureSet {
 
     /// Whether this version can carry `capability`.
     pub fn allows(&self, capability: &Capability) -> bool {
-        !(self.withheld.contains(capability) || self.missing_port_forward && *capability == Capability::PortForward)
+        !(self.withheld.contains(capability)
+            || self.missing_port_forward && *capability == Capability::PortForward
+            || self.missing_file_view && *capability == Capability::FileView)
     }
 }
 

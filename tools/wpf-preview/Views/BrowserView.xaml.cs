@@ -12,25 +12,42 @@ namespace Yaac.WpfPreview.Views;
 public partial class BrowserView : UserControl
 {
     internal event Action<string, object?>? Command;
+    internal Func<int>? ComposerCaret { get; set; }
 
     private string thread = "";
     private ulong? active;
     private bool full, busy, focusNewTab, focusWhenConnected;
     private bool windowShown;
     private bool addressDirty, updatingAddress, composing;
+    private bool browserActive;
+    private string filesReason = "Open a thread to use Files.";
+    private readonly FilesPane files = new();
     private string displayedUrl = "";
     private string tabSignature = "", portSignature = "";
     private (ulong Tab, int Width, int Height, double Dpi)? viewport;
     private readonly Dictionary<ulong, BitmapImage> icons = new();
 
-    internal bool OwnsKeyboard => PageInput.IsKeyboardFocused || AddressField.IsKeyboardFocused;
+    internal bool OwnsKeyboard => PageInput.IsKeyboardFocused || AddressField.IsKeyboardFocused || files.OwnsKeyboard;
 
     public BrowserView()
     {
         InitializeComponent();
+        FilesContent.Content = files;
+        files.Command += (command, data) =>
+        {
+            if (command == "fullScreen")
+                Command?.Invoke("browser.fullScreen", new { thread, fullScreen = !full });
+            else if (active is ulong tab)
+            {
+                if (command == "add")
+                    Command?.Invoke("files.add", new { thread, tab, data, caret = ComposerCaret?.Invoke() });
+                else
+                    Command?.Invoke("files." + command, new { thread, tab, data });
+            }
+        };
         PreviewKeyDown += (_, e) =>
         {
-            if (e.Key != Key.F12 || !Inspect.IsEnabled) return;
+            if (!browserActive || e.Key != Key.F12 || !Inspect.IsEnabled) return;
             if (!e.IsRepeat) Send("inspect");
             e.Handled = true;
         };
@@ -103,7 +120,7 @@ public partial class BrowserView : UserControl
         if (thread != nextThread) focusNewTab = false;
         var selected = state.Value("active");
         ulong? next = selected.ValueKind == JsonValueKind.Number ? selected.GetUInt64() : null;
-        bool switched = next != active;
+        bool switched = next != active || nextThread != thread;
         bool hadPageFocus = PageInput.IsKeyboardFocused;
         if (switched)
         {
@@ -121,10 +138,25 @@ public partial class BrowserView : UserControl
         var tabs = state.GetProperty("tabs");
         tabState = tabs.Clone();
         tabReason = Text(state, "reason");
+        filesReason = Text(state, "filesReason");
         RenderTabs(tabs, tabReason, switched);
-        if (active is not ulong tab) return;
-
-        var current = tabs.EnumerateArray().First(t => t.GetProperty("id").GetUInt64() == tab);
+        var current = active is ulong tabId
+            ? tabs.EnumerateArray().FirstOrDefault(t => t.GetProperty("id").GetUInt64() == tabId)
+            : default;
+        var kind = Text(current, "kind");
+        browserActive = active is not null && (kind is "" or "browser");
+        BrowserToolbar.Visibility = browserActive ? Visibility.Visible : Visibility.Collapsed;
+        if (!browserActive)
+        {
+            Surface.Visibility = Landing.Visibility = Visibility.Collapsed;
+            FilesContent.Visibility = active is null ? Visibility.Collapsed : Visibility.Visible;
+            if (active is not null) files.Render(state, current, thread, full);
+            else files.Clear();
+            return;
+        }
+        FilesContent.Visibility = Visibility.Collapsed;
+        files.Clear();
+        var tab = active!.Value;
         var url = Text(current, "url");
         if (switched || !addressDirty || displayedUrl != url) SetAddress(url);
         displayedUrl = url;
@@ -171,25 +203,25 @@ public partial class BrowserView : UserControl
     {
         // Address and loading updates do not replace tab controls or steal their focus.
         var ids = new HashSet<ulong>();
-        var labels = new List<(ulong Id, string Title, string AgentLogo, string AgentLogoColor)>();
+        var labels = new List<(ulong Id, string Title, string AgentLogo, string AgentLogoColor, string Path)>();
         foreach (var tab in tabs.EnumerateArray())
         {
             var id = tab.GetProperty("id").GetUInt64();
             var title = Text(tab, "title");
             if (title.Length == 0) title = Text(tab, "url");
-            labels.Add((id, title.Length == 0 ? "New tab" : title, Text(tab, "agentLogo"), Text(tab, "agentLogoColor")));
+            labels.Add((id, title.Length == 0 ? "New tab" : title, Text(tab, "agentLogo"), Text(tab, "agentLogoColor"), Text(tab, "path")));
             ids.Add(id);
         }
         foreach (var id in icons.Keys.Where(id => !ids.Contains(id)).ToArray()) icons.Remove(id);
         var signature = JsonSerializer.Serialize(new
         {
-            active, reason, tabs = labels.Select(t => new { t.Id, t.Title, t.AgentLogo, t.AgentLogoColor }), favicon = icons.Keys
+            active, reason, filesReason, tabs = labels.Select(t => new { t.Id, t.Title, t.AgentLogo, t.AgentLogoColor, t.Path }), favicon = icons.Keys
         });
         if (signature == tabSignature) return;
         tabSignature = signature;
         TabStrip.Children.Clear();
 
-        foreach (var (id, title, agentLogo, agentLogoColor) in labels)
+        foreach (var (id, title, agentLogo, agentLogoColor, path) in labels)
         {
             var row = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 0, 2, 0) };
             if (active == id) row.SetResourceReference(BackgroundProperty, "YaacSelected");
@@ -222,6 +254,7 @@ public partial class BrowserView : UserControl
             }
             label.Children.Add(new TextBlock { Text = title, MaxWidth = 156, TextTrimming = TextTrimming.CharacterEllipsis });
             var pick = QuietButton(label, title);
+            if (path.Length > 0) pick.ToolTip = path;
             if (agentLogo.Length > 0)
             {
                 const string status = "Agent is using this tab";
@@ -238,12 +271,34 @@ public partial class BrowserView : UserControl
                 });
         }
         var add = QuietButton("+", "New tab");
-        add.IsEnabled = reason.Length == 0;
+        add.IsEnabled = reason.Length == 0 || filesReason.Length == 0;
         if (!add.IsEnabled) add.ToolTip = reason;
         ToolTipService.SetShowOnDisabled(add, true);
-        add.Click += (_, _) => OpenNewTab();
+        add.Click += (_, _) => OpenAddMenu(add);
         TabStrip.Children.Add(add);
     }
+
+    internal void OpenAddMenu(FrameworkElement target)
+    {
+        var menu = new ContextMenu { PlacementTarget = target,
+            Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+        Add("Browser", tabReason, OpenNewTab);
+        Add("Files", filesReason, () => Command?.Invoke("files.new", new { thread }));
+        menu.IsOpen = true;
+
+        void Add(string title, string unavailable, Action choose)
+        {
+            var item = new MenuItem { Header = title, IsEnabled = unavailable.Length == 0,
+                ToolTip = unavailable.Length == 0 ? null : unavailable };
+            ToolTipService.SetShowOnDisabled(item, true);
+            item.Click += (_, _) => choose();
+            menu.Items.Add(item);
+        }
+    }
+
+    internal void ReceiveFileDocument(IncomingFileDocument document) => files.ReceiveDocument(document);
+    internal void FileDocumentFailed(ulong id) => files.DocumentFailed(id);
+    internal void NavigateDiff(ulong id, int row) => files.Navigate(id, row);
 
     internal void OpenNewTab()
     {

@@ -26,8 +26,14 @@ import type {
   ForgePrsResult,
   FsListParams,
   FsListResult,
+  FsReadParams,
+  FsReadResult,
   FsSearchParams,
   FsSearchResult,
+  FsTreeParams,
+  FsTreeResult,
+  GitFileDiffParams,
+  GitFileDiffResult,
   InitializeParams,
   InitializeResult,
   InstanceRateLimits,
@@ -195,6 +201,9 @@ export const METHODS = {
   UPLOAD_READ: "upload/read",
   FS_LIST: "fs/list",
   FS_SEARCH: "fs/search",
+  FS_TREE: "fs/tree",
+  FS_READ: "fs/read",
+  GIT_FILE_DIFF: "git/fileDiff",
   PROJECT_RESOLVE: "project/resolve",
   SKILLS_LIST: "skills/list",
   PROJECT_LIST: "project/list",
@@ -385,6 +394,12 @@ export interface RequestMap {
   "fs/list": { params: FsListParams; result: FsListResult };
   /** Find files under a working directory on the target. */
   "fs/search": { params: FsSearchParams; result: FsSearchResult };
+  /** List a worktree directory with its git marks. */
+  "fs/tree": { params: FsTreeParams; result: FsTreeResult };
+  /** Read a file inside a worktree. */
+  "fs/read": { params: FsReadParams; result: FsReadResult };
+  /** Read both sides of a worktree file's diff against HEAD. */
+  "git/fileDiff": { params: GitFileDiffParams; result: GitFileDiffResult };
   /** The git identity of a directory. */
   "project/resolve": { params: ProjectResolveParams; result: ProjectResolveResult };
   /** The skills one instance offers for a working directory (under `skills`). */
@@ -523,6 +538,9 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "upload/read": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "fs/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "fs/search": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "fs/tree": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "fs/read": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
+  "git/fileDiff": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "project/resolve": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "skills/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "project/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },

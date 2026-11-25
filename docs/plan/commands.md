@@ -79,7 +79,7 @@ Keys marked **new** are proposals; existing ones are kept. "—" means no defaul
 | Send now | While a turn runs: steer it, or interrupt it and start again with the message — "Send now — interrupts" where the thread cannot steer (D166). Enabled only while a turn runs and no approval or question waits. | Ctrl+Enter (Ctrl+Shift+Enter when the send key is Ctrl+Enter) |
 | New line | — | Shift+Enter |
 | Stop the turn | Stop the running turn. | Esc |
-| Attach files… | Open the file picker (D95). | Ctrl+Shift+A **new** |
+| Attach files… | Open the file picker (D95). In a focused File or Diff viewer, Ctrl+Shift+A adds its selection to the composer. | Ctrl+Shift+A **new** |
 | Paste | Text, files, images. | Ctrl+V |
 | Change model… | Pick a model of this harness (sub-list). | Ctrl+M **new** |
 | Change effort… | Pick an effort level (sub-list). | Ctrl+E **new** |

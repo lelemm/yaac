@@ -392,6 +392,7 @@ impl UiState {
     /// The persisted choices as they are now.
     pub(crate) fn prefs(&self) -> UiPrefs {
         UiPrefs {
+            diff_side_by_side: false, // Side pane preferences are collected in persist_prefs.
             grouping: self.grouping,
             collapsed_groups: self.collapsed_groups.clone(),
             ordering: self.ordering,
@@ -1578,6 +1579,7 @@ impl YaacApp {
                         p.load(k, v);
                     }
                     self.ui.load_prefs(&p);
+                    self.browsers.side_by_side = p.diff_side_by_side;
                     self.saved_prefs = p;
                     self.applied = None;
                     h.prefs_loaded = true;
@@ -1590,7 +1592,8 @@ impl YaacApp {
     /// Send changed window-side choices to the hub (attached only; the demo keeps them in
     /// memory).
     pub(crate) fn persist_prefs(&mut self) {
-        let now = self.ui.prefs();
+        let mut now = self.ui.prefs();
+        now.diff_side_by_side = self.browsers.side_by_side;
         if now == self.saved_prefs {
             return;
         }
@@ -1795,6 +1798,8 @@ impl eframe::App for YaacApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.upkeep(ctx);
         let repaint = ctx.clone();
+        let file_repaint = ctx.clone();
+        self.browsers.set_file_wake(move || file_repaint.request_repaint());
         self.browsers.check_runtime(move || repaint.request_repaint());
         let visible = self.client.state.selected_thread().filter(|_| !self.ui.settings && !self.shell.hidden && ctx.input(|i| i.viewport().visible() != Some(false))).cloned();
         if let Some(delay) = self.browsers.tick(&mut self.client, visible.as_ref(), std::time::Instant::now()) {

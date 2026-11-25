@@ -15,7 +15,7 @@
         <StackPanel x:Name="TabStrip" Orientation="Horizontal" Margin="3,3,3,2" />
       </ScrollViewer>
     </Border>
-    <Border Grid.Row="1" Background="{DynamicResource YaacPanel}" Padding="4"
+    <Border x:Name="BrowserToolbar" Grid.Row="1" Background="{DynamicResource YaacPanel}" Padding="4"
             BorderBrush="{DynamicResource YaacRule}" BorderThickness="0,0,0,1">
       <StackPanel>
         <DockPanel>
@@ -56,5 +56,7 @@
         </StackPanel>
       </ScrollViewer>
     </Grid>
+    <ContentControl x:Name="FilesContent" Grid.Row="2" Visibility="Collapsed"
+                    HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" />
   </Grid>
 </UserControl>

@@ -53,6 +53,9 @@ impl Client {
 
     /// The composer's text changed (or a selection of a new-thread draft): store it soon.
     pub fn draft_changed(&mut self, d: &DraftRef) {
+        if let Some(draft) = self.draft_mut(d) {
+            draft.excerpts.retain(|e| draft.text.contains(&e.token));
+        }
         self.dirty.insert(d.clone());
     }
 
@@ -320,7 +323,9 @@ impl Client {
             let key = d.store_key();
             let value = match &d {
                 DraftRef::Thread(k) => self.state.drafts.get(k).filter(|x| !x.is_empty()).map(|x| {
-                    json!({ "key": key, "target": k.target, "threadId": k.thread, "text": x.text, "attachments": stored(&x.attachments) })
+                    let mut atts = stored(&x.attachments);
+                    if !x.excerpts.is_empty() { atts.push(json!({"kind":"codeExcerpts","entries":x.excerpts})); }
+                    json!({ "key": key, "target": k.target, "threadId": k.thread, "text": x.text, "attachments": atts })
                 }),
                 DraftRef::New(id) => self.state.new_threads.iter().find(|x| x.id == *id).map(|x| {
                     let mut atts = vec![new_thread_meta(x)];
@@ -355,7 +360,9 @@ impl Client {
                     attachments.push(att);
                 }
             }
-            let draft = Draft { text, attachments };
+            let excerpts = stored_atts.iter().find(|v| v["kind"] == "codeExcerpts")
+                .and_then(|v| serde_json::from_value(v["entries"].clone()).ok()).unwrap_or_default();
+            let draft = Draft { text, attachments, excerpts };
             let d = if let Some(new_id) = DraftRef::new_id_of(&key) {
                 let Some(meta) = meta else { continue };
                 if self.state.new_threads.iter().any(|x| x.id == new_id) {

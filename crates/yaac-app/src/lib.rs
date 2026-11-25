@@ -31,6 +31,8 @@ mod browser;
 mod preview_agent;
 mod preview_controller;
 mod preview_ui;
+mod file_pane;
+mod file_pane_ui;
 mod cards;
 mod commander;
 mod composer;
