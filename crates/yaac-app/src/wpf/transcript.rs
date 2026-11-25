@@ -730,7 +730,7 @@ fn conversation(app: &YaacApp, map: &AttentionMap, markdown: &mut super::markdow
     };
     let insertion = rows.iter().rposition(|row| !string(row, "id").starts_with("~copy:")).map_or(0, |i| i + 1);
     let pinned = rows.split_off(insertion);
-    for card in crate::artifacts::cards(state, key) {
+    for card in crate::artifacts::cards(state, key, &app.ui.dismissed_artifacts) {
         let id = card.id();
         let browser = app.browsers.reason(&app.client, Some(key)).is_none();
         let actions = card.actions(browser).into_iter().map(|(command,label)| sidebar_view::action(&format!("artifact{command:?}"), label, true)).collect::<Vec<_>>();
@@ -901,7 +901,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
     let id = ItemId::from(string(p, "id"));
     if act == "chooseExplanation" { app.apply(vec![Action::SettingsPage(yaac_core::settings::Page::Approvals)]); return Ok(()); }
     if act.starts_with("artifact") {
-        if let Some(card) = crate::artifacts::cards(&app.client.state, &k).into_iter().find(|card| card.id() == id.as_str()) {
+        if let Some(card) = crate::artifacts::cards(&app.client.state, &k, &app.ui.dismissed_artifacts).into_iter().find(|card| card.id() == id.as_str()) {
             let browser = app.browsers.reason(&app.client, Some(&k)).is_none();
             if let Some((command, _)) = card.actions(browser).into_iter().find(|(c,_)| format!("artifact{c:?}") == act) {
                 app.apply(vec![Action::Artifact(k, card, command)]);
@@ -1156,12 +1156,22 @@ mod tests {
             ids.push(row["id"].clone());
             assert_eq!(row["actions"][0]["id"], "artifactDownload");
             assert_eq!(row["actions"][1]["id"], "artifactOpen");
+            assert_eq!(row["actions"].as_array().unwrap().last().unwrap()["id"], "artifactDismiss");
             if key != &worker { assert!(row["text"].as_str().unwrap().contains("index-rebuild")); }
         }
         assert!(ids.windows(2).all(|pair| pair[0] == pair[1]));
         command(&mut app, "transcript.action", &json!({"threadId": root.address(), "id": ids[0], "action": "artifactDownload"})).unwrap();
         assert!(app.demo.as_ref().unwrap().requests().iter().any(|(target, method, p)| target.as_ref() == Some(&worker.target)
             && method == "upload/read" && p["uploadId"] == "u_artifact_md_test"));
+        command(&mut app, "transcript.action", &json!({"threadId": root.address(), "id": ids[0], "action": "artifactDismiss"})).unwrap();
+        for (key, visible) in [(&root, false), (&parent, true), (&worker, true)] {
+            let view = conversation(&app, &map, &mut md, key, false);
+            assert_eq!(view["rows"].as_array().unwrap().iter().any(|row| row["kind"] == "artifact"), visible);
+        }
+        let key = yaac_core::prefs::keys::DISMISSED_ARTIFACTS;
+        let mut stored = yaac_core::prefs::UiPrefs::default();
+        stored.load(key, &app.ui.prefs().value(key));
+        assert_eq!(stored.dismissed_artifacts, app.ui.dismissed_artifacts);
     }
 
     #[test]

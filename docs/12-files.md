@@ -45,6 +45,10 @@ column — pill or docked panel included — fills the pane.
 
 ### Tab strip
 
+In full screen, hold Ctrl and press Tab to cycle through Chat and the open tabs. Release Ctrl
+to activate the highlighted tab, or press Escape to keep the current tab. The shortcut can
+be changed in Settings.
+
 - 36 px tall on the panel colour, a 1 px rule under it.
 - Each tab is 32 px tall, **minimum 110 px, preferred 200 px**, all tabs equal width, shrinking
   together to fit; below the minimum the strip scrolls horizontally (wheel scrolls it), and the

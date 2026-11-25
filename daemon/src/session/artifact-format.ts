@@ -32,6 +32,7 @@ export function artifactFormat(ext: string, bytes: Buffer, signature: string | n
   }
   const types = new Map(Object.entries({
     md: "text/markdown", markdown: "text/markdown", txt: "text/plain", mmd: "text/plain", mermaid: "text/plain",
+    html: "text/html", htm: "text/html",
     csv: "text/csv", svg: "image/svg+xml", pdf: "application/pdf", png: "image/png", gif: "image/gif",
     webp: "image/webp", jpg: "image/jpeg", jpeg: "image/jpeg",
   }));

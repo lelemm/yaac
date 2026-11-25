@@ -15,7 +15,7 @@ public partial class ComposerView
     private enum RowKind { Notice, Queue, Command, Attachment }
 
     private sealed record ComposerAction(
-        string Id, string Label, bool Enabled, bool Checked, string Detail, string Tone, ComposerAction[] Children);
+        string Id, string Label, bool Enabled, bool Checked, string Detail, string Tone, bool Warn, ComposerAction[] Children);
 
     private sealed class OptionButton : Button
     {
@@ -50,6 +50,7 @@ public partial class ComposerView
             Field(value, "checked").ComposerFlag(),
             Field(value, "detail").String(),
             Field(value, "tone").String(),
+            Field(value, "warn").ComposerFlag(),
             ReadActions(Field(value, "children")));
     }
 
@@ -134,6 +135,19 @@ public partial class ComposerView
                 SetButton(button, action, available);
                 AutomationProperties.SetItemStatus(button, action.Checked ? "On" : "");
                 button.FontWeight = action.Checked ? FontWeights.SemiBold : FontWeights.Normal;
+                if (action.Id == "mode")
+                {
+                    if (action.Warn)
+                    {
+                        button.SetResourceReference(ForegroundProperty, "YaacFailure");
+                        button.ContentTemplate ??= (DataTemplate)FindResource("PermissionWarningLabel");
+                    }
+                    else
+                    {
+                        button.ClearValue(ForegroundProperty);
+                        button.ClearValue(ContentControl.ContentTemplateProperty);
+                    }
+                }
                 if (button.SpeedBolt is { } bolt)
                 {
                     var color = action.Tone switch

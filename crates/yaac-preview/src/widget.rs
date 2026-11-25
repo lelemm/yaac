@@ -47,6 +47,8 @@ pub struct Preview {
     menu: Option<ContextMenu>,
     dialog: Option<Dialog>,
     pub responses: std::collections::VecDeque<serde_json::Value>,
+    pub external_links: Vec<String>,
+    pub host_exit: Option<String>,
 }
 impl Preview {
     pub fn new(engine: &mut BrowserHost, url: &str, socks: Option<u16>, ctx: &Context) -> Self {
@@ -84,6 +86,8 @@ impl Preview {
             menu: None,
             dialog: None,
             responses: Default::default(),
+            external_links: Vec::new(),
+            host_exit: None,
         }
     }
     pub fn navigate(&self, url: &str) {
@@ -128,6 +132,11 @@ impl Preview {
         while let Some(update) = self.tab.try_update() {
             match update {
                 Update::Frame(f) => upload(ctx, &mut self.textures[usize::from(f.popup)], &f),
+                Update::HostExited(error) => {
+                    self.state.error = Some(error.clone());
+                    self.host_exit = Some(error);
+                    ctx.request_repaint();
+                }
                 Update::Event(event) => match event {
                     Event::Favicon(png) => self.state.favicon = png,
                     Event::FileDialog {
@@ -137,6 +146,10 @@ impl Preview {
                         filters,
                     } => self.tab.choose_files(mode, title, default_path, filters),
                     Event::Url(s) => self.state.url = s,
+                    Event::ExternalLink(url) => {
+                        self.external_links.push(url);
+                        ctx.request_repaint();
+                    }
                     Event::Title(s) => self.state.title = s,
                     Event::Loading {
                         busy,
@@ -292,16 +305,18 @@ impl Preview {
             let mut open = true;
             let mut selected = None;
             let mut inspect = false;
-            egui::Popup::from_response(&r)
+            egui::Popup::menu(&r)
                 .at_position(rect.min + egui::vec2(at[0] as f32, at[1] as f32))
                 .open_bool(&mut open)
                 .show(|ui| {
+                    ui.set_min_width(160.0);
                     for (id, title, enabled) in &menu.items {
                         if ui.add_enabled(*enabled, egui::Button::new(title)).clicked() {
                             selected = Some(*id);
                             ui.close();
                         }
                     }
+                    if !menu.items.is_empty() { ui.separator(); }
                     if ui.button("Inspect element").clicked() {
                         inspect = true;
                         ui.close();

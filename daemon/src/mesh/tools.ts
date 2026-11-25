@@ -13,7 +13,7 @@ export const WAIT_MAX_SECS = 45;
 /** The tool-call timeout configured for the server (N24). */
 export const TOOL_TIMEOUT_SECS = 60;
 
-const ARTIFACT_INSTRUCTIONS = "Use present_artifact only for user-requested generated documents and images. Never use it for source code or project files.";
+const ARTIFACT_INSTRUCTIONS = "Use present_artifact only for user-requested generated documents and images, not source code or project files. To show a generated HTML document, present it directly so the user can open it in the integrated browser.";
 const WORKER_INSTRUCTIONS = [
   "When delegating work, always prefer YAAC workers via the `yaac` tool `spawn_thread` over the harness's built-in subagent tools.",
   "Treat requests to spawn or use subagents as requests for YAAC workers unless the user explicitly asks for the harness's built-in tool.",
@@ -49,7 +49,7 @@ const states = ["idle", "running", "needsAttention", "failed", "waiting", "done"
 const MESH_TOOLS: ToolDef[] = [
   {
     name: "present_artifact",
-    description: ARTIFACT_INSTRUCTIONS + " Presents a downloadable snapshot in your transcript and your ancestors' transcripts. Supports Markdown, text, CSV, Mermaid, PDF, DOCX, XLSX, PPTX, SVG, PNG, JPEG, GIF and WebP.",
+    description: ARTIFACT_INSTRUCTIONS + " Presents a downloadable snapshot in your transcript and your ancestors' transcripts. Supports HTML, Markdown, text, CSV, Mermaid, PDF, DOCX, XLSX, PPTX, SVG, PNG, JPEG, GIF and WebP, up to 64 MiB.",
     inputSchema: { type: "object", properties: { path: str("File path relative to your working directory."), title: str("Optional card title.") }, required: ["path"], additionalProperties: false },
   },
   {

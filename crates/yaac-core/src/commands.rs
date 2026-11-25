@@ -122,6 +122,7 @@ pub enum Cmd {
     NewTerminalWithShell,
     NextTerminal,
     PrevTerminal,
+    CycleFullscreenTabs,
     MaximiseTerminalPanel,
     // Window
     HideToTray,
@@ -324,6 +325,7 @@ pub static COMMANDS: &[CommandDef] = &[
     def(Cmd::CopyPrLink, "copy-pr-link", "Copy the PR link", "Copy the pull request's address.", &["pull request", "url", "clipboard"], G::PullRequests, &[]),
     // ── View
     def(Cmd::ToggleSidebar, "toggle-sidebar", "Toggle the sidebar", "Collapse the sidebar to the strip and back.", &["collapse", "expand", "strip"], G::View, &["Ctrl+B"]),
+    def(Cmd::CycleFullscreenTabs, "cycle-fullscreen-tabs", "Cycle full-screen tabs", "Step through Chat and full-screen tabs. Release the shortcut modifier to switch.", &["switch", "browser", "file", "terminal"], G::View, &["Ctrl+Tab"]),
     def(Cmd::Dock, "dock", "Dock / undock the agents panel", "Dock the agents panel beside the thread, or float it.", &["panel", "pill"], G::View, &["Ctrl+Shift+B"]),
     step(def(Cmd::Grouping, "grouping", "Grouping: machine / project / worktree…", "Toggle each grouping of the sidebar.", &["group by", "sections"], G::View, &[]), StepKind::Grouping),
     step(def(Cmd::Order, "order", "Order: last message / A → Z / Z → A…", "How threads are ordered in each group.", &["sort", "ordering"], G::View, &[]), StepKind::Order),
@@ -408,6 +410,8 @@ pub struct Ctx<'a> {
     /// The open thread's machine's shells, default first (empty until `terminal/shells`
     /// answers), and whether its terminal panel is open and maximised.
     pub terminal: TerminalCtx<'a>,
+    /// The selected conversation has full-screen tabs to cycle through.
+    pub fullscreen_tabs: bool,
 }
 
 /// The terminal panel's part of [`Ctx`] (P338).
@@ -723,6 +727,7 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
         },
         Cmd::NextTerminal | Cmd::PrevTerminal => when(ctx.terminal.open && ctx.terminal.any, "The terminal panel is closed"),
         Cmd::MaximiseTerminalPanel => when(ctx.terminal.open, "The terminal panel is closed"),
+        Cmd::CycleFullscreenTabs => when(ctx.fullscreen_tabs, "Open the tabs in full screen first"),
         Cmd::ArchiveSelected | Cmd::MuteSelected | Cmd::MoveSelected | Cmd::ClearSelection => when(ctx.list_selected > 0, "Nothing is selected in the sidebar (Ctrl+click rows)"),
         Cmd::Commander
         | Cmd::SearchThreads
@@ -1209,7 +1214,7 @@ pub struct Bindings {
 /// Whether a command's keys reach YAAC while a terminal has focus, by default (P338): only
 /// the terminal commands; everything else (the Commander's Ctrl+Space too) goes to the shell.
 pub fn in_terminal_default(cmd: Cmd) -> bool {
-    matches!(cmd, Cmd::ToggleTerminalPanel | Cmd::NewTerminal | Cmd::MaximiseTerminalPanel | Cmd::NextTerminal | Cmd::PrevTerminal)
+    matches!(cmd, Cmd::ToggleTerminalPanel | Cmd::NewTerminal | Cmd::MaximiseTerminalPanel | Cmd::NextTerminal | Cmd::PrevTerminal | Cmd::CycleFullscreenTabs)
 }
 
 /// The default chords of a command.

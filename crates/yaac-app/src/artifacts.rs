@@ -1,7 +1,7 @@
 //! P358. A card identifies a snapshot on its publisher's target. Its host action starts
 //! only on a click, reads through upload/read, and materializes bytes off the UI thread.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::Write,
     path::Path,
     sync::mpsc,
@@ -31,6 +31,10 @@ impl ArtifactCard {
         )
     }
 
+    pub(crate) fn dismissal_key(&self, viewing: &ThreadKey) -> String {
+        format!("{}:{}", viewing.address(), self.id())
+    }
+
     fn extension(&self) -> Result<&str, String> {
         let ext = self
             .artifact
@@ -40,7 +44,7 @@ impl ArtifactCard {
             .unwrap_or("");
         [
             "docx", "xlsx", "pptx", "csv", "svg", "md", "markdown", "txt", "mmd", "mermaid", "pdf",
-            "png", "jpg", "jpeg", "gif", "webp",
+            "png", "jpg", "jpeg", "gif", "webp", "html", "htm",
         ]
         .into_iter()
         .find(|e| ext.eq_ignore_ascii_case(e))
@@ -63,7 +67,9 @@ impl ArtifactCard {
                     | "jpg"
                     | "jpeg"
                     | "gif"
-                    | "webp")
+                    | "webp"
+                    | "html"
+                    | "htm")
             )
         {
             actions.push((Command::Browser, "Open in integrated browser"));
@@ -71,11 +77,12 @@ impl ArtifactCard {
         if self.artifact.size <= 64 * 1024 && matches!(self.extension(), Ok("mmd" | "mermaid")) {
             actions.push((Command::Diagram, "Preview diagram"));
         }
+        actions.push((Command::Dismiss, "Dismiss"));
         actions
     }
 }
 
-pub(crate) fn cards(state: &AppState, viewing: &ThreadKey) -> Vec<ArtifactCard> {
+pub(crate) fn cards(state: &AppState, viewing: &ThreadKey, dismissed: &BTreeSet<String>) -> Vec<ArtifactCard> {
     state
         .threads
         .iter()
@@ -98,6 +105,7 @@ pub(crate) fn cards(state: &AppState, viewing: &ThreadKey) -> Vec<ArtifactCard> 
                     artifact,
                 })
         })
+        .filter(|card| !dismissed.contains(&card.dismissal_key(viewing)))
         .collect()
 }
 
@@ -107,6 +115,7 @@ pub(crate) enum Command {
     Open,
     Browser,
     Diagram,
+    Dismiss,
 }
 
 struct Transfer {
@@ -223,7 +232,7 @@ impl Artifacts {
             }
             let mut t = self.transfer.take().expect("matched transfer");
             match reply.and_then(|r| {
-                if r.present && (r.size != t.card.artifact.size || r.size > 16 * 1024 * 1024) {
+                if r.present && r.size != t.card.artifact.size {
                     return Err("The snapshot size does not match its card".into());
                 }
                 crate::images::append_chunk(r, &mut t.bytes)
@@ -311,9 +320,8 @@ fn materialize(t: Transfer) -> Result<ResultFile, String> {
         .suffix(&format!(".{suffix}"))
         .tempfile()
         .map_err(|e| e.to_string())?;
-    // CEF's stream handler only sets the MIME type. Mark the temporary text view
-    // as UTF-8 so Chromium does not guess the user's legacy locale encoding.
-    if t.command == Command::Browser && suffix == "txt" && !t.bytes.starts_with(b"\xef\xbb\xbf") {
+    // Mark the browser copy as UTF-8 without changing the downloaded snapshot.
+    if t.command == Command::Browser && matches!(suffix, "txt" | "html" | "htm") && !t.bytes.starts_with(b"\xef\xbb\xbf") {
         file.write_all(b"\xef\xbb\xbf").map_err(|e| e.to_string())?;
     }
     file.write_all(&t.bytes).map_err(|e| e.to_string())?;
@@ -368,6 +376,8 @@ mod tests {
             ("diagram.mmd", 65_536, true, true),
             ("diagram.MERMAID", 65_537, true, false),
             ("report.md", 300, true, false),
+            ("runbook.html", 300, true, false),
+            ("runbook.HTM", 300, true, false),
             ("data.csv", 10, true, false),
             ("plot.SVG", 10, false, false),
             ("report.docx", 100, false, false),

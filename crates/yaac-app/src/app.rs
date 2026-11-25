@@ -290,6 +290,7 @@ pub(crate) struct UiState {
     pub recent: Vec<String>,
     pub(crate) composer_history: Arc<[String]>,
     pub(crate) composer_history_walk: Option<(DraftRef, usize)>,
+    pub(crate) dismissed_artifacts: BTreeSet<String>,
     /// The request card whose button has keyboard focus (set while drawing it).
     pub card_focus: Option<ItemId>,
     /// "Quit YAAC?" is asked (Quit with the tray off).
@@ -402,6 +403,7 @@ impl UiState {
             history: yaac_core::history::History::default(),
             composer_history: Default::default(),
             composer_history_walk: None,
+            dismissed_artifacts: BTreeSet::new(),
             restore: None,
             nav_menu: None,
             nav_sel: 0,
@@ -448,6 +450,7 @@ impl UiState {
             terminal_commands: self.bindings.in_terminal.clone(),
             recent: self.recent.clone(),
             composer_history: self.composer_history.clone(),
+            dismissed_artifacts: self.dismissed_artifacts.clone(),
             terminal: self.terminal,
         }
     }
@@ -475,6 +478,7 @@ impl UiState {
         self.recent = p.recent.clone();
         self.composer_history = p.composer_history.clone();
         self.composer_history_walk = None;
+        self.dismissed_artifacts = p.dismissed_artifacts.clone();
         self.terminal = p.terminal;
     }
 }
@@ -1191,6 +1195,9 @@ impl YaacApp {
     pub(crate) fn apply(&mut self, actions: Vec<Action>) {
         for a in actions {
             match a {
+                Action::Artifact(key, card, crate::artifacts::Command::Dismiss) => {
+                    self.ui.dismissed_artifacts.insert(card.dismissal_key(&key));
+                }
                 Action::Artifact(key, card, command) => self.artifacts.start(&self.ctx, &mut self.client, key, card, command),
                 Action::OpenImage(source, name) => self.images.open(source, name),
                 Action::OlderHistory(k) => self.client.older_history(&k),
@@ -1786,7 +1793,10 @@ impl YaacApp {
 
     /// The keyboard: one dispatcher, through the command table (D131).
     pub(crate) fn keyboard(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        crate::commander::dispatch(self, ctx, actions);
+        crate::preview_ui::switch_keys(self, ctx);
+        if !self.preview_ui.page_focus.is_some_and(|id| ctx.memory(|m| m.has_focus(id))) {
+            crate::commander::dispatch(self, ctx, actions);
+        }
     }
 }
 
@@ -1927,7 +1937,10 @@ impl eframe::App for YaacApp {
         self.preview_ui.sync(&self.browsers, visible.as_ref());
         // Agent browser calls (docs/11-preview.md#agents), on the calling thread's tabs.
         #[cfg(feature = "preview")]
-        self.preview_ui.pump(&mut self.browsers, visible.as_ref(), ctx);
+        {
+            self.preview_ui.pump(&mut self.browsers, &mut self.client, visible.as_ref(), ctx);
+            if let Some(wait) = self.browsers.browser_retry(std::time::Instant::now()) { ctx.request_repaint_after(wait); }
+        }
         #[cfg(feature = "preview")]
         let next = self.browser_agent.step(&mut self.client, &mut self.browsers, &mut self.preview_ui, std::time::Instant::now());
         #[cfg(not(feature = "preview"))]
@@ -1979,7 +1992,7 @@ impl eframe::App for YaacApp {
             if escape {
                 self.ui.ultrafast_confirm = None;
             }
-        } else if !self.images.is_open() && !self.preview_ui.page_focus.is_some_and(|id| ctx.memory(|m| m.has_focus(id))) {
+        } else if !self.images.is_open() {
             self.keyboard(&ctx, &mut actions);
         }
         let map = AttentionMap::compute(&self.client.state);

@@ -12,6 +12,8 @@ public partial class MainWindow
 {
     private string browserThread = "";
     private string? browserDragThread;
+    private bool browserCanSwitchTabs;
+    private ModifierKeys? tabSwitchModifiers;
 
     private void InitializeBrowser()
     {
@@ -22,6 +24,12 @@ public partial class MainWindow
         BrowserPane.Command += Send;
         BrowserPane.ComposerCaret = () => ComposerPane.CaretIndex;
         DpiChanged += (_, _) => Dispatcher.BeginInvoke(DispatcherPriority.Loaded, BrowserPane.UpdateViewport);
+        Deactivated += (_, _) => FinishTabSwitch(false);
+        PreviewKeyUp += (_, _) =>
+        {
+            if (tabSwitchModifiers is { } held && (Keyboard.Modifiers & held) != held)
+                FinishTabSwitch(true);
+        };
     }
 
     private void CaptionAddClicked(object sender, RoutedEventArgs e) => BrowserPane.OpenAddMenu(CaptionAddPane);
@@ -29,13 +37,20 @@ public partial class MainWindow
     private void RenderBrowser(JsonElement state)
     {
         var thread = Text(state, "thread");
-        if (browserThread != thread) browserDragThread = null;
+        if (browserThread != thread)
+        {
+            browserDragThread = null;
+            tabSwitchModifiers = null;
+        }
         browserThread = thread;
         // Side pane tabs belong to a thread: without one open there is nothing to add a tab to.
         CaptionAddPane.Visibility = string.IsNullOrEmpty(thread) ? Visibility.Collapsed : Visibility.Visible;
         BrowserExternalFallback.Visibility = Flag(state, "external") ? Visibility.Visible : Visibility.Collapsed;
         var active = state.Value("active").ValueKind == JsonValueKind.Number;
         var full = active && Flag(state, "fullScreen");
+        browserCanSwitchTabs = full && state.Value("tabs").Elements().Any();
+        if (!browserCanSwitchTabs) tabSwitchModifiers = null;
+        RenderTabSwitcher(state.Value("tabSwitcher"));
         BrowserPane.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
         bool showChatTab = full && Flag(state, "chat");
         if (showChatTab && ThreadColumns.Children.Contains(ChatRegion))
@@ -62,6 +77,45 @@ public partial class MainWindow
         UpdateDockLayout();
         BrowserPane.Render(state);
         RenderTerminalPanel(state);
+    }
+
+    private bool CycleFullscreenTabs(string key, ModifierKeys modifiers, bool repeat)
+    {
+        if (!browserCanSwitchTabs || settingsOpen || SettingsPane.IsRecordingShortcut || CommanderOverlay.IsVisible
+            || (dialog?.IsVisible ?? false)) return false;
+        if (key == "Escape" && tabSwitchModifiers.HasValue)
+        {
+            FinishTabSwitch(false);
+            return true;
+        }
+        if (!shortcuts.TryGetValue((key, modifiers), out var shortcut) || shortcut.Id != "cycle-fullscreen-tabs") return false;
+        if (TerminalFocused ? !shortcut.InTerminal : Keyboard.FocusedElement is (TextBoxBase or PasswordBox) && !shortcut.InText) return false;
+        if (repeat) return true;
+        tabSwitchModifiers = modifiers;
+        Send("browser.switchTab", new { thread = browserThread, mode = "cycle" });
+        if (modifiers == ModifierKeys.None) FinishTabSwitch(true);
+        return true;
+    }
+
+    private void FinishTabSwitch(bool activate)
+    {
+        if (!tabSwitchModifiers.HasValue) return;
+        tabSwitchModifiers = null;
+        TabSwitchOverlay.Visibility = Visibility.Collapsed;
+        Send("browser.switchTab", new { thread = browserThread, mode = activate ? "commit" : "cancel" });
+    }
+
+    private void RenderTabSwitcher(JsonElement state)
+    {
+        if (!tabSwitchModifiers.HasValue || state.ValueKind != JsonValueKind.Object)
+        {
+            TabSwitchOverlay.Visibility = Visibility.Collapsed;
+            return;
+        }
+        TabSwitchRows.ItemsSource = state.Value("tabs").Elements().Select(item => item.Text()).ToArray();
+        TabSwitchRows.SelectedIndex = state.GetProperty("index").GetInt32();
+        TabSwitchOverlay.Visibility = Visibility.Visible;
+        if (TabSwitchRows.SelectedItem is { } selected) TabSwitchRows.ScrollIntoView(selected);
     }
 
     private void BrowserExternalClicked(object sender, RoutedEventArgs e)

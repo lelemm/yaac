@@ -910,8 +910,8 @@ and project files. Supply a path relative to the calling thread's working direct
 The confined worktree reader takes a snapshot and the target upload store keeps its bytes.
 DOCX, XLSX and PPTX require a matching Office package and exclude macro-enabled documents.
 SVG must begin with an SVG root. PDF, PNG, JPEG, GIF and WebP require matching signatures.
-Markdown, CSV, plain text and Mermaid
-(`.mmd`, `.mermaid`) require UTF-8 text. Each file must be nonempty and at most 16 MiB.
+HTML (`.html`, `.htm`), Markdown, CSV, plain text and Mermaid
+(`.mmd`, `.mermaid`) require UTF-8 text. Each file must be nonempty and at most 64 MiB.
 
 The thread index carries the card metadata (up to 32 distinct snapshots per thread). Presenting
 identical content with the same extension in the same thread returns its existing card. The
@@ -919,6 +919,9 @@ window uses the cached parent graph to display each published card at the end of
 and each listed ancestor's transcript, above pinned worker requests. Copies name their originating thread and target.
 After reconnect the same identities are available from the index. **Download…** asks for a
 host destination. **Open** uses the host's associated viewer. When the browser runtime and
-target support integrated browsing, **Open in integrated browser** serves text documents, PDF
-and raster images from an isolated tab origin. SVG and Office documents use Download or Open. File actions fetch and verify the published
-bytes through the originating target's existing connection.
+target support integrated browsing, **Open in integrated browser** serves text documents,
+HTML, PDF and raster images from an isolated tab origin. HTML is rendered as a standalone
+document with inline CSS and embedded data images. SVG and Office documents use Download
+or Open. File actions fetch and verify the published bytes in ranges through the originating
+target's existing connection. **Dismiss** hides the card in the current conversation and
+remembers that choice on this host. Worker and ancestor copies can be dismissed independently.

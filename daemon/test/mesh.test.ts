@@ -64,7 +64,7 @@ test("the fake provider declares meshTools once the mesh is attached", async () 
   }
 });
 
-test("present_artifact validates Office, SVG, CSV and Mermaid formats", () => {
+test("present_artifact validates Office, SVG, HTML, CSV and Mermaid formats", () => {
   for (const [ext, part, main] of [
     ["docx", "word/document.xml", "wordprocessingml.document"],
     ["xlsx", "xl/workbook.xml", "spreadsheetml.sheet"],
@@ -79,6 +79,10 @@ test("present_artifact validates Office, SVG, CSV and Mermaid formats", () => {
   assert.equal(artifactFormat("svg", Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'), null), "image/svg+xml");
   assert.throws(() => artifactFormat("svg", Buffer.from("<html/>"), null));
   assert.equal(artifactFormat("csv", Buffer.from("x,y"), null), "text/csv");
+  for (const ext of ["html", "htm"]) {
+    assert.equal(artifactFormat(ext, Buffer.from("<!doctype html><h1>Guia de operação</h1>"), null), "text/html");
+    assert.throws(() => artifactFormat(ext, Buffer.from([255]), null));
+  }
   assert.equal(artifactFormat("mermaid", Buffer.from("graph TD"), null), "text/plain");
   assert.throws(() => artifactFormat("mmd", Buffer.from([255]), null));
 });
@@ -101,6 +105,25 @@ test("present_artifact snapshots a confined document once and rejects invalid fi
     assert.equal(cards[0]!.title, "My report");
     const bytes = await c.request("upload/read", { uploadId: cards[0]!.uploadId, offset: 0, maxBytes: 64 });
     assert.equal(Buffer.from(bytes.dataBase64, "base64").toString(), "# Original");
+    const html = "<!doctype html><title>Runbook</title><h1>Rotação</h1>";
+    fs.writeFileSync(cwd + "/runbook.html", html);
+    assert.ok(!(await publish("runbook.html")).isError);
+    const pdfSize = 17 * 1024 * 1024;
+    const pdfPath = cwd + "/large.pdf";
+    fs.writeFileSync(pdfPath, "%PDF-1.7\n");
+    fs.truncateSync(pdfPath, pdfSize);
+    assert.ok(!(await publish("large.pdf")).isError);
+    const published = d.core.summaryOf(d.core.thread(id)!).artifacts!;
+    const htmlRead = await c.request("upload/read", { uploadId: published[1]!.uploadId, offset: 0, maxBytes: 128 });
+    assert.equal(htmlRead.mediaType, "text/html");
+    assert.equal(Buffer.from(htmlRead.dataBase64, "base64").toString(), html);
+    assert.equal(published[2]!.size, pdfSize);
+    const pdfHead = await c.request("upload/read", { uploadId: published[2]!.uploadId, offset: 0, maxBytes: 64 });
+    assert.equal(pdfHead.mediaType, "application/pdf");
+    assert.equal(pdfHead.more, true);
+    const pdfTail = await c.request("upload/read", { uploadId: published[2]!.uploadId, offset: pdfSize - 64, maxBytes: 64 });
+    assert.equal(pdfTail.more, false);
+    assert.equal(Buffer.from(pdfTail.dataBase64, "base64").length, 64);
     fs.writeFileSync(cwd + "/script.js", "alert(1)");
     fs.writeFileSync(cwd + "/fake.png", "plain text");
     assert.ok((await publish("script.js")).isError);
@@ -115,7 +138,7 @@ test("present_artifact snapshots a confined document once and rejects invalid fi
     await d.stop("test restart");
     d = await startDaemon(home, { mesh: MESH_OPTS });
     c = await client(d);
-    assert.deepEqual(d.core.summaryOf(d.core.thread(id)!).artifacts, cards);
+    assert.deepEqual(d.core.summaryOf(d.core.thread(id)!).artifacts, published);
     const restored = await c.request("upload/read", { uploadId: cards[0]!.uploadId, offset: 2, maxBytes: 4 });
     assert.equal(Buffer.from(restored.dataBase64, "base64").toString(), "Orig");
   } finally {

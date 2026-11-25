@@ -69,6 +69,13 @@ public partial class BrowserView
             {
                 case "DismissMenu": dismissHostMenu?.Invoke(); break;
                 case "DismissDialog": dismissHostDialog?.Invoke(); break;
+                case "Restarted":
+                    popupBounds = null;
+                    compositionCaret = null;
+                    viewport = null;
+                    UpdateViewport();
+                    if (PageInput.IsKeyboardFocusWithin) SendInput(new { Focus = true });
+                    break;
             }
             return;
         }
@@ -223,6 +230,11 @@ public partial class BrowserView
             if (pageMenu != menu) return;
             pageMenu = null;
             dismissHostMenu = null;
+            Dispatcher.BeginInvoke(DispatcherPriority.Input, () =>
+            {
+                if (thread == menuThread && active == tab && pageMenu is null && !PageInput.IsKeyboardFocusWithin)
+                    SendInput(new { Focus = false });
+            });
         };
         pageMenu = menu;
         dismissHostMenu = () => { answered = true; menu.IsOpen = false; };

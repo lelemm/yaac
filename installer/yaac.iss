@@ -12,7 +12,7 @@
 ;   this script, so the two cannot disagree;
 ; - uninstalling keeps the user's settings and data unless asked (/REMOVEDATA=yes when silent);
 ; - /RELAUNCH starts the installed yaac.exe when setup finishes, even when silent: the in-app
-;   updater runs `setup /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH` (docs/install.md).
+;   updater runs `setup /SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH` (docs/install.md).
 
 #ifndef AppVersion
   #error Pass /DAppVersion=<version> (scripts/build-installer.sh does)

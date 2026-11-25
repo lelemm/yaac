@@ -72,6 +72,8 @@ pub struct UiPrefs {
     pub recent: Vec<String>,
     /// Recent composer messages, newest first.
     pub composer_history: std::sync::Arc<[String]>,
+    /// File cards dismissed in this window profile, scoped to the conversation showing them.
+    pub dismissed_artifacts: BTreeSet<String>,
     /// Settings → Terminal (P339) and the terminal panel's height (P338).
     pub terminal: TerminalPrefs,
 }
@@ -110,7 +112,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), composer_history: Default::default(), terminal: TerminalPrefs::default() }
+        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), composer_history: Default::default(), dismissed_artifacts: BTreeSet::new(), terminal: TerminalPrefs::default() }
     }
 }
 
@@ -146,6 +148,8 @@ pub mod keys {
     pub const COMMANDER_RECENT: &str = "commanderRecent";
     /// Recently submitted message drafts.
     pub const COMPOSER_HISTORY: &str = "composerHistory";
+    /// Dismissed generated-file cards.
+    pub const DISMISSED_ARTIFACTS: &str = "dismissedArtifacts";
     /// Side-by-side layout in diff tabs.
     pub const DIFF_SIDE_BY_SIDE: &str = "diffSideBySide";
     /// Settings → Terminal and the panel's height (P338, P339).
@@ -153,7 +157,7 @@ pub mod keys {
     /// Commands whose "Works in the terminal" differs from the default (P338).
     pub const TERMINAL_COMMANDS: &str = "terminalCommands";
     /// Every key.
-    pub const ALL: [&str; 18] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, PILL_POSITION, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS, COMPOSER_HISTORY];
+    pub const ALL: [&str; 19] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, PILL_POSITION, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS, COMPOSER_HISTORY, DISMISSED_ARTIFACTS];
 }
 
 impl UiPrefs {
@@ -199,6 +203,7 @@ impl UiPrefs {
                 "panelShare": self.terminal.panel_share,
             }),
             keys::COMMANDER_RECENT => json!(self.recent),
+            keys::DISMISSED_ARTIFACTS => json!(self.dismissed_artifacts),
             keys::COMPOSER_HISTORY => {
                 // The attach frame also carries the method and request id. Keep the newest
                 // whole messages when unusually large drafts would exceed that frame.
@@ -274,6 +279,11 @@ impl UiPrefs {
                     self.composer_history = list.iter().filter_map(Value::as_str)
                         .filter(|text| !text.trim().is_empty()).take(crate::compose::MESSAGE_HISTORY_LIMIT)
                         .map(str::to_owned).collect::<Vec<_>>().into();
+                }
+            }
+            keys::DISMISSED_ARTIFACTS => {
+                if let Ok(dismissed) = serde_json::from_value(v.clone()) {
+                    self.dismissed_artifacts = dismissed;
                 }
             }
             keys::THEME => {

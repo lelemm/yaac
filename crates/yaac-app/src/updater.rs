@@ -10,7 +10,7 @@
 //! - **On request**, on a worker thread: the installer is downloaded into the updates folder,
 //!   its size and SHA-256 checked against the manifest, and only then `pending.json` written
 //!   ([`download`]).
-//! - **"Restart to update"**: the installer runs silently with `/RELAUNCH` ([`run_installer`])
+//! - **"Restart to update"**: the installer shows progress and runs with `/RELAUNCH` ([`run_installer`])
 //!   and the window quits; the installer stops the window and the hub itself (`yaac quit`),
 //!   starts the hub again, and then starts YAAC.
 //!
@@ -274,13 +274,13 @@ pub(crate) fn download(cfg: &Config, found: &Found, progress: &mut dyn FnMut(u64
     result
 }
 
-/// Starts the installer silently, to start YAAC again when it is done (`/RELAUNCH`), and
+/// Starts the installer with visible progress, to start YAAC again when it is done (`/RELAUNCH`), and
 /// returns at once. It is marked attempted first, so a failed install is never run again.
 pub(crate) fn run_installer(dir: &Path, p: &Pending) -> Result<(), String> {
     write_pending(dir, &Pending { attempted: true, ..p.clone() }).map_err(|e| format!("cannot write {PENDING}: {e}"))?;
     let log = format!("/LOG={}", dir.join(INSTALL_LOG).display());
     let mut cmd = std::process::Command::new(&p.path);
-    cmd.args(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/RELAUNCH", &log]).current_dir(dir);
+    cmd.args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/RELAUNCH", &log]).current_dir(dir);
     #[cfg(windows)]
     {
         // Out of the window's job when the job allows it: the installer outlives this window.

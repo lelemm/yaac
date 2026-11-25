@@ -652,7 +652,7 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
     }
     // The same room under the last block whatever it is, so the newest line does not move
     // when a message (with its time line, D154) gives way to an activity line.
-    let cards = crate::artifacts::cards(state, key);
+    let cards = crate::artifacts::cards(state, key, &app.ui.dismissed_artifacts);
     let artifact_browser = !cards.is_empty() && app.browsers.reason(&app.client, Some(key)).is_none();
     // Keep waiting worker requests visible at the end (P354).
     let insertion = bl.iter().rposition(|b| !matches!(b, Block::Copy { .. })).map_or(0, |i| i + 1);
@@ -2092,7 +2092,7 @@ mod tests {
         let map = AttentionMap::compute(&app.client.state);
         let mut out = ctx.run_ui(input, |ui| transcript(ui, &mut app, &map, &key, 0, &mut Vec::new()));
         out.textures_delta.clear();
-        for label in ["Generated report", "Download…", "Open"] {
+        for label in ["Generated report", "Download…", "Open", "Dismiss"] {
             assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(line) if line.galley.text() == label)), "{label}");
         }
         assert!(!app.demo.as_ref().unwrap().requests().iter().any(|(_, method, _)| method == "upload/read"));

@@ -20,6 +20,7 @@ pub(crate) struct Renderer {
     pub(crate) focus_address: Option<u64>,
     pub(crate) page_focus: Option<egui::Id>,
     pub(crate) file_focus: Option<egui::Id>,
+    switch_hold: Option<yaac_core::keys::Chord>,
     edits: std::collections::HashMap<u64, String>,
     pub(crate) external_address: String,
     /// Demo screenshots: a drawn stand-in for pages the build cannot render.
@@ -69,7 +70,7 @@ impl Renderer {
 impl Renderer {
     /// Start ready tabs that are not drawn (an agent's tab, or a tab of another thread)
     /// hidden, and keep the state of pages that are not drawn current in the controller.
-    pub(crate) fn pump(&mut self, browsers: &mut Browsers, visible: Option<&ThreadKey>, ctx: &egui::Context) {
+    pub(crate) fn pump(&mut self, browsers: &mut Browsers, client: &mut yaac_core::client::Client, visible: Option<&ThreadKey>, ctx: &egui::Context) {
         let active = visible
             .and_then(|k| browsers.areas.get(k))
             .filter(|a| !(a.full_screen && a.chat))
@@ -90,11 +91,20 @@ impl Renderer {
                 }
                 self.pages.insert(id, page);
             }
-            if Some(id) == active {
+            let Some(p) = self.pages.get_mut(&id) else { continue };
+            p.pump(ctx);
+            for link in std::mem::take(&mut p.external_links) {
+                browsers.external_link(client, &key, &link);
+            }
+            if let Some(error) = p.host_exit.take() {
+                if !p.state.url.is_empty() && let Some(tab) = browsers.tab_mut(&key, id) {
+                    tab.url.clone_from(&p.state.url);
+                }
+                self.pages.remove(&id);
+                browsers.restart_browser_tab(&key, id, error, std::time::Instant::now());
                 continue;
             }
-            if let (Some(p), Some(tab)) = (self.pages.get_mut(&id), browsers.tab_mut(&key, id)) {
-                p.pump(ctx);
+            if Some(id) != active && let Some(tab) = browsers.tab_mut(&key, id) {
                 tab.url.clone_from(&p.state.url);
                 tab.title.clone_from(&p.state.title);
                 tab.loading = p.state.loading;
@@ -132,6 +142,88 @@ const TAB_MAX: f32 = 200.;
 /// The chat column's minimum width beside the pane (P314), and the pane's.
 pub(crate) const CHAT_MIN: f32 = 360.;
 const PANE_MIN: f32 = 280.;
+
+/// Consume the configured switcher chord before the focused pane handles its own keys.
+pub(crate) fn switch_keys(app: &mut YaacApp, ctx: &egui::Context) {
+    use yaac_core::commands::Cmd::CycleFullscreenTabs;
+    let key = app.client.state.selected_thread().filter(|key| {
+        !app.ui.settings && app.ui.commander.is_none() && app.browsers.can_switch_tabs(key)
+    }).cloned();
+    let focused = ctx.input(|i| i.focused);
+    let key = key.filter(|_| focused);
+    app.browsers.retain_tab_switch(key.as_ref());
+    let Some(key) = key else {
+        app.preview_ui.switch_hold = None;
+        return;
+    };
+    let bindings = &app.ui.bindings;
+    let focused_terminal = crate::terminal_ui::focused(ctx);
+    let focused_text = ctx.text_edit_focused();
+    let mut hits = Vec::new();
+    let mut cancelled = false;
+    let switching = app.browsers.switch_tab_index(&key).is_some();
+    let modifiers = ctx.input_mut(|input| {
+        input.events.retain(|event| {
+            let egui::Event::Key { key, pressed: true, repeat, modifiers, .. } = event else { return true };
+            if switching && *key == egui::Key::Escape {
+                cancelled = true;
+                return false;
+            }
+            let chord = crate::commander::chord_of(*key, *modifiers);
+            if bindings.resolve(&chord) != Some(CycleFullscreenTabs)
+                || (focused_terminal && !bindings.works_in_terminal(CycleFullscreenTabs))
+                || (focused_text && !focused_terminal && !chord.works_in_text()) {
+                return true;
+            }
+            if !repeat { hits.push(chord); }
+            false
+        });
+        input.modifiers
+    });
+    if cancelled {
+        app.browsers.finish_tab_switch(&key, false);
+        app.preview_ui.switch_hold = None;
+        return;
+    }
+    for chord in hits {
+        app.browsers.cycle_tab(&key);
+        app.preview_ui.switch_hold = Some(chord);
+    }
+    let held = app.preview_ui.switch_hold.as_ref().is_some_and(|chord| {
+        (chord.ctrl || chord.shift || chord.alt)
+            && (!chord.ctrl || modifiers.ctrl || modifiers.command)
+            && (!chord.shift || modifiers.shift)
+            && (!chord.alt || modifiers.alt)
+    });
+    if !held {
+        app.browsers.finish_tab_switch(&key, true);
+        app.preview_ui.switch_hold = None;
+    }
+}
+
+fn tab_switch_overlay(ctx: &egui::Context, app: &YaacApp, key: &ThreadKey) {
+    let Some(selected) = app.browsers.switch_tab_index(key) else { return };
+    let area = &app.browsers.areas[key];
+    let titles = std::iter::once("Chat".to_owned()).chain(area.tabs.iter().map(|tab| tab_info(app, area, tab).title));
+    egui::Area::new(egui::Id::unique("full-screen-tab-switcher"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_width(340.0);
+                egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                    for (index, title) in titles.enumerate() {
+                        let row = egui::Frame::NONE.fill(if index == selected { app.p.selected } else { egui::Color32::TRANSPARENT })
+                            .corner_radius(4).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.add(egui::Label::new(title).truncate());
+                            });
+                        if index == selected { row.response.scroll_to_me(None); }
+                    }
+                });
+            });
+        });
+}
 
 /// Draw the side pane and return the chat rectangle: the left of the split, the area under
 /// the strip when the full-screen **Chat** tab is shown, or None when another tab fills it.
@@ -189,6 +281,7 @@ pub(crate) fn layout(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
         ui.ctx().request_repaint();
     }
     let below = egui::Rect::from_min_max(egui::pos2(pane.left(), strip.bottom()), pane.max);
+    tab_switch_overlay(ui.ctx(), app, key);
     if area.full_screen && area.chat {
         return Some(below);
     }

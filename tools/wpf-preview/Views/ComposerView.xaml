@@ -6,6 +6,13 @@
              Visibility="Collapsed"
              Loaded="ComposerLoaded" Unloaded="ComposerUnloaded">
   <UserControl.Resources>
+    <DataTemplate x:Key="PermissionWarningLabel">
+      <StackPanel Orientation="Horizontal">
+        <Path Data="F0 M7,0 L14,12 0,12 Z M6.3,4 H7.7 V7.5 H6.3 Z M6.3,8.7 H7.7 V10.1 H6.3 Z"
+              Fill="{DynamicResource YaacFailure}" VerticalAlignment="Center" Margin="0,0,5,0" />
+        <TextBlock Text="{Binding}" VerticalAlignment="Center" />
+      </StackPanel>
+    </DataTemplate>
 
     <Style x:Key="ComposerButton" TargetType="Button" BasedOn="{StaticResource YaacButtonBase}">
       <Setter Property="Padding" Value="8,3" />

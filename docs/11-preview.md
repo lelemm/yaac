@@ -108,7 +108,8 @@ The Rust window controller keeps the tab list, active tab, split ratio, and full
   **Full screen**.
 - **Full screen** hides the chat: the browser takes the whole container (the sidebar and title
   bar stay). The button becomes **Restore**, which brings the split back at the width it had.
-  Esc does not leave full screen — the page may need Esc; Restore does.
+  Hold Ctrl and press Tab to highlight the next tab in the full-screen switcher. Releasing Ctrl
+  selects it. Escape closes the switcher and keeps the current tab. The binding is in Settings.
 - A new tab with no address shows the thread target's **discovered ports** (below) as a list to
   pick from, and the address field.
 - `localhost`, `127.0.0.1` and `[::1]` in a tab mean **the thread's target**, never the host:
@@ -117,6 +118,8 @@ The Rust window controller keeps the tab list, active tab, split ratio, and full
   its shell on that target cannot already reach.
 - A tab driven by an agent shows a small agent mark (the harness logo) beside its title while
   the agent acts on it.
+- Ctrl-clicking an HTTP or HTTPS link opens it in the UI host's default browser. Loopback links
+  use the target's existing forward. The page's context menu follows the host UI theme.
 
 ### Ports
 
@@ -132,9 +135,10 @@ DevTools open in their own top-level window: F12 in a tab, **Inspect** in the to
 
 ### Without the browser host
 
-In a build without the `preview` feature, or when the browser host cannot start (no CEF runtime,
-a crash), **Browser** in the + menu is shown disabled with the reason, and **Open in browser**
-— a forward in the host's default browser — is the way to see a target's server.
+When the browser host exits unexpectedly, the window starts a fresh host and reloads each open
+tab at its last address. The browser retries with an increasing delay if the host keeps exiting.
+In a build without the `preview` feature or CEF runtime, **Browser** in the + menu is disabled.
+**Open in browser** can still forward a target server to the host's default browser.
 
 ## Agents
 

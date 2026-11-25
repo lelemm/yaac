@@ -251,7 +251,8 @@ draft. Moving a new-thread draft to a project on another target uploads every ch
 
 A published artifact card shows a snapshot from the agent's working directory. The thread
 record keeps its name and upload ID. Download and Open read the snapshot from the originating
-target's private upload store. Removing or editing the working file leaves the snapshot intact.
+target's private upload store. **Dismiss** hides the card in that conversation on the host.
+Removing or editing the working file leaves the snapshot intact.
 If the target's temporary store was cleaned, the card reports the missing bytes on the next
 attempt. The agent can publish the same file again to restore that snapshot. See the
 [supported formats and worker card behavior](10-agent-mesh.md#presenting-generated-files-p358-proposed).

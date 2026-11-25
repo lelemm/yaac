@@ -91,6 +91,7 @@ pub enum Event {
         filters: Vec<String>,
     },
     Url(String),
+    ExternalLink(String),
     Title(String),
     Loading {
         busy: bool,

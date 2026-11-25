@@ -32,6 +32,12 @@ pub(crate) struct BrowserTab {
     snapshot: Option<std::path::PathBuf>,
     socks: Option<u16>,
     started: bool,
+    #[cfg(feature = "preview")]
+    retry_at: Option<Instant>,
+    #[cfg(feature = "preview")]
+    pub(crate) retry_delay: Option<Duration>,
+    #[cfg(feature = "preview")]
+    started_at: Option<Instant>,
 }
 
 impl BrowserTab {
@@ -105,6 +111,7 @@ pub(crate) struct Browsers {
     pub(crate) pending: HashMap<RpcId, Pending>,
     /// Terminal sessions: side-pane Terminal tabs and the panel under the composer.
     pub(crate) terms: crate::terminal::Terminals,
+    tab_switch: Option<(ThreadKey, usize)>,
     next: u64,
     #[cfg(feature = "preview")]
     host: yaac_preview::BrowserHost,
@@ -126,6 +133,9 @@ pub(crate) fn address(input: &str) -> Result<Url, String> {
         format!("http://{s}")
     };
     let url = Url::parse(&s).map_err(|e| e.to_string())?;
+    if url.scheme() == "file" {
+        return Err("Enter an HTTP or HTTPS address. For generated HTML, open its file card or create one with present_artifact.".into());
+    }
     if !matches!(url.scheme(), "http" | "https")
         || url.host().is_none()
         || !url.username().is_empty()
@@ -301,6 +311,7 @@ impl Browsers {
     /// Full screen on or off. Opening it keeps the tab that was active; Restore goes back to
     /// the split with the last non-chat tab on the right.
     pub(crate) fn set_full_screen(&mut self, key: &ThreadKey, on: bool) {
+        self.finish_tab_switch(key, false);
         if let Some(area) = self.areas.get_mut(key) {
             area.full_screen = on;
             area.chat = false;
@@ -309,6 +320,7 @@ impl Browsers {
 
     /// Show a pane tab (leaving the Chat tab in full screen).
     pub(crate) fn select(&mut self, key: &ThreadKey, id: u64) {
+        self.finish_tab_switch(key, false);
         if let Some(area) = self.areas.get_mut(key)
             && area.tabs.iter().any(|t| t.id == id)
         {
@@ -319,8 +331,44 @@ impl Browsers {
 
     /// Show the pinned Chat tab; only in full screen (in the split the chat is always shown).
     pub(crate) fn select_chat(&mut self, key: &ThreadKey) {
+        self.finish_tab_switch(key, false);
         if let Some(area) = self.areas.get_mut(key).filter(|a| a.full_screen) {
             area.chat = true;
+        }
+    }
+
+    pub(crate) fn can_switch_tabs(&self, key: &ThreadKey) -> bool {
+        self.areas.get(key).is_some_and(|a| a.full_screen && !a.tabs.is_empty())
+    }
+
+    pub(crate) fn cycle_tab(&mut self, key: &ThreadKey) -> bool {
+        let Some(area) = self.areas.get(key).filter(|a| a.full_screen && !a.tabs.is_empty()) else { return false };
+        let current = self.switch_tab_index(key).unwrap_or_else(|| {
+            if area.chat { 0 } else { area.tabs.iter().position(|tab| tab.id == area.active).map_or(0, |i| i + 1) }
+        });
+        self.tab_switch = Some((key.clone(), (current + 1) % (area.tabs.len() + 1)));
+        true
+    }
+
+    pub(crate) fn switch_tab_index(&self, key: &ThreadKey) -> Option<usize> {
+        self.tab_switch.as_ref().filter(|(thread, _)| thread == key).map(|(_, index)| *index)
+    }
+
+    pub(crate) fn retain_tab_switch(&mut self, key: Option<&ThreadKey>) {
+        if self.tab_switch.as_ref().is_some_and(|(thread, _)| Some(thread) != key || !self.can_switch_tabs(thread)) {
+            self.tab_switch = None;
+        }
+    }
+
+    pub(crate) fn finish_tab_switch(&mut self, key: &ThreadKey, activate: bool) {
+        let Some(index) = self.switch_tab_index(key) else { return };
+        self.tab_switch = None;
+        if activate && self.can_switch_tabs(key) {
+            if index == 0 {
+                self.select_chat(key);
+            } else if let Some(tab) = self.areas[key].tabs.get(index - 1) {
+                self.select(key, tab.id);
+            }
         }
     }
 
@@ -343,6 +391,7 @@ impl Browsers {
     }
 
     pub(crate) fn close(&mut self, key: &ThreadKey, id: u64) {
+        self.finish_tab_switch(key, false);
         let Some(area) = self.areas.get_mut(key) else {
             return;
         };
@@ -407,11 +456,36 @@ impl Browsers {
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Option<yaac_preview::Tab> {
         let tab = self.tab_mut(key, id)?;
-        let socks = tab.socks.take()?;
+        let now = Instant::now();
+        if tab.started || tab.retry_at.is_some_and(|retry| retry > now) { return None; }
+        let socks = tab.socks?;
         tab.started = true;
+        tab.retry_at = None;
+        tab.started_at = Some(now);
+        tab.error = None;
         let url = tab.url.clone();
-        let snapshot = tab.snapshot.take();
+        let snapshot = tab.snapshot.clone();
         Some(self.host.open_document(&url, Some(socks), snapshot, wake))
+    }
+
+    #[cfg(feature = "preview")]
+    pub(crate) fn restart_browser_tab(&mut self, key: &ThreadKey, id: u64, error: String, now: Instant) {
+        let Some(tab) = self.tab_mut(key, id) else { return };
+        let stable = tab.started_at.is_some_and(|opened| now.saturating_duration_since(opened) >= Duration::from_secs(30));
+        let delay = tab.retry_delay.filter(|_| !stable).map_or(Duration::from_millis(250), |last| (last * 2).min(Duration::from_secs(10)));
+        tab.started = false;
+        tab.loading = true;
+        tab.back = false;
+        tab.forward = false;
+        tab.retry_delay = Some(delay);
+        tab.retry_at = Some(now + delay);
+        tab.error = Some(format!("Restarting the browser · {error}"));
+    }
+
+    #[cfg(feature = "preview")]
+    pub(crate) fn browser_retry(&self, now: Instant) -> Option<Duration> {
+        self.areas.values().flat_map(|area| &area.tabs).filter_map(|tab| tab.retry_at)
+            .min().map(|retry| retry.saturating_duration_since(now))
     }
 
     pub(crate) fn external(
@@ -431,6 +505,23 @@ impl Browsers {
         input: &str,
     ) -> Result<(), String> {
         self.forward(client, key, 0, input)
+    }
+
+    #[cfg(feature = "preview")]
+    pub(crate) fn external_link(&mut self, client: &mut Client, key: &ThreadKey, input: &str) {
+        let Ok(url) = Url::parse(input) else { return };
+        if !matches!(url.scheme(), "http" | "https") { return; }
+        let target_local = match url.host() {
+            Some(url::Host::Domain(name)) => name == "localhost" || name.ends_with(".localhost"),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_unspecified(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback() || ip.is_unspecified(),
+            None => false,
+        };
+        if target_local {
+            if let Err(error) = self.external_address(client, key, url.as_str()) { self.notice = Some(error); }
+        } else {
+            crate::browser::open(url.as_str());
+        }
     }
 
     fn forward(
@@ -625,6 +716,54 @@ mod tests {
         browsers.close(&a, first);
         assert!(!browsers.areas.contains_key(&a));
         assert_eq!(browsers.areas[&b].tabs.len(), 1);
+    }
+
+    #[test]
+    fn full_screen_switcher_keeps_the_current_tab_until_confirmation() {
+        let mut browsers = Browsers::default();
+        let key = ThreadKey::new("local", "chat");
+        let first = browsers.insert(&key);
+        let second = browsers.insert(&key);
+        browsers.select(&key, first);
+        assert!(!browsers.cycle_tab(&key));
+
+        browsers.set_full_screen(&key, true);
+        assert!(browsers.cycle_tab(&key));
+        assert_eq!(browsers.switch_tab_index(&key), Some(2));
+        assert_eq!(browsers.areas[&key].active, first);
+        browsers.finish_tab_switch(&key, false);
+        assert_eq!(browsers.areas[&key].active, first);
+
+        browsers.cycle_tab(&key);
+        browsers.finish_tab_switch(&key, true);
+        assert_eq!(browsers.areas[&key].active, second);
+        browsers.cycle_tab(&key);
+        browsers.finish_tab_switch(&key, true);
+        assert!(browsers.areas[&key].chat);
+    }
+
+    #[cfg(feature = "preview")]
+    #[test]
+    fn browser_host_exit_preserves_the_tab_and_backs_off() {
+        let mut browsers = Browsers::default();
+        let key = ThreadKey::new("local", "chat");
+        let id = browsers.insert(&key);
+        let now = Instant::now();
+        let tab = browsers.tab_mut(&key, id).unwrap();
+        tab.url = "http://localhost:5173/report".into();
+        tab.socks = Some(12000);
+        tab.started = true;
+        tab.started_at = Some(now);
+
+        browsers.restart_browser_tab(&key, id, "crash".into(), now);
+        let tab = browsers.tab(&key, id).unwrap();
+        assert_eq!(tab.url, "http://localhost:5173/report");
+        assert_eq!(tab.socks, Some(12000));
+        assert!(!tab.started);
+        assert_eq!(browsers.browser_retry(now), Some(Duration::from_millis(250)));
+
+        browsers.restart_browser_tab(&key, id, "crash again".into(), now);
+        assert_eq!(browsers.browser_retry(now), Some(Duration::from_millis(500)));
     }
 
     #[test]

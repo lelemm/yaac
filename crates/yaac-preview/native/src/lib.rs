@@ -36,6 +36,8 @@ struct Tab {
 }
 struct State {
     id: u64,
+    isolated_html: bool,
+    ctrl_click: Cell<Option<std::time::Instant>>,
     bounds: Cell<(i32, i32, f32)>,
     surface: [RefCell<Surface>; 2],
     popup: Cell<[i32; 4]>,
@@ -182,7 +184,7 @@ wrap_render_handler! {
 }
 wrap_life_span_handler! {
     struct Life {
-        id: u64,
+        s: Shared<State>,
     }
     impl LifeSpanHandler {
         fn on_before_popup(
@@ -192,7 +194,7 @@ wrap_life_span_handler! {
             _id: i32,
             url: Option<&CefString>,
             _name: Option<&CefString>,
-            _disposition: WindowOpenDisposition,
+            disposition: WindowOpenDisposition,
             user_gesture: i32,
             _features: Option<&PopupFeatures>,
             _info: Option<&mut WindowInfo>,
@@ -201,6 +203,9 @@ wrap_life_span_handler! {
             _extra: Option<&mut Option<DictionaryValue>>,
             _no_js: Option<&mut i32>,
         ) -> i32 {
+            if self.s.external_link(url, disposition, user_gesture) {
+                return 1;
+            }
             if user_gesture != 0 {
                 if let Some(frame) = browser.and_then(|b| b.main_frame()) {
                     frame.load_url(url);
@@ -210,9 +215,9 @@ wrap_life_span_handler! {
         }
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             TABS.with_borrow_mut(|tabs| {
-                tabs.remove(&self.id);
+                tabs.remove(&self.s.id);
             });
-            emit(self.id, Event::Closed);
+            emit(self.s.id, Event::Closed);
             maybe_quit();
         }
     }
@@ -443,10 +448,11 @@ wrap_context_menu_handler! {
                 return 0;
             };
             let items = (0..m.count())
+                .filter(|&i| matches!(m.type_at(i), MenuItemType::COMMAND | MenuItemType::CHECK | MenuItemType::RADIO))
                 .map(|i| {
                     (
                         m.command_id_at(i),
-                        CefString::from(&m.label_at(i)).to_string(),
+                        menu_label(&CefString::from(&m.label_at(i)).to_string()),
                         m.is_enabled_at(i) != 0,
                     )
                 })
@@ -463,6 +469,17 @@ wrap_context_menu_handler! {
             1
         }
     }
+}
+
+fn menu_label(label: &str) -> String {
+    let mut chars = label.chars().peekable();
+    let mut text = String::new();
+    while let Some(ch) = chars.next() {
+        if ch != '&' || chars.next_if_eq(&'&').is_some() {
+            text.push(ch);
+        }
+    }
+    text
 }
 wrap_life_span_handler! {
     struct ToolsLife {
@@ -504,8 +521,11 @@ wrap_client! {
         fn render_handler(&self) -> Option<RenderHandler> {
             Some(Render::new(self.s.clone()))
         }
+        fn request_handler(&self) -> Option<RequestHandler> {
+            Some(PageNavigation::new(self.s.clone()))
+        }
         fn life_span_handler(&self) -> Option<LifeSpanHandler> {
-            Some(Life::new(self.s.id))
+            Some(Life::new(self.s.clone()))
         }
         fn load_handler(&self) -> Option<LoadHandler> {
             Some(Load::new(self.s.id))
@@ -522,6 +542,39 @@ wrap_client! {
         fn jsdialog_handler(&self) -> Option<JsdialogHandler> {
             Some(Dialogs::new(self.s.clone()))
         }
+    }
+}
+
+const ARTIFACT_URL: &str = "https://artifact.invalid/document";
+
+wrap_request_handler! {
+    struct PageNavigation { s: Shared<State> }
+    impl RequestHandler {
+        fn on_before_browse(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>,
+            request: Option<&mut cef::Request>, _user_gesture: i32, _is_redirect: i32) -> i32 {
+            if !self.s.isolated_html { return 0; }
+            let Some(request) = request else { return 1 };
+            let url = CefString::from(&request.url()).to_string();
+            let page = url.split('#').next().unwrap_or_default();
+            i32::from(!matches!(page, ARTIFACT_URL | "about:blank"))
+        }
+        fn on_open_urlfrom_tab(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>,
+            url: Option<&CefString>, disposition: WindowOpenDisposition, user_gesture: i32) -> i32 {
+            i32::from(self.s.external_link(url, disposition, user_gesture))
+        }
+    }
+}
+
+impl State {
+    fn external_link(&self, url: Option<&CefString>, disposition: WindowOpenDisposition, user_gesture: i32) -> bool {
+        if user_gesture == 0 || !matches!(disposition, WindowOpenDisposition::NEW_BACKGROUND_TAB | WindowOpenDisposition::NEW_FOREGROUND_TAB)
+            || !self.ctrl_click.take().is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2)) {
+            return false;
+        }
+        if let Some(url) = url {
+            emit(self.id, Event::ExternalLink(url.to_string()));
+        }
+        true
     }
 }
 wrap_dev_tools_message_observer! {
@@ -586,21 +639,42 @@ fn context_proxy(ctx: &RequestContext, socks: u16) -> Result<(), String> {
 }
 // Only the private controller pipe supplies this path. No part of a browser URL
 // is interpreted as a host filename, and other tabs have separate request contexts.
+wrap_resource_handler! {
+    struct ArtifactResponse { stream: ResourceHandler, html: bool }
+    impl ResourceHandler {
+        fn open(&self, request: Option<&mut cef::Request>, handle: Option<&mut i32>, callback: Option<&mut Callback>) -> i32 {
+            self.stream.open(request, handle, callback)
+        }
+        fn response_headers(&self, response: Option<&mut Response>, length: Option<&mut i64>, redirect: Option<&mut CefString>) {
+            let Some(response) = response else { return };
+            self.stream.response_headers(Some(response), length, redirect);
+            response.set_header_by_name(Some(&"X-Content-Type-Options".into()), Some(&"nosniff".into()), 1);
+            response.set_header_by_name(Some(&"Cache-Control".into()), Some(&"no-store".into()), 1);
+            if self.html {
+                response.set_charset(Some(&"utf-8".into()));
+                response.set_header_by_name(Some(&"Content-Security-Policy".into()),
+                    Some(&"sandbox allow-popups; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'".into()), 1);
+                response.set_header_by_name(Some(&"Referrer-Policy".into()), Some(&"no-referrer".into()), 1);
+            }
+        }
+        fn read(&self, output: *mut u8, count: i32, read: Option<&mut i32>, callback: Option<&mut ResourceReadCallback>) -> i32 {
+            self.stream.read(output, count, read, callback)
+        }
+    }
+}
+
 wrap_scheme_handler_factory! {
     struct SnapshotResource { path: String, mime: String }
     impl SchemeHandlerFactory {
         fn create(&self, _browser: Option<&mut Browser>, _frame: Option<&mut Frame>,
             _scheme: Option<&CefString>, request: Option<&mut cef::Request>) -> Option<ResourceHandler> {
             use cef::wrapper::stream_resource_handler::StreamResourceHandler;
-            if CefString::from(&request?.url()).to_string() != "https://artifact.invalid/document" {
+            if CefString::from(&request?.url()).to_string() != ARTIFACT_URL {
                 return Some(StreamResourceHandler::new(404, "Not Found".into(), "text/plain".into(), None, None));
             }
             let stream = stream_reader_create_for_file(Some(&self.path.as_str().into()))?;
-            let mut headers = CefStringMultimap::new();
-            headers.append("X-Content-Type-Options", "nosniff");
-            headers.append("Cache-Control", "no-store");
-            Some(StreamResourceHandler::new(
-                200, "OK".into(), self.mime.clone(), Some(headers), Some(stream)))
+            Some(ArtifactResponse::new(
+                StreamResourceHandler::new_with_stream(self.mime.clone(), stream), self.mime == "text/html"))
         }
     }
 }
@@ -617,6 +691,7 @@ wrap_request_context_handler! {
             if let Some(path) = &self.snapshot {
                 let mime = match path.extension().and_then(|s| s.to_str()) {
                     Some("txt") => "text/plain", Some("pdf") => "application/pdf",
+                    Some("html" | "htm") => "text/html",
                     Some("png") => "image/png", Some("gif") => "image/gif",
                     Some("webp") => "image/webp", Some("jpg" | "jpeg") => "image/jpeg",
                     _ => { emit(self.id, Event::Error("Unsupported document type".into())); return; }
@@ -644,6 +719,8 @@ wrap_request_context_handler! {
     }
 }
 fn open(id: u64, url: String, socks: Option<u16>, snapshot: Option<PathBuf>) -> Result<(), String> {
+    let isolated_html = snapshot.as_deref().and_then(|path| path.extension()).and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "html" | "htm"));
     let mut ctx = request_context_create_context(
         Some(&RequestContextSettings::default()),
         Some(&mut ContextReady::new(id, url, socks, snapshot)),
@@ -651,6 +728,8 @@ fn open(id: u64, url: String, socks: Option<u16>, snapshot: Option<PathBuf>) -> 
     .ok_or("request context unavailable")?;
     let state = Shared::new(State {
         id,
+        isolated_html,
+        ctrl_click: Cell::new(None),
         bounds: Cell::new((800, 600, 1.0)),
         surface: Default::default(),
         popup: Default::default(),
@@ -666,7 +745,10 @@ fn open(id: u64, url: String, socks: Option<u16>, snapshot: Option<PathBuf>) -> 
         }),
         Some(&mut Page::new(state.clone())),
         Some(&"about:blank".into()),
-        Some(&BrowserSettings::default()),
+        Some(&BrowserSettings {
+            javascript: if isolated_html { cef::State::DISABLED } else { cef::State::DEFAULT },
+            ..Default::default()
+        }),
         None,
         Some(&mut ctx),
     )
@@ -826,7 +908,13 @@ fn handle(req: Request) {
                 h.invalidate(PaintElementType::VIEW);
             }
         }
-        Focus(v) => h.set_focus(v.into()),
+        Focus(v) => {
+            if !v && let Some(menu) = s.menu.take() {
+                menu.cancel();
+                emit(id, Event::DismissMenu);
+            }
+            h.set_focus(v.into());
+        }
         Inspect { title, at } => {
             #[cfg(not(windows))]
             let win = WindowInfo {
@@ -871,7 +959,9 @@ fn handle(req: Request) {
             match kind {
                 wire::Pointer::Move => h.send_mouse_move_event(Some(&e), 0),
                 wire::Pointer::Leave => h.send_mouse_move_event(Some(&e), 1),
-                wire::Pointer::Button { button, up, count } => h.send_mouse_click_event(
+                wire::Pointer::Button { button, up, count } => {
+                    s.ctrl_click.set((button == 0 && up && flags & 4 != 0).then(std::time::Instant::now));
+                    h.send_mouse_click_event(
                     Some(&e),
                     match button {
                         1 => MouseButtonType::MIDDLE,
@@ -880,7 +970,8 @@ fn handle(req: Request) {
                     },
                     up.into(),
                     count,
-                ),
+                    );
+                }
                 wire::Pointer::Wheel(dx, dy) => h.send_mouse_wheel_event(Some(&e), dx, dy),
             }
         }

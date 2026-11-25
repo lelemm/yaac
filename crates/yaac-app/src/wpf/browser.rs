@@ -33,6 +33,7 @@ impl BrowserPipe {
             .then(|| selected_thread(app).cloned())
             .flatten();
         let visible = thread.as_ref().filter(|_| shown);
+        app.browsers.retain_tab_switch(visible);
         if let Some(key) = visible.filter(|key| crate::terminal::unavailable(&app.client,key).is_none()) {
             app.browsers.terms.shells(&mut app.client, &key.target);
         }
@@ -41,7 +42,12 @@ impl BrowserPipe {
         let next = app.browsers.tick(&mut app.client, visible, Instant::now());
 
         #[cfg(feature = "preview")]
-        let updates = self.native.pump(&mut app.browsers, visible, wake.clone());
+        let updates = self.native.pump(&mut app.browsers, &mut app.client, visible, wake.clone());
+        #[cfg(feature = "preview")]
+        let next = match (next, app.browsers.browser_retry(Instant::now())) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         // Agent browser calls (docs/11-preview.md#agents), on the calling thread's tabs.
         #[cfg(feature = "preview")]
         let agent = app.browser_agent.step(&mut app.client, &mut app.browsers, &mut self.native, Instant::now());
@@ -132,6 +138,12 @@ impl BrowserPipe {
             "active": area.map(|area| area.active),
             "ratio": area.map(|area| area.ratio),
             "fullScreen": area.is_some_and(|area| area.full_screen),
+            "tabSwitcher": thread.and_then(|thread| browsers.switch_tab_index(thread)).zip(area).map(|(index, area)| json!({
+                "index": index,
+                "tabs": std::iter::once("Chat").chain(area.tabs.iter().map(|tab| {
+                    if !tab.title.is_empty() { tab.title.as_str() } else if !tab.url.is_empty() { tab.url.as_str() } else { "New tab" }
+                })).collect::<Vec<_>>(),
+            })),
             "tabs": area.map(|area| area.tabs.iter().map(|tab| json!({
                 "id": tab.id, "url": tab.url, "title": tab.title, "loading": tab.loading,
                 "kind": files::kind(tab), "path": tab.kind.path(),
@@ -229,6 +241,12 @@ impl BrowserPipe {
                 browsers.set_full_screen(&thread, payload["fullScreen"] == true);
             }
             "browser.chat" => browsers.select_chat(&thread),
+            "browser.switchTab" => match string(payload, "mode") {
+                "cycle" => { browsers.cycle_tab(&thread); }
+                "commit" => browsers.finish_tab_switch(&thread, true),
+                "cancel" => browsers.finish_tab_switch(&thread, false),
+                _ => return Ok(false),
+            },
             "browser.ratio" => {
                 if let Some(area) = browsers.areas.get_mut(&thread)
                     && let Some(ratio) = payload["ratio"].as_f64()

@@ -173,7 +173,8 @@ public partial class BrowserView : UserControl
         {
             if (composing) SendInput("CancelComposition");
             composing = false;
-            SendInput(new { Focus = false });
+            // The WPF popup temporarily owns keyboard focus while CEF's menu is pending.
+            if (pageMenu is null) SendInput(new { Focus = false });
         };
         TextCompositionManager.AddPreviewTextInputStartHandler(PageInput, (_, e) => Compose(e));
         TextCompositionManager.AddPreviewTextInputUpdateHandler(PageInput, (_, e) => Compose(e));

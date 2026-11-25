@@ -64,7 +64,7 @@ temporary folder first so the installed file itself is not held open.
    the installed `yaac.exe`, and the hub is running again, so the mesh keeps working without
    waiting for the next login.
 4. The finish page's **Launch YAAC** (ticked) opens the window. A silent install
-   (`/VERYSILENT`) does not open it, unless it was given **`/RELAUNCH`** (what the in-app
+   (`/SILENT` or `/VERYSILENT`) does not open it, unless it was given **`/RELAUNCH`** (what the in-app
    updater passes): then the installed `yaac.exe` is started once setup has finished. A setup
    that failed runs neither.
 
@@ -168,8 +168,9 @@ with a numeric build id checks for updates. Development builds leave the updater
    installer stays selected even if another release is published while it waits. The
    restarted window checks for newer releases again.
 4. **"Restart to update"** (a click): `pending.json` is marked `attempted`, the installer is
-   started with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /RELAUNCH
-   /LOG=<updates>\install.log`, and the window quits. The installer closes anything left and
+   started with `/SILENT /SUPPRESSMSGBOXES /NORESTART /SP- /RELAUNCH
+   /LOG=<updates>\install.log`, and the window quits. Setup displays its progress window
+   throughout installation. The installer closes anything left and
    stops the hub (`yaac quit`), replaces `yaac.exe`, starts the hub again (`autostart sync
    --start`, when *start at login* is on), and starts YAAC (`/RELAUNCH`).
 5. **At the next start**, before the window opens:

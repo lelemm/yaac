@@ -40,6 +40,7 @@ pub(super) struct Surfaces {
 pub(super) enum Output {
     Event(u64, Event),
     Frame(u64, Frame, bool),
+    Restarted(u64),
 }
 
 impl Surfaces {
@@ -98,6 +99,7 @@ impl Surfaces {
     pub(super) fn pump(
         &mut self,
         browsers: &mut Browsers,
+        client: &mut yaac_core::client::Client,
         visible: Option<&ThreadKey>,
         wake: impl Fn() + Clone + Send + Sync + 'static,
     ) -> Vec<Output> {
@@ -117,10 +119,13 @@ impl Surfaces {
             .iter()
             .flat_map(|(key, area)| area.tabs.iter().map(move |tab| (key.clone(), tab.id)))
             .collect::<Vec<_>>();
+        let mut updates = Vec::new();
         for (key, id) in ready {
             if let Some(tab) = browsers.open_ready(&key, id, wake.clone()) {
                 if active != Some(id) {
                     tab.send(Action::Hidden(true));
+                } else if browsers.tab(&key, id).is_some_and(|model| model.retry_delay.is_some()) {
+                    updates.push(Output::Restarted(id));
                 }
                 self.tabs.insert(
                     id,
@@ -138,7 +143,6 @@ impl Surfaces {
             }
         }
 
-        let mut updates = Vec::new();
         if active != self.visible {
             if let Some(id) = self.visible {
                 self.awake.remove(&id);
@@ -182,6 +186,7 @@ impl Surfaces {
         self.awake.retain(|id| self.tabs.contains_key(id));
 
         let mut closed = Vec::new();
+        let mut external_links = Vec::new();
         for (&id, surface) in &mut self.tabs {
             let Some(tab) = browsers.tab_mut(&surface.thread, id) else {
                 continue;
@@ -195,6 +200,16 @@ impl Surfaces {
                         updates.push(Output::Frame(id, frame, full));
                     }
                     Update::Frame(_) => {}
+                    Update::HostExited(error) => {
+                        browsers.restart_browser_tab(&surface.thread, id, error, std::time::Instant::now());
+                        if foreground {
+                            updates.push(Output::Event(id, Event::DismissMenu));
+                            updates.push(Output::Event(id, Event::DismissDialog));
+                        }
+                        closed.push(id);
+                        break;
+                    }
+                    Update::Event(Event::ExternalLink(url)) => external_links.push((surface.thread.clone(), url)),
                     Update::Event(Event::Url(url)) => tab.url = url,
                     Update::Event(Event::Title(title)) => tab.title = title,
                     Update::Event(Event::Loading {
@@ -260,6 +275,9 @@ impl Surfaces {
         for id in closed {
             self.tabs.remove(&id);
         }
+        for (thread, url) in external_links {
+            browsers.external_link(client, &thread, &url);
+        }
         updates
     }
 
@@ -271,6 +289,7 @@ impl Surfaces {
         for update in updates {
             match update {
                 Output::Event(tab, event) => write_frame(stdout, &event_message(tab, &event))?,
+                Output::Restarted(tab) => write_frame(stdout, &json!({ "browserEvent": { "tab": tab, "event": "Restarted" } }))?,
                 Output::Frame(tab, frame, full) => {
                     self.next_frame += 1;
                     let id = self.next_frame;

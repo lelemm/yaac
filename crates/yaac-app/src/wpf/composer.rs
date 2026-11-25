@@ -77,7 +77,9 @@ fn controls(row: &ControlRow) -> Vec<Value> {
         v.push(choices("effort", effort, ToString::to_string));
     }
     if let Some(mode) = &row.mode {
-        v.push(choices("mode", mode, ToString::to_string));
+        let mut selector = choices("mode", mode, ToString::to_string);
+        selector["warn"] = json!(mode.warn);
+        v.push(selector);
     }
     if let Some(agents) = &row.agents {
         v.push(choices("agents", agents, |policy| {

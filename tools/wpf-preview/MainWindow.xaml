@@ -311,6 +311,13 @@
     </DockPanel>
     <StackPanel x:Name="WslNotifications" Panel.ZIndex="4" HorizontalAlignment="Right"
                 VerticalAlignment="Bottom" Margin="16" MaxWidth="330" />
+    <Border x:Name="TabSwitchOverlay" Panel.ZIndex="5" Visibility="Collapsed" IsHitTestVisible="False"
+            HorizontalAlignment="Center" VerticalAlignment="Center" Width="360" MaxHeight="352" Padding="10"
+            Background="{DynamicResource YaacPanel}" BorderBrush="{DynamicResource YaacRule}" BorderThickness="1" CornerRadius="8">
+      <ListBox x:Name="TabSwitchRows" Focusable="False" IsTabStop="False" Background="Transparent" BorderThickness="0"
+               ItemContainerStyle="{StaticResource YaacNavigationItem}" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+               AutomationProperties.Name="Full-screen tabs" />
+    </Border>
     <Grid x:Name="CommanderOverlay" Panel.ZIndex="5" Visibility="Collapsed"
           PreviewKeyDown="CommanderKeyDown" shell:WindowChrome.IsHitTestVisibleInChrome="True">
       <Border Background="#50000000" MouseLeftButtonDown="CommanderOutsideClicked"

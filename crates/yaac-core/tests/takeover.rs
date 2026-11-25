@@ -33,6 +33,7 @@ fn ctx<'a>(state: &'a yaac_core::state::AppState, thread: Option<&'a ThreadKey>)
         focused_card: None,
         list_selected: 0,
         terminal: Default::default(),
+        fullscreen_tabs: false,
     }
 }
 

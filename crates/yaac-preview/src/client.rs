@@ -99,6 +99,7 @@ impl Drop for Frame {
 pub enum Update {
     Frame(Frame),
     Event(Event),
+    HostExited(String),
 }
 #[derive(Clone)]
 struct Route {
@@ -227,7 +228,7 @@ impl BrowserHost {
                     r.tabs.values().cloned().collect::<Vec<_>>()
                 };
                 for route in targets {
-                    let _ = route.events.send(Update::Event(Event::Error(err.clone())));
+                    let _ = route.events.send(Update::HostExited(err.clone()));
                     (route.wake)();
                 }
             });

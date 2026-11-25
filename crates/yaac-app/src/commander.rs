@@ -132,6 +132,7 @@ pub(crate) fn with_ctx<R>(app: &YaacApp, card: Option<&ItemId>, f: impl FnOnce(&
         focused_card: card,
         list_selected: app.ui.list_sel.len(),
         terminal,
+        fullscreen_tabs: thread.is_some_and(|k| app.browsers.can_switch_tabs(k)),
     };
     f(&ctx)
 }
@@ -514,6 +515,11 @@ pub(crate) fn run(app: &mut YaacApp, ctx: &egui::Context, cmd: Cmd, card: Option
         Cmd::MaximiseTerminalPanel => {
             if let Some(k) = &thread {
                 app.browsers.terms.panel_maximise(k);
+            }
+        }
+        Cmd::CycleFullscreenTabs => {
+            if let Some(k) = &thread && app.browsers.cycle_tab(k) {
+                app.browsers.finish_tab_switch(k, true);
             }
         }
         Cmd::Quit => {

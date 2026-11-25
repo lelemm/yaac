@@ -587,6 +587,12 @@ public partial class MainWindow : Window
             return;
         }
         if (BrowserPane.IsRenamingTerminal || panelTabs?.IsRenamingTerminal == true) return;
+        var logical = Views.SettingsView.CanonicalKey(key, Keyboard.Modifiers) ?? key.ToString();
+        if (CycleFullscreenTabs(logical, Keyboard.Modifiers, args.IsRepeat))
+        {
+            args.Handled = true;
+            return;
+        }
         if (key == Key.F2 && Keyboard.Modifiers == ModifierKeys.None && !CommanderOverlay.IsVisible
             && (BrowserPane.RenameFocusedTab() || panelTabs?.RenameFocusedTab() == true))
         {
@@ -601,7 +607,6 @@ public partial class MainWindow : Window
         }
         if (SettingsPane.IsRecordingShortcut || BrowserPane.OwnsKeyboard ||
             (key == Key.F12 && BrowserPane.IsKeyboardFocusWithin && !TerminalFocused)) return;
-        var logical = Views.SettingsView.CanonicalKey(key, Keyboard.Modifiers) ?? key.ToString();
         if (CommanderOverlay.IsVisible)
         {
             if (!args.IsRepeat && shortcuts.TryGetValue((logical, Keyboard.Modifiers), out var shortcut)

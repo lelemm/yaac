@@ -36,6 +36,7 @@ fn ctx<'a>(state: &'a AppState, thread: Option<&'a ThreadKey>) -> Ctx<'a> {
         focused_card: None,
         list_selected: 0,
         terminal: Default::default(),
+        fullscreen_tabs: false,
     }
 }
 
