@@ -175,6 +175,7 @@ fn isolated_config(dir: &Path) -> LocalConfig {
 }
 
 #[test]
+#[ignore = "benchmark (P336): timing depends on the machine; run with `cargo test -p yaac-hub --test terminal -- --ignored`"]
 fn real_terminal_budgets() {
     let home = Home::new();
     let dir = home.dir.path();

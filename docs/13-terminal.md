@@ -107,7 +107,8 @@ a keystroke for hundreds of milliseconds on a slow link.
 - **Credit** for terminal output is 1 MiB, so fast output never waits a round trip for credit;
   the window always reads the stream (it never stops granting credit while the tab is open,
   hidden or not), so a flood is limited by the link, not by YAAC.
-- **Budget, enforced by tests.** Keystroke-to-echo over a loopback target adds **at most 5 ms**
+- **Budget, checked by a benchmark** (`cargo test -p yaac-hub --test terminal -- --ignored`, run
+  on demand on a real machine, not in CI, whose runners are too variable for timing gates). Keystroke-to-echo over a loopback target adds **at most 5 ms**
   to the network round trip (p99), measured end to end through window, hub and `yaacd`.
   Throughput: `cat` of a 100 MB file through YAAC finishes within 1.5× of the **raw PTY floor**
   (the same `cat` through `node-pty` read by a local process, no protocol) and at no less than

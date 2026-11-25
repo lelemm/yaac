@@ -64,3 +64,7 @@ harnesses and on different machines messaging, spawning, and waiting for each ot
   recalled — see `docs/research/harness-surfaces.md` for how. Both change often.
 - Rust types in `yaac-protocol` are the source of truth for the wire protocol; TypeScript
   bindings are generated, never hand-edited.
+- **No CPU- or GPU-bound test runs in CI.** A benchmark or timing budget is `#[ignore]` (run it
+  on demand with `--ignored`); a test that mixes a correctness check with a wall-clock budget
+  keeps the correctness check and asserts the budget only when `CI` is unset. CI runners are too
+  variable for timing gates.

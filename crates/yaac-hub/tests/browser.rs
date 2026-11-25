@@ -105,8 +105,18 @@ fn a_browser_request_without_an_attached_window_fails_immediately() {
     let hub = home.start_with(config);
     wait_until("fake daemon connection", || daemon.connected());
 
-    let peer = list_tabs(&daemon);
-    let error = answer(&daemon, peer).unwrap_err();
+    // Connected is not yet initialised: a request that arrives before the hub has finished its
+    // `initialize` handshake is answered `NotInitialized`. Ask again until the handshake is
+    // done (each try is a new request), then the answer must be `NoWindow` at once.
+    let deadline = std::time::Instant::now() + support::WAIT;
+    let error = loop {
+        let peer = list_tabs(&daemon);
+        let error = answer(&daemon, peer).unwrap_err();
+        if error.code != ErrorCode::NotInitialized || std::time::Instant::now() > deadline {
+            break error;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
     assert_eq!(error.code, ErrorCode::NoWindow);
     assert_eq!(error.message, "No YAAC window is open; the browser needs one");
     hub.shutdown();
