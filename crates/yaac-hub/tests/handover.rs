@@ -224,8 +224,17 @@ fn reconnect_target(c: &Client, target: &TargetId) {
     c.call(attach::names::TARGETS_ENABLE, json!({ "id": target, "enabled": true })).unwrap();
 }
 
+/// The hand-over tests each start real daemons and Node processes and wait on them; run in
+/// parallel on a slow CI runner they starve each other past [`support::WAIT`]. One at a time.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn an_older_daemon_hands_over_at_idle_and_the_newest_build_serves() {
+    let _serial = serial();
     let Some(mut rig) = Rig::new() else { return };
     rig.serve(&rig.old.clone());
     let (hub, c, target) = rig.hub();
@@ -247,6 +256,7 @@ fn an_older_daemon_hands_over_at_idle_and_the_newest_build_serves() {
 
 #[test]
 fn no_hand_over_unless_the_hub_holds_a_newer_build() {
+    let _serial = serial();
     // The same build serving.
     let Some(mut rig) = Rig::new() else { return };
     rig.serve(&rig.new.clone());
@@ -280,6 +290,7 @@ fn no_hand_over_unless_the_hub_holds_a_newer_build() {
 
 #[test]
 fn a_hand_over_that_brings_back_the_same_build_is_not_asked_again() {
+    let _serial = serial();
     let Some(mut rig) = Rig::new() else { return };
     rig.serve(&rig.old.clone());
     // The connector claims build 42 but runs the old bundle: after the hand-over, 41 serves again.
@@ -304,6 +315,7 @@ fn a_hand_over_that_brings_back_the_same_build_is_not_asked_again() {
 
 #[test]
 fn update_now_interrupts_a_running_turn_marked_by_the_update_and_hands_over() {
+    let _serial = serial();
     let Some(mut rig) = Rig::new() else { return };
     rig.serve(&rig.old.clone());
     // Connect first knowing no newer build, and start a turn that runs until interrupted.
@@ -340,6 +352,7 @@ fn update_now_interrupts_a_running_turn_marked_by_the_update_and_hands_over() {
 
 #[test]
 fn a_pending_approval_survives_and_holds_the_hand_over_until_answered() {
+    let _serial = serial();
     let Some(mut rig) = Rig::new() else { return };
     rig.serve(&rig.old.clone());
     rig.use_bundle(&rig.new.clone(), None);
