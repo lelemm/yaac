@@ -31,7 +31,18 @@ public partial class MainWindow
         var active = state.Value("active").ValueKind == JsonValueKind.Number;
         var full = active && Flag(state, "fullScreen");
         BrowserPane.Visibility = active ? Visibility.Visible : Visibility.Collapsed;
-        BrowserChat.Visibility = full ? Visibility.Collapsed : Visibility.Visible;
+        bool showChatTab = full && Flag(state, "chat");
+        if (showChatTab && ThreadColumns.Children.Contains(ChatRegion))
+        {
+            ThreadColumns.Children.Remove(ChatRegion);
+            BrowserPane.ChatHost.Content = ChatRegion;
+        }
+        else if (!showChatTab && BrowserPane.ChatHost.Content != null)
+        {
+            BrowserPane.ChatHost.Content = null;
+            ThreadColumns.Children.Insert(0, ChatRegion);
+        }
+        ChatRegion.Visibility = full && !showChatTab ? Visibility.Collapsed : Visibility.Visible;
         BrowserDivider.Visibility = active && !full ? Visibility.Visible : Visibility.Collapsed;
         BrowserDividerColumn.Width = new GridLength(active && !full ? 5 : 0);
         if (browserDragThread is null)
@@ -41,6 +52,8 @@ public partial class MainWindow
             BrowserChatColumn.Width = new GridLength(full ? 0 : active ? ratio : 1, GridUnitType.Star);
             BrowserColumn.Width = new GridLength(full ? 1 : active ? 1 - ratio : 0, GridUnitType.Star);
         }
+        ThreadLocation.Visibility = showChatTab ? Visibility.Collapsed : Visibility.Visible;
+        UpdateDockLayout();
         BrowserPane.Render(state);
     }
 

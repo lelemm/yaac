@@ -324,6 +324,7 @@ internal sealed class FilesEditor : Grid
         {
             if (owner.View(second)?.Rows is not { } rows || TextView is not { VisualLinesValid: true } view) return;
             context.DrawRectangle(Palette.Brush("YaacPanel"), null, new Rect(RenderSize));
+            context.DrawRectangle(Palette.Brush("YaacRule"), null, new Rect(ActualWidth - 1, 0, 1, ActualHeight));
             var paired = owner.layout?.Right is not null;
             var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
             foreach (var line in view.VisualLines)
@@ -332,6 +333,9 @@ internal sealed class FilesEditor : Grid
                 if (index >= rows.Count) continue;
                 var row = rows[index];
                 var y = line.GetTextLineVisualYPosition(line.TextLines[0], VisualYPosition.TextTop) - view.VerticalOffset;
+                if (row.Sign is "+" or "−")
+                    context.DrawRectangle(Palette.Brush(row.Sign == "+" ? "YaacDiffAdded" : "YaacDiffRemoved"), null,
+                        new Rect(0, line.VisualTop - view.VerticalOffset, Math.Max(0, ActualWidth - 1), line.Height));
                 if (!paired || !second) Number(row.Old, paired ? ActualWidth - 17 : 45);
                 if (!paired || second) Number(row.New, ActualWidth - 17);
                 if (row.Sign.Length > 0) Draw(row.Sign, ActualWidth - 4, row.Sign == "+" ? "YaacSuccess" : "YaacFailure");

@@ -26,15 +26,23 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     let narrow = full.width() < NARROW;
     let selected = app.client.state.selected_thread().cloned();
     // No related agent known in the index: no panel (not an empty pill).
-    let full_browser = selected.as_ref().and_then(|k| app.browsers.areas.get(k)).is_some_and(|a| a.full_screen);
+    // A pane tab in full screen hides the chat; the full-screen Chat tab shows it.
+    let full_browser = selected.as_ref().is_some_and(|k| !app.browsers.chat_visible(k));
     let panel = selected.as_ref().filter(|_| !full_browser).and_then(|k| agents_panel(&app.client.state, map, k)).filter(|p| p.all().next().is_some());
     let docked = panel.is_some() && app.ui.panel == PanelMode::Docked && !narrow;
+    // With a side pane open the Related agents panel belongs to the chat column, left of the
+    // pane (docs/12-files.md#where-the-pane-sits); the thread view leaves room for it.
+    let pane = selected.as_ref().is_some_and(|k| app.browsers.areas.contains_key(k));
+    app.ui.chat_dock_width = (docked && pane).then_some(app.ui.agents_width);
+    app.ui.chat_dock = None;
+    app.ui.chat_column = None;
+    app.ui.chat_agents = pane && panel.is_some();
     // The sidebar's own width, or the strip (collapsed, or a window too narrow for it).
     let side_w = app.ui.sidebar.shown(narrow);
     let strip = side_w <= yaac_core::strip::STRIP_WIDTH;
     let side = egui::Rect::from_min_max(full.min, egui::pos2(full.left() + side_w, full.bottom()));
-    let right = if docked { egui::Rect::from_min_max(egui::pos2(full.right() - app.ui.agents_width.min(full.width() * 0.4), full.top()), full.max) } else { egui::Rect::NOTHING };
-    let center = egui::Rect::from_min_max(egui::pos2(side.right(), full.top()), egui::pos2(if docked { right.left() } else { full.right() }, full.bottom()));
+    let right = if docked && !pane { egui::Rect::from_min_max(egui::pos2(full.right() - app.ui.agents_width.min(full.width() * 0.4), full.top()), full.max) } else { egui::Rect::NOTHING };
+    let center = egui::Rect::from_min_max(egui::pos2(side.right(), full.top()), egui::pos2(if docked && !pane { right.left() } else { full.right() }, full.bottom()));
     let hair = egui::Stroke::new(1.0, p.border);
     ui.painter().rect_filled(side, 0.0, p.panel);
     // The window's top row is its title bar (D104): the sidebar's and the thread's first rows
@@ -56,15 +64,16 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             crate::sidebar::show(ui, app, map, now, actions);
         });
     }
-    if docked && let Some(panel) = &panel {
-        ui.painter().rect_filled(right, 0.0, p.panel);
-        let hovered = ui.scope_builder(egui::UiBuilder::new().max_rect(below(right).shrink2(vec2(14.0, 12.0))).id_salt("agents-docked"), |ui| {
-            ui.set_clip_rect(right);
+    let draw_dock = |ui: &mut egui::Ui, app: &mut YaacApp, panel: &yaac_core::agents::AgentsPanel, rect: egui::Rect, content: egui::Rect, actions: &mut Vec<Action>| {
+        ui.painter().rect_filled(rect, 0.0, p.panel);
+        let hovered = ui.scope_builder(egui::UiBuilder::new().max_rect(content.shrink2(vec2(14.0, 12.0))).id_salt("agents-docked"), |ui| {
+            ui.set_clip_rect(rect);
             crate::agents_ui::docked(ui, app, panel, actions)
         }).inner;
-        crate::agents_ui::dock_hover(app, ui.ctx(), ui.rect_contains_pointer(below(right)), hovered);
-    } else {
-        crate::agents_ui::dock_hover(app, ui.ctx(), false, None);
+        crate::agents_ui::dock_hover(app, ui.ctx(), ui.rect_contains_pointer(content), hovered);
+    };
+    if docked && !pane && let Some(panel) = &panel {
+        draw_dock(ui, app, panel, right, below(right), actions);
     }
     ui.scope_builder(egui::UiBuilder::new().max_rect(center).id_salt("center"), |ui| {
         ui.set_clip_rect(center);
@@ -79,11 +88,18 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             }
         }
     });
-    let mut chat = below(center);
-    let browser = selected.as_ref().and_then(|k| app.browsers.areas.get(k));
-    if let Some(area) = browser {
-        chat.max.x = chat.left() + chat.width() * area.ratio;
+    // With a side pane, the docked panel goes where the thread view left room for it.
+    let dock = app.ui.chat_dock.filter(|_| docked && pane);
+    match (&panel, dock) {
+        (Some(panel), Some(dock)) => draw_dock(ui, app, panel, dock, dock, actions),
+        _ if !(docked && !pane) => crate::agents_ui::dock_hover(app, ui.ctx(), false, None),
+        _ => {}
     }
+    let browser = selected.as_ref().and_then(|k| app.browsers.areas.get(k));
+    let chat = match app.ui.chat_column {
+        Some(column) if browser.is_some() => column,
+        _ => below(center),
+    };
     if !full_browser && (browser.is_none()
         || ui.input(|i| i.pointer.hover_pos().is_some_and(|p| chat.contains(p)))) {
         drop_target(ui, app, chat, actions);
@@ -92,17 +108,27 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
     // and snapped to one pixel column, so each is one unbroken line the full height.
     let snap = |x: f32| ui.painter().round_to_pixel_center(x);
     ui.painter().vline(snap(side.right()), full.y_range(), hair);
-    if docked {
+    if docked && !pane {
         ui.painter().vline(snap(right.left()), full.y_range(), hair);
         agents_edge(ui, app, right);
+    }
+    if let Some(dock) = dock {
+        let x = ui.painter().round_to_pixel_center(dock.left());
+        ui.painter().vline(x, dock.y_range(), hair);
+        agents_edge(ui, app, dock);
     }
     if !narrow {
         resize_edge(ui, app, side);
     }
     if let Some(panel) = &panel
-        && !docked
+        && !(docked && !pane)
+        && dock.is_none()
     {
-        crate::agents_ui::floating(ui.ctx(), app, center, panel, actions);
+        // Inside the chat column when a side pane is open (never over the pane).
+        let column = if pane { app.ui.chat_column.map(|c| egui::Rect::from_min_max(egui::pos2(c.left(), center.top()), c.max)) } else { Some(center) };
+        if let Some(column) = column {
+            crate::agents_ui::floating(ui.ctx(), app, column, panel, actions);
+        }
     }
 
     wsl_notification(ui.ctx(), app, actions);

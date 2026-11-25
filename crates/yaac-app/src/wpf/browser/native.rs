@@ -103,6 +103,7 @@ impl Surfaces {
     ) -> Vec<Output> {
         let active = visible
             .and_then(|key| browsers.areas.get(key))
+            .filter(|area| !area.chat)
             .map(|area| area.active);
         self.tabs.retain(|id, surface| {
             browsers

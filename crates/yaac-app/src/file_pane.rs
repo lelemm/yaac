@@ -60,6 +60,11 @@ impl FileTree {
     pub(crate) fn refresh(&mut self) {
         self.due = None;
     }
+    /// Demo screenshots: the tree as loaded, with no refresh due for an hour.
+    pub(crate) fn hold(&mut self, turn: Option<yaac_protocol::TurnId>) {
+        self.due = Some(Instant::now() + Duration::from_secs(3600));
+        self.last_turn = turn;
+    }
     pub(crate) fn collapse_all(&mut self) {
         self.expanded.clear();
     }
@@ -149,6 +154,7 @@ impl Browsers {
             && let Some(t) = area.tabs.iter().find(|t| t.kind == kind)
         {
             area.active = t.id;
+            area.chat = false;
             return Ok(t.id);
         }
         let id = self.insert(key);

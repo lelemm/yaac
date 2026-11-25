@@ -49,7 +49,10 @@ impl BrowserPipe {
         };
 
         self.files.prepare(
-            thread.as_ref().and_then(|key| app.browsers.areas.get(key)),
+            thread
+                .as_ref()
+                .and_then(|key| app.browsers.areas.get(key))
+                .filter(|area| !area.chat),
             app.browsers.side_by_side,
             wake.clone(),
         )?;
@@ -75,8 +78,27 @@ impl BrowserPipe {
     ) -> Value {
         let reason = browsers.reason(client, thread);
         let area = thread.and_then(|thread| browsers.areas.get(thread));
+        let attention = thread
+            .filter(|_| area.is_some_and(|area| area.full_screen && !area.chat))
+            .map(|key| {
+                let map = yaac_core::attention::AttentionMap::compute(&client.state);
+                let mark = yaac_core::attention::display(&client.state, &map, key).mark;
+                (browsers.chat_marked(client, &map, key), super::sidebar_view::tone(mark))
+            });
+        let chat_logo = thread
+            .and_then(|key| client.state.provider_of(key))
+            .and_then(|provider| crate::logos::for_kind(provider.kind.as_str()));
         json!({
             "thread": thread.map(ThreadKey::address),
+            "chat": area.is_some_and(|a| a.chat),
+            "chatMarked": attention.is_some_and(|(marked, _)| marked),
+            "chatTone": attention.map(|(_, tone)| tone),
+            "chatTitle": thread.and_then(|key| client.state.summary(key)).map(|s| &s.title),
+            "chatLogo": chat_logo.map(|(logo, _)| crate::logos::source(logo).0),
+            "chatLogoColor": chat_logo.and_then(|(_, color)| color).map(|c| format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())),
+            "machine": thread.map(|key| client.state.target_name(&key.target)),
+            "project": thread.and_then(|key| client.state.project_of(key)).map(|p| &p.folder),
+            "discovering": area.is_some_and(|a| !a.ports_discovered),
             "reason": reason,
             "filesReason": files::reason(client, thread),
             "files": self.files.view(area, browsers.side_by_side),
@@ -87,6 +109,10 @@ impl BrowserPipe {
             "tabs": area.map(|area| area.tabs.iter().map(|tab| json!({
                 "id": tab.id, "url": tab.url, "title": tab.title, "loading": tab.loading,
                 "kind": files::kind(tab), "path": tab.kind.path(),
+                "mark": tab.kind.path().and_then(|path| {
+                    let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+                    area.tree.folders.get(dir)?.entries.iter().find(|e| e.name == name)?.git.as_ref()
+                }),
                 "back": tab.back, "forward": tab.forward, "error": tab.error,
                 "surface": self.has_surface(tab.id),
                 "agentLogo": tab.agent.as_deref().and_then(crate::logos::for_kind).map(|(logo, _)| crate::logos::source(logo).0),
@@ -165,10 +191,9 @@ impl BrowserPipe {
                 browsers.external_address(&mut app.client, &thread, string(payload, "url"))?;
             }
             "browser.fullScreen" => {
-                if let Some(area) = browsers.areas.get_mut(&thread) {
-                    area.full_screen = payload["fullScreen"] == true;
-                }
+                browsers.set_full_screen(&thread, payload["fullScreen"] == true);
             }
+            "browser.chat" => browsers.select_chat(&thread),
             "browser.ratio" => {
                 if let Some(area) = browsers.areas.get_mut(&thread)
                     && let Some(ratio) = payload["ratio"].as_f64()
@@ -187,9 +212,7 @@ impl BrowserPipe {
                 };
                 match command {
                     "browser.close" => browsers.close(&thread, id),
-                    "browser.select" => {
-                        browsers.areas.get_mut(&thread).expect("open area").active = id
-                    }
+                    "browser.select" => browsers.select(&thread, id),
                     "browser.navigate" | "browser.external" | "browser.inspect"
                         if browsers.tab(&thread, id).is_none_or(|tab| tab.kind != crate::file_pane::TabKind::Browser) =>
                     {
@@ -272,5 +295,18 @@ mod tests {
         assert_eq!(state["tabs"][0]["title"], "Preview");
         assert_eq!(state["fullScreen"], true);
         assert!(browser.view(&browsers, &client, None)["active"].is_null());
+
+        browsers.select_chat(&key);
+        let chat = browser.view(&browsers, &client, Some(&key));
+        assert_eq!(chat["chat"], true);
+        assert_eq!(chat["active"], 17);
+        assert_eq!(chat["chatTitle"], client.state.summary(&key).unwrap().title);
+        assert!(chat["chatLogo"].as_str().is_some_and(|logo| !logo.is_empty()));
+        assert_eq!(chat["chatMarked"], false);
+        browsers.set_full_screen(&key, false);
+        let split = browser.view(&browsers, &client, Some(&key));
+        assert_eq!(split["chat"], false);
+        assert_eq!(split["active"], 17);
+        assert_eq!(split["ratio"], state["ratio"]);
     }
 }

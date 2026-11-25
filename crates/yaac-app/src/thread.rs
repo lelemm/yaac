@@ -58,9 +58,23 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key
         .frame(egui::Frame::NONE.fill(p.bg).inner_margin(Margin { left: 28, right: 127, top: 7, bottom: 6 }))
         .show(ui, |ui| header_view(ui, app, map, key, actions));
     if app.browsers.areas.contains_key(key) {
-        if let Some(chat) = crate::preview_ui::layout(ui, app, key) {
-            ui.scope_builder(egui::UiBuilder::new().max_rect(chat), |ui| {
-                ui.set_clip_rect(chat);
+        if let Some(chat) = crate::preview_ui::layout(ui, app, map, key) {
+            // The chat column: the transcript and composer, then a docked Related agents
+            // panel at its right; the floating pill stays inside it.
+            app.ui.chat_column = Some(chat);
+            let mut text = chat;
+            // The transcript keeps its minimum width; without room for the panel beside it,
+            // the pill floats in the chat column instead.
+            if let Some(w) = app.ui.chat_dock_width.filter(|_| chat.width() - crate::preview_ui::CHAT_MIN >= yaac_core::prefs::AGENTS_MIN_WIDTH) {
+                let w = w.min(chat.width() - crate::preview_ui::CHAT_MIN);
+                text.max.x = chat.right() - w;
+                app.ui.chat_dock = Some(egui::Rect::from_min_max(egui::pos2(text.right(), chat.top()), chat.max));
+            } else if app.ui.chat_agents {
+                // The floating pill keeps its own gutter at the column's right edge.
+                text.max.x = (chat.right() - crate::agents_ui::PILL_GUTTER).max(chat.left());
+            }
+            ui.scope_builder(egui::UiBuilder::new().max_rect(text), |ui| {
+                ui.set_clip_rect(text);
                 body(ui, app, map, key, now, actions);
             });
         }

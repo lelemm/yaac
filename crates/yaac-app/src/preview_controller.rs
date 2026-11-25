@@ -46,9 +46,18 @@ pub(crate) struct BrowserArea {
     pub(crate) active: u64,
     pub(crate) ratio: f32,
     pub(crate) full_screen: bool,
+    /// In full screen, the pinned **Chat** tab is shown instead of `active`, which stays the
+    /// last non-chat tab for Restore (docs/12-files.md#tab-strip). False outside full screen.
+    pub(crate) chat: bool,
+    /// The transcript (item count, last item revision) as last seen while the chat was on
+    /// screen, for the Chat tab's attention mark.
+    chat_seen: Option<(usize, u64)>,
     pub(crate) tree: FileTree,
     pub(crate) ports: Vec<PreviewPort>,
     pub(crate) ports_error: Option<String>,
+    /// Set by the first `preview/ports` reply (a result or an error): until then the New tab
+    /// page shows a spinner instead of "No servers".
+    pub(crate) ports_discovered: bool,
     pub(crate) epoch: u64,
     next_poll: Instant,
     polling: bool,
@@ -61,9 +70,12 @@ impl Default for BrowserArea {
             active: 0,
             ratio: 0.5,
             full_screen: false,
+            chat: false,
+            chat_seen: None,
             tree: FileTree::default(),
             ports: vec![],
             ports_error: None,
+            ports_discovered: false,
             epoch: 0,
             next_poll: Instant::now(),
             polling: false,
@@ -131,6 +143,11 @@ pub(crate) fn listener_url(port: &PreviewPort) -> String {
     format!("http://{host}:{}/", port.port)
 }
 
+fn chat_fingerprint(t: &yaac_core::transcript::Transcript) -> (usize, u64) {
+    let n = t.items().len();
+    (n, n.checked_sub(1).map_or(0, |i| t.item_rev(i)))
+}
+
 pub(crate) fn supported(client: &Client, key: &ThreadKey) -> bool {
     client.state.target(&key.target).is_some_and(|t| {
         t.connected()
@@ -192,6 +209,7 @@ impl Browsers {
             ..Default::default()
         });
         area.active = self.next;
+        area.chat = false;
         self.next
     }
 
@@ -203,16 +221,28 @@ impl Browsers {
             return Err(reason);
         }
         address(input)?;
-        let active = self.areas.get(key).filter(|a| !a.tabs.is_empty()).map(|a| a.active);
+        let active = self.areas.get(key).filter(|a| !a.tabs.is_empty()).map(|a| (a.active, a.chat));
         let id = self.insert(key);
-        if let Some(active) = active {
-            self.areas.get_mut(key).expect("area just used").active = active;
+        if let Some((active, chat)) = active {
+            let area = self.areas.get_mut(key).expect("area just used");
+            area.active = active;
+            area.chat = chat;
         }
         if let Err(e) = self.navigate(client, key, id, input) {
             self.close(key, id);
             return Err(e);
         }
         Ok(id)
+    }
+
+    /// Demo screenshots: no port or tree requests for this area for an hour.
+    pub(crate) fn hold_requests(&mut self, client: &Client, key: &ThreadKey) {
+        let turn = client.state.transcripts.get(key).and_then(|t| t.last_completed_turn.clone());
+        if let Some(area) = self.areas.get_mut(key) {
+            area.next_poll = Instant::now() + Duration::from_secs(3600);
+            area.ports_discovered = true;
+            area.tree.hold(turn);
+        }
     }
 
     pub(crate) fn tab(&self, key: &ThreadKey, id: u64) -> Option<&BrowserTab> {
@@ -225,6 +255,50 @@ impl Browsers {
             .tabs
             .iter_mut()
             .find(|t| t.id == id)
+    }
+
+    /// Full screen on or off. Opening it keeps the tab that was active; Restore goes back to
+    /// the split with the last non-chat tab on the right.
+    pub(crate) fn set_full_screen(&mut self, key: &ThreadKey, on: bool) {
+        if let Some(area) = self.areas.get_mut(key) {
+            area.full_screen = on;
+            area.chat = false;
+        }
+    }
+
+    /// Show a pane tab (leaving the Chat tab in full screen).
+    pub(crate) fn select(&mut self, key: &ThreadKey, id: u64) {
+        if let Some(area) = self.areas.get_mut(key)
+            && area.tabs.iter().any(|t| t.id == id)
+        {
+            area.active = id;
+            area.chat = false;
+        }
+    }
+
+    /// Show the pinned Chat tab; only in full screen (in the split the chat is always shown).
+    pub(crate) fn select_chat(&mut self, key: &ThreadKey) {
+        if let Some(area) = self.areas.get_mut(key).filter(|a| a.full_screen) {
+            area.chat = true;
+        }
+    }
+
+    /// Whether the thread's chat is on screen: no pane, the split, or the Chat tab.
+    pub(crate) fn chat_visible(&self, key: &ThreadKey) -> bool {
+        self.areas.get(key).is_none_or(|a| !a.full_screen || a.chat)
+    }
+
+    /// The Chat tab's attention mark: while another tab is shown in full screen, the thread
+    /// runs (an agent acting), needs the user, or has new transcript items since the chat was
+    /// last on screen.
+    pub(crate) fn chat_marked(&self, client: &Client, map: &yaac_core::attention::AttentionMap, key: &ThreadKey) -> bool {
+        if self.chat_visible(key) {
+            return false;
+        }
+        let transcript = client.state.transcripts.get(key);
+        map.of(key).is_some()
+            || transcript.is_some_and(|t| t.active_turn.is_some())
+            || self.areas.get(key).and_then(|a| a.chat_seen) != transcript.map(chat_fingerprint)
     }
 
     pub(crate) fn close(&mut self, key: &ThreadKey, id: u64) {
@@ -380,6 +454,7 @@ impl Browsers {
                         .filter(|a| a.polling && a.epoch == epoch)
                     {
                         area.polling = false;
+                        area.ports_discovered = true;
                         match result.and_then(|v| {
                             serde_json::from_value::<PreviewPortsResult>(v)
                                 .map_err(|e| e.to_string())
@@ -409,6 +484,14 @@ impl Browsers {
             }
         }
         self.finish_file_jobs();
+        if let Some(key) = visible
+            && self.chat_visible(key)
+            && let Some(area) = self.areas.get_mut(key)
+        {
+            area.chat_seen = client.state.transcripts.get(key).map(chat_fingerprint);
+        }
+        // The Chat tab hides the pane's tab: no tree or port polling while it is shown.
+        let visible = visible.filter(|k| self.areas.get(k).is_none_or(|a| !(a.full_screen && a.chat)));
         if let Some(key) = visible && self.areas.get(key).and_then(|a| self.tab(key,a.active)).is_some_and(|t| t.kind != TabKind::Browser) {
             return self.tick_files(client,key,now);
         }
@@ -597,7 +680,7 @@ mod tests {
         assert!(
             labels
                 .iter()
-                .any(|(text, pos)| text == "Listening ports" && pos.x > 700.)
+                .any(|(text, pos)| text.starts_with("Servers on ") && pos.x > 700.)
         );
         assert!(app.browsers.areas.contains_key(&key));
     }
@@ -620,7 +703,8 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    chat = crate::preview_ui::layout(ui, app, &key);
+                    let map = yaac_core::attention::AttentionMap::compute(&app.client.state);
+                    chat = crate::preview_ui::layout(ui, app, &map, &key);
                 },
             );
             output.textures_delta.clear();

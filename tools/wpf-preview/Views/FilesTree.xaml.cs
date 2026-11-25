@@ -82,6 +82,16 @@ public partial class FilesTree : UserControl
             Command?.Invoke("expand", new { path = node.Path, expanded = item.IsExpanded });
     }
 
+    private void FolderRowClicked(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is Border { TemplatedParent: TreeViewItem { DataContext: Node { Directory: true } node } item })
+        {
+            item.IsSelected = true;
+            Command?.Invoke("expand", new { path = node.Path, expanded = !node.Expanded });
+            e.Handled = true;
+        }
+    }
+
     private void OpenName(object sender, RoutedEventArgs e) => Open(sender, diff: false, duplicate: false);
     private void OpenMark(object sender, RoutedEventArgs e) => Open(sender, diff: true, duplicate: false);
     private void MiddleName(object sender, MouseButtonEventArgs e) => MiddleOpen(sender, e, diff: false);
@@ -97,6 +107,12 @@ public partial class FilesTree : UserControl
     private void Open(object sender, bool diff, bool duplicate)
     {
         if (sender is not Button { DataContext: Node node } || node.Path.Length == 0) return;
+        for (DependencyObject? parent = (Button)sender; parent != null; parent = VisualTreeHelper.GetParent(parent))
+        {
+            if (parent is not TreeViewItem item) continue;
+            item.IsSelected = true;
+            break;
+        }
         if (node.Directory)
         {
             Command?.Invoke("expand", new { path = node.Path, expanded = !node.Expanded });

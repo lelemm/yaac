@@ -692,6 +692,144 @@ pub(crate) fn stop_square(p: &Painter, c: Pos2, d: f32, col: Color32) {
     p.rect_filled(Rect::from_center_size(c, Vec2::splat(d * 0.5)), 2.0, col);
 }
 
+/// Reload: a circular arrow, open at the top right, its head pointing on round.
+pub(crate) fn reload(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let r = d * 0.34;
+    let s = Stroke::new((d * 0.085).max(1.3), col);
+    // Clockwise from the top (−90°) round to about 45° short of a full turn.
+    let (start, sweep) = (-TAU * 0.22, TAU * 0.82);
+    let n = 28;
+    let pts: Vec<Pos2> = (0..=n)
+        .map(|i| {
+            let a = start + (i as f32 / n as f32) * sweep;
+            pos2(c.x + r * a.cos(), c.y + r * a.sin())
+        })
+        .collect();
+    let end = start + sweep;
+    p.add(Shape::line(pts, s));
+    // A filled head at the end, pointing along the arc.
+    let tip = pos2(c.x + r * end.cos(), c.y + r * end.sin());
+    let dir = vec2(-end.sin(), end.cos());
+    let side = vec2(-dir.y, dir.x);
+    let h = d * 0.2;
+    p.add(Shape::convex_polygon(vec![tip + dir * h * 0.9, tip - side * h * 0.75, tip + side * h * 0.75], col, Stroke::NONE));
+}
+
+/// A globe: a web page without a favicon, and the address field's leading mark.
+pub(crate) fn globe(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let w = (d * 0.075).max(1.1);
+    let r = d * 0.4;
+    p.circle_stroke(c, r, stroke(col, w));
+    // The meridian: an ellipse half as wide.
+    let n = 24;
+    let ellipse: Vec<Pos2> = (0..=n)
+        .map(|i| {
+            let a = i as f32 / n as f32 * TAU;
+            pos2(c.x + r * 0.45 * a.cos(), c.y + r * a.sin())
+        })
+        .collect();
+    p.add(Shape::line(ellipse, stroke(col, w)));
+    p.line_segment([pos2(c.x - r, c.y), pos2(c.x + r, c.y)], stroke(col, w));
+}
+
+/// An eye: show what is hidden (Show ignored).
+pub(crate) fn eye(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let w = (d * 0.08).max(1.2);
+    let (rx, ry) = (d * 0.44, d * 0.27);
+    let n = 12;
+    let lid = |sign: f32| -> Vec<Pos2> {
+        (0..=n)
+            .map(|i| {
+                let t = i as f32 / n as f32 * std::f32::consts::PI;
+                pos2(c.x - rx * t.cos(), c.y + sign * ry * t.sin())
+            })
+            .collect()
+    };
+    p.line(lid(-1.0), stroke(col, w));
+    p.line(lid(1.0), stroke(col, w));
+    p.circle_stroke(c, d * 0.13, stroke(col, w));
+}
+
+/// Collapse all: two chevrons pointing up, one above the other.
+pub(crate) fn collapse_all(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let w = (d * 0.09).max(1.3);
+    let s = d * 0.3;
+    for dy in [-d * 0.14, d * 0.14] {
+        let y = c.y + dy;
+        p.line(vec![pos2(c.x - s, y + s * 0.5), pos2(c.x, y - s * 0.5), pos2(c.x + s, y + s * 0.5)], stroke(col, w));
+    }
+}
+
+/// Code brackets, `</>`: Inspect (the page's DevTools).
+pub(crate) fn code(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let w = (d * 0.08).max(1.2);
+    let s = d * 0.24;
+    let (l, r) = (c.x - d * 0.2, c.x + d * 0.2);
+    p.line(vec![pos2(l, c.y - s), pos2(l - s, c.y), pos2(l, c.y + s)], stroke(col, w));
+    p.line(vec![pos2(r, c.y - s), pos2(r + s, c.y), pos2(r, c.y + s)], stroke(col, w));
+    p.line_segment([pos2(c.x + d * 0.08, c.y - s * 1.2), pos2(c.x - d * 0.08, c.y + s * 1.2)], stroke(col, w));
+}
+
+/// An arrow out of a box: open elsewhere (Open in browser).
+pub(crate) fn open_external(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let w = (d * 0.08).max(1.2);
+    let r = Rect::from_center_size(c + vec2(-d * 0.04, d * 0.04), Vec2::splat(d * 0.64));
+    let gap = d * 0.26;
+    p.line(
+        vec![pos2(r.right() - gap, r.top()), r.left_top(), r.left_bottom(), r.right_bottom(), pos2(r.right(), r.top() + gap)],
+        stroke(col, w),
+    );
+    let tip = pos2(r.right() + d * 0.06, r.top() - d * 0.06);
+    let h = d * 0.24;
+    p.line_segment([pos2(c.x - d * 0.02, c.y + d * 0.02), tip], stroke(col, w));
+    p.line(vec![pos2(tip.x - h, tip.y), tip, pos2(tip.x, tip.y + h)], stroke(col, w));
+}
+
+/// An open folder: the back with its tab, and the front leaning open (an expanded folder).
+pub(crate) fn folder_open(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let w = (d * 0.08).max(1.1);
+    let r = Rect::from_center_size(c + vec2(0.0, d * 0.05), vec2(d * 0.8, d * 0.55));
+    p.line(
+        vec![
+            pos2(r.left() + d * 0.06, r.bottom()),
+            r.left_bottom(),
+            pos2(r.left(), r.top() - d * 0.08),
+            pos2(r.left() + d * 0.28, r.top() - d * 0.08),
+            pos2(r.left() + d * 0.36, r.top()),
+            pos2(r.right() - d * 0.06, r.top()),
+            pos2(r.right() - d * 0.06, r.top() + d * 0.14),
+        ],
+        stroke(col, w),
+    );
+    let lip = r.top() + d * 0.14;
+    p.line(
+        vec![
+            pos2(r.left() + d * 0.1, lip),
+            pos2(r.right() + d * 0.08, lip),
+            pos2(r.right() - d * 0.06, r.bottom()),
+            r.left_bottom(),
+            pos2(r.left() + d * 0.1, lip),
+        ],
+        stroke(col, w),
+    );
+}
+
+/// A file's git change: a small rounded square in the mark's colour with its letter
+/// (`M`, `A`, `D`, `R`, `U`, `!`), the icon of a Diff tab.
+pub(crate) fn git_letter(p: &Painter, c: Pos2, d: f32, col: Color32, letter: &str) {
+    let p = &soft(p);
+    let r = Rect::from_center_size(c, Vec2::splat(d * 0.8));
+    p.rect_stroke(r, 3.0, stroke(col, (d * 0.07).max(1.1)), egui::StrokeKind::Inside);
+    p.text(c + vec2(0.0, 0.5), egui::Align2::CENTER_CENTER, letter, crate::theme::bold(d * 0.56), col);
+}
+
 #[cfg(test)]
 mod spinner_tests {
     use super::*;

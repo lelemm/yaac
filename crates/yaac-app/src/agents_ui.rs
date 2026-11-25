@@ -411,6 +411,9 @@ pub(crate) fn schedule_activity_ages<'a>(ctx: &egui::Context, app: &YaacApp, row
 }
 
 const PILL_W: f32 = 44.0;
+/// The room the floating pill keeps at a chat column's right edge beside the side pane, so
+/// text never runs under it (docs/12-files.md#where-the-pane-sits).
+pub(crate) const PILL_GUTTER: f32 = PILL_W + 12.0 + 8.0;
 /// The budget's row: the paused mark in the pill, "Agent budget reached · Continue" in the card.
 const BUDGET_H: f32 = 18.0;
 const PILL_ROW: f32 = 32.0;

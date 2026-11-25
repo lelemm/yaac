@@ -560,3 +560,69 @@ pub(crate) fn menu_row(ui: &mut Ui, p: &Palette, selected: bool, enabled: bool) 
     }
     (resp, rect)
 }
+
+/// `under` moved towards `over` by `t` (0..=1): the hover tint of a surface.
+pub(crate) fn blend(under: Color32, over: Color32, t: f32) -> Color32 {
+    let mix = |a: u8, b: u8| -> u8 {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a channel in 0..=255")]
+        let v = (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u8;
+        v
+    };
+    Color32::from_rgb(mix(under.r(), over.r()), mix(under.g(), over.g()), mix(under.b(), over.b()))
+}
+
+/// The hover fill of a quiet control on `under`: between the surface and the selected fill.
+pub(crate) fn hover_fill(p: &Palette, under: Color32) -> Color32 {
+    blend(under, p.selected, 0.6)
+}
+
+/// A toolbar icon button (the side pane's, docs/12-files.md#visual-design-of-the-side-pane):
+/// 28 px, no outline, a faint fill on hover, the selected fill while pressed or toggled on;
+/// disabled ones draw in the unavailable colour and do not react. The hover text names the
+/// action and its shortcut.
+pub(crate) fn tool_button(ui: &mut Ui, p: &Palette, under: Color32, hover: &str, enabled: bool, on: bool, f: impl FnOnce(&egui::Painter, egui::Pos2, f32, Color32)) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(28.0), if enabled { Sense::click() } else { Sense::hover() });
+    let resp = if enabled { resp.on_hover_text(hover) } else { resp.on_hover_text(format!("{hover} (unavailable)")) };
+    let fill = if enabled && (resp.is_pointer_button_down_on() || on) {
+        Some(p.selected)
+    } else if enabled && resp.hovered() {
+        Some(hover_fill(p, under))
+    } else {
+        None
+    };
+    if let Some(fill) = fill {
+        ui.painter().rect_filled(rect, 5.0, fill);
+    }
+    let col = if !enabled {
+        p.unavailable.gamma_multiply(0.55)
+    } else if resp.hovered() || on {
+        p.text
+    } else {
+        p.text2
+    };
+    f(ui.painter(), rect.center(), 16.0, col);
+    if resp.has_focus() {
+        ui.painter().rect_stroke(rect, CornerRadius::same(5), Stroke::new(2.0, p.focus), StrokeKind::Inside);
+    }
+    resp
+}
+
+/// One line of text cut at its start with "…" to fit `width` (a path, whose end matters).
+pub(crate) fn elided_start(ui: &Ui, text: &str, font: &egui::FontId, color: Color32, width: f32) -> std::sync::Arc<egui::Galley> {
+    let lay = |s: String| ui.fonts_mut(|f| f.layout_no_wrap(s, font.clone(), color));
+    let full = lay(text.to_owned());
+    if full.size().x <= width {
+        return full;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "a character count")]
+    let mut keep = ((chars.len() as f32) * (width / full.size().x)) as usize + 1;
+    loop {
+        keep = keep.min(chars.len());
+        let g = lay(format!("…{}", chars[chars.len() - keep..].iter().collect::<String>()));
+        if g.size().x <= width || keep == 0 {
+            return g;
+        }
+        keep -= 1;
+    }
+}

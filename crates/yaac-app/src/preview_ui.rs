@@ -1,7 +1,15 @@
 //! egui presentation of the controller's currently visible tab.
-use crate::{app::YaacApp, preview_controller::Browsers};
+use crate::{
+    app::YaacApp,
+    file_pane::TabKind,
+    icons,
+    preview_controller::Browsers,
+    theme::{self, Palette, size},
+    widgets,
+};
 use eframe::egui;
-use yaac_core::ThreadKey;
+use yaac_core::{ThreadKey, attention::AttentionMap};
+use yaac_protocol::GitFileStatus;
 
 #[derive(Default)]
 pub(crate) struct Renderer {
@@ -14,6 +22,8 @@ pub(crate) struct Renderer {
     pub(crate) file_focus: Option<egui::Id>,
     edits: std::collections::HashMap<u64, String>,
     pub(crate) external_address: String,
+    /// Demo screenshots: a drawn stand-in for pages the build cannot render.
+    pub(crate) demo_page: bool,
 }
 
 impl Renderer {
@@ -28,8 +38,10 @@ impl Renderer {
         #[cfg(feature = "preview")]
         {
             self.favicons.retain(|id, _| keep(id));
+            // The full-screen Chat tab hides the pane's tab.
             let active = visible
                 .and_then(|k| browsers.areas.get(k))
+                .filter(|a| !(a.full_screen && a.chat))
                 .map(|a| a.active);
             self.pages.retain(|id, p| {
                 if !keep(id) {
@@ -43,7 +55,7 @@ impl Renderer {
                     .flat_map(|a| a.tabs.iter())
                     .any(|t| t.id == *id && t.agent.is_some());
                 if Some(*id) != active {
-                    p.set_hidden(!agent)
+                    p.set_hidden(!agent);
                 }
                 true
             });
@@ -58,7 +70,10 @@ impl Renderer {
     /// Start ready tabs that are not drawn (an agent's tab, or a tab of another thread)
     /// hidden, and keep the state of pages that are not drawn current in the controller.
     pub(crate) fn pump(&mut self, browsers: &mut Browsers, visible: Option<&ThreadKey>, ctx: &egui::Context) {
-        let active = visible.and_then(|k| browsers.areas.get(k)).map(|a| a.active);
+        let active = visible
+            .and_then(|k| browsers.areas.get(k))
+            .filter(|a| !(a.full_screen && a.chat))
+            .map(|a| a.active);
         let tabs: Vec<(ThreadKey, u64, bool)> = browsers
             .areas
             .iter()
@@ -107,17 +122,32 @@ impl crate::preview_agent::Driver for Renderer {
     }
 }
 
-/// Draw the browser and return the chat rectangle (None when full screen).
-pub(crate) fn layout(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) -> Option<egui::Rect> {
+/// The tab strip's height (docs/12-files.md#tab-strip).
+pub(crate) const STRIP_H: f32 = 36.;
+/// A toolbar's height under the strip.
+pub(crate) const BAR_H: f32 = 36.;
+const TAB_H: f32 = 32.;
+const TAB_MIN: f32 = 110.;
+const TAB_MAX: f32 = 200.;
+/// The chat column's minimum width beside the pane (P314), and the pane's.
+pub(crate) const CHAT_MIN: f32 = 360.;
+const PANE_MIN: f32 = 280.;
+
+/// Draw the side pane and return the chat rectangle: the left of the split, the area under
+/// the strip when the full-screen **Chat** tab is shown, or None when another tab fills it.
+pub(crate) fn layout(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey) -> Option<egui::Rect> {
     let full = ui.available_rect_before_wrap();
     let Some(area) = app.browsers.areas.get_mut(key) else {
         return Some(full);
     };
-    let mut page = full;
-    let chat = if area.full_screen {
-        None
+    let full_screen = area.full_screen;
+    let (pane, chat) = if full_screen {
+        (full, None)
     } else {
-        let x = full.left() + full.width() * area.ratio;
+        // The chat column never goes below its minimum width (P314); the pane gets the rest.
+        let x = (full.left() + full.width() * area.ratio)
+            .min(full.right() - PANE_MIN.min(full.width() - CHAT_MIN))
+            .max(full.left() + CHAT_MIN.min(full.width()));
         let divider = egui::Rect::from_center_size(
             egui::pos2(x, full.center().y),
             egui::vec2(6., full.height()),
@@ -136,267 +166,848 @@ pub(crate) fn layout(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) -> O
         }
         ui.painter()
             .vline(x, full.y_range(), egui::Stroke::new(1., app.p.border));
+        let mut page = full;
         page.min.x = divider.right().min(full.right());
         let mut chat = full;
         chat.max.x = divider.left().max(full.left());
-        Some(chat)
+        (page, Some(chat))
     };
+    let strip = egui::Rect::from_min_size(pane.min, egui::vec2(pane.width(), STRIP_H));
     ui.scope_builder(
-        egui::UiBuilder::new()
-            .id_salt(("preview", key))
-            .max_rect(page),
+        egui::UiBuilder::new().id_salt(("preview", key)).max_rect(strip),
         |ui| {
-            ui.set_clip_rect(page);
+            ui.set_clip_rect(strip.expand2(egui::vec2(0., 1.)));
+            strip_ui(ui, app, map, key, strip);
+        },
+    );
+    let Some(area) = app.browsers.areas.get(key) else {
+        // The last tab was closed: the chat takes the whole width again.
+        ui.ctx().request_repaint();
+        return Some(full);
+    };
+    if area.full_screen != full_screen {
+        ui.ctx().request_repaint();
+    }
+    let below = egui::Rect::from_min_max(egui::pos2(pane.left(), strip.bottom()), pane.max);
+    if area.full_screen && area.chat {
+        return Some(below);
+    }
+    ui.scope_builder(
+        egui::UiBuilder::new().id_salt(("preview-content", key)).max_rect(below),
+        |ui| {
+            ui.set_clip_rect(below);
+            ui.painter().rect_filled(below, 0., app.p.bg);
             draw(ui, app, key);
         },
     );
     chat
 }
 
-fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
-    let browser_enabled = app.browsers.reason(&app.client,Some(key)).is_none();
-    let files_enabled = crate::file_pane::supported(&app.client,key);
-    let area = app.browsers.areas.get_mut(key).unwrap();
-    let mut close = None;
-    let mut add = None;
-    egui::ScrollArea::horizontal()
-        .id_salt("tabs")
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for tab in &area.tabs {
-                    let label = if tab.title.is_empty() {
-                        if tab.url.is_empty() {
-                            "New tab"
-                        } else {
-                            &tab.url
-                        }
-                    } else {
-                        &tab.title
-                    };
-                    #[cfg(feature = "preview")]
-                    if let Some(tex) = app.preview_ui.favicons.get(&tab.id) {
-                        ui.image((tex.id(), egui::vec2(16., 16.)));
-                    }
-                    let r = ui.add(egui::Button::selectable(
-                        area.active == tab.id,
-                        if label.chars().count() > 24 {
-                            format!("{}…", label.chars().take(23).collect::<String>())
-                        } else {
-                            label.to_owned()
-                        },
-                    ));
-                    if let Some(kind) = &tab.agent {
-                        // An agent is acting on this tab: its harness mark.
-                        let (rect, mark) =
-                            ui.allocate_exact_size(egui::vec2(14., 14.), egui::Sense::hover());
-                        crate::agents_ui::harness_mark(
-                            ui.painter(),
-                            rect.center(),
-                            12.,
-                            Some(kind.as_str()).filter(|k| !k.is_empty()),
-                            None,
-                            false,
-                            &app.p,
-                        );
-                        mark.on_hover_text("An agent is using this tab");
-                    }
-                    let r = if let Some(path) = tab.kind.path() {r.on_hover_text(path)} else {r};
-                    if r.clicked() {
-                        area.active = tab.id
-                    }
-                    if r.middle_clicked()
-                        || ui.small_button("×").on_hover_text("Close tab").clicked()
-                    {
-                        close = Some(tab.id)
-                    }
-                }
-                ui.menu_button("+", |ui| {
-                    if ui.add_enabled(browser_enabled,egui::Button::new("Browser")).clicked(){add=Some(false);ui.close();}
-                    if files_enabled && ui.button("Files").clicked(){add=Some(true);ui.close();}
-                });
-            })
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Entry {
+    Chat,
+    Tab(u64),
+}
+
+enum Icon {
+    Harness(Option<String>),
+    #[cfg(feature = "preview")]
+    Favicon(egui::TextureId),
+    Globe,
+    Spinner,
+    Folder,
+    File,
+    Diff(String, egui::Color32),
+}
+
+struct TabInfo {
+    entry: Entry,
+    title: String,
+    hover: String,
+    icon: Icon,
+    agent: Option<String>,
+}
+
+/// The git mark of a worktree path from the loaded tree, if its folder is loaded.
+fn git_status(tree: &crate::file_pane::FileTree, path: &str) -> Option<GitFileStatus> {
+    let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+    tree.folders
+        .get(dir)?
+        .entries
+        .iter()
+        .find(|e| e.name == name)?
+        .git
+        .clone()
+}
+
+pub(crate) fn git_color(p: &Palette, g: &GitFileStatus) -> egui::Color32 {
+    match g {
+        GitFileStatus::Added | GitFileStatus::Untracked => p.git_added,
+        GitFileStatus::Deleted | GitFileStatus::Conflict => p.git_deleted,
+        _ => p.git_modified,
+    }
+}
+
+fn tab_info(app: &YaacApp, area: &crate::preview_controller::BrowserArea, tab: &crate::preview_controller::BrowserTab) -> TabInfo {
+    let title = if !tab.title.is_empty() {
+        tab.title.clone()
+    } else if !tab.url.is_empty() {
+        tab.url.clone()
+    } else {
+        "New tab".to_owned()
+    };
+    let hover = tab
+        .kind
+        .path()
+        .map(str::to_owned)
+        .or_else(|| (!tab.url.is_empty()).then(|| format!("{title}\n{}", tab.url)))
+        .unwrap_or_else(|| title.clone());
+    let icon = match &tab.kind {
+        _ if tab.loading => Icon::Spinner,
+        TabKind::Browser => {
+            #[cfg(feature = "preview")]
+            if let Some(tex) = app.preview_ui.favicons.get(&tab.id) {
+                return TabInfo { entry: Entry::Tab(tab.id), title, hover, icon: Icon::Favicon(tex.id()), agent: tab.agent.clone() };
+            }
+            Icon::Globe
+        }
+        TabKind::Files => Icon::Folder,
+        TabKind::File(_) => Icon::File,
+        TabKind::Diff(path) => {
+            let g = git_status(&area.tree, path).unwrap_or(GitFileStatus::Modified);
+            Icon::Diff(g.as_str().to_owned(), git_color(&app.p, &g))
+        }
+    };
+    let _ = app;
+    TabInfo { entry: Entry::Tab(tab.id), title, hover, icon, agent: tab.agent.clone() }
+}
+
+/// Points of a rectangle's left, top and right edges with rounded top corners, open at the
+/// bottom (the active tab joins the page under it).
+fn tab_outline(r: egui::Rect, radius: f32) -> Vec<egui::Pos2> {
+    let mut pts = vec![r.left_bottom()];
+    let arc = |c: egui::Pos2, from: f32, pts: &mut Vec<egui::Pos2>| {
+        for i in 0..=6 {
+            let a = from + i as f32 / 6. * std::f32::consts::FRAC_PI_2;
+            pts.push(c + radius * egui::vec2(a.cos(), a.sin()));
+        }
+    };
+    arc(egui::pos2(r.left() + radius, r.top() + radius), std::f32::consts::PI, &mut pts);
+    arc(egui::pos2(r.right() - radius, r.top() + radius), -std::f32::consts::FRAC_PI_2, &mut pts);
+    pts.push(r.right_bottom());
+    pts
+}
+
+fn draw_icon(painter: &egui::Painter, c: egui::Pos2, icon: &Icon, ink: egui::Color32, p: &Palette) {
+    match icon {
+        Icon::Harness(kind) => crate::agents_ui::harness_mark(painter, c, 16., kind.as_deref(), None, false, p),
+        #[cfg(feature = "preview")]
+        Icon::Favicon(tex) => {
+            painter.image(
+                *tex,
+                egui::Rect::from_center_size(c, egui::Vec2::splat(16.)),
+                egui::Rect::from_min_max(egui::pos2(0., 0.), egui::pos2(1., 1.)),
+                egui::Color32::WHITE,
+            );
+        }
+        Icon::Globe => icons::globe(painter, c, 16., ink),
+        Icon::Spinner => icons::spinner(painter, c, 16., ink),
+        Icon::Folder => icons::folder(painter, c, 17., ink),
+        Icon::File => icons::file(painter, c, 17., ink, false),
+        Icon::Diff(letter, col) => icons::git_letter(painter, c, 16., *col, letter),
+    }
+}
+
+/// The Chat tab's corner mark: the sidebar's attention marks (needs you, running, new).
+fn chat_mark(painter: &egui::Painter, c: egui::Pos2, app: &YaacApp, map: &AttentionMap, key: &ThreadKey, under: egui::Color32) {
+    let p = &app.p;
+    let d = yaac_core::attention::display(&app.client.state, map, key);
+    painter.circle_filled(c, 5.5, under);
+    match d.mark {
+        yaac_core::attention::Mark::NeedsYou | yaac_core::attention::Mark::Paused => icons::mark(painter, c, 10., d.mark, p),
+        yaac_core::attention::Mark::Running => icons::thread_mark(painter, c, 10., &d, p),
+        _ => {
+            painter.circle_filled(c, 3.5, p.unseen);
+        }
+    }
+}
+
+/// The pane's + menu rows (here and in the title bar): Browser and Files with their icons,
+/// unavailable ones disabled with the reason as hover text. Returns Some(true) for Files.
+pub(crate) fn pane_menu(ui: &mut egui::Ui, app: &YaacApp, key: Option<&ThreadKey>) -> Option<bool> {
+    let p = app.p;
+    let browser = app.browsers.reason(&app.client, key);
+    let files = match key {
+        Some(k) if crate::file_pane::supported(&app.client, k) => None,
+        Some(_) => Some("The target is offline or does not offer its files".to_owned()),
+        None => Some("Open a thread first".to_owned()),
+    };
+    ui.set_min_width(180.);
+    let mut pick = None;
+    for (is_files, label, reason) in [(false, "Browser", browser), (true, "Files", files)] {
+        let enabled = reason.is_none();
+        let (r, rect) = widgets::menu_row(ui, &p, false, enabled);
+        let ink = if enabled { p.text } else { p.unavailable };
+        let c = egui::pos2(rect.left() + 18., rect.center().y);
+        if is_files {
+            icons::folder(ui.painter(), c, 17., ink);
+        } else {
+            icons::globe(ui.painter(), c, 16., ink);
+        }
+        let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), theme::ui(size::UI), ink));
+        ui.painter().galley(egui::pos2(rect.left() + 34., rect.center().y - g.size().y / 2.), g, ink);
+        let r = match &reason {
+            Some(reason) => r.on_hover_text(reason),
+            None => r,
+        };
+        if r.clicked() {
+            pick = Some(is_files);
+            ui.close();
+        }
+    }
+    pick
+}
+
+enum StripAction {
+    Select(Entry),
+    Close(u64),
+    Add(bool),
+    FullScreen(bool),
+}
+
+/// The tab strip: equal-width tabs that shrink together and then scroll, + after the last
+/// tab, Full screen / Restore at the right end (docs/12-files.md#tab-strip).
+fn strip_ui(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, strip: egui::Rect) {
+    let p = app.p;
+    let Some(area) = app.browsers.areas.get(key) else {
+        return;
+    };
+    ui.painter().rect_filled(strip, 0., p.panel);
+    let rule_y = ui.painter().round_to_pixel_center(strip.bottom() - 0.5);
+    ui.painter()
+        .hline(strip.x_range(), rule_y, egui::Stroke::new(1., p.border));
+    let full = area.full_screen;
+    let mut infos = Vec::new();
+    if full {
+        let title = app
+            .client
+            .state
+            .summary(key)
+            .map(|s| s.title.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "Chat".to_owned());
+        let kind = app.client.state.provider_of(key).map(|d| d.kind.as_str().to_owned());
+        infos.push(TabInfo { entry: Entry::Chat, hover: format!("{title}\nThe chat"), title, icon: Icon::Harness(kind), agent: None });
+    }
+    infos.extend(area.tabs.iter().map(|t| tab_info(app, area, t)));
+    let current = if full && area.chat { Entry::Chat } else { Entry::Tab(area.active) };
+    let marked = full && app.browsers.chat_marked(&app.client, map, key);
+    let mut action = None;
+
+    // Full screen / Restore, always visible at the right end.
+    let fs = egui::Rect::from_center_size(egui::pos2(strip.right() - 22., strip.center().y), egui::Vec2::splat(28.));
+    let hover = if full { "Restore" } else { "Full screen" };
+    if ui
+        .put(fs, |ui: &mut egui::Ui| {
+            widgets::tool_button(ui, &p, p.panel, hover, true, false, |pa, c, d, col| icons::maximize(pa, c, d, col, full))
+        })
+        .clicked()
+    {
+        action = Some(StripAction::FullScreen(!full));
+    }
+
+    let left = strip.left() + 6.;
+    let room = (fs.left() - 8. - 28. - 4. - left).max(TAB_MIN);
+    let n = infos.len().max(1) as f32;
+    let font = theme::ui(size::UI);
+    // The active tab never loses its title: it widens (up to the preferred width) when the
+    // others shrink.
+    let active_i = infos.iter().position(|t| t.entry == current);
+    let active_need = active_i.map_or(0., |i| {
+        let title = ui.fonts_mut(|f| f.layout_no_wrap(infos[i].title.clone(), font.clone(), p.text)).size().x;
+        (title + 34. + 30. + 2.).min(TAB_MAX)
+    });
+    let w = (room / n).clamp(TAB_MIN, TAB_MAX).floor();
+    let w = if active_need > w && n > 1. { ((room - active_need) / (n - 1.)).clamp(TAB_MIN, TAB_MAX).floor() } else { w };
+    let widths: Vec<f32> = (0..infos.len()).map(|i| if Some(i) == active_i { active_need.max(w) } else { w }).collect();
+    let starts: Vec<f32> = widths.iter().scan(0., |x, w| { let s = *x; *x += w; Some(s) }).collect();
+    let total: f32 = widths.iter().sum();
+    let view_w = total.min(room);
+    let view = egui::Rect::from_min_max(egui::pos2(left, strip.top()), egui::pos2(left + view_w, strip.bottom()));
+    let sid = ui.scope_id().with("tab-scroll");
+    let (mut offset, seen): (f32, Option<Entry>) = ui.data(|d| d.get_temp(sid)).unwrap_or((0., None));
+    let max_off = (total - view_w).max(0.);
+    if max_off > 0. && ui.rect_contains_pointer(view) {
+        // The wheel scrolls the strip sideways.
+        let delta = ui.input(|i| i.smooth_scroll_delta);
+        if delta != egui::Vec2::ZERO {
+            offset -= delta.x + delta.y;
+            ui.input_mut(|i| i.smooth_scroll_delta = egui::Vec2::ZERO);
+        }
+    }
+    if seen != Some(current)
+        && let Some(i) = active_i
+    {
+        // The active tab is kept in view.
+        let (a, b) = (starts[i], starts[i] + widths[i]);
+        if a < offset {
+            offset = a;
+        } else if b > offset + view_w {
+            offset = b - view_w;
+        }
+    }
+    offset = offset.clamp(0., max_off);
+    ui.data_mut(|d| d.insert_temp(sid, (offset, Some(current))));
+
+    // Interactions first, then paint (inactive tabs, then the active one on top).
+    let mut drawn = Vec::new();
+    for (i, info) in infos.iter().enumerate() {
+        let x = view.left() + starts[i] - offset;
+        let w = widths[i];
+        let rect = egui::Rect::from_min_max(egui::pos2(x, strip.bottom() - TAB_H), egui::pos2(x + w, strip.bottom()));
+        if rect.right() < view.left() || rect.left() > view.right() {
+            continue;
+        }
+        let hit = rect.intersect(view);
+        let id = ui.scope_id().with(("tab", info.entry_id()));
+        let resp = ui.interact(hit, id, egui::Sense::click());
+        let active = info.entry == current;
+        let closable = info.entry != Entry::Chat;
+        let close_room = closable;
+        let close_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 17., rect.center().y), egui::Vec2::splat(20.));
+        let close = close_room.then(|| {
+            ui.interact(close_rect.intersect(view), id.with("close"), egui::Sense::click())
+                .on_hover_text("Close tab (middle-click)")
         });
-    if let Some(id) = close {
-        app.browsers.close(key, id);
-        ui.ctx().request_repaint();
-        return;
+        let hovered = resp.hovered() || close.as_ref().is_some_and(|c| c.hovered());
+        if close.as_ref().is_some_and(|c| c.clicked()) || (closable && resp.middle_clicked()) {
+            if let Entry::Tab(id) = info.entry {
+                action = Some(StripAction::Close(id));
+            }
+        } else if resp.clicked() {
+            action = Some(StripAction::Select(info.entry));
+        }
+        let focused = resp.has_focus();
+        let resp = resp.on_hover_text(&info.hover);
+        drawn.push((info, rect, active, hovered, focused, close.filter(|_| active || hovered)));
+        let _ = resp;
     }
-    if let Some(files) = add {
-        if files { let _=app.browsers.open_file_tab(&mut app.client,key,crate::file_pane::TabKind::Files,false); }
-        else { app.preview_ui.focus_address = app.browsers.new_tab(&app.client, key).ok(); }
-        ui.ctx().request_repaint();
-        return;
+    let painter = ui.painter_at(egui::Rect::from_min_max(view.min, egui::pos2(view.right(), strip.bottom() + 1.)));
+    let hover_fill = widgets::hover_fill(&p, p.panel);
+    for (i, (info, rect, active, hovered, focused, close)) in drawn.iter().enumerate() {
+        let under = if *active {
+            p.bg
+        } else if *hovered {
+            hover_fill
+        } else {
+            p.panel
+        };
+        if *active {
+            let r = egui::Rect::from_min_max(
+                egui::pos2(painter.round_to_pixel_center(rect.left()), painter.round_to_pixel_center(rect.top())),
+                egui::pos2(painter.round_to_pixel_center(rect.right()), strip.bottom() + 1.),
+            );
+            painter.rect_filled(r, egui::CornerRadius { nw: 7, ne: 7, sw: 0, se: 0 }, p.bg);
+            painter.add(egui::Shape::line(tab_outline(r, 7.), egui::Stroke::new(1., p.border)));
+        } else if *hovered {
+            painter.rect_filled(rect.shrink2(egui::vec2(2., 0.)).with_max_y(rect.bottom() - 3.), 6., hover_fill);
+        } else {
+            // A short divider between two resting tabs.
+            let next = drawn.get(i + 1);
+            if next.is_some_and(|n| !n.2 && !n.3) {
+                let x = painter.round_to_pixel_center(rect.right());
+                painter.vline(x, (rect.center().y - 8.)..=(rect.center().y + 7.), egui::Stroke::new(1., p.border));
+            }
+        }
+        let c = egui::pos2(rect.left() + 18., rect.center().y - 1.);
+        let ink = if *active || *hovered { p.text } else { p.text2 };
+        draw_icon(&painter, c, &info.icon, ink, &p);
+        if let Some(kind) = &info.agent {
+            // An agent drives this tab: its harness mark on the icon's corner.
+            let corner = c + egui::vec2(6., 6.);
+            painter.circle_filled(corner, 6., under);
+            crate::agents_ui::harness_mark(&painter, corner, 10., Some(kind.as_str()).filter(|k| !k.is_empty()), None, false, &p);
+        }
+        if info.entry == Entry::Chat && marked {
+            chat_mark(&painter, c + egui::vec2(6., -6.), app, map, key, under);
+        }
+        let text_left = rect.left() + 34.;
+        // Room for the × only where it shows (the active tab, a hovered one).
+        let text_right = if close.is_some() { rect.right() - 30. } else { rect.right() - 10. };
+        if text_right > text_left + 8. {
+            let g = widgets::elided(ui, &info.title, &font, ink, text_right - text_left);
+            painter.galley(egui::pos2(text_left, rect.center().y - g.size().y / 2. - 1.), g, ink);
+        }
+        if let Some(close) = close {
+            let r = close.rect;
+            if close.hovered() {
+                painter.rect_filled(r, 4., widgets::hover_fill(&p, under));
+            }
+            icons::close(&painter, r.center(), 14., if close.hovered() { p.text } else { p.text2 });
+        }
+        if *focused {
+            painter.rect_stroke(rect.shrink(3.), 5., egui::Stroke::new(2., p.focus), egui::StrokeKind::Inside);
+        }
     }
+
+    // Soft edges where the strip scrolls: more tabs that way.
+    let fade = |x0: f32, x1: f32, left_solid: bool| {
+        let mut mesh = egui::Mesh::default();
+        let (a, b) = if left_solid { (p.panel, egui::Color32::TRANSPARENT) } else { (egui::Color32::TRANSPARENT, p.panel) };
+        let r = egui::Rect::from_min_max(egui::pos2(x0, strip.top()), egui::pos2(x1, strip.bottom() - 1.));
+        mesh.colored_vertex(r.left_top(), a);
+        mesh.colored_vertex(r.right_top(), b);
+        mesh.colored_vertex(r.right_bottom(), b);
+        mesh.colored_vertex(r.left_bottom(), a);
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        ui.painter().add(egui::Shape::mesh(mesh));
+    };
+    if offset > 0.5 {
+        fade(view.left(), view.left() + 24., true);
+    }
+    if offset < max_off - 0.5 {
+        fade(view.right() - 24., view.right(), false);
+    }
+
+    // + right after the last tab.
+    let plus = egui::Rect::from_center_size(egui::pos2(view.right() + 4. + 14., strip.center().y), egui::Vec2::splat(28.));
+    let resp = ui.put(plus, |ui: &mut egui::Ui| {
+        widgets::tool_button(ui, &p, p.panel, "New tab", true, false, icons::plus)
+    });
+    if let Some(Some(files)) = widgets::menu_popup(egui::Popup::menu(&resp), &p)
+        .show(|ui| pane_menu(ui, app, Some(key)))
+        .map(|r| r.inner)
+    {
+        action = Some(StripAction::Add(files));
+    }
+
+    let Some(action) = action else { return };
+    match action {
+        StripAction::Select(Entry::Chat) => app.browsers.select_chat(key),
+        StripAction::Select(Entry::Tab(id)) => app.browsers.select(key, id),
+        StripAction::Close(id) => app.browsers.close(key, id),
+        StripAction::FullScreen(on) => app.browsers.set_full_screen(key, on),
+        StripAction::Add(true) => {
+            let _ = app.browsers.open_file_tab(&mut app.client, key, TabKind::Files, false);
+        }
+        StripAction::Add(false) => {
+            app.preview_ui.focus_address = app.browsers.new_tab(&app.client, key).ok();
+        }
+    }
+    ui.ctx().request_repaint();
+}
+
+impl TabInfo {
+    fn entry_id(&self) -> u64 {
+        match self.entry {
+            Entry::Chat => 0,
+            Entry::Tab(id) => id,
+        }
+    }
+}
+
+/// A toolbar row under the strip, on the content's background (so the active tab joins it)
+/// with a rule under it; one line, never wrapping. Returns what `add` returned and the rest.
+pub(crate) fn toolbar<R>(ui: &mut egui::Ui, p: &Palette, add: impl FnOnce(&mut egui::Ui) -> R) -> (R, egui::Rect) {
+    let all = ui.max_rect();
+    let bar = egui::Rect::from_min_size(all.min, egui::vec2(all.width(), BAR_H));
+    ui.painter().rect_filled(bar, 0., p.bg);
+    let y = ui.painter().round_to_pixel_center(bar.bottom() - 0.5);
+    ui.painter().hline(bar.x_range(), y, egui::Stroke::new(1., p.border));
+    let inner = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(bar.shrink2(egui::vec2(6., 0.)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 2.;
+                add(ui)
+            },
+        )
+        .inner;
+    (inner, egui::Rect::from_min_max(egui::pos2(all.left(), bar.bottom()), all.max))
+}
+
+/// A rounded address field: a leading globe (the spinner while loading), the URL, a 2 px
+/// progress line along its bottom while loading. Focusing it selects the whole text.
+#[allow(clippy::too_many_arguments)]
+fn address_field(ui: &mut egui::Ui, p: &Palette, edit: &mut String, id: egui::Id, size: egui::Vec2, font: egui::FontId, hint: &str, loading: bool) -> egui::Response {
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let radius = size.y / 2.;
+    let focused = ui.memory(|m| m.has_focus(id));
+    let fill = if focused { p.bg } else if p.dark { p.raised } else { widgets::blend(p.bg, p.selected, 0.55) };
+    ui.painter().rect_filled(rect, radius, fill);
+    if focused {
+        ui.painter().rect_stroke(rect, radius, egui::Stroke::new(2., p.focus), egui::StrokeKind::Inside);
+    }
+    let ic = egui::pos2(rect.left() + radius.max(14.), rect.center().y);
+    if loading {
+        icons::spinner(ui.painter(), ic, 15., p.text2);
+    } else {
+        icons::globe(ui.painter(), ic, 15., p.text2);
+    }
+    let text_h = font.size + 6.;
+    let inner = egui::Rect::from_min_max(
+        egui::pos2(ic.x + 14., rect.center().y - text_h / 2.),
+        egui::pos2(rect.right() - radius.max(10.), rect.center().y + text_h / 2.),
+    );
+    let r = ui.put(
+        inner,
+        egui::TextEdit::singleline(edit)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .margin(egui::Margin::ZERO)
+            .font(font)
+            .hint_text(widgets::secondary(hint, p))
+            .align(egui::Align2::LEFT_CENTER)
+            .desired_width(inner.width()),
+    );
+    if r.gained_focus()
+        && let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id)
+    {
+        let end = edit.chars().count();
+        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+            egui::text::CCursor::new(0),
+            egui::text::CCursor::new(end),
+        )));
+        state.store(ui.ctx(), id);
+    }
+    if loading {
+        // An indeterminate 2 px progress line in the primary colour.
+        let track = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + radius, rect.bottom() - 2.),
+            egui::pos2(rect.right() - radius, rect.bottom()),
+        );
+        let t = ui.input(|i| i.time);
+        #[allow(clippy::cast_possible_truncation, reason = "a phase in 0..1")]
+        let phase = ((t / 1.4).fract()) as f32;
+        let seg = track.width() * 0.3;
+        let x0 = track.left() - seg + (track.width() + seg) * phase;
+        let bar = egui::Rect::from_min_max(egui::pos2(x0.max(track.left()), track.top()), egui::pos2((x0 + seg).min(track.right()), track.bottom()));
+        if bar.width() > 0. {
+            ui.painter().rect_filled(bar, 1., p.primary);
+        }
+        // The leading spinner already asks for the next frame while it is drawn.
+    }
+    r
+}
+
+fn draw(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
+    let p = app.p;
+    let area = app.browsers.areas.get_mut(key).unwrap();
     let id = area.active;
     let Some(tab) = area.tabs.iter_mut().find(|t| t.id == id) else {
         return;
     };
-    if tab.kind != crate::file_pane::TabKind::Browser {
+    if tab.kind != TabKind::Browser {
         ui.push_id(id, |ui| crate::file_pane_ui::draw(ui, app, key, id));
         return;
     }
     #[cfg(feature = "preview")]
     let page = app.preview_ui.pages.get(&id);
+    #[cfg(not(feature = "preview"))]
+    let page: Option<&()> = None;
     let mut navigate = None;
     let mut external = false;
     let address_id = ui.scope_id().with(("address", id));
+    let big_id = ui.scope_id().with(("address-big", id));
     let edit = app.preview_ui.edits.entry(id).or_default();
-    if !ui.memory(|m| m.has_focus(address_id)) {
+    let editing = ui.memory(|m| m.has_focus(address_id) || m.has_focus(big_id));
+    if !editing {
         edit.clone_from(&tab.url);
     }
-    ui.horizontal_wrapped(|ui| {
-        #[cfg(feature = "preview")]
-        {
-            if ui
-                .add_enabled(tab.back, egui::Button::new("←"))
-                .on_hover_text("Back")
-                .clicked()
-                && let Some(p) = page
-            {
-                p.back()
-            }
-            if ui
-                .add_enabled(tab.forward, egui::Button::new("→"))
-                .on_hover_text("Forward")
-                .clicked()
-                && let Some(p) = page
-            {
-                p.forward()
-            }
-            if ui
-                .add_enabled(
-                    page.is_some(),
-                    egui::Button::new(if tab.loading { "Stop" } else { "Reload" }),
-                )
-                .clicked()
-                && let Some(p) = page
-            {
-                if tab.loading { p.stop() } else { p.reload() }
-            }
-        }
-        let r = ui.add(
-            egui::TextEdit::singleline(edit)
-                .id(address_id)
-                .desired_width(160.)
-                .hint_text("URL or port"),
-        );
-        if app.preview_ui.focus_address == Some(id) {
-            r.request_focus();
-            app.preview_ui.focus_address = None;
-        }
-        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            navigate = Some(edit.clone());
-        }
-        external = ui
-            .add_enabled(!tab.url.is_empty(), egui::Button::new("Open in browser"))
-            .clicked();
-        #[cfg(feature = "preview")]
-        if ui
-            .add_enabled(page.is_some(), egui::Button::new("Inspect"))
-            .clicked()
-            && let Some(p) = page
-        {
-            p.inspect(None)
-        }
-        if ui
-            .button(if area.full_screen {
-                "Restore"
-            } else {
-                "Full screen"
-            })
-            .clicked()
-        {
-            area.full_screen = !area.full_screen;
-        }
-    });
-    if let Some(e) = &tab.error {
-        ui.label(e);
-    }
-    if tab.url.is_empty() {
-        if let Some(e) = &area.ports_error {
-            ui.label(e);
-        }
-        ui.label("Listening ports");
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for port in &area.ports {
-                if ui
-                    .button(format!(
-                        "{}  {}",
-                        port.port,
-                        port.command.as_deref().unwrap_or("")
-                    ))
-                    .clicked()
-                {
-                    navigate = Some(crate::preview_controller::listener_url(port));
-                }
+    let new_tab = tab.url.is_empty();
+    // Shortcuts while the page or its address field has focus.
+    let ours = editing || app.preview_ui.page_focus.is_some_and(|f| ui.memory(|m| m.has_focus(f)));
+    let (mut back, mut forward, mut reload, mut inspect) = (false, false, false, false);
+    if ours {
+        ui.input_mut(|i| {
+            back = i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowLeft);
+            forward = i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowRight);
+            reload = i.consume_key(egui::Modifiers::NONE, egui::Key::F5) | i.consume_key(egui::Modifiers::COMMAND, egui::Key::R);
+            if i.consume_key(egui::Modifiers::COMMAND, egui::Key::L) {
+                app.preview_ui.focus_address = Some(id);
             }
         });
+    }
+    let (address, rest) = toolbar(ui, &p, |ui| {
+        let has_page = page.is_some() || app.preview_ui.demo_page;
+        back |= widgets::tool_button(ui, &p, p.bg, "Back (Alt+Left)", tab.back && has_page, false, |pa, c, d, col| icons::nav(pa, c, d, false, col)).clicked();
+        forward |= widgets::tool_button(ui, &p, p.bg, "Forward (Alt+Right)", tab.forward && has_page, false, |pa, c, d, col| icons::nav(pa, c, d, true, col)).clicked();
+        let stop = tab.loading;
+        reload |= widgets::tool_button(ui, &p, p.bg, if stop { "Stop" } else { "Reload (F5)" }, has_page, false, |pa, c, d, col| {
+            if stop {
+                icons::stop_square(pa, c, d * 0.95, col);
+            } else {
+                icons::reload(pa, c, d, col);
+            }
+        })
+        .clicked();
+        ui.add_space(4.);
+        let w = (ui.available_width() - 2. * 28. - 2. * 2. - 6.).max(40.);
+        // On the New tab page the hint is in the large field only.
+        let hint = if new_tab { "" } else { "Enter a URL or a port" };
+        let r = address_field(ui, &p, edit, address_id, egui::vec2(w, 28.), theme::ui(size::UI), hint, tab.loading);
+        ui.add_space(4.);
+        external = widgets::tool_button(ui, &p, p.bg, "Open in browser", !tab.url.is_empty(), false, icons::open_external).clicked();
+        inspect |= widgets::tool_button(ui, &p, p.bg, "Inspect (F12)", has_page, false, icons::code).clicked();
+        r
+    });
+    if app.preview_ui.focus_address == Some(id) && !new_tab {
+        address.request_focus();
+        app.preview_ui.focus_address = None;
+    }
+    if address.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        navigate = Some(edit.clone());
+    }
+    #[cfg(feature = "preview")]
+    if let Some(pg) = page {
+        if back {
+            pg.back();
+        }
+        if forward {
+            pg.forward();
+        }
+        if reload {
+            if tab.loading { pg.stop() } else { pg.reload() }
+        }
+        if inspect {
+            pg.inspect(None);
+        }
+    }
+    #[cfg(not(feature = "preview"))]
+    let _ = (back, forward, reload, inspect);
+    let mut rest = rest;
+    // An error: one line under the toolbar, with a close ×.
+    if tab.error.is_some() {
+        let line = egui::Rect::from_min_size(rest.min, egui::vec2(rest.width(), 30.));
+        rest.min.y = line.bottom();
+        let mut dismiss = false;
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(line.shrink2(egui::vec2(10., 0.))).layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                ui.painter().rect_filled(line, 0., p.wash(p.failed));
+                widgets::icon(ui, 14., |pa, c, d| icons::warning(pa, c, d, p.failed, p.bg));
+                let text = tab.error.as_deref().unwrap_or_default();
+                let g = widgets::elided(ui, text, &theme::ui(size::SMALL), p.failed, ui.available_width() - 34.);
+                ui.add(egui::Label::new(g).selectable(false)).on_hover_text(text);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    dismiss = widgets::icon_button(ui, &p, 12., "Dismiss", icons::close).clicked();
+                });
+            },
+        );
+        if dismiss {
+            tab.error = None;
+        }
+    }
+    if new_tab {
+        let big = egui::Rect::from_min_max(rest.min, rest.max);
+        if let Some(input) = new_tab_page(ui, app, key, id, big, big_id) {
+            navigate = Some(input);
+        }
     }
     if let Some(input) = navigate {
         match app.browsers.navigate(&mut app.client, key, id, &input) {
             Ok(()) =>
             {
                 #[cfg(feature = "preview")]
-                if let Some(p) = page {
+                if let Some(p) = app.preview_ui.pages.get(&id) {
                     p.navigate(&app.browsers.tab_mut(key, id).unwrap().url);
                 }
             }
             Err(e) => app.browsers.tab_mut(key, id).unwrap().error = Some(e),
         }
+        ui.ctx().request_repaint();
     }
     if external && let Err(e) = app.browsers.external(&mut app.client, key, id) {
         app.browsers.tab_mut(key, id).unwrap().error = Some(e);
     }
     #[cfg(feature = "preview")]
-    {
-        if let Some(handle) = app.browsers.open_ready(key, id, || {}) {
-            let tab = app.browsers.tab_mut(key, id).unwrap();
-            app.preview_ui.pages.insert(
-                id,
-                yaac_preview::Preview::from_tab(handle, &tab.url, ui.ctx()),
-            );
+    if !new_tab && !app.preview_ui.demo_page {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(rest), |ui| page_ui(ui, app, key, id));
+    }
+    if !new_tab && app.preview_ui.demo_page {
+        demo_page(ui, rest);
+    }
+}
+
+/// The demo's stand-in page (the same as the WPF renderer's screenshots).
+fn demo_page(ui: &egui::Ui, rect: egui::Rect) {
+    let painter = ui.painter_at(rect);
+    let ink = egui::Color32::from_rgb(0x27, 0x33, 0x45);
+    painter.rect_filled(rect, 0., egui::Color32::from_rgb(0xFC, 0xFC, 0xFD));
+    painter.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), 38.)), 0., egui::Color32::from_rgb(0xEE, 0xF1, 0xF5));
+    let at = |x: f32, y: f32| rect.min + egui::vec2(x, y);
+    painter.text(at(16., 19.), egui::Align2::LEFT_CENTER, "Project documentation", egui::FontId::proportional(12.), ink);
+    painter.text(at(22., 86.), egui::Align2::LEFT_CENTER, "Authentication", theme::bold(20.), ink);
+    painter.text(at(22., 117.), egui::Align2::LEFT_CENTER, "Development environment", egui::FontId::proportional(11.), ink);
+    painter.hline((rect.left() + 22.)..=(rect.right() - 22.), rect.top() + 146., egui::Stroke::new(1., egui::Color32::from_rgb(0xD5, 0xDA, 0xE0)));
+    painter.text(at(22., 180.), egui::Align2::LEFT_CENTER, "Getting started", egui::FontId::proportional(15.), ink);
+    painter.text(at(22., 208.), egui::Align2::LEFT_CENTER, "Run the project and open the local preview.", egui::FontId::proportional(11.), ink);
+}
+
+/// The New tab page: a large address field, then the servers listening on the target.
+fn new_tab_page(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, id: u64, rect: egui::Rect, big_id: egui::Id) -> Option<String> {
+    let p = app.p;
+    let width = 520_f32.min(rect.width() - 32.).max(120.);
+    let left = rect.center().x - width / 2.;
+    let mut y = rect.top() + rect.height() * 0.15;
+    let mut navigate = None;
+    let machine = app.client.state.target_name(&key.target);
+    let folder = app
+        .client
+        .state
+        .project_of(key)
+        .map(|p| p.folder.as_str().to_owned())
+        .or_else(|| app.client.state.summary(key).map(|s| s.cwd.as_str().to_owned()));
+    let column = |ui: &mut egui::Ui, y: &mut f32, h: f32, add: &mut dyn FnMut(&mut egui::Ui)| {
+        let r = egui::Rect::from_min_size(egui::pos2(left, *y), egui::vec2(width, h));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| add(ui));
+        *y += h;
+    };
+    let edit = app.preview_ui.edits.entry(id).or_default();
+    let mut field = None;
+    column(ui, &mut y, 36., &mut |ui| {
+        field = Some(address_field(ui, &p, edit, big_id, egui::vec2(width, 36.), theme::ui(size::PROSE), "Enter a URL or a port", false));
+    });
+    let field = field.unwrap();
+    if app.preview_ui.focus_address == Some(id) {
+        field.request_focus();
+        app.preview_ui.focus_address = None;
+    }
+    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        navigate = Some(edit.clone());
+    }
+    y += 28.;
+    let area = app.browsers.areas.get(key).unwrap();
+    column(ui, &mut y, 22., &mut |ui| {
+        ui.add(egui::Label::new(egui::RichText::new(format!("Servers on {machine}")).font(theme::bold(size::SMALL)).color(p.text2)).selectable(false));
+        if !area.ports_discovered {
+            ui.add_space(6.);
+            widgets::icon(ui, 12., |pa, c, d| icons::spinner(pa, c, d, p.text2));
         }
-        if let Some(p) = app.preview_ui.pages.get_mut(&id) {
-            p.devtools_title = format!(
-                "DevTools — {} · {}",
-                p.state.title,
-                app.client.state.target_name(&key.target)
+    });
+    y += 4.;
+    if let Some(e) = &area.ports_error {
+        column(ui, &mut y, 22., &mut |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(e).font(theme::ui(size::SMALL)).color(p.failed)).truncate());
+        });
+    }
+    if area.ports.is_empty() && area.ports_discovered {
+        y += 6.;
+        column(ui, &mut y, 22., &mut |ui| {
+            ui.add(egui::Label::new(format!("No servers are listening on {machine}.")).selectable(false));
+        });
+        column(ui, &mut y, 20., &mut |ui| {
+            ui.add(egui::Label::new(widgets::secondary("Start your dev server — it shows up here.", &p)).selectable(false));
+        });
+    }
+    let rows_rect = egui::Rect::from_min_max(egui::pos2(left - 8., y), egui::pos2(left + width + 8., rect.bottom() - 8.));
+    let ports = area.ports.clone();
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rows_rect), |ui| {
+        egui::ScrollArea::vertical().id_salt(("ports", id)).auto_shrink([false, true]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.;
+            for port in &ports {
+                let url = crate::preview_controller::listener_url(port);
+                let (r, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.), egui::Sense::click());
+                let resp = resp.on_hover_text(format!("Open {url}"));
+                if resp.hovered() || resp.has_focus() {
+                    ui.painter().rect_filled(r, 6., widgets::hover_fill(&p, p.bg));
+                }
+                if resp.has_focus() {
+                    ui.painter().rect_stroke(r, 6., egui::Stroke::new(2., p.focus), egui::StrokeKind::Inside);
+                }
+                let ink = if resp.hovered() { p.text } else { p.text2 };
+                icons::globe(ui.painter(), egui::pos2(r.left() + 18., r.center().y), 16., ink);
+                let host = url.trim_start_matches("http://").trim_end_matches('/').to_owned();
+                let g = ui.fonts_mut(|f| f.layout_no_wrap(host, theme::mono(size::MONO), p.text));
+                let mut x = r.left() + 36.;
+                let gw = g.size().x;
+                ui.painter().galley(egui::pos2(x, r.center().y - g.size().y / 2.), g, p.text);
+                x += gw + 12.;
+                let cwd = port.cwd.as_deref().map(|cwd| relative(folder.as_deref(), cwd));
+                let detail = match (port.command.as_deref(), cwd) {
+                    (Some(c), Some(d)) => format!("{c}  ·  {d}"),
+                    (Some(c), None) => c.to_owned(),
+                    (None, Some(d)) => d,
+                    (None, None) => String::new(),
+                };
+                let room = r.right() - 30. - x;
+                if room > 20. && !detail.is_empty() {
+                    let g = widgets::elided(ui, &detail, &theme::ui(size::SMALL), p.text2, room);
+                    ui.painter().galley(egui::pos2(x, r.center().y - g.size().y / 2.), g, p.text2);
+                }
+                icons::chevron(ui.painter(), egui::pos2(r.right() - 16., r.center().y), 12., false, ink);
+                if resp.clicked() {
+                    navigate = Some(url);
+                }
+            }
+        });
+    });
+    navigate
+}
+
+/// A server's folder relative to the project when inside it.
+fn relative(root: Option<&str>, cwd: &str) -> String {
+    match root.filter(|root| yaac_core::projects::contains(root, cwd)) {
+        Some(root) => {
+            let rest = cwd[root.len().min(cwd.len())..].trim_start_matches(['/', '\\']);
+            if rest.is_empty() { "project root".to_owned() } else { rest.to_owned() }
+        }
+        None => cwd.to_owned(),
+    }
+}
+
+#[cfg(feature = "preview")]
+fn page_ui(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, id: u64) {
+    if let Some(handle) = app.browsers.open_ready(key, id, || {}) {
+        let tab = app.browsers.tab_mut(key, id).unwrap();
+        app.preview_ui.pages.insert(
+            id,
+            yaac_preview::Preview::from_tab(handle, &tab.url, ui.ctx()),
+        );
+    }
+    if let Some(p) = app.preview_ui.pages.get_mut(&id) {
+        p.devtools_title = format!(
+            "DevTools — {} · {}",
+            p.state.title,
+            app.client.state.target_name(&key.target)
+        );
+        let frame = p.ui(ui);
+        app.preview_ui.page_focus = Some(frame.id);
+        let png = std::mem::take(&mut p.state.favicon);
+        if !png.is_empty()
+            && let Some(image) = favicon(&png)
+        {
+            app.preview_ui.favicons.insert(
+                id,
+                ui.ctx()
+                    .load_texture(format!("favicon-{id}"), image, Default::default()),
             );
-            let frame = p.ui(ui);
-            app.preview_ui.page_focus = Some(frame.id);
-            let png = std::mem::take(&mut p.state.favicon);
-            if !png.is_empty()
-                && let Some(image) = favicon(&png)
-            {
-                app.preview_ui.favicons.insert(
-                    id,
-                    ui.ctx()
-                        .load_texture(format!("favicon-{id}"), image, Default::default()),
-                );
-                ui.ctx().request_repaint();
-            }
-            let tab = app.browsers.tab_mut(key, id).unwrap();
-            if tab.url != p.state.url
-                || tab.title != p.state.title
-                || tab.loading != p.state.loading
-                || tab.back != p.state.can_go_back
-                || tab.forward != p.state.can_go_forward
-                || p.state
-                    .error
-                    .as_ref()
-                    .is_some_and(|error| tab.error.as_ref() != Some(error))
-            {
-                ui.ctx().request_repaint();
-            }
-            tab.url.clone_from(&p.state.url);
-            tab.title.clone_from(&p.state.title);
-            tab.loading = p.state.loading;
-            tab.back = p.state.can_go_back;
-            tab.forward = p.state.can_go_forward;
-            if let Some(e) = &p.state.error {
-                tab.error = Some(e.clone());
-                app.browsers.host_error = Some(e.clone());
-            }
+            ui.ctx().request_repaint();
+        }
+        let tab = app.browsers.tab_mut(key, id).unwrap();
+        if tab.url != p.state.url
+            || tab.title != p.state.title
+            || tab.loading != p.state.loading
+            || tab.back != p.state.can_go_back
+            || tab.forward != p.state.can_go_forward
+            || p.state
+                .error
+                .as_ref()
+                .is_some_and(|error| tab.error.as_ref() != Some(error))
+        {
+            ui.ctx().request_repaint();
+        }
+        tab.url.clone_from(&p.state.url);
+        tab.title.clone_from(&p.state.title);
+        tab.loading = p.state.loading;
+        tab.back = p.state.can_go_back;
+        tab.forward = p.state.can_go_forward;
+        if let Some(e) = &p.state.error {
+            tab.error = Some(e.clone());
+            app.browsers.host_error = Some(e.clone());
         }
     }
 }

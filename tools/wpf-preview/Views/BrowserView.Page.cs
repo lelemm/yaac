@@ -89,7 +89,7 @@ public partial class BrowserView
                 if (tabState is JsonElement tabs)
                 {
                     tabSignature = "";
-                    RenderTabs(tabs, tabReason, false);
+                    RenderTabs(tabs, tabReason);
                 }
             }
             catch (Exception error) when (error is IOException or NotSupportedException or ArgumentException)

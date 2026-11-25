@@ -132,20 +132,23 @@ pub(crate) fn update(ui: &mut egui::Ui, full: Rect, p: &Palette, u: &crate::upda
 /// Pane menu immediately before the native-style caption controls.
 pub(crate) fn panes(ui: &mut egui::Ui, full: Rect, app: &mut crate::app::YaacApp) {
     let rect = Rect::from_min_size(pos2(full.right() - 4.0 * BUTTON_W, full.top()), vec2(BUTTON_W, HEIGHT));
-    let plus = ui.put(rect, egui::Button::new("+").frame(false)).on_hover_text("Add pane");
+    let plus = ui.interact(rect, egui::Id::unique("title-panes"), Sense::click()).on_hover_text("Add a side pane tab");
+    let hot = plus.hovered() || plus.has_focus();
+    if hot {
+        ui.painter().rect_filled(rect, 0.0, app.p.faint);
+    }
+    icons::plus(ui.painter(), rect.center(), 16.0, if hot { app.p.text } else { app.p.text2 });
     crate::widgets::menu_popup(egui::Popup::menu(&plus), &app.p).show(|ui| {
         let key = app.client.state.selected_thread().filter(|_| !app.ui.settings).cloned();
         let reason = app.browsers.reason(&app.client, key.as_ref());
-        if ui.add_enabled(reason.is_none(), egui::Button::new("Browser"))
-            .on_disabled_hover_text(reason.as_deref().unwrap_or_default()).clicked()
-            && let Some(key) = &key {
-            app.preview_ui.focus_address = app.browsers.new_tab(&app.client, key).ok();
-            ui.close();
-        }
-        if let Some(key) = key.as_ref().filter(|k| crate::file_pane::supported(&app.client,k))
-            && ui.button("Files").clicked() {
-            let _ = app.browsers.open_file_tab(&mut app.client,key,crate::file_pane::TabKind::Files,false);
-            ui.close();
+        match (crate::preview_ui::pane_menu(ui, app, key.as_ref()), &key) {
+            (Some(true), Some(key)) => {
+                let _ = app.browsers.open_file_tab(&mut app.client, key, crate::file_pane::TabKind::Files, false);
+            }
+            (Some(false), Some(key)) => {
+                app.preview_ui.focus_address = app.browsers.new_tab(&app.client, key).ok();
+            }
+            _ => {}
         }
         if reason.is_some() && let Some(key) = key.filter(|k| crate::preview_controller::supported(&app.client, k)) {
             ui.add(egui::TextEdit::singleline(&mut app.preview_ui.external_address).hint_text("URL or port"));

@@ -116,6 +116,26 @@ pub(crate) const SCREENS: &[(&str, &str)] = &[
     ("131", "many-agents-card"),
     ("132", "many-agents-docked"),
     ("133", "many-agents-alive-overflow"),
+    // The side pane (docs/12-files.md#visual-design-of-the-side-pane), with the WPF
+    // renderer's fixture: written as <theme>-<width>-<scene>.png.
+    ("pane-wide-browser", "pane"),
+    ("pane-wide-servers", "pane"),
+    ("pane-wide-empty", "pane"),
+    ("pane-wide-files", "pane"),
+    ("pane-wide-diff", "pane"),
+    ("pane-wide-many-tabs", "pane"),
+    ("pane-wide-full-chat", "pane"),
+    ("pane-wide-full-browser", "pane"),
+    ("pane-narrow-browser", "pane"),
+    ("pane-narrow-servers", "pane"),
+    ("pane-narrow-empty", "pane"),
+    ("pane-narrow-files", "pane"),
+    ("pane-narrow-diff", "pane"),
+    ("pane-narrow-many-tabs", "pane"),
+    ("pane-narrow-full-chat", "pane"),
+    ("pane-narrow-full-browser", "pane"),
+    ("pane-docked-split", "pane"),
+    ("pane-docked-full-chat", "pane"),
 ];
 
 /// Screen 21 is drawn at the smallest supported window: 960 × 720 points.
@@ -130,6 +150,12 @@ fn crop(img: &ColorImage, w: f32, h: f32) -> ColorImage {
     }
     ColorImage::new([w, h], pixels)
 }
+
+/// The side-pane scenes match the WPF renderer's captures: 960 × 587 points at 150 %.
+const PANE_SIZE: [f32; 2] = [960.0, 587.0];
+const PANE_ZOOM: f32 = 1.5;
+/// The docked Related agents panel needs a window wider than [`crate::shell::NARROW`].
+const DOCKED_SIZE: [f32; 2] = [1280.0, 800.0];
 
 const SETTLE_FRAMES: u32 = 14;
 
@@ -174,8 +200,20 @@ impl Shots {
         if self.waiting {
             let img = self.image.lock().ok().and_then(|mut g| g.take());
             if let Some(img) = img {
-                let file = self.dir.join(format!("{id}-{name}-{}.png", if dark { "dark" } else { "light" }));
-                let img = if id == "21" { crop(&img, NARROW_SIZE[0] * 1.25, NARROW_SIZE[1] * 1.25) } else { (*img).clone() };
+                let theme = if dark { "dark" } else { "light" };
+                let file = match id.strip_prefix("pane-") {
+                    Some(scene) => self.dir.join(format!("{theme}-{scene}.png")),
+                    None => self.dir.join(format!("{id}-{name}-{theme}.png")),
+                };
+                let img = if id == "21" {
+                    crop(&img, NARROW_SIZE[0] * 1.25, NARROW_SIZE[1] * 1.25)
+                } else if id.starts_with("pane-docked") {
+                    crop(&img, DOCKED_SIZE[0] * 1.25, DOCKED_SIZE[1] * 1.25)
+                } else if id.starts_with("pane-") {
+                    crop(&img, PANE_SIZE[0] * PANE_ZOOM, PANE_SIZE[1] * PANE_ZOOM)
+                } else {
+                    (*img).clone()
+                };
                 match write_png(&file, &img) {
                     Ok(()) => {
                         eprintln!("wrote {} ({}x{})", file.display(), img.size[0], img.size[1]);
@@ -199,7 +237,7 @@ impl Shots {
                     ctx.input(|i| i.viewport().monitor_size)
                 );
             }
-            ctx.set_zoom_factor(1.25);
+            ctx.set_zoom_factor(if id.starts_with("pane-") && !id.starts_with("pane-docked") { PANE_ZOOM } else { 1.25 });
             // Each screen starts from fresh widget memory (scroll positions from the screen
             // before must not carry over).
             ctx.data_mut(egui::util::IdTypeMap::clear);
@@ -208,7 +246,15 @@ impl Shots {
             setup(app, id);
             // This display cannot resize the window reliably, so screen 21 lays the shell out in
             // 960 × 720 points and the picture is cropped to it.
-            app.ui.layout_size = (id == "21").then(|| egui::vec2(NARROW_SIZE[0], NARROW_SIZE[1]));
+            app.ui.layout_size = if id == "21" {
+                Some(egui::vec2(NARROW_SIZE[0], NARROW_SIZE[1]))
+            } else if id.starts_with("pane-docked") {
+                Some(egui::vec2(DOCKED_SIZE[0], DOCKED_SIZE[1]))
+            } else if id.starts_with("pane-") {
+                Some(egui::vec2(PANE_SIZE[0], PANE_SIZE[1]))
+            } else {
+                None
+            };
             app.ui.theme = if dark { ThemeChoice::Dark } else { ThemeChoice::Light };
             app.applied = None;
             self.started = ctx.input(|i| i.time);
@@ -245,6 +291,10 @@ fn setup(app: &mut YaacApp, id: &str) {
     };
     let docked = matches!(id, "02" | "03" | "04" | "20" | "21" | "23" | "24" | "44" | "48" | "50" | "60" | "95");
     app.ui.panel = if docked { PanelMode::Docked } else { PanelMode::Pill };
+    if let Some(scene) = id.strip_prefix("pane-") {
+        pane(app, scene);
+        return;
+    }
     match id {
         "01" | "10" => {
             let k = if id == "01" { threads::fix() } else { threads::handshake() };
@@ -965,6 +1015,131 @@ git diff --check
         }
         _ => {}
     }
+}
+
+/// The side pane on Migrate auth module · orchestrator: New tab, Files, the app.rs diff and
+/// a page; `scene` is `<wide|narrow>-<browser|servers|empty|files|diff|many-tabs|full-chat|full-browser>`.
+fn pane(app: &mut YaacApp, scene: &str) {
+    use crate::file_pane::TabKind;
+    use yaac_protocol::{FsTreeEntry, FsTreeEntryKind, FsTreeResult, GitFileStatus, PreviewPort};
+    let (width, name) = scene.split_once('-').unwrap_or((scene, ""));
+    let key = threads::orchestrator();
+    app.open(&key, None);
+    if let Some(t) = app.client.state.targets.iter_mut().find(|t| t.entry.id == key.target) {
+        t.entry.state.daemon = Some(yaac_protocol::attach::DaemonSummary {
+            build: "demo".into(),
+            older: false,
+            schema_hash_matches: true,
+            can_update: false,
+            port_forward: true,
+            file_view: true,
+        });
+    }
+    app.preview_ui.demo_page = true;
+    let b = &mut app.browsers;
+    let many = name == "many-tabs";
+    let new_tab = if many { None } else { Some(b.insert(&key)) };
+    let files = b.insert(&key);
+    let diff = b.insert(&key);
+    let page = b.insert(&key);
+    {
+        let tab = b.tab_mut(&key, files).unwrap();
+        tab.kind = TabKind::Files;
+        tab.title = "Files".into();
+        let tab = b.tab_mut(&key, diff).unwrap();
+        tab.kind = TabKind::Diff("src/app.rs".into());
+        tab.title = "app.rs".into();
+        let old = "use crate::Session;\n\npub fn expires_in(session: &Session) -> u64 {\n    let timeout = 60;\n    session.created_at + timeout\n}\n";
+        let input = yaac_code::DiffInput {
+            path: "src/app.rs".into(),
+            old_path: None,
+            old: Some(old.into()),
+            new: Some(old.replace("= 60;", "= 300;")),
+            notice: None,
+        };
+        tab.work = yaac_code::spawn_diff(input, || {}).ok().map(crate::file_pane::Work::Diff);
+        tab.loading = true;
+        let tab = b.tab_mut(&key, page).unwrap();
+        tab.url = "http://localhost:5173/".into();
+        tab.title = "Project documentation".into();
+        tab.back = true;
+    }
+    let mut active = match name {
+        "files" => files,
+        "diff" => diff,
+        "browser" | "full-browser" | "full-chat" => page,
+        _ => new_tab.unwrap_or(page),
+    };
+    if many {
+        for n in ["lib.rs", "client.rs", "session.rs", "auth.rs", "config.rs", "main.rs", "schema.rs"] {
+            let id = b.insert(&key);
+            let tab = b.tab_mut(&key, id).unwrap();
+            tab.kind = TabKind::File(format!("src/{n}"));
+            tab.title = n.into();
+            tab.document = Some(std::sync::Arc::new(crate::file_pane::Document::Notice("Loading…".into())));
+        }
+        active = b.insert(&key);
+    }
+    let entry = |name: &str, dir: bool, git: Option<GitFileStatus>, changed: bool| FsTreeEntry {
+        name: name.into(),
+        kind: if dir { FsTreeEntryKind::Dir } else { FsTreeEntryKind::File },
+        size: None,
+        mtime: None,
+        git,
+        ignored: false,
+        changed,
+    };
+    let area = b.areas.get_mut(&key).unwrap();
+    area.tree.folders.insert(String::new(), FsTreeResult {
+        entries: vec![
+            entry("assets", true, None, false),
+            entry("docs", true, None, false),
+            entry("src", true, None, true),
+            entry("tests", true, None, true),
+            entry(".gitignore", false, None, false),
+            entry("Cargo.toml", false, None, false),
+            entry("README.md", false, None, false),
+        ],
+        repo: true,
+        truncated: false,
+    });
+    area.tree.folders.insert("src".into(), FsTreeResult {
+        entries: vec![
+            entry("app.rs", false, Some(GitFileStatus::Modified), false),
+            entry("auth.rs", false, Some(GitFileStatus::Added), false),
+            entry("lib.rs", false, None, false),
+            entry("main.rs", false, None, false),
+        ],
+        repo: true,
+        truncated: false,
+    });
+    area.tree.expanded.insert("src".into());
+    if name != "empty" {
+        let folder = app.client.state.project_of(&key).map(|p| p.folder.as_str().to_owned()).unwrap_or_else(|| "/work/auth".into());
+        area.ports = [(5173, "vite", format!("{folder}/web")), (8000, "python", folder), (9000, "node", "/opt/services/admin".into())]
+            .into_iter()
+            .map(|(port, command, cwd)| PreviewPort { port, host: "127.0.0.1".into(), pid: None, command: Some(command.into()), cwd: Some(cwd) })
+            .collect();
+    }
+    area.ratio = match width {
+        "wide" => 0.32,
+        "docked" => 0.72,
+        _ => 0.67,
+    };
+    if width == "docked" {
+        app.ui.panel = PanelMode::Docked;
+        if name == "split" {
+            active = page;
+        }
+    }
+    b.select(&key, active);
+    if name.starts_with("full") {
+        b.set_full_screen(&key, true);
+        if name == "full-chat" {
+            b.select_chat(&key);
+        }
+    }
+    b.hold_requests(&app.client, &key);
 }
 
 fn write_png(path: &std::path::Path, img: &ColorImage) -> Result<(), String> {

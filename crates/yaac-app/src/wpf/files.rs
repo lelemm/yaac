@@ -45,7 +45,7 @@ pub(super) struct FilesPipe {
     current: Option<Transfer>,
     worker: Option<mpsc::Receiver<io::Result<String>>>,
     worker_id: u64,
-    change: Option<(u64, usize)>,
+    change: Option<(u64, usize, usize)>,
 }
 
 struct Transfer {
@@ -133,8 +133,8 @@ impl FilesPipe {
     }
 
     pub(super) fn write(&mut self, stdout: &mut impl Write) -> io::Result<bool> {
-        if let Some((id, row)) = self.change.take() {
-            write_frame(stdout, &json!({ "filesChange": { "id": id, "row": row } }))?;
+        if let Some((id, row, ordinal)) = self.change.take() {
+            write_frame(stdout, &json!({ "filesChange": { "id": id, "row": row, "ordinal": ordinal } }))?;
         }
         let Some(current) = &mut self.current else {
             return Ok(false);
@@ -191,7 +191,7 @@ impl FilesPipe {
                     });
                 let mut folders = BTreeMap::new();
                 visible_folders(tree, "", &mut folders);
-                json!({ "status": status, "showIgnored": tree.show_ignored, "folders": folders, "errors": tree.errors })
+                json!({ "status": status, "showIgnored": tree.show_ignored, "canCollapse": !tree.expanded.is_empty(), "folders": folders, "errors": tree.errors })
             }
             TabKind::File(_) | TabKind::Diff(_) => {
                 let current = self.current.as_ref().filter(|value| value.tab == tab.id);
@@ -205,14 +205,15 @@ impl FilesPipe {
                         }
                         _ => None,
                     });
-                let changes = match tab.document.as_deref() {
+                let indices = match tab.document.as_deref() {
                     Some(Document::Diff(diff)) => {
-                        !diff_rows(diff, side_by_side).change_indices.is_empty()
+                        diff_rows(diff, side_by_side).change_indices.as_slice()
                     }
-                    _ => false,
+                    _ => &[],
                 };
                 json!({
-                    "status": status, "sideBySide": side_by_side, "changes": changes,
+                    "status": status, "sideBySide": side_by_side, "changes": !indices.is_empty(),
+                    "changeCount": indices.len(), "firstChange": indices.first(),
                     "document": current.filter(|value| !value.failed).map(|value| value.id),
                 })
             }
@@ -305,7 +306,8 @@ impl FilesPipe {
                     if let Some(row) =
                         next_change(display, number(data, "row"), data["forward"] == true)
                     {
-                        self.change = Some((current.id, row));
+                        let ordinal = display.change_indices.partition_point(|&start| start <= row);
+                        self.change = Some((current.id, row, ordinal));
                     }
                 } else {
                     let Some(path) = tab.kind.path() else {
@@ -327,7 +329,7 @@ impl FilesPipe {
                     ) {
                         return Err("The composer is unavailable for this thread.".into());
                     }
-                    area.full_screen = false;
+                    browsers.set_full_screen(key, false);
                     app.ui.focus_composer = true;
                 }
             }

@@ -235,6 +235,14 @@ pub(crate) struct UiState {
     pub shot_pointer: Option<egui::Pos2>,
     /// Screenshots only: lay the shell out in this size instead of the window's.
     pub layout_size: Option<egui::Vec2>,
+    /// With a side pane open, the docked Related agents panel sits inside the chat column
+    /// (docs/12-files.md#where-the-pane-sits): its width, set by the shell before the thread
+    /// is drawn, and the rectangles the thread view left for it and for the floating pill.
+    pub chat_dock_width: Option<f32>,
+    pub chat_dock: Option<egui::Rect>,
+    pub chat_column: Option<egui::Rect>,
+    /// The thread has Related agents to show beside the side pane (pill or docked panel).
+    pub chat_agents: bool,
     /// The settings pages' own state.
     pub set: crate::settings::SettingsUi,
     /// Transcript block heights as last drawn, keyed by block identity, not content (D152, P200).
@@ -357,6 +365,10 @@ impl UiState {
             drop_preview: false,
             shot_pointer: None,
             layout_size: None,
+            chat_dock_width: None,
+            chat_dock: None,
+            chat_column: None,
+            chat_agents: false,
             set: crate::settings::SettingsUi::default(),
             heights: HashMap::new(),
             guesses: HashMap::new(),

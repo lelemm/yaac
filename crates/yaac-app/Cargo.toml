@@ -29,7 +29,6 @@ glow = ["eframe/glow"]
 wgpu = ["eframe/wgpu"]
 
 [dependencies]
-egui_ltreeview = "0.10"
 yaac-code = { path = "../yaac-code" }
 yaac-preview = { path = "../yaac-preview", optional = true }
 yaac-core = { path = "../yaac-core" }

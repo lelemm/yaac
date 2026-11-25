@@ -96,17 +96,26 @@ public partial class MainWindow
 
     private void UpdateDockLayout()
     {
-        AgentsPane.SetDockFolded(NarrowWorkspace);
+        double room = Math.Max(0, ThreadColumns.ActualWidth - 5);
+        bool split = BrowserPane.Visibility == Visibility.Visible && BrowserDivider.Visibility == Visibility.Visible;
+        const double minimumPane = 280, minimumChat = 360, pillGutter = 64;
+        BrowserColumn.MinWidth = split ? Math.Min(minimumPane, Math.Max(0, room - minimumChat)) : 0;
+        BrowserChatColumn.MinWidth = split ? Math.Min(minimumChat, room) : 0;
+
+        // Fold the dock before shrinking the conversation, and preserve the saved dock preference.
+        var available = ChatRegion.ActualWidth;
+        AgentsPane.SetDockFolded(NarrowWorkspace || split && available < minimumChat + DockMinWidth);
         bool docked = AgentsPane.IsDocked && AgentsPane.Visibility == Visibility.Visible;
         var requested = paneDrag is { Sidebar: false } drag ? DraggedWidth(drag) : null;
         var width = Math.Clamp(requested ?? dockWidth, DockMinWidth, DockMaxWidth);
-        DockColumn.Width = new GridLength(docked ? Math.Min(width, Workspace.ActualWidth * .4) : 0);
+        DockColumn.Width = new GridLength(AgentsPane.Visibility != Visibility.Visible ? 0 : docked
+            ? Math.Min(width, Math.Min(Workspace.ActualWidth * .4, Math.Max(DockMinWidth, available - minimumChat)))
+            : Math.Min(pillGutter, available));
         DockSplitter.Visibility = docked ? Visibility.Visible : Visibility.Collapsed;
         DockSplitter.IsHitTestVisible = paneSizingReady;
-        Grid.SetColumn(AgentsPane, docked ? 3 : 2);
-        AgentsPane.HorizontalAlignment = docked ? HorizontalAlignment.Stretch : HorizontalAlignment.Right;
+        AgentsPane.HorizontalAlignment = docked ? HorizontalAlignment.Stretch : HorizontalAlignment.Center;
         AgentsPane.VerticalAlignment = docked ? VerticalAlignment.Stretch : VerticalAlignment.Center;
-        AgentsPane.Margin = docked ? new Thickness(0, 42, 0, 0) : new Thickness(0, 0, 20, 0);
+        AgentsPane.Margin = new Thickness(0);
     }
 
     private double? DraggedWidth(PaneDrag drag)

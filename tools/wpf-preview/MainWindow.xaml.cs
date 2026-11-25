@@ -188,7 +188,8 @@ public partial class MainWindow : Window
         if (browserFrame is { } browserPixels) BrowserPane.Paint(browserPixels);
         if (frame.TryGetProperty("browserEvent", out var browserEvent)) BrowserPane.ReceiveEvent(browserEvent);
         if (frame.TryGetProperty("filesChange", out var change))
-            BrowserPane.NavigateDiff(change.GetProperty("id").GetUInt64(), change.GetProperty("row").GetInt32());
+            BrowserPane.NavigateDiff(change.GetProperty("id").GetUInt64(), change.GetProperty("row").GetInt32(),
+                change.TryGetProperty("ordinal", out var ordinal) ? ordinal.GetInt32() : 0);
         if (image is { } viewer)
             ImageOverlay.Render(viewer);
         if (frame.TryGetProperty("window", out var command))
@@ -405,6 +406,11 @@ public partial class MainWindow : Window
         AgentsPane?.SetFloatingViewport(e.NewSize.Height);
     }
 
+    private void ChatRegionSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.WidthChanged && AgentsPane != null) UpdateDockLayout();
+    }
+
     private void ComposerResize(object sender, System.Windows.Controls.Primitives.DragDeltaEventArgs e)
     {
         var max = BrowserChat.ActualWidth * .95;
@@ -525,6 +531,12 @@ public partial class MainWindow : Window
             }
             else if (!ImageOverlay.IsKeyboardFocusWithin)
                 args.Handled = true;
+            return;
+        }
+        if (!CommanderOverlay.IsVisible && (BrowserPane.IsKeyboardFocusWithin || Keyboard.FocusedElement is not (TextBoxBase or PasswordBox))
+            && BrowserPane.FilesShortcut(key, Keyboard.Modifiers))
+        {
+            args.Handled = true;
             return;
         }
         if (SettingsPane.IsRecordingShortcut || BrowserPane.OwnsKeyboard ||

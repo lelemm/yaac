@@ -2,21 +2,24 @@
 use crate::{
     app::YaacApp,
     file_pane::{Document, FileTree, TabKind},
-    theme::Palette,
+    icons,
+    theme::{self, Palette, size},
+    widgets,
 };
 use eframe::egui::{self, Color32, RichText, Ui};
-use egui_ltreeview::{NodeBuilder, TreeView, TreeViewBuilder};
 use std::{collections::BTreeMap, ops::Range};
 use yaac_code::{DiffLineKind as Kind, DiffRow, DiffView, Highlighted, ScopeClass};
 use yaac_core::{ThreadKey, attachments::DraftRef};
-use yaac_protocol::{FsTreeEntryKind, GitFileStatus};
+use yaac_protocol::{FsTreeEntry, FsTreeEntryKind};
 
 pub(crate) fn draw(ui: &mut Ui, app: &mut YaacApp, key: &ThreadKey, id: u64) {
+    let p = app.p;
     let area = app.browsers.areas.get_mut(key).unwrap();
     let tab = area.tabs.iter().find(|t| t.id == id).unwrap();
     let kind = tab.kind.clone();
     let doc = tab.document.clone();
     let error = tab.error.clone();
+    let loading = tab.loading;
     let initial_side = app.browsers.side_by_side;
     let state_id = ui
         .scope_id()
@@ -25,30 +28,84 @@ pub(crate) fn draw(ui: &mut Ui, app: &mut YaacApp, key: &ThreadKey, id: u64) {
         .data_mut(|d| d.get_temp::<Viewer>(state_id))
         .unwrap_or_default();
     let mut jump = None;
-    let mut reload = false;
-    ui.horizontal_wrapped(|ui| {
-        if kind == TabKind::Files {
-            ui.checkbox(&mut area.tree.show_ignored, "Show ignored");
-            if ui.button("Refresh").clicked() {
-                area.tree.refresh();
+    // Shortcuts while nothing else holds the keyboard, or the viewer does.
+    let free = ui.memory(|m| m.focused().is_none_or(|f| Some(f) == app.preview_ui.file_focus));
+    let (mut reload, mut next, mut prev) = (false, false, false);
+    if free {
+        ui.input_mut(|i| {
+            reload = i.consume_key(egui::Modifiers::NONE, egui::Key::F5);
+            prev = i.consume_key(egui::Modifiers::SHIFT, egui::Key::F7);
+            next = i.consume_key(egui::Modifiers::NONE, egui::Key::F7);
+        });
+    }
+    let (_, rest) = crate::preview_ui::toolbar(ui, &p, |ui| {
+        let reload_button = |ui: &mut Ui, enabled: bool| {
+            widgets::tool_button(ui, &p, p.bg, "Reload (F5)", enabled, false, icons::reload).clicked()
+        };
+        match &kind {
+            TabKind::Files => {
+                let on = area.tree.show_ignored;
+                if widgets::tool_button(ui, &p, p.bg, if on { "Hide ignored files" } else { "Show ignored files" }, true, on, icons::eye).clicked() {
+                    area.tree.show_ignored = !on;
+                }
+                if widgets::tool_button(ui, &p, p.bg, "Refresh (F5)", true, false, icons::reload).clicked() || reload {
+                    area.tree.refresh();
+                    ui.ctx().request_repaint();
+                }
+                if widgets::tool_button(ui, &p, p.bg, "Collapse all", !area.tree.expanded.is_empty(), false, icons::collapse_all).clicked() {
+                    area.tree.collapse_all();
+                }
+                reload = false;
             }
-            if ui.button("Collapse all").clicked() {
-                area.tree.collapse_all();
-                state.tree_epoch += 1;
+            TabKind::File(path) => {
+                ui.add_space(6.);
+                let w = (ui.available_width() - 28. - 10.).max(0.);
+                path_label(ui, &p, path, w);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    reload |= reload_button(ui, !loading);
+                });
             }
-        } else {
-            reload = ui.button("Reload").clicked();
-            if let Some(Document::Diff(diff)) = doc.as_deref() {
-                ui.selectable_value(&mut app.browsers.side_by_side, false, "Unified");
-                ui.selectable_value(&mut app.browsers.side_by_side, true, "Side by side");
-                let view = if app.browsers.side_by_side {
-                    &diff.side_by_side
+            TabKind::Diff(path) => {
+                let counts = if let Some(Document::Diff(diff)) = doc.as_deref() {
+                    let view = if app.browsers.side_by_side { &diff.side_by_side } else { &diff.unified };
+                    Some(view.change_indices.clone())
                 } else {
-                    &diff.unified
+                    None
                 };
-                let n = view.change_indices.len();
-                for (label, forward) in [("Previous change", false), ("Next change", true)] {
-                    if ui.add_enabled(n > 0, egui::Button::new(label)).clicked() {
+                let n = counts.as_ref().map_or(0, Vec::len);
+                // The counter starts at the first change.
+                if state.change.is_none() && n > 0 {
+                    state.change = Some(0);
+                }
+                let counter = match (state.change, counts.is_some()) {
+                    (_, false) => String::new(),
+                    (Some(i), true) => format!("{} of {n}", i + 1),
+                    (None, true) => format!("0 of {n}"),
+                };
+                let font = theme::ui(size::SMALL);
+                let counter_w = ui.fonts_mut(|f| f.layout_no_wrap(counter.clone(), font.clone(), p.text2)).size().x + 10.;
+                let switch_w = segmented_width(ui, "Unified", "Side by side");
+                let right = switch_w + 6. + 28. * 3. + counter_w + 4. + 2. * 5.;
+                ui.add_space(4.);
+                let path_w = ui.available_width() - right - 6.;
+                if path_w > 12. {
+                    path_label(ui, &p, path, path_w);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.;
+                    reload |= reload_button(ui, !loading);
+                    ui.add_space(4.);
+                    next |= widgets::tool_button(ui, &p, p.bg, "Next change (F7)", n > 0, false, |pa, c, d, col| icons::arrow_vertical(pa, c, d, col, false)).clicked();
+                    ui.add_sized([counter_w, 28.], egui::Label::new(egui::RichText::new(&counter).font(font.clone()).color(p.text2)).selectable(false));
+                    prev |= widgets::tool_button(ui, &p, p.bg, "Previous change (Shift+F7)", n > 0, false, |pa, c, d, col| icons::arrow_vertical(pa, c, d, col, true)).clicked();
+                    ui.add_space(6.);
+                    if let Some(side) = segmented(ui, &p, "Unified", "Side by side", app.browsers.side_by_side) {
+                        app.browsers.side_by_side = side;
+                    }
+                });
+                if let Some(indices) = counts.filter(|v| !v.is_empty()) {
+                    let n = indices.len();
+                    for forward in [prev.then_some(false), next.then_some(true)].into_iter().flatten() {
                         let i = match (state.change, forward) {
                             (None, true) => 0,
                             (None, false) => n - 1,
@@ -56,20 +113,12 @@ pub(crate) fn draw(ui: &mut Ui, app: &mut YaacApp, key: &ThreadKey, id: u64) {
                             (Some(i), false) => (i + n - 1) % n,
                         };
                         state.change = Some(i);
-                        jump = Some(state.display_index(view.change_indices[i]));
+                        jump = Some(state.display_index(indices[i]));
+                        ui.ctx().request_repaint();
                     }
                 }
             }
-        }
-        if ui
-            .button(if area.full_screen {
-                "Restore"
-            } else {
-                "Full screen"
-            })
-            .clicked()
-        {
-            area.full_screen = !area.full_screen;
+            TabKind::Browser => {}
         }
     });
     if app.browsers.side_by_side != initial_side {
@@ -78,45 +127,132 @@ pub(crate) fn draw(ui: &mut Ui, app: &mut YaacApp, key: &ThreadKey, id: u64) {
     }
     if reload {
         app.browsers.reload_file(&mut app.client, key, id);
+        ui.ctx().request_repaint();
         return;
     }
-    if kind == TabKind::Files {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rest.shrink2(egui::vec2(0., 2.))), |ui| {
+        body(ui, app, key, &kind, doc, error.as_deref(), &mut state, jump);
+    });
+    ui.data_mut(|d| d.insert_temp(state_id, state));
+}
+
+/// A worktree path in the secondary colour, cut at its start to fit.
+fn path_label(ui: &mut Ui, p: &Palette, path: &str, width: f32) {
+    let g = widgets::elided_start(ui, path, &theme::ui(size::SMALL), p.text2, width);
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(g.size().x, 28.), egui::Sense::hover());
+    ui.painter().galley(egui::pos2(rect.left(), rect.center().y - g.size().y / 2.), g, p.text2);
+    resp.on_hover_text(path);
+}
+
+fn segmented_width(ui: &Ui, left: &str, right: &str) -> f32 {
+    let font = theme::ui(size::SMALL);
+    let w = |s: &str| ui.fonts_mut(|f| f.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE)).size().x + 16.;
+    w(left) + w(right) + 4.
+}
+
+/// A two-segment switch on a quiet track; returns the new choice when one is clicked.
+fn segmented(ui: &mut Ui, p: &Palette, left: &str, right: &str, on_right: bool) -> Option<bool> {
+    let font = theme::ui(size::SMALL);
+    let total = segmented_width(ui, left, right);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(total, 26.), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 6., widgets::blend(p.bg, p.selected, 0.7));
+    let mut x = rect.left() + 2.;
+    let mut pick = None;
+    for (label, right_side) in [(left, false), (right, true)] {
+        let g = ui.fonts_mut(|f| f.layout_no_wrap(label.to_owned(), font.clone(), p.text));
+        let seg = egui::Rect::from_min_size(egui::pos2(x, rect.top() + 2.), egui::vec2(g.size().x + 16., rect.height() - 4.));
+        x = seg.right();
+        let resp = ui.interact(seg, ui.scope_id().with(("segment", label)), egui::Sense::click());
+        let selected = on_right == right_side;
+        if selected {
+            ui.painter().rect_filled(seg, 5., if p.dark { p.multi } else { p.bg });
+        } else if resp.hovered() {
+            ui.painter().rect_filled(seg, 5., widgets::blend(p.bg, p.selected, 0.9));
+        }
+        let ink = if selected || resp.hovered() { p.text } else { p.text2 };
+        ui.painter().galley(seg.center() - g.size() / 2., g, ink);
+        if resp.has_focus() {
+            ui.painter().rect_stroke(seg, 5., egui::Stroke::new(2., p.focus), egui::StrokeKind::Inside);
+        }
+        if resp.clicked() && !selected {
+            pick = Some(right_side);
+        }
+    }
+    pick
+}
+
+#[allow(clippy::too_many_arguments)]
+fn body(ui: &mut Ui, app: &mut YaacApp, key: &ThreadKey, kind: &TabKind, doc: Option<std::sync::Arc<Document>>, error: Option<&str>, state: &mut Viewer, jump: Option<usize>) {
+    let p = app.p;
+    if *kind == TabKind::Files {
         let mut open = None;
         let mut changes = vec![];
-        egui::ScrollArea::both().show(ui, |ui| {
-            let area = app.browsers.areas.get(key).unwrap();
-            TreeView::new(ui.scope_id().with(("worktree", state.tree_epoch)))
-                .allow_drag_and_drop(false)
-                .show(ui, |b| {
-                    folder(b, &area.tree, "", &app.p, &mut changes, &mut open)
-                });
-            for (path, e) in &area.tree.errors {
-                ui.colored_label(app.p.failed, format!("{path} {e}"));
-            }
-            if area.tree.folders.values().any(|f| f.truncated) {
-                ui.label("Listing limited to 5,000 entries per folder.");
-            }
-        });
-        for (p, on) in changes {
-            app.browsers.areas.get_mut(key).unwrap().tree.expand(&p, on);
+        let area = app.browsers.areas.get(key).unwrap();
+        let mut rows = Vec::new();
+        flatten(&area.tree, "", 0, &mut rows);
+        let notes: Vec<(String, Color32)> = area
+            .tree
+            .errors
+            .iter()
+            .map(|(path, e)| (format!("{path} {e}"), p.failed))
+            .chain(
+                area.tree
+                    .folders
+                    .values()
+                    .any(|f| f.truncated)
+                    .then(|| ("Listing limited to 5,000 entries per folder.".to_owned(), p.text2)),
+            )
+            .collect();
+        if rows.is_empty() && area.tree.folders.is_empty() && notes.is_empty() {
+            ui.add_space(12.);
+            ui.horizontal(|ui| {
+                ui.add_space(14.);
+                widgets::icon(ui, 14., |pa, c, d| icons::spinner(pa, c, d, p.text2));
+                ui.label(widgets::secondary("Loading files…", &p));
+            });
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show_rows(ui, ROW_H, rows.len() + notes.len(), |ui, range| {
+                ui.spacing_mut().item_spacing.y = 0.;
+                for i in range {
+                    if let Some(row) = rows.get(i) {
+                        tree_row(ui, &p, &area.tree, row, state, &mut changes, &mut open);
+                    } else if let Some((text, color)) = notes.get(i - rows.len()) {
+                        ui.add_sized([ui.available_width(), ROW_H], egui::Label::new(RichText::new(text).font(theme::ui(size::SMALL)).color(*color)).truncate());
+                    }
+                }
+            });
+        for (path, on) in changes {
+            app.browsers.areas.get_mut(key).unwrap().tree.expand(&path, on);
             ui.ctx().request_repaint();
         }
         if let Some((kind, duplicate)) = open {
             let _ = app
                 .browsers
                 .open_file_tab(&mut app.client, key, kind, duplicate);
+            ui.ctx().request_repaint();
         }
     } else if let Some(e) = error {
-        ui.colored_label(app.p.failed, e);
+        ui.add_space(12.);
+        ui.horizontal(|ui| {
+            ui.add_space(14.);
+            ui.colored_label(p.failed, e);
+        });
     } else if let Some(doc) = doc {
         if let Document::Notice(s) = doc.as_ref() {
-            ui.label(s);
+            ui.add_space(12.);
+            ui.horizontal(|ui| {
+                ui.add_space(14.);
+                ui.label(widgets::secondary(s.clone(), &p));
+            });
         } else {
             let path = kind.path().unwrap();
             app.preview_ui.file_focus = Some(ui.scope_id().with(("selection", path)));
             let side = app.browsers.side_by_side && matches!(doc.as_ref(), Document::Diff(_));
             let view = Layout { doc: &doc, side };
-            if let Some(excerpt) = viewer(ui, &view, &mut state, jump, &app.p, path) {
+            if let Some(excerpt) = viewer(ui, &view, state, jump, &p, path) {
                 let draft = DraftRef::Thread(key.clone());
                 let edit = crate::composer::composer_id(&draft);
                 let mut cursor = egui::TextEdit::load_state(ui.ctx(), edit).unwrap_or_default();
@@ -147,25 +283,33 @@ pub(crate) fn draw(ui: &mut Ui, app: &mut YaacApp, key: &ThreadKey, id: u64) {
                             egui::text::CCursor::new(at + len),
                         )));
                     cursor.store(ui.ctx(), edit);
-                    app.browsers.areas.get_mut(key).unwrap().full_screen = false;
+                    app.browsers.set_full_screen(key, false);
                     app.ui.focus_composer = true;
                 }
             }
         }
     } else {
-        ui.label("Loading…");
+        ui.add_space(12.);
+        ui.horizontal(|ui| {
+            ui.add_space(14.);
+            widgets::icon(ui, 14., |pa, c, d| icons::spinner(pa, c, d, p.text2));
+            ui.label(widgets::secondary("Loading…", &p));
+        });
     }
-    ui.data_mut(|d| d.insert_temp(state_id, state));
 }
 
-fn folder(
-    b: &mut TreeViewBuilder<'_, String>,
-    tree: &FileTree,
-    dir: &str,
-    p: &Palette,
-    changes: &mut Vec<(String, bool)>,
-    open: &mut Option<(TabKind, bool)>,
-) {
+const ROW_H: f32 = 24.;
+const INDENT: f32 = 16.;
+
+struct TreeRow<'a> {
+    depth: usize,
+    path: String,
+    entry: &'a FsTreeEntry,
+}
+
+/// The visible rows: folders first then files (as listed), expanded folders' children under
+/// them, ignored entries only when shown.
+fn flatten<'a>(tree: &'a FileTree, dir: &str, depth: usize, out: &mut Vec<TreeRow<'a>>) {
     let Some(f) = tree.folders.get(dir) else {
         return;
     };
@@ -178,67 +322,93 @@ fn folder(
         } else {
             format!("{dir}/{}", e.name)
         };
-        let color = if e.ignored { p.unavailable } else { p.text };
-        if e.kind == FsTreeEntryKind::Dir {
-            let expanded = tree.expanded.contains(&path);
-            let is_open = b.node(
-                NodeBuilder::dir(path.clone()).default_open(expanded).label(
-                    RichText::new(format!("{}{}", e.name, if e.changed { " •" } else { "" }))
-                        .color(color),
-                ),
-            );
-            if is_open != expanded {
-                changes.push((path.clone(), is_open));
-            }
-            if is_open {
-                folder(b, tree, &path, p, changes, open);
-            }
-            b.close_dir();
-        } else {
-            b.node(NodeBuilder::leaf(path.clone()).label_ui(|ui| {
-                ui.horizontal(|ui| {
-                    let name = ui.label(RichText::new(&e.name).color(color));
-                    let hit = |r: &egui::Response| {
-                        r.ctx.input(|i| {
-                            if !i
-                                .pointer
-                                .interact_pos()
-                                .is_some_and(|pos| r.interact_rect.contains(pos))
-                            {
-                                return None;
-                            }
-                            if i.pointer.button_clicked(egui::PointerButton::Middle) {
-                                Some(true)
-                            } else if i.pointer.primary_clicked() {
-                                Some(false)
-                            } else {
-                                None
-                            }
-                        })
-                    };
-                    if let Some(new) = hit(&name) {
-                        *open = Some((TabKind::File(path.clone()), new));
-                    }
-                    if let Some(g) = &e.git {
-                        let col = match g {
-                            GitFileStatus::Added | GitFileStatus::Untracked => p.git_added,
-                            GitFileStatus::Deleted | GitFileStatus::Conflict => p.git_deleted,
-                            _ => p.git_modified,
-                        };
-                        let r = ui.label(RichText::new(g.as_str()).strong().color(col));
-                        if let Some(new) = hit(&r) {
-                            *open = Some((TabKind::Diff(path.clone()), new));
-                        }
-                    }
-                });
-            }));
+        let open = e.kind == FsTreeEntryKind::Dir && tree.expanded.contains(&path);
+        out.push(TreeRow { depth, path: path.clone(), entry: e });
+        if open {
+            flatten(tree, &path, depth + 1, out);
         }
     }
 }
 
+/// One tree row: a closed or open folder, or a file; the name; the git mark after it (a
+/// click on the mark opens the Diff tab) or a folder's change dot.
+fn tree_row(
+    ui: &mut Ui,
+    p: &Palette,
+    tree: &FileTree,
+    row: &TreeRow<'_>,
+    state: &mut Viewer,
+    changes: &mut Vec<(String, bool)>,
+    open: &mut Option<(TabKind, bool)>,
+) {
+    let e = row.entry;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), egui::Sense::click());
+    let row_rect = rect.shrink2(egui::vec2(4., 1.));
+    let selected = state.selected.as_deref() == Some(row.path.as_str());
+    if selected {
+        ui.painter().rect_filled(row_rect, 4., p.selected);
+    } else if resp.hovered() {
+        ui.painter().rect_filled(row_rect, 4., widgets::hover_fill(p, p.bg));
+    }
+    if resp.has_focus() {
+        ui.painter().rect_stroke(row_rect, 4., egui::Stroke::new(2., p.focus), egui::StrokeKind::Inside);
+    }
+    let ink = if e.ignored { p.unavailable } else { p.text };
+    let icon_ink = if e.ignored { p.unavailable } else { p.text2 };
+    let x = rect.left() + 14. + row.depth as f32 * INDENT;
+    let c = egui::pos2(x + 8., rect.center().y);
+    let dir = e.kind == FsTreeEntryKind::Dir;
+    let expanded = dir && tree.expanded.contains(&row.path);
+    if expanded {
+        icons::folder_open(ui.painter(), c, 17., icon_ink);
+    } else if dir {
+        icons::folder(ui.painter(), c, 17., icon_ink);
+    } else {
+        icons::file(ui.painter(), c, 16., icon_ink, false);
+    }
+    let mark = e.git.as_ref().map(|g| (g, crate::preview_ui::git_color(p, g)));
+    let mark_w = if mark.is_some() || e.changed { 22. } else { 0. };
+    let name_x = x + 24.;
+    let font = theme::ui(size::UI);
+    let g = widgets::elided(ui, &e.name, &font, ink, (rect.right() - 8. - mark_w - name_x).max(10.));
+    let name_w = g.size().x;
+    ui.painter().galley(egui::pos2(name_x, rect.center().y - g.size().y / 2.), g, ink);
+    let mut on_mark = false;
+    if let Some((g, col)) = mark {
+        let r = egui::Rect::from_center_size(egui::pos2(name_x + name_w + 14., rect.center().y), egui::vec2(18., 18.));
+        let m = ui.interact(r, resp.id.with("mark"), egui::Sense::click()).on_hover_text("Show the diff");
+        if m.hovered() {
+            ui.painter().rect_filled(r, 4., widgets::hover_fill(p, p.bg));
+        }
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, g.as_str(), theme::bold(size::SMALL), col);
+        if m.clicked() || m.middle_clicked() {
+            *open = Some((TabKind::Diff(row.path.clone()), m.middle_clicked()));
+            state.selected = Some(row.path.clone());
+            on_mark = true;
+        }
+    } else if e.changed {
+        ui.painter().circle_filled(egui::pos2(name_x + name_w + 10., rect.center().y), 3., p.git_modified);
+    }
+    if on_mark {
+        return;
+    }
+    if resp.clicked() || resp.middle_clicked() {
+        state.selected = Some(row.path.clone());
+        if dir {
+            if resp.clicked() {
+                changes.push((row.path.clone(), !expanded));
+            }
+        } else {
+            *open = Some((TabKind::File(row.path.clone()), resp.middle_clicked()));
+        }
+    }
+    resp.on_hover_text(&row.path);
+}
+
 #[derive(Default, Clone)]
 struct Viewer {
-    tree_epoch: u64,
+    /// The tree's selected row (the last one clicked).
+    selected: Option<String>,
     change: Option<usize>,
     // Original folded row -> number of extra displayed rows.
     expanded: BTreeMap<usize, usize>,
@@ -431,10 +601,12 @@ fn viewer(
     p: &Palette,
     path: &str,
 ) -> Option<yaac_code::Excerpt> {
-    let height = ui
-        .text_style_height(&egui::TextStyle::Monospace)
-        .max(ui.spacing().interact_size.y);
-    let stride = height + ui.spacing().item_spacing.y;
+    // Compact rows at the mono line height, no gaps between them.
+    ui.spacing_mut().item_spacing.y = 0.;
+    let height = (ui.fonts_mut(|f| f.row_height(&theme::mono(size::MONO))) + 3.).round();
+    let stride = height;
+    // Horizontal rows are at least `interact_size.y` tall: make that the line height.
+    ui.spacing_mut().interact_size.y = height;
     let mut scroll = egui::ScrollArea::vertical().id_salt(("code", path, layout.side));
     if let Some(row) = jump {
         scroll = scroll.vertical_scroll_offset(row as f32 * stride);
@@ -467,9 +639,16 @@ fn viewer(
                             }
                             continue;
                         }
+                        let cell = layout.cell(state, row, right);
+                        if let Some(cell) = cell.as_ref().filter(|c| c.kind != Kind::Context) {
+                            // Added and removed lines on their tint, the full row wide.
+                            let top = ui.cursor().top();
+                            let clip = ui.clip_rect();
+                            let r = egui::Rect::from_min_max(egui::pos2(clip.left(), top), egui::pos2(clip.right(), top + height));
+                            ui.painter().rect_filled(r, 0., p.diff_ground(cell.kind == Kind::Added));
+                        }
                         ui.horizontal(|ui| {
                             ui.set_min_height(height);
-                            let cell = layout.cell(state, row, right);
                             if let Some(cell) = cell {
                                 let s = cell.src.line_text(cell.index);
                                 let sign = match cell.kind {
@@ -482,10 +661,19 @@ fn viewer(
                                     Kind::Removed => p.git_deleted,
                                     Kind::Context => p.text2,
                                 };
+                                // Unified diffs number both sides: old, new, then the sign.
+                                let number = |n: Option<usize>| n.map_or_else(|| " ".repeat(5), |n| format!("{:>5}", n + 1));
+                                let gutter = match (layout.doc, layout.side, layout.row(state, row)) {
+                                    (Document::Diff(_), false, Some(DiffRow::Line { old, new })) => {
+                                        format!("{} {} {sign} ", number(old), number(new))
+                                    }
+                                    (Document::Diff(_), ..) => format!("{} {sign} ", number(Some(cell.index))),
+                                    _ => format!("{} ", number(Some(cell.index))),
+                                };
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new(format!("{:>5} {sign}", cell.index + 1))
-                                            .monospace()
+                                        RichText::new(gutter)
+                                            .font(theme::mono(size::MONO))
                                             .color(color),
                                     )
                                     .selectable(false)

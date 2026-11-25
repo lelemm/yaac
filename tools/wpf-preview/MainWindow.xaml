@@ -129,7 +129,6 @@
         <ColumnDefinition x:Name="SidebarColumn" Width="280" />
         <ColumnDefinition x:Name="SidebarGap" Width="1" />
         <ColumnDefinition Width="*" />
-        <ColumnDefinition x:Name="DockColumn" Width="0" />
       </Grid.ColumnDefinitions>
 
       <views:SidebarView x:Name="SidebarPane" />
@@ -204,12 +203,17 @@
             <Button Content="Continue" Click="ContinueClicked" shell:WindowChrome.IsHitTestVisibleInChrome="True" />
           </StackPanel>
         </Grid>
-        <Grid Grid.Row="1">
+        <Grid Grid.Row="1" x:Name="ThreadColumns" SizeChanged="ChatRegionSizeChanged">
           <Grid.ColumnDefinitions>
             <ColumnDefinition x:Name="BrowserChatColumn" Width="*" />
             <ColumnDefinition x:Name="BrowserDividerColumn" Width="0" />
             <ColumnDefinition x:Name="BrowserColumn" Width="0" />
           </Grid.ColumnDefinitions>
+          <Grid x:Name="ChatRegion" ClipToBounds="True" SizeChanged="ChatRegionSizeChanged">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition x:Name="DockColumn" Width="0"/>
+            </Grid.ColumnDefinitions>
           <Grid x:Name="BrowserChat" SizeChanged="BrowserChatSizeChanged">
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto" />
@@ -254,6 +258,13 @@
                          FontSize="17" FontWeight="SemiBold" />
             </Grid>
           </Grid>
+      <views:AgentsView Grid.Column="1" x:Name="AgentsPane" Panel.ZIndex="2"
+                        HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,20,0" />
+      <Thumb x:Name="DockSplitter" Grid.Column="1" Panel.ZIndex="3" Style="{StaticResource PaneSplitter}"
+             Margin="-3.5,0,0,0" HorizontalAlignment="Left" Visibility="Collapsed"
+             DragStarted="PaneDragStarted" DragDelta="PaneDragDelta" DragCompleted="PaneDragCompleted"
+             AutomationProperties.Name="Resize docked agents panel" />
+          </Grid>
           <GridSplitter x:Name="BrowserDivider" Grid.Column="1" HorizontalAlignment="Stretch"
                         VerticalAlignment="Stretch" Background="{DynamicResource YaacRule}"
                         ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"
@@ -263,12 +274,6 @@
           <views:BrowserView x:Name="BrowserPane" Grid.Column="2" Visibility="Collapsed" />
         </Grid>
       </Grid>
-      <views:AgentsView Grid.Column="2" x:Name="AgentsPane" Panel.ZIndex="2"
-                        HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,20,0" />
-      <Thumb x:Name="DockSplitter" Grid.Column="3" Panel.ZIndex="3" Style="{StaticResource PaneSplitter}"
-             Margin="-3.5,0,0,0" HorizontalAlignment="Left" Visibility="Collapsed"
-             DragStarted="PaneDragStarted" DragDelta="PaneDragDelta" DragCompleted="PaneDragCompleted"
-             AutomationProperties.Name="Resize docked agents panel" />
     </Grid>
 
     <views:SettingsView x:Name="SettingsPane" Visibility="Collapsed" />

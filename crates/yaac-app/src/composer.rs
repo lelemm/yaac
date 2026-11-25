@@ -547,9 +547,13 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                 } else {
                     130.0
                 };
-                ui.horizontal(|ui| {
+                // A narrow column (under 500 points, e.g. beside the side pane) puts the
+                // buttons on their own row under the text instead of squeezing it.
+                let stacked = ui.available_width() < STACK_BELOW;
+                let layout = if stacked { egui::Layout::top_down(egui::Align::Min) } else { egui::Layout::left_to_right(egui::Align::Center) };
+                ui.with_layout(layout, |ui| {
                     ui.vertical(|ui| {
-                        ui.set_width(ui.available_width() - btn_w);
+                        ui.set_width(if stacked { ui.available_width() } else { (ui.available_width() - btn_w).max(0.0) });
                         submit = text_column(ui, app, key, &d, id, &placeholder, dimmed, editing, actions);
                         if editing {
                             ui.label(widgets::secondary("Editing a queued message", &p));
@@ -559,7 +563,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                             ui.label(widgets::secondary(why, &p));
                         }
                     });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let buttons = |ui: &mut egui::Ui| {
                         if dimmed {
                             return;
                         }
@@ -603,7 +607,13 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                         }
                         // Attachments can be prepared while a turn runs.
                         attach_button(ui, app, &d, actions);
-                    });
+                    };
+                    let row = egui::Layout::right_to_left(egui::Align::Center);
+                    if stacked {
+                        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 30.0), row, buttons);
+                    } else {
+                        ui.with_layout(row, buttons);
+                    }
                 });
             });
             if ui.memory(|m| m.has_focus(id)) {
@@ -630,6 +640,9 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
         control_row(ui, app, &row, &Target::Thread(key.clone()), actions);
     }
 }
+
+/// Below this width the composer's buttons wrap to a row under the text.
+const STACK_BELOW: f32 = 500.0;
 
 /// The text box of a started thread's composer, on its draft — or, while a queued message is
 /// being edited, on that edit (D166).

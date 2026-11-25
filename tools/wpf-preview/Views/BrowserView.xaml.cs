@@ -19,7 +19,11 @@ public partial class BrowserView : UserControl
     private bool full, busy, focusNewTab, focusWhenConnected;
     private bool windowShown;
     private bool addressDirty, updatingAddress, composing;
-    private bool browserActive;
+    private bool browserActive, chat;
+    private string chatTitle = "", chatLogo = "", chatLogoColor = "", dismissedError = "";
+    private bool chatMarked;
+    private string chatTone = "";
+    private Border? selectedTab;
     private string filesReason = "Open a thread to use Files.";
     private readonly FilesPane files = new();
     private string displayedUrl = "";
@@ -27,17 +31,52 @@ public partial class BrowserView : UserControl
     private (ulong Tab, int Width, int Height, double Dpi)? viewport;
     private readonly Dictionary<ulong, BitmapImage> icons = new();
 
-    internal bool OwnsKeyboard => PageInput.IsKeyboardFocused || AddressField.IsKeyboardFocused || files.OwnsKeyboard;
+    internal bool OwnsKeyboard => PageInput.IsKeyboardFocused || AddressField.IsKeyboardFocused || LandingAddress.IsKeyboardFocused || files.OwnsKeyboard;
 
     public BrowserView()
     {
         InitializeComponent();
+        PaneIcon.Set(AddTabButton, "New tab");
+        AddTabButton.Click += (_, _) => OpenAddMenu(AddTabButton);
+        PaneIcon.Set(Back, "Back", "Back (Alt+Left)");
+        PaneIcon.Set(Forward, "Forward", "Forward (Alt+Right)");
+        PaneIcon.Set(External, "Open in browser");
+        PaneIcon.Set(Inspect, "Inspect", "Inspect (F12)");
+        PaneIcon.Set(DismissError, "Close", "Dismiss error");
+        AutomationProperties.SetName(DismissError, "Dismiss error");
+        DismissError.Click += (_, _) => { dismissedError = ErrorBanner.Text; ErrorRow.Visibility = Visibility.Collapsed; };
+        DiscoverySpinner.Content = new RunningSpinner();
+        TabAvailable.SizeChanged += (_, _) => SizeTabs();
+        TabScroll.ScrollChanged += (_, _) =>
+        {
+            LeftFade.Visibility = TabScroll.HorizontalOffset > .5 ? Visibility.Visible : Visibility.Collapsed;
+            RightFade.Visibility = TabScroll.HorizontalOffset + .5 < TabScroll.ScrollableWidth ? Visibility.Visible : Visibility.Collapsed;
+        };
+        TabScroll.PreviewMouseWheel += (_, e) =>
+        {
+            TabScroll.ScrollToHorizontalOffset(TabScroll.HorizontalOffset - e.Delta);
+            e.Handled = true;
+        };
+        AddressField.GotKeyboardFocus += (_, _) => AddressField.SelectAll();
+        AddressField.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            if (AddressField.IsKeyboardFocused) return;
+            AddressField.Focus();
+            e.Handled = true;
+        };
+        LandingAddress.TextChanged += (_, _) => AddressHint.Visibility =
+            LandingAddress.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        LandingAddress.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key != Key.Enter) return;
+            focusWhenConnected = true;
+            Send("navigate", new { url = LandingAddress.Text });
+            e.Handled = true;
+        };
         FilesContent.Content = files;
         files.Command += (command, data) =>
         {
-            if (command == "fullScreen")
-                Command?.Invoke("browser.fullScreen", new { thread, fullScreen = !full });
-            else if (active is ulong tab)
+            if (active is ulong tab)
             {
                 if (command == "add")
                     Command?.Invoke("files.add", new { thread, tab, data, caret = ComposerCaret?.Invoke() });
@@ -47,8 +86,23 @@ public partial class BrowserView : UserControl
         };
         PreviewKeyDown += (_, e) =>
         {
-            if (!browserActive || e.Key != Key.F12 || !Inspect.IsEnabled) return;
-            if (!e.IsRepeat) Send("inspect");
+            if (!browserActive) return;
+            var key = e.Key == Key.System ? e.SystemKey : e.Key;
+            if (key == Key.L && Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                AddressField.Focus();
+                AddressField.SelectAll();
+            }
+            else if (key == Key.Left && Keyboard.Modifiers == ModifierKeys.Alt && Back.IsEnabled) SendInput("Back");
+            else if (key == Key.Right && Keyboard.Modifiers == ModifierKeys.Alt && Forward.IsEnabled) SendInput("Forward");
+            else if (Reload.IsEnabled && (key == Key.F5 && Keyboard.Modifiers == ModifierKeys.None ||
+                key == Key.R && Keyboard.Modifiers == ModifierKeys.Control))
+                SendInput(busy ? "Stop" : "Reload");
+            else if (key == Key.F12 && Inspect.IsEnabled)
+            {
+                if (!e.IsRepeat) Send("inspect");
+            }
+            else return;
             e.Handled = true;
         };
         Back.Click += (_, _) => SendInput("Back");
@@ -58,6 +112,8 @@ public partial class BrowserView : UserControl
         Inspect.Click += (_, _) => Send("inspect");
         Fullscreen.Click += (_, _) => Command?.Invoke("browser.fullScreen", new { thread, fullScreen = !full });
 
+        AddressField.GotKeyboardFocus += (_, _) => AddressDisplay.Visibility = Visibility.Collapsed;
+        AddressField.LostKeyboardFocus += (_, _) => AddressDisplay.Visibility = Visibility.Visible;
         AddressField.TextChanged += (_, _) => addressDirty |= !updatingAddress;
         AddressField.PreviewKeyDown += (_, e) =>
         {
@@ -71,6 +127,7 @@ public partial class BrowserView : UserControl
             else if (e.Key == Key.Escape)
             {
                 SetAddress(displayedUrl);
+                if (Surface.IsVisible) FocusPage(); else LandingAddress.Focus();
                 e.Handled = true;
             }
         };
@@ -120,10 +177,13 @@ public partial class BrowserView : UserControl
         if (thread != nextThread) focusNewTab = false;
         var selected = state.Value("active");
         ulong? next = selected.ValueKind == JsonValueKind.Number ? selected.GetUInt64() : null;
-        bool switched = next != active || nextThread != thread;
+        bool nextChat = Flag(state, "fullScreen") && Flag(state, "chat");
+        bool switched = chat != nextChat || next != active || nextThread != thread;
         bool hadPageFocus = PageInput.IsKeyboardFocused;
         if (switched)
         {
+            LandingAddress.Clear();
+            dismissedError = "";
             focusWhenConnected = false;
             DismissPageUi();
             active = next;
@@ -134,23 +194,31 @@ public partial class BrowserView : UserControl
 
         thread = nextThread;
         full = Flag(state, "fullScreen");
-        Fullscreen.Content = full ? "Restore" : "Full screen";
+        chat = nextChat;
+        chatTitle = Text(state, "chatTitle");
+        chatLogo = Text(state, "chatLogo");
+        chatLogoColor = Text(state, "chatLogoColor");
+        chatMarked = Flag(state, "chatMarked");
+        chatTone = Text(state, "chatTone");
+        ChatHost.Visibility = chat ? Visibility.Visible : Visibility.Collapsed;
+        if ((string?)Fullscreen.ToolTip != (full ? "Restore" : "Full screen"))
+            PaneIcon.Set(Fullscreen, full ? "Restore" : "Full screen");
         var tabs = state.GetProperty("tabs");
         tabState = tabs.Clone();
         tabReason = Text(state, "reason");
         filesReason = Text(state, "filesReason");
-        RenderTabs(tabs, tabReason, switched);
+        RenderTabs(tabs, tabReason);
         var current = active is ulong tabId
             ? tabs.EnumerateArray().FirstOrDefault(t => t.GetProperty("id").GetUInt64() == tabId)
             : default;
         var kind = Text(current, "kind");
-        browserActive = active is not null && (kind is "" or "browser");
+        browserActive = !chat && active is not null && (kind is "" or "browser");
         BrowserToolbar.Visibility = browserActive ? Visibility.Visible : Visibility.Collapsed;
         if (!browserActive)
         {
             Surface.Visibility = Landing.Visibility = Visibility.Collapsed;
-            FilesContent.Visibility = active is null ? Visibility.Collapsed : Visibility.Visible;
-            if (active is not null) files.Render(state, current, thread, full);
+            FilesContent.Visibility = active is null || chat ? Visibility.Collapsed : Visibility.Visible;
+            if (!chat && active is not null) files.Render(state, current, thread);
             else files.Clear();
             return;
         }
@@ -163,26 +231,30 @@ public partial class BrowserView : UserControl
         busy = Flag(current, "loading");
         var error = Text(current, "error");
         var hasSurface = Flag(current, "surface");
+        if (ErrorBanner.Text != error) dismissedError = "";
         ErrorBanner.Text = error;
-        ErrorBanner.Visibility = hasSurface && error.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ErrorRow.Visibility = error != dismissedError && error.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         Surface.Visibility = hasSurface ? Visibility.Visible : Visibility.Collapsed;
         Landing.Visibility = hasSurface ? Visibility.Collapsed : Visibility.Visible;
         Reload.IsEnabled = hasSurface;
-        Reload.Content = busy ? "×" : "⟳";
-        Reload.ToolTip = busy ? "Stop" : "Reload";
-        AutomationProperties.SetName(Reload, (string)Reload.ToolTip);
+        if ((string?)Reload.ToolTip != (busy ? "Stop (F5 or Ctrl+R)" : "Reload (F5 or Ctrl+R)"))
+        {
+            PaneIcon.Set(Reload, busy ? "Stop" : "Reload", busy ? "Stop (F5 or Ctrl+R)" : "Reload (F5 or Ctrl+R)");
+            AddressIcon.Content = busy ? new RunningSpinner { Width = 16, Height = 16 } : PaneIcon.Draw("Browser");
+        }
+        ProgressLine.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         Back.IsEnabled = Flag(current, "back");
         Forward.IsEnabled = Flag(current, "forward");
         External.IsEnabled = url.Length > 0;
         Inspect.IsEnabled = hasSurface;
 
         if (!hasSurface)
-            RenderPorts(state, error.Length > 0 ? error : url.Length > 0 ? "Connecting…" : Text(state, "portsError"));
+            RenderPorts(state, url.Length > 0 && error.Length == 0 ? "Connecting…" : "");
         if (switched && hasSurface && hadPageFocus) SendInput(new { Focus = true });
         if (hasSurface && focusWhenConnected)
         {
             focusWhenConnected = false;
-            if (AddressField.IsKeyboardFocused) FocusPage();
+            FocusPage();
         }
         UpdateViewport();
         if (focusNewTab && switched && url.Length == 0)
@@ -192,90 +264,16 @@ public partial class BrowserView : UserControl
             {
                 if (active == tab && IsVisible)
                 {
-                    AddressField.Focus();
-                    AddressField.SelectAll();
+                    LandingAddress.Focus();
                 }
             });
         }
     }
 
-    private void RenderTabs(JsonElement tabs, string reason, bool bringSelectedIntoView)
+    internal bool FilesShortcut(Key key, ModifierKeys modifiers)
     {
-        // Address and loading updates do not replace tab controls or steal their focus.
-        var ids = new HashSet<ulong>();
-        var labels = new List<(ulong Id, string Title, string AgentLogo, string AgentLogoColor, string Path)>();
-        foreach (var tab in tabs.EnumerateArray())
-        {
-            var id = tab.GetProperty("id").GetUInt64();
-            var title = Text(tab, "title");
-            if (title.Length == 0) title = Text(tab, "url");
-            labels.Add((id, title.Length == 0 ? "New tab" : title, Text(tab, "agentLogo"), Text(tab, "agentLogoColor"), Text(tab, "path")));
-            ids.Add(id);
-        }
-        foreach (var id in icons.Keys.Where(id => !ids.Contains(id)).ToArray()) icons.Remove(id);
-        var signature = JsonSerializer.Serialize(new
-        {
-            active, reason, filesReason, tabs = labels.Select(t => new { t.Id, t.Title, t.AgentLogo, t.AgentLogoColor, t.Path }), favicon = icons.Keys
-        });
-        if (signature == tabSignature) return;
-        tabSignature = signature;
-        TabStrip.Children.Clear();
-
-        foreach (var (id, title, agentLogo, agentLogoColor, path) in labels)
-        {
-            var row = new DockPanel { LastChildFill = true, Margin = new Thickness(0, 0, 2, 0) };
-            if (active == id) row.SetResourceReference(BackgroundProperty, "YaacSelected");
-            row.PreviewMouseDown += (_, e) =>
-            {
-                if (e.ChangedButton != MouseButton.Middle) return;
-                SendFor(id, "close");
-                e.Handled = true;
-            };
-            var close = QuietButton("×", $"Close {title}");
-            DockPanel.SetDock(close, Dock.Right);
-            close.Click += (_, _) => SendFor(id, "close");
-            row.Children.Add(close);
-
-            var label = new DockPanel();
-            if (icons.TryGetValue(id, out var icon))
-                label.Children.Add(new Image { Source = icon, Width = 14, Height = 14, Margin = new Thickness(0, 0, 5, 0) });
-            if (agentLogo.Length > 0)
-            {
-                var mark = new System.Windows.Shapes.Path
-                {
-                    Data = Geometry.Parse(agentLogo), Width = 14, Height = 14, Stretch = Stretch.Uniform,
-                    Margin = new Thickness(0, 0, 5, 0),
-                };
-                if (agentLogoColor.Length > 0)
-                    mark.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString(agentLogoColor));
-                else
-                    mark.SetResourceReference(System.Windows.Shapes.Path.FillProperty, "YaacText");
-                label.Children.Add(mark);
-            }
-            label.Children.Add(new TextBlock { Text = title, MaxWidth = 156, TextTrimming = TextTrimming.CharacterEllipsis });
-            var pick = QuietButton(label, title);
-            if (path.Length > 0) pick.ToolTip = path;
-            if (agentLogo.Length > 0)
-            {
-                const string status = "Agent is using this tab";
-                pick.ToolTip = $"{title} · {status}";
-                AutomationProperties.SetItemStatus(pick, status);
-            }
-            pick.Click += (_, _) => SendFor(id, "select");
-            row.Children.Add(pick);
-            TabStrip.Children.Add(row);
-            if (bringSelectedIntoView && active == id)
-                Dispatcher.BeginInvoke(DispatcherPriority.Loaded, () =>
-                {
-                    if (active == id) row.BringIntoView();
-                });
-        }
-        var add = QuietButton("+", "New tab");
-        add.IsEnabled = reason.Length == 0 || filesReason.Length == 0;
-        if (!add.IsEnabled) add.ToolTip = reason;
-        ToolTipService.SetShowOnDisabled(add, true);
-        add.Click += (_, _) => OpenAddMenu(add);
-        TabStrip.Children.Add(add);
+        if (!FilesContent.IsVisible) return false;
+        return files.Shortcut(key, modifiers);
     }
 
     internal void OpenAddMenu(FrameworkElement target)
@@ -290,6 +288,8 @@ public partial class BrowserView : UserControl
         {
             var item = new MenuItem { Header = title, IsEnabled = unavailable.Length == 0,
                 ToolTip = unavailable.Length == 0 ? null : unavailable };
+            item.Icon = PaneIcon.Draw(title);
+            ((FrameworkElement)item.Icon).Margin = new Thickness(0,0,6,0);
             ToolTipService.SetShowOnDisabled(item, true);
             item.Click += (_, _) => choose();
             menu.Items.Add(item);
@@ -298,7 +298,7 @@ public partial class BrowserView : UserControl
 
     internal void ReceiveFileDocument(IncomingFileDocument document) => files.ReceiveDocument(document);
     internal void FileDocumentFailed(ulong id) => files.DocumentFailed(id);
-    internal void NavigateDiff(ulong id, int row) => files.Navigate(id, row);
+    internal void NavigateDiff(ulong id, int row, int ordinal) => files.Navigate(id, row, ordinal);
 
     internal void OpenNewTab()
     {
@@ -309,21 +309,44 @@ public partial class BrowserView : UserControl
     private void RenderPorts(JsonElement state, string status)
     {
         var ports = state.GetProperty("ports");
-        var signature = $"{active}:{status}:{ports.GetRawText()}";
+        var machine = Text(state,"machine");
+        var project = Text(state,"project").TrimEnd('/','\\');
+        var discovering = Flag(state, "discovering");
+        var portsError = Text(state, "portsError");
+        var signature = $"{thread}:{active}:{machine}:{project}:{discovering}:{status}:{portsError}:{ports.GetRawText()}";
         if (signature == portSignature) return;
         portSignature = signature;
-        LandingStatus.Text = status.Length > 0 ? status :
-            ports.GetArrayLength() > 0 ? "Listening ports" : "No listening ports found";
+        if (machine.Length == 0) machine = "this target";
+        bool empty = ports.GetArrayLength() == 0 && !discovering && status.Length == 0 && portsError.Length == 0;
+        LandingStatus.Text = status.Length > 0 ? status : portsError.Length > 0 ? portsError :
+            empty ? $"No servers are listening on {machine}." : $"Servers on {machine}";
+        DiscoverySpinner.Visibility = discovering ? Visibility.Visible : Visibility.Collapsed;
+        NoServersHint.Visibility = empty ? Visibility.Visible : Visibility.Collapsed;
         PortList.Children.Clear();
         foreach (var port in ports.EnumerateArray())
         {
             var number = port.GetProperty("port").GetInt32();
             var command = Text(port, "command");
             var cwd = Text(port, "cwd");
-            var label = command.Length == 0 ? $"{number}" : $"{number}   {command}";
-            var button = QuietButton(new TextBlock { Text = label, TextTrimming = TextTrimming.CharacterEllipsis }, label);
-            if (cwd.Length > 0) button.ToolTip = cwd;
-            button.HorizontalContentAlignment = HorizontalAlignment.Left;
+            if (project.Length > 0 && (cwd.StartsWith(project + "/") || cwd.StartsWith(project + "\\")))
+                cwd = cwd[(project.Length + 1)..];
+            else if (cwd == project) cwd = "project root";
+            var label = $"localhost:{number}";
+            var row = new DockPanel();
+            var globe = PaneIcon.Draw("Browser");
+            globe.Margin = new Thickness(0,0,10,0);
+            row.Children.Add(globe);
+            var chevron = PaneIcon.Draw("Chevron",12);
+            DockPanel.SetDock(chevron, Dock.Right);
+            row.Children.Add(chevron);
+            row.Children.Add(new TextBlock { Text = label, FontFamily = YaacFonts.Mono, VerticalAlignment = VerticalAlignment.Center });
+            row.Children.Add(new TextBlock { Text = string.Join("  ·  ", new[]{command, cwd}.Where(x => x.Length > 0)),
+                Margin = new Thickness(12,0,6,0), VerticalAlignment = VerticalAlignment.Center,
+                Foreground = Palette.Brush("YaacMuted"), TextTrimming = TextTrimming.CharacterEllipsis });
+            var button = QuietButton(row, label);
+            button.ToolTip = $"{label}  {command}  {cwd}".TrimEnd();
+            button.Height = 36;
+            button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
             var url = Text(port, "url");
             button.Click += (_, _) => Send("navigate", new { url });
             PortList.Children.Add(button);
