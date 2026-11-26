@@ -65,7 +65,7 @@ impl TerminalPipe {
     pub(super) fn update(
         &mut self,
         tab: Option<(u64, &mut crate::terminal::Session)>,
-        theme: crate::theme::ThemeChoice,
+        theme: Option<Theme>,
         out: &mut impl Write,
     ) -> io::Result<Option<Duration>> {
         self.select(tab.as_ref().map(|(id, _)| *id));
@@ -94,12 +94,9 @@ impl TerminalPipe {
         {
             return Ok(Some(wait));
         }
-        let dark = match theme {
-            crate::theme::ThemeChoice::Dark => true,
-            crate::theme::ThemeChoice::Light => false,
-            crate::theme::ThemeChoice::System => self.cell_size.0 == 0 || self.dark,
-        };
-        let theme = if dark { Theme::DARK } else { Theme::LIGHT };
+        let theme = theme.unwrap_or_else(|| {
+            if self.cell_size.0 == 0 || self.dark { Theme::DARK } else { Theme::LIGHT }
+        });
         let pixels = if self.cell_size.0 > 0 {
             self.cell_size
         } else {

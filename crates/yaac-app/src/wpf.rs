@@ -57,13 +57,6 @@ pub(super) fn available() -> bool {
     false
 }
 
-fn theme_name(theme: ThemeChoice) -> &'static str {
-    match theme {
-        ThemeChoice::Dark => "dark",
-        ThemeChoice::Light => "light",
-        ThemeChoice::System => "system",
-    }
-}
 
 fn scenario_name(scenario: Scenario) -> &'static str {
     match scenario {
@@ -85,7 +78,7 @@ impl Frontend {
     pub(super) fn start(launch: &crate::Launch) -> io::Result<Self> {
         let path = executable().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the WPF window is missing"))?;
         let mut command = Command::new(path);
-        command.args(["--pipe", "--theme", theme_name(launch.theme)])
+        command.args(["--pipe", "--theme", launch.theme.id()])
             .stdin(Stdio::piped()).stdout(Stdio::piped());
         if launch.tray { command.arg("--tray"); }
         if let Some(scenario) = launch.demo {
@@ -224,6 +217,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
     let mut insert = None;
     let mut paste_sequence = 0;
     let mut window_shown = false;
+    let mut system_theme = None;
     let mut visible_pr_rows = Vec::new();
     let mut agent_rows_visible = false;
     let mut next_pr_check = None;
@@ -256,6 +250,7 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
             );
             let mut output = ctx.run_ui(
                 egui::RawInput {
+                    system_theme,
                     time: Some(app.started.elapsed().as_secs_f64()),
                     ..Default::default()
                 },
@@ -398,6 +393,11 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
             Ok(Input::Command(frame)) => {
                 let command = string(&frame, "command");
                 let payload = &frame["payload"];
+                if command == "shell.systemTheme" {
+                    system_theme = Some(if payload["light"] == true { egui::Theme::Light } else { egui::Theme::Dark });
+                    once = true;
+                    continue;
+                }
                 if command.starts_with("browser.") || command.starts_with("files.") || command.starts_with("terminal.") {
                     match browser.command(&mut app, window_shown, command, payload) {
                         Ok(changed) => {
@@ -507,7 +507,9 @@ fn view(
             crate::shell::stopped_wsl_notifications(app).into_iter()
                 .map(|(target, notice)| json!({ "id": target, "label": notice })).collect::<Vec<_>>()
         },
-        "theme": theme_name(app.ui.theme),
+        "theme": app.ui.theme.id(),
+        "customPalette": (app.ui.theme == ThemeChoice::Custom).then(|| app.ui.themes.current()).flatten()
+            .map(|t| crate::theme::Palette::custom(t).wpf_colors()),
         "fontScale": app.ui.font_size / crate::theme::size::UI,
         "fonts": app.fonts.native,
         "commander": navigation::command_view(app),

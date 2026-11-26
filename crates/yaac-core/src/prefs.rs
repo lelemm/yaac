@@ -22,6 +22,19 @@ pub enum ThemePref {
     Dark,
     /// Light.
     Light,
+    /// Use the selected imported palette.
+    Custom,
+}
+
+impl ThemePref {
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::Custom => "custom",
+        }
+    }
 }
 
 /// Which key sends a message.
@@ -57,6 +70,7 @@ pub struct UiPrefs {
     pub diff_side_by_side: bool,
     /// Theme.
     pub theme: ThemePref,
+    pub themes: std::sync::Arc<crate::themes::Catalog>,
     /// The Muted section is expanded.
     pub muted_open: bool,
     /// Base UI font size in points.
@@ -121,7 +135,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, muted_open: false, font_size: 13.5, fonts: FontPrefs::default(), send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), composer_history: Default::default(), dismissed_artifacts: BTreeSet::new(), terminal: TerminalPrefs::default() }
+        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, themes: Default::default(), muted_open: false, font_size: 13.5, fonts: FontPrefs::default(), send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), composer_history: Default::default(), dismissed_artifacts: BTreeSet::new(), terminal: TerminalPrefs::default() }
     }
 }
 
@@ -191,11 +205,8 @@ impl UiPrefs {
                 "runningOnly": self.ordering.running_only,
             }),
             keys::AGENTS_DOCKED => json!(self.docked),
-            keys::THEME => json!(match self.theme {
-                ThemePref::System => "system",
-                ThemePref::Dark => "dark",
-                ThemePref::Light => "light",
-            }),
+            keys::THEME if !self.themes.entries.is_empty() => json!({"mode": self.theme.id(), "catalog": &*self.themes}),
+            keys::THEME => json!(self.theme.id()),
             keys::COLLAPSED => json!({ "muted": !self.muted_open }),
             keys::COLLAPSED_GROUPS => json!(self.collapsed_groups),
             keys::FONT_SIZE => json!(self.font_size),
@@ -298,7 +309,13 @@ impl UiPrefs {
                 }
             }
             keys::THEME => {
-                self.theme = match v.as_str() {
+                if let Some(catalog) = v.get("catalog") {
+                    let Ok(parsed) = serde_json::from_value::<crate::themes::Catalog>(catalog.clone()) else { return };
+                    if !parsed.valid() { return; }
+                    self.themes = std::sync::Arc::new(parsed);
+                }
+                self.theme = match v.get("mode").unwrap_or(v).as_str() {
+                    Some("custom") if self.themes.current().is_some() => ThemePref::Custom,
                     Some("dark") => ThemePref::Dark,
                     Some("light") => ThemePref::Light,
                     Some("system") => ThemePref::System,

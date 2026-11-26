@@ -192,6 +192,8 @@ public partial class SettingsView
         private readonly StackPanel titleRow = new();
         private readonly StackPanel sectionActions = new();
         private readonly StackPanel rowHost = new();
+        private readonly WrapPanel previews = new();
+        private string previewState = "";
         private readonly Dictionary<string, Row> rows = new(StringComparer.Ordinal);
         private readonly Row header;
 
@@ -214,6 +216,7 @@ public partial class SettingsView
             stack.Children.Add(titleRow);
             stack.Children.Add(detail);
             stack.Children.Add(rowHost);
+            stack.Children.Add(previews);
             header = new Row(owner);
             stack.Children.Add(sectionActions);
             sectionActions.Children.Add(header.Root);
@@ -244,6 +247,37 @@ public partial class SettingsView
                 header.Root.Margin = inlineActions ? new Thickness(12, 0, 0, 0) : new Thickness();
             }
             header.Apply(section, true);
+            if (section.TryGetProperty("cards", out var cards) && cards.GetRawText() != previewState)
+            {
+                previewState = cards.GetRawText();
+                previews.Children.Clear();
+                foreach (var card in cards.EnumerateArray())
+                {
+                    var name = Str(card, "name");
+                    var stack = new StackPanel();
+                    var canvas = new Canvas { Width = 264, Height = 144, ClipToBounds = true };
+                    stack.Children.Add(canvas);
+                    foreach (var piece in Items(card, "scene"))
+                    {
+                        var rgb = piece.GetProperty("color").GetUInt32();
+                        var brush = new SolidColorBrush(Color.FromRgb((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb));
+                        var text = Str(piece, "text");
+                        var height = piece.GetProperty("h").GetInt32();
+                        FrameworkElement child = text.Length > 0
+                            ? new TextBlock { Text = text, Foreground = brush, FontSize = height }
+                            : new Border { Width = piece.GetProperty("w").GetInt32(), Height = height, Background = brush };
+                        Canvas.SetLeft(child, piece.GetProperty("x").GetInt32());
+                        Canvas.SetTop(child, piece.GetProperty("y").GetInt32());
+                        canvas.Children.Add(child);
+                    }
+                    stack.Children.Add(new TextBlock { Text = name, Margin = new Thickness(4) });
+                    var button = new Button { Content = stack, Padding = new Thickness(1), Margin = new Thickness(0, 0, 8, 8),
+                        BorderThickness = new Thickness(Flag(card, "selected") ? 2 : 1) };
+                    AutomationProperties.SetName(button, name);
+                    button.Click += (_, _) => owner.SendAction("appearance.selectTheme", new() { ["name"] = name });
+                    previews.Children.Add(button);
+                }
+            }
             Arrange(rowHost, rows, Items(section, "rows"), item => Str(item, "id"),
                 _ => new Row(owner), (row, item) => row.Apply(item), row => row.Root, row => row.Detach());
         }

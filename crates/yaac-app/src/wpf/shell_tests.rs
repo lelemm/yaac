@@ -234,7 +234,7 @@ fn frames() {
     std::fs::create_dir_all(&dir).unwrap();
     let ctx = egui::Context::default();
     for theme in [ThemeChoice::Dark, ThemeChoice::Light] {
-        let name = theme_name(theme);
+        let name = theme.id();
         let key = threads::ci();
         let finished = vec![
             bang("u1", "s1", "cargo test -p yaac-core"),

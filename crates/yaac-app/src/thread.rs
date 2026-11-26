@@ -826,6 +826,10 @@ pub(crate) fn transcript(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMa
                     } else {
                         ui.strong(&card.artifact.title);
                     }
+                    if let Some(source) = card.inline_image()
+                        && app.images.inline(ui, &source, &card.artifact.title) {
+                        actions_local.push(Action::OpenImage(source, card.artifact.title.clone()));
+                    }
                     if card.worker != *key { ui.label(yaac_core::copies::header(state, &card.worker).text()); }
                     if card.artifact.name != card.artifact.title { ui.label(&card.artifact.name); }
                     ui.horizontal_wrapped(|ui| {
@@ -2097,6 +2101,7 @@ mod tests {
         app.pump_demo();
         app.zone = yaac_core::time::Zone::new(-3 * 3600);
         app.client.state.threads.get_mut(&key).unwrap().summary.artifacts = Some(vec![yaac_protocol::GeneratedArtifact {
+            inline_preview: None,
             upload_id: "u_artifact_md_test".into(), name: "report.md".into(), size: 12, title: "Generated report".into(),
             published_at: Some("2026-11-25T18:34:00Z".into()),
         }]);

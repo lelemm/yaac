@@ -23,6 +23,11 @@ pub(crate) struct ArtifactCard {
 }
 
 impl ArtifactCard {
+    pub(crate) fn inline_image(&self) -> Option<crate::images::ImageSource> {
+        (self.artifact.inline_preview == Some(true) && matches!(self.extension(), Ok("png" | "jpg" | "jpeg" | "gif" | "webp"))).then(||
+            crate::images::ImageSource::Target(self.worker.target.clone(), self.artifact.upload_id.clone()))
+    }
+
     pub(crate) fn publication_time(&self, zone: yaac_core::time::Zone) -> Option<String> {
         use yaac_core::time::{clock_in, date_in, secs};
         let at = secs(self.artifact.published_at.as_ref()?)?;
@@ -366,6 +371,7 @@ mod tests {
         let mut card = ArtifactCard {
             worker: yaac_core::demo::threads::index(),
             artifact: GeneratedArtifact {
+                inline_preview: None,
                 name: "sample.md".into(),
                 upload_id: "test".into(),
                 title: "Report".into(),
@@ -406,6 +412,7 @@ mod tests {
         let key = yaac_core::demo::threads::notes();
         let bytes = b"<script>sample</script>".to_vec();
         let artifact = GeneratedArtifact {
+            inline_preview: None,
             upload_id: format!("u_artifact_md_{:x}", Sha256::digest(&bytes)).into(),
             title: "Report".into(),
             name: "report.md".into(),

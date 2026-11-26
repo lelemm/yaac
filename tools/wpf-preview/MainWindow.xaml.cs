@@ -173,6 +173,7 @@ public partial class MainWindow : Window
                 return;
             }
             Send("shell.ready", new { tray = tray is not null });
+            ReportSystemTheme();
             UpdateVisibility();
             await Task.Run(() => session.RunAsync(
                 frame =>
@@ -332,7 +333,7 @@ public partial class MainWindow : Window
         RenderStatusNotice();
         if (shell.TryGetProperty("stoppedWsl", out var stoppedWsl)) RenderWslNotifications(stoppedWsl);
         if (shell.TryGetProperty("commander", out var commands)) RenderCommander(commands);
-        Palette.SetTheme(Text(shell, "theme"));
+        Palette.SetTheme(Text(shell, "theme"), shell.Value("customPalette"));
         RenderHistory(SidebarPane.BackButton, shell, "back");
         RenderHistory(SidebarPane.ForwardButton, shell, "forward");
         RenderHistory(RailBack, shell, "back");
@@ -411,6 +412,30 @@ public partial class MainWindow : Window
     private void BackClicked(object sender, RoutedEventArgs args) => Send("shell.back");
     private void ForwardClicked(object sender, RoutedEventArgs args) => Send("shell.forward");
     private void NeedsClicked(object sender, RoutedEventArgs args) => Send("shell.needs");
+
+    private bool? systemLight;
+    private bool readingSystemTheme;
+    internal async void ReportSystemTheme()
+    {
+        // Report the OS preference independently of the window's forced light/dark mode.
+        if (controller is null || readingSystemTheme) return;
+        readingSystemTheme = true;
+        try
+        {
+            var light = await Task.Run(() => Microsoft.Win32.Registry.GetValue(
+                @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "AppsUseLightTheme", 1) is not 0);
+            if (!closed && systemLight != light)
+            {
+                systemLight = light;
+                Send("shell.systemTheme", new { light });
+            }
+        }
+        catch (System.Security.SecurityException) { }
+        catch (UnauthorizedAccessException) { }
+        catch (System.IO.IOException) { }
+        finally { readingSystemTheme = false; }
+    }
 
     private void UpdateVisibility()
     {

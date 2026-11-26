@@ -301,11 +301,10 @@ async function workingBytes(loc: WorktreePath, limit: number): Promise<FileBytes
 }
 
 /** Snapshot bytes under the authenticated caller's worktree using the ordinary confined reader. */
-export function artifactBytes(root: string, relative: string): Promise<Buffer> {
+export function artifactBytes(root: string, relative: string, limit = 64 * 1024 * 1024): Promise<Buffer> {
   return schedule(async () => {
-    const limit = 64 * 1024 * 1024;
     const { size, bytes } = await workingBytes(await locate(root, relative), limit);
-    if (!size || size > limit) throw invalid("present a nonempty artifact of at most 64 MiB");
+    if (!size || size > limit) throw invalid(`provide a nonempty file of at most ${limit} bytes`);
     return bytes;
   });
 }

@@ -43,7 +43,9 @@ pub(crate) fn widget_id(session: u64) -> egui::Id {
 }
 
 pub(crate) fn theme_of(p: &Palette) -> Theme {
-    if p.dark { Theme::DARK } else { Theme::LIGHT }
+    let base = if p.dark { Theme::DARK } else { Theme::LIGHT };
+    let rgb = |c: Color32| yaac_term::Rgb(c.r(), c.g(), c.b());
+    Theme { bg: rgb(p.bg), fg: rgb(p.text), cursor: rgb(p.text), cursor_text: rgb(p.bg), ..base }
 }
 
 fn c32(c: yaac_term::Rgb) -> Color32 {
@@ -104,7 +106,7 @@ struct RowMesh {
 
 #[derive(Default)]
 struct Grid {
-    key: Option<((u32, [usize; 2], u64), usize, usize, bool)>,
+    key: Option<((u32, [usize; 2], u64), usize, usize, Theme)>,
     rows: Vec<RowMesh>,
     assembled: Option<(u64, Pos2, u64, Arc<egui::Mesh>)>,
 }
@@ -569,7 +571,7 @@ fn grid_mesh(ui: &egui::Ui, r: &mut Renderer, session: u64, frame: &Frame, origi
     let m = r.atlas.refresh(ui);
     let atlas_key = r.atlas.key.expect("refreshed");
     let grid = r.grids.entry(session).or_default();
-    let key = (atlas_key, frame.cols, frame.rows, theme.dark);
+    let key = (atlas_key, frame.cols, frame.rows, *theme);
     let full = grid.key != Some(key) || frame.full || grid.rows.len() != frame.rows;
     let mut built = 0;
     if full {
@@ -1555,6 +1557,10 @@ mod tests {
         rig.session().term.feed(b"l");
         rig.frame();
         assert_eq!(rig.stats().0, built + 1);
+        // Switching between two dark palettes invalidates already painted glyphs.
+        rig.app.p.text = Color32::from_rgb(121, 222, 113);
+        rig.frame();
+        assert!(rig.stats().0 > built + 1);
     }
 
     #[test]

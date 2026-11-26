@@ -406,6 +406,9 @@ catalogue! {
         /// Terminal rename: the user's name for a terminal (P343).
         TerminalRename = "terminal/rename" as TERMINAL_RENAME:
             t::TerminalRenameParams => t::Empty, HostToDaemon, request Control, response Control;
+        /// Manage window appearance.
+        ThemeCall = "theme/call" as THEME_CALL:
+            t::ThemeCallParams => t::ThemeCallResult, DaemonToHost, request Control, response Bulk;
         /// Inspect the calling thread’s browser.
         BrowserCall = "browser/call" as BROWSER_CALL:
             t::BrowserCallParams => t::BrowserCallResult, DaemonToHost, request Control, response Bulk;

@@ -78,6 +78,7 @@ pub(super) fn decode_peer_request(_: &Dialect, method: &str, params: Value) -> R
     Ok(match method {
         names::MESH_RELAY => PeerRequest::MeshRelay(decode("mesh/relay", params)?),
         names::MESH_DELIVERY_RECEIPT => PeerRequest::MeshDeliveryReceipt(decode("mesh/deliveryReceipt", params)?),
+        names::THEME_CALL => PeerRequest::ThemeCall(decode("theme/call", params)?),
         names::BROWSER_CALL => PeerRequest::BrowserCall(decode("browser/call", params)?),
         names::MESH_QUERY => PeerRequest::MeshQuery(decode("mesh/query", params)?),
         names::MESH_USAGE => PeerRequest::MeshUsage(decode("mesh/usage", params)?),

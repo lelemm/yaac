@@ -18,12 +18,11 @@ use yaac_core::ThreadKey;
 use yaac_core::commands::{self as cmds, Avail, Cmd, Ctx, StepKind, StepValue};
 use yaac_core::history::Place;
 use yaac_core::keys::{Chord, MouseButton};
-use yaac_core::prefs::ThemePref;
 use yaac_core::state::Selection;
 use yaac_protocol::ItemId;
 
 use crate::app::{Action, YaacApp};
-use crate::theme::{self, ThemeChoice, size};
+use crate::theme::{self, size};
 use crate::widgets;
 
 /// The smallest and largest interface size (points of body text), as in Appearance.
@@ -122,11 +121,7 @@ pub(crate) fn with_ctx<R>(app: &YaacApp, card: Option<&ItemId>, f: impl FnOnce(&
         ordering: app.ui.ordering,
         archived_open: app.ui.archived_open,
         docked: app.ui.panel == yaac_core::agents::PanelMode::Docked,
-        theme: match app.ui.theme {
-            ThemeChoice::System => ThemePref::System,
-            ThemeChoice::Dark => ThemePref::Dark,
-            ThemeChoice::Light => ThemePref::Light,
-        },
+        theme: app.ui.theme,
         zoom: (app.ui.font_size, ZOOM_MIN, ZOOM_MAX),
         host_windows: app.host_windows,
         focused_card: card,
@@ -613,11 +608,7 @@ pub(crate) fn run_step(app: &mut YaacApp, cmd: Cmd, value: StepValue, actions: &
                 cmds::GroupField::Worktree => g.worktree = !g.worktree,
             }
         }
-        StepValue::Theme(t) => actions.push(Action::Theme(match t {
-            ThemePref::System => ThemeChoice::System,
-            ThemePref::Dark => ThemeChoice::Dark,
-            ThemePref::Light => ThemeChoice::Light,
-        })),
+        StepValue::Theme(t) => actions.push(Action::Theme(t)),
         StepValue::Retry(t) => actions.push(Action::Retry(t)),
         StepValue::TargetEnabled(t, on) => actions.push(Action::TargetEnabled(t, on)),
         StepValue::Refresh(t) => actions.push(Action::RefreshProviders(t, None)),

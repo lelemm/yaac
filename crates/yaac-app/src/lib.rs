@@ -63,6 +63,7 @@ mod skills_ui;
 mod terminal;
 mod terminal_ui;
 mod theme;
+mod custom_themes;
 mod thread;
 mod timeline;
 mod titlebar;

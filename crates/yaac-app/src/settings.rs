@@ -1279,7 +1279,7 @@ fn appearance(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     let p = app.p;
     title_row(ui, "Appearance", |_| {});
     widgets::heading(ui, "Theme");
-    for (choice, label) in [(ThemeChoice::System, "Follow the system"), (ThemeChoice::Dark, "Dark"), (ThemeChoice::Light, "Light")] {
+    for (choice, label) in [(ThemeChoice::System, "Follow the system"), (ThemeChoice::Dark, "Dark"), (ThemeChoice::Light, "Light"), (ThemeChoice::Custom, "Custom")] {
         if ui.radio(app.ui.theme == choice, label).clicked() {
             actions.push(Action::Theme(choice));
         }
@@ -1344,6 +1344,24 @@ fn appearance(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     if let Some(error) = &app.fonts.error {
         ui.label(egui::RichText::new(error).color(p.failed));
     }
+
+    widgets::heading(ui, "Custom themes");
+    if ui.button("Import JSON…").clicked() { app.import_theme(); }
+    if let Some(error) = &app.theme_import.error { ui.colored_label(p.failed,error); }
+    let mut picked = None;
+    ui.horizontal_wrapped(|ui| {
+        for theme in app.ui.themes.entries.values() {
+            ui.allocate_ui_with_layout(egui::vec2(264.0, 170.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                let selected = app.ui.theme == ThemeChoice::Custom && app.ui.themes.selected == theme.name;
+                let preview = crate::custom_themes::card(ui, theme);
+                let label = ui.selectable_label(selected, &theme.name);
+                if preview.clicked() || label.clicked() {
+                    picked = Some(theme.name.clone());
+                }
+            });
+        }
+    });
+    if let Some(name) = picked { let _ = app.select_theme(&name); }
 
 }
 

@@ -39,6 +39,10 @@ public partial class App : Application
 
     private void SystemThemeChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs args)
     {
-        if (Palette.FollowsSystem) Dispatcher.BeginInvoke(Palette.Refresh);
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (Palette.FollowsSystem) Palette.Refresh();
+            (MainWindow as MainWindow)?.ReportSystemTheme();
+        });
     }
 }

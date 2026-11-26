@@ -51,6 +51,7 @@ pub mod moving;
 pub mod mute;
 pub mod pr;
 pub mod prefs;
+pub mod themes;
 pub mod settings;
 pub mod ssh_setup;
 pub mod requests;

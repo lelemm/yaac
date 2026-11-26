@@ -317,6 +317,9 @@ pub struct ThreadSetModeParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GeneratedArtifact {
+    /// Render a raster image inside its transcript card (theme previews).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_preview: Option<bool>,
     /// Content-addressed snapshot, readable with upload/read on the originating target.
     pub upload_id: super::UploadId,
     /// Byte size of the published snapshot.

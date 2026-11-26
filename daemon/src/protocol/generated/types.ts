@@ -1682,6 +1682,10 @@ export interface FsTreeResult {
  */
 export interface GeneratedArtifact {
   /**
+   * Render a raster image inside its transcript card (theme previews).
+   */
+  inlinePreview?: boolean | null;
+  /**
    * Suggested filename on download.
    */
   name: string;
@@ -5223,6 +5227,56 @@ export interface TextPart {
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
 export type TextRole = "pasted" | "command" | "context";
+
+/**
+ * Window appearance operation from a ticket-authenticated thread.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type ThemeCallParams = {
+  threadId: ThreadId;
+} & (({
+  kind: "list";
+} & Empty) | ({
+  kind: "preview";
+} & ThemeName) | ({
+  kind: "import";
+} & ThemeImport) | ({
+  kind: "select";
+} & ThemeSelect));
+
+/**
+ * Host theme catalog after the operation, including an encoded image for preview requests.
+ */
+export interface ThemeCallResult {
+  png?: string | null;
+  selected: string;
+  themes: string[];
+}
+
+/**
+ * Import JSON into the host library, replacing a duplicate only by explicit request.
+ */
+export interface ThemeImport {
+  json: string;
+  opId: OpId;
+  overwrite: boolean;
+}
+
+/**
+ * Name of the built-in or imported palette to preview.
+ */
+export interface ThemeName {
+  name: string;
+}
+
+/**
+ * Apply a named palette in the attached window.
+ */
+export interface ThemeSelect {
+  name: string;
+  opId: OpId;
+}
 
 /**
  * `thread/ack`: how far this client has durably got. Sent periodically while attached.

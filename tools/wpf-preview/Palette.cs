@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Data;
 using System.Windows.Media;
@@ -48,12 +49,15 @@ internal static class Palette
     internal static Brush Brush(string name) => Brushes[name].Brush;
     internal static bool FollowsSystem => requested == "system";
 
-    internal static void SetTheme(string theme)
+    private static JsonElement custom;
+
+    internal static void SetTheme(string theme, JsonElement palette = default)
     {
-        requested = theme;
+        custom = theme == "custom" ? palette : default;
+        requested = custom.ValueKind == JsonValueKind.Object ? (custom.GetProperty("dark").GetBoolean() ? "dark" : "light") : theme;
         var app = Application.Current;
 #pragma warning disable WPF0001 // Preview uses WPF's Fluent control resources.
-        var mode = theme switch { "light" => ThemeMode.Light, "system" => ThemeMode.System, _ => ThemeMode.Dark };
+        var mode = requested switch { "light" => ThemeMode.Light, "system" => ThemeMode.System, _ => ThemeMode.Dark };
         if (app.ThemeMode != mode)
             app.ThemeMode = mode;
 #pragma warning restore WPF0001
@@ -69,6 +73,8 @@ internal static class Palette
         foreach (var (name, darkValue, lightValue) in Colors)
         {
             var value = light ? lightValue : darkValue;
+            if (custom.ValueKind == JsonValueKind.Object && custom.TryGetProperty(name, out var rgb))
+                value = rgb.GetUInt32();
             var color = Color.FromRgb((byte)(value >> 16), (byte)(value >> 8), (byte)value);
             if (Brushes.TryGetValue(name, out var current))
             {

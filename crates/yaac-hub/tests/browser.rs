@@ -142,3 +142,30 @@ fn a_browser_request_finishes_when_its_window_detaches() {
     assert!(second.drain().iter().all(|msg| !matches!(msg, Message::Request { .. })));
     hub.shutdown();
 }
+
+#[test]
+fn remote_theme_call_uses_the_attached_window_and_returns_its_palette_result() {
+    let home = Home::new();
+    let daemon = FakeDaemon::new("remote");
+    home.fakes.add(&daemon);
+    let hub = home.start();
+    let window = hub.client();
+    let target = window.add_target("remote").id;
+    window.wait_status(&target, ConnectionStatus::Connected);
+    let params = json!({"threadId":"remote-thread","kind":"select","name":"Oasis","opId":"once"});
+    let peer = daemon.originate(methods::names::THEME_CALL, params.clone()).unwrap();
+    let mut request = None;
+    wait_until("theme request reaches window", || {
+        request = window.drain().into_iter().find_map(|msg| match msg {
+            Message::Request { id, method, params } if method == attach::names::THEME_CALL => Some((id,params)),
+            _ => None,
+        });
+        request.is_some()
+    });
+    let (id, got) = request.unwrap();
+    assert_eq!(params,got);
+    let result = json!({"selected":"Oasis","themes":["dark","Oasis"]});
+    window.link.send(Message::Response {id,result:result.clone()}).unwrap();
+    assert_eq!(answer(&daemon, peer).unwrap(), result);
+    hub.shutdown();
+}

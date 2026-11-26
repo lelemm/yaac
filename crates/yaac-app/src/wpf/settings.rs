@@ -150,7 +150,7 @@ pub(super) fn upkeep(app: &mut YaacApp, target: Option<&TargetId>) {
 pub(super) fn view(app: &YaacApp, target: Option<&TargetId>) -> Value {
     if let HelloOutcome::WindowOutdated { message } = &app.client.state.hub.outcome {
         return json!({
-            "mode": "updateNeeded", "theme": theme_id(app.ui.theme), "title": "Update YAAC", "detail": message,
+            "mode": "updateNeeded", "theme": app.ui.theme.id(), "title": "Update YAAC", "detail": message,
             "footer": "A newer YAAC is already running on this computer."
         });
     }
@@ -158,7 +158,7 @@ pub(super) fn view(app: &YaacApp, target: Option<&TargetId>) -> Value {
         if first_run::is_first_run(&app.client.state)
             && app.client.state.selection == Selection::None
         {
-            return with(welcome(app), json!({ "theme": theme_id(app.ui.theme) }));
+            return with(welcome(app), json!({ "theme": app.ui.theme.id() }));
         }
         return json!({ "mode": "hidden" });
     }
@@ -200,7 +200,7 @@ pub(super) fn view(app: &YaacApp, target: Option<&TargetId>) -> Value {
     };
     with(
         content,
-        json!({ "mode": "settings", "page": page.label().to_ascii_lowercase(), "theme": theme_id(app.ui.theme) }),
+        json!({ "mode": "settings", "page": page.label().to_ascii_lowercase(), "theme": app.ui.theme.id() }),
     )
 }
 
@@ -800,16 +800,9 @@ fn providers(app: &YaacApp, target: Option<&TargetId>) -> Value {
     })
 }
 
-fn theme_id(theme: ThemeChoice) -> &'static str {
-    match theme {
-        ThemeChoice::System => "system",
-        ThemeChoice::Dark => "dark",
-        ThemeChoice::Light => "light",
-    }
-}
 
 fn appearance(app: &YaacApp) -> Value {
-    let theme = theme_id(app.ui.theme);
+    let theme = app.ui.theme.id();
     let default_size = crate::theme::size::UI;
     let mut choices = vec![action("default", "YAAC default", true)];
     choices.extend(app.fonts.choices.iter().map(|choice| json!({
@@ -822,7 +815,7 @@ fn appearance(app: &YaacApp) -> Value {
     json!({ "sections": [
         { "id": "theme", "title": "Theme", "rows": [
             { "id": "theme", "fields": [{ "id": "theme", "type": "radio", "value": theme, "action": "appearance.theme",
-                "options": [action("system", "Follow the system", true), action("dark", "Dark", true), action("light", "Light", true)] }] }
+                "options": [action("system", "Follow the system", true), action("dark", "Dark", true), action("light", "Light", true), action("custom", "Custom", true)] }] }
         ] },
         { "id": "font", "title": "Font size", "detail": "Scales the whole window; agent prose stays the largest text.", "rows": [
             { "id": "font", "label": format!("{:.1} pt", app.ui.font_size), "actions": [
@@ -841,7 +834,12 @@ fn appearance(app: &YaacApp) -> Value {
                 "actions": [action("appearance.importCode", "Import font…", true)]
             },
             { "id": "font-error", "label": app.fonts.error }
-        ] }
+        ] },
+        {"id":"custom-themes","title":"Custom themes","detail":app.theme_import.error,
+         "actions":[action("appearance.importTheme","Import JSON…",true)],
+         "cards":app.ui.themes.entries.values().map(|t| json!({"name":t.name,
+            "selected":app.ui.theme == ThemeChoice::Custom && app.ui.themes.selected == t.name,
+            "scene":crate::custom_themes::scene(&crate::theme::Palette::custom(t))})).collect::<Vec<_>>()}
     ] })
 }
 
@@ -1371,7 +1369,10 @@ pub(super) fn command(
             app.ui.set.diag_target = Some(target_id(app, values)?);
             return Ok(());
         }
+        "appearance.importTheme" => { app.import_theme(); return Ok(()); }
+        "appearance.selectTheme" => { app.select_theme(string(values,"name"))?; return Ok(()); }
         "appearance.theme" => Action::Theme(match string(values, "theme") {
+            "custom" => ThemeChoice::Custom,
             "dark" => ThemeChoice::Dark,
             "light" => ThemeChoice::Light,
             "system" => ThemeChoice::System,

@@ -3,13 +3,7 @@
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Shadow, Stroke, Visuals};
 
-/// Theme preference.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ThemeChoice {
-    Dark,
-    Light,
-    System,
-}
+pub(crate) use yaac_core::prefs::ThemePref as ThemeChoice;
 
 /// The tokens of one theme.
 #[derive(Clone, Copy, Debug, PartialEq)]

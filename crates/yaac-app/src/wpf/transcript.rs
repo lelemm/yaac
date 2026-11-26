@@ -736,7 +736,12 @@ fn conversation(app: &YaacApp, map: &AttentionMap, markdown: &mut super::markdow
         let actions = card.actions(browser).into_iter().map(|(command,label)| sidebar_view::action(&format!("artifact{command:?}"), label, true)).collect::<Vec<_>>();
         let from = (card.worker != *key).then(|| yaac_core::copies::header(state, &card.worker).text());
         let text = [from.as_deref(), (card.artifact.name != card.artifact.title).then_some(card.artifact.name.as_str())].into_iter().flatten().collect::<Vec<_>>().join("\n");
-        rows.push(json!({"id": id, "kind":"artifact", "title":card.artifact.title, "text":text, "filename":card.artifact.name,
+        let parts: Vec<_> = card.inline_image().into_iter().map(|source| json!({
+            "kind":"image","id":"image","label":card.artifact.title,"preview":app.images.wire_preview(&source),
+            "action":sidebar_view::action("artifactOpenImage","Open image",true),
+            "request":sidebar_view::action("artifactPreviewImage","Preview image",true)
+        })).collect();
+        rows.push(json!({"id": id, "kind":"artifact","parts":parts, "title":card.artifact.title, "text":text, "filename":card.artifact.name,
             "publishedAt":card.publication_time(app.zone),
             "mermaidSource":app.artifacts.diagrams.get(&id), "status":app.artifacts.status.get(&id), "actions":actions}));
     }
@@ -903,6 +908,13 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
     if act == "chooseExplanation" { app.apply(vec![Action::SettingsPage(yaac_core::settings::Page::Approvals)]); return Ok(()); }
     if act.starts_with("artifact") {
         if let Some(card) = crate::artifacts::cards(&app.client.state, &k, &app.ui.dismissed_artifacts).into_iter().find(|card| card.id() == id.as_str()) {
+            if let Some(source) = card.inline_image() {
+                match act {
+                    "artifactOpenImage" => { app.images.open(source,card.artifact.title); return Ok(()); }
+                    "artifactPreviewImage" => { app.images.preview(source); return Ok(()); }
+                    _ => {}
+                }
+            }
             let browser = app.browsers.reason(&app.client, Some(&k)).is_none();
             if let Some((command, _)) = card.actions(browser).into_iter().find(|(c,_)| format!("artifact{c:?}") == act) {
                 app.apply(vec![Action::Artifact(k, card, command)]);
@@ -1144,6 +1156,7 @@ mod tests {
         app.pump_demo();
         app.zone = yaac_core::time::Zone::new(-3 * 3600);
         let artifact = yaac_protocol::GeneratedArtifact {
+            inline_preview: None,
             upload_id: "u_artifact_md_test".into(), size: 8, name: "report.md".into(), title: "Report".into(),
             published_at: Some("2026-11-25T18:34:00Z".into()),
         };

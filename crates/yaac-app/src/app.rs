@@ -20,7 +20,7 @@ use yaac_core::fork::ForkChoice;
 use yaac_core::history::{Anchor, Place};
 use yaac_core::mode_confirm::ModeTarget;
 use yaac_core::permission::BudgetFields;
-use yaac_core::prefs::{SendKey, ThemePref, UiPrefs};
+use yaac_core::prefs::{SendKey, UiPrefs};
 use yaac_core::settings::Page;
 use yaac_core::sidebar::Grouping;
 use yaac_core::ssh_setup::{SetupRecord, SshSetupBackend};
@@ -220,6 +220,7 @@ pub(crate) struct UiState {
     pub settings: bool,
     pub settings_page: Page,
     pub theme: ThemeChoice,
+    pub themes: std::sync::Arc<yaac_core::themes::Catalog>,
     pub font_size: f32,
     pub fonts: yaac_core::prefs::FontPrefs,
     pub send_key: SendKey,
@@ -370,6 +371,7 @@ impl UiState {
             settings: false,
             settings_page: Page::Targets,
             theme,
+            themes: Default::default(),
             font_size: theme::size::UI,
             fonts: Default::default(),
             send_key: SendKey::Enter,
@@ -436,11 +438,8 @@ impl UiState {
             collapsed_groups: self.collapsed_groups.clone(),
             ordering: self.ordering,
             docked: self.panel == PanelMode::Docked,
-            theme: match self.theme {
-                ThemeChoice::System => ThemePref::System,
-                ThemeChoice::Dark => ThemePref::Dark,
-                ThemeChoice::Light => ThemePref::Light,
-            },
+            theme: self.theme,
+            themes: self.themes.clone(),
             muted_open: self.muted_open,
             font_size: self.font_size,
             fonts: self.fonts.clone(),
@@ -464,11 +463,8 @@ impl UiState {
         self.collapsed_groups = p.collapsed_groups.clone();
         self.ordering = p.ordering;
         self.panel = if p.docked { PanelMode::Docked } else { PanelMode::Pill };
-        self.theme = match p.theme {
-            ThemePref::System => ThemeChoice::System,
-            ThemePref::Dark => ThemeChoice::Dark,
-            ThemePref::Light => ThemeChoice::Light,
-        };
+        self.theme = p.theme;
+        self.themes = p.themes.clone();
         self.muted_open = p.muted_open;
         self.font_size = p.font_size;
         self.fonts = p.fonts.clone();
@@ -793,7 +789,8 @@ pub(crate) struct YaacApp {
     zone_checked: f64,
     saved_prefs: UiPrefs,
     last_tick: f64,
-    pub applied: Option<bool>,
+    pub applied: Option<Palette>,
+    pub theme_import: crate::custom_themes::Import,
     /// Diagnostics: `YAAC_DEBUG_COPY=<text>` copies the text on the first frame through the
     /// same path as Copy (egui's copy command, handed to the system clipboard by egui-winit),
     /// so the clipboard can be checked from outside the window.
@@ -806,7 +803,7 @@ pub(crate) struct YaacApp {
     pub updater: crate::updater::Updater,
     pub troubleshoot: crate::troubleshoot::Troubleshoot,
     #[cfg_attr(not(feature = "hub"), allow(dead_code))]
-    ctx: egui::Context,
+    pub(crate) ctx: egui::Context,
 }
 
 impl std::fmt::Debug for YaacApp {
@@ -945,6 +942,7 @@ impl YaacApp {
             saved_prefs,
             last_tick: 0.0,
             applied: None,
+            theme_import: Default::default(),
             debug_copy: std::env::var("YAAC_DEBUG_COPY").ok().filter(|t| !t.is_empty()),
             shell,
             display: launch.display,
@@ -1494,6 +1492,7 @@ impl YaacApp {
                     self.wsl_section_opened();
                 }
                 Action::Nav(n) => self.nav(n),
+                Action::Theme(ThemeChoice::Custom) if self.ui.themes.current().is_none() => self.import_theme(),
                 Action::Theme(t) => {
                     self.ui.theme = t;
                     self.applied = None;
@@ -1710,8 +1709,9 @@ impl YaacApp {
         self.saved_prefs = now;
     }
 
-    fn palette_for(&self, ctx: &egui::Context) -> Palette {
+    pub(crate) fn palette_for(&self, ctx: &egui::Context) -> Palette {
         let dark = match self.ui.theme {
+            ThemeChoice::Custom => return self.ui.themes.current().map(Palette::custom).unwrap_or(Palette::DARK),
             ThemeChoice::Dark => true,
             ThemeChoice::Light => false,
             ThemeChoice::System => ctx.system_theme().is_none_or(|t| t == egui::Theme::Dark),
@@ -1857,6 +1857,11 @@ impl YaacApp {
         }
         #[cfg(feature = "hub")]
         self.hub_upkeep();
+        #[cfg(feature = "hub")]
+        let themes_ready = self.hub.as_ref().is_none_or(|h| h.prefs_loaded);
+        #[cfg(not(feature = "hub"))]
+        let themes_ready = true;
+        if themes_ready { self.theme_upkeep(); }
         self.troubleshoot.pump(&mut self.client, ctx);
         #[cfg(feature = "hub")]
         if let Some(h) = &self.hub {
@@ -1974,9 +1979,10 @@ impl eframe::App for YaacApp {
         let ctx = ui.ctx().clone();
         crate::icons::set_spinner_window_hidden(&ctx, self.shell.hidden);
         let p = self.palette_for(&ctx);
-        if self.applied != Some(p.dark) {
+        if self.applied != Some(p) {
             ctx.set_theme(if p.dark { egui::Theme::Dark } else { egui::Theme::Light });
-            self.applied = Some(p.dark);
+            theme::apply(&ctx, &p);
+            self.applied = Some(p);
         }
         if self.shots.is_none() {
             let zoom = self.ui.font_size / theme::size::UI;
@@ -2212,7 +2218,7 @@ pub(crate) mod tests {
     }
 
     /// One frame of the whole window (`App::ui`), headless.
-    fn window_frame(ctx: &egui::Context, app: &mut YaacApp, input: egui::RawInput) {
+    pub(crate) fn window_frame(ctx: &egui::Context, app: &mut YaacApp, input: egui::RawInput) {
         let mut frame = eframe::Frame::_new_kittest();
         let mut out = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
         out.textures_delta.clear();

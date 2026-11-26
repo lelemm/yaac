@@ -404,6 +404,8 @@ pub enum Inbound {
 pub enum PeerRequest {
     /// Inspect a thread’s browser.
     BrowserCall(crate::BrowserCallParams),
+    /// Window appearance operation.
+    ThemeCall(crate::ThemeCallParams),
     /// `mesh/relay`.
     MeshRelay(MeshRelayParams),
     /// `mesh/deliveryReceipt`.

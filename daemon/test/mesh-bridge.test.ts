@@ -75,7 +75,7 @@ test(`the stdio bridge (${label}) serves the yaac tools as the ticket's thread, 
   const c = await client(d);
   let mcp: McpProcess | null = null;
   try {
-    const { threadId } = await startThread(c, "/fake say hi", { agents: "allow" });
+    const { threadId } = await startThread(c, "/fake say hi", { agents: "allow", cwd: home });
     await untilIdle(d, threadId);
     const native = d.core.thread(threadId)!.record.native;
     const att = fakeOf(d).meshAttachment(native)!;
@@ -93,7 +93,7 @@ test(`the stdio bridge (${label}) serves the yaac tools as the ticket's thread, 
     assert.equal(unknown.error.code, -32601);
     const list = await mcp.request("tools/list", {});
     const names = list.result.tools.map((x: any) => x.name).sort();
-    assert.deepEqual(names, ["browser_click", "browser_close", "browser_console", "browser_eval", "browser_list", "browser_navigate", "browser_network", "browser_open", "browser_press", "browser_screenshot", "browser_snapshot", "browser_type", "find_thread", "list_models", "list_targets", "list_threads", "notify_when_done", "pr_checks", "pr_comments", "pr_create", "pr_get", "pr_list", "pr_reply", "pr_rerun_checks", "present_artifact", "read_thread", "send_message", "spawn_thread", "stop_all", "stop_thread", "wait", "whoami"]);
+    assert.deepEqual(names, ["browser_click", "browser_close", "browser_console", "browser_eval", "browser_list", "browser_navigate", "browser_network", "browser_open", "browser_press", "browser_screenshot", "browser_snapshot", "browser_type", "find_thread", "import_theme", "list_models", "list_targets", "list_themes", "list_threads", "notify_when_done", "pr_checks", "pr_comments", "pr_create", "pr_get", "pr_list", "pr_reply", "pr_rerun_checks", "present_artifact", "preview_theme", "read_thread", "select_theme", "send_message", "spawn_thread", "stop_all", "stop_thread", "wait", "whoami"]);
     const who = await mcp.request("tools/call", { name: "whoami", arguments: {}, _meta: { threadId: native } });
     assert.equal(who.result.isError, undefined);
     assert.match(who.result.content[0].text, new RegExp(`Address: local/${threadId}`));
@@ -136,6 +136,41 @@ test(`the stdio bridge (${label}) serves the yaac tools as the ticket's thread, 
       else if (kind === "eval") assert.equal(response.content[0].text, "2");
       else if (kind === "close" || kind === "click" || kind === "type" || kind === "press") assert.equal(response.content[0].text, "Done.");
       else assert.deepEqual(JSON.parse(response.content[0].text), { kind, ...result });
+    }
+    for (const [tool, kind, args] of [
+      ["list_themes","list",{}],["select_theme","select",{name:"dark"}],
+      ["import_theme","import",{json:'{"name":"Test","colors":{}}',overwrite:true}],
+      ["preview_theme","preview",{name:"dark"}],
+    ] as const) {
+      const start = c.messages.length;
+      const pending = browser(tool,args);
+      const req = await until(() => c.messages.slice(start).find(m => m.type === "request" && m.method === "theme/call"));
+      assert.ok(req.type === "request");
+      const {opId,...params} = req.params as Record<string,unknown>;
+      assert.deepEqual(params,{threadId,kind,...args});
+      if (kind === "select" || kind === "import") assert.ok(opId);
+      c.sendRaw(encodeMessageFrame(encodeMessage({type:"response",id:req.id,result:{themes:["dark"],selected:"dark",...(kind==="preview"?{png}:{})}})));
+      const response = (await pending).result;
+      if (kind === "preview") {
+        assert.deepEqual(response.content,[{type:"image",mimeType:"image/png",data:png}]);
+        const artifact = d.core.thread(threadId)!.record.artifacts!.at(-1)!;
+        assert.equal(artifact.name,"theme-preview.png");
+        assert.equal(artifact.inlinePreview,true);
+      } else assert.deepEqual(JSON.parse(response.content[0].text),{selected:"dark",themes:["dark"]});
+    }
+    const file = '{"name":"Harbor","colors":{}}';
+    fs.writeFileSync(path.join(home,"theme.json"),file);
+    const start = c.messages.length;
+    const importing = browser("import_theme", {path:"theme.json"});
+    const request = await until(() => c.messages.slice(start).find(m => m.type === "request" && m.method === "theme/call"));
+    assert.ok(request.type === "request");
+    assert.equal((request.params as any).json,file);
+    assert.equal((request.params as any).overwrite,false);
+    c.sendRaw(encodeMessageFrame(encodeMessage({type:"response",id:request.id,result:{themes:["Harbor"],selected:"system"}})));
+    assert.equal((await importing).result.isError,undefined);
+    fs.truncateSync(path.join(home,"theme.json"),16385);
+    for (const invalid of [{path:"theme.json"},{json:file,overwrite:"yes"},{path:"../theme.json"},{json:file,path:"theme.json"}]) {
+      assert.equal((await browser("import_theme",invalid)).result.isError,true);
     }
     // Malformed actions never reach the window, and a tool cannot name another thread.
     for (const [name, args] of [

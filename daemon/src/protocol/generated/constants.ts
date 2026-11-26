@@ -92,6 +92,8 @@ import type {
   TerminalResizeParams,
   TerminalShellsResult,
   TerminalTitleParams,
+  ThemeCallParams,
+  ThemeCallResult,
   ThreadAckParams,
   ThreadArchiveParams,
   ThreadCompactParams,
@@ -224,6 +226,7 @@ export const METHODS = {
   TERMINAL_CLOSE: "terminal/close",
   TERMINAL_LIST: "terminal/list",
   TERMINAL_RENAME: "terminal/rename",
+  THEME_CALL: "theme/call",
   BROWSER_CALL: "browser/call",
   TUNNEL_OPEN: "tunnel/open",
   PREVIEW_PORTS: "preview/ports",
@@ -436,6 +439,8 @@ export interface RequestMap {
   "terminal/list": { params: Empty; result: TerminalListResult };
   /** Terminal rename: the user's name for a terminal (P343). */
   "terminal/rename": { params: TerminalRenameParams; result: Empty };
+  /** Manage window appearance. */
+  "theme/call": { params: ThemeCallParams; result: ThemeCallResult };
   /** Inspect the calling thread’s browser. */
   "browser/call": { params: BrowserCallParams; result: BrowserCallResult };
   /** Connect a loopback preview socket and exchange initial receive windows. */
@@ -609,6 +614,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "terminal/close": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/rename": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "theme/call": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "browser/call": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "tunnel/open": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "preview/ports": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },

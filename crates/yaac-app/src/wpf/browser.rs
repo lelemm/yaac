@@ -74,6 +74,8 @@ impl BrowserPipe {
         if let Some(text) = app.browsers.terms.clipboard.take() {
             write_frame(stdout,&json!({"terminalCopy":text,"terminalNotice":"Copied by the terminal"}))?;
         }
+        let terminal_theme = (app.ui.theme != crate::theme::ThemeChoice::System)
+            .then(|| crate::terminal_ui::theme_of(&app.palette_for(&app.ctx)));
         for (index, pipe) in self.terminals.iter_mut().enumerate() {
             let panel = index == 1;
             let active = visible.and_then(|key| super::terminal::tabs::active(&app.browsers,key,panel));
@@ -81,7 +83,7 @@ impl BrowserPipe {
             let request_focus = active.is_some_and(|(_, id)| app.browsers.terms.focus == Some(id));
             let session = active.and_then(|(tab,id)| Some((tab,app.browsers.terms.get_mut(id)?)));
             pipe.surface(panel);
-            if let Some(wait) = pipe.update(session, app.ui.theme, stdout)? {
+            if let Some(wait) = pipe.update(session, terminal_theme, stdout)? {
                 next = Some(next.map_or(wait, |existing| existing.min(wait)));
             }
             if request_focus && let Some((tab,_))=active {

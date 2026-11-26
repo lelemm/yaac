@@ -2700,6 +2700,7 @@ impl Core {
             }
             PeerRequest::MeshQuery(params) => self.route_query(source, generation, peer_id, &params),
             PeerRequest::MeshUsage(params) => self.route_usage(source, generation, peer_id, &params),
+            PeerRequest::ThemeCall(params) => self.route_theme(source, generation, peer_id, params),
             PeerRequest::BrowserCall(params) => self.route_browser(source, generation, peer_id, params),
             PeerRequest::Other { .. } => {} // the session already answered method_not_found
         }

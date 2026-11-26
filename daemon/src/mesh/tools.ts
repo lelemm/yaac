@@ -47,6 +47,10 @@ const int = (description: string, minimum?: number, maximum?: number) => ({ type
 const states = ["idle", "running", "needsAttention", "failed", "waiting", "done"];
 
 const MESH_TOOLS: ToolDef[] = [
+  { name: "list_themes", description: "List the YAAC window's themes and current selection.", inputSchema: {type:"object",properties:{},additionalProperties:false} },
+  { name: "select_theme", description: "Apply a theme in the YAAC window immediately.", inputSchema: {type:"object",properties:{name:str("Exact name from list_themes.")},required:["name"],additionalProperties:false} },
+  { name: "preview_theme", description: "Show a PNG sample in this conversation without changing appearance.", inputSchema: {type:"object",properties:{name:str("Exact name from list_themes.")},required:["name"],additionalProperties:false} },
+  { name: "import_theme", description: "Import a theme into the window's library. Give either JSON text or a JSON file in this thread's worktree (16 KiB maximum).", inputSchema: {type:"object",properties:{json:str("Theme JSON text."),path:str("Worktree-relative theme file."),overwrite:bool("Explicitly replace a theme with the same name.")},additionalProperties:false} },
   {
     name: "present_artifact",
     description: ARTIFACT_INSTRUCTIONS + " Presents a downloadable snapshot in your transcript and your ancestors' transcripts. Supports HTML, Markdown, text, CSV, Mermaid, PDF, DOCX, XLSX, PPTX, SVG, PNG, JPEG, GIF and WebP, up to 64 MiB.",

@@ -251,6 +251,7 @@ pub struct Client {
     troubleshoot_reply: Option<(RpcId, Result<yaac_protocol::TroubleshootResult, String>)>,
     terminal_notes: Vec<(String, Value)>,
     /// Agent browser calls from the hub (`hub/browser/call`), not yet taken by the window.
+    pub theme_calls: Vec<(RpcId, yaac_protocol::ThemeCallParams)>,
     browser_calls: Vec<(RpcId, attach::BrowserCallParams)>,
     /// Answers to `hub/ssh/*` steps, for the setup backend.
     ssh_replies: Vec<(RpcId, Result<Value, ErrorObject>)>,
@@ -324,6 +325,7 @@ impl Client {
             preview_replies: Vec::new(),
             troubleshoot_reply: None,
             terminal_notes: Vec::new(),
+            theme_calls: Vec::new(),
             browser_calls: Vec::new(),
             ssh_replies: Vec::new(),
             ssh_wire: None,
@@ -415,8 +417,12 @@ impl Client {
     /// Answer an agent browser call. `method_not_found` makes the hub offer the call to
     /// another window.
     pub fn answer_browser_call(&mut self, id: RpcId, outcome: Result<yaac_protocol::BrowserCallResult, ErrorObject>) {
+        self.answer_window_call(id,outcome.map(|r| serde_json::json!(r)));
+    }
+
+    pub fn answer_window_call(&mut self,id: RpcId,outcome: Result<Value, ErrorObject>) {
         self.link.send(match outcome {
-            Ok(result) => Message::Response { id, result: serde_json::to_value(result).unwrap_or(Value::Null) },
+            Ok(result) => Message::Response { id, result },
             Err(error) => Message::Error { id: Some(id), error },
         });
     }
@@ -533,6 +539,12 @@ impl Client {
                 }
             }
             Message::Notification { method, params } => self.on_notification(&method, params),
+            Message::Request { id, method, params } if method == attach::names::THEME_CALL => {
+                match serde_json::from_value(params) {
+                    Ok(call) => self.theme_calls.push((id,call)),
+                    Err(e) => self.answer_window_call(id,Err(ErrorObject::new(ErrorCode::InvalidParams,e.to_string()))),
+                }
+            }
             Message::Request { id, method, params } if method == attach::names::BROWSER_CALL => {
                 match serde_json::from_value::<attach::BrowserCallParams>(params) {
                     Ok(call) => self.browser_calls.push((id, call)),

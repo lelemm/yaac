@@ -83,6 +83,8 @@ pub mod names {
     pub const TERMINAL_RENAME: &str = "hub/terminal/rename";
     /// Terminal renamed on the selected target (P343).
     pub const TERMINAL_RENAMED: &str = "hub/terminal/renamed";
+    /// Hub → window theme request.
+    pub const THEME_CALL: &str = "hub/theme/call";
     /// Hub → window browser request.
     pub const BROWSER_CALL: &str = "hub/browser/call";
     /// Preview listener management.

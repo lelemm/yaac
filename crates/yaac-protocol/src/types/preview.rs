@@ -361,3 +361,45 @@ open_union! {
         Eval(BrowserEvalResult) = "eval",
     }
 }
+
+/// Window appearance operation from a ticket-authenticated thread.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all="camelCase")]
+pub struct ThemeCallParams {
+    pub thread_id: ThreadId,
+    #[serde(flatten)]
+    pub action: ThemeAction,
+}
+
+/// Name of the built-in or imported palette to preview.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ThemeName { pub name: String }
+/// Import JSON into the host library, replacing a duplicate only by explicit request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ThemeImport { pub json: String, pub overwrite: bool, #[serde(rename="opId")] pub op_id: super::OpId }
+/// Apply a named palette in the attached window.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ThemeSelect { pub name: String, #[serde(rename="opId")] pub op_id: super::OpId }
+
+open_union! {
+    /// An operation on the UI host theme library.
+    pub enum ThemeAction tag "kind" {
+        /// List available themes.
+        List(Empty) = "list",
+        /// Read a preview without changing selection.
+        Preview(ThemeName) = "preview",
+        /// Add a validated theme.
+        Import(ThemeImport) = "import",
+        /// Apply immediately.
+        Select(ThemeSelect) = "select",
+    }
+}
+
+/// Host theme catalog after the operation, including an encoded image for preview requests.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ThemeCallResult {
+    pub selected: String,
+    pub themes: Vec<String>,
+    #[serde(default, skip_serializing_if="Option::is_none")]
+    pub png: Option<String>,
+}

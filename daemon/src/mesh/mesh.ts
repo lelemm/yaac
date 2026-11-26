@@ -13,6 +13,8 @@ import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import type {
   Address,
+  ThemeCallParams,
+  ThemeCallResult,
   Item,
   MeshBudget,
   MeshBudgetResult,
@@ -54,7 +56,7 @@ import { BROWSER_TOOLS, inspectBrowser } from "./browser.js";
 import { createMeshServer, readable } from "./mcp.js";
 import { MeshStore, NO_TIME_LIMIT, type MessageRecord, type RootState } from "./store.js";
 import { chooseWorkerMode, ModeRefused, type ParentMode } from "./modes.js";
-import { identityBlock, TOOL_TIMEOUT_SECS, WAIT_MAX_SECS } from "./tools.js";
+import { identityBlock, TOOLS, TOOL_TIMEOUT_SECS, WAIT_MAX_SECS } from "./tools.js";
 
 /** How long an orchestration counts as live for discovery after a person last acted on it. */
 const LIVE_WINDOW_MS = 12 * 3600 * 1000;
@@ -521,24 +523,15 @@ export class Mesh implements CoreMeshHooks {
     try {
       let text: string;
       switch (call.tool) {
+        case "list_themes": case "select_theme": case "preview_theme": case "import_theme":
+          return await this.themeTool(rt,call.tool,a);
         case "present_artifact": {
           if (typeof a.path !== "string") throw new ToolError("provide a relative file path");
           const name = path.basename(a.path);
           const title = a.title ?? name;
           if (typeof title !== "string" || !title.trim() || Buffer.byteLength(title) > 160) throw new ToolError("provide a title of 1–160 bytes");
           const bytes = await artifactBytes(rt.record.cwd, a.path);
-          if (rt.deleted) throw new ToolError("this thread no longer exists");
-          const previous = rt.record.artifacts ?? [];
-          const snapshot = this.core.uploads.storeArtifact(bytes, name, id => {
-            // Bound index metadata before writing any new blob.
-            if (previous.length >= 32 && !previous.some(row => row.uploadId === id)) throw new ToolError("this thread has presented 32 artifacts");
-          });
-          if (!previous.some(row => row.uploadId === snapshot.uploadId)) {
-            rt.record.artifacts = [...previous, { ...snapshot, title, size: bytes.length, publishedAt: nowIso() }];
-            try { rt.saveRecord(); } catch (error) { rt.record.artifacts = previous; throw error; }
-          }
-          this.core.updateIndex(rt);
-          text = `Presented ${snapshot.name} (${snapshot.uploadId}).`;
+          text = this.publishArtifact(rt, bytes, name, title);
           break;
         }
         case "whoami":
@@ -636,6 +629,70 @@ export class Mesh implements CoreMeshHooks {
     if (!hub || hub.isClosed) throw new RpcError("not_initialized", "the hub is not reachable");
     const params: MeshQueryParams = { caller: this.normalise(caller), target, query };
     return (await hub.requestHost("mesh/query", params, 30_000)) as Record<string, unknown>;
+  }
+
+  private publishArtifact(rt: ThreadRuntime, bytes: Buffer, name: string, title: string, inlinePreview = false): string {
+    if (rt.deleted) throw new ToolError("this thread no longer exists");
+    const previous = rt.record.artifacts ?? [];
+    const snapshot = this.core.uploads.storeArtifact(bytes, name, id => {
+      // Bound index metadata before writing any new blob.
+      if (previous.length >= 32 && !previous.some(row => row.uploadId === id)) throw new ToolError("this thread has presented 32 artifacts");
+    });
+    const existing = previous.find(row => row.uploadId === snapshot.uploadId);
+    if (!existing || (inlinePreview && !existing.inlinePreview)) {
+      rt.record.artifacts = existing
+        ? previous.map(row => row === existing ? { ...row, inlinePreview: true } : row)
+        : [...previous, { ...snapshot, title, size: bytes.length, publishedAt: nowIso(), ...(inlinePreview && { inlinePreview: true }) }];
+      try { rt.saveRecord(); } catch (error) { rt.record.artifacts = previous; throw error; }
+    }
+    this.core.updateIndex(rt);
+    return `Presented ${snapshot.name} (${snapshot.uploadId}).`;
+  }
+
+  private async themeTool(rt: ThreadRuntime, tool: string, args: Record<string, unknown>): Promise<MeshToolResult> {
+    const threadId = rt.id;
+    const schema = TOOLS.find(t => t.name === tool)!.inputSchema;
+    if (Object.keys(args).some(key => !Object.hasOwn(schema.properties, key))) {
+      throw new ToolError("Unexpected theme tool argument.");
+    }
+    let params: ThemeCallParams;
+    if (tool === "import_theme") {
+      if ((args.json === undefined) === (args.path === undefined) ||
+          (args.overwrite !== undefined && typeof args.overwrite !== "boolean")) {
+        throw new ToolError("Give either json or path and an optional boolean overwrite.");
+      }
+      if (args.path !== undefined && typeof args.path !== "string") throw new ToolError("Expected a relative file path.");
+      const limit = 16 * 1024;
+      const json = typeof args.path === "string"
+        ? new TextDecoder("utf-8", { fatal: true }).decode(await artifactBytes(rt.record.cwd, args.path, limit))
+        : args.json;
+      if (typeof json !== "string" || Buffer.byteLength(json) > limit) throw new ToolError("Theme JSON must fit in 16 KiB.");
+      params = { threadId, kind: "import", json, overwrite: args.overwrite === true, opId: randomId("theme_", 12) };
+    } else if (tool === "list_themes") {
+      params = { threadId, kind: "list" };
+    } else {
+      if (typeof args.name !== "string" || !args.name || Buffer.byteLength(args.name) > 64) {
+        throw new ToolError("Provide a theme name from list_themes.");
+      }
+      params = tool === "select_theme"
+        ? { threadId, kind: "select", name: args.name, opId: randomId("theme_", 12) }
+        : { threadId, kind: "preview", name: args.name };
+    }
+
+    if (!this.hub || this.hub.isClosed) throw new ToolError("Theme tools need a connected YAAC window.");
+    const reply = await this.hub.requestHost("theme/call", params, 30_000) as ThemeCallResult;
+    if (params.kind !== "preview") {
+      return { isError: false, text: JSON.stringify({ selected: reply.selected, themes: reply.themes }) };
+    }
+    if (typeof reply.png !== "string") throw new ToolError("The window returned no preview.");
+    const bytes = Buffer.from(reply.png, "base64");
+    if (!bytes.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex")) || bytes.toString("base64") !== reply.png) {
+      throw new ToolError("Invalid preview image.");
+    }
+    const text = this.publishArtifact(rt, bytes, "theme-preview.png", params.name + " theme preview", true);
+    return (await this.core.computeEffective(rt)).imageInput === "supported"
+      ? { isError: false, text, image: { type: "image", mimeType: "image/png", data: reply.png } }
+      : { isError: false, text };
   }
 
   private async listTargets(rt: ThreadRuntime): Promise<string> {

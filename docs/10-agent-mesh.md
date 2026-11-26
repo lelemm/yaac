@@ -928,3 +928,16 @@ filename in a read-only field. SVG and Office documents use Download
 or Open. File actions fetch and verify the published bytes in ranges through the originating
 target's existing connection. **Dismiss** hides the card in the current conversation and
 remembers that choice on this host. Worker and ancestor copies can be dismissed independently.
+
+### Window appearance tools
+
+An attached YAAC window handles `list_themes`, `import_theme`, `select_theme`, and
+`preview_theme` through `theme/call` on the ordinary target connection. The daemon
+authenticates the thread from its attachment ticket. The hub prefers a window displaying the
+thread. Local, SSH and WSL callers use the same route.
+
+Give `import_theme` either `json` text or a worktree-relative `path` on the caller's target.
+Import adds to the UI host library. Use `overwrite: true` to replace an existing entry.
+`select_theme` applies a listed name. `preview_theme` takes a listed name and publishes a PNG
+in the originating chat without changing the selection. Models with confirmed image input
+also receive the PNG as an MCP image result. See [the theme JSON format](07-ui.md#appearance--custom-themes).
