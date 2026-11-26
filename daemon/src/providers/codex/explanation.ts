@@ -11,6 +11,7 @@ export async function explainCommand(
   command: string,
   remember: (id: string) => void,
   signal?: AbortSignal,
+  analysis?: { effort: string; instructions: string },
 ): Promise<string | null> {
   const { config } = await conn.request("config/read", { cwd }, 4_000) as {
     config: { mcp_servers?: Record<string, unknown> };
@@ -25,8 +26,8 @@ export async function explainCommand(
     threadSource: EXPLANATION_SOURCE,
     approvalPolicy: "never",
     sandbox: "read-only",
-    baseInstructions: COMMAND_EXPLANATION_INSTRUCTIONS,
-    developerInstructions: COMMAND_EXPLANATION_INSTRUCTIONS,
+    baseInstructions: analysis?.instructions ?? COMMAND_EXPLANATION_INSTRUCTIONS,
+    developerInstructions: analysis?.instructions ?? COMMAND_EXPLANATION_INSTRUCTIONS,
     config: {
       ...disabledServers,
       "features.shell_tool": false,
@@ -72,12 +73,13 @@ export async function explainCommand(
   });
   const abort = () => settle(null);
   signal?.addEventListener("abort", abort, { once: true });
-  const timeout = setTimeout(() => settle(null), 20_000).unref();
+  const timeout = setTimeout(() => settle(null), analysis ? 95_000 : 20_000).unref();
   try {
     // Verify the server honored the option before sharing the command with it.
     if (thread.ephemeral !== true || signal?.aborted) return null;
     const { turn } = await conn.request("turn/start", {
       threadId,
+      ...(analysis ? { effort: analysis.effort } : {}),
       input: [{ type: "text", text: command, text_elements: [] }],
     }, 8_000) as { turn: Turn };
     turnId ??= turn.id;

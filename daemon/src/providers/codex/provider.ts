@@ -287,6 +287,7 @@ export class CodexProvider implements HarnessProvider {
   private lastFailure: { status: ProbeResult["status"]; message: string } | null = null;
   private threads = new Map<NativeId, ThreadState>();
   private readonly explanationThreads = new Set<NativeId>();
+  private troubleshootCwd?: string;
   private requests = new Map<string, LiveRequest>();
   private models: ModelInfo[] = [];
   /** Each listed model's fast service tier id (D125), by model id. */
@@ -648,6 +649,7 @@ export class CodexProvider implements HarnessProvider {
     const { models, complete } = await this.listModels(conn);
     if (complete || models.length > 0) this.models = complete ? models : this.models.length > 0 ? this.models : models;
     const caps: Capability[] = [
+      "troubleshoot",
       "threadList",
       "threadRead",
       "threadResume",
@@ -871,12 +873,22 @@ export class CodexProvider implements HarnessProvider {
 
   private isExplanationThread(thread: Thread): boolean {
     return thread.threadSource === EXPLANATION_SOURCE || this.explanationThreads.has(thread.id) ||
-      (thread.ephemeral === true && thread.cwd === this.ctx.stateDir);
+      (thread.ephemeral === true && (thread.cwd === this.ctx.stateDir || thread.cwd === this.troubleshootCwd));
   }
 
   private rememberExplanationThread(id: string): void {
     this.explanationThreads.add(id);
     if (this.explanationThreads.size > 256) this.explanationThreads.delete(this.explanationThreads.values().next().value!);
+  }
+
+  async troubleshoot(model: string, command: string, options: { cwd: string; effort: string; instructions: string }, signal: AbortSignal): Promise<string | null> {
+    this.troubleshootCwd = options.cwd;
+    try {
+      const conn = await this.ensure();
+      return await explainCommand(conn, options.cwd, model, command, id => this.rememberExplanationThread(id), signal, options);
+    } finally {
+      this.troubleshootCwd = undefined;
+    }
   }
 
   async explainCommand(model: string, command: string, signal?: AbortSignal): Promise<string | null> {

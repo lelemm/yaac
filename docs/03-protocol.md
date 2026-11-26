@@ -119,6 +119,7 @@ requests. They are items in the thread, answered with `request/respond`
 | `daemon/handover` | Ask the daemon to step aside for a newer build — `when: "idle"` or `when: "now"`. Part of the frozen core. |
 | `ping` | Liveness and latency. |
 | `diagnostics/get` | Redacted daemon and provider diagnostics, for the "what is wrong with this target" view. Never contains message content. |
+| `diagnostics/troubleshoot` | On a provider advertising `troubleshoot`, use a temporary public YAAC checkout and an ephemeral model call to return a developer report and source revision. The input is a symptom, the window build and renderer, and the live instance, model and effort IDs. The connection does not create a YAAC thread. |
 
 ### Terminal
 

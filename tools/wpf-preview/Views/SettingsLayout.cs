@@ -421,6 +421,12 @@ public partial class SettingsView
 
         private void InvokeAction(ActionControl control, bool? check, Dictionary<string, object?> values)
         {
+            if (control.CopyField.Length > 0 && fields.TryGetValue(control.CopyField, out var copied))
+            {
+                copied.CopyText();
+                return;
+            }
+
             if (check.HasValue)
                 values["checked"] = check.Value;
 

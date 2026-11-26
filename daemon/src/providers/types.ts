@@ -386,6 +386,7 @@ export class PeerInputDenied extends Error {}
 /** What a provider implements inside yaacd. */
 export interface HarnessProvider {
   /** A one-shot text explanation with no durable harness conversation. */
+  troubleshoot?(model: string, command: string, options: { cwd: string; effort: string; instructions: string }, signal: AbortSignal): Promise<string | null>;
   explainCommand?(model: string, command: string, signal?: AbortSignal): Promise<string | null>;
   /** Install, sign-in, backend, models. Called at start, on `provider/refresh`, on `descriptorChanged`. */
   probe(): Promise<ProbeResult>;

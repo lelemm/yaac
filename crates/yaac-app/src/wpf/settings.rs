@@ -1032,13 +1032,16 @@ fn about(app: &YaacApp) -> Value {
     } else {
         format!("Development build ({id})")
     };
+    let diagnostic = crate::troubleshoot::choice(&app.client.state);
     let info = with(
         section("build", &format!("YAAC {version}"), Vec::new()),
         json!({
             "detail": format!("{build} · {}", crate::BUILD),
             "actions": [
                 with(action("about.releases", "Releases", true), json!({ "kind": "link" })),
-                with(action("about.source", "Source", true), json!({ "kind": "link" }))
+                with(action("about.source", "Source", true), json!({ "kind": "link" })),
+                with(action("about.troubleshoot", "Troubleshoot", diagnostic.is_some() || app.troubleshoot.open),
+                    json!({ "detail": if diagnostic.is_none() { crate::troubleshoot::UNAVAILABLE } else { "" } }))
             ]
         }),
     );
@@ -1086,7 +1089,38 @@ fn about(app: &YaacApp) -> Value {
         "actions": [with(action("about.refresh", "Refresh", true),
             json!({ "detail": "Check target connections and the latest release now" }))]
     }));
-    json!({ "sections": [info, components] })
+    let mut sections = vec![info, components];
+    if app.troubleshoot.open {
+        let panel = &app.troubleshoot;
+        let pending = panel.pending_label();
+        let status = pending.map(|label| format!("Diagnosing with {label}…"))
+            .or_else(|| panel.error.clone())
+            .unwrap_or_else(|| diagnostic.as_ref().map_or(crate::troubleshoot::UNAVAILABLE, |c| c.label.as_str()).to_owned());
+        let mut rows = vec![json!({
+            "id": "symptom", "layout": "form",
+            "status": status, "tone": if panel.error.is_some() { "error" } else { "" },
+            "fields": [{
+                "id": "symptom", "type": "textarea", "label": "Symptom", "value": panel.symptom,
+                "placeholder": "What is happening?", "height": 90, "required": true,
+                "enabled": pending.is_none(), "maxLength": crate::troubleshoot::MAX_SYMPTOM
+            }],
+            "actions": [with(action("about.diagnose", "Diagnose", diagnostic.is_some() && pending.is_none()),
+                json!({ "kind": "primary", "submit": true }))]
+        })];
+        if !panel.report.is_empty() {
+            rows.push(json!({
+                "id": "diagnostic-report", "layout": "form", "resetKey": panel.report_version.to_string(),
+                "fields": [{
+                    "id": "report", "type": "textarea", "label": "Developer handoff",
+                    "value": panel.report, "height": 290
+                }],
+                "actions": [with(action("about.copyReport", "Copy report", true), json!({ "copyField": "report" }))]
+            }));
+        }
+        sections.push(with(section("troubleshoot", "Troubleshoot", rows),
+            json!({ "detail": crate::troubleshoot::GUIDANCE })));
+    }
+    json!({ "sections": sections })
 }
 
 pub(super) fn command(
@@ -1421,6 +1455,15 @@ pub(super) fn command(
         "about.releases" => Action::OpenUrl(format!("{REPOSITORY}/releases")),
         "about.source" => Action::OpenUrl(REPOSITORY.to_owned()),
         "about.refresh" => Action::RefreshComponents,
+        "about.troubleshoot" => {
+            app.troubleshoot.open = !app.troubleshoot.open;
+            return Ok(());
+        }
+        "about.diagnose" => {
+            app.troubleshoot.symptom = string(values, "symptom").to_owned();
+            app.troubleshoot.start(&mut app.client, "WPF", app.host_windows);
+            return Ok(());
+        }
         "update.download" => {
             app.updater.download();
             return Ok(());
@@ -1958,6 +2001,47 @@ mod tests {
         app.client.pump();
         assert_eq!(toggle(&app, &local)["checked"], false);
         assert_eq!(toggle(&app, &remote)["checked"], true);
+    }
+
+    #[test]
+    fn about_diagnosis_routes_to_the_ready_remote_harness_and_shows_the_report() {
+        use yaac_protocol::attach::ConnectionStatus;
+        use yaac_protocol::{Capability, EffortId, EffortInfo, ModelId, ProviderStatus};
+
+        let mut app = crate::app::tests::demo_app(&egui::Context::default());
+        for target in &mut app.client.state.targets {
+            target.entry.state.status = ConnectionStatus::Offline;
+        }
+        let button = |app: &YaacApp| about(app)["sections"][0]["actions"][2]["enabled"].clone();
+        assert_eq!(button(&app), false);
+        let remote = app.client.state.targets.iter_mut()
+            .find(|target| target.entry.id.as_str() == "devbox").unwrap();
+        remote.entry.state.status = ConnectionStatus::Connected;
+        let provider = remote.providers.first_mut().unwrap();
+        provider.status = ProviderStatus::Ready;
+        provider.capabilities.push(Capability::Troubleshoot);
+        let model = provider.models.first_mut().unwrap();
+        model.id = ModelId::new("fixture-model-id");
+        model.display_name = "Opus 5.5".into();
+        model.hidden = false;
+        model.efforts = vec![EffortInfo {
+            id: EffortId::new("fixture-effort-id"), display_name: Some("Medium".into()), description: None,
+        }];
+        assert_eq!(button(&app), true);
+        let mut target = None;
+        command(&mut app, &mut target, "settings.action", &json!({ "id": "about.troubleshoot" })).unwrap();
+        command(&mut app, &mut target, "settings.action", &json!({
+            "id": "about.diagnose", "values": { "symptom": "The window is blank." }
+        })).unwrap();
+        assert!(app.demo.as_ref().unwrap().requests().iter().any(|(target, method, params)| {
+            target.as_ref().is_some_and(|id| id.as_str() == "devbox")
+                && method == yaac_protocol::methods::names::DIAGNOSTICS_TROUBLESHOOT
+                && params["model"] == "fixture-model-id"
+                && params["effort"] == "fixture-effort-id"
+                && params["symptom"] == "The window is blank."
+        }));
+        app.troubleshoot.report = "Developer report".into();
+        assert_eq!(about(&app)["sections"][2]["rows"][1]["fields"][0]["value"], "Developer report");
     }
 
     #[test]

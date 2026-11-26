@@ -804,6 +804,7 @@ pub(crate) struct YaacApp {
     pub display: crate::display::DisplayState,
     /// The in-app updater (D136): the title row's update item and Components' release row.
     pub updater: crate::updater::Updater,
+    pub troubleshoot: crate::troubleshoot::Troubleshoot,
     #[cfg_attr(not(feature = "hub"), allow(dead_code))]
     ctx: egui::Context,
 }
@@ -951,6 +952,7 @@ impl YaacApp {
             preview_ui: Default::default(),
             browser_agent: Default::default(),
             updater: launch.updater,
+            troubleshoot: Default::default(),
             ctx: cc.egui_ctx,
         };
         // The release check, on a worker (nothing when the updater is off).
@@ -1855,6 +1857,7 @@ impl YaacApp {
         }
         #[cfg(feature = "hub")]
         self.hub_upkeep();
+        self.troubleshoot.pump(&mut self.client, ctx);
         #[cfg(feature = "hub")]
         if let Some(h) = &self.hub {
             self.client.ssh_zone = self.zone;

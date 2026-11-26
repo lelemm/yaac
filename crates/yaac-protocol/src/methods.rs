@@ -248,6 +248,9 @@ catalogue! {
         /// Redacted daemon and provider diagnostics. Never message content.
         DiagnosticsGet = "diagnostics/get" as DIAGNOSTICS_GET:
             t::DiagnosticsGetParams => t::DiagnosticsGetResult, HostToDaemon, request Control, response Bulk;
+        /// Prepare a developer report for an explicitly supplied symptom.
+        DiagnosticsTroubleshoot = "diagnostics/troubleshoot" as DIAGNOSTICS_TROUBLESHOOT:
+            t::TroubleshootParams => t::TroubleshootResult, HostToDaemon, request Control, response Bulk;
 
         // ── Providers ──────────────────────────────────────────────────────────────────
         /// All provider instances on the target, each with a full descriptor.

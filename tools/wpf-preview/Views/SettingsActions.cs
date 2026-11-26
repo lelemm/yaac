@@ -37,6 +37,7 @@ public partial class SettingsView
         public bool Cancel { get; private set; }
         public bool Submit { get; private set; }
         public bool Clear { get; private set; }
+        public string CopyField { get; private set; } = "";
 
         public ActionControl(SettingsView owner, Action<ActionControl, bool?, Dictionary<string, object?>> invoke)
         {
@@ -55,6 +56,7 @@ public partial class SettingsView
             checkedValue = Flag(action, "checked");
             initialValues = SnapshotValues(action);
             copyText = Str(action, "text");
+            CopyField = Str(action, "copyField");
             var label = Str(action, "label", Id);
             detail = Str(action, "detail");
             var newKind = Str(action, "kind");

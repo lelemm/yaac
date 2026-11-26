@@ -1500,6 +1500,12 @@ fn about(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         if widgets::link(ui, &p, "Source", theme::ui(size::UI)).clicked() {
             crate::browser::open(REPOSITORY);
         }
+        let enabled = crate::troubleshoot::choice(&app.client.state).is_some();
+        if ui.add_enabled(enabled || app.troubleshoot.open, egui::Button::new("Troubleshoot"))
+            .on_disabled_hover_text(crate::troubleshoot::UNAVAILABLE).clicked()
+        {
+            app.troubleshoot.open = !app.troubleshoot.open;
+        }
     });
     // Every component against this window's build (D135): checked as YAAC starts — the hub at
     // `hub/hello`, each target's yaacd when the hub connects to it.
@@ -1543,6 +1549,47 @@ fn about(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         });
         ui.end_row();
     });
+    if app.troubleshoot.open {
+        troubleshoot(ui, app);
+    }
+}
+
+fn troubleshoot(ui: &mut egui::Ui, app: &mut YaacApp) {
+    use crate::troubleshoot::{GUIDANCE, MAX_SYMPTOM, UNAVAILABLE, choice};
+
+    ui.add_space(18.0);
+    widgets::heading(ui, "Troubleshoot");
+    ui.label(GUIDANCE);
+    let selection = choice(&app.client.state);
+    let panel = &mut app.troubleshoot;
+    let pending = panel.pending_label().is_some();
+    ui.add_enabled(!pending, egui::TextEdit::multiline(&mut panel.symptom)
+        .hint_text("What is happening?")
+        .desired_width(f32::INFINITY)
+        .desired_rows(4)
+        .char_limit(MAX_SYMPTOM));
+    if ui.add_enabled(selection.is_some() && !pending && !panel.symptom.trim().is_empty(),
+        egui::Button::new("Diagnose")).clicked()
+    {
+        panel.start(&mut app.client, "egui", app.host_windows);
+    }
+    if let Some(label) = panel.pending_label() {
+        ui.label(format!("Diagnosing with {label}…"));
+    } else if let Some(error) = &panel.error {
+        ui.colored_label(app.p.failed, error);
+    } else {
+        ui.label(selection.as_ref().map_or(UNAVAILABLE, |s| s.label.as_str()));
+    }
+    if !panel.report.is_empty() {
+        ui.add_space(8.0);
+        ui.label("Developer handoff");
+        ui.add(egui::TextEdit::multiline(&mut panel.report)
+            .desired_width(f32::INFINITY)
+            .desired_rows(14));
+        if ui.button("Copy report").clicked() {
+            ui.ctx().copy_text(panel.report.clone());
+        }
+    }
 }
 
 /// Settings → Terminal (P339, docs/13-terminal.md#clipboard-and-selection).

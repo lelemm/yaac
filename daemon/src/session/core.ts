@@ -1,3 +1,4 @@
+import { Troubleshooter } from "./troubleshoot.js";
 import { chooseWorkerMode, rankOf } from "../mesh/modes.js";
 import type { ThreadSetModeParams } from "../protocol/generated/types.js";
 import { Terminals } from "./terminals.js";
@@ -340,6 +341,7 @@ function notActed(code: string, message: string, data?: unknown): NotActed {
 }
 
 export class Core {
+  readonly troubleshooter: Troubleshooter;
   readonly terminals = new Terminals(() => this.uploads.allocateStream(), () => this.activity.emit());
   readonly registry: ProviderRegistry;
   readonly commandExplanations: CommandExplanations;
@@ -399,6 +401,7 @@ export class Core {
     this.gitStatus = new GitStatusStore(path.join(opts.home, "git-status.json"), this.git, this.gitLimiter, (root) => this.onGitChanged(root));
     this.registry.onEvent((instance, event) => this.onProviderEvent(instance, event));
     this.commandExplanations = new CommandExplanations(this.registry);
+    this.troubleshooter = new Troubleshooter(this.registry);
     this.registry.onDescriptor((d) => this.broadcast("provider/updated", { provider: d }));
     this.capsFile = path.join(opts.home, "discovery.json");
     let stored: Partial<DiscoveryCaps> | undefined;

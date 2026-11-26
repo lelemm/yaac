@@ -91,6 +91,11 @@ export class ClientSession implements SessionHandler, ClientLink {
     switch (method) {
       case METHODS.PING:
         return {};
+      case METHODS.DIAGNOSTICS_TROUBLESHOOT:
+        return core.troubleshooter.run({
+          instance: str(p, "instance"), model: str(p, "model"), effort: str(p, "effort"),
+          symptom: str(p, "symptom"), build: str(p, "build"), environment: str(p, "environment"),
+        });
       case METHODS.DIAGNOSTICS_GET:
         return core.diagnostics([
           ...this.hooks.diagnostics(),

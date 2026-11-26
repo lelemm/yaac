@@ -126,6 +126,8 @@ import type {
   ThreadUpdateParams,
   ThreadUpdateResult,
   ThreadUpdatedParams,
+  TroubleshootParams,
+  TroubleshootResult,
   TunnelCloseParams,
   TunnelOpenParams,
   TunnelOpenResult,
@@ -172,6 +174,7 @@ export const METHODS = {
   DAEMON_HANDOVER: "daemon/handover",
   PING: "ping",
   DIAGNOSTICS_GET: "diagnostics/get",
+  DIAGNOSTICS_TROUBLESHOOT: "diagnostics/troubleshoot",
   PROVIDER_LIST: "provider/list",
   PROVIDER_REFRESH: "provider/refresh",
   PROVIDER_MODEL_BEST_USE_SET: "provider/modelBestUse/set",
@@ -333,6 +336,8 @@ export interface RequestMap {
   "ping": { params: Empty; result: Empty };
   /** Redacted daemon and provider diagnostics. Never message content. */
   "diagnostics/get": { params: Empty; result: DiagnosticsGetResult };
+  /** Prepare a developer report for an explicitly supplied symptom. */
+  "diagnostics/troubleshoot": { params: TroubleshootParams; result: TroubleshootResult };
   /** All provider instances on the target, each with a full descriptor. */
   "provider/list": { params: Empty; result: ProviderListResult };
   /** Force a re-probe of one instance or all. */
@@ -554,6 +559,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "daemon/handover": { direction: "hostToDaemon", frozen: true, stateChanging: false, requestClass: "control", responseClass: "control" },
   "ping": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "diagnostics/get": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
+  "diagnostics/troubleshoot": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "provider/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "provider/refresh": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "provider/modelBestUse/set": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },

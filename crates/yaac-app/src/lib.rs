@@ -55,6 +55,7 @@ mod pr_ui;
 mod screenshot;
 mod seltext;
 mod settings;
+mod troubleshoot;
 mod strip;
 mod shell;
 mod sidebar;

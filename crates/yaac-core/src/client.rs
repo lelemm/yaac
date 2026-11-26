@@ -161,6 +161,7 @@ enum Call {
     /// A `hub/ssh/*` step: the answer goes to the setup backend under this id.
     Ssh(RpcId),
     Preview(RpcId),
+    Troubleshoot(RpcId),
     /// `hub/ssh/records`.
     SshRecords,
     /// `hub/wsl/distros`.
@@ -247,6 +248,7 @@ pub struct Client {
     pub notification_open: std::collections::VecDeque<attach::NotificationOpen>,
     /// Preview proxy, forward and discovery results for the window.
     preview_replies: Vec<(RpcId, Result<Value, String>)>,
+    troubleshoot_reply: Option<(RpcId, Result<yaac_protocol::TroubleshootResult, String>)>,
     terminal_notes: Vec<(String, Value)>,
     /// Agent browser calls from the hub (`hub/browser/call`), not yet taken by the window.
     browser_calls: Vec<(RpcId, attach::BrowserCallParams)>,
@@ -320,6 +322,7 @@ impl Client {
             visible_requests: None,
             notification_open: Default::default(),
             preview_replies: Vec::new(),
+            troubleshoot_reply: None,
             terminal_notes: Vec::new(),
             browser_calls: Vec::new(),
             ssh_replies: Vec::new(),
@@ -422,6 +425,18 @@ impl Client {
         let env = RoutedRequest { target: target.clone(), method: method.to_owned(), params };
         let value = serde_json::to_value(env).unwrap_or(Value::Null);
         self.request(attach::names::REQUEST, value, call);
+    }
+
+    /// Run an ephemeral support diagnosis on a connected target.
+    pub fn troubleshoot(&mut self, target: &TargetId, params: yaac_protocol::TroubleshootParams) -> RpcId {
+        let id = RpcId::Number(self.next_id);
+        self.routed(target, m::DIAGNOSTICS_TROUBLESHOOT, json!(params), Call::Troubleshoot(id.clone()));
+        id
+    }
+
+    /// Collect the last diagnosis response without waiting for the hub.
+    pub fn take_troubleshoot_reply(&mut self) -> Option<(RpcId, Result<yaac_protocol::TroubleshootResult, String>)> {
+        self.troubleshoot_reply.take()
     }
 
     /// Fetch one bounded chunk of an image stored on a connected target.
@@ -719,6 +734,10 @@ impl Client {
             }
             Call::Respond { .. } | Call::Ignore | Call::UpdateDaemon(_) => {}
             Call::Preview(id) => self.preview_replies.push((id, Ok(result))),
+            Call::Troubleshoot(id) => {
+                let report = serde_json::from_value(result).map_err(|_| "The target returned an invalid diagnostic report.".to_owned());
+                self.troubleshoot_reply = Some((id, report));
+            }
             Call::Ssh(id) => self.ssh_replies.push((id, Ok(result))),
             Call::SshRecords => self.on_ssh_records(&result),
             Call::WslDistros => self.on_wsl_distros(result),
@@ -1200,6 +1219,7 @@ impl Client {
                 }
             }
             Call::Preview(id) => self.preview_replies.push((id, Err(error.message.clone()))),
+            Call::Troubleshoot(id) => self.troubleshoot_reply = Some((id, Err(error.message.clone()))),
             Call::Ssh(id) => self.ssh_replies.push((id, Err(error.clone()))),
             Call::WslDistros => self.on_wsl_distros_error(error),
             c @ (Call::ForgePrs(_) | Call::ForgePrepare(_) | Call::ForgeCreate(_) | Call::ForgeAsk(_)) => self.on_forge_error(c, error),

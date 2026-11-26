@@ -182,3 +182,25 @@ pub struct DiagnosticsGetResult {
     /// Sections, in display order.
     pub sections: Vec<DiagnosticSection>,
 }
+
+/// Input to an ephemeral source-based diagnosis.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TroubleshootParams {
+    pub instance: super::InstanceId,
+    pub model: super::ModelId,
+    pub effort: super::EffortId,
+    pub symptom: String,
+    /// The version the user is diagnosing.
+    pub build: String,
+    /// Renderer and OS, without machine or account identifiers.
+    pub environment: String,
+}
+
+/// A handoff for the developer and the actual checkout examined.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TroubleshootResult {
+    pub report: String,
+    pub revision: String,
+}

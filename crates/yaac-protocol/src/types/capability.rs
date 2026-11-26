@@ -136,6 +136,8 @@ open_enum! {
         // Working with other agents
         /// Can be given the `yaac` tools: message, spawn, and wait for other agents.
         MeshTools = "meshTools",
+        /// Read-only one-shot troubleshooting over a temporary source checkout.
+        Troubleshoot = "troubleshoot",
         // Agent features surfaced in the UI
         /// Task list updates.
         Plan = "plan",

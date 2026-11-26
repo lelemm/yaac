@@ -560,7 +560,15 @@ export class ClaudeProvider implements HarnessProvider {
     };
   }
 
+  async troubleshoot(model: string, command: string, options: { cwd: string; effort: string; instructions: string }, signal: AbortSignal): Promise<string | null> {
+    return this.oneShot(model, command, signal, options);
+  }
+
   async explainCommand(model: string, command: string, signal?: AbortSignal): Promise<string | null> {
+    return this.oneShot(model, command, signal);
+  }
+
+  private async oneShot(model: string, command: string, signal?: AbortSignal, analysis?: { cwd: string; effort: string; instructions: string }): Promise<string | null> {
     const exe = this.options.executable;
     if (!exe) return null;
     const sdk = await this.sdk();
@@ -568,7 +576,7 @@ export class ClaudeProvider implements HarnessProvider {
     const abort = () => abortController.abort();
     if (signal?.aborted) return null;
     signal?.addEventListener("abort", abort, { once: true });
-    const timeout = setTimeout(() => abortController.abort(), 20_000).unref();
+    const timeout = setTimeout(() => abortController.abort(), analysis ? 95_000 : 20_000).unref();
     const input = new InputQueue();
     input.push({ type: "user", message: { role: "user", content: command }, parent_tool_use_id: null });
     let query: SdkQuery | undefined;
@@ -576,14 +584,15 @@ export class ClaudeProvider implements HarnessProvider {
       query = sdk.query({
         prompt: input,
         options: {
-          cwd: this.options.stateDir,
+          cwd: analysis?.cwd ?? this.options.stateDir,
           env: this.options.env,
           pathToClaudeCodeExecutable: exe,
           model,
+          ...(analysis ? { effort: analysis.effort as NonNullable<Options["effort"]> } : {}),
           abortController,
           persistSession: false,
           maxTurns: 1,
-          systemPrompt: COMMAND_EXPLANATION_INSTRUCTIONS,
+          systemPrompt: analysis?.instructions ?? COMMAND_EXPLANATION_INSTRUCTIONS,
           settingSources: [],
           settings: { disableAllHooks: true },
           strictMcpConfig: true,
@@ -679,6 +688,7 @@ export class ClaudeProvider implements HarnessProvider {
       } satisfies ModelInfo;
     });
     const capabilities = this.baseCapabilities();
+    capabilities.push("troubleshoot");
     if (this.meshAttached) capabilities.push("meshTools");
     if (this.models.some((m) => (m.efforts ?? []).length > 0)) capabilities.push("reasoning");
     const autoMode = models.some((m) => m.supportsAutoMode === true);

@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using Microsoft.Win32;
@@ -55,6 +56,18 @@ public partial class SettingsView
         public string Id { get; }
         public string ActionId { get; private set; } = "";
         public bool IsShortcut => type == "shortcut";
+
+        public void CopyText()
+        {
+            if (text is null || text.Text.Length == 0)
+                return;
+            try { Clipboard.SetText(text.Text); }
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                text.Focus();
+                text.SelectAll();
+            }
+        }
         public bool IncludeInSubmit => enabled && Id.Length > 0 && type is not ("shortcut" or "progress");
         public bool NeedsAny => IncludeInSubmit && validation == "any";
 
@@ -129,6 +142,14 @@ public partial class SettingsView
                 }
                 if (reveal is not null)
                     AutomationProperties.SetName(reveal, name);
+
+                if (type == "textarea" && text is not null)
+                {
+                    if (field.TryGetProperty("height", out var height) && height.TryGetDouble(out var pixels))
+                        text.Height = Math.Clamp(pixels, 64, 500);
+                    text.MaxLength = field.TryGetProperty("maxLength", out var limit) && limit.TryGetInt32(out var length)
+                        ? Math.Max(0, length) : 0;
+                }
 
                 fontSample = Str(field, "sample");
                 codeFont = Flag(field, "codeFont");
@@ -222,11 +243,22 @@ public partial class SettingsView
                 "choice" => CreateChoice(),
                 "radio" => radios = new WrapPanel { MaxWidth = 540 },
                 "shortcut" => shortcut = CreateShortcut(),
+                "textarea" => CreateArea(),
                 "progress" => progress = new ProgressBar { Minimum = 0, Maximum = 100, Height = 6, Width = 176 },
                 _ => CreateText()
             };
-            body.HorizontalContentAlignment = HorizontalAlignment.Left;
-            Root.MaxWidth = subtype == "radio" ? 540 : 380;
+            body.HorizontalContentAlignment = subtype == "textarea" ? HorizontalAlignment.Stretch : HorizontalAlignment.Left;
+            Root.MaxWidth = subtype switch { "textarea" => 720, "radio" => 540, _ => 380 };
+            Root.Margin = new Thickness(0, 2, subtype == "textarea" ? 0 : 10, 5);
+            if (subtype == "textarea")
+            {
+                Root.SetBinding(FrameworkElement.WidthProperty, new Binding(nameof(FrameworkElement.ActualWidth))
+                {
+                    RelativeSource = new RelativeSource(RelativeSourceMode.FindAncestor, typeof(WrapPanel), 1)
+                });
+            }
+            else
+                BindingOperations.ClearBinding(Root, FrameworkElement.WidthProperty);
         }
 
         private Grid WithPlaceholder(FrameworkElement input, double width)
@@ -243,6 +275,19 @@ public partial class SettingsView
             text = new TextBox { MinHeight = 29, Padding = new Thickness(8, 4, 8, 4) };
             text.TextChanged += (_, _) => Edited();
             return WithPlaceholder(text, 180);
+        }
+
+        private Grid CreateArea()
+        {
+            text = new TextBox
+            {
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.Wrap,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Padding = new Thickness(8, 6, 8, 6)
+            };
+            text.TextChanged += (_, _) => Edited();
+            return WithPlaceholder(text, double.NaN);
         }
 
         private UIElement CreatePath()
