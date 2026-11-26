@@ -5,7 +5,7 @@ use super::{
 };
 use crate::theme_capture::{Capture, ThemeInput};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use eframe::egui::{self, Color32};
+use egui::{self, Color32};
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
@@ -211,10 +211,10 @@ impl YaacApp {
         let ctx = self.ctx.clone();
         std::thread::spawn(move || {
             let result = (|| {
-                let Some(path) = rfd::FileDialog::new()
-                    .add_filter("YAAC theme", &["json"])
-                    .pick_file()
-                else {
+                let Some(path) = crate::platform::pick_file(
+                    None,
+                    Some(crate::platform::Filter { name: "YAAC theme", extensions: &["json"] }),
+                ) else {
                     return Ok(None);
                 };
                 let file = std::fs::File::open(path).map_err(|e| e.to_string())?;

@@ -1,7 +1,7 @@
 //! What sits around messages in the transcript: the user's bubble (D155), a message's time
 //! shown while it is hovered (D154), and the line a finished turn folds into (D156).
 
-use eframe::egui::{self, Margin, Rect, Sense, UiBuilder, pos2, vec2};
+use egui::{self, Margin, Rect, Sense, UiBuilder, pos2, vec2};
 use yaac_core::activity::Block;
 use yaac_core::time::Zone;
 use yaac_core::transcript::Transcript;

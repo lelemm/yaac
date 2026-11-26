@@ -1,7 +1,7 @@
 //! Colour tokens from the screen brief (docs/design/screens.md), dark and light, and how they
 //! become egui's style. Flat: 1 px borders, small radii, no shadows except floating menus.
 
-use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Shadow, Stroke, Visuals};
+use egui::{self, Color32, CornerRadius, FontFamily, FontId, Shadow, Stroke, Visuals};
 
 pub(crate) use yaac_core::prefs::ThemePref as ThemeChoice;
 

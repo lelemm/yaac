@@ -14,19 +14,26 @@ path = "src/lib.rs"
 [[bin]]
 name = "yaac"
 path = "src/main.rs"
+required-features = ["desktop"]
 
 [features]
-default = ["glow", "wgpu", "hub"]
+default = ["desktop", "glow", "wgpu", "hub"]
+# The desktop window and what it asks of a desktop OS: eframe and winit, the file dialogs
+# (rfd), the system clipboard (arboard), the system font scan, the updater's HTTPS client
+# (ureq). Without it the crate builds only the window controller that the WPF and
+# Android front ends drive (`view_protocol`); each missing piece is a hook in `platform`.
+# `yaac-android` builds it with `default-features = false, features = ["hub"]`.
+desktop = ["dep:eframe", "dep:rfd", "dep:arboard", "dep:ureq"]
 # The real hub: `yaac hub` and attaching to it. Without it the binary runs only `--demo`
 # (a window-only build for UI work).
 hub = ["dep:yaac-hub"]
-preview = ["dep:yaac-preview"]
+preview = ["desktop", "dep:yaac-preview"]
 # Both renderers are built in and chosen at start (D128, docs/02-architecture.md#the-renderer):
 # OpenGL through glow, the default (smaller and lighter);
-glow = ["eframe/glow"]
+glow = ["desktop", "eframe/glow"]
 # wgpu on Direct3D 12, Vulkan or OpenGL, and the software adapters (WARP on Windows) that
 # the window falls back to when the chosen renderer cannot start.
-wgpu = ["eframe/wgpu", "dep:pollster"]
+wgpu = ["desktop", "eframe/wgpu", "dep:pollster"]
 
 [dependencies]
 tempfile = "3.10"
@@ -41,7 +48,10 @@ serde_json.workspace = true
 url = "2.5"
 # `clipboard`: the system clipboard for copy and plain-text paste (egui-winit's arboard and,
 # on Wayland, smithay-clipboard).
-eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "accesskit", "wayland", "x11", "clipboard"] }
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "accesskit", "wayland", "x11", "clipboard"], optional = true }
+# The UI library itself (pure Rust; eframe re-exports this same crate). The controller runs
+# egui's `Context` without a window, so it is needed in every build.
+egui = { version = "0.37.0", default-features = false, features = ["default_fonts"] }
 pulldown-cmark = { version = "0.13.0", default-features = false }
 png = "0.17"
 # The host's local UTC offset (D91: every time shown is in the local zone). Only the `clock`
@@ -52,9 +62,9 @@ zeno = { version = "0.3.3", default-features = false, features = ["eval", "std"]
 # Attachments (docs/06-attachments.md), all used on worker threads only:
 # the system file picker (Windows: the common item dialog; Linux: the XDG desktop portal over
 # D-Bus, no GTK);
-rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
+rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"], optional = true }
 # the clipboard's file list (`CF_HDROP`; `text/uri-list` on X11 and Wayland), image and text;
-arboard = { version = "3.7.0", default-features = false, features = ["image-data", "wayland-data-control"] }
+arboard = { version = "3.7.0", default-features = false, features = ["image-data", "wayland-data-control"], optional = true }
 # thumbnails decoded at display size (the formats the MVP sends as images);
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 # clipboard bytes go to the hub's draft store in base64 chunks.
@@ -63,10 +73,11 @@ base64 = "0.22"
 # latest release and the installer download. rustls on ring with the webpki root store, so it
 # cross-compiles to x86_64-pc-windows-gnu with no OpenSSL and no system TLS; no gzip, cookies,
 # or JSON features (serde_json parses). Only a Windows build ever calls it.
-ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"], optional = true }
 # The installer's SHA-256, checked against the release manifest (already used by the hub).
 sha2 = "0.10"
 pollster = { version = "1.0.3", optional = true }
+# Font discovery and import (`fonts`). Pure Rust; only the desktop scans the system's fonts.
 fontdb = { version = "0.24", default-features = false, features = ["fs", "memmap"] }
 
 [target.'cfg(windows)'.dependencies]

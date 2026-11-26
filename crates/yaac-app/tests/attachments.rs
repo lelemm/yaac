@@ -134,7 +134,7 @@ fn a_file_and_a_clipboard_image_reach_the_fake_provider_through_the_real_hub() {
         assert!(Instant::now() < deadline, "the hub did not listen");
         std::thread::sleep(Duration::from_millis(20));
     }
-    let config = AttachConfig { paths, exe, autostart: None, start_timeout: Duration::from_secs(15) };
+    let config = AttachConfig { paths, exe, autostart: None, start_timeout: Duration::from_secs(15), remote: None };
     let a = Arc::new(Mutex::new(HubAttach::start(config, Arc::new(|| {}))));
     let mut c = Client::new(Box::new(SharedAttach(a)), yaac_app::BUILD, ClientId::new("test-window"));
     pump_until(&mut c, "attached", |c| c.state.hub.attached);

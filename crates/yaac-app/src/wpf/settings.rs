@@ -237,15 +237,23 @@ fn welcome(app: &YaacApp) -> Value {
             "detail": if v.can_start { "Enter" } else { "No provider is ready yet." }
         }),
     )));
+    // On a client of another machine's hub (the phone), "this computer" is that machine.
+    let pc = app.hub_machine();
+    let computer = v.other_name.clone().or_else(|| pc.as_ref().map(|pc| format!("{pc} (the hub)"))).unwrap_or_else(|| "This computer".into());
+    let ssh_detail = pc.as_ref().map_or_else(|| "Run agents on another machine over SSH.".to_owned(), |pc| format!("Run agents on another machine over SSH; {pc} connects to it."));
+    let (wsl_title, wsl_detail) = pc.as_ref().map_or_else(
+        || ("Turn on WSL".to_owned(), "Run agents inside a Linux distro on this PC.".to_owned()),
+        |pc| (format!("Turn on WSL on {pc}"), format!("Run agents inside a Linux distro on {pc}.")),
+    );
     json!({
         "mode": "firstRun", "title": "YAAC",
         "detail": "Run your coding agents on any machine, and let them work together.",
         "footer": "Agents keep running when you close this window.",
         "sections": [
-            { "id": "computer", "title": v.other_name.as_deref().unwrap_or("This computer"), "rows": rows, "actions": actions },
-            { "id": "ssh", "title": "Add a server", "detail": "Run agents on another machine over SSH.",
+            { "id": "computer", "title": computer, "rows": rows, "actions": actions },
+            { "id": "ssh", "title": "Add a server", "detail": ssh_detail,
               "actions": [action("ssh.add", "Add server…", true)] },
-            { "id": "wsl", "title": "Turn on WSL", "detail": "Run agents inside a Linux distro on this PC.",
+            { "id": "wsl", "title": wsl_title, "detail": wsl_detail,
               "actions": [with(action("first.wsl", "Turn on…", app.host_windows), json!({ "detail": if app.host_windows { "" } else { "Windows only" } }))] }
         ]
     })
@@ -301,7 +309,8 @@ fn targets(app: &YaacApp) -> Value {
             ConnectionStatus::Disabled => "Off",
             _ => "Offline",
         };
-        local.push(json!({ "id": id, "label": "This computer", "status": status, "detail": record.entry.state.detail,
+        let label = app.hub_machine().map_or_else(|| "This computer".to_owned(), |pc| format!("{pc} (the hub)"));
+        local.push(json!({ "id": id, "label": label, "status": status, "detail": record.entry.state.detail,
             "actions": [args(toggle("target.enabled", "Enabled", *on, true), json!({ "target": id }))] }));
     }
     sections.push(section("local", "Local", local));
@@ -852,6 +861,9 @@ fn host(app: &YaacApp) -> Host {
 }
 
 fn window(app: &YaacApp) -> Value {
+    if app.ui.platform == yaac_core::input::Platform::Android {
+        return android_window(app);
+    }
     let host = host(app);
     let current = app.display.file.renderer;
     let options = offered(host, crate::display::built())
@@ -882,7 +894,32 @@ fn window(app: &YaacApp) -> Value {
                 },
                 "actions": [toggle("window.tray", "Keep running in the tray when closed", tray_enabled && app.ui.tray_on_close, tray_enabled)]
             })]),
-            section("display", "Display", rows)
+            section("display", "Display", rows),
+            section("android", "Android", vec![
+                json!({ "id": "tailscale", "layout": "form",
+                    "detail": "The phone attaches to this computer's hub over Tailscale, only from devices signed in to the same Tailscale account. Nothing is paired or stored.",
+                    "actions": [toggle("window.tailscale", "Allow the Android client over Tailscale", app.client.state.hub.tailscale_attach.unwrap_or(false), app.client.state.hub.tailscale_attach.is_some())]
+                }),
+                json!({ "id": "tailscaleStatus", "status": app.client.state.hub.tailscale_status })
+            ])
+        ]
+    })
+}
+
+/// Settings → Window in the Android app: the tray setting is **Keep running in the
+/// background** (the same preference; its ongoing notification is the tray icon), and the
+/// renderer is Android's own, so it is one line saying so, with nothing to choose.
+fn android_window(app: &YaacApp) -> Value {
+    json!({
+        "sections": [
+            section("close", "Leaving the app", vec![json!({
+                "id": "tray",
+                "detail": "YAAC stays attached in the background, with an ongoing notification. The notification has Open and Quit; Quit ends this app, never the hub.",
+                "actions": [toggle("window.tray", "Keep running in the background", app.ui.tray_on_close, true)]
+            })]),
+            section("display", "Display", vec![
+                json!({ "id": "current", "detail": "Drawn by Android (Jetpack Compose)." })
+            ]),
         ]
     })
 }
@@ -948,7 +985,10 @@ fn keyboard(app: &YaacApp) -> Value {
         section(group.label(), group.label(), rows)
     }).collect();
     json!({
-        "detail": "Every command is also in the Commander. Click a key to record a new one. Esc cancels and Backspace clears. Keys without Ctrl or Alt act only when no text field has focus.",
+        "detail": app.ui.input.pick(
+            "Every command is also in the Commander. Click a key to record a new one. Esc cancels and Backspace clears. Keys without Ctrl or Alt act only when no text field has focus.",
+            "Every command is also in the Commander. With a hardware keyboard, tap a key to record a new one. Esc cancels and Backspace clears. Keys without Ctrl or Alt act only when no text field has focus.",
+        ),
         "actions": [action("keys.resetAll", "Reset all", !bindings.overrides.0.is_empty() || !bindings.in_terminal.is_empty())],
         "sections": sections
     })
@@ -1411,7 +1451,11 @@ pub(super) fn command(
             }
             return Ok(());
         }
-        "window.tray" if app.shell.has_tray() => {
+        "window.tailscale" => {
+            app.client.set_tailscale_attach(checked(values)?);
+            return Ok(());
+        }
+        "window.tray" if app.shell.has_tray() || app.ui.platform == yaac_core::input::Platform::Android => {
             app.ui.tray_on_close = checked(values)?;
             return Ok(());
         }
@@ -1907,6 +1951,46 @@ fn ssh_config_hosts() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn on_android_the_window_page_offers_running_in_the_background_and_no_renderer_choice() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let desktop = window(&app);
+        super::super::dispatch(&mut app, &ctx, &mut None, "shell.platform", &json!({ "platform": "android" })).unwrap();
+        let android = window(&app);
+        assert_ne!(desktop, android);
+        let tray = &android["sections"][0]["rows"][0];
+        assert_eq!(tray["actions"][0]["label"], "Keep running in the background");
+        assert_eq!(tray["actions"][0]["enabled"], true);
+        assert!(tray["detail"].as_str().unwrap().contains("Open and Quit"));
+        let display = android["sections"][1]["rows"].as_array().unwrap();
+        assert_eq!(display.len(), 1);
+        assert!(display[0].get("fields").is_none(), "nothing to choose");
+        // The same preference as the desktop's tray toggle.
+        command(&mut app, &mut None, "settings.action", &json!({ "id": "window.tray", "values": { "checked": false } })).unwrap();
+        assert!(!app.ui.tray_on_close);
+        super::super::dispatch(&mut app, &ctx, &mut None, "shell.platform", &json!({ "platform": "desktop" })).unwrap();
+        assert_eq!(window(&app)["sections"][0], {
+            let mut back = crate::app::tests::demo_app(&ctx);
+            back.ui.tray_on_close = false;
+            window(&back)["sections"][0].clone()
+        });
+    }
+
+    #[test]
+    fn touch_input_changes_only_the_texts_that_name_a_mechanic() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let pointer = keyboard(&app);
+        assert!(pointer["detail"].as_str().unwrap().contains("Click a key"));
+        super::super::dispatch(&mut app, &ctx, &mut None, "shell.inputMode", &json!({ "mode": "touch" })).unwrap();
+        let touch = keyboard(&app);
+        assert!(touch["detail"].as_str().unwrap().contains("With a hardware keyboard, tap a key"));
+        assert_eq!(pointer["sections"], touch["sections"]);
+        super::super::dispatch(&mut app, &ctx, &mut None, "shell.inputMode", &json!({ "mode": "pointer" })).unwrap();
+        assert_eq!(keyboard(&app), pointer);
+    }
 
     #[test]
     fn keyboard_switch_updates_the_shortcut_dispatched_by_a_focused_terminal() {

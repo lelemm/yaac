@@ -7,7 +7,7 @@
 //! a merge mark for merged, a struck-through number for closed; a small cross when checks
 //! fail and a small dotted ring while they run (passing draws nothing).
 
-use eframe::egui::{self, Align2, Margin, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
+use egui::{self, Align2, Margin, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, pos2, vec2};
 use yaac_core::ThreadKey;
 use yaac_core::pr::{AgentDraft, BadgeAction, BadgeClick, BadgeHint, PrBadge, Prepare, badge_menu, click, describe};
 use yaac_protocol::ChecksState;

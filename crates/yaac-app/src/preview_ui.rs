@@ -7,7 +7,6 @@ use crate::{
     theme::{self, Palette, size},
     widgets,
 };
-use eframe::egui;
 use yaac_core::{ThreadKey, attention::AttentionMap};
 use yaac_protocol::GitFileStatus;
 

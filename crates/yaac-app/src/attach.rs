@@ -41,6 +41,11 @@ pub struct AttachConfig {
     pub autostart: Option<Autostart>,
     /// How long to wait for a started hub to listen.
     pub start_timeout: Duration,
+    /// A hub on another machine, as `host:port` (its Tailscale attach listener,
+    /// docs/02-architecture.md#attaching-over-tailscale): the Android client's way in. Such a
+    /// hub is never started, stopped or replaced from here; `paths` then only places this
+    /// client's own files.
+    pub remote: Option<String>,
 }
 
 impl AttachConfig {
@@ -49,7 +54,59 @@ impl AttachConfig {
         let paths = HubPaths::from_env().map_err(|e| e.to_string())?;
         let exe = std::env::current_exe().map_err(|e| format!("cannot find the yaac binary: {e}"))?;
         let autostart = Autostart::from_env(exe.clone()).ok();
-        Ok(Self { paths, exe, autostart, start_timeout: Duration::from_secs(8) })
+        Ok(Self { paths, exe, autostart, start_timeout: Duration::from_secs(8), remote: None })
+    }
+
+    /// A hub on another machine at `address` (`host:port`); `paths` holds this client's files.
+    pub fn remote(address: String, paths: HubPaths) -> Self {
+        Self { paths, exe: PathBuf::new(), autostart: None, start_timeout: Duration::from_secs(10), remote: Some(address) }
+    }
+
+    /// Whether the hub is on another machine (never started or replaced by this client).
+    pub fn is_remote(&self) -> bool {
+        self.remote.is_some()
+    }
+
+    /// What a client of a hub on another machine says when the builds differ: it never
+    /// replaces or restarts that hub (docs/14-android.md), so the hub's own advice (send
+    /// `hub/shutdown`, update this window) does not apply. `None` for the local hub.
+    pub fn mismatch_text(&self) -> Option<String> {
+        let address = self.remote.as_deref()?;
+        Some(format!(
+            "The hub on {} is a different YAAC build. Update YAAC on the PC or on this phone so they match.",
+            machine_name(address)
+        ))
+    }
+}
+
+/// The machine an address names, for people: `desk.tailnet.ts.net:47380` → `desk`;
+/// `[fd7a::1]:47380` or `100.64.0.7:47380` → the address without the port.
+pub(crate) fn machine_name(address: &str) -> &str {
+    let host = match address.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+        _ => address,
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let is_ip = host.parse::<std::net::IpAddr>().is_ok();
+    if is_ip { host } else { host.split('.').next().filter(|s| !s.is_empty()).unwrap_or(host) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_remote_hubs_build_mismatch_names_the_pc_and_never_suggests_replacing_it() {
+        let paths = HubPaths { config_dir: "c".into(), data_dir: "d".into(), runtime_dir: "r".into() };
+        let remote = AttachConfig::remote("desk.tailnet.ts.net:47380".into(), paths.clone());
+        let text = remote.mismatch_text().unwrap();
+        assert_eq!(text, "The hub on desk is a different YAAC build. Update YAAC on the PC or on this phone so they match.");
+        assert!(!text.contains("shutdown"));
+        assert_eq!(machine_name("100.64.0.7:47380"), "100.64.0.7");
+        assert_eq!(machine_name("[fd7a:115c::1]:47380"), "fd7a:115c::1");
+        assert_eq!(machine_name("desk"), "desk");
+        let local = AttachConfig { paths, exe: PathBuf::new(), autostart: None, start_timeout: Duration::from_secs(1), remote: None };
+        assert!(local.mismatch_text().is_none());
     }
 }
 
@@ -131,11 +188,33 @@ pub fn spawn_hub(config: &AttachConfig) -> std::io::Result<()> {
 
 fn connect(config: &AttachConfig, waker: &Waker) -> std::io::Result<HubClient> {
     let w = waker.clone();
-    HubClient::connect_with_waker(&config.paths.socket(), move || w())
+    match &config.remote {
+        Some(address) => connect_remote(address, waker),
+        None => HubClient::connect_with_waker(&config.paths.socket(), move || w()),
+    }
+}
+
+/// Resolves `host:port` (a Tailscale name or an address) and connects to the first address
+/// that answers.
+fn connect_remote(address: &str, waker: &Waker) -> std::io::Result<HubClient> {
+    use std::net::ToSocketAddrs;
+    let mut last = std::io::Error::new(std::io::ErrorKind::NotFound, format!("{address} has no address"));
+    for addr in address.to_socket_addrs()? {
+        let w = waker.clone();
+        match HubClient::connect_tcp(addr, move || w()) {
+            Ok(c) => return Ok(c),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }
 
 /// Connects to a running hub, or starts one and waits for it to listen.
 fn connect_or_start(config: &AttachConfig, waker: &Waker, slot: &Mutex<Slot>) -> Result<HubClient, String> {
+    if config.is_remote() {
+        // Another machine's hub: connect or say why; it is never started from here.
+        return connect(config, waker).map_err(|e| format!("could not reach the hub: {e}"));
+    }
     if let Ok(c) = connect(config, waker) {
         return Ok(c);
     }
@@ -199,7 +278,7 @@ impl HubAttach {
         let slot: Arc<Mutex<Slot>> = Arc::default();
         let s = slot.clone();
         let spawned = std::thread::Builder::new().name("yaac-attach".into()).spawn(move || {
-            if after_shutdown && !wait_for_lock(&config, config.start_timeout) {
+            if after_shutdown && (config.is_remote() || !wait_for_lock(&config, config.start_timeout)) {
                 if let Ok(mut g) = s.lock() {
                     g.error = Some("the old hub did not exit".into());
                 }
@@ -208,7 +287,8 @@ impl HubAttach {
             }
             let outcome = connect_or_start(&config, &waker, &s);
             // The window reads the cache file directly (read-only); the hub is its only writer.
-            let prefs = read_prefs(&config);
+            // A remote hub's cache is on its own machine: nothing is read here.
+            let prefs = if config.is_remote() { Vec::new() } else { read_prefs(&config) };
             if let Ok(mut g) = s.lock() {
                 g.prefs = Some(prefs);
                 match outcome {

@@ -1,7 +1,7 @@
 //! Dialogs over the shell: the fork dialog (screen 11) and the confirmation of a mode that
 //! bypasses approvals (screen 30). Each dims the shell with the scrim and has one filled button.
 
-use eframe::egui::{self, Align2, Margin, RichText, vec2};
+use egui::{self, Align2, Margin, RichText, vec2};
 use yaac_core::fork::ForkChoice;
 
 use crate::app::{Action, Menu, YaacApp};

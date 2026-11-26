@@ -1,4 +1,3 @@
-use eframe::egui;
 use yaac_preview::{BrowserHost, Preview};
 
 struct Demo {

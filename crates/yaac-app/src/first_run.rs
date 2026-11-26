@@ -1,6 +1,6 @@
 //! First run (screen 07), and the page shown when this window is older than the hub.
 
-use eframe::egui::{self, Margin, RichText};
+use egui::{self, Margin, RichText};
 use yaac_core::attention::Mark;
 use yaac_core::settings::Page;
 

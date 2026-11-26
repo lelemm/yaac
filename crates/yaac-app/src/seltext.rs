@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use eframe::egui::{self, Color32, Galley, Pos2, Rect, Response, Sense, Ui, text::CCursor, text_selection::CCursorRange};
+use egui::{self, Color32, Galley, Pos2, Rect, Response, Sense, Ui, text::CCursor, text_selection::CCursorRange};
 use yaac_core::ThreadKey;
 use yaac_core::selection::{Drag, Selection, TextPos, Texts, Unit, copy_text};
 
@@ -261,7 +261,7 @@ impl SelCx<'_> {
 #[cfg(test)]
 mod tests {
     //! Driven through a headless egui context with simulated pointer and key events.
-    use eframe::egui::{Event, FontId, OutputCommand, PointerButton, RawInput, pos2, vec2};
+    use egui::{Event, FontId, OutputCommand, PointerButton, RawInput, pos2, vec2};
 
     use super::*;
 

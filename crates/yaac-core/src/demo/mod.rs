@@ -11,6 +11,7 @@
 pub(crate) mod build;
 mod terminal;
 mod diffs;
+mod sidepane;
 mod fleet;
 mod forge;
 mod long;
@@ -89,11 +90,14 @@ pub enum Scene {
     ManyAgents,
     /// A running CI worker under search-service (P356).
     ModeChange,
+    /// The side panes on users-service: its worktree with every git mark, files, diffs, a
+    /// terminal; in the transcript a screenshot from a tool, a diagram and published files.
+    SidePanes,
 }
 
 impl Scene {
     /// Every scene, for the demo menu.
-    pub const ALL: [Scene; 16] = [
+    pub const ALL: [Scene; 17] = [
         Scene::RequestStates,
         Scene::Permission,
         Scene::Notices,
@@ -110,6 +114,7 @@ impl Scene {
         Scene::QueueWhileRunning,
         Scene::ManyAgents,
         Scene::ModeChange,
+        Scene::SidePanes,
     ];
 
     /// Menu label.
@@ -130,6 +135,7 @@ impl Scene {
             Scene::HarnessSubagents => "Claude Code's own subagents under search-service",
             Scene::QueueWhileRunning => "billing-service is working; two messages wait in its queue",
             Scene::ModeChange => "Permission modes across running workers",
+            Scene::SidePanes => "Side panes: files, diffs, a terminal, images (users-service)",
             Scene::ManyAgents => "An orchestrator with 30 agents, most of them finished",
         }
     }
@@ -176,6 +182,13 @@ struct Inner {
     explanations: yaac_protocol::ExplanationModels,
     always: bool,
     notifications: yaac_protocol::attach::NotificationSettings,
+    /// The request feed (`hub/notifications/subscribe`), once a client asked for it, and the
+    /// requests opened from it (seen).
+    feed: Option<attach::RequestFeed>,
+    feed_seen: std::collections::BTreeSet<attach::RequestLocation>,
+    /// Tunnels to the demo's dev server (`hub/preview/tunnel`): each one's request so far.
+    tunnels: std::collections::HashMap<yaac_protocol::StreamId, Vec<u8>>,
+    next_tunnel: u32,
     fleet: Fleet,
     ready: VecDeque<Message>,
     scheduled: VecDeque<(u32, Pending)>,
@@ -218,11 +231,16 @@ impl HubLink for DemoHub {
         if let Some((method, params)) = inner.terminals.events.pop_front() {
             return Some(Message::notification(&method, params));
         }
+        inner.refresh_feed();
         inner.ready.pop_front()
     }
 
     fn send_data(&mut self, stream: yaac_protocol::StreamId, bytes: Vec<u8>) {
         let mut inner = self.inner.borrow_mut();
+        if inner.tunnels.contains_key(&stream) {
+            inner.tunnel_data(stream, &bytes);
+            return;
+        }
         let target = inner.fleet.targets.first().map(|t| t.id.to_string()).unwrap_or_default();
         inner.terminals.data(stream, &bytes, &target);
     }
@@ -239,7 +257,7 @@ impl DemoHub {
             Scenario::Fleet => Fleet::standard(now),
             Scenario::Fresh => Fleet::fresh(now),
         };
-        Self { inner: Rc::new(RefCell::new(Inner { explanations: Default::default(), always: true, notifications: Default::default(), fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new(), lose_next: false, terminals: terminal::Terminals::default() })) }
+        Self { inner: Rc::new(RefCell::new(Inner { explanations: Default::default(), always: true, notifications: Default::default(), feed: None, feed_seen: Default::default(), tunnels: Default::default(), next_tunnel: 10_000, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new(), lose_next: false, terminals: terminal::Terminals::default() })) }
     }
 
     /// Every thread of the scenario — the window's "recently used" set, so their hints are
@@ -569,6 +587,29 @@ impl Inner {
                 self.ready.push_back(result(id, json!({ "views": [] })));
             }
             "hub/notifications/visible" | crate::client::hub_names::VIEW_SHOWING => self.ready.push_back(result(id, json!({}))),
+            attach::names::PREVIEW_TUNNEL => {
+                // The demo's one server: a dev server on port 5173 of every machine.
+                if params.get("port").and_then(Value::as_u64) == Some(sidepane::DEV_PORT) {
+                    self.next_tunnel += 1;
+                    let stream = yaac_protocol::StreamId(self.next_tunnel);
+                    self.tunnels.insert(stream, Vec::new());
+                    self.ready.push_back(result(id, json!({ "stream": stream, "initialCredit": 1 << 20 })));
+                } else {
+                    self.ready.push_back(error(id, ErrorCode::ConnectionRefused, "connection refused"));
+                }
+            }
+            attach::names::PREVIEW_TUNNEL_CLOSE => {
+                if let Some(stream) = params.get("stream").and_then(|s| serde_json::from_value(s.clone()).ok()) {
+                    self.tunnels.remove(&stream);
+                }
+                self.ready.push_back(result(id, json!({})));
+            }
+            attach::names::NOTIFICATIONS_SUBSCRIBE => {
+                let feed = attach::RequestFeed { revision: 1, items: self.feed_items() };
+                self.ready.push_back(result(id, serde_json::to_value(&feed).unwrap_or_default()));
+                self.feed = Some(feed);
+            }
+            attach::names::NOTIFICATIONS_RESPOND => self.feed_respond(id, &params),
             crate::client::hub_names::THREADS_FIND => self.find(id, &params),
             crate::client::hub_names::SETTINGS_GET | crate::client::hub_names::SETTINGS_UPDATE => {
                 if let Some(e) = params.get("explanations").and_then(|v| serde_json::from_value(v.clone()).ok()) { self.explanations = e; }
@@ -938,6 +979,37 @@ impl Inner {
             m::THREAD_START => self.start_thread(id, target, p),
             m::THREAD_FORK_PREVIEW => self.fork_preview(id, target, p),
             m::FS_LIST => self.fs_list(id, p),
+            m::PREVIEW_PORTS => {
+                self.ready.push_back(result(id, json!({ "ports": [
+                    { "port": sidepane::DEV_PORT, "host": "127.0.0.1", "command": "vite", "cwd": "/home/dev/api" },
+                ] })));
+            }
+            m::FS_TREE => {
+                let path = p.get("path").and_then(Value::as_str).unwrap_or("");
+                match sidepane::tree(path) {
+                    Some(v) => self.ready.push_back(result(id, v)),
+                    None => self.ready.push_back(error(id, ErrorCode::from_wire("not_found"), "no such folder")),
+                }
+            }
+            m::FS_READ => {
+                let path = p.get("path").and_then(Value::as_str).unwrap_or("");
+                let max = p.get("maxBytes").and_then(Value::as_u64).unwrap_or(4 << 20);
+                match sidepane::read(path, max) {
+                    Some(v) => self.ready.push_back(result(id, v)),
+                    None => self.ready.push_back(error(id, ErrorCode::from_wire("not_found"), "no such file")),
+                }
+            }
+            m::GIT_FILE_DIFF => {
+                let path = p.get("path").and_then(Value::as_str).unwrap_or("");
+                match sidepane::diff(path) {
+                    Some(v) => self.ready.push_back(result(id, v)),
+                    None => self.ready.push_back(error(id, ErrorCode::from_wire("not_found"), "no change to this file")),
+                }
+            }
+            m::UPLOAD_READ => {
+                let upload = p.get("uploadId").and_then(Value::as_str).unwrap_or("");
+                self.ready.push_back(result(id, sidepane::upload(upload)));
+            }
             m::FS_SEARCH => {
                 let cwd = p["cwd"].as_str().unwrap_or_default().trim_end_matches('/');
                 let query = p["query"].as_str().unwrap_or_default().to_lowercase();
@@ -1196,6 +1268,89 @@ impl Inner {
         if self.fleet.threads.get(key).is_some_and(|t| t.subscribed) {
             self.ready.push_back(routed(&key.target, m::THREAD_EVENT, json!(ev)));
         }
+    }
+
+    /// A tunnel's bytes: once the request is complete, the dev server answers and closes.
+    fn tunnel_data(&mut self, stream: yaac_protocol::StreamId, bytes: &[u8]) {
+        let Some(request) = self.tunnels.get_mut(&stream) else { return };
+        request.extend_from_slice(bytes);
+        if !request.windows(4).any(|w| w == b"\r\n\r\n") {
+            return;
+        }
+        let response = sidepane::dev_server(request);
+        self.tunnels.remove(&stream);
+        self.terminals.out.push_back((stream, response));
+        self.ready.push_back(Message::notification(attach::names::PREVIEW_TUNNEL_CLOSE, json!({ "stream": stream })));
+    }
+
+    /// The pending requests as the hub's reminder lists them, oldest first (the demo has no
+    /// focused viewport: only what was opened from the feed is seen).
+    fn feed_items(&self) -> Vec<attach::RequestFeedItem> {
+        let mut items: Vec<attach::RequestFeedItem> = self.fleet.threads.iter().flat_map(|(key, t)| {
+            t.items.iter().filter_map(move |item| {
+                let ItemBody::Request(r) = &item.body else { return None };
+                if r.state != RequestState::Pending {
+                    return None;
+                }
+                let location = attach::RequestLocation { target: key.target.clone(), thread_id: key.thread.clone(), request_id: r.request_id.clone() };
+                let (kind, title, decisions) = attach::reminder_entry(r);
+                Some(attach::RequestFeedItem {
+                    location,
+                    item_id: item.id.clone(),
+                    worker: attach::one_line(&t.summary.title, 48),
+                    kind: kind.to_owned(),
+                    title,
+                    decisions: decisions.map(|(allow, deny)| attach::FeedDecisions { allow, deny }),
+                    created_ms: item.started_at.as_ref()
+                        .and_then(|ts| crate::time::parse_rfc3339(ts.as_str()))
+                        .map_or(0, |secs| secs * 1000),
+                })
+            })
+        }).filter(|i| !self.feed_seen.contains(&i.location)).collect();
+        items.sort_by_key(|i| i.created_ms);
+        items
+    }
+
+    /// Sends the feed again when it changed (subscribed clients only).
+    fn refresh_feed(&mut self) {
+        let Some(feed) = &self.feed else { return };
+        let items = self.feed_items();
+        if items != feed.items {
+            let feed = attach::RequestFeed { revision: feed.revision + 1, items };
+            self.ready.push_back(Message::notification(attach::names::NOTIFICATIONS_REQUESTS, serde_json::to_value(&feed).unwrap_or_default()));
+            self.feed = Some(feed);
+        }
+    }
+
+    /// `hub/notifications/respond`, as the hub: a stale revision is refused; Open marks the
+    /// request seen; Allow or Deny answers it with the offered decision.
+    fn feed_respond(&mut self, id: RpcId, params: &Value) {
+        let Ok(p) = serde_json::from_value::<attach::FeedRespondParams>(params.clone()) else {
+            self.ready.push_back(error(id, ErrorCode::InvalidParams, "bad params"));
+            return;
+        };
+        let entry = self.feed.as_ref().filter(|f| f.revision == p.revision)
+            .and_then(|f| f.items.iter().find(|i| i.location == p.location)).cloned();
+        let Some(entry) = entry else {
+            self.ready.push_back(error(id, ErrorCode::from_wire("stale"), "The requests changed; look again before answering"));
+            return;
+        };
+        let decision = match (p.decision.as_deref(), &entry.decisions) {
+            (None, _) => {
+                self.feed_seen.insert(p.location);
+                self.ready.push_back(result(id, json!({ "itemId": entry.item_id })));
+                return;
+            }
+            (Some("allow"), Some(d)) => d.allow.clone(),
+            (Some("deny"), Some(d)) => d.deny.clone(),
+            _ => {
+                self.ready.push_back(error(id, ErrorCode::InvalidParams, "cannot be answered from a notification"));
+                return;
+            }
+        };
+        let answer = json!({ "threadId": p.location.thread_id, "requestId": p.location.request_id,
+            "opId": self.next("toast"), "response": { "requestKind": "approval", "decision": decision } });
+        self.respond(id, &p.location.target, &answer);
     }
 
     fn emit_now(&mut self, key: &ThreadKey, event: ThreadEvent) {
@@ -1751,6 +1906,37 @@ impl Inner {
         self.ready.push_back(result(id, json!({ "skills": skills })));
     }
 
+    /// [`Scene::SidePanes`]: users-service's machine offers the file view and terminals; its
+    /// transcript gains a turn with a screenshot from a tool and a diagram, and it publishes a
+    /// report and the screenshot (cards in its transcript and the orchestrator's).
+    fn play_side_panes(&mut self) {
+        let users = k(USERS);
+        for t in &mut self.fleet.targets {
+            if t.id == users.target {
+                t.state.daemon = Some(DaemonSummary { build: "demo".to_owned(), older: false, schema_hash_matches: true, can_update: false, port_forward: true, file_view: true, terminal: true, budget_time_limit: false, terminal_unavailable_reason: None });
+            }
+        }
+        self.targets_changed();
+        let turn = "u-t2";
+        self.emit_now(&users, ThreadEvent::ItemCompleted(ItemEvent { item: done("u7", turn, user("Show me the new auth flow and check the login page still renders.", &[], &[])) }));
+        let mut shot = tool(ToolKind::Command, "Took a screenshot of /login", Some(0), "Saved login.png (240 × 150)");
+        if let ItemBody::ToolCall(t) = &mut shot {
+            t.images = vec![yaac_protocol::ToolImage { upload_id: sidepane::LOGIN_UPLOAD.into(), name: "login.png".into() }];
+        }
+        self.emit_now(&users, ThreadEvent::ItemCompleted(ItemEvent { item: done("u9", turn, shot) }));
+        self.emit_now(&users, ThreadEvent::ItemCompleted(ItemEvent { item: done("u10", turn, tool(ToolKind::FileChange, "Edited 3 files", None, diffs::USERS)) }));
+        self.emit_now(&users, ThreadEvent::ItemCompleted(ItemEvent { item: done("u8", turn, agent(
+            "The login page renders, and I published the report and the screenshot. The request path after the migration:\n\n```mermaid\nsequenceDiagram\n    participant C as client\n    participant U as users-service\n    participant A as crates/auth\n    C->>U: GET /me (Bearer token)\n    U->>A: verify(token)\n    A-->>U: subject\n    U-->>C: 200 user\n```",
+        )) }));
+        let at = crate::time::timestamp(self.fleet.base - 30);
+        self.summary_now(&users, |s| {
+            s.artifacts = Some(vec![
+                yaac_protocol::GeneratedArtifact { inline_preview: None, upload_id: sidepane::REPORT_UPLOAD.into(), size: sidepane::REPORT_MD.len() as u64, name: "auth-migration-report.md".into(), title: "Auth migration report".into(), published_at: Some(at.clone()) },
+                yaac_protocol::GeneratedArtifact { inline_preview: Some(true), upload_id: sidepane::LOGIN_ARTIFACT.into(), size: sidepane::LOGIN_PNG.len() as u64, name: "login.png".into(), title: "Login page".into(), published_at: Some(at) },
+            ]);
+        });
+    }
+
     fn fs_list(&mut self, id: RpcId, p: &Value) {
         let path = p.get("path").and_then(Value::as_str).unwrap_or("/home/dev").trim_end_matches('/').to_owned();
         let path = if path.is_empty() { "/".to_owned() } else { path };
@@ -1794,6 +1980,7 @@ impl Inner {
     fn play(&mut self, scene: Scene) {
         let base = self.fleet.base;
         match scene {
+            Scene::SidePanes => self.play_side_panes(),
             Scene::ModeChange => {
                 let ci = k(CI);
                 if let Some(t) = self.fleet.threads.get_mut(&ci) {

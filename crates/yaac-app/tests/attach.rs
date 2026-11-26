@@ -76,6 +76,7 @@ impl Profile {
             exe: exe(),
             autostart: Some(self.autostart()),
             start_timeout: Duration::from_secs(15),
+            remote: None,
         }
     }
 

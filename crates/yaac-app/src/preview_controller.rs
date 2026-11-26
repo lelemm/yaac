@@ -36,6 +36,10 @@ pub(crate) struct BrowserTab {
     /// harness logo beside the title (docs/11-preview.md#the-browser-area).
     pub(crate) agent: Option<String>,
     snapshot: Option<ArtifactSnapshot>,
+    /// For an external host (Android): a navigation serial, raised by every load or history
+    /// step the host must carry out, and which history step it is (`None`: load `url`).
+    pub(crate) nav: u64,
+    pub(crate) history: Option<String>,
     /// Set once per renderer handle, only after the hub supplies a target proxy.
     socks: Option<u16>,
     started: bool,
@@ -108,6 +112,8 @@ impl Default for BrowserArea {
 }
 
 pub(crate) enum Pending {
+    /// A `hub/preview/tunnel` for a connection of the external host's proxy.
+    Tunnel(u64),
     File(FileRequest),
     Proxy(ThreadKey, u64),
     External(ThreadKey, u64, Url),
@@ -132,6 +138,8 @@ pub(crate) struct Browsers {
     next: u64,
     #[cfg(feature = "preview")]
     host: yaac_preview::BrowserHost,
+    /// The embedder's own browser host (Android, P380), when it has one.
+    pub(crate) external: Option<crate::external_host::Host>,
 }
 
 pub(crate) fn address(input: &str) -> Result<Url, String> {
@@ -205,6 +213,10 @@ impl Browsers {
     }
 
     pub(crate) fn reason(&self, client: &Client, key: Option<&ThreadKey>) -> Option<String> {
+        if self.external.is_some() {
+            let Some(key) = key else { return Some("Open a thread first".into()) };
+            return (!supported(client, key)).then(|| "The target is offline or lacks port forwarding".into());
+        }
         if !cfg!(feature = "preview") {
             return Some("This build has no browser host".into());
         }
@@ -283,7 +295,6 @@ impl Browsers {
 
     /// An agent's tab: added after the thread's tabs without changing the active tab (the
     /// user's view), except that a thread's first tab opens its browser area.
-    #[cfg(feature = "preview")]
     pub(crate) fn open_background(&mut self, client: &mut Client, key: &ThreadKey, input: &str) -> Result<u64, String> {
         if let Some(reason) = self.reason(client, Some(key)) {
             return Err(reason);
@@ -448,9 +459,17 @@ impl Browsers {
     }
 
     fn load_url(&mut self, client: &mut Client, key: &ThreadKey, id: u64, url: Url) -> Result<(), String> {
+        let external = self.external.is_some();
         let tab = self.tab_mut(key, id).ok_or("Tab closed")?;
         tab.url = url.to_string();
         tab.error = None;
+        if external {
+            // The host loads it through the controller's own proxy (`external_host`).
+            tab.nav += 1;
+            tab.history = None;
+            tab.loading = true;
+            return Ok(());
+        }
         if !tab.started
             && tab.socks.is_none()
             && !self
@@ -569,6 +588,8 @@ impl Browsers {
     pub(crate) fn tick(&mut self, client: &mut Client, visible: Option<&ThreadKey>, now: Instant) -> Option<Duration> {
         // Replies first (a terminal's stream becomes known), then the terminals' output, which
         // may have arrived in the same batch.
+        let wake = self.file_wake.clone();
+        self.external_tick(client, visible, wake, now);
         let rest = self.tick_pane(client, visible, now);
         let terms = self.terms.tick(client, now);
         match (terms, rest) {
@@ -595,6 +616,12 @@ impl Browsers {
                 continue;
             };
             match Some(pending) {
+                Some(Pending::Tunnel(conn)) => {
+                    let code = result.as_ref().err().filter(|e| e.to_lowercase().contains("refused")).map(|_| "connection_refused");
+                    if let Some(proxy) = self.external.as_mut().and_then(|h| h.proxy.as_mut()) {
+                        proxy.opened(client, conn, result, code);
+                    }
+                }
                 Some(Pending::File(request)) => self.file_reply(client, request, result),
                 Some(Pending::Proxy(k, id)) => {
                     if let Some(tab) = self.tab_mut(&k, id) {
@@ -714,7 +741,6 @@ impl Browsers {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui;
     use yaac_core::demo::{Scenario, threads};
 
     #[test]

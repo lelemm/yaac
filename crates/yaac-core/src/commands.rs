@@ -412,6 +412,8 @@ pub struct Ctx<'a> {
     pub terminal: TerminalCtx<'a>,
     /// The selected conversation has full-screen tabs to cycle through.
     pub fullscreen_tabs: bool,
+    /// A mouse and keyboard, or touch: the reasons that name an input mechanic follow it.
+    pub input: crate::input::InputMode,
 }
 
 /// The terminal panel's part of [`Ctx`] (P338).
@@ -683,7 +685,10 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
             if pending(ctx).is_empty() && ctx.thread.is_none_or(|k| crate::copies::pending(ctx.state, k).is_empty()) {
                 off("No request is waiting here")
             } else {
-                when(card_decision(ctx, cmd).is_some(), "Focus the request card first (Ctrl+J)")
+                when(
+                    card_decision(ctx, cmd).is_some(),
+                    ctx.input.pick("Focus the request card first (Ctrl+J)", "Open the request card first (Needs you)"),
+                )
             }
         }
         Cmd::AnswerQuestion => when(
@@ -728,7 +733,10 @@ pub fn availability(cmd: Cmd, ctx: &Ctx<'_>) -> Avail {
         Cmd::NextTerminal | Cmd::PrevTerminal => when(ctx.terminal.open && ctx.terminal.any, "The terminal panel is closed"),
         Cmd::MaximiseTerminalPanel => when(ctx.terminal.open, "The terminal panel is closed"),
         Cmd::CycleFullscreenTabs => when(ctx.fullscreen_tabs, "Open the tabs in full screen first"),
-        Cmd::ArchiveSelected | Cmd::MuteSelected | Cmd::MoveSelected | Cmd::ClearSelection => when(ctx.list_selected > 0, "Nothing is selected in the sidebar (Ctrl+click rows)"),
+        Cmd::ArchiveSelected | Cmd::MuteSelected | Cmd::MoveSelected | Cmd::ClearSelection => when(
+            ctx.list_selected > 0,
+            ctx.input.pick("Nothing is selected in the sidebar (Ctrl+click rows)", "Nothing is selected in the list (tap a row's state mark)"),
+        ),
         Cmd::Commander
         | Cmd::SearchThreads
         | Cmd::Settings

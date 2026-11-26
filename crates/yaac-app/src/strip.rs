@@ -8,7 +8,7 @@
 //! section. The wheel scrolls it. Hovering a thread shows a card with everything its full row
 //! shows, with the agents card's no-flicker rule (`yaac_core::hover`).
 
-use eframe::egui::{self, Rect, Sense, pos2, vec2};
+use egui::{self, Rect, Sense, pos2, vec2};
 use yaac_core::attention::AttentionMap;
 use yaac_core::hover::Region;
 use yaac_core::sidebar::{Open, sections};

@@ -1,6 +1,6 @@
 //! The one shell: sidebar | thread (header, transcript, composer, control row) | agents.
 
-use eframe::egui::{self, Align2, Margin, vec2};
+use egui::{self, Align2, Margin, vec2};
 use yaac_core::agents::{PanelMode, agents_panel};
 use yaac_core::attention::AttentionMap;
 use yaac_core::state::Selection;

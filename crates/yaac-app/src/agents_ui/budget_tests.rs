@@ -1,7 +1,7 @@
 //! The budget line in the real widget (P352), on a headless egui context with the demo fleet:
 //! both limits, which one ran out, and the duration's right-click menu.
 
-use eframe::egui::{self, Event, Pos2, RawInput, Rect, pos2, vec2};
+use egui::{self, Event, Pos2, RawInput, Rect, pos2, vec2};
 use yaac_core::agents::{PanelMode, agents_panel};
 use yaac_core::attention::AttentionMap;
 use yaac_core::demo::{Scene, threads};

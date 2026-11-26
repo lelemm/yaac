@@ -136,7 +136,7 @@ impl Troubleshoot {
         self.error = None;
     }
 
-    pub(crate) fn pump(&mut self, client: &mut Client, ctx: &eframe::egui::Context) {
+    pub(crate) fn pump(&mut self, client: &mut Client, ctx: &egui::Context) {
         if let Some((id, response)) = client.take_troubleshoot_reply()
             && self
                 .pending

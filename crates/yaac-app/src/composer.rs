@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Margin, text::LayoutJob};
+use egui::{self, Key, KeyboardShortcut, Modifiers, Margin, text::LayoutJob};
 use yaac_core::ThreadKey;
 use yaac_core::attention::AttentionMap;
 use yaac_core::controls::{Choice, ControlRow, ControlRowView, Speed, ULTRAFAST_WARNING, draft_row, thread_row};
@@ -1444,7 +1444,7 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
 #[cfg(test)]
 mod tests {
     //! The text box on a headless egui context with simulated keys.
-    use eframe::egui::{Event, RawInput};
+    use egui::{Event, RawInput};
 
     use super::*;
 

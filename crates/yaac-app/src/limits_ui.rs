@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use eframe::egui::{self, Color32, Rect, Sense, pos2, vec2};
+use egui::{self, Color32, Rect, Sense, pos2, vec2};
 use yaac_core::limits::{Group, Panel, Segment};
 
 use crate::app::YaacApp;
@@ -143,23 +143,24 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, now: i64) {
     }
 }
 
-/// The collapsed strip's form: per account, the logo and one thin bar for its most used
-/// window, stacked above Settings. Returns the height used (drawn upwards from `bottom`).
+/// The collapsed strip's form: each account's logo and thin bars, stacked above Settings.
+/// Returns the height used (drawn upwards from `bottom`).
 pub(crate) fn strip(ui: &mut egui::Ui, app: &mut YaacApp, now: i64, cx: f32, bottom: f32) -> f32 {
-    const CELL: f32 = 30.0;
+    const BAR_SPACING: f32 = 5.0;
     let Some(panel) = model(ui, app, now) else { return 0.0 };
     let p = app.p;
     let mut y = bottom;
     for g in panel.groups.iter().rev() {
-        let cell = Rect::from_min_max(pos2(cx - 20.0, y - CELL), pos2(cx + 20.0, y));
+        let height = 25.0 + g.bars.len() as f32 * BAR_SPACING;
+        let cell = Rect::from_min_max(pos2(cx - 20.0, y - height), pos2(cx + 20.0, y));
         crate::agents_ui::harness_mark(ui.painter(), pos2(cx, cell.top() + 10.0), 15.0, Some(g.kind.as_str()), None, g.stale, &p);
-        if let Some(b) = g.bars.get(g.tightest) {
-            let tone = if g.stale { colour(g.kind.as_str(), &p).gamma_multiply(0.55) } else { colour(g.kind.as_str(), &p) };
-            let tone = if b.near { p.failed } else { tone };
+        for (row, b) in g.bars.iter().enumerate() {
+            let tone = if b.near { p.failed } else { colour(g.kind.as_str(), &p) };
+            let tone = if g.stale { tone.gamma_multiply(0.55) } else { tone };
             // Thinner and narrower than the panel's bar: five 4×3 segments.
             let w = 4.0 * 5.0 + 1.5 * 4.0;
             for (i, s) in b.segments.iter().enumerate() {
-                let r = Rect::from_min_size(pos2(cx - w / 2.0 + i as f32 * 5.5, cell.top() + 21.0), vec2(4.0, 3.0));
+                let r = Rect::from_min_size(pos2(cx - w / 2.0 + i as f32 * 5.5, cell.top() + 21.0 + row as f32 * BAR_SPACING), vec2(4.0, 3.0));
                 let fill = match s {
                     Segment::Full => tone,
                     Segment::Partial => tone.gamma_multiply(0.45),
@@ -167,10 +168,9 @@ pub(crate) fn strip(ui: &mut egui::Ui, app: &mut YaacApp, now: i64, cx: f32, bot
                 };
                 ui.painter().rect_filled(r, 0.5, fill);
             }
-            let tip = format!("{} {}\n\n{}", b.label, b.text, g.tooltip);
-            ui.interact(cell, egui::Id::unique(("strip-rate-limits", &g.key)), Sense::hover()).on_hover_text(tip);
         }
-        y -= CELL;
+        ui.interact(cell, egui::Id::unique(("strip-rate-limits", &g.key)), Sense::hover()).on_hover_text(&g.tooltip);
+        y -= height;
     }
     bottom - y
 }
@@ -180,6 +180,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_collapsed_meter_draws_every_visible_window() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let now = app.now();
+        app.client.rate_limits_shown(now);
+        app.pump_demo();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(strip(ui, &mut app, now, 24.0, 250.0), 65.0);
+        });
+        let segments = output.shapes.iter().filter(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(rect) if rect.rect.size() == vec2(4.0, 3.0))
+        }).count();
+        output.textures_delta.clear();
+        assert_eq!(segments, 15, "Claude has two visible windows and Codex has one");
+    }
+
+    #[test]
     fn wraps_and_centres_each_usage_row() {
         let panel = Panel {
             groups: (0..3)
@@ -187,7 +204,6 @@ mod tests {
                     key: i.to_string(),
                     kind: yaac_protocol::ProviderKind::new("fixture"),
                     bars: Vec::new(),
-                    tightest: 0,
                     tooltip: String::new(),
                     stale: false,
                 })

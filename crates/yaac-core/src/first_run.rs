@@ -34,9 +34,14 @@ pub struct FirstRunView {
     pub can_start: bool,
 }
 
-/// Whether the window is on a fresh install: no thread anywhere, no project, no draft.
+/// Whether the window is on a fresh install: no thread anywhere, no project, no draft — known
+/// only once every target's thread index has answered (a hub over Tailscale can take a while).
 pub fn is_first_run(state: &AppState) -> bool {
-    state.hub.attached && state.threads.is_empty() && state.projects.is_empty() && state.new_threads.is_empty()
+    state.hub.attached
+        && state.hub.index_pending.is_empty()
+        && state.threads.is_empty()
+        && state.projects.is_empty()
+        && state.new_threads.is_empty()
 }
 
 fn word(status: &ProviderStatus) -> String {
@@ -174,4 +179,19 @@ pub fn project_picker(state: &AppState, selected: Option<&str>) -> Vec<PickerMac
     }
     machines.sort_by_key(|m| std::cmp::Reverse(m.0));
     machines.into_iter().map(|m| m.1).collect()
+}
+
+#[cfg(test)]
+mod index_tests {
+    use crate::state::AppState;
+
+    #[test]
+    fn no_first_run_until_every_targets_index_has_answered() {
+        let mut state = AppState::default();
+        state.hub.attached = true;
+        state.hub.index_pending.insert("devbox".into());
+        assert!(!super::is_first_run(&state), "threads may simply not be loaded yet");
+        state.hub.index_pending.clear();
+        assert!(super::is_first_run(&state));
+    }
 }

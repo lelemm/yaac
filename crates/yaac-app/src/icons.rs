@@ -3,7 +3,7 @@
 
 use std::f32::consts::TAU;
 
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
+use egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke, Vec2, pos2, vec2};
 use yaac_core::attention::Mark;
 use yaac_core::controls::Speed;
 
@@ -341,7 +341,7 @@ pub(crate) fn lock(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let p = &soft(p);
     let w = (d * 0.09).max(1.2);
     let body = Rect::from_center_size(pos2(c.x, c.y + d * 0.14), vec2(d * 0.62, d * 0.46));
-    p.rect_stroke(body, 1.5, stroke(col, w), eframe::egui::StrokeKind::Middle);
+    p.rect_stroke(body, 1.5, stroke(col, w), egui::StrokeKind::Middle);
     let r = d * 0.2;
     let top = pos2(c.x, body.top() - d * 0.02);
     let pts: Vec<Pos2> = (0..=10).map(|k| {
@@ -392,7 +392,7 @@ pub(crate) fn terminal(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let p = &soft(p);
     let w = (d * 0.08).max(1.1);
     let r = Rect::from_center_size(c, vec2(d * 0.8, d * 0.62));
-    p.rect_stroke(r, 2.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
+    p.rect_stroke(r, 2.0, stroke(col, w), egui::StrokeKind::Middle);
     let s = d * 0.12;
     let a = pos2(r.left() + d * 0.14, r.center().y - s);
     p.line(vec![a, pos2(a.x + s, a.y + s), pos2(a.x, a.y + 2.0 * s)], stroke(col, w));
@@ -414,7 +414,7 @@ pub(crate) fn clear(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let p = &soft(p);
     let w = (d * 0.08).max(1.1);
     let at = |x: f32, y: f32| pos2(c.x + (x - 8.0) * d / 16.0, c.y + (y - 8.0) * d / 16.0);
-    p.add(eframe::egui::Shape::closed_line(vec![at(3.0, 9.5), at(8.0, 4.5), at(12.5, 9.0), at(8.5, 13.0), at(6.5, 13.0)], stroke(col, w)));
+    p.add(egui::Shape::closed_line(vec![at(3.0, 9.5), at(8.0, 4.5), at(12.5, 9.0), at(8.5, 13.0), at(6.5, 13.0)], stroke(col, w)));
     p.line_segment([at(5.5, 7.0), at(10.5, 11.5)], stroke(col, w));
     p.line_segment([at(9.0, 13.0), at(14.0, 13.0)], stroke(col, w));
 }
@@ -438,7 +438,7 @@ pub(crate) fn image(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let p = &soft(p);
     let w = (d * 0.08).max(1.1);
     let r = Rect::from_center_size(c, vec2(d * 0.8, d * 0.62));
-    p.rect_stroke(r, 2.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
+    p.rect_stroke(r, 2.0, stroke(col, w), egui::StrokeKind::Middle);
     p.line(vec![pos2(r.left() + 2.0, r.bottom() - 2.0), pos2(c.x - d * 0.05, c.y), pos2(r.right() - 2.0, r.bottom() - 2.0)], stroke(col, w));
     p.circle_filled(pos2(r.right() - d * 0.18, r.top() + d * 0.16), d * 0.06, col);
 }
@@ -496,7 +496,7 @@ pub(crate) fn git_square(p: &Painter, c: Pos2, d: f32, col: Color32, kind: char)
     let p = &soft(p);
     let w = (d * 0.09).max(1.1);
     let r = Rect::from_center_size(c, Vec2::splat(d * 0.72));
-    p.rect_stroke(r, 2.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
+    p.rect_stroke(r, 2.0, stroke(col, w), egui::StrokeKind::Middle);
     let s = d * 0.2;
     match kind {
         '+' => {
@@ -554,7 +554,7 @@ pub(crate) fn copy(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let back = Rect::from_min_size(pos2(c.x - s * 0.75, c.y - s * 0.75), vec2(s, s));
     let front = Rect::from_min_size(pos2(c.x - s * 0.25, c.y - s * 0.25), vec2(s, s));
     p.line(vec![pos2(back.left(), back.bottom()), back.left_top(), pos2(back.right(), back.top())], stroke(col, w));
-    p.rect_stroke(front, 1.5, stroke(col, w), eframe::egui::StrokeKind::Middle);
+    p.rect_stroke(front, 1.5, stroke(col, w), egui::StrokeKind::Middle);
 }
 
 /// A check mark (done; "Copied").
@@ -588,7 +588,7 @@ pub(crate) fn sidebar(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let p = &soft(p);
     let w = (d * 0.08).max(1.2);
     let r = Rect::from_center_size(c, vec2(d * 0.8, d * 0.66));
-    p.rect_stroke(r, 2.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
+    p.rect_stroke(r, 2.0, stroke(col, w), egui::StrokeKind::Middle);
     let x = r.left() + r.width() * 0.34;
     p.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], stroke(col, w));
 }
@@ -675,11 +675,11 @@ pub(crate) fn maximize(p: &Painter, c: Pos2, d: f32, col: Color32, restore: bool
     if restore {
         let o = d * 0.1;
         let front = Rect::from_center_size(pos2(c.x - o, c.y + o), Vec2::splat(s * 0.85));
-        p.rect_stroke(front, 1.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
+        p.rect_stroke(front, 1.0, stroke(col, w), egui::StrokeKind::Middle);
         let back = front.translate(vec2(2.0 * o, -2.0 * o));
         p.line(vec![pos2(back.left(), front.top()), back.left_top(), back.right_top(), back.right_bottom(), pos2(front.right(), back.bottom())], stroke(col, w));
     } else {
-        p.rect_stroke(Rect::from_center_size(c, Vec2::splat(s)), 1.0, stroke(col, w), eframe::egui::StrokeKind::Middle);
+        p.rect_stroke(Rect::from_center_size(c, Vec2::splat(s)), 1.0, stroke(col, w), egui::StrokeKind::Middle);
     }
 }
 

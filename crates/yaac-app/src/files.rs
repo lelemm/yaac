@@ -12,13 +12,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use eframe::egui::{self, ColorImage, TextureHandle};
+use egui::{self, ColorImage, TextureHandle};
 use yaac_core::attachments::{BLOB_CHUNK_MAX, DraftRef};
 
 /// A clipboard bitmap larger than this (as PNG) is refused (docs/06: 64 clipboard MiB per image).
 const CLIPBOARD_IMAGE_MAX: usize = 64 * 1024 * 1024;
 /// Files larger than this get no thumbnail.
 const THUMB_FILE_MAX: u64 = 64 * 1024 * 1024;
+/// The largest local file sent by its bytes (`Files::attach_local`).
+const LOCAL_FILE_MAX: u64 = 64 * 1024 * 1024;
 /// Thumbnails are decoded to at most this many pixels on the long side (shown at about half,
 /// so they stay sharp on a high-density display).
 const THUMB_PX: u32 = 72;
@@ -144,7 +146,7 @@ impl Files {
             return;
         }
         self.picking = true;
-        self.spawn("yaac-picker", move || Outcome::Picked(draft, rfd::FileDialog::new().set_title("Attach files").pick_files()));
+        self.spawn("yaac-picker", move || Outcome::Picked(draft, crate::platform::pick_files("Attach files")));
     }
 
     /// Ctrl+V: read the clipboard. Into a composer, a file list or a bitmap becomes chips;
@@ -154,6 +156,19 @@ impl Files {
             let clip = read_clipboard(draft.as_ref(), local_time);
             Outcome::Pasted(draft, clip)
         });
+    }
+
+    /// Files the hub cannot read by path (they are on this device, the hub on another
+    /// machine: the Android client): each is read here, on a worker, and attached by its bytes
+    /// through the hub's draft store, like a clipboard image. Images are recognised by content.
+    pub(crate) fn attach_local(&self, draft: &DraftRef, paths: Vec<String>) {
+        for path in paths {
+            let draft = draft.clone();
+            self.spawn("yaac-encode", move || match encode_file(&draft, &path) {
+                Ok(enc) => Outcome::Encoded(enc),
+                Err(why) => Outcome::Notice(why),
+            });
+        }
     }
 
     /// "Attach as a file" for a long text paste.
@@ -216,6 +231,7 @@ impl Files {
 /// Reads the clipboard: a file list first (a file manager also offers the paths as text),
 /// then text, then a bitmap — the order egui itself uses for text and images, so copying from
 /// an office program (which offers a picture of the text too) still pastes text.
+#[cfg(feature = "desktop")]
 fn read_clipboard(draft: Option<&DraftRef>, local_time: (i32, u32, u32, u32, u32)) -> Clip {
     let Ok(mut cb) = arboard::Clipboard::new() else { return Clip::Nothing };
     if draft.is_some()
@@ -251,6 +267,50 @@ fn read_clipboard(draft: Option<&DraftRef>, local_time: (i32, u32, u32, u32, u32
         }
         Err(_) => Clip::Nothing,
     }
+}
+
+/// Without the desktop clipboard the embedder's hooks answer: copied files (a picture, a
+/// document) as local copies, else text.
+#[cfg(not(feature = "desktop"))]
+fn read_clipboard(draft: Option<&DraftRef>, _local_time: (i32, u32, u32, u32, u32)) -> Clip {
+    if draft.is_some()
+        && let Some(files) = crate::platform::clipboard_files().filter(|f| !f.is_empty())
+    {
+        return Clip::Files(files.into_iter().map(|p| p.to_string_lossy().into_owned()).collect());
+    }
+    match crate::platform::clipboard_text() {
+        Some(text) if !text.is_empty() => Clip::Text(text.replace("\r\n", "\n")),
+        _ => Clip::Nothing,
+    }
+}
+
+/// A local file as an attachment's bytes, at most [`LOCAL_FILE_MAX`].
+fn encode_file(draft: &DraftRef, path: &str) -> Result<Encoded, String> {
+    use std::io::Read as _;
+    let name = std::path::Path::new(path).file_name().map_or_else(|| "file".to_owned(), |n| n.to_string_lossy().into_owned());
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(LOCAL_FILE_MAX + 1).read_to_end(&mut bytes))
+        .map_err(|e| format!("Could not read {name}: {e}"))?;
+    if bytes.len() as u64 > LOCAL_FILE_MAX {
+        return Err(format!("{name} is larger than 64 MiB."));
+    }
+    let image = image::guess_format(&bytes).ok().and_then(|f| match f {
+        image::ImageFormat::Png => Some("image/png"),
+        image::ImageFormat::Jpeg => Some("image/jpeg"),
+        image::ImageFormat::Gif => Some("image/gif"),
+        image::ImageFormat::WebP => Some("image/webp"),
+        _ => None,
+    });
+    let thumb = image.and_then(|_| decode_thumb(path));
+    Ok(Encoded {
+        draft: draft.clone(),
+        name,
+        media_type: image.unwrap_or("application/octet-stream").into(),
+        size: bytes.len() as u64,
+        chunks: chunks(&bytes),
+        thumb,
+    })
 }
 
 /// RGBA8 to PNG.
@@ -363,6 +423,25 @@ mod tests {
         let t = thumb_of_rgba(w, h, &rgba).unwrap();
         assert!(t.size[0] <= THUMB_PX as usize && t.size[1] <= THUMB_PX as usize);
         assert!(encode_png(2, 2, &[0; 3]).is_err());
+    }
+
+    #[test]
+    fn a_local_file_is_read_into_chunks_with_its_type_by_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = DraftRef::New(1);
+        let png = encode_png(4, 3, &[200u8; 4 * 3 * 4]).unwrap();
+        // The name says text; the content says PNG: the content wins.
+        let photo = dir.path().join("photo.txt");
+        std::fs::write(&photo, &png).unwrap();
+        let enc = encode_file(&d, photo.to_str().unwrap()).unwrap();
+        assert_eq!((enc.name.as_str(), enc.media_type.as_str(), enc.size), ("photo.txt", "image/png", png.len() as u64));
+        assert!(enc.thumb.is_some());
+        let notes = dir.path().join("notes.md");
+        std::fs::write(&notes, "# hi").unwrap();
+        let enc = encode_file(&d, notes.to_str().unwrap()).unwrap();
+        assert_eq!(enc.media_type, "application/octet-stream");
+        assert!(enc.thumb.is_none());
+        assert!(encode_file(&d, dir.path().join("gone").to_str().unwrap()).unwrap_err().contains("gone"));
     }
 
     #[test]

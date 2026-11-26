@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn rename_resolves_background_tabs_in_their_own_strip() {
-        let mut app = crate::app::tests::demo_app(&eframe::egui::Context::default());
+        let mut app = crate::app::tests::demo_app(&egui::Context::default());
         let key = yaac_core::demo::threads::orchestrator();
         let b = &mut app.browsers;
         let panel = b.terms.insert(&key, None, "/panel".into());
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn side_and_panel_input_with_the_same_tab_number_reach_the_displayed_session() {
-        let mut app = crate::app::tests::demo_app(&eframe::egui::Context::default());
+        let mut app = crate::app::tests::demo_app(&egui::Context::default());
         let key = yaac_core::demo::threads::orchestrator();
         let b = &mut app.browsers;
         // Side-pane tab numbers and terminal session numbers use independent counters.

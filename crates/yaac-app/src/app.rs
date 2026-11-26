@@ -6,10 +6,11 @@
 //! arrived (the link's waker), the demo is streaming, or an arrow is fading.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::Arc;
 #[cfg(feature = "hub")]
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
-use eframe::egui::{self, Key};
+use egui::{self, Key};
 use yaac_core::activity::Expansion;
 use yaac_core::agents::{PanelInput, PanelMode};
 use yaac_core::attention::AttentionMap;
@@ -103,6 +104,11 @@ pub(crate) struct ForkDialog {
 /// View state that is not application state.
 #[derive(Debug)]
 pub(crate) struct UiState {
+    /// A mouse and keyboard, or touch (the Android client's `shell.inputMode`): only the
+    /// texts that name an input mechanic change.
+    pub input: yaac_core::input::InputMode,
+    /// The desktop, or the Android app (`shell.platform`): the tray and renderer settings.
+    pub platform: yaac_core::input::Platform,
     pub visible_requests: Vec<yaac_protocol::attach::RequestLocation>,
     pub grouping: Grouping,
     pub collapsed_groups: BTreeSet<String>,
@@ -306,6 +312,8 @@ pub(crate) struct UiState {
 impl UiState {
     fn new(theme: ThemeChoice) -> Self {
         Self {
+            input: yaac_core::input::InputMode::default(),
+            platform: yaac_core::input::Platform::default(),
             visible_requests: Vec::new(),
             grouping: Grouping::default(),
             collapsed_groups: BTreeSet::new(),
@@ -873,6 +881,7 @@ pub(crate) fn window_run() -> String {
 }
 
 impl YaacApp {
+    #[cfg(feature = "desktop")]
     pub(crate) fn new(cc: &eframe::CreationContext<'_>, launch: crate::Launch) -> Self {
         Self::from_ctx(&cc.egui_ctx, launch)
     }
@@ -1566,9 +1575,7 @@ impl YaacApp {
                 }
                 Action::DemoReset => self.reset_demo(self.scenario),
                 Action::AttachPick(d) => self.files.pick(d),
-                Action::AttachPaths(d, paths) => {
-                    self.client.attach_files(&d, &paths);
-                }
+                Action::AttachPaths(d, paths) => self.attach_paths(&d, paths),
                 Action::RemoveAttachment(d, id) => self.client.remove_attachment(&d, id),
                 Action::SendAs(d, id, c) => self.client.choose_send_as(&d, id, c),
                 Action::RetryAttachment(d, id) => self.client.retry_attachment(&d, id),
@@ -1648,7 +1655,9 @@ impl YaacApp {
             self.client.state.hub.last_error = Some(format!("Could not reach the hub: {e}"));
         }
         match self.client.state.hub.outcome.clone() {
-            HelloOutcome::HubOutdated { .. } if !h.restarted => {
+            // A hub on another machine (the Android client over Tailscale) is never shut down or
+            // replaced from here: it falls to the next arm and is reported.
+            HelloOutcome::HubOutdated { .. } if !h.restarted && !h.config.is_remote() => {
                 if !h.shutdown_sent {
                     self.client.shutdown_hub();
                     h.shutdown_sent = true;
@@ -1665,11 +1674,17 @@ impl YaacApp {
                 }
             }
             HelloOutcome::HubOutdated { hub_build } => {
-                self.client.state.hub.last_error = Some(format!("The running hub ({hub_build}) could not be replaced by this build."));
+                // A hub on another machine is never replaced from here: say what to update.
+                self.client.state.hub.last_error = Some(h.config.mismatch_text()
+                    .unwrap_or_else(|| format!("The running hub ({hub_build}) could not be replaced by this build.")));
             }
             HelloOutcome::WindowOutdated { message } => {
+                let message = h.config.mismatch_text().unwrap_or(message);
                 // Attach to nothing: this window is older than the hub.
                 let mut c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
+                if h.config.is_remote() {
+                    c.state.hub.last_error = Some(message.clone());
+                }
                 c.state.hub.outcome = HelloOutcome::WindowOutdated { message };
                 self.browsers = Default::default();
                 self.preview_ui = Default::default();
@@ -1767,13 +1782,11 @@ impl YaacApp {
                     self.files.picking = false;
                     if let Some(paths) = paths {
                         let paths: Vec<String> = paths.iter().map(|p| p.to_string_lossy().into_owned()).collect();
-                        self.client.attach_files(&d, &paths);
+                        self.attach_paths(&d, paths);
                     }
                 }
                 Outcome::Pasted(into, clip) => match (into, clip) {
-                    (Some(d), Clip::Files(paths)) => {
-                        self.client.attach_files(&d, &paths);
-                    }
+                    (Some(d), Clip::Files(paths)) => self.attach_paths(&d, paths),
                     (Some(_), Clip::Image(enc)) => self.attach_encoded(enc),
                     (Some(d), Clip::Text(text)) if yaac_core::attachments::is_large_paste(&text) => {
                         self.files.large_paste = Some(crate::files::LargePaste { draft: d, text });
@@ -1793,6 +1806,35 @@ impl YaacApp {
             }
         }
         any
+    }
+
+    /// Files by path: the hub reads them itself when it runs on this machine; otherwise
+    /// (`hub_reads_paths`) they are read here and sent by their bytes.
+    fn attach_paths(&mut self, d: &DraftRef, paths: Vec<String>) {
+        if self.hub_reads_paths() {
+            self.client.attach_files(d, &paths);
+        } else {
+            self.files.attach_local(d, paths);
+        }
+    }
+
+    /// The hub's machine when it is another one (the Android client): what "this computer"
+    /// means to it.
+    pub(crate) fn hub_machine(&self) -> Option<String> {
+        #[cfg(feature = "hub")]
+        return self.hub.as_ref()?.config.remote.as_deref().map(|a| crate::attach::machine_name(a).to_owned());
+        #[cfg(not(feature = "hub"))]
+        None
+    }
+
+    /// Whether a path picked here names a file the hub can read: not on Android (a build
+    /// without the desktop, its files on the phone), nor with a hub on another machine.
+    fn hub_reads_paths(&self) -> bool {
+        #[cfg(feature = "hub")]
+        if self.hub.as_ref().is_some_and(|h| h.config.is_remote()) {
+            return false;
+        }
+        cfg!(feature = "desktop")
     }
 
     fn attach_encoded(&mut self, enc: crate::files::Encoded) {
@@ -1928,6 +1970,7 @@ impl YaacApp {
     }
 }
 
+#[cfg(feature = "desktop")]
 impl eframe::App for YaacApp {
     /// Ctrl+C and Ctrl+X become egui's copy and cut again (the clipboard shortcuts are off so
     /// that Ctrl+V reaches the window as a key), and text read from the clipboard by a worker
@@ -2097,7 +2140,7 @@ pub(crate) mod tests {
     use yaac_core::history::{Anchor, Place};
 
     use super::*;
-    use eframe::egui::Modifiers;
+    use egui::Modifiers;
 
     pub(crate) fn demo_app(ctx: &egui::Context) -> YaacApp {
         let launch = crate::Launch {

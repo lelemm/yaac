@@ -2,7 +2,7 @@
 //! (docs/04-providers.md#skills). The decisions are `yaac_core::skills`; this draws the popup
 //! and takes the keys. The picker never changes text the user did not pick.
 
-use eframe::egui::{self, Align2, Key, Modifiers};
+use egui::{self, Align2, Key, Modifiers};
 use yaac_core::skills::{self, Composer, Entry, PickerState, Status, View};
 
 use crate::app::Action;

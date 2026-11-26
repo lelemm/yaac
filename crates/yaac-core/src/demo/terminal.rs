@@ -8,6 +8,30 @@ use yaac_protocol::StreamId;
 
 const PROMPT: &str = "\x1b[1;32mdev@demo\x1b[0m:\x1b[1;34m~/work\x1b[0m$ ";
 
+/// What a few commands print in the demo (colour, a bell, a longer stream); others echo.
+fn scripted(command: &str) -> Option<String> {
+    Some(match command {
+        "bell" => "\x07".into(),
+        "git status" => concat!(
+            "On branch main\r\nChanges not staged for commit:\r\n",
+            "\t\x1b[31mmodified:   README.md\x1b[0m\r\n",
+            "\t\x1b[31mmodified:   services/users/src/handlers.rs\x1b[0m\r\n",
+            "\t\x1b[31mdeleted:    services/users/src/legacy.rs\x1b[0m\r\n",
+            "Unmerged paths:\r\n\t\x1b[31mboth modified:   migrations/0007_users_tokens.sql\x1b[0m\r\n",
+            "Untracked files:\r\n\t\x1b[31mnotes.txt\x1b[0m\r\n",
+        ).into(),
+        "cargo test" => {
+            let mut out = String::from("\x1b[1;32m   Compiling\x1b[0m users v0.3.0 (/home/dev/api/services/users)\r\n\x1b[1;32m    Finished\x1b[0m `test` profile in 4.21s\r\n\r\nrunning 14 tests\r\n");
+            for name in ["me_returns_the_subject", "list", "get", "create", "update", "deactivate", "reactivate", "search", "export", "delete_revokes_tokens", "tokens_newest_first", "bearer_is_required", "expired_token_is_refused", "schema_round_trips"] {
+                out.push_str(&format!("test handlers::{name} ... \x1b[32mok\x1b[0m\r\n"));
+            }
+            out.push_str("\r\ntest result: \x1b[32mok\x1b[0m. 14 passed; 0 failed\r\n\x07");
+            out
+        }
+        _ => return None,
+    })
+}
+
 /// One demo shell.
 #[derive(Debug)]
 struct Shell {
@@ -45,7 +69,7 @@ impl Terminals {
                 let stream = StreamId(self.next);
                 let terminal = params.get("terminal").and_then(Value::as_str).map_or_else(|| format!("demo-{}", self.next), str::to_owned);
                 self.shells.insert(stream, Shell { terminal: terminal.clone(), line: String::new() });
-                let banner = format!("Demo terminal: lines are echoed back; `exit N` ends it.\r\n{PROMPT}");
+                let banner = format!("Demo terminal: lines are echoed back; try `git status`, `cargo test`, `bell`; `exit N` ends it.\r\n{PROMPT}");
                 self.out.push_back((stream, banner.into_bytes()));
                 Ok(json!({ "terminal": terminal, "stream": stream, "initialCredit": 65536, "target": target }))
             }
@@ -72,8 +96,9 @@ impl Terminals {
                         self.shells.remove(&stream);
                         return;
                     }
-                    if !line.trim().is_empty() {
-                        echo.push_str(&format!("{line}\r\n"));
+                    match line.trim() {
+                        "" => {}
+                        command => echo.push_str(&scripted(command).unwrap_or_else(|| format!("{line}\r\n"))),
                     }
                     echo.push_str(PROMPT);
                 }

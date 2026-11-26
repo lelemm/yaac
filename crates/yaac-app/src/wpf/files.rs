@@ -720,7 +720,7 @@ mod tests {
 
     #[test]
     fn file_selection_becomes_a_removable_composer_chip() {
-        let ctx = eframe::egui::Context::default();
+        let ctx = egui::Context::default();
         let mut app = crate::app::tests::demo_app(&ctx);
         let key = yaac_core::demo::threads::users();
         app.client.open(&key);

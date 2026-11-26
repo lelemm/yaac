@@ -4,7 +4,7 @@
 //! is drawn in the theme's text colour. That is the one exception to the monochrome rule, and
 //! it lives here only.
 
-use eframe::egui::{self, Color32, ColorImage, Painter, Pos2, Rect, TextureHandle, TextureOptions, pos2, vec2};
+use egui::{self, Color32, ColorImage, Painter, Pos2, Rect, TextureHandle, TextureOptions, pos2, vec2};
 
 /// A logo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

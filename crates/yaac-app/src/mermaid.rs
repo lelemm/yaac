@@ -9,7 +9,6 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use eframe::egui;
 use serde::Deserialize;
 
 pub(crate) fn language(info: &str) -> bool {
@@ -118,16 +117,12 @@ fn write_export(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
 
 fn save(bytes: Arc<[u8]>, ext: &'static str) {
     std::thread::spawn(move || {
-        if let Some(path) = rfd::FileDialog::new()
-            .set_file_name(format!("diagram.{ext}"))
-            .add_filter(ext, &[ext])
-            .save_file()
-            && let Err(e) = write_export(&path, &bytes)
-        {
-            rfd::MessageDialog::new()
-                .set_title("Save diagram")
-                .set_description(e.to_string())
-                .show();
+        if let Err(e) = crate::platform::save_with(
+            &format!("diagram.{ext}"),
+            Some(crate::platform::Filter { name: ext, extensions: &[ext] }),
+            |path| write_export(path, &bytes),
+        ) {
+            crate::platform::message("Save diagram", &e.to_string());
         }
     });
 }

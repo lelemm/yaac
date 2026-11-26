@@ -13,7 +13,7 @@
 //! take an argument continue in it as a sub-list. It draws only when a frame happens anyway and
 //! asks for none of its own, so it costs nothing while it sits open.
 
-use eframe::egui::{self, Event, Key, Modifiers, Sense, pos2, vec2};
+use egui::{self, Event, Key, Modifiers, Sense, pos2, vec2};
 use yaac_core::ThreadKey;
 use yaac_core::commands::{self as cmds, Avail, Cmd, Ctx, StepKind, StepValue};
 use yaac_core::history::Place;
@@ -128,6 +128,7 @@ pub(crate) fn with_ctx<R>(app: &YaacApp, card: Option<&ItemId>, f: impl FnOnce(&
         list_selected: app.ui.list_sel.len(),
         terminal,
         fullscreen_tabs: thread.is_some_and(|k| app.browsers.can_switch_tabs(k)),
+        input: app.ui.input,
     };
     f(&ctx)
 }

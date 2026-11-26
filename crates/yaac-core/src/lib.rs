@@ -40,6 +40,7 @@ pub mod hints;
 pub mod history;
 pub mod hover;
 pub mod images;
+pub mod input;
 pub mod key;
 pub mod limits;
 pub mod keys;

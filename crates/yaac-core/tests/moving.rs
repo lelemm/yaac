@@ -250,6 +250,7 @@ fn the_commander_lists_the_machines_projects_with_the_current_one_ticked() {
         host_windows: false,
         focused_card: None,
         list_selected: 0,
+        input: yaac_core::input::InputMode::Pointer,
         terminal: Default::default(),
         fullscreen_tabs: false,
     };

@@ -10,7 +10,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
-use eframe::egui;
 use serde_json::{Value, json};
 use yaac_core::client::{Client, hub_names};
 use yaac_core::ssh_setup::{Credential, HostKey, InstalledKey, ProbeOutcome, SshConn, SshSetupBackend, StepError, StepReport};

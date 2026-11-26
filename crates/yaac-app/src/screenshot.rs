@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use eframe::egui::{self, ColorImage};
+use egui::{self, ColorImage};
 use yaac_core::agents::PanelMode;
 use yaac_core::demo::{DemoHub, Scenario, Scene, threads};
 

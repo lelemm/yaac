@@ -497,6 +497,43 @@ mod tests {
     use super::*;
     use yaac_core::demo::{Scenario, threads};
 
+    /// The demo's side-pane scene serves real `fs/tree`, `fs/read` and `git/fileDiff` answers
+    /// through the same requests a target gets (what the Android app draws on the demo).
+    #[test]
+    fn the_side_pane_scene_serves_a_worktree_files_and_diffs() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::users();
+        app.apply(vec![crate::app::Action::Scene(yaac_core::demo::Scene::SidePanes)]);
+        app.pump_demo();
+        app.open(&key, None);
+        app.pump_demo();
+        assert!(supported(&app.client, &key), "the scene turns the file view on");
+        let settle = |app: &mut crate::app::YaacApp| {
+            for _ in 0..50 {
+                app.pump_demo();
+                app.browsers.tick(&mut app.client, Some(&key), Instant::now());
+                app.browsers.finish_file_jobs();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let files = app.browsers.open_file_tab(&mut app.client, &key, TabKind::Files, false).unwrap();
+        app.browsers.select(&key, files);
+        settle(&mut app);
+        let root = &app.browsers.areas[&key].tree.folders[""];
+        assert!(root.entries.iter().any(|e| e.ignored));
+        assert!(root.entries.iter().any(|e| e.changed));
+        assert!(root.entries.iter().any(|e| e.kind == yaac_protocol::FsTreeEntryKind::Dir && e.changed), "folders are folders");
+        let diff = app.browsers.open_file_tab(&mut app.client, &key, TabKind::Diff("services/users/src/handlers.rs".into()), false).unwrap();
+        let png = app.browsers.open_file_tab(&mut app.client, &key, TabKind::File("docs/architecture.png".into()), false).unwrap();
+        let big = app.browsers.open_file_tab(&mut app.client, &key, TabKind::File("dump.sql".into()), true).unwrap();
+        settle(&mut app);
+        let mut doc = |id| app.browsers.tab_mut(&key, id).and_then(|t| t.document.clone());
+        assert!(matches!(doc(diff).as_deref(), Some(Document::Diff(_))), "a text diff");
+        assert!(matches!(doc(png).as_deref(), Some(Document::Notice(n)) if n.contains("Binary")));
+        assert!(matches!(doc(big).as_deref(), Some(Document::Notice(_))), "over the limit");
+    }
+
     fn daemon(client: &mut Client, key: &ThreadKey) {
         client
             .state

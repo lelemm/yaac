@@ -6,7 +6,7 @@ use crate::{
     theme::{self, Palette, size},
     widgets,
 };
-use eframe::egui::{self, Color32, RichText, Ui};
+use egui::{self, Color32, RichText, Ui};
 use std::{collections::BTreeMap, ops::Range};
 use yaac_code::{DiffLineKind as Kind, DiffRow, DiffView, Highlighted, ScopeClass};
 use yaac_core::{ThreadKey, attachments::DraftRef};
@@ -791,7 +791,7 @@ fn viewer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::{Event, Key, Modifiers, PointerButton, Pos2};
+    use egui::{Event, Key, Modifiers, PointerButton, Pos2};
 
     #[test]
     fn drag_then_shortcut_in_virtual_file_view_adds_exact_selection() {

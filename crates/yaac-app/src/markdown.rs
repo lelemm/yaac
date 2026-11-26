@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use eframe::egui::{self, Color32, FontId, text::LayoutJob, vec2};
+use egui::{self, Color32, FontId, text::LayoutJob, vec2};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use yaac_protocol::ItemId;
 

@@ -296,6 +296,32 @@ pub struct HubState {
     pub always: Option<bool>,
     pub explanations: yaac_protocol::ExplanationModels,
     pub notifications: yaac_protocol::attach::NotificationSettings,
+    /// The hub's request reminder as a list (`hub/notifications/subscribe`), for a client that
+    /// draws its own notifications; `None` until subscribed (and from a hub without it).
+    pub request_feed: Option<yaac_protocol::attach::RequestFeed>,
+    /// "Allow the Android client over Tailscale" (`tailscaleAttach`), once known.
+    pub tailscale_attach: Option<bool>,
+    /// Targets whose first thread index (`thread/sync`) has not answered since `hub/hello`:
+    /// until it is empty, "no threads" may only mean "not loaded yet" (no first run).
+    pub index_pending: std::collections::BTreeSet<TargetId>,
+    /// Whether the hub is listening on Tailscale now, as a line for Settings
+    /// (`hub/settings/get`, then `hub/tailscale/status`).
+    pub tailscale_status: Option<String>,
+}
+
+/// A line for Settings from the hub's Tailscale attach status (`{ state, addresses, login,
+/// reason }`). `None` when the setting is off.
+pub fn tailscale_status_line(status: &serde_json::Value) -> Option<String> {
+    let text = |k: &str| status.get(k).and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+    match status.get("state").and_then(serde_json::Value::as_str)? {
+        "starting" => Some("Looking for Tailscale on this computer…".to_owned()),
+        "listening" => {
+            let addresses: Vec<&str> = status.get("addresses").and_then(serde_json::Value::as_array).map(|a| a.iter().filter_map(serde_json::Value::as_str).collect()).unwrap_or_default();
+            Some(format!("Listening on {} for devices signed in to Tailscale as {}.", addresses.join(", "), text("login")))
+        }
+        "unavailable" => Some(format!("Not available: {} YAAC tries again every minute.", text("reason"))),
+        _ => None,
+    }
 }
 
 /// A `thread/forkPreview` in flight or answered.

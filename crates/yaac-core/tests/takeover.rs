@@ -32,6 +32,7 @@ fn ctx<'a>(state: &'a yaac_core::state::AppState, thread: Option<&'a ThreadKey>)
         host_windows: false,
         focused_card: None,
         list_selected: 0,
+        input: yaac_core::input::InputMode::Pointer,
         terminal: Default::default(),
         fullscreen_tabs: false,
     }

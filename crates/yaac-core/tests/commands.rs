@@ -35,6 +35,7 @@ fn ctx<'a>(state: &'a AppState, thread: Option<&'a ThreadKey>) -> Ctx<'a> {
         host_windows: false,
         focused_card: None,
         list_selected: 0,
+        input: yaac_core::input::InputMode::Pointer,
         terminal: Default::default(),
         fullscreen_tabs: false,
     }
@@ -357,4 +358,17 @@ fn terminal_commands_and_full_screen_switcher_work_in_a_focused_terminal_by_defa
     let t = p.value(yaac_core::prefs::keys::TERMINAL);
     assert_eq!(t["copyOnSelect"], false);
     assert_eq!(t["confirmMultilinePaste"], true);
+}
+
+#[test]
+fn reasons_that_name_an_input_mechanic_follow_the_input_mode() {
+    let state = AppState::default();
+    let mut c = ctx(&state, None);
+    let reason = |c: &Ctx<'_>| match availability(Cmd::ArchiveSelected, c) {
+        Avail::Disabled(why) => why,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(reason(&c), "Nothing is selected in the sidebar (Ctrl+click rows)");
+    c.input = yaac_core::input::InputMode::Touch;
+    assert_eq!(reason(&c), "Nothing is selected in the list (tap a row's state mark)");
 }

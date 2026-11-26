@@ -1,5 +1,10 @@
 //! The WPF preview hosts the same window controller as the standard display. The
 //! private pipe carries view state and UI input. It is independent of the hub protocol.
+//!
+//! The controller loop ([`serve`]) does not know its transport: commands arrive on a
+//! [`Connection`] (fed by a pipe reader thread, or directly through a channel) and view frames
+//! leave through any [`Write`], one JSON object per line. The WPF window uses its process's
+//! pipes; the Android library uses channels (`crate::view_protocol`).
 
 use std::io::{self, BufRead, Write};
 use std::process::ExitCode;
@@ -9,7 +14,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use eframe::egui;
 use serde_json::{Map, Value, json};
 use yaac_core::agents::{PanelInput, agents_panel};
 use yaac_core::attachments::DraftRef;
@@ -137,18 +141,7 @@ pub(super) fn controller_main(scenario: Option<&str>, theme: Option<&str>) -> Ex
         Some("system") => ThemeChoice::System,
         _ => ThemeChoice::Dark,
     };
-    let launch = crate::Launch {
-        demo: Some(scenario),
-        theme,
-        shots: None,
-        host_windows: true,
-        #[cfg(feature = "hub")]
-        attach: None,
-        display: crate::display::DisplayState::default(),
-        shell: crate::tray::Shell::new(),
-        tray: false,
-        updater: crate::updater::Updater::off("Offline demo"),
-    };
+    let launch = demo_launch(scenario, theme);
     let commands = Connection::new(io::BufReader::new(io::stdin()));
     match serve(launch, commands, io::stdout().lock(), None) {
         Ok(()) => ExitCode::SUCCESS,
@@ -160,20 +153,49 @@ pub(super) fn controller_main(scenario: Option<&str>, theme: Option<&str>) -> Ex
     }
 }
 
-enum Input {
+/// The window controller on a scripted demo hub, as `--wpf-controller` starts it.
+pub(crate) fn demo_launch(scenario: Scenario, theme: ThemeChoice) -> crate::Launch {
+    crate::Launch {
+        demo: Some(scenario),
+        theme,
+        shots: None,
+        host_windows: true,
+        #[cfg(feature = "hub")]
+        attach: None,
+        display: crate::display::DisplayState::default(),
+        shell: crate::tray::Shell::new(),
+        tray: false,
+        updater: crate::updater::Updater::off("Offline demo"),
+    }
+}
+
+pub(crate) enum Input {
     Command(Value),
     Wake,
     BrowserWake,
     Closed,
 }
 
-struct Connection {
+/// Where the controller's input arrives: UI commands from the transport, and its own wakes.
+pub(crate) struct Connection {
     sender: mpsc::SyncSender<Input>,
     receiver: mpsc::Receiver<Input>,
 }
 
 impl Connection {
-    fn new(input: impl BufRead + Send + 'static) -> Self {
+    /// Fed directly: the transport sends [`Input::Command`] (and [`Input::Closed`] to end the
+    /// loop) through [`Connection::sender`].
+    pub(crate) fn channel() -> Self {
+        let (sender, receiver) = mpsc::sync_channel(64);
+        Self { sender, receiver }
+    }
+
+    pub(crate) fn sender(&self) -> mpsc::SyncSender<Input> {
+        self.sender.clone()
+    }
+
+    /// Fed by a reader thread: one JSON command per line of `input`; its end closes the loop.
+    pub(crate) fn new(input: impl BufRead + Send + 'static) -> Self {
         let (sender, receiver) = mpsc::sync_channel(64);
         let stdin_sender = sender.clone();
         std::thread::spawn(move || {
@@ -193,17 +215,13 @@ impl Connection {
 
 #[cfg(windows)]
 pub(super) fn capture(theme: crate::theme_capture::ThemeInput, output: &std::path::Path) -> io::Result<()> {
-    let launch = crate::Launch {
-        demo: Some(Scenario::Fleet), theme: ThemeChoice::Dark, shots: None, host_windows: true,
-        #[cfg(feature = "hub")]
-        attach: None,
-        display: Default::default(), shell: crate::tray::Shell::new(), tray: false,
-        updater: crate::updater::Updater::off("Offline demo"),
-    };
+    let launch = demo_launch(Scenario::Fleet, ThemeChoice::Dark);
     Frontend::start_with_capture(&launch, Some(output))?.run_with_theme(launch, Some(theme))
 }
 
-fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write, capture_theme: Option<crate::theme_capture::ThemeInput>) -> io::Result<()> {
+/// Runs the window controller until the input closes or the window quits. Each view frame is
+/// written to `stdout` as one line of JSON and flushed.
+pub(crate) fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write, capture_theme: Option<crate::theme_capture::ThemeInput>) -> io::Result<()> {
     let Connection { sender, receiver } = commands;
     let browser_dirty = Arc::new(AtomicBool::new(false));
     let wake_browser = {
@@ -538,6 +556,11 @@ fn view(
         "fonts": app.fonts.native,
         "commander": navigation::command_view(app),
     });
+    // Only for a client that asked for it (`shell.requestFeed`, the Android client): the
+    // WPF window's frames are unchanged.
+    if let Some(feed) = &state.hub.request_feed {
+        shell["requests"] = requests_view(feed);
+    }
     if let (Some(shell), Value::Object(header)) =
         (shell.as_object_mut(), header::fields(app, &attention))
     {
@@ -562,6 +585,36 @@ fn view(
         ("agents".into(), agents::view(app, &attention, agent_ages_ctx)),
         ("settings".into(), settings::view(app, settings_target)),
     ])
+}
+
+/// The hub's request reminder as a list (`shell.requests`): exactly the unseen requests the
+/// desktop reminder counts, oldest first, with Allow once and Deny only where the toast offers
+/// them. `threadId` is the thread's address (`target/thread`), as everywhere in the frames.
+fn requests_view(feed: &yaac_protocol::attach::RequestFeed) -> Value {
+    let items: Vec<Value> = feed.items.iter().map(|i| {
+        let address = ThreadKey::new(i.location.target.clone(), i.location.thread_id.clone()).address();
+        let decisions = if i.decisions.is_some() {
+            json!([{ "id": "allow", "label": "Allow once" }, { "id": "deny", "label": "Deny" }])
+        } else {
+            json!([])
+        };
+        json!({
+            "threadId": address.as_str(), "requestId": i.location.request_id, "itemId": i.item_id,
+            "workerTitle": i.worker, "kind": i.kind, "title": i.title,
+            "detail": format!("{} · {} · {}", i.worker, i.kind, i.title),
+            "decisions": decisions, "createdAt": i.created_ms,
+        })
+    }).collect();
+    json!({ "revision": feed.revision, "items": items })
+}
+
+/// The feed entry a `shell.requestAction` / `shell.requestOpen` names.
+fn feed_location(payload: &Value) -> Option<yaac_protocol::attach::RequestLocation> {
+    let key = ThreadKey::from_address(&Address(string(payload, "threadId").to_owned()))?;
+    let request = string(payload, "requestId");
+    (!request.is_empty()).then(|| yaac_protocol::attach::RequestLocation {
+        target: key.target, thread_id: key.thread, request_id: request.into(),
+    })
 }
 
 fn caption_update(phase: &crate::updater::Phase) -> Value {
@@ -687,6 +740,45 @@ fn dispatch(
         }
         "shell.ready" => {
             app.shell.external_tray = payload["tray"] == true;
+            None
+        }
+        // The Android client says it is a touch screen (and back to pointer when a mouse is
+        // attached): only texts that name an input mechanic change.
+        // The embedder runs its own browser host (Android WebViews, P380).
+        "shell.browserHost" => {
+            app.browsers.enable_external_host();
+            None
+        }
+        "shell.platform" => {
+            if let Some(platform) = yaac_core::input::Platform::from_id(string(payload, "platform")) {
+                app.ui.platform = platform;
+            }
+            None
+        }
+        "shell.inputMode" => {
+            if let Some(mode) = yaac_core::input::InputMode::from_id(string(payload, "mode")) {
+                app.ui.input = mode;
+            }
+            None
+        }
+        // The request feed (Android notifications, P355): subscribe; answer as the toast's
+        // Allow once / Deny (refused by the hub when `revision` is stale); Open.
+        "shell.requestFeed" => {
+            app.client.subscribe_request_feed();
+            None
+        }
+        "shell.requestAction" | "shell.requestOpen" => {
+            let location = feed_location(payload).ok_or("No such request")?;
+            let decision = (command == "shell.requestAction").then(|| string(payload, "decision"));
+            if decision.is_some_and(|d| !matches!(d, "allow" | "deny")) {
+                return Err("A notification answers only allow or deny".into());
+            }
+            // An answer names the revision the user saw (a changed list refuses it); Open is
+            // harmless and goes with the current one.
+            let current = app.client.state.hub.request_feed.as_ref().map(|f| f.revision);
+            let revision = if decision.is_some() { payload["revision"].as_u64() } else { current }
+                .ok_or("No request list from the hub, or no revision")?;
+            app.client.respond_request_feed(&location, revision, decision)?;
             None
         }
         "shell.focusSearchDone" => {

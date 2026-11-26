@@ -18,17 +18,20 @@
 //! it (docs/install.md#how-targets-get-the-new-daemon). No personal data is sent: the request
 //! carries a generic User-Agent and nothing else.
 
-use std::io::{Read, Write};
+use std::io::Read;
+#[cfg(feature = "desktop")]
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
-use eframe::egui;
 use sha2::{Digest, Sha256};
-use yaac_core::update::{CheckSchedule, Manifest, Offer, Pending, PendingRead, Release, ReleaseCheck, StartDecision, Throttle, decide_start, next_check, offer};
+#[cfg(feature = "desktop")]
+use yaac_core::update::Release;
+use yaac_core::update::{CheckSchedule, Manifest, Offer, Pending, PendingRead, ReleaseCheck, StartDecision, Throttle, decide_start, next_check, offer};
 
 /// Whether this build offers updates at all.
-pub(crate) const ENABLED: bool = cfg!(windows);
+pub(crate) const ENABLED: bool = cfg!(all(windows, feature = "desktop"));
 
 /// The latest release of the public repository.
 pub(crate) const LATEST_URL: &str = "https://api.github.com/repos/lelemm/yaac/releases/latest";
@@ -61,6 +64,7 @@ impl Config {
     }
 }
 
+#[cfg(feature = "desktop")]
 fn agent(cfg: &Config, body_timeout: Option<Duration>) -> ureq::Agent {
     ureq::Agent::config_builder()
         .user_agent(USER_AGENT)
@@ -76,6 +80,7 @@ fn agent(cfg: &Config, body_timeout: Option<Duration>) -> ureq::Agent {
 }
 
 /// Why a check found nothing. Shown only in Settings → About → Components.
+#[cfg(feature = "desktop")]
 fn describe(e: &ureq::Error) -> String {
     match e {
         ureq::Error::Timeout(_) => "no answer from GitHub (timed out)".into(),
@@ -105,6 +110,7 @@ impl CheckError {
 }
 
 /// The text of a small JSON answer, or why there is none.
+#[cfg(feature = "desktop")]
 fn get_text(agent: &ureq::Agent, url: &str, accept: &str) -> Result<String, CheckError> {
     let mut resp = agent.get(url).header("Accept", accept).call().map_err(|e| describe(&e))?;
     let status = resp.status().as_u16();
@@ -136,6 +142,7 @@ pub(crate) struct Found {
 }
 
 /// The latest release and its manifest. Blocking: run it on a worker.
+#[cfg(feature = "desktop")]
 fn check(cfg: &Config) -> Result<Found, CheckError> {
     let agent = agent(cfg, Some(cfg.timeout * 2));
     let release = Release::parse(&get_text(&agent, &cfg.latest_url, "application/vnd.github+json")?)?;
@@ -144,6 +151,11 @@ fn check(cfg: &Config) -> Result<Found, CheckError> {
     let installer = manifest.installer().ok_or_else(|| "the release has no installer".to_owned())?;
     let installer_url = release.asset_url(&installer.name).unwrap_or(&installer.url).to_owned();
     Ok(Found { manifest, installer_url })
+}
+
+#[cfg(not(feature = "desktop"))]
+fn check(_: &Config) -> Result<Found, CheckError> {
+    Err(NO_CLIENT.to_owned().into())
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -232,35 +244,8 @@ pub(crate) fn download(cfg: &Config, found: &Found, progress: &mut dyn FnMut(u64
     let path = cfg.dir.join(&installer.name);
     let part = cfg.dir.join(format!("{}.part", installer.name));
     let result = (|| {
-        let mut resp = agent(cfg, None).get(&found.installer_url).call().map_err(|e| describe(&e))?;
-        if resp.status().as_u16() != 200 {
-            return Err(format!("the download answered HTTP {}", resp.status().as_u16()));
-        }
-        let mut body = resp.body_mut().with_config().limit(installer.size.saturating_add(1)).reader();
-        let mut file = std::fs::File::create(&part).map_err(|e| format!("cannot write {}: {e}", part.display()))?;
-        let mut h = Sha256::new();
-        let mut done = 0u64;
-        let mut buf = vec![0u8; 64 * 1024];
-        progress(0, installer.size);
-        loop {
-            let k = body.read(&mut buf).map_err(|e| format!("the download stopped: {e}"))?;
-            if k == 0 {
-                break;
-            }
-            done += k as u64;
-            if done > installer.size {
-                return Err("the download is larger than the release says".into());
-            }
-            h.update(&buf[..k]);
-            file.write_all(&buf[..k]).map_err(|e| format!("cannot write {}: {e}", part.display()))?;
-            progress(done, installer.size);
-        }
-        file.sync_all().map_err(|e| e.to_string())?;
-        drop(file);
-        if done != installer.size {
-            return Err(format!("the download ended early ({done} of {} bytes)", installer.size));
-        }
-        if hex(&h.finalize()) != installer.sha256 {
+        let sha256 = fetch(cfg, &found.installer_url, installer.size, &part, progress)?;
+        if sha256 != installer.sha256 {
             return Err("the download does not match the release's SHA-256".into());
         }
         std::fs::rename(&part, &path).map_err(|e| e.to_string())?;
@@ -273,6 +258,51 @@ pub(crate) fn download(cfg: &Config, found: &Found, progress: &mut dyn FnMut(u64
     }
     result
 }
+
+/// Downloads `url` into `part` (at most `size` bytes, exactly `size` expected) and returns its
+/// SHA-256 in hex.
+#[cfg(feature = "desktop")]
+fn fetch(cfg: &Config, url: &str, size: u64, part: &Path, progress: &mut dyn FnMut(u64, u64)) -> Result<String, String> {
+    let mut resp = agent(cfg, None).get(url).call().map_err(|e| describe(&e))?;
+    if resp.status().as_u16() != 200 {
+        return Err(format!("the download answered HTTP {}", resp.status().as_u16()));
+    }
+    let mut body = resp.body_mut().with_config().limit(size.saturating_add(1)).reader();
+    let mut file = std::fs::File::create(part).map_err(|e| format!("cannot write {}: {e}", part.display()))?;
+    let mut h = Sha256::new();
+    let mut done = 0u64;
+    let mut buf = vec![0u8; 64 * 1024];
+    progress(0, size);
+    loop {
+        let k = body.read(&mut buf).map_err(|e| format!("the download stopped: {e}"))?;
+        if k == 0 {
+            break;
+        }
+        done += k as u64;
+        if done > size {
+            return Err("the download is larger than the release says".into());
+        }
+        h.update(&buf[..k]);
+        file.write_all(&buf[..k]).map_err(|e| format!("cannot write {}: {e}", part.display()))?;
+        progress(done, size);
+    }
+    file.sync_all().map_err(|e| e.to_string())?;
+    drop(file);
+    if done != size {
+        return Err(format!("the download ended early ({done} of {size} bytes)"));
+    }
+    Ok(hex(&h.finalize()))
+}
+
+/// A build without the desktop pieces has no HTTPS client: it never offers an update
+/// ([`ENABLED`] is false there), so this only answers why.
+#[cfg(not(feature = "desktop"))]
+fn fetch(_: &Config, _: &str, _: u64, _: &Path, _: &mut dyn FnMut(u64, u64)) -> Result<String, String> {
+    Err(NO_CLIENT.into())
+}
+
+#[cfg(not(feature = "desktop"))]
+const NO_CLIENT: &str = "this build has no updater";
 
 /// Starts the installer with visible progress, to start YAAC again when it is done (`/RELAUNCH`), and
 /// returns at once. It is marked attempted first, so a failed install is never run again.

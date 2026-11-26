@@ -1,0 +1,49 @@
+[package]
+name = "yaac-android"
+description = "The YAAC window controller as an Android native library: JNI exports for the Compose app's `NativeController` (docs/14-android.md)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "yaac_android"
+# `cdylib` is the app's `libyaac_android.so`; `rlib` lets the host run this crate's tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The controller only: no eframe, winit, tray, file dialogs, system clipboard or updater.
+yaac-app = { path = "../yaac-app", default-features = false, features = ["hub"] }
+yaac-core = { path = "../yaac-core" }
+serde.workspace = true
+serde_json.workspace = true
+jni = { version = "0.21.1", default-features = false }
+
+# The workspace lints, except `unsafe_code`: the JNI entry points must be `#[unsafe(no_mangle)]`
+# for the JVM to find them, which `forbid` rejects. It is `deny` here and allowed only on the
+# `exports` module (src/lib.rs), which holds those symbols and nothing else unsafe. No other
+# crate changes its lints.
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+unreachable_pub = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+exit = "warn"
+mem_forget = "warn"
+rc_mutex = "warn"
+large_stack_arrays = "warn"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+semicolon_if_nothing_returned = "warn"
+explicit_iter_loop = "warn"
+manual_let_else = "warn"
+unnested_or_patterns = "warn"
+cast_possible_truncation = "warn"

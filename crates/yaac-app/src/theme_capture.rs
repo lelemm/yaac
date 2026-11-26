@@ -43,7 +43,6 @@ pub(crate) struct Capture {
     pub(crate) image: egui::ColorImage,
 }
 
-use eframe::egui;
 
 pub(crate) fn generate(input: ThemeInput, wpf: bool) -> Result<Capture, String> {
     let dir = tempfile::Builder::new()
@@ -148,7 +147,7 @@ pub(crate) fn capture_cli(
     theme: ThemeChoice,
     renderer: Option<&str>,
 ) -> ExitCode {
-    let run = || {
+    let run = || -> Result<(), String> {
         let input = if let Some(file) = file {
             let f = fs::File::open(file).map_err(display_error)?;
             let mut bytes = Vec::new();

@@ -1,5 +1,5 @@
 //! Window-local font discovery, import, and loading off the UI thread.
-use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
+use egui::{self, FontData, FontDefinitions, FontFamily};
 use fontdb::{Database, Source};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -244,6 +244,8 @@ fn catalog(db: &Database, root: Option<&Path>) -> (Vec<Choice>, BTreeMap<String,
 fn worker(commands: mpsc::Receiver<Request>, send: impl Fn(Reply)) {
     let root = font_root();
     let mut db = Database::new();
+    // Without the desktop pieces (Android) only YAAC's own and imported fonts are offered.
+    #[cfg(feature = "desktop")]
     db.load_system_fonts();
     if let Some(root) = &root {
         db.load_fonts_dir(root);
@@ -317,10 +319,10 @@ fn worker(commands: mpsc::Receiver<Request>, send: impl Fn(Reply)) {
                 send(Reply::Applied(prefs, preview, definitions, native));
             }
             Request::Import(role) => {
-                let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Font files", &["ttf", "otf", "ttc", "otc"])
-                    .pick_file()
-                else {
+                let Some(path) = crate::platform::pick_file(
+                    None,
+                    Some(crate::platform::Filter { name: "Font files", extensions: &["ttf", "otf", "ttc", "otc"] }),
+                ) else {
                     continue;
                 };
                 match import_font(root.as_deref(), &path) {

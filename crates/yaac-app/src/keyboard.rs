@@ -3,7 +3,7 @@
 //! reset all. A chord another command has is flagged, naming it, until it is resolved with
 //! Replace or Cancel. Only differences from the defaults are stored (`keyBindings`).
 
-use eframe::egui::{self, Event, Key, RichText};
+use egui::{self, Event, Key, RichText};
 use yaac_core::commands::{self as cmds, COMMANDS, Cmd, Group, Scope};
 use yaac_core::keys::{Chord, MouseButton};
 

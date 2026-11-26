@@ -6,7 +6,7 @@
 //!
 //! What to draw comes from `yaac_core::timeline`; this module only paints and hit-tests.
 
-use eframe::egui::{self, Rect, Sense, pos2, vec2};
+use egui::{self, Rect, Sense, pos2, vec2};
 use yaac_core::ThreadKey;
 use yaac_core::time::Zone;
 use yaac_core::timeline::{self as tl, Entry};
@@ -186,7 +186,7 @@ fn card(ui: &egui::Ui, p: &Palette, at: egui::Pos2, title: &str, stamp: Option<i
 
 #[cfg(test)]
 mod tests {
-    use eframe::egui::{self, Event, PointerButton, Pos2, Rect, pos2, vec2};
+    use egui::{self, Event, PointerButton, Pos2, Rect, pos2, vec2};
     use yaac_core::attention::AttentionMap;
     use yaac_core::demo::{Scene, threads};
 

@@ -106,7 +106,8 @@ impl Agent {
     }
 
     /// Build without the browser host: no window here can serve the call, so the hub offers
-    /// it to another window (or answers `no_window`).
+    /// it to another window (or answers `no_window`) — unless the embedder has its own host
+    /// (Android, P380), which carries the calls out.
     #[cfg(not(feature = "preview"))]
     pub(crate) fn step(
         &mut self,
@@ -114,6 +115,13 @@ impl Agent {
         browsers: &mut crate::preview_controller::Browsers,
         now: Instant,
     ) -> Option<Duration> {
+        if browsers.external.is_some() {
+            let acting = browsers.external_calls(client, now);
+            for (key, id) in &acting {
+                self.mark(client, browsers, key, *id, now);
+            }
+            return self.expire_marks(browsers, now, &acting);
+        }
         for (rpc, _) in client.take_browser_calls() {
             client.answer_browser_call(
                 rpc,
@@ -130,6 +138,7 @@ impl Agent {
 #[cfg(feature = "preview")]
 mod engine {
     use super::*;
+    use super::scripts::*;
     use crate::preview_controller::Browsers;
     use serde_json::{Value, json};
     use yaac_preview::wire::Action;
@@ -1010,8 +1019,13 @@ mod engine {
         network_entries(&engine.diagnostics_since(0), cursor)
     }
 
+}
+
+/// The page scripts of the agent tools, shared by the CEF engine and an external host (the
+/// Android WebViews get them with each call, so refs and errors are the same everywhere).
+pub(crate) mod scripts {
     /// Resolves `{ref, selector}` to an element, from the refs the last snapshot handed out.
-    const RESOLVE_JS: &str = r#"function resolve(a) {
+    pub(crate) const RESOLVE_JS: &str = r#"function resolve(a) {
   const st = globalThis[Symbol.for("yaac.refs")];
   if (a.ref) {
     const el = st && st.els.get(a.ref) && st.els.get(a.ref).deref();
@@ -1024,7 +1038,7 @@ mod engine {
 }"#;
 
     /// Viewport centre of an element, scrolled into view.
-    static CENTER_JS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    pub(crate) static CENTER_JS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         format!(
             r#"(a) => {{ {RESOLVE_JS}
   const el = resolve(a);
@@ -1037,7 +1051,7 @@ mod engine {
     });
 
     /// Page rectangle of an element, scrolled into view, for a clipped screenshot.
-    static RECT_JS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    pub(crate) static RECT_JS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         format!(
             r#"(a) => {{ {RESOLVE_JS}
   const el = resolve(a);
@@ -1051,7 +1065,7 @@ mod engine {
 
     /// Focus the named element (or keep the focused one) and place the caret at the end, or
     /// select everything for `clear`, so the following `Input.insertText` replaces it.
-    static FOCUS_JS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    pub(crate) static FOCUS_JS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
         format!(
             r#"(a) => {{ {RESOLVE_JS}
   const el = (a.ref || a.selector) ? resolve(a) : document.activeElement;
@@ -1071,7 +1085,7 @@ mod engine {
 
     /// The page as an indented accessibility-style outline; interactive elements get a
     /// `[ref=eN]` that stays the same for the element's life.
-    const SNAPSHOT_JS: &str = r#"() => {
+    pub(crate) const SNAPSHOT_JS: &str = r#"() => {
   const S = Symbol.for("yaac.refs");
   const st = globalThis[S] || (globalThis[S] = { next: 0, ids: new WeakMap(), els: new Map() });
   const refOf = (el) => { let r = st.ids.get(el); if (!r) { r = "e" + (++st.next); st.ids.set(el, r); st.els.set(r, new WeakRef(el)); } return r; };

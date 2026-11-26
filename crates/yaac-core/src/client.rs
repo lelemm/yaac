@@ -136,6 +136,10 @@ enum Call {
     /// `skills/list` for a composer's scope.
     Skills(crate::skills::SkillScopeKey),
     HubSettings,
+    /// `hub/notifications/subscribe`.
+    RequestFeed,
+    /// `hub/notifications/respond`: where to open the request if an answer fails.
+    FeedRespond { open: attach::NotificationOpen, answered: bool },
     Explain(ThreadKey, ItemId, RequestId),
     Projects(TargetId),
     ProjectCreate { target: TargetId, for_draft: Option<u64> },
@@ -248,11 +252,19 @@ pub struct Client {
     showing: Option<Vec<ThreadKey>>,
     visible_requests: Option<Vec<attach::RequestLocation>>,
     pub notification_open: std::collections::VecDeque<attach::NotificationOpen>,
+    /// Subscribe to the request feed on every attach (`subscribe_request_feed`).
+    request_feed: bool,
     /// Preview proxy, forward and discovery results for the window.
     preview_replies: Vec<(RpcId, Result<Value, String>)>,
     troubleshoot_reply: Option<(RpcId, Result<yaac_protocol::TroubleshootResult, String>)>,
     catalog_reply: Option<(RpcId, Result<Value, String>)>,
     terminal_notes: Vec<(String, Value)>,
+    /// Attach streams that are tunnels (`hub/preview/tunnel`, P380), their data and notes kept
+    /// apart from the terminals'.
+    tunnel_streams: std::collections::HashSet<yaac_protocol::StreamId>,
+    tunnel_data: Vec<(yaac_protocol::StreamId, Vec<u8>)>,
+    terminal_data: Vec<(yaac_protocol::StreamId, Vec<u8>)>,
+    tunnel_notes: Vec<(String, Value)>,
     /// Agent browser calls from the hub (`hub/browser/call`), not yet taken by the window.
     pub theme_calls: Vec<(RpcId, yaac_protocol::ThemeCallParams)>,
     browser_calls: Vec<(RpcId, attach::BrowserCallParams)>,
@@ -325,10 +337,15 @@ impl Client {
             showing: None,
             visible_requests: None,
             notification_open: Default::default(),
+            request_feed: false,
             preview_replies: Vec::new(),
             troubleshoot_reply: None,
             catalog_reply: None,
             terminal_notes: Vec::new(),
+            tunnel_streams: Default::default(),
+            tunnel_data: Vec::new(),
+            terminal_data: Vec::new(),
+            tunnel_notes: Vec::new(),
             theme_calls: Vec::new(),
             browser_calls: Vec::new(),
             ssh_replies: Vec::new(),
@@ -394,11 +411,45 @@ impl Client {
 
     /// Terminal output that has arrived, in order.
     pub fn take_terminal_data(&mut self) -> Vec<(yaac_protocol::StreamId, Vec<u8>)> {
-        let mut out = Vec::new();
-        while let Some(d) = self.link.poll_data() {
-            out.push(d);
+        self.sort_data();
+        std::mem::take(&mut self.terminal_data)
+    }
+
+    fn sort_data(&mut self) {
+        while let Some((stream, bytes)) = self.link.poll_data() {
+            if self.tunnel_streams.contains(&stream) {
+                self.tunnel_data.push((stream, bytes));
+            } else {
+                self.terminal_data.push((stream, bytes));
+            }
         }
-        out
+    }
+
+    /// A tunnel's attach stream (from a `hub/preview/tunnel` answer): its data and notes go to
+    /// [`Client::take_tunnel_data`] and [`Client::take_tunnel_notes`] from now on.
+    pub fn track_tunnel(&mut self, stream: yaac_protocol::StreamId) {
+        self.tunnel_streams.insert(stream);
+    }
+
+    /// Stop tracking a tunnel (closed either way).
+    pub fn forget_tunnel(&mut self, stream: yaac_protocol::StreamId) {
+        self.tunnel_streams.remove(&stream);
+    }
+
+    /// Tunnel bytes that have arrived, in order.
+    pub fn take_tunnel_data(&mut self) -> Vec<(yaac_protocol::StreamId, Vec<u8>)> {
+        self.sort_data();
+        std::mem::take(&mut self.tunnel_data)
+    }
+
+    /// `stream/credit` and `hub/preview/tunnelClose` for tunnels.
+    pub fn take_tunnel_notes(&mut self) -> Vec<(String, Value)> {
+        std::mem::take(&mut self.tunnel_notes)
+    }
+
+    /// Bytes for a tunnel (within the credit the hub granted). Never blocks.
+    pub fn send_tunnel_data(&mut self, stream: yaac_protocol::StreamId, bytes: Vec<u8>) {
+        self.link.send_data(stream, bytes);
     }
 
     /// Terminal notifications from the hub since the last call: `hub/terminal/title`,
@@ -616,6 +667,9 @@ impl Client {
                 self.state.hub.build = Some(hello.build);
                 self.request(hub_names::SETTINGS_GET, json!({}), Call::HubSettings);
                 self.request(hub_names::VIEW_GET, json!({}), Call::View);
+                if self.request_feed {
+                    self.request(attach::names::NOTIFICATIONS_SUBSCRIBE, json!({}), Call::RequestFeed);
+                }
                 // Tell the (new) hub what this window shows again.
                 if let Some(cards) = self.visible_requests.take() { self.set_visible_requests(cards); }
                 if let Some(keys) = self.showing.take() {
@@ -628,6 +682,7 @@ impl Client {
                 let ids: Vec<(TargetId, bool)> =
                     hello.targets.iter().map(|t| (t.id.clone(), t.state.status == attach::ConnectionStatus::Connected)).collect();
                 self.state.set_targets(hello.targets);
+                self.state.hub.index_pending = ids.iter().map(|(id, _)| id.clone()).collect();
                 for (id, _connected) in ids {
                     // Cached index and providers are served by the hub even while offline.
                     self.load_target(&id);
@@ -684,10 +739,20 @@ impl Client {
                 self.state.apply_view(&result);
                 self.clear_shown_unseen();
             }
+            Call::RequestFeed => {
+                if let Ok(feed) = serde_json::from_value(result) {
+                    self.state.hub.request_feed = Some(feed);
+                }
+            }
+            Call::FeedRespond { .. } => {}
             Call::HubSettings => {
                 self.state.hub.explanations = result.pointer("/settings/explanations").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
                 self.state.hub.notifications = result.pointer("/settings/notifications").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
                 self.state.hub.always = result.get("settings").and_then(|s| s.get("always")).and_then(Value::as_bool);
+                self.state.hub.tailscale_attach = result.pointer("/settings/tailscaleAttach").and_then(Value::as_bool);
+                if let Some(status) = result.get("tailscale") {
+                    self.state.hub.tailscale_status = crate::state::tailscale_status_line(status);
+                }
             }
             Call::Projects(t) => {
                 if let Ok(r) = serde_json::from_value::<yaac_protocol::ProjectListResult>(result) {
@@ -711,6 +776,7 @@ impl Client {
                 self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
             }
             Call::Sync { target: t, connected } => {
+                self.state.hub.index_pending.remove(&t);
                 if !connected && self.state.target(&t).is_some_and(|target| target.connected()) {
                     return; // A fresh sync was requested on reconnect.
                 }
@@ -1073,6 +1139,10 @@ impl Client {
     }
 
     fn on_error(&mut self, call: Call, error: &ErrorObject) {
+        if let Call::Sync { target, .. } = &call {
+            // Answered, if only with an error: the index is as known as it will get.
+            self.state.hub.index_pending.remove(target);
+        }
         match call {
             Call::HistoryTail { read, .. } => self.on_error(*read, error),
             Call::SessionDiscovery { write: true, .. } => {
@@ -1255,7 +1325,18 @@ impl Client {
                 self.state.skills.insert(key, crate::skills::SkillsState::Failed(error.message.clone()));
             }
             Call::Explain(key, item, request) => self.finish_explanation(key, item, request, None),
-            Call::HubSettings | Call::Projects(_) | Call::SshRecords => {}
+            Call::HubSettings | Call::Projects(_) | Call::SshRecords | Call::RequestFeed => {}
+            // An answer that did not go through opens the request with the reason, as a
+            // failed toast answer does; nothing is re-sent.
+            Call::FeedRespond { mut open, answered } => {
+                if answered {
+                    open.error = Some(error.message.clone());
+                    self.error(None, error.message.clone());
+                    self.notification_open.push_back(open);
+                } else {
+                    self.error(None, error.message.clone());
+                }
+            }
             Call::InstanceHome { target, instance, home } => {
                 if error.code == ErrorCode::StoreChange {
                     // Another store: nothing changed; the user decides (P300).
@@ -1304,6 +1385,12 @@ impl Client {
             }
             "hub/notifications/settings" => {
                 if let Ok(settings) = serde_json::from_value(params) { self.state.hub.notifications = settings; }
+            }
+            "hub/tailscale/status" => self.state.hub.tailscale_status = crate::state::tailscale_status_line(&params),
+            attach::names::NOTIFICATIONS_REQUESTS => {
+                if let Ok(feed) = serde_json::from_value(params) {
+                    self.state.hub.request_feed = Some(feed);
+                }
             }
             attach::names::NOTIFICATIONS_OPEN => {
                 if let Ok(open) = serde_json::from_value::<attach::NotificationOpen>(params) {
@@ -1358,6 +1445,12 @@ impl Client {
                 self.on_routed(n);
             }
             crate::attachments::names::UPLOAD_PROGRESS | crate::attachments::names::UPLOAD_DONE => self.on_upload_note(method, &params),
+            attach::names::PREVIEW_TUNNEL_CLOSE => self.tunnel_notes.push((method.to_owned(), params)),
+            m::STREAM_CREDIT
+                if params.get("stream").and_then(|s| serde_json::from_value(s.clone()).ok()).is_some_and(|s| self.tunnel_streams.contains(&s)) =>
+            {
+                self.tunnel_notes.push((method.to_owned(), params));
+            }
             attach::names::TERMINAL_TITLE | attach::names::TERMINAL_EXITED | attach::names::TERMINAL_RENAMED | m::STREAM_CREDIT => {
                 self.terminal_notes.push((method.to_owned(), params));
             }
@@ -2578,6 +2671,38 @@ impl Client {
         self.state.hub.explanations = models;
     }
 
+    /// Receive the hub's request reminder as a list (`state.hub.request_feed`), now and on
+    /// every later attach: for a client that draws its own notifications (Android).
+    pub fn subscribe_request_feed(&mut self) {
+        if self.request_feed {
+            return;
+        }
+        self.request_feed = true;
+        if self.state.hub.attached {
+            self.request(attach::names::NOTIFICATIONS_SUBSCRIBE, json!({}), Call::RequestFeed);
+        }
+    }
+
+    /// A feed entry's action, as the toast's: `decision` `allow` or `deny` answers it with
+    /// the decision the hub offered (refused by the hub if `revision` is no longer current);
+    /// `None` is Open — the request opens here at once and the hub marks it seen.
+    pub fn respond_request_feed(&mut self, location: &attach::RequestLocation, revision: u64, decision: Option<&str>) -> Result<(), String> {
+        let feed = self.state.hub.request_feed.as_ref().ok_or("No request list from the hub")?;
+        let entry = feed.items.iter().find(|i| &i.location == location).ok_or("This request no longer needs you")?;
+        if decision.is_some() && entry.decisions.is_none() {
+            return Err("This request cannot be answered from a notification".into());
+        }
+        let open = attach::NotificationOpen { location: location.clone(), item_id: entry.item_id.clone(), error: None };
+        let mut params = json!({ "revision": revision, "location": location });
+        if let Some(d) = decision {
+            params["decision"] = json!(d);
+        } else {
+            self.notification_open.push_back(open.clone());
+        }
+        self.request(attach::names::NOTIFICATIONS_RESPOND, params, Call::FeedRespond { open, answered: decision.is_some() });
+        Ok(())
+    }
+
     pub fn set_notifications(&mut self, settings: attach::NotificationSettings) {
         self.state.hub.notifications = settings;
         self.request(hub_names::SETTINGS_UPDATE, json!({ "notifications": settings }), Call::HubSettings);
@@ -2587,6 +2712,13 @@ impl Client {
     pub fn set_always(&mut self, always: bool) {
         self.state.hub.always = Some(always);
         self.request(hub_names::SETTINGS_UPDATE, json!({ "always": always }), Call::HubSettings);
+    }
+
+    /// "Allow the Android client over Tailscale": the hub also accepts attaches on this host's
+    /// Tailscale addresses, from the same Tailscale login only.
+    pub fn set_tailscale_attach(&mut self, on: bool) {
+        self.state.hub.tailscale_attach = Some(on);
+        self.request(hub_names::SETTINGS_UPDATE, json!({ "tailscaleAttach": on }), Call::HubSettings);
     }
 
     /// "Clear cache": the hub drops its cache (drafts are never touched), and the window

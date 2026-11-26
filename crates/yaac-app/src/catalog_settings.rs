@@ -8,7 +8,6 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use eframe::egui;
 use serde_json::{Value, json};
 use yaac_core::client::Client;
 use yaac_protocol::{
@@ -149,9 +148,7 @@ impl Settings {
         self.imported = Some(rx);
         self.notice = None;
         std::thread::spawn(move || {
-            let result = rfd::FileDialog::new()
-                .set_title("Choose a folder containing SKILL.md")
-                .pick_folder()
+            let result = crate::platform::pick_folder("Choose a folder containing SKILL.md")
                 .map(|folder| import_folder(&folder))
                 .transpose();
             let _ = tx.send(result);

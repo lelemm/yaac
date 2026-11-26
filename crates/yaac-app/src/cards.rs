@@ -2,7 +2,7 @@
 //! state, and the budget notice. A faint fill and a 3 px coloured left edge; no outline.
 //! Keys act only while the card has focus.
 
-use eframe::egui::{self, Key, Modifiers};
+use egui::{self, Key, Modifiers};
 use yaac_core::ThreadKey;
 use yaac_core::agents::root_of;
 use yaac_core::attention::Mark;

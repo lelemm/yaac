@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, Pos2, Rect, Vec2, epaint::Vertex, pos2, vec2};
+use egui::{self, Color32, Pos2, Rect, Vec2, epaint::Vertex, pos2, vec2};
 use yaac_core::ThreadKey;
 use yaac_term::{CellSide, Color, CursorShape, Flags, Frame, Key, Mods, MouseAction, MouseButton, SelectKind, Shortcut, Theme};
 
@@ -702,7 +702,7 @@ fn request_paste(ctx: &egui::Context, session: u64) {
     let slot = clip_slot(ctx);
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        let text = arboard::Clipboard::new().and_then(|mut c| c.get_text()).unwrap_or_default();
+        let text = crate::platform::clipboard_text().unwrap_or_default();
         if !text.is_empty()
             && let Ok(mut g) = slot.lock()
         {

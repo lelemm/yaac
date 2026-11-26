@@ -19,7 +19,7 @@
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, OnceLock};
 
-use eframe::egui::{self, ViewportCommand};
+use egui::{self, ViewportCommand};
 use yaac_core::display::{CloseAction, on_close};
 
 /// A request from outside the window's own input.

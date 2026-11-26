@@ -1,6 +1,6 @@
 //! The sidebar: a flat list under sticky headers (no tree), virtualised.
 
-use eframe::egui::{self, Margin, Rect, Sense, pos2, vec2};
+use egui::{self, Margin, Rect, Sense, pos2, vec2};
 use yaac_core::attention::AttentionMap;
 use yaac_core::sidebar::{NeedsCycle, Order, RowRight, Section, SectionKind, hub_footer, needs_you, sections, title_width};
 use yaac_core::thread_menu::{MenuAction, MenuEntry, thread_menu};

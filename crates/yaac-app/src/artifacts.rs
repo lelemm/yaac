@@ -8,7 +8,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eframe::egui;
 use sha2::{Digest, Sha256};
 use tempfile::{NamedTempFile, TempPath};
 use yaac_core::{ThreadKey, client::Client, state::AppState};
@@ -304,14 +303,15 @@ fn materialize(t: Transfer) -> Result<ResultFile, String> {
     }
     let name = t.card.artifact.name.split(['/', '\\']).next_back().unwrap_or("artifact");
     if t.command == Command::Download {
-        let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() else {
-            return Ok(ResultFile::Cancelled);
-        };
-        let mut file = NamedTempFile::new_in(path.parent().ok_or("Missing destination directory")?)
-            .map_err(|e| e.to_string())?;
-        file.write_all(&t.bytes).map_err(|e| e.to_string())?;
-        file.persist(path).map_err(|e| e.to_string())?;
-        return Ok(ResultFile::Saved);
+        let saved = crate::platform::save_with(name, None, |path| {
+            let parent = path.parent().ok_or_else(|| std::io::Error::other("Missing destination directory"))?;
+            let mut file = NamedTempFile::new_in(parent)?;
+            file.write_all(&t.bytes)?;
+            file.persist(path)?;
+            Ok(())
+        })
+        .map_err(|e| e.to_string())?;
+        return Ok(if saved { ResultFile::Saved } else { ResultFile::Cancelled });
     }
     let suffix = if t.command == Command::Browser
         && matches!(ext, "md" | "markdown" | "mmd" | "mermaid" | "csv")
@@ -337,12 +337,17 @@ fn materialize(t: Transfer) -> Result<ResultFile, String> {
     Ok(ResultFile::Opened(file))
 }
 
-#[cfg(windows)]
+#[cfg(not(feature = "desktop"))]
+fn open(file: &Path) -> std::io::Result<()> {
+    crate::platform::open_document(file)
+}
+
+#[cfg(all(windows, feature = "desktop"))]
 fn open(file: &Path) -> std::io::Result<()> {
     yaac_winsys::open_document(file)
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), feature = "desktop"))]
 fn open(file: &Path) -> std::io::Result<()> {
     let opener = if cfg!(target_os = "macos") {
         "open"

@@ -1,7 +1,7 @@
 //! Small widgets in the house style: no outlines; one filled button per screen; plain-text
 //! buttons with a faint fill on hover; selectors as a word and a chevron; a 2 px focus ring.
 
-use eframe::egui::{self, Color32, CornerRadius, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use egui::{self, Color32, CornerRadius, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use yaac_core::attention::Mark;
 
 use crate::icons;

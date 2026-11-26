@@ -4,7 +4,7 @@
 //! once. A button with nowhere to go is drawn in the unavailable colour, does nothing, and has
 //! no list.
 
-use eframe::egui::{self, Sense, pos2, vec2};
+use egui::{self, Sense, pos2, vec2};
 use yaac_core::history::{Entry, Place};
 
 use crate::app::{Action, YaacApp};

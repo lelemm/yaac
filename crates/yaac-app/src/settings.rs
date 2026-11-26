@@ -1,7 +1,7 @@
 //! Settings: a full-window page with its own navigation (Targets, Providers, Appearance,
 //! Window, Advanced) and "Back to threads". No thread list, no agents panel, no composer.
 
-use eframe::egui::{self, Margin, RichText, pos2, vec2};
+use egui::{self, Margin, RichText, pos2, vec2};
 use yaac_core::attention::Mark;
 use yaac_core::components::ComponentStatus;
 use yaac_core::settings::{CHOOSE_DISTRO, DistroOption, DistroPhase, DistroPicker, LEGEND, Page, SshAction, diagnostics, distro_picker, kind_label, providers_view, targets_view};
@@ -1391,6 +1391,24 @@ fn window(ui: &mut egui::Ui, app: &mut YaacApp) {
         "The tray icon is available on Windows. Here, closing the window closes it; the hub keeps running."
     };
     ui.label(widgets::secondary(note, &p));
+
+    widgets::heading(ui, "Android");
+    let allowed = app.client.state.hub.tailscale_attach;
+    ui.horizontal(|ui| {
+        let on = allowed.unwrap_or(false);
+        if allowed.is_some() {
+            if widgets::switch(ui, &p, on).clicked() {
+                app.client.set_tailscale_attach(!on);
+            }
+        } else {
+            ui.add_enabled_ui(false, |ui| widgets::switch(ui, &p, false));
+        }
+        ui.label("Allow the Android client over Tailscale");
+    });
+    ui.label(widgets::secondary("The phone attaches to this computer's hub over Tailscale, only from devices signed in to the same Tailscale account. Nothing is paired or stored.", &p));
+    if let Some(status) = &app.client.state.hub.tailscale_status {
+        ui.label(RichText::new(status).font(theme::ui(size::SMALL)).color(p.text));
+    }
 
     widgets::heading(ui, "Display");
     let host = Host::current();

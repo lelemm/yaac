@@ -12,13 +12,17 @@
 //! `YAAC_RENDERER=<id>` (or `--renderer <id>`) overrides the stored choice for one start;
 //! `YAAC_RENDERER_FAIL=1` makes the first attempt fail, to test the fallback for real.
 
+#[cfg(feature = "desktop")]
 use std::cell::RefCell;
 use std::path::PathBuf;
+#[cfg(feature = "desktop")]
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use yaac_core::display::{Built, DisplayFile, Host, InUse, Plan, Renderer};
+use yaac_core::display::{Built, DisplayFile, InUse, Renderer};
+#[cfg(feature = "desktop")]
+use yaac_core::display::{Host, Plan};
 
 /// The renderers compiled into this build.
 pub(crate) fn built() -> Built {
@@ -165,6 +169,7 @@ fn wgpu_options(r: Renderer, fail: bool) -> eframe::egui_wgpu::WgpuConfiguration
     WgpuConfiguration { wgpu_setup: WgpuSetup::CreateNew(setup), ..WgpuConfiguration::default() }
 }
 
+#[cfg(feature = "desktop")]
 fn options_for(r: Renderer, base: &dyn Fn() -> eframe::NativeOptions, fail: bool) -> eframe::NativeOptions {
     let mut o = base();
     match r {
@@ -199,6 +204,7 @@ fn backend_name(b: eframe::wgpu::Backend) -> String {
 }
 
 /// What eframe created, read from the creation context.
+#[cfg(feature = "desktop")]
 fn describe(cc: &eframe::CreationContext<'_>, r: Renderer) -> InUse {
     #[cfg_attr(not(feature = "wgpu"), allow(unused_mut))]
     let mut u = InUse { renderer: r, ..InUse::default() };
@@ -222,6 +228,7 @@ pub(crate) fn choice(file: &DisplayFile, arg: Option<&str>) -> Renderer {
 
 /// Runs the window to its end on the planned renderer, falling back once. `base` builds the
 /// options every attempt shares.
+#[cfg(feature = "desktop")]
 pub(crate) fn run_window(base: &dyn Fn() -> eframe::NativeOptions, plan: &Plan, choice: Renderer, mut file: DisplayFile, store: &Store, launch: crate::Launch) -> ExitCode {
     let host = Host::current();
     let fail_first = env_flag("YAAC_RENDERER_FAIL");

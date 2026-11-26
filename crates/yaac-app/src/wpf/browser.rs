@@ -19,6 +19,8 @@ pub(super) struct BrowserPipe {
     terminals: [super::terminal::TerminalPipe; 2],
     #[cfg(feature = "preview")]
     native: native::Surfaces,
+    /// The last `browserHost` state sent to an external host (Android).
+    host_state: Value,
 }
 
 impl BrowserPipe {
@@ -100,6 +102,16 @@ impl BrowserPipe {
 
         #[cfg(feature = "preview")]
         self.native.write(updates, stdout)?;
+        // The embedder's own browser host (Android, P380): what should run, and agent actions.
+        if let Some(state) = app.browsers.external_view(visible)
+            && state != self.host_state
+        {
+            write_frame(stdout, &json!({ "browserHost": state }))?;
+            self.host_state = state;
+        }
+        for call in app.browsers.external.as_mut().map(|h| std::mem::take(&mut h.outbox)).unwrap_or_default() {
+            write_frame(stdout, &json!({ "browserHostCall": call }))?;
+        }
         Ok(if self.files.write(stdout)? { Some(Duration::ZERO) } else { next })
     }
 
@@ -193,6 +205,15 @@ impl BrowserPipe {
         if command == "terminal.ack" {
             return Ok(self.terminals[usize::from(payload["panel"]==true)].ack(payload["frame"].as_u64()));
         }
+        // The external host's reports apply whatever thread is shown.
+        if command == "browser.hostEvent" {
+            app.browsers.external_event(payload);
+            return Ok(true);
+        }
+        if command == "browser.hostResult" {
+            app.browsers.external_result(&mut app.client, payload);
+            return Ok(true);
+        }
         if command == "browser.frameAck" {
             #[cfg(feature = "preview")]
             if let (Some(tab), Some(frame)) = (id, data["id"].as_u64()) {
@@ -268,6 +289,8 @@ impl BrowserPipe {
                 };
                 match command {
                     "browser.close" => browsers.close(&thread, id),
+                    // Back, forward, reload and stop, for an external host's tab.
+                    "browser.history" => browsers.external_history(&thread, id, string(payload, "history"))?,
                     "browser.select" => browsers.select(&thread, id),
                     "browser.navigate" | "browser.external" | "browser.inspect"
                         if browsers.tab(&thread, id).is_none_or(|tab| tab.kind != crate::file_pane::TabKind::Browser) =>

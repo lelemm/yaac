@@ -6,7 +6,7 @@
 //! restores it; the controls in it work as usual. While the window is not maximized, its edges
 //! and corners resize it.
 
-use eframe::egui::{self, Rect, Sense, ViewportCommand, pos2, vec2};
+use egui::{self, Rect, Sense, ViewportCommand, pos2, vec2};
 
 use crate::icons;
 use crate::theme::Palette;

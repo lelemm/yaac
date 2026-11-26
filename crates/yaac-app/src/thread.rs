@@ -2,7 +2,7 @@
 
 use std::hash::{Hash, Hasher};
 
-use eframe::egui::{self, Margin, Panel, Rect, Sense, UiBuilder, pos2, vec2};
+use egui::{self, Margin, Panel, Rect, Sense, UiBuilder, pos2, vec2};
 use yaac_core::agentcall::{CallLine, Pill};
 use yaac_core::activity::{ActivityLine, Block, LineMark, blocks, thought_text};
 use yaac_core::diff::{FileDiff, LineKind};

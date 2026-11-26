@@ -4,7 +4,7 @@
 //! in core. The card and docked panel add Siblings. Arrows show only while a message is in flight,
 //! and are static: an idle fleet costs no CPU.
 
-use eframe::egui::{self, Align2, Margin, Pos2, Rect, Sense, Stroke, pos2, vec2};
+use egui::{self, Align2, Margin, Pos2, Rect, Sense, Stroke, pos2, vec2};
 use yaac_core::agents::{AgentRow, AgentsPanel, BudgetLine, DockEntry, RanOut, Flow, Overflow, PanelInput, PanelMode, PillLayout, Relation, card_groups, clusters, docked_clusters, docked_entries, pill, pill_cap, sibling_rows};
 use yaac_core::attention::Mark;
 use yaac_core::hover::Region;
@@ -817,7 +817,7 @@ fn heading(ui: &mut egui::Ui, p: &Palette, text: &str, n: Option<usize>) {
 mod tests {
     //! The real widget on a headless egui context, with the demo fleet and simulated pointer
     //! positions: the card must not flicker, and must not keep the window repainting.
-    use eframe::egui::{Event, Pos2, RawInput, ViewportId, vec2};
+    use egui::{Event, Pos2, RawInput, ViewportId, vec2};
     use yaac_core::agents::agents_panel;
     use yaac_core::attention::AttentionMap;
 

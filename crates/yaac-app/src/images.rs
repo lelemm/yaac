@@ -6,7 +6,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use eframe::egui::{self, ColorImage, TextureHandle, Vec2, vec2};
+use egui::{self, ColorImage, TextureHandle, Vec2, vec2};
 use serde_json::{Value, json};
 use yaac_core::{
     attachments::{DraftRef, Source},

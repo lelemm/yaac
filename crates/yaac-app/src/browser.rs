@@ -25,21 +25,27 @@ pub(crate) fn open(url: &str) {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, feature = "desktop"))]
 fn open_now(url: &str) -> std::io::Result<()> {
     yaac_winsys::open_url(url)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 fn open_now(url: &str) -> std::io::Result<()> {
     std::process::Command::new("open").arg(url).status().map(|_| ())
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(target_os = "macos"), feature = "desktop"))]
 fn open_now(url: &str) -> std::io::Result<()> {
     use std::process::Stdio;
     // The child is waited for here, on the worker thread, so it never lingers as a zombie.
     std::process::Command::new("xdg-open").arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|_| ())
+}
+
+/// Without the desktop pieces (Android) the embedder opens it (`platform::PlatformHooks`).
+#[cfg(not(feature = "desktop"))]
+fn open_now(url: &str) -> std::io::Result<()> {
+    crate::platform::open_url(url)
 }
 
 #[cfg(test)]
