@@ -114,7 +114,7 @@ pub struct CatalogSkillsParams {
 #[serde(rename_all = "camelCase")]
 pub struct CatalogSkillsResult {
     /// The metadata returned on list.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub skills: Vec<CatalogSkillInfo>,
     /// The bundle returned on retrieval.
     #[serde(default, skip_serializing_if = "Option::is_none")]
