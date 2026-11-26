@@ -22,6 +22,13 @@ never waits behind more than one chunk — measured at about 1 ms during a 20 MB
 Limits: 512 MiB per file, 2 GiB of unfinished uploads, 4 sending to one target at once,
 64 clipboard MiB per image.
 
+**On Android** (docs/14-android.md) the file is on the phone and the hub on another machine,
+so the hub cannot read it by path. The window reads each picked or pasted file itself, on a
+worker, and sends its bytes like a clipboard image: a draft blob first, then the upload. The
+limit there is 64 MiB per file. Images are recognised by content as on the desktop, and the
+thread's `ImageInput` decides how they are sent, unchanged. The same applies to any window
+attached to a hub by address (`AttachConfig::remote`).
+
 ## The flow
 
 ```
@@ -208,6 +215,11 @@ platform code was needed.
 | Windows (the WSL host) | A file list put on the clipboard by another program (PowerShell `Set-Clipboard -Path`, which writes `CF_HDROP` as Explorer does) is read as two absolute paths, one with a space; text and a bitmap round-trip (the cross-compiled test run on Windows). |
 | Linux, X11 | File list (`text/uri-list`, percent-decoded), text, and bitmap, under Xvfb. |
 | Linux, Wayland | Not verified: the only compositor available (WSLg's Weston) has no data-control protocol, so `arboard` falls back to X11 (XWayland). Without XWayland, files and images cannot be pasted and text falls back to egui's paste. |
+
+On Android the system answers instead (`PlatformBridge`, P378). **Attach** asks *Photos*
+(the photo picker, images only) or *Files* (the document picker). **Paste** takes a copied
+picture or document (a clip with a `content://` URI) as a file, else text. Each file is copied
+into the app's cache first, because the controller reads by path.
 
 Drag and drop comes from egui (winit): Windows and X11 report dropped files; winit does not
 report dropped files on Wayland.

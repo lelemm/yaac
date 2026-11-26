@@ -96,7 +96,8 @@ Explicitly **not** in the MVP (the design must not preclude them):
 - Moving a thread between targets.
 - Windows machines as SSH targets (Windows is supported locally and through WSL).
 - An ACP provider (planned as the first provider after the MVP).
-- Auto-update, telemetry, multi-window, mobile. macOS is kept building on a best-effort basis
+- Auto-update, telemetry, multi-window, mobile (a post-MVP Android design is proposed in
+  [14 Android](14-android.md)). macOS is kept building on a best-effort basis
   but is not packaged or tested.
 - Cloud-hosted agent tasks.
 - Running the hub on a server, or a target acting as a hub (the design allows both).

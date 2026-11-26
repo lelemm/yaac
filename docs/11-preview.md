@@ -291,6 +291,61 @@ with an address or port field.
   separately, so a normal YAAC build does not require the CEF SDK. Binary distributions and
   reproducible smoke tests are described in the [crate guide](../crates/yaac-preview/README.md).
 
+### Android (Proposed, P380)
+
+The Android app has no CEF. Its browser host is the system **WebView**, in the app's own
+process (`android/…/core/BrowserHost.kt`), behind the same controller tab model: the controller
+keeps the tabs, the active tab, the agent calls and the buffers; the host only runs pages. A
+WebView is an ordinary Android view, so Compose places it (A3 draws the tab bar and toolbar
+from the same `browser` view the WPF window gets); no frames are copied.
+
+```
+WebView (process proxy override) ──SOCKS──▶ controller 127.0.0.1:<p> (in the app) ──attach link──▶ hub ──tunnel/open──▶ yaacd ──TCP──▶ target
+```
+
+- **The network goes over the attach link.** The hub's `hub/preview/proxy` listens on the PC's
+  loopback, which the phone cannot (and must not) reach. A new attach method
+  `hub/preview/tunnel { target, host, port, initialCredit }` → `{ stream, initialCredit }` makes
+  the hub do one `tunnel/open` on the target's connection and relay its bytes over the
+  **attach connection's own data frames**, with credit both ways and `hub/preview/tunnelClose`
+  either way, as terminals are relayed. Nothing new is opened to the hub or the target
+  (invariants 1 and 14). Same refusals as the SOCKS proxy (`target_offline`,
+  `capability_missing`, `connection_refused`, `invalid_params`).
+- **The phone's SOCKS endpoint is in the controller.** `yaac-android` binds a SOCKS server
+  (v5 and v4a, `CONNECT` only, host names passed on unresolved) on `127.0.0.1:<random>` while a
+  browser tab exists; each `CONNECT` becomes one `hub/preview/tunnel`. The WebView's proxy is
+  set with `androidx.webkit` `ProxyController.setProxyOverride` to that endpoint for every
+  scheme, with no bypass (loopback included), so `localhost` means the thread's target and DNS
+  is resolved on the target, as on the desktop (P323).
+- **One target at a time.** Android's proxy override is per process, not per WebView, so the
+  endpoint is bound to one target. Tabs of only one target run at a time: opening or showing a
+  tab of another target stops (destroys) the other target's WebViews, keeping their addresses,
+  and re-points the endpoint; showing them again reloads them. An agent call on a stopped tab
+  answers "The phone's browser is showing another machine; open this thread on the phone".
+  A page can therefore never reach a target other than its own.
+- **Isolation.** Each tab keeps its own cookies and storage only per target (WebView profiles
+  where the system WebView supports them; otherwise one store, cleared when the endpoint
+  changes target). WebRTC cannot be told to keep UDP on the proxy, so a document-start script
+  (`addDocumentStartJavaScript`) removes `RTCPeerConnection` from every page.
+- **Agents** use the same `browser/call` actions, carried out by the host with WebView APIs:
+  `navigate` → `loadUrl`/history; `snapshot`, `click`, `type`, `eval` → injected JavaScript
+  (the desktop's snapshot script, so refs match); `press` → key events on the view; `screenshot`
+  → the view drawn into a bitmap (an agent's hidden tab is laid out off screen at the last
+  visible size); `console` → `onConsoleMessage`; `network` → a document-start
+  `PerformanceObserver` plus load errors. Same bounds, cursors and timeouts as the desktop.
+- **Inspect** is not offered on the phone (the owner's scope, P374): debug builds call
+  `setWebContentsDebuggingEnabled`, so `chrome://inspect` on a PC reaches the tabs. The agent
+  tools `console` and `network` still work from the host's buffers.
+- **Open in browser** forwards nothing to the phone: it opens the address in the phone's
+  browser only for public URLs; a target's local server is reachable in YAAC's own tabs.
+- **No authentication (the owner's choice, 2026-11-26).** Like the desktop's proxy (stated
+  above), the phone's loopback endpoint has no authentication — WebView cannot authenticate to
+  a SOCKS proxy. The risk, plainly: **another app on the phone can use the endpoint while a
+  YAAC browser tab is open**, and reach what the thread's target reaches. The endpoint exists
+  only while tabs exist. The alternative, not taken: an HTTP proxy with a per-run secret,
+  answered in `onReceivedHttpAuthRequest`, at the cost of an HTTP-proxy parser in the
+  controller.
+
 ## Later
 
 - More items in the title bar's **+** menu.

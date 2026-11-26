@@ -46,6 +46,17 @@ The journal creation time orders known requests, with arrival order breaking tie
 Every rendered set of actions carries a revision so a late click cannot answer a different
 request. Open consumes the oldest entry without answering it.
 
+A client that raises its own notifications (the Android app, P379) subscribes to that same
+list with `hub/notifications/subscribe` and receives it again as `hub/notifications/requests`
+whenever it changes: a revision, and per entry the location (target, thread, request id), the
+journal item, the worker's title, the kind, a short title, the plain allow/deny decision ids
+when the toast would offer them, and the creation time. Nested workers that are no list row
+are included, as in the reminder. `hub/notifications/respond {revision, location, decision?}`
+is the toast's action on one entry. A stale revision is refused (`stale`) and nothing is
+answered. A decision goes out on the toast's `request/respond` path with a fresh operation
+id, and its outcome answers the call. Without a decision it is Open: the entry is marked seen
+and the client opens the request itself.
+
 Inside the window the UI thread never blocks on I/O: it reads an in-memory state snapshot and
 paints. Inside the hub one I/O thread owns every connection and decodes frames; anything that
 can block — SQLite writes, hashing a pasted file, decoding an image — runs on a small bounded
@@ -58,6 +69,42 @@ are journaled there.
 On Windows both are one `yaac.exe`, installed per user by an Inno Setup installer that stops
 the window and the hub before an upgrade and starts the hub again after it; the hub's login
 entry is the per-user `Run` value `YAAC hub` ([Installing on Windows](install.md)).
+
+### Attaching over Tailscale
+
+The [Android client](14-android.md) attaches to the hub from another device (P373, P377). When
+the hub setting **`tailscaleAttach`** is on (**Settings → Window → Android → Allow the Android
+client over Tailscale**, [07](07-ui.md#android); off by default), the hub also accepts attaches
+over TCP, on **port 47380** (`yaac_hub::tailnet::TAILSCALE_ATTACH_PORT`), as well as on its
+local socket:
+
+- **Where it listens.** The hub asks Tailscale for this host's addresses (`tailscale status
+  --json`: `Self.TailscaleIPs`) and binds each one, IPv4 and IPv6. It binds **only** those
+  addresses, never `0.0.0.0` or `::`, so the port cannot be reached from any other network.
+- **Who may attach.** For every accepted connection, before reading a byte from it, the hub runs
+  `tailscale whois --json <peer address>` and `tailscale status --json`. It admits the
+  connection only when the peer's `UserProfile.LoginName` equals this host's own login
+  (`User[Self.UserID].LoginName`), compared without regard to case (logins are e-mail names). Any other peer — another user's device, a shared-in node, a
+  tagged device, or one Tailscale cannot name within ten seconds — is closed at once, without a
+  message. The refusal is logged with the peer's address. At most eight connections wait for
+  this check at once; more are closed.
+- **What it carries.** An admitted connection is an ordinary attach: the same frames, the same
+  methods, the same `hub/hello` build rule as the local socket. The client side is
+  `HubClient::connect_tcp`. Both ends turn on TCP keepalive (idle 30 s, then 3 probes 10 s
+  apart; the platform's defaults where it cannot set them), so a phone that sleeps or changes
+  network is detached within about a minute. Nothing is paired and nothing is stored: Tailscale already
+  authenticates both devices, and the hub keeps no key, token or list of devices (invariant 12).
+- **When it changes.** Turning the setting off stops listening and closes every connection it
+  let in. While the setting is on and Tailscale is missing, stopped, logged out, or the
+  addresses cannot be bound, the hub reports why and asks again every minute and whenever the
+  setting is turned on again. The state (`off`, `starting`, `listening` with the addresses and
+  login, `unavailable` with the reason) is in `hub/status` and in the `hub/settings/get` and
+  `hub/settings/update` answers (`tailscale`), and each change is sent as `hub/tailscale/status`.
+
+The `tailscale` command is the one on `PATH`; on Windows the hub also tries
+`C:\Program Files\Tailscale\tailscale.exe`, and on macOS the app bundle's `Tailscale`. It runs
+with no console window. These are local commands on the host: no connection to a target is
+opened for them (invariant 1).
 
 ## The single-connection rule
 
@@ -690,9 +737,11 @@ object on Windows, a distro shutdown on WSL. Each is specified and tested on its
 
 ## Security and privacy
 
-- Neither `yaacd` nor the hub ever listens on TCP. Its socket is a Unix socket (mode `0600`, in a `0700`
-  directory) or a Windows named pipe restricted to the current user. All remote access rides on
-  SSH or WSL, which already authenticate the user.
+- `yaacd` never listens on TCP, and the hub listens on TCP only when the user turns on
+  [attaching over Tailscale](#attaching-over-tailscale): then only on this host's Tailscale
+  addresses, and only for devices of the same Tailscale login. Otherwise each socket is a Unix
+  socket (mode `0600`, in a `0700` directory) or a Windows named pipe restricted to the current
+  user. All remote access to targets rides on SSH or WSL, which already authenticate the user.
 - The host stores no harness credentials and **no passwords**. The only SSH secret it keeps is
   the private half of a key that YAAC itself generated for one connection during
   [setup](#setting-up-an-ssh-connection) — user-only file permissions, never the user's own
@@ -844,3 +893,13 @@ signals. The installer ships the self-contained WPF runtime.
 Choose **Windows WPF** under **Settings → Window → Display**. Existing `windows-compat`
 preferences use WPF. The demo command is `yaac.exe --demo fleet --renderer windows-wpf`.
 Renderer selection applies on restart.
+
+The controller loop does not know its transport. It reads JSON commands from a queue and
+writes one JSON view frame per line to any writer; WPF feeds it from its pipes. The Android app
+(`crates/yaac-android`, P376) runs the same loop in-process through
+`yaac_app::view_protocol::ViewController`: commands and frames cross JNI over channels, and the
+last frame is `{"stopped": {"error": …}}`. That build leaves out the `desktop` feature (eframe
+and winit, file dialogs, the system clipboard, the system font scan, the updater's HTTPS client,
+the preview host); what those did for the controller goes through
+`yaac_app::platform::PlatformHooks`, which the embedder fills (P378). Its attach is to a hub by
+address over Tailscale (`AttachConfig::remote`), which it never starts, stops or replaces.
