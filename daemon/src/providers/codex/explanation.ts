@@ -17,12 +17,13 @@ export async function explainCommand(
     config: { mcp_servers?: Record<string, unknown> };
   };
   const disabledServers = Object.fromEntries(Object.keys(config.mcp_servers ?? {})
-    .map((name) => [`mcp_servers.${name}.enabled`, false]));
+    .map((name) => [`mcp_servers.${name}`, { enabled: false }]));
   if (signal?.aborted) return null;
   const { thread } = await conn.request("thread/start", {
     cwd,
     model,
     ephemeral: true,
+    ...(analysis ? { environments: [] } : {}),
     threadSource: EXPLANATION_SOURCE,
     approvalPolicy: "never",
     sandbox: "read-only",
@@ -35,6 +36,8 @@ export async function explainCommand(
       "features.hooks": false,
       "features.apps": false,
       "features.plugins": false,
+      "features.remote_plugin": false,
+      "features.tool_suggest": false,
       "features.multi_agent": false,
       "features.multi_agent_v2": false,
       "features.skill_search": false,
