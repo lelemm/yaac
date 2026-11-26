@@ -59,12 +59,11 @@ public sealed class UsageMeter : WrapPanel
     {
         var tooltip = account.Value("tooltip").Text();
         var bars = account.Value("bars").Elements().ToArray();
-        if (Compact && account.Value("tightest").TryGetInt32(out var tightest) && tightest < bars.Length)
-            bars = [bars[tightest]];
 
         var meter = new StackPanel
         {
             Orientation = Compact ? Orientation.Vertical : Orientation.Horizontal,
+            VerticalAlignment = VerticalAlignment.Center,
             Margin = Compact ? new Thickness(4, 4, 4, 3) : new Thickness(4, 3, 4, 3),
             Opacity = account.Value("stale").Flag() ? .55 : 1,
             ToolTip = tooltip,
@@ -76,18 +75,21 @@ public sealed class UsageMeter : WrapPanel
             {
                 Data = geometry, Fill = BrushFrom(account.Value("logoColor").Text()), Stretch = Stretch.Uniform,
                 Width = 14, Height = 14, VerticalAlignment = VerticalAlignment.Center,
+                HorizontalAlignment = Compact ? HorizontalAlignment.Center : HorizontalAlignment.Stretch,
                 Margin = Compact ? new Thickness(0, 0, 0, 3) : new Thickness(0, 0, 4, 0),
             });
         }
         else
             meter.Children.Add(new TextBlock { Text = Compact ? label[..Math.Min(1, label.Length)] : label,
                 Foreground = TranscriptColors.Muted, FontSize = 10,
+                VerticalAlignment = VerticalAlignment.Center,
                 HorizontalAlignment = Compact ? HorizontalAlignment.Center : HorizontalAlignment.Stretch,
                 Margin = Compact ? new Thickness() : new Thickness(0, 0, 4, 0) });
 
         var windows = new StackPanel
         {
             HorizontalAlignment = Compact ? HorizontalAlignment.Center : HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Center,
         };
         foreach (var bar in bars)
         {
@@ -96,7 +98,7 @@ public sealed class UsageMeter : WrapPanel
             var row = new StackPanel
             {
                 Orientation = Orientation.Horizontal,
-                Margin = Compact ? new Thickness(1.5, 0, 0, 0) : new Thickness(),
+                Margin = Compact ? new Thickness(1.5, windows.Children.Count == 0 ? 0 : 2, 0, 0) : new Thickness(),
             };
             foreach (var segment in bar.Value("segments").Elements())
             {

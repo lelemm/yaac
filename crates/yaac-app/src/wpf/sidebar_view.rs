@@ -217,7 +217,7 @@ fn usage(app: &YaacApp, now: i64) -> Vec<Value> {
         let colour = crate::limits_ui::colour(group.kind.as_str(), &app.p);
         json!({
             "label": group.kind, "tooltip": group.tooltip, "stale": group.stale,
-            "tightest": group.tightest, "bars": bars, "color": hex(colour),
+            "bars": bars, "color": hex(colour),
             "logo": logo.map(|(logo, _)| crate::logos::source(logo).0),
             "logoColor": logo.and_then(|(_, colour)| colour).map(hex),
         })

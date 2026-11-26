@@ -64,8 +64,6 @@ pub struct Group {
     pub kind: ProviderKind,
     /// The bars, shortest window first.
     pub bars: Vec<Bar>,
-    /// The bar the collapsed strip shows: the most used.
-    pub tightest: usize,
     /// The tooltip: plan and email, each window exactly with its reset in local time, and
     /// which targets use the account.
     pub tooltip: String,
@@ -187,9 +185,7 @@ pub fn panel(accounts: &[AccountRateLimits], names: &dyn Fn(&TargetId) -> String
         .into_iter()
         .filter_map(|a| {
             let bars: Vec<Bar> = shown(a, now).into_iter().map(|w| bar(w, now)).collect();
-            // The most used; the first of equals.
-            let tightest = bars.iter().enumerate().max_by_key(|(i, b)| (b.percent, std::cmp::Reverse(*i)))?.0;
-            Some(Group { key: a.key.clone(), kind: a.kind.clone(), bars, tightest, tooltip: tooltip(a, names, now, zone), stale: a.stale })
+            (!bars.is_empty()).then(|| Group { key: a.key.clone(), kind: a.kind.clone(), bars, tooltip: tooltip(a, names, now, zone), stale: a.stale })
         })
         .collect();
     Panel { groups }
@@ -294,7 +290,6 @@ mod tests {
         let claude = &p.groups[0];
         let texts: Vec<(&str, &str, bool)> = claude.bars.iter().map(|b| (b.label.as_str(), b.text.as_str(), b.near)).collect();
         assert_eq!(texts, vec![("5h", "100% · 53m", true), ("weekly", "55% · 2d", false)], "the scoped window under 90% is only in the tooltip");
-        assert_eq!(claude.tightest, 0);
         assert_eq!(p.groups[1].bars[0].text, "55% · 4d");
         assert!(claude.tooltip.contains("Claude Ultra · someone@example.com"));
         assert!(claude.tooltip.contains("5h: 100% used · resets Sun 22 Nov, 13:53"), "{}", claude.tooltip);
@@ -312,7 +307,6 @@ mod tests {
         let texts: Vec<&str> = p.groups[0].bars.iter().map(|b| b.text.as_str()).collect();
         assert_eq!(texts, vec!["0%", "55% · 2d", "95% · 2d"]);
         assert_eq!(p.groups[0].bars[2].label, "weekly (Fable)");
-        assert_eq!(p.groups[0].tightest, 2);
     }
 
     #[test]
