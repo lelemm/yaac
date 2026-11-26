@@ -48,6 +48,10 @@ pub struct HubSettings {
     pub explanations: yaac_protocol::ExplanationModels,
     #[serde(default)]
     pub notifications: yaac_protocol::attach::NotificationSettings,
+    /// Accept attaches over Tailscale from this host's own Tailscale login ("Allow the Android
+    /// client over Tailscale"). Off by default.
+    #[serde(default)]
+    pub tailscale_attach: bool,
     /// Fields this build does not know.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -66,7 +70,7 @@ fn default_idle_exit_secs() -> u64 {
 
 impl Default for HubSettings {
     fn default() -> Self {
-        Self { always: true, idle_exit_secs: DEFAULT_IDLE_EXIT_SECS, explanations: Default::default(), notifications: Default::default(), extra: Map::new() }
+        Self { always: true, idle_exit_secs: DEFAULT_IDLE_EXIT_SECS, explanations: Default::default(), notifications: Default::default(), tailscale_attach: false, extra: Map::new() }
     }
 }
 

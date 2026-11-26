@@ -80,6 +80,9 @@ pub mod names {
     pub const SETTINGS_GET: &str = "hub/settings/get";
     /// Window → hub: change the hub settings (a patch).
     pub const SETTINGS_UPDATE: &str = "hub/settings/update";
+    /// Hub → window notification ([`super::TailscaleAttach`]): whether the hub accepts attaches
+    /// over Tailscale now, and where. Sent whenever it changes; `hub/status` has the current one.
+    pub const TAILSCALE_STATUS: &str = "hub/tailscale/status";
     /// Window → hub: reconnect a target now (user request), skipping the backoff. Never
     /// starts a stopped WSL distro.
     pub const TARGETS_RECONNECT: &str = "hub/targets/reconnect";
@@ -189,6 +192,9 @@ pub mod codes {
     pub const HELLO_REQUIRED: &str = "hello_required";
     /// The method is the hub's own business and cannot be routed (`initialize`, `mesh/deliver`…).
     pub const NOT_ROUTABLE: &str = "not_routable";
+    /// `hub/notifications/respond`: the request list changed since the client saw it, or the
+    /// request no longer needs the user. Nothing was answered.
+    pub const STALE: &str = "stale";
     /// A target name is empty or already used.
     pub const NAME_TAKEN: &str = "name_taken";
     /// The upload was cancelled (`hub/upload/cancel`).
@@ -287,6 +293,33 @@ pub struct StatusResult {
     /// This host's client id (as sent to every `yaacd`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<ClientId>,
+    /// Attaches over Tailscale (docs/02-architecture.md#attaching-over-tailscale).
+    #[serde(default)]
+    pub tailscale: TailscaleAttach,
+}
+
+/// Whether the hub accepts attaches over Tailscale (`hub/status`, `hub/tailscale/status`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum TailscaleAttach {
+    /// The setting is off: the hub listens only on its local socket.
+    #[default]
+    Off,
+    /// The setting is on and the hub is asking Tailscale for this host's addresses.
+    Starting,
+    /// Listening on these `address:port`s, for connections from this Tailscale login only.
+    Listening {
+        /// The bound addresses (Tailscale IPv4 and IPv6 only).
+        addresses: Vec<String>,
+        /// The host's own Tailscale login, the only one accepted.
+        login: String,
+    },
+    /// The setting is on but the hub cannot listen (no Tailscale, not running, not logged in,
+    /// or binding failed). The hub tries again every minute and whenever the setting changes.
+    Unavailable {
+        /// Why, for the user.
+        reason: String,
+    },
 }
 
 /// `hub/settings/update` params (a patch).
@@ -301,6 +334,9 @@ pub struct SettingsUpdateParams {
     pub idle_exit_secs: Option<u64>,
     pub explanations: Option<yaac_protocol::ExplanationModels>,
     pub notifications: Option<yaac_protocol::attach::NotificationSettings>,
+    /// Allow the Android client over Tailscale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailscale_attach: Option<bool>,
 }
 
 /// `hub/settings/get` and `hub/settings/update` result.
@@ -309,6 +345,10 @@ pub struct SettingsUpdateParams {
 pub struct SettingsResult {
     /// The settings now.
     pub settings: HubSettings,
+    /// Attaching over Tailscale now (follows `settings.tailscaleAttach` a moment later; then
+    /// `hub/tailscale/status`).
+    #[serde(default)]
+    pub tailscale: TailscaleAttach,
 }
 
 /// `hub/targets/reconnect` and `hub/debug/dropConnection` params.

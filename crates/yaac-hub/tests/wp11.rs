@@ -367,3 +367,87 @@ fn one_summary_walks_workers_oldest_first_and_restores_the_last_approvals_button
         matches!(desktop.0.lock().unwrap()[0].2.try_recv(),Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)));
     assert_eq!(desktop.0.lock().unwrap().len(),1);
 }
+
+/// A client that draws its own notifications (the Android client) gets the reminder's unseen
+/// list beside the desktop reminder, and answers through the toast's path.
+#[test]
+fn a_feed_subscriber_sees_the_unseen_requests_and_answers_with_the_current_revision() {
+    use yaac_protocol::{ItemEvent, RequestResponse, ThreadEvent};
+    let home = Home::new();
+    let alpha = FakeDaemon::new("alpha");
+    alpha.add_thread("worker");
+    home.fakes.add(&alpha);
+    // Every real hub has a notifier (it is what watches blocked threads); the feed is the
+    // same list beside the desktop reminder.
+    let mut config = home.config();
+    config.notifier = Some(Arc::new(Recorder::default()));
+    let hub = home.start_with(config);
+    let c = hub.client();
+    let target = c.add_target("alpha").id;
+    c.wait_status(&target, ConnectionStatus::Connected);
+    let empty = c.call("hub/notifications/subscribe", json!({})).unwrap();
+    assert_eq!(empty["items"], json!([]));
+    for request in ["answer-me", "open-me"] {
+        let item = serde_json::from_value(json!({"kind":"request","id":request,"turnId":"turn","status":"completed",
+            "requestId":request,"state":"pending","requestKind":"approval","approvalKind":"fileChange","title":request,
+            "decisions":[{"kind":"allow","id":"provider-permit","label":"Allow once"},{"kind":"deny","id":"provider-refuse","label":"Deny"}]})).unwrap();
+        alpha.emit("worker", ThreadEvent::ItemStarted(ItemEvent { item }));
+    }
+    let mut summary = support::fake_daemon::summary("worker");
+    summary.state = ThreadState::NeedsAttention;
+    alpha.originate_notification_thread_updated(&summary);
+    let mut feed = serde_json::Value::Null;
+    wait_until("the feed lists both requests", || {
+        for m in c.drain() {
+            if let yaac_protocol::rpc::Message::Notification { method, params } = m
+                && method == "hub/notifications/requests"
+            {
+                feed = params;
+            }
+        }
+        feed["items"].as_array().is_some_and(|i| i.len() == 2)
+    });
+    let items = feed["items"].as_array().unwrap();
+    assert_eq!(items[0]["location"]["requestId"], "answer-me");
+    assert_eq!(items[0]["decisions"], json!({"allow":"provider-permit","deny":"provider-refuse"}));
+    assert_eq!(items[0]["kind"], "Approval");
+    let revision = feed["revision"].as_u64().unwrap();
+    let location = |req: &str| json!({"target": target, "threadId": "worker", "requestId": req});
+    // A stale revision is refused and answers nothing.
+    let stale = c.call("hub/notifications/respond", json!({"revision": revision + 7, "location": location("answer-me"), "decision": "allow"}));
+    assert_eq!(stale.unwrap_err().code.as_str(), "stale");
+    assert!(alpha.request_answers().is_empty());
+    // Allow goes to the daemon with the offered decision and a fresh operation id.
+    c.call("hub/notifications/respond", json!({"revision": revision, "location": location("answer-me"), "decision": "allow"})).unwrap();
+    wait_until("the answer reaches the daemon", || !alpha.request_answers().is_empty());
+    let answers = alpha.request_answers();
+    assert_eq!(answers[0].request_id.as_str(), "answer-me");
+    assert!(matches!(&answers[0].response, RequestResponse::Approval(a) if a.decision == "provider-permit"));
+    assert!(!answers[0].op_id.as_str().is_empty());
+    // Open marks the other one seen; the feed then empties.
+    let mut latest = revision;
+    wait_until("the feed drops the answered request", || {
+        for m in c.drain() {
+            if let yaac_protocol::rpc::Message::Notification { method, params } = m
+                && method == "hub/notifications/requests"
+            {
+                latest = params["revision"].as_u64().unwrap();
+                feed = params;
+            }
+        }
+        feed["items"].as_array().is_some_and(|i| i.len() == 1)
+    });
+    let opened = c.call("hub/notifications/respond", json!({"revision": latest, "location": location("open-me")})).unwrap();
+    assert_eq!(opened["itemId"], "open-me");
+    wait_until("the feed empties", || {
+        for m in c.drain() {
+            if let yaac_protocol::rpc::Message::Notification { method, params } = m
+                && method == "hub/notifications/requests"
+            {
+                feed = params;
+            }
+        }
+        feed["items"].as_array().is_some_and(Vec::is_empty)
+    });
+    assert_eq!(alpha.request_answers().len(), 1);
+}

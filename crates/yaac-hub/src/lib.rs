@@ -21,6 +21,7 @@
 //! | [`drafts`] | The durable draft store (own file, own migrations). |
 //! | [`relay`] | The durable mesh relay queue (own file, own migrations). |
 //! | [`notify`] | Desktop notifications for pending requests outside the focused window. |
+//! | [`tailnet`] | Attaching over Tailscale: the listener on this host's Tailscale addresses, and who may attach. |
 //!
 //! Threads: one tokio current-thread runtime on the calling thread does all I/O and owns all
 //! protocol state; one store thread does all SQLite work, in submission order. Nothing else.
@@ -46,6 +47,7 @@ pub mod relay;
 mod server;
 pub mod settings;
 pub mod ssh;
+pub mod tailnet;
 mod worker;
 
 use std::time::Duration;
@@ -157,10 +159,14 @@ pub fn run_hub(config: HubConfig) -> Result<HubExit, HubError> {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let worker = worker::Worker::start(worker::Stores { cache, drafts, relay }, tx.clone())?;
         let core_handles_signals = config.handle_signals;
+        let tailnet = config.tailnet.clone();
+        let tailscale_port = config.tailscale_port;
         let pool = pool::Pool::start(config.pool_threads, &tx)?;
         let mut core = Core::new(config, settings, worker, pool, tx.clone(), loaded);
         let (writers_tx, mut writers_rx) = mpsc::unbounded_channel();
         let reason = {
+            let tailscale = tailnet::run(core.tailscale_switch(), tailnet::Ctx { tailnet, port: tailscale_port, core: tx.clone(), writers: writers_tx.clone() });
+            tokio::pin!(tailscale);
             let serve = server::serve(&listener, tx.clone(), writers_tx);
             tokio::pin!(serve);
             let mut tick = tokio::time::interval(Duration::from_millis(100));
@@ -173,6 +179,7 @@ pub fn run_hub(config: HubConfig) -> Result<HubExit, HubError> {
                 tokio::select! {
                     () = &mut serve, if serving => serving = false,
                     () = &mut signals => {}
+                    () = &mut tailscale => {}
                     event = rx.recv() => match event {
                         Some(event) => core.handle(event),
                         None => break ExitReason::Signal,

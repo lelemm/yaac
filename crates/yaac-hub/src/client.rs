@@ -1,4 +1,5 @@
-//! The window side of the attach protocol: connect to the hub's socket, then exchange
+//! The window side of the attach protocol: connect to the hub's socket (or, from another
+//! device, to its Tailscale listener: [`HubClient::connect_tcp`]), then exchange
 //! [`Message`]s without ever blocking the caller.
 //!
 //! ```text
@@ -19,7 +20,6 @@
 //! fn poll(&mut self) -> Option<Message> { self.try_recv() } }`.
 
 use std::collections::VecDeque;
-#[cfg(unix)]
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -170,7 +170,23 @@ impl HubClient {
         Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "the hub client is not available on this platform yet"))
     }
 
-    #[cfg(unix)]
+    /// Connects to a hub's Tailscale attach listener (docs/02-architecture.md#attaching-over-tailscale)
+    /// — the Android client's way in. The same frames and methods as the local socket; the hub
+    /// closes the connection at once unless this device is on the hub host's own Tailscale login.
+    /// Calls `waker` whenever a message arrives or the connection closes.
+    pub fn connect_tcp(addr: std::net::SocketAddr, waker: impl Fn() + Send + 'static) -> std::io::Result<Self> {
+        let stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(10))?;
+        stream.set_nodelay(true)?;
+        crate::tailnet::keep_alive(&socket2::SockRef::from(&stream))?;
+        let reader = stream.try_clone()?;
+        let closer = stream.try_clone()?;
+        let mut client = Self::start(reader, stream, waker)?;
+        client.closer = Some(Box::new(move || {
+            let _ = closer.shutdown(std::net::Shutdown::Both);
+        }));
+        Ok(client)
+    }
+
     fn start(
         mut reader: impl Read + Send + 'static,
         mut writer: impl Write + Send + 'static,

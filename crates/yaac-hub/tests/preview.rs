@@ -376,3 +376,50 @@ fn preview_methods_report_a_target_without_port_forwarding() {
     assert!(list(&client).is_empty());
     hub.shutdown();
 }
+
+/// P380: a tunnel carried over the attach connection itself (the Android client's way to a
+/// target server): no hub listener, bytes both ways under credit, closed from either end.
+#[test]
+fn a_tunnel_over_the_attach_connection_reaches_a_target_server_and_closes() {
+    let home = Home::new();
+    let Some(config) = real_config(&home) else {
+        return;
+    };
+    let hub = home.start_with(config);
+    let client = hub.client();
+    let target = client.add_target("preview").id;
+    client.wait_status(&target, ConnectionStatus::Connected);
+    let (echo_port, echo_worker) = start_echo();
+    let open = |client: &support::Client| {
+        let r = client
+            .call(names::PREVIEW_TUNNEL, json!({ "target": target, "port": echo_port, "initialCredit": 65536 }))
+            .unwrap();
+        (yaac_protocol::StreamId(u32::try_from(r["stream"].as_u64().unwrap()).unwrap()), r["initialCredit"].as_u64().unwrap())
+    };
+    let (stream, credit) = open(&client);
+    assert!(credit > 0, "the client may send at once");
+    let message = b"over the attach link".to_vec();
+    client.link.send_data(stream, message.clone()).unwrap();
+    let mut echoed = Vec::new();
+    while echoed.len() < message.len() {
+        let (s, bytes) = client.link.recv_data_timeout(SOCKET_TIMEOUT).unwrap();
+        assert_eq!(s, stream);
+        echoed.extend(bytes);
+    }
+    assert_eq!(echoed, message);
+    assert!(list(&client).is_empty(), "no hub listener is involved");
+
+    // Closed by the window; a second tunnel then works the same way.
+    client.call(names::PREVIEW_TUNNEL_CLOSE, json!({ "stream": stream })).unwrap();
+    let (second, _) = open(&client);
+    assert_ne!(second, stream);
+    client.link.send_data(second, b"again".to_vec()).unwrap();
+    let (s, bytes) = client.link.recv_data_timeout(SOCKET_TIMEOUT).unwrap();
+    assert_eq!((s, bytes.as_slice()), (second, &b"again"[..]));
+    client.call(names::PREVIEW_TUNNEL_CLOSE, json!({ "stream": second })).unwrap();
+    // Nothing listens there: an ordinary error, and no stream.
+    let refused_port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap().local_addr().unwrap().port();
+    let refused = client.call(names::PREVIEW_TUNNEL, json!({ "target": target, "port": refused_port, "initialCredit": 65536 })).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::ConnectionRefused, "{}", refused.message);
+    drop(echo_worker);
+}

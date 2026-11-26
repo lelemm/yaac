@@ -2,6 +2,7 @@
 //! window, and the routing between them. Everything that can block runs on the store worker;
 //! the core never waits for it — finished jobs come back as [`CoreEvent`]s.
 
+mod attach_tunnel;
 mod browser;
 mod notifications;
 mod limits;
@@ -136,6 +137,8 @@ pub(crate) enum CoreEvent {
     UploadChunk { handle: String, offset: u64, result: Result<Vec<u8>, ErrorObject> },
     /// A loopback listener or browser socket reported progress.
     Preview(preview::Event),
+    /// Attaching over Tailscale changed state.
+    Tailscale(crate::protocol::TailscaleAttach),
 }
 
 /// Why the hub stopped.
@@ -177,6 +180,8 @@ struct Client {
     /// What the window shows (`hub/view/showing`, D114).
     showing: HashSet<Key>,
     visible_requests: Option<HashSet<attach::RequestLocation>>,
+    /// Receives the request reminder's list (`hub/notifications/subscribe`).
+    feed: bool,
 }
 
 // ── Per-target state ──────────────────────────────────────────────────────────────────────
@@ -204,6 +209,8 @@ enum Pending {
     UploadCancel { handle: String },
     Terminal { client: ClientKey, id: RpcId, terminal: Option<String> },
     PreviewOpen { socket: u64 },
+    /// `tunnel/open` for a window's tunnel over its attach connection (P380).
+    AttachTunnel { client: ClientKey, id: RpcId },
     /// `daemon/handover`; **Update now** answers the window that asked.
     Handover { reply: Option<(ClientKey, RpcId)> },
     /// `provider/rateLimits` (D161).
@@ -255,6 +262,8 @@ struct Conn {
     modes_during_reconnect: Option<HashSet<ThreadId>>,
     terminal_streams: HashMap<StreamId, StreamId>,
     preview_streams: HashMap<StreamId, u64>,
+    /// Target stream → attach stream, for windows' tunnels (P380).
+    attach_tunnels: HashMap<StreamId, StreamId>,
     subs: HashMap<ThreadId, Sub>,
     delivering: HashSet<MessageId>,
     last_rx: Instant,
@@ -440,6 +449,7 @@ pub(crate) struct Core {
     uploads: HashMap<String, uploads::Upload>,
     upload_seq: u64,
     terminals: terminal::Relays,
+    attach_tunnels: attach_tunnel::AttachTunnels,
     previews: preview::Previews,
     browser: browser::BrowserCalls,
     /// File reads and hashing.
@@ -453,6 +463,10 @@ pub(crate) struct Core {
     /// Rate limits of every account on every target (D161).
     limits: limits::LimitsState,
     pub(crate) exit: Option<ExitReason>,
+    /// The hub setting `tailscaleAttach`, followed by the Tailscale listener.
+    tailscale_on: tokio::sync::watch::Sender<bool>,
+    /// Attaching over Tailscale now.
+    tailscale: crate::protocol::TailscaleAttach,
 }
 
 /// What a fanned-out lookup answers once every target has.
@@ -541,6 +555,7 @@ impl Core {
             uploads: HashMap::new(),
             upload_seq: 0,
             terminals: Default::default(),
+            attach_tunnels: Default::default(),
             previews: preview::Previews::default(),
             browser: browser::BrowserCalls::default(),
             pool,
@@ -549,7 +564,10 @@ impl Core {
             handovers: HashMap::new(),
             limits: limits::LimitsState::new(loaded.rate_limits),
             exit: None,
+            tailscale_on: tokio::sync::watch::channel(false).0,
+            tailscale: Default::default(),
         };
+        core.tailscale_on.send_replace(core.settings.hub.tailscale_attach);
         for (target, thread) in loaded.kept {
             core.kept.entry(target).or_default().insert(thread);
         }
@@ -565,6 +583,11 @@ impl Core {
             core.start_target(&id);
         }
         core
+    }
+
+    /// The setting the Tailscale listener follows.
+    pub(crate) fn tailscale_switch(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.tailscale_on.subscribe()
     }
 
     /// Stops every connection and hands back the worker so its queue can drain.
@@ -584,9 +607,13 @@ impl Core {
             CoreEvent::NotificationAction(group, action) => self.notification_action(group, &action),
             CoreEvent::NotificationDestination(open, lineage) => self.show_notification_destination(open, &lineage),
             CoreEvent::Attached { client, tx } => {
-                self.clients.insert(client, Client { tx, hello: Hello::None, subs: HashSet::new(), showing: HashSet::new(), visible_requests: None });
+                self.clients.insert(client, Client { tx, hello: Hello::None, subs: HashSet::new(), showing: HashSet::new(), visible_requests: None, feed: false });
             }
-            CoreEvent::ClientData { client, stream, bytes } => self.terminal_input(client, stream, bytes),
+            CoreEvent::ClientData { client, stream, bytes } => {
+                if !self.attach_tunnel_input(client, stream, bytes.clone()) {
+                    self.terminal_input(client, stream, bytes);
+                }
+            }
             CoreEvent::FromClient { client, message } => self.on_client(client, message),
             CoreEvent::Detached { client } => self.on_detached(client),
             CoreEvent::Conn { target, supervisor, generation, event } => self.on_conn(&target, supervisor, generation, event),
@@ -672,6 +699,12 @@ impl Core {
             }
             CoreEvent::StoreError(e) => log(format!("store: {e}")),
             CoreEvent::Signal => self.exit = Some(ExitReason::Signal),
+            CoreEvent::Tailscale(status) => {
+                if status != self.tailscale {
+                    self.tailscale = status;
+                    self.broadcast(&Message::notification(ext::names::TAILSCALE_STATUS, to_value(&self.tailscale)));
+                }
+            }
             CoreEvent::UploadSource { handle, result } => self.on_upload_source(&handle, result),
             CoreEvent::UploadHashed { handle, result } => self.on_upload_hashed(&handle, result),
             CoreEvent::UploadChunk { handle, offset, result } => self.on_upload_chunk(&handle, offset, result),
@@ -716,6 +749,7 @@ impl Core {
         let Some(c) = self.clients.remove(&client) else { return };
         if c.visible_requests.is_some_and(|cards| !cards.is_empty()) { self.notifications.reconsider(Instant::now()); }
         self.terminal_window_closed(client);
+        self.attach_tunnels_client_gone(client);
         self.browser_window_closed(client);
         for key in c.subs {
             self.release(client, &key);
@@ -731,7 +765,11 @@ impl Core {
                 }
             }
             Message::Notification { method, params } if method == names::STREAM_CREDIT => {
-                if let Ok(credit) = parse(params) { self.terminal_output_credit(client, &credit); }
+                if let Ok(credit) = parse::<StreamCreditParams>(params)
+                    && !self.attach_tunnel_client_credit(client, &credit)
+                {
+                    self.terminal_output_credit(client, &credit);
+                }
             }
             Message::Notification { method, params }
                 if method == attach::names::NOTIFICATION && self.clients.get(&client).is_some_and(|c| c.hello == Hello::Attached) =>
@@ -751,7 +789,7 @@ impl Core {
         }
         let Ok(credit) = serde_json::from_value::<StreamCreditParams>(n.params) else { return };
         if let Some(conn) = self.targets.get_mut(&n.target).and_then(Target::ready_conn) {
-            if conn.preview_streams.contains_key(&credit.stream) || conn.terminal_streams.contains_key(&credit.stream) {
+            if conn.preview_streams.contains_key(&credit.stream) || conn.terminal_streams.contains_key(&credit.stream) || conn.attach_tunnels.contains_key(&credit.stream) {
                 return; // The hub is the receiver on this stream.
             }
             let _ = conn.session.notify::<methods::StreamCredit>(&credit);
@@ -842,6 +880,16 @@ impl Core {
                 }
                 Err(e) => Some(Err(e)),
             },
+            attach::names::NOTIFICATIONS_SUBSCRIBE => {
+                if let Some(c) = self.clients.get_mut(&client) {
+                    c.feed = true;
+                }
+                Some(Ok(to_value(&self.notifications.feed)))
+            }
+            attach::names::NOTIFICATIONS_RESPOND => match parse::<attach::FeedRespondParams>(params) {
+                Ok(p) => self.feed_respond(client, id, p),
+                Err(e) => Some(Err(e)),
+            },
             attach::names::NOTIFICATIONS_VISIBLE => Some(parse::<HashSet<attach::RequestLocation>>(params).map(|visible| {
                 self.clients.get_mut(&client).unwrap().visible_requests = Some(visible);
                 self.notifications.reconsider(Instant::now());
@@ -913,7 +961,7 @@ impl Core {
                 }
                 Err(e) => Some(Err(e)),
             },
-            ext::names::SETTINGS_GET => Some(Ok(to_value(&SettingsResult { settings: self.settings.hub.clone() }))),
+            ext::names::SETTINGS_GET => Some(Ok(to_value(&SettingsResult { settings: self.settings.hub.clone(), tailscale: self.tailscale.clone() }))),
             ext::names::SETTINGS_UPDATE => Some(parse::<SettingsUpdateParams>(params).and_then(|p| {
                 let previous = self.settings.hub.clone();
                 if let Some(settings) = &p.explanations { self.settings.hub.explanations = settings.clone(); }
@@ -924,10 +972,15 @@ impl Core {
                 if let Some(secs) = p.idle_exit_secs {
                     self.settings.hub.idle_exit_secs = secs;
                 }
+                if let Some(on) = p.tailscale_attach {
+                    self.settings.hub.tailscale_attach = on;
+                }
                 if let Err(e) = self.save_settings() {
                     self.settings.hub = previous;
                     return Err(e);
                 }
+                let on = self.settings.hub.tailscale_attach;
+                self.tailscale_on.send_if_modified(|current| std::mem::replace(current, on) != on);
                 if p.explanations.is_some() {
                     self.broadcast(&Message::notification("hub/approvals/settings", to_value(&self.settings.hub.explanations)));
                 }
@@ -935,7 +988,7 @@ impl Core {
                     self.broadcast(&Message::notification("hub/notifications/settings", to_value(&self.settings.hub.notifications)));
                     self.notifications.reconsider(Instant::now());
                 }
-                Ok(to_value(&SettingsResult { settings: self.settings.hub.clone() }))
+                Ok(to_value(&SettingsResult { settings: self.settings.hub.clone(), tailscale: self.tailscale.clone() }))
             })),
             ext::names::CACHE_CLEAR => {
                 self.clear_cache(client, id.clone());
@@ -985,6 +1038,14 @@ impl Core {
             ext::names::UPLOAD_CANCEL => Some(parse::<ext::UploadHandleParams>(params).map(|p| self.upload_cancel(&p.handle))),
             ext::names::UPLOAD_LIST => Some(Ok(self.upload_list())),
             name if name.starts_with("hub/terminal/") => self.terminal_request(client, id, name, params),
+            attach::names::PREVIEW_TUNNEL => match parse(params) {
+                Ok(p) => self.attach_tunnel_open(client, id, p),
+                Err(e) => Some(Err(e)),
+            },
+            attach::names::PREVIEW_TUNNEL_CLOSE => Some(parse(params).map(|p| {
+                self.attach_tunnel_client_close(client, &p);
+                json!({})
+            })),
             attach::names::PREVIEW_PROXY => Some(parse(params).and_then(|p| self.preview_proxy(p))),
             attach::names::PREVIEW_PROXY_CLOSE => Some(parse(params).and_then(|p| self.preview_proxy_close(p))),
             attach::names::PREVIEW_OPEN => Some(parse(params).and_then(|p| self.preview_open(p))),
@@ -1141,6 +1202,7 @@ impl Core {
             settings: self.settings.hub.clone(),
             cache_file: self.cfg.paths.cache_file().display().to_string(),
             client_id: self.settings.client_id.clone(),
+            tailscale: self.tailscale.clone(),
         }
     }
 
@@ -1560,6 +1622,7 @@ impl Core {
                     pending: HashMap::new(),
                     terminal_streams: HashMap::new(),
                     preview_streams: HashMap::new(),
+                    attach_tunnels: HashMap::new(),
                     subs: HashMap::new(),
                     delivering: HashSet::new(),
                     last_rx: now,
@@ -1619,6 +1682,7 @@ impl Core {
             self.terminals.streams.remove(stream);
         }
         self.preview_disconnected(id);
+        self.attach_tunnels_target_gone(id);
         self.browser_target_closed(id);
         let was_ready = conn.ready;
         // Batched events of this connection are still valid: commit them.
@@ -2063,6 +2127,7 @@ impl Core {
             Pending::UploadCancel { handle } => self.on_upload_cancelled(&handle),
             Pending::Terminal { client, id: rid, terminal } => self.terminal_response(id, client, rid, method, terminal, outcome),
             Pending::PreviewOpen { socket } => self.preview_opened(id, socket, outcome),
+            Pending::AttachTunnel { client, id: rid } => self.attach_tunnel_opened(id, client, rid, outcome),
             Pending::Receipt { message_id, receipt } => {
                 if outcome.is_ok() {
                     self.worker.submit(move |s| {
@@ -2158,11 +2223,19 @@ impl Core {
                     Err(e) => Some(CoreEvent::StoreError(e.to_string())),
                 });
             }
-            Inbound::StreamCredit(p) => self.terminal_input_credit(id, &p),
+            Inbound::StreamCredit(p) => {
+                if !self.attach_tunnel_target_credit(id, &p) {
+                    self.terminal_input_credit(id, &p);
+                }
+            }
             Inbound::Other { method, params } if matches!(method.as_str(), names::TERMINAL_TITLE | names::TERMINAL_EXITED | names::TERMINAL_RENAMED) => {
                 self.terminal_event(id, &method, params);
             }
-            Inbound::TunnelClose(p) => self.preview_remote_close(id, p.stream),
+            Inbound::TunnelClose(p) => {
+                if !self.attach_tunnel_remote_closed(id, p.stream) {
+                    self.preview_remote_close(id, p.stream);
+                }
+            }
             Inbound::Other { method, params } if method == names::PROVIDER_RATE_LIMITS_UPDATED => self.limits_updated(id, params),
             Inbound::Other { method, params } if method == names::DISCOVERY_UPDATED => {
                 if let Ok(p) = serde_json::from_value::<yaac_protocol::DiscoveryCapsResult>(params.clone()) {
@@ -3166,10 +3239,15 @@ impl Core {
 
     pub(crate) fn tick(&mut self) {
         let now = Instant::now();
-        if let Some(notifier) = &self.cfg.notifier {
-            self.notifications.flush(now, self.settings.hub.notifications,
-                |loc| self.clients.values().any(|c| c.visible_requests.as_ref().is_some_and(|v| v.contains(loc))),
-                notifier.as_ref(), &self.tx);
+        self.notifications.flush(now, self.settings.hub.notifications,
+            |loc| self.clients.values().any(|c| c.visible_requests.as_ref().is_some_and(|v| v.contains(loc))),
+            self.cfg.notifier.as_deref(), &self.tx);
+        if std::mem::take(&mut self.notifications.feed_changed) {
+            let feed = to_value(&self.notifications.feed);
+            let to: Vec<_> = self.clients.iter().filter(|(_, c)| c.feed).map(|(k, _)| *k).collect();
+            for client in to {
+                self.send_to(client, Message::notification(attach::names::NOTIFICATIONS_REQUESTS, feed.clone()));
+            }
         }
         self.expire_browser_calls(now);
         // Acknowledge what is committed.

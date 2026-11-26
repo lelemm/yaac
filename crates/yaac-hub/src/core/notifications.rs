@@ -2,7 +2,7 @@
 use super::*;
 use crate::notify::Notification;
 use attach::{NotificationSettings, RequestLocation};
-use yaac_protocol::{DecisionKind, ItemId, RequestBody};
+use yaac_protocol::{ItemId, RequestBody};
 
 struct Card {
     item: ItemId,
@@ -34,21 +34,16 @@ pub(super) struct Notifications {
     pub(super) open: std::collections::VecDeque<attach::NotificationOpen>,
     last_launch: Option<Instant>,
     answers: HashMap<RpcId, attach::NotificationOpen>,
+    /// The same unseen list as a feed for clients that draw their own notifications
+    /// (`hub/notifications/subscribe`, the Android client).
+    pub(super) feed: attach::RequestFeed,
+    /// The feed changed since it was last sent.
+    pub(super) feed_changed: bool,
 }
 
 /// Fit each worker or title on one preview line, even when the provider sends a long prompt.
 fn preview(value: &str, limit: usize) -> String {
-    let mut words = value.split_whitespace();
-    let first = words.next().unwrap_or_default();
-    let mut chars = first
-        .chars()
-        .chain(words.flat_map(|word| std::iter::once(' ').chain(word.chars())));
-    let mut short: String = chars.by_ref().take(limit).collect();
-    if chars.next().is_some() {
-        short.pop();
-        short.push('…');
-    }
-    short
+    attach::one_line(value, limit)
 }
 
 impl Notifications {
@@ -65,41 +60,7 @@ impl Notifications {
             self.resolve(&loc);
             return;
         }
-        let (kind, title, decisions) = match &r.body {
-            RequestBody::Approval(a) => {
-                let plain = |kind| {
-                    a.decisions
-                        .iter()
-                        .find(|d| d.kind == kind && !d.accepts_reason)
-                        .map(|d| d.id.clone())
-                };
-                (
-                    "Approval",
-                    if a.details.as_ref().and_then(|d| d["kind"].as_str()) == Some("writeStdin") {
-                        "Send input to a running command".into()
-                    } else if a.command.is_some() {
-                        "Run a command".into()
-                    } else {
-                        a.title.clone()
-                    },
-                    plain(DecisionKind::Allow).zip(plain(DecisionKind::Deny)),
-                )
-            }
-            RequestBody::Form(form)
-                if form.schema.as_ref().is_some_and(|s| s["url"].is_string()) =>
-            {
-                ("Login", form.message.clone(), None)
-            }
-            RequestBody::Form(f) => ("Form", f.message.clone(), None),
-            RequestBody::Question(q) => (
-                "Question",
-                q.questions
-                    .first()
-                    .map_or_else(|| "Agent question".into(), |q| q.text.clone()),
-                None,
-            ),
-            _ => ("Request", "Input needed".into(), None),
-        };
+        let (kind, title, decisions) = attach::reminder_entry(r);
         let card = self.cards.entry(loc).or_insert_with(|| {
             self.order += 1;
             Card {
@@ -118,7 +79,7 @@ impl Notifications {
                 announced: false,
             }
         });
-        card.title = preview(&title, 64);
+        card.title = title;
         card.decisions = decisions;
         self.reconsider(now);
     }
@@ -190,12 +151,33 @@ impl Notifications {
         format!("{} · {} · {}", preview(&place, 48), card.kind, card.title)
     }
 
+    /// The feed entry for one unseen request.
+    fn feed_item(&self, loc: &RequestLocation) -> attach::RequestFeedItem {
+        let card = &self.cards[loc];
+        let worker = self
+            .labels
+            .get(&(loc.target.clone(), loc.thread_id.clone()))
+            .cloned()
+            .unwrap_or_else(|| format!("{}/{}", loc.target, loc.thread_id));
+        attach::RequestFeedItem {
+            location: loc.clone(),
+            item_id: card.item.clone(),
+            worker: preview(&worker, 48),
+            kind: card.kind.to_owned(),
+            title: card.title.clone(),
+            decisions: card.decisions.clone().map(|(allow, deny)| attach::FeedDecisions { allow, deny }),
+            created_ms: card.created_ms,
+        }
+    }
+
+    /// Recomputes the unseen list once its deadline passes: the feed for subscribed clients,
+    /// and the desktop reminder when this host has a `notifier`.
     pub(super) fn flush(
         &mut self,
         now: Instant,
         settings: NotificationSettings,
         visible: impl Fn(&RequestLocation) -> bool,
-        notifier: &dyn crate::notify::Notifier,
+        notifier: Option<&dyn crate::notify::Notifier>,
         tx: &mpsc::UnboundedSender<CoreEvent>,
     ) {
         if !self.deadline.is_some_and(|at| now >= at) {
@@ -216,6 +198,18 @@ impl Notifications {
         }
         unseen.sort_unstable_by_key(|(order, _)| *order);
         let members: Vec<_> = unseen.into_iter().map(|(_, loc)| loc).collect();
+        let items: Vec<_> = members.iter().map(|loc| self.feed_item(loc)).collect();
+        if items != self.feed.items {
+            self.feed.revision += 1;
+            self.feed.items = items;
+            self.feed_changed = true;
+        }
+        let Some(notifier) = notifier else {
+            for loc in &members {
+                self.cards.get_mut(loc).unwrap().announced = true;
+            }
+            return;
+        };
         let Some(first) = members.first() else {
             self.posted = None;
             return;
@@ -349,6 +343,45 @@ impl Core {
             self.open_notification(open);
         }
     }
+    /// `hub/notifications/respond`: the toast's actions on one feed entry. An answer goes out
+    /// like the toast's (`request/respond` with a fresh operation id) and its outcome is this
+    /// call's answer; Open only marks the entry seen (the client opens it itself).
+    pub(super) fn feed_respond(&mut self, client: ClientKey, rid: &RpcId, p: attach::FeedRespondParams) -> Option<Result<Value, ErrorObject>> {
+        let state = &mut self.notifications;
+        if p.revision != state.feed.revision {
+            return Some(Err(hub_err(ext::codes::STALE, "The requests changed; look again before answering")));
+        }
+        let Some(entry) = state.feed.items.iter().find(|i| i.location == p.location) else {
+            return Some(Err(hub_err(ext::codes::STALE, "This request no longer needs you")));
+        };
+        let decision = match (p.decision.as_deref(), &entry.decisions) {
+            (None, _) => None,
+            (Some("allow"), Some(d)) => Some(d.allow.clone()),
+            (Some("deny"), Some(d)) => Some(d.deny.clone()),
+            (Some(other), _) => {
+                return Some(Err(err(ErrorCode::InvalidParams, format!("{other} cannot be answered from a notification"))));
+            }
+        };
+        let item_id = entry.item_id.clone();
+        let Some(card) = state.cards.get_mut(&p.location) else {
+            return Some(Err(hub_err(ext::codes::STALE, "This request no longer needs you")));
+        };
+        card.reviewed = true;
+        state.deadline = Some(Instant::now());
+        let Some(decision) = decision else {
+            return Some(Ok(json!({ "itemId": item_id })));
+        };
+        let loc = p.location;
+        let request = RoutedRequest {
+            target: loc.target.clone(),
+            method: names::REQUEST_RESPOND.into(),
+            params: json!({
+                "threadId":loc.thread_id,"requestId":loc.request_id,"opId":new_id("toast"),"response":{"requestKind":"approval","decision":decision}
+            }),
+        };
+        self.on_routed(client, rid, request)
+    }
+
     pub(super) fn notification_answer(&mut self, rid: &RpcId, error: Option<ErrorObject>) {
         if let Some(mut open) = self.notifications.answers.remove(rid)
             && let Some(error) = error
@@ -459,6 +492,47 @@ mod tests {
     }
 
     #[test]
+    fn the_feed_is_the_reminders_unseen_list_even_without_a_desktop_notifier() {
+        let mut state = Notifications::default();
+        let (tx, _) = mpsc::unbounded_channel();
+        let start = Instant::now();
+        let approval = |title: &str| serde_json::from_value::<Item>(json!({"kind":"request","id":"item","turnId":"turn","status":"completed",
+            "requestId":"r","state":"pending","requestKind":"approval","approvalKind":"fileChange","title":title,
+            "decisions":[{"kind":"allow","id":"yes","label":"Allow once"},{"kind":"deny","id":"no","label":"Deny"}]})).unwrap();
+        let question = serde_json::from_value::<Item>(json!({"kind":"request","id":"q","turnId":"turn","status":"completed",
+            "requestId":"r","state":"pending","requestKind":"question","questions":[{"id":"a","text":"Which branch?","options":[]}]})).unwrap();
+        let worker = (TargetId::new("box"), ThreadId::new("index-rebuild"));
+        let other = (TargetId::new("box"), ThreadId::new("asker"));
+        state.labels.insert(worker.clone(), "index-rebuild".into());
+        state.observe(&worker, &approval("Edit lib.rs"), start);
+        state.observe(&other, &question, start + Duration::from_secs(1));
+        state.flush(start + Duration::from_secs(2), Default::default(), |_| false, None, &tx);
+        assert!(state.feed_changed);
+        let feed = state.feed.clone();
+        assert_eq!(feed.revision, 1);
+        assert_eq!(feed.items.len(), 2);
+        let first = &feed.items[0];
+        assert_eq!((first.worker.as_str(), first.kind.as_str(), first.title.as_str()), ("index-rebuild", "Approval", "Edit lib.rs"));
+        assert_eq!(first.decisions, Some(attach::FeedDecisions { allow: "yes".into(), deny: "no".into() }));
+        assert_eq!(first.item_id, ItemId::from("item"));
+        assert_eq!((feed.items[1].kind.as_str(), feed.items[1].decisions.as_ref()), ("Question", None));
+        assert_eq!(feed.items[1].worker, "box/asker");
+        // Nothing changed: same revision. Seen on a screen: it leaves the feed.
+        state.feed_changed = false;
+        state.reconsider(start + Duration::from_secs(3));
+        state.flush(start + Duration::from_secs(4), Default::default(), |_| false, None, &tx);
+        assert!(!state.feed_changed);
+        state.reconsider(start + Duration::from_secs(5));
+        state.flush(start + Duration::from_secs(6), Default::default(), |loc| loc.thread_id.as_str() == "asker", None, &tx);
+        assert_eq!((state.feed.revision, state.feed.items.len()), (2, 1));
+        // Notifications off: an empty feed.
+        let off = NotificationSettings { enabled: false, ..Default::default() };
+        state.reconsider(start + Duration::from_secs(7));
+        state.flush(start + Duration::from_secs(8), off, |_| false, None, &tx);
+        assert!(state.feed.items.is_empty());
+    }
+
+    #[test]
     fn hiding_a_previously_visible_request_posts_once() {
         let key = (TargetId::new("a"), ThreadId::new("worker"));
         let item = serde_json::from_value(
@@ -472,14 +546,14 @@ mod tests {
         let (tx, _) = mpsc::unbounded_channel();
         let delay = Duration::from_secs(2);
         state.observe(&key, &item, now);
-        state.flush(now + delay, Default::default(), |_| true, &desktop, &tx);
+        state.flush(now + delay, Default::default(), |_| true, Some(&desktop), &tx);
         assert!(desktop.0.lock().unwrap().is_empty());
         state.reconsider(now + delay);
         state.flush(
             now + 2 * delay,
             Default::default(),
             |_| false,
-            &desktop,
+            Some(&desktop),
             &tx,
         );
         state.observe(&key, &item, now + 2 * delay);
@@ -488,7 +562,7 @@ mod tests {
             now + 3 * delay,
             Default::default(),
             |_| false,
-            &desktop,
+            Some(&desktop),
             &tx,
         );
         assert_eq!(desktop.0.lock().unwrap().len(), 1);
@@ -528,7 +602,7 @@ mod tests {
                 now + Duration::from_secs(2),
                 prefs,
                 |loc| loc.request_id.as_str() == "0",
-                &desktop,
+                Some(&desktop),
                 &tx,
             );
             let mut posted = desktop.0.lock().unwrap();
@@ -541,7 +615,7 @@ mod tests {
                     now + Duration::from_secs(3),
                     prefs,
                     |_| false,
-                    &desktop,
+                    Some(&desktop),
                     &tx,
                 );
                 while cancel.try_recv().is_ok() {}
@@ -575,7 +649,7 @@ mod tests {
                 now + Duration::from_secs(1),
                 settings,
                 |_| false,
-                &desktop,
+                Some(&desktop),
                 &tx,
             );
         }
@@ -591,7 +665,7 @@ mod tests {
             now + Duration::from_secs(2),
             settings,
             |r| r.thread_id == early.1,
-            &desktop,
+            Some(&desktop),
             &tx,
         );
         let mut posted = desktop.0.lock().unwrap();
@@ -603,7 +677,7 @@ mod tests {
             now + Duration::from_secs(3),
             settings,
             |_| false,
-            &desktop,
+            Some(&desktop),
             &tx,
         );
         assert!(posted[0].1.try_recv().is_err());
@@ -636,7 +710,7 @@ mod tests {
                 at + Duration::from_secs(1),
                 Default::default(),
                 |_| false,
-                &desktop,
+                Some(&desktop),
                 &tx,
             );
             let mut posted = desktop.0.lock().unwrap();
@@ -662,7 +736,7 @@ mod tests {
                 at + Duration::from_secs(2),
                 Default::default(),
                 |_| false,
-                &desktop,
+                Some(&desktop),
                 &tx,
             );
             assert!(
@@ -677,7 +751,7 @@ mod tests {
                 start + Duration::from_secs(60 + count as u64),
                 Default::default(),
                 |_| false,
-                &desktop,
+                Some(&desktop),
                 &tx,
             );
             let mut posted = desktop.0.lock().unwrap();

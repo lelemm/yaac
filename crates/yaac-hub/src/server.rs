@@ -1,4 +1,5 @@
-//! The attach server: a user-only local socket speaking [`yaac_protocol::attach`] in the same
+//! The attach server: a user-only local socket (and, when the user allows it, this host's
+//! Tailscale addresses: [`crate::tailnet`]) speaking [`yaac_protocol::attach`] in the same
 //! frames as the YAAC protocol. Several windows may attach at once; each is one task pair
 //! (reader, writer) feeding the hub core.
 //!
@@ -8,6 +9,7 @@
 //! cannot have taken the name first).
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -125,7 +127,6 @@ impl Listener {
 /// Accepts windows until the hub stops. Returns the writer tasks so the hub can let them
 /// flush their last messages before it exits.
 pub(crate) async fn serve(listener: &Listener, core: mpsc::UnboundedSender<CoreEvent>, writers: mpsc::UnboundedSender<JoinHandle<()>>) {
-    let mut next: ClientKey = 0;
     loop {
         let Ok((reader, writer)) = listener.accept().await else {
             // A failed pipe instance must not turn into a busy loop.
@@ -133,15 +134,39 @@ pub(crate) async fn serve(listener: &Listener, core: mpsc::UnboundedSender<CoreE
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             continue;
         };
-        next += 1;
-        let client = next;
-        let (tx, rx) = crate::attach_writer::channel();
-        if core.send(CoreEvent::Attached { client, tx }).is_err() {
+        if !attach(reader, writer, &core, &writers, std::future::pending()) {
             return;
         }
-        let _ = writers.send(tokio::spawn(write_loop(writer, rx)));
-        tokio::spawn(read_loop(client, reader, core.clone()));
     }
+}
+
+/// Window keys, unique within the process (the local socket and Tailscale share them).
+static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
+
+/// Starts serving one attached window: its reader and writer tasks. The window is detached
+/// when it closes the connection, sends garbage, or `stop` resolves. False when the core is
+/// gone.
+pub(crate) fn attach(
+    reader: impl AsyncRead + Send + Unpin + 'static,
+    writer: impl AsyncWrite + Send + Unpin + 'static,
+    core: &mpsc::UnboundedSender<CoreEvent>,
+    writers: &mpsc::UnboundedSender<JoinHandle<()>>,
+    stop: impl Future<Output = ()> + Send + 'static,
+) -> bool {
+    let client: ClientKey = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = crate::attach_writer::channel();
+    if core.send(CoreEvent::Attached { client, tx }).is_err() {
+        return false;
+    }
+    let _ = writers.send(tokio::spawn(write_loop(writer, rx)));
+    let core = core.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            () = read_loop(client, reader, core.clone()) => {}
+            () = stop => { let _ = core.send(CoreEvent::Detached { client }); }
+        }
+    });
+    true
 }
 
 async fn read_loop(client: ClientKey, mut reader: impl AsyncRead + Unpin, core: mpsc::UnboundedSender<CoreEvent>) {

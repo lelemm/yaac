@@ -199,6 +199,12 @@ pub struct HubConfig {
     pub ssh: Option<Arc<SshDefaults>>,
     /// Lists the installed WSL distros (`hub/wsl/distros`).
     pub wsl_distros: Arc<dyn WslLister>,
+    /// What Tailscale says about this host and its peers, for attaching over Tailscale
+    /// (the `tailscale` command line by default; tests supply a fake).
+    pub tailnet: Arc<dyn crate::tailnet::Tailnet>,
+    /// The port of the Tailscale attach listener ([`crate::tailnet::TAILSCALE_ATTACH_PORT`];
+    /// tests use `0`, any free port).
+    pub tailscale_port: u16,
 }
 
 impl std::fmt::Debug for HubConfig {
@@ -293,6 +299,8 @@ impl HubConfig {
             pool_threads: 2,
             ssh: None,
             wsl_distros: Arc::new(DefaultWslLister::default()),
+            tailnet: Arc::new(crate::tailnet::TailscaleCli::default()),
+            tailscale_port: crate::tailnet::TAILSCALE_ATTACH_PORT,
         }
     }
 }

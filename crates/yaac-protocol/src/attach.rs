@@ -29,12 +29,104 @@ pub struct RequestLocation {
 
 /// Destination for a desktop action. A rejected or uncertain answer opens the card with
 /// the original error so that no answer is silently retried.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationOpen {
     pub location: RequestLocation,
     pub item_id: crate::ItemId,
     pub error: Option<String>,
+}
+
+/// The hub's request reminder as a list, for a client that draws its own notifications (the
+/// Android client, P355): exactly the unseen requests the desktop reminder counts, oldest
+/// first, with the decisions the toast offers. Sent as `hub/notifications/requests` to clients
+/// that asked with `hub/notifications/subscribe`, and as that method's answer.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestFeed {
+    /// Changes whenever the list or an entry changes; an answer names the revision it saw.
+    pub revision: u64,
+    pub items: Vec<RequestFeedItem>,
+}
+
+/// One unseen request of a [`RequestFeed`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestFeedItem {
+    pub location: RequestLocation,
+    /// The request's journal item (where Open lands).
+    pub item_id: crate::ItemId,
+    /// The thread's title as the hub knows it (a worker that is no list row included).
+    pub worker: String,
+    /// `Approval`, `Question`, `Form`, `Login` or `Request`.
+    pub kind: String,
+    /// A short title (at most 64 characters).
+    pub title: String,
+    /// Present only for a tool approval with a plain allow and deny.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decisions: Option<FeedDecisions>,
+    /// When the request was made (Unix milliseconds).
+    pub created_ms: i64,
+}
+
+/// How the request reminder names a pending request: its kind (`Approval`, `Question`,
+/// `Form`, `Login`, `Request`), a one-line title of at most 64 characters, and the ids of a
+/// plain allow and deny when it offers both (an approval the toast and the feed can answer).
+/// Shared by the hub and the demo hub so both describe a request alike.
+pub fn reminder_entry(r: &crate::RequestItem) -> (&'static str, String, Option<(String, String)>) {
+    use crate::{DecisionKind, RequestBody};
+    let (kind, title, decisions) = match &r.body {
+        RequestBody::Approval(a) => {
+            let plain = |kind| a.decisions.iter().find(|d| d.kind == kind && !d.accepts_reason).map(|d| d.id.clone());
+            let title = if a.details.as_ref().and_then(|d| d["kind"].as_str()) == Some("writeStdin") {
+                "Send input to a running command".into()
+            } else if a.command.is_some() {
+                "Run a command".into()
+            } else {
+                a.title.clone()
+            };
+            ("Approval", title, plain(DecisionKind::Allow).zip(plain(DecisionKind::Deny)))
+        }
+        RequestBody::Form(form) if form.schema.as_ref().is_some_and(|s| s["url"].is_string()) => ("Login", form.message.clone(), None),
+        RequestBody::Form(f) => ("Form", f.message.clone(), None),
+        RequestBody::Question(q) => ("Question", q.questions.first().map_or_else(|| "Agent question".into(), |q| q.text.clone()), None),
+        _ => ("Request", "Input needed".into(), None),
+    };
+    (kind, one_line(&title, 64), decisions)
+}
+
+/// `value` on one line of at most `limit` characters (whitespace collapsed, `…` when cut).
+pub fn one_line(value: &str, limit: usize) -> String {
+    let mut words = value.split_whitespace();
+    let first = words.next().unwrap_or_default();
+    let mut chars = first.chars().chain(words.flat_map(|word| std::iter::once(' ').chain(word.chars())));
+    let mut short: String = chars.by_ref().take(limit).collect();
+    if chars.next().is_some() {
+        short.pop();
+        short.push('…');
+    }
+    short
+}
+
+/// The decision ids behind a feed entry's Allow once and Deny.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedDecisions {
+    pub allow: String,
+    pub deny: String,
+}
+
+/// `hub/notifications/respond`: what the user did on one feed entry. With no decision it is
+/// the toast's Open (the entry is marked seen; the client opens it). Refused when `revision`
+/// is not the current one, so a list that changed under the user's finger is never answered.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedRespondParams {
+    pub revision: u64,
+    pub location: RequestLocation,
+    /// `allow` or `deny`; absent for Open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
 }
 
 /// Hub-owned desktop notification preferences.
@@ -63,6 +155,13 @@ pub mod names {
     pub const NOTIFICATIONS_VISIBLE: &str = "hub/notifications/visible";
     /// Hub → window. Open a notification at its exact request.
     pub const NOTIFICATIONS_OPEN: &str = "hub/notifications/open";
+    /// Window → hub. Receive the request reminder's list ([`super::RequestFeed`]) now and
+    /// whenever it changes.
+    pub const NOTIFICATIONS_SUBSCRIBE: &str = "hub/notifications/subscribe";
+    /// Hub → window. The request reminder's list changed ([`super::RequestFeed`]).
+    pub const NOTIFICATIONS_REQUESTS: &str = "hub/notifications/requests";
+    /// Window → hub. Answer or open one feed entry ([`super::FeedRespondParams`]).
+    pub const NOTIFICATIONS_RESPOND: &str = "hub/notifications/respond";
     /// Terminal open on the selected target.
     pub const TERMINAL_OPEN: &str = "hub/terminal/open";
     /// Terminal attach on the selected target.
@@ -97,6 +196,10 @@ pub mod names {
     pub const BROWSER_CALL: &str = "hub/browser/call";
     /// Preview listener management.
     pub const PREVIEW_PROXY: &str = "hub/preview/proxy";
+    /// Window → hub. A tunnel to the target over this attach connection (P380).
+    pub const PREVIEW_TUNNEL: &str = "hub/preview/tunnel";
+    /// Either way. A tunnel over the attach connection closed.
+    pub const PREVIEW_TUNNEL_CLOSE: &str = "hub/preview/tunnelClose";
     /// Preview listener management.
     pub const PREVIEW_PROXY_CLOSE: &str = "hub/preview/proxyClose";
     /// Preview listener management.
@@ -500,6 +603,36 @@ pub struct AccountRateLimits {
 pub struct RateLimitsResult {
     /// One entry per account that reports at least one window.
     pub accounts: Vec<AccountRateLimits>,
+}
+
+/// `hub/preview/tunnel`: one TCP connection to `host:port` on the target, carried over this
+/// attach connection's data frames instead of a hub listener (the Android client, P380). The
+/// hub does one `tunnel/open` on the target and relays both ways under credit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewTunnelParams {
+    pub target: TargetId,
+    /// Resolved on the target; absent means `127.0.0.1`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    pub port: u16,
+    /// What the client may receive before it grants more with `stream/credit`.
+    pub initial_credit: u64,
+}
+
+/// `hub/preview/tunnel` result: the attach stream and what the client may send on it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewTunnelResult {
+    pub stream: crate::StreamId,
+    pub initial_credit: u64,
+}
+
+/// `hub/preview/tunnelClose`, either way: the tunnel on `stream` is closed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewTunnelCloseParams {
+    pub stream: crate::StreamId,
 }
 
 /// Start or reuse the target’s SOCKS5 proxy.

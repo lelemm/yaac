@@ -14,10 +14,11 @@ chrono = { version = "0.4.42", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { version = "1.43", default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros", "signal"] }
+tokio = { version = "1.43", default-features = false, features = ["rt", "net", "io-util", "time", "sync", "macros", "signal", "process"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 fs4 = { version = "0.12", default-features = false, features = ["sync"] }
 sha2 = "0.10"
+socket2 = { version = "0.6", features = ["all"] }
 base64 = "0.22"
 zeroize = { version = "1.8", default-features = false, features = ["alloc"] }
 

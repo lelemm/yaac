@@ -10,7 +10,7 @@ const OUTPUT_WINDOW: u64 = 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub(super) struct Relays {
-    next: u32,
+    pub(super) next: u32,
     pub(super) streams: HashMap<StreamId, Relay>,
 }
 
@@ -114,9 +114,11 @@ impl Core {
                 conn.session
                     .open_interactive_stream(opened.stream, opened.initial_credit)
                     .map_err(|e| err(ErrorCode::InternalError, e.to_string()))?;
+                // Unused by this hub's terminals and attach tunnels (`next_attach_stream`).
                 loop {
                     self.terminals.next = self.terminals.next.wrapping_add(1);
-                    if !self.terminals.streams.contains_key(&StreamId(self.terminals.next)) {
+                    let s = StreamId(self.terminals.next);
+                    if s.0 != 0 && !self.terminals.streams.contains_key(&s) && !self.attach_tunnels.streams.contains_key(&s) {
                         break;
                     }
                 }
@@ -203,7 +205,9 @@ impl Core {
             .and_then(|t| t.conn.as_ref())
             .and_then(|c| c.terminal_streams.get(&remote))
         else {
-            self.preview_data(target, remote, bytes);
+            if !self.attach_tunnel_data(target, remote, bytes.clone()) {
+                self.preview_data(target, remote, bytes);
+            }
             return;
         };
         if let Some(r) = self.terminals.streams.get_mut(&stream) {
