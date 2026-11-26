@@ -1,4 +1,4 @@
-# YAAC — Yet Another Agent Controller
+# YAAC - Yet Another Agent Controller
 
 **One window to drive Codex and Claude Code: on this machine, on your servers over SSH, and inside
 WSL. Your agents can message, start and wait for each other, across harnesses and machines.**
