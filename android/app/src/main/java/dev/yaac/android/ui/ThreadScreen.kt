@@ -1,0 +1,272 @@
+package dev.yaac.android.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.yaac.android.core.double
+import dev.yaac.android.core.flag
+import dev.yaac.android.core.get
+import dev.yaac.android.core.int
+import dev.yaac.android.core.objects
+import dev.yaac.android.core.scalar
+import dev.yaac.android.core.str
+import dev.yaac.android.core.text
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonElement
+
+/** The thread (A05, A07, A12): header, transcript, request cards, composer, control row, pill. */
+@Composable
+fun ThreadScreen(
+    shell: JsonElement?, transcript: JsonElement?, composer: JsonElement?, agents: JsonElement?, sidebar: JsonElement?, history: JsonElement?,
+    states: TranscriptStates, send: (String, Any?) -> Unit, onBack: () -> Unit, onNeeds: () -> Unit, showBack: Boolean = true,
+    browser: JsonElement? = null, side: SidePaneState? = null,
+) {
+    var addingSide by remember { mutableStateOf(false) }
+    val c = LocalYaac.current
+    val type = LocalType.current
+    var agentsOpen by remember { mutableStateOf(false) }
+    var threadMenu by remember { mutableStateOf(false) }
+    var headerSheet by remember { mutableStateOf(false) }
+    val threadId = transcript["threadId"].str
+    val rows = transcript["rows"].objects
+    val listState = remember(threadId) { androidx.compose.foundation.lazy.LazyListState(firstVisibleItemIndex = maxOf(0, rows.size - 1)) }
+    val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+
+    Column(Modifier.fillMaxSize().background(c.canvas).statusBarsPadding().imePadding()) {
+        Header(shell, onBack.takeIf { showBack }, onNeeds, send, { headerSheet = true },
+            onAddSide = { addingSide = true }.takeIf { browser != null && browser["tabs"].objects.isEmpty() }) { threadMenu = true }
+        // The side pane's tabs (Files, Terminal, Browser) beside the chat, at compact width.
+        if (browser != null) SideTabs(browser, shell["threadId"].str, send, addingSide) { addingSide = it }
+        Spacer(Modifier.height(4.dp))
+        if (browser != null && side != null && !showsChat(browser)) {
+            SideContent(browser, shell["threadId"].str, side, send, Modifier.weight(1f))
+        } else {
+        for (b in shell["banners"].objects) Banner(b, shell["threadId"].str, send)
+        shell["status"].obj()?.let { st ->
+            st["text"].text?.let { text ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).clip(RoundedCornerShape(6.dp)).background(c.input).padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    T(text, type.ui, c.failure, modifier = Modifier.weight(1f))
+                    TextAction("Dismiss") { send("shell.dismissStatus", mapOf("id" to (st["id"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toLongOrNull())) }
+                }
+            }
+        }
+
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            val height = maxHeight
+            if (rows.isEmpty()) {
+                T(if (transcript["loading"].flag()) "Loading…" else transcript["emptyText"].str, type.ui, c.muted, modifier = Modifier.align(Alignment.Center))
+            }
+            // The timeline (A07, A11f): a dash per prompt at the left edge when there are two or more.
+            val prompts = transcript["prompts"].objects
+            val timeline = prompts.size >= 2
+            if (timeline) Timeline(prompts, Modifier.align(Alignment.TopStart)) { id -> send("transcript.prompt", mapOf("id" to id, "threadId" to threadId)) }
+            LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = if (timeline) 22.dp else 14.dp, end = 14.dp, top = 4.dp, bottom = 12.dp)) {
+                items(rows, key = { it["id"].str }, contentType = { it["kind"].str }) { row ->
+                    TranscriptRow(row, threadId, states.of(threadId, row["id"].str)) { payload -> send("transcript.action", payload) }
+                }
+            }
+            // Follow the end while it is in view; page older and newer history at the edges.
+            val atEnd by remember(listState) { derivedStateOf { !listState.canScrollForward } }
+            var follow by remember(threadId) { mutableStateOf(true) }
+            // Only the user's own scrolling changes whether the end is followed; new rows do not.
+            LaunchedEffect(listState) {
+                snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) follow = !listState.canScrollForward }
+            }
+            val lastKey = rows.lastOrNull()?.hashCode()
+            // Rows already seen: everything while the end is followed.
+            var seenCount by remember(threadId) { mutableStateOf(rows.size) }
+            if (follow && seenCount != rows.size) seenCount = rows.size
+            LaunchedEffect(threadId, rows.size, lastKey) {
+                if (follow && rows.isNotEmpty()) listState.scrollToItem(rows.size - 1, Int.MAX_VALUE / 2)
+            }
+            val page = transcript["page"]
+            val first by remember(listState) { derivedStateOf { listState.firstVisibleItemIndex } }
+            var requested by remember(threadId) { mutableStateOf<String?>(null) }
+            LaunchedEffect(first, page) {
+                if (page["loading"].flag()) return@LaunchedEffect
+                val older = page["older"].text
+                if (first < 2 && older != null && older != requested) { requested = older; send("transcript.page", mapOf("id" to "older", "threadId" to threadId)) }
+                val newer = page["newer"].text
+                if (atEnd && newer != null && newer != requested) { requested = newer; send("transcript.page", mapOf("id" to "newer", "threadId" to threadId)) }
+            }
+            // The request cards on screen, so the hub does not notify them (as WPF reports them).
+            LaunchedEffect(listState, threadId) {
+                snapshotFlow {
+                    listState.layoutInfo.visibleItemsInfo.mapNotNull { info -> rows.getOrNull(info.index)?.get("requestLocation").obj() }
+                        .map { mapOf("target" to it["target"].str, "threadId" to it["threadId"].str, "requestId" to it["requestId"].str) }
+                }.distinctUntilChanged().collect { cards -> send("shell.visibleRequests", mapOf("cards" to cards)) }
+            }
+            androidx.compose.runtime.DisposableEffect(threadId) { onDispose { send("shell.visibleRequests", mapOf("cards" to emptyList<Any>())) } }
+            val focusToken = transcript["focusToken"].scalar
+            LaunchedEffect(focusToken) {
+                val id = transcript["focusId"].text ?: return@LaunchedEffect
+                val i = rows.indexOfFirst { it["id"].str == id || it["actionId"].str == id }
+                if (i >= 0) { follow = false; listState.animateScrollToItem(i) }
+            }
+            if (!atEnd && !follow && rows.isNotEmpty()) {
+                Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp).clip(RoundedCornerShape(16.dp)).background(c.raised)
+                    .clickable { scope.launch { follow = true; listState.scrollToItem(rows.size - 1, Int.MAX_VALUE / 2) } }.padding(horizontal = 14.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    val fresh = rows.size - seenCount
+                    T(when {
+                        transcript["historyAway"].flag() -> "Jump to latest"
+                        fresh > 0 -> "$fresh new ${if (fresh == 1) "message" else "messages"}"
+                        else -> "Latest"
+                    }, type.ui)
+                    Spacer(Modifier.width(6.dp)); Icon(YIcon.ArrowDown, c.text, size = 15.dp)
+                }
+            }
+            val fraction = (agents["pillPosition"].double ?: 0.5).toFloat().coerceIn(0.05f, 0.95f)
+            AgentsPill(agents, { agentsOpen = true }, Modifier.align(Alignment.TopEnd).padding(end = 6.dp).offset(y = height * fraction * 0.6f))
+        }
+        Box(Modifier.navigationBarsPadding()) { Composer(composer, send, history) }
+        }
+    }
+
+    if (headerSheet) HeaderSheet(shell, sidebar, send) { headerSheet = false }
+    if (agentsOpen) AgentsSheet(agents, send, { agentsOpen = false }) { agentsOpen = false }
+    if (threadMenu) {
+        val selected = sidebar["sections"].objects.flatMap { it["rows"].objects }.firstOrNull { it["id"].str == shell["threadId"].str }
+        fun places(key: String) = shell[key].objects.map { ActionItem("history:" + (it["steps"].int ?: 0), it["label"].str, true, it["detail"].text, false, null, emptyList(), false) }
+        val nav = listOf(
+            ActionItem("nav.forward", "Forward", shell["canForward"].flag(), null, false, null, emptyList(), false),
+            ActionItem("nav.backList", "Back history", places("back").isNotEmpty(), null, false, null, places("back"), false),
+            ActionItem("nav.forwardList", "Forward history", places("forward").isNotEmpty(), null, false, null, places("forward"), false),
+            ActionItem("", "", false, null, false, null, emptyList(), false),
+        )
+        ActionSheet(shell["title"].str, nav + ActionItem.list(selected?.get("actions")), { threadMenu = false }) { a ->
+            when (a.id) {
+                "nav.forward" -> send("shell.forward", null)
+                "copyId" -> clipboard.setText(AnnotatedString(selected?.get("copyId").text ?: shell["threadId"].str))
+                else -> if (a.id.startsWith("history:")) send("shell.history", mapOf("steps" to a.id.removePrefix("history:").toInt()))
+                    else send("sidebar.action", mapOf("action" to a.id, "ids" to listOf(shell["threadId"].str)))
+            }
+        }
+    }
+}
+
+@Composable
+private fun Header(shell: JsonElement?, onBack: (() -> Unit)?, onNeeds: () -> Unit, send: (String, Any?) -> Unit, onTitle: () -> Unit, onAddSide: (() -> Unit)? = null, onMenu: () -> Unit) {
+    val c = LocalYaac.current
+    val type = LocalType.current
+    Row(Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (onBack != null) IconButton(YIcon.Back, "Back to the list", onClick = onBack) else Spacer(Modifier.width(12.dp))
+        val mark = shell["mark"].text
+        if (shell["hasThread"].flag() && mark != null) {
+            StateMark(mark, size = 16.dp, fast = shell["fast"].flag(), ultrafast = shell["ultrafast"].flag())
+            Spacer(Modifier.width(8.dp))
+        }
+        Column(Modifier.weight(1f).clip(RoundedCornerShape(6.dp)).clickable(onClickLabel = "Thread details", onClick = onTitle).padding(vertical = 2.dp)) {
+            T(shell["title"].str, type.title.copy(fontSize = 19.sp), maxLines = 1)
+            val tag = shell["tag"].text
+            val location = shell["location"].text
+            // State · breadcrumb on one line, the breadcrumb ellipsised first.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                tag?.let { T(it, type.ui, toneColor(shell["tagTone"].text, c), maxLines = 1) }
+                if (tag != null && location != null) T(" · ", type.ui, c.muted)
+                location?.let { T(it, type.ui, c.muted, maxLines = 1, modifier = Modifier.weight(1f, fill = false)) }
+            }
+        }
+        NeedsButton(shell["needs"].int ?: 0, onNeeds)
+        if (onAddSide != null) IconButton(YIcon.CirclePlus, "Open beside the chat", strokeWidthIcon = 1.7f, onClick = onAddSide)
+        IconButton(YIcon.Command, "Commander") { send("commander.open", mapOf("card" to null, "threadId" to null)) }
+        IconButton(YIcon.More, "Thread menu", strokeWidthIcon = 3f, onClick = onMenu)
+    }
+    shell["links"].objects.takeIf { it.isNotEmpty() }?.let { links ->
+        Row(Modifier.padding(start = 52.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            for (l in links) {
+                val id = l["id"].text
+                T(l["label"].str, type.small, if (id == null) c.muted else c.text,
+                    modifier = if (id == null) Modifier.padding(end = 5.dp) else Modifier.clip(RoundedCornerShape(4.dp)).clickable { send("sidebar.open", mapOf("id" to id)) }.padding(horizontal = 4.dp, vertical = 2.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun IconButton(icon: YIcon, description: String, strokeWidthIcon: Float, onClick: () -> Unit) {
+    val c = LocalYaac.current
+    Box(Modifier.padding(0.dp).clip(RoundedCornerShape(6.dp)).clickable(onClickLabel = description, onClick = onClick).padding(11.dp), contentAlignment = Alignment.Center) {
+        Icon(icon, c.text, size = 22.dp, strokeWidth = strokeWidthIcon)
+    }
+}
+
+private fun toneColor(tone: String?, c: YaacColors) = when (tone) {
+    "needs", "needsYou", "needs you" -> c.warning
+    "failed" -> c.failure
+    "done" -> c.success
+    else -> c.muted
+}
+
+@Composable
+private fun Banner(b: kotlinx.serialization.json.JsonObject, threadId: String, send: (String, Any?) -> Unit) {
+    val c = LocalYaac.current
+    val type = LocalType.current
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).clip(RoundedCornerShape(6.dp)).background(c.input).padding(12.dp)) {
+        T(b["label"].str, type.ui)
+        b["detail"].text?.let { T(it, type.small, if (b["failed"].flag()) c.failure else c.muted) }
+        Row {
+            for (a in ActionItem.list(b["actions"])) {
+                if (a.primary) PrimaryButton(a.label, a.enabled) { send("header.action", mapOf("id" to a.id, "threadId" to threadId)) }
+                else TextAction(a.label, a.enabled) { send("header.action", mapOf("id" to a.id, "threadId" to threadId)) }
+            }
+        }
+    }
+}
+
+/** The prompt timeline: separate short dashes; tap jumps, touch and hold shows the prompt. */
+@Composable
+private fun Timeline(prompts: List<kotlinx.serialization.json.JsonObject>, modifier: Modifier, jump: (String) -> Unit) {
+    val c = LocalYaac.current
+    var held by remember { mutableStateOf<kotlinx.serialization.json.JsonObject?>(null) }
+    BoxWithConstraints(modifier.width(18.dp).fillMaxHeight().padding(vertical = 8.dp)) {
+        val step = maxHeight / prompts.size.coerceAtLeast(1)
+        // At most one dash per 10 dp; several prompts may share a dash.
+        val buckets = prompts.withIndex().groupBy { (i, _) -> ((step * i) / 10.dp).toInt() }
+        for ((bucket, items) in buckets) {
+            val p = items.last().value
+            Box(Modifier.offset(y = 10.dp * bucket).width(18.dp).height(10.dp)
+                .tapAndHold({ jump(p["id"].str) }, { held = p }), contentAlignment = Alignment.CenterStart) {
+                Box(Modifier.padding(start = 4.dp).width(9.dp).height(2.dp).background(c.muted))
+            }
+        }
+    }
+    held?.let { p -> ActionSheet(p["title"].str, listOf(ActionItem("jump", "Go to this prompt", true, p["stamp"].text, false, null, emptyList(), false)), { held = null }) { jump(p["id"].str) } }
+}
