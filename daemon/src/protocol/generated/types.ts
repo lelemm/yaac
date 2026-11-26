@@ -682,6 +682,88 @@ export interface BrowserTypeParams {
 export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
+ * Complete bundle staged on a target on demand.
+ */
+export interface CatalogSkill {
+  /**
+   * The entrypoint and supporting files.
+   */
+  files: CatalogSkillFile[];
+  /**
+   * Discovery metadata and version.
+   */
+  info: CatalogSkillInfo;
+}
+
+/**
+ * A regular file of a catalog skill, relative to the root of the bundle.
+ */
+export interface CatalogSkillFile {
+  /**
+   * The file's bytes.
+   */
+  dataBase64: string;
+  /**
+   * Whether to preserve the owner's execute bit on Unix.
+   */
+  executable?: boolean;
+  /**
+   * Portable relative path using slashes.
+   */
+  path: string;
+}
+
+/**
+ * One skill owned by the user's YAAC installation.
+ */
+export interface CatalogSkillInfo {
+  /**
+   * Offer it to the model for selection when relevant.
+   */
+  automatic: boolean;
+  /**
+   * The installer supplies this skill.
+   */
+  bundled: boolean;
+  /**
+   * A short description for discovery.
+   */
+  description: string;
+  /**
+   * Public identifier, such as `yaac.create-yaac-theme`.
+   */
+  id: string;
+  /**
+   * Immutable bundle revision.
+   */
+  revision: string;
+}
+
+/**
+ * Read either discovery metadata or one full skill from the hub.
+ */
+export interface CatalogSkillsParams {
+  /**
+   * Omit to list metadata. Include the catalog ID to retrieve its bundle.
+   */
+  id?: string | null;
+}
+
+/**
+ * Metadata listing or a single immutable bundle.
+ */
+export interface CatalogSkillsResult {
+  /**
+   * The bundle returned on retrieval.
+   */
+  skill?: CatalogSkill | null;
+  /**
+   * The metadata returned on list.
+   */
+  skills?: CatalogSkillInfo[];
+}
+
+/**
  * One check's (or policy's) state.
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.

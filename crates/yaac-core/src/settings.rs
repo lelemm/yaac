@@ -19,6 +19,8 @@ pub enum Page {
     Targets,
     /// Providers (17).
     Providers,
+    /// The installation-owned skill catalog.
+    Skills,
     /// Appearance.
     Appearance,
     /// Window: the tray and the renderer (D127, D128).
@@ -38,13 +40,14 @@ pub enum Page {
 
 impl Page {
     /// Every page, in navigation order.
-    pub const ALL: [Page; 10] = [Page::Targets, Page::Providers, Page::Approvals, Page::Appearance, Page::Window, Page::Keyboard, Page::Terminal, Page::Notifications, Page::Advanced, Page::About];
+    pub const ALL: [Page; 11] = [Page::Targets, Page::Providers, Page::Skills, Page::Approvals, Page::Appearance, Page::Window, Page::Keyboard, Page::Terminal, Page::Notifications, Page::Advanced, Page::About];
 
     /// The navigation label.
     pub fn label(self) -> &'static str {
         match self {
             Page::Targets => "Targets",
             Page::Providers => "Providers",
+            Page::Skills => "Skills",
             Page::Appearance => "Appearance",
             Page::Window => "Window",
             Page::Keyboard => "Keyboard",

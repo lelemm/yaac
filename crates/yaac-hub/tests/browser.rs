@@ -169,3 +169,28 @@ fn remote_theme_call_uses_the_attached_window_and_returns_its_palette_result() {
     assert_eq!(answer(&daemon, peer).unwrap(), result);
     hub.shutdown();
 }
+
+#[test]
+fn the_target_reads_catalog_metadata_and_bundles_even_after_the_window_closes() {
+    let home = Home::new();
+    let daemon = FakeDaemon::new("target");
+    home.fakes.add(&daemon);
+    let hub = home.start();
+    let window = hub.client();
+    let target = window.add_target("target").id;
+    window.wait_status(&target, ConnectionStatus::Connected);
+    let expected = window.call(attach::names::CATALOG_SKILLS, json!({})).unwrap();
+    assert_eq!(expected["skills"][0]["id"], "yaac.create-yaac-theme");
+    assert_eq!(expected["skills"][0]["automatic"], true);
+    drop(window);
+    let list = daemon.originate(methods::names::CATALOG_SKILLS, json!({})).unwrap();
+    assert_eq!(answer(&daemon, list).unwrap(), expected);
+    let load = daemon.originate(methods::names::CATALOG_SKILLS, json!({
+        "id": "yaac.create-yaac-theme"
+    })).unwrap();
+    let packet = answer(&daemon, load).unwrap();
+    assert_eq!(packet["skill"]["info"], expected["skills"][0]);
+    assert_eq!(packet["skill"]["files"][0]["path"], "SKILL.md");
+    assert!(packet["skill"]["files"][0]["dataBase64"].as_str().unwrap().len() > 100);
+    hub.shutdown();
+}

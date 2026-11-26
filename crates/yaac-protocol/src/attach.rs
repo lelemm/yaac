@@ -83,6 +83,14 @@ pub mod names {
     pub const TERMINAL_RENAME: &str = "hub/terminal/rename";
     /// Terminal renamed on the selected target (P343).
     pub const TERMINAL_RENAMED: &str = "hub/terminal/renamed";
+    /// Read the hub-owned skill catalog.
+    pub const CATALOG_SKILLS: &str = "hub/catalog/skills";
+    /// Create or edit a user-owned skill.
+    pub const CATALOG_SKILL_SAVE: &str = "hub/catalog/skill/save";
+    /// Remove a user-owned skill or override.
+    pub const CATALOG_SKILL_REMOVE: &str = "hub/catalog/skill/remove";
+    /// A catalog edit was committed.
+    pub const CATALOG_SKILLS_CHANGED: &str = "hub/catalog/skillsChanged";
     /// Hub → window theme request.
     pub const THEME_CALL: &str = "hub/theme/call";
     /// Hub → window browser request.

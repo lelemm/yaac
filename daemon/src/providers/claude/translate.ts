@@ -18,6 +18,7 @@ import { ASK_TOOL, normaliseQuestions } from "./questions.js";
 import { editDiff, editedPath } from "./diff.js";
 import { cleanToolOutput, isInterruptedMarker, promptItem, unwrapToolError, type PromptFlags } from "./markup.js";
 import { agentCallTitle, claudeAgentCall, meshToolOf } from "../agentcalls.js";
+import { catalogSkillId } from "../../mesh/tools.js";
 
 export { promptItem };
 
@@ -124,8 +125,11 @@ export function withResult(item: Item, result: Block, structured?: unknown, stor
     done = withAgentCall(done, str(name) ?? "", input, done.output ?? "", structured, failed) as typeof done;
   }
   // Confirmed by the tool's own successful result, never by the request alone.
-  if (!failed && done.input && str(done.input.name) === "Skill" && str(done.input.skill)) {
-    done = { ...done, title: "Skill loaded", skill: { name: str(done.input.skill)! } } as typeof done;
+  if (!failed && done.input) {
+    const name = str(done.input.name) ?? "";
+    const skill = name === "Skill" ? str(done.input.skill)
+      : meshToolOf(name) === "load_skill" ? catalogSkillId(done.input.id) : null;
+    if (skill) done = { ...done, title: "Skill loaded", skill: { name: skill } } as typeof done;
   }
   if (!failed && done.tool === "fileChange" && done.input) {
     const name = str(done.input.name) ?? "";

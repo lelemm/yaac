@@ -378,6 +378,10 @@ pub struct AppState {
     pub fork_previews: BTreeMap<(ThreadKey, InstanceId), ForkPreviewState>,
     /// `fs/list` answers, by target and directory asked for ("" for the home directory).
     pub fs_listings: BTreeMap<(TargetId, String), FsListingState>,
+    /// Metadata for the installation's skills, shared across composers.
+    pub catalog_skills: Vec<yaac_protocol::CatalogSkillInfo>,
+    /// Why the hub's skill index could not be read.
+    pub catalog_error: Option<String>,
     /// `skills/list` answers, by target, instance and folder (the composer's picker).
     pub skills: BTreeMap<crate::skills::SkillScopeKey, crate::skills::SkillsState>,
     /// An item to scroll to and highlight (navigation from a To/From link or Needs you).

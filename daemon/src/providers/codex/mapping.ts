@@ -23,6 +23,7 @@ import { userItem } from "../markup.js";
 import { base64Image, imagePath, isImageBlock, resultImages, type StoreToolImage } from "../tool-images.js";
 import { CODEX_MARKUP, textWithElements } from "./markup.js";
 import { agentCallTitle, codexAgentCall, meshAgentCall, MESH_SERVER } from "../agentcalls.js";
+import { catalogSkillId } from "../../mesh/tools.js";
 import { INTERACTIVE_SOURCES, type Model, type Thread, type ThreadItem, type ThreadTokenUsage, type TokenUsageBreakdown } from "./wire.js";
 
 // ── Small helpers ──────────────────────────────────────────────────────────────────────────
@@ -328,6 +329,10 @@ export function mapItem(raw: ThreadItem, turnId: string, final: ItemStatus, skil
       } as Item;
       // YAAC's own mesh tools (D150): read as communication with another agent.
       if (str(it.server) === MESH_SERVER) {
+        const skill = it.tool === "load_skill" ? catalogSkillId(obj(it.arguments).id) : null;
+        if (skill && status === "completed" && !it.error && obj(it.result).isError !== true) {
+          return { ...item, title: "Skill loaded", skill: { name: skill } } as Item;
+        }
         const done = status !== "inProgress";
         const call = meshAgentCall(str(it.tool) ?? "", obj(it.arguments), done ? output : null, status === "failed" || obj(it.result).isError === true);
         if (call) return { ...item, agentCall: call, title: agentCallTitle(call, false) } as Item;

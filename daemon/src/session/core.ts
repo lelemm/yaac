@@ -163,6 +163,8 @@ interface Snapshot {
  * (`this.mesh?.…`): the core works the same without a mesh.
  */
 export interface CoreMeshHooks {
+  /** Attach bounded catalog discovery to provider input, leaving the visible message intact. */
+  catalogInput?(threadKey: string, text: string, origin: TurnOrigin, continuation: boolean): Promise<string>;
   /** A turn began (journaled already). */
   turnStarted(rt: ThreadRuntime, turnId: TurnId, origin: TurnOrigin): void;
   /**
@@ -2104,7 +2106,7 @@ export class Core {
     });
   }
 
-  private buildInput(threadKey: string, parts: InputPart[], origin: TurnOrigin): ProviderInput {
+  private async buildInput(threadKey: string, parts: InputPart[], origin: TurnOrigin, continuation = false): Promise<ProviderInput> {
     const texts: string[] = [];
     const images: ProviderInput["images"] = [];
     const files: ProviderInput["files"] = [];
@@ -2122,6 +2124,7 @@ export class Core {
     if (files.length > 0) {
       text += `${text ? "\n\n" : ""}Attached files (on this machine):\n${files.map((f) => `- ${f.path}`).join("\n")}`;
     }
+    if (this.mesh?.catalogInput) text += await this.mesh.catalogInput(threadKey, texts.join("\n\n"), origin, continuation);
     return { parts, text, images, files, origin, uploadsDir: this.uploads.threadDir(threadKey) };
   }
 
@@ -2158,7 +2161,7 @@ export class Core {
       // The thread's id is not known until the harness has started it: its attachment
       // folder is keyed by this operation, for the thread's whole life.
       const uploadsKey = `start:${p.opId}`;
-      const input = this.buildInput(uploadsKey, parts, "user");
+      const input = await this.buildInput(uploadsKey, parts, "user");
       const trusted = await this.trustProjectFolder(instance, cwd);
       model = this.newThreadModel(instance, p.model);
       const advertisedModel = model ?? instance.descriptor.models?.find((m) => m.isDefault)?.id ?? null;
@@ -2629,7 +2632,8 @@ export class Core {
     const turn = rt.activeTurn;
     if (turn && (await this.canSteer(rt))) {
       if (rt.claimed || rt.activeTurn !== turn || rt.pendingRequestCount() > 0) throw notActed("turn_in_progress", "the recipient changed before the message could be delivered");
-      const input = this.buildInput(rt.uploadsKey, parts, origin);
+      const input = await this.buildInput(rt.uploadsKey, parts, origin, true);
+      if (rt.claimed || rt.activeTurn !== turn || rt.pendingRequestCount() > 0) throw notActed("turn_in_progress", "the recipient changed before the message could be delivered");
       if (extra.mesh) input.mesh = extra.mesh;
       await extra.beforeStart?.();
       try {
@@ -2682,7 +2686,7 @@ export class Core {
       const raw = await provider.control(rt.record.native).catch((): ExternalControl => ({ external: false, uncertain: true }));
       this.setExternal(rt, raw);
       if (blocked()) return null;
-      const input = this.buildInput(rt.uploadsKey, dispatch.input, "mesh");
+      const input = await this.buildInput(rt.uploadsKey, dispatch.input, "mesh", true);
       input.mesh = dispatch.mesh;
       const accepted = await provider.deliverPeer(rt.record.native, turn, input, () => !blocked() && beforeSend(), beforeFollowOn);
       if (accepted) {
@@ -2874,7 +2878,7 @@ export class Core {
       await work.beforeStart?.();
       const instance = this.registry.require(rt.record.instance);
       if (work.overrides.model !== this.modelOf(rt)) this.checkModelEnabled(instance, work.overrides.model);
-      const input = this.buildInput(rt.uploadsKey, work.parts, work.origin);
+      const input = await this.buildInput(rt.uploadsKey, work.parts, work.origin);
       if (work.mesh) input.mesh = work.mesh;
       rt.expectTurn = { origin: work.origin, parts: work.parts, driver: work.driver, ...(work.journalItems ? { items: work.journalItems } : {}), ...(work.opId ? { opId: work.opId } : {}) };
       const expected = rt.expectTurn;
@@ -3105,7 +3109,7 @@ export class Core {
     this.checkModelEnabled(instance, p.model);
     this.checkModel(instance.descriptor, p.model);
     const uploadsKey = `spawn:${randomId("s", 12)}`;
-    const input = this.buildInput(uploadsKey, p.parts, "mesh");
+    const input = await this.buildInput(uploadsKey, p.parts, "mesh");
     input.mesh = p.mesh;
     // Only a folder of a user's project: an agent's arbitrary path keeps the harness's behaviour.
     const trusted = await this.trustProjectFolder(instance, p.cwd);
@@ -3230,7 +3234,9 @@ export class Core {
       }
       const parts = this.validateParts(p.input, eff.imageInput);
       this.mesh?.humanInput?.(rt);
-      await provider.steer(rt.record.native, p.turnId, this.buildInput(rt.uploadsKey, parts, "user"));
+      const input = await this.buildInput(rt.uploadsKey, parts, "user", true);
+      if (rt.activeTurn !== p.turnId) throw notActed("turn_mismatch", `turn ${String(p.turnId)} is not the running turn`);
+      await provider.steer(rt.record.native, p.turnId, input);
       return {};
     });
   }
@@ -3548,7 +3554,7 @@ export class Core {
     fs.writeFileSync(file, rendered.markdown, { mode: 0o600 });
     const where = this.mesh?.whereIs?.(src);
     const meshTools = (dest.descriptor.capabilities ?? []).includes("meshTools");
-    const input = this.buildInput(uploadsKey, parts, "user");
+    const input = await this.buildInput(uploadsKey, parts, "user");
     input.text = preamble(file, { target: where?.target ?? "this machine", threadId: src.id, address: where?.address ?? null }, meshTools) + input.text;
     input.readable = [path.dirname(file), ...readable];
     const trusted = await this.trustProjectFolder(dest, src.record.cwd);

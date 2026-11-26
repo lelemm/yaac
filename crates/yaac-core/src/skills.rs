@@ -132,6 +132,8 @@ pub enum EntryKind {
     /// A command of YAAC's own, offered by the caller (for example `/compact` under the
     /// `compact` capability). Choosing it inserts `/name ` and leaves the rest to the caller.
     Builtin,
+    /// A skill from the installation-owned catalog.
+    Catalog,
 }
 
 /// One row of the picker.
@@ -158,10 +160,20 @@ impl Entry {
         Entry::builtin("compact", "Summarise the conversation to free context")
     }
 
+    /// What prefixes this choice when inserted.
+    pub fn sigil(&self, caps: SkillCaps) -> &'static str {
+        match self.kind {
+            EntryKind::Catalog => "",
+            EntryKind::Skill { .. } if caps.inline => "$",
+            _ => "/",
+        }
+    }
+
     /// Where it came from, for the row's small print ("project", "user").
     pub fn scope_word(&self) -> Option<&'static str> {
         match &self.kind {
             EntryKind::Builtin => Some("built in"),
+            EntryKind::Catalog => Some("YAAC catalog"),
             EntryKind::Skill { scope: Some(SkillScope::Project), .. } => Some("project"),
             EntryKind::Skill { scope: Some(SkillScope::User), .. } => Some("user"),
             EntryKind::Skill { scope: Some(SkillScope::System), .. } => Some("system"),
@@ -216,7 +228,7 @@ pub struct Edit {
 /// is picked: `$name ` when the provider names skills inline, `/name ` otherwise (and always for
 /// a built-in). No space is added when one already follows.
 pub fn insertion(text: &str, active: &Active, entry: &Entry, caps: SkillCaps) -> String {
-    let sigil = if caps.inline && entry.kind != EntryKind::Builtin { '$' } else { '/' };
+    let sigil = entry.sigil(caps);
     let rest = &text[active.end.min(text.len())..];
     let space = if rest.starts_with(char::is_whitespace) { "" } else { " " };
     format!("{sigil}{}{space}", entry.name)
@@ -446,10 +458,18 @@ pub fn view(state: &AppState, comp: &Composer, text: &str, cursor: usize, ps: &P
                 Some(SkillsState::Failed(e)) => (&[], Some(Status::Failed(e.clone())), None),
                 Some(SkillsState::Ready(list)) => (list, None, None),
             };
-            // Only `/` lists YAAC's own commands; `$` names skills.
-            let builtins: &[Entry] = if active.trigger == Trigger::Slash { &comp.builtins } else { &[] };
-            let rows = if status.is_none() { entries(skills, builtins, &active.query) } else { Vec::new() };
-            let status = status.unwrap_or(if rows.is_empty() { Status::Empty } else { Status::Rows });
+            // Catalog skills can be selected with either trigger. The selection inserts the
+            // same explicit ID for every harness, without asking it to resolve a native name.
+            let mut shared = if status.is_none() && active.trigger == Trigger::Slash {
+                comp.builtins.clone()
+            } else {
+                Vec::new()
+            };
+            shared.extend(state.catalog_skills.iter().map(|s| Entry {
+                name: s.id.clone(), description: s.description.clone(), hint: None, kind: EntryKind::Catalog,
+            }));
+            let rows = entries(skills, &shared, &active.query);
+            let status = if rows.is_empty() { status.unwrap_or(Status::Empty) } else { Status::Rows };
             let selected = ps.selected.min(rows.len().saturating_sub(1));
             View::Open { active, rows, status, selected, want }
         }

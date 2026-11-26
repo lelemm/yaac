@@ -7,6 +7,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace Yaac.WpfPreview.Views;
 
@@ -255,21 +256,21 @@ public partial class SettingsView
                 {
                     var name = Str(card, "name");
                     var stack = new StackPanel();
-                    var canvas = new Canvas { Width = 264, Height = 144, ClipToBounds = true };
-                    stack.Children.Add(canvas);
-                    foreach (var piece in Items(card, "scene"))
+                    var sample = new Grid { Width = 264, Height = 144, ClipToBounds = true };
+                    var status = new TextBlock
                     {
-                        var rgb = piece.GetProperty("color").GetUInt32();
-                        var brush = new SolidColorBrush(Color.FromRgb((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb));
-                        var text = Str(piece, "text");
-                        var height = piece.GetProperty("h").GetInt32();
-                        FrameworkElement child = text.Length > 0
-                            ? new TextBlock { Text = text, Foreground = brush, FontSize = height }
-                            : new Border { Width = piece.GetProperty("w").GetInt32(), Height = height, Background = brush };
-                        Canvas.SetLeft(child, piece.GetProperty("x").GetInt32());
-                        Canvas.SetTop(child, piece.GetProperty("y").GetInt32());
-                        canvas.Children.Add(child);
-                    }
+                        Text = Str(card, "status"), HorizontalAlignment = HorizontalAlignment.Center,
+                        VerticalAlignment = VerticalAlignment.Center, Foreground = owner.Tone("")
+                    };
+                    var image = new Image { Stretch = Stretch.Uniform };
+                    sample.Children.Add(status);
+                    sample.Children.Add(image);
+                    stack.Children.Add(sample);
+                    var path = Str(card, "imagePath");
+                    if (path.Length > 0)
+                        _ = LoadPreviewAsync(path, image, status);
+                    else if (Str(card, "error") is { Length: > 0 } error)
+                        sample.ToolTip = error;
                     stack.Children.Add(new TextBlock { Text = name, Margin = new Thickness(4) });
                     var button = new Button { Content = stack, Padding = new Thickness(1), Margin = new Thickness(0, 0, 8, 8),
                         BorderThickness = new Thickness(Flag(card, "selected") ? 2 : 1) };
@@ -280,6 +281,30 @@ public partial class SettingsView
             }
             Arrange(rowHost, rows, Items(section, "rows"), item => Str(item, "id"),
                 _ => new Row(owner), (row, item) => row.Apply(item), row => row.Root, row => row.Detach());
+        }
+
+        private static async System.Threading.Tasks.Task LoadPreviewAsync(string path, Image image, TextBlock status)
+        {
+            var source = await System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    using var stream = System.IO.File.OpenRead(path);
+                    var bitmap = new BitmapImage();
+                    bitmap.BeginInit();
+                    bitmap.StreamSource = stream;
+                    bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                    bitmap.EndInit();
+                    bitmap.Freeze();
+                    return bitmap;
+                }
+                catch (Exception error) when (error is System.IO.IOException or NotSupportedException)
+                {
+                    return null;
+                }
+            });
+            image.Source = source;
+            status.Text = source is null ? "Preview unavailable" : "";
         }
 
         public void ClearSecrets()

@@ -166,6 +166,7 @@ pub(super) fn view(app: &YaacApp, target: Option<&TargetId>) -> Value {
     let content = match page {
         Page::Targets => targets(app),
         Page::Providers => providers(app, target),
+        Page::Skills => crate::catalog_settings::wpf_view(app),
         Page::Appearance => appearance(app),
         Page::Window => window(app),
         Page::Terminal => terminal_settings(app),
@@ -837,9 +838,8 @@ fn appearance(app: &YaacApp) -> Value {
         ] },
         {"id":"custom-themes","title":"Custom themes","detail":app.theme_import.error,
          "actions":[action("appearance.importTheme","Import JSON…",true)],
-         "cards":app.ui.themes.entries.values().map(|t| json!({"name":t.name,
-            "selected":app.ui.theme == ThemeChoice::Custom && app.ui.themes.selected == t.name,
-            "scene":crate::custom_themes::scene(&crate::theme::Palette::custom(t))})).collect::<Vec<_>>()}
+         "cards":app.ui.themes.entries.values().map(|t| app.theme_import.wpf_card(t,
+            app.ui.theme == ThemeChoice::Custom && app.ui.themes.selected == t.name)).collect::<Vec<_>>()}
     ] })
 }
 
@@ -1132,6 +1132,9 @@ pub(super) fn command(
     }
     let id = string(p, "id");
     let values = &p["values"];
+    if id.starts_with("catalog.") {
+        return crate::catalog_settings::wpf_command(app, id, values);
+    }
     let action = match id {
         "first.start" if first_run::first_run(&app.client.state).can_start => Action::StartFirstThread,
         "first.wsl" if app.host_windows => {

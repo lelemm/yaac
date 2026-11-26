@@ -406,6 +406,9 @@ catalogue! {
         /// Terminal rename: the user's name for a terminal (P343).
         TerminalRename = "terminal/rename" as TERMINAL_RENAME:
             t::TerminalRenameParams => t::Empty, HostToDaemon, request Control, response Control;
+        /// Fetch YAAC's hub-owned skill metadata or a selected bundle.
+        CatalogSkills = "catalog/skills" as CATALOG_SKILLS:
+            t::CatalogSkillsParams => t::CatalogSkillsResult, DaemonToHost, request Control, response Bulk;
         /// Manage window appearance.
         ThemeCall = "theme/call" as THEME_CALL:
             t::ThemeCallParams => t::ThemeCallResult, DaemonToHost, request Control, response Bulk;

@@ -93,7 +93,7 @@ test(`the stdio bridge (${label}) serves the yaac tools as the ticket's thread, 
     assert.equal(unknown.error.code, -32601);
     const list = await mcp.request("tools/list", {});
     const names = list.result.tools.map((x: any) => x.name).sort();
-    assert.deepEqual(names, ["browser_click", "browser_close", "browser_console", "browser_eval", "browser_list", "browser_navigate", "browser_network", "browser_open", "browser_press", "browser_screenshot", "browser_snapshot", "browser_type", "find_thread", "import_theme", "list_models", "list_targets", "list_themes", "list_threads", "notify_when_done", "pr_checks", "pr_comments", "pr_create", "pr_get", "pr_list", "pr_reply", "pr_rerun_checks", "present_artifact", "preview_theme", "read_thread", "select_theme", "send_message", "spawn_thread", "stop_all", "stop_thread", "wait", "whoami"]);
+    assert.deepEqual(names, ["browser_click", "browser_close", "browser_console", "browser_eval", "browser_list", "browser_navigate", "browser_network", "browser_open", "browser_press", "browser_screenshot", "browser_snapshot", "browser_type", "find_thread", "import_theme", "list_models", "list_skills", "list_targets", "list_themes", "list_threads", "load_skill", "notify_when_done", "pr_checks", "pr_comments", "pr_create", "pr_get", "pr_list", "pr_reply", "pr_rerun_checks", "present_artifact", "preview_theme", "read_thread", "select_theme", "send_message", "spawn_thread", "stop_all", "stop_thread", "wait", "whoami"]);
     const who = await mcp.request("tools/call", { name: "whoami", arguments: {}, _meta: { threadId: native } });
     assert.equal(who.result.isError, undefined);
     assert.match(who.result.content[0].text, new RegExp(`Address: local/${threadId}`));
@@ -105,6 +105,27 @@ test(`the stdio bridge (${label}) serves the yaac tools as the ticket's thread, 
     assert.equal(offline.result.isError, true);
     assert.match(offline.result.content[0].text, /No YAAC window is open/);
     await c.request("mesh/roster", { selfId: "target", selfName: "test", targets: [] });
+    const skillInfo = { id: "yaac.create-yaac-theme", description: "Create a theme.", automatic: true, revision: "bundled1", bundled: true };
+    const skillFile = "# Theme skill";
+    for (const [name, args] of [["list_skills", {}], ["load_skill", { id: skillInfo.id }]] as const) {
+      const start = c.messages.length;
+      const pending = browser(name, args);
+      const req = await until(() => c.messages.slice(start).find(m => m.type === "request" && m.method === "catalog/skills"));
+      assert.ok(req.type === "request");
+      assert.deepEqual(req.params, args);
+      const result = name === "list_skills" ? { skills: [skillInfo] } : {
+        skill: { info: skillInfo, files: [{ path: "SKILL.md", dataBase64: Buffer.from(skillFile).toString("base64") }] },
+      };
+      c.sendRaw(encodeMessageFrame(encodeMessage({ type: "response", id: req.id, result })));
+      const response = (await pending).result;
+      assert.equal(response.isError, undefined);
+      assert.match(response.content[0].text, /yaac\.create-yaac-theme/);
+      if (name === "load_skill") {
+        const match = response.content[0].text.match(/Read (".*?") and follow/);
+        assert.ok(match);
+        assert.equal(fs.readFileSync(JSON.parse(match[1]), "utf8"), skillFile);
+      }
+    }
     const spoof = await browser("browser_list", { threadId: "other" });
     assert.equal(spoof.result.isError, true);
     const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jQp8AAAAASUVORK5CYII=";

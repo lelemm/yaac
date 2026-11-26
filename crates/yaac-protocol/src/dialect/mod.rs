@@ -404,6 +404,8 @@ pub enum Inbound {
 pub enum PeerRequest {
     /// Inspect a thread’s browser.
     BrowserCall(crate::BrowserCallParams),
+    /// Read the hub's skill catalog.
+    CatalogSkills(crate::CatalogSkillsParams),
     /// Window appearance operation.
     ThemeCall(crate::ThemeCallParams),
     /// `mesh/relay`.

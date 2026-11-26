@@ -938,6 +938,26 @@ thread. Local, SSH and WSL callers use the same route.
 
 Give `import_theme` either `json` text or a worktree-relative `path` on the caller's target.
 Import adds to the UI host library. Use `overwrite: true` to replace an existing entry.
-`select_theme` applies a listed name. `preview_theme` takes a listed name and publishes a PNG
-in the originating chat without changing the selection. Models with confirmed image input
-also receive the PNG as an MCP image result. See [the theme JSON format](07-ui.md#appearance--custom-themes).
+`select_theme` applies a listed name. `preview_theme` captures the themed demo window
+offscreen and publishes the full PNG in the originating chat. Models with confirmed
+image input also receive the full PNG as an MCP image result. See [the theme JSON format](07-ui.md#appearance--custom-themes).
+
+
+### Loading catalog skills
+
+`list_skills` reads metadata from the hub. `load_skill` takes an exact ID such as
+`yaac.create-yaac-theme`. The daemon at the calling thread’s target retrieves the bundle
+over `catalog/skills` on the existing connection. It extracts a complete revision beneath that
+thread’s private system-temp directory and returns the local `SKILL.md` path. The harness can
+read scripts and references beside that file using its normal permissions. Activation itself
+writes files without running them.
+
+The first load of a skill in a turn pins its revision for the rest of the turn. Completed loads
+stay in the thread directory until it is removed, so later turns can still refer to their files.
+The hub provides metadata and bundles with the window closed. If the hub is offline, already
+staged paths remain usable. The next load needs the hub to choose or validate a revision.
+
+YAAC sends a short discovery hint with provider input. Automatic entries are eligible when
+relevant. Manual entries require an ID in the current user input. The YAAC picker uses the
+same ID on every harness. The MCP tools expose the catalog independently of native skill
+folders or native slash commands.

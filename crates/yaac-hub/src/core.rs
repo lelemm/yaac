@@ -87,6 +87,10 @@ pub(crate) enum CoreEvent {
     Rebuilt { target: TargetId, thread: ThreadId, position: JournalPosition },
     /// Answer a window's request.
     Reply { client: ClientKey, id: RpcId, outcome: Result<Value, ErrorObject> },
+    /// A catalog reply, with an optional notice for the other windows.
+    CatalogWindow { client: ClientKey, id: RpcId, outcome: Result<Value, ErrorObject>, changed: bool },
+    /// A catalog response to the originating target.
+    CatalogTarget { source: TargetId, generation: u64, id: RpcId, outcome: Result<Value, ErrorObject> },
     /// Send to every attached window.
     Broadcast(Message),
     /// A `mesh/relay` is stored (or recognised as a duplicate).
@@ -589,6 +593,15 @@ impl Core {
             CoreEvent::Committed { target, thread, events, position } => self.on_committed(&target, thread, events, position),
             CoreEvent::Rebuilt { target, thread, position } => self.on_rebuilt(&target, &thread, position),
             CoreEvent::Reply { client, id, outcome } => self.reply(client, id, outcome),
+            CoreEvent::CatalogWindow { client, id, outcome, changed } => {
+                if changed && outcome.is_ok() {
+                    self.broadcast(&Message::notification(attach::names::CATALOG_SKILLS_CHANGED, json!({})));
+                }
+                self.reply(client, id, outcome);
+            }
+            CoreEvent::CatalogTarget { source, generation, id, outcome } => {
+                self.respond_peer(&source, generation, id, names::CATALOG_SKILLS, outcome);
+            }
             CoreEvent::Broadcast(message) => self.broadcast(&message),
             CoreEvent::RelayAccepted { source, generation, peer_id, message, accepted, in_flight } => {
                 self.in_flight = in_flight;
@@ -864,6 +877,37 @@ impl Core {
                 Ok(p) => {
                     self.store_reply(client, id, move |s| {
                         s.cache.projects(&p.id).map(|projects| json!({ "projects": projects })).map_err(|e| e.to_string())
+                    });
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            attach::names::CATALOG_SKILLS => match parse::<yaac_protocol::CatalogSkillsParams>(params) {
+                Ok(p) => {
+                    self.store_reply(client, id, move |s| s.drafts.catalog(&p).map(|r| to_value(&r)));
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            attach::names::CATALOG_SKILL_SAVE => match parse::<yaac_protocol::CatalogSkillSave>(params) {
+                Ok(p) => {
+                    let id = id.clone();
+                    self.worker.submit(move |s| {
+                        let outcome = s.drafts.save_catalog_skill(p).map(|r| to_value(&r))
+                            .map_err(|e| err(ErrorCode::InvalidParams, e));
+                        Some(CoreEvent::CatalogWindow { client, id, outcome, changed: true })
+                    });
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
+            attach::names::CATALOG_SKILL_REMOVE => match parse::<yaac_protocol::CatalogSkillRemove>(params) {
+                Ok(p) => {
+                    let id = id.clone();
+                    self.worker.submit(move |s| {
+                        let outcome = s.drafts.remove_catalog_skill(&p).map(|()| json!({}))
+                            .map_err(|e| err(ErrorCode::InvalidParams, e));
+                        Some(CoreEvent::CatalogWindow { client, id, outcome, changed: true })
                     });
                     None
                 }
@@ -2700,6 +2744,14 @@ impl Core {
             }
             PeerRequest::MeshQuery(params) => self.route_query(source, generation, peer_id, &params),
             PeerRequest::MeshUsage(params) => self.route_usage(source, generation, peer_id, &params),
+            PeerRequest::CatalogSkills(params) => {
+                let source = source.clone();
+                self.worker.submit(move |s| {
+                    let outcome = s.drafts.catalog(&params).map(|r| to_value(&r))
+                        .map_err(|e| err(ErrorCode::InvalidParams, e));
+                    Some(CoreEvent::CatalogTarget { source, generation, id: peer_id, outcome })
+                });
+            }
             PeerRequest::ThemeCall(params) => self.route_theme(source, generation, peer_id, params),
             PeerRequest::BrowserCall(params) => self.route_browser(source, generation, peer_id, params),
             PeerRequest::Other { .. } => {} // the session already answered method_not_found

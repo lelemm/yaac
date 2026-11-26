@@ -152,7 +152,7 @@ pub(crate) fn show(ui: &mut egui::Ui, picker: &mut Picker, id: egui::Id, comp: &
 }
 
 fn row(ui: &mut egui::Ui, p: &Palette, e: &Entry, comp: &Composer, selected: bool) -> bool {
-    let sigil = if comp.caps.inline && e.kind != skills::EntryKind::Builtin { '$' } else { '/' };
+    let sigil = e.sigil(comp.caps);
     let w = ui.available_width().max(300.0);
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 36.0), egui::Sense::click());
     if selected || resp.hovered() {
@@ -249,7 +249,7 @@ impl WpfSkills {
                     Status::Empty => ("empty", if active.query.is_empty() { "No skills here." } else { "No skill matches." }.to_owned()),
                     Status::Failed(why) => ("failed", format!("Skills could not be listed: {why}")),
                 };
-                let sigil_of = |e: &Entry| if comp.caps.inline && e.kind != skills::EntryKind::Builtin { '$' } else { '/' };
+                let sigil_of = |e: &Entry| e.sigil(comp.caps);
                 let rows: Vec<_> = rows
                     .iter()
                     .map(|e| {

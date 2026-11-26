@@ -13,7 +13,7 @@ use crate::widgets;
 /// folds back to the pill (screen 21).
 pub(crate) const NARROW: f32 = 1000.0;
 
-pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, actions: &mut Vec<Action>, _frame: &mut eframe::Frame) -> bool {
+pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, actions: &mut Vec<Action>) -> bool {
     app.ui.visible_requests.clear();
     let p = app.p;
     // Fixed regions, split by hand so the layout is exact: sidebar | thread | docked panel.

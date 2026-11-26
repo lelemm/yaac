@@ -24,12 +24,17 @@ public partial class App : Application
         SystemParameters.StaticPropertyChanged += SystemThemeChanged;
         var piped = args.Args.Contains("--pipe");
         var scenario = Option("--demo");
-        var display = new MainWindow(piped ? Controller.FromPipe : () => new Controller(
-                Option("--controller") ?? Path.Combine(AppContext.BaseDirectory, "yaac.exe"),
-                scenario == "fresh" ? "fresh" : "fleet", Option("--theme") ?? "dark"),
-            demo: !piped || scenario is not null, tray: args.Args.Contains("--tray"));
+        Func<Controller> connect = piped ? Controller.FromPipe : () => new Controller(
+            Option("--controller") ?? Path.Combine(AppContext.BaseDirectory, "yaac.exe"),
+            scenario == "fresh" ? "fresh" : "fleet", Option("--theme") ?? "dark");
+        var target = Option("--capture-ui");
+        var display = new MainWindow(connect, demo: !piped || scenario is not null,
+            tray: target is null && args.Args.Contains("--tray"));
         MainWindow = display;
-        display.Show();
+        if (target is null)
+            display.Show();
+        else
+            _ = display.CaptureDemoAsync(connect, target);
     }
     protected override void OnExit(ExitEventArgs args)
     {

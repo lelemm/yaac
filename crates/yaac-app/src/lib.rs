@@ -55,6 +55,7 @@ mod pr_ui;
 mod screenshot;
 mod seltext;
 mod settings;
+mod catalog_settings;
 mod troubleshoot;
 mod strip;
 mod shell;
@@ -63,6 +64,7 @@ mod skills_ui;
 mod terminal;
 mod terminal_ui;
 mod theme;
+mod theme_capture;
 mod custom_themes;
 mod thread;
 mod timeline;
@@ -126,6 +128,8 @@ pub fn run(args: &[String]) -> ExitCode {
     let mut demo = None;
     let mut theme = theme::ThemeChoice::System;
     let mut shots_dir = None;
+    let mut theme_file = None;
+    let mut capture_file = None;
     let mut only: Option<Vec<String>> = None;
     let mut renderer_arg: Option<String> = None;
     let mut host_windows = cfg!(windows) || std::env::var("YAAC_DEBUG_HOST").is_ok_and(|v| v == "windows");
@@ -155,6 +159,14 @@ pub fn run(args: &[String]) -> ExitCode {
                 host_windows = args.get(i + 1).is_some_and(|h| h == "windows");
                 i += 1;
             }
+            "--theme-file" => {
+                theme_file = args.get(i + 1).map(std::path::PathBuf::from);
+                i += 1;
+            }
+            "--capture-ui" => {
+                capture_file = args.get(i + 1).map(std::path::PathBuf::from);
+                i += 1;
+            }
             "--screenshots" => {
                 shots_dir = args.get(i + 1).map(std::path::PathBuf::from);
                 i += 1;
@@ -168,12 +180,21 @@ pub fn run(args: &[String]) -> ExitCode {
                 i += 1;
             }
             "--help" | "-h" => {
-                println!("yaac [hub] | yaac quit [--wait-for <exe>] | yaac autostart on|off|status|sync [--start] | yaac remove-data | yaac --demo [fleet|fresh] [--theme dark|light|system] [--host windows|linux] [--screenshots <dir> [--only 01,02]] [--renderer auto|dx12|vulkan|wgpu-gl|glow|software|windows-wpf]");
+                println!("yaac [hub] | yaac quit [--wait-for <exe>] | yaac autostart on|off|status|sync [--start] | yaac remove-data | yaac --demo [fleet|fresh] [--theme dark|light|system] [--host windows|linux] [--screenshots <dir> [--only 01,02]] [--capture-ui <png> [--theme-file <json>]] [--renderer auto|dx12|vulkan|wgpu-gl|glow|software|windows-wpf]");
                 return ExitCode::SUCCESS;
             }
             other => eprintln!("ignoring unknown argument {other}"),
         }
         i += 1;
+    }
+    if let Some(output) = capture_file {
+        if demo.is_none() {
+            eprintln!("YAAC: --capture-ui requires --demo");
+            return ExitCode::FAILURE;
+        }
+        return theme_capture::capture_cli(
+            &output, theme_file.as_deref(), theme, renderer_arg.as_deref(),
+        );
     }
     let shots = shots_dir.map(|d| {
         let _ = std::fs::create_dir_all(&d);

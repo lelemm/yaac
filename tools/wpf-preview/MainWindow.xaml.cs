@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Shell;
 using Yaac.WpfPreview.Views;
 
@@ -12,6 +13,8 @@ namespace Yaac.WpfPreview;
 public partial class MainWindow : Window
 {
     private Controller? controller;
+    private string? captureFile;
+    private bool captureQueued;
     private WindowTray? tray;
     private bool trayOnClose;
     private bool quitting;
@@ -160,6 +163,50 @@ public partial class MainWindow : Window
         }
     }
 
+    internal async Task CaptureDemoAsync(Func<Controller> connect, string file)
+    {
+        captureFile = file;
+        await StartAsync(connect);
+        if (!closed && !captureQueued)
+            FailCapture("The controller closed before returning a demo frame.");
+    }
+
+    private void SaveDemoCapture()
+    {
+        try
+        {
+            var root = (FrameworkElement)Content;
+            // The ordinary window's template supplies this backing brush.
+            if (root is Panel panel)
+                panel.Background = Background;
+            var dimensions = new Size(1280, 800);
+            root.Measure(dimensions);
+            root.Arrange(new Rect(dimensions));
+            root.UpdateLayout();
+            // The workspace's responsive layout also reacts to its first arranged size.
+            UpdatePaneLayout();
+            root.UpdateLayout();
+            var bitmap = new RenderTargetBitmap(1280, 800, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(root);
+            var png = new PngBitmapEncoder();
+            png.Frames.Add(BitmapFrame.Create(bitmap));
+            using (var file = System.IO.File.Create(captureFile!))
+                png.Save(file);
+            Application.Current.Shutdown();
+        }
+        catch (Exception error)
+        {
+            FailCapture(error.ToString());
+        }
+    }
+
+    private void FailCapture(string error)
+    {
+        captureQueued = true;
+        try { System.IO.File.WriteAllText(captureFile + ".error.txt", error); }
+        finally { Application.Current.Shutdown(1); }
+    }
+
     private async Task StartAsync(Func<Controller> connect)
     {
         try
@@ -205,6 +252,11 @@ public partial class MainWindow : Window
         }
         catch (Exception error) when (!closed)
         {
+            if (captureFile is not null)
+            {
+                FailCapture(error.ToString());
+                return;
+            }
             SetLocalStatus($"Controller disconnected · {error.Message}");
             Workspace.IsEnabled = false;
             SettingsPane.IsEnabled = false;
@@ -302,6 +354,11 @@ public partial class MainWindow : Window
                 SidebarPane.FocusSearch();
             }
             Send("shell.focusSearchDone");
+        }
+        if (captureFile is not null && !captureQueued && hasShell && views.TryGetProperty("transcript", out _))
+        {
+            captureQueued = true;
+            Dispatcher.InvokeAsync(SaveDemoCapture, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
         if (views.TryGetProperty("sidebar", out _) || views.TryGetProperty("agents", out _)
             || views.TryGetProperty("shell", out _) || views.TryGetProperty("transcript", out _) || views.TryGetProperty("transcriptPreview", out _))

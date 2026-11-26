@@ -7,6 +7,9 @@
 //! *blobs*, one file each in `draft-blobs/` beside the database, described by a row. They go
 //! when their draft is deleted (the message was sent, or the user emptied it).
 
+#[path = "catalog.rs"]
+mod catalog;
+
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -72,6 +75,8 @@ const MIGRATIONS: &[&str] = &[
     ",
     // 5: confirmed orchestration mode changes that have never been sent.
     "CREATE TABLE pending_modes (target TEXT NOT NULL, thread TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(target, thread));",
+    // 6: skills owned by this user, retained across cache clears.
+    "CREATE TABLE catalog_skills (id TEXT PRIMARY KEY, info TEXT NOT NULL, files TEXT NOT NULL);",
 ];
 
 /// A draft-store error.

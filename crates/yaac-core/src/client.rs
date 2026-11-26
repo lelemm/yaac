@@ -162,6 +162,8 @@ enum Call {
     Ssh(RpcId),
     Preview(RpcId),
     Troubleshoot(RpcId),
+    CatalogList,
+    CatalogEdit(RpcId),
     /// `hub/ssh/records`.
     SshRecords,
     /// `hub/wsl/distros`.
@@ -249,6 +251,7 @@ pub struct Client {
     /// Preview proxy, forward and discovery results for the window.
     preview_replies: Vec<(RpcId, Result<Value, String>)>,
     troubleshoot_reply: Option<(RpcId, Result<yaac_protocol::TroubleshootResult, String>)>,
+    catalog_reply: Option<(RpcId, Result<Value, String>)>,
     terminal_notes: Vec<(String, Value)>,
     /// Agent browser calls from the hub (`hub/browser/call`), not yet taken by the window.
     pub theme_calls: Vec<(RpcId, yaac_protocol::ThemeCallParams)>,
@@ -324,6 +327,7 @@ impl Client {
             notification_open: Default::default(),
             preview_replies: Vec::new(),
             troubleshoot_reply: None,
+            catalog_reply: None,
             terminal_notes: Vec::new(),
             theme_calls: Vec::new(),
             browser_calls: Vec::new(),
@@ -443,6 +447,37 @@ impl Client {
     /// Collect the last diagnosis response without waiting for the hub.
     pub fn take_troubleshoot_reply(&mut self) -> Option<(RpcId, Result<yaac_protocol::TroubleshootResult, String>)> {
         self.troubleshoot_reply.take()
+    }
+
+    /// Read the hub-owned skill index.
+    pub fn catalog_list(&mut self) {
+        if !self.pending.values().any(|c| *c == Call::CatalogList) {
+            self.request(attach::names::CATALOG_SKILLS, json!({}), Call::CatalogList);
+        }
+    }
+
+    /// Load one skill to edit on the window.
+    pub fn catalog_edit(&mut self, id: &str) -> RpcId {
+        self.catalog_request(attach::names::CATALOG_SKILLS, json!({ "id": id }))
+    }
+
+    /// Save the user's latest edit against the revision they opened.
+    pub fn catalog_save(&mut self, skill: yaac_protocol::CatalogSkillSave) -> RpcId {
+        self.catalog_request(attach::names::CATALOG_SKILL_SAVE, json!(skill))
+    }
+
+    /// Remove a user-owned entry.
+    pub fn catalog_remove(&mut self, skill: yaac_protocol::CatalogSkillRemove) -> RpcId {
+        self.catalog_request(attach::names::CATALOG_SKILL_REMOVE, json!(skill))
+    }
+
+    fn catalog_request(&mut self, method: &str, params: Value) -> RpcId {
+        self.request(method, params, Call::CatalogEdit(RpcId::Number(self.next_id)))
+    }
+
+    /// Collect an edit reply without blocking the window.
+    pub fn take_catalog_reply(&mut self) -> Option<(RpcId, Result<Value, String>)> {
+        self.catalog_reply.take()
     }
 
     /// Fetch one bounded chunk of an image stored on a connected target.
@@ -587,6 +622,7 @@ impl Client {
                     self.set_showing(keys);
                 }
                 self.request(crate::attachments::names::DRAFTS_LIST, json!({}), Call::DraftsList);
+                self.catalog_list();
                 self.load_rate_limits();
                 self.load_ssh_records();
                 let ids: Vec<(TargetId, bool)> =
@@ -745,6 +781,13 @@ impl Client {
                 self.mode_reply(batch, root, &key, offline, false);
             }
             Call::Respond { .. } | Call::Ignore | Call::UpdateDaemon(_) => {}
+            Call::CatalogList => {
+                if let Ok(r) = serde_json::from_value::<yaac_protocol::CatalogSkillsResult>(result) {
+                    self.state.catalog_skills = r.skills;
+                    self.state.catalog_error = None;
+                }
+            }
+            Call::CatalogEdit(id) => self.catalog_reply = Some((id, Ok(result))),
             Call::Preview(id) => self.preview_replies.push((id, Ok(result))),
             Call::Troubleshoot(id) => {
                 let report = serde_json::from_value(result).map_err(|_| "The target returned an invalid diagnostic report.".to_owned());
@@ -1230,6 +1273,8 @@ impl Client {
                     self.error(None, format!("The harness home was not changed: {}", error.message));
                 }
             }
+            Call::CatalogList => self.state.catalog_error = Some(error.message.clone()),
+            Call::CatalogEdit(id) => self.catalog_reply = Some((id, Err(error.message.clone()))),
             Call::Preview(id) => self.preview_replies.push((id, Err(error.message.clone()))),
             Call::Troubleshoot(id) => self.troubleshoot_reply = Some((id, Err(error.message.clone()))),
             Call::Ssh(id) => self.ssh_replies.push((id, Err(error.clone()))),
@@ -1253,6 +1298,7 @@ impl Client {
             return;
         }
         match method {
+            attach::names::CATALOG_SKILLS_CHANGED => self.catalog_list(),
             "hub/approvals/settings" => {
                 if let Ok(models) = serde_json::from_value(params) { self.state.hub.explanations = models; }
             }

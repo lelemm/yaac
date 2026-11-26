@@ -8,6 +8,12 @@ import { BROWSER_TOOLS } from "./browser.js";
 import { PR_INSTRUCTIONS, PR_TOOLS } from "../forge/tools.js";
 
 export const SERVER_NAME = "yaac";
+
+/** The public, qualified ID of a user-owned catalog entry. */
+export function catalogSkillId(value: unknown): string | null {
+  return typeof value === "string" && value.length <= 69 && /^yaac\.[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)
+    ? value : null;
+}
 /** `wait` never blocks longer than this (N24). */
 export const WAIT_MAX_SECS = 45;
 /** The tool-call timeout configured for the server (N24). */
@@ -23,6 +29,7 @@ export const SERVER_INSTRUCTIONS = [
   "You are running inside YAAC, which connects coding agents in different harnesses (Codex, Claude Code) and on different machines.",
   WORKER_INSTRUCTIONS,
   ARTIFACT_INSTRUCTIONS,
+  "YAAC catalog skills use the yaac.<skill-name> namespace. Use list_skills to discover their descriptions and load_skill to use a relevant automatic skill or one the user asked for explicitly.",
   "These tools let you work with those other agents:",
   "- To message an agent the user mentions (\"the Claude thread\", \"thread 0198a1c4 on devbox\"): find it with `list_threads` (your own collaborators) or `find_thread` (any machine, by id or by words of its title), then `send_message`.",
   "- To hand work to new agents (\"spawn three Opus workers\"): `list_models` to see which providers and models exist, then `spawn_thread` once per worker, then `wait` for their results.",
@@ -47,9 +54,11 @@ const int = (description: string, minimum?: number, maximum?: number) => ({ type
 const states = ["idle", "running", "needsAttention", "failed", "waiting", "done"];
 
 const MESH_TOOLS: ToolDef[] = [
+  { name: "list_skills", description: "List the YAAC installation's skill catalog with descriptions and activation modes.", inputSchema: { type: "object", properties: {}, additionalProperties: false } },
+  { name: "load_skill", description: "Stage a relevant automatic or explicitly requested catalog skill on this target, and return the local SKILL.md path. Read that file before doing the skill's work.", inputSchema: { type: "object", properties: { id: str("Exact catalog ID, including yaac. prefix.") }, required: ["id"], additionalProperties: false } },
   { name: "list_themes", description: "List the YAAC window's themes and current selection.", inputSchema: {type:"object",properties:{},additionalProperties:false} },
   { name: "select_theme", description: "Apply a theme in the YAAC window immediately.", inputSchema: {type:"object",properties:{name:str("Exact name from list_themes.")},required:["name"],additionalProperties:false} },
-  { name: "preview_theme", description: "Show a PNG sample in this conversation without changing appearance.", inputSchema: {type:"object",properties:{name:str("Exact name from list_themes.")},required:["name"],additionalProperties:false} },
+  { name: "preview_theme", description: "Capture the full YAAC demo window with this theme and show the PNG in this conversation.", inputSchema: {type:"object",properties:{name:str("Exact name from list_themes.")},required:["name"],additionalProperties:false} },
   { name: "import_theme", description: "Import a theme into the window's library. Give either JSON text or a JSON file in this thread's worktree (16 KiB maximum).", inputSchema: {type:"object",properties:{json:str("Theme JSON text."),path:str("Worktree-relative theme file."),overwrite:bool("Explicitly replace a theme with the same name.")},additionalProperties:false} },
   {
     name: "present_artifact",

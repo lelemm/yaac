@@ -495,6 +495,10 @@ harness confirmed it, never from the request alone:
   `skills/list` of the instance nothing is recognised (P313). No direct "skill used" signal
   exists in the schema, so this is the only evidence.
 
+- YAAC catalog: a successful `yaac.load_skill` result shows **Skill loaded** with the
+  qualified `yaac.<name>` ID in either renderer. This records staging on the target. The
+  harness reads the loaded file separately.
+
 ### Listing a harness's own sub-agents is a capability
 
 **Decided (D151); Proposed (P190–P194).** A provider that reports **`subagentThreads`** lists

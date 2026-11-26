@@ -3,14 +3,20 @@ use super::{
     app::YaacApp,
     theme::{Palette, ThemeChoice},
 };
+use crate::theme_capture::{Capture, ThemeInput};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use eframe::egui::{self, Color32};
 use serde_json::{Value, json};
 use std::{
+    collections::VecDeque,
     io::Read,
     sync::{Arc, mpsc},
 };
-use yaac_core::themes::{Base, MAX_BYTES, Theme};
+use yaac_core::{
+    display::Renderer,
+    settings::Page,
+    themes::{Base, MAX_BYTES, Theme},
+};
 use yaac_protocol::{
     ThemeAction, ThemeCallResult,
     rpc::{ErrorCode, ErrorObject, RpcId},
@@ -46,84 +52,153 @@ impl Palette {
     }
 }
 
-#[derive(serde::Serialize)]
-pub(crate) struct Piece {
-    x: u32,
-    y: u32,
-    w: u32,
-    h: u32,
-    color: u32,
-    text: &'static str,
-}
-const WIDTH: u32 = 264;
-const HEIGHT: u32 = 144;
-pub(crate) fn scene(p: &Palette) -> Vec<Piece> {
-    let piece = |x, y, w, h, c: Color32, text| Piece {
-        x,
-        y,
-        w,
-        h,
-        color: u32::from_be_bytes([0, c.r(), c.g(), c.b()]),
-        text,
-    };
-    vec![
-        piece(0, 0, WIDTH, HEIGHT, p.bg, ""),
-        piece(0, 0, 70, HEIGHT, p.panel, ""),
-        piece(70, 0, 1, HEIGHT, p.border, ""),
-        piece(5, 8, 0, 12, p.text, "Threads"),
-        piece(3, 30, 64, 20, p.selected, ""),
-        piece(8, 33, 0, 11, p.text, "Workspace"),
-        piece(8, 58, 0, 11, p.text2, "Review"),
-        piece(81, 8, 0, 13, p.text, "Workspace"),
-        piece(71, 29, 193, 1, p.border, ""),
-        piece(119, 39, 136, 23, p.user_bg, ""),
-        piece(127, 43, 0, 12, p.text, "Run the tests"),
-        piece(81, 77, 5, 5, p.done, ""),
-        piece(92, 71, 0, 12, p.text, "All tests passed."),
-        piece(80, 111, 175, 24, p.faint, ""),
-        piece(88, 116, 0, 11, p.text2, "Message…"),
-        piece(211, 114, 40, 18, p.primary, ""),
-        piece(217, 116, 0, 11, p.on_primary, "Send"),
-    ]
+struct Cached {
+    capture: Capture,
+    texture: Option<egui::TextureHandle>,
 }
 
-fn color(rgb: u32) -> Color32 {
-    let [_, r, g, b] = rgb.to_be_bytes();
-    Color32::from_rgb(r, g, b)
-}
-
-pub(crate) fn card(ui: &mut egui::Ui, t: &Theme) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(WIDTH as f32, HEIGHT as f32),
-        egui::Sense::click(),
-    );
-    let painter = ui.painter_at(rect);
-    for piece in scene(&Palette::custom(t)) {
-        let pos = rect.min + egui::vec2(piece.x as f32, piece.y as f32);
-        if piece.text.is_empty() {
-            painter.rect_filled(
-                egui::Rect::from_min_size(pos, egui::vec2(piece.w as f32, piece.h as f32)),
-                0,
-                color(piece.color),
-            );
-        } else {
-            painter.text(
-                pos,
-                egui::Align2::LEFT_TOP,
-                piece.text,
-                egui::FontId::proportional(piece.h as f32),
-                color(piece.color),
-            );
-        }
-    }
-    response
-}
+type Completed = Result<Cached, String>;
+type CaptureJob = (String, mpsc::Receiver<Result<Capture, String>>);
 
 #[derive(Default)]
 pub(crate) struct Import {
     file: Option<mpsc::Receiver<Result<Option<Theme>, String>>>,
-    previews: Vec<(RpcId, mpsc::Receiver<Result<ThemeCallResult, String>>)>,
+    previews: Vec<(RpcId, String, ThemeCallResult)>,
+    queued: VecDeque<(String, ThemeInput, bool)>,
+    job: Option<CaptureJob>,
+    cache: VecDeque<(String, Completed)>,
     pub(crate) error: Option<String>,
+}
+
+fn key(input: &ThemeInput, wpf: bool) -> String {
+    let theme = match input {
+        ThemeInput::BuiltIn(choice) => choice.id().to_owned(),
+        ThemeInput::Custom(theme) => serde_json::to_string(theme).expect("serializable theme"),
+    };
+    format!("{}:{theme}", if wpf { "wpf" } else { "egui" })
+}
+
+impl Import {
+    fn cached(&self, key: &str) -> Option<&Completed> {
+        self.cache
+            .iter()
+            .find_map(|(name, preview)| (name == key).then_some(preview))
+    }
+
+    fn schedule(&mut self, input: ThemeInput, wpf: bool, priority: bool) -> String {
+        let key = key(&input, wpf);
+        if self.cached(&key).is_some()
+            || self
+                .job
+                .as_ref()
+                .is_some_and(|(running, _)| *running == key)
+        {
+            return key;
+        }
+        if priority {
+            self.queued.retain(|(queued, _, _)| *queued != key);
+            self.queued.push_front((key.clone(), input, wpf));
+        } else if !self.queued.iter().any(|(queued, _, _)| *queued == key) {
+            self.queued.push_back((key.clone(), input, wpf));
+        }
+        key
+    }
+
+    fn pump(&mut self, ctx: &egui::Context) {
+        if let Some((name, rx)) = self.job.take() {
+            match rx.try_recv() {
+                Err(mpsc::TryRecvError::Empty) => self.job = Some((name, rx)),
+                result => {
+                    let completed = result
+                        .unwrap_or_else(|_| Err("Preview renderer stopped.".into()))
+                        .map(|capture| {
+                            let texture = name.starts_with("egui:").then(|| {
+                                ctx.load_texture(
+                                    "theme screenshot",
+                                    capture.image.clone(),
+                                    egui::TextureOptions::LINEAR,
+                                )
+                            });
+                            Cached { capture, texture }
+                        });
+                    self.cache.push_back((name, completed));
+                }
+            }
+        }
+        if self.job.is_none()
+            && let Some((name, input, wpf)) = self.queued.pop_front()
+        {
+            let (tx, rx) = mpsc::channel();
+            let ctx = ctx.clone();
+            self.job = Some((name, rx));
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::theme_capture::generate(input, wpf));
+                ctx.request_repaint();
+            });
+        }
+    }
+
+    fn prune(&mut self, catalog: &yaac_core::themes::Catalog, wpf: bool) {
+        let valid: Vec<_> = catalog
+            .entries
+            .values()
+            .map(|theme| key(&ThemeInput::Custom(theme.clone()), wpf))
+            .collect();
+        let keep = |name: &String| {
+            name.ends_with(":dark")
+                || name.ends_with(":light")
+                || valid.contains(name)
+                || self.previews.iter().any(|(_, request, _)| request == name)
+        };
+        self.cache.retain(|(name, _)| keep(name));
+        self.queued.retain(|(name, _, _)| keep(name));
+    }
+
+    pub(crate) fn card(&self, ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
+        let key = key(&ThemeInput::Custom(theme.clone()), false);
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(264.0, 144.0), egui::Sense::click());
+        if let Some(Ok(cached)) = self.cached(&key)
+            && let Some(texture) = &cached.texture
+        {
+            ui.painter().image(
+                texture.id(),
+                rect,
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        } else {
+            let pending = self.cached(&key).is_none();
+            ui.painter()
+                .rect_filled(rect, 4.0, ui.visuals().faint_bg_color);
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                if pending {
+                    "Rendering preview…"
+                } else {
+                    "Preview unavailable"
+                },
+                egui::FontId::proportional(13.0),
+                ui.visuals().weak_text_color(),
+            );
+            if let Some(Err(error)) = self.cached(&key) {
+                return response.on_hover_text(error);
+            }
+        }
+        response
+    }
+
+    pub(crate) fn wpf_card(&self, theme: &Theme, selected: bool) -> Value {
+        let key = key(&ThemeInput::Custom(theme.clone()), true);
+        let preview = self.cached(&key);
+        json!({
+            "name": theme.name, "selected": selected,
+            "imagePath": preview.and_then(|p| p.as_ref().ok()).map(|p| p.capture.tile.to_string_lossy()),
+            "status": match preview { Some(Ok(_)) => "", Some(Err(_)) => "Preview unavailable", None => "Rendering preview…" },
+            "error": preview.and_then(|p| p.as_ref().err()),
+        })
+    }
 }
 
 impl YaacApp {
@@ -202,35 +277,33 @@ impl YaacApp {
             ThemeAction::Import(p) => Arc::make_mut(&mut self.ui.themes)
                 .import(Theme::parse(p.json.as_bytes())?, p.overwrite)?,
             ThemeAction::Preview(p) => {
-                let palette = match p.name.as_str() {
-                    "dark" => Palette::DARK,
-                    "light" => Palette::LIGHT,
-                    "system" => {
+                let input = match p.name.as_str() {
+                    "dark" => ThemeInput::BuiltIn(ThemeChoice::Dark),
+                    "light" => ThemeInput::BuiltIn(ThemeChoice::Light),
+                    "system" => ThemeInput::BuiltIn(
                         if self.ctx.system_theme() == Some(egui::Theme::Light) {
-                            Palette::LIGHT
+                            ThemeChoice::Light
                         } else {
-                            Palette::DARK
-                        }
-                    }
-                    name => {
-                        Palette::custom(self.ui.themes.entries.get(name).ok_or("Unknown theme.")?)
-                    }
+                            ThemeChoice::Dark
+                        },
+                    ),
+                    name => ThemeInput::Custom(
+                        self.ui
+                            .themes
+                            .entries
+                            .get(name)
+                            .cloned()
+                            .ok_or("Unknown theme.")?,
+                    ),
                 };
-                if self.theme_import.previews.len() >= 4 {
+                if self.theme_import.previews.len() >= 2 {
                     return Err("Theme preview is busy.".into());
                 }
-                let (tx, rx) = mpsc::channel();
-                self.theme_import.previews.push((id.clone(), rx));
-                let ctx = self.ctx.clone();
-                let mut result = self.theme_result();
-                std::thread::spawn(move || {
-                    let image = preview_png(&palette).map(|bytes| {
-                        result.png = Some(STANDARD.encode(bytes));
-                        result
-                    });
-                    let _ = tx.send(image);
-                    ctx.request_repaint();
-                });
+                let wpf = self.display.in_use.renderer == Renderer::WindowsWpf;
+                let key = self.theme_import.schedule(input, wpf, true);
+                self.theme_import
+                    .previews
+                    .push((id.clone(), key, self.theme_result()));
                 return Ok(None);
             }
             ThemeAction::Unknown(_) => return Err("Unknown theme operation.".into()),
@@ -272,101 +345,30 @@ impl YaacApp {
                 Err(message) => self.client.answer_window_call(id, reply(Err(message))),
             }
         }
-        self.theme_import
-            .previews
-            .retain(|(id, rx)| match rx.try_recv() {
-                Err(mpsc::TryRecvError::Empty) => true,
-                result => {
-                    self.client.answer_window_call(
-                        id.clone(),
-                        reply(result.unwrap_or_else(|_| Err("Preview renderer stopped.".into()))),
-                    );
-                    false
-                }
-            });
-    }
-}
-
-#[derive(Default)]
-struct Outline(Vec<zeno::Command>);
-impl ttf_parser::OutlineBuilder for Outline {
-    fn move_to(&mut self, x: f32, y: f32) {
-        self.0.push(zeno::Command::MoveTo((x, y).into()));
-    }
-    fn line_to(&mut self, x: f32, y: f32) {
-        self.0.push(zeno::Command::LineTo((x, y).into()));
-    }
-    fn quad_to(&mut self, x: f32, y: f32, x1: f32, y1: f32) {
-        self.0
-            .push(zeno::Command::QuadTo((x, y).into(), (x1, y1).into()));
-    }
-    fn curve_to(&mut self, x: f32, y: f32, x1: f32, y1: f32, x2: f32, y2: f32) {
-        self.0.push(zeno::Command::CurveTo(
-            (x, y).into(),
-            (x1, y1).into(),
-            (x2, y2).into(),
-        ));
-    }
-    fn close(&mut self) {
-        self.0.push(zeno::Command::Close);
-    }
-}
-
-fn preview_png(p: &Palette) -> Result<Vec<u8>, String> {
-    let face = ttf_parser::Face::parse(
-        include_bytes!("../assets/fonts/UbuntuSansNerdFontPropo-Regular.ttf"),
-        0,
-    )
-    .map_err(|e| e.to_string())?;
-    let mut image = image::RgbImage::new(WIDTH * 2, HEIGHT * 2);
-    for piece in scene(p) {
-        let [_, r, g, b] = piece.color.to_be_bytes();
-        let ink = [r, g, b];
-        if piece.text.is_empty() {
-            for y in piece.y * 2..(piece.y + piece.h) * 2 {
-                for x in piece.x * 2..(piece.x + piece.w) * 2 {
-                    image.put_pixel(x, y, image::Rgb(ink));
-                }
+        let wpf = self.display.in_use.renderer == Renderer::WindowsWpf;
+        self.theme_import.prune(&self.ui.themes, wpf);
+        if self.ui.settings && self.ui.settings_page == Page::Appearance {
+            for theme in self.ui.themes.entries.values() {
+                self.theme_import
+                    .schedule(ThemeInput::Custom(theme.clone()), wpf, false);
             }
-            continue;
         }
-        let scale = (piece.h * 2) as f32 / f32::from(face.units_per_em());
-        let mut pen = (piece.x * 2) as f32;
-        for c in piece.text.chars() {
-            let Some(id) = face.glyph_index(c) else {
-                continue;
-            };
-            let mut path = Outline::default();
-            if face.outline_glyph(id, &mut path).is_some() {
-                let transform = zeno::Transform::scale(scale, -scale)
-                    .then_translate(pen, ((piece.y + piece.h) * 2) as f32);
-                let (mask, pos) = zeno::Mask::new(path.0.as_slice())
-                    .transform(Some(transform))
-                    .render();
-                for y in 0..pos.height {
-                    for x in 0..pos.width {
-                        let (xx, yy) = (pos.left + x as i32, pos.top + y as i32);
-                        if xx < 0 || yy < 0 {
-                            continue;
-                        }
-                        if let Some(pixel) = image.get_pixel_mut_checked(xx as u32, yy as u32) {
-                            let alpha = u32::from(mask[(y * pos.width + x) as usize]);
-                            for (bg, fg) in pixel.0.iter_mut().zip(ink) {
-                                *bg = ((u32::from(*bg) * (255 - alpha) + u32::from(fg) * alpha)
-                                    / 255) as u8;
-                            }
-                        }
+        self.theme_import.pump(&self.ctx);
+        for (id, key, mut result) in std::mem::take(&mut self.theme_import.previews) {
+            if let Some(capture) = self.theme_import.cached(&key) {
+                let outcome = match capture {
+                    Ok(cached) => {
+                        result.png = Some(STANDARD.encode(&cached.capture.full));
+                        Ok(result)
                     }
-                }
+                    Err(error) => Err(error.clone()),
+                };
+                self.client.answer_window_call(id, reply(outcome));
+            } else {
+                self.theme_import.previews.push((id, key, result));
             }
-            pen += f32::from(face.glyph_hor_advance(id).unwrap_or(0)) * scale;
         }
     }
-    let mut data = std::io::Cursor::new(Vec::new());
-    image
-        .write_to(&mut data, image::ImageFormat::Png)
-        .map_err(|e| e.to_string())?;
-    Ok(data.into_inner())
 }
 
 #[cfg(test)]
@@ -392,7 +394,7 @@ mod tests {
         crate::app::tests::window_frame(&ctx, &mut app, Default::default());
         let p = app.p;
         assert!(!p.dark);
-        assert_eq!(p.bg, color(0xcceedd));
+        assert_eq!(p.bg, Color32::from_rgb(0xcc, 0xee, 0xdd));
         assert_eq!(p.wpf_colors()["YaacCanvas"], 0xcceedd);
         assert_eq!(crate::theme::visuals(&p).panel_fill, p.bg);
         let mut loaded = UiPrefs::default();
@@ -421,27 +423,15 @@ mod tests {
         )
         .unwrap();
         crate::app::tests::window_frame(&ctx, &mut app, Default::default());
-        assert_eq!(ctx.global_style().visuals.panel_fill, color(0x123456));
+        assert_eq!(
+            ctx.global_style().visuals.panel_fill,
+            Color32::from_rgb(0x12, 0x34, 0x56)
+        );
         app.handle_theme(&id, action(json!({"kind":"preview","name":"dark"})))
             .unwrap();
-        let (_, rx) = app.theme_import.previews.pop().unwrap();
-        let result = rx
-            .recv_timeout(std::time::Duration::from_secs(15))
-            .unwrap()
-            .unwrap();
         assert_eq!(app.theme_result().selected, "Oasis");
-        let png = STANDARD.decode(result.png.unwrap()).unwrap();
-        let img = image::load_from_memory(&png).unwrap().to_rgb8();
-        assert_eq!(img.dimensions(), (WIDTH * 2, HEIGHT * 2));
-        assert_eq!(img.get_pixel(0, 0).0, Palette::DARK.panel.to_array()[..3]);
-        assert!(
-            img.rows()
-                .skip(16)
-                .take(24)
-                .flatten()
-                .take(5000)
-                .any(|px| px[0] > 128)
-        );
+        assert_eq!(app.theme_import.previews.len(), 1);
+        assert_eq!(app.theme_import.queued.len(), 1);
     }
     #[test]
     fn validation_rejects_invalid_theme_files() {

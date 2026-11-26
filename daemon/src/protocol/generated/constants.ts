@@ -8,6 +8,8 @@ import type {
   ApprovalExplainResult,
   BrowserCallParams,
   BrowserCallResult,
+  CatalogSkillsParams,
+  CatalogSkillsResult,
   CommandLogsParams,
   CommandLogsResult,
   CommandStopParams,
@@ -226,6 +228,7 @@ export const METHODS = {
   TERMINAL_CLOSE: "terminal/close",
   TERMINAL_LIST: "terminal/list",
   TERMINAL_RENAME: "terminal/rename",
+  CATALOG_SKILLS: "catalog/skills",
   THEME_CALL: "theme/call",
   BROWSER_CALL: "browser/call",
   TUNNEL_OPEN: "tunnel/open",
@@ -439,6 +442,8 @@ export interface RequestMap {
   "terminal/list": { params: Empty; result: TerminalListResult };
   /** Terminal rename: the user's name for a terminal (P343). */
   "terminal/rename": { params: TerminalRenameParams; result: Empty };
+  /** Fetch YAAC's hub-owned skill metadata or a selected bundle. */
+  "catalog/skills": { params: CatalogSkillsParams; result: CatalogSkillsResult };
   /** Manage window appearance. */
   "theme/call": { params: ThemeCallParams; result: ThemeCallResult };
   /** Inspect the calling thread’s browser. */
@@ -614,6 +619,7 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "terminal/close": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/rename": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "catalog/skills": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "theme/call": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "browser/call": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "tunnel/open": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },

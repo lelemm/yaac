@@ -200,6 +200,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
                 match app.ui.settings_page {
                     Page::Targets => targets(ui, app, actions),
                     Page::Providers => providers(ui, app, actions),
+                    Page::Skills => crate::catalog_settings::show(ui, app),
                     Page::Appearance => appearance(ui, app, actions),
                     Page::Window => window(ui, app),
                     Page::Keyboard => crate::keyboard::page(ui, app),
@@ -1353,7 +1354,7 @@ fn appearance(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
         for theme in app.ui.themes.entries.values() {
             ui.allocate_ui_with_layout(egui::vec2(264.0, 170.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                 let selected = app.ui.theme == ThemeChoice::Custom && app.ui.themes.selected == theme.name;
-                let preview = crate::custom_themes::card(ui, theme);
+                let preview = app.theme_import.card(ui, theme);
                 let label = ui.selectable_label(selected, &theme.name);
                 if preview.clicked() || label.clicked() {
                     picked = Some(theme.name.clone());

@@ -243,3 +243,10 @@ rasterization. Additional scripts such as Han use available host fonts during co
 For a Linux development checkout run `npm ci --prefix tools/mermaid`. Put Node 22 on PATH and
 install Chromium, or set `YAAC_MERMAID_BROWSER` to its executable. Run
 `node --test tools/mermaid/render.test.cjs` to check themes, exports and parser errors.
+
+
+## Bundled skills
+
+The YAAC binary in the installer includes `yaac.create-yaac-theme`. The hub offers it in
+Settings → Skills on the first run. Skills added by the user and overrides of the bundled
+entry persist in the hub’s durable data across updates.

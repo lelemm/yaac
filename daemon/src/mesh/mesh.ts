@@ -6,6 +6,8 @@
 // with no hub (D73). Only work that involves another target goes through the hub, over the
 // one connection the hub holds to this target.
 
+import { Catalog } from "./catalog.js";
+import type { CatalogSkillsResult } from "../protocol/generated/types.js";
 import { PR_TOOL_NAMES } from "../forge/tools.js";
 import { PrToolError, type PrTools } from "../forge/pr-tools.js";
 import * as fs from "node:fs";
@@ -191,6 +193,11 @@ function looksLikeId(q: string): boolean {
 export class Mesh implements CoreMeshHooks {
   readonly store: MeshStore;
   private hub: ClientSession | null = null;
+  private readonly catalog = new Catalog(async (id, timeoutMs = 10_000) => {
+    const hub = this.hub;
+    if (!hub || hub.isClosed) throw new RpcError("not_initialized", "The hub is not reachable.");
+    return await hub.requestHost("catalog/skills", id ? { id } : {}, timeoutMs) as CatalogSkillsResult;
+  });
   private readonly waiters = new Map<string, Waiter>();
   /** What each local root last said of its budget (`exhausted:held`), D164. */
   private readonly budgetReported = new Map<string, string>();
@@ -523,6 +530,18 @@ export class Mesh implements CoreMeshHooks {
     try {
       let text: string;
       switch (call.tool) {
+        case "list_skills": {
+          const skills = await this.catalog.list();
+          text = skills.length ? skills.map(s => `${s.id} (${s.automatic ? "auto when relevant" : "manual"}): ${s.description}`).join("\n") : "No catalog skills.";
+          break;
+        }
+        case "load_skill": {
+          if (typeof a.id !== "string") throw new ToolError("Provide the catalog skill ID.");
+          const entrypoint = await this.catalog.load(rt.uploadsKey, this.core.uploads.threadDir(rt.uploadsKey),
+            a.id, () => !rt.deleted);
+          text = `Loaded ${a.id}. Read ${JSON.stringify(entrypoint)} and follow its instructions. Bundled files are relative to that directory.`;
+          break;
+        }
         case "list_themes": case "select_theme": case "preview_theme": case "import_theme":
           return await this.themeTool(rt,call.tool,a);
         case "present_artifact": {
@@ -2425,6 +2444,10 @@ export class Mesh implements CoreMeshHooks {
 
   // ── Session-core hooks ─────────────────────────────────────────────────────────────
 
+  catalogInput(threadKey: string, text: string, origin: TurnOrigin, continuation: boolean): Promise<string> {
+    return this.catalog.instructions(threadKey, text, origin === "user", continuation);
+  }
+
   turnStarted(rt: ThreadRuntime, _turnId: TurnId, origin: TurnOrigin): void {
     this.kick(rt.id);
     if (origin === "mesh") {
@@ -2453,6 +2476,7 @@ export class Mesh implements CoreMeshHooks {
   }
 
   turnCompleted(rt: ThreadRuntime, turnId: TurnId, status: string, error: string | null): void {
+    this.catalog.done(rt.uploadsKey);
     this.confirmOffered(rt.id);
     const w = this.waiters.get(rt.id);
     if (w && !w.done) w.finish("The turn ended.");
@@ -2548,6 +2572,7 @@ export class Mesh implements CoreMeshHooks {
   }
 
   threadRemoved(rt: ThreadRuntime): void {
+    this.catalog.done(rt.uploadsKey);
     const address = this.addressOf(rt.id);
     this.waiters.get(rt.id)?.finish("This thread was deleted.");
     for (const r of this.store.inbox(rt.id, ["pending", "dispatching", "offered"])) {

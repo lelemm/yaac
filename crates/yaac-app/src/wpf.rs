@@ -76,11 +76,16 @@ pub(super) struct Frontend {
 #[cfg(windows)]
 impl Frontend {
     pub(super) fn start(launch: &crate::Launch) -> io::Result<Self> {
+        Self::start_with_capture(launch, None)
+    }
+
+    fn start_with_capture(launch: &crate::Launch, capture: Option<&std::path::Path>) -> io::Result<Self> {
         let path = executable().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the WPF window is missing"))?;
         let mut command = Command::new(path);
         command.args(["--pipe", "--theme", launch.theme.id()])
             .stdin(Stdio::piped()).stdout(Stdio::piped());
         if launch.tray { command.arg("--tray"); }
+        if let Some(output) = capture { command.arg("--capture-ui").arg(output); }
         if let Some(scenario) = launch.demo {
             command.args(["--demo", scenario_name(scenario)]);
         }
@@ -98,10 +103,14 @@ impl Frontend {
         Err(io::Error::other("the WPF window did not finish starting"))
     }
 
-    pub(super) fn run(mut self, mut launch: crate::Launch) -> io::Result<()> {
+    pub(super) fn run(self, launch: crate::Launch) -> io::Result<()> {
+        self.run_with_theme(launch, None)
+    }
+
+    fn run_with_theme(mut self, mut launch: crate::Launch, capture_theme: Option<crate::theme_capture::ThemeInput>) -> io::Result<()> {
         launch.tray = false;
         launch.shell.external_tray = self.tray;
-        let result = serve(launch, self.commands, io::BufWriter::new(self.views));
+        let result = serve(launch, self.commands, io::BufWriter::new(self.views), capture_theme);
         if result.as_ref().is_err_and(|error| error.kind() != io::ErrorKind::BrokenPipe) {
             let _ = self.child.kill();
         }
@@ -141,7 +150,7 @@ pub(super) fn controller_main(scenario: Option<&str>, theme: Option<&str>) -> Ex
         updater: crate::updater::Updater::off("Offline demo"),
     };
     let commands = Connection::new(io::BufReader::new(io::stdin()));
-    match serve(launch, commands, io::stdout().lock()) {
+    match serve(launch, commands, io::stdout().lock(), None) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(error) => {
@@ -182,7 +191,19 @@ impl Connection {
     }
 }
 
-fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) -> io::Result<()> {
+#[cfg(windows)]
+pub(super) fn capture(theme: crate::theme_capture::ThemeInput, output: &std::path::Path) -> io::Result<()> {
+    let launch = crate::Launch {
+        demo: Some(Scenario::Fleet), theme: ThemeChoice::Dark, shots: None, host_windows: true,
+        #[cfg(feature = "hub")]
+        attach: None,
+        display: Default::default(), shell: crate::tray::Shell::new(), tray: false,
+        updater: crate::updater::Updater::off("Offline demo"),
+    };
+    Frontend::start_with_capture(&launch, Some(output))?.run_with_theme(launch, Some(theme))
+}
+
+fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write, capture_theme: Option<crate::theme_capture::ThemeInput>) -> io::Result<()> {
     let Connection { sender, receiver } = commands;
     let browser_dirty = Arc::new(AtomicBool::new(false));
     let wake_browser = {
@@ -207,6 +228,9 @@ fn serve(launch: crate::Launch, commands: Connection, mut stdout: impl Write) ->
         }
     });
     let mut app = YaacApp::from_ctx(&ctx, launch);
+    if let Some(theme) = capture_theme {
+        theme.apply(&mut app);
+    }
     app.display.first_frame();
     app.images.use_wpf();
     let mut previous = Map::new();
