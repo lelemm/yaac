@@ -91,14 +91,20 @@ fun SettingsScreen(view: JsonElement?, send: (String, Any?) -> Unit, onChangeHub
                         Icon(YIcon.ChevronRight, c.muted, size = 18.dp)
                     }
                 }
-                // Which hub this phone attaches to (the window's attach target): Android only.
+                // Which hubs this phone attaches to (the window's attach target), P404: Android only.
                 if (onChangeHub != null) {
                     Spacer(Modifier.height(12.dp))
                     Row(Modifier.fillMaxWidth().clickable(onClick = onChangeHub).heightIn(min = 52.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
-                            T("Change hub…", type.ui.copy(fontSize = 16.sp))
-                            dev.yaac.android.core.YaacRuntime.connection?.let { conn ->
-                                T(if (conn.mode == "hub") "Connected to ${conn.hub}" else "Running the demo", type.small, c.muted)
+                            T("Hubs…", type.ui.copy(fontSize = 16.sp))
+                            val rt = dev.yaac.android.core.YaacRuntime
+                            rt.selected?.let { sel ->
+                                val n = rt.running.size
+                                T(when {
+                                    sel.hub == null -> "Running the demo"
+                                    n > 1 -> "$n hubs · showing ${sel.name}"
+                                    else -> "Connected to ${sel.hub.address}"
+                                }, type.small, c.muted)
                             }
                         }
                     }

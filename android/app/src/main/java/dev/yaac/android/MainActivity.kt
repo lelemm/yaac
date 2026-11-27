@@ -58,39 +58,71 @@ import dev.yaac.android.ui.TranscriptStates
 import dev.yaac.android.ui.YaacTheme
 
 class MainActivity : ComponentActivity() {
-    /** The running controller, or none while the connection screen is up. */
-    private val active = mutableStateOf<Controller?>(null)
-    private val controller: Controller? get() = active.value
+    /** The selected hub's controller, or none while the connection screen is up (P404). */
+    private val controller: Controller? get() = YaacRuntime.controller
     /** Something shared into YAAC, waiting for the user to choose its thread. */
     private val share = mutableStateOf<dev.yaac.android.core.Share?>(null)
     /** A thread a notification asked to open; the UI shows it and clears this. */
     private val openRequest = mutableStateOf<String?>(null)
+    /** Settings → Hubs… is open; Add a hub is open. */
+    private val hubsOpen = mutableStateOf(false)
+    private val adding = mutableStateOf(false)
     private val quit: () -> Unit = { runOnUiThread { finishAndRemoveTask() } }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Before the controller starts: its directories, and the activity the pickers use (A2).
+        // Before the controllers start: their directories, and the activity the pickers use (A2).
         dev.yaac.android.core.PlatformBridge.init(this)
-        // What to attach to: intent extras (`--es hubAddress`, `--es scenario`, `--es transport
-        // tcp`) override the saved choice; with neither, the connection screen asks. The
-        // controller belongs to the process (YaacRuntime), so it survives this activity.
-        val chosen = Connection.fromIntent(intent) ?: YaacRuntime.connection ?: Connection.saved(this)
-        if (chosen != null) connect(chosen, save = false)
+        YaacRuntime.systemLight = !isDark()
+        // What to attach to: intent extras (`--es hubAddress` adds and selects a hub, `--es
+        // scenario`, `--es transport tcp`) override the saved choice; with neither, the
+        // connection screen asks. The controllers belong to the process (YaacRuntime), so they
+        // survive this activity.
+        if (YaacRuntime.running.isEmpty()) {
+            val mode = Connection.savedMode(this)
+            YaacRuntime.load(this, migrate = mode == "hub")
+            val extra = Connection.fromIntent(intent)
+            when {
+                extra?.mode == "hub" -> YaacRuntime.addHub(applicationContext, extra.hub!!, null)
+                extra != null -> YaacRuntime.startSingle(applicationContext, extra)
+                mode == "demo" -> YaacRuntime.startSingle(applicationContext, Connection("demo"))
+                mode == "hub" -> YaacRuntime.startHubs(applicationContext)
+            }
+        }
         YaacRuntime.quitListeners += quit
         enableEdgeToEdge(SystemBarStyle.dark(android.graphics.Color.TRANSPARENT), SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         setContent {
-            val ctl = active.value
-            val failed = ctl?.store?.stopped
+            val sel = YaacRuntime.selected
+            val failed = sel?.store?.stopped
+            val plain = kotlinx.serialization.json.JsonObject(mapOf("theme" to kotlinx.serialization.json.JsonPrimitive("system")))
             when {
-                ctl == null -> YaacTheme(kotlinx.serialization.json.JsonObject(mapOf("theme" to kotlinx.serialization.json.JsonPrimitive("system")))) {
-                    ConnectScreen(Connection.lastHub(this)) { connect(it, save = true) }
+                sel == null || adding.value -> YaacTheme(sel?.store?.view("shell") ?: plain) {
+                    val first = sel == null
+                    ConnectScreen(if (first) YaacRuntime.hubs.current?.address ?: Connection.lastHub(this) else null, adding = !first || YaacRuntime.hubs.hubs.isNotEmpty(),
+                        onConnect = { address, label -> addHub(address, label) },
+                        onDemo = if (first) ({ connectDemo() }) else null,
+                        onHubs = if (first && YaacRuntime.hubs.hubs.isNotEmpty()) ({ Connection.saveMode(this, "hub"); YaacRuntime.startHubs(applicationContext) }) else null,
+                        onCancel = if (!first) ({ adding.value = false }) else null)
                 }
-                failed != null -> YaacTheme(ctl.store.view("shell")) {
-                    ConnectionFailed(YaacRuntime.connection, failed,
+                hubsOpen.value -> YaacTheme(sel.store.view("shell")) {
+                    dev.yaac.android.ui.HubsScreen(onAdd = { adding.value = true }, onLeaveDemo = ::leaveDemo, onClose = { hubsOpen.value = false })
+                }
+                failed != null -> YaacTheme(sel.store.view("shell")) {
+                    ConnectionFailed(sel.connection.takeIf { sel.hub == null } ?: Connection("hub", hub = sel.name), failed,
                         onRetry = ::retry,
-                        onChange = ::changeHub)
+                        onChange = ::openHubs)
                 }
-                else -> YaacApp(ctl.store, { name, payload -> dev.yaac.android.ui.pane.ComposerCaret.observe(name, payload); ctl.send(name, payload) }, openRequest, onChangeHub = ::changeHub, onRetry = ::retry, share = share)
+                // Each hub has its own window state (screen, panes, scroll); switching hubs
+                // switches all of it, and its theme comes from its own shell.
+                else -> androidx.compose.runtime.key(sel.key) {
+                    val ctl = sel.controller
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        dev.yaac.android.core.LocalHubKey provides sel.localKey,
+                        dev.yaac.android.ui.LocalOpenHubs provides ::openHubs,
+                    ) {
+                        YaacApp(ctl.store, { name, payload -> dev.yaac.android.ui.pane.ComposerCaret.observe(name, payload); ctl.send(name, payload) }, openRequest, onHubs = ::openHubs, onRetry = ::retry, share = share)
+                    }
+                }
             }
         }
         handleOpen(intent)
@@ -99,27 +131,30 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
     }
 
-    private fun connect(c: Connection, save: Boolean) {
-        if (save) Connection.save(this, c)
-        val ctl = YaacRuntime.start(applicationContext, c)
-        ctl.send("shell.systemTheme", mapOf("light" to !isDark()))
-        ctl.send("shell.visible", mapOf("shown" to true, "hidden" to false))
-        active.value = ctl
+    private fun addHub(address: String, label: String?) {
+        YaacRuntime.addHub(applicationContext, address, label)
+        adding.value = false
+        hubsOpen.value = false
     }
 
-    /** Retry: a fresh attach to the same hub (a new controller; nothing is re-sent). */
+    private fun connectDemo() {
+        Connection.saveMode(this, "demo")
+        YaacRuntime.startSingle(applicationContext, Connection("demo"))
+    }
+
+    /** Leave the demo: its controller ends and the connection screen asks (the hubs stay saved). */
+    private fun leaveDemo() {
+        YaacRuntime.disconnect(applicationContext)
+        hubsOpen.value = false
+    }
+
+    /** Retry: a fresh attach to the selected hub (a new controller; nothing is re-sent). */
     private fun retry() {
-        val c = YaacRuntime.connection ?: return
-        YaacRuntime.disconnect(applicationContext)
-        connect(c, save = false)
+        val key = YaacRuntime.selected?.key ?: return
+        YaacRuntime.retry(applicationContext, key)
     }
 
-    /** Change hub: end this attach (never the hub), forget the choice, show the connection screen. */
-    private fun changeHub() {
-        YaacRuntime.disconnect(applicationContext)
-        Connection.save(this, null)
-        active.value = null
-    }
+    private fun openHubs() { hubsOpen.value = true }
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
@@ -158,8 +193,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleOpen(intent: android.content.Intent?) {
-        val ctl = controller ?: return
         val n = dev.yaac.android.notify.Notifier
+        // A notification names its hub (P404): show that hub, then its thread.
+        intent?.getStringExtra(n.EXTRA_HUB)?.let { hub ->
+            intent.removeExtra(n.EXTRA_HUB)
+            if (YaacRuntime.running[hub] != null) {
+                YaacRuntime.select(applicationContext, hub)
+                hubsOpen.value = false; adding.value = false
+            }
+        }
+        val ctl = controller ?: return
         // A request notification: open that request (the exact card, or its open ancestor's copy).
         val request = intent?.getStringExtra(n.EXTRA_REQUEST)
         val requestThread = intent?.getStringExtra(n.EXTRA_THREAD)
@@ -178,12 +221,13 @@ class MainActivity : ComponentActivity() {
     // The activity handles uiMode itself (configChanges), so the system theme is reported here.
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        controller?.send("shell.systemTheme", mapOf("light" to !isDark()))
+        YaacRuntime.systemLight = !isDark()
+        YaacRuntime.broadcast("shell.systemTheme", mapOf("light" to !isDark()))
     }
 
     private fun isDark() = (resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK) == android.content.res.Configuration.UI_MODE_NIGHT_YES
 
-    override fun onStart() { super.onStart(); controller?.send("shell.visible", mapOf("shown" to true, "hidden" to false)) }
+    override fun onStart() { super.onStart(); YaacRuntime.visible(true) }
     override fun onResume() { super.onResume(); dev.yaac.android.notify.Notifier.foreground = true }
     override fun onPause() {
         dev.yaac.android.notify.Notifier.foreground = false
@@ -191,11 +235,11 @@ class MainActivity : ComponentActivity() {
         controller?.send("shell.visibleRequests", mapOf("cards" to emptyList<Any>()))
         super.onPause()
     }
-    override fun onStop() { controller?.send("shell.visible", mapOf("shown" to false, "hidden" to true)); super.onStop() }
+    override fun onStop() { YaacRuntime.visible(false); super.onStop() }
     override fun onDestroy() {
         YaacRuntime.quitListeners -= quit
         // Without "Keep running in the background", closing the last window ends the client.
-        val keep = controller?.store?.view("shell")["trayOnClose"].flag(true)
+        val keep = YaacRuntime.running.values.any { it.store.view("shell")["trayOnClose"].flag(true) }
         if (isFinishing && !keep) YaacRuntime.quit(applicationContext)
         super.onDestroy()
     }
@@ -204,7 +248,7 @@ class MainActivity : ComponentActivity() {
 private enum class Screen { List, Thread }
 
 @Composable
-private fun YaacApp(store: ViewStore, send: (String, Any?) -> Unit, openRequest: androidx.compose.runtime.MutableState<String?>, onChangeHub: () -> Unit, onRetry: () -> Unit,
+private fun YaacApp(store: ViewStore, send: (String, Any?) -> Unit, openRequest: androidx.compose.runtime.MutableState<String?>, onHubs: () -> Unit, onRetry: () -> Unit,
                     share: androidx.compose.runtime.MutableState<dev.yaac.android.core.Share?> = mutableStateOf(null)) {
     val shell = store.view("shell")
     YaacTheme(shell) {
@@ -290,15 +334,15 @@ private fun YaacApp(store: ViewStore, send: (String, Any?) -> Unit, openRequest:
             val settingsView = store.view("settings")
             val settingsMode = settingsView["mode"].text
             if (shell["settings"].flag() || settingsMode == "firstRun" || settingsMode == "updateNeeded")
-                dev.yaac.android.ui.SettingsScreen(settingsView, navigate, onChangeHub)
+                dev.yaac.android.ui.SettingsScreen(settingsView, navigate, onHubs)
             // On a phone the WSL cards and the status notice sit over the list; the thread shows
             // the status as a banner and the stopped distro in its composer.
             if (screen == Screen.List) ShellNotices(shell, send)
             // Attached to a hub that does not answer (or refused the hello, e.g. another build):
-            // say which hub, why, and offer Retry and Change hub.
+            // say which hub, why, and offer Retry and Hubs….
             val conn = YaacRuntime.connection
             if (conn?.mode == "hub" && shell != null && !shell["hub"]["reachable"].flag(true))
-                HubDown(conn.hub ?: "", shell["status"]["text"].text, onRetry, onChangeHub)
+                HubDown(YaacRuntime.selected?.let { if (YaacRuntime.running.size > 1) "${it.name} (${conn.hub})" else conn.hub } ?: "", shell["status"]["text"].text, onRetry, onHubs)
             // Another build than the hub's: offer the hub's app (core/AppUpdates.kt).
             LaunchedEffect(shell) { dev.yaac.android.core.AppUpdates.observe(shell, BuildConfig.VERSION_NAME) }
             if (conn?.mode == "hub") dev.yaac.android.ui.HubBuildOffer(Modifier.align(Alignment.BottomCenter))
@@ -374,7 +418,7 @@ private fun HubDown(hub: String, reason: String?, onRetry: () -> Unit, onChange:
             type.ui, if (reason != null) c.failure else c.muted, modifier = Modifier.padding(top = 4.dp))
         androidx.compose.foundation.layout.Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             dev.yaac.android.ui.PrimaryButton("Retry", onClick = onRetry)
-            dev.yaac.android.ui.TextAction("Change hub", onClick = onChange)
+            dev.yaac.android.ui.TextAction("Hubs…", onClick = onChange)
         }
     }
 }

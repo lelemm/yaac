@@ -73,7 +73,7 @@ class CallService : Service() {
             }
             val b = Notification.Builder(context, CHANNEL)
                 .setSmallIcon(R.drawable.ic_stat_yaac)
-                .setContentTitle(CallManager.title.ifBlank { "Voice call" })
+                .setContentTitle(listOfNotNull(CallManager.hubName, CallManager.title.ifBlank { "Voice call" }).joinToString(" · "))
                 .setContentText(text)
                 .setCategory(Notification.CATEGORY_CALL)
                 .setOngoing(true)

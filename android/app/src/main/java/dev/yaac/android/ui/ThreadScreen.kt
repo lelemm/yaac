@@ -258,6 +258,9 @@ private fun Header(shell: JsonElement?, onBack: (() -> Unit)?, onNeeds: () -> Un
     val type = LocalType.current
     Row(Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         if (onBack != null) IconButton(YIcon.Back, "Back to the list", onClick = onBack) else Spacer(Modifier.width(12.dp))
+        // Which hub this thread is on, quietly, when the phone has several (P404). The wide
+        // layout shows it in the list beside.
+        if (onBack != null && dev.yaac.android.core.YaacRuntime.running.size > 1) { HubBadge(subtle = true); Spacer(Modifier.width(8.dp)) }
         val mark = shell["mark"].text
         if (shell["hasThread"].flag() && mark == null && shell["readOnly"].flag()) { Icon(YIcon.Lock, c.muted, size = 15.dp, strokeWidth = 1.8f); Spacer(Modifier.width(8.dp)) }
         if (shell["hasThread"].flag() && mark != null) {
