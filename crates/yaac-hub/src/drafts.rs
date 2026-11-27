@@ -414,10 +414,14 @@ impl DraftStore {
             let rows = stmt.query_map([cutoff], |r| r.get(0))?;
             rows.collect::<Result<_, _>>()?
         };
-        for id in expired {
-            if !uploading.contains(&id) {
-                self.blob_delete(&id)?;
+        for id in expired.into_iter().filter(|id| !uploading.contains(id)) {
+            self.open_blobs.remove(&id);
+            if let Err(error) = self.remove_blob_files(&id) {
+                // Keep the row so a later sweep can retry a file held by another process.
+                crate::core::log(format!("cannot expire device draft blob {id}: {error}"));
+                continue;
             }
+            self.conn.execute("DELETE FROM draft_blobs WHERE blob_id = ?1", params![id])?;
         }
         Ok(())
     }
@@ -501,11 +505,16 @@ impl DraftStore {
     pub fn blob_delete(&mut self, id: &str) -> Result<(), DraftsError> {
         self.open_blobs.remove(id);
         self.conn.execute("DELETE FROM draft_blobs WHERE blob_id = ?1", params![id])?;
+        self.remove_blob_files(id)?;
+        Ok(())
+    }
+
+    fn remove_blob_files(&self, id: &str) -> std::io::Result<()> {
         for partial in [true, false] {
             match std::fs::remove_file(self.blob_file(id, partial)) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(e),
             }
         }
         Ok(())
@@ -610,6 +619,10 @@ mod tests {
         let (fresh, fresh_file) = blob("device/thread:a/d", DEVICE_BLOB_MAX_AGE_MS - 60_000, true);
         let (held, held_file) = blob("device/thread:a/e", old, true);
         let (desktop, desktop_file) = blob("thread:device/a", old, true);
+        let (retry, retry_path) = blob("device/thread:a/retry", old, true);
+        std::fs::remove_file(&retry_path).unwrap();
+        // A directory in place of a blob makes remove_file fail on all hosts.
+        std::fs::create_dir(&retry_path).unwrap();
 
         db.expire_device_blobs(&HashSet::from([held.clone()])).unwrap();
         assert!(db.blob(&expired).unwrap().is_none());
@@ -619,11 +632,15 @@ mod tests {
         assert!(db.blob(&held).unwrap().is_some());
         drop(db);
 
-        let db = DraftStore::open(&path).unwrap();
+        let mut db = DraftStore::open(&path).unwrap();
         assert!(db.blob(&held).unwrap().is_none());
         assert!(!held_file.exists());
         assert!(db.blob(&desktop).unwrap().is_some() && desktop_file.is_file());
         assert!(db.blob(&fresh).unwrap().is_some() && fresh_file.is_file());
+        assert!(db.blob(&retry).unwrap().is_some());
+        std::fs::remove_dir(&retry_path).unwrap();
+        db.expire_device_blobs(&HashSet::new()).unwrap();
+        assert!(db.blob(&retry).unwrap().is_none());
     }
 
     #[test]
