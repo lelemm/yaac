@@ -230,6 +230,10 @@ private fun Editor(composer: JsonObject, key: String, send: (String, Any?) -> Un
                 else send("composer.caret", mapOf("key" to key, "caret" to v.selection.end))
             },
             enabled = editable, maxLines = 5, interactionSource = interaction,
+            // A command is typed as is: no capital first letter, no autocorrect.
+            keyboardOptions = if (shell) androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None,
+                autoCorrectEnabled = false, keyboardType = androidx.compose.ui.text.input.KeyboardType.Ascii)
+                else androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
             textStyle = (if (shell) type.mono.copy(fontSize = 15.sp) else type.prose).copy(color = c.text), cursorBrush = SolidColor(c.text),
             modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
         )

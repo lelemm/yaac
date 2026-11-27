@@ -34,6 +34,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -106,6 +108,8 @@ fun NeedsButton(count: Int, onClick: () -> Unit) {
 fun IconButton(icon: YIcon, description: String, tint: Color = LocalYaac.current.text, size: Dp = 22.dp, enabled: Boolean = true, strokeWidth: Float = 2f, onClick: () -> Unit) {
     Box(
         Modifier.size(44.dp).clip(RoundedCornerShape(6.dp)).clickable(enabled = enabled, onClickLabel = description, onClick = onClick)
+            // Read by TalkBack (K04), and how tests find the icon.
+            .semantics { contentDescription = description }
             .alpha(if (enabled) 1f else 0.4f),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, tint, size = size, strokeWidth = strokeWidth) }

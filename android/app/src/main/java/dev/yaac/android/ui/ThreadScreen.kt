@@ -36,6 +36,8 @@ import androidx.compose.runtime.snapshotFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -80,9 +82,9 @@ fun ThreadScreen(
             // With an approval on screen the Commander offers its Allow / Deny rows (WPF sends the focused card).
             onCommander = { send("commander.open", mapOf("card" to visibleApproval, "threadId" to visibleApproval?.let { threadId })) }) { threadMenu = true }
         // The side pane's tabs (Files, Terminal, Browser) beside the chat, at compact width.
-        if (browser != null) SideTabs(browser, shell["threadId"].str, send, addingSide) { addingSide = it }
+        if (browser != null) SideTabs(browser, shell["threadId"].str, send, addingSide, side) { addingSide = it }
         Spacer(Modifier.height(4.dp))
-        if (browser != null && side != null && !showsChat(browser)) {
+        if (browser != null && side != null && !showsChat(browser, side)) {
             SideContent(browser, shell["threadId"].str, side, send, Modifier.weight(1f))
         } else {
         for (b in shell["banners"].objects) Banner(b, shell["threadId"].str, send)
@@ -240,7 +242,8 @@ private fun Header(shell: JsonElement?, onBack: (() -> Unit)?, onNeeds: () -> Un
 @Composable
 private fun IconButton(icon: YIcon, description: String, strokeWidthIcon: Float, onClick: () -> Unit) {
     val c = LocalYaac.current
-    Box(Modifier.padding(0.dp).clip(RoundedCornerShape(6.dp)).clickable(onClickLabel = description, onClick = onClick).padding(11.dp), contentAlignment = Alignment.Center) {
+    Box(Modifier.padding(0.dp).clip(RoundedCornerShape(6.dp)).clickable(onClickLabel = description, onClick = onClick)
+        .semantics { contentDescription = description }.padding(11.dp), contentAlignment = Alignment.Center) {
         Icon(icon, c.text, size = 22.dp, strokeWidth = strokeWidthIcon)
     }
 }

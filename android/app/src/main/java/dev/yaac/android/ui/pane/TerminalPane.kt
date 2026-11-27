@@ -268,7 +268,9 @@ fun TerminalPane(threadId: String, tab: JsonObject, screen: TermScreen?, side: S
                         KeyRoute.Consume -> true
                         KeyRoute.Text -> false
                     }
-                }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Send, autoCorrectEnabled = false),
+                }, // A password-type field: keyboards then commit each character as typed, with no composing
+                // word to rewrite (composition against the sentinel reset lost characters, A1).
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Send, autoCorrectEnabled = false),
                 keyboardActions = KeyboardActions(onSend = { input("key", mapOf("key" to "Enter", "mods" to 0)) }))
         }
         // The exit status (E01): the code, or why the shell failed, with Restart.

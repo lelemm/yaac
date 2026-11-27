@@ -87,6 +87,13 @@ import kotlinx.serialization.json.JsonPrimitive
 @Stable
 class SidePaneState(private val send: (String, Any?) -> Unit) {
     private val chunks = HashMap<Long, StringBuilder>()
+    /**
+     * At compact width the pane replaces the chat, so the phone remembers when Chat was chosen:
+     * the controller's `chat` flag only applies in full-screen mode (the desktop shows both).
+     * Cleared when another tab becomes active.
+     */
+    var chatChosen by mutableStateOf(false)
+    var chatChosenFor by mutableStateOf<Long?>(null)
     /** Assembled documents by id: `{file?, old?, new?, rows?, sideBySide}`. */
     val documents = mutableStateMapOf<Long, JsonObject>()
     /** Side-pane terminals by tab id (the panel under the composer is not shown on a phone). */
@@ -154,10 +161,10 @@ private fun item(id: String, label: String, enabled: Boolean = true, detail: Str
  * list, full screen, and ⊕.
  */
 @Composable
-fun SideTabs(browser: JsonElement?, threadId: String, send: (String, Any?) -> Unit, adding: Boolean, setAdding: (Boolean) -> Unit) {
+fun SideTabs(browser: JsonElement?, threadId: String, send: (String, Any?) -> Unit, adding: Boolean, side: SidePaneState? = null, setAdding: (Boolean) -> Unit) {
     val c = LocalYaac.current
     val tabs = browser["tabs"].objects
-    val showChat = browser["active"].isNullishPrimitive() || browser["chat"].flag()
+    val showChat = showsChat(browser, side)
     var menu by remember { mutableStateOf<TabInfo?>(null) }
     var renaming by remember { mutableStateOf<TabInfo?>(null) }
     var overflow by remember { mutableStateOf(false) }
@@ -165,12 +172,12 @@ fun SideTabs(browser: JsonElement?, threadId: String, send: (String, Any?) -> Un
     if (tabs.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         // Chat stays pinned at the start, outside the scrolling tabs, with the thread's mark.
         SideTab(Tabs.info(JsonObject(mapOf("kind" to JsonPrimitive("chat")))).copy(title = "Chat", icon = dev.yaac.android.ui.pane.TabIcon.Chat), showChat,
-            dot = if (browser["chatMarked"].flag()) c.accent else null) { send("browser.chat", mapOf("thread" to threadId)) }
+            dot = if (browser["chatMarked"].flag()) c.accent else null) { side?.chooseChat(browser); send("browser.chat", mapOf("thread" to threadId)) }
         Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
             for (info in infos) {
                 val selected = !showChat && browser["active"].scalarLong() == info.id
                 SideTab(info, selected, onClose = { send("browser.close", mapOf("thread" to threadId, "tab" to info.id)) }.takeIf { selected },
-                    onHold = { menu = info }) { send("browser.select", mapOf("thread" to threadId, "tab" to info.id)) }
+                    onHold = { menu = info }) { side?.chatChosen = false; send("browser.select", mapOf("thread" to threadId, "tab" to info.id)) }
             }
         }
         if (tabs.size > 2) Box(Modifier.size(40.dp).clip(RoundedCornerShape(6.dp)).clickable(onClickLabel = "All tabs") { overflow = true }
@@ -208,8 +215,8 @@ fun SideTabs(browser: JsonElement?, threadId: String, send: (String, Any?) -> Un
             item("tab:${i.id}", i.title, detail = listOfNotNull(i.detail, Tabs.describe(i, !showChat && browser["active"].scalarLong() == i.id).substringAfter(", ${i.title}").removePrefix(", ").takeIf { it.isNotEmpty() }).joinToString(" · ").ifEmpty { null })
         }
         ActionSheet("Tabs", items, { overflow = false }) { a ->
-            if (a.id == "chat") send("browser.chat", mapOf("thread" to threadId))
-            else send("browser.select", mapOf("thread" to threadId, "tab" to a.id.removePrefix("tab:").toLongOrNull()))
+            if (a.id == "chat") { side?.chooseChat(browser); send("browser.chat", mapOf("thread" to threadId)) }
+            else { side?.chatChosen = false; send("browser.select", mapOf("thread" to threadId, "tab" to a.id.removePrefix("tab:").toLongOrNull())) }
         }
     }
     menu?.let { t ->
@@ -379,7 +386,12 @@ private fun FilesTree(view: JsonObject?, threadId: String, tab: Long?, send: (St
 }
 
 /** Whether the chat is shown (no side tab active, or the chat chosen). */
-fun showsChat(browser: JsonElement?): Boolean = browser["active"].isNullishPrimitive() || browser["chat"].flag() || browser["tabs"].objects.isEmpty()
+fun showsChat(browser: JsonElement?, side: SidePaneState? = null): Boolean =
+    browser["active"].isNullishPrimitive() || browser["chat"].flag() || browser["tabs"].objects.isEmpty() ||
+        (side != null && side.chatChosen && side.chatChosenFor == browser["active"].scalarLong())
+
+/** Chat chosen while [browser]'s active tab is open: shown until another tab becomes active. */
+fun SidePaneState.chooseChat(browser: JsonElement?) { chatChosen = true; chatChosenFor = browser["active"].scalarLong() }
 
 /** A multi-line paste into a terminal waits for a decision (`terminal.pasteDecision`, E07). */
 @Composable
