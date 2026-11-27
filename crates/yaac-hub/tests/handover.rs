@@ -19,7 +19,7 @@ use support::{BUILD, Client, Home, RunningHub, wait_until};
 use yaac_hub::protocol::names as ext;
 use yaac_hub::settings::TargetDef;
 use yaac_hub::{ConnectorFactory, HubConfig};
-use yaac_protocol::TargetId;
+use yaac_protocol::{ItemBody, NoticeKind, TargetId, ThreadId};
 use yaac_protocol::attach::{self, ConnectionStatus, DaemonUpdatePhase, TargetEntry};
 use yaac_transport::{Connector, LocalConfig, LocalConnector};
 
@@ -338,11 +338,19 @@ fn update_now_interrupts_a_running_turn_marked_by_the_update_and_hands_over() {
     assert_eq!(r["state"], "exiting");
     wait_serving(&c, &target, NEW);
     wait_until("the older daemon exited", || !rig.serving_alive());
-    // The notice reaches the hub's cache from the new daemon's journal a moment after it serves.
-    let marked = |all: &[Value]| all.iter().any(|i| i["kind"] == "notice" && i["noticeKind"] == "interruptedByUpdate");
-    wait_until("the update's notice in the cache", || marked(&items(&c, &target, &thread)));
-    let all = items(&c, &target, &thread);
-    assert!(marked(&all), "the turn is marked as interrupted by the update: {all:#?}");
+    // The notice is checked in the hub's cache, not with `thread/read` to the new daemon: the
+    // old daemon journals it, and the hub may receive and acknowledge it before the old daemon
+    // closes its connection. The journal is then trimmed through it, and the new daemon rebuilds
+    // the transcript from the harness's store, which never holds yaacd's own notices
+    // (docs/03-protocol.md#keeping-the-journal-bounded). Otherwise it reaches the cache from
+    // the new daemon's journal a moment after it serves.
+    let marked = || {
+        let mut cache = rig.home.cache();
+        cache.thread(&target, &ThreadId::new(&thread)).ok().flatten().is_some_and(|t| {
+            t.items.iter().any(|i| matches!(&i.body, ItemBody::Notice(n) if n.notice_kind == NoticeKind::InterruptedByUpdate))
+        })
+    };
+    wait_until("the update's notice in the cache", marked);
     assert!(!running(&c, &target, &thread));
     let log = steps(&c, &target);
     assert!(log.iter().any(|s| s.contains(&format!("asked yaacd {OLD} to hand over now, to {NEW}"))), "{log:#?}");
