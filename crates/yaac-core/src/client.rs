@@ -33,6 +33,8 @@ pub mod hub_names {
     pub const CACHE_CLEAR: &str = "hub/cache/clear";
     /// Store a `ui_state` value.
     pub const UI_STATE_SET: &str = "hub/uiState/set";
+    /// Read `ui_state` values (a client on another machine than the hub).
+    pub const UI_STATE_GET: &str = "hub/uiState/get";
     // SEAM (D92): the hub's view preferences — pin, mute (with `mutedUntil`), dismiss — kept
     // on the user's computer, not on the thread. The attach methods are being added to
     // `yaac-protocol` by the daemon/hub package; until they land, their names live here and
@@ -138,6 +140,8 @@ enum Call {
     HubSettings,
     /// `hub/notifications/subscribe`.
     RequestFeed,
+    /// `hub/uiState/get`.
+    UiStateGet,
     /// `hub/notifications/respond`: where to open the request if an answer fails.
     FeedRespond { open: attach::NotificationOpen, answered: bool },
     Explain(ThreadKey, ItemId, RequestId),
@@ -265,6 +269,8 @@ pub struct Client {
     tunnel_data: Vec<(yaac_protocol::StreamId, Vec<u8>)>,
     terminal_data: Vec<(yaac_protocol::StreamId, Vec<u8>)>,
     tunnel_notes: Vec<(String, Value)>,
+    /// The window-side choices read with `hub/uiState/get`, until taken.
+    ui_state: Option<Vec<(String, Value)>>,
     /// Agent browser calls from the hub (`hub/browser/call`), not yet taken by the window.
     pub theme_calls: Vec<(RpcId, yaac_protocol::ThemeCallParams)>,
     browser_calls: Vec<(RpcId, attach::BrowserCallParams)>,
@@ -346,6 +352,7 @@ impl Client {
             tunnel_data: Vec::new(),
             terminal_data: Vec::new(),
             tunnel_notes: Vec::new(),
+            ui_state: None,
             theme_calls: Vec::new(),
             browser_calls: Vec::new(),
             ssh_replies: Vec::new(),
@@ -753,6 +760,10 @@ impl Client {
                 }
             }
             Call::FeedRespond { .. } => {}
+            Call::UiStateGet => {
+                let values = result.get("values").and_then(Value::as_object).cloned().unwrap_or_default();
+                self.ui_state = Some(values.into_iter().collect());
+            }
             Call::HubSettings => {
                 self.state.hub.explanations = result.pointer("/settings/explanations").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
                 self.state.hub.notifications = result.pointer("/settings/notifications").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
@@ -1334,6 +1345,8 @@ impl Client {
             }
             Call::Explain(key, item, request) => self.finish_explanation(key, item, request, None),
             Call::HubSettings | Call::Projects(_) | Call::SshRecords | Call::RequestFeed => {}
+            // An older hub has no such method: nothing is stored there, and nothing is said.
+            Call::UiStateGet => self.ui_state = Some(Vec::new()),
             // An answer that did not go through opens the request with the reason, as a
             // failed toast answer does; nothing is re-sent.
             Call::FeedRespond { mut open, answered } => {
@@ -2709,6 +2722,19 @@ impl Client {
         }
         self.request(attach::names::NOTIFICATIONS_RESPOND, params, Call::FeedRespond { open, answered: decision.is_some() });
         Ok(())
+    }
+
+    /// Ask the hub for stored window-side choices (`hub/uiState/get`); the answer arrives
+    /// through [`Client::take_ui_state`]. For a client on another machine than the hub, which
+    /// cannot read the hub's cache file.
+    pub fn load_ui_state(&mut self, keys: &[&str]) {
+        self.ui_state = None;
+        self.request(hub_names::UI_STATE_GET, json!({ "keys": keys }), Call::UiStateGet);
+    }
+
+    /// The stored choices, once they have arrived (empty from a hub that has none to give).
+    pub fn take_ui_state(&mut self) -> Option<Vec<(String, Value)>> {
+        self.ui_state.take()
     }
 
     pub fn set_notifications(&mut self, settings: attach::NotificationSettings) {

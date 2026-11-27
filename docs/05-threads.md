@@ -781,6 +781,13 @@ Rules:
   a version and is rebuilt from the targets when it changes.
 - **The cache is not a model authority.** See
   [models are never hardcoded](04-providers.md#models-are-never-hardcoded).
+- **Window-side choices (`ui_state`) are the hub's, shared by every window and client.** The
+  hub is the cache's only writer (`hub/uiState/set`). A window on the hub's machine reads them
+  from the cache file at attach; a client on another machine (the Android app over Tailscale)
+  cannot, and asks `hub/uiState/get { keys }` → `{ values }` right after `hub/hello`, applying the
+  answer the same way. A hub without the method gives nothing and nothing is shown; the client
+  then starts from its defaults (dismissed cards, grouping and theme come back only with a hub
+  of the same build).
 - **Secret answers are never cached.** An answer to a question marked `secret` is not written
   to the host.
 - Removing a target deletes its rows.

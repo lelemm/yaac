@@ -447,3 +447,29 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod stored_dismissal_tests {
+    /// What the phone gets from `hub/uiState/get` after a restart is applied like the cache
+    /// file's: a card dismissed before stays dismissed.
+    #[test]
+    fn stored_dismissals_hide_their_cards_after_a_restart() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        app.apply(vec![crate::app::Action::Scene(yaac_core::demo::Scene::SidePanes)]);
+        app.pump_demo();
+        let users = yaac_core::demo::threads::users();
+        let shown = super::cards(&app.client.state, &users, &app.ui.dismissed_artifacts);
+        assert_eq!(shown.len(), 2);
+        let key = shown[0].dismissal_key(&users);
+        // A fresh window, as after reopening YAAC: nothing dismissed until the stored choices arrive.
+        let mut app = crate::app::tests::demo_app(&ctx);
+        app.apply(vec![crate::app::Action::Scene(yaac_core::demo::Scene::SidePanes)]);
+        app.pump_demo();
+        assert_eq!(super::cards(&app.client.state, &users, &app.ui.dismissed_artifacts).len(), 2);
+        app.apply_stored_prefs(&[(yaac_core::prefs::keys::DISMISSED_ARTIFACTS.to_owned(), serde_json::json!([key]))]);
+        let left = super::cards(&app.client.state, &users, &app.ui.dismissed_artifacts);
+        assert_eq!(left.len(), 1);
+        assert_ne!(left[0].dismissal_key(&users), key);
+    }
+}

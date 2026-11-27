@@ -714,6 +714,8 @@ pub(crate) struct HubConn {
     shutdown_sent: bool,
     restarted: bool,
     prefs_loaded: bool,
+    /// A remote hub's stored choices were asked for (`hub/uiState/get`).
+    prefs_asked: bool,
     /// The SSH setup backend's requests and answers (`hub/ssh/*`).
     ssh: std::rc::Rc<std::cell::RefCell<crate::ssh_hub::SshBridge>>,
 }
@@ -909,7 +911,7 @@ impl YaacApp {
                     let c = hub_client(&attach);
                     let ssh = std::rc::Rc::new(std::cell::RefCell::new(crate::ssh_hub::SshBridge::new(cc.egui_ctx.clone())));
                     let backend = crate::ssh_hub::HubSsh(ssh.clone());
-                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false, ssh });
+                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false, prefs_asked: false, ssh });
                     (c, None, Scenario::Fleet, Clock::System, Box::new(backend) as Box<dyn SshSetupBackend>)
                 } else {
                     let c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
@@ -1693,21 +1695,37 @@ impl YaacApp {
                 self.hub = None;
             }
             HelloOutcome::Attached if !h.prefs_loaded => {
-                let stored = h.attach.lock().ok().and_then(|mut a| a.take_prefs());
-                if let Some(stored) = stored {
-                    let mut p = self.ui.prefs();
-                    for (k, v) in &stored {
-                        p.load(k, v);
+                // A window on the hub's machine reads the cache file; a client on another
+                // machine (the phone) asks the hub for the same values.
+                let stored = if h.config.is_remote() {
+                    if !h.prefs_asked {
+                        self.client.load_ui_state(&yaac_core::prefs::keys::ALL);
+                        h.prefs_asked = true;
                     }
-                    self.ui.load_prefs(&p);
-                    self.browsers.side_by_side = p.diff_side_by_side;
-                    self.saved_prefs = p;
-                    self.applied = None;
+                    self.client.take_ui_state()
+                } else {
+                    h.attach.lock().ok().and_then(|mut a| a.take_prefs())
+                };
+                if let Some(stored) = stored {
                     h.prefs_loaded = true;
+                    self.apply_stored_prefs(&stored);
                 }
             }
             _ => {}
         }
+    }
+
+    /// Window-side choices stored in the hub (read from its cache file, or with
+    /// `hub/uiState/get` on another machine) become this window's.
+    pub(crate) fn apply_stored_prefs(&mut self, stored: &[(String, serde_json::Value)]) {
+        let mut p = self.ui.prefs();
+        for (k, v) in stored {
+            p.load(k, v);
+        }
+        self.ui.load_prefs(&p);
+        self.browsers.side_by_side = p.diff_side_by_side;
+        self.saved_prefs = p;
+        self.applied = None;
     }
 
     /// Send changed window-side choices to the hub (attached only; the demo keeps them in

@@ -57,6 +57,11 @@ answered. A decision goes out on the toast's `request/respond` path with a fresh
 id, and its outcome answers the call. Without a decision it is Open: the entry is marked seen
 and the client opens the request itself.
 
+A client attached over Tailscale reads the window-side choices the hub keeps (`ui_state`:
+grouping, theme, dismissed artifact cards, composer history, …) with `hub/uiState/get`, since
+the cache file is on the hub's machine ([05](05-threads.md)); they are shared with the
+desktop windows, as one owner's choices.
+
 Inside the window the UI thread never blocks on I/O: it reads an in-memory state snapshot and
 paints. Inside the hub one I/O thread owns every connection and decodes frames; anything that
 can block — SQLite writes, hashing a pasted file, decoding an image — runs on a small bounded

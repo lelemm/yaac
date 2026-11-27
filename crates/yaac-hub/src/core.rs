@@ -994,6 +994,21 @@ impl Core {
                 self.clear_cache(client, id.clone());
                 None
             }
+            ext::names::UI_STATE_GET => match parse::<ext::UiStateGetParams>(params) {
+                Ok(p) => {
+                    self.store_reply(client, id, move |s| {
+                        let mut values = serde_json::Map::new();
+                        for key in p.keys {
+                            if let Some(v) = s.cache.ui_state(&key).map_err(|e| e.to_string())? {
+                                values.insert(key, v);
+                            }
+                        }
+                        Ok(to_value(&ext::UiStateGetResult { values }))
+                    });
+                    None
+                }
+                Err(e) => Some(Err(e)),
+            },
             ext::names::UI_STATE_SET => match parse::<UiStateSetParams>(params) {
                 Ok(p) => {
                     self.store_reply(client, id, move |s| s.cache.set_ui_state(&p.key, &p.value).map(|()| json!({})).map_err(|e| e.to_string()));

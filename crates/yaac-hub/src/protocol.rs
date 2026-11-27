@@ -99,6 +99,9 @@ pub mod names {
     pub const CACHE_CLEAR: &str = "hub/cache/clear";
     /// Window → hub: store a `ui_state` value in the cache (the hub is its only writer).
     pub const UI_STATE_SET: &str = "hub/uiState/set";
+    /// Window → hub: read `ui_state` values from the cache. A window on this machine reads the
+    /// cache file itself; a client on another machine (the Android app) asks this.
+    pub const UI_STATE_GET: &str = "hub/uiState/get";
     /// Window → hub: list drafts.
     pub const DRAFTS_LIST: &str = "hub/drafts/list";
     /// Window → hub: store a draft.
@@ -367,6 +370,21 @@ pub struct UiStateSetParams {
     pub key: String,
     /// Value; `null` deletes the key.
     pub value: Value,
+}
+
+/// `hub/uiState/get` params.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiStateGetParams {
+    /// The keys wanted.
+    pub keys: Vec<String>,
+}
+
+/// `hub/uiState/get` result: the stored values; a key with no value is absent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiStateGetResult {
+    pub values: serde_json::Map<String, Value>,
 }
 
 /// A draft: unsent composer text and its attachments. User data, never part of the cache.

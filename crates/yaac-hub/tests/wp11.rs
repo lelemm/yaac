@@ -451,3 +451,19 @@ fn a_feed_subscriber_sees_the_unseen_requests_and_answers_with_the_current_revis
     });
     assert_eq!(alpha.request_answers().len(), 1);
 }
+
+/// A client on another machine reads the window-side choices through the hub (`hub/uiState/get`),
+/// the same values a window on this machine reads from the cache file.
+#[test]
+fn ui_state_written_by_one_client_is_read_back_by_another_through_the_hub() {
+    let home = Home::new();
+    let hub = home.start();
+    let desktop = hub.client();
+    desktop.call("hub/uiState/set", json!({ "key": "dismissedArtifacts", "value": ["local/t1|u_artifact_md_1"] })).unwrap();
+    desktop.call("hub/uiState/set", json!({ "key": "grouping", "value": "machine" })).unwrap();
+    let phone = hub.client();
+    let got = phone.call("hub/uiState/get", json!({ "keys": ["dismissedArtifacts", "grouping", "theme"] })).unwrap();
+    assert_eq!(got["values"]["dismissedArtifacts"], json!(["local/t1|u_artifact_md_1"]));
+    assert_eq!(got["values"]["grouping"], "machine");
+    assert!(got["values"].get("theme").is_none(), "a key never stored is absent");
+}
