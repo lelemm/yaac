@@ -736,7 +736,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             crate::voice::audio(app, &draft, &pcm);
             return Ok(());
         }
-        "composer.voiceStart" if can_write => { crate::voice::start(app, &draft); return Ok(()); }
+        "composer.voiceStart" if can_write => { crate::voice::start(app, &draft, optional_string(p, "language")); return Ok(()); }
         _ => {}
     }
     if let Some(key) = &thread {
@@ -753,7 +753,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             "composer.callStart" if can_write => {
                 // A refusal is shown in the frame's `call.error`, not as a command failure.
                 let offer = string(p, "sdpOffer").to_owned();
-                let _ = crate::voice_call::start(app, key, offer);
+                let _ = crate::voice_call::start(app, key, offer, optional_string(p, "language"));
                 return Ok(());
             }
             _ => {}
@@ -1229,6 +1229,34 @@ mod tests {
     }
 
     #[test]
+    fn a_call_speaks_the_renderers_language_else_the_windows_choice() {
+        let ctx = egui::Context::default();
+        let start = |language: Option<&str>, choice: &str| {
+            let mut app = crate::app::tests::demo_app(&ctx);
+            let key = threads::fix();
+            app.apply(vec![Action::Open(key.clone())]);
+            settle(&mut app);
+            app.ui.voice_language = choice.to_owned();
+            let mut p = json!({ "sdpOffer": "v=0\r\n" });
+            if let Some(l) = language {
+                p["language"] = json!(l);
+            }
+            voice_command(&mut app, &key, "composer.callStart", p);
+            let sent = app.demo.as_ref().unwrap().requests();
+            let (_, _, params) = sent.iter().rev().find(|(_, m, _)| m == "hub/voiceCall/start").expect("start sent").clone();
+            params
+        };
+        // Android sends the phone's choice or locale; it wins over the window's setting.
+        assert_eq!(start(Some("pt-br"), "fr-FR")["language"], "pt-BR");
+        assert_eq!(start(None, "fr-FR")["language"], "fr-FR");
+        // A renderer's junk is not sent as is.
+        assert_eq!(start(Some("speak English"), "de-DE")["language"], "de-DE");
+        // "Same as this device": the device's language, or none where it has none.
+        let device = crate::voice_language::device();
+        assert_eq!(start(None, "")["language"].as_str(), device.as_deref());
+    }
+
+    #[test]
     fn a_call_hands_the_offer_on_shows_the_answer_and_the_words_and_hangs_up() {
         let ctx = egui::Context::default();
         let mut app = crate::app::tests::demo_app(&ctx);
@@ -1254,7 +1282,7 @@ mod tests {
         // One call per window: another thread cannot start one now.
         if let Some(other) = app.client.state.transcripts.keys().find(|k| **k != key && crate::voice_call::offered(&app, k)).cloned() {
             assert_eq!(call_view(&app, &other)["button"]["enabled"], false);
-            assert!(crate::voice_call::start(&mut app, &other, "v=0".into()).is_err());
+            assert!(crate::voice_call::start(&mut app, &other, "v=0".into(), None).is_err());
         }
         voice_command(&mut app, &key, "composer.callEnd", json!({}));
         assert_eq!(call_view(&app, &key)["state"], "ending");
@@ -1316,7 +1344,7 @@ mod tests {
         assert!(why.starts_with("No transcriber available."), "{why}");
         assert!(why.contains("Codex transcribes only with an OpenAI API key sign-in."), "{why}");
         assert_eq!(voice["button"]["detail"], why);
-        crate::voice::start(&mut app, &DraftRef::Thread(key.clone()));
+        crate::voice::start(&mut app, &DraftRef::Thread(key.clone()), None);
         assert!(app.client.dictation().is_none(), "nothing starts without a transcriber");
     }
 
@@ -1417,7 +1445,7 @@ mod tests {
         if let Some(other) = &other {
             let v = crate::voice::view(&app, other);
             assert_eq!((v["state"].as_str(), v["button"]["enabled"].as_bool()), (Some("idle"), Some(false)));
-            crate::voice::start(&mut app, other);
+            crate::voice::start(&mut app, other, None);
             assert_eq!(app.client.dictation().map(|d| d.key.clone()), Some(DraftRef::Thread(key.clone())));
         }
         voice_command(&mut app, &key, "composer.voiceAudio", half_second());

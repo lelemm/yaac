@@ -4,7 +4,7 @@
 // protocol, a client, a journal, or a protocol version: the session layer owns all of that.
 // Wire value types (items, descriptors, capabilities, …) come from the generated bindings.
 
-import type { Dictation, DictationEvents, DictationOptions, VoiceCall, VoiceCallEvents } from "../voice/types.js";
+import type { Dictation, DictationEvents, DictationOptions, VoiceCall, VoiceCallEvents, VoiceCallOptions } from "../voice/types.js";
 import type {
   AppliedSettings,
   CommandLogsResult,
@@ -513,8 +513,10 @@ export interface HarnessProvider {
    * Voice call (`voiceCall`, docs/plan/voice-call.md): a speech-to-speech call with `thread`
    * from the host's SDP offer. The call acts in the thread: turns it starts are the thread's
    * own turns, reported as usual. Only SDP and transcript text pass through yaacd.
+   * `opts.language` comes only where the thread's effective capabilities contain
+   * `voiceCallLanguage`.
    */
-  startVoiceCall?(thread: NativeId, sdpOffer: string, events: VoiceCallEvents): VoiceCall;
+  startVoiceCall?(thread: NativeId, sdpOffer: string, opts: VoiceCallOptions, events: VoiceCallEvents): VoiceCall;
 
   readonly events: EventSource<ProviderEvent>;
   dispose(): Promise<void>;

@@ -919,7 +919,34 @@ fn window(app: &YaacApp) -> Value {
                 "actions": [toggle("window.tray", "Keep running in the tray when closed", tray_enabled && app.ui.tray_on_close, tray_enabled)]
             })]),
             section("display", "Display", rows),
+            section("voice", "Voice", vec![voice_language_row(app)]),
         ]
+    })
+}
+
+/// The option id for "Same as this device" (an empty id would read as no value).
+const SAME_AS_DEVICE_ID: &str = "device";
+
+/// Settings → Window → Voice call language (docs/plan/voice-call.md § Language). The phone keeps
+/// its own choice (ui/Settings.kt), so only the desktop shows this row.
+fn voice_language_row(app: &YaacApp) -> Value {
+    use yaac_core::voice_language::{CHOICES, SAME_AS_DEVICE, label};
+    let device = crate::voice_language::device();
+    let same = match device.as_deref() {
+        Some(tag) => format!("{SAME_AS_DEVICE} ({})", label(tag)),
+        None => SAME_AS_DEVICE.to_owned(),
+    };
+    let mut options = vec![action(SAME_AS_DEVICE_ID, &same, true)];
+    options.extend(CHOICES.iter().map(|(tag, name)| action(tag, name, true)));
+    let chosen = &app.ui.voice_language;
+    if !chosen.is_empty() && !CHOICES.iter().any(|(tag, _)| tag == chosen) {
+        options.push(action(chosen, chosen, true));
+    }
+    let value = if chosen.is_empty() { SAME_AS_DEVICE_ID } else { chosen.as_str() };
+    json!({
+        "id": "voiceLanguage",
+        "detail": "The language voice calls speak and dictation listens for. Code identifiers stay as they are.",
+        "fields": [choice("voiceLanguage", "Voice call language", Some(value), "window.voiceLanguage", options)]
     })
 }
 
@@ -1494,6 +1521,15 @@ pub(super) fn command(
         }
         "window.tray" if app.shell.has_tray() || app.ui.platform == yaac_core::input::Platform::Android => {
             app.ui.tray_on_close = checked(values)?;
+            return Ok(());
+        }
+        "window.voiceLanguage" => {
+            let picked = string(values, "voiceLanguage");
+            app.ui.voice_language = if picked == SAME_AS_DEVICE_ID {
+                String::new()
+            } else {
+                yaac_core::voice_language::normalize(picked).ok_or("This language is unavailable.")?
+            };
             return Ok(());
         }
         "window.renderer" | "window.retryRenderer" => {

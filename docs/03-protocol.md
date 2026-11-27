@@ -164,7 +164,7 @@ WebRTC peer; only SDP and transcript text cross the wire. Full contract:
 
 | Method | Purpose |
 | --- | --- |
-| `voiceCall/start` (op) | `{ opId, threadId, sdpOffer }` → `{ callId }`, once the harness accepted. Errors: `capability_missing`, `thread_not_found`, `thread_in_use`, `limit_exceeded` (one call per thread), `provider_unavailable`, `needs_auth`. |
+| `voiceCall/start` (op) | `{ opId, threadId, sdpOffer, language? }` → `{ callId }`, once the harness accepted. `language` is a BCP-47 tag, sent only where the thread has `voiceCallLanguage` (P401). Errors: `capability_missing`, `thread_not_found`, `thread_in_use`, `limit_exceeded` (one call per thread), `provider_unavailable`, `needs_auth`. |
 | `voiceCall/end` | `{ callId }` → `{}`; ending an unknown or ended call is not an error. |
 | `voiceCall/answer` (daemon → host) | `{ callId, sdpAnswer }`, once. |
 | `voiceCall/state` (daemon → host) | `{ callId, state: connecting \| active \| ended, error? }`; `ended` is always last. |

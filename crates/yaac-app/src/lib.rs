@@ -81,6 +81,7 @@ pub mod platform;
 mod updater;
 mod voice;
 mod voice_call;
+mod voice_language;
 mod voice_audio;
 mod voice_capture;
 #[cfg(feature = "desktop")]

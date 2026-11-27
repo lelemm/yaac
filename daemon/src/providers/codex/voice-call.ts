@@ -15,12 +15,21 @@
 // - The realtime model's delegations start or steer turns in this same thread. The provider
 //   treats turns that start while the call runs as the user's own (the call is the user's).
 // - `model` and `voice` stay unset: Codex picks them (invariant 3).
+// - Language (docs/plan/voice-call.md § Language): `prompt` *replaces* the realtime model's whole
+//   default prompt (codex-prompts `prepare_realtime_backend_prompt`), and
+//   `realtimeStartInstructions` replaces the default start instructions of the *backing* Codex
+//   model, not the voice. `initialItems` (v3 only, "complete role-bearing text items to the
+//   initial Frameless Bidi session history") go into the session Codex posts with the offer
+//   (`session.initial_items`, codex-api `methods_frameless_bidi::session_json`) beside Codex's
+//   own instructions. So a chosen language is one `developer` initial item. Nothing in the
+//   schema takes a language or locale, and the TUI's `/voice` sets none.
 //
 // The call runs on the user's thread, so nothing here creates a thread or touches config.
 
 import type { CodexConnection } from "./rpc.js";
 import { RpcError } from "../../protocol/rpc.js";
-import { DictationRefused, type VoiceCall, type VoiceCallEvents } from "../../voice/types.js";
+import { DictationRefused, type VoiceCall, type VoiceCallEvents, type VoiceCallOptions } from "../../voice/types.js";
+import { callLanguageInstruction } from "../../voice/language.js";
 
 /** The realtime protocol version the TUI's `/voice` uses (0.172.0); WebRTC refuses v2. */
 export const CALL_REALTIME_VERSION = "v3";
@@ -46,8 +55,13 @@ export function callErrorText(message: string): string {
   return `Codex voice call failed: ${message}`;
 }
 
-export function startCodexVoiceCall(thread: string, sdpOffer: string, deps: CodexVoiceCallDeps, events: VoiceCallEvents): VoiceCall {
-  return new CodexVoiceCall(thread, sdpOffer, deps, events);
+export function startCodexVoiceCall(thread: string, sdpOffer: string, deps: CodexVoiceCallDeps, events: VoiceCallEvents, opts: VoiceCallOptions = {}): VoiceCall {
+  return new CodexVoiceCall(thread, sdpOffer, deps, events, opts);
+}
+
+/** `thread/realtime/start`'s `initialItems` for `opts`: the language, as one developer item. */
+export function callInitialItems(opts: VoiceCallOptions): Array<{ role: "developer"; text: string }> | undefined {
+  return opts.language ? [{ role: "developer", text: callLanguageInstruction(opts.language) }] : undefined;
 }
 
 class CodexVoiceCall implements VoiceCall {
@@ -65,6 +79,7 @@ class CodexVoiceCall implements VoiceCall {
     private readonly offer: string,
     private readonly deps: CodexVoiceCallDeps,
     private readonly events: VoiceCallEvents,
+    private readonly opts: VoiceCallOptions,
   ) {
     this.accepted = this.open().catch((e) => {
       this.cleanup();
@@ -81,11 +96,13 @@ class CodexVoiceCall implements VoiceCall {
     await this.deps.prepare();
     if (this.over) throw new Error("the call ended while it was starting");
     this.deps.live(true);
+    const initialItems = callInitialItems(this.opts);
     await conn.request("thread/realtime/start", {
       threadId: this.thread,
       outputModality: "audio",
       transport: { type: "webrtc", sdp: this.offer },
       version: CALL_REALTIME_VERSION,
+      ...(initialItems ? { initialItems } : {}),
       // `model` and `voice` unset: Codex picks them (invariant 3). Handoffs stay automatic,
       // so Codex's replies reach the realtime model, which speaks them.
     }, 20_000);

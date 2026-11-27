@@ -30,6 +30,10 @@ open_enum! {
         /// hold a speech-to-speech call with the thread now, which can start and steer turns
         /// there. The client is the media peer; no audio format is involved.
         VoiceCall = "voiceCall",
+        /// Voice call language. As a daemon feature: `voiceCall/start` takes `language`. On an
+        /// instance or in a thread's effective capabilities: the harness can be told which
+        /// language the call speaks (docs/plan/voice-call.md § Language).
+        VoiceCallLanguage = "voiceCallLanguage",
         /// Permission mode can change during a running turn.
         ModeChangeLive = "modeChangeLive",
         // Thread lifecycle

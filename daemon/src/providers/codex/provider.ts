@@ -31,7 +31,7 @@ import { RpcError } from "../../protocol/rpc.js";
 import { Emitter } from "../../util/emitter.js";
 import { EXPLANATION_SOURCE, disabledMcpServers, explainCommand } from "./explanation.js";
 import { CODEX_VOICE_FORMAT, VOICE_SOURCE, startCodexDictation } from "./voice.js";
-import type { Dictation, DictationEvents, DictationOptions, VoiceCall, VoiceCallEvents } from "../../voice/types.js";
+import type { Dictation, DictationEvents, DictationOptions, VoiceCall, VoiceCallEvents, VoiceCallOptions } from "../../voice/types.js";
 import { startCodexVoiceCall } from "./voice-call.js";
 import { randomId, readJson, sha256Hex, writeJsonAtomic } from "../../util/fsx.js";
 import type {
@@ -707,7 +707,8 @@ export class CodexProvider implements HarnessProvider {
     // Transcription serves every composer on every target, not only Codex threads (P392).
     if (this.voiceUsable()) caps.push("transcription");
     // A voice call over WebRTC works with any sign-in: Codex creates the call with its own.
-    if (this.realtime) caps.push("voiceCall");
+    // The call's language is a developer item in the v3 session's history (./voice-call.ts).
+    if (this.realtime) caps.push("voiceCall", "voiceCallLanguage");
     const transcription: TranscriptionOffer | null = !this.realtime ? null
       : this.voiceUsable() ? { format: CODEX_VOICE_FORMAT }
       : { unavailable: "Codex transcribes only with an OpenAI API key sign-in." };
@@ -919,7 +920,7 @@ export class CodexProvider implements HarnessProvider {
    * A voice call with `thread` (./voice-call.ts): Codex's realtime session over WebRTC from the
    * host's offer, on the user's own thread, as Codex's `/voice` does.
    */
-  startVoiceCall(thread: NativeId, sdpOffer: string, events: VoiceCallEvents): VoiceCall {
+  startVoiceCall(thread: NativeId, sdpOffer: string, opts: VoiceCallOptions, events: VoiceCallEvents): VoiceCall {
     if (!this.realtime) throw new RpcError("capability_missing", "voice calls are not available for this Codex instance");
     const st = this.state(thread);
     return startCodexVoiceCall(thread, sdpOffer, {
@@ -936,7 +937,7 @@ export class CodexProvider implements HarnessProvider {
       },
       live: (on) => { st.call = on; },
       log: (l) => this.ctx.log(l),
-    }, events);
+    }, events, opts);
   }
 
   // ── Turns ────────────────────────────────────────────────────────────────────────────────
@@ -1525,7 +1526,7 @@ export class CodexProvider implements HarnessProvider {
     if (efforts.length > 0) base.push("effortSwitch", "reasoning");
     if (image === "supported") base.push("imageInput");
     if (this.offersShellCommand()) base.push("userShellCommand");
-    if (this.realtime) base.push("voiceCall");
+    if (this.realtime) base.push("voiceCall", "voiceCallLanguage");
     return {
       capabilities: base,
       imageInput: image,

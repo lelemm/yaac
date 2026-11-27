@@ -78,9 +78,10 @@ fn busy_elsewhere(app: &YaacApp, key: &ThreadKey) -> bool {
     app.client.voice_call().is_some_and(|c| &c.key != key)
 }
 
-/// `composer.callStart`: start a call with `key` from the renderer's complete SDP offer. The
-/// last call's words and error on that thread are cleared first.
-pub(crate) fn start(app: &mut YaacApp, key: &ThreadKey, sdp_offer: String) -> Result<(), String> {
+/// `composer.callStart`: start a call with `key` from the renderer's complete SDP offer, in the
+/// renderer's `language` or the window's ([`crate::voice_language`]). The last call's words and
+/// error on that thread are cleared first.
+pub(crate) fn start(app: &mut YaacApp, key: &ThreadKey, sdp_offer: String, language: Option<&str>) -> Result<(), String> {
     if !offered(app, key) {
         return Err("This thread cannot take a voice call.".into());
     }
@@ -91,7 +92,8 @@ pub(crate) fn start(app: &mut YaacApp, key: &ThreadKey, sdp_offer: String) -> Re
     let started = if app.client.dictation().is_some() {
         Err("Finish the dictation first: the microphone is in use.".to_owned())
     } else {
-        app.client.voice_call_start(key, sdp_offer)
+        let language = crate::voice_language::language(app, language);
+        app.client.voice_call_start(key, sdp_offer, language)
     };
     if let Err(why) = &started {
         app.voice_call.refused = Some((key.clone(), why.clone()));

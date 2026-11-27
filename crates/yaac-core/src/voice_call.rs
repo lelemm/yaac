@@ -17,6 +17,11 @@ pub fn offered(effective: Option<&ThreadEffective>) -> bool {
     effective.is_some_and(|e| e.capabilities.contains(&Capability::VoiceCall))
 }
 
+/// The thread's call can be told which language to speak (`voiceCallLanguage`).
+pub fn speaks_language(effective: Option<&ThreadEffective>) -> bool {
+    effective.is_some_and(|e| e.capabilities.contains(&Capability::VoiceCallLanguage))
+}
+
 /// Where a call is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CallPhase {

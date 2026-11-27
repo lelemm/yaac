@@ -980,6 +980,11 @@ fn string<'a>(value: &'a Value, field: &str) -> &'a str {
     value[field].as_str().unwrap_or_default()
 }
 
+/// `field` when it is a non-empty string.
+fn optional_string<'a>(value: &'a Value, field: &str) -> Option<&'a str> {
+    value[field].as_str().filter(|s| !s.is_empty())
+}
+
 fn key(app: &YaacApp, id: &str) -> Option<ThreadKey> {
     ThreadKey::from_address(&Address(id.to_owned()))
         .filter(|key| app.client.state.summary(key).is_some())

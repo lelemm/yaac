@@ -73,6 +73,11 @@ export interface VoiceCallEvents {
   ended(error?: string): void;
 }
 
+export interface VoiceCallOptions {
+  /** The language to speak, a BCP-47 tag (`pt-BR`); absent: the harness's own default. */
+  language?: string;
+}
+
 /** One running call inside a provider. */
 export interface VoiceCall {
   /**

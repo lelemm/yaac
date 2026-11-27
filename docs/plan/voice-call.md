@@ -37,6 +37,65 @@ Read from `codex app-server generate-ts --experimental` and the tagged source `r
   `thread/realtime/stop { threadId }` ends it.
 - `model` and `voice` stay unset: Codex picks them (invariant 3).
 
+## Language
+
+**P401 (Proposed — the owner's request).** Release 1052's first real call answered in English
+to a user speaking Portuguese: nothing told the realtime model which language to use. The call
+now speaks the client's language unless the user chose another.
+
+**What Codex takes (verified, codex-cli 0.172.0, `generate-ts --experimental` and the source
+at `rust-v0.172.0`).** `ThreadRealtimeStartParams` has no language or locale field, and the
+TUI's `/voice` sets no language (`tui/src/realtime_call.rs` sends `prompt: None`,
+`initial_items: Vec::new()`). Of the fields that could steer it:
+
+- `prompt` **replaces** the realtime model's whole default prompt
+  (`codex-prompts::prepare_realtime_backend_prompt`: a request prompt wins over
+  `templates/realtime/backend_prompt.md`, Codex's identity, tone and handoff rules). Too
+  invasive.
+- `realtimeStartInstructions` — "Developer instructions given to the backing Codex model when
+  this realtime session starts" — goes to the *backing* Codex agent's turn context
+  (`RealtimeState`, in place of `templates/realtime/realtime_start.md`), not the voice.
+- `voice` picks a voice, not a language.
+- `initialItems` — "complete role-bearing text items to the initial Frameless Bidi session
+  history … only supported by realtime V3", `{ role: "user" | "developer" | "assistant",
+  text }`, at most 128 items and 8,192 estimated tokens. Codex puts them in the session it
+  posts with the offer (`session.initial_items`, codex-api
+  `realtime_websocket/methods_frameless_bidi::session_json`; covered by
+  `sends_backend_frameless_session_call_to_realtime_calls` in `realtime_call.rs`), **beside**
+  its own `instructions`. `existingCall` refuses it; a `webrtc` offer (YAAC's path) takes it.
+
+So yaacd sends one `developer` initial item, nothing else:
+
+> Speak with the user in Brazilian Portuguese (pt-BR), unless they ask for another language.
+> Keep code identifiers, file names and commands exactly as they are.
+
+The name is the tag's English name (`Intl.DisplayNames`; the tag itself where there is none).
+Codex's prompt, the backing model's instructions, the model and the voice are untouched.
+
+**Protocol.** `VoiceCallStartParams.language?` — a BCP-47 tag (2–3 letter language, optional
+subtags, at most 35 characters; anything else is `invalid_params`). Additive: `yaacd` announces
+the feature `voiceCallLanguage`, and the Codex provider puts the capability `voiceCallLanguage`
+beside `voiceCall` on the instance and the thread. The window sends `language` only where the
+thread's effective capabilities contain it (so an older `yaacd` never sees the field), and the
+hub's dialect folds the capability away when the daemon lacks the feature. `yaacd` drops a
+language the thread's harness cannot take; the call still runs.
+
+**Which language.** First match wins:
+
+1. the renderer's `language` in `composer.callStart` / `composer.voiceStart` — the Android app
+   always sends one: Settings → **Voice call language** on the phone (kept on the phone,
+   never in the hub), else the phone's locale (`Locale.toLanguageTag()`);
+2. the window's **Settings → Window → Voice → Voice call language** (`ui_state`
+   `voiceLanguage`, a tag; `""` = *Same as this device*);
+3. the computer's display language: Windows `GetUserPreferredUILanguages` (first entry),
+   elsewhere `LC_ALL` / `LC_MESSAGES` / `LANG` (`pt_BR.UTF-8` → `pt-BR`; `C` and `POSIX` are
+   none);
+4. none: the harness's own default.
+
+Settings lists common languages by their own names (`yaac_core::voice_language::CHOICES`; the
+phone has the same list) plus *Same as this device (…)*. The same language goes to dictation
+([voice.md § Language](voice.md#language)).
+
 ## Consent
 
 A call **acts in the thread**: what the model hands off becomes turns that run with the
@@ -69,12 +128,14 @@ message.
 | `initialize` → `features` | `voiceCall` | This `yaacd` implements `voiceCall/*`. Without it the hub's dialect folds `voiceCall` out of every capability set. |
 | `ProviderDescriptor.capabilities` | `voiceCall` | The harness has the realtime WebRTC surface (Codex: the app-server answers `thread/realtime/listVoices`). Any sign-in type. |
 | `ThreadEffective.capabilities` | `voiceCall` | This thread can start a call now. No format: media does not pass through YAAC. |
+| `initialize` → `features` | `voiceCallLanguage` | `voiceCall/start` takes `language`. Without it the dialect folds `voiceCallLanguage` away. |
+| `ProviderDescriptor` / `ThreadEffective.capabilities` | `voiceCallLanguage` | The harness can be told the call's language (Codex: a v3 `initialItems` developer item). |
 
 ## Methods (yaacd ⇄ host, additive feature `voiceCall`)
 
 | Method | Direction | Params → Result |
 | --- | --- | --- |
-| `voiceCall/start` (op) | host → daemon | `VoiceCallStartParams { opId, threadId, sdpOffer }` → `VoiceCallStartResult { callId }`. Answered once Codex accepted `thread/realtime/start`; every notification below for this call comes after the result. |
+| `voiceCall/start` (op) | host → daemon | `VoiceCallStartParams { opId, threadId, sdpOffer, language? }` → `VoiceCallStartResult { callId }`. `language` (BCP-47) only with `voiceCallLanguage` ([§ Language](#language)). Answered once Codex accepted `thread/realtime/start`; every notification below for this call comes after the result. |
 | `voiceCall/end` | host → daemon | `VoiceCallEndParams { callId }` → `{}`. `voiceCall/state ended` follows. Ending an unknown or ended call is not an error. |
 | `voiceCall/answer` | daemon → host | `VoiceCallAnswerParams { callId, sdpAnswer }`. Once per call. The client sets it as the remote description. |
 | `voiceCall/state` | daemon → host | `VoiceCallStateParams { callId, state, error? }`. `state`: `connecting` (start accepted, waiting for the answer) → `active` (answer sent) → `ended`. `ended` is always the last message for a call; `error` is words for the user, absent after a normal end. |
@@ -99,7 +160,7 @@ Target-side params flattened beside `target` (`TargetVoiceCall<P>` = `{ target, 
 
 | Name | Direction | Payload |
 | --- | --- | --- |
-| `hub/voiceCall/start` | window → hub | `{ target, opId, threadId, sdpOffer }` → `{ callId }` |
+| `hub/voiceCall/start` | window → hub | `{ target, opId, threadId, sdpOffer, language? }` → `{ callId }` |
 | `hub/voiceCall/end` | window → hub | `{ target, callId }` → `{}` |
 | `hub/voiceCall/answer` | hub → the starting window only | `{ target, callId, sdpAnswer }` |
 | `hub/voiceCall/state` | hub → the starting window only | `{ target, callId, state, error? }` |
@@ -133,7 +194,7 @@ Commands (renderer → controller):
 
 | Command | Params | Effect |
 | --- | --- | --- |
-| `composer.callStart` | `{ key, sdpOffer }` | Starts a call on `key` with the renderer's offer. Needs the composer writable and no other call in this window. |
+| `composer.callStart` | `{ key, sdpOffer, language? }` | Starts a call on `key` with the renderer's offer, in `language` (BCP-47) or the window's ([§ Language](#language)). Needs the composer writable and no other call in this window. |
 | `composer.callEnd` | `{ key }` | Ends the call. Always allowed. |
 
 **Where it lives (answers for the renderers).**

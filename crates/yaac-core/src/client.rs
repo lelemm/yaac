@@ -675,7 +675,9 @@ impl Client {
     /// Start a voice call with a thread from the renderer's complete SDP offer. Refused while a
     /// call is running in this window, or when the thread cannot call now
     /// ([`crate::voice_call::offered`]). The answer arrives in [`Client::voice_call`].
-    pub fn voice_call_start(&mut self, key: &ThreadKey, sdp_offer: String) -> Result<(), String> {
+    /// `language` (a BCP-47 tag) is sent only where the thread's effective capabilities contain
+    /// `voiceCallLanguage`; elsewhere the call speaks the harness's default.
+    pub fn voice_call_start(&mut self, key: &ThreadKey, sdp_offer: String, language: Option<String>) -> Result<(), String> {
         if self.voice_call.is_some() {
             return Err("A voice call is already running in this window.".into());
         }
@@ -686,8 +688,12 @@ impl Client {
         if sdp_offer.trim().is_empty() {
             return Err("The voice call has no SDP offer.".into());
         }
+        let language = language.filter(|_| crate::voice_call::speaks_language(effective));
         let op = self.op_id();
-        let params = json!({ "target": key.target, "opId": op, "threadId": key.thread, "sdpOffer": sdp_offer });
+        let mut params = json!({ "target": key.target, "opId": op, "threadId": key.thread, "sdpOffer": sdp_offer });
+        if let Some(language) = language {
+            params["language"] = json!(language);
+        }
         self.voice_call = Some(crate::voice_call::VoiceCall::new(key.clone()));
         self.voice_call_outcome = None;
         self.request(attach::names::VOICE_CALL_START, params, Call::VoiceCallStart(key.clone()));
@@ -3886,18 +3892,33 @@ mod voice_tests {
     #[test]
     fn a_call_needs_the_capability_and_runs_one_at_a_time() {
         let (mut client, wire, key) = setup_call(false);
-        assert!(client.voice_call_start(&key, "v=offer".into()).is_err());
+        assert!(client.voice_call_start(&key, "v=offer".into(), None).is_err());
         assert!(wire.borrow().sent.is_empty());
         let (mut client, _, key) = setup_call(true);
-        assert!(client.voice_call_start(&key, " ".into()).is_err(), "an offer is needed");
-        assert!(client.voice_call_start(&key, "v=offer".into()).is_ok());
-        assert!(client.voice_call_start(&key, "v=offer".into()).is_err(), "one call per window");
+        assert!(client.voice_call_start(&key, " ".into(), None).is_err(), "an offer is needed");
+        assert!(client.voice_call_start(&key, "v=offer".into(), None).is_ok());
+        assert!(client.voice_call_start(&key, "v=offer".into(), None).is_err(), "one call per window");
+    }
+
+    #[test]
+    fn a_call_carries_the_language_only_where_the_thread_takes_one() {
+        let (mut client, wire, key) = setup_call(true);
+        client.voice_call_start(&key, "v=offer".into(), Some("pt-BR".into())).unwrap();
+        let (_, params) = last_request(&wire, attach::names::VOICE_CALL_START);
+        assert!(params.get("language").is_none(), "no voiceCallLanguage: nothing an older yaacd would ignore");
+
+        let (mut client, wire, key) = setup_call(true);
+        let t = client.state.transcripts.get_mut(&key).unwrap();
+        t.effective.as_mut().unwrap().capabilities.push(yaac_protocol::Capability::VoiceCallLanguage);
+        client.voice_call_start(&key, "v=offer".into(), Some("pt-BR".into())).unwrap();
+        let (_, params) = last_request(&wire, attach::names::VOICE_CALL_START);
+        assert_eq!(params["language"], "pt-BR");
     }
 
     #[test]
     fn a_call_carries_the_offer_keeps_the_answer_and_the_words_and_ends_once() {
         let (mut client, wire, key) = setup_call(true);
-        client.voice_call_start(&key, "v=offer".into()).unwrap();
+        client.voice_call_start(&key, "v=offer".into(), None).unwrap();
         let (id, params) = last_request(&wire, attach::names::VOICE_CALL_START);
         assert_eq!(params["target"], "box");
         assert_eq!(params["threadId"], "t1");
@@ -3939,7 +3960,7 @@ mod voice_tests {
     #[test]
     fn hanging_up_while_starting_ends_the_call_once_it_has_an_id_and_a_failed_start_says_why() {
         let (mut client, wire, key) = setup_call(true);
-        client.voice_call_start(&key, "v=offer".into()).unwrap();
+        client.voice_call_start(&key, "v=offer".into(), None).unwrap();
         let (id, _) = last_request(&wire, attach::names::VOICE_CALL_START);
         client.voice_call_end();
         assert!(!wire.borrow().sent.iter().any(|m| matches!(m, Message::Request { method, .. } if method == attach::names::VOICE_CALL_END)));
@@ -3948,7 +3969,7 @@ mod voice_tests {
         assert_eq!(end["callId"], "c9");
 
         let (mut client, wire, key) = setup_call(true);
-        client.voice_call_start(&key, "v=offer".into()).unwrap();
+        client.voice_call_start(&key, "v=offer".into(), None).unwrap();
         let (id, _) = last_request(&wire, attach::names::VOICE_CALL_START);
         let error = ErrorObject { code: ErrorCode::OutcomeUnknown, message: "dropped".into(), data: None };
         deliver(&mut client, &wire, Message::Error { id: Some(id), error });

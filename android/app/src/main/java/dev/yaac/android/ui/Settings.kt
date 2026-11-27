@@ -104,6 +104,7 @@ fun SettingsScreen(view: JsonElement?, send: (String, Any?) -> Unit, onChangeHub
                     }
                     // This app's build against the hub's, and downloading another (ui/Updates.kt).
                     UpdatesRow()
+                    VoiceLanguageRow()
                 }
             }
         } else {
@@ -447,6 +448,40 @@ private fun ThemeMock() {
             Column(Modifier.padding(3.dp)) {
                 T("Run a command", tiny, c.text, maxLines = 1)
                 Box(Modifier.clip(RoundedCornerShape(2.dp)).background(c.accent).padding(horizontal = 4.dp)) { T("Allow once", tiny, c.onAccent, maxLines = 1) }
+            }
+        }
+    }
+}
+
+/**
+ * Settings → Voice call language: this phone's own choice (core/VoiceLanguage.kt), never the
+ * hub's. Calls and dictation speak it; "Same as this device" follows the phone's language.
+ */
+@Composable
+private fun VoiceLanguageRow() {
+    val c = LocalYaac.current
+    val type = LocalType.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val device = java.util.Locale.getDefault()
+    var chosen by remember { mutableStateOf(dev.yaac.android.core.VoiceLanguage.choice(context)) }
+    var open by rememberSaveable { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth().clickable { open = !open }.heightIn(min = 52.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            T("Voice call language", type.ui.copy(fontSize = 16.sp))
+            T(dev.yaac.android.core.VoiceLanguage.label(chosen, device), type.small, c.muted)
+        }
+        Icon(YIcon.ChevronRight, c.muted, size = 18.dp)
+    }
+    if (open) {
+        val options = listOf("" to dev.yaac.android.core.VoiceLanguage.label("", device)) + dev.yaac.android.core.VoiceLanguage.choices
+        for ((tag, name) in options) {
+            Row(Modifier.fillMaxWidth().clickable {
+                dev.yaac.android.core.VoiceLanguage.choose(context, tag)
+                chosen = tag
+                open = false
+            }.heightIn(min = 44.dp).padding(start = 36.dp, end = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                T(name, type.ui.copy(fontSize = 15.sp), if (tag == chosen) c.text else c.muted, modifier = Modifier.weight(1f))
+                if (tag == chosen) T("✓", type.ui, c.text)
             }
         }
     }

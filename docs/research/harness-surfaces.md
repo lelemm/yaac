@@ -987,6 +987,16 @@ Read from the same schema and tag; no realtime session was opened and no audio w
   steers a turn **in the session's own thread** (nothing in that path names another thread).
 - v3 always flushes the transcript tail into the thread as user messages
   (`flushTranscriptTailOnSessionEnd` is forced on).
+- **Language** (read 2026-11-27, same tag). No language or locale field anywhere in
+  `ThreadRealtimeStartParams`; the TUI's `/voice` sets none. `prompt` replaces the realtime
+  model's default prompt (`codex-prompts::prepare_realtime_backend_prompt`; a config
+  `experimental_realtime_ws_backend_prompt` wins over both). `realtimeStartInstructions`
+  replaces the default `realtime_start.md` developer section of the *backing* model's turn
+  context (`core/src/session/world_state.rs` `RealtimeState`). `initialItems` (v3 only,
+  roles `user`/`developer`/`assistant`, ≤ 128 items, ≤ 8,192 estimated tokens) become
+  `session.initial_items` messages of the session posted to `realtime/calls`, beside its
+  `instructions` (`methods_frameless_bidi::session_json`). The v2 transcription session has no
+  language either. YAAC's use: [voice-call § Language](../plan/voice-call.md#language).
 
 ## Claude Code dictation (verified 2026-11-27)
 

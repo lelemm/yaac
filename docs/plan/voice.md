@@ -68,6 +68,23 @@ nearest reason in the same order (`"No transcriber available. Codex on devbox: �
 machine is connected. The label is `"{instance display name} on {target name}"`. A user
 preference can be added later; there is none now.
 
+## Language
+
+**P401.** A dictation listens for the same language a call speaks
+([voice-call.md § Language](voice-call.md#language)): the renderer's `language` in
+`composer.voiceStart` (Android: the phone's setting or locale), else the window's *Voice call
+language*, else the computer's display language. The window passes it as `language` on
+`hub/voice/start` → `voice/start`. What each transcriber does with it (verified):
+
+- **Claude `dictate`** (2.1.330): `start` takes `language`, "the language spoken, as a code
+  (en, pt-BR) or a name" — passed as is.
+- **Claude `voice_stream` fallback** (P390): the `language` query parameter, which takes a
+  two-letter code; yaacd maps the tag to its base language (`pt-BR` → `pt`) and sends `en` for
+  one it does not list (`providers/claude/voice-stream.ts` `voiceLanguage`).
+- **Codex transcription** (0.172.0): no field. The v2 transcription session (`type:
+  "transcription"`) Codex builds carries no language, and `thread/realtime/start` has none, so
+  the language is ignored there and Codex's transcriber detects it.
+
 ## Methods (yaacd ⇄ host, additive feature `transcription`)
 
 | Method | Direction | Params → Result |

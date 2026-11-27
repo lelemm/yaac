@@ -301,6 +301,8 @@ pub(crate) struct UiState {
     /// Submissions made after the in-flight history read was sent, newest first.
     pub(crate) composer_history_loading: Option<Vec<String>>,
     pub(crate) desktop_call_consent: bool,
+    /// Settings → Voice call language (`""`: the device's).
+    pub(crate) voice_language: String,
     pub(crate) composer_history_walk: Option<(DraftRef, usize)>,
     pub(crate) dismissed_artifacts: BTreeSet<String>,
     /// The request card whose button has keyboard focus (set while drawing it).
@@ -421,6 +423,7 @@ impl UiState {
             composer_history: Default::default(),
             composer_history_loading: None,
             desktop_call_consent: false,
+            voice_language: String::new(),
             composer_history_walk: None,
             dismissed_artifacts: BTreeSet::new(),
             restore: None,
@@ -468,6 +471,7 @@ impl UiState {
             recent: self.recent.clone(),
             composer_history: self.composer_history.clone(),
             desktop_call_consent: self.desktop_call_consent,
+            voice_language: self.voice_language.clone(),
             dismissed_artifacts: self.dismissed_artifacts.clone(),
             terminal: self.terminal,
         }
@@ -494,6 +498,7 @@ impl UiState {
         self.recent = p.recent.clone();
         self.composer_history = p.composer_history.clone();
         self.desktop_call_consent = p.desktop_call_consent;
+        self.voice_language = p.voice_language.clone();
         self.composer_history_walk = None;
         self.dismissed_artifacts = p.dismissed_artifacts.clone();
         self.terminal = p.terminal;

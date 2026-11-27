@@ -33,7 +33,9 @@ object CallWire {
         return if (composer["key"].text == key) composer[VIEW].obj else null
     }
 
-    fun startPayload(key: String, sdp: String) = mapOf("key" to key, "sdpOffer" to sdp)
+    /** With [language] (BCP-47, this phone's choice or locale) when there is one. */
+    fun startPayload(key: String, sdp: String, language: String? = null): Map<String, String> =
+        if (language.isNullOrEmpty()) mapOf("key" to key, "sdpOffer" to sdp) else mapOf("key" to key, "sdpOffer" to sdp, "language" to language)
     fun endPayload(key: String) = mapOf("key" to key)
 }
 

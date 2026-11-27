@@ -48,7 +48,7 @@ import kotlinx.serialization.json.JsonObject
  * itself and streams it with `composer.voiceAudio`. The words land in the field through the
  * controller's `insert`, at the caret; nothing is ever sent by itself.
  */
-class VoiceUi(private val key: String, private val send: (String, Any?) -> Unit) {
+class VoiceUi(private val key: String, private val send: (String, Any?) -> Unit, private val language: () -> String? = { null }) {
     var recorder: VoiceRecorder? = null
     var level by mutableFloatStateOf(0f)
     /** A failure on this phone (permission, microphone) in words; the controller has its own. */
@@ -56,7 +56,8 @@ class VoiceUi(private val key: String, private val send: (String, Any?) -> Unit)
 
     fun record(rate: Int) {
         localError = null
-        send("composer.voiceStart", mapOf("key" to key))
+        // The same language as a call: this phone's choice or locale (core/VoiceLanguage.kt).
+        send("composer.voiceStart", language()?.let { mapOf("key" to key, "language" to it) } ?: mapOf("key" to key))
         val handler = android.os.Handler(android.os.Looper.getMainLooper())
         recorder = VoiceRecorder(
             rate,

@@ -362,3 +362,25 @@ pub fn named_event_exists(name: &str) -> bool {
     true
 }
 
+
+/// The user's first preferred Windows display language as a locale name (`pt-BR`), or `None`.
+pub fn user_ui_language() -> Option<String> {
+    use windows_sys::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
+    let mut count = 0u32;
+    let mut len = 0u32;
+    // SAFETY: a null buffer with a zero length asks only for the needed length, written to `len`.
+    let ok = unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, ptr::null_mut(), &mut len) };
+    if ok == 0 || len == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; len as usize];
+    // SAFETY: `buf` holds `len` UTF-16 units, the length the previous call asked for.
+    let ok = unsafe { GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, buf.as_mut_ptr(), &mut len) };
+    if ok == 0 {
+        return None;
+    }
+    // A double-NUL-terminated list; the first entry is the one the user prefers.
+    let first = buf.split(|&c| c == 0).next().unwrap_or_default();
+    let name = String::from_utf16_lossy(first);
+    (!name.is_empty()).then_some(name)
+}

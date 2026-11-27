@@ -128,9 +128,10 @@ fn busy_elsewhere(app: &YaacApp, key: &DraftRef) -> bool {
     app.client.dictation().is_some_and(|d| &d.key != key)
 }
 
-/// `composer.voiceStart`: start dictating into `key`'s composer. This controller records when
-/// it can ([`voice_capture::AVAILABLE`]); otherwise the renderer sends `composer.voiceAudio`.
-pub(crate) fn start(app: &mut YaacApp, key: &DraftRef) {
+/// `composer.voiceStart`: start dictating into `key`'s composer, in the renderer's `language` or
+/// the window's ([`crate::voice_language`]). This controller records when it can
+/// ([`voice_capture::AVAILABLE`]); otherwise the renderer sends `composer.voiceAudio`.
+pub(crate) fn start(app: &mut YaacApp, key: &DraftRef, language: Option<&str>) {
     #[cfg(feature = "desktop")]
     if crate::desktop_call::busy(app) {
         return;
@@ -141,7 +142,8 @@ pub(crate) fn start(app: &mut YaacApp, key: &DraftRef) {
     }
     app.voice.error = None;
     app.voice.level = 0.0;
-    if let Err(why) = app.client.voice_start(key, None) {
+    let language = crate::voice_language::language(app, language);
+    if let Err(why) = app.client.voice_start(key, language) {
         app.voice.error = Some((key.clone(), why));
         return;
     }

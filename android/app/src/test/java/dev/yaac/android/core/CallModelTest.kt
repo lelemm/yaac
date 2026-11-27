@@ -246,6 +246,8 @@ class CallModelTest {
         assertEquals("composer.callStart", CallWire.START)
         assertEquals("composer.callEnd", CallWire.END)
         assertEquals(mapOf("key" to "k", "sdpOffer" to "v=0"), CallWire.startPayload("k", "v=0"))
+        assertEquals(mapOf("key" to "k", "sdpOffer" to "v=0", "language" to "pt-BR"), CallWire.startPayload("k", "v=0", "pt-BR"))
+        assertEquals(mapOf("key" to "k", "sdpOffer" to "v=0"), CallWire.startPayload("k", "v=0", ""))
         assertEquals(mapOf("key" to "k"), CallWire.endPayload("k"))
     }
 

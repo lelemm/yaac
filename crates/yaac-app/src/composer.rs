@@ -871,7 +871,7 @@ enum VoiceClick {
 /// The mic's click, once the buttons are drawn.
 fn voice_clicked(app: &mut YaacApp, key: &DraftRef, click: Option<VoiceClick>) {
     match click {
-        Some(VoiceClick::Start) => crate::voice::start(app, key),
+        Some(VoiceClick::Start) => crate::voice::start(app, key, None),
         Some(VoiceClick::Stop) => crate::voice::stop(app, key),
         None => {}
     }

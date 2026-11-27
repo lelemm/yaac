@@ -99,6 +99,9 @@ pub struct UiPrefs {
     pub dismissed_artifacts: BTreeSet<String>,
     /// The first-use desktop voice call explanation was accepted.
     pub desktop_call_consent: bool,
+    /// The language of voice calls and dictation, a BCP-47 tag; `""`: the device's
+    /// ([`crate::voice_language`]).
+    pub voice_language: String,
     /// Settings → Terminal (P339) and the terminal panel's height (P338).
     pub terminal: TerminalPrefs,
 }
@@ -137,7 +140,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, themes: Default::default(), muted_open: false, font_size: 13.5, fonts: FontPrefs::default(), send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), composer_history: Default::default(), dismissed_artifacts: BTreeSet::new(), desktop_call_consent: false, terminal: TerminalPrefs::default() }
+        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, themes: Default::default(), muted_open: false, font_size: 13.5, fonts: FontPrefs::default(), send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), composer_history: Default::default(), dismissed_artifacts: BTreeSet::new(), desktop_call_consent: false, voice_language: String::new(), terminal: TerminalPrefs::default() }
     }
 }
 
@@ -178,6 +181,8 @@ pub mod keys {
     pub const DISMISSED_ARTIFACTS: &str = "dismissedArtifacts";
     /// First-use consent for desktop voice calls.
     pub const DESKTOP_CALL_CONSENT: &str = "desktopCallConsent";
+    /// Settings → Voice call language; `""` follows the device.
+    pub const VOICE_LANGUAGE: &str = "voiceLanguage";
     /// Side-by-side layout in diff tabs.
     pub const DIFF_SIDE_BY_SIDE: &str = "diffSideBySide";
     /// Settings → Terminal and the panel's height (P338, P339).
@@ -185,7 +190,7 @@ pub mod keys {
     /// Commands whose "Works in the terminal" differs from the default (P338).
     pub const TERMINAL_COMMANDS: &str = "terminalCommands";
     /// Every key.
-    pub const ALL: [&str; 21] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, PILL_POSITION, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS, COMPOSER_HISTORY, DISMISSED_ARTIFACTS, FONTS, DESKTOP_CALL_CONSENT];
+    pub const ALL: [&str; 22] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, PILL_POSITION, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS, COMPOSER_HISTORY, DISMISSED_ARTIFACTS, FONTS, DESKTOP_CALL_CONSENT, VOICE_LANGUAGE];
 }
 
 impl UiPrefs {
@@ -231,6 +236,7 @@ impl UiPrefs {
             keys::COMMANDER_RECENT => json!(self.recent),
             keys::DISMISSED_ARTIFACTS => json!(self.dismissed_artifacts),
             keys::DESKTOP_CALL_CONSENT => json!(self.desktop_call_consent),
+            keys::VOICE_LANGUAGE => json!(self.voice_language),
             keys::COMPOSER_HISTORY => json!(self.composer_history.iter()
                 .filter(|text| yaac_protocol::attach::history_entry(text))
                 .take(yaac_protocol::attach::COMPOSER_HISTORY_LIMIT).collect::<Vec<_>>()),
@@ -268,6 +274,11 @@ impl UiPrefs {
             keys::AGENTS_DOCKED => self.docked = v.as_bool().unwrap_or(self.docked),
             keys::TRAY_ON_CLOSE => self.tray_on_close = v.as_bool().unwrap_or(self.tray_on_close),
             keys::DESKTOP_CALL_CONSENT => self.desktop_call_consent = v.as_bool().unwrap_or(self.desktop_call_consent),
+            keys::VOICE_LANGUAGE => {
+                if let Some(s) = v.as_str() {
+                    self.voice_language = crate::voice_language::normalize(s).unwrap_or_default();
+                }
+            }
             keys::KEY_BINDINGS => {
                 if v.is_object() {
                     self.bindings = crate::keys::Overrides::from_value(v);

@@ -82,7 +82,8 @@ test("voiceCall is offered whenever the realtime methods answer, whatever the si
       assert.equal(probe.capabilities.includes("voiceCall"), c.realtime, JSON.stringify(c));
       const eff = await r.provider.effective(THREAD);
       assert.equal(!!eff.capabilities?.includes("voiceCall"), c.realtime, JSON.stringify(c));
-      if (!c.realtime) assert.throws(() => r.provider.startVoiceCall(THREAD, OFFER, recorder().events), /not available/);
+      assert.equal(!!eff.capabilities?.includes("voiceCallLanguage"), c.realtime, JSON.stringify(c));
+      if (!c.realtime) assert.throws(() => r.provider.startVoiceCall(THREAD, OFFER, {}, recorder().events), /not available/);
     } finally {
       await r.done();
     }
@@ -94,7 +95,7 @@ test("a call starts realtime over WebRTC on the user's thread, relays the answer
   try {
     await r.provider.probe();
     const rec = recorder();
-    const call = r.provider.startVoiceCall(THREAD, OFFER, rec.events);
+    const call = r.provider.startVoiceCall(THREAD, OFFER, {}, rec.events);
     await call.accepted;
 
     assert.equal(r.fake.requests("thread/resume").length, 1, "the thread is subscribed first");
@@ -106,6 +107,7 @@ test("a call starts realtime over WebRTC on the user's thread, relays the answer
     assert.equal(rt!.params.version, "v3");
     assert.equal(rt!.params.model, undefined, "Codex picks the model (invariant 3)");
     assert.equal(rt!.params.voice, undefined);
+    assert.equal(rt!.params.initialItems, undefined, "no language asked: Codex's own default");
 
     push(r.fake, "thread/realtime/started", { realtimeSessionId: "s", version: "v3" });
     push(r.fake, "thread/realtime/sdp", { sdp: "v=answer\r\n" });
@@ -148,7 +150,7 @@ test("Codex refusing the start is the start's error; an error during the call en
   try {
     await refused.provider.probe();
     const rec = recorder();
-    const call = refused.provider.startVoiceCall(THREAD, OFFER, rec.events);
+    const call = refused.provider.startVoiceCall(THREAD, OFFER, {}, rec.events);
     await assert.rejects(call.accepted, (e: Error & { code?: string }) => e.code === "provider_unavailable" && /conversational/.test(e.message));
     assert.deepEqual(rec.ended, []);
   } finally {
@@ -158,7 +160,7 @@ test("Codex refusing the start is the start's error; an error during the call en
   try {
     await r.provider.probe();
     const rec = recorder();
-    const call = r.provider.startVoiceCall(THREAD, OFFER, rec.events);
+    const call = r.provider.startVoiceCall(THREAD, OFFER, {}, rec.events);
     await call.accepted;
     push(r.fake, "thread/realtime/error", { message: "sideband dropped" });
     await until(() => rec.ended.length === 1);
@@ -177,11 +179,34 @@ test("Codex closing the session for its own reason ends the call with that reaso
   try {
     await r.provider.probe();
     const rec = recorder();
-    const call = r.provider.startVoiceCall(THREAD, OFFER, rec.events);
+    const call = r.provider.startVoiceCall(THREAD, OFFER, {}, rec.events);
     await call.accepted;
     push(r.fake, "thread/realtime/closed", { reason: "session_expired" });
     await until(() => rec.ended.length === 1);
     assert.match(rec.ended[0]!, /session_expired/);
+  } finally {
+    await r.done();
+  }
+});
+
+test("a call language is one developer initial item beside Codex's own instructions", async () => {
+  const r = await rig();
+  try {
+    await r.provider.probe();
+    const call = r.provider.startVoiceCall(THREAD, OFFER, { language: "pt-BR" }, recorder().events);
+    await call.accepted;
+    const [rt] = r.fake.requests("thread/realtime/start");
+    assert.equal(rt!.params.version, "v3", "initialItems are v3 only");
+    const items = rt!.params.initialItems as Array<{ role: string; text: string }>;
+    assert.equal(items.length, 1);
+    assert.equal(items[0]!.role, "developer");
+    assert.match(items[0]!.text, /^Speak with the user in Brazilian Portuguese \(pt-BR\)/);
+    assert.match(items[0]!.text, /code identifiers/);
+    // Codex's own prompt and the backing model's start instructions are left alone.
+    assert.equal(rt!.params.prompt, undefined);
+    assert.equal(rt!.params.realtimeStartInstructions, undefined);
+    assert.equal(rt!.params.model, undefined, "invariant 3");
+    call.end();
   } finally {
     await r.done();
   }

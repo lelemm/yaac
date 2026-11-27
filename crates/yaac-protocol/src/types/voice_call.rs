@@ -39,6 +39,12 @@ pub struct VoiceCallStartParams {
     /// The client's complete (non-trickle) SDP offer: an audio track and the realtime events
     /// data channel.
     pub sdp_offer: String,
+    /// The language to speak with the user, as a BCP-47 tag (`pt-BR`). Absent: the harness's
+    /// own default. Sent only where the thread's effective capabilities contain
+    /// `voiceCallLanguage`; `yaacd` turns it into the least invasive instruction the harness
+    /// takes (docs/plan/voice-call.md § Language).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 /// The call that started.

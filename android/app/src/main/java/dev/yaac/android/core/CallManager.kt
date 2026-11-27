@@ -96,7 +96,7 @@ object CallManager {
     private fun apply(effects: List<CallEffect>) {
         for (fx in effects) when (fx) {
             CallEffect.CreateOffer -> open()
-            is CallEffect.SendStart -> controller?.send(CallWire.START, CallWire.startPayload(fx.key, fx.sdp))
+            is CallEffect.SendStart -> controller?.send(CallWire.START, CallWire.startPayload(fx.key, fx.sdp, app?.let(VoiceLanguage::current)))
             is CallEffect.ApplyAnswer -> peer?.applyAnswer(fx.sdp)
             is CallEffect.SendEnd -> controller?.send(CallWire.END, CallWire.endPayload(fx.key))
             CallEffect.ClosePeer -> close()

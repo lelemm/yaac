@@ -174,6 +174,7 @@ fn caps() -> Vec<Capability> {
         Capability::ForkKeepChildren,
         // A voice call with the thread (docs/plan/voice-call.md): scripted in the demo hub.
         Capability::VoiceCall,
+        Capability::VoiceCallLanguage,
     ]
 }
 

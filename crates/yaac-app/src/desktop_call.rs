@@ -239,7 +239,7 @@ pub(crate) fn upkeep(app: &mut YaacApp) {
                     );
                     return;
                 }
-                if let Err(error) = crate::voice_call::start(app, &session.key, sdp) {
+                if let Err(error) = crate::voice_call::start(app, &session.key, sdp, None) {
                     fail(app, session.key.clone(), error);
                     return;
                 }

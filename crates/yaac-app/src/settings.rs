@@ -1416,6 +1416,8 @@ fn window(ui: &mut egui::Ui, app: &mut YaacApp) {
     };
     ui.label(widgets::secondary(note, &p));
 
+    voice_language(ui, app);
+
     widgets::heading(ui, "Display");
     let host = Host::current();
     let choices = offered(host, crate::display::built());
@@ -1460,6 +1462,28 @@ fn window(ui: &mut egui::Ui, app: &mut YaacApp) {
             }
         });
     }
+}
+
+/// Settings → Window → Voice call language (docs/plan/voice-call.md § Language).
+fn voice_language(ui: &mut egui::Ui, app: &mut YaacApp) {
+    use yaac_core::voice_language::{CHOICES, SAME_AS_DEVICE, label};
+    let p = app.p;
+    widgets::heading(ui, "Voice");
+    let same = match crate::voice_language::device() {
+        Some(tag) => format!("{SAME_AS_DEVICE} ({})", label(&tag)),
+        None => SAME_AS_DEVICE.to_owned(),
+    };
+    let current = if app.ui.voice_language.is_empty() { same.clone() } else { label(&app.ui.voice_language).to_owned() };
+    ui.horizontal(|ui| {
+        ui.label("Voice call language");
+        egui::ComboBox::from_id_salt("voice-language").selected_text(current).show_ui(ui, |ui| {
+            ui.selectable_value(&mut app.ui.voice_language, String::new(), same);
+            for (tag, name) in CHOICES {
+                ui.selectable_value(&mut app.ui.voice_language, (*tag).to_owned(), *name);
+            }
+        });
+    });
+    ui.label(widgets::secondary("The language voice calls speak and dictation listens for. Code identifiers stay as they are.", &p));
 }
 
 fn advanced(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {

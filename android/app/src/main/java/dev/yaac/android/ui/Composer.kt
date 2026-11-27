@@ -336,7 +336,8 @@ private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) ->
     val attach = ActionItem.of(composer["attach"])
     val editable = composer["editable"].flag(true)
     val voice = composer["voice"].obj()
-    val voiceUi = remember(key) { VoiceUi(key, send) }
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+    val voiceUi = remember(key) { VoiceUi(key, send) { dev.yaac.android.core.VoiceLanguage.current(appContext) } }
     Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         // + attaches; touch and hold offers Paste, which goes through the controller (a large
         // paste then offers Attach as file, as on desktop).

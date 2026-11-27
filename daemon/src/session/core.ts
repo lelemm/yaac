@@ -4,6 +4,7 @@ import type { ThreadSetModeParams } from "../protocol/generated/types.js";
 import { Terminals } from "./terminals.js";
 import { VoiceSessions } from "../voice/sessions.js";
 import { MAX_SDP_BYTES, VoiceCalls } from "../voice/calls.js";
+import { isLanguageTag } from "../voice/language.js";
 import type { ConnectionView } from "../protocol/connection.js";
 // The session core: threads, journals, requests, control, the dispatcher, and the index —
 // everything between the providers and the connected clients. It knows no protocol version
@@ -1935,6 +1936,7 @@ export class Core {
       threadArchive: "archive",
       threadDelete: "remove",
       voiceCall: "startVoiceCall",
+      voiceCallLanguage: "startVoiceCall",
       threadTakeOverInterrupt: "interruptHolder",
     };
     eff.capabilities = (eff.capabilities ?? []).filter((c) => {
@@ -1998,10 +2000,13 @@ export class Core {
    * the host's SDP offer. The call acts in the thread, so it is refused where YAAC is not the
    * thread's writer (invariant 9). Answer, state and transcripts go back to `view` only.
    */
-  async voiceCallStart(view: ConnectionView, p: { opId?: unknown; threadId?: unknown; sdpOffer?: unknown }) {
+  async voiceCallStart(view: ConnectionView, p: { opId?: unknown; threadId?: unknown; sdpOffer?: unknown; language?: unknown }) {
     return this.ops.run("voiceCall/start", p.opId, async () => {
       if (typeof p.sdpOffer !== "string" || !p.sdpOffer.trim() || Buffer.byteLength(p.sdpOffer) > MAX_SDP_BYTES) {
         throw notActed("invalid_params", "sdpOffer must be an SDP offer of at most 64 KiB");
+      }
+      if (p.language !== undefined && p.language !== null && (typeof p.language !== "string" || !isLanguageTag(p.language))) {
+        throw notActed("invalid_params", "language must be a BCP-47 language tag such as pt-BR");
       }
       const rt = this.requireThread(p.threadId);
       const readOnly = rt.record.metadataPending ? METADATA_PENDING : this.subagentReadOnly(rt);
@@ -2018,8 +2023,10 @@ export class Core {
       }
       const native = rt.record.native;
       const offer = p.sdpOffer;
+      // A language the harness cannot take is dropped, not refused: the call still works.
+      const language = typeof p.language === "string" && eff.capabilities?.includes("voiceCallLanguage") ? p.language : undefined;
       try {
-        return await this.calls.start(view, rt.id, (events) => provider.startVoiceCall!(native, offer, events));
+        return await this.calls.start(view, rt.id, (events) => provider.startVoiceCall!(native, offer, language ? { language } : {}, events));
       } catch (e) {
         if (e instanceof RpcError) throw notActed(e.code, e.message);
         throw e;
