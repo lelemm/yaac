@@ -102,6 +102,8 @@ fun SettingsScreen(view: JsonElement?, send: (String, Any?) -> Unit, onChangeHub
                             }
                         }
                     }
+                    // This app's build against the hub's, and downloading another (ui/Updates.kt).
+                    UpdatesRow()
                 }
             }
         } else {

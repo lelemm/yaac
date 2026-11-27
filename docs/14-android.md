@@ -24,9 +24,16 @@ only its Tailscale addresses, and admits only devices of its own Tailscale login
 owner) hold for the phone too. It is off until the user turns on **Settings → Android → Allow
 the Android client over Tailscale** ([02](02-architecture.md#attaching-over-tailscale), P377).
 
-**Versions.** The window and the hub are always the same build, but a phone updates through its
-store. When the builds differ, the attach adapts through the dialect layer, as `yaacd` does
+**Versions.** The window and the hub are always the same build, but a phone updates on its
+own. When the builds differ, the attach adapts through the dialect layer, as `yaacd` does
 ([09](09-compatibility.md)). A phone never replaces or restarts the hub.
+
+**Updates.** Until dialects across builds exist, the phone must run the hub's exact build. Each
+release carries the Android app, signed with one release key, and the phone offers the APK of
+**the hub's build** when they differ, and Check for updates in Settings (the latest release only
+with the warning that it needs the PC on the same build). Nothing is downloaded or installed
+without a tap; the system installer does the install. Details in
+[android/README.md](../android/README.md#releases-and-updates).
 
 **Two clients, one owner.** The window and the phone are the same user. Everything that already
 holds for two attached windows holds here too: an action carries an operation id, a request is

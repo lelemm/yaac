@@ -495,6 +495,8 @@ fn hello_has_three_outcomes() {
     older.pump();
     assert!(matches!(&older.state.hub.outcome, HelloOutcome::WindowOutdated { message } if message.contains("Update YAAC")));
     assert!(!older.state.hub.attached);
+    // The refusal names the hub's build (a phone offers the app of that build).
+    assert_eq!(older.state.hub.build.as_deref(), Some("2.0.0"));
 }
 
 // ── persisted choices ──────────────────────────────────────────────────────────────────

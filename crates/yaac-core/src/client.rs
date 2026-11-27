@@ -1327,7 +1327,12 @@ impl Client {
             }
             Call::Hello => {
                 self.state.hub.outcome = match error.code.as_str() {
-                    hub_names::WINDOW_OUTDATED => HelloOutcome::WindowOutdated { message: error.message.clone() },
+                    hub_names::WINDOW_OUTDATED => {
+                        // The refusal names the hub's build; a phone uses it to offer the
+                        // matching app (docs/14-android.md, Updates).
+                        self.state.hub.build = refused_by_build(&error.message);
+                        HelloOutcome::WindowOutdated { message: error.message.clone() }
+                    }
                     hub_names::HUB_OUTDATED => HelloOutcome::HubOutdated { hub_build: String::new() },
                     _ => HelloOutcome::Pending,
                 };
@@ -3016,6 +3021,14 @@ struct FindPage {
     total: u32,
     #[serde(default)]
     cursor: Option<String>,
+}
+
+/// The hub's build in its `window_outdated` refusal: "This window (<ours>) is older than the
+/// running hub (<theirs>). Update YAAC." The text is the only place a refusal carries it.
+fn refused_by_build(message: &str) -> Option<String> {
+    let rest = &message[message.find("running hub (")? + "running hub (".len()..];
+    let build = &rest[..rest.find(')')?];
+    (!build.is_empty() && !build.contains(char::is_whitespace)).then(|| build.to_owned())
 }
 
 #[derive(serde::Deserialize)]

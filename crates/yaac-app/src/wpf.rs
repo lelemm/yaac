@@ -545,7 +545,14 @@ fn view(
         "scenes": Scene::ALL.into_iter().enumerate().map(|(id, s)| json!({ "id": id, "label": s.label() })).collect::<Vec<_>>(),
         "firstRun": fresh || matches!(state.hub.outcome, yaac_core::state::HelloOutcome::WindowOutdated { .. }),
         "scenario": scenario_name(app.scenario),
-        "hub": { "reachable": footer.reachable, "up": footer.up, "down": footer.down },
+        // `build` is this controller's; `hub.build` the hub's, once its hello answered or refused,
+        // and `hub.mismatch` says they differ (the phone offers the hub's app, docs/14-android.md).
+        "build": crate::BUILD,
+        "hub": {
+            "reachable": footer.reachable, "up": footer.up, "down": footer.down,
+            "build": state.hub.build,
+            "mismatch": matches!(state.hub.outcome, yaac_core::state::HelloOutcome::HubOutdated { .. } | yaac_core::state::HelloOutcome::WindowOutdated { .. }),
+        },
         "dialog": dialogs::view(app),
         "canBack": !back.is_empty(), "canForward": !forward.is_empty(),
         "back": back, "forward": forward,

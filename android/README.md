@@ -15,6 +15,10 @@ cd android
 ./gradlew assembleDebug          # app/build/outputs/apk/debug/app-debug.apk
 ```
 
+`versionCode` is the build id (`YAAC_BUILD_ID`, 1 locally) and `versionName` is
+`<workspace version>+<id>` (`+dev` locally), so a release's APK always says the same build as the
+hub it attaches to.
+
 Gradle 9.4.1 (wrapper), AGP 9.2.1 with its built-in Kotlin, the Compose compiler plugin 2.3.10,
 Compose 1.10, Material 3 1.4 (used only for sheets and dialogs, restyled to YAAC tokens).
 `minSdk` 29, `targetSdk` 36. The SDK path is in `local.properties` (not committed).
@@ -27,8 +31,51 @@ saved (SharedPreferences) and reused; intent extras override it. When the hub do
 or refuses the hello (another build), the list shows which hub and why, with **Retry** and
 **Change hub**; when the controller ends (`{"stopped": {"error"}}`), a screen says why, with the
 same two actions. **Settings → Change hub…** (below the pages) returns to the connection screen.
-The phone and the hub must be the same build (`hub/hello`): install the APK built from the same
-tree as the PC's YAAC.
+The phone and the hub must be the same build (`hub/hello`): install the APK of the same release
+as the PC's YAAC (see Releases and updates).
+
+## Releases and updates
+
+**Releases.** `.github/workflows/release.yml` builds the APK in its `android` job, after the
+build id is chosen: `cargo ndk -t arm64-v8a -t x86_64 build --release -p yaac-android` with the
+same `YAAC_BUILD_ID` as `yaac.exe`, then `./gradlew assembleRelease`. The release carries it as
+`yaac-android-<version>-build.<id>.apk` (asset names keep to GitHub's safe characters, as the
+installer's do; release 1048's hand-built `yaac-android-0.1.0+1048.apk` is also recognised) and
+`manifest.json` lists it as component `android` with its SHA-256. R8 is off: the JNI entry points
+and the frames are reached by name.
+
+**Signing.** Releases are signed with the YAAC release key (RSA 4096, alias `yaac`, certificate
+SHA-256 `EA:C4:F7:C7:14:5A:33:FE:9F:DB:01:FE:8D:44:D0:73:19:9D:AF:99:2E:60:63:47:25:79:18:57:04:B6:06:A7`),
+from the repository secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
+`ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`. The keystore is never in the repository; the
+owner keeps its one backup outside it. Losing it means no later APK can update the installed
+app in place. Gradle signs a release only when all four of `YAAC_ANDROID_KEYSTORE` (a path),
+`YAAC_ANDROID_KEYSTORE_PASSWORD`, `YAAC_ANDROID_KEY_ALIAS` and `YAAC_ANDROID_KEY_PASSWORD` are set
+(or the Gradle properties `yaac.android.keystore`, `…keystorePassword`, `…keyAlias`,
+`…keyPassword`); otherwise `assembleRelease` is unsigned, and debug builds use the debug key as
+before.
+
+**Switching from a debug-signed app.** Builds up to 1048 (and every local `assembleDebug`) are
+signed with a debug key. Android refuses to update an app with one signed by another key, so
+before installing the first release-signed APK, uninstall YAAC from the phone once (the saved
+hub and settings go with it; the hub keeps everything else). Later releases update in place.
+
+**Updating from the phone** (`core/Updates.kt` for the pure logic, tested in `UpdatesTest`;
+`core/AppUpdates.kt` for the network and the installer; `ui/Updates.kt`). The controller puts
+its own build in `shell.build` and the hub's in `shell.hub.build` (from the hello, or from the
+hub's `window_outdated` refusal), with `shell.hub.mismatch` when they differ. Then a card offers
+**Download YAAC <hub build> for this phone**: the APK of the release of the hub's build (`GET
+/repos/lelemm/yaac/releases/tags/v<version>-build.<id>`, else the release list), never the
+latest. When the hub's build is older than the app, the card says that Android installs it only
+after an uninstall, and that updating the PC instead keeps the app. **Settings → Check for
+updates** (below the pages) looks up the hub's build when attached, and also shows the latest
+release (`/releases/latest`, no token, `User-Agent: yaac-updater`), offered only with the
+warning that it will not attach until the PC runs it too. A download goes to
+`cache/updates/` with a progress bar, is checked against the asset's size and the manifest's
+SHA-256, and is handed to the system installer (`ACTION_VIEW` through the FileProvider,
+`REQUEST_INSTALL_PACKAGES`). The first time, Android asks to allow YAAC to install unknown apps:
+the app opens that setting, and the user taps **Install** again on return. Nothing downloads or
+installs without a tap.
 
 ## Transports
 
@@ -68,6 +115,7 @@ The UI does not know which transport carries the frames (`core/Transport.kt`).
 | `ui/Connect.kt` | The connection screen and the failed-connection screen. |
 | `ui/Strip.kt` | The strip at medium width (A04). |
 | `notify/Notifier.kt`, `notify/YaacService.kt` | A21: the foreground service ("Keep running in the background", `shell.trayOnClose`) with the ongoing "YAAC · N need you" and Quit; one sticky high-importance notification per thread that needs you, withdrawn when answered anywhere, summarised from two up. |
+| `core/Updates.kt`, `core/AppUpdates.kt`, `ui/Updates.kt` | Releases and updates: build labels and APK selection (unit-tested), the download and the installer, the hub-build card and Settings → Check for updates. |
 | `core/PlatformBridge.kt` | A2's platform hooks (pickers, clipboard, URLs); `init` runs before the controller starts. |
 | `ui/SidePane.kt` | The side pane (A23, A24): its state (file documents in chunks, terminal screens, `filesChange`, paste confirmation, `terminalReadPaste`, notices), the tab strip (pinned Chat, icons, marks, overflow, full screen, Rename), the Files tree. |
 | `ui/pane/FilePane.kt`, `ui/pane/TerminalPane.kt` | A file or diff tab; a terminal tab. |

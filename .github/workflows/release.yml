@@ -1,6 +1,6 @@
 # Makes a GitHub release of YAAC (D136, docs/install.md#releases): the Windows installer, the
-# binaries (yaac.exe, yaacd.mjs, yaacd-mcp.mjs) and manifest.json, which the in-app updater
-# reads. The repository is public, so releases are readable without a token.
+# binaries (yaac.exe, yaacd.mjs, yaacd-mcp.mjs), the Android app (yaac-android-…apk, signed with
+# the release key in the ANDROID_* secrets) and manifest.json, which the in-app updater reads. The repository is public, so releases are readable without a token.
 #
 # Build ids (D135): every artefact of one release carries `<version>+<id>` with
 # id = RELEASE_BASE + the workflow's run number. CI ids are the release ids; local builds
@@ -261,9 +261,117 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  android:
+    name: Android app (APK)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # The NDK of docs/plan/android.md (A0); the SDK of android/app/build.gradle.kts.
+      NDK_VERSION: "27.2.12479018"
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+          cache-dependency-path: |
+            android/**/*.gradle.kts
+            android/gradle/wrapper/gradle-wrapper.properties
+
+      # The runner image has the SDK and sdkmanager; the exact NDK and platform are added.
+      - name: Android SDK and NDK
+        shell: bash
+        run: |
+          set -eu
+          sdkmanager=$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager
+          yes | "$sdkmanager" --licenses >/dev/null || true
+          "$sdkmanager" --install "ndk;$NDK_VERSION" "platforms;android-36" "build-tools;36.0.0" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+
+      - name: Rust, the Android targets and cargo-ndk
+        id: rust
+        shell: bash
+        run: |
+          set -eu
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-linux-android x86_64-linux-android
+          echo "rust=$(rustc -Vv | sed -n 's/^commit-hash: //p')" >> "$GITHUB_OUTPUT"
+          echo "image=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Rust Android build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: "2"
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            ~/.cargo/bin/cargo-ndk
+            target/release/.fingerprint
+            target/release/build
+            target/release/deps
+            target/aarch64-linux-android/release/.fingerprint
+            target/aarch64-linux-android/release/build
+            target/aarch64-linux-android/release/deps
+            target/x86_64-linux-android/release/.fingerprint
+            target/x86_64-linux-android/release/build
+            target/x86_64-linux-android/release/deps
+          key: rust-android-v1-${{ runner.arch }}-${{ steps.rust.outputs.image }}-${{ steps.rust.outputs.rust }}-${{ env.NDK_VERSION }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            rust-android-v1-${{ runner.arch }}-${{ steps.rust.outputs.image }}-${{ steps.rust.outputs.rust }}-${{ env.NDK_VERSION }}-
+
+      - name: cargo-ndk
+        run: cargo ndk --version 2>/dev/null || cargo install cargo-ndk --version 4.1.2 --locked
+
+      # The controller with the same build id as yaac.exe, so the phone attaches to that hub.
+      - name: Build libyaac_android.so (arm64-v8a, x86_64)
+        env:
+          YAAC_BUILD_ID: ${{ needs.build.outputs.build }}
+        run: cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build --release --locked -p yaac-android
+
+      - name: Build and sign the APK
+        shell: bash
+        working-directory: android
+        env:
+          YAAC_BUILD_ID: ${{ needs.build.outputs.build }}
+          VERSION: ${{ needs.build.outputs.version }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          YAAC_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          YAAC_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          YAAC_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -eu
+          for v in KEYSTORE_BASE64 YAAC_ANDROID_KEYSTORE_PASSWORD YAAC_ANDROID_KEY_ALIAS YAAC_ANDROID_KEY_PASSWORD; do
+            [ -n "${!v}" ] || { echo "::error::the release signing secrets (ANDROID_*) are not set"; exit 1; }
+          done
+          export YAAC_ANDROID_KEYSTORE="$RUNNER_TEMP/yaac-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$YAAC_ANDROID_KEYSTORE"
+          ./gradlew --no-daemon assembleRelease
+          rm -f "$YAAC_ANDROID_KEYSTORE"
+          apk=app/build/outputs/apk/release/app-release.apk
+          build_tools=$ANDROID_HOME/build-tools/36.0.0
+          "$build_tools/apksigner" verify --print-certs "$apk" | grep 'SHA-256'
+          "$build_tools/aapt2" dump badging "$apk" | head -n 1 | grep -q "versionCode='$YAAC_BUILD_ID' versionName='$VERSION+$YAAC_BUILD_ID'"
+          mkdir -p ../dist/android
+          cp "$apk" "../dist/android/yaac-android-$VERSION-build.$YAAC_BUILD_ID.apk"
+          ls -l ../dist/android
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android
+          path: dist/android/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
   release:
     name: Release
-    needs: [checks, build, installer]
+    needs: [checks, build, installer, android]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -285,6 +393,11 @@ jobs:
           name: installer
           path: dist/setup
 
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android
+          path: dist/android
+
       # Asset names keep to letters, digits, '.', '-' and '_' (GitHub renames others), so the
       # installer is YAAC-Setup-<version>-build.<id>.exe here.
       - name: Assets and manifest
@@ -299,10 +412,13 @@ jobs:
           setup="dist/release/YAAC-Setup-$VERSION-build.$BUILD.exe"
           cp "dist/setup/YAAC-Setup-$VERSION+$BUILD.exe" "$setup"
           cp dist/stage/yaac.exe dist/stage/yaacd.mjs dist/stage/yaacd-mcp.mjs dist/release/
+          apk="dist/release/yaac-android-$VERSION-build.$BUILD.apk"
+          cp "dist/android/yaac-android-$VERSION-build.$BUILD.apk" "$apk"
           node scripts/make-manifest.mjs --version "$VERSION" --build "$BUILD" --tag "$TAG" \
             --repo "$GITHUB_REPOSITORY" --out dist/release/manifest.json \
             "installer=$setup" app=dist/release/yaac.exe \
-            daemon=dist/release/yaacd.mjs daemon-mcp=dist/release/yaacd-mcp.mjs
+            daemon=dist/release/yaacd.mjs daemon-mcp=dist/release/yaacd-mcp.mjs \
+            "android=$apk"
           cat dist/release/manifest.json
           (cd dist/release && sha256sum -- *)
 
@@ -316,7 +432,7 @@ jobs:
           TAG: ${{ needs.build.outputs.tag }}
         run: |
           set -eu
-          notes="YAAC $VERSION+$BUILD. Install with YAAC-Setup-$VERSION-build.$BUILD.exe. To try the Windows compatibility renderer, choose Windows WPF in Settings → Window → Renderer, then restart YAAC. The Windows installer includes the WPF runtime. manifest.json lists every file with its SHA-256."
+          notes="YAAC $VERSION+$BUILD. Install with YAAC-Setup-$VERSION-build.$BUILD.exe. To try the Windows compatibility renderer, choose Windows WPF in Settings → Window → Renderer, then restart YAAC. The Windows installer includes the WPF runtime. The Android app is yaac-android-$VERSION-build.$BUILD.apk; it attaches only to a hub of this same build. manifest.json lists every file with its SHA-256."
           gh release create "$TAG" dist/release/* \
             --target "$GITHUB_SHA" \
             --title "YAAC $VERSION+$BUILD" \

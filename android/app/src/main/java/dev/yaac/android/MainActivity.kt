@@ -298,6 +298,9 @@ private fun YaacApp(store: ViewStore, send: (String, Any?) -> Unit, openRequest:
             val conn = YaacRuntime.connection
             if (conn?.mode == "hub" && shell != null && !shell["hub"]["reachable"].flag(true))
                 HubDown(conn.hub ?: "", shell["status"]["text"].text, onRetry, onChangeHub)
+            // Another build than the hub's: offer the hub's app (core/AppUpdates.kt).
+            LaunchedEffect(shell) { dev.yaac.android.core.AppUpdates.observe(shell, BuildConfig.VERSION_NAME) }
+            if (conn?.mode == "hub") dev.yaac.android.ui.HubBuildOffer(Modifier.align(Alignment.BottomCenter))
             store.status?.let { s ->
                 Box(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 60.dp).align(Alignment.TopCenter), contentAlignment = Alignment.Center) {
                     T(s, LocalType.current.small, c.muted)

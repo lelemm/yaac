@@ -36,7 +36,8 @@ pub struct Manifest {
 pub struct Artifact {
     /// Its asset name in the release.
     pub name: String,
-    /// `installer`, `app`, `daemon` or `daemon-mcp`.
+    /// `installer`, `app`, `daemon`, `daemon-mcp` or `android` (the phone's APK, which the
+    /// desktop updater never downloads).
     pub component: String,
     /// Its own version with the build id: `<version>+<build>`.
     pub version: String,
@@ -316,6 +317,14 @@ mod tests {
             Manifest::parse(&v.to_string())
         };
         assert!(edit(&|_| {}).is_ok());
+        // The Android APK is listed too; the desktop updater only reads the installer.
+        let with_apk = edit(&|v| {
+            let mut apk = v["artifacts"][0].clone();
+            apk["name"] = "yaac-android-0.1.0-build.1005.apk".into();
+            apk["component"] = "android".into();
+            v["artifacts"].as_array_mut().unwrap().push(apk);
+        }).unwrap();
+        assert_eq!(with_apk.installer().unwrap().name, "YAAC-Setup-0.1.0-build.1005.exe");
         assert!(edit(&|v| v["schema"] = 2.into()).unwrap_err().contains("schema"));
         assert!(edit(&|v| v["build"] = 0.into()).is_err());
         assert!(edit(&|v| v["artifacts"][0]["sha256"] = "abc".into()).unwrap_err().contains("SHA-256"));

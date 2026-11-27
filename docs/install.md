@@ -97,11 +97,13 @@ releases are read without a token.
 | `checks` | `ubuntu-latest` | Two parallel jobs run the full Rust workspace suite and the daemon and manifest suites. Rust test builds restore cached dependencies and use a profile without debug symbols. | test results |
 | `build` | `ubuntu-latest` | Runs alongside the checks. Builds the daemon bundle and runs `scripts/build-windows.sh` with MinGW-w64 and the `x86_64-pc-windows-gnu` Rust target. It caches Cargo's release dependencies separately from the Linux test cache. | `yaac.exe` (window and hub, with `yaacd` embedded), `yaacd.mjs`, `yaacd-mcp.mjs`, the exe's `yaac.ico` |
 | `installer` | `windows-latest` | `ISCC.exe installer\yaac.iss` with the same `/D` defines as `scripts/build-installer.sh`. Inno Setup 6 is preinstalled on GitHub's Windows images (actions/runner-images lists it); the job installs it with Chocolatey only if it is missing | `YAAC-Setup-<version>+<id>.exe` |
-| `release` | `ubuntu-latest` | After the checks and installer succeed, runs `scripts/make-manifest.mjs`, then `gh release create <tag> … --latest` with the job's `GITHUB_TOKEN` (`contents: write`, this job only) | the release |
+| `android` | `ubuntu-latest` | After `build`: the Rust Android targets, `cargo-ndk`, NDK 27 and the Android 36 platform (sdkmanager on the runner image), `libyaac_android.so` for `arm64-v8a` and `x86_64` with the same `YAAC_BUILD_ID`, then `./gradlew assembleRelease` signed with the release key from the `ANDROID_*` secrets; the APK's versionCode and signature are checked. Cargo's Android dependencies and Gradle's are cached | `yaac-android-<version>-build.<id>.apk` |
+| `release` | `ubuntu-latest` | After the checks, installer and Android app succeed, runs `scripts/make-manifest.mjs`, then `gh release create <tag> … --latest` with the job's `GITHUB_TOKEN` (`contents: write`, this job only) | the release |
 
 A release holds `YAAC-Setup-<version>-build.<id>.exe` (asset names keep to letters, digits,
-`.`, `-` and `_`, which GitHub never renames), `yaac.exe`, `yaacd.mjs`, `yaacd-mcp.mjs`, and
-`manifest.json`. Actions are pinned to commit SHAs.
+`.`, `-` and `_`, which GitHub never renames), `yaac.exe`, `yaacd.mjs`, `yaacd-mcp.mjs`,
+`yaac-android-<version>-build.<id>.apk` (the Android app; signing and updating it are in
+[android/README.md](../android/README.md#releases-and-updates)), and `manifest.json`. Actions are pinned to commit SHAs.
 
 When the dependency hash changes, each Cargo cache can restore from a compatible runner and
 toolchain. Cargo checks which entries are still valid. Release executables and manifests
@@ -131,7 +133,8 @@ sample the Rust parser is tested against):
       "size": 9123456, "sha256": "<64 hex>", "url": "https://github.com/lelemm/yaac/releases/download/v0.1.0/YAAC-Setup-0.1.0-build.1005.exe" },
     { "name": "yaac.exe", "component": "app", … },
     { "name": "yaacd.mjs", "component": "daemon", … },
-    { "name": "yaacd-mcp.mjs", "component": "daemon-mcp", … }
+    { "name": "yaacd-mcp.mjs", "component": "daemon-mcp", … },
+    { "name": "yaac-android-0.1.0-build.1005.apk", "component": "android", … }
   ]
 }
 ```
@@ -139,7 +142,8 @@ sample the Rust parser is tested against):
 `schema` is the format: a reader uses only the schema it knows (a manifest of another one
 offers no update) and ignores fields it does not know, so fields are only ever added.
 `build` is the number the updater compares; each artefact's `version` is its own version with
-the same build id.
+the same build id. The desktop updater reads only the installer; the phone uses the `android`
+entry's SHA-256 to check its download.
 
 ## Updating
 

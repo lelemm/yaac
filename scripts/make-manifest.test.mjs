@@ -56,6 +56,18 @@ test("the format matches the sample the Rust updater is tested against", () => {
   assert.deepEqual(m.artifacts.map(strip), sample.artifacts.map(strip));
 });
 
+test("the Android app is an artefact of its own", () => {
+  const { dir, list } = files();
+  const apk = join(dir, "yaac-android-0.1.0-build.1005.apk");
+  writeFileSync(apk, "apk bytes");
+  const m = makeManifest({ ...base, files: [...list, { component: "android", path: apk }] });
+  const a = m.artifacts.find((x) => x.component === "android");
+  assert.equal(a.name, "yaac-android-0.1.0-build.1005.apk");
+  assert.equal(a.version, "0.1.0+1005");
+  assert.equal(a.sha256, createHash("sha256").update("apk bytes").digest("hex"));
+  assert.equal(a.url, "https://github.com/lelemm/yaac/releases/download/v0.1.0/yaac-android-0.1.0-build.1005.apk");
+});
+
 test("bad input is refused", () => {
   const { list } = files();
   assert.throws(() => makeManifest({ ...base, build: "12a", files: list }), /build number/);
