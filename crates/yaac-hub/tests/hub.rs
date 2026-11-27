@@ -421,9 +421,17 @@ fn routed_requests_pass_through_and_the_cache_answers_while_offline() {
     c.wait_status(&target, ConnectionStatus::Offline);
     let sync = c.routed(&target, "thread/sync", json!({ "token": "" })).unwrap();
     assert_eq!(sync["changed"][0]["id"], "t1", "served from the cache");
+    let resumed = c.routed(&target, "thread/sync", json!({ "token": sync["token"] })).unwrap();
+    assert_eq!(resumed["changed"], json!([]));
+    assert_eq!(resumed["full"], false, "an unchanged cached index needs no snapshot");
     let answer: ThreadSubscribeResult = serde_json::from_value(c.subscribe(&target, "t1")).unwrap();
     let head = fake.head("t1");
     assert!(matches!(answer.mode, SubscribeMode::Reset(r) if r.head_seq == head.seq));
+    let replay = c.routed(&target, "thread/subscribe", json!({
+        "threadId": "t1", "epoch": head.epoch, "afterSeq": head.seq,
+    })).unwrap();
+    let replay: ThreadSubscribeResult = serde_json::from_value(replay).unwrap();
+    assert!(matches!(replay.mode, SubscribeMode::Replay(r) if r.head_seq == head.seq));
     let read = c.routed(&target, "thread/read", json!({ "threadId": "t1", "maxBytes": 1 })).unwrap();
     assert_eq!(read["position"]["seq"], head.seq.0);
     assert!(read["cursor"].is_string(), "paged by bytes");
@@ -482,6 +490,27 @@ fn drafts_are_durable_and_clear_cache_does_not_touch_them() {
     assert_eq!(drafts["drafts"][0]["text"], "half a thought");
     assert_eq!(drafts["drafts"][0]["target"], json!(target));
     assert!(home.cache().thread(&target, &ThreadId::new("t1")).unwrap().is_none(), "the old cache was dropped");
+}
+
+#[test]
+fn composer_history_push_preserves_previous_entries_and_caps_the_list() {
+    let home = Home::new();
+    let hub = home.start();
+    let desktop = hub.client();
+    let phone = hub.client();
+    let key = attach::COMPOSER_HISTORY;
+    let oversized = "x".repeat(attach::COMPOSER_HISTORY_ENTRY_BYTES + 1);
+    desktop.call(ext::UI_STATE_SET, json!({ "key": key, "value": [&oversized, "old message"] })).unwrap();
+    phone.call(attach::names::COMPOSER_HISTORY_PUSH, json!({ "opId": "phone-1", "text": "new message" })).unwrap();
+    let first = phone.call(ext::UI_STATE_GET, json!({ "keys": [key] })).unwrap();
+    assert_eq!(first["values"][key], json!(["new message", "old message"]));
+    assert!(phone.call(attach::names::COMPOSER_HISTORY_PUSH, json!({ "opId": "phone-2", "text": oversized })).is_err());
+    for i in 0..12 {
+        desktop.call(attach::names::COMPOSER_HISTORY_PUSH, json!({ "opId": format!("desktop-{i}"), "text": format!("message {i}") })).unwrap();
+    }
+    let latest = phone.call(ext::UI_STATE_GET, json!({ "keys": [key] })).unwrap();
+    let expected: Vec<_> = (2..12).rev().map(|i| format!("message {i}")).collect();
+    assert_eq!(latest["values"][key], json!(expected));
 }
 
 /// Simulates a cache written by a build with another schema: the hub must drop it.

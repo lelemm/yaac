@@ -53,6 +53,7 @@ import androidx.compose.foundation.layout.widthIn
 import dev.yaac.android.core.objects
 import dev.yaac.android.core.str
 import dev.yaac.android.core.text
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 
@@ -325,7 +326,7 @@ private fun decodeThumbnail(t: JsonObject): androidx.compose.ui.graphics.ImageBi
 @Composable
 private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) -> Unit, shell: Boolean, empty: Boolean, history: JsonElement?, clear: () -> Unit, recall: (String) -> Unit) {
     val act: (ActionItem) -> Unit = { a -> if (a.enabled) send("composer.action", mapOf("key" to key, "id" to a.id)) }
-    var historySheet by remember { mutableStateOf(false) }
+    var historySheet by remember(key, shell) { mutableStateOf(false) }
     var attachMenu by remember { mutableStateOf(false) }
     val c = LocalYaac.current
     val type = LocalType.current
@@ -350,9 +351,6 @@ private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) ->
         stop?.takeIf { it.enabled }?.let { a -> TextAction(a.label, editable) { send("composer.stop", mapOf("key" to key)) } }
         ActionItem.of(composer["cancelEdit"])?.let { a -> TextAction(a.label, a.enabled && editable) { act(a) } }
         Spacer(Modifier.weight(1f))
-        // Message history: the last messages sent from this client, offered in an empty composer.
-        // Message history in an empty composer; in `!` mode the thread's own command history (E08).
-        val past = if (shell) composer["shell"]["history"].list.mapNotNull { it.text } else history.list.mapNotNull { it.text }
         // Clear the draft: shown whenever there is text (leaving `!` mode too, since the `!` goes).
         // Dictation (voice input): on every composer, a draft's too; disabled with the reason when no
         // connected machine can transcribe (P392).
@@ -361,12 +359,22 @@ private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) ->
         // A voice call with the thread, only where the composer carries `call` (the capability).
         if (!shell) CallButton(composer, key, editable)
         if (!empty && editable) IconButton(YIcon.Close, "Clear the message") { clear() }
-        if ((empty || shell) && past.isNotEmpty()) IconButton(YIcon.History, if (shell) "Command history" else "Message history") { historySheet = true }
+        if (if (shell) composer["shell"]["history"].list.isNotEmpty() else empty) {
+            IconButton(YIcon.History, if (shell) "Command history" else "Message history") {
+                if (!shell) send("composer.loadHistory", null)
+                historySheet = true
+            }
+        }
     }
     if (historySheet) {
         val list = if (shell) composer["shell"]["history"].list else history.list
-        ActionSheet(if (shell) "Commands run here" else "Sent from here", list.mapIndexedNotNull { i, m -> m.text?.let { ActionItem("h$i", it.lineSequence().first().take(120), true, null, false, null, emptyList(), false) } }, { historySheet = false }) { a ->
-            list.getOrNull(a.id.removePrefix("h").toInt())?.text?.let { recall(if (shell) "!$it" else it) }
+        val items = list.mapIndexedNotNull { i, m -> m.text?.let { ActionItem("h$i", it.lineSequence().first().take(120), true, null, false, null, emptyList(), false) } }
+        val rows = items.ifEmpty {
+            val label = if (!shell && history !is JsonArray) "Loading message history…" else "No messages in history"
+            listOf(ActionItem("empty", label, false, null, false, null, emptyList(), false))
+        }
+        ActionSheet(if (shell) "Commands run here" else "Sent from here", rows, { historySheet = false }) { a ->
+            a.id.removePrefix("h").toIntOrNull()?.let(list::getOrNull)?.text?.let { recall(if (shell) "!$it" else it) }
         }
     }
     if (attachMenu) ActionSheet(null, listOfNotNull(attach, ActionItem.of(composer["paste"])), { attachMenu = false }) { act(it) }

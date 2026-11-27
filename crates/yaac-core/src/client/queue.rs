@@ -33,6 +33,7 @@ impl Client {
     /// **queued** (`delivery: queue`) and delivered when the turn ends. With a queued message
     /// open for editing, this saves the edit instead. Returns whether anything was sent.
     pub fn send(&mut self, key: &ThreadKey) -> bool {
+        if self.state.hub.reconnecting { return false; }
         if self.state.queue_edits.contains_key(key) {
             return self.save_queue_edit(key);
         }
@@ -44,6 +45,7 @@ impl Client {
     /// starts with it; `yaacd` chooses by the same capability. While the thread waits on an
     /// approval or a question it is queued instead (answering is what moves the agent on).
     pub fn send_now(&mut self, key: &ThreadKey) -> bool {
+        if self.state.hub.reconnecting { return false; }
         if self.state.queue_edits.contains_key(key) {
             return self.save_queue_edit(key);
         }

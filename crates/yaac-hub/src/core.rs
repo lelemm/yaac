@@ -1032,6 +1032,11 @@ impl Core {
                         let mut values = serde_json::Map::new();
                         for key in p.keys {
                             if let Some(v) = s.cache.ui_state(&key).map_err(|e| e.to_string())? {
+                                let v = if key == attach::COMPOSER_HISTORY {
+                                    json!(attach::history_entries(&v).collect::<Vec<_>>())
+                                } else {
+                                    v
+                                };
                                 values.insert(key, v);
                             }
                         }
@@ -1046,6 +1051,21 @@ impl Core {
                     self.store_reply(client, id, move |s| s.cache.set_ui_state(&p.key, &p.value).map(|()| json!({})).map_err(|e| e.to_string()));
                     None
                 }
+                Err(e) => Some(Err(e)),
+            },
+            attach::names::COMPOSER_HISTORY_PUSH => match parse::<attach::ComposerHistoryPush>(params) {
+                Ok(p) if attach::history_entry(&p.text) => {
+                    self.store_reply(client, id, move |s| {
+                        let key = attach::COMPOSER_HISTORY;
+                        let stored = s.cache.ui_state(key).map_err(|e| e.to_string())?.unwrap_or_default();
+                        let history = std::iter::once(p.text.as_str()).chain(attach::history_entries(&stored))
+                            .take(attach::COMPOSER_HISTORY_LIMIT).collect::<Vec<_>>();
+                        s.cache.set_ui_state(key, &json!(history)).map_err(|e| e.to_string())?;
+                        Ok(json!({}))
+                    });
+                    None
+                }
+                Ok(_) => Some(Err(err(ErrorCode::InvalidParams, "message is empty or too large for history"))),
                 Err(e) => Some(Err(e)),
             },
             ext::names::DRAFTS_LIST => {
@@ -2684,7 +2704,7 @@ impl Core {
             self.worker.submit(move |s| {
                 let live = s.cache.thread(&key.0, &key.1).ok().flatten().map(|t| t.live).unwrap_or_default();
                 let result = ThreadSubscribeResult {
-                    mode: SubscribeMode::Reset(SubscribeReset { epoch: position.epoch, head_seq: position.seq }),
+                    mode: window_mode(position, &request),
                     // Last known; the target is offline, so the window cannot act on it anyway.
                     control: live.control.unwrap_or(Control::Free),
                     control_holder: live.control_holder,
@@ -2846,11 +2866,13 @@ impl Core {
                 self.worker.submit(move |s| reply(s.cache.providers(&target).map(|providers| json!({ "providers": providers })).map_err(|e| e.to_string())));
             }
             names::THREAD_SYNC => {
-                let token = self.tokens.get(&target).cloned().unwrap_or_default();
                 self.worker.submit(move |s| {
-                    reply(s.cache.threads(&target).map_err(|e| e.to_string()).map(|changed| {
-                        to_value(&ThreadSyncResult { changed, removed: vec![], token, more: false, full: true, stale_instances: vec![] })
-                    }))
+                    reply((|| {
+                        let token = s.cache.sync_token(&target)?.unwrap_or_default();
+                        let current = !token.as_str().is_empty() && params.get("token").and_then(Value::as_str) == Some(token.as_str());
+                        let changed = if current { vec![] } else { s.cache.threads(&target)? };
+                        Ok(to_value(&ThreadSyncResult { changed, removed: vec![], token, more: false, full: !current, stale_instances: vec![] }))
+                    })().map_err(|e: crate::cache::CacheError| e.to_string()))
                 });
             }
             names::THREAD_READ => {
@@ -3420,13 +3442,8 @@ fn window_answer(
     request: &ThreadSubscribeParams,
 ) -> ThreadSubscribeResult {
     let position = position.unwrap_or(JournalPosition { epoch: epoch.unwrap_or_default(), seq: Seq(0) });
-    let mode = if request.epoch == Some(position.epoch) && request.after_seq == Some(position.seq) {
-        SubscribeMode::Replay(SubscribeReplay { epoch: position.epoch, from_seq: Seq(position.seq.0 + 1), head_seq: position.seq })
-    } else {
-        SubscribeMode::Reset(SubscribeReset { epoch: position.epoch, head_seq: position.seq })
-    };
     ThreadSubscribeResult {
-        mode,
+        mode: window_mode(position, request),
         control: subscribed.map_or(Control::Free, |s| s.control.clone()),
         control_holder: subscribed.and_then(|s| s.control_holder.clone()),
         take_over_blocked: subscribed.and_then(|s| s.take_over_blocked.clone()),
@@ -3436,6 +3453,14 @@ fn window_answer(
         tokens: subscribed.and_then(|s| s.tokens.clone()),
         queued: subscribed.and_then(|s| s.queued.clone()),
         hold: subscribed.and_then(|s| s.hold.clone()),
+    }
+}
+
+fn window_mode(position: JournalPosition, request: &ThreadSubscribeParams) -> SubscribeMode {
+    if request.epoch == Some(position.epoch) && request.after_seq == Some(position.seq) {
+        SubscribeMode::Replay(SubscribeReplay { epoch: position.epoch, from_seq: Seq(position.seq.0 + 1), head_seq: position.seq })
+    } else {
+        SubscribeMode::Reset(SubscribeReset { epoch: position.epoch, head_seq: position.seq })
     }
 }
 

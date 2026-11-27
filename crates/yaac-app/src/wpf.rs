@@ -253,7 +253,8 @@ pub(crate) fn serve(launch: crate::Launch, commands: Connection, mut stdout: imp
     app.display.first_frame();
     app.images.use_wpf();
     let mut previous = Map::new();
-    let mut composer_history = Arc::<[String]>::default();
+    let mut composer_history: Option<Arc<[String]>> = None;
+    let mut composer_history_loading = false;
     let mut selected_settings_target = None;
     let mut once = true;
     let mut paste_for: Option<String> = None;
@@ -396,9 +397,14 @@ pub(crate) fn serve(launch: crate::Launch, commands: Connection, mut stdout: imp
                 .filter(|(key, value)| previous.get(*key) != Some(*value))
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect();
-            if !Arc::ptr_eq(&composer_history, &app.ui.composer_history) {
-                composer_history = app.ui.composer_history.clone();
-                changes.insert("composerMessageHistory".into(), json!(composer_history.as_ref()));
+            let history_loading = app.ui.composer_history_loading.is_some();
+            if composer_history_loading != history_loading
+                || composer_history.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &app.ui.composer_history))
+            {
+                composer_history_loading = history_loading;
+                composer_history = Some(app.ui.composer_history.clone());
+                let view = if composer_history_loading { Value::Null } else { json!(app.ui.composer_history.as_ref()) };
+                changes.insert("composerMessageHistory".into(), view);
             }
             if let Some(view) = changes.get_mut("transcript")
                 && let Some(old) = previous.get("transcript")
@@ -953,6 +959,10 @@ fn dispatch(
             return sidebar_view::command(app, ctx, cmd, payload);
         }
         cmd if cmd.starts_with("dialog.") => return dialogs::command(app, cmd, payload),
+        "composer.loadHistory" => {
+            app.load_composer_history();
+            None
+        }
         cmd if cmd.starts_with("composer.") => return composer::command(app, cmd, payload),
         cmd if cmd.starts_with("transcript.") => return transcript::command(app, cmd, payload),
         cmd if cmd.starts_with("settings.") => {

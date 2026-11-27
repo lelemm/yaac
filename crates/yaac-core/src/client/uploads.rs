@@ -494,14 +494,22 @@ impl Client {
             self.start_upload(&d, id);
         }
         if running {
-            self.request(names::UPLOAD_LIST, json!({}), Call::UploadList);
+            self.request(names::UPLOAD_LIST, json!({}), Call::UploadList { restart_missing: true });
+        }
+    }
+
+    /// The hub may have finished a running upload while this window was away.
+    pub(super) fn check_running_uploads(&mut self) {
+        let drafts = self.state.drafts.values().chain(self.state.new_threads.iter().map(|d| &d.draft));
+        if drafts.flat_map(|d| &d.attachments).any(|a| matches!(a.upload, Upload::Running { .. })) {
+            self.request(names::UPLOAD_LIST, json!({}), Call::UploadList { restart_missing: false });
         }
     }
 
     /// The hub's unfinished uploads: a restored chip whose upload the hub no longer has
     /// (it finished or failed while no window listened) is uploaded again — content addressing
     /// makes that cheap.
-    pub(super) fn on_upload_list(&mut self, result: &Value) {
+    pub(super) fn on_upload_list(&mut self, result: &Value, restart_missing: bool) {
         let live: Vec<String> = result
             .get("uploads")
             .and_then(Value::as_array)
@@ -516,6 +524,11 @@ impl Client {
             todo.extend(d.draft.attachments.iter().filter(|a| stale(a)).map(|a| (DraftRef::New(d.id), a.id)));
         }
         for (d, id) in todo {
+            if !restart_missing {
+                let error = ErrorObject::new(yaac_protocol::rpc::ErrorCode::OutcomeUnknown, "Connection lost while uploading");
+                self.upload_failed(&d, id, u32::MAX, &error);
+                continue;
+            }
             if let Some(a) = self.attachment_mut(&d, id) {
                 // Not cancelled: the hub has no such handle any more.
                 a.upload = Upload::Starting;

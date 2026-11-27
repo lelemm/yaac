@@ -58,9 +58,9 @@ id, and its outcome answers the call. Without a decision it is Open: the entry i
 and the client opens the request itself.
 
 A client attached over Tailscale reads the window-side choices the hub keeps (`ui_state`:
-grouping, theme, dismissed artifact cards, composer history, …) with `hub/uiState/get`, since
-the cache file is on the hub's machine ([05](05-threads.md)); they are shared with the
-desktop windows, as one owner's choices.
+grouping, theme, dismissed artifact cards, …) with `hub/uiState/get`, since the cache file is
+on the hub's machine ([05](05-threads.md)). The phone and desktop share these choices. The
+phone reads the composer history when the user opens the history sheet.
 
 Inside the window the UI thread never blocks on I/O: it reads an in-memory state snapshot and
 paints. Inside the hub one I/O thread owns every connection and decodes frames; anything that
@@ -99,6 +99,12 @@ local socket:
   apart; the platform's defaults where it cannot set them), so a phone that sleeps or changes
   network is detached within about a minute. Nothing is paired and nothing is stored: Tailscale already
   authenticates both devices, and the hub keeps no key, token or list of devices (invariant 12).
+- **Reattaching.** The phone keeps its client state when the connection drops. In-flight calls
+  fail with `connection lost` and their uncertain operations are never sent again. The next
+  hello syncs the index with the last token and restores live subscriptions using each retained
+  transcript's epoch and sequence. The hub can reuse positions it still recognises and falls
+  back to a snapshot when needed. The phone keeps three recent transcripts alongside the open
+  one and releases the subscription when it evicts a transcript.
 - **When it changes.** Turning the setting off stops listening and closes every connection it
   let in. While the setting is on and Tailscale is missing, stopped, logged out, or the
   addresses cannot be bound, the hub reports why and asks again every minute and whenever the

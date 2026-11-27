@@ -298,6 +298,8 @@ pub(crate) struct UiState {
     /// The Commander's recently used commands, most recent first.
     pub recent: Vec<String>,
     pub(crate) composer_history: Arc<[String]>,
+    /// Submissions made after the in-flight history read was sent, newest first.
+    pub(crate) composer_history_loading: Option<Vec<String>>,
     pub(crate) desktop_call_consent: bool,
     pub(crate) composer_history_walk: Option<(DraftRef, usize)>,
     pub(crate) dismissed_artifacts: BTreeSet<String>,
@@ -417,6 +419,7 @@ impl UiState {
             diffs: crate::thread::DiffCache::default(),
             history: yaac_core::history::History::default(),
             composer_history: Default::default(),
+            composer_history_loading: None,
             desktop_call_consent: false,
             composer_history_walk: None,
             dismissed_artifacts: BTreeSet::new(),
@@ -729,9 +732,6 @@ pub(crate) struct HubConn {
     ssh: std::rc::Rc<std::cell::RefCell<crate::ssh_hub::SshBridge>>,
     /// A hub on another machine: this device keeps its own drafts (P393).
     device_drafts: Option<crate::device_drafts::DeviceDrafts>,
-    /// The thread that was open when a remote hub's connection dropped: opened again (its
-    /// transcript read) once attached again.
-    reopen: Option<yaac_core::key::ThreadKey>,
 }
 
 /// The SSH setup backend of a window attached to no hub (or built without one): SSH setup is
@@ -883,10 +883,13 @@ const REATTACH_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
 #[cfg(feature = "hub")]
 const REATTACH_MAX: std::time::Duration = std::time::Duration::from_secs(30);
 
-fn hub_client(attach: &Arc<Mutex<HubAttach>>) -> Client {
+fn hub_client(attach: &Arc<Mutex<HubAttach>>, remote: bool) -> Client {
     // The client id is a placeholder until `hub/hello` returns this host's own.
     let mut c = Client::new(Box::new(SharedAttach(attach.clone())), crate::BUILD, ClientId::new("window"));
     c.set_run(window_run());
+    if remote {
+        c.state.transcript_capacity = 3;
+    }
     c
 }
 
@@ -933,7 +936,7 @@ impl YaacApp {
                 #[cfg(feature = "hub")]
                 if let Some(config) = launch.attach {
                     let attach = Arc::new(Mutex::new(HubAttach::start(config.clone(), waker(&cc.egui_ctx))));
-                    let mut c = hub_client(&attach);
+                    let mut c = hub_client(&attach, config.is_remote());
                     let ssh = std::rc::Rc::new(std::cell::RefCell::new(crate::ssh_hub::SshBridge::new(cc.egui_ctx.clone())));
                     let backend = crate::ssh_hub::HubSsh(ssh.clone());
                     // A hub on another machine (the phone): drafts stay on this device and
@@ -942,7 +945,7 @@ impl YaacApp {
                     if let Some(d) = &device_drafts {
                         c.keep_drafts_on_device(d.stored());
                     }
-                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false, prefs_asked: false, next_reattach: None, reattach_delay: REATTACH_FIRST, ssh, device_drafts, reopen: None });
+                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false, prefs_asked: false, next_reattach: None, reattach_delay: REATTACH_FIRST, ssh, device_drafts });
                     (c, None, Scenario::Fleet, Clock::System, Box::new(backend) as Box<dyn SshSetupBackend>)
                 } else {
                     let c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
@@ -1677,20 +1680,46 @@ impl YaacApp {
     }
 
     fn remember_composer_message(&mut self, message: Option<String>) {
+        use yaac_core::compose::MESSAGE_HISTORY_LIMIT;
+
         self.ui.composer_history_walk = None;
-        let Some(text) = message.filter(|text| !text.trim().is_empty()) else { return };
+        let Some(text) = message.filter(|text| yaac_protocol::attach::history_entry(text)) else { return };
+        #[cfg(feature = "hub")]
+        if self.hub.is_some() {
+            self.client.push_composer_history(&text);
+        }
+        if let Some(newer) = &mut self.ui.composer_history_loading {
+            newer.insert(0, text.clone());
+            newer.truncate(MESSAGE_HISTORY_LIMIT);
+        }
         self.ui.composer_history = std::iter::once(text).chain(self.ui.composer_history.iter().cloned())
-            .take(yaac_core::compose::MESSAGE_HISTORY_LIMIT).collect::<Vec<_>>().into();
+            .take(MESSAGE_HISTORY_LIMIT).collect::<Vec<_>>().into();
+    }
+
+    /// The phone fetches the history only when its sheet is opened.
+    pub(crate) fn load_composer_history(&mut self) {
+        #[cfg(feature = "hub")]
+        if self.hub.as_ref().is_some_and(|h| h.config.is_remote())
+            && self.client.state.hub.attached && self.ui.composer_history_loading.is_none()
+        {
+            self.ui.composer_history_loading = Some(Vec::new());
+            self.client.load_composer_history();
+        }
     }
 
     /// The hello outcomes, the old hub's replacement, and the persisted choices.
     #[cfg(feature = "hub")]
     fn hub_upkeep(&mut self) {
         let Some(h) = &mut self.hub else { return };
-        let status = h.attach.lock().map_or(LinkStatus::Closed, |a| a.status());
-        if let LinkStatus::Failed(e) = &status {
-            self.client.state.hub.last_error = Some(format!("Could not reach the hub: {e}"));
+        if let Some(history) = self.client.take_composer_history() {
+            let newer = self.ui.composer_history_loading.take().unwrap_or_default();
+            if let Ok(history) = history {
+                self.ui.composer_history = newer.into_iter().chain(history)
+                    .take(yaac_core::compose::MESSAGE_HISTORY_LIMIT).collect::<Vec<_>>().into();
+                self.ui.composer_history_walk = None;
+            }
         }
+        let status = h.attach.lock().map_or(LinkStatus::Closed, |a| a.status());
         // A hub on another machine (the phone over Tailscale) drops whenever the phone sleeps or
         // changes network. Attach again, waiting longer after each failure, as a local window's
         // hub supervisor would; nothing that was in flight is re-sent (operation ids decide).
@@ -1707,42 +1736,27 @@ impl YaacApp {
                         h.next_reattach = None;
                         h.reattach_delay = (h.reattach_delay * 2).min(REATTACH_MAX);
                         let attach = Arc::new(Mutex::new(HubAttach::start(h.config.clone(), waker(&self.ctx))));
-                        h.attach = attach.clone();
+                        self.client.rebind(Box::new(SharedAttach(attach.clone())));
+                        h.attach = attach;
                         h.prefs_loaded = false;
                         h.prefs_asked = false;
                         self.browsers = Default::default();
                         self.preview_ui = Default::default();
                         self.browser_agent = Default::default();
-                        // The new client starts from this device's drafts, the latest included.
-                        self.client.flush_drafts();
-                        let mut client = hub_client(&attach);
-                        if let Some(d) = h.device_drafts.as_mut() {
-                            d.absorb(self.client.take_device_drafts());
-                            client.keep_drafts_on_device(d.stored());
-                        }
-                        // Stay where the user was: the open thread stays open (and its
-                        // composer with it) while the link comes back.
-                        let selection = self.client.state.selection.clone();
-                        if let yaac_core::state::Selection::Thread(k) = &selection {
-                            h.reopen = Some(k.clone());
-                        }
-                        client.state.selection = selection;
-                        self.client = client;
                         return;
                     }
                     Some(at) => self.ctx.request_repaint_after(at - now),
                     None => {
+                        self.client.connection_lost();
+                        self.ui.composer_history_loading = None;
                         h.next_reattach = Some(now + h.reattach_delay);
                         self.ctx.request_repaint_after(h.reattach_delay);
                     }
                 }
             }
         }
-        if matches!(self.client.state.hub.outcome, HelloOutcome::Attached)
-            && let Some(k) = h.reopen.take()
-            && self.client.state.selection == yaac_core::state::Selection::Thread(k.clone())
-        {
-            self.client.open(&k);
+        if let LinkStatus::Failed(e) = &status {
+            self.client.state.hub.last_error = Some(format!("Could not reach the hub: {e}"));
         }
         match self.client.state.hub.outcome.clone() {
             // A hub on another machine (the Android client over Tailscale) is never shut down or
@@ -1760,7 +1774,7 @@ impl YaacApp {
                     self.browsers = Default::default();
                     self.preview_ui = Default::default();
                     self.browser_agent = Default::default();
-                    self.client = hub_client(&attach);
+                    self.client = hub_client(&attach, false);
                 }
             }
             HelloOutcome::HubOutdated { hub_build } => {
@@ -1787,7 +1801,9 @@ impl YaacApp {
                 // machine (the phone) asks the hub for the same values.
                 let stored = if h.config.is_remote() {
                     if !h.prefs_asked {
-                        self.client.load_ui_state(&yaac_core::prefs::keys::ALL);
+                        use yaac_core::prefs::keys;
+                        let keys = keys::ALL.into_iter().filter(|&key| key != keys::COMPOSER_HISTORY).collect::<Vec<_>>();
+                        self.client.load_ui_state(&keys);
                         h.prefs_asked = true;
                     }
                     self.client.take_ui_state()
@@ -1839,7 +1855,9 @@ impl YaacApp {
         #[cfg(feature = "hub")]
         if self.hub.as_ref().is_some_and(|h| h.prefs_loaded) {
             for k in now.changed(&self.saved_prefs) {
-                self.client.set_ui_state(k, &now.value(k));
+                if k != yaac_core::prefs::keys::COMPOSER_HISTORY {
+                    self.client.set_ui_state(k, &now.value(k));
+                }
             }
         }
         self.saved_prefs = now;
@@ -2299,6 +2317,87 @@ pub(crate) mod tests {
         let key = yaac_core::prefs::keys::COMPOSER_HISTORY;
         loaded.load(key, &app.ui.prefs().value(key));
         assert_eq!(loaded.composer_history.as_ref(), expected.as_slice());
+    }
+
+    #[cfg(feature = "hub")]
+    #[test]
+    fn remote_attach_defers_composer_history_and_bounds_the_transcript_cache() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+        use serde_json::json;
+        use yaac_protocol::frame::{Frame, FrameDecoder, encode_message_frame};
+        use yaac_protocol::rpc::Message;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = AttachConfig::remote(
+            listener.local_addr().unwrap().to_string(),
+            yaac_hub::HubPaths::under(dir.path()),
+        );
+        let hub = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut decoder = FrameDecoder::new();
+            let mut buf = [0; 4096];
+            let mut state_gets = 0;
+            while state_gets < 2 {
+                let size = stream.read(&mut buf).unwrap();
+                assert!(size > 0);
+                for frame in decoder.decode(&buf[..size]).unwrap() {
+                    let Frame::Message(bytes) = frame else { continue };
+                    let Message::Request { id, method, params } = serde_json::from_slice(&bytes).unwrap() else { continue };
+                    let result = match method.as_str() {
+                        yaac_protocol::attach::names::HELLO => json!({ "build": crate::BUILD, "targets": [] }),
+                        yaac_core::client::hub_names::UI_STATE_GET => {
+                            state_gets += 1;
+                            let key = yaac_core::prefs::keys::COMPOSER_HISTORY;
+                            if state_gets == 1 {
+                                assert!(!params["keys"].as_array().unwrap().iter().any(|value| value == key));
+                                json!({ "values": {} })
+                            } else {
+                                assert_eq!(params["keys"], json!([key]));
+                                json!({ "values": { (key): ["Remember me"] } })
+                            }
+                        }
+                        _ => json!({}),
+                    };
+                    let mut bytes = Vec::new();
+                    encode_message_frame(&serde_json::to_vec(&Message::Response { id, result }).unwrap(), &mut bytes).unwrap();
+                    stream.write_all(&bytes).unwrap();
+                }
+            }
+        });
+        let ctx = egui::Context::default();
+        let launch = crate::Launch {
+            demo: None,
+            theme: ThemeChoice::Dark,
+            shots: None,
+            host_windows: false,
+            attach: Some(config),
+            display: crate::display::DisplayState::default(),
+            shell: crate::tray::Shell::new(),
+            tray: false,
+            updater: crate::updater::Updater::off("tests"),
+        };
+        let mut app = YaacApp::from_ctx(&ctx, launch);
+        assert_eq!(app.client.state.transcript_capacity, 3);
+        let wait = |ready: fn(&YaacApp) -> bool, app: &mut YaacApp| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready(app) {
+                assert!(Instant::now() < deadline, "the remote hub did not answer");
+                app.client.pump();
+                app.hub_upkeep();
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        wait(|app| app.hub.as_ref().unwrap().prefs_loaded, &mut app);
+        assert!(app.ui.composer_history.is_empty());
+        app.load_composer_history();
+        app.remember_composer_message(Some("Sent during the read".into()));
+        wait(|app| app.ui.composer_history_loading.is_none(), &mut app);
+        assert_eq!(app.ui.composer_history.as_ref(), &["Sent during the read", "Remember me"]);
+        hub.join().unwrap();
     }
 
     pub(crate) fn worker_mode_dialog(ctx: &egui::Context) -> YaacApp {

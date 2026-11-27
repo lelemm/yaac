@@ -173,7 +173,7 @@ pub mod keys {
     /// The Commander's recently used commands (D130).
     pub const COMMANDER_RECENT: &str = "commanderRecent";
     /// Recently submitted message drafts.
-    pub const COMPOSER_HISTORY: &str = "composerHistory";
+    pub use yaac_protocol::attach::COMPOSER_HISTORY;
     /// Dismissed generated-file cards.
     pub const DISMISSED_ARTIFACTS: &str = "dismissedArtifacts";
     /// First-use consent for desktop voice calls.
@@ -231,18 +231,9 @@ impl UiPrefs {
             keys::COMMANDER_RECENT => json!(self.recent),
             keys::DISMISSED_ARTIFACTS => json!(self.dismissed_artifacts),
             keys::DESKTOP_CALL_CONSENT => json!(self.desktop_call_consent),
-            keys::COMPOSER_HISTORY => {
-                // The attach frame also carries the method and request id. Keep the newest
-                // whole messages when unusually large drafts would exceed that frame.
-                let mut remaining = yaac_protocol::frame::MAX_MESSAGE_PAYLOAD - 256;
-                let texts: Vec<_> = self.composer_history.iter().take_while(|text| {
-                    let bytes = serde_json::to_vec(text).map_or(usize::MAX, |json| json.len() + 1);
-                    let Some(left) = remaining.checked_sub(bytes) else { return false };
-                    remaining = left;
-                    true
-                }).collect();
-                json!(texts)
-            }
+            keys::COMPOSER_HISTORY => json!(self.composer_history.iter()
+                .filter(|text| yaac_protocol::attach::history_entry(text))
+                .take(yaac_protocol::attach::COMPOSER_HISTORY_LIMIT).collect::<Vec<_>>()),
             keys::SEND_KEY => json!(match self.send_key {
                 SendKey::Enter => "enter",
                 SendKey::CtrlEnter => "ctrlEnter",
@@ -303,9 +294,8 @@ impl UiPrefs {
                 }
             }
             keys::COMPOSER_HISTORY => {
-                if let Some(list) = v.as_array() {
-                    self.composer_history = list.iter().filter_map(Value::as_str)
-                        .filter(|text| !text.trim().is_empty()).take(crate::compose::MESSAGE_HISTORY_LIMIT)
+                if v.is_array() {
+                    self.composer_history = yaac_protocol::attach::history_entries(v)
                         .map(str::to_owned).collect::<Vec<_>>().into();
                 }
             }

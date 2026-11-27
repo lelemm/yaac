@@ -379,7 +379,11 @@ pub fn composer(state: &AppState, map: &AttentionMap, key: &ThreadKey) -> Compos
     }
     let support = crate::attachments::thread_image_support(state, key);
     let chips = chips(state.drafts.get(key), &support, Some(&key.target));
-    let blocked = crate::attachments::blocked(&chips);
+    let blocked = if state.hub.reconnecting {
+        Some("Reconnecting to the hub…".to_owned())
+    } else {
+        crate::attachments::blocked(&chips)
+    };
     let ready = blocked.is_none();
     ComposerView::Shown {
         placeholder: format!("Message {name}…"),

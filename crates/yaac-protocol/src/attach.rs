@@ -18,6 +18,32 @@ use serde_json::Value;
 use crate::macros::{open_enum, open_union};
 use crate::types::{ClientId, Empty, TargetId, TargetName};
 
+/// The UI state key for submitted composer messages.
+pub const COMPOSER_HISTORY: &str = "composerHistory";
+/// The most recent messages eligible for composer recall.
+pub const COMPOSER_HISTORY_LIMIT: usize = 10;
+/// The maximum size in UTF-8 bytes of a message eligible for composer recall.
+pub const COMPOSER_HISTORY_ENTRY_BYTES: usize = 16 * 1024;
+
+/// Keep recall exact and bound both saved and legacy history.
+pub fn history_entry(text: &str) -> bool {
+    text.len() <= COMPOSER_HISTORY_ENTRY_BYTES && !text.trim().is_empty()
+}
+
+/// Read the newest valid entries from a stored history list.
+pub fn history_entries(value: &Value) -> impl Iterator<Item = &str> {
+    value.as_array().into_iter().flatten().filter_map(Value::as_str)
+        .filter(|text| history_entry(text)).take(COMPOSER_HISTORY_LIMIT)
+}
+
+/// Append one newly submitted message to the hub's stored composer history.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerHistoryPush {
+    pub op_id: crate::OpId,
+    pub text: String,
+}
+
 /// A pending request as identified across targets and windows.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -234,6 +260,8 @@ pub mod names {
     pub const PREVIEW_LIST: &str = "hub/preview/list";
     /// Window → hub, first message: exchange builds.
     pub const HELLO: &str = "hub/hello";
+    /// Window → hub: store one submission in the shared composer history.
+    pub const COMPOSER_HISTORY_PUSH: &str = "hub/composer/historyPush";
     /// Window → hub: ask an older hub to checkpoint its relay queue and exit.
     pub const SHUTDOWN: &str = "hub/shutdown";
     /// Window → hub: list targets.

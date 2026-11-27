@@ -284,6 +284,8 @@ pub enum HelloOutcome {
 pub struct HubState {
     /// `hub/hello` completed with the same build.
     pub attached: bool,
+    /// A lost attach is being replaced. The last target and transcript state stays visible.
+    pub reconnecting: bool,
     /// How `hub/hello` ended.
     pub outcome: HelloOutcome,
     /// The hub's build.

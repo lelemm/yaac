@@ -143,6 +143,7 @@ enum Call {
     RequestFeed,
     /// `hub/uiState/get`.
     UiStateGet,
+    ComposerHistoryGet,
     /// `hub/notifications/respond`: where to open the request if an answer fails.
     FeedRespond { open: attach::NotificationOpen, answered: bool },
     Explain(ThreadKey, ItemId, RequestId),
@@ -162,7 +163,7 @@ enum Call {
     /// `hub/drafts/blob/end`.
     BlobEnd { draft: DraftRef, id: u64 },
     /// `hub/upload/list` after restoring drafts.
-    UploadList,
+    UploadList { restart_missing: bool },
     /// `hub/drafts/list` after attaching.
     DraftsList,
     /// `hub/rateLimits/get` (D161).
@@ -235,6 +236,7 @@ pub struct Client {
     link: Box<dyn HubLink>,
     next_id: i64,
     pending: HashMap<RpcId, Call>,
+    unavailable: Vec<Call>,
     mode_results: HashMap<OpId, ModeChangeResults>,
     ops: u64,
     /// This window run's own part of every operation id (D159): ids must never repeat across
@@ -292,6 +294,7 @@ pub struct Client {
     tunnel_notes: Vec<(String, Value)>,
     /// The window-side choices read with `hub/uiState/get`, until taken.
     ui_state: Option<Vec<(String, Value)>>,
+    composer_history: Option<Result<Vec<String>, String>>,
     /// Agent browser calls from the hub (`hub/browser/call`), not yet taken by the window.
     pub theme_calls: Vec<(RpcId, yaac_protocol::ThemeCallParams)>,
     browser_calls: Vec<(RpcId, attach::BrowserCallParams)>,
@@ -347,6 +350,7 @@ impl Client {
             link,
             next_id: 1,
             pending: HashMap::new(),
+            unavailable: Vec::new(),
             ops: 0,
             run: String::new(),
             build: build.into(),
@@ -381,6 +385,7 @@ impl Client {
             terminal_data: Vec::new(),
             tunnel_notes: Vec::new(),
             ui_state: None,
+            composer_history: None,
             theme_calls: Vec::new(),
             browser_calls: Vec::new(),
             ssh_replies: Vec::new(),
@@ -393,9 +398,44 @@ impl Client {
             move_notice: None,
         };
         c.state.client_id = Some(client_id);
-        let params = json!({ "build": c.build });
-        c.request(attach::names::HELLO, params, Call::Hello);
+        c.hello();
         c
+    }
+
+    fn hello(&mut self) {
+        self.request(attach::names::HELLO, json!({ "build": self.build }), Call::Hello);
+    }
+
+    /// Fail the old link's unanswered calls as uncertain while keeping the window's state.
+    pub fn connection_lost(&mut self) {
+        self.link = Box::new(crate::link::DetachedLink);
+        self.state.hub.attached = false;
+        self.state.hub.reconnecting = true;
+        self.state.hub.outcome = HelloOutcome::Pending;
+        self.state.hub.index_pending.clear();
+        self.state.hub.request_feed = None;
+        self.state.hub.last_error = Some("connection lost".into());
+        let error = ErrorObject::new(ErrorCode::OutcomeUnknown, "connection lost");
+        for (_, call) in std::mem::take(&mut self.pending) {
+            self.on_error(call, &error);
+        }
+        self.voice_finish(Some(error.message.clone()));
+        self.voice_call_finish(Some(error.message));
+        self.orphans.clear();
+        self.browser_calls.clear();
+        self.theme_calls.clear();
+        self.tunnel_streams.clear();
+        self.tunnel_data.clear();
+        self.tunnel_notes.clear();
+        self.terminal_data.clear();
+        self.terminal_notes.clear();
+    }
+
+    /// Attach again and resume from this window's index and journal positions.
+    pub fn rebind(&mut self, link: Box<dyn HubLink>) {
+        self.connection_lost();
+        self.link = link;
+        self.hello();
     }
 
     /// Threads to subscribe to as soon as their target's index is known, so their hints and
@@ -404,9 +444,16 @@ impl Client {
         self.warm = keys;
     }
 
-    /// Apply everything the hub has sent. Returns whether anything arrived.
+    /// Apply hub messages and local call failures. Returns whether anything was processed.
     pub fn pump(&mut self) -> bool {
-        let mut any = false;
+        let unavailable = std::mem::take(&mut self.unavailable);
+        let mut any = !unavailable.is_empty();
+        if any {
+            let error = ErrorObject::new(ErrorCode::TargetOffline, "connection lost");
+            for call in unavailable {
+                self.on_error(call, &error);
+            }
+        }
         for _ in 0..100_000 {
             let Some(msg) = self.link.poll() else { break };
             any = true;
@@ -415,7 +462,7 @@ impl Client {
         if any {
             // Targets may have been added or changed: show the hub's SSH records on them.
             self.map_ssh_records();
-            if self.state.copies.dirty { self.follow_copies(); }
+            if self.state.copies.dirty && !self.state.hub.reconnecting { self.follow_copies(); }
         }
         any
     }
@@ -423,6 +470,11 @@ impl Client {
     fn request(&mut self, method: &str, params: Value, call: Call) -> RpcId {
         let id = RpcId::Number(self.next_id);
         self.next_id += 1;
+        if self.state.hub.reconnecting && !matches!(call, Call::Hello) {
+            // This call never reached a link, unlike the unanswered calls from the old one.
+            self.unavailable.push(call);
+            return id;
+        }
         self.pending.insert(id.clone(), call);
         self.link.send(Message::request(id.clone(), method, params));
         id
@@ -951,8 +1003,10 @@ impl Client {
                     self.state.hub.build = Some(hello.build);
                     return;
                 }
+                let resumed = std::mem::take(&mut self.state.hub.reconnecting);
                 self.state.hub.attached = true;
                 self.state.hub.outcome = HelloOutcome::Attached;
+                self.state.hub.last_error = None;
                 self.image_preview_supported = true;
                 // A dictation of an earlier attachment is gone with its stream.
                 self.voice_finish(Some("The connection to YAAC was interrupted.".into()));
@@ -984,6 +1038,20 @@ impl Client {
                 for (id, _connected) in ids {
                     // Cached index and providers are served by the hub even while offline.
                     self.load_target(&id);
+                }
+                if resumed {
+                    self.check_running_uploads();
+                    let gone: Vec<_> = self.state.threads.keys().filter(|key| self.state.target(&key.target).is_none()).cloned().collect();
+                    for key in gone {
+                        self.state.remove_thread(&key);
+                    }
+                    let held: Vec<_> = self.state.transcripts.keys().filter(|key|
+                        !self.state.copies.detached.contains(*key) && self.state.target(&key.target).is_some()
+                        && !self.pending.values().any(|call| matches!(call, Call::Subscribe(k) if k == *key))
+                    ).cloned().collect();
+                    for key in held {
+                        self.subscribe(&key);
+                    }
                 }
             }
             Call::Targets => {
@@ -1046,6 +1114,10 @@ impl Client {
             Call::UiStateGet => {
                 let values = result.get("values").and_then(Value::as_object).cloned().unwrap_or_default();
                 self.ui_state = Some(values.into_iter().collect());
+            }
+            Call::ComposerHistoryGet => {
+                let value = &result["values"][attach::COMPOSER_HISTORY];
+                self.composer_history = Some(Ok(attach::history_entries(value).map(str::to_owned).collect()));
             }
             Call::HubSettings => {
                 self.state.hub.explanations = result.pointer("/settings/explanations").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
@@ -1188,7 +1260,7 @@ impl Client {
             Call::BlobBegin { draft, id, chunks } => self.on_blob_begun(&draft, id, chunks, &result),
             Call::BlobAppend { .. } => {}
             Call::BlobEnd { draft, id } => self.on_blob_ended(&draft, id, &result),
-            Call::UploadList => self.on_upload_list(&result),
+            Call::UploadList { restart_missing } => self.on_upload_list(&result, restart_missing),
             Call::DraftsList => self.on_drafts_list(&result),
             Call::RateLimits => self.on_rate_limits(result),
             Call::ThreadStart { draft } => {
@@ -1582,12 +1654,16 @@ impl Client {
             Call::BlobBegin { draft, id, .. } | Call::BlobAppend { draft, id } | Call::BlobEnd { draft, id } => {
                 self.upload_failed(&draft, id, u32::MAX, error);
             }
-            Call::UploadList | Call::DraftsList => {}
+            Call::UploadList { .. } | Call::DraftsList => {}
             Call::ThreadStart { draft } => {
                 if !self.state.new_threads.iter().any(|d| d.id == draft.id) {
                     self.state.new_threads.push(draft);
                 }
-                self.error(None, format!("The thread was not started: {}", error.message));
+                if error.code == ErrorCode::OutcomeUnknown {
+                    self.error(None, format!("Could not confirm whether the thread started: {}. Check the thread list before sending again.", error.message));
+                } else {
+                    self.error(None, format!("The thread was not started: {}", error.message));
+                }
             }
             Call::ReadOlder(key, cursor) | Call::ReadNewer(key, cursor) => {
                 let Some(t) = self.state.transcripts.get_mut(&key) else { return };
@@ -1597,7 +1673,9 @@ impl Client {
                     (&mut t.older_cursor, &mut t.loading_older)
                 };
                 if edge.as_deref() != Some(&cursor) || !std::mem::take(loading) { return; }
-                *edge = None;
+                if !self.state.hub.reconnecting {
+                    *edge = None;
+                }
                 let stale_anchor = matches!(
                     (&error.code, error.message.as_str()),
                     (ErrorCode::InvalidParams, "this message is no longer in the thread" | "The thread changed while loading history.")
@@ -1645,6 +1723,7 @@ impl Client {
             Call::HubSettings | Call::Projects(_) | Call::SshRecords | Call::RequestFeed => {}
             // An older hub has no such method: nothing is stored there, and nothing is said.
             Call::UiStateGet => self.ui_state = Some(Vec::new()),
+            Call::ComposerHistoryGet => self.composer_history = Some(Err(error.message.clone())),
             // An answer that did not go through opens the request with the reason, as a
             // failed toast answer does; nothing is re-sent.
             Call::FeedRespond { mut open, answered } => {
@@ -1890,6 +1969,9 @@ impl Client {
     }
 
     fn subscribe(&mut self, key: &ThreadKey) {
+        if self.state.hub.reconnecting {
+            return;
+        }
         let pos = self.state.transcripts.get(key).and_then(|t| t.position);
         let mut params = json!({ "threadId": key.thread });
         if let Some(p) = pos {
@@ -1993,6 +2075,10 @@ impl Client {
     pub fn set_visible_requests(&mut self, mut cards: Vec<attach::RequestLocation>) {
         cards.sort();
         cards.dedup();
+        if self.state.hub.reconnecting {
+            self.visible_requests = Some(cards);
+            return;
+        }
         if self.state.hub.explanations.main.is_some() {
             for location in &cards {
                 let key = ThreadKey::new(location.target.clone(), location.thread_id.clone());
@@ -2034,6 +2120,10 @@ impl Client {
     }
 
     pub fn set_showing(&mut self, keys: Vec<ThreadKey>) {
+        if self.state.hub.reconnecting {
+            self.showing = Some(keys);
+            return;
+        }
         if self.showing.as_ref() == Some(&keys) {
             return;
         }
@@ -2137,7 +2227,9 @@ impl Client {
             self.state.transcripts.insert(key.clone(), crate::transcript::Transcript::new());
         }
         for old in self.state.touch(key) {
-            self.routed(&old.target, m::THREAD_UNSUBSCRIBE, json!({ "threadId": old.thread }), Call::Ignore);
+            if !self.state.hub.reconnecting {
+                self.routed(&old.target, m::THREAD_UNSUBSCRIBE, json!({ "threadId": old.thread }), Call::Ignore);
+            }
         }
         if fresh || detached || self.stalled(key) {
             self.subscribe(key);
@@ -2442,6 +2534,7 @@ impl Client {
     /// Send a draft's first message: `thread/start` creates the thread and sends it, as one
     /// operation.
     pub fn start_thread(&mut self, draft_id: u64) -> bool {
+        if self.state.hub.reconnecting { return false; }
         let Some(draft) = self.state.new_threads.iter().find(|d| d.id == draft_id).cloned() else { return false };
         if crate::compose::is_compact_command(&draft.draft.text) {
             self.error(None, "Start the conversation before compacting context.");
@@ -3078,6 +3171,23 @@ impl Client {
     /// The stored choices, once they have arrived (empty from a hub that has none to give).
     pub fn take_ui_state(&mut self) -> Option<Vec<(String, Value)>> {
         self.ui_state.take()
+    }
+
+    /// Fetch the composer history separately from the window's startup preferences.
+    pub fn load_composer_history(&mut self) {
+        self.request(hub_names::UI_STATE_GET, json!({ "keys": [attach::COMPOSER_HISTORY] }), Call::ComposerHistoryGet);
+    }
+
+    pub fn take_composer_history(&mut self) -> Option<Result<Vec<String>, String>> {
+        self.composer_history.take()
+    }
+
+    /// Store one submission without replacing any messages this window has yet to read.
+    pub fn push_composer_history(&mut self, text: &str) {
+        if self.state.hub.attached {
+            let op = self.op_id();
+            self.request(attach::names::COMPOSER_HISTORY_PUSH, json!({ "opId": op, "text": text }), Call::Ignore);
+        }
     }
 
     pub fn set_notifications(&mut self, settings: attach::NotificationSettings) {
