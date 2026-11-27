@@ -77,6 +77,48 @@ hub here again** (deletes the tombstone and starts the local hub; the data on th
 of the hand-over). Steps are never retried automatically (invariant 10). Each state-changing
 request carries the transfer's `opId`.
 
+## The old hub's side, as built (`crates/yaac-hub/src/core/transfer.rs`)
+
+- **Eligibility** (`hub/transfer/candidates`): the transport first (SSH only), then a
+  development build (every target: "…a development build…; there is no release binary"), a hub
+  whose binary supplies no release lookup ("This build of YAAC cannot move its hub."), not
+  connected ("Connect it first."), no `hubHost` capability ("Update YAAC on that target first.").
+  Only targets left after that are probed, on their existing connection. Their probe must say:
+  Linux; an arch with a published hub (`x86_64` for now); Tailscale running; the same login as
+  this hub's own node (`tailscale` on this computer); a Tailscale address; 47380 free; no hub
+  already running. Every row has a sentence when it is not eligible. While a transfer runs,
+  every row says the hub is already moving.
+- **Release asset**: a `TransferHost` (`yaac_hub::transfer`) supplied by the `yaac` binary
+  (`updater::HubTransfer`). It finds the release of exactly this build and the manifest asset
+  `yaac-hub-linux-<arch>` (URL, SHA-256, size), and it turns start-at-login off. Builds without
+  the `desktop` feature (the Linux hub itself) have no HTTP client and cannot move again yet.
+- **Files put, in order**, one stream at a time, each waiting for its `hubHost/putComplete`:
+  `data/cache.sqlite` (live `VACUUM INTO` through a separate read-only connection), then after
+  the quiesce `data/relay.sqlite`, `data/drafts.sqlite`, `data/cache.sqlite` (only if its hash
+  changed), YAAC's own keys `data/ssh/keys/<slug>/id_ed25519(.pub)`, `data/ssh/known_hosts`
+  (the host keys the user confirmed), and `config/hub.json` last. The final copies are
+  `VACUUM INTO` on the store thread itself, after every write queued before them.
+- **During the hand-over** only reads are served (target list, status, settings, view,
+  drafts and operations lists, UI state, finds, blob reads). Every other client request, including
+  `hub/shutdown` and routed requests, gets `hub_moving`. `mesh/relay` and
+  `mesh/deliveryReceipt` from X get `hub_moving` too: they would write `relay.sqlite` after its
+  final copy, so the daemon keeps them for the new hub. The other targets are stopped with "The
+  hub is moving to X." and restarted if the transfer fails.
+- **Once `hubHost/start` is sent**, a connection to X that drops counts as moved, not as a
+  failure. `yaacd` may have armed the new hub, and that hub starts when this connection closes.
+  So the old hub writes its tombstone and stops (no two hubs). If nothing started, the window
+  offers **Start the hub here again**.
+- **The tombstone** is `<data>/moved.json` (`yaac_hub::paths::MovedTombstone`). `run_hub`
+  checks it under the hub lock and returns `HubError::Moved`, and `yaac hub` exits successfully
+  with a message. **Start the hub here again** is `yaac hub --reclaim`, which deletes the
+  tombstone and runs the hub. The window can also call
+  `yaac_hub::paths::remove_moved_tombstone` and then start the hub as usual.
+- The hub exits with `ExitReason::Moved` after `hub/moved` reaches every client that said hello,
+  whatever its build, and X's connection is closed.
+- **Not yet**: streaming the binary when X cannot reach GitHub; deleting YAAC's key from the PC
+  after the hand-over; a time limit on an unanswered `hubHost/*` request (the transfer waits,
+  and the user sees the phase it is in).
+
 ## The rewritten hub.json (P410)
 
 - X becomes the new hub's **local** target (`transport: local`), same target id, so its threads
@@ -84,11 +126,14 @@ request carries the transfer's `opId`.
 - Other **SSH** targets stay, with YAAC's **own generated key** (the only key YAAC keeps,
   invariant 12) copied with the hub and deleted from the PC after the hand-over. A target that
   used the user's own key or agent stays but is marked "Sign in again on the new hub" (YAAC never
-  copies the user's keys).
+  copies the user's keys). In `hub.json` the mark is the target's `signInAgain` field (a
+  sentence).
 - **WSL** targets and the PC's **local** Windows target cannot be reached from Linux: they stay in
-  the list, disabled, with "On <pc>: reachable only by a hub on that PC". Their threads stay in
+  the list, disabled, with "On <pc>: reachable only by a hub on that PC" (the target's
+  `movedUnreachable` field). Their threads stay in
   their `yaacd` journals; moving the hub back brings them back.
-- `hubId` is kept (clients recognise the same hub); `hostName` becomes X's.
+- `hubId` and `clientId` are kept (clients recognise the same hub; each `yaacd` sees the same
+  client); `hostName` becomes X's; `tailscaleAttach` is on.
 
 ## The Linux hub binary (P411)
 

@@ -225,6 +225,10 @@ pub struct HubConfig {
     /// (`hub/update/request`, [`crate::host_update`]). `None`: this host does not support it
     /// (the default; the `yaac` binary supplies one on Windows).
     pub host_installer: Option<Arc<dyn crate::host_update::HostInstaller>>,
+    /// Finds this build's Linux hub in its release and turns start-at-login off, for moving the
+    /// hub to another machine (`hub/transfer/*`, [`crate::transfer`]). `None`: this hub cannot
+    /// move (the default; the `yaac` binary supplies one).
+    pub transfer_host: Option<Arc<dyn crate::transfer::TransferHost>>,
 }
 
 impl std::fmt::Debug for HubConfig {
@@ -338,6 +342,7 @@ impl HubConfig {
             tailnet: Arc::new(crate::tailnet::TailscaleCli::default()),
             tailscale_port: crate::tailnet::TAILSCALE_ATTACH_PORT,
             host_installer: None,
+            transfer_host: None,
         }
     }
 }

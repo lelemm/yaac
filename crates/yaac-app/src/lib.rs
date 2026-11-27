@@ -137,7 +137,7 @@ pub fn run(args: &[String]) -> ExitCode {
     }
     if args.first().map(String::as_str) == Some("hub") {
         #[cfg(feature = "hub")]
-        return hubmode::run(BUILD);
+        return hubmode::run(BUILD, &args[1..]);
         #[cfg(not(feature = "hub"))]
         {
             eprintln!("yaac: this build has no hub (built without the `hub` feature)");

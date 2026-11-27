@@ -100,6 +100,39 @@ struct State {
     next_voice: u32,
     /// Every `voiceCall/*` request, in order.
     call_requests: Vec<(String, Value)>,
+    /// `hubHost/*` (moving the hub here).
+    hub_host: HubHost,
+}
+
+/// What the fake does and saw for `hubHost/*`.
+#[derive(Debug, Default)]
+pub struct HubHost {
+    /// `hubHost/probe`'s answer (default: [`default_probe`]).
+    pub probe: Option<Value>,
+    /// Every request, in order: method and params.
+    pub calls: Vec<(String, Value)>,
+    /// Files received and verified, by name, in order of completion (a re-put replaces).
+    pub staged: Vec<(String, Vec<u8>)>,
+    /// A put of this name completes with this error.
+    pub fail_put: Option<(String, String)>,
+    /// Hold the answer to `hubHost/start` until [`FakeDaemon::release_start`].
+    pub hold_start: bool,
+    held_start: Option<(u64, RpcId)>,
+    /// Whether each of these other daemons was connected when `hubHost/start` arrived.
+    pub watch: Vec<FakeDaemon>,
+    pub connected_at_start: Vec<(String, bool)>,
+    streams: HashMap<u32, (String, u64, String, Vec<u8>)>,
+    next_stream: u32,
+}
+
+/// A target that can take the hub: Linux, Tailscale up as `me@example.com` at 100.64.0.7.
+pub fn default_probe() -> Value {
+    json!({ "os": "linux", "arch": "x86_64", "tailscale": { "running": true, "login": "me@example.com", "ips": ["100.64.0.7"] }, "portFree": true, "hubRunning": false })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// A fake daemon. Cheap to clone; clones share state.
@@ -293,6 +326,20 @@ impl FakeDaemon {
 
     pub fn set_deliver_fails(&self, fails: bool) {
         self.lock().deliver_fails = fails;
+    }
+
+    /// `hubHost/*` state, to set up or inspect.
+    pub fn hub_host<R>(&self, f: impl FnOnce(&mut HubHost) -> R) -> R {
+        f(&mut self.lock().hub_host)
+    }
+
+    /// Answers a held `hubHost/start`.
+    pub fn release_start(&self) {
+        let mut s = self.lock();
+        let Some((conn, id)) = s.hub_host.held_start.take() else { return };
+        if let Some(c) = s.conns.get(&conn) {
+            let _ = c.tx.send(frame(&Message::Response { id, result: json!({ "armed": true }) }));
+        }
     }
 
     pub fn connected(&self) -> bool {
@@ -510,8 +557,20 @@ impl FakeDaemon {
                                 }
                             }
                             Frame::Data { stream, bytes } => {
-                                if let Some(audio) = self.lock().voice_audio.get_mut(&stream.0) {
+                                let mut s = self.lock();
+                                if let Some(audio) = s.voice_audio.get_mut(&stream.0) {
                                     audio.extend(bytes);
+                                } else if let Some(put) = s.hub_host.streams.get_mut(&stream.0) {
+                                    put.3.extend(bytes);
+                                    if put.3.len() as u64 >= put.1 {
+                                        let (name, _, sha, data) = s.hub_host.streams.remove(&stream.0).unwrap();
+                                        let message = (sha256_hex(&data) != sha).then(|| "the file does not match the declared SHA-256".to_owned());
+                                        if message.is_none() {
+                                            s.hub_host.staged.retain(|(n, _)| n != &name);
+                                            s.hub_host.staged.push((name, data));
+                                        }
+                                        let _ = tx.send(frame(&Message::notification(names::HUB_HOST_PUT_COMPLETE, json!({ "stream": stream.0, "message": message }))));
+                                    }
                                 }
                             }
                         }
@@ -530,6 +589,16 @@ impl FakeDaemon {
         match message {
             Message::Request { id, method, params } => {
                 let mut out = Vec::new();
+                if method == names::HUB_HOST_START && self.lock().hub_host.hold_start {
+                    let mut s = self.lock();
+                    s.hub_host.calls.push((method, params));
+                    s.hub_host.held_start = Some((conn_id, id));
+                    let watch = s.hub_host.watch.clone();
+                    drop(s);
+                    let seen: Vec<(String, bool)> = watch.iter().map(|d| (d.name().to_owned(), d.connected())).collect();
+                    self.lock().hub_host.connected_at_start = seen;
+                    return;
+                }
                 let outcome = self.on_request(conn_id, &method, params, &mut out);
                 let reply = match outcome {
                     Ok(result) => Message::Response { id, result },
@@ -577,6 +646,45 @@ impl FakeDaemon {
                 Ok(serde_json::to_value(result).unwrap())
             }
             names::PING => Ok(json!({})),
+            m if m.starts_with("hubHost/") => {
+                s.hub_host.calls.push((m.to_owned(), params.clone()));
+                match m {
+                    names::HUB_HOST_PROBE => Ok(s.hub_host.probe.clone().unwrap_or_else(default_probe)),
+                    names::HUB_HOST_INSTALL => {
+                        out.push(Message::notification(names::HUB_HOST_PROGRESS, json!({ "opId": params["opId"], "done": params["size"], "total": params["size"] })));
+                        Ok(json!({ "path": "/home/tester/.local/share/yaac/bin/yaac" }))
+                    }
+                    names::HUB_HOST_PUT => {
+                        let name = params["name"].as_str().unwrap_or_default().to_owned();
+                        let size = params["size"].as_u64().unwrap_or(0);
+                        let sha = params["sha256"].as_str().unwrap_or_default().to_owned();
+                        s.hub_host.next_stream += 1;
+                        let stream = 9000 + s.hub_host.next_stream;
+                        if let Some((_, message)) = s.hub_host.fail_put.clone().filter(|(n, _)| *n == name) {
+                            out.push(Message::notification(names::HUB_HOST_PUT_COMPLETE, json!({ "stream": stream, "message": message })));
+                        } else if size == 0 {
+                            let ok = sha256_hex(&[]) == sha;
+                            if ok {
+                                s.hub_host.staged.push((name, Vec::new()));
+                            }
+                            out.push(Message::notification(names::HUB_HOST_PUT_COMPLETE, json!({ "stream": stream, "message": (!ok).then_some("bad hash") })));
+                        } else {
+                            s.hub_host.streams.insert(stream, (name, size, sha, Vec::new()));
+                        }
+                        Ok(json!({ "stream": stream, "credit": size.max(1) }))
+                    }
+                    names::HUB_HOST_START => {
+                        let seen: Vec<(String, bool)> = s.hub_host.watch.iter().map(|d| (d.name().to_owned(), d.connected())).collect();
+                        s.hub_host.connected_at_start = seen;
+                        Ok(json!({ "armed": true }))
+                    }
+                    names::HUB_HOST_ABORT => {
+                        s.hub_host.streams.clear();
+                        Ok(json!({}))
+                    }
+                    other => Err(ErrorObject::new(ErrorCode::MethodNotFound, format!("fake daemon: unknown method {other}"))),
+                }
+            }
             names::VOICE_START | names::VOICE_STOP | names::VOICE_CANCEL => {
                 s.voice_calls.push((method.to_owned(), params.clone()));
                 match method {
