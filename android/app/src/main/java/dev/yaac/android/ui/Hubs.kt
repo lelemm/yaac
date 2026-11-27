@@ -44,6 +44,7 @@ import dev.yaac.android.core.HubState
 import dev.yaac.android.core.YaacRuntime
 import dev.yaac.android.core.get
 import dev.yaac.android.core.int
+import dev.yaac.android.core.text
 
 /** Opens Settings → Hubs… from anywhere (the badge's menu); provided by the activity. */
 val LocalOpenHubs = staticCompositionLocalOf<() -> Unit> { {} }
@@ -120,7 +121,10 @@ private fun HubDetail(rt: HubRuntime) {
     val state = rt.state
     val color = when (state) { HubState.Connected -> c.muted; HubState.Connecting -> c.muted; else -> c.failure }
     val needs = rt.store.view("shell")["needs"].int ?: 0
-    val parts = listOfNotNull(rt.hub?.address, state.label, needs.takeIf { it > 0 }?.let { "$it need you" },
+    // Two saved addresses that answer with one hubId are one hub (14-android.md#several-hubs-p403).
+    val id = rt.store.view("shell")["hub"]["id"].text
+    val twin = id?.let { YaacRuntime.ordered.firstOrNull { o -> o !== rt && o.store.view("shell")["hub"]["id"].text == it } }
+    val parts = listOfNotNull(rt.hub?.address, state.label, twin?.let { "Same hub as ${it.name}" }, needs.takeIf { it > 0 }?.let { "$it need you" },
         "In a call".takeIf { CallManager.phase.live && CallManager.hubKey == rt.key })
     T(parts.joinToString(" · "), type.small, color, maxLines = 1)
 }

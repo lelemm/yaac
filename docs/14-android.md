@@ -1,6 +1,6 @@
 # 14 — Android
 
-**Proposed** (P372–P375, P403). Post-MVP ([01](01-overview.md#mvp-scope)). This design was agreed
+**Proposed** (P372–P375, P403, P404). Post-MVP ([01](01-overview.md#mvp-scope)). This design was agreed
 between a Claude thread and a Codex Astra thread, from the owner's direction. It is waiting for
 the owner to review it.
 
@@ -117,9 +117,17 @@ hub reaches another, and each hub still sees one ordinary client.
   shows them as `hub.id`, `hub.name` and `hub.address` (the address the controller dials). Two saved
   addresses that answer with the same `hubId` are one hub. An older hub sends neither field, and
   the phone then knows that hub by its address and the label the user gave it.
-- **On screen.** A badge with the current hub's initial is shown next to the YAAC mark, only when
-  more than one hub is saved. A drop-down switches between hubs and shows each hub's name and
-  address and which one is selected. Every hub's requests raise notifications. Opening a notification switches to its hub and opens the thread.
+- **On screen (P404).** One hub is shown at a time, with its own list, threads, Settings and
+  theme; the others run hidden (`shell.visible` hidden: their hubs stream no open thread). A badge
+  with the selected hub's initial is attached left of the YAAC mark, only when more than one hub
+  is saved; a drop-down switches between hubs and shows each hub's name, address, connection and
+  which one is selected. **Settings → Hubs…** adds, removes and retries hubs. Every hub's requests
+  raise notifications, tagged with the hub's name; opening one switches to its hub and opens the
+  thread, and its Allow once / Deny go to that hub. A call stays with its hub when another is
+  selected. Details in [07](07-ui.md#several-hubs-on-android).
+- **Cost.** Each saved hub is an attach and a controller kept running (some MB of native memory
+  and the radio waking for its frames) whether or not it is shown — the price of its
+  notifications. Remove a hub you no longer use.
 
 ## Open points
 

@@ -32,11 +32,29 @@ x86_64 is built into debug APKs for the emulator.
 ## Connecting
 
 On first launch the app asks **Connect to your YAAC hub**: the hub's Tailscale name (MagicDNS)
-or 100.x address, port 47380 unless `host:port` is given, or **Try the demo**. The choice is
-saved (SharedPreferences) and reused; intent extras override it. When the hub does not answer
-or refuses the hello (another build), the list shows which hub and why, with **Retry** and
-**Change hub**; when the controller ends (`{"stopped": {"error"}}`), a screen says why, with the
-same two actions. **Settings → Change hub…** (below the pages) returns to the connection screen.
+or 100.x address, port 47380 unless `host:port` is given, or **Try the demo**. Intent extras
+override the saved choice (`--es hubAddress` adds and selects a hub). When the selected hub does
+not answer or refuses the hello (another build), the list shows which hub and why, with **Retry**
+and **Hubs…**; when its controller ends (`{"stopped": {"error"}}`), a screen says why, with the
+same two actions.
+
+**Several hubs (P404, docs/14-android.md#several-hubs-p403).** **Settings → Hubs…** (below the
+pages) lists the saved hubs (name, address, connection, a check on the one shown) with Retry and
+Remove, and **Add a hub** (the connection screen with an optional label and Cancel; the demo is
+offered only on first launch, and stays a mode of its own: Hubs… then offers Leave the demo). The
+list (address, label, a stable slot) and the selection are in SharedPreferences (`yaac.hubs`);
+an install from before P404 brings its one hub in as the first, keeping the app's root data
+directory, so its drafts survive; later hubs use `files/hubs/<slot>` (each controller needs its
+own). Every hub has its own controller and `ViewStore`, all attached while YAAC runs; the window
+shows the selected one, and its theme, settings and prefs are that hub's own. The others are sent
+`shell.visible` hidden, so their hubs stream no open thread and the transcript cache stays small,
+but each still costs an attach, a controller (some MB of native memory) and the radio waking for
+its frames — the price of its notifications. With two or more hubs a **badge** (the hub's
+initial, from `shell.hub.name`, else the label, else the host; initials that collide take a second
+letter, then a number) sits left of the YAAC mark, and quietly (outlined) after ← in the thread's
+top bar and at the top of the strip; a tap opens a drop-down of the hubs and **Hubs…**. A hub's
+left-off marks are kept per hub. Remove ends the attach (never the hub), deletes its data
+directory, and its notifications go.
 The phone and the hub must be the same build (`hub/hello`): install the APK of the same release
 as the PC's YAAC (see Releases and updates).
 
@@ -114,16 +132,18 @@ The UI does not know which transport carries the frames (`core/Transport.kt`).
 | `ui/ThreadScreen.kt`, `ui/Transcript.kt`, `ui/Markdown.kt` | The thread: header, banners, transcript rows, request cards. |
 | `ui/Composer.kt` | The composer, queue, running commands and control row. |
 | `ui/Voice.kt`, `core/VoiceRecorder.kt`, `core/VoiceAudio.kt` | Dictation (docs/07-ui.md#voice-input): the mic in the button row when the frame has `voice`, RECORD_AUDIO asked at the first tap, `AudioRecord` on its own thread at the format's rate (or one the phone opens, resampled), ~100 ms base64 chunks to `composer.voiceAudio`, the words heard so far in place at the caret. The audio math and the caret mapping are unit-tested (`VoiceAudioTest`, `VoiceTapTest`). |
-| `ui/Call.kt`, `core/CallManager.kt`, `core/CallPeer.kt`, `core/CallAudio.kt`, `notify/CallService.kt` | A voice call with a thread ([docs/07-ui.md](../docs/07-ui.md#voice-calls-on-android), contract in [docs/plan/voice-call.md](../docs/plan/voice-call.md)): the phone in the button row when the composer has `call`, the one-time consent sheet, the call bar (state, clock, transcript, Mute, speaker, End). `CallManager` is the process's one call, so it outlives the activity; `CallPeer` is the libwebrtc peer (Opus track, `oai-events` data channel, non-trickle offer) on its own thread; `CallAudio` sets communication mode, focus and the output; `CallService` is the microphone foreground service with Mute and End in its notification. |
+| `ui/Call.kt`, `core/CallManager.kt`, `core/CallPeer.kt`, `core/CallAudio.kt`, `notify/CallService.kt` | A voice call with a thread ([docs/07-ui.md](../docs/07-ui.md#voice-calls-on-android), contract in [docs/plan/voice-call.md](../docs/plan/voice-call.md)): the phone in the button row when the composer has `call`, the one-time consent sheet, the call bar (state, clock, transcript, Mute, speaker, End). `CallManager` is the process's one call, so it outlives the activity; it belongs to the hub it was started on and goes on when another hub is selected (the call bar and its notification then name that hub; P404); `CallPeer` is the libwebrtc peer (Opus track, `oai-events` data channel, non-trickle offer) on its own thread; `CallAudio` sets communication mode, focus and the output; `CallService` is the microphone foreground service with Mute and End in its notification. |
 | `core/CallModel.kt` | The call's pure logic, unit-tested in `CallModelTest`: every wire name (`CallWire`), the state machine with its deadlines and stale-frame rules (`CallMachine`), the SDP checks, the `call` frame, output routing, the clock, the consent flag. |
 | `ui/Agents.kt` | The agents pill and the Related agents sheet. |
 | `ui/agents/AgentsModel.kt` | The agents frame as plain values (pill entries, sheet order and folds, budget, time-limit menu, row under a held finger), unit-tested in `AgentsModelTest`. |
 | `ui/Common.kt` | Marks, buttons, action sheets (context menus), `shell.dialog`. |
 | `ui/Commander.kt` | The Commander (`shell.commander`) and the header sheet (A06). |
-| `core/Runtime.kt` | `Connection` (hub, demo or dev TCP; saved, overridable by intent extras) and `YaacRuntime`: the process's one controller, which outlives the activity. |
-| `ui/Connect.kt` | The connection screen and the failed-connection screen. |
+| `core/Runtime.kt` | `Connection` (hub, demo or dev TCP) and `YaacRuntime`: one `HubRuntime` (controller + store) per saved hub, or the demo alone, outliving the activity; the selection, visibility, add/remove/retry (P404). |
+| `core/Hubs.kt` | The pure part of several hubs, unit-tested in `HubsTest`: the hubs list (add, remove, select, encode, migrate), names and initials, connection state, namespaced notification ids, the ongoing summary. |
+| `ui/Hubs.kt` | The hub badge and its drop-down, and Settings → Hubs…. |
+| `ui/Connect.kt` | The connection screen (first launch, Add a hub) and the failed-connection screen. |
 | `ui/Strip.kt` | The strip at medium width (A04). |
-| `notify/Notifier.kt`, `notify/YaacService.kt` | A21: the foreground service ("Keep running in the background", `shell.trayOnClose`) with the ongoing "YAAC · N need you" and Quit; one sticky high-importance notification per thread that needs you, withdrawn when answered anywhere, summarised from two up. |
+| `notify/Notifier.kt`, `notify/YaacService.kt` | A21: the foreground service ("Keep running in the background", `shell.trayOnClose`) with the ongoing "YAAC · N need you" and Quit; one sticky high-importance notification per thread that needs you, withdrawn when answered anywhere, summarised from two up. Every hub's controller is followed (P404): ids, groups and summaries are per hub, the hub's name is the subtext when there are several, Open and Allow once / Deny carry the hub and go to it (opening switches the window to it), and the ongoing notification sums the hubs with a line per hub. |
 | `core/Updates.kt`, `core/AppUpdates.kt`, `ui/Updates.kt` | Releases and updates: build labels and APK selection (unit-tested), the download and the installer, the hub-build card and Settings → Check for updates. |
 | `core/PlatformBridge.kt` | A2's platform hooks (pickers, clipboard, URLs); `init` runs before the controller starts. |
 | `ui/SidePane.kt` | The side pane (A23, A24): its state (file documents in chunks, terminal screens, `filesChange`, paste confirmation, `terminalReadPaste`, notices), the tab strip (pinned Chat, icons, marks, overflow, full screen, Rename), the Files tree. |
