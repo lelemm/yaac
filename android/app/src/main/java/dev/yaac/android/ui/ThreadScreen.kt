@@ -53,6 +53,7 @@ import dev.yaac.android.core.scalar
 import dev.yaac.android.core.str
 import dev.yaac.android.core.text
 import kotlinx.coroutines.launch
+import dev.yaac.android.ui.transcript.timelineGestures
 import kotlinx.serialization.json.JsonElement
 
 /** The thread (A05, A07, A12): header, transcript, request cards, composer, control row, pill. */
@@ -97,21 +98,30 @@ fun ThreadScreen(
             }
         }
 
-        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+        val prompts = transcript["prompts"].objects
+        val timelineState = dev.yaac.android.ui.transcript.rememberTimelineState()
+        val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+        // A prompt picked on the timeline: jumped to as soon as its row is loaded (it may be on an older page).
+        var pendingJump by remember(threadId) { mutableStateOf<String?>(null) }
+        val currentPrompts by androidx.compose.runtime.rememberUpdatedState(prompts)
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().timelineGestures(timelineState, { currentPrompts }, { id ->
+            pendingJump = id
+            send("transcript.prompt", mapOf("id" to id, "threadId" to threadId))
+        }) { strong ->
+            haptics.performHapticFeedback(if (strong) androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress else androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+        }) {
             val height = maxHeight
             if (rows.isEmpty()) {
                 T(if (transcript["loading"].flag()) "Loading…" else transcript["emptyText"].str, type.ui, c.muted, modifier = Modifier.align(Alignment.Center))
             }
-            // The timeline (A07, A11f): a dash per prompt at the left edge when there are two or more.
-            val prompts = transcript["prompts"].objects
-            val timeline = prompts.size >= 2
-            if (timeline) Timeline(prompts, Modifier.align(Alignment.TopStart)) { id -> send("transcript.prompt", mapOf("id" to id, "threadId" to threadId)) }
+            // The timeline (A11f) is hidden: hold a finger 2 s at the left edge to scrub it.
             // One selection over the whole transcript, so it runs across rows (T05).
-            androidx.compose.foundation.text.selection.SelectionContainer { LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = if (timeline) 22.dp else 14.dp, end = if (agents["visible"].flag() && agents["pill"]["rowIds"].list.isNotEmpty()) 54.dp else 14.dp, top = 4.dp, bottom = 12.dp)) {
+            androidx.compose.foundation.text.selection.SelectionContainer { LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = 14.dp, end = if (agents["visible"].flag() && agents["pill"]["rowIds"].list.isNotEmpty()) 54.dp else 14.dp, top = 4.dp, bottom = 12.dp)) {
                 items(rows, key = { it["id"].str }, contentType = { it["kind"].str }) { row ->
                     TranscriptRow(row, threadId, states.of(threadId, row["id"].str)) { payload -> send("transcript.action", payload) }
                 }
             } }
+            dev.yaac.android.ui.transcript.TimelineOverlay(timelineState, prompts)
             // Follow the end while it is in view; page older and newer history at the edges.
             val atEnd by remember(listState) { derivedStateOf { !listState.canScrollForward } }
             var follow by remember(threadId) { mutableStateOf(true) }
@@ -151,10 +161,16 @@ fun ThreadScreen(
                     .distinctUntilChanged().collect { visibleApproval = it }
             }
             val focusToken = transcript["focusToken"].scalar
-            LaunchedEffect(focusToken) {
+            // Retried as rows arrive: the focused item may be on a page that is still loading.
+            LaunchedEffect(focusToken, rows.size) {
                 val id = transcript["focusId"].text ?: return@LaunchedEffect
                 val i = rows.indexOfFirst { it["id"].str == id || it["actionId"].str == id }
                 if (i >= 0) { follow = false; listState.animateScrollToItem(i) }
+            }
+            LaunchedEffect(pendingJump, rows.size) {
+                val id = pendingJump ?: return@LaunchedEffect
+                val i = rows.indexOfFirst { it["id"].str == id }
+                if (i >= 0) { follow = false; listState.scrollToItem(i); pendingJump = null }
             }
             if (!atEnd && !follow && rows.isNotEmpty()) {
                 Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp).clip(RoundedCornerShape(16.dp)).background(c.raised)
@@ -271,22 +287,3 @@ private fun Banner(b: kotlinx.serialization.json.JsonObject, threadId: String, s
     }
 }
 
-/** The prompt timeline: separate short dashes; tap jumps, touch and hold shows the prompt. */
-@Composable
-private fun Timeline(prompts: List<kotlinx.serialization.json.JsonObject>, modifier: Modifier, jump: (String) -> Unit) {
-    val c = LocalYaac.current
-    var held by remember { mutableStateOf<kotlinx.serialization.json.JsonObject?>(null) }
-    BoxWithConstraints(modifier.width(18.dp).fillMaxHeight().padding(vertical = 8.dp)) {
-        val step = maxHeight / prompts.size.coerceAtLeast(1)
-        // At most one dash per 10 dp; several prompts may share a dash.
-        val buckets = prompts.withIndex().groupBy { (i, _) -> ((step * i) / 10.dp).toInt() }
-        for ((bucket, items) in buckets) {
-            val p = items.last().value
-            Box(Modifier.offset(y = 10.dp * bucket).width(18.dp).height(10.dp)
-                .tapAndHold({ jump(p["id"].str) }, { held = p }), contentAlignment = Alignment.CenterStart) {
-                Box(Modifier.padding(start = 4.dp).width(9.dp).height(2.dp).background(c.muted))
-            }
-        }
-    }
-    held?.let { p -> ActionSheet(p["title"].str, listOf(ActionItem("jump", "Go to this prompt", true, p["stamp"].text, false, null, emptyList(), false)), { held = null }) { jump(p["id"].str) } }
-}
