@@ -11,6 +11,8 @@ open_enum! {
     pub enum Capability fallback Unknown {
         /// This target supports loopback web previews.
         PortForward = "portForward",
+        /// This target's `yaacd` supports the `hubHost/*` hub transfer methods.
+        HubHost = "hubHost",
         /// This target supports interactive PTY sessions.
         Terminal = "terminal",
         /// Worktree file browser.

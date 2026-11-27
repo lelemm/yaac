@@ -38,6 +38,16 @@ import type {
   FsTreeResult,
   GitFileDiffParams,
   GitFileDiffResult,
+  HubHostAbortParams,
+  HubHostInstallParams,
+  HubHostInstallResult,
+  HubHostProbeResult,
+  HubHostProgressParams,
+  HubHostPutCompleteParams,
+  HubHostPutParams,
+  HubHostPutResult,
+  HubHostStartParams,
+  HubHostStartResult,
   InitializeParams,
   InitializeResult,
   InstanceRateLimits,
@@ -192,6 +202,11 @@ export const METHODS = {
   PING: "ping",
   DIAGNOSTICS_GET: "diagnostics/get",
   DIAGNOSTICS_TROUBLESHOOT: "diagnostics/troubleshoot",
+  HUB_HOST_PROBE: "hubHost/probe",
+  HUB_HOST_INSTALL: "hubHost/install",
+  HUB_HOST_PUT: "hubHost/put",
+  HUB_HOST_START: "hubHost/start",
+  HUB_HOST_ABORT: "hubHost/abort",
   PROVIDER_LIST: "provider/list",
   PROVIDER_REFRESH: "provider/refresh",
   PROVIDER_MODEL_BEST_USE_SET: "provider/modelBestUse/set",
@@ -302,6 +317,8 @@ export const NOTIFICATIONS = {
   VOICE_CALL_TRANSCRIPT: "voiceCall/transcript",
   TUNNEL_CLOSE: "tunnel/close",
   STREAM_CREDIT: "stream/credit",
+  HUB_HOST_PROGRESS: "hubHost/progress",
+  HUB_HOST_PUT_COMPLETE: "hubHost/putComplete",
   FORGE_PRS_CHANGED: "forge/prs/changed",
   PROVIDER_RATE_LIMITS_UPDATED: "provider/rateLimits/updated",
   MESH_BUDGET_CHANGED: "mesh/budget/changed",
@@ -368,6 +385,16 @@ export interface RequestMap {
   "diagnostics/get": { params: Empty; result: DiagnosticsGetResult };
   /** Prepare a developer report for an explicitly supplied symptom. */
   "diagnostics/troubleshoot": { params: TroubleshootParams; result: TroubleshootResult };
+  /** Read the facts that determine whether this target can host the hub. */
+  "hubHost/probe": { params: Empty; result: HubHostProbeResult };
+  /** Download and verify the hub binary on the target. */
+  "hubHost/install": { params: HubHostInstallParams; result: HubHostInstallResult };
+  /** Open a credited data stream for one staged transfer file. */
+  "hubHost/put": { params: HubHostPutParams; result: HubHostPutResult };
+  /** Validate staging and arm startup when the old hub's connection closes. */
+  "hubHost/start": { params: HubHostStartParams; result: HubHostStartResult };
+  /** Disarm startup and discard staging. */
+  "hubHost/abort": { params: HubHostAbortParams; result: Empty };
   /** All provider instances on the target, each with a full descriptor. */
   "provider/list": { params: Empty; result: ProviderListResult };
   /** Force a re-probe of one instance or all. */
@@ -584,6 +611,10 @@ export interface NotificationMap {
   "tunnel/close": TunnelCloseParams;
   /** The receiver of a data stream grants more credit. */
   "stream/credit": StreamCreditParams;
+  /** Progress of the target's hub binary download. */
+  "hubHost/progress": HubHostProgressParams;
+  /** One staged stream has finished, with its verification outcome. */
+  "hubHost/putComplete": HubHostPutCompleteParams;
   /** A branch's pull requests changed (or were asked again after a push or commit). */
   "forge/prs/changed": ForgePrsResult;
   /** An instance's account or rate-limit windows changed (D161). */
@@ -616,6 +647,11 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "ping": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "diagnostics/get": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "diagnostics/troubleshoot": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
+  "hubHost/probe": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "hubHost/install": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "hubHost/put": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "hubHost/start": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "hubHost/abort": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "provider/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "provider/refresh": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "provider/modelBestUse/set": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
@@ -732,6 +768,8 @@ export const NOTIFICATION_INFO: { readonly [N in keyof NotificationMap]: Notific
   "voiceCall/transcript": { direction: "daemonToHost", class: "control" },
   "tunnel/close": { direction: "both", class: "control" },
   "stream/credit": { direction: "both", class: "control" },
+  "hubHost/progress": { direction: "daemonToHost", class: "control" },
+  "hubHost/putComplete": { direction: "daemonToHost", class: "control" },
   "forge/prs/changed": { direction: "daemonToHost", class: "control" },
   "provider/rateLimits/updated": { direction: "daemonToHost", class: "control" },
   "mesh/budget/changed": { direction: "daemonToHost", class: "control" },

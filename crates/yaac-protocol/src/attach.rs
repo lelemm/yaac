@@ -269,6 +269,14 @@ pub mod names {
     pub const UPDATE_REQUEST: &str = "hub/update/request";
     /// Hub → clients, frozen: [`super::HostUpdateProgress`].
     pub const UPDATE_PROGRESS: &str = "hub/update/progress";
+    /// Client → hub: list transfer targets and their eligibility ([`super::HubTransferCandidatesResult`]).
+    pub const TRANSFER_CANDIDATES: &str = "hub/transfer/candidates";
+    /// Client → hub: accept a transfer attempt ([`super::HubTransferStartParams`]).
+    pub const TRANSFER_START: &str = "hub/transfer/start";
+    /// Hub → clients: [`super::HubTransferProgress`].
+    pub const TRANSFER_PROGRESS: &str = "hub/transfer/progress";
+    /// Hub → clients: attach to the hub's new address ([`super::HubMoved`]).
+    pub const MOVED: &str = "hub/moved";
     /// Window → hub: list targets.
     pub const TARGETS_LIST: &str = "hub/targets/list";
     /// Window → hub: add a target.
@@ -481,6 +489,90 @@ pub mod host_update {
         /// Another update is already running or installing.
         pub const IN_PROGRESS: &str = "update_in_progress";
     }
+}
+
+/// `hub/transfer/candidates` params.
+pub type HubTransferCandidatesParams = Empty;
+
+/// One target in `hub/transfer/candidates`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubTransferCandidate {
+    pub target_id: TargetId,
+    pub label: String,
+    pub eligible: bool,
+    /// Why this target cannot take the hub, in words for the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// `hub/transfer/candidates` result: every target, including those that cannot take the hub.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubTransferCandidatesResult {
+    pub candidates: Vec<HubTransferCandidate>,
+}
+
+/// `hub/transfer/start` params: the selected destination and this attempt's operation id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubTransferStartParams {
+    pub op_id: crate::OpId,
+    pub target_id: TargetId,
+}
+
+/// `hub/transfer/start` result: the attempt was accepted. Progress follows separately.
+pub type HubTransferStartResult = Empty;
+
+/// `hub/transfer/progress`: the current phase of the attempt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubTransferProgress {
+    pub op_id: crate::OpId,
+    pub target_id: TargetId,
+    /// One of the phases in [`hub_transfer`]. Show unknown values as they are.
+    pub phase: String,
+    /// Bytes transferred so far, when measurable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done: Option<u64>,
+    /// Total bytes, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    /// Progress detail or a failure reason, in words for the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// The phases of [`HubTransferProgress`].
+pub mod hub_transfer {
+    pub const CHECKING: &str = "checking";
+    pub const INSTALLING: &str = "installing";
+    pub const COPYING: &str = "copying";
+    pub const HANDING_OVER: &str = "handingOver";
+    pub const MOVED: &str = "moved";
+    pub const FAILED: &str = "failed";
+
+    /// Error codes for transfer and requests that arrive during hand-over.
+    pub mod codes {
+        /// The hub has quiesced for hand-over and will not accept state-changing calls.
+        pub const MOVING: &str = "hub_moving";
+        /// The selected target cannot take the hub.
+        pub const NOT_ELIGIBLE: &str = "transfer_not_eligible";
+        /// A transfer attempt is already running.
+        pub const IN_PROGRESS: &str = "transfer_in_progress";
+        /// The hub cannot start a transfer now.
+        pub const UNAVAILABLE: &str = "transfer_unavailable";
+    }
+}
+
+/// `hub/moved`: the old hub is handing over. Clients update the saved hub and reattach.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubMoved {
+    pub hub_id: String,
+    /// The new hub's Tailscale socket address, including its port.
+    pub address: String,
+    pub host_name: String,
 }
 
 /// `hub/shutdown` params.
