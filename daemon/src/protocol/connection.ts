@@ -349,7 +349,7 @@ export class ServerConnection implements ConnectionView {
     const result = {
       protocol: negotiated.answer(),
       ...(p.messageChunks === true ? { messageChunks: true } : {}),
-      features: this.dialect.features().fold(terminal && !terminal.unavailableReason ? ["portForward", "fileView", "terminal", "budgetTimeLimit", "voiceInput"] : ["portForward", "fileView", "budgetTimeLimit", "voiceInput"]),
+      features: this.dialect.features().fold(terminal && !terminal.unavailableReason ? ["portForward", "fileView", "terminal", "budgetTimeLimit", "voiceInput", "voiceCall"] : ["portForward", "fileView", "budgetTimeLimit", "voiceInput", "voiceCall"]),
       terminalUnavailableReason: terminal?.unavailableReason,
       schemaHash: this.dialect.schemaHash(),
       daemon: this.host.daemonInfo(),

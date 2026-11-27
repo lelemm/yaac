@@ -260,6 +260,8 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.VOICE_START: return core.voiceStart(this.view, p);
       case METHODS.VOICE_STOP: core.voice.stop(this.view, p.stream, p.bytes); return {};
       case METHODS.VOICE_CANCEL: core.voice.cancel(this.view, p.stream); return {};
+      case METHODS.VOICE_CALL_START: return core.voiceCallStart(this.view, p);
+      case METHODS.VOICE_CALL_END: core.calls.end(this.view, p.callId); return {};
       case METHODS.TUNNEL_OPEN:
         return this.tunnels.open(p);
       case METHODS.PREVIEW_PORTS:
@@ -341,6 +343,7 @@ export class ClientSession implements SessionHandler, ClientLink {
     this.closed = true;
     this.core.terminals.drop(this.view);
     this.core.voice.drop(this.view);
+    this.core.calls.drop(this.view);
     this.tunnels.drop();
     this.core.clients.delete(this);
     this.core.uploads.dropOwner(this);

@@ -30,7 +30,8 @@ import { RpcError } from "../../protocol/rpc.js";
 import { Emitter } from "../../util/emitter.js";
 import { EXPLANATION_SOURCE, disabledMcpServers, explainCommand } from "./explanation.js";
 import { CODEX_VOICE_FORMAT, VOICE_SOURCE, startCodexDictation } from "./voice.js";
-import type { Dictation, DictationEvents, DictationOptions } from "../../voice/types.js";
+import type { Dictation, DictationEvents, DictationOptions, VoiceCall, VoiceCallEvents } from "../../voice/types.js";
+import { startCodexVoiceCall } from "./voice-call.js";
 import { randomId, readJson, sha256Hex, writeJsonAtomic } from "../../util/fsx.js";
 import type {
   ExternalControl,
@@ -227,6 +228,8 @@ interface ThreadState {
   foreignTurn: TurnId | null;
   /** Another client drove this thread; cleared only when Codex unloads it. */
   foreignSeen: boolean;
+  /** A voice call YAAC started is live in this thread: turns that start meanwhile are its. */
+  call?: boolean;
   /** The last turn another client started (names the holder for a takeover, D140). */
   lastForeignTurn: TurnId | null;
   /** turn/start or turn/steer in flight: events are held until we know whose turn it is. */
@@ -701,6 +704,8 @@ export class CodexProvider implements HarnessProvider {
     if (models.some((m) => m.capabilities?.some((c) => c.capability === "imageInput" && c.support !== "unsupported"))) caps.push("imageInput");
     if (this.meshAttached) caps.push("meshTools");
     if (this.voiceUsable()) caps.push("voiceInput");
+    // A voice call over WebRTC works with any sign-in: Codex creates the call with its own.
+    if (this.realtime) caps.push("voiceCall");
     return {
       displayName: "Codex",
       backend: "daemon",
@@ -902,6 +907,30 @@ export class CodexProvider implements HarnessProvider {
       remember: (id) => this.rememberExplanationThread(id),
       log: (l) => this.ctx.log(l),
     }, events, opts);
+  }
+
+  /**
+   * A voice call with `thread` (./voice-call.ts): Codex's realtime session over WebRTC from the
+   * host's offer, on the user's own thread, as Codex's `/voice` does.
+   */
+  startVoiceCall(thread: NativeId, sdpOffer: string, events: VoiceCallEvents): VoiceCall {
+    if (!this.realtime) throw new RpcError("capability_missing", "voice calls are not available for this Codex instance");
+    const st = this.state(thread);
+    return startCodexVoiceCall(thread, sdpOffer, {
+      connection: () => this.ensure(),
+      prepare: async () => {
+        if (!st.subscribed) {
+          const t = await this.resume(thread, null);
+          if (this.isActive(t.status ?? null) && !st.ownTurn) {
+            st.foreignSeen = true;
+            this.publishControl(st);
+            throw new RpcError("thread_in_use", "the Codex thread is running a turn started elsewhere");
+          }
+        }
+      },
+      live: (on) => { st.call = on; },
+      log: (l) => this.ctx.log(l),
+    }, events);
   }
 
   // ── Turns ────────────────────────────────────────────────────────────────────────────────
@@ -1492,6 +1521,7 @@ export class CodexProvider implements HarnessProvider {
     if (this.offersShellCommand()) base.push("userShellCommand");
     const voice = this.voiceUsable();
     if (voice) base.push("voiceInput");
+    if (this.realtime) base.push("voiceCall");
     return {
       capabilities: base,
       ...(voice ? { voiceInput: CODEX_VOICE_FORMAT } : {}),
@@ -1836,6 +1866,9 @@ export class CodexProvider implements HarnessProvider {
         if (turn.id === st.ownTurn) return; // announced when turn/start returned
         if (st.compact && !st.compact.candidate && !st.ownTurn && !st.foreignTurn) {
           st.compact.candidate = turn;
+        } else if (st.call && !st.ownTurn) {
+          // The voice call handed work to the thread: the user's own turn (docs/plan/voice-call.md).
+          this.observedTurn(st, turn, "user");
         } else {
           this.observedTurn(st, turn, "external");
         }

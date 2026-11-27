@@ -57,3 +57,28 @@ export interface DictationOptions {
   /** The spoken language as a code (`en`, `pt-BR`); absent: the harness's own setting. */
   language?: string;
 }
+
+// ── Voice calls (docs/plan/voice-call.md) ─────────────────────────────────────────────────────
+// A speech-to-speech conversation with a thread. The host is the WebRTC peer: only its SDP
+// offer, the service's answer, and transcript text pass through yaacd; never audio.
+
+/** What a call reports. yaacd forwards each one to the host that started it. */
+export interface VoiceCallEvents {
+  /** The service's SDP answer (once). */
+  answer(sdp: string): void;
+  /** The whole current utterance of `role`; `final` closes it. */
+  transcript(role: "user" | "assistant", text: string, final: boolean): void;
+  /** The call is over. Called exactly once; `error` in words for the user. */
+  ended(error?: string): void;
+}
+
+/** One running call inside a provider. */
+export interface VoiceCall {
+  /**
+   * Settles once the harness accepted (resolves) or refused (rejects; a `DictationRefused`
+   * for a refusal) the call. `voiceCall/start` answers only then.
+   */
+  readonly accepted: Promise<void>;
+  /** Hang up: `ended` follows (without an error). */
+  end(): void;
+}

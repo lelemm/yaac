@@ -3,6 +3,7 @@ import { chooseWorkerMode, rankOf } from "../mesh/modes.js";
 import type { ThreadSetModeParams } from "../protocol/generated/types.js";
 import { Terminals } from "./terminals.js";
 import { VoiceSessions } from "../voice/sessions.js";
+import { MAX_SDP_BYTES, VoiceCalls } from "../voice/calls.js";
 import type { ConnectionView } from "../protocol/connection.js";
 // The session core: threads, journals, requests, control, the dispatcher, and the index —
 // everything between the providers and the connected clients. It knows no protocol version
@@ -218,6 +219,7 @@ export interface CoreMeshHooks {
  */
 const SUBAGENT_WRITES: ReadonlySet<Capability> = new Set<Capability>([
   "voiceInput",
+  "voiceCall",
   "threadResume",
   "threadFork",
   "threadForkAtTurn",
@@ -362,6 +364,8 @@ export class Core {
   readonly terminals = new Terminals(() => this.uploads.allocateStream(), () => this.activity.emit());
   /** Voice input streams (docs/plan/voice.md). */
   readonly voice = new VoiceSessions(() => this.uploads.allocateStream());
+  /** Voice calls (docs/plan/voice-call.md). */
+  readonly calls = new VoiceCalls();
   readonly registry: ProviderRegistry;
   readonly commandExplanations: CommandExplanations;
   readonly index: ThreadIndex;
@@ -426,10 +430,11 @@ export class Core {
     this.registry.onDescriptor((d) => {
       this.broadcast("provider/updated", { provider: d });
       const hasVoice = d.capabilities?.includes("voiceInput") === true;
+      const hasCall = d.capabilities?.includes("voiceCall") === true;
       for (const rt of this.allThreads()) {
         if (rt.record.instance !== d.instance || !rt.effective
           || (rt.record.metadataPending || this.subagentReadOnly(rt))
-          || !!rt.effective.voiceInput === hasVoice) continue;
+          || (!!rt.effective.voiceInput === hasVoice && (rt.effective.capabilities ?? []).includes("voiceCall") === hasCall)) continue;
         void this.computeEffective(rt).then((effective) => {
           if (!rt.deleted) this.append(rt, { type: "settingsChanged", effective });
         });
@@ -1932,6 +1937,7 @@ export class Core {
       threadArchive: "archive",
       threadDelete: "remove",
       voiceInput: "startDictation",
+      voiceCall: "startVoiceCall",
       threadTakeOverInterrupt: "interruptHolder",
     };
     eff.capabilities = (eff.capabilities ?? []).filter((c) => {
@@ -1983,6 +1989,40 @@ export class Core {
         return await this.voice.start(view, rt.id, format, (events) => provider.startDictation!(native, language ? { language } : {}, events));
       } catch (e) {
         // Nothing changed anywhere (a refusal, a limit): the host may try again.
+        if (e instanceof RpcError) throw notActed(e.code, e.message);
+        throw e;
+      }
+    });
+  }
+
+  /**
+   * `voiceCall/start` (docs/plan/voice-call.md): a speech-to-speech call with the thread from
+   * the host's SDP offer. The call acts in the thread, so it is refused where YAAC is not the
+   * thread's writer (invariant 9). Answer, state and transcripts go back to `view` only.
+   */
+  async voiceCallStart(view: ConnectionView, p: { opId?: unknown; threadId?: unknown; sdpOffer?: unknown }) {
+    return this.ops.run("voiceCall/start", p.opId, async () => {
+      if (typeof p.sdpOffer !== "string" || !p.sdpOffer.trim() || Buffer.byteLength(p.sdpOffer) > MAX_SDP_BYTES) {
+        throw notActed("invalid_params", "sdpOffer must be an SDP offer of at most 64 KiB");
+      }
+      const rt = this.requireThread(p.threadId);
+      const readOnly = rt.record.metadataPending ? METADATA_PENDING : this.subagentReadOnly(rt);
+      if (readOnly) throw notActed("thread_in_use", readOnly);
+      if (rt.external.external) {
+        throw notActed("thread_in_use", `this thread is in use in ${rt.external.holder ?? "another program"}; take it over to call it`);
+      }
+      const away = this.storeAway(rt);
+      if (away) throw notActed("provider_unavailable", away);
+      const provider = this.registry.get(rt.record.instance)?.provider;
+      const eff = await this.computeEffective(rt);
+      if (!provider?.startVoiceCall || !eff.capabilities?.includes("voiceCall")) {
+        throw notActed("capability_missing", "this thread's harness offers no voice call here");
+      }
+      const native = rt.record.native;
+      const offer = p.sdpOffer;
+      try {
+        return await this.calls.start(view, rt.id, (events) => provider.startVoiceCall!(native, offer, events));
+      } catch (e) {
         if (e instanceof RpcError) throw notActed(e.code, e.message);
         throw e;
       }
@@ -3853,6 +3893,7 @@ export class Core {
   private forget(rt: ThreadRuntime): void {
     this.mesh?.threadRemoved(rt);
     this.voice.endThread(rt.id, "The thread was removed.");
+    this.calls.endThread(rt.id, "The thread was removed.");
     rt.deleted = true;
     for (const w of rt.queue.splice(0)) w.reject(rpc("thread_not_found", "the thread was deleted"));
     if (rt.flushTimer) clearTimeout(rt.flushTimer);
@@ -4280,6 +4321,7 @@ export class Core {
     }
     this.terminals.shutdown();
     this.voice.shutdown();
+    this.calls.shutdown();
     this.gitStatus.close();
     for (const rt of this.threads.values()) {
       this.flushDeltas(rt);
