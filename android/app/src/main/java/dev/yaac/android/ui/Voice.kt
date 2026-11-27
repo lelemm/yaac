@@ -35,6 +35,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import dev.yaac.android.core.VoiceRecorder
+import dev.yaac.android.core.flag
 import dev.yaac.android.core.get
 import dev.yaac.android.core.int
 import dev.yaac.android.core.str
@@ -134,6 +135,8 @@ fun VoiceButton(voice: JsonObject, ui: VoiceUi, enabled: Boolean) {
     val state = voice["state"].str
     val rate = voice["format"]["sampleRate"].int ?: 16_000
     val active = state == "starting" || state == "listening"
+    // Disabled by the controller: no transcriber anywhere, another composer dictating, a call.
+    val allowed = enabled && (active || voice["button"]["enabled"].flag(true))
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) ui.record(rate) else ui.localError = "YAAC needs the microphone to take dictation. Allow it in the app's settings."
     }
@@ -155,13 +158,13 @@ fun VoiceButton(voice: JsonObject, ui: VoiceUi, enabled: Boolean) {
         "listening" -> "Stop dictation"
         "starting" -> "Starting dictation, tap to stop"
         "stopping" -> "Finishing dictation"
-        else -> "Dictate"
+        else -> voice["button"]["detail"].text?.takeIf { !allowed } ?: "Dictate"
     }
     Box(
         Modifier.size(44.dp).clip(RoundedCornerShape(6.dp))
-            .clickable(enabled = enabled && state != "stopping", onClickLabel = description) { tap() }
+            .clickable(enabled = allowed && state != "stopping", onClickLabel = description) { tap() }
             .semantics { contentDescription = description }
-            .alpha(if (enabled) 1f else 0.4f),
+            .alpha(if (allowed) 1f else 0.4f),
         contentAlignment = Alignment.Center,
     ) {
         if (active) {
@@ -184,9 +187,10 @@ fun VoiceStatus(voice: JsonObject, ui: VoiceUi) {
     val type = LocalType.current
     val error = ui.localError ?: voice["error"].text
     val state = voice["state"].str
+    // The controller's line names who transcribes ("Dictating with Claude on wsl: Ubuntu… 0:12").
     val line = when (state) {
-        "starting" -> "Starting dictation…"
-        "listening" -> listOfNotNull("Listening…", voice["time"].text).joinToString(" ")
+        "starting" -> voice["status"].text ?: "Starting dictation…"
+        "listening" -> voice["status"].text?.takeIf { voice["partial"].text == null } ?: listOfNotNull("Listening…", voice["time"].text).joinToString(" ")
         "stopping" -> "Finishing…"
         else -> null
     }
