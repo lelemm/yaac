@@ -36,8 +36,7 @@ pub struct Manifest {
 pub struct Artifact {
     /// Its asset name in the release.
     pub name: String,
-    /// `installer`, `app`, `daemon`, `daemon-mcp` or `android` (the phone's APK, which the
-    /// desktop updater never downloads).
+    /// The release component, such as `installer`, `android` or `hub-linux-x86_64`.
     pub component: String,
     /// Its own version with the build id: `<version>+<build>`.
     pub version: String,
@@ -81,6 +80,11 @@ impl Manifest {
     /// The installer artefact.
     pub fn installer(&self) -> Option<&Artifact> {
         self.artifacts.iter().find(|a| a.component == INSTALLER)
+    }
+
+    /// Looks up a release asset by its file name, including the architecture for Linux hubs.
+    pub fn asset(&self, name: &str) -> Option<&Artifact> {
+        self.artifacts.iter().find(|a| a.name == name)
     }
 
     /// `<version>+<build>`, as builds are shown everywhere.

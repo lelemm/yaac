@@ -153,7 +153,8 @@ never opens a connection of its own.
 
 | Target | The one child process | Notes |
 | --- | --- | --- |
-| Local | `<private runtime> yaacd.mjs connect` | No shell in between. |
+| Local (Windows) | `<private runtime> yaacd.mjs connect` | Direct launch. |
+| Local (Linux hub) | `sh -c <stage 0>` | The shell replaces itself with `yaacd connect` using the same installs as SSH. |
 | SSH | `ssh -T … -- <host> <one-line stage 0 loader>` | One SSH session, one exec channel, no PTY, no connection sharing. |
 | WSL | `wsl.exe -d <distro> [-u <user>] --exec <bootstrap>` | One `wsl.exe` per enabled WSL connection. |
 
@@ -495,7 +496,8 @@ not there (P39 departs from P4 here); `YAAC_SYSTEM_NODE=0` makes stage 0 ignore 
 
 ### Stage 0
 
-The command the transport runs on a remote target is a tiny POSIX shell program, *stage 0*. It
+The command the transport runs on a remote target (or locally on the Linux hub) is a tiny
+POSIX shell program, *stage 0*. It
 does as little as possible: report what is there, get a runtime in place, and hand over to it.
 
 ```

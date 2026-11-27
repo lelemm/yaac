@@ -20,6 +20,47 @@ use tokio::process::Command;
 
 use crate::{BoxFuture, ChildGuard, ConnectCtx, ConnectError, Connector, Stream};
 
+/// The Linux hub starts stage 0 locally, using the same installs as SSH.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug)]
+pub struct LinuxLocalConnector {
+    pub bundle: crate::DaemonBundle,
+    pub runtime: crate::RuntimeSource,
+    pub env: Vec<(String, String)>,
+}
+
+#[cfg(target_os = "linux")]
+impl Connector for LinuxLocalConnector {
+    fn connect<'a>(&'a self, _ctx: &'a ConnectCtx) -> BoxFuture<'a, Result<Stream, ConnectError>> {
+        Box::pin(async move {
+            use crate::bootstrap::{Stage0Timeouts, bootstrap_child, stage0_argv};
+
+            let mut env = self.env.clone();
+            if let Some(name) = self.runtime.name() {
+                env.push(("YAAC_RUNTIME_VERSION".into(), name.into()));
+            }
+            let mut argv = stage0_argv(&env).into_iter();
+            let child = Command::new(argv.next().expect("stage 0 shell"))
+                .args(argv)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|source| ConnectError::Spawn { what: self.describe(), source })?;
+            bootstrap_child(child, &[], &self.bundle, Some(&self.runtime), "local target", Stage0Timeouts::default(), |_| None).await
+        })
+    }
+
+    fn describe(&self) -> String {
+        "local: sh <stage 0>".into()
+    }
+
+    fn daemon_build(&self) -> Option<String> {
+        Some(self.bundle.build.clone())
+    }
+}
+
 fn install_file(source: &Path, dest: &Path) -> std::io::Result<()> {
     if dest.is_file() {
         return Ok(());

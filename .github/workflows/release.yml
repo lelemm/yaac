@@ -1,5 +1,5 @@
 # Makes a GitHub release of YAAC (D136, docs/install.md#releases): the Windows installer, the
-# binaries (yaac.exe, yaacd.mjs, yaacd-mcp.mjs), the Android app (yaac-android-…apk, signed with
+# binaries (yaac.exe, yaac-hub-linux-x86_64, yaacd.mjs, yaacd-mcp.mjs), the Android app (yaac-android-…apk, signed with
 # the release key in the ANDROID_* secrets) and manifest.json, which the in-app updater reads. The repository is public, so releases are readable without a token.
 #
 # Build ids (D135): every artefact of one release carries `<version>+<id>` with
@@ -99,7 +99,7 @@ jobs:
         run: cargo test --workspace --locked
 
   build:
-    name: Build yaac.exe and yaacd (Linux)
+    name: Build Windows and Linux binaries and yaacd
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -180,6 +180,15 @@ jobs:
         env:
           YAAC_BUILD_ID: ${{ steps.id.outputs.build }}
         run: scripts/build-windows.sh
+
+      - name: Build the headless Linux hub (embedding yaacd)
+        env:
+          YAAC_BUILD_ID: ${{ steps.id.outputs.build }}
+          CARGO_INCREMENTAL: "0"
+        run: |
+          cargo build --release --locked -p yaac-app --bin yaac --no-default-features --features hub
+          mkdir -p dist/stage
+          install -m 755 target/release/yaac dist/stage/yaac-hub-linux-x86_64
 
       - name: Collect the build
         shell: bash
@@ -408,6 +417,7 @@ jobs:
           mkdir -p dist/release
           setup="dist/release/YAAC-Setup-$VERSION-build.$BUILD.exe"
           cp "dist/setup/YAAC-Setup-$VERSION+$BUILD.exe" "$setup"
+          cp dist/stage/yaac-hub-linux-x86_64 dist/release/
           cp dist/stage/yaac.exe dist/stage/yaacd.mjs dist/stage/yaacd-mcp.mjs dist/release/
           apk="dist/release/yaac-android-$VERSION-build.$BUILD.apk"
           cp "dist/android/yaac-android-$VERSION-build.$BUILD.apk" "$apk"
@@ -415,7 +425,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --out dist/release/manifest.json \
             "installer=$setup" app=dist/release/yaac.exe \
             daemon=dist/release/yaacd.mjs daemon-mcp=dist/release/yaacd-mcp.mjs \
-            "android=$apk"
+            "android=$apk" hub-linux-x86_64=dist/release/yaac-hub-linux-x86_64
           cat dist/release/manifest.json
           (cd dist/release && sha256sum -- *)
 
@@ -429,7 +439,7 @@ jobs:
           TAG: ${{ needs.build.outputs.tag }}
         run: |
           set -eu
-          notes="YAAC $VERSION+$BUILD. Install with YAAC-Setup-$VERSION-build.$BUILD.exe. To try the Windows compatibility renderer, choose Windows WPF in Settings → Window → Renderer, then restart YAAC. The Windows installer includes the WPF runtime. The Android app is yaac-android-$VERSION-build.$BUILD.apk; it attaches only to a hub of this same build. manifest.json lists every file with its SHA-256."
+          notes="YAAC $VERSION+$BUILD. Install with YAAC-Setup-$VERSION-build.$BUILD.exe. To try the Windows compatibility renderer, choose Windows WPF in Settings → Window → Renderer, then restart YAAC. The Windows installer includes the WPF runtime. The headless Linux hub is yaac-hub-linux-x86_64. The Android app is yaac-android-$VERSION-build.$BUILD.apk; it attaches only to a hub of this same build. manifest.json lists every file with its SHA-256."
           gh release create "$TAG" dist/release/* \
             --target "$GITHUB_SHA" \
             --title "YAAC $VERSION+$BUILD" \

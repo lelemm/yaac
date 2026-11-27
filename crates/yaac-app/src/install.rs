@@ -23,6 +23,7 @@ use serde_json::json;
 use yaac_hub::HubPaths;
 use yaac_hub::autostart::{Autostart, autostart_installed, install_autostart, remove_autostart};
 use yaac_hub::client::HubClient;
+use yaac_hub::paths::moved_tombstone;
 use yaac_hub::settings::Settings;
 use yaac_protocol::attach::names;
 
@@ -35,6 +36,7 @@ pub fn dispatch(args: &[String], build: &str) -> Option<ExitCode> {
     let code = match args.first().map(String::as_str)? {
         "quit" => quit(rest, build),
         "autostart" => autostart(rest),
+        #[cfg(feature = "desktop")]
         "remove-data" => remove_data(),
         _ => return None,
     };
@@ -173,13 +175,20 @@ fn autostart(args: &[String]) -> ExitCode {
                 Ok(p) => p,
                 Err(code) => return code,
             };
-            match Settings::load(&paths.settings_file()) {
-                Ok(Some(s)) => Some(s.hub.always),
-                // Never run: the window's first run installs the entry and starts the hub, so
-                // its first-run page still appears. An entry already there is pointed here.
-                Ok(None) => autostart_installed(&entry).then_some(true),
+            match moved_tombstone(&paths) {
+                Ok(Some(_)) => Some(false),
+                Ok(None) => match Settings::load(&paths.settings_file()) {
+                    Ok(Some(s)) => Some(s.hub.always),
+                    // Never run: the window's first run installs the entry and starts the hub, so
+                    // its first-run page still appears. An entry already there is pointed here.
+                    Ok(None) => autostart_installed(&entry).then_some(true),
+                    Err(e) => {
+                        eprintln!("yaac autostart: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                },
                 Err(e) => {
-                    eprintln!("yaac autostart: {e}");
+                    eprintln!("yaac autostart: cannot read {}: {e}", paths.moved_file().display());
                     return ExitCode::FAILURE;
                 }
             }

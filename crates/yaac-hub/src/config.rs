@@ -132,6 +132,22 @@ impl ConnectorFactory for DefaultConnectors {
     }
 }
 
+#[cfg(target_os = "linux")]
+struct LinuxConnectors {
+    defaults: DefaultConnectors,
+    local: yaac_transport::local::LinuxLocalConnector,
+}
+
+#[cfg(target_os = "linux")]
+impl ConnectorFactory for LinuxConnectors {
+    fn connector(&self, target: &TargetDef) -> Result<Arc<dyn Connector>, String> {
+        match &target.transport {
+            TargetTransport::Local(_) => Ok(Arc::new(self.local.clone())),
+            _ => self.defaults.connector(target),
+        }
+    }
+}
+
 /// Reconnection backoff: capped exponential.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Backoff {
@@ -269,9 +285,25 @@ impl HubConfig {
         let runtime = RuntimeSource::pinned(Some(paths.data_dir.join("runtime-cache")));
         wsl.runtime = Some(runtime.clone());
         let mut ssh = SshDefaults::new(&paths.data_dir, &paths.runtime_dir, wsl.bundle.clone(), wsl.env.clone());
-        ssh.runtime = Some(runtime);
+        ssh.runtime = Some(runtime.clone());
         let lister = DefaultWslLister { wsl_exe: wsl.wsl_exe.clone() };
-        let mut config = Self::new(build, paths, Arc::new(DefaultConnectors { local, wsl }));
+        let defaults = DefaultConnectors { local, wsl };
+        let connectors: Arc<dyn ConnectorFactory> = {
+            #[cfg(target_os = "linux")]
+            if ["YAAC_RUNTIME", "YAAC_DAEMON_BUNDLE", "YAAC_ROOT"].iter().all(|key| std::env::var_os(key).is_none_or(|v| v.is_empty()))
+                && let Some(bundle) = defaults.wsl.bundle.clone()
+            {
+                Arc::new(LinuxConnectors {
+                    local: yaac_transport::local::LinuxLocalConnector { bundle, runtime, env: defaults.wsl.env.clone() },
+                    defaults,
+                })
+            } else {
+                Arc::new(defaults)
+            }
+            #[cfg(not(target_os = "linux"))]
+            Arc::new(defaults)
+        };
+        let mut config = Self::new(build, paths, connectors);
         config.wsl_distros = Arc::new(lister);
         config.ssh = Some(Arc::new(ssh));
         config.notifier = Some(Arc::new(SystemNotifier));

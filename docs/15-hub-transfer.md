@@ -59,7 +59,7 @@ old hub has let go of all of them.
    is there), and start `yaac hub` detached **only when this connection closes**. So the two hubs
    never hold targets at the same time.
 6. **Hand over** — the old hub writes a **tombstone** `moved.json` in its data dir (`{hubId,
-   address, host, at}`), turns its own start-at-login off, sends every client `hub/moved {hubId,
+   address, hostName, atMs}`), turns its own start-at-login off, sends every client `hub/moved {hubId,
    address, hostName}`, closes X, and exits. On the PC, `yaac hub` (and `autostart sync --start`)
    with a tombstone does not start; the window reads it and attaches to the new address.
 7. **Come back** — the new hub starts, binds its Tailscale addresses (Settings → Android "allow
@@ -91,9 +91,18 @@ request carries the transfer's `opId`.
 ## The Linux hub binary (P411)
 
 The release builds `yaac` for `x86_64-unknown-linux-gnu` with `--no-default-features --features
-hub` (no window, no eframe), as `yaac-hub-linux-x86_64`, and lists it in `manifest.json` with
-its size and SHA-256. It runs `yaac hub` headless; Tailscale admission (`tailscale whois`) is the
-same code as on Windows. It is not a desktop app on Linux: no window, no tray.
+hub` as the stripped release asset `yaac-hub-linux-x86_64` and lists it in `manifest.json`
+with its size and SHA-256. `yaac hub` runs headless and uses the local XDG socket and the
+same Tailscale admission as on Windows (`tailscale` on `PATH`). The binary also supports
+`yaac quit`, `yaac autostart`, and `yaac --version`.
+
+The release embeds `yaacd.mjs`. On the new local target one stage 0 process reuses the
+existing daemon and Node.js installation, with the same rules as SSH. It installs the embedded
+daemon if that build is missing and reuses the pinned YAAC Node.js or an existing Node.js 22+
+before fetching the pinned runtime. The daemon keeps its existing journals under `~/.yaac`
+(or `YAAC_HOME`).
+
+TODO: Publish a Linux aarch64 hub build.
 
 ## Contracts (names; the types are in `yaac-protocol`)
 

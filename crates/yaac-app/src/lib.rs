@@ -15,9 +15,9 @@
 //! `--host windows` pretends the host is Windows (the WSL settings are shown only there), so
 //! those screens can be checked on Linux.
 //!
-//! Without the `desktop` feature (the Android library) the crate is the window controller
-//! only ([`view_protocol`]): the egui painting code still compiles — the controller runs egui's
-//! `Context` headless and shares its state — but nothing draws it, hence the allowance.
+//! Without the `desktop` feature, the binary can run headless and renderers such as Android
+//! can use the window controller ([`view_protocol`]). The controller still uses egui's
+//! `Context` headless.
 #![cfg_attr(not(feature = "desktop"), allow(dead_code))]
 
 #[cfg(feature = "hub")]
@@ -92,7 +92,6 @@ mod external_host;
 mod tunnel_proxy;
 pub mod view_protocol;
 
-#[cfg(feature = "desktop")]
 use std::process::ExitCode;
 
 use yaac_core::demo::Scenario;
@@ -122,12 +121,15 @@ pub(crate) struct Launch {
 }
 
 /// The entry point: `args` without the program name.
-#[cfg(feature = "desktop")]
 pub fn run(args: &[String]) -> ExitCode {
     // Started by `ssh` as SSH_ASKPASS during the hub's SSH setup: answer and exit.
     #[cfg(feature = "hub")]
     if let Some(code) = yaac_hub::ssh::askpass::client_main() {
         return code;
+    }
+    if args.first().is_some_and(|a| a == "--version" || a == "-V") {
+        println!("yaac {BUILD}");
+        return ExitCode::SUCCESS;
     }
     #[cfg(feature = "hub")]
     if let Some(code) = install::dispatch(args, BUILD) {
@@ -142,6 +144,27 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
+    #[cfg(feature = "desktop")]
+    return run_window(args);
+    #[cfg(not(feature = "desktop"))]
+    {
+        if args.first().is_some_and(|a| a == "--help" || a == "-h") {
+            #[cfg(feature = "hub")]
+            println!("yaac hub | yaac quit | yaac autostart on|off|status|sync [--start] | yaac --version");
+            #[cfg(not(feature = "hub"))]
+            println!("yaac --version");
+            return ExitCode::SUCCESS;
+        }
+        #[cfg(feature = "hub")]
+        eprintln!("yaac: this is a hub-only build. Use `yaac hub` to start it.");
+        #[cfg(not(feature = "hub"))]
+        eprintln!("yaac: this build has no window or hub.");
+        ExitCode::FAILURE
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn run_window(args: &[String]) -> ExitCode {
     if args.first().is_some_and(|a| a == "--wpf-controller") {
         return wpf::controller_main(args.get(1).map(String::as_str), args.get(2).map(String::as_str));
     }
@@ -200,7 +223,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 i += 1;
             }
             "--help" | "-h" => {
-                println!("yaac [hub] | yaac quit [--wait-for <exe>] | yaac autostart on|off|status|sync [--start] | yaac remove-data | yaac --demo [fleet|fresh] [--theme dark|light|system] [--host windows|linux] [--screenshots <dir> [--only 01,02]] [--capture-ui <png> [--theme-file <json>]] [--renderer auto|dx12|vulkan|wgpu-gl|glow|software|windows-wpf]");
+                println!("yaac [hub] | yaac --version | yaac quit [--wait-for <exe>] | yaac autostart on|off|status|sync [--start] | yaac remove-data | yaac --demo [fleet|fresh] [--theme dark|light|system] [--host windows|linux] [--screenshots <dir> [--only 01,02]] [--capture-ui <png> [--theme-file <json>]] [--renderer auto|dx12|vulkan|wgpu-gl|glow|software|windows-wpf]");
                 return ExitCode::SUCCESS;
             }
             other => eprintln!("ignoring unknown argument {other}"),

@@ -15,9 +15,8 @@
 //! | [`bootstrap`] | Stage 0, the host side: report, in-band runtime and daemon install, hand-over. |
 //! | [`runtime`] | The pinned private runtime (D17, D25) and the host's verified copy of it. |
 //!
-//! The stream carries the YAAC protocol from its first byte on the local target (there is no
-//! stage 0 locally). A remote connector completes stage 0 inside `connect` and hands back a
-//! stream positioned at the first protocol byte, so callers never see the bootstrap.
+//! Connectors complete any stage 0 bootstrap inside `connect` and hand back a stream
+//! positioned at the first protocol byte. Linux hubs bootstrap the local target like SSH.
 
 use std::fmt;
 use std::future::Future;
