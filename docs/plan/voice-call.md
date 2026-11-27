@@ -31,6 +31,14 @@ Read from `codex app-server generate-ts --experimental` and the tagged source `r
   (with `existingCall` because it creates the call itself; YAAC hands Codex the offer
   instead, which Codex's own tests cover for v3). The realtime model answers aloud and its
   delegations start or steer a turn **in that thread**.
+- Each delegation is the turn's input, a user-role message that is wholly
+  `<realtime_delegation>` (`core/src/context/realtime_delegation.rs`): `<input>` (what the
+  model passed on), an optional `<transcript_delta>` (`user: …` / `assistant: …` lines), and
+  on hang-up `<source>transcript_tail_flush</source>` with Codex's fixed note as the input.
+  It is the call speaking, not the user: `yaacd` shows it as a notice, "From the voice call:
+  «…»" or "Voice call ended · transcript handed to the agent", with the input and the
+  speaker-labelled excerpt as its body — never a user bubble or the tags, live or in history
+  ([07](../07-ui.md#thread-view), P407).
 - `thread/realtime/transcript/delta { threadId, role, delta }` and `…/done { threadId, role,
   text }` (`role`: `user` | `assistant`) carry what is said. `thread/realtime/error
   { threadId, message }`, `thread/realtime/closed { threadId, reason }`.

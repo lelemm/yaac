@@ -235,6 +235,66 @@ test("codex: a userMessage item is split, and a paste placeholder's range is a p
   assert.deepEqual([aborted.kind, aborted.noticeKind, aborted.text], ["notice", "interrupted", "Interrupted"]);
 });
 
+// A voice call's handoffs (codex-cli 0.172.0 `RealtimeDelegation::body`), as seen live in a
+// Codex thread with a call: never a user bubble, never the tags (invariant 13, P122).
+const delegation = (inner: string) => ({ type: "userMessage", id: "rt1", content: [{ type: "text", text: `<realtime_delegation>\n${inner}</realtime_delegation>`, text_elements: [] }] }) as never;
+
+test("codex: a voice call's handoff is a notice with the spoken input and speaker-labelled lines", () => {
+  const item = mapItem(
+    delegation(
+      "  <input>Eu só queria saber se você tá conseguindo utilizar bem aí o aplicativo…</input>\n" +
+        "  <transcript_delta>user: Alô?\nassistant: Oi. Sou o ChatGPT, &lt;voz&gt; &amp; texto\nuser: Eu só queria saber se você tá conseguindo utilizar bem aí o aplicativo…</transcript_delta>\n",
+    ),
+    "t1",
+    "completed",
+  ) as { kind: string; noticeKind: string; text: string; body: string; parts?: unknown; details: { voiceCall: { source: string; input: string; lines: unknown[] } } };
+  assert.equal(item.kind, "notice");
+  assert.equal(item.parts, undefined);
+  assert.equal(item.noticeKind, "info");
+  assert.equal(item.text, "From the voice call: «Eu só queria saber se você tá conseguindo utilizar bem aí o aplicativo…»");
+  assert.deepEqual(item.details.voiceCall, {
+    source: "handoff",
+    input: "Eu só queria saber se você tá conseguindo utilizar bem aí o aplicativo…",
+    lines: [
+      { speaker: "user", text: "Alô?" },
+      { speaker: "assistant", text: "Oi. Sou o ChatGPT, <voz> & texto" },
+      { speaker: "user", text: "Eu só queria saber se você tá conseguindo utilizar bem aí o aplicativo…" },
+    ],
+  });
+  assert.equal(item.body, "Eu só queria saber se você tá conseguindo utilizar bem aí o aplicativo…\n\nTranscript:\nYou: Alô?\nVoice: Oi. Sou o ChatGPT, <voz> & texto\nYou: Eu só queria saber se você tá conseguindo utilizar bem aí o aplicativo…");
+  assert.doesNotMatch(JSON.stringify(item), /<\/?(?:realtime_delegation|input|transcript_delta|source)>/);
+  // Without a transcript the input is all there is.
+  const bare = mapItem(delegation("  <input>abre o README</input>\n"), "t1", "completed") as { kind: string; text: string; body: string };
+  assert.deepEqual([bare.kind, bare.text, bare.body], ["notice", "From the voice call: «abre o README»", "abre o README"]);
+});
+
+test("codex: the transcript tail a voice call flushes at hang-up is one quiet notice", () => {
+  const item = mapItem(
+    delegation(
+      "  <source>transcript_tail_flush</source>\n" +
+        "  <input>The user just ended their realtime session. Here is the remaining handoff/transcript tail. You probably do not have to do anything; acknowledge the handoff unless the transcript itself asks for something.</input>\n" +
+        "  <transcript_delta>…ser: Halo\nassistant: Yeah, hi. How can I help?\nwith a second line</transcript_delta>\n",
+    ),
+    "t1",
+    "completed",
+  ) as { kind: string; text: string; body: string; details: { voiceCall: { source: string; lines: unknown[] } } };
+  assert.equal(item.kind, "notice");
+  assert.equal(item.text, "Voice call ended · transcript handed to the agent");
+  assert.equal(item.details.voiceCall.source, "transcriptTailFlush");
+  // Codex keeps a transcript's last 4 KiB: a cut-off head has no speaker.
+  assert.deepEqual(item.details.voiceCall.lines, [
+    { text: "…ser: Halo" },
+    { speaker: "assistant", text: "Yeah, hi. How can I help?\nwith a second line" },
+  ]);
+  // Codex's fixed note to its agent is not something the user said: only the transcript.
+  assert.equal(item.body, "…ser: Halo\nVoice: Yeah, hi. How can I help?\nwith a second line");
+});
+
+test("codex: realtime_delegation markup inside other text is not a handoff", () => {
+  const item = mapItem({ type: "userMessage", id: "u", content: [{ type: "text", text: "what is <realtime_delegation><input>x</input></realtime_delegation>?", text_elements: [] }] } as never, "t1", "completed");
+  assert.equal(item.kind, "userMessage");
+});
+
 // ── YAAC's own wrappers ──────────────────────────────────────────────────────────────────
 
 test("yaac: a turn that is a mesh delivery is a notice from YAAC, not a user message", () => {

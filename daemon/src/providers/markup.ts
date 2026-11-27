@@ -54,6 +54,8 @@ export interface MarkupTable {
 export interface MarkerNotice {
   noticeKind: string;
   text: string;
+  /** The longer text behind the line, shown when the notice is opened. */
+  body?: string;
   details?: Record<string, unknown>;
 }
 
@@ -278,7 +280,7 @@ export function userItem(base: { id: string; turnId: string; status?: string }, 
   const first = parts.find((p) => p.type === "text") as { text: string } | undefined;
   if (first && parts.length === 1 && table.marker) {
     const m = table.marker(first.text);
-    if (m) return { id: base.id, turnId: base.turnId, status: "completed", kind: "notice", noticeKind: m.noticeKind, text: m.text, ...(m.details ? { details: m.details } : {}) } as Item;
+    if (m) return { id: base.id, turnId: base.turnId, status: "completed", kind: "notice", noticeKind: m.noticeKind, text: m.text, ...(m.body ? { body: m.body } : {}), ...(m.details ? { details: m.details } : {}) } as Item;
   }
   if (first) {
     const framed = meshFrames(first.text);

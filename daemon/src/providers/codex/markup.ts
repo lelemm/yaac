@@ -6,9 +6,13 @@
 // contextual fragments (environment, AGENTS.md, a shell command the user ran, an aborted turn)
 // out of them. The table still knows those fragments, so a message that carries one — from an
 // older Codex, or a path that does not filter — never shows its tags.
+//
+// A voice call's handoff (`<realtime_delegation>`, read from the rust-v0.172.0 source) is the
+// exception: Codex sends it as the turn's input, so it does arrive as a `userMessage`, live and
+// in history. It becomes a notice (`voiceCallDelegation`).
 
 import type { InputPart } from "../../protocol/generated/types.js";
-import { findElement, textPart, trimBlock, type MarkerNotice, type MarkupTable, type TagRule } from "../markup.js";
+import { findElement, oneLine, textPart, trimBlock, type MarkerNotice, type MarkupTable, type TagRule } from "../markup.js";
 
 const context = (tag: string, label: string, whole = false): TagRule => ({ tag, what: { as: "context", label }, ...(whole ? { whole } : {}) });
 
@@ -49,9 +53,70 @@ function special(rest: string): { parts: InputPart[]; length: number } | null {
  */
 function marker(text: string): MarkerNotice | null {
   const t = text.trim();
+  const delegation = voiceCallDelegation(t);
+  if (delegation) return delegation;
   const el = findElement(t, "turn_aborted");
   if (!el || el.start !== 0 || el.end !== t.length) return null;
   return { noticeKind: "interrupted", text: "Interrupted", details: { during: "turn" } };
+}
+
+/** Codex's escaping inside a realtime delegation (`escape_xml_text`: `&`, `<`, `>` only). */
+const unescapeDelegation = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+
+/** One line of a delegation's transcript: `user: …` or `assistant: …`. */
+export interface VoiceCallLine {
+  /** Absent for the cut-off head of a truncated transcript (Codex keeps its last 4 KiB). */
+  speaker?: "user" | "assistant";
+  text: string;
+}
+
+const SPEAKER_LABEL = { user: "You", assistant: "Voice" } as const;
+
+/**
+ * A voice call's handoff to the thread's agent (codex-cli 0.172.0,
+ * `core/src/context/realtime_delegation.rs`): a user-role message that is wholly
+ *
+ * ```
+ * <realtime_delegation>
+ *   <source>transcript_tail_flush</source>      (only for the flush at hang-up)
+ *   <input>…</input>
+ *   <transcript_delta>user: …\nassistant: …</transcript_delta>   (optional)
+ * </realtime_delegation>
+ * ```
+ *
+ * It is the realtime model speaking for the user, not the user's own words (invariant 13):
+ * a quiet notice, never a user bubble. The transcript becomes speaker-labelled lines.
+ */
+export function voiceCallDelegation(text: string): MarkerNotice | null {
+  const t = text.trim();
+  const el = findElement(t, "realtime_delegation");
+  if (!el || el.start !== 0 || el.end !== t.length) return null;
+  const inner = el.inner;
+  const source = findElement(inner, "source");
+  const input = findElement(inner, "input");
+  if (!input) return null;
+  const delta = findElement(inner, "transcript_delta");
+  const flush = source ? trimBlock(source.inner) === "transcript_tail_flush" : false;
+  const said = unescapeDelegation(input.inner.trim());
+  const lines: VoiceCallLine[] = [];
+  if (delta) {
+    for (const raw of unescapeDelegation(delta.inner).split("\n")) {
+      const m = /^(user|assistant): ?(.*)$/.exec(raw);
+      if (m) lines.push({ speaker: m[1] as VoiceCallLine["speaker"], text: m[2]! });
+      else if (raw.trim() && lines.length > 0) lines[lines.length - 1]!.text += `\n${raw}`;
+      else if (raw.trim()) lines.push({ text: raw }); // the cut-off head ("…rest of a line")
+    }
+  }
+  const transcript = lines.map((l) => (l.speaker ? `${SPEAKER_LABEL[l.speaker]}: ${l.text}` : l.text)).join("\n");
+  const line = flush ? "Voice call ended · transcript handed to the agent" : `From the voice call: «${oneLine(said, 160)}»`;
+  // The flush's input is Codex's fixed note to the agent, not something the user said.
+  const body = flush ? transcript : [said, transcript && `Transcript:\n${transcript}`].filter(Boolean).join("\n\n");
+  return {
+    noticeKind: "info",
+    text: line,
+    ...(body ? { body } : {}),
+    details: { voiceCall: { source: flush ? "transcriptTailFlush" : "handoff", input: said, lines } },
+  };
 }
 
 export const CODEX_MARKUP: MarkupTable = { rules: CODEX_RULES, special, specialStart: /<user_shell_command>/, marker };
