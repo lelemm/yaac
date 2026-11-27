@@ -161,11 +161,15 @@ fun ThreadScreen(
                     .distinctUntilChanged().collect { visibleApproval = it }
             }
             val focusToken = transcript["focusToken"].scalar
-            // Retried as rows arrive: the focused item may be on a page that is still loading.
+            // Applied once per focus: retried only until its row has arrived (it may be on a page
+            // that is still loading), never again afterwards, so later row changes leave the view alone.
+            var appliedFocus by remember(threadId) { mutableStateOf<String?>(null) }
             LaunchedEffect(focusToken, rows.size) {
+                val token = focusToken ?: return@LaunchedEffect
+                if (token == appliedFocus) return@LaunchedEffect
                 val id = transcript["focusId"].text ?: return@LaunchedEffect
                 val i = rows.indexOfFirst { it["id"].str == id || it["actionId"].str == id }
-                if (i >= 0) { follow = false; listState.animateScrollToItem(i) }
+                if (i >= 0) { appliedFocus = token; follow = false; listState.animateScrollToItem(i) }
             }
             LaunchedEffect(pendingJump, rows.size) {
                 val id = pendingJump ?: return@LaunchedEffect
