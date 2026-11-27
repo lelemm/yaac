@@ -175,6 +175,9 @@ fun AgentsSheet(view: JsonElement?, send: (String, Any?) -> Unit, onDismiss: () 
     }
     val endPreview = { if (previewing != null) hover(null) }
 
+    // Open fully, so *Spawned by* at the foot is on screen without scrolling; only the middle scrolls.
+    // (A hold still drops the sheet to half for the preview.)
+    LaunchedEffect(Unit) { sheet.expand() }
     // Open at the first hidden agent when "more" was tapped (WPF ScheduleCardPosition).
     var scrolledToHidden by remember { mutableStateOf(!atHidden) }
     val hiddenTop = firstHidden?.let { rowTops[it] }
