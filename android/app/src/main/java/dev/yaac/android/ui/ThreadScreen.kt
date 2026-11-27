@@ -116,7 +116,7 @@ fun ThreadScreen(
             }
             // The timeline (A11f) is hidden: hold a finger 2 s at the left edge to scrub it.
             // One selection over the whole transcript, so it runs across rows (T05).
-            androidx.compose.foundation.text.selection.SelectionContainer { LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = 14.dp, end = if (agents["visible"].flag() && agents["pill"]["rowIds"].list.isNotEmpty()) 54.dp else 14.dp, top = 4.dp, bottom = 12.dp)) {
+            androidx.compose.foundation.text.selection.SelectionContainer { LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = dev.yaac.android.ui.transcript.TimelineGutter, end = if (agents["visible"].flag() && agents["pill"]["rowIds"].list.isNotEmpty()) 54.dp else 14.dp, top = 4.dp, bottom = 12.dp)) {
                 items(rows, key = { it["id"].str }, contentType = { it["kind"].str }) { row ->
                     TranscriptRow(row, threadId, states.of(threadId, row["id"].str)) { payload -> send("transcript.action", payload) }
                 }

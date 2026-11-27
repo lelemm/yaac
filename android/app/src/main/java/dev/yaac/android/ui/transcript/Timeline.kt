@@ -53,8 +53,10 @@ import kotlin.math.roundToInt
 
 /** The track's inset from the top and bottom of the transcript. */
 private val TrackInset = 24.dp
-/** The edge zone a hold must start in. */
-private val EdgeZone = 20.dp
+/** The free strip left of the transcript where the timeline is held open; the transcript is padded by it. */
+val TimelineGutter = 26.dp
+/** The edge zone a hold must start in: the gutter and a little of the margin beside it. */
+private val EdgeZone = 30.dp
 
 /** The scrub timeline's live state, shared by the gesture (on the parent) and the overlay. */
 class TimelineState {
