@@ -230,7 +230,8 @@ private fun CardRow(row: JsonObject, state: RowState, submit: (ActionItem, Boole
             DisableSelection { Questions(row, state); Fields(row, state) }
             row["status"].text?.let { Spacer(Modifier.height(6.dp)); T(it, type.small, c.tone(row["tone"].text, c.muted)) }
             Spacer(Modifier.height(4.dp))
-            Actions(row, submit, stacked = true)
+            // Decisions on a request stack full width; an artifact's actions share one row.
+            Actions(row, submit, stacked = row["kind"].str != "artifact")
         }
     }
 }
@@ -466,6 +467,7 @@ fun InputField(value: String, onChange: (String) -> Unit, secret: Boolean = fals
 }
 
 /** The offered decisions. On a card they stack full width, the primary one filled. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun Actions(row: JsonObject, submit: (ActionItem, Boolean) -> Unit, stacked: Boolean) {
     val actions = ActionItem.list(row["actions"])
@@ -482,7 +484,12 @@ private fun Actions(row: JsonObject, submit: (ActionItem, Boolean) -> Unit, stac
             }
         }
     } else {
-        Row(Modifier.padding(top = 4.dp)) { for (a in actions) TextAction(a.label, a.enabled, style = LocalType.current.ui) { click(a) } }
+        FlowRow(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+            for (a in actions) {
+                if (a.primary) PrimaryButton(a.label, a.enabled) { click(a) }
+                else TextAction(a.label, a.enabled, style = LocalType.current.ui) { click(a) }
+            }
+        }
     } }
     menu?.let { m -> ActionSheet(m.label, m.children, { menu = null }) { submit(it, true) } }
 }
