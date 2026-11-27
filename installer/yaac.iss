@@ -12,7 +12,11 @@
 ;   this script, so the two cannot disagree;
 ; - uninstalling keeps the user's settings and data unless asked (/REMOVEDATA=yes when silent);
 ; - /RELAUNCH starts the installed yaac.exe when setup finishes, even when silent: the in-app
-;   updater runs `setup /SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH` (docs/install.md).
+;   updater runs `setup /SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH` (docs/install.md), and
+;   the hub, when a newer phone asks it to update this computer, the same with /VERYSILENT
+;   (docs/install.md#updating-from-the-phone). Either way the hub is started again by
+;   `autostart sync --start` (start at login on) and by the relaunched window (always), so the
+;   phone can reattach. Without /RELAUNCH an interactive install is unchanged.
 
 #ifndef AppVersion
   #error Pass /DAppVersion=<version> (scripts/build-installer.sh does)
@@ -89,8 +93,10 @@ Name: "{autodesktop}\YAAC"; Filename: "{app}\yaac.exe"; Tasks: desktopicon
 ; Before the first run of the window nothing is written: the window's first run does it.
 Filename: "{app}\yaac.exe"; Parameters: "autostart sync --start"; WorkingDir: "{app}"; Flags: runhidden; StatusMsg: "Starting the YAAC hub..."
 Filename: "{app}\yaac.exe"; Description: "{cm:LaunchProgram,YAAC}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent; Check: not RelaunchRequested
-; The in-app updater's /RELAUNCH: an entry without `postinstall` runs in silent mode too, after
-; the hub entry above. Only after a successful install: a failed setup runs no [Run] entry.
+; /RELAUNCH (the in-app updater, or the hub at the phone's request): an entry without
+; `postinstall` runs in silent and very silent mode too, after the hub entry above. Starting the
+; window also starts the hub when the entry above did not. Only after a successful install: a
+; failed setup runs no [Run] entry.
 Filename: "{app}\yaac.exe"; WorkingDir: "{app}"; Flags: nowait; Check: RelaunchRequested
 
 [Code]

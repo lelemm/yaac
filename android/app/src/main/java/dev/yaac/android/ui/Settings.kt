@@ -224,6 +224,9 @@ private fun SettingsAction(a: JsonObject, fields: Map<String, String>?, send: (S
     val enabled = a["enabled"].flag(true)
     val id = a["id"].str
     var menu by remember { mutableStateOf(false) }
+    // An action that asks first (`confirm`): the dialog sends it, Cancel does nothing.
+    val confirm = dev.yaac.android.core.ActionConfirm.parse(a)
+    var confirming by remember { mutableStateOf(false) }
     fun values(extra: Map<String, Any?> = emptyMap()): Map<String, Any?> {
         val v = LinkedHashMap<String, Any?>()
         a["values"].obj?.forEach { (k, x) -> v[k] = (x as? JsonPrimitive)?.let { p -> if (p.isString) p.content else p.content.toBooleanStrictOrNull() ?: p.content.toLongOrNull() ?: p.content } }
@@ -231,9 +234,25 @@ private fun SettingsAction(a: JsonObject, fields: Map<String, String>?, send: (S
         v.putAll(extra)
         return v
     }
-    fun run(extra: Map<String, Any?> = emptyMap()) {
+    fun dispatch(extra: Map<String, Any?>) {
         val v = values(extra)
         send("settings.action", if (v.isEmpty()) mapOf("id" to id) else mapOf("id" to id, "values" to v))
+    }
+    fun run(extra: Map<String, Any?> = emptyMap()) {
+        if (confirm != null) confirming = true else dispatch(extra)
+    }
+    if (confirming && confirm != null) {
+        val type = LocalType.current
+        androidx.compose.ui.window.Dialog(onDismissRequest = { confirming = false }) {
+            Column(Modifier.clip(RoundedCornerShape(8.dp)).background(c.raised).padding(20.dp)) {
+                T(confirm.title, type.title)
+                if (confirm.text.isNotEmpty()) T(confirm.text, type.ui, c.muted, modifier = Modifier.padding(top = 10.dp))
+                Row(Modifier.fillMaxWidth().padding(top = 16.dp), horizontalArrangement = Arrangement.End) {
+                    TextAction("Cancel") { confirming = false }
+                    PrimaryButton(confirm.ok) { confirming = false; dispatch(emptyMap()) }
+                }
+            }
+        }
     }
     when {
         a["kind"].text == "toggle" -> {

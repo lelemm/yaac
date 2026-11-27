@@ -94,7 +94,9 @@ local socket:
   message. The refusal is logged with the peer's address. At most eight connections wait for
   this check at once; more are closed.
 - **What it carries.** An admitted connection is an ordinary attach: the same frames, the same
-  methods, the same `hub/hello` build rule as the local socket. The client side is
+  methods, the same `hub/hello` build rule as the local socket. The exception: only a client
+  admitted here may send the frozen `hub/update/request`, which asks the hub to install a newer
+  build on this computer ([install](install.md#updating-from-the-phone)). The client side is
   `HubClient::connect_tcp`. Both ends turn on TCP keepalive (idle 30 s, then 3 probes 10 s
   apart; the platform's defaults where it cannot set them), so a phone that sleeps or changes
   network is detached within about a minute. Nothing is paired and nothing is stored: Tailscale already

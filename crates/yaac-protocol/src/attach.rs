@@ -264,6 +264,11 @@ pub mod names {
     pub const COMPOSER_HISTORY_PUSH: &str = "hub/composer/historyPush";
     /// Window → hub: ask an older hub to checkpoint its relay queue and exit.
     pub const SHUTDOWN: &str = "hub/shutdown";
+    /// Client over Tailscale → hub, frozen: install a newer YAAC build on the hub's computer
+    /// ([`super::HostUpdateParams`] → [`super::HostUpdateResult`]).
+    pub const UPDATE_REQUEST: &str = "hub/update/request";
+    /// Hub → clients, frozen: [`super::HostUpdateProgress`].
+    pub const UPDATE_PROGRESS: &str = "hub/update/progress";
     /// Window → hub: list targets.
     pub const TARGETS_LIST: &str = "hub/targets/list";
     /// Window → hub: add a target.
@@ -394,6 +399,79 @@ pub struct HelloResult {
     /// recognise its own answers ("answered by you") and its own turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<ClientId>,
+}
+
+// ── Updating the hub's computer from a newer client (frozen) ────────────────────────────────
+//
+// `hub/update/request` and `hub/update/progress` belong to the attach protocol's frozen core
+// with `hub/hello` and `hub/shutdown` (docs/09-compatibility.md#the-frozen-core): any hub,
+// forever, accepts them from a client of another build, so a phone that is newer than the PC
+// can bring the PC up to its build. Fields are only ever added; unknown `phase` values are
+// shown as they are.
+
+/// `hub/update/request`: install YAAC `build` on the hub's computer (window, hub and the
+/// `yaacd` bundle). Only from a client admitted over Tailscale, only for a build newer than
+/// the hub's, and only one attempt per request: an uncertain outcome is never sent again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostUpdateParams {
+    /// The build to install, `<version>+<id>` (normally the client's own).
+    pub build: String,
+    /// One per tap. The same id again while that attempt runs is answered with its state.
+    pub op_id: crate::OpId,
+}
+
+/// `hub/update/request` result: the release is published and carries an installer; the
+/// download has started. What follows arrives as `hub/update/progress`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostUpdateResult {
+    /// The build being installed.
+    pub build: String,
+    /// The installer's size in bytes.
+    pub size: u64,
+}
+
+/// Hub → every client that sent `hub/hello`, whatever its build: how an update of the hub's
+/// computer stands.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostUpdateProgress {
+    pub op_id: crate::OpId,
+    pub build: String,
+    /// `checking` · `downloading` · `installing` (the installer is running: the hub, the
+    /// window and this connection stop shortly) · `failed`. Open: show others as they are.
+    pub phase: String,
+    #[serde(default)]
+    pub done: u64,
+    #[serde(default)]
+    pub total: u64,
+    /// Why it failed (`failed`), a sentence for the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// The phases of [`HostUpdateProgress`].
+pub mod host_update {
+    pub const CHECKING: &str = "checking";
+    pub const DOWNLOADING: &str = "downloading";
+    pub const INSTALLING: &str = "installing";
+    pub const FAILED: &str = "failed";
+
+    /// Error codes of `hub/update/request`.
+    pub mod codes {
+        /// Not from a client admitted over Tailscale (a window on the hub's own computer
+        /// updates itself).
+        pub const NOT_ALLOWED: &str = "update_not_allowed";
+        /// The build is not newer than the hub's (never a downgrade), or not a release build.
+        pub const NOT_NEWER: &str = "update_not_newer";
+        /// This host cannot install YAAC this way (the installer is for Windows).
+        pub const UNSUPPORTED: &str = "update_unsupported";
+        /// No published release of that build with an installer (or GitHub could not be asked).
+        pub const UNAVAILABLE: &str = "update_unavailable";
+        /// Another update is already running or installing.
+        pub const IN_PROGRESS: &str = "update_in_progress";
+    }
 }
 
 /// `hub/shutdown` params.

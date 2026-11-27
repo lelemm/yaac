@@ -313,7 +313,7 @@ async fn admit(stream: TcpStream, peer: SocketAddr, ctx: Arc<Ctx>, mut stop: wat
     let stopped = async move {
         let _ = stop.wait_for(|stopped| *stopped).await;
     };
-    crate::server::attach(reader, writer, &ctx.core, &ctx.writers, stopped);
+    crate::server::attach(reader, writer, &ctx.core, &ctx.writers, true, stopped);
 }
 
 /// Accepts the peer only when its login is this host's own.

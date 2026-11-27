@@ -26,7 +26,13 @@ the Android client over Tailscale** ([02](02-architecture.md#attaching-over-tail
 
 **Versions.** The window and the hub are always the same build, but a phone updates on its
 own. When the builds differ, the attach adapts through the dialect layer, as `yaacd` does
-([09](09-compatibility.md)). A phone never replaces or restarts the hub.
+([09](09-compatibility.md)). A phone never stops, replaces or restarts the hub. It can do one
+thing when it is newer: ask the PC to install the phone's build. **Settings → About → Update
+YAAC on <pc> to build <n>** appears only when both are release builds and the phone's number is
+higher (P403). After a confirmation, the hub downloads that release's installer, verifies it,
+and runs it. The phone follows the progress, shows *"<pc> is updating…"* once the connection
+drops, and attaches again on the matching build. This uses the frozen `hub/update/request`
+([09](09-compatibility.md#the-frozen-core), [install](install.md#updating-from-the-phone)).
 
 **Updates.** Until dialects across builds exist, the phone must run the hub's exact build. Each
 release carries the Android app, signed with one release key, and the phone offers the APK of

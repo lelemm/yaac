@@ -310,6 +310,42 @@ pub struct HubState {
     /// Whether the hub is listening on Tailscale now, as a line for Settings
     /// (`hub/settings/get`, then `hub/tailscale/status`).
     pub tailscale_status: Option<String>,
+    /// An update of the hub's computer (`hub/update/request`): the one this client asked for,
+    /// or, in a window on that computer, one the phone asked for.
+    pub host_update: Option<HostUpdate>,
+}
+
+/// An update of the hub's computer to another YAAC build (docs/install.md#updating-from-the-phone).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostUpdate {
+    /// The build being installed.
+    pub build: String,
+    pub phase: HostUpdatePhase,
+    /// This client asked for it (the phone); otherwise another client did.
+    pub requested_here: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostUpdatePhase {
+    /// Sent; the hub is looking for the release.
+    Requesting,
+    Downloading { done: u64, total: u64 },
+    /// The installer is running on the computer.
+    Installing,
+    /// The connection dropped while installing: the computer is updating; the client attaches
+    /// again by itself.
+    Restarting,
+    /// Refused or failed, with why. Nothing is tried again without a new tap.
+    Failed(String),
+    /// A phase this build does not know, as the hub named it.
+    Other(String),
+}
+
+impl HostUpdatePhase {
+    /// Running: a second tap is not offered, and a lost connection is attached again.
+    pub fn active(&self) -> bool {
+        !matches!(self, Self::Failed(_))
+    }
 }
 
 /// A line for Settings from the hub's Tailscale attach status (`{ state, addresses, login,

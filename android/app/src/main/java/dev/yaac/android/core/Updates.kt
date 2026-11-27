@@ -95,6 +95,17 @@ object Updates {
     }
 
     /**
+     * Whether this phone can ask the PC to update to its build (Settings → About, drawn by the
+     * controller from the same rule, docs/install.md#updating-from-the-phone): both release
+     * builds and this phone's newer. Never a downgrade of the PC.
+     */
+    fun offersPcUpdate(own: BuildLabel?, hub: BuildLabel?): Boolean {
+        val mine = own?.number ?: return false
+        val theirs = hub?.number ?: return false
+        return mine > theirs
+    }
+
+    /**
      * Android installs only a higher or equal versionCode (the build number) over the installed
      * app: going back to an older hub's build needs an uninstall first.
      */

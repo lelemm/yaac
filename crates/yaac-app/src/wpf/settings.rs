@@ -1192,6 +1192,9 @@ fn about(app: &YaacApp) -> Value {
             json!({ "detail": "Check target connections and the latest release now" }))]
     }));
     let mut sections = vec![info, components];
+    if let Some(pc) = host_update_section(app) {
+        sections.push(pc);
+    }
     if app.troubleshoot.open {
         let panel = &app.troubleshoot;
         let pending = panel.pending_label();
@@ -1223,6 +1226,55 @@ fn about(app: &YaacApp) -> Value {
             json!({ "detail": crate::troubleshoot::GUIDANCE })));
     }
     json!({ "sections": sections })
+}
+
+/// A phone newer than its PC's hub: **Update YAAC on <pc> to <build>**, and how that update
+/// stands (`hub/update/request`, docs/install.md#updating-from-the-phone). Only for a hub on
+/// another computer, and only while the phone's build is the newer release.
+fn host_update_section(app: &YaacApp) -> Option<Value> {
+    host_update_view(&app.remote_pc()?, crate::BUILD, &app.client.state.hub)
+}
+
+fn host_update_view(pc: &str, own: &str, hub: &yaac_core::state::HubState) -> Option<Value> {
+    use yaac_core::state::HostUpdatePhase as P;
+    let offered = yaac_core::update::offers_host_update(own, hub.build.as_deref());
+    let update = hub.host_update.as_ref().filter(|u| u.requested_here);
+    if !offered && update.is_none() {
+        return None;
+    }
+    let number = |b: &str| yaac_core::update::build_number(b).map_or_else(|| b.to_owned(), |n| n.to_string());
+    let label = format!("Update YAAC on {pc} to build {}", number(own));
+    let button = || with(action("pc.update", &label, true), json!({
+        "kind": "primary",
+        "confirm": {
+            "title": format!("Update YAAC on {pc}?"),
+            "text": format!("{pc} downloads YAAC {own} from GitHub and installs it. YAAC closes there, \
+                and running turns keep going on the targets. Its hub and window start again on the new build, \
+                and this phone reconnects by itself."),
+            "ok": "Update"
+        }
+    }));
+    let mut row = json!({ "id": "pc", "label": format!("YAAC on {pc}"),
+        "detail": format!("{pc} runs YAAC {}; this phone runs {own}.", hub.build.as_deref().unwrap_or("?")) });
+    match update.map(|u| &u.phase) {
+        None => row["actions"] = json!([button()]),
+        Some(P::Requesting) => row["status"] = json!(format!("Asking {pc} to update…")),
+        Some(P::Downloading { done, total }) => {
+            row["status"] = json!(format!("{pc} is downloading YAAC {own}…"));
+            row["fields"] = json!([{ "id": "progress", "type": "progress", "value": (*total > 0).then(|| (100.0 * *done as f64 / *total as f64).min(100.0)) }]);
+        }
+        Some(P::Installing) => row["status"] = json!(format!("{pc} is installing YAAC {own}. It closes YAAC and starts it again.")),
+        Some(P::Restarting) => row["status"] = json!(format!("{pc} is updating… This phone reconnects when it is back.")),
+        Some(P::Other(phase)) => row["status"] = json!(format!("{pc}: {phase}")),
+        Some(P::Failed(why)) => {
+            row["status"] = json!(why);
+            row["tone"] = json!("error");
+            if offered {
+                row["actions"] = json!([button()]);
+            }
+        }
+    }
+    Some(section("pc", &format!("YAAC on {pc}"), vec![row]))
 }
 
 pub(super) fn command(
@@ -1587,6 +1639,10 @@ pub(super) fn command(
         }
         "update.download" => {
             app.updater.download();
+            return Ok(());
+        }
+        "pc.update" if app.remote_pc().is_some() => {
+            app.client.request_host_update();
             return Ok(());
         }
         "update.install" => {
@@ -2149,6 +2205,36 @@ mod tests {
                 && params["expectedModel"] == "specific-model" && params["summary"] == "Review focused changes"
                 && params["opId"].is_string()
         }));
+    }
+
+    #[test]
+    fn the_pc_update_button_shows_only_for_a_phone_newer_than_its_hub() {
+        use yaac_core::state::{HostUpdate, HostUpdatePhase, HubState};
+        let hub = |build: &str| HubState { build: Some(build.into()), ..HubState::default() };
+        let phone = "0.1.0+1060";
+        assert!(host_update_view("desk", phone, &hub(phone)).is_none(), "the same build");
+        assert!(host_update_view("desk", phone, &hub("0.1.0+1070")).is_none(), "an older phone");
+        assert!(host_update_view("desk", "0.1.0+dev.ab", &hub("0.1.0+1050")).is_none(), "a development phone");
+        assert!(host_update_view("desk", phone, &HubState::default()).is_none(), "the hub's build unknown");
+        let view = host_update_view("desk", phone, &hub("0.1.0+1050")).unwrap();
+        let button = &view["rows"][0]["actions"][0];
+        assert_eq!(button["id"], "pc.update");
+        assert_eq!(button["label"], "Update YAAC on desk to build 1060");
+        assert_eq!(button["confirm"]["ok"], "Update");
+        // While it runs: the state, no button; after the drop, "updating…".
+        let mut state = hub("0.1.0+1050");
+        state.host_update = Some(HostUpdate { build: phone.into(), phase: HostUpdatePhase::Downloading { done: 1, total: 4 }, requested_here: true });
+        let view = host_update_view("desk", phone, &state).unwrap();
+        assert!(view["rows"][0]["actions"].is_null());
+        assert_eq!(view["rows"][0]["fields"][0]["value"], 25.0);
+        state.host_update.as_mut().unwrap().phase = HostUpdatePhase::Restarting;
+        let view = host_update_view("desk", phone, &state).unwrap();
+        assert!(view["rows"][0]["status"].as_str().unwrap().contains("desk is updating"));
+        // Failed: why, and the button again.
+        state.host_update.as_mut().unwrap().phase = HostUpdatePhase::Failed("GitHub could not be reached".into());
+        let view = host_update_view("desk", phone, &state).unwrap();
+        assert_eq!(view["rows"][0]["tone"], "error");
+        assert_eq!(view["rows"][0]["actions"][0]["id"], "pc.update");
     }
 
     #[test]

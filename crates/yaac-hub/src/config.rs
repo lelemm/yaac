@@ -205,6 +205,10 @@ pub struct HubConfig {
     /// The port of the Tailscale attach listener ([`crate::tailnet::TAILSCALE_ATTACH_PORT`];
     /// tests use `0`, any free port).
     pub tailscale_port: u16,
+    /// Installs another YAAC build on this computer when a newer phone asks
+    /// (`hub/update/request`, [`crate::host_update`]). `None`: this host does not support it
+    /// (the default; the `yaac` binary supplies one on Windows).
+    pub host_installer: Option<Arc<dyn crate::host_update::HostInstaller>>,
 }
 
 impl std::fmt::Debug for HubConfig {
@@ -301,6 +305,7 @@ impl HubConfig {
             wsl_distros: Arc::new(DefaultWslLister::default()),
             tailnet: Arc::new(crate::tailnet::TailscaleCli::default()),
             tailscale_port: crate::tailnet::TAILSCALE_ATTACH_PORT,
+            host_installer: None,
         }
     }
 }

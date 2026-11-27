@@ -125,6 +125,13 @@ pub fn build_number(build: &str) -> Option<u64> {
     build.split_once('+').and_then(|(_, id)| id.trim().parse().ok())
 }
 
+/// Whether a client on another computer (the phone) offers to update the hub's computer to
+/// its own build: both are release builds and the client's is newer (never a downgrade;
+/// docs/install.md#updating-from-the-phone).
+pub fn offers_host_update(own: &str, hub: Option<&str>) -> bool {
+    matches!((build_number(own), hub.and_then(build_number)), (Some(mine), Some(theirs)) if mine > theirs)
+}
+
 /// Time between release checks while the window runs (D145).
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
@@ -446,5 +453,21 @@ mod tests {
         let mut t = Throttle::default();
         let shown = (0..=10_000u64).filter(|i| t.should_show(i * 100, 1_000_000, *i as f64 * 0.01)).count();
         assert!(shown <= Throttle::STEPS as usize + 2, "{shown} repaints for 100 s of chunks");
+    }
+}
+
+#[cfg(test)]
+mod host_update_tests {
+    use super::offers_host_update;
+
+    #[test]
+    fn the_pc_is_offered_only_a_newer_release_build() {
+        assert!(offers_host_update("0.1.0+1060", Some("0.1.0+1050")));
+        assert!(offers_host_update("0.2.0+1060", Some("0.1.0+1050")));
+        assert!(!offers_host_update("0.1.0+1050", Some("0.1.0+1050")), "the same build");
+        assert!(!offers_host_update("0.1.0+1049", Some("0.1.0+1050")), "never a downgrade");
+        assert!(!offers_host_update("0.1.0+dev.ab", Some("0.1.0+1050")), "a development phone");
+        assert!(!offers_host_update("0.1.0+1060", Some("0.1.0+dev.cd")), "a development hub");
+        assert!(!offers_host_update("0.1.0+1060", None), "the hub's build is not known");
     }
 }

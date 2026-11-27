@@ -158,6 +158,86 @@ fn check(_: &Config) -> Result<Found, CheckError> {
     Err(NO_CLIENT.to_owned().into())
 }
 
+/// The release tag of a build the workflow tagged itself: `0.1.0+1060` → `v0.1.0-build.1060`
+/// (docs/install.md#releases). `None` unless it is a release build whose version is plain
+/// digits, letters, `.` and `-` (it goes into a URL).
+pub(crate) fn release_tag(build: &str) -> Option<String> {
+    let (version, id) = build.split_once('+')?;
+    let plain = version.starts_with(|c: char| c.is_ascii_digit()) && version.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    (plain && !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then(|| format!("v{version}-build.{id}"))
+}
+
+/// The release of exactly `build`, with its manifest and installer (the phone's request,
+/// [`HubInstaller`]). Blocking: run it on a worker.
+#[cfg(feature = "desktop")]
+fn find_build(cfg: &Config, build: &str) -> Result<Found, String> {
+    let tag = release_tag(build).ok_or_else(|| format!("{build} is not a YAAC release build."))?;
+    let base = cfg.latest_url.strip_suffix("/latest").ok_or("the release address is not GitHub's")?;
+    let agent = agent(cfg, Some(cfg.timeout * 2));
+    let release = match get_text(&agent, &format!("{base}/tags/{tag}"), "application/vnd.github+json") {
+        Err(e) if e.message.contains("no release") => return Err(format!("There is no published release of YAAC {build}.")),
+        other => Release::parse(&other.map_err(|e| e.message)?)?,
+    };
+    let url = release.asset_url(yaac_core::update::MANIFEST_NAME).ok_or_else(|| format!("release {tag} has no manifest"))?;
+    let manifest = Manifest::parse(&get_text(&agent, url, "application/json").map_err(|e| e.message)?)?;
+    if manifest.label() != build {
+        return Err(format!("release {tag} is YAAC {}, not {build}", manifest.label()));
+    }
+    let installer = manifest.installer().ok_or_else(|| format!("release {tag} has no installer"))?;
+    let installer_url = release.asset_url(&installer.name).unwrap_or(&installer.url).to_owned();
+    Ok(Found { manifest, installer_url })
+}
+
+#[cfg(not(feature = "desktop"))]
+fn find_build(_: &Config, _: &str) -> Result<Found, String> {
+    Err(NO_CLIENT.to_owned())
+}
+
+// ── The hub's side: a newer phone asks for its build (docs/install.md#updating-from-the-phone) ──
+
+/// What the hub runs for `hub/update/request` on Windows: the same release lookup, download,
+/// SHA-256 check and installer as the window's updater, into the same updates folder, with the
+/// installer unattended. The hub calls it on a thread of its own.
+#[cfg(feature = "hub")]
+pub(crate) struct HubInstaller {
+    cfg: Config,
+    /// The verified download, between [`yaac_hub::host_update::HostInstaller::download`] and
+    /// `install`.
+    pending: std::sync::Mutex<Option<Pending>>,
+}
+
+#[cfg(feature = "hub")]
+impl HubInstaller {
+    pub(crate) fn new(cfg: Config) -> Self {
+        Self { cfg, pending: std::sync::Mutex::new(None) }
+    }
+}
+
+#[cfg(feature = "hub")]
+impl yaac_hub::host_update::HostInstaller for HubInstaller {
+    fn find(&self, build: &str) -> Result<yaac_hub::host_update::HostRelease, String> {
+        let found = find_build(&self.cfg, build)?;
+        let size = found.manifest.installer().map_or(0, |i| i.size);
+        Ok(yaac_hub::host_update::HostRelease { build: found.manifest.label(), size, detail: Box::new(found) })
+    }
+
+    fn download(&self, release: &yaac_hub::host_update::HostRelease, progress: &mut dyn FnMut(u64, u64)) -> Result<(), String> {
+        let found = release.detail.downcast_ref::<Found>().ok_or("not a release this updater found")?;
+        let p = download(&self.cfg, found, progress)?;
+        *self.pending.lock().map_err(|_| "the updater failed")? = Some(p);
+        Ok(())
+    }
+
+    fn install(&self, release: &yaac_hub::host_update::HostRelease) -> Result<(), String> {
+        let p = self.pending.lock().map_err(|_| "the updater failed")?.take().ok_or("nothing is downloaded")?;
+        if p.version != release.build || !verify(&p) {
+            discard(&self.cfg.dir);
+            return Err("the downloaded installer changed on disk; it was deleted".into());
+        }
+        run_installer_as(&self.cfg.dir, &p, InstallerUi::Unattended)
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
@@ -304,13 +384,35 @@ fn fetch(_: &Config, _: &str, _: u64, _: &Path, _: &mut dyn FnMut(u64, u64)) -> 
 #[cfg(not(feature = "desktop"))]
 const NO_CLIENT: &str = "this build has no updater";
 
+/// How the installer is shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InstallerUi {
+    /// "Restart to update" in the window: Setup shows its progress (`/SILENT`).
+    Progress,
+    /// The hub, asked by the phone: nobody may be at the computer (`/VERYSILENT`).
+    Unattended,
+}
+
+/// The installer's arguments: silent, no reboot, and `/RELAUNCH`, which starts YAAC (the
+/// window, and with it the hub) once setup has finished (installer/yaac.iss).
+pub(crate) fn installer_args(ui: InstallerUi, log: &Path) -> Vec<String> {
+    let quiet = match ui {
+        InstallerUi::Progress => "/SILENT",
+        InstallerUi::Unattended => "/VERYSILENT",
+    };
+    [quiet, "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/RELAUNCH"].into_iter().map(str::to_owned).chain([format!("/LOG={}", log.display())]).collect()
+}
+
 /// Starts the installer with visible progress, to start YAAC again when it is done (`/RELAUNCH`), and
 /// returns at once. It is marked attempted first, so a failed install is never run again.
 pub(crate) fn run_installer(dir: &Path, p: &Pending) -> Result<(), String> {
+    run_installer_as(dir, p, InstallerUi::Progress)
+}
+
+fn run_installer_as(dir: &Path, p: &Pending, ui: InstallerUi) -> Result<(), String> {
     write_pending(dir, &Pending { attempted: true, ..p.clone() }).map_err(|e| format!("cannot write {PENDING}: {e}"))?;
-    let log = format!("/LOG={}", dir.join(INSTALL_LOG).display());
     let mut cmd = std::process::Command::new(&p.path);
-    cmd.args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/RELAUNCH", &log]).current_dir(dir);
+    cmd.args(installer_args(ui, &dir.join(INSTALL_LOG))).current_dir(dir);
     #[cfg(windows)]
     {
         // Out of the window's job when the job allows it: the installer outlives this window.
@@ -755,6 +857,46 @@ mod tests {
         let setup = format!("/download/{SETUP}");
         assert_eq!(log.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), [LATEST, "/download/manifest.json", setup.as_str()]);
         assert!(log.iter().all(|(_, a)| a.as_deref() == Some(USER_AGENT)));
+    }
+
+    #[test]
+    fn the_hub_finds_exactly_the_phones_build_and_installs_it_unattended() {
+        use yaac_hub::host_update::HostInstaller as _;
+        assert_eq!(release_tag("0.1.0+1060").as_deref(), Some("v0.1.0-build.1060"));
+        assert_eq!(release_tag("0.1.0+dev.ab"), None);
+        assert_eq!(release_tag("0.1.0/../x+7"), None);
+        let args = installer_args(InstallerUi::Unattended, Path::new("u/install.log"));
+        assert!(args.contains(&"/VERYSILENT".to_owned()) && args.contains(&"/RELAUNCH".to_owned()) && !args.contains(&"/SILENT".to_owned()), "{args:?}");
+        assert!(installer_args(InstallerUi::Progress, Path::new("l")).contains(&"/SILENT".to_owned()));
+
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("updates");
+        let server = serve(|b| vec![
+            ("/repos/lelemm/yaac/releases/tags/v0.1.0-build.7".to_owned(), 200, release(b).into_bytes()),
+            ("/download/manifest.json".to_owned(), 200, manifest(b, 7, BYTES.len(), &sha(BYTES)).into_bytes()),
+            (format!("/download/{SETUP}"), 200, BYTES.to_vec()),
+        ]);
+        let hub = HubInstaller::new(config(&server, &dir));
+        // Not published: said so, nothing downloaded.
+        assert!(hub.find("0.1.0+8").unwrap_err().contains("no published release"));
+        // A development build has no release.
+        assert!(hub.find("0.1.0+dev").is_err());
+        let release = hub.find("0.1.0+7").unwrap();
+        assert_eq!((release.build.as_str(), release.size), ("0.1.0+7", BYTES.len() as u64));
+        let mut last = (0, 0);
+        hub.download(&release, &mut |d, t| last = (d, t)).unwrap();
+        assert_eq!(last, (BYTES.len() as u64, BYTES.len() as u64));
+        let PendingRead::Found(p) = read_pending(&dir) else { panic!("verified and pending") };
+        assert!(verify(&p) && !p.attempted);
+        // Starting it marks it attempted first (here it is no executable, so it fails to start).
+        let started = hub.install(&release);
+        let PendingRead::Found(after) = read_pending(&dir) else { panic!("still there") };
+        assert!(after.attempted);
+        if cfg!(unix) {
+            assert!(started.is_err());
+        }
+        // One download, one install: never again without a new download.
+        assert!(hub.install(&release).unwrap_err().contains("nothing is downloaded"));
     }
 
     #[test]

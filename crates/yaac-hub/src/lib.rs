@@ -21,6 +21,7 @@
 //! | [`drafts`] | The durable draft store (own file, own migrations). |
 //! | [`relay`] | The durable mesh relay queue (own file, own migrations). |
 //! | [`notify`] | Desktop notifications for pending requests outside the focused window. |
+//! | [`host_update`] | Updating YAAC on this computer at a newer phone's request (`hub/update/request`). |
 //! | [`tailnet`] | Attaching over Tailscale: the listener on this host's Tailscale addresses, and who may attach. |
 //!
 //! Threads: one tokio current-thread runtime on the calling thread does all I/O and owns all
@@ -35,6 +36,7 @@ mod conn;
 mod core;
 pub mod drafts;
 pub mod find;
+pub mod host_update;
 mod limits;
 mod lock;
 pub mod mesh;

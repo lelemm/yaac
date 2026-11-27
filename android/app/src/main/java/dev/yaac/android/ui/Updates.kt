@@ -38,6 +38,8 @@ fun HubBuildOffer(modifier: Modifier = Modifier) {
         if (Updates.needsUninstall(hub, AppUpdates.ownBuild))
             T("That build is older than this app: Android installs it only after YAAC is uninstalled. Updating YAAC on the PC instead keeps this app.",
                 type.small, c.muted, modifier = Modifier.padding(top = 4.dp))
+        if (Updates.offersPcUpdate(AppUpdates.ownBuild, hub))
+            T("Settings → About → Update YAAC on the PC installs this phone's build there.", type.small, c.muted, modifier = Modifier.padding(top = 4.dp))
         Box(Modifier.padding(top = 8.dp)) { Progress(hub, forHub = true) }
     }
 }

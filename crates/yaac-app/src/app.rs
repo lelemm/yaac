@@ -916,6 +916,16 @@ pub(crate) fn window_run() -> String {
 }
 
 impl YaacApp {
+    /// The computer of a hub this client reaches over Tailscale (the phone's PC), for people.
+    pub(crate) fn remote_pc(&self) -> Option<String> {
+        #[cfg(feature = "hub")]
+        {
+            self.hub.as_ref().and_then(|h| h.config.remote.as_deref()).map(|a| crate::attach::machine_name(a).to_owned())
+        }
+        #[cfg(not(feature = "hub"))]
+        None
+    }
+
     #[cfg(feature = "desktop")]
     pub(crate) fn new(cc: &eframe::CreationContext<'_>, launch: crate::Launch) -> Self {
         Self::from_ctx(&cc.egui_ctx, launch)
@@ -1730,7 +1740,10 @@ impl YaacApp {
         // hub supervisor would; nothing that was in flight is re-sent (operation ids decide).
         if h.config.is_remote() {
             let lost = matches!(status, LinkStatus::Closed | LinkStatus::Failed(_));
-            let refused = matches!(self.client.state.hub.outcome, HelloOutcome::WindowOutdated { .. } | HelloOutcome::HubOutdated { .. });
+            // A refused hello is final, except while the PC installs the build this phone asked
+            // for (`hub/update/request`): it comes back as that build, so attach again.
+            let updating = self.client.state.hub.host_update.as_ref().is_some_and(|u| u.requested_here && u.phase.active());
+            let refused = !updating && matches!(self.client.state.hub.outcome, HelloOutcome::WindowOutdated { .. } | HelloOutcome::HubOutdated { .. });
             if status == LinkStatus::Connected {
                 h.next_reattach = None;
                 h.reattach_delay = REATTACH_FIRST;

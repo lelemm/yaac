@@ -20,7 +20,7 @@ use crate::attachments::DraftRef;
 use crate::key::ThreadKey;
 use crate::link::HubLink;
 use crate::mode_confirm::{ModePick, ModeTarget};
-use crate::state::{AppState, Draft, ForkPreviewState, FsListingState, HelloOutcome, NewThreadDraft, Selection};
+use crate::state::{AppState, Draft, ForkPreviewState, FsListingState, HelloOutcome, HostUpdate, HostUpdatePhase, NewThreadDraft, Selection};
 
 /// Hub-side attach methods this client uses beyond `yaac_protocol::attach` (the hub's own
 /// additions; the names are the hub's, repeated here because this crate cannot depend on it).
@@ -151,6 +151,8 @@ enum Call {
     ProjectCreate { target: TargetId, for_draft: Option<u64> },
     Find { query: String },
     Shutdown,
+    /// `hub/update/request` (frozen): update the hub's computer to this build.
+    HostUpdate,
     TargetChanged,
     /// **Update now** (`hub/targets/updateDaemon`) for this target.
     UpdateDaemon(TargetId),
@@ -415,6 +417,16 @@ impl Client {
         self.state.hub.index_pending.clear();
         self.state.hub.request_feed = None;
         self.state.hub.last_error = Some("connection lost".into());
+        if let Some(u) = self.state.hub.host_update.as_mut().filter(|u| u.requested_here) {
+            match u.phase {
+                // The installer stops the hub: the PC is updating, attach again.
+                HostUpdatePhase::Installing => u.phase = HostUpdatePhase::Restarting,
+                HostUpdatePhase::Downloading { .. } | HostUpdatePhase::Other(_) => {
+                    u.phase = HostUpdatePhase::Failed("The connection to the PC was lost during the update: whether it went in is not known.".into());
+                }
+                _ => {}
+            }
+        }
         let error = ErrorObject::new(ErrorCode::OutcomeUnknown, "connection lost");
         for (_, call) in std::mem::take(&mut self.pending) {
             self.on_error(call, &error);
@@ -1002,6 +1014,7 @@ impl Client {
         match call {
             Call::Hello => {
                 let Ok(hello) = serde_json::from_value::<HelloResult>(result) else { return };
+                self.host_update_after_hello(&hello.build);
                 if hello.build != self.build {
                     // The hub accepted the hello but is another build: only `hub/shutdown` is
                     // allowed now. (An older window is refused with an error instead.)
@@ -1152,6 +1165,11 @@ impl Client {
             }
             Call::Find { query } => self.on_find(&query, &result),
             Call::Shutdown => self.state.hub.shutdown_answered = true,
+            Call::HostUpdate => {
+                if let Some(u) = self.state.hub.host_update.as_mut().filter(|u| u.requested_here && u.phase == HostUpdatePhase::Requesting) {
+                    u.phase = HostUpdatePhase::Downloading { done: 0, total: result["size"].as_u64().unwrap_or(0) };
+                }
+            }
             Call::TargetChanged => {
                 self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
             }
@@ -1719,6 +1737,16 @@ impl Client {
                 self.state.hub.last_error = Some(error.message.clone());
             }
             Call::Shutdown => self.state.hub.shutdown_answered = true,
+            Call::HostUpdate => {
+                if let Some(u) = self.state.hub.host_update.as_mut().filter(|u| u.requested_here && u.phase == HostUpdatePhase::Requesting) {
+                    // Never sent again by itself (invariant 10): an unknown outcome is said.
+                    u.phase = HostUpdatePhase::Failed(if error.code == ErrorCode::OutcomeUnknown {
+                        "The connection to the PC was lost before it answered: whether the update started is not known.".into()
+                    } else {
+                        error.message.clone()
+                    });
+                }
+            }
             Call::ForkPreview { key, instance } => {
                 self.state.fork_previews.insert((key, instance), ForkPreviewState::Failed(error.message.clone()));
             }
@@ -1808,6 +1836,7 @@ impl Client {
             return;
         }
         match method {
+            attach::names::UPDATE_PROGRESS => self.on_host_update_progress(params),
             attach::names::CATALOG_SKILLS_CHANGED => self.catalog_list(),
             "hub/approvals/settings" => {
                 if let Ok(models) = serde_json::from_value(params) { self.state.hub.explanations = models; }
@@ -3157,6 +3186,56 @@ impl Client {
     /// `hub/hello` that found another build.
     pub fn shutdown_hub(&mut self) {
         self.request(attach::names::SHUTDOWN, json!({}), Call::Shutdown);
+    }
+
+    /// Asks the hub to install this client's build on its computer (`hub/update/request`,
+    /// docs/install.md#updating-from-the-phone). Once per tap: nothing while one runs, and
+    /// never sent again by itself. Only when [`crate::update::offers_host_update`] holds.
+    pub fn request_host_update(&mut self) {
+        if self.state.hub.host_update.as_ref().is_some_and(|u| u.phase.active())
+            || !crate::update::offers_host_update(&self.build, self.state.hub.build.as_deref())
+        {
+            return;
+        }
+        let op = self.op_id();
+        self.state.hub.host_update = Some(HostUpdate { build: self.build.clone(), phase: HostUpdatePhase::Requesting, requested_here: true });
+        self.request(attach::names::UPDATE_REQUEST, json!({ "build": self.build, "opId": op }), Call::HostUpdate);
+    }
+
+    fn on_host_update_progress(&mut self, params: Value) {
+        let Ok(p) = serde_json::from_value::<attach::HostUpdateProgress>(params) else { return };
+        use attach::host_update as phase;
+        let next = match p.phase.as_str() {
+            phase::CHECKING => HostUpdatePhase::Requesting,
+            phase::DOWNLOADING => HostUpdatePhase::Downloading { done: p.done, total: p.total },
+            phase::INSTALLING => HostUpdatePhase::Installing,
+            phase::FAILED => HostUpdatePhase::Failed(p.message.unwrap_or_else(|| "The update failed.".into())),
+            other => HostUpdatePhase::Other(other.to_owned()),
+        };
+        let requested_here = self.state.hub.host_update.as_ref().is_some_and(|u| u.requested_here && u.build == p.build);
+        let changed = self.state.hub.host_update.as_ref().is_none_or(|u| std::mem::discriminant(&u.phase) != std::mem::discriminant(&next));
+        if !requested_here && changed {
+            // A window on the PC: say what is about to happen before the installer closes it.
+            let number = crate::update::build_number(&p.build).map_or(p.build.clone(), |n| n.to_string());
+            match &next {
+                HostUpdatePhase::Installing => self.error(None, format!("Updating YAAC to build {number}, requested from your phone. YAAC closes and starts again in a moment.")),
+                HostUpdatePhase::Failed(why) => self.error(None, format!("The update to YAAC build {number}, requested from your phone, failed: {why}")),
+                _ => self.error(None, format!("Updating YAAC to build {number}, requested from your phone.")),
+            }
+        }
+        self.state.hub.host_update = Some(HostUpdate { build: p.build, phase: next, requested_here });
+    }
+
+    /// After the PC came back from an update this client asked for.
+    fn host_update_after_hello(&mut self, hub: &str) {
+        let Some(u) = self.state.hub.host_update.as_mut().filter(|u| u.requested_here && u.phase == HostUpdatePhase::Restarting) else { return };
+        if hub == u.build {
+            self.state.hub.host_update = None;
+        } else {
+            u.phase = HostUpdatePhase::Failed(format!(
+                "The PC came back on YAAC {hub}: the update did not go in. The installer's log is install.log in YAAC's updates folder on the PC."
+            ));
+        }
     }
 
     pub fn set_explanations(&mut self, models: yaac_protocol::ExplanationModels) {

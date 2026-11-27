@@ -134,7 +134,7 @@ pub(crate) async fn serve(listener: &Listener, core: mpsc::UnboundedSender<CoreE
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             continue;
         };
-        if !attach(reader, writer, &core, &writers, std::future::pending()) {
+        if !attach(reader, writer, &core, &writers, false, std::future::pending()) {
             return;
         }
     }
@@ -144,18 +144,19 @@ pub(crate) async fn serve(listener: &Listener, core: mpsc::UnboundedSender<CoreE
 static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
 
 /// Starts serving one attached window: its reader and writer tasks. The window is detached
-/// when it closes the connection, sends garbage, or `stop` resolves. False when the core is
-/// gone.
+/// when it closes the connection, sends garbage, or `stop` resolves. `remote`: it came over
+/// Tailscale and was admitted there (`crate::tailnet`). False when the core is gone.
 pub(crate) fn attach(
     reader: impl AsyncRead + Send + Unpin + 'static,
     writer: impl AsyncWrite + Send + Unpin + 'static,
     core: &mpsc::UnboundedSender<CoreEvent>,
     writers: &mpsc::UnboundedSender<JoinHandle<()>>,
+    remote: bool,
     stop: impl Future<Output = ()> + Send + 'static,
 ) -> bool {
     let client: ClientKey = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
     let (tx, rx) = crate::attach_writer::channel();
-    if core.send(CoreEvent::Attached { client, tx }).is_err() {
+    if core.send(CoreEvent::Attached { client, tx, remote }).is_err() {
         return false;
     }
     let _ = writers.send(tokio::spawn(write_loop(writer, rx)));

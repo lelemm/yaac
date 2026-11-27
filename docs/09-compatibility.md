@@ -79,6 +79,27 @@ Optional initialize fields can negotiate extensions after that response. For exa
 oversized JSON only when both peers opt in. A peer that omits the field still receives the
 original one-frame messages.
 
+**The attach protocol's frozen core.** The window and the hub are the same build, so the attach
+protocol has no dialects. A client of another build still needs a few messages that every hub
+understands, forever. These are frozen in the same way as the daemon's core: the names, the
+fields listed, and the meaning never change, and fields are only added.
+
+- `hub/hello { build }`, answered with `{ build, … }` or refused with `window_outdated`, which
+  names the hub's build in its text;
+- `hub/shutdown`, which a hub of an older build accepts from a newer window on its own computer;
+- `hub/update/request { build, opId }` → `{ build, size }`, and the hub → client notification
+  `hub/update/progress { opId, build, phase, done, total, message? }`. A hub accepts these
+  after any `hello`, whatever the client's build, so a phone newer than the PC can bring the PC
+  up to its build. The rules are fixed: only from a client admitted over Tailscale, only for a
+  published release build newer than the hub's, and one attempt per request. The error codes
+  are `update_not_allowed`, `update_not_newer`, `update_unsupported`, `update_unavailable` and
+  `update_in_progress`. Unknown `phase` values are shown as they are. The details are in
+  [install](install.md#updating-from-the-phone).
+
+Everything else a mismatched client sends is refused with `hub_outdated` or `window_outdated`.
+The types live in `yaac_protocol::attach` beside `HelloParams`. `crates/yaac-hub/tests/host_update.rs`
+pins this behaviour.
+
 The [stage-0 bootstrap line](02-architecture.md#stage-0) is frozen in the same spirit: it is a
 list of `key=value` tokens, new keys may be added, and unknown keys are ignored.
 

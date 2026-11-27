@@ -4,6 +4,7 @@
 
 mod attach_tunnel;
 mod browser;
+mod host_update;
 mod notifications;
 mod limits;
 mod preview;
@@ -75,8 +76,8 @@ pub(crate) enum CoreEvent {
     NotificationAction(u64, String),
     NotificationDestination(attach::NotificationOpen, Vec<Key>),
     PendingModes(TargetId, u64, Vec<yaac_protocol::ThreadSetModeParams>),
-    /// A window connected.
-    Attached { client: ClientKey, tx: crate::attach_writer::Sender },
+    /// A window connected; `remote`: over Tailscale, admitted as this host's own login.
+    Attached { client: ClientKey, tx: crate::attach_writer::Sender, remote: bool },
     /// Raw interactive input from a window.
     ClientData { client: ClientKey, stream: StreamId, bytes: Vec<u8> },
     /// A message from a window.
@@ -144,6 +145,8 @@ pub(crate) enum CoreEvent {
     Preview(preview::Event),
     /// Attaching over Tailscale changed state.
     Tailscale(crate::protocol::TailscaleAttach),
+    /// The update of this computer moved on (`hub/update/request`).
+    HostUpdate(host_update::Event),
 }
 
 /// Why the hub stopped.
@@ -181,6 +184,8 @@ enum Hello {
 struct Client {
     tx: crate::attach_writer::Sender,
     hello: Hello,
+    /// Attached over Tailscale (admitted as this host's login), not the local socket.
+    remote: bool,
     subs: HashSet<Key>,
     /// What the window shows (`hub/view/showing`, D114).
     showing: HashSet<Key>,
@@ -485,6 +490,8 @@ pub(crate) struct Core {
     tailscale_on: tokio::sync::watch::Sender<bool>,
     /// Attaching over Tailscale now.
     tailscale: crate::protocol::TailscaleAttach,
+    /// An update of this computer a phone asked for (`hub/update/request`).
+    host_update: Option<host_update::Running>,
 }
 
 /// What a fanned-out lookup answers once every target has.
@@ -587,6 +594,7 @@ impl Core {
             exit: None,
             tailscale_on: tokio::sync::watch::channel(false).0,
             tailscale: Default::default(),
+            host_update: None,
         };
         core.tailscale_on.send_replace(core.settings.hub.tailscale_attach);
         for (target, thread) in loaded.kept {
@@ -627,8 +635,8 @@ impl Core {
         match event {
             CoreEvent::NotificationAction(group, action) => self.notification_action(group, &action),
             CoreEvent::NotificationDestination(open, lineage) => self.show_notification_destination(open, &lineage),
-            CoreEvent::Attached { client, tx } => {
-                self.clients.insert(client, Client { tx, hello: Hello::None, subs: HashSet::new(), showing: HashSet::new(), visible_requests: None, feed: false });
+            CoreEvent::Attached { client, tx, remote } => {
+                self.clients.insert(client, Client { tx, hello: Hello::None, remote, subs: HashSet::new(), showing: HashSet::new(), visible_requests: None, feed: false });
             }
             CoreEvent::ClientData { client, stream, bytes } => {
                 if !self.attach_tunnel_input(client, stream, bytes.clone()) && !self.voice_input(client, stream, bytes.clone()) {
@@ -720,6 +728,7 @@ impl Core {
             }
             CoreEvent::StoreError(e) => log(format!("store: {e}")),
             CoreEvent::Signal => self.exit = Some(ExitReason::Signal),
+            CoreEvent::HostUpdate(event) => self.host_update_event(event),
             CoreEvent::Tailscale(status) => {
                 if status != self.tailscale {
                     self.tailscale = status;
@@ -834,6 +843,10 @@ impl Core {
         let hello = self.clients.get(&client).map_or(Hello::None, |c| c.hello);
         if method == attach::names::HELLO {
             return Some(self.on_hello(client, params));
+        }
+        if method == attach::names::UPDATE_REQUEST {
+            // Frozen core: served whatever the client's build (docs/09-compatibility.md).
+            return self.host_update_request(client, id, params);
         }
         match (hello, method) {
             (Hello::Attached | Hello::HubOutdated, attach::names::SHUTDOWN) => {

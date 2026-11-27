@@ -159,7 +159,8 @@ with a numeric build id checks for updates. Development builds leave the updater
    regular 10-minute interval, GitHub's reset time, and its `Retry-After` delay, when supplied.
    Click **Refresh** next to **Components** to check before the regular interval. A server
    retry delay or an installer already downloading or ready can defer that release check.
-   The hub, command-line commands, and demo never make these checks.
+   The hub, command-line commands, and demo never make these checks. The hub fetches one
+   release only when a newer phone asks for it ([below](#updating-from-the-phone)).
 2. **A newer build** (`build` above this one's) puts an **update icon** in the title row
    beside Minimize in both WPF and egui: *"YAAC <version>+<id> is available · Download"*.
 3. **Download** (a click): on a worker, into `%LOCALAPPDATA%\yaac\updates\` (YAAC's own
@@ -195,9 +196,64 @@ Settings → **About** → Components has a row **YAAC (latest release)**: the l
 release's build and whether this YAAC is behind it, or why the latest check is unavailable.
 It also shows when the last check finished in local time, including after a failed check.
 
+### Updating from the phone
+
+**Proposed** (P403, the owner's request). When the [Android app](14-android.md#what-it-is-p372) runs a
+**newer** release build than the PC's hub, the phone's **Settings → About** shows **Update YAAC
+on <pc> to build <n>**. After a confirmation, the phone sends the hub `hub/update/request
+{ build, opId }` with its own build. That request is part of the attach protocol's
+[frozen core](09-compatibility.md#the-frozen-core), so the older hub accepts it even though it
+refuses everything else from a client of another build.
+
+The hub checks, in this order, and refuses with a reason (never silently):
+
+| Check | Refusal |
+| --- | --- |
+| The client attached over Tailscale and was admitted as this host's own login ([02](02-architecture.md#attaching-over-tailscale)). A window on the PC updates itself. | `update_not_allowed` |
+| It said `hub/hello` first (any build). | `hello_required` |
+| The build is a release build, `<version>+<digits>`, and its number is **higher** than the hub's. The hub is a release build too. Never the same build, never a downgrade. | `update_not_newer` |
+| This host can install YAAC this way: the `yaac` binary on Windows supplies the installer. A Linux hub has none. | `update_unsupported` ("not supported on this host") |
+| No other update is running or installing. | `update_in_progress` |
+| GitHub has the **published** release `v<version>-build.<n>`, whose `manifest.json` names exactly that build and lists an installer. | `update_unavailable` |
+
+The answer comes once the release is found: `{ build, size }`. The work runs on a thread of the
+hub's own, not on its I/O thread and not in its small upload pool (a download can take minutes).
+It uses the window updater's code (`yaac-app/src/updater.rs`, `HubInstaller`): the installer is
+downloaded into the same `%LOCALAPPDATA%\yaac\updates\`. Its size and SHA-256 are checked
+against that release's manifest as the bytes arrive. Only then is `pending.json` written and
+marked `attempted`. Setup is started with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
+/RELAUNCH /LOG=<updates>\install.log`. From there it is an ordinary upgrade
+([Install and upgrade](#install-and-upgrade)). The installer runs `yaac quit`, which closes the
+window and stops the hub. It replaces `yaac.exe` and the `yaacd` bundle, then starts the hub
+again (`autostart sync --start`) and the window (`/RELAUNCH`). The window starts the hub itself
+when *start at login* is off. Without `/RELAUNCH`, an interactive install is unchanged.
+
+Every step goes to every client that said hello, whatever its build, as
+`hub/update/progress { opId, build, phase, done, total, message? }`. The phases are `checking`,
+`downloading`, `installing` and `failed`:
+
+- **The phone** shows the step and the download's progress. When the connection drops while
+  installing, it shows *"<pc> is updating…"* and attaches again with its usual backoff, even
+  though its last hello was refused. On the phone's build it is attached as usual. On the old
+  build it says the update did not go in and points at `install.log` on the PC.
+- **A window open on the PC** shows *"Updating YAAC to build N, requested from your phone"*
+  before the installer closes it, and once more when installing starts.
+
+**One request is one attempt** (invariant 10). The hub never retries. A failed download is
+reported, nothing unverified is kept, and only a new tap sends a new request with a new
+operation id. A connection lost before the answer is shown as unknown, and the request is not
+sent again. At the window's next start, `pending.json` works as in [Updating](#updating). For
+this build it is cleaned up. If it is still older (the installer failed), the window says so
+once with the log's path.
+
+Targets follow as after any update ([below](#how-targets-get-the-new-daemon)). The new hub
+carries the new `yaacd` bundle, installs it on each target on its next connection, and asks the
+older serving daemon to hand over when idle. The phone's request touches nothing on a target.
+
 ### How targets get the new daemon
 
-The updater downloads only the installer. Targets never download YAAC from GitHub, and the
+The updater (the window's, or the hub's at the phone's request) downloads only the installer.
+Targets never download YAAC from GitHub, and the
 hub opens nothing new to reach them (invariant #1): the `yaacd` bundle is embedded in
 `yaac.exe` (`yaac-hub/build.rs`, `config::embedded_bundle`), and the hub installs it on a
 target in-band, over that target's one connection, when the target lacks that build
