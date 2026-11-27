@@ -11,6 +11,8 @@
 - When it is done every attached client (the window on the PC, the phone) is told the hub's new
   address (`hub/moved`), replaces the old hub in its saved hubs by the new one (same `hubId`), and
   attaches there. Nothing is lost: turns keep running in `yaacd` and are replayed (invariant 8).
+  The phone keeps the entry's key, slot, label and data directory (device drafts, left-off marks,
+  notification routing) and only changes its address ([14](14-android.md#several-hubs-p405)).
 - **Several hubs on desktop (P412).** The Android model (P405/P406) comes to egui and WPF: a list
   of saved hubs — "This PC" (the local hub, local socket) plus any number of remote hubs over
   Tailscale (`AttachConfig::remote`) — a badge with the selected hub's initial left of the YAAC

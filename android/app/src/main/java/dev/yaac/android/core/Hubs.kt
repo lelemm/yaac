@@ -5,14 +5,24 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * One saved hub (P404). [id] is the normalized address (`host:port`), so adding the same hub twice
- * selects it instead. [slot] is a small number of its own, kept for as long as the hub is saved:
- * it names the hub's data directory and namespaces its notification ids. [legacy] marks the hub
- * an install from before P404 was attached to: its controller keeps the app's root data
+ * One saved hub (P404). [id] is the key it was saved under: the normalized address (`host:port`)
+ * it was first added with. It names the running controller, the hub's notifications and its
+ * phone-local keys (left-off marks), and does not change when the hub moves to another machine
+ * (P412): [address] does. [slot] is a small number of its own, kept for as long as the hub is
+ * saved: it names the hub's data directory and namespaces its notification ids. [legacy] marks
+ * the hub an install from before P404 was attached to: its controller keeps the app's root data
  * directory, so nothing it stored is lost on the upgrade.
  */
-data class Hub(val id: String, val label: String? = null, val slot: Int, val legacy: Boolean = false) {
-    val address: String get() = id
+data class Hub(val id: String, val label: String? = null, val slot: Int, val legacy: Boolean = false, val address: String = id)
+
+/** `hub/moved` as the controller shows it (`shell.hub.movedTo`): where the hub now listens. */
+data class HubMove(val hubId: String?, val address: String, val hostName: String?) {
+    companion object {
+        fun parse(e: kotlinx.serialization.json.JsonElement?): HubMove? {
+            val address = e["address"].text?.trim()?.ifEmpty { null } ?: return null
+            return HubMove(e["hubId"].text, address, e["hostName"].text)
+        }
+    }
 }
 
 /**
@@ -24,19 +34,47 @@ data class HubList(val hubs: List<Hub> = emptyList(), val selected: String? = nu
 
     fun byId(id: String?): Hub? = hubs.firstOrNull { it.id == id }
 
+    /** The saved hub that dials [address] (normalized), if any. */
+    fun byAddress(address: String): Hub? = hubs.firstOrNull { it.address == address }
+
     /**
      * Adds [input] (normalized like the connection screen) and selects it; a hub already saved
-     * is selected, and takes [label] when one is given. Null when [input] is not an address.
+     * at that address is selected, and takes [label] when one is given. Null when [input] is not
+     * an address. A new hub's key is its address, unless a moved hub still holds that key.
      */
     fun add(input: String, label: String? = null): HubList? {
         val address = Connection.normalize(input) ?: return null
         val name = label?.trim()?.ifEmpty { null }
-        val existing = byId(address)
+        val existing = byAddress(address)
         if (existing != null)
-            return copy(hubs = hubs.map { if (it.id == address && name != null) it.copy(label = name) else it }, selected = address)
+            return copy(hubs = hubs.map { if (it === existing && name != null) it.copy(label = name) else it }, selected = existing.id)
         val used = hubs.map { it.slot }.toHashSet()
         val slot = generateSequence(0) { it + 1 }.first { it !in used }
-        return HubList(hubs + Hub(address, name, slot), address)
+        val ids = hubs.map { it.id }.toHashSet()
+        val id = if (address in ids) generateSequence(1) { it + 1 }.map { "$address#$it" }.first { it !in ids } else address
+        return HubList(hubs + Hub(id, name, slot, address = address), id)
+    }
+
+    /** What [moved] does to the list: the new list, and the saved hubs it merged away. */
+    data class Moved(val list: HubList, val merged: List<Hub>)
+
+    /**
+     * The hub saved as [id] moved to another machine (`hub/moved`, P412): it keeps its key, slot,
+     * label and data directory (so its drafts and left-off marks stay) and dials [move]'s address
+     * from now on. Another saved hub at that address, or answering with the same `hubId`
+     * ([hubIdOf], from each controller's `shell.hub.id`), is the same hub: it is merged into this
+     * one (its label is used when this one has none, the selection follows) and returned in
+     * [Moved.merged] for the caller to stop. Null when nothing changes or the address is not one.
+     */
+    fun applyMoved(id: String, move: HubMove, hubIdOf: (Hub) -> String? = { null }): Moved? {
+        val hub = byId(id) ?: return null
+        val address = Connection.normalize(move.address) ?: return null
+        val same = hubs.filter { it !== hub && (it.address == address || (move.hubId != null && hubIdOf(it) == move.hubId)) }
+        if (address == hub.address && same.isEmpty()) return null
+        val moved = hub.copy(address = address, label = hub.label ?: same.firstNotNullOfOrNull { it.label })
+        val rest = hubs.filter { it !in same }.map { if (it === hub) moved else it }
+        val sel = if (same.any { it.id == selected }) hub.id else selected
+        return Moved(HubList(rest, sel), same)
     }
 
     /** Removes a hub; the selection moves to the next one (or the one before when it was last). */
@@ -54,7 +92,8 @@ data class HubList(val hubs: List<Hub> = emptyList(), val selected: String? = nu
         "selected" to (selected?.let { JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull),
         "hubs" to JsonArray(hubs.map { h ->
             JsonObject(buildMap {
-                put("address", JsonPrimitive(h.id))
+                put("address", JsonPrimitive(h.address))
+                if (h.id != h.address) put("key", JsonPrimitive(h.id))
                 put("slot", JsonPrimitive(h.slot))
                 h.label?.let { put("label", JsonPrimitive(it)) }
                 if (h.legacy) put("legacy", JsonPrimitive(true))
@@ -67,13 +106,16 @@ data class HubList(val hubs: List<Hub> = emptyList(), val selected: String? = nu
         fun decode(s: String?): HubList {
             if (s.isNullOrBlank()) return HubList()
             val o = runCatching { FrameJson.parseToJsonElement(s) as? JsonObject }.getOrNull() ?: return HubList()
-            val seen = HashSet<String>()
+            val ids = HashSet<String>()
+            val addresses = HashSet<String>()
             val slots = HashSet<Int>()
             val hubs = o["hubs"].objects.mapNotNull { h ->
                 val address = h["address"].text?.let(Connection::normalize) ?: return@mapNotNull null
+                val id = h["key"].text ?: address
                 val slot = h["slot"].int ?: return@mapNotNull null
-                if (!seen.add(address) || !slots.add(slot)) return@mapNotNull null
-                Hub(address, h["label"].text, slot, h["legacy"].flag())
+                if (id in ids || address in addresses || slot in slots) return@mapNotNull null
+                ids += id; addresses += address; slots += slot
+                Hub(id, h["label"].text, slot, h["legacy"].flag(), address)
             }
             return HubList(hubs, o["selected"].text?.takeIf { id -> hubs.any { it.id == id } } ?: hubs.firstOrNull()?.id)
         }

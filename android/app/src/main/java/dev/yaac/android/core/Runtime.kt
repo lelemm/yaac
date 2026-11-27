@@ -147,6 +147,29 @@ object YaacRuntime {
         hubs.current?.let { select(context, it.id) } ?: run { selectedKey = null }
     }
 
+    /**
+     * The hub saved as [key] said it moved to another machine (`hub/moved`, P412; its controller
+     * shows it as `shell.hub.movedTo`). The saved entry keeps its key, slot, label and data
+     * directory and takes the new address; another saved entry that is the same hub (same address
+     * or same `hubId`) is merged into it and stops. Then the hub's controller is started again on
+     * the new address; it attaches with the normal reattach backoff once the new hub is up. Its
+     * notifications keep their ids and routing (both by key and slot).
+     */
+    fun hubMoved(context: Context, key: String, move: HubMove) {
+        val rt = running[key] ?: return
+        val result = hubs.applyMoved(key, move) { h -> running[h.id]?.store?.view("shell")["hub"]["id"].text } ?: return
+        val wasSelected = selectedKey == key || result.merged.any { it.id == selectedKey }
+        save(context, result.list)
+        for (gone in result.merged) {
+            stopOne(context, gone.id)
+            if (!gone.legacy) runCatching { java.io.File(dataDir(gone)).deleteRecursively() }
+        }
+        val hub = hubs.byId(key) ?: return
+        stopOne(context, key)
+        startOne(context, key, hub, rt.connection.copy(hub = hub.address))
+        if (wasSelected) select(context, key)
+    }
+
     /** Shows [key]'s hub; the one shown before runs on hidden. Remembered. */
     fun select(context: Context, key: String) {
         val rt = running[key] ?: return
@@ -211,6 +234,17 @@ object YaacRuntime {
         val ctl = Controller(transport, store)
         val rt = HubRuntime(key, hub, c, ctl)
         running[key] = rt
+        if (hub != null) {
+            // `hub/moved`: acted on once, after this frame is applied (listeners run on the main thread).
+            var moved = false
+            store.listeners += { _ ->
+                val move = if (moved) null else HubMove.parse(store.view("shell")["hub"]["movedTo"])
+                if (move != null) {
+                    moved = true
+                    android.os.Handler(android.os.Looper.getMainLooper()).post { if (running[key] === rt) hubMoved(context.applicationContext, key, move) }
+                }
+            }
+        }
         ctl.start()
         // The foreground service is this client's tray (P375), so "Keep running in the
         // background" (trayOnClose) applies. Every hub starts hidden until it is selected.
