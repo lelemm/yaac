@@ -538,6 +538,35 @@ impl Inner {
             }
             return;
         }
+        if method.starts_with("hub/voiceCall/") {
+            // A scripted call (docs/plan/voice-call.md): the result first, then what a target
+            // would send. The answer is not real SDP: a demo renderer's peer cannot connect.
+            self.log.push_back((None, method.clone(), params.clone()));
+            let target = params["target"].clone();
+            if method == attach::names::VOICE_CALL_START {
+                let can = params["target"].as_str().zip(params["threadId"].as_str())
+                    .map(|(target, thread)| ThreadKey::new(TargetId::new(target), yaac_protocol::ThreadId::new(thread)))
+                    .and_then(|key| self.fleet.threads.get(&key))
+                    .is_some_and(|t| t.effective.capabilities.contains(&yaac_protocol::Capability::VoiceCall));
+                if !can {
+                    self.ready.push_back(error(id, ErrorCode::CapabilityMissing, "This thread cannot take a voice call."));
+                    return;
+                }
+                self.counter += 1;
+                let call = format!("demo-call-{}", self.counter);
+                self.ready.push_back(result(id, json!({ "callId": call })));
+                let note = |m: &str, p: Value| Message::notification(m, p);
+                self.ready.push_back(note(attach::names::VOICE_CALL_STATE, json!({ "target": target, "callId": call, "state": "connecting" })));
+                self.ready.push_back(note(attach::names::VOICE_CALL_ANSWER, json!({ "target": target, "callId": call, "sdpAnswer": "v=0\r\ns=yaac-demo\r\n" })));
+                self.ready.push_back(note(attach::names::VOICE_CALL_STATE, json!({ "target": target, "callId": call, "state": "active" })));
+                self.ready.push_back(note(attach::names::VOICE_CALL_TRANSCRIPT, json!({ "target": target, "callId": call, "role": "user", "text": "Can you run the tests?", "final": true })));
+                self.ready.push_back(note(attach::names::VOICE_CALL_TRANSCRIPT, json!({ "target": target, "callId": call, "role": "assistant", "text": "Sure, starting them now.", "final": true })));
+            } else {
+                self.ready.push_back(result(id, json!({})));
+                self.ready.push_back(Message::notification(attach::names::VOICE_CALL_STATE, json!({ "target": target, "callId": params["callId"], "state": "ended" })));
+            }
+            return;
+        }
         if method.starts_with("hub/terminal/") {
             self.log.push_back((None, method.clone(), params.clone()));
             match self.terminals.request(&method, &params) {

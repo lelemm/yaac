@@ -248,6 +248,12 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
     }
     match draft.clone() {
         DraftRef::Thread(key) => {
+            // A voice call with the thread, where its harness offers one (its capability).
+            // The desktop build adds its own peer's fields on top (desktop_call::view).
+            #[cfg(not(feature = "desktop"))]
+            if let Some(call) = crate::voice_call::view(app, &key) {
+                v["call"] = call;
+            }
             v["runningCommands"] = command_strip(app, &key);
             notices.extend(
                 app.client.errors.iter().filter(|e| e.key.as_ref() == Some(&key)).map(|e| {
@@ -632,6 +638,15 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
                 return Ok(());
             }
             "composer.voiceStart" if can_write => { crate::voice::start(app, key); return Ok(()); }
+            // A voice call (docs/plan/voice-call.md): ending is always allowed, starting needs
+            // the composer; the renderer made the offer and owns the media.
+            "composer.callEnd" => { crate::voice_call::end(app, key); return Ok(()); }
+            "composer.callStart" if can_write => {
+                // A refusal is shown in the frame's `call.error`, not as a command failure.
+                let offer = string(p, "sdpOffer").to_owned();
+                let _ = crate::voice_call::start(app, key, offer);
+                return Ok(());
+            }
             _ => {}
         }
     }
@@ -1017,6 +1032,91 @@ mod tests {
     fn voice_pass(app: &mut YaacApp) {
         settle(app);
         crate::voice::upkeep(app);
+    }
+
+    fn call_pass(app: &mut YaacApp) {
+        settle(app);
+        crate::voice_call::upkeep(app);
+    }
+
+    /// The `call` object as this build's controller makes it (the desktop build adds its own
+    /// peer's fields on top, in `desktop_call`).
+    fn call_view(app: &YaacApp, key: &ThreadKey) -> Value {
+        crate::voice_call::view(app, key).unwrap_or(Value::Null)
+    }
+
+    #[test]
+    fn a_call_is_offered_from_the_capability_alone() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.apply(vec![Action::Open(key.clone())]);
+        settle(&mut app);
+        let call = call_view(&app, &key);
+        assert_eq!(call["state"], "idle");
+        assert_eq!(call["button"]["id"], "composer.callStart");
+        assert_eq!(call["button"]["enabled"], true);
+        assert!(call["button"]["detail"].as_str().unwrap().contains("can start work here"), "the consent note");
+        #[cfg(not(feature = "desktop"))]
+        assert_eq!(composer_view(&app)["call"], call);
+        let effective = app.client.state.transcripts.get_mut(&key).and_then(|t| t.effective.as_mut()).unwrap();
+        effective.capabilities.retain(|c| *c != yaac_protocol::Capability::VoiceCall);
+        assert!(call_view(&app, &key).is_null());
+        assert!(composer_view(&app)["call"].is_null());
+    }
+
+    #[test]
+    fn a_call_hands_the_offer_on_shows_the_answer_and_the_words_and_hangs_up() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.apply(vec![Action::Open(key.clone())]);
+        settle(&mut app);
+        let queued = app.client.state.transcripts.get(&key).map_or(0, |t| t.queued.len());
+        voice_command(&mut app, &key, "composer.callStart", json!({ "sdpOffer": "v=0\r\no=offer\r\n" }));
+        assert_eq!(call_view(&app, &key)["state"], "starting");
+        let sent = app.demo.as_ref().unwrap().requests();
+        let (_, _, params) = sent.iter().rev().find(|(_, m, _)| m == "hub/voiceCall/start").expect("start sent");
+        assert_eq!(params["sdpOffer"], "v=0\r\no=offer\r\n");
+        call_pass(&mut app);
+        let call = call_view(&app, &key);
+        assert_eq!(call["state"], "active");
+        assert!(call["callId"].as_str().unwrap().starts_with("demo-call-"));
+        assert_eq!(call["answer"], "v=0\r\ns=yaac-demo\r\n");
+        assert_eq!(call["button"]["id"], "composer.callEnd");
+        assert_eq!(call["transcript"], json!([
+            { "role": "user", "text": "Can you run the tests?", "final": true },
+            { "role": "assistant", "text": "Sure, starting them now.", "final": true },
+        ]));
+        // One call per window: another thread cannot start one now.
+        if let Some(other) = app.client.state.transcripts.keys().find(|k| **k != key && crate::voice_call::offered(&app, k)).cloned() {
+            assert_eq!(call_view(&app, &other)["button"]["enabled"], false);
+            assert!(crate::voice_call::start(&mut app, &other, "v=0".into()).is_err());
+        }
+        voice_command(&mut app, &key, "composer.callEnd", json!({}));
+        assert_eq!(call_view(&app, &key)["state"], "ending");
+        call_pass(&mut app);
+        let call = call_view(&app, &key);
+        assert_eq!(call["state"], "idle");
+        assert!(call["answer"].is_null(), "the answer goes with the call");
+        assert_eq!(call["transcript"].as_array().unwrap().len(), 2, "what was said stays until the next call");
+        // The window itself sent nothing to the conversation.
+        assert_eq!(app.client.state.transcripts.get(&key).map_or(0, |t| t.queued.len()), queued);
+        assert!(!app.demo.as_ref().unwrap().requests().iter().any(|(_, m, _)| m == "turn/start"));
+    }
+
+    #[test]
+    fn a_refused_call_says_why_in_the_frame() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.apply(vec![Action::Open(key.clone())]);
+        settle(&mut app);
+        voice_command(&mut app, &key, "composer.callStart", json!({ "sdpOffer": "" }));
+        let call = call_view(&app, &key);
+        assert_eq!(call["state"], "error");
+        assert!(call["error"].as_str().unwrap().contains("SDP offer"));
+        assert_eq!(call["button"]["id"], "composer.callStart");
     }
 
     #[test]

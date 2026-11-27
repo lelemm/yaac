@@ -174,6 +174,8 @@ fn caps() -> Vec<Capability> {
         Capability::ForkKeepChildren,
         // Dictation through the harness's own speech-to-text (docs/plan/voice.md).
         Capability::VoiceInput,
+        // A voice call with the thread (docs/plan/voice-call.md): scripted in the demo hub.
+        Capability::VoiceCall,
     ]
 }
 

@@ -78,6 +78,7 @@ mod tray;
 pub mod platform;
 mod updater;
 mod voice;
+mod voice_call;
 mod voice_audio;
 mod voice_capture;
 mod widgets;
