@@ -74,5 +74,6 @@ pub mod transcript;
 pub mod turns;
 pub mod update;
 pub mod voice;
+pub mod voice_call;
 
 pub use key::ThreadKey;

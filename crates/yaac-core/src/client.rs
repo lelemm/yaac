@@ -173,6 +173,10 @@ enum Call {
     VoiceStart(ThreadKey),
     /// `hub/voice/stop` or `hub/voice/cancel`: only a failure matters.
     VoiceStream,
+    /// `hub/voiceCall/start` for the running call with this thread.
+    VoiceCallStart(ThreadKey),
+    /// `hub/voiceCall/end`: the state notification says how it ended.
+    VoiceCallEnd,
     Troubleshoot(RpcId),
     CatalogList,
     CatalogEdit(RpcId),
@@ -270,6 +274,9 @@ pub struct Client {
     /// The running dictation (docs/plan/voice.md), and the last one's words until taken.
     dictation: Option<crate::voice::Dictation>,
     dictation_outcome: Option<crate::voice::DictationOutcome>,
+    /// The running voice call (docs/plan/voice-call.md), and the last one's end until taken.
+    voice_call: Option<crate::voice_call::VoiceCall>,
+    voice_call_outcome: Option<crate::voice_call::CallOutcome>,
     /// Attach streams that are tunnels (`hub/preview/tunnel`, P380), their data and notes kept
     /// apart from the terminals'.
     tunnel_streams: std::collections::HashSet<yaac_protocol::StreamId>,
@@ -357,6 +364,8 @@ impl Client {
             terminal_notes: Vec::new(),
             dictation: None,
             dictation_outcome: None,
+            voice_call: None,
+            voice_call_outcome: None,
             tunnel_streams: Default::default(),
             tunnel_data: Vec::new(),
             terminal_data: Vec::new(),
@@ -592,6 +601,114 @@ impl Client {
         }
     }
 
+    // ── Voice call (docs/plan/voice-call.md) ─────────────────────────────────────────────
+
+    /// Start a voice call with a thread from the renderer's complete SDP offer. Refused while a
+    /// call is running in this window, or when the thread cannot call now
+    /// ([`crate::voice_call::offered`]). The answer arrives in [`Client::voice_call`].
+    pub fn voice_call_start(&mut self, key: &ThreadKey, sdp_offer: String) -> Result<(), String> {
+        if self.voice_call.is_some() {
+            return Err("A voice call is already running in this window.".into());
+        }
+        let effective = self.state.transcripts.get(key).and_then(|t| t.effective.as_ref());
+        if !crate::voice_call::offered(effective) {
+            return Err("This thread cannot take a voice call.".into());
+        }
+        if sdp_offer.trim().is_empty() {
+            return Err("The voice call has no SDP offer.".into());
+        }
+        let op = self.op_id();
+        let params = json!({ "target": key.target, "opId": op, "threadId": key.thread, "sdpOffer": sdp_offer });
+        self.voice_call = Some(crate::voice_call::VoiceCall::new(key.clone()));
+        self.voice_call_outcome = None;
+        self.request(attach::names::VOICE_CALL_START, params, Call::VoiceCallStart(key.clone()));
+        Ok(())
+    }
+
+    /// Hang up the running call. Its end arrives as the call's outcome.
+    pub fn voice_call_end(&mut self) {
+        let Some(c) = self.voice_call.as_mut() else { return };
+        if c.end_sent {
+            return;
+        }
+        c.phase = crate::voice_call::CallPhase::Ending;
+        match c.call_id.clone() {
+            Some(call) => {
+                c.end_sent = true;
+                let params = json!({ "target": c.key.target, "callId": call });
+                self.request(attach::names::VOICE_CALL_END, params, Call::VoiceCallEnd);
+            }
+            None => c.end_on_start = true,
+        }
+    }
+
+    /// The running call: its phase, the SDP answer for the renderer's peer, what was said.
+    pub fn voice_call(&self) -> Option<&crate::voice_call::VoiceCall> {
+        self.voice_call.as_ref()
+    }
+
+    /// The finished call's error and transcript, once.
+    pub fn take_voice_call_outcome(&mut self) -> Option<crate::voice_call::CallOutcome> {
+        self.voice_call_outcome.take()
+    }
+
+    fn voice_call_started(&mut self, key: &ThreadKey, result: Value) {
+        let Ok(started) = serde_json::from_value::<yaac_protocol::VoiceCallStartResult>(result) else {
+            self.voice_call_finish(Some("The target answered the call start in a form this YAAC does not read.".into()));
+            return;
+        };
+        let Some(c) = self.voice_call.as_mut().filter(|c| &c.key == key && c.call_id.is_none()) else {
+            // Nobody waits for it any more: hang up on the target.
+            self.request(attach::names::VOICE_CALL_END, json!({ "target": key.target, "callId": started.call_id }), Call::VoiceCallEnd);
+            return;
+        };
+        c.call_id = Some(started.call_id);
+        if c.end_on_start {
+            self.voice_call_end();
+            return;
+        }
+        if c.phase == crate::voice_call::CallPhase::Starting {
+            c.phase = crate::voice_call::CallPhase::Connecting;
+        }
+    }
+
+    fn on_voice_call_note(&mut self, method: &str, params: &Value) {
+        let Some(c) = self.voice_call.as_mut() else { return };
+        if c.call_id.as_deref().is_none_or(|id| params.get("callId").and_then(Value::as_str) != Some(id))
+            || params.get("target").and_then(Value::as_str) != Some(c.key.target.as_str())
+        {
+            return;
+        }
+        match method {
+            attach::names::VOICE_CALL_ANSWER => {
+                if c.answer.is_none() && let Some(sdp) = params.get("sdpAnswer").and_then(Value::as_str) {
+                    c.answer = Some(sdp.to_owned());
+                }
+            }
+            attach::names::VOICE_CALL_TRANSCRIPT => {
+                let Ok(p) = serde_json::from_value::<yaac_protocol::VoiceCallTranscriptParams>(params.clone()) else { return };
+                if matches!(p.role, yaac_protocol::VoiceCallRole::User | yaac_protocol::VoiceCallRole::Assistant) {
+                    c.heard(p.role, &p.text, p.is_final);
+                }
+            }
+            _ => match params.get("state").and_then(Value::as_str) {
+                Some("active") if c.phase != crate::voice_call::CallPhase::Ending => c.phase = crate::voice_call::CallPhase::Active,
+                Some("ended") => {
+                    let error = params.get("error").and_then(Value::as_str).map(str::to_owned);
+                    self.voice_call_finish(error);
+                }
+                _ => {}
+            },
+        }
+    }
+
+    /// Ends the running call, keeping its transcript for the UI.
+    fn voice_call_finish(&mut self, error: Option<String>) {
+        if let Some(c) = self.voice_call.take() {
+            self.voice_call_outcome = Some(crate::voice_call::CallOutcome { key: c.key, error, transcript: c.transcript });
+        }
+    }
+
     /// Terminal notifications from the hub since the last call: `hub/terminal/title`,
     /// `hub/terminal/exited`, and `stream/credit` (input credit for a terminal stream).
     pub fn take_terminal_notes(&mut self) -> Vec<(String, Value)> {
@@ -810,6 +927,8 @@ impl Client {
                 self.state.hub.outcome = HelloOutcome::Attached;
                 // A dictation of an earlier attachment is gone with its stream.
                 self.voice_finish(Some("The connection to YAAC was interrupted.".into()));
+                // So is a call: the hub hung it up when this window's connection went away.
+                self.voice_call_finish(Some("The connection to YAAC was interrupted.".into()));
                 // The hub tells the window its own client id ("answered by you").
                 if let Some(id) = hello.client_id {
                     self.state.client_id = Some(id);
@@ -1011,6 +1130,8 @@ impl Client {
             Call::Preview(id) => self.preview_replies.push((id, Ok(result))),
             Call::VoiceStart(key) => self.voice_started(&key, result),
             Call::VoiceStream => {}
+            Call::VoiceCallStart(key) => self.voice_call_started(&key, result),
+            Call::VoiceCallEnd => {}
             Call::Troubleshoot(id) => {
                 let report = serde_json::from_value(result).map_err(|_| "The target returned an invalid diagnostic report.".to_owned());
                 self.troubleshoot_reply = Some((id, report));
@@ -1531,6 +1652,17 @@ impl Client {
                 }
             }
             Call::VoiceStream => {}
+            Call::VoiceCallStart(key) => {
+                if self.voice_call.as_ref().is_some_and(|c| c.key == key && c.call_id.is_none()) {
+                    let text = if error.code == ErrorCode::OutcomeUnknown {
+                        format!("The call may or may not have started, and it was not tried again: {}", error.message)
+                    } else {
+                        format!("The call could not start: {}", error.message)
+                    };
+                    self.voice_call_finish(Some(text));
+                }
+            }
+            Call::VoiceCallEnd => {}
             Call::Troubleshoot(id) => self.troubleshoot_reply = Some((id, Err(error.message.clone()))),
             Call::Ssh(id) => self.ssh_replies.push((id, Err(error.clone()))),
             Call::WslDistros => self.on_wsl_distros_error(error),
@@ -1627,6 +1759,7 @@ impl Client {
                 self.tunnel_notes.push((method.to_owned(), params));
             }
             attach::names::VOICE_TRANSCRIPT | attach::names::VOICE_ENDED => self.on_voice_note(method, &params),
+            attach::names::VOICE_CALL_ANSWER | attach::names::VOICE_CALL_STATE | attach::names::VOICE_CALL_TRANSCRIPT => self.on_voice_call_note(method, &params),
             m::STREAM_CREDIT
                 if self.dictation.as_ref().and_then(|d| d.stream).is_some_and(|s| params.get("stream") == Some(&serde_json::to_value(s).unwrap_or_default())) =>
             {
@@ -3477,6 +3610,89 @@ mod voice_tests {
     fn deliver(client: &mut Client, wire: &Rc<RefCell<Wire>>, message: Message) {
         wire.borrow_mut().inbox.push_back(message);
         client.pump();
+    }
+
+    fn setup_call(call: bool) -> (Client, Rc<RefCell<Wire>>, ThreadKey) {
+        let (mut client, wire, key) = setup(false);
+        if call {
+            let t = client.state.transcripts.get_mut(&key).unwrap();
+            t.effective.as_mut().unwrap().capabilities.push(yaac_protocol::Capability::VoiceCall);
+        }
+        (client, wire, key)
+    }
+
+    #[test]
+    fn a_call_needs_the_capability_and_runs_one_at_a_time() {
+        let (mut client, wire, key) = setup_call(false);
+        assert!(client.voice_call_start(&key, "v=offer".into()).is_err());
+        assert!(wire.borrow().sent.is_empty());
+        let (mut client, _, key) = setup_call(true);
+        assert!(client.voice_call_start(&key, " ".into()).is_err(), "an offer is needed");
+        assert!(client.voice_call_start(&key, "v=offer".into()).is_ok());
+        assert!(client.voice_call_start(&key, "v=offer".into()).is_err(), "one call per window");
+    }
+
+    #[test]
+    fn a_call_carries_the_offer_keeps_the_answer_and_the_words_and_ends_once() {
+        let (mut client, wire, key) = setup_call(true);
+        client.voice_call_start(&key, "v=offer".into()).unwrap();
+        let (id, params) = last_request(&wire, attach::names::VOICE_CALL_START);
+        assert_eq!(params["target"], "box");
+        assert_eq!(params["threadId"], "t1");
+        assert_eq!(params["sdpOffer"], "v=offer");
+        assert!(params["opId"].is_string());
+        assert_eq!(client.voice_call().unwrap().phase, crate::voice_call::CallPhase::Starting);
+        deliver(&mut client, &wire, Message::Response { id, result: json!({ "callId": "c1" }) });
+        assert_eq!(client.voice_call().unwrap().phase, crate::voice_call::CallPhase::Connecting);
+        let note = |m: &str, p: Value| Message::notification(m, p);
+        deliver(&mut client, &wire, note(attach::names::VOICE_CALL_ANSWER, json!({ "target": "box", "callId": "other", "sdpAnswer": "v=no" })));
+        assert!(client.voice_call().unwrap().answer.is_none(), "another call's answer is not ours");
+        deliver(&mut client, &wire, note(attach::names::VOICE_CALL_ANSWER, json!({ "target": "box", "callId": "c1", "sdpAnswer": "v=answer" })));
+        deliver(&mut client, &wire, note(attach::names::VOICE_CALL_STATE, json!({ "target": "box", "callId": "c1", "state": "active" })));
+        deliver(&mut client, &wire, note(attach::names::VOICE_CALL_TRANSCRIPT, json!({ "target": "box", "callId": "c1", "role": "user", "text": "run", "final": false })));
+        deliver(&mut client, &wire, note(attach::names::VOICE_CALL_TRANSCRIPT, json!({ "target": "box", "callId": "c1", "role": "user", "text": "Run the tests.", "final": true })));
+        let c = client.voice_call().unwrap();
+        assert_eq!(c.answer.as_deref(), Some("v=answer"));
+        assert_eq!(c.phase, crate::voice_call::CallPhase::Active);
+        assert_eq!(c.transcript.len(), 1);
+        assert_eq!(c.transcript[0].text, "Run the tests.");
+        client.voice_call_end();
+        client.voice_call_end();
+        let ends = wire.borrow().sent.iter().filter(|m| matches!(m, Message::Request { method, .. } if method == attach::names::VOICE_CALL_END)).count();
+        assert_eq!(ends, 1, "hung up once");
+        let (_, end) = last_request(&wire, attach::names::VOICE_CALL_END);
+        assert_eq!(end, json!({ "target": "box", "callId": "c1" }));
+        deliver(&mut client, &wire, note(attach::names::VOICE_CALL_STATE, json!({ "target": "box", "callId": "c1", "state": "ended" })));
+        assert!(client.voice_call().is_none());
+        let outcome = client.take_voice_call_outcome().unwrap();
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.transcript.len(), 1);
+        assert!(client.take_voice_call_outcome().is_none());
+        assert!(
+            !wire.borrow().sent.iter().any(|m| matches!(m, Message::Request { method, .. } if method == attach::names::REQUEST)),
+            "nothing is sent as a message by the window"
+        );
+    }
+
+    #[test]
+    fn hanging_up_while_starting_ends_the_call_once_it_has_an_id_and_a_failed_start_says_why() {
+        let (mut client, wire, key) = setup_call(true);
+        client.voice_call_start(&key, "v=offer".into()).unwrap();
+        let (id, _) = last_request(&wire, attach::names::VOICE_CALL_START);
+        client.voice_call_end();
+        assert!(!wire.borrow().sent.iter().any(|m| matches!(m, Message::Request { method, .. } if method == attach::names::VOICE_CALL_END)));
+        deliver(&mut client, &wire, Message::Response { id, result: json!({ "callId": "c9" }) });
+        let (_, end) = last_request(&wire, attach::names::VOICE_CALL_END);
+        assert_eq!(end["callId"], "c9");
+
+        let (mut client, wire, key) = setup_call(true);
+        client.voice_call_start(&key, "v=offer".into()).unwrap();
+        let (id, _) = last_request(&wire, attach::names::VOICE_CALL_START);
+        let error = ErrorObject { code: ErrorCode::OutcomeUnknown, message: "dropped".into(), data: None };
+        deliver(&mut client, &wire, Message::Error { id: Some(id), error });
+        let outcome = client.take_voice_call_outcome().unwrap();
+        assert!(outcome.error.unwrap().contains("not tried again"), "an uncertain start is shown, never re-sent");
+        assert_eq!(wire.borrow().sent.iter().filter(|m| matches!(m, Message::Request { method, .. } if method == attach::names::VOICE_CALL_START)).count(), 1);
     }
 
     #[test]
