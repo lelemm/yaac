@@ -174,6 +174,7 @@ public partial class ComposerView : UserControl
         SetButton(StopButton, ReadAction(Field(view, "stop")), editingEnabled, "Esc");
         SetButton(CancelEditButton, cancelEditAction, editingEnabled, "Esc");
         RenderVoice(Field(view, "voice"));
+        RenderCall(Field(view, "call"));
         var ready = Field(view, "submitReady");
         submitReady = ready.ValueKind is JsonValueKind.True or JsonValueKind.False ? ready.GetBoolean() : null;
         submitWithoutText = Field(view, "submitWithoutText").ComposerFlag();

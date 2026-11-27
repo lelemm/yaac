@@ -297,6 +297,7 @@ pub(crate) struct UiState {
     /// The Commander's recently used commands, most recent first.
     pub recent: Vec<String>,
     pub(crate) composer_history: Arc<[String]>,
+    pub(crate) desktop_call_consent: bool,
     pub(crate) composer_history_walk: Option<(DraftRef, usize)>,
     pub(crate) dismissed_artifacts: BTreeSet<String>,
     /// The request card whose button has keyboard focus (set while drawing it).
@@ -414,6 +415,7 @@ impl UiState {
             diffs: crate::thread::DiffCache::default(),
             history: yaac_core::history::History::default(),
             composer_history: Default::default(),
+            desktop_call_consent: false,
             composer_history_walk: None,
             dismissed_artifacts: BTreeSet::new(),
             restore: None,
@@ -460,6 +462,7 @@ impl UiState {
             terminal_commands: self.bindings.in_terminal.clone(),
             recent: self.recent.clone(),
             composer_history: self.composer_history.clone(),
+            desktop_call_consent: self.desktop_call_consent,
             dismissed_artifacts: self.dismissed_artifacts.clone(),
             terminal: self.terminal,
         }
@@ -485,6 +488,7 @@ impl UiState {
         self.bindings.in_terminal = p.terminal_commands.clone();
         self.recent = p.recent.clone();
         self.composer_history = p.composer_history.clone();
+        self.desktop_call_consent = p.desktop_call_consent;
         self.composer_history_walk = None;
         self.dismissed_artifacts = p.dismissed_artifacts.clone();
         self.terminal = p.terminal;
@@ -816,6 +820,8 @@ pub(crate) struct YaacApp {
     pub updater: crate::updater::Updater,
     pub troubleshoot: crate::troubleshoot::Troubleshoot,
     pub catalog_settings: crate::catalog_settings::Settings,
+    #[cfg(feature = "desktop")]
+    pub(crate) desktop_call: crate::desktop_call::DesktopCall,
     /// Voice input: the microphone and the words waiting for a composer.
     pub(crate) voice: crate::voice::Voice,
     pub(crate) voice_call: crate::voice_call::VoiceCallUi,
@@ -979,6 +985,8 @@ impl YaacApp {
             catalog_settings: Default::default(),
             voice: Default::default(),
             voice_call: Default::default(),
+            #[cfg(feature = "desktop")]
+            desktop_call: Default::default(),
             ctx: cc.egui_ctx,
         };
         // The release check, on a worker (nothing when the updater is off).
@@ -1974,6 +1982,8 @@ impl YaacApp {
         if themes_ready { self.theme_upkeep(); }
         self.troubleshoot.pump(&mut self.client, ctx);
         self.catalog_settings.upkeep(&mut self.client, ctx);
+        #[cfg(feature = "desktop")]
+        crate::desktop_call::upkeep(self);
         crate::voice::upkeep(self);
         crate::voice_call::upkeep(self);
         #[cfg(feature = "hub")]
@@ -2069,6 +2079,7 @@ impl eframe::App for YaacApp {
         let file_repaint = ctx.clone();
         self.browsers.set_file_wake(move || file_repaint.request_repaint());
         self.browsers.check_runtime(move || repaint.request_repaint());
+        self.browsers.poll_runtime();
         let visible = self.client.state.selected_thread().filter(|_| !self.ui.settings && !self.shell.hidden && ctx.input(|i| i.viewport().visible() != Some(false))).cloned();
         if let Some(delay) = self.browsers.tick(&mut self.client, visible.as_ref(), std::time::Instant::now()) {
             ctx.request_repaint_after(delay);

@@ -844,6 +844,16 @@ measurements. The helper publishes premultiplied BGRA through shared memory and 
 notification when a surface changes. The egui adapter updates the showing viewport's texture
 through the common texture API for glow, wgpu and software. [Web preview](11-preview.md#the-browser-host)
 
+**Desktop voice calls (P391).** The Windows controller starts a separate offscreen CEF
+host for the duration of a call. It uses the browser runtime already shipped by the installer
+and publishes no paint surfaces. The existing Chromium stack supplies WebRTC, Opus and audio
+processing. A stripped Windows GNU release at `05d77f5` with `preview` and the embedded daemon
+measured 36 220 416 bytes before the desktop call work, above the 20 MB target. Standalone
+Windows GNU probes using bundled libopus measured 2.08 MB with str0m/Windows CNG and 3.36 MB with
+webrtc-rs/Tokio/ring. Those are standalone sizes. The Windows adapter DLL grew by 56 648 bytes.
+The browser runtime is loaded only during a call or an open Browser tab.
+[Desktop call host](11-preview.md#desktop-voice-calls)
+
 ### The renderer
 
 D128. The window can draw with OpenGL through `glow`, or with `wgpu` on Direct3D 12, Vulkan or

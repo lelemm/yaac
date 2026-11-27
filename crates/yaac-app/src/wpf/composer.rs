@@ -248,6 +248,10 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
     }
     match draft.clone() {
         DraftRef::Thread(key) => {
+            #[cfg(feature = "desktop")]
+            if let Some(call) = crate::desktop_call::view(app, &key) {
+                v["call"] = call;
+            }
             // A voice call with the thread, where its harness offers one (its capability).
             // The desktop build adds its own peer's fields on top (desktop_call::view).
             #[cfg(not(feature = "desktop"))]
@@ -593,6 +597,16 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
         _ => None,
     };
     let can_write = thread.as_ref().is_none_or(|k| app.client.state.may_act(k));
+    #[cfg(feature = "desktop")]
+    if let Some(key) = &thread {
+        use crate::desktop_call;
+        match name {
+            "composer.desktopCallAsk" => { desktop_call::ask(app, key); return Ok(()); }
+            "composer.desktopCallConsent" => { desktop_call::consent(app, key, p["accepted"] == true); return Ok(()); }
+            "composer.desktopCallMute" => { desktop_call::mute(app, key); return Ok(()); }
+            _ => {}
+        }
+    }
     let id = string(p, "id");
     if name == "composer.action" && let Some(key) = &thread {
         if let Some(id) = id.strip_prefix("error:").and_then(|id| id.parse().ok()) {
@@ -640,7 +654,13 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             "composer.voiceStart" if can_write => { crate::voice::start(app, key); return Ok(()); }
             // A voice call (docs/plan/voice-call.md): ending is always allowed, starting needs
             // the composer; the renderer made the offer and owns the media.
-            "composer.callEnd" => { crate::voice_call::end(app, key); return Ok(()); }
+            "composer.callEnd" => {
+                #[cfg(feature = "desktop")]
+                crate::desktop_call::end(app, key);
+                #[cfg(not(feature = "desktop"))]
+                crate::voice_call::end(app, key);
+                return Ok(());
+            }
             "composer.callStart" if can_write => {
                 // A refusal is shown in the frame's `call.error`, not as a command failure.
                 let offer = string(p, "sdpOffer").to_owned();

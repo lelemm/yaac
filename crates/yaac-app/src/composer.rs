@@ -539,6 +539,8 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
         ui.add_space(4.0);
     }
     let compacting = app.client.compacting(key);
+    #[cfg(feature = "desktop")]
+    crate::desktop_call::bar(ui, app, key);
     if compacting {
         ui.label(widgets::secondary("Compacting context…", &p));
     }
@@ -626,6 +628,12 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                 let mic = shell.is_none() && !editing && crate::voice_capture::AVAILABLE && crate::voice::offered(app, key).is_some();
                 let btn_w = btn_w + if mic { 32.0 } else { 0.0 };
                 let mut voice_click = None;
+                #[cfg(feature = "desktop")]
+                let call = shell.is_none() && !editing && crate::desktop_call::phone_offered(app, key);
+                #[cfg(feature = "desktop")]
+                let btn_w = btn_w + if call { 32.0 } else { 0.0 };
+                #[cfg(feature = "desktop")]
+                let mut call_click = false;
                 // A narrow column (under 500 points, e.g. beside the side pane) puts the
                 // buttons on their own row under the text instead of squeezing it.
                 let stacked = ui.available_width() < STACK_BELOW;
@@ -684,6 +692,8 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                             }
                             attach_button(ui, app, &d, actions);
                             voice_button(ui, app, key, &mut voice_click);
+                            #[cfg(feature = "desktop")]
+                            if call { call_click = crate::desktop_call::phone(ui, app, key, !dimmed); }
                             return;
                         }
                         if stop && widgets::plain(ui, &p, "Stop", None).on_hover_text("Stop the running turn; nothing is sent (Esc)").clicked() {
@@ -707,6 +717,8 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                         // Attachments can be prepared while a turn runs.
                         attach_button(ui, app, &d, actions);
                         voice_button(ui, app, key, &mut voice_click);
+                        #[cfg(feature = "desktop")]
+                        if call { call_click = crate::desktop_call::phone(ui, app, key, !dimmed); }
                     };
                     let row = egui::Layout::right_to_left(egui::Align::Center);
                     if stacked {
@@ -720,6 +732,8 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                     Some(VoiceClick::Stop) => crate::voice::stop(app, key),
                     None => {}
                 }
+                #[cfg(feature = "desktop")]
+                if call_click { crate::desktop_call::ask(app, key); }
             });
             if shell.is_some() {
                 // The 3 px shell bar on the left edge.
@@ -866,6 +880,8 @@ fn voice_button(ui: &mut egui::Ui, app: &YaacApp, key: &ThreadKey, click: &mut O
     let p = app.p;
     let (state, _) = crate::voice::state(app, key);
     let busy = app.client.dictation().is_some_and(|d| &d.key != key);
+    #[cfg(feature = "desktop")]
+    let busy = busy || crate::desktop_call::busy(app);
     if state.active() {
         // Listening: a pulse behind the stop mark, swelling with the voice.
         #[allow(clippy::cast_possible_truncation, reason = "a pulse phase; precision does not matter")]
@@ -882,7 +898,7 @@ fn voice_button(ui: &mut egui::Ui, app: &YaacApp, key: &ThreadKey, click: &mut O
     } else if state == crate::voice::State::Stopping {
         widgets::icon(ui, 24.0, |pa, c, d| icons::spinner(pa, c, d * 0.6, p.text2)).on_hover_text("Finishing the dictation…");
     } else {
-        let tip = if busy { "Another thread is taking dictation" } else { "Dictate: speak, and the words go into the message (not sent)" };
+        let tip = if busy { "The microphone is already in use" } else { "Dictate: speak, and the words go into the message (not sent)" };
         let r = ui.add_enabled_ui(!busy, |ui| widgets::icon_button(ui, &p, 16.0, tip, icons::mic)).inner;
         if r.clicked() && !busy {
             *click = Some(VoiceClick::Start);

@@ -40,6 +40,9 @@ impl BrowserPipe {
             app.browsers.terms.shells(&mut app.client, &key.target);
         }
         app.browsers.check_runtime(wake.clone());
+        if app.browsers.poll_runtime() {
+            app.ctx.request_repaint();
+        }
         app.browsers.set_file_wake(wake.clone());
         let next = app.browsers.tick(&mut app.client, visible, Instant::now());
 

@@ -95,6 +95,10 @@ fn busy_elsewhere(app: &YaacApp, key: &ThreadKey) -> bool {
 /// `composer.voiceStart`: start dictating into `key`'s composer. This controller records when
 /// it can ([`voice_capture::AVAILABLE`]); otherwise the renderer sends `composer.voiceAudio`.
 pub(crate) fn start(app: &mut YaacApp, key: &ThreadKey) {
+    #[cfg(feature = "desktop")]
+    if crate::desktop_call::busy(app) {
+        return;
+    }
     let Some(format) = offered(app, key).cloned() else { return };
     if app.client.dictation().is_some() {
         return;
@@ -275,12 +279,16 @@ pub(crate) fn view(app: &YaacApp, key: &ThreadKey) -> Option<Value> {
     let format = offered(app, key)?;
     let (state, partial) = state(app, key);
     let elsewhere = busy_elsewhere(app, key);
+    #[cfg(feature = "desktop")]
+    let in_call = crate::desktop_call::busy(app);
+    #[cfg(not(feature = "desktop"))]
+    let in_call = false;
     let (id, label, enabled) = match state {
         State::Starting | State::Listening => ("composer.voiceStop", "Stop dictation", true),
         State::Stopping => ("composer.voiceStop", "Finishing…", false),
-        State::Idle | State::Error => ("composer.voiceStart", "Dictate", !elsewhere),
+        State::Idle | State::Error => ("composer.voiceStart", "Dictate", !elsewhere && !in_call),
     };
-    let detail = if elsewhere { "Another thread is taking dictation" } else if state.active() { "Stop and put the words in the message" } else { "Speak; the words go into the message, not sent" };
+    let detail = if elsewhere { "Another thread is taking dictation" } else if in_call { "The microphone is in use by a voice call" } else if state.active() { "Stop and put the words in the message" } else { "Speak; the words go into the message, not sent" };
     // Listening: the elapsed time, and near the thread's limit the time left.
     let secs = elapsed(app, key).filter(|_| state == State::Listening);
     let left = secs.zip(format.max_seconds).map(|(s, max)| u64::from(max).saturating_sub(s)).filter(|left| *left <= 15);

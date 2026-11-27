@@ -97,6 +97,8 @@ pub struct UiPrefs {
     pub composer_history: std::sync::Arc<[String]>,
     /// File cards dismissed in this window profile, scoped to the conversation showing them.
     pub dismissed_artifacts: BTreeSet<String>,
+    /// The first-use desktop voice call explanation was accepted.
+    pub desktop_call_consent: bool,
     /// Settings → Terminal (P339) and the terminal panel's height (P338).
     pub terminal: TerminalPrefs,
 }
@@ -135,7 +137,7 @@ pub fn agents_width(to: f32) -> f32 {
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, themes: Default::default(), muted_open: false, font_size: 13.5, fonts: FontPrefs::default(), send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), composer_history: Default::default(), dismissed_artifacts: BTreeSet::new(), terminal: TerminalPrefs::default() }
+        Self { diff_side_by_side: false, grouping: Grouping::default(), collapsed_groups: BTreeSet::new(), ordering: Ordering::default(), docked: false, theme: ThemePref::System, themes: Default::default(), muted_open: false, font_size: 13.5, fonts: FontPrefs::default(), send_key: SendKey::Enter, sidebar: crate::strip::SidebarSize::default(), agents_width: AGENTS_DEFAULT_WIDTH, pill_position: 0.5, tray_on_close: true, bindings: crate::keys::Overrides::default(), terminal_commands: std::collections::BTreeMap::new(), recent: Vec::new(), composer_history: Default::default(), dismissed_artifacts: BTreeSet::new(), desktop_call_consent: false, terminal: TerminalPrefs::default() }
     }
 }
 
@@ -174,6 +176,8 @@ pub mod keys {
     pub const COMPOSER_HISTORY: &str = "composerHistory";
     /// Dismissed generated-file cards.
     pub const DISMISSED_ARTIFACTS: &str = "dismissedArtifacts";
+    /// First-use consent for desktop voice calls.
+    pub const DESKTOP_CALL_CONSENT: &str = "desktopCallConsent";
     /// Side-by-side layout in diff tabs.
     pub const DIFF_SIDE_BY_SIDE: &str = "diffSideBySide";
     /// Settings → Terminal and the panel's height (P338, P339).
@@ -181,7 +185,7 @@ pub mod keys {
     /// Commands whose "Works in the terminal" differs from the default (P338).
     pub const TERMINAL_COMMANDS: &str = "terminalCommands";
     /// Every key.
-    pub const ALL: [&str; 20] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, PILL_POSITION, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS, COMPOSER_HISTORY, DISMISSED_ARTIFACTS, FONTS];
+    pub const ALL: [&str; 21] = [GROUPING, AGENTS_DOCKED, THEME, COLLAPSED, COLLAPSED_GROUPS, FONT_SIZE, SEND_KEY, SIDEBAR, AGENTS_WIDTH, PILL_POSITION, ORDERING, TRAY_ON_CLOSE, KEY_BINDINGS, COMMANDER_RECENT, DIFF_SIDE_BY_SIDE, TERMINAL, TERMINAL_COMMANDS, COMPOSER_HISTORY, DISMISSED_ARTIFACTS, FONTS, DESKTOP_CALL_CONSENT];
 }
 
 impl UiPrefs {
@@ -226,6 +230,7 @@ impl UiPrefs {
             }),
             keys::COMMANDER_RECENT => json!(self.recent),
             keys::DISMISSED_ARTIFACTS => json!(self.dismissed_artifacts),
+            keys::DESKTOP_CALL_CONSENT => json!(self.desktop_call_consent),
             keys::COMPOSER_HISTORY => {
                 // The attach frame also carries the method and request id. Keep the newest
                 // whole messages when unusually large drafts would exceed that frame.
@@ -271,6 +276,7 @@ impl UiPrefs {
             }
             keys::AGENTS_DOCKED => self.docked = v.as_bool().unwrap_or(self.docked),
             keys::TRAY_ON_CLOSE => self.tray_on_close = v.as_bool().unwrap_or(self.tray_on_close),
+            keys::DESKTOP_CALL_CONSENT => self.desktop_call_consent = v.as_bool().unwrap_or(self.desktop_call_consent),
             keys::KEY_BINDINGS => {
                 if v.is_object() {
                     self.bindings = crate::keys::Overrides::from_value(v);

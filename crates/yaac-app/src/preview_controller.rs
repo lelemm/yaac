@@ -128,6 +128,8 @@ pub(crate) struct Browsers {
     probe: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     #[cfg(feature = "preview")]
     checked: bool,
+    #[cfg(all(windows, feature = "preview"))]
+    runtime_error: Option<String>,
     pub(crate) host_error: Option<String>,
     pub(crate) side_by_side: bool,
     pub(crate) file_wake: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -198,6 +200,24 @@ pub(crate) fn supported(client: &Client, key: &ThreadKey) -> bool {
 }
 
 impl Browsers {
+    #[cfg(all(windows, feature = "preview"))]
+    pub(crate) fn runtime_reason(&self) -> Option<&str> {
+        self.runtime_error.as_deref().or_else(|| (!self.checked).then_some("Checking the browser host…"))
+    }
+
+    pub(crate) fn poll_runtime(&mut self) -> bool {
+        #[cfg(feature = "preview")]
+        if let Some(result) = self.probe.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.host_error = result.err();
+            #[cfg(windows)]
+            { self.runtime_error.clone_from(&self.host_error); }
+            self.checked = true;
+            self.probe = None;
+            return true;
+        }
+        false
+    }
+
     pub(crate) fn check_runtime(&mut self, wake: impl FnOnce() + Send + 'static) {
         #[cfg(feature = "preview")]
         if !self.checked && self.probe.is_none() {
@@ -604,12 +624,6 @@ impl Browsers {
         visible: Option<&ThreadKey>,
         now: Instant,
     ) -> Option<Duration> {
-        #[cfg(feature = "preview")]
-        if let Some(result) = self.probe.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.host_error = result.err();
-            self.checked = true;
-            self.probe = None;
-        }
         for (id, result) in client.take_preview_replies() {
             let Some(pending) = self.pending.remove(&id) else {
                 self.terms.on_reply(client, &id, result);

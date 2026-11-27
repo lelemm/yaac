@@ -869,6 +869,18 @@ mod spinner_tests {
     }
 }
 
+/// The handset for a voice call.
+#[cfg(feature = "desktop")]
+pub(crate) fn phone(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let handset = [
+        (-0.38, -0.41), (-0.16, -0.41), (-0.08, -0.18), (-0.20, -0.09),
+        (-0.08, 0.08), (0.09, 0.20), (0.18, 0.08), (0.41, 0.16),
+        (0.41, 0.38), (0.29, 0.42), (0.05, 0.35), (-0.14, 0.23),
+        (-0.32, 0.04), (-0.42, -0.26), (-0.38, -0.41),
+    ];
+    soft(p).line(handset.into_iter().map(|(x, y)| c + vec2(x * d, y * d)).collect(), stroke(col, 1.4));
+}
+
 /// The microphone (voice input): a capsule on a cradle and a stand.
 pub(crate) fn mic(p: &Painter, c: Pos2, d: f32, col: Color32) {
     let p = &soft(p);

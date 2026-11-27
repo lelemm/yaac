@@ -11,7 +11,7 @@ const script = page.split("<script>")[1].split("</script>")[0];
 function load(getMedia) {
     const documentEvents = new EventTarget();
     const outbound = [];
-    const audio = { srcObject: null, async play() {} };
+    const audio = { srcObject: null, async play() { this.playing = true; } };
     const channel = new EventTarget();
     let peer;
     class Peer extends EventTarget {
@@ -35,7 +35,9 @@ function load(getMedia) {
     const stream = { getAudioTracks: () => [mic], getTracks: () => [mic] };
     const window = {};
     vm.runInNewContext(script, {
-        RTCPeerConnection: Peer, window, console: {
+        RTCPeerConnection: Peer,
+        MediaStream: class { constructor(tracks) { this.tracks = tracks; } },
+        window, console: {
             log(message) { outbound.push(JSON.parse(message.substring("yaac-call:".length))); },
         },
         document: { querySelector: () => audio },
@@ -43,7 +45,7 @@ function load(getMedia) {
         addEventListener: documentEvents.addEventListener.bind(documentEvents),
         setTimeout, clearTimeout,
     });
-    return { window, peer, mic, stream, channel, outbound, documentEvents };
+    return { window, peer, mic, stream, channel, outbound, documentEvents, audio };
 }
 
 test("waits for ICE and uses the data channel to mark the call ready", async () => {
@@ -68,6 +70,10 @@ test("waits for ICE and uses the data channel to mark the call ready", async () 
     assert.equal(call.peer.answer.sdp, "answer");
     call.channel.dispatchEvent(new Event("open"));
     assert.deepEqual(call.outbound, [{ Offer: "complete" }, "Ready"]);
+    const remote = new EventTarget();
+    call.peer.dispatchEvent(Object.assign(new Event("track"), { track: remote }));
+    assert.equal(call.audio.srcObject.tracks[0], remote);
+    assert.equal(call.audio.playing, true);
     call.window.yaacCall.mute(true);
     assert.equal(call.mic.enabled, false);
     call.window.yaacCall.mute(false);
@@ -75,6 +81,7 @@ test("waits for ICE and uses the data channel to mark the call ready", async () 
     call.documentEvents.dispatchEvent(new Event("pagehide"));
     assert.equal(call.peer.closed, true);
     assert.equal(call.mic.stopped, true);
+    assert.equal(call.audio.srcObject, null);
 });
 
 test("releases a microphone that arrives after the call closes", async () => {

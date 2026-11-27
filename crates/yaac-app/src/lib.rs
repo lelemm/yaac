@@ -81,6 +81,8 @@ mod voice;
 mod voice_call;
 mod voice_audio;
 mod voice_capture;
+#[cfg(feature = "desktop")]
+mod desktop_call;
 mod widgets;
 mod wpf;
 mod external_host;

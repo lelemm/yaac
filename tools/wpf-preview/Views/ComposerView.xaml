@@ -51,6 +51,21 @@
           </StackPanel>
         </Border>
 
+        <StackPanel x:Name="CallBar" Visibility="Collapsed" Margin="4,0,4,6">
+          <TextBlock x:Name="CallMessage" Style="{StaticResource ComposerQuietText}" />
+          <WrapPanel>
+            <Button x:Name="CallConfirm" Content="Start call" Style="{StaticResource ComposerPrimaryButton}"
+                    Click="CallConfirmed" Visibility="Collapsed" />
+            <Button x:Name="CallCancel" Content="Cancel" Style="{StaticResource ComposerButton}"
+                    Click="CallCancelled" Visibility="Collapsed" />
+            <Button x:Name="CallMute" Style="{StaticResource ComposerButton}"
+                    Click="CallMuted" Visibility="Collapsed" />
+            <Button x:Name="CallEnd" Content="End call" Style="{StaticResource ComposerButton}"
+                    Click="CallEnded" Visibility="Collapsed" />
+          </WrapPanel>
+          <TextBlock x:Name="CallTranscript" Style="{StaticResource ComposerQuietText}" />
+        </StackPanel>
+
         <StackPanel x:Name="CommandArea" Visibility="Collapsed" Margin="0,0,0,6">
           <Button x:Name="CommandTitle" HorizontalAlignment="Left" Style="{StaticResource ComposerButton}"
                   FontSize="11" Foreground="{DynamicResource YaacMuted}"
@@ -187,6 +202,12 @@
                 <Button x:Name="StopButton" Style="{StaticResource ComposerButton}" Click="StopClicked" />
                 <Button x:Name="CancelEditButton" Style="{StaticResource ComposerButton}" Click="CancelEditClicked" />
                 <Button x:Name="VoiceButton" Style="{StaticResource ComposerButton}" Click="VoiceClicked" Visibility="Collapsed" />
+                <Button x:Name="CallButton" Style="{StaticResource ComposerButton}" Click="CallClicked"
+                        ToolTip="Start voice call" AutomationProperties.Name="Start voice call" Visibility="Collapsed">
+                  <Path Width="14" Height="14" Stretch="Uniform" StrokeThickness="1.5"
+                        StrokeLineJoin="Round" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                        Data="M 3,2 L 7,2 8.5,6.5 6.5,8 9,11 12,13.5 13.5,11.5 18,13 18,17 16,18 11.5,17 8,15 4.5,11.5 2.5,8 2,4 Z" />
+                </Button>
               </WrapPanel>
             </Grid>
             <TextBlock x:Name="Hint" Style="{StaticResource ComposerQuietText}" Margin="4,3,5,0" />
