@@ -49,7 +49,7 @@ impl Sender {
     pub(crate) fn send(&self, msg: Message) -> Result<(), ()> {
         let queue = match &msg {
             Message::Request { method, .. } | Message::Notification { method, .. }
-                if method.starts_with("hub/terminal/") || method.starts_with("hub/voice/") || method == "stream/credit" =>
+                if method.starts_with("hub/terminal/") || method.starts_with("hub/voice/") || method.starts_with("hub/voiceCall/") || method == "stream/credit" =>
             {
                 &self.terminal
             }

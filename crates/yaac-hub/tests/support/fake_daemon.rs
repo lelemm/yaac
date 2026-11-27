@@ -98,6 +98,8 @@ struct State {
     /// Every `voice/*` request, in order: method and params as received.
     voice_calls: Vec<(String, Value)>,
     next_voice: u32,
+    /// Every `voiceCall/*` request, in order.
+    call_requests: Vec<(String, Value)>,
 }
 
 /// A fake daemon. Cheap to clone; clones share state.
@@ -429,6 +431,11 @@ impl FakeDaemon {
         self.lock().voice_audio.get(&stream).cloned().unwrap_or_default()
     }
 
+    /// Every `voiceCall/*` request received.
+    pub fn call_requests(&self) -> Vec<(String, Value)> {
+        self.lock().call_requests.clone()
+    }
+
     /// Every `voice/*` request received.
     pub fn voice_calls(&self) -> Vec<(String, Value)> {
         self.lock().voice_calls.clone()
@@ -589,6 +596,19 @@ impl FakeDaemon {
                         out.push(Message::notification(names::VOICE_ENDED, json!({ "stream": params["stream"] })));
                         Ok(json!({}))
                     }
+                }
+            }
+            names::VOICE_CALL_START | names::VOICE_CALL_END => {
+                s.call_requests.push((method.to_owned(), params.clone()));
+                if method == names::VOICE_CALL_START {
+                    let call = format!("call-{}", s.call_requests.len());
+                    out.push(Message::notification(names::VOICE_CALL_STATE, json!({ "callId": call, "state": "connecting" })));
+                    out.push(Message::notification(names::VOICE_CALL_ANSWER, json!({ "callId": call, "sdpAnswer": "v=answer" })));
+                    out.push(Message::notification(names::VOICE_CALL_STATE, json!({ "callId": call, "state": "active" })));
+                    Ok(json!({ "callId": call }))
+                } else {
+                    out.push(Message::notification(names::VOICE_CALL_STATE, json!({ "callId": params["callId"], "state": "ended" })));
+                    Ok(json!({}))
                 }
             }
             names::FS_TREE if s.features.as_ref().is_some_and(|features| features.contains(&yaac_protocol::Capability::FileView)) => {

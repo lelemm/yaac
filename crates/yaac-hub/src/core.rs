@@ -11,6 +11,7 @@ mod terminal;
 mod ssh;
 mod uploads;
 mod voice;
+mod voice_call;
 
 pub use uploads::UploadLimits;
 
@@ -211,6 +212,8 @@ enum Pending {
     Terminal { client: ClientKey, id: RpcId, terminal: Option<String> },
     /// A `voice/*` request from a window (or the hub's own cancel).
     Voice { client: ClientKey, id: RpcId, ask: voice::VoiceAsk },
+    /// A `voiceCall/*` request from a window (or the hub's own hang-up).
+    VoiceCall { client: ClientKey, id: RpcId, ask: voice_call::CallAsk },
     PreviewOpen { socket: u64 },
     /// `tunnel/open` for a window's tunnel over its attach connection (P380).
     AttachTunnel { client: ClientKey, id: RpcId },
@@ -455,6 +458,7 @@ pub(crate) struct Core {
     upload_seq: u64,
     terminals: terminal::Relays,
     voice: voice::Relays,
+    voice_calls: voice_call::Calls,
     attach_tunnels: attach_tunnel::AttachTunnels,
     previews: preview::Previews,
     browser: browser::BrowserCalls,
@@ -562,6 +566,7 @@ impl Core {
             upload_seq: 0,
             terminals: Default::default(),
             voice: Default::default(),
+            voice_calls: Default::default(),
             attach_tunnels: Default::default(),
             previews: preview::Previews::default(),
             browser: browser::BrowserCalls::default(),
@@ -757,6 +762,7 @@ impl Core {
         if c.visible_requests.is_some_and(|cards| !cards.is_empty()) { self.notifications.reconsider(Instant::now()); }
         self.terminal_window_closed(client);
         self.voice_window_closed(client);
+        self.voice_call_window_closed(client);
         self.attach_tunnels_client_gone(client);
         self.browser_window_closed(client);
         for key in c.subs {
@@ -1062,6 +1068,7 @@ impl Core {
             ext::names::UPLOAD_LIST => Some(Ok(self.upload_list())),
             name if name.starts_with("hub/terminal/") => self.terminal_request(client, id, name, params),
             name if name.starts_with("hub/voice/") => self.voice_request(client, id, name, params),
+            name if name.starts_with("hub/voiceCall/") => self.voice_call_request(client, id, name, params),
             attach::names::PREVIEW_TUNNEL => match parse(params) {
                 Ok(p) => self.attach_tunnel_open(client, id, p),
                 Err(e) => Some(Err(e)),
@@ -1709,6 +1716,7 @@ impl Core {
         self.preview_disconnected(id);
         self.attach_tunnels_target_gone(id);
         self.voice_target_closed(id);
+        self.voice_call_target_closed(id);
         self.browser_target_closed(id);
         let was_ready = conn.ready;
         // Batched events of this connection are still valid: commit them.
@@ -1735,6 +1743,11 @@ impl Core {
                     self.reply(client, id, Err(err(ErrorCode::OutcomeUnknown, "the connection dropped before the dictation started; it may have started and ended")));
                 }
                 Pending::Voice { client, id, ask: voice::VoiceAsk::Stream } => self.reply(client, id, Err(err(ErrorCode::TargetOffline, "the connection to the target dropped"))),
+                Pending::VoiceCall { ask: voice_call::CallAsk::Quiet, .. } => {}
+                Pending::VoiceCall { client, id, ask: voice_call::CallAsk::Start } => {
+                    self.reply(client, id, Err(err(ErrorCode::OutcomeUnknown, "the connection dropped before the call started; it may have started and ended")));
+                }
+                Pending::VoiceCall { client, id, ask: voice_call::CallAsk::End } => self.reply(client, id, Err(err(ErrorCode::TargetOffline, "the connection to the target dropped"))),
                 Pending::MeshQuery { source, generation, peer_id } => {
                     self.respond_peer(&source, generation, peer_id, names::MESH_QUERY, Err(err(ErrorCode::TargetOffline, "the target went offline")));
                 }
@@ -2158,6 +2171,7 @@ impl Core {
             Pending::UploadCancel { handle } => self.on_upload_cancelled(&handle),
             Pending::Terminal { client, id: rid, terminal } => self.terminal_response(id, client, rid, method, terminal, outcome),
             Pending::Voice { client, id: rid, ask } => self.voice_response(id, client, rid, method, ask, outcome),
+            Pending::VoiceCall { client, id: rid, ask } => self.voice_call_response(id, client, rid, method, ask, outcome),
             Pending::PreviewOpen { socket } => self.preview_opened(id, socket, outcome),
             Pending::AttachTunnel { client, id: rid } => self.attach_tunnel_opened(id, client, rid, outcome),
             Pending::Receipt { message_id, receipt } => {
@@ -2262,6 +2276,9 @@ impl Core {
             }
             Inbound::Other { method, params } if matches!(method.as_str(), names::VOICE_TRANSCRIPT | names::VOICE_ENDED) => {
                 self.voice_event(id, &method, params);
+            }
+            Inbound::Other { method, params } if matches!(method.as_str(), names::VOICE_CALL_ANSWER | names::VOICE_CALL_STATE | names::VOICE_CALL_TRANSCRIPT) => {
+                self.voice_call_event(id, &method, params);
             }
             Inbound::Other { method, params } if matches!(method.as_str(), names::TERMINAL_TITLE | names::TERMINAL_EXITED | names::TERMINAL_RENAMED) => {
                 self.terminal_event(id, &method, params);
@@ -2716,6 +2733,7 @@ impl Core {
         match method {
             name if name.starts_with("terminal/") => return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, "use the hub terminal methods"))),
             name if name.starts_with("voice/") => return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, "use the hub voice methods"))),
+            name if name.starts_with("voiceCall/") => return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, "use the hub voice call methods"))),
             names::INITIALIZE | names::MESH_RELAY | names::MESH_DELIVER | names::MESH_RECEIPT | names::MESH_DELIVERY_RECEIPT | names::MESH_ROSTER | names::TUNNEL_OPEN => {
                 return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, format!("{method} is handled by the hub itself"))));
             }
