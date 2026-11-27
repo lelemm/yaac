@@ -78,7 +78,7 @@ entry is the per-user `Run` value `YAAC hub` ([Installing on Windows](install.md
 ### Attaching over Tailscale
 
 The [Android client](14-android.md) attaches to the hub from another device (P373, P377). When
-the hub setting **`tailscaleAttach`** is on (**Settings → Window → Android → Allow the Android
+the hub setting **`tailscaleAttach`** is on (**Settings → Android → Allow the Android
 client over Tailscale**, [07](07-ui.md#android); off by default), the hub also accepts attaches
 over TCP, on **port 47380** (`yaac_hub::tailnet::TAILSCALE_ATTACH_PORT`), as well as on its
 local socket:

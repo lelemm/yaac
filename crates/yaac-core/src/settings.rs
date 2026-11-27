@@ -25,6 +25,8 @@ pub enum Page {
     Appearance,
     /// Window: the tray and the renderer (D127, D128).
     Window,
+    /// Android: whether the hub accepts the Android client over Tailscale (P377).
+    Android,
     /// Keyboard: every command's keys (D131).
     Keyboard,
     /// Terminal: copy on select, Ctrl+V, the multi-line paste question (P339).
@@ -40,7 +42,7 @@ pub enum Page {
 
 impl Page {
     /// Every page, in navigation order.
-    pub const ALL: [Page; 11] = [Page::Targets, Page::Providers, Page::Skills, Page::Approvals, Page::Appearance, Page::Window, Page::Keyboard, Page::Terminal, Page::Notifications, Page::Advanced, Page::About];
+    pub const ALL: [Page; 12] = [Page::Targets, Page::Providers, Page::Skills, Page::Approvals, Page::Appearance, Page::Window, Page::Android, Page::Keyboard, Page::Terminal, Page::Notifications, Page::Advanced, Page::About];
 
     /// The navigation label.
     pub fn label(self) -> &'static str {
@@ -50,6 +52,7 @@ impl Page {
             Page::Skills => "Skills",
             Page::Appearance => "Appearance",
             Page::Window => "Window",
+            Page::Android => "Android",
             Page::Keyboard => "Keyboard",
             Page::Terminal => "Terminal",
             Page::Approvals => "Approvals",

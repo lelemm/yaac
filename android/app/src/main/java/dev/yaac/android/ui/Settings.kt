@@ -58,7 +58,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /** The pages, in the controller's order (`Page::ALL`); Notifications matters most on a phone. */
-private val Pages = listOf("targets", "providers", "skills", "approvals", "appearance", "window", "keyboard", "terminal", "notifications", "advanced", "about")
+private val Pages = listOf("targets", "providers", "skills", "approvals", "appearance", "window", "android", "keyboard", "terminal", "notifications", "advanced", "about")
 private fun title(id: String) = id.replaceFirstChar { it.uppercase() }
 
 /**

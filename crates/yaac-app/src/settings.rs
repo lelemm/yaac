@@ -203,6 +203,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
                     Page::Skills => crate::catalog_settings::show(ui, app),
                     Page::Appearance => appearance(ui, app, actions),
                     Page::Window => window(ui, app),
+                    Page::Android => android(ui, app),
                     Page::Keyboard => crate::keyboard::page(ui, app),
                     Page::Terminal => terminal(ui, app),
                     Page::Approvals => {
@@ -1366,6 +1367,29 @@ fn appearance(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
 
 }
 
+// ── Android: the Android client over Tailscale (P377) ──────────────────────────────────
+
+fn android(ui: &mut egui::Ui, app: &mut YaacApp) {
+    let p = app.p;
+    title_row(ui, "Android", |_| {});
+    let allowed = app.client.state.hub.tailscale_attach;
+    ui.horizontal(|ui| {
+        let on = allowed.unwrap_or(false);
+        if allowed.is_some() {
+            if widgets::switch(ui, &p, on).clicked() {
+                app.client.set_tailscale_attach(!on);
+            }
+        } else {
+            ui.add_enabled_ui(false, |ui| widgets::switch(ui, &p, false));
+        }
+        ui.label("Allow the Android client over Tailscale");
+    });
+    ui.label(widgets::secondary("The phone attaches to this computer's hub over Tailscale, only from devices signed in to the same Tailscale account. Nothing is paired or stored.", &p));
+    if let Some(status) = &app.client.state.hub.tailscale_status {
+        ui.label(RichText::new(status).font(theme::ui(size::SMALL)).color(p.text));
+    }
+}
+
 // ── Window: the tray and the renderer ──────────────────────────────────────────────────
 
 fn window(ui: &mut egui::Ui, app: &mut YaacApp) {
@@ -1391,24 +1415,6 @@ fn window(ui: &mut egui::Ui, app: &mut YaacApp) {
         "The tray icon is available on Windows. Here, closing the window closes it; the hub keeps running."
     };
     ui.label(widgets::secondary(note, &p));
-
-    widgets::heading(ui, "Android");
-    let allowed = app.client.state.hub.tailscale_attach;
-    ui.horizontal(|ui| {
-        let on = allowed.unwrap_or(false);
-        if allowed.is_some() {
-            if widgets::switch(ui, &p, on).clicked() {
-                app.client.set_tailscale_attach(!on);
-            }
-        } else {
-            ui.add_enabled_ui(false, |ui| widgets::switch(ui, &p, false));
-        }
-        ui.label("Allow the Android client over Tailscale");
-    });
-    ui.label(widgets::secondary("The phone attaches to this computer's hub over Tailscale, only from devices signed in to the same Tailscale account. Nothing is paired or stored.", &p));
-    if let Some(status) = &app.client.state.hub.tailscale_status {
-        ui.label(RichText::new(status).font(theme::ui(size::SMALL)).color(p.text));
-    }
 
     widgets::heading(ui, "Display");
     let host = Host::current();

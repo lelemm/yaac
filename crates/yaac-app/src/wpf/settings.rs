@@ -172,6 +172,7 @@ pub(super) fn view(app: &YaacApp, target: Option<&TargetId>) -> Value {
         Page::Skills => crate::catalog_settings::wpf_view(app),
         Page::Appearance => appearance(app),
         Page::Window => window(app),
+        Page::Android => android(app),
         Page::Terminal => terminal_settings(app),
         Page::Keyboard => keyboard(app),
         Page::Approvals => {
@@ -918,14 +919,27 @@ fn window(app: &YaacApp) -> Value {
                 "actions": [toggle("window.tray", "Keep running in the tray when closed", tray_enabled && app.ui.tray_on_close, tray_enabled)]
             })]),
             section("display", "Display", rows),
-            section("android", "Android", vec![
-                json!({ "id": "tailscale", "layout": "form",
-                    "detail": "The phone attaches to this computer's hub over Tailscale, only from devices signed in to the same Tailscale account. Nothing is paired or stored.",
-                    "actions": [toggle("window.tailscale", "Allow the Android client over Tailscale", app.client.state.hub.tailscale_attach.unwrap_or(false), app.client.state.hub.tailscale_attach.is_some())]
-                }),
-                json!({ "id": "tailscaleStatus", "status": app.client.state.hub.tailscale_status })
-            ])
         ]
+    })
+}
+
+/// Settings → Android: whether the hub accepts the Android client over Tailscale (P377). The
+/// setting is the hub's; in the Android app the page says so, naming the hub's computer.
+fn android(app: &YaacApp) -> Value {
+    let hub = &app.client.state.hub;
+    let detail = if app.ui.platform == yaac_core::input::Platform::Android {
+        let pc = app.hub_machine().unwrap_or_else(|| "the PC".into());
+        format!("This setting belongs to the hub on {pc}. With it on, the hub accepts this phone over Tailscale, only from devices signed in to the same Tailscale account. Nothing is paired or stored. Turning it off ends this phone's connection.")
+    } else {
+        "The phone attaches to this computer's hub over Tailscale, only from devices signed in to the same Tailscale account. Nothing is paired or stored.".into()
+    };
+    json!({
+        "sections": [section("tailscale", "Tailscale", vec![
+            json!({ "id": "tailscale", "layout": "form", "detail": detail,
+                "actions": [toggle("android.tailscale", "Allow the Android client over Tailscale", hub.tailscale_attach.unwrap_or(false), hub.tailscale_attach.is_some())]
+            }),
+            json!({ "id": "tailscaleStatus", "status": hub.tailscale_status })
+        ])]
     })
 }
 
@@ -1474,7 +1488,7 @@ pub(super) fn command(
             }
             return Ok(());
         }
-        "window.tailscale" => {
+        "android.tailscale" => {
             app.client.set_tailscale_attach(checked(values)?);
             return Ok(());
         }
@@ -2015,6 +2029,34 @@ mod tests {
             back.ui.tray_on_close = false;
             window(&back)["sections"][0].clone()
         });
+    }
+
+    #[test]
+    fn the_tailscale_toggle_is_on_the_android_page_not_the_window_page() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        assert_eq!(Page::ALL[Page::ALL.iter().position(|p| *p == Page::Window).unwrap() + 1], Page::Android);
+        let toggles = |v: &Value| v.to_string().contains("tailscale");
+        assert!(!toggles(&window(&app)), "Window no longer holds it");
+        app.client.state.hub.tailscale_attach = Some(true);
+        app.ui.settings = true;
+        app.ui.settings_page = Page::Android;
+        let desktop = view(&app, None);
+        assert_eq!(desktop["page"], "android");
+        let row = &desktop["sections"][0]["rows"][0];
+        assert_eq!(row["actions"][0]["id"], "android.tailscale");
+        assert_eq!(row["actions"][0]["label"], "Allow the Android client over Tailscale");
+        assert_eq!(row["actions"][0]["enabled"], true);
+        assert!(!row["detail"].as_str().unwrap().contains("belongs to the hub"));
+        command(&mut app, &mut None, "settings.action", &json!({ "id": "android.tailscale", "values": { "checked": false } })).unwrap();
+        assert_eq!(app.client.state.hub.tailscale_attach, Some(false));
+        // On the phone it is the same hub setting, and the page says whose it is.
+        super::super::dispatch(&mut app, &ctx, &mut None, "shell.platform", &json!({ "platform": "android" })).unwrap();
+        assert!(!toggles(&window(&app)));
+        let phone = view(&app, None);
+        let row = &phone["sections"][0]["rows"][0];
+        assert_eq!(row["actions"][0]["id"], "android.tailscale");
+        assert!(row["detail"].as_str().unwrap().contains("This setting belongs to the hub on"));
     }
 
     #[test]

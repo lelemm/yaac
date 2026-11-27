@@ -21,8 +21,8 @@ of its own and no QR code: the phone and the hub host are on the same tailnet, a
 the one the window uses, carried over that network instead of the local socket. The hub binds
 only its Tailscale addresses, and admits only devices of its own Tailscale login, checked with
 `tailscale whois` before anything is read. So the local socket's guarantees (user-only, the same
-owner) hold for the phone too. It is off until the user turns on **Settings → Window → Allow the
-Android client over Tailscale** ([02](02-architecture.md#attaching-over-tailscale), P377).
+owner) hold for the phone too. It is off until the user turns on **Settings → Android → Allow
+the Android client over Tailscale** ([02](02-architecture.md#attaching-over-tailscale), P377).
 
 **Versions.** The window and the hub are always the same build, but a phone updates through its
 store. When the builds differ, the attach adapts through the dialect layer, as `yaacd` does
