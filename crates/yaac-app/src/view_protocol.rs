@@ -370,7 +370,7 @@ mod tests {
         send("shell.visible", json!({ "shown": true }));
         send("files.new", json!({ "thread": users.as_str() }));
         let mut browser = Value::Null;
-        let mut wait = |browser: &mut Value, what: &str, done: &dyn Fn(&Value, &Value) -> bool| {
+        let wait = |browser: &mut Value, what: &str, done: &dyn Fn(&Value, &Value) -> bool| {
             let deadline = std::time::Instant::now() + Duration::from_secs(20);
             while std::time::Instant::now() < deadline {
                 let Some(frame) = controller.wait_frame(Duration::from_millis(500)) else { continue };

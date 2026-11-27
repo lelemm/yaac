@@ -60,6 +60,8 @@ class MainActivity : ComponentActivity() {
     /** The running controller, or none while the connection screen is up. */
     private val active = mutableStateOf<Controller?>(null)
     private val controller: Controller? get() = active.value
+    /** Something shared into YAAC, waiting for the user to choose its thread. */
+    private val share = mutableStateOf<dev.yaac.android.core.Share?>(null)
     /** A thread a notification asked to open; the UI shows it and clears this. */
     private val openRequest = mutableStateOf<String?>(null)
     private val quit: () -> Unit = { runOnUiThread { finishAndRemoveTask() } }
@@ -87,10 +89,11 @@ class MainActivity : ComponentActivity() {
                         onRetry = ::retry,
                         onChange = ::changeHub)
                 }
-                else -> YaacApp(ctl.store, ctl::send, openRequest, onChangeHub = ::changeHub, onRetry = ::retry)
+                else -> YaacApp(ctl.store, { name, payload -> dev.yaac.android.ui.pane.ComposerCaret.observe(name, payload); ctl.send(name, payload) }, openRequest, onChangeHub = ::changeHub, onRetry = ::retry, share = share)
             }
         }
         handleOpen(intent)
+        handleShare(intent)
         if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED)
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
     }
@@ -120,6 +123,37 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         handleOpen(intent)
+        handleShare(intent)
+    }
+
+    /**
+     * The share sheet (C09): text and files from another app. Files are copied into the app's
+     * cache off the UI thread (a content URI cannot be read later), then the user picks a thread.
+     */
+    private fun handleShare(intent: android.content.Intent?) {
+        val action = intent?.action ?: return
+        if (action != android.content.Intent.ACTION_SEND && action != android.content.Intent.ACTION_SEND_MULTIPLE) return
+        intent.action = null
+        val text = intent.getStringExtra(android.content.Intent.EXTRA_TEXT)
+        @Suppress("DEPRECATION")
+        val uris: List<android.net.Uri> = if (action == android.content.Intent.ACTION_SEND_MULTIPLE)
+            intent.getParcelableArrayListExtra<android.net.Uri>(android.content.Intent.EXTRA_STREAM).orEmpty()
+        else listOfNotNull(intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM))
+        Thread({
+            val dir = java.io.File(cacheDir, "shared/" + java.util.UUID.randomUUID()).apply { mkdirs() }
+            val paths = uris.mapNotNull { uri ->
+                runCatching {
+                    val name = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) c.getString(0) else null
+                    }?.replace('/', '_')?.ifBlank { null } ?: "shared"
+                    val file = java.io.File(dir, name)
+                    contentResolver.openInputStream(uri)?.use { input -> file.outputStream().use { input.copyTo(it) } } ?: return@runCatching null
+                    file.absolutePath
+                }.getOrNull()
+            }
+            val s = dev.yaac.android.core.Share(text, paths)
+            if (!s.isEmpty) runOnUiThread { share.value = s }
+        }, "yaac-share").start()
     }
 
     private fun handleOpen(intent: android.content.Intent?) {
@@ -169,11 +203,14 @@ class MainActivity : ComponentActivity() {
 private enum class Screen { List, Thread }
 
 @Composable
-private fun YaacApp(store: ViewStore, send: (String, Any?) -> Unit, openRequest: androidx.compose.runtime.MutableState<String?>, onChangeHub: () -> Unit, onRetry: () -> Unit) {
+private fun YaacApp(store: ViewStore, send: (String, Any?) -> Unit, openRequest: androidx.compose.runtime.MutableState<String?>, onChangeHub: () -> Unit, onRetry: () -> Unit,
+                    share: androidx.compose.runtime.MutableState<dev.yaac.android.core.Share?> = mutableStateOf(null)) {
     val shell = store.view("shell")
     YaacTheme(shell) {
         val clipboard: ClipboardManager = LocalClipboardManager.current
         val side = remember(store) { dev.yaac.android.ui.SidePaneState(send) }
+        side.shortcuts(store.view("shortcuts"))
+        side.composerKey = store.view("composer")["key"].text
         var viewer by remember { mutableStateOf<kotlinx.serialization.json.JsonObject?>(null) }
         val context = androidx.compose.ui.platform.LocalContext.current
         store.effects = { fx ->
@@ -184,6 +221,10 @@ private fun YaacApp(store: ViewStore, send: (String, Any?) -> Unit, openRequest:
                 is FrameEffect.FilesDocument -> side.document(fx.frame)
                 is FrameEffect.Terminal -> side.terminal(fx.frame)
                 is FrameEffect.ImageViewer -> viewer = fx.frame
+                is FrameEffect.FilesChange -> side.change(fx.frame)
+                is FrameEffect.PasteConfirm -> side.pasteConfirm = fx.frame
+                is FrameEffect.ReadPaste -> side.readPaste(fx.frame)
+                is FrameEffect.TerminalNotice -> side.notice = fx.text
             }
         }
         var screen by rememberSaveable { mutableStateOf(Screen.List) }
@@ -264,7 +305,26 @@ private fun YaacApp(store: ViewStore, send: (String, Any?) -> Unit, openRequest:
             }
         }
         shell["commander"].obj()?.let { CommanderSheet(it, navigate) }
+        // Shared from another app: choose the thread (or a new one), then attach and append.
+        share.value?.let { sh ->
+            var target by remember(sh) { mutableStateOf<String?>(null) }
+            val composerKey = store.view("composer")["key"].text
+            val draftText = store.view("composer")["text"].text ?: ""
+            if (target == null) dev.yaac.android.ui.ShareTargetSheet(store.view("sidebar"), sh, onDismiss = { share.value = null }) { id ->
+                if (id == null) send("sidebar.new", null) else send("sidebar.open", mapOf("id" to id))
+                target = id ?: "draft"
+            } else LaunchedEffect(composerKey) {
+                // Once the chosen composer is the open one, hand it the share.
+                val ready = composerKey != null && (if (target == "draft") composerKey.startsWith("draft") else composerKey == "thread:$target")
+                if (ready) {
+                    dev.yaac.android.core.shareCommands(composerKey!!, draftText, sh).forEach { (cmd, payload) -> send(cmd, payload) }
+                    share.value = null
+                    screen = Screen.Thread
+                }
+            }
+        }
         viewer?.let { v -> dev.yaac.android.ui.ImageViewer(v) { viewer = null; send("image.close", null) } }
+        side.pasteConfirm?.let { p -> dev.yaac.android.ui.PasteConfirm(p, send) { side.pasteConfirm = null } }
         shell["dialog"].obj()?.takeIf { it["id"].text != null }?.let { ShellDialog(it, navigate) }
     }
 }

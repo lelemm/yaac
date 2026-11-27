@@ -862,7 +862,7 @@ fn dispatch(
                 && owner.address().as_str() == string(payload, "owner")
             {
                 let hovered = key(app, string(payload, "id"));
-                crate::agents_ui::dock_hover(app, ctx, payload["inside"] == true, hovered);
+                crate::agents_ui::dock_hover_at(app, ctx, payload["inside"] == true, hovered, payload["now"] == true);
             }
             None
         }

@@ -2,6 +2,7 @@ package dev.yaac.android.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -131,6 +132,8 @@ private fun SettingsPage(view: JsonElement?, send: (String, Any?) -> Unit) {
                         section["detail"].text?.let { T(it, type.small, c.muted, modifier = Modifier.padding(top = 2.dp)) }
                     }
                 }
+                val cards = section["cards"].objects
+                if (cards.isNotEmpty()) item("c:$sid") { ThemeCards(cards, send) }
                 for (row in section["rows"].objects) item("r:$sid/${row["id"].str}") { SettingsRow(row, "$sid/${row["id"].str}/", drafts, send) }
                 val sectionActions = section["actions"].objects
                 if (sectionActions.isNotEmpty()) item("a:$sid") {
@@ -382,5 +385,60 @@ private fun canonicalKey(e: android.view.KeyEvent): String? {
         android.view.KeyEvent.KEYCODE_LEFT_BRACKET -> "OpenBracket"
         android.view.KeyEvent.KEYCODE_RIGHT_BRACKET -> "CloseBracket"
         else -> null
+    }
+}
+
+/**
+ * Custom theme cards (S11): each a small live mock of the phone's own UI in that theme's
+ * colours (`palette`, the same map as `shell.customPalette`); a tap selects the theme.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ThemeCards(cards: List<JsonObject>, send: (String, Any?) -> Unit) {
+    val c = LocalYaac.current
+    val type = LocalType.current
+    FlowRow(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        for (card in cards) {
+            val name = card["name"].str
+            val selected = card["selected"].flag()
+            Column(Modifier.clip(RoundedCornerShape(8.dp))
+                .then(if (selected) Modifier.border(2.dp, c.focus, RoundedCornerShape(8.dp)) else Modifier)
+                .clickable { send("settings.action", mapOf("id" to "appearance.selectTheme", "values" to mapOf("name" to name))) }.padding(4.dp)) {
+                val palette = card["palette"].obj
+                if (palette != null) {
+                    val tc = YaacColors.of("custom", palette, c.dark)
+                    androidx.compose.runtime.CompositionLocalProvider(LocalYaac provides tc) { ThemeMock() }
+                } else Box(Modifier.width(150.dp).height(96.dp).background(c.input), contentAlignment = Alignment.Center) {
+                    T(card["status"].text ?: card["error"].text ?: "", type.small, c.muted)
+                }
+                Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (selected) { Icon(YIcon.Check, c.text, size = 14.dp); Spacer(Modifier.width(4.dp)) }
+                    T(name, type.small, maxLines = 1)
+                }
+                card["error"].text?.let { T(it, type.small, c.failure, maxLines = 2) }
+            }
+        }
+    }
+}
+
+/** A thread in miniature: header, a user bubble, agent prose and a request card. */
+@Composable
+private fun ThemeMock() {
+    val c = LocalYaac.current
+    val tiny = LocalType.current.small.copy(fontSize = 7.sp, lineHeight = 9.sp)
+    Column(Modifier.width(150.dp).height(96.dp).clip(RoundedCornerShape(6.dp)).background(c.canvas).padding(6.dp)) {
+        T("Fix frame decoder", tiny.copy(fontSize = 8.sp), c.text, maxLines = 1)
+        T("Needs you · approval", tiny, c.warning, maxLines = 1)
+        Box(Modifier.align(Alignment.End).padding(top = 3.dp).clip(RoundedCornerShape(3.dp)).background(c.user).padding(horizontal = 4.dp, vertical = 2.dp)) {
+            T("Why does it drop a frame?", tiny, c.text, maxLines = 1)
+        }
+        T("The prefix counts the kind byte.", tiny, c.text, maxLines = 1, modifier = Modifier.padding(top = 3.dp))
+        Row(Modifier.padding(top = 3.dp).fillMaxWidth().clip(RoundedCornerShape(3.dp)).background(c.card)) {
+            Box(Modifier.width(2.dp).height(22.dp).background(c.warning))
+            Column(Modifier.padding(3.dp)) {
+                T("Run a command", tiny, c.text, maxLines = 1)
+                Box(Modifier.clip(RoundedCornerShape(2.dp)).background(c.accent).padding(horizontal = 4.dp)) { T("Allow once", tiny, c.onAccent, maxLines = 1) }
+            }
+        }
     }
 }

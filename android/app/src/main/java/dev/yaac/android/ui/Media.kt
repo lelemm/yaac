@@ -71,72 +71,10 @@ fun ImagePart(part: JsonObject, submit: (ActionItem) -> Unit) {
     }
 }
 
-/** The controller's image viewer (`imageViewer` {id, name, png, error}): full screen, pinch to zoom. */
+/** The controller's image viewer (`imageViewer` {id, name, png, error}): see [ZoomImageViewer]. */
 @Composable
-fun ImageViewer(frame: JsonObject, onClose: () -> Unit) {
-    val c = LocalYaac.current
-    val bitmap = remember(frame["png"].text) { decodePng(frame["png"].text) }
-    var scale by remember { mutableFloatStateOf(1f) }
-    var pan by remember { mutableStateOf(Offset.Zero) }
-    val state = rememberTransformableState { zoom, move, _ -> scale = (scale * zoom).coerceIn(1f, 8f); pan += move }
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().background(c.canvas)) {
-            if (bitmap != null) Image(bitmap, frame["name"].text, Modifier.fillMaxSize().transformable(state)
-                .graphicsLayer(scaleX = scale, scaleY = scale, translationX = pan.x, translationY = pan.y), contentScale = ContentScale.Fit)
-            else T(frame["error"].text ?: "Loading…", LocalType.current.ui, c.muted, modifier = Modifier.align(Alignment.Center))
-            Row(Modifier.fillMaxWidth().statusBarsPadding().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(YIcon.Close, "Close", onClick = onClose)
-                T(frame["name"].str, LocalType.current.heading, maxLines = 1)
-            }
-        }
-    }
-}
+fun ImageViewer(frame: JsonObject, onClose: () -> Unit) = dev.yaac.android.ui.transcript.ZoomImageViewer(frame, onClose)
 
-/**
- * A mermaid diagram, drawn by the bundled mermaid (the desktop draws it with the same library).
- * The page is local and offline: no network, no file access beyond the bundled script.
- */
-@SuppressLint("SetJavaScriptEnabled")
+/** A mermaid diagram with its Save PNG / SVG / source: see [dev.yaac.android.ui.transcript.MermaidDiagram]. */
 @Composable
-fun MermaidBlock(source: String) {
-    val c = LocalYaac.current
-    var height by remember(source) { mutableFloatStateOf(0f) }
-    var failed by remember(source) { mutableStateOf<String?>(null) }
-    val bg = String.format("#%06X", c.canvas.value.toLong().shr(32).toInt() and 0xFFFFFF)
-    val html = remember(source, c.dark) {
-        val escaped = source.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        """<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>html,body{margin:0;background:transparent}#d{display:flex}svg{max-width:100%;height:auto}</style>
-<script src="mermaid.min.js"></script></head><body><pre class="mermaid" id="d">$escaped</pre>
-<script>mermaid.initialize({startOnLoad:false,theme:'${if (c.dark) "dark" else "default"}',securityLevel:'strict'});
-mermaid.run({nodes:[document.getElementById('d')]}).then(function(){yaac.height(document.body.scrollHeight)}).catch(function(e){yaac.failed(String(e))});</script></body></html>"""
-    }
-    // The WebView loads only on request: a transcript must never depend on it (a broken
-    // system WebView aborts the whole process natively, which nothing can catch).
-    var shown by remember(source) { mutableStateOf(false) }
-    if (failed != null || !shown) {
-        CodeBlock(source, source, "mermaid")
-        TextAction(if (failed != null) "The diagram could not be drawn" else "Show diagram", enabled = failed == null, style = LocalType.current.small) { shown = true }
-        return
-    }
-    val density = androidx.compose.ui.platform.LocalDensity.current.density
-    AndroidView(
-        factory = { ctx ->
-            WebView(ctx).apply {
-                setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                settings.javaScriptEnabled = true
-                settings.blockNetworkLoads = true
-                settings.allowFileAccess = true // only file:///android_asset/mermaid/
-                settings.allowContentAccess = false
-                isVerticalScrollBarEnabled = false
-                addJavascriptInterface(object {
-                    @JavascriptInterface fun height(px: Int) { post { height = px.toFloat() } }
-                    @JavascriptInterface fun failed(message: String) { post { failed = message } }
-                }, "yaac")
-            }
-        },
-        update = { web -> if (web.tag != html) { web.tag = html; web.loadDataWithBaseURL("file:///android_asset/mermaid/", html, "text/html", "utf-8", null) } },
-        modifier = Modifier.fillMaxWidth().height(if (height > 0) (height + 8).dp else 160.dp).clip(RoundedCornerShape(6.dp)),
-    )
-    @Suppress("UNUSED_VARIABLE") val unused = bg to density
-}
+fun MermaidBlock(source: String) = dev.yaac.android.ui.transcript.MermaidDiagram(source)

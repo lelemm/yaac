@@ -61,6 +61,7 @@ The UI does not know which transport carries the frames (`core/Transport.kt`).
 | `ui/ThreadScreen.kt`, `ui/Transcript.kt`, `ui/Markdown.kt` | The thread: header, banners, transcript rows, request cards. |
 | `ui/Composer.kt` | The composer, queue, running commands and control row. |
 | `ui/Agents.kt` | The agents pill and the Related agents sheet. |
+| `ui/agents/AgentsModel.kt` | The agents frame as plain values (pill entries, sheet order and folds, budget, time-limit menu, row under a held finger), unit-tested in `AgentsModelTest`. |
 | `ui/Common.kt` | Marks, buttons, action sheets (context menus), `shell.dialog`. |
 | `ui/Commander.kt` | The Commander (`shell.commander`) and the header sheet (A06). |
 | `core/Runtime.kt` | `Connection` (hub, demo or dev TCP; saved, overridable by intent extras) and `YaacRuntime`: the process's one controller, which outlives the activity. |
@@ -68,12 +69,17 @@ The UI does not know which transport carries the frames (`core/Transport.kt`).
 | `ui/Strip.kt` | The strip at medium width (A04). |
 | `notify/Notifier.kt`, `notify/YaacService.kt` | A21: the foreground service ("Keep running in the background", `shell.trayOnClose`) with the ongoing "YAAC · N need you" and Quit; one sticky high-importance notification per thread that needs you, withdrawn when answered anywhere, summarised from two up. |
 | `core/PlatformBridge.kt` | A2's platform hooks (pickers, clipboard, URLs); `init` runs before the controller starts. |
+| `ui/SidePane.kt` | The side pane (A23, A24): its state (file documents in chunks, terminal screens, `filesChange`, paste confirmation, `terminalReadPaste`, notices), the tab strip (pinned Chat, icons, marks, overflow, full screen, Rename), the Files tree. |
+| `ui/pane/FilePane.kt`, `ui/pane/TerminalPane.kt` | A file or diff tab; a terminal tab. |
+| `ui/pane/*Model.kt`, `ui/pane/ComposerCaret.kt` | Their pure logic, unit-tested on the JVM: the `terminalFrame` wire and screen, hardware-key routing, cells and swipes, paste; the diff layout with folds, selection → `files.add`, change navigation; tab labels and marks; the composer's saved caret. |
+| `ui/transcript/` | The transcript's logic in plain Kotlin, unit-tested: the scroll anchor (`Anchor.kt`: restore by `anchorToken`, `transcript.anchor` reports, keeping the top row through folding), Copy message and the code gutter (`CopyText.kt`), the image viewer's zoom (`Zoom.kt`), mermaid saving (`DiagramFiles.kt`), the header's budget reason (`HeaderBudget.kt`); `Viewers.kt` draws the image viewer and the mermaid preview. |
 
 ## Behaviour notes
 
 - **Back.** The system Back walks YAAC's history (`shell.back`) while `shell.canBack` holds,
   then returns to the list. The ← in the thread's top bar goes straight to the list. Forward and
   the Back/Forward history lists are in the thread's ⋮ menu (`shell.forward`, `shell.history`).
+- **Transcript text (T05).** One `SelectionContainer` covers the whole transcript, so a touch and hold starts a selection whose handles run across rows; the toolbar's Copy (and Ctrl+C) joins rows by line. Buttons, disclosure labels, chips, times and code line numbers are in `DisableSelection` and are never copied. A tap on a message shows its time and **Copy message**.
 - **Selection (A03).** A tap on a row's state mark adds or removes it; once a selection exists, a
   tap anywhere on a row does. The selection bar sends `bulk.*` with the ids; Move lists the
   sections that offer a drop (`section.drop`, with the controller's reason when refused).
@@ -125,6 +131,13 @@ The UI does not know which transport carries the frames (`core/Transport.kt`).
   (`composer.fileQuery`) for the token at the caret; a draft starting with `!` on a thread with
   `shellCapable` switches to `!` mode; an empty composer offers the message history
   (`composerMessageHistory`); touch and hold **+** offers Paste through the controller.
+- **Files and terminals** (`ui/SidePane.kt`, `ui/pane/`). A file or diff: tap a line, tap
+  another to extend, then Copy or Add to composer (`files.add`, at the composer's caret as last
+  reported by `composer.edit`/`composer.caret`); touch and hold selects text; a fold opens on a
+  tap. A terminal: swipes scroll back (wheel notches), touch and hold then drag selects (word
+  first), a tap focuses the keyboard. With a hardware keyboard every key reaches the shell except
+  bindings marked Works in the terminal (`shortcuts` → `shell.shortcut`). The phone shows only the
+  side pane's terminals, not the panel under the composer.
 - **Demo scenes.** In the demo, touch and hold the YAAC mark for `shell.scenes`.
 
 ## Testing on the emulator

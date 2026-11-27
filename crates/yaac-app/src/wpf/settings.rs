@@ -862,8 +862,16 @@ fn appearance(app: &YaacApp) -> Value {
         ] },
         {"id":"custom-themes","title":"Custom themes","detail":app.theme_import.error,
          "actions":[action("appearance.importTheme","Import JSON…",true)],
-         "cards":app.ui.themes.entries.values().map(|t| app.theme_import.wpf_card(t,
-            app.ui.theme == ThemeChoice::Custom && app.ui.themes.selected == t.name)).collect::<Vec<_>>()}
+         "cards":app.ui.themes.entries.values().map(|t| {
+            let mut card = app.theme_import.wpf_card(t, app.ui.theme == ThemeChoice::Custom && app.ui.themes.selected == t.name);
+            // The phone cannot render the desktop's offscreen demo; it draws the preview itself
+            // from the theme's colours, with its own components (the same map as `customPalette`).
+            if app.ui.platform == yaac_core::input::Platform::Android {
+                card["palette"] = json!(crate::theme::Palette::custom(t).wpf_colors());
+                card["status"] = json!("");
+            }
+            card
+        }).collect::<Vec<_>>()}
     ] })
 }
 

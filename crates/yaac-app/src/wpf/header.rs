@@ -92,6 +92,9 @@ pub(super) fn fields(app: &YaacApp, map: &AttentionMap) -> Value {
         "title": h.title, "location": h.breadcrumb.join(" · "), "hasThread": true, "threadId": key.address(),
         "showEditor": !h.display.read_only, "readOnly": h.display.read_only, "mark": sidebar_view::tone(h.display.mark),
         "fast": h.display.fast, "ultrafast": h.display.ultrafast, "tag": tag, "tagTone": tone, "links": links, "banners": banners, "budget": h.budget.is_some(),
+        // Which limit ran out, in words, beside Continue (so it stays readable when the title
+        // is cut short); null without an exhausted budget.
+        "budgetReason": agents_panel(state, map, key).and_then(|p| p.budget).filter(|b| b.exhausted).and_then(|b| b.reached()),
     })
 }
 
@@ -107,7 +110,8 @@ pub(super) fn command(app: &mut YaacApp, p: &Value) {
         return;
     };
     let action = match string(p, "id") {
-        "continue" => h.budget.map(Action::ContinueBudget),
+        // `continueBudget` is the agents panel's id for the same action.
+        "continue" | "continueBudget" => h.budget.map(Action::ContinueBudget),
         "takeOver" => yaac_core::thread_menu::take_over(state, &thread)
             .filter(|t| t.enabled)
             .map(|_| Action::TakeOver(thread)),

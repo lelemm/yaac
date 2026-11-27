@@ -23,6 +23,12 @@ sealed interface FrameEffect {
     data class FilesDocument(val frame: JsonObject) : FrameEffect
     data class Terminal(val frame: JsonObject) : FrameEffect
     data class ImageViewer(val frame: JsonObject) : FrameEffect
+    data class FilesChange(val frame: JsonObject) : FrameEffect
+    data class PasteConfirm(val frame: JsonObject) : FrameEffect
+    /** `terminalReadPaste` {tab, panel}: the shell's paste key; read the clipboard and send `terminal.paste`. */
+    data class ReadPaste(val frame: JsonObject) : FrameEffect
+    /** `terminalNotice`: a quiet notice ("Copied by the terminal"). */
+    data class TerminalNotice(val text: String) : FrameEffect
 }
 
 /**
@@ -65,6 +71,12 @@ class FrameMerger {
         (frame["filesDocument"] as? JsonObject)?.let { fx += FrameEffect.FilesDocument(it) }
         (frame["terminalFrame"] as? JsonObject)?.let { fx += FrameEffect.Terminal(it) }
         (frame["imageViewer"] as? JsonObject)?.let { fx += FrameEffect.ImageViewer(it) }
+        (frame["filesChange"] as? JsonObject)?.let { fx += FrameEffect.FilesChange(it) }
+        (frame["terminalPasteConfirm"] as? JsonObject)?.let { fx += FrameEffect.PasteConfirm(it) }
+        // A terminal's Copy or a program's OSC 52 write: the same clipboard write as `copy`.
+        frame["terminalCopy"].text?.let { fx += FrameEffect.Copy(it) }
+        frame["terminalNotice"].text?.let { fx += FrameEffect.TerminalNotice(it) }
+        (frame["terminalReadPaste"] as? JsonObject)?.let { fx += FrameEffect.ReadPaste(it) }
         // The native controller's last frame: `{"stopped": {"error": …}}`.
         val stopped = (frame["stopped"] as? JsonObject)?.let { it["error"].text ?: "" }
         (frame["views"] as? JsonObject)?.forEach { (name, value) ->

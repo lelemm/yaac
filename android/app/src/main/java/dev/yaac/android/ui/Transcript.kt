@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -122,14 +123,18 @@ private fun UserRow(row: JsonObject, state: RowState, submit: (ActionItem, Boole
         val max = maxWidth * 0.8f
         Column(Modifier.align(Alignment.TopEnd).widthIn(max = max), horizontalAlignment = Alignment.End) {
             Column(Modifier.clip(RoundedCornerShape(8.dp)).background(c.user).clickable { state.showStamp = !state.showStamp }.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                androidx.compose.foundation.text.selection.SelectionContainer {
-                    Column { Body(row, "user", type.prose); Parts(row, state, submit) }
-                }
+                // Selectable as part of the transcript's one selection (T05, ThreadScreen).
+                Column { Body(row, "user", type.prose); Parts(row, state, submit) }
                 Attachments(row, submit)
             }
             val status = row["status"].text
             val stamp = if (status != null && row["actions"].list.isEmpty()) status else row["stamp"].text?.takeIf { state.showStamp }
-            stamp?.let { T(it, type.small, if (status != null) c.tone(row["tone"].text, c.muted) else c.muted, modifier = Modifier.padding(top = 3.dp, end = 2.dp)) }
+            DisableSelection {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (state.showStamp) CopyMessage(row)
+                    stamp?.let { T(it, type.small, if (status != null) c.tone(row["tone"].text, c.muted) else c.muted, modifier = Modifier.padding(top = 3.dp, end = 2.dp)) }
+                }
+            }
             Actions(row, submit, stacked = false)
         }
     }
@@ -162,15 +167,18 @@ private fun ProseRow(row: JsonObject, kind: String, state: RowState, submit: (Ac
             }
         }
         row["title"].text?.takeIf { kind != "agent" && !task }?.let { T(it, type.ui, tone, weight = FontWeight.SemiBold) }
-        // Touch and hold starts the system selection, with Copy in its toolbar (A11e).
-        androidx.compose.foundation.text.selection.SelectionContainer {
-            Body(row, kind, if (kind == "agent" || task) type.prose else type.ui, if (kind == "agent" || task) c.text else tone)
-        }
-        if (row["streaming"].flag()) T("▌", type.prose, c.muted)
+        // Touch and hold starts the transcript's selection, which runs across rows (T05, A11e).
+        Body(row, kind, if (kind == "agent" || task) type.prose else type.ui, if (kind == "agent" || task) c.text else tone)
+        if (row["streaming"].flag()) DisableSelection { T("▌", type.prose, c.muted) }
         Details(row, state, submit)
         Attachments(row, submit)
         row["status"].text?.let { T(it, type.small, c.tone(row["tone"].text, c.muted)) }
-        if (state.showStamp) row["stamp"].text?.let { T(it, type.small, c.muted, modifier = Modifier.padding(top = 2.dp)) }
+        if (state.showStamp) DisableSelection {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                row["stamp"].text?.let { T(it, type.small, c.muted, modifier = Modifier.padding(top = 2.dp, end = 4.dp)) }
+                CopyMessage(row)
+            }
+        }
         Actions(row, submit, stacked = false)
     }
 }
@@ -219,8 +227,7 @@ private fun CardRow(row: JsonObject, state: RowState, submit: (ActionItem, Boole
             }
             Details(row, state, submit)
             Attachments(row, submit)
-            Questions(row, state)
-            Fields(row, state)
+            DisableSelection { Questions(row, state); Fields(row, state) }
             row["status"].text?.let { Spacer(Modifier.height(6.dp)); T(it, type.small, c.tone(row["tone"].text, c.muted)) }
             Spacer(Modifier.height(4.dp))
             Actions(row, submit, stacked = true)
@@ -349,7 +356,7 @@ private fun Parts(row: JsonObject, state: RowState, submit: (ActionItem, Boolean
         if (kind == "code") label = label ?: part["language"].text
         val show: @Composable () -> Unit = {
             when (kind) {
-                "code", "diff" -> CodeBlock(text, text, part["language"].text, kind == "diff")
+                "code", "diff" -> CodeBlock(text, text, part["language"].text, kind == "diff", lineNumbers = kind == "code")
                 "command" -> T(text.replace("`", ""), type.mono, color)
                 "markdown", "pasted" -> Blocks(part["blocks"], text, if (row["kind"].str == "user") type.prose else type.ui, color)
                 else -> T(text, type.ui, color)
@@ -366,12 +373,12 @@ private fun Parts(row: JsonObject, state: RowState, submit: (ActionItem, Boolean
 private fun Disclosure(label: String, preview: String?, state: RowState, key: String, default: Boolean, content: @Composable () -> Unit) {
     val c = LocalYaac.current
     val open = state.expanded[key] ?: default
-    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).clickable { state.expanded[key] = !open }.heightIn(min = 36.dp).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+    DisableSelection { Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(4.dp)).clickable { state.expanded[key] = !open }.heightIn(min = 36.dp).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(if (open) YIcon.CaretDown else YIcon.CaretRight, c.text, size = 12.dp)
         Spacer(Modifier.width(10.dp))
         T(if (open && preview != null) "Hide command" else label, LocalType.current.ui.copy(fontSize = 15.sp))
         if (!open && preview != null) { Spacer(Modifier.width(10.dp)); T(preview, LocalType.current.mono, c.muted, maxLines = 1) }
-    }
+    } }
     if (open) content()
 }
 
@@ -381,7 +388,7 @@ private fun Attachments(row: JsonObject, submit: (ActionItem, Boolean) -> Unit) 
     val list = row["attachments"].objects.filter { it["label"].text != null }
     if (list.isEmpty()) return
     val c = LocalYaac.current
-    FlowRow(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    DisableSelection { FlowRow(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         for (a in list) {
             val missing = a["missing"].flag()
             val action = ActionItem.of(a["action"])
@@ -393,7 +400,7 @@ private fun Attachments(row: JsonObject, submit: (ActionItem, Boolean) -> Unit) 
                 T(label, LocalType.current.mono, if (missing) c.muted else c.text, maxLines = 1)
             }
         }
-    }
+    } }
 }
 
 @Composable
@@ -465,7 +472,8 @@ private fun Actions(row: JsonObject, submit: (ActionItem, Boolean) -> Unit, stac
     if (actions.isEmpty()) return
     var menu by remember { mutableStateOf<ActionItem?>(null) }
     val click: (ActionItem) -> Unit = { a -> if (a.children.isNotEmpty()) menu = a else submit(a, true) }
-    if (stacked) {
+    // Buttons are not text: a selection across rows leaves them out (T05).
+    DisableSelection { if (stacked) {
         Column(Modifier.fillMaxWidth().padding(top = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             for (a in actions) {
                 if (a.primary) PrimaryButton(a.label, a.enabled, Modifier.fillMaxWidth()) { click(a) }
@@ -475,7 +483,7 @@ private fun Actions(row: JsonObject, submit: (ActionItem, Boolean) -> Unit, stac
         }
     } else {
         Row(Modifier.padding(top = 4.dp)) { for (a in actions) TextAction(a.label, a.enabled, style = LocalType.current.ui) { click(a) } }
-    }
+    } }
     menu?.let { m -> ActionSheet(m.label, m.children, { menu = null }) { submit(it, true) } }
 }
 
@@ -512,4 +520,12 @@ private fun ShellRow(row: JsonObject, state: RowState, submit: (ActionItem, Bool
         row["status"].text?.let { T(it, type.small, c.tone(row["tone"].text, c.muted)) }
         Actions(row, submit, stacked = false)
     }
+}
+
+/** **Copy message** beside a message's time (T05, WPF's context-menu item): its whole text. */
+@Composable
+private fun CopyMessage(row: JsonObject) {
+    val text = dev.yaac.android.ui.transcript.copyMessage(row) ?: return
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    TextAction("Copy message", style = LocalType.current.small, color = LocalYaac.current.muted) { clipboard.setText(androidx.compose.ui.text.AnnotatedString(text)) }
 }

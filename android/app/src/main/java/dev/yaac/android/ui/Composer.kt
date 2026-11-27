@@ -321,11 +321,15 @@ private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) ->
         ActionItem.of(composer["cancelEdit"])?.let { a -> TextAction(a.label, a.enabled && editable) { act(a) } }
         Spacer(Modifier.weight(1f))
         // Message history: the last messages sent from this client, offered in an empty composer.
-        val past = history.list.mapNotNull { it.text }
-        if (empty && !shell && past.isNotEmpty()) IconButton(YIcon.History, "Message history") { historySheet = true }
+        // Message history in an empty composer; in `!` mode the thread's own command history (E08).
+        val past = if (shell) composer["shell"]["history"].list.mapNotNull { it.text } else history.list.mapNotNull { it.text }
+        if ((empty || shell) && past.isNotEmpty()) IconButton(YIcon.History, if (shell) "Command history" else "Message history") { historySheet = true }
     }
-    if (historySheet) ActionSheet("Sent from here", history.list.mapIndexedNotNull { i, m -> m.text?.let { ActionItem("h$i", it.lineSequence().first().take(120), true, null, false, null, emptyList(), false) } }, { historySheet = false }) { a ->
-        history.list.getOrNull(a.id.removePrefix("h").toInt())?.text?.let(recall)
+    if (historySheet) {
+        val list = if (shell) composer["shell"]["history"].list else history.list
+        ActionSheet(if (shell) "Commands run here" else "Sent from here", list.mapIndexedNotNull { i, m -> m.text?.let { ActionItem("h$i", it.lineSequence().first().take(120), true, null, false, null, emptyList(), false) } }, { historySheet = false }) { a ->
+            list.getOrNull(a.id.removePrefix("h").toInt())?.text?.let { recall(if (shell) "!$it" else it) }
+        }
     }
     if (attachMenu) ActionSheet(null, listOfNotNull(attach, ActionItem.of(composer["paste"])), { attachMenu = false }) { act(it) }
     composer["hint"].text?.let { T(it, type.small, c.muted, modifier = Modifier.padding(top = 2.dp, start = 4.dp)) }

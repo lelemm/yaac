@@ -61,9 +61,11 @@ fun ThreadScreen(
     browser: JsonElement? = null, side: SidePaneState? = null,
 ) {
     var addingSide by remember { mutableStateOf(false) }
+    var visibleApproval by remember { mutableStateOf<String?>(null) }
     val c = LocalYaac.current
     val type = LocalType.current
     var agentsOpen by remember { mutableStateOf(false) }
+    var agentsAtHidden by remember { mutableStateOf(false) }
     var threadMenu by remember { mutableStateOf(false) }
     var headerSheet by remember { mutableStateOf(false) }
     val threadId = transcript["threadId"].str
@@ -74,7 +76,9 @@ fun ThreadScreen(
 
     Column(Modifier.fillMaxSize().background(c.canvas).statusBarsPadding().imePadding()) {
         Header(shell, onBack.takeIf { showBack }, onNeeds, send, { headerSheet = true },
-            onAddSide = { addingSide = true }.takeIf { browser != null && browser["tabs"].objects.isEmpty() }) { threadMenu = true }
+            onAddSide = { addingSide = true }.takeIf { browser != null && browser["tabs"].objects.isEmpty() },
+            // With an approval on screen the Commander offers its Allow / Deny rows (WPF sends the focused card).
+            onCommander = { send("commander.open", mapOf("card" to visibleApproval, "threadId" to visibleApproval?.let { threadId })) }) { threadMenu = true }
         // The side pane's tabs (Files, Terminal, Browser) beside the chat, at compact width.
         if (browser != null) SideTabs(browser, shell["threadId"].str, send, addingSide) { addingSide = it }
         Spacer(Modifier.height(4.dp))
@@ -100,11 +104,12 @@ fun ThreadScreen(
             val prompts = transcript["prompts"].objects
             val timeline = prompts.size >= 2
             if (timeline) Timeline(prompts, Modifier.align(Alignment.TopStart)) { id -> send("transcript.prompt", mapOf("id" to id, "threadId" to threadId)) }
-            LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = if (timeline) 22.dp else 14.dp, end = if (agents["visible"].flag() && agents["pill"]["rowIds"].list.isNotEmpty()) 54.dp else 14.dp, top = 4.dp, bottom = 12.dp)) {
+            // One selection over the whole transcript, so it runs across rows (T05).
+            androidx.compose.foundation.text.selection.SelectionContainer { LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = if (timeline) 22.dp else 14.dp, end = if (agents["visible"].flag() && agents["pill"]["rowIds"].list.isNotEmpty()) 54.dp else 14.dp, top = 4.dp, bottom = 12.dp)) {
                 items(rows, key = { it["id"].str }, contentType = { it["kind"].str }) { row ->
                     TranscriptRow(row, threadId, states.of(threadId, row["id"].str)) { payload -> send("transcript.action", payload) }
                 }
-            }
+            } }
             // Follow the end while it is in view; page older and newer history at the edges.
             val atEnd by remember(listState) { derivedStateOf { !listState.canScrollForward } }
             var follow by remember(threadId) { mutableStateOf(true) }
@@ -112,6 +117,7 @@ fun ThreadScreen(
             LaunchedEffect(listState) {
                 snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) follow = !listState.canScrollForward }
             }
+            dev.yaac.android.ui.transcript.KeepAnchor(transcript, rows, listState, follow, { follow = false }, send) // T02
             val lastKey = rows.lastOrNull()?.hashCode()
             // Rows already seen: everything while the end is followed.
             var seenCount by remember(threadId) { mutableStateOf(rows.size) }
@@ -137,6 +143,11 @@ fun ThreadScreen(
                 }.distinctUntilChanged().collect { cards -> send("shell.visibleRequests", mapOf("cards" to cards)) }
             }
             androidx.compose.runtime.DisposableEffect(threadId) { onDispose { send("shell.visibleRequests", mapOf("cards" to emptyList<Any>())) } }
+            // The approval on screen, for the Commander's Allow once / Allow for the session / Deny.
+            LaunchedEffect(listState, threadId) {
+                snapshotFlow { listState.layoutInfo.visibleItemsInfo.firstNotNullOfOrNull { info -> rows.getOrNull(info.index)?.takeIf { it["kind"].str == "approval" }?.get("actionId").text } }
+                    .distinctUntilChanged().collect { visibleApproval = it }
+            }
             val focusToken = transcript["focusToken"].scalar
             LaunchedEffect(focusToken) {
                 val id = transcript["focusId"].text ?: return@LaunchedEffect
@@ -157,14 +168,14 @@ fun ThreadScreen(
                 }
             }
             val fraction = (agents["pillPosition"].double ?: 0.5).toFloat().coerceIn(0.05f, 0.95f)
-            AgentsPill(agents, { agentsOpen = true }, Modifier.align(Alignment.TopEnd).padding(end = 6.dp).offset(y = height * fraction * 0.6f))
+            AgentsPill(agents, { hidden -> agentsAtHidden = hidden; agentsOpen = true }, Modifier.align(Alignment.TopEnd).padding(end = 6.dp).offset(y = height * fraction * 0.6f))
         }
         Box(Modifier.navigationBarsPadding()) { Composer(composer, send, history) }
         }
     }
 
     if (headerSheet) HeaderSheet(shell, sidebar, send) { headerSheet = false }
-    if (agentsOpen) AgentsSheet(agents, send, { agentsOpen = false }) { agentsOpen = false }
+    if (agentsOpen) AgentsSheet(agents, send, { agentsOpen = false }, atHidden = agentsAtHidden) { agentsOpen = false }
     if (threadMenu) {
         val selected = sidebar["sections"].objects.flatMap { it["rows"].objects }.firstOrNull { it["id"].str == shell["threadId"].str }
         fun places(key: String) = shell[key].objects.map { ActionItem("history:" + (it["steps"].int ?: 0), it["label"].str, true, it["detail"].text, false, null, emptyList(), false) }
@@ -186,7 +197,7 @@ fun ThreadScreen(
 }
 
 @Composable
-private fun Header(shell: JsonElement?, onBack: (() -> Unit)?, onNeeds: () -> Unit, send: (String, Any?) -> Unit, onTitle: () -> Unit, onAddSide: (() -> Unit)? = null, onMenu: () -> Unit) {
+private fun Header(shell: JsonElement?, onBack: (() -> Unit)?, onNeeds: () -> Unit, send: (String, Any?) -> Unit, onTitle: () -> Unit, onAddSide: (() -> Unit)? = null, onCommander: () -> Unit, onMenu: () -> Unit) {
     val c = LocalYaac.current
     val type = LocalType.current
     Row(Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -210,9 +221,9 @@ private fun Header(shell: JsonElement?, onBack: (() -> Unit)?, onNeeds: () -> Un
         }
         NeedsButton(shell["needs"].int ?: 0, onNeeds)
         // The orchestration's budget is limiting it: the mark opens the agents sheet's budget line.
-        if (shell["budget"].flag()) T("Budget", type.small, c.warning, modifier = Modifier.padding(horizontal = 4.dp))
+        dev.yaac.android.ui.transcript.HeaderBudget(shell, send) // T01: the reason and Continue
         if (onAddSide != null) IconButton(YIcon.CirclePlus, "Open beside the chat", strokeWidthIcon = 1.7f, onClick = onAddSide)
-        IconButton(YIcon.Command, "Commander") { send("commander.open", mapOf("card" to null, "threadId" to null)) }
+        IconButton(YIcon.Command, "Commander") { onCommander() }
         IconButton(YIcon.More, "Thread menu", strokeWidthIcon = 3f, onClick = onMenu)
     }
     shell["links"].objects.takeIf { it.isNotEmpty() }?.let { links ->

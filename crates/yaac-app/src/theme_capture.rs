@@ -3,7 +3,11 @@ use std::{
     fs,
     io::Read,
     path::{Path, PathBuf},
-    process::{Command, ExitCode, Stdio},
+    process::ExitCode,
+};
+#[cfg(feature = "desktop")]
+use std::{
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -44,6 +48,14 @@ pub(crate) struct Capture {
 }
 
 
+/// Without the desktop pieces (Android) there is no offscreen demo to start: the app draws
+/// theme previews itself from the palette.
+#[cfg(not(feature = "desktop"))]
+pub(crate) fn generate(_input: ThemeInput, _wpf: bool) -> Result<Capture, String> {
+    Err("Previews are drawn by the app".into())
+}
+
+#[cfg(feature = "desktop")]
 pub(crate) fn generate(input: ThemeInput, wpf: bool) -> Result<Capture, String> {
     let dir = tempfile::Builder::new()
         .prefix("yaac-theme-")

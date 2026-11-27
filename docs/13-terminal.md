@@ -430,6 +430,11 @@ thread's context without starting a turn** — the agent sees it with the user's
 - While a turn is running, records are held and appended when it ends.
 - Every appended record also appears in the transcript (a quiet "sent from terminal" line,
   expandable), so the user always sees what the agent was given.
+- **Not implemented on any client yet** (2026-11-26). The view protocol it will use, agreed
+  with the Android client: each terminal tab (side pane and panel) carries `sendCommands: bool`
+  and `sendCommandsReason: string | null` (`null` when available, else why not, e.g. "This
+  shell has no shell integration."), and the command `terminal.sendCommands
+  { thread, tab, panel, data: { on } }` switches it. Until then no client shows the toggle.
 
 ## Later
 

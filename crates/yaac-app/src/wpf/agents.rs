@@ -185,6 +185,19 @@ mod budget_tests {
     }
 
     #[test]
+    fn the_header_says_why_the_budget_stopped() {
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, Scene::BudgetOutOfTime);
+        let header = super::super::header::fields(&app, &AttentionMap::compute(&app.client.state));
+        assert_eq!(header["budgetReason"], "Paused: 12 h without you");
+        let root = threads::orchestrator().address().to_string();
+        crate::wpf::dispatch(&mut app, &ctx, &mut None, "agents.continue", &json!({ "id": root })).unwrap();
+        app.pump_demo();
+        let header = super::super::header::fields(&app, &AttentionMap::compute(&app.client.state));
+        assert!(header["budgetReason"].is_null(), "nothing ran out any more");
+    }
+
+    #[test]
     fn the_menu_sets_extends_and_removes_the_limit() {
         let ctx = egui::Context::default();
         let mut app = app(&ctx, Scene::BudgetOutOfTime);

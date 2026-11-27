@@ -152,3 +152,30 @@ private fun Field(label: String, value: String) {
 }
 
 @Suppress("unused") private fun JsonElement?.n() = int
+
+/** Where a share goes (C09): a thread from the list, or a new thread. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ShareTargetSheet(sidebar: JsonElement?, share: dev.yaac.android.core.Share, onDismiss: () -> Unit, onPick: (String?) -> Unit) {
+    val c = LocalYaac.current
+    val type = LocalType.current
+    val rows = sidebar["sections"].objects.flatMap { s -> s["rows"].objects.map { it to (s["header"]["machine"].text ?: "") } }.distinctBy { it.first["id"].str }
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.raised, contentColor = c.text, tonalElevation = 0.dp) {
+        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 12.dp)) {
+            T("Share to a thread", type.title, modifier = Modifier.padding(horizontal = 20.dp))
+            T(listOfNotNull(share.paths.size.takeIf { it > 0 }?.let { "$it ${if (it == 1) "file" else "files"}" }, share.text?.takeIf { it.isNotBlank() }?.let { "text" }).joinToString(" and "),
+                type.small, c.muted, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
+            Row(Modifier.fillMaxWidth().clickable { onPick(null) }.heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(YIcon.Plus, c.text, size = 18.dp); Spacer(Modifier.width(10.dp)); T("New thread", type.ui.copy(fontSize = 15.sp))
+            }
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 460.dp)) {
+                items(rows, key = { it.first["id"].str }) { (r, machine) ->
+                    Row(Modifier.fillMaxWidth().clickable { onPick(r["id"].str) }.heightIn(min = 48.dp).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+                        T(r["title"].str, type.ui.copy(fontSize = 15.sp), maxLines = 1, modifier = Modifier.weight(1f))
+                        T(machine, type.small, c.muted)
+                    }
+                }
+            }
+        }
+    }
+}

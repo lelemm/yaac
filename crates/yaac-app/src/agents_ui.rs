@@ -27,7 +27,7 @@ impl DockPreview {
         (self.armed && self.owner.as_ref() == Some(owner)).then_some(self.hovered.as_ref()).flatten()
     }
 
-    fn hover(&mut self, owner: Option<yaac_core::ThreadKey>, hovered: Option<yaac_core::ThreadKey>, now: f64) {
+    fn hover(&mut self, owner: Option<yaac_core::ThreadKey>, hovered: Option<yaac_core::ThreadKey>, now: f64, at_once: bool) {
         if self.owner != owner {
             *self = Self::default();
             self.owner = owner;
@@ -37,7 +37,8 @@ impl DockPreview {
         let hovered = hovered.filter(|key| self.owner.as_ref().is_some_and(|owner| key != owner));
         if self.hovered != hovered {
             self.hovered = hovered;
-            self.due = (!self.armed && self.hovered.is_some()).then_some(now + 2.0);
+            // A touch-and-hold (`at_once`) has already waited; a pointer hovers 2 s first.
+            self.due = (!self.armed && self.hovered.is_some()).then_some(if at_once { now } else { now + 2.0 });
         }
     }
 
@@ -53,6 +54,12 @@ impl DockPreview {
 
 /// Update only the preview. The normal open-thread path owns navigation and read marks.
 pub(crate) fn dock_hover(app: &mut YaacApp, ctx: &egui::Context, inside: bool, hovered: Option<yaac_core::ThreadKey>) {
+    dock_hover_at(app, ctx, inside, hovered, false);
+}
+
+/// [`dock_hover`]; `at_once` arms the preview without the 2 s hover delay (a touch and hold
+/// has already waited: the Android client's `agents.hover {now: true}`).
+pub(crate) fn dock_hover_at(app: &mut YaacApp, ctx: &egui::Context, inside: bool, hovered: Option<yaac_core::ThreadKey>, at_once: bool) {
     let before = app.ui.dock_preview.hovered.clone().filter(|_| app.ui.dock_preview.armed);
     let owner = if inside && !app.ui.settings {
         app.client.state.selected_thread().cloned()
@@ -60,7 +67,7 @@ pub(crate) fn dock_hover(app: &mut YaacApp, ctx: &egui::Context, inside: bool, h
         None
     };
     let now = app.started.elapsed().as_secs_f64();
-    app.ui.dock_preview.hover(owner, hovered, now);
+    app.ui.dock_preview.hover(owner, hovered, now, at_once);
     if let Some(key) = &app.ui.dock_preview.hovered
         && app.ui.dock_preview.armed && before.as_ref() != Some(key)
     {
@@ -811,6 +818,25 @@ fn heading(ui: &mut egui::Ui, p: &Palette, text: &str, n: Option<usize>) {
     };
     ui.label(egui::RichText::new(t).font(theme::bold(size::SMALL)).color(p.text2));
     ui.add_space(4.0);
+}
+
+#[cfg(test)]
+mod hover_tests {
+    use super::DockPreview;
+    use yaac_core::ThreadKey;
+
+    #[test]
+    fn a_touch_and_hold_arms_the_preview_at_once_and_a_pointer_waits() {
+        let (owner, row) = (ThreadKey::new("t", "owner"), ThreadKey::new("t", "row"));
+        let mut p = DockPreview::default();
+        p.hover(Some(owner.clone()), Some(row.clone()), 10.0, false);
+        assert_eq!(p.advance(10.5), None, "a pointer hovers 2 s first");
+        assert_eq!(p.advance(12.0), Some(row.clone()));
+        let mut p = DockPreview::default();
+        p.hover(Some(owner.clone()), Some(row.clone()), 10.0, true);
+        assert_eq!(p.advance(10.0), Some(row));
+        assert_eq!(p.target(&owner), Some(&ThreadKey::new("t", "row")));
+    }
 }
 
 #[cfg(test)]

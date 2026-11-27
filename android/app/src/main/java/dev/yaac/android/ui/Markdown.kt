@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,6 +44,7 @@ import dev.yaac.android.core.str
 import dev.yaac.android.core.text
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import dev.yaac.android.ui.transcript.lineNumberGutter
 
 /** Inline spans `{text, bold, italic, code, link}` as one annotated string. */
 @Composable
@@ -99,7 +101,7 @@ fun Blocks(blocks: JsonElement?, fallback: String?, style: TextStyle, color: Col
                 }
                 "rule" -> Box(Modifier.fillMaxWidth().height(1.dp).background(c.rule))
                 "mermaid" -> MermaidBlock(b["text"].str)
-                "code", "diff" -> CodeBlock(b["copyText"].text ?: b["text"].str, b["text"].str, b["language"].text, b["kind"].str == "diff")
+                "code", "diff" -> CodeBlock(b["copyText"].text ?: b["text"].str, b["text"].str, b["language"].text, b["kind"].str == "diff", lineNumbers = b["kind"].str == "code")
                 "table" -> Table(b, style, color)
                 else -> BasicText(spans(b["spans"], color).takeIf { it.isNotEmpty() } ?: AnnotatedString(b["text"].str), style = style.copy(color = color))
             }
@@ -107,24 +109,38 @@ fun Blocks(blocks: JsonElement?, fallback: String?, style: TextStyle, color: Col
     }
 }
 
+/**
+ * A code surface: the language and **Copy** (never part of a text selection), then the code,
+ * scrolling sideways. Fenced code shows line numbers in a gutter that is not selected or copied
+ * (07-ui: "Copying text omits the line numbers").
+ */
 @Composable
-fun CodeBlock(copy: String, text: String, language: String?, diff: Boolean = false) {
+fun CodeBlock(copy: String, text: String, language: String?, diff: Boolean = false, lineNumbers: Boolean = false) {
     val c = LocalYaac.current
     val clipboard = LocalClipboardManager.current
+    val mono = LocalType.current.mono
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(c.input)) {
-        Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            T(language ?: "", LocalType.current.small, c.muted, modifier = Modifier.weight(1f))
-            T("Copy", LocalType.current.small, c.muted, modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { clipboard.setText(AnnotatedString(copy)) }.padding(horizontal = 8.dp, vertical = 6.dp))
+        DisableSelection {
+            Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                T(language ?: "", LocalType.current.small, c.muted, modifier = Modifier.weight(1f))
+                T("Copy", LocalType.current.small, c.muted, modifier = Modifier.clip(RoundedCornerShape(4.dp)).clickable { clipboard.setText(AnnotatedString(copy)) }.padding(horizontal = 8.dp, vertical = 6.dp))
+            }
         }
-        val styled = if (!diff) AnnotatedString(text) else buildAnnotatedString {
-            text.lines().forEachIndexed { i, line ->
+        val shown = if (lineNumbers) text.removeSuffix("\n") else text
+        val styled = if (!diff) AnnotatedString(shown) else buildAnnotatedString {
+            shown.lines().forEachIndexed { i, line ->
                 if (i > 0) append("\n")
                 val col = when { line.startsWith("+") -> c.success; line.startsWith("-") -> c.failure; else -> c.text }
                 withStyle(SpanStyle(color = col)) { append(line) }
             }
         }
-        Box(Modifier.horizontalScroll(rememberScrollState()).padding(start = 12.dp, end = 12.dp, bottom = 10.dp)) {
-            BasicText(styled, style = LocalType.current.mono.copy(color = c.text), softWrap = false)
+        Row(Modifier.padding(bottom = 10.dp)) {
+            if (lineNumbers) DisableSelection {
+                BasicText(lineNumberGutter(shown), Modifier.padding(start = 10.dp, end = 2.dp), style = mono.copy(color = c.muted), softWrap = false)
+            }
+            Box(Modifier.horizontalScroll(rememberScrollState()).padding(start = if (lineNumbers) 8.dp else 12.dp, end = 12.dp)) {
+                BasicText(styled, style = mono.copy(color = c.text), softWrap = false)
+            }
         }
     }
 }

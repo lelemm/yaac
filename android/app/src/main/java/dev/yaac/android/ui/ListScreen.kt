@@ -40,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
@@ -154,7 +155,7 @@ fun ListScreen(sidebar: JsonElement?, shell: JsonElement?, send: (String, Any?) 
             Spacer(Modifier.width(6.dp))
             NeedsButton(shell["needs"].int ?: 0, onNeeds)
             Spacer(Modifier.width(4.dp))
-            SearchField(sidebar, send, Modifier.weight(1f))
+            SearchField(sidebar, send, Modifier.weight(1f), shell["focusSearch"].flag())
             IconButton(YIcon.Sort, "Grouping and order") { sortSheet = true }
             IconButton(YIcon.Command, "Commander") { send("commander.open", mapOf("card" to null, "threadId" to null)) }
             val newThread = ActionItem.of(sidebar["newThread"])
@@ -286,17 +287,20 @@ fun ListScreen(sidebar: JsonElement?, shell: JsonElement?, send: (String, Any?) 
 fun JsonElement?.obj(): JsonObject? = this as? JsonObject
 
 @Composable
-private fun SearchField(sidebar: JsonElement?, send: (String, Any?) -> Unit, modifier: Modifier) {
+private fun SearchField(sidebar: JsonElement?, send: (String, Any?) -> Unit, modifier: Modifier, focusSearch: Boolean = false) {
     val c = LocalYaac.current
     val enabled = sidebar["searchEnabled"].flag(true)
     var text by remember { mutableStateOf(sidebar["search"].str) }
+    // Search threads (Commander, Ctrl+K): the controller asks for focus once, then hears it is done.
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    LaunchedEffect(focusSearch) { if (focusSearch) { runCatching { focus.requestFocus() }; send("shell.focusSearchDone", null) } }
     Row(modifier.height(38.dp).clip(RoundedCornerShape(6.dp)).background(c.input).padding(horizontal = 10.dp).alpha(if (enabled) 1f else 0.5f), verticalAlignment = Alignment.CenterVertically) {
         Icon(YIcon.Search, c.muted, size = 17.dp)
         Spacer(Modifier.width(8.dp))
         Box(Modifier.weight(1f)) {
             if (text.isEmpty()) T("Search", LocalType.current.ui.copy(fontSize = 15.sp), c.muted, maxLines = 1)
             BasicTextField(text, { v -> text = v; send("sidebar.search", mapOf("text" to v)) }, enabled = enabled, singleLine = true,
-                textStyle = LocalType.current.ui.copy(fontSize = 15.sp, color = c.text), cursorBrush = SolidColor(c.text), modifier = Modifier.fillMaxWidth())
+                textStyle = LocalType.current.ui.copy(fontSize = 15.sp, color = c.text), cursorBrush = SolidColor(c.text), modifier = Modifier.fillMaxWidth().focusRequester(focus))
         }
         if (text.isNotEmpty()) Box(Modifier.size(28.dp).clickable { text = ""; send("sidebar.search", mapOf("text" to "")) }, contentAlignment = Alignment.Center) { Icon(YIcon.Close, c.muted, size = 15.dp) }
     }

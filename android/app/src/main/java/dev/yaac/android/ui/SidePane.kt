@@ -5,7 +5,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,14 +13,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -40,49 +39,82 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.rememberTextMeasurer
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.yaac.android.core.FrameJson
 import dev.yaac.android.core.flag
 import dev.yaac.android.core.get
 import dev.yaac.android.core.int
-import dev.yaac.android.core.list
 import dev.yaac.android.core.objects
 import dev.yaac.android.core.str
 import dev.yaac.android.core.text
-import kotlinx.serialization.json.JsonArray
+import dev.yaac.android.ui.pane.ComposerCaret
+import dev.yaac.android.ui.pane.FilePane
+import dev.yaac.android.ui.pane.PaneGlyph
+import dev.yaac.android.ui.pane.PaneIcon
+import dev.yaac.android.ui.pane.Rename
+import dev.yaac.android.ui.pane.Shortcut
+import dev.yaac.android.ui.pane.TabInfo
+import dev.yaac.android.ui.pane.TabMark
+import dev.yaac.android.ui.pane.Tabs
+import dev.yaac.android.ui.pane.TermPaste
+import dev.yaac.android.ui.pane.TermScreen
+import dev.yaac.android.ui.pane.TerminalPane
+import dev.yaac.android.ui.pane.TerminalWire
+import dev.yaac.android.ui.pane.glyphOf
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * What the side pane receives outside the views: file documents in chunks (`filesDocument`)
- * and terminal frames (`terminalFrame`), as WPF's `ReceiveFileDocument` and `ReceiveTerminal`.
+ * What the side pane receives outside the views, as WPF's `ReceiveFileDocument` and
+ * `ReceiveTerminal`: file documents in chunks (`filesDocument`), terminal frames
+ * (`terminalFrame`, acknowledged one by one), the change the controller moved to
+ * (`filesChange`), a multi-line paste to confirm (`terminalPasteConfirm`), a request to read the
+ * clipboard for the shell's paste key (`terminalReadPaste`) and quiet notices (`terminalNotice`).
  */
 @Stable
 class SidePaneState(private val send: (String, Any?) -> Unit) {
     private val chunks = HashMap<Long, StringBuilder>()
     /** Assembled documents by id: `{file?, old?, new?, rows?, sideBySide}`. */
     val documents = mutableStateMapOf<Long, JsonObject>()
-    val terminals = mutableStateMapOf<Long, TerminalGrid>()
+    /** Side-pane terminals by tab id (the panel under the composer is not shown on a phone). */
+    val terminals = mutableStateMapOf<Long, TermScreen>()
+    /** The change the controller moved to: `filesChange` {id, row, ordinal}, with a serial so a repeat still scrolls. */
+    var change by mutableStateOf<FilesChange?>(null)
+    /** A multi-line paste waiting for the user's decision (`terminalPasteConfirm`). */
+    var pasteConfirm by mutableStateOf<JsonObject?>(null)
+    /** The shell's paste key was pressed (`terminalReadPaste` {tab, panel}): read the clipboard and paste. */
+    var readPaste by mutableStateOf<Long?>(null)
+    /** A quiet notice under the pane ("Copied by the terminal", a refused clipboard read). */
+    var notice by mutableStateOf<String?>(null)
+    /** Key bindings (`shortcuts` view), for the focused terminal (K04). */
+    var shortcuts by mutableStateOf<List<Shortcut>>(emptyList())
+    /** The open composer's key (`composer` view), whose saved caret Add to composer uses. */
+    var composerKey: String? = null
+    private var changes = 0
+
+    /** The `caret` field of `files.add` / `terminal.add`. */
+    fun caret(): Int? = ComposerCaret.caret(composerKey)
+
+    data class FilesChange(val id: Long, val row: Int, val ordinal: Int?, val serial: Int)
+
+    fun change(frame: JsonObject) {
+        val id = (frame["id"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return
+        val row = frame["row"].int ?: return
+        change = FilesChange(id, row, frame["ordinal"].int, ++changes)
+    }
 
     fun document(frame: JsonObject) {
         val id = (frame["id"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return
@@ -98,61 +130,69 @@ class SidePaneState(private val send: (String, Any?) -> Unit) {
     }
 
     fun terminal(frame: JsonObject) {
-        val tab = (frame["tab"] as? JsonPrimitive)?.content?.toLongOrNull() ?: return
-        val grid = terminals.getOrPut(tab) { TerminalGrid() }
-        grid.apply(frame)
+        val f = TerminalWire.decode(frame) ?: return
+        if (!f.panel) terminals[f.tab] = (terminals[f.tab] ?: TermScreen()).apply(f)
         // Acknowledge each frame: the controller paces its frames on these (WPF `terminal.ack`).
-        send("terminal.ack", mapOf("tab" to tab, "panel" to frame["panel"].flag(), "frame" to (frame["frame"] as? JsonPrimitive)?.content?.toLongOrNull()))
+        send("terminal.ack", mapOf("tab" to f.tab, "panel" to f.panel, "frame" to f.serial))
     }
+
+    /** `terminalReadPaste`: only the side pane's terminals are on screen here. */
+    fun readPaste(frame: JsonObject) {
+        if (frame["panel"].flag()) return
+        readPaste = (frame["tab"] as? JsonPrimitive)?.content?.toLongOrNull()
+    }
+
+    fun shortcuts(view: JsonElement?) { shortcuts = Shortcut.list(view) }
 }
 
-/** One terminal's rows of runs `[col, width, ink, paper, flags, text]`, the height, the cursor. */
-@Stable
-class TerminalGrid {
-    val rows = mutableStateMapOf<Int, JsonArray>()
-    var height by mutableStateOf(0)
-    var cursor by mutableStateOf<JsonArray?>(null)
+private fun item(id: String, label: String, enabled: Boolean = true, detail: String? = null, children: List<ActionItem> = emptyList(), danger: Boolean = false) =
+    ActionItem(id, label, enabled, detail, danger, null, children, false)
 
-    fun apply(frame: JsonObject) {
-        val h = frame["height"].int ?: height
-        if (h != height) { rows.keys.filter { it >= h }.forEach { rows.remove(it) }; height = h }
-        for (r in frame["rows"].list) {
-            val pair = r as? JsonArray ?: continue
-            val index = (pair.getOrNull(0) as? JsonPrimitive)?.content?.toIntOrNull() ?: continue
-            rows[index] = pair.getOrNull(1) as? JsonArray ?: JsonArray(emptyList())
-        }
-        cursor = frame["cursor"] as? JsonArray
-    }
-}
-
-/** The tab row (compact width, P375 "tabs at compact width"): Chat, the side tabs, and ⊕. */
+/**
+ * The tab strip (B02, compact width, P375 "tabs at compact width"): the pinned Chat tab, then
+ * the side tabs (icon, ellipsized title, marks, × on the selected one) scrolling, an overflow
+ * list, full screen, and ⊕.
+ */
 @Composable
 fun SideTabs(browser: JsonElement?, threadId: String, send: (String, Any?) -> Unit, adding: Boolean, setAdding: (Boolean) -> Unit) {
     val c = LocalYaac.current
-    val type = LocalType.current
     val tabs = browser["tabs"].objects
     val showChat = browser["active"].isNullishPrimitive() || browser["chat"].flag()
-    var menu by remember { mutableStateOf<JsonObject?>(null) }
-    if (tabs.isNotEmpty()) Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        run {
-            SideTab("Chat", showChat) { send("browser.chat", mapOf("thread" to threadId)) }
-            for (t in tabs) {
-                val id = (t["id"] as? JsonPrimitive)?.content?.toLongOrNull()
-                val selected = !showChat && browser["active"].scalarLong() == id
-                val label = t["title"].text ?: t["path"].text?.substringAfterLast('/') ?: when (t["kind"].str) { "files" -> "Files"; "terminal" -> "Terminal"; else -> t["url"].text ?: "New tab" }
-                SideTab(label, selected, mark = t["mark"].text, onHold = { menu = t }) { send("browser.select", mapOf("thread" to threadId, "tab" to id)) }
+    var menu by remember { mutableStateOf<TabInfo?>(null) }
+    var renaming by remember { mutableStateOf<TabInfo?>(null) }
+    var overflow by remember { mutableStateOf(false) }
+    val infos = tabs.map { Tabs.info(it) }
+    if (tabs.isNotEmpty()) Row(Modifier.fillMaxWidth().padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        // Chat stays pinned at the start, outside the scrolling tabs, with the thread's mark.
+        SideTab(Tabs.info(JsonObject(mapOf("kind" to JsonPrimitive("chat")))).copy(title = "Chat", icon = dev.yaac.android.ui.pane.TabIcon.Chat), showChat,
+            dot = if (browser["chatMarked"].flag()) c.accent else null) { send("browser.chat", mapOf("thread" to threadId)) }
+        Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+            for (info in infos) {
+                val selected = !showChat && browser["active"].scalarLong() == info.id
+                SideTab(info, selected, onClose = { send("browser.close", mapOf("thread" to threadId, "tab" to info.id)) }.takeIf { selected },
+                    onHold = { menu = info }) { send("browser.select", mapOf("thread" to threadId, "tab" to info.id)) }
             }
         }
-        Box(Modifier.size(40.dp).clip(RoundedCornerShape(6.dp)).clickable { setAdding(true) }, contentAlignment = Alignment.Center) { Icon(YIcon.CirclePlus, c.text, size = 20.dp, strokeWidth = 1.7f) }
+        if (tabs.size > 2) Box(Modifier.size(40.dp).clip(RoundedCornerShape(6.dp)).clickable(onClickLabel = "All tabs") { overflow = true }
+            .semantics { contentDescription = "All tabs (${tabs.size + 1})" }, contentAlignment = Alignment.Center) { PaneIcon(PaneGlyph.More, c.text, size = 20.dp) }
+        if (!showChat) {
+            val full = browser["fullScreen"].flag()
+            Box(Modifier.size(40.dp).clip(RoundedCornerShape(6.dp)).clickable { send("browser.fullScreen", mapOf("thread" to threadId, "fullScreen" to !full)) }
+                .semantics { contentDescription = if (full) "Restore" else "Full screen" }, contentAlignment = Alignment.Center) {
+                PaneIcon(if (full) PaneGlyph.Restore else PaneGlyph.Expand, c.text, size = 18.dp)
+            }
+        }
+        Box(Modifier.size(40.dp).clip(RoundedCornerShape(6.dp)).clickable { setAdding(true) }.semantics { contentDescription = "Open beside the chat" },
+            contentAlignment = Alignment.Center) { Icon(YIcon.CirclePlus, c.text, size = 20.dp, strokeWidth = 1.7f) }
     }
     if (adding) {
         // Each kind keeps the controller's reason when it is unavailable (no browser host, …).
-        val shells = browser["shells"].objects.map { ActionItem("shell:" + it["path"].str, it["name"].str, true, it["path"].text, false, null, emptyList(), false) }
+        val shells = browser["shells"].objects.map { item("shell:" + it["path"].str, it["name"].str, detail = it["path"].text) }
         val items = listOf(
-            ActionItem("files", "Files", browser["filesReason"].text == null, browser["filesReason"].text, false, null, emptyList(), false),
-            ActionItem("terminal", "Terminal", browser["terminalReason"].text == null, browser["terminalReason"].text, false, null,
-                if (shells.size > 1) listOf(ActionItem("terminal", "Default shell", true, null, false, null, emptyList(), false)) + shells else emptyList(), false),
-            ActionItem("browser", "Browser", browser["reason"].text == null, browser["reason"].text, false, null, emptyList(), false),
+            item("files", "Files", browser["filesReason"].text == null, browser["filesReason"].text),
+            item("terminal", "Terminal", browser["terminalReason"].text == null, browser["terminalReason"].text,
+                if (shells.size > 1) listOf(item("terminal", "Default shell")) + shells else emptyList()),
+            item("browser", "Browser", browser["reason"].text == null, browser["reason"].text),
         )
         ActionSheet("Open beside the chat", items, { setAdding(false) }) { a ->
             when {
@@ -163,23 +203,89 @@ fun SideTabs(browser: JsonElement?, threadId: String, send: (String, Any?) -> Un
             }
         }
     }
-    menu?.let { t ->
-        ActionSheet(t["title"].text ?: t["path"].text ?: t["kind"].str, listOf(ActionItem("close", "Close tab", true, null, false, null, emptyList(), false)), { menu = null }) {
-            send("browser.close", mapOf("thread" to threadId, "tab" to (t["id"] as? JsonPrimitive)?.content?.toLongOrNull()))
+    if (overflow) {
+        val items = listOf(item("chat", "Chat", detail = if (showChat) "Shown" else null)) + infos.map { i ->
+            item("tab:${i.id}", i.title, detail = listOfNotNull(i.detail, Tabs.describe(i, !showChat && browser["active"].scalarLong() == i.id).substringAfter(", ${i.title}").removePrefix(", ").takeIf { it.isNotEmpty() }).joinToString(" · ").ifEmpty { null })
+        }
+        ActionSheet("Tabs", items, { overflow = false }) { a ->
+            if (a.id == "chat") send("browser.chat", mapOf("thread" to threadId))
+            else send("browser.select", mapOf("thread" to threadId, "tab" to a.id.removePrefix("tab:").toLongOrNull()))
         }
     }
+    menu?.let { t ->
+        val terminal = t.kind == "terminal"
+        val items = listOfNotNull(
+            item("rename", "Rename").takeIf { terminal },
+            item("clearName", "Use the shell's title").takeIf { terminal },
+            item("restart", "Restart").takeIf { terminal && Tabs.canRestart(t) },
+            item("close", "Close tab", danger = false),
+        )
+        ActionSheet(listOfNotNull(t.title, t.detail).joinToString(" · "), items, { menu = null }) { a ->
+            when (a.id) {
+                "rename" -> renaming = t
+                "clearName" -> send("terminal.rename", mapOf("thread" to threadId, "tab" to t.id, "panel" to false, "data" to mapOf("name" to "")))
+                "restart" -> send("terminal.restart", mapOf("thread" to threadId, "tab" to t.id, "panel" to false, "data" to emptyMap<String, Any?>()))
+                "close" -> send("browser.close", mapOf("thread" to threadId, "tab" to t.id))
+            }
+        }
+    }
+    renaming?.let { t -> RenameDialog(t.title, { renaming = null }) { data -> send("terminal.rename", mapOf("thread" to threadId, "tab" to t.id, "panel" to false, "data" to data)) } }
+}
+
+/** Rename a terminal (E02, P343): the title selected; Save keeps it, Cancel or Back discards, Clear restores the shell's title. */
+@Composable
+private fun RenameDialog(original: String, onDone: () -> Unit, onSave: (Map<String, Any?>) -> Unit) {
+    val c = LocalYaac.current
+    val type = LocalType.current
+    var value by remember { mutableStateOf(TextFieldValue(original, TextRange(0, original.length))) }
+    val focus = remember { FocusRequester() }
+    fun save() { Rename.data(original, value.text)?.let(onSave); onDone() }
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDone) {
+        Column(Modifier.clip(RoundedCornerShape(8.dp)).background(c.raised).padding(20.dp)) {
+            T("Rename terminal", type.title)
+            BasicTextField(value, { value = it }, singleLine = true, textStyle = type.ui.copy(color = c.text, fontSize = 15.sp), cursorBrush = SolidColor(c.text),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { save() }),
+                modifier = Modifier.padding(top = 12.dp).fillMaxWidth().clip(RoundedCornerShape(6.dp)).background(c.input).padding(12.dp).focusRequester(focus)
+                    .onPreviewKeyEvent { e ->
+                        if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                        when (e.key) { Key.Enter -> { save(); true }; Key.Escape -> { onDone(); true }; else -> false }
+                    })
+            T("An empty name goes back to the shell's title.", type.small, c.muted, modifier = Modifier.padding(top = 6.dp))
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.End) {
+                TextAction("Clear") { value = TextFieldValue("") }
+                TextAction("Cancel") { onDone() }
+                PrimaryButton("Save") { save() }
+            }
+        }
+    }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
 }
 
 private fun JsonElement?.isNullishPrimitive() = this == null || this is kotlinx.serialization.json.JsonNull
-private fun JsonElement?.scalarLong() = (this as? JsonPrimitive)?.content?.toLongOrNull()
+internal fun JsonElement?.scalarLong() = (this as? JsonPrimitive)?.content?.toLongOrNull()
 
 @Composable
-private fun SideTab(label: String, selected: Boolean, mark: String? = null, onHold: (() -> Unit)? = null, onClick: () -> Unit) {
+private fun SideTab(info: TabInfo, selected: Boolean, dot: Color? = null, onClose: (() -> Unit)? = null, onHold: (() -> Unit)? = null, onClick: () -> Unit) {
     val c = LocalYaac.current
+    val type = LocalType.current
+    val tint = if (selected) c.text else c.muted
     Row(Modifier.padding(end = 4.dp).clip(RoundedCornerShape(6.dp)).background(if (selected) c.selected else Color.Transparent)
-        .tapAndHold(onClick, onHold).heightIn(min = 36.dp).padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-        T(label, LocalType.current.ui.copy(fontSize = 15.sp), if (selected) c.text else c.muted, maxLines = 1)
-        mark?.let { Spacer(Modifier.width(5.dp)); T(it, LocalType.current.monoSmall, gitColor(it, c)) }
+        .tapAndHold(onClick, onHold).semantics { contentDescription = Tabs.describe(info, selected) }
+        .heightIn(min = 36.dp).padding(start = 10.dp, end = if (onClose != null) 2.dp else 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        when (info.mark) {
+            // Loading replaces the icon; a bell flashes it in the warning colour.
+            TabMark.Loading -> Icon(YIcon.Spinner, c.muted, size = 14.dp, strokeWidth = 1.8f)
+            TabMark.Bell -> PaneIcon(PaneGlyph.Bell, c.warning, size = 14.dp, strokeWidth = 1.8f)
+            else -> PaneIcon(glyphOf(info.icon), if (info.mark == TabMark.Failed) c.failure else tint, size = 14.dp, strokeWidth = 1.8f)
+        }
+        Spacer(Modifier.width(6.dp))
+        T(info.title, type.ui.copy(fontSize = 15.sp), tint, maxLines = 1, modifier = Modifier.widthIn(max = 150.dp))
+        info.git?.let { Spacer(Modifier.width(5.dp)); T(it, type.monoSmall, gitColor(it, c)) }
+        if (info.mark == TabMark.Exited) { Spacer(Modifier.width(5.dp)); T("exit ${info.exitCode}", type.monoSmall, if (info.exitCode == 0) c.muted else c.failure) }
+        val mark = dot ?: if (info.mark == TabMark.Unseen) c.accent else null
+        mark?.let { Spacer(Modifier.width(5.dp)); Box(Modifier.size(6.dp).clip(CircleShape).background(it)) }
+        if (onClose != null) Box(Modifier.size(32.dp).clip(RoundedCornerShape(6.dp)).clickable(onClick = onClose).semantics { contentDescription = "Close ${info.title}" },
+            contentAlignment = Alignment.Center) { PaneIcon(PaneGlyph.Close, c.muted, size = 12.dp) }
     }
 }
 
@@ -190,7 +296,7 @@ fun gitColor(mark: String, c: YaacColors): Color = when (mark.firstOrNull()) {
     else -> c.muted
 }
 
-/** The active side tab's content (compact width replaces the chat with it). */
+/** The active side tab's content (compact width replaces the chat with it), with the pane's notice. */
 @Composable
 fun SideContent(browser: JsonElement?, threadId: String, side: SidePaneState, send: (String, Any?) -> Unit, modifier: Modifier = Modifier) {
     val c = LocalYaac.current
@@ -200,14 +306,19 @@ fun SideContent(browser: JsonElement?, threadId: String, side: SidePaneState, se
         when (tab?.get("kind").str) {
             // (the terminal pads its key row; the lists scroll under the navigation bar)
             "files" -> FilesTree(browser["files"].obj(), threadId, active, send)
-            "file", "diff" -> FileDocument(browser["files"].obj(), tab!!, threadId, active, side, send)
-            "terminal" -> Terminal(threadId, active, side.terminals[active ?: -1], send)
+            "file", "diff" -> FilePane(browser["files"].obj(), tab!!, threadId, active, side, send)
+            "terminal" -> TerminalPane(threadId, tab!!, side.terminals[active ?: -1], side, send)
             "browser" -> Column(Modifier.padding(20.dp)) {
                 T("Browser", LocalType.current.heading)
                 T(browser["reason"].text ?: tab?.get("error").text ?: "The page is shown on the desktop window.", LocalType.current.ui, c.muted, modifier = Modifier.padding(top = 6.dp))
                 tab?.get("url").text?.let { url -> TextAction("Open in the browser") { send("browser.external", mapOf("thread" to threadId, "tab" to active)) }; T(url, LocalType.current.monoSmall, c.muted) }
             }
             else -> {}
+        }
+        side.notice?.let { n ->
+            LaunchedEffect(n) { kotlinx.coroutines.delay(3000); if (side.notice == n) side.notice = null }
+            T(n, LocalType.current.small, c.text, modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
+                .clip(RoundedCornerShape(6.dp)).background(c.raised).padding(horizontal = 12.dp, vertical = 6.dp))
         }
     }
 }
@@ -267,175 +378,34 @@ private fun FilesTree(view: JsonObject?, threadId: String, tab: Long?, send: (St
     }
 }
 
-/** A file or a diff (A23), from the assembled `filesDocument`. Unified at compact width. */
-@Composable
-private fun FileDocument(view: JsonObject?, tab: JsonObject, threadId: String, tabId: Long?, side: SidePaneState, send: (String, Any?) -> Unit) {
-    val c = LocalYaac.current
-    val type = LocalType.current
-    val docId = view?.get("document").scalarLong()
-    val doc = docId?.let { side.documents[it] }
-    // The phone shows diffs unified; ask the controller for the unified rows.
-    LaunchedEffect(view?.get("sideBySide")) {
-        if (tab["kind"].str == "diff" && view?.get("sideBySide").flag()) send("files.mode", mapOf("thread" to threadId, "tab" to tabId, "data" to mapOf("sideBySide" to false)))
-    }
-    Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            T(tab["path"].str, type.mono, maxLines = 1, modifier = Modifier.weight(1f))
-            tab["mark"].text?.let { T(it, type.mono, gitColor(it, c)) }
-            if (tab["kind"].str == "diff") view?.get("changeCount").int?.let { T("  $it changes", type.small, c.muted) }
-        }
-        (view?.get("status").text)?.let { T(it, type.ui, c.muted, modifier = Modifier.padding(16.dp)) }
-        if (doc == null) { if (view?.get("status").text == null) T("Loading…", type.small, c.muted, modifier = Modifier.padding(16.dp)); return }
-        val lines: List<AnnotatedString> = remember(doc) { codeLines(doc, c) }
-        Box(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
-            LazyColumn(Modifier.width(1400.dp).fillMaxSize()) {
-                items(lines.size) { i -> BasicText(lines[i], style = type.mono.copy(fontSize = 12.sp, color = c.text), softWrap = false, modifier = Modifier.padding(horizontal = 8.dp)) }
-            }
-        }
-    }
-}
-
-private fun scopeColor(scope: String, c: YaacColors): Color? = when {
-    scope.contains("comment") -> c["YaacCodeComment"]
-    scope.contains("string") -> c["YaacCodeString"]
-    scope.contains("keyword") || scope.contains("storage") -> c["YaacCodeKeyword"]
-    scope.contains("number") || scope.contains("constant") -> c["YaacCodeNumber"]
-    scope.contains("type") || scope.contains("entity") -> c["YaacCodeType"]
-    else -> null
-}
-
-/** A source's lines, coloured by its syntax spans (UTF-16 ranges, as the wire carries them). */
-private fun sourceLines(src: JsonObject?, c: YaacColors): List<AnnotatedString> {
-    val text = src?.get("text").str
-    val styles = src?.get("styles").obj()
-    return text.split('\n').mapIndexed { i, line ->
-        val spans = styles?.get(i.toString())?.get("spans").objects
-        if (spans.isEmpty()) AnnotatedString(line) else buildAnnotatedString {
-            append(line)
-            for (s in spans) {
-                val a = s["start"].int ?: continue; val b = s["end"].int ?: continue
-                scopeColor(s["scope"].str, c)?.let { col -> if (a in 0..b && b <= line.length) addStyle(SpanStyle(color = col), a, b) }
-            }
-        }
-    }
-}
-
-private fun codeLines(doc: JsonObject, c: YaacColors): List<AnnotatedString> {
-    doc["file"].obj()?.let { file ->
-        val lines = sourceLines(file, c)
-        val w = lines.size.toString().length
-        return lines.mapIndexed { i, l -> buildAnnotatedString { withStyle(SpanStyle(color = c.muted)) { append((i + 1).toString().padStart(w) + "  ") }; append(l) } }
-    }
-    val old = sourceLines(doc["old"].obj(), c)
-    val new = sourceLines(doc["new"].obj(), c)
-    val out = ArrayList<AnnotatedString>()
-    for (r in doc["rows"].list) {
-        val row = r as? JsonArray ?: continue
-        val o = (row.getOrNull(0) as? JsonPrimitive)?.content?.toIntOrNull()
-        val n = (row.getOrNull(1) as? JsonPrimitive)?.content?.toIntOrNull()
-        val count = (row.getOrNull(2) as? JsonPrimitive)?.content?.toIntOrNull() ?: 0
-        out += when {
-            count > 0 -> buildAnnotatedString { withStyle(SpanStyle(color = c.muted)) { append("   ⋯ $count unchanged lines") } }
-            o != null && n != null -> buildAnnotatedString { append("   "); append(new.getOrElse(n) { AnnotatedString("") }) }
-            o != null -> buildAnnotatedString { withStyle(SpanStyle(background = c["YaacDiffRemoved"])) { withStyle(SpanStyle(color = c.failure)) { append(" - ") }; append(old.getOrElse(o) { AnnotatedString("") }) } }
-            n != null -> buildAnnotatedString { withStyle(SpanStyle(background = c["YaacDiffAdded"])) { withStyle(SpanStyle(color = c.success)) { append(" + ") }; append(new.getOrElse(n) { AnnotatedString("") }) } }
-            else -> AnnotatedString("")
-        }
-    }
-    return out
-}
-
-/**
- * The terminal (A24): the controller's grid, sized to the pane (`terminal.resize`), with the
- * keyboard sent as text and keys, and a row of the keys a touch keyboard lacks.
- */
-@Composable
-private fun Terminal(threadId: String, tab: Long?, grid: TerminalGrid?, send: (String, Any?) -> Unit) {
-    val c = LocalYaac.current
-    val type = LocalType.current
-    val style = type.mono.copy(fontSize = 12.sp, lineHeight = 15.sp)
-    val measurer = rememberTextMeasurer()
-    val cell = remember(style) { measurer.measure("MMMMMMMMMM", style).size.let { it.width / 10f to it.height.toFloat() } }
-    var ctrl by remember { mutableStateOf(false) }
-    val focus = remember { FocusRequester() }
-    fun input(name: String, data: Map<String, Any?>) = send("terminal.$name", mapOf("thread" to threadId, "tab" to tab, "panel" to false, "data" to data))
-    val sentinel = "​"
-    var field by remember { mutableStateOf(TextFieldValue(sentinel, TextRange(1))) }
-    Column(Modifier.fillMaxSize().background(c.input)) {
-        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().clickable { runCatching { focus.requestFocus() } }.padding(6.dp)) {
-            val density = LocalDensity.current
-            val cols = (with(density) { maxWidth.toPx() } / cell.first).toInt().coerceAtLeast(2)
-            val rows = (with(density) { maxHeight.toPx() } / cell.second).toInt().coerceAtLeast(1)
-            LaunchedEffect(tab, cols, rows) {
-                input("resize", mapOf("cols" to cols, "rows" to rows, "cellWidth" to cell.first.toInt(), "cellHeight" to cell.second.toInt(), "dark" to c.dark))
-                input("focus", mapOf("focused" to true))
-            }
-            if (grid == null) T("Starting the terminal…", type.small, c.muted)
-            else Column {
-                val cursor = grid.cursor
-                val cc = (cursor?.getOrNull(0) as? JsonPrimitive)?.content?.toIntOrNull()
-                val cr = (cursor?.getOrNull(1) as? JsonPrimitive)?.content?.toIntOrNull()
-                val visible = (cursor?.getOrNull(2) as? JsonPrimitive)?.content != "hidden"
-                for (r in 0 until grid.height) {
-                    BasicText(terminalRow(grid.rows[r], if (visible && r == cr) cc else null, c), style = style.copy(color = c.text), softWrap = false, maxLines = 1)
-                }
-            }
-            // The keyboard: an invisible field keeps a one-character sentinel, so a deletion is
-            // seen as Backspace and anything typed is sent as text.
-            BasicTextField(field, { v ->
-                val text = v.text
-                when {
-                    text.length < sentinel.length -> input("key", mapOf("key" to "Backspace", "mods" to 0))
-                    text.length > sentinel.length -> {
-                        val typed = text.removePrefix(sentinel)
-                        if (ctrl && typed.length == 1) { input("key", mapOf("key" to typed.lowercase(), "mods" to 4)); ctrl = false }
-                        else input("text", mapOf("text" to typed, "mods" to 0))
-                    }
-                }
-                field = TextFieldValue(sentinel, TextRange(1))
-            }, modifier = Modifier.size(1.dp).alpha(0f).focusRequester(focus).onPreviewKeyEvent { e ->
-                if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
-                val name = when (e.key) { Key.Enter -> "Enter"; Key.Tab -> "Tab"; Key.Escape -> "Escape"; Key.DirectionUp -> "Up"; Key.DirectionDown -> "Down"
-                    Key.DirectionLeft -> "Left"; Key.DirectionRight -> "Right"; else -> null } ?: return@onPreviewKeyEvent false
-                input("key", mapOf("key" to name, "mods" to 0)); true
-            }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii, imeAction = ImeAction.Send, autoCorrectEnabled = false),
-                keyboardActions = KeyboardActions(onSend = { input("key", mapOf("key" to "Enter", "mods" to 0)) }))
-        }
-        // The keys a touch keyboard lacks.
-        Row(Modifier.fillMaxWidth().background(c.panel).navigationBarsPadding().horizontalScroll(rememberScrollState()).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextAction("Ctrl", color = if (ctrl) c.warning else c.text, style = type.mono) { ctrl = !ctrl; runCatching { focus.requestFocus() } }
-            for ((label, key) in listOf("Esc" to "Escape", "Tab" to "Tab", "↑" to "Up", "↓" to "Down", "←" to "Left", "→" to "Right", "⏎" to "Enter"))
-                TextAction(label, style = type.mono) { input("key", mapOf("key" to key, "mods" to 0)) }
-            TextAction("Restart", style = type.small) { input("restart", emptyMap()) }
-        }
-    }
-}
-
-/** One row of runs, laid out by column, with the cursor cell inverted. */
-private fun terminalRow(runs: JsonArray?, cursorCol: Int?, c: YaacColors): AnnotatedString = buildAnnotatedString {
-    var col = 0
-    for (r in runs.orEmpty()) {
-        val run = r as? JsonArray ?: continue
-        val start = (run.getOrNull(0) as? JsonPrimitive)?.content?.toIntOrNull() ?: continue
-        val ink = (run.getOrNull(2) as? JsonPrimitive)?.content?.toLongOrNull()
-        val paper = (run.getOrNull(3) as? JsonPrimitive)?.content?.toLongOrNull() ?: -1
-        val flags = (run.getOrNull(4) as? JsonPrimitive)?.content?.toIntOrNull() ?: 0
-        val text = (run.getOrNull(5) as? JsonPrimitive)?.content ?: ""
-        if (start > col) { append(" ".repeat(start - col)); col = start }
-        withStyle(SpanStyle(
-            color = ink?.let { Color(0xFF000000 or (it and 0xFFFFFF)) } ?: Color.Unspecified,
-            background = if (paper >= 0) Color(0xFF000000 or (paper and 0xFFFFFF)) else Color.Unspecified,
-            fontWeight = if (flags and 1 != 0) FontWeight.Bold else null,
-            fontStyle = if (flags and 2 != 0) FontStyle.Italic else null,
-            textDecoration = when { flags and 4 != 0 -> TextDecoration.Underline; flags and 32 != 0 -> TextDecoration.LineThrough; else -> null },
-        )) { append(text) }
-        col += text.length
-    }
-    if (cursorCol != null) {
-        if (cursorCol >= length) append(" ".repeat(cursorCol - length + 1))
-        addStyle(SpanStyle(background = c.text, color = c.canvas), cursorCol, cursorCol + 1)
-    }
-}
-
 /** Whether the chat is shown (no side tab active, or the chat chosen). */
 fun showsChat(browser: JsonElement?): Boolean = browser["active"].isNullishPrimitive() || browser["chat"].flag() || browser["tabs"].objects.isEmpty()
+
+/** A multi-line paste into a terminal waits for a decision (`terminal.pasteDecision`, E07). */
+@Composable
+fun PasteConfirm(p: JsonObject, send: (String, Any?) -> Unit, onDone: () -> Unit) {
+    val c = LocalYaac.current
+    var remember by remember { mutableStateOf(false) }
+    fun decide(allow: Boolean) {
+        send("terminal.pasteDecision", mapOf("thread" to p["thread"].str, "tab" to p["tab"].scalarLong(), "panel" to p["panel"].flag(),
+            "data" to mapOf("token" to p["token"].scalarLong(), "allow" to allow, "remember" to (allow && remember))))
+        onDone()
+    }
+    androidx.compose.ui.window.Dialog(onDismissRequest = { decide(false) }) {
+        Column(Modifier.clip(RoundedCornerShape(8.dp)).background(c.raised).padding(20.dp)) {
+            T(TermPaste.question(p["lines"].int ?: 2), LocalType.current.title)
+            T("The shell did not ask for bracketed paste, so each line runs as a command.", LocalType.current.ui, c.muted, modifier = Modifier.padding(top = 6.dp))
+            Row(Modifier.padding(top = 10.dp).clickable { remember = !remember }.semantics { contentDescription = "Don't ask again, " + if (remember) "on" else "off" },
+                verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(18.dp).clip(RoundedCornerShape(4.dp)).background(if (remember) c.accent else c.input), contentAlignment = Alignment.Center) {
+                    if (remember) Icon(YIcon.Check, c.onAccent, size = 14.dp)
+                }
+                Spacer(Modifier.width(8.dp)); T("Don't ask again", LocalType.current.ui)
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.End) {
+                TextAction("Cancel") { decide(false) }
+                PrimaryButton("Paste") { decide(true) }
+            }
+        }
+    }
+}
