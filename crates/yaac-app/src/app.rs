@@ -1859,14 +1859,27 @@ impl YaacApp {
 
     /// Window-side choices stored in the hub (read from its cache file, or with
     /// `hub/uiState/get` on another machine) become this window's.
+    ///
+    /// A choice made here before they arrived (the user picked a theme right after connecting)
+    /// wins over the stored value: it is kept, and [`Self::persist_prefs`] sends it next.
     pub(crate) fn apply_stored_prefs(&mut self, stored: &[(String, serde_json::Value)]) {
-        let mut p = self.ui.prefs();
+        let mut local = self.ui.prefs();
+        local.diff_side_by_side = self.browsers.side_by_side;
+        let made_here: Vec<&str> = local
+            .changed(&self.saved_prefs)
+            .into_iter()
+            .filter(|&k| k != yaac_core::prefs::keys::COMPOSER_HISTORY)
+            .collect();
+        let mut p = local.clone();
         for (k, v) in stored {
             p.load(k, v);
         }
+        self.saved_prefs = p.clone();
+        for k in made_here {
+            p.load(k, &local.value(k));
+        }
         self.ui.load_prefs(&p);
         self.browsers.side_by_side = p.diff_side_by_side;
-        self.saved_prefs = p;
         self.applied = None;
     }
 
@@ -1879,7 +1892,13 @@ impl YaacApp {
             return;
         }
         #[cfg(feature = "hub")]
-        if self.hub.as_ref().is_some_and(|h| h.prefs_loaded) {
+        if let Some(h) = &self.hub {
+            // Until the hub's stored choices arrive, a change here stays pending: it is not
+            // folded into `saved_prefs`, so `apply_stored_prefs` keeps it over the stored value
+            // and it is sent once they are in.
+            if !h.prefs_loaded {
+                return;
+            }
             for k in now.changed(&self.saved_prefs) {
                 if k != yaac_core::prefs::keys::COMPOSER_HISTORY {
                     self.client.set_ui_state(k, &now.value(k));
@@ -2424,6 +2443,96 @@ pub(crate) mod tests {
         wait(|app| app.ui.composer_history_loading.is_none(), &mut app);
         assert_eq!(app.ui.composer_history.as_ref(), &["Sent during the read", "Remember me"]);
         hub.join().unwrap();
+    }
+
+    /// A choice made on a remote client before the hub's stored choices arrive wins over them
+    /// and is written to the hub (the CI race in `tests/two_hubs.rs`).
+    #[cfg(feature = "hub")]
+    #[test]
+    fn a_choice_made_before_the_stored_ones_arrive_wins_and_is_written() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+        use serde_json::json;
+        use yaac_core::client::hub_names;
+        use yaac_core::prefs::keys;
+        use yaac_protocol::frame::{Frame, FrameDecoder, encode_message_frame};
+        use yaac_protocol::rpc::Message;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let config = AttachConfig::remote(listener.local_addr().unwrap().to_string(), yaac_hub::HubPaths::under(dir.path()));
+        let (asked_tx, asked_rx) = std::sync::mpsc::channel::<()>();
+        let (answer_tx, answer_rx) = std::sync::mpsc::channel::<()>();
+        let hub = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut decoder = FrameDecoder::new();
+            let mut buf = [0; 4096];
+            let mut sets = Vec::new();
+            while sets.is_empty() {
+                let size = stream.read(&mut buf).unwrap();
+                assert!(size > 0);
+                for frame in decoder.decode(&buf[..size]).unwrap() {
+                    let Frame::Message(bytes) = frame else { continue };
+                    let Message::Request { id, method, params } = serde_json::from_slice(&bytes).unwrap() else { continue };
+                    let result = match method.as_str() {
+                        yaac_protocol::attach::names::HELLO => json!({ "build": crate::BUILD, "targets": [] }),
+                        hub_names::UI_STATE_GET => {
+                            // The hub is slow: the user chooses before it answers.
+                            asked_tx.send(()).unwrap();
+                            answer_rx.recv().unwrap();
+                            json!({ "values": { (keys::THEME): "dark", (keys::FONT_SIZE): 16.0 } })
+                        }
+                        hub_names::UI_STATE_SET => {
+                            sets.push((params["key"].clone(), params["value"].clone()));
+                            json!({})
+                        }
+                        _ => json!({}),
+                    };
+                    let mut bytes = Vec::new();
+                    encode_message_frame(&serde_json::to_vec(&Message::Response { id, result }).unwrap(), &mut bytes).unwrap();
+                    stream.write_all(&bytes).unwrap();
+                }
+            }
+            sets
+        });
+        let ctx = egui::Context::default();
+        let launch = crate::Launch {
+            demo: None,
+            theme: ThemeChoice::Dark,
+            shots: None,
+            host_windows: false,
+            attach: Some(config),
+            display: crate::display::DisplayState::default(),
+            shell: crate::tray::Shell::new(),
+            tray: false,
+            updater: crate::updater::Updater::off("tests"),
+        };
+        let mut app = YaacApp::from_ctx(&ctx, launch);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while asked_rx.try_recv().is_err() {
+            assert!(Instant::now() < deadline, "the hub was not asked for the stored choices");
+            app.client.pump();
+            app.hub_upkeep();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        app.apply(vec![Action::Theme(ThemeChoice::Light)]);
+        app.persist_prefs();
+        answer_tx.send(()).unwrap();
+        while !app.hub.as_ref().unwrap().prefs_loaded {
+            assert!(Instant::now() < deadline, "the stored choices did not arrive");
+            app.client.pump();
+            app.hub_upkeep();
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        // The user's theme stays; a stored choice they did not touch is taken.
+        assert_eq!(app.ui.theme, ThemeChoice::Light);
+        assert_eq!(app.ui.font_size, 16.0);
+        app.persist_prefs();
+        let sets = hub.join().unwrap();
+        assert_eq!(sets, vec![(json!(keys::THEME), app.ui.prefs().value(keys::THEME))]);
+        assert_ne!(app.ui.prefs().value(keys::THEME), json!("dark"));
     }
 
     pub(crate) fn worker_mode_dialog(ctx: &egui::Context) -> YaacApp {

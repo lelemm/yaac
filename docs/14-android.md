@@ -119,7 +119,8 @@ hub reaches another, and each hub still sees one ordinary client.
   returns to that controller.
 - **Each hub's own choices.** Each controller asks its own hub for the stored choices
   (`hub/uiState/get`), such as the theme, and writes them back there. Two hubs can have two
-  themes.
+  themes. A choice made before the stored ones arrive (right after connecting, or while
+  reattaching) wins: it is kept over the stored value and written to the hub once they are in.
 - **Which hub is which.** `hub/hello` names the hub: `hubId` (stable per hub install) and
   `hostName` (the PC's name) ([02](02-architecture.md#attaching-over-tailscale)). The shell view
   shows them as `hub.id`, `hub.name` and `hub.address` (the address the controller dials). Two saved
