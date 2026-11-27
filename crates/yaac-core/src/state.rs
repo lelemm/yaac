@@ -317,6 +317,76 @@ pub struct HubState {
     /// An update of the hub's computer (`hub/update/request`): the one this client asked for,
     /// or, in a window on that computer, one the phone asked for.
     pub host_update: Option<HostUpdate>,
+    /// Where the hub can move (`hub/transfer/candidates`), once asked: every target, with
+    /// whether it can take the hub and why not (docs/15-hub-transfer.md).
+    pub transfer_candidates: Option<Result<Vec<yaac_protocol::attach::HubTransferCandidate>, String>>,
+    /// The transfer of this hub to another machine, as `hub/transfer/progress` last said.
+    pub transfer: Option<HubTransfer>,
+    /// The hub moved (`hub/moved`): where it is now. Kept until this client stops.
+    pub moved: Option<yaac_protocol::attach::HubMoved>,
+}
+
+/// A transfer of the hub to another machine (`hub/transfer/start`, then its progress).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HubTransfer {
+    pub op_id: Option<yaac_protocol::OpId>,
+    pub target_id: TargetId,
+    pub phase: HubTransferPhase,
+    /// Bytes so far and in all while copying.
+    pub done: Option<u64>,
+    pub total: Option<u64>,
+    /// The hub's words about this step, or why it failed.
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HubTransferPhase {
+    /// Sent; not accepted yet.
+    Requesting,
+    Checking,
+    Installing,
+    Copying,
+    HandingOver,
+    Moved,
+    /// Refused or failed (nothing has moved before the hand-over). Never retried by itself.
+    Failed,
+    /// A phase this build does not know, as the hub named it.
+    Other(String),
+}
+
+impl HubTransferPhase {
+    /// From the wire's phase name.
+    pub fn from_wire(phase: &str) -> Self {
+        use yaac_protocol::attach::hub_transfer as p;
+        match phase {
+            p::CHECKING => Self::Checking,
+            p::INSTALLING => Self::Installing,
+            p::COPYING => Self::Copying,
+            p::HANDING_OVER => Self::HandingOver,
+            p::MOVED => Self::Moved,
+            p::FAILED => Self::Failed,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+
+    /// Running: a second transfer is not offered.
+    pub fn active(&self) -> bool {
+        !matches!(self, Self::Failed | Self::Moved)
+    }
+
+    /// The step, for people.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Requesting => "Starting the transfer…".into(),
+            Self::Checking => "Checking the machine…".into(),
+            Self::Installing => "Installing YAAC there…".into(),
+            Self::Copying => "Copying the hub's data…".into(),
+            Self::HandingOver => "Handing over…".into(),
+            Self::Moved => "The hub has moved.".into(),
+            Self::Failed => "The transfer failed. Nothing has moved.".into(),
+            Self::Other(phase) => phase.clone(),
+        }
+    }
 }
 
 /// An update of the hub's computer to another YAAC build (docs/install.md#updating-from-the-phone).

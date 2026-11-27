@@ -20,7 +20,7 @@ use crate::attachments::DraftRef;
 use crate::key::ThreadKey;
 use crate::link::HubLink;
 use crate::mode_confirm::{ModePick, ModeTarget};
-use crate::state::{AppState, Draft, ForkPreviewState, FsListingState, HelloOutcome, HostUpdate, HostUpdatePhase, NewThreadDraft, Selection};
+use crate::state::{AppState, Draft, ForkPreviewState, FsListingState, HelloOutcome, HostUpdate, HostUpdatePhase, HubTransferPhase, NewThreadDraft, Selection};
 
 /// Hub-side attach methods this client uses beyond `yaac_protocol::attach` (the hub's own
 /// additions; the names are the hub's, repeated here because this crate cannot depend on it).
@@ -153,6 +153,10 @@ enum Call {
     Shutdown,
     /// `hub/update/request` (frozen): update the hub's computer to this build.
     HostUpdate,
+    /// `hub/transfer/candidates`.
+    TransferCandidates,
+    /// `hub/transfer/start` for this attempt.
+    TransferStart(OpId),
     TargetChanged,
     /// **Update now** (`hub/targets/updateDaemon`) for this target.
     UpdateDaemon(TargetId),
@@ -1172,6 +1176,18 @@ impl Client {
                     u.phase = HostUpdatePhase::Downloading { done: 0, total: result["size"].as_u64().unwrap_or(0) };
                 }
             }
+            Call::TransferCandidates => {
+                self.state.hub.transfer_candidates = Some(
+                    serde_json::from_value::<attach::HubTransferCandidatesResult>(result)
+                        .map(|r| r.candidates)
+                        .map_err(|_| "The hub's answer could not be read.".to_owned()),
+                );
+            }
+            Call::TransferStart(op) => {
+                if let Some(t) = self.state.hub.transfer.as_mut().filter(|t| t.op_id.as_ref() == Some(&op) && t.phase == HubTransferPhase::Requesting) {
+                    t.phase = HubTransferPhase::Checking;
+                }
+            }
             Call::TargetChanged => {
                 self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
             }
@@ -1749,6 +1765,18 @@ impl Client {
                     });
                 }
             }
+            Call::TransferCandidates => self.state.hub.transfer_candidates = Some(Err(error.message.clone())),
+            Call::TransferStart(op) => {
+                if let Some(t) = self.state.hub.transfer.as_mut().filter(|t| t.op_id.as_ref() == Some(&op) && t.phase == HubTransferPhase::Requesting) {
+                    // Never sent again by itself (invariant 10): an unknown outcome is said.
+                    t.phase = HubTransferPhase::Failed;
+                    t.message = Some(if error.code == ErrorCode::OutcomeUnknown {
+                        "The connection to the hub was lost before it answered: whether the transfer started is not known.".into()
+                    } else {
+                        error.message.clone()
+                    });
+                }
+            }
             Call::ForkPreview { key, instance } => {
                 self.state.fork_previews.insert((key, instance), ForkPreviewState::Failed(error.message.clone()));
             }
@@ -1839,6 +1867,12 @@ impl Client {
         }
         match method {
             attach::names::UPDATE_PROGRESS => self.on_host_update_progress(params),
+            attach::names::TRANSFER_PROGRESS => self.on_transfer_progress(params),
+            attach::names::MOVED => {
+                if let Ok(moved) = serde_json::from_value::<attach::HubMoved>(params) {
+                    self.state.hub.moved = Some(moved);
+                }
+            }
             attach::names::CATALOG_SKILLS_CHANGED => self.catalog_list(),
             "hub/approvals/settings" => {
                 if let Ok(models) = serde_json::from_value(params) { self.state.hub.explanations = models; }
@@ -3202,6 +3236,37 @@ impl Client {
         let op = self.op_id();
         self.state.hub.host_update = Some(HostUpdate { build: self.build.clone(), phase: HostUpdatePhase::Requesting, requested_here: true });
         self.request(attach::names::UPDATE_REQUEST, json!({ "build": self.build, "opId": op }), Call::HostUpdate);
+    }
+
+    /// Asks the hub where it could move (`hub/transfer/candidates`); the answer replaces the
+    /// last one.
+    pub fn load_transfer_candidates(&mut self) {
+        self.request(attach::names::TRANSFER_CANDIDATES, json!({}), Call::TransferCandidates);
+    }
+
+    /// Moves the hub to `target` (`hub/transfer/start`): once per confirmation, nothing while
+    /// one runs, never sent again by itself (invariant 10).
+    pub fn start_hub_transfer(&mut self, target: &TargetId) {
+        if self.state.hub.transfer.as_ref().is_some_and(|t| t.phase.active()) {
+            return;
+        }
+        let op = self.op_id();
+        self.state.hub.transfer = Some(crate::state::HubTransfer {
+            op_id: Some(op.clone()), target_id: target.clone(), phase: HubTransferPhase::Requesting,
+            done: None, total: None, message: None,
+        });
+        let params = attach::HubTransferStartParams { op_id: op.clone(), target_id: target.clone() };
+        self.request(attach::names::TRANSFER_START, serde_json::to_value(params).unwrap_or_default(), Call::TransferStart(op));
+    }
+
+    fn on_transfer_progress(&mut self, params: Value) {
+        let Ok(p) = serde_json::from_value::<attach::HubTransferProgress>(params) else { return };
+        let phase = HubTransferPhase::from_wire(&p.phase);
+        let message = p.message.or_else(|| (phase == HubTransferPhase::Failed).then(|| "The transfer failed.".to_owned()));
+        // Every client hears it: a transfer another client started is shown too.
+        self.state.hub.transfer = Some(crate::state::HubTransfer {
+            op_id: Some(p.op_id), target_id: p.target_id, phase, done: p.done, total: p.total, message,
+        });
     }
 
     fn on_host_update_progress(&mut self, params: Value) {
