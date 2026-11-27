@@ -92,12 +92,14 @@ fun relocate(old: List<String>, new: List<String>, anchor: String): String? {
  * Keeps the transcript's place (T02): applies the controller's restore anchor, reports the
  * first visible row as the user scrolls (`transcript.anchor`), and keeps the place when the row
  * at the top folds away. Call it beside the transcript's LazyColumn with its state; [onPinned]
- * stops following the end (an anchor was applied).
+ * stops following the end (an anchor was applied). While [hold] (the unread marker is placing
+ * its divider) the restore anchor waits; when [discard] changes (the divider took the place) the
+ * anchor waiting is dropped.
  */
 @OptIn(FlowPreview::class)
 @Composable
 fun KeepAnchor(transcript: JsonElement?, rows: List<JsonObject>, listState: LazyListState, follow: Boolean,
-    onPinned: () -> Unit, send: (String, Any?) -> Unit) {
+    onPinned: () -> Unit, send: (String, Any?) -> Unit, hold: Boolean = false, discard: Int = 0) {
     val threadId = transcript["threadId"].str
     val density = LocalDensity.current.density
     val restore = remember(threadId) { AnchorRestore() }
@@ -112,7 +114,10 @@ fun KeepAnchor(transcript: JsonElement?, rows: List<JsonObject>, listState: Lazy
     val token = transcript["anchorToken"].scalar
     val anchor by rememberUpdatedState(transcript["anchor"])
     LaunchedEffect(threadId, token) { restore.incoming(token, anchor)?.let { pending = it } }
-    LaunchedEffect(pending, ids) {
+    var discarded by remember(threadId) { mutableStateOf(discard) }
+    LaunchedEffect(pending, ids, hold, discard) {
+        if (discard != discarded) { discarded = discard; pending = null; return@LaunchedEffect }
+        if (hold) return@LaunchedEffect
         val pin = pending ?: return@LaunchedEffect
         val i = ids.indexOf(pin.id)
         if (i < 0) return@LaunchedEffect

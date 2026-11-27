@@ -76,6 +76,8 @@ fun ThreadScreen(
     val listState = remember(threadId) { androidx.compose.foundation.lazy.LazyListState(firstVisibleItemIndex = maxOf(0, rows.size - 1)) }
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
+    // The open visit's "Unread from here" clear, for the composer below the transcript.
+    val unreadClear = remember(threadId) { arrayOf<() -> Unit>({}) }
 
     Column(Modifier.fillMaxSize().background(c.canvas).statusBarsPadding().imePadding()) {
         Header(shell, onBack.takeIf { showBack }, onNeeds, send, { headerSheet = true },
@@ -111,6 +113,10 @@ fun ThreadScreen(
             haptics.performHapticFeedback(if (strong) androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress else androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
         }) {
             val height = maxHeight
+            var follow by remember(threadId) { mutableStateOf(true) }
+            // Where the user left off (docs/07-ui.md#unread-from-here-on-android): placed once on return.
+            val unread = dev.yaac.android.ui.transcript.rememberUnread(transcript, rows, listState, { follow = false }, send)
+            unreadClear[0] = unread::clear
             if (rows.isEmpty()) {
                 T(if (transcript["loading"].flag()) "Loading…" else transcript["emptyText"].str, type.ui, c.muted, modifier = Modifier.align(Alignment.Center))
             }
@@ -118,24 +124,41 @@ fun ThreadScreen(
             // One selection over the whole transcript, so it runs across rows (T05).
             androidx.compose.foundation.text.selection.SelectionContainer { LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = dev.yaac.android.ui.transcript.TimelineGutter, end = if (agents["visible"].flag() && agents["pill"]["rowIds"].list.isNotEmpty()) 54.dp else 14.dp, top = 4.dp, bottom = 12.dp)) {
                 items(rows, key = { it["id"].str }, contentType = { it["kind"].str }) { row ->
-                    TranscriptRow(row, threadId, states.of(threadId, row["id"].str)) { payload -> send("transcript.action", payload) }
+                    // "Unread from here": drawn inside the row's item, so row indices stay the list's.
+                    if (unread.dividerBefore == row["id"].str) Column {
+                        dev.yaac.android.ui.transcript.UnreadDivider(unread.count)
+                        TranscriptRow(row, threadId, states.of(threadId, row["id"].str)) { payload -> send("transcript.action", payload) }
+                    } else TranscriptRow(row, threadId, states.of(threadId, row["id"].str)) { payload -> send("transcript.action", payload) }
                 }
             } }
             dev.yaac.android.ui.transcript.TimelineOverlay(timelineState, prompts)
             // Follow the end while it is in view; page older and newer history at the edges.
             val atEnd by remember(listState) { derivedStateOf { !listState.canScrollForward } }
-            var follow by remember(threadId) { mutableStateOf(true) }
             // Only the user's own scrolling changes whether the end is followed; new rows do not.
+            val currentRows by androidx.compose.runtime.rememberUpdatedState(rows)
+            val dragged = remember(listState) { booleanArrayOf(false) }
             LaunchedEffect(listState) {
-                snapshotFlow { listState.isScrollInProgress }.collect { scrolling -> if (!scrolling) follow = !listState.canScrollForward }
+                listState.interactionSource.interactions.collect { if (it is androidx.compose.foundation.interaction.DragInteraction.Start) dragged[0] = true }
             }
-            dev.yaac.android.ui.transcript.KeepAnchor(transcript, rows, listState, follow, { follow = false }, send) // T02
+            LaunchedEffect(listState) {
+                snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+                    if (scrolling) return@collect
+                    follow = !listState.canScrollForward
+                    // The user scrolled past the divider to the end: it has done its job for this
+                    // visit. (Following the end as rows stream in does not count.)
+                    val byUser = dragged[0]
+                    dragged[0] = false
+                    val before = unread.dividerBefore
+                    if (byUser && follow && before != null && currentRows.indexOfFirst { it["id"].str == before } < listState.firstVisibleItemIndex) unread.clear()
+                }
+            }
+            dev.yaac.android.ui.transcript.KeepAnchor(transcript, rows, listState, follow, { follow = false }, send, hold = unread.busy, discard = unread.tookPlace) // T02
             val lastKey = rows.lastOrNull()?.hashCode()
             // Rows already seen: everything while the end is followed.
             var seenCount by remember(threadId) { mutableStateOf(rows.size) }
             if (follow && seenCount != rows.size) seenCount = rows.size
-            LaunchedEffect(threadId, rows.size, lastKey) {
-                if (follow && rows.isNotEmpty()) listState.scrollToItem(rows.size - 1, Int.MAX_VALUE / 2)
+            LaunchedEffect(threadId, rows.size, lastKey, unread.busy) {
+                if (follow && !unread.busy && rows.isNotEmpty()) listState.scrollToItem(rows.size - 1, Int.MAX_VALUE / 2)
             }
             val page = transcript["page"]
             val first by remember(listState) { derivedStateOf { listState.firstVisibleItemIndex } }
@@ -167,6 +190,8 @@ fun ThreadScreen(
             LaunchedEffect(focusToken, rows.size) {
                 val token = focusToken ?: return@LaunchedEffect
                 if (token == appliedFocus) return@LaunchedEffect
+                // The focus that the unread marker's own jump causes is the marker's to apply.
+                if (unread.jumping) { appliedFocus = token; return@LaunchedEffect }
                 val id = transcript["focusId"].text ?: return@LaunchedEffect
                 val i = rows.indexOfFirst { it["id"].str == id || it["actionId"].str == id }
                 if (i >= 0) { appliedFocus = token; follow = false; listState.animateScrollToItem(i) }
@@ -178,7 +203,7 @@ fun ThreadScreen(
             }
             if (!atEnd && !follow && rows.isNotEmpty()) {
                 Row(Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp).clip(RoundedCornerShape(16.dp)).background(c.raised)
-                    .clickable { scope.launch { follow = true; listState.scrollToItem(rows.size - 1, Int.MAX_VALUE / 2) } }.padding(horizontal = 14.dp, vertical = 7.dp),
+                    .clickable { scope.launch { unread.clear(); follow = true; listState.scrollToItem(rows.size - 1, Int.MAX_VALUE / 2) } }.padding(horizontal = 14.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     val fresh = rows.size - seenCount
                     T(when {
@@ -198,7 +223,8 @@ fun ThreadScreen(
             // The thread's harness logo for the model control (a started thread never changes provider).
             val logo = remember(sidebar, threadId) { threadLogo(sidebar, threadId) }
             androidx.compose.runtime.CompositionLocalProvider(LocalThreadTitle provides shell["title"].str) {
-                Composer(composer, send, history, logo)
+                // Sending a message ends the visit's "Unread from here" divider.
+                Composer(composer, { cmd, payload -> if (cmd == "composer.send" || cmd == "composer.sendNow") unreadClear[0](); send(cmd, payload) }, history, logo)
             }
         }
         }

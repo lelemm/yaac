@@ -105,6 +105,7 @@ fun SettingsScreen(view: JsonElement?, send: (String, Any?) -> Unit, onChangeHub
                     // This app's build against the hub's, and downloading another (ui/Updates.kt).
                     UpdatesRow()
                     VoiceLanguageRow()
+                    LeftOffRow()
                 }
             }
         } else {
@@ -484,5 +485,28 @@ private fun VoiceLanguageRow() {
                 if (tag == chosen) T("✓", type.ui, c.text)
             }
         }
+    }
+}
+
+/**
+ * Settings → Mark where I left off: this phone's own toggle (core/LeftOff.kt, on by default).
+ * With it on, a thread opens where you stopped reading, below "New since you left".
+ */
+@Composable
+private fun LeftOffRow() {
+    val c = LocalYaac.current
+    val type = LocalType.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var on by remember { mutableStateOf(dev.yaac.android.core.LeftOff.enabled(context)) }
+    Row(Modifier.fillMaxWidth().clickable(onClickLabel = if (on) "Turn off" else "Turn on") {
+        on = !on
+        dev.yaac.android.core.LeftOff.setEnabled(context, on)
+    }.heightIn(min = 52.dp).padding(horizontal = 20.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            T("Mark where I left off", type.ui.copy(fontSize = 16.sp))
+            T("Open a thread where you stopped reading, with a line above what is new", type.small, c.muted)
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(on, true)
     }
 }
