@@ -27,6 +27,7 @@ import { Forge, type ForgeOptions } from "../forge/forge.js";
 import { PrTools } from "../forge/pr-tools.js";
 import { Skills } from "./skills.js";
 import { RateLimits } from "./ratelimits.js";
+import { HubHost } from "./hub-host.js";
 
 /** The on-disk state format. Separate from the protocol version and the build. */
 export const STATE_FORMAT = 1;
@@ -65,6 +66,8 @@ export interface DaemonConfig {
   mesh?: Partial<Omit<MeshOptions, "log" | "socketPath" | "home" | "env">>;
   /** The forge's runners (tests stand in a fake `gh` / `az`). */
   forge?: Partial<Pick<ForgeOptions, "runner" | "http" | "now" | "minAskMs" | "debounceMs">>;
+  /** Allow a fixture server to deliver a hub binary over HTTP. */
+  hubHostAllowHttpForTests?: boolean;
 }
 
 interface StateFile {
@@ -112,6 +115,7 @@ export class Daemon implements FrozenCoreHost {
   private readonly logFile: string;
   private readonly startedAt = Date.now();
   private readonly clientOptions: ClientOptions;
+  private readonly hubHost?: HubHost;
   private markReady!: () => void;
   /** Resolves once state is loaded and providers are probed; connections wait for it. */
   readonly ready = new Promise<void>((resolve) => {
@@ -140,6 +144,9 @@ export class Daemon implements FrozenCoreHost {
       ...(config.controlRefreshMs !== undefined ? { controlRefreshMs: config.controlRefreshMs } : {}),
       ...(config.takeOverWaitMs !== undefined ? { takeOverWaitMs: config.takeOverWaitMs } : {}),
     });
+    if (process.platform === "linux") {
+      this.hubHost = new HubHost(config.env, () => this.core.uploads.allocateStream(), (l) => this.log(l), config.hubHostAllowHttpForTests);
+    }
     this.core.activity.on(() => this.checkIdle());
     // The agent mesh (WP7): its tools, mailbox, and the daemon side of the hub's relay.
     this.mesh = new Mesh(this.core, { ...config.mesh, log: (l) => this.log(l), socketPath: this.socketPath, home: config.home, env: config.env });
@@ -221,7 +228,13 @@ export class Daemon implements FrozenCoreHost {
         // `initialize` succeeded: from now on this connection is a host.
         if (!conn.isClosed) this.hosts.add(conn);
         setImmediate(() => this.checkIdle());
-        return new ClientSession(this.core, view, n, { diagnostics: () => this.diagnostics(), extraMethods: this.extraMethods, log: (l) => this.log(l) }, this.clientOptions);
+        return new ClientSession(this.core, view, n, {
+          diagnostics: () => this.diagnostics(),
+          extraMethods: this.extraMethods,
+          log: (l) => this.log(l),
+          hubHost: this.hubHost,
+          hubHostLaunchDone: () => this.checkIdle(),
+        }, this.clientOptions);
       },
       (l) => this.log(`[conn ${n}] ${l}`),
     );
@@ -244,6 +257,8 @@ export class Daemon implements FrozenCoreHost {
   }
 
   terminalSupport() { return { unavailableReason: terminalUnavailableReason }; }
+
+  hubHostSupported() { return this.hubHost !== undefined; }
 
   targetFacts(): TargetFacts {
     return targetFacts();
@@ -289,7 +304,7 @@ export class Daemon implements FrozenCoreHost {
   private checkIdle(): void {
     if (this.stopping) return;
     const b = this.core.busy();
-    const workIdle = b.runningTurns === 0 && b.pendingRequests === 0 && b.runningCommands === 0;
+    const workIdle = b.runningTurns === 0 && b.pendingRequests === 0 && b.runningCommands === 0 && !this.hubHost?.launching;
     if (this.handoverPending && workIdle) {
       // Attached clients do not hold a hand-over back.
       void this.stop("handover idle", false);
@@ -312,7 +327,7 @@ export class Daemon implements FrozenCoreHost {
       this.idleTimer = null;
       if (this.stopping) return;
       const now = this.core.busy();
-      if (this.hosts.size > 0 || now.runningTurns > 0 || now.pendingRequests > 0 || now.runningCommands > 0) return;
+      if (this.hosts.size > 0 || now.runningTurns > 0 || now.pendingRequests > 0 || now.runningCommands > 0 || this.hubHost?.launching) return;
       // A connection still within its handshake grace may be a host about to initialize: give it
       // the rest of its grace, never more.
       const youngest = Math.max(0, ...[...this.connections].filter((c) => !this.hosts.has(c)).map((c) => this.acceptedAt.get(c) ?? 0));
@@ -345,6 +360,7 @@ export class Daemon implements FrozenCoreHost {
             }),
         ),
       );
+      await this.hubHost?.waitForLaunch();
       this.mesh.close();
       this.forge.close();
       this.rateLimits.close();

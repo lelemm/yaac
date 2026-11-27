@@ -124,19 +124,27 @@ requests. They are items in the thread, answered with `request/respond`
 
 ### Hub transfer
 
-**Proposed (P408–P411).** A target advertising `hubHost` in `initialize.features` accepts
-these requests on its existing connection. State-changing calls use the same transfer `opId`
-throughout the attempt.
+**Proposed (P408–P411).** Linux daemons advertise `hubHost` in `initialize.features`.
+The current hub sends these requests over its existing target connection and uses one
+transfer `opId` throughout the attempt.
 
 | Message | Purpose |
 | --- | --- |
 | `hubHost/probe {}` | Returns `{ os, arch, tailscale: { running, login?, ips }, portFree, hubRunning, lastTransfer? }`. The optional outcome has `opId`, `status` and an optional `message`. |
-| `hubHost/install { opId, url, sha256, size }` | Downloads and verifies the exact release binary. Returns its staged `{ path }`. |
+| `hubHost/install { opId, url, sha256, size }` | Downloads the release binary over HTTPS, verifies size and SHA-256, and returns its executable staged `{ path }` under `transfer-<opId>/bin/yaac` in the YAAC data directory. |
 | `hubHost/progress { opId, done, total }` | Daemon notification with download progress in bytes. |
-| `hubHost/put { opId, name, size, sha256 }` | Opens a file stream and returns `{ stream, credit }`. Send bytes in data frames on that stream. The daemon grants additional byte credit via `stream/credit`. |
+| `hubHost/put { opId, name, size, sha256 }` | Opens a file stream and returns `{ stream, credit }`. Send bytes in data frames on that stream. The daemon grants additional byte credit via `stream/credit` and verifies size and SHA-256 before publishing the staged file. |
 | `hubHost/putComplete { stream, message? }` | Daemon notification after staging and verification. A message indicates failure. Wait for this outcome before advancing. |
-| `hubHost/start { opId, armOnClose }` | Validates staging and returns `{ armed: true }` for a deferred start when the connection closes. |
+| `hubHost/start { opId, armOnClose: true }` | Validates staging and returns `{ armed: true }`. When this connection closes, the daemon promotes the files into the hub's XDG config and data directories and saves any replaced files under `transfer-<opId>/replaced/`. |
 | `hubHost/abort { opId }` | Disarms startup and discards staging. Returns `{}`. |
+
+The accepted paths are `config/hub.json`, `data/{cache,relay,drafts}.sqlite`, `bin/yaac`,
+and YAAC-managed key files under `data/keys/<file>` or `data/ssh/keys/<server>/id_ed25519[.pub]`.
+`data/ssh/known_hosts` carries the host keys already trusted by the old hub.
+The daemon discards incomplete files when the transfer is aborted or the connection closes.
+The target uses `yaac-hub.service` when a systemd user manager is available. Other targets
+use YAAC's autostart command or launch the hub detached with output in `hub.log`. The
+daemon records the startup outcome as JSON in `transfer-<opId>.result` in the data directory.
 
 [Hub transfer](15-hub-transfer.md#how-it-works-p409)
 

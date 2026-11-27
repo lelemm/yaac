@@ -5,6 +5,7 @@
 import type { Duplex } from "node:stream";
 import { performance } from "node:perf_hooks";
 import type {
+  Capability,
   ClientInfo,
   DaemonBusy,
   DaemonInfo,
@@ -26,6 +27,7 @@ import type { Dialect, FeatureSet } from "./dialect.js";
 export interface FrozenCoreHost {
   /** Native PTY probe result, absent on hosts without a terminal backend. */
   terminalSupport?(): { unavailableReason?: string };
+  hubHostSupported?(): boolean;
   daemonInfo(): DaemonInfo;
   targetFacts(): TargetFacts;
   busy(): DaemonBusy;
@@ -346,10 +348,14 @@ export class ServerConnection implements ConnectionView {
     this.dialect = select(negotiated);
     this.clientInfo = client;
     const terminal = this.host.terminalSupport?.();
+    const capabilities: Capability[] = ["portForward", "fileView"];
+    if (terminal && !terminal.unavailableReason) capabilities.push("terminal");
+    capabilities.push("budgetTimeLimit", "transcription", "voiceCall", "voiceCallLanguage");
+    if (this.host.hubHostSupported?.()) capabilities.push("hubHost");
     const result = {
       protocol: negotiated.answer(),
       ...(p.messageChunks === true ? { messageChunks: true } : {}),
-      features: this.dialect.features().fold(terminal && !terminal.unavailableReason ? ["portForward", "fileView", "terminal", "budgetTimeLimit", "transcription", "voiceCall", "voiceCallLanguage"] : ["portForward", "fileView", "budgetTimeLimit", "transcription", "voiceCall", "voiceCallLanguage"]),
+      features: this.dialect.features().fold(capabilities),
       terminalUnavailableReason: terminal?.unavailableReason,
       schemaHash: this.dialect.schemaHash(),
       daemon: this.host.daemonInfo(),
