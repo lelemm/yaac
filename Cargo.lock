@@ -5542,6 +5542,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "fs4",
+ "image",
  "notify-rust",
  "rusqlite",
  "serde",

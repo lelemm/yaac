@@ -14,13 +14,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use image::ImageEncoder as _;
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use support::{BUILD, Client, Home, wait_until};
 use yaac_hub::protocol::{BlobAppendParams, names as ext};
 use yaac_hub::settings::TargetDef;
 use yaac_hub::{ConnectorFactory, HubConfig};
-use yaac_protocol::attach::ConnectionStatus;
+use yaac_protocol::attach::{self, ConnectionStatus, HubUploadPreviewParams, HubUploadPreviewResult};
+use yaac_protocol::rpc::ErrorCode;
 use yaac_protocol::rpc::Message;
 use yaac_protocol::{InputPart, Item, ItemBody, TargetId};
 use yaac_transport::{Connector, LocalConfig, LocalConnector};
@@ -236,6 +239,41 @@ fn write(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
     let path = dir.join(name);
     std::fs::write(&path, bytes).unwrap();
     path
+}
+
+#[test]
+fn upload_preview_returns_under_100_kb_for_a_5_mb_png() {
+    let Some(rig) = Rig::new(&["alpha"]) else { return };
+    let hub = rig.home.start_with(rig.config());
+    let c = hub.client();
+    let target = connect(&c, "alpha");
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(&noise(1_400 * 1_000 * 4, 7), 1_400, 1_000, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    assert!(png.len() > 5_000_000);
+    let path = write(rig.home.dir.path(), "large.png", &png);
+    let handle = start(&c, json!({ "target": target, "path": path }));
+    let done = Seen::default().done(&c, &handle);
+    assert!(done.get("error").is_none(), "{done}");
+    let mut params = HubUploadPreviewParams {
+        target,
+        upload_id: serde_json::from_value(done["uploadId"].clone()).unwrap(),
+        max_edge: 200,
+    };
+    let reply = c.call(attach::names::UPLOAD_PREVIEW, json!(params)).unwrap();
+    assert!(serde_json::to_vec(&reply).unwrap().len() < 100_000);
+    let preview: HubUploadPreviewResult = serde_json::from_value(reply).unwrap();
+    let bytes = STANDARD.decode(preview.png_base64).unwrap();
+    let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png).unwrap();
+    assert!((128..=params.max_edge).contains(&image.width()));
+    assert!((f64::from(image.width()) / f64::from(image.height()) - 1.4).abs() < 0.02);
+
+    params.max_edge = 0;
+    let error = c.call(attach::names::UPLOAD_PREVIEW, json!(params)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidParams);
+    drop(c);
+    hub.shutdown();
 }
 
 #[test]

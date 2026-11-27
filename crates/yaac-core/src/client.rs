@@ -121,6 +121,7 @@ enum Call {
     TakeOver(ThreadKey),
     Compact { key: ThreadKey, command: Option<String> },
     FsSearch(u64),
+    ImagePreview(u64),
     ImageChunk(u64),
     /// Generated artifact transfer.
     ArtifactChunk(u64),
@@ -246,6 +247,9 @@ pub struct Client {
     next_error: u64,
     /// The composer’s most recent file lookup.
     pub composer_files: Option<ComposerFiles>,
+    /// Inline previews returned by the hub. `Ok(None)` means the hub lacks this method.
+    pub image_previews: Vec<(u64, Result<Option<attach::HubUploadPreviewResult>, String>)>,
+    image_preview_supported: bool,
     /// Bounded image reads returned by the hub.
     pub image_chunks: Vec<(u64, Result<yaac_protocol::UploadReadResult, String>)>,
     /// Generated artifact transfer.
@@ -351,6 +355,8 @@ impl Client {
             next_error: 0,
             mode_results: HashMap::new(),
             composer_files: None,
+            image_previews: Vec::new(),
+            image_preview_supported: true,
             image_chunks: Vec::new(),
             artifact_chunks: Vec::new(),
             command_log: None,
@@ -799,6 +805,17 @@ impl Client {
         self.catalog_reply.take()
     }
 
+    /// Ask the hub to resize an image stored on a target. Returns false when this
+    /// attachment has already reported that it only supports chunk reads.
+    pub fn read_image_preview(&mut self, token: u64, target: &TargetId, upload_id: &yaac_protocol::UploadId, max_edge: u32) -> bool {
+        if !self.image_preview_supported {
+            return false;
+        }
+        let params = attach::HubUploadPreviewParams { target: target.clone(), upload_id: upload_id.clone(), max_edge };
+        self.request(attach::names::UPLOAD_PREVIEW, json!(params), Call::ImagePreview(token));
+        true
+    }
+
     /// Fetch one bounded chunk of an image stored on a connected target.
     pub fn read_image_chunk(&mut self, token: u64, target: &TargetId, id: &yaac_protocol::UploadId, offset: u64) {
         self.read_upload_chunk(target, id, offset, Call::ImageChunk(token));
@@ -936,6 +953,7 @@ impl Client {
                 }
                 self.state.hub.attached = true;
                 self.state.hub.outcome = HelloOutcome::Attached;
+                self.image_preview_supported = true;
                 // A dictation of an earlier attachment is gone with its stream.
                 self.voice_finish(Some("The connection to YAAC was interrupted.".into()));
                 // So is a call: the hub hung it up when this window's connection went away.
@@ -1237,6 +1255,7 @@ impl Client {
                     self.draft_changed(&DraftRef::Thread(key));
                 }
             }
+            Call::ImagePreview(id) => self.image_previews.push((id, serde_json::from_value(result).map(Some).map_err(|e| e.to_string()))),
             Call::ImageChunk(id) => self.image_chunks.push((id, serde_json::from_value(result).map_err(|e| e.to_string()))),
             Call::ArtifactChunk(id) => self.artifact_chunks.push((id, serde_json::from_value(result).map_err(|e| e.to_string()))),
             Call::FsSearch(id) => self.finish_composer_search(id, serde_json::from_value(result).map_err(|e| e.to_string())),
@@ -1518,6 +1537,11 @@ impl Client {
                 };
                 self.error(Some(key), message);
             }
+            Call::ImagePreview(id) if error.code == ErrorCode::MethodNotFound => {
+                self.image_preview_supported = false;
+                self.image_previews.push((id, Ok(None)));
+            }
+            Call::ImagePreview(id) => self.image_previews.push((id, Err(error.message.clone()))),
             Call::ImageChunk(id) => self.image_chunks.push((id, Err(error.message.clone()))),
             Call::ArtifactChunk(id) => self.artifact_chunks.push((id, Err(error.message.clone()))),
             Call::FsSearch(id) => self.finish_composer_search(id, Err(error.message.clone())),

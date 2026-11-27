@@ -156,9 +156,13 @@ Details that matter:
   types come from the thread's effective capabilities when the harness reports them. The MVP
   sends PNG, JPEG, GIF, and WebP as-is and rejects oversized images — by bytes and by pixel
   count — with a clear message. Downscaling on the host before upload is a later optimisation.
-- **Thumbnails.** The composer and expanded tool calls show thumbnails decoded at display size
-  on the host. The viewer requests missing image bytes in bounded chunks over the same
-  connection (`upload/read`). Codex's **Generate image** tool uses the same viewer in egui
+- **Thumbnails.** The composer decodes its draft images at display size. For uploads shown in
+  the transcript, the window calls `hub/upload/preview {target, uploadId, maxEdge}` (P396).
+  The hub reads the image in 512 KiB chunks over the existing target connection and uses its
+  worker pool to decode and resize it. It returns `{pngBase64}` in the bulk queue, capped at
+  a 220-pixel long edge and 72 KiB before base64. With a hub that lacks this method, the window
+  reads and decodes the original as before. Opening the viewer reads the original in bounded
+  chunks (`upload/read`). Codex's **Generate image** tool uses the same viewer in egui
   and WPF. `yaacd` snapshots the image when Codex supplies a saved path or inline image bytes,
   and keeps the reference in the transcript. Older recorded calls can recover their preview
   from the saved file or inline result that is still available.
@@ -247,7 +251,7 @@ The viewer opens fitted to the available space. Use the zoom controls or mouse w
 drag to pan, select **Reset** to restore the fitted view, or use **Close** or Escape to leave.
 
 Image results use the target's private temporary upload store. The transcript keeps references
-and the window reads the image in bounded chunks on the existing connection. Codex's native
+and the window requests thumbnails as they come into view. Codex's native
 image-view calls supply a target path, so an older call can show the file only if it is still
 readable on that target. YAAC does not fetch external image URLs. Images are decoded on a
 worker thread. The viewer bounds decoding and scales very large images to a 4,096-pixel

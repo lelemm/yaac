@@ -9,6 +9,7 @@ mod limits;
 mod preview;
 mod terminal;
 mod ssh;
+mod upload_preview;
 mod uploads;
 mod voice;
 mod voice_call;
@@ -137,6 +138,8 @@ pub(crate) enum CoreEvent {
     Ssh(ssh::SshEvent),
     /// A pool worker read the next chunk of an upload's file.
     UploadChunk { handle: String, offset: u64, result: Result<Vec<u8>, ErrorObject> },
+    /// A pool worker resized a target image for inline display.
+    UploadPreviewReady { client: ClientKey, id: RpcId, outcome: Result<Value, ErrorObject> },
     /// A loopback listener or browser socket reported progress.
     Preview(preview::Event),
     /// Attaching over Tailscale changed state.
@@ -209,6 +212,7 @@ enum Pending {
     UploadBegin { handle: String },
     UploadEnd { handle: String },
     UploadCancel { handle: String },
+    UploadPreview(upload_preview::PreviewRead),
     Terminal { client: ClientKey, id: RpcId, terminal: Option<String> },
     /// A `voice/*` request from a window (or the hub's own cancel).
     Voice { client: ClientKey, id: RpcId, ask: voice::VoiceAsk },
@@ -459,6 +463,7 @@ pub(crate) struct Core {
     /// Uploads in progress, by handle ([`uploads`]).
     uploads: HashMap<String, uploads::Upload>,
     upload_seq: u64,
+    upload_preview_slots: Arc<tokio::sync::Semaphore>,
     terminals: terminal::Relays,
     voice: voice::Relays,
     voice_calls: voice_call::Calls,
@@ -567,6 +572,7 @@ impl Core {
             unseen: loaded.unseen.into_iter().collect(),
             uploads: HashMap::new(),
             upload_seq: 0,
+            upload_preview_slots: Arc::new(tokio::sync::Semaphore::new(upload_preview::CONCURRENT_PREVIEWS)),
             terminals: Default::default(),
             voice: Default::default(),
             voice_calls: Default::default(),
@@ -723,6 +729,14 @@ impl Core {
             CoreEvent::UploadSource { handle, result } => self.on_upload_source(&handle, result),
             CoreEvent::UploadHashed { handle, result } => self.on_upload_hashed(&handle, result),
             CoreEvent::UploadChunk { handle, offset, result } => self.on_upload_chunk(&handle, offset, result),
+            CoreEvent::UploadPreviewReady { client, id, outcome } => match outcome {
+                Ok(result) => {
+                    if let Some(c) = self.clients.get(&client) {
+                        let _ = c.tx.bulk_reply(Message::Response { id, result });
+                    }
+                }
+                Err(error) => self.reply(client, id, Err(error)),
+            },
             CoreEvent::Preview(event) => self.preview_event(event),
             CoreEvent::Ssh(event) => self.on_ssh(event),
         }
@@ -768,6 +782,7 @@ impl Core {
         self.voice_call_window_closed(client);
         self.attach_tunnels_client_gone(client);
         self.browser_window_closed(client);
+        self.cancel_preview_reads(client);
         for key in c.subs {
             self.release(client, &key);
         }
@@ -1069,6 +1084,10 @@ impl Core {
             ext::names::UPLOAD_START => Some(parse::<ext::UploadStartParams>(params).and_then(|p| self.upload_start(p))),
             ext::names::UPLOAD_CANCEL => Some(parse::<ext::UploadHandleParams>(params).map(|p| self.upload_cancel(&p.handle))),
             ext::names::UPLOAD_LIST => Some(Ok(self.upload_list())),
+            attach::names::UPLOAD_PREVIEW => match parse(params).and_then(|p| self.upload_preview(client, id, p)) {
+                Ok(()) => None,
+                Err(error) => Some(Err(error)),
+            },
             name if name.starts_with("hub/terminal/") => self.terminal_request(client, id, name, params),
             name if name.starts_with("hub/voice/") => self.voice_request(client, id, name, params),
             name if name.starts_with("hub/voiceCall/") => self.voice_call_request(client, id, name, params),
@@ -1741,6 +1760,7 @@ impl Core {
                     self.broadcast(&Message::notification("hub/modeChange/result", json!({ "target": id, "thread": thread, "error": "Connection lost. The mode change outcome is unknown." })));
                     self.worker.submit(move |s| s.drafts.op_uncertain(&op).err().map(|e| CoreEvent::StoreError(e.to_string())));
                 }
+                Pending::UploadPreview(read) => self.close_preview_read(read),
                 Pending::Terminal { client, id, .. } => self.reply(client, id, Err(err(ErrorCode::OutcomeUnknown, "target disconnected before answering terminal request"))),
                 Pending::Voice { ask: voice::VoiceAsk::Quiet, .. } => {}
                 Pending::Voice { client, id, ask: voice::VoiceAsk::Start(_) } => {
@@ -2174,6 +2194,7 @@ impl Core {
             Pending::UploadBegin { handle } => self.on_upload_begun(id, &handle, outcome),
             Pending::UploadEnd { handle } => self.on_upload_ended(id, &handle, outcome),
             Pending::UploadCancel { handle } => self.on_upload_cancelled(&handle),
+            Pending::UploadPreview(read) => self.on_preview_chunk(id, read, outcome),
             Pending::Terminal { client, id: rid, terminal } => self.terminal_response(id, client, rid, method, terminal, outcome),
             Pending::Voice { client, id: rid, ask } => self.voice_response(id, client, rid, method, &ask, outcome),
             Pending::VoiceCall { client, id: rid, ask } => self.voice_call_response(id, client, rid, method, ask, outcome),
@@ -3310,6 +3331,7 @@ impl Core {
             }
         }
         self.expire_browser_calls(now);
+        self.expire_preview_reads(now);
         // Acknowledge what is committed.
         if now.duration_since(self.last_ack) >= self.cfg.ack_interval {
             self.last_ack = now;

@@ -1,5 +1,5 @@
-//! Shared image loading for the transcript and composer. Target reads are bounded on the
-//! existing hub connection, and the window's workers decode pixels off the UI thread.
+//! Shared image loading for the transcript and composer. The hub sends small previews of
+//! target uploads and the window's workers decode pixels off the UI thread.
 use std::collections::{HashMap, VecDeque};
 use std::io::{Cursor, Read};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -12,12 +12,14 @@ use yaac_core::{
     attachments::{DraftRef, Source},
     client::Client,
 };
+use yaac_protocol::attach::{UPLOAD_PREVIEW_MAX_BYTES, UPLOAD_PREVIEW_MAX_EDGE};
 use yaac_protocol::{TargetId, UploadId, UploadReadResult};
 
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_EDGE: u32 = 4096;
 const PREVIEWS: usize = 48;
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(20);
+const PREVIEW_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum ImageSource {
@@ -37,6 +39,12 @@ struct Transfer {
     job: Job,
     source: ReadSource,
     bytes: Vec<u8>,
+    deadline: Instant,
+}
+
+struct HubPreview {
+    token: u64,
+    job: Job,
     deadline: Instant,
 }
 
@@ -82,6 +90,7 @@ pub(crate) struct Images {
     recent: VecDeque<ImageSource>,
     queue: VecDeque<Job>,
     transfer: Option<Transfer>,
+    hub_preview: Option<HubPreview>,
     working: bool,
     wpf: bool,
 }
@@ -99,6 +108,7 @@ impl Images {
             recent: VecDeque::new(),
             queue: VecDeque::new(),
             transfer: None,
+            hub_preview: None,
             working: false,
             wpf: false,
         }
@@ -248,6 +258,12 @@ impl Images {
         if self.working || self.transfer.is_some() {
             return;
         }
+        // A click can fetch the original while the hub is still preparing a thumbnail.
+        if !self.queue.front().is_some_and(|job| job.viewer.is_some())
+            && self.finish_hub_preview(client)
+        {
+            return;
+        }
         while let Some(job) = self.queue.pop_front() {
             if !self.current(&job) {
                 continue;
@@ -258,7 +274,26 @@ impl Images {
                     self.decode(job, Input::Path(path));
                     return;
                 }
-                ImageSource::Target(target, id) => ReadSource::Target(target.clone(), id.clone()),
+                ImageSource::Target(target, id) => {
+                    if job.viewer.is_none() {
+                        self.serial += 1;
+                        if client.read_image_preview(
+                            self.serial,
+                            target,
+                            id,
+                            UPLOAD_PREVIEW_MAX_EDGE,
+                        ) {
+                            self.hub_preview = Some(HubPreview {
+                                token: self.serial,
+                                job,
+                                deadline: Instant::now() + PREVIEW_TIMEOUT,
+                            });
+                            self.ctx.request_repaint_after(PREVIEW_TIMEOUT);
+                            return;
+                        }
+                    }
+                    ReadSource::Target(target.clone(), id.clone())
+                }
                 ImageSource::Draft(draft, id) => {
                     let attachment = client
                         .draft(draft)
@@ -296,6 +331,42 @@ impl Images {
             self.request(client, &mut transfer);
             self.transfer = Some(transfer);
             return;
+        }
+    }
+
+    /// Returns whether the next queued thumbnail should wait.
+    fn finish_hub_preview(&mut self, client: &mut Client) -> bool {
+        let replies = std::mem::take(&mut client.image_previews);
+        let Some(pending) = &self.hub_preview else {
+            return false;
+        };
+        let Some(reply) = replies
+            .into_iter()
+            .find_map(|(token, reply)| (token == pending.token).then_some(reply))
+            .or_else(|| {
+                (Instant::now() >= pending.deadline)
+                    .then(|| Err("Timed out while preparing the image preview.".into()))
+            })
+        else {
+            return true;
+        };
+        let pending = self.hub_preview.take().expect("pending image preview");
+        if !self.recent.contains(&pending.job.source) {
+            return false;
+        }
+        match reply {
+            Ok(Some(preview)) => {
+                self.decode(pending.job, Input::PreviewPng(preview.png_base64));
+                self.working
+            }
+            Ok(None) => {
+                self.queue.push_front(pending.job);
+                false
+            }
+            Err(error) => {
+                self.complete(pending.job, Err(error));
+                false
+            }
         }
     }
 
@@ -481,10 +552,12 @@ pub(crate) fn append_chunk(reply: UploadReadResult, bytes: &mut Vec<u8>) -> Resu
 enum Input {
     Path(String),
     Bytes(Vec<u8>),
+    PreviewPng(String),
 }
 
 fn decode(input: Input, big: bool, wpf: bool) -> Result<Decoded, String> {
     let bytes = match input {
+        Input::PreviewPng(png) => return decode_preview_png(png, wpf),
         Input::Bytes(bytes) => bytes,
         Input::Path(path) => {
             let info = std::fs::metadata(&path).map_err(|e| e.to_string())?;
@@ -525,7 +598,11 @@ fn decode(input: Input, big: bool, wpf: bool) -> Result<Decoded, String> {
         .decode()
         .map_err(|e| format!("Could not decode the image. {e}"))?;
     drop(bytes);
-    let edge = if big { MAX_EDGE } else { 220 };
+    let edge = if big {
+        MAX_EDGE
+    } else {
+        UPLOAD_PREVIEW_MAX_EDGE
+    };
     let image = if image.width() > edge || image.height() > edge {
         image.resize(edge, edge, image::imageops::FilterType::Triangle)
     } else {
@@ -558,9 +635,168 @@ fn decode(input: Input, big: bool, wpf: bool) -> Result<Decoded, String> {
     })
 }
 
+fn decode_preview_png(png: String, wpf: bool) -> Result<Decoded, String> {
+    let invalid = || "The hub returned an invalid image preview.".to_owned();
+    if png.len() > UPLOAD_PREVIEW_MAX_BYTES.div_ceil(3) * 4 {
+        return Err(invalid());
+    }
+    let bytes = STANDARD.decode(&png).map_err(|_| invalid())?;
+    if bytes.len() > UPLOAD_PREVIEW_MAX_BYTES {
+        return Err(invalid());
+    }
+    let mut reader = image::ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(2 * 1024 * 1024);
+    limits.max_image_width = Some(UPLOAD_PREVIEW_MAX_EDGE);
+    limits.max_image_height = Some(UPLOAD_PREVIEW_MAX_EDGE);
+    reader.limits(limits);
+    let pixels = if wpf {
+        reader.into_dimensions().map_err(|_| invalid())?;
+        ColorImage::default()
+    } else {
+        let rgba = reader.decode().map_err(|_| invalid())?.into_rgba8();
+        ColorImage::from_rgba_unmultiplied(
+            [rgba.width() as usize, rgba.height() as usize],
+            rgba.as_raw(),
+        )
+    };
+    Ok(Decoded {
+        pixels,
+        png: wpf.then_some(png),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use yaac_core::link::HubLink;
+    use yaac_protocol::attach::{self, HubUploadPreviewResult};
+    use yaac_protocol::rpc::{ErrorCode, ErrorObject, Message, RpcId};
+
+    #[derive(Clone, Default)]
+    struct TestLink {
+        requests: Rc<RefCell<Vec<Message>>>,
+        replies: Rc<RefCell<VecDeque<Message>>>,
+    }
+
+    impl HubLink for TestLink {
+        fn send(&mut self, message: Message) {
+            self.requests.borrow_mut().push(message);
+        }
+
+        fn poll(&mut self) -> Option<Message> {
+            self.replies.borrow_mut().pop_front()
+        }
+    }
+
+    fn preview_request(link: &TestLink) -> RpcId {
+        let requests = link.requests.borrow();
+        let [_, Message::Request { id, method, params }] = requests.as_slice() else {
+            panic!("expected hello and a preview request");
+        };
+        assert_eq!(method, attach::names::UPLOAD_PREVIEW);
+        assert_eq!(
+            params,
+            &json!({
+                "target": "target", "uploadId": "stored-image", "maxEdge": UPLOAD_PREVIEW_MAX_EDGE
+            })
+        );
+        id.clone()
+    }
+
+    fn assert_original_requested(link: &TestLink) {
+        let requests = link.requests.borrow();
+        let [_, _, Message::Request { method, params, .. }] = requests.as_slice() else {
+            panic!("expected an additional read request");
+        };
+        assert_eq!(method, attach::names::REQUEST);
+        assert_eq!(params["method"], yaac_protocol::methods::names::UPLOAD_READ);
+        assert_eq!(params["params"]["offset"], 0);
+    }
+
+    #[test]
+    fn target_preview_job_never_reads_original_chunks() {
+        use image::ImageEncoder as _;
+        let link = TestLink::default();
+        let mut client = Client::new(
+            Box::new(link.clone()),
+            "test",
+            yaac_protocol::ClientId::new("window"),
+        );
+        let mut images = Images::new(&egui::Context::default());
+        images.use_wpf();
+        let source = ImageSource::Target(TargetId::new("target"), UploadId::new("stored-image"));
+        images.preview(source.clone());
+        images.pump(&mut client);
+        let id = preview_request(&link);
+
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(&[123, 45, 67, 255], 1, 1, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let png_base64 = STANDARD.encode(png);
+        let result = json!(HubUploadPreviewResult {
+            png_base64: png_base64.clone()
+        });
+        link.replies
+            .borrow_mut()
+            .push_back(Message::Response { id, result });
+        assert!(client.pump());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while images.wire_preview(&source).is_none() {
+            images.pump(&mut client);
+            assert!(Instant::now() < deadline, "the thumbnail was not displayed");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            images.wire_preview(&source),
+            Some(&json!({ "png": png_base64 }))
+        );
+        preview_request(&link);
+
+        images.open(source, "image.png".into());
+        images.pump(&mut client);
+        assert_original_requested(&link);
+    }
+
+    #[test]
+    fn target_preview_falls_back_only_when_the_hub_method_is_missing() {
+        for (code, falls_back) in [
+            (ErrorCode::MethodNotFound, true),
+            (ErrorCode::UploadNotFound, false),
+        ] {
+            let link = TestLink::default();
+            let mut client = Client::new(
+                Box::new(link.clone()),
+                "test",
+                yaac_protocol::ClientId::new("window"),
+            );
+            let mut images = Images::new(&egui::Context::default());
+            let source =
+                ImageSource::Target(TargetId::new("target"), UploadId::new("stored-image"));
+            images.preview(source.clone());
+            images.pump(&mut client);
+            let id = preview_request(&link);
+            link.replies.borrow_mut().push_back(Message::Error {
+                id: Some(id),
+                error: ErrorObject::new(code, "preview error"),
+            });
+            assert!(client.pump());
+            images.pump(&mut client);
+            if falls_back {
+                assert_original_requested(&link);
+                assert!(images.wire_preview(&source).is_none());
+            } else {
+                preview_request(&link);
+                assert_eq!(
+                    images.wire_preview(&source),
+                    Some(&json!({ "error": "preview error" }))
+                );
+            }
+        }
+    }
 
     #[test]
     fn image_reads_require_a_complete_bounded_sequence() {

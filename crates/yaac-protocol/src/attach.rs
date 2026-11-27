@@ -256,6 +256,9 @@ pub mod names {
     pub const TARGET_STATE: &str = "hub/target/state";
     /// Window → hub: carry a YAAC request to a target; answered with the target's result.
     pub const REQUEST: &str = "hub/request";
+    /// Window → hub: resize a target upload for inline display.
+    /// See [`super::HubUploadPreviewParams`] and [`super::HubUploadPreviewResult`].
+    pub const UPLOAD_PREVIEW: &str = "hub/upload/preview";
     /// Either way: carry a YAAC notification to or from a target.
     pub const NOTIFICATION: &str = "hub/notification";
     /// Window → hub: the plan rate limits of every account used on any target, one entry per
@@ -263,6 +266,29 @@ pub mod names {
     pub const RATE_LIMITS_GET: &str = "hub/rateLimits/get";
     /// Hub → window notification: those accounts changed ([`RateLimitsResult`]).
     pub const RATE_LIMITS_CHANGED: &str = "hub/rateLimits/changed";
+}
+
+/// Largest edge the hub will produce for an inline upload preview.
+pub const UPLOAD_PREVIEW_MAX_EDGE: u32 = 220;
+/// Largest PNG the hub will send for an inline upload preview, before base64.
+pub const UPLOAD_PREVIEW_MAX_BYTES: usize = 72 * 1024;
+
+/// `hub/upload/preview`: a thumbnail of an image stored on a target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubUploadPreviewParams {
+    pub target: TargetId,
+    pub upload_id: crate::UploadId,
+    /// Upper bound on the longer edge, in pixels. Must be positive.
+    pub max_edge: u32,
+}
+
+/// `hub/upload/preview` result, sent in the bulk queue.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubUploadPreviewResult {
+    /// PNG bytes, standard base64 with padding.
+    pub png_base64: String,
 }
 
 /// Terminal request or notification on the window–hub link.
