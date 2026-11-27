@@ -716,6 +716,9 @@ pub(crate) struct HubConn {
     prefs_loaded: bool,
     /// A remote hub's stored choices were asked for (`hub/uiState/get`).
     prefs_asked: bool,
+    /// A remote hub's connection was lost: when to attach again, and the wait after that one.
+    next_reattach: Option<std::time::Instant>,
+    reattach_delay: std::time::Duration,
     /// The SSH setup backend's requests and answers (`hub/ssh/*`).
     ssh: std::rc::Rc<std::cell::RefCell<crate::ssh_hub::SshBridge>>,
 }
@@ -858,6 +861,12 @@ fn waker(ctx: &egui::Context) -> crate::attach::Waker {
 }
 
 #[cfg(feature = "hub")]
+/// The first wait before a lost remote hub is attached again, and the longest.
+#[cfg(feature = "hub")]
+const REATTACH_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
+#[cfg(feature = "hub")]
+const REATTACH_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+
 fn hub_client(attach: &Arc<Mutex<HubAttach>>) -> Client {
     // The client id is a placeholder until `hub/hello` returns this host's own.
     let mut c = Client::new(Box::new(SharedAttach(attach.clone())), crate::BUILD, ClientId::new("window"));
@@ -911,7 +920,7 @@ impl YaacApp {
                     let c = hub_client(&attach);
                     let ssh = std::rc::Rc::new(std::cell::RefCell::new(crate::ssh_hub::SshBridge::new(cc.egui_ctx.clone())));
                     let backend = crate::ssh_hub::HubSsh(ssh.clone());
-                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false, prefs_asked: false, ssh });
+                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false, prefs_asked: false, next_reattach: None, reattach_delay: REATTACH_FIRST, ssh });
                     (c, None, Scenario::Fleet, Clock::System, Box::new(backend) as Box<dyn SshSetupBackend>)
                 } else {
                     let c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
@@ -1655,6 +1664,39 @@ impl YaacApp {
         let status = h.attach.lock().map_or(LinkStatus::Closed, |a| a.status());
         if let LinkStatus::Failed(e) = &status {
             self.client.state.hub.last_error = Some(format!("Could not reach the hub: {e}"));
+        }
+        // A hub on another machine (the phone over Tailscale) drops whenever the phone sleeps or
+        // changes network. Attach again, waiting longer after each failure, as a local window's
+        // hub supervisor would; nothing that was in flight is re-sent (operation ids decide).
+        if h.config.is_remote() {
+            let lost = matches!(status, LinkStatus::Closed | LinkStatus::Failed(_));
+            let refused = matches!(self.client.state.hub.outcome, HelloOutcome::WindowOutdated { .. } | HelloOutcome::HubOutdated { .. });
+            if status == LinkStatus::Connected {
+                h.next_reattach = None;
+                h.reattach_delay = REATTACH_FIRST;
+            } else if lost && !refused {
+                let now = std::time::Instant::now();
+                match h.next_reattach {
+                    Some(at) if now >= at => {
+                        h.next_reattach = None;
+                        h.reattach_delay = (h.reattach_delay * 2).min(REATTACH_MAX);
+                        let attach = Arc::new(Mutex::new(HubAttach::start(h.config.clone(), waker(&self.ctx))));
+                        h.attach = attach.clone();
+                        h.prefs_loaded = false;
+                        h.prefs_asked = false;
+                        self.browsers = Default::default();
+                        self.preview_ui = Default::default();
+                        self.browser_agent = Default::default();
+                        self.client = hub_client(&attach);
+                        return;
+                    }
+                    Some(at) => self.ctx.request_repaint_after(at - now),
+                    None => {
+                        h.next_reattach = Some(now + h.reattach_delay);
+                        self.ctx.request_repaint_after(h.reattach_delay);
+                    }
+                }
+            }
         }
         match self.client.state.hub.outcome.clone() {
             // A hub on another machine (the Android client over Tailscale) is never shut down or
