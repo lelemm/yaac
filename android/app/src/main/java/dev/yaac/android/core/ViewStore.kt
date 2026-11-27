@@ -133,6 +133,11 @@ class ViewStore {
     /** Set when the controller ended (`{"stopped": {"error"}}`): the error, or "" for none. */
     var stopped by mutableStateOf<String?>(null)
     var effects: (FrameEffect) -> Unit = {}
+    /**
+     * Called on the main thread after each update is published, whether or not an activity is
+     * open: the voice call ([CallManager]) follows its frames with the screen off.
+     */
+    val listeners = java.util.concurrent.CopyOnWriteArrayList<(FrameUpdate) -> Unit>()
 
     private fun slot(name: String) = views.getOrPut(name) { mutableStateOf(null) }
 
@@ -152,6 +157,7 @@ class ViewStore {
             for ((name, value) in update.views) slot(name).value = value
             update.stopped?.let { stopped = it; status = null }
             update.effects.forEach(effects)
+            listeners.forEach { it(update) }
         }
     }
 }

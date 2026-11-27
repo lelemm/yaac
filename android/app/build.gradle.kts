@@ -89,6 +89,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     // The Android browser host (P380, A2b BrowserHost.kt): ProxyController, document-start scripts.
     implementation("androidx.webkit:webkit:1.14.0")
+    // A voice call's WebRTC peer (core/CallPeer.kt): upstream libwebrtc M150 for Android, built
+    // and published by the webrtc-sdk project (BSD-3, no transitive dependencies). Adds
+    // libjingle_peerconnection_so.so: ~12 MB for arm64-v8a, ~16 MB for x86_64 (the ABIs kept).
+    implementation("io.github.webrtc-sdk:android:150.7871.09")
     debugImplementation("androidx.compose.ui:ui-tooling:$compose")
     testImplementation("junit:junit:4.13.2")
 }

@@ -8,6 +8,11 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Dictation in the composer (ui/Voice.kt), asked for at the first tap on the mic. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- A voice call with a thread (core/CallManager.kt): the call's audio routing, the WebRTC
+         peer's network monitor, and the microphone foreground service that holds the call. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <application
         android:label="YAAC"
@@ -42,6 +47,11 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the attach to the user's YAAC hub open so agent requests reach the user while no window is open" />
         </service>
+        <!-- A voice call (notify/CallService.kt): holds the microphone with the screen off. -->
+        <service
+            android:name=".notify.CallService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
         <receiver android:name=".notify.DecisionReceiver" android:exported="false" />
         <!-- Files the controller hands to other apps (PlatformBridge, A2). -->
         <provider

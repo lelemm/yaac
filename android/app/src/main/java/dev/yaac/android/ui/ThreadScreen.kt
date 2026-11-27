@@ -192,10 +192,14 @@ fun ThreadScreen(
             val fraction = (agents["pillPosition"].double ?: 0.5).toFloat().coerceIn(0.05f, 0.95f)
             AgentsPill(agents, { hidden -> agentsAtHidden = hidden; agentsOpen = true }, Modifier.align(Alignment.TopEnd).padding(end = 6.dp).offset(y = height * fraction * 0.6f)) { parent -> send("agents.open", mapOf("id" to parent)) }
         }
+        // A voice call, whichever thread it is with (docs/07-ui.md#voice-calls-on-android).
+        CallBar(composer["key"].text)
         Box(Modifier.navigationBarsPadding()) {
             // The thread's harness logo for the model control (a started thread never changes provider).
             val logo = remember(sidebar, threadId) { threadLogo(sidebar, threadId) }
-            Composer(composer, send, history, logo)
+            androidx.compose.runtime.CompositionLocalProvider(LocalThreadTitle provides shell["title"].str) {
+                Composer(composer, send, history, logo)
+            }
         }
         }
     }

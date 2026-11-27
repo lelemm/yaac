@@ -340,7 +340,10 @@ private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) ->
         val past = if (shell) composer["shell"]["history"].list.mapNotNull { it.text } else history.list.mapNotNull { it.text }
         // Clear the draft: shown whenever there is text (leaving `!` mode too, since the `!` goes).
         // Dictation (voice input), only where the thread's harness offers it.
-        if (voice != null && !shell) VoiceButton(voice, voiceUi, editable)
+        // The microphone is the call's while one runs (docs/plan/voice-call.md): no dictation then.
+        if (voice != null && !shell) VoiceButton(voice, voiceUi, editable && !dev.yaac.android.core.CallManager.phase.live)
+        // A voice call with the thread, only where the composer carries `call` (the capability).
+        if (!shell) CallButton(composer, key, editable)
         if (!empty && editable) IconButton(YIcon.Close, "Clear the message") { clear() }
         if ((empty || shell) && past.isNotEmpty()) IconButton(YIcon.History, if (shell) "Command history" else "Message history") { historySheet = true }
     }

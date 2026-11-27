@@ -21,6 +21,11 @@ hub it attaches to.
 
 Gradle 9.4.1 (wrapper), AGP 9.2.1 with its built-in Kotlin, the Compose compiler plugin 2.3.10,
 Compose 1.10, Material 3 1.4 (used only for sheets and dialogs, restyled to YAAC tokens).
+Voice calls use libwebrtc M150 as published by the webrtc-sdk project
+(`io.github.webrtc-sdk:android:150.7871.09`, BSD-3, no transitive dependencies): it tracks
+upstream WebRTC releases (the older `io.getstream:stream-webrtc-android` was last published in
+September 2025). It adds `libjingle_peerconnection_so.so`, stored uncompressed: 12.3 MB for
+arm64-v8a (about 5.9 MB to download) and 16.2 MB for x86_64.
 `minSdk` 29, `targetSdk` 36. The SDK path is in `local.properties` (not committed).
 
 ## Connecting
@@ -108,6 +113,8 @@ The UI does not know which transport carries the frames (`core/Transport.kt`).
 | `ui/ThreadScreen.kt`, `ui/Transcript.kt`, `ui/Markdown.kt` | The thread: header, banners, transcript rows, request cards. |
 | `ui/Composer.kt` | The composer, queue, running commands and control row. |
 | `ui/Voice.kt`, `core/VoiceRecorder.kt`, `core/VoiceAudio.kt` | Dictation (docs/07-ui.md#voice-input): the mic in the button row when the frame has `voice`, RECORD_AUDIO asked at the first tap, `AudioRecord` on its own thread at the format's rate (or one the phone opens, resampled), ~100 ms base64 chunks to `composer.voiceAudio`, the words heard so far in place at the caret. The audio math and the caret mapping are unit-tested (`VoiceAudioTest`, `VoiceTapTest`). |
+| `ui/Call.kt`, `core/CallManager.kt`, `core/CallPeer.kt`, `core/CallAudio.kt`, `notify/CallService.kt` | A voice call with a thread ([docs/07-ui.md](../docs/07-ui.md#voice-calls-on-android), contract in [docs/plan/voice-call.md](../docs/plan/voice-call.md)): the phone in the button row when the composer has `call`, the one-time consent sheet, the call bar (state, clock, transcript, Mute, speaker, End). `CallManager` is the process's one call, so it outlives the activity; `CallPeer` is the libwebrtc peer (Opus track, `oai-events` data channel, non-trickle offer) on its own thread; `CallAudio` sets communication mode, focus and the output; `CallService` is the microphone foreground service with Mute and End in its notification. |
+| `core/CallModel.kt` | The call's pure logic, unit-tested in `CallModelTest`: every wire name (`CallWire`), the state machine with its deadlines and stale-frame rules (`CallMachine`), the SDP checks, the `call` frame, output routing, the clock, the consent flag. |
 | `ui/Agents.kt` | The agents pill and the Related agents sheet. |
 | `ui/agents/AgentsModel.kt` | The agents frame as plain values (pill entries, sheet order and folds, budget, time-limit menu, row under a held finger), unit-tested in `AgentsModelTest`. |
 | `ui/Common.kt` | Marks, buttons, action sheets (context menus), `shell.dialog`. |

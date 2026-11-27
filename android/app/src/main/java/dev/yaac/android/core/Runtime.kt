@@ -91,6 +91,8 @@ object YaacRuntime {
 
     private fun stopController(context: Context) {
         val c = controller ?: return
+        // A voice call ends with its controller (`call.end` goes before the controller stops).
+        CallManager.controllerStopping()
         controller = null
         connection = null
         dev.yaac.android.notify.Notifier.detach(context.applicationContext)
