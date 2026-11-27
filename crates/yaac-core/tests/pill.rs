@@ -170,10 +170,10 @@ fn related_agent_rows_use_activity_order_and_fold_only_the_inactive_tail() {
     );
     let cl = clusters(&p);
     assert_eq!(titles(&cl[0].rows), [
-        "recent running", "older running", "inactive", "recent finished",
+        "recent running", "older running", "recent finished", "inactive",
         "finished", "older finished", "oldest finished",
     ]);
-    assert_eq!(cl[0].rows[3].activity_age(70).as_deref(), Some("1m"));
+    assert_eq!(cl[0].rows[2].activity_age(70).as_deref(), Some("1m"));
     assert_eq!(cl[0].rows[0].activity_age(8).as_deref(), Some("now"));
     let mut rows = Vec::new();
     let mut fold = None;
@@ -184,7 +184,7 @@ fn related_agent_rows_use_activity_order_and_fold_only_the_inactive_tail() {
         }
     }
     assert_eq!(rows, ["recent running", "older running"]);
-    assert_eq!(fold, Some((vec!["inactive".to_owned(), "recent finished".into(), "finished".into(), "older finished".into(), "oldest finished".into()], "inactive")));
+    assert_eq!(fold, Some((vec!["recent finished".to_owned(), "inactive".into(), "finished".into(), "older finished".into(), "oldest finished".into()], "inactive")));
     assert_eq!(DOCK_FOLD_MIN, 4);
 }
 
@@ -207,14 +207,14 @@ fn expanded_groups_move_a_completed_agent_to_the_read_tier_without_changing_rece
         Vec::new(),
     );
     p.siblings = p.workers.clone();
-    let expected = ["newer unread", "older unread", "running", "needs attention", "idle", "read"];
+    let expected = ["needs attention", "running", "newer unread", "older unread", "idle", "read"];
     assert_eq!(titles(&clusters(&p)[0].rows), expected);
     assert_eq!(card_groups(&p)[0].0, "Siblings");
     assert_eq!(titles(&card_groups(&p)[0].1), expected);
 
     p.workers[0].display.unseen = false;
     p.siblings[0].display.unseen = false;
-    let expected = ["older unread", "running", "needs attention", "idle", "newer unread", "read"];
+    let expected = ["needs attention", "running", "older unread", "idle", "newer unread", "read"];
     assert_eq!(titles(&clusters(&p)[0].rows), expected);
     assert_eq!(titles(&card_groups(&p)[0].1), expected);
     assert_eq!(titles(&pill(&p, PILL_MAX).clusters[0].rows), [
@@ -248,10 +248,47 @@ fn the_demo_orchestrator_with_thirty_agents() {
         DockEntry::Fold { rows, .. } => rows,
     }).collect();
     assert_eq!(docked, workers.rows);
-    // Completed read agents go after all non-completed rows, even when a completion is newer.
-    let first_read_completion = docked.iter().position(|row| row.display.mark == Mark::Done && !row.display.unseen).unwrap();
-    assert!(docked[first_read_completion..].iter().all(|row| row.display.mark == Mark::Done && !row.display.unseen));
-    assert!(docked[first_read_completion..].windows(2).all(|pair| pair[0].updated >= pair[1].updated));
+    // Alive first (needs you, running, waiting), then completed unread, then the rest; newest
+    // first within each tier, even when a quiet row is newer than an alive one.
+    let tier = |row: &AgentRow| {
+        let l = Liveness::of(row);
+        if l.alive() { (0, l) } else if row.display.unseen { (1, Liveness::Finished) } else { (2, Liveness::Finished) }
+    };
+    assert!(docked.windows(2).all(|pair| (tier(pair[0]), std::cmp::Reverse(pair[0].updated)) <= (tier(pair[1]), std::cmp::Reverse(pair[1].updated))));
+    assert!(Liveness::of(docked[0]).alive());
+}
+
+/// The card and dock order with one agent in each state: alive first in the pill's order, then
+/// completed unread, then completed read, idle and stopped by recency; the fold takes that tail.
+#[test]
+fn the_card_and_dock_put_alive_agents_first_with_one_of_each_state() {
+    let mut unread = row("done unread", Role::Worker, Mark::Done, 20, 0);
+    unread.display.unseen = true;
+    let mut p = panel(
+        None,
+        vec![
+            row("offline", Role::Worker, Mark::Offline, 95, 0),
+            row("done read", Role::Worker, Mark::Done, 90, 0),
+            unread,
+            row("waiting", Role::Worker, Mark::Waiting, 10, 0),
+            row("idle", Role::Worker, Mark::Idle, 80, 0),
+            row("running", Role::Worker, Mark::Running, 5, 0),
+            row("failed", Role::Worker, Mark::Failed, 70, 0),
+            row("needs you", Role::Worker, Mark::NeedsYou, 1, 0),
+        ],
+        Vec::new(),
+    );
+    let expected = ["needs you", "running", "waiting", "done unread", "offline", "done read", "idle", "failed"];
+    assert_eq!(titles(&clusters(&p)[0].rows), expected);
+    let entries = docked_entries(&clusters(&p)[0]);
+    let shown: Vec<_> = entries.iter().filter_map(|e| match e { DockEntry::Row(r) => Some(r.title.as_str()), _ => None }).collect();
+    assert_eq!(shown, ["needs you", "running", "waiting", "done unread"]);
+    assert!(matches!(entries.last(), Some(DockEntry::Fold { rows, word: "inactive" }) if titles(rows) == ["offline", "done read", "idle", "failed"]));
+    // The open thread keeps its place among siblings by the same tiers (P341).
+    p.siblings = p.workers.clone();
+    p.siblings[5].is_self = true;
+    assert_eq!(titles(&card_groups(&p)[0].1), expected);
+    assert!(card_groups(&p)[0].1[1].is_self);
 }
 
 /// D188: a thread whose turn ended while its harness subagents still work shows as waiting

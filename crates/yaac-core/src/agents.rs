@@ -260,14 +260,20 @@ fn relation_clusters(panel: &AgentsPanel) -> impl Iterator<Item = Cluster<'_>> {
         .map(|(relation, rows)| Cluster { relation, rows })
 }
 
-/// Completed and unread first, other states next, completed and read last.
-fn list_order_key(row: &AgentRow) -> (u8, std::cmp::Reverse<i64>) {
-    let group = match (row.display.mark, row.display.unseen) {
-        (Mark::Done, true) => 0,
-        (Mark::Done, false) => 2,
-        _ => 1,
+/// The card and dock order (D168, P394): alive first — needs you, running, waiting, in
+/// that order as in the pill — then completed unread, then everything else (completed read,
+/// idle, stopped); newest activity first within each tier. The tail tier is exactly the rows
+/// that are not [`prominent`], so the dock's fold takes it whole.
+fn list_order_key(row: &AgentRow) -> (u8, Liveness, std::cmp::Reverse<i64>) {
+    let liveness = Liveness::of(row);
+    let (tier, within) = if liveness.alive() {
+        (0, liveness)
+    } else if row.display.unseen {
+        (1, Liveness::Finished)
+    } else {
+        (2, Liveness::Finished)
     };
-    (group, std::cmp::Reverse(row.updated))
+    (tier, within, std::cmp::Reverse(row.updated))
 }
 
 /// Rows grouped by relation in card and dock order, newest activity first within each tier.

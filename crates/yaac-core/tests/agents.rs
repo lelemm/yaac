@@ -73,11 +73,11 @@ fn switching_siblings_keeps_the_same_order_and_moves_the_self_row() {
 }
 
 #[test]
-fn reading_a_completed_worker_moves_it_after_active_workers() {
+fn reading_a_completed_worker_moves_it_to_the_quiet_tier() {
     let (c, _) = boot();
     let map = AttentionMap::compute(&c.state);
     let mut panel = agents_panel(&c.state, &map, &threads::orchestrator()).unwrap();
-    for (row, (updated, unseen)) in panel.workers.iter_mut().zip([(10, true), (5, false), (100, false), (90, false)]) {
+    for (row, (updated, unseen)) in panel.workers.iter_mut().zip([(10, true), (50, false), (5, false), (1, false)]) {
         row.updated = updated;
         row.display.unseen = unseen;
     }
@@ -85,9 +85,11 @@ fn reading_a_completed_worker_moves_it_after_active_workers() {
         clusters(panel).into_iter().find(|group| group.relation == Relation::Workers).unwrap()
             .rows.into_iter().map(|row| row.title.clone()).collect::<Vec<_>>()
     };
-    assert_eq!(ordered(&panel), ["users-service", "search-service", "index-rebuild", "billing-service"]);
+    // Alive first (index-rebuild needs you, search-service is running) even though both are
+    // older, then the unread completion (users-service), then the read one.
+    assert_eq!(ordered(&panel), ["index-rebuild", "search-service", "users-service", "billing-service"]);
     panel.workers[0].display.unseen = false;
-    assert_eq!(ordered(&panel), ["search-service", "index-rebuild", "users-service", "billing-service"]);
+    assert_eq!(ordered(&panel), ["index-rebuild", "search-service", "billing-service", "users-service"]);
 }
 
 #[test]
