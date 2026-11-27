@@ -136,15 +136,32 @@ Commands (renderer → controller):
 | `composer.callStart` | `{ key, sdpOffer }` | Starts a call on `key` with the renderer's offer. Needs the composer writable and no other call in this window. |
 | `composer.callEnd` | `{ key }` | Ends the call. Always allowed. |
 
-The **renderer** owns the media: it creates the `RTCPeerConnection` with the microphone track
-and a data channel (the "realtime events data channel" Codex's schema asks for; OpenAI's public WebRTC
-samples name it `oai-events` — Codex's own peer runs in a helper process and its channel name
-was not read, so treat the name as unverified), makes the offer (after ICE gathering, so the offer is complete), sends
-`composer.callStart`, applies `call.answer` as the remote description **once per `callId`**,
-plays the remote audio track, and closes the peer when `call.state` leaves
-`connecting`/`active`. One call per window; leaving the thread does **not** end a call (it is
-a conversation with the thread, not with the composer); the thread's composer keeps the call
-controls.
+**Where it lives (answers for the renderers).**
+
+1. `call` is a field of the **composer frame of a thread** (the same object that carries
+   `voice`), so it is per thread key: the composer for key K shows K's call. A draft for a new
+   thread has no `call`.
+2. The SDP answer is **state in that frame, not a one-shot effect**: `call.answer` (a string)
+   appears once the answer arrives and stays until the call leaves `connecting`/`active`, so a
+   renderer that re-subscribes or restarts still gets it. Apply it **once per `callId`**
+   (remember the last `callId` you applied).
+3. The capability shows to renderers as **the presence of `composer.call`**: present iff the
+   thread's effective capabilities contain `voiceCall`. Renderers never look at the provider.
+
+The **renderer** owns the media. Verified by C2 in `openai/codex` rust-v0.172.0
+`voice-host/src/transport.rs` (Codex's own peer): one Opus send track plus receive, a data
+channel labelled `oai-events` with default options, a **non-trickle** offer (wait for ICE
+gathering to complete, up to 15 s), no ICE servers, and the call counts as ready when the data
+channel opens. Do the same: create the `RTCPeerConnection` with the microphone track and the
+`oai-events` data channel, make the offer, wait for gathering, send `composer.callStart` with
+the complete SDP, apply `call.answer` as the remote description, play the remote audio track,
+and close the peer when `call.state` leaves `connecting`/`active` (or on `composer.callEnd`).
+The data channel carries Codex's realtime events between the peer and OpenAI; the renderer may
+ignore its messages (transcripts reach it through `call.transcript`).
+
+One call per window. Leaving the thread does **not** end a call (it is a conversation with the
+thread, not with the composer); the thread's composer keeps the call controls. While a call is
+active in a window, that window offers no dictation (the microphone is the call's).
 
 ## Flow
 
