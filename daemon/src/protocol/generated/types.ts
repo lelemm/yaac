@@ -686,7 +686,7 @@ export interface BrowserTypeParams {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "voiceInput" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "voiceInput" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadTakeOverInterrupt" | "threadCheckControl" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * Complete bundle staged on a target on demand.
@@ -5400,6 +5400,18 @@ export interface ThreadArchiveParams {
 }
 
 /**
+ * `thread/checkControl` (P388, under `threadCheckControl`): ask the harness again, now,
+ * whether the thread is in use elsewhere. Changes nothing; the answer arrives as the
+ * thread's `controlChanged` event when it differs from what was shown.
+ */
+export interface ThreadCheckControlParams {
+  /**
+   * The thread.
+   */
+  threadId: ThreadId;
+}
+
+/**
  * `thread/compact`: request native context compaction on an idle thread.
  */
 export interface ThreadCompactParams {
@@ -6389,6 +6401,13 @@ export interface ThreadSyncResult {
  * without `threadTakeOver`. A thread nobody else holds is answered with success.
  */
 export interface ThreadTakeOverParams {
+  /**
+   * "Interrupt and take over" (P387, under `threadTakeOverInterrupt`): when the holder is
+   * running a turn, interrupt it first (what Esc or Ctrl+C would do there; a background
+   * session is stopped), wait for it to go idle, then take over. Only on the user's
+   * explicit, confirmed request. Without it a busy holder refuses the takeover.
+   */
+  interrupt?: boolean | null;
   /**
    * Operation id.
    */

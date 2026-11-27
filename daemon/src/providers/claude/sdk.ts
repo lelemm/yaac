@@ -319,6 +319,8 @@ export interface ClaudeCli {
   authStatus(): Promise<AuthStatus | null>;
   /** Live sessions (interactive and background). Throws when the command fails or is unreadable. */
   agents(): Promise<AgentEntry[]>;
+  /** `claude stop <id>`: stops a background session (its conversation is kept). */
+  stop?(id: string): Promise<void>;
 }
 
 function run(file: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<string> {
@@ -366,6 +368,9 @@ export function realCli(executable: string, env: NodeJS.ProcessEnv): ClaudeCli {
       const parsed = JSON.parse(await run(executable, ["agents", "--json"], env, 15000)) as unknown;
       if (!Array.isArray(parsed)) throw new Error("claude agents --json did not print a list");
       return parsed as AgentEntry[];
+    },
+    async stop(id: string) {
+      await run(executable, ["stop", id], env, 15000);
     },
   };
 }

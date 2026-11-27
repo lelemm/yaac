@@ -8,7 +8,8 @@ import { zipSync } from "fflate";
 import { artifactFormat } from "../src/session/artifact-format.js";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
-import { client, fakeOf, opId, sleep, startDaemon, startThread, TestClient, text, tmpHome, until } from "./helpers.js";
+import * as path from "node:path";
+import { client, FAKE, fakeOf, opId, sleep, startDaemon, startThread, TestClient, text, tmpHome, until } from "./helpers.js";
 import { meshAgentCall } from "../src/providers/agentcalls.js";
 import { addressOf, childOf, itemsOf, kinds, startAllowed, stateOf, toolOutputs, untilIdle, untilTool } from "./mesh-helpers.js";
 import { InputOutcomeUnknown, type HarnessProvider } from "../src/providers/types.js";
@@ -1086,5 +1087,36 @@ test("a message waiting undelivered past the limit earns its sender one passive 
     assert.equal(fakeOf(d).turnLog(native(d, a)).length, 1, "the notice does not start a turn");
   } finally {
     await done();
+  }
+});
+
+test("a worker whose turn outlived a yaacd restart still returns its result to its parent, once (P385)", async () => {
+  const home = tmpHome("ym-");
+  let d = await startDaemon(home, { mesh: MESH_OPTS });
+  let c = await client(d);
+  try {
+    const parent = await idleThread(d, c);
+    const spawned = await call(d, parent, "spawn_thread", { title: "Survivor", text: "/fake stall" });
+    assert.equal(spawned.isError, false, spawned.text);
+    const child = await childOf(d, parent);
+    const turnId = await until(() => d.core.thread(child)!.activeTurn, "the worker's turn");
+    const workerNative = native(d, child);
+    await c.close();
+    await d.stop("test restart");
+    // Its process kept running while yaacd was away (a Claude Code orphan).
+    fs.writeFileSync(path.join(home, "providers", FAKE, "store", "survivors.json"), JSON.stringify([{ native: workerNative, turnId }]));
+    d = await startDaemon(home, { mesh: MESH_OPTS });
+    c = await client(d);
+    assert.equal(d.core.thread(child)!.activeTurn, turnId, "still running, not interrupted");
+    fakeOf(d).finishSurvivor(workerNative, "finished after the restart");
+    const results = () => d.mesh.store.all().filter((r) => r.message.kind === "result" && r.message.to === addressOf(d, parent));
+    await until(() => results().length === 1, "the result to reach the parent");
+    assert.match(results()[0]!.message.text, /finished after the restart/);
+    await sleep(200);
+    assert.equal(results().length, 1, "exactly once");
+  } finally {
+    await c.close();
+    await d.stop("test");
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });

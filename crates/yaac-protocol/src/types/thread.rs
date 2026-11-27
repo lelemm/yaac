@@ -834,6 +834,22 @@ pub struct ThreadTakeOverParams {
     pub op_id: OpId,
     /// The thread.
     pub thread_id: ThreadId,
+    /// "Interrupt and take over" (P387, under `threadTakeOverInterrupt`): when the holder is
+    /// running a turn, interrupt it first (what Esc or Ctrl+C would do there; a background
+    /// session is stopped), wait for it to go idle, then take over. Only on the user's
+    /// explicit, confirmed request. Without it a busy holder refuses the takeover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interrupt: Option<bool>,
+}
+
+/// `thread/checkControl` (P388, under `threadCheckControl`): ask the harness again, now,
+/// whether the thread is in use elsewhere. Changes nothing; the answer arrives as the
+/// thread's `controlChanged` event when it differs from what was shown.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadCheckControlParams {
+    /// The thread.
+    pub thread_id: ThreadId,
 }
 
 /// `thread/move` (D144): list the thread under another project (and optionally one of that

@@ -554,6 +554,16 @@ What survives what: closing the UI, losing the network, and `yaacd` restarting a
 The target machine (or WSL distro) shutting down, or the harness process itself dying, is not — the thread then
 shows the turn as interrupted, with whatever the harness saved.
 
+**A harness process that outlives `yaacd` is still `yaacd`'s** (P385). `yaacd` dying
+uncleanly (a crash, a SIGKILL) does not stop the Claude Code processes it started: one that was
+mid-turn finishes the turn and writes its session. So `yaacd` keeps the pid and start time of
+each process it starts in `providers/<instance>/children.json`; the next `yaacd` adopts those
+still running with the same start time — never reported as another program, their turns still
+running, what they save imported into the thread, their end completing the turn (and returning a
+worker's result to its parent). Only the user's **Stop** ends one. Codex turns run in the Codex
+daemon and are re-attached to (`runningTurn`) instead. See
+[threads](05-threads.md#after-yaacd-restarts-p385).
+
 ### One serving daemon per user
 
 On a target there is at most **one** `yaacd serve` per user, enforced by a start-up lock —

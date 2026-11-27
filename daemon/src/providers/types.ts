@@ -440,7 +440,13 @@ export interface HarnessProvider {
   /** Capabilities and settings for one conversation, given its model and current state. */
   effective(thread: NativeId): Promise<ThreadEffective>;
   /** Whether another client or program is currently driving (or has open) this conversation. */
-  control(thread: NativeId): Promise<ExternalControl>;
+  control(thread: NativeId, opts?: { fresh?: boolean }): Promise<ExternalControl>;
+  /**
+   * "Interrupt and take over" (P387, `threadTakeOverInterrupt`): interrupt what the holders of
+   * a thread are running — the user's explicit, confirmed request, never automatic. Resolves
+   * once the harness was asked (not once it obeyed); the caller looks again with `control`.
+   */
+  interruptHolder?(thread: NativeId): Promise<void>;
   /**
    * The turn the harness is running in this conversation, if any. Used after a yaacd restart
    * to tell a turn that survived from one that died with the old process. Absent: turns do

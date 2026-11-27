@@ -50,6 +50,10 @@ export interface DaemonConfig {
   factories?: ProviderFactory[];
   coalesceMs?: number;
   coalesceBytes?: number;
+  /** The in-use re-check period (P386); tests shorten it. */
+  controlRefreshMs?: number;
+  /** How long "Interrupt and take over" waits for the holder (P387); tests shorten it. */
+  takeOverWaitMs?: number;
   journal?: Partial<JournalOptions>;
   client?: Partial<ClientOptions>;
   tempDir?: string;
@@ -133,6 +137,8 @@ export class Daemon implements FrozenCoreHost {
       journal: { ...DEFAULT_JOURNAL_OPTIONS, ...config.journal },
       cleanStart,
       ...(config.tempDir ? { tempDir: config.tempDir } : {}),
+      ...(config.controlRefreshMs !== undefined ? { controlRefreshMs: config.controlRefreshMs } : {}),
+      ...(config.takeOverWaitMs !== undefined ? { takeOverWaitMs: config.takeOverWaitMs } : {}),
     });
     this.core.activity.on(() => this.checkIdle());
     // The agent mesh (WP7): its tools, mailbox, and the daemon side of the hub's relay.

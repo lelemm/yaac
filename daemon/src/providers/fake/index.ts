@@ -235,6 +235,9 @@ export class FakeProvider implements HarnessProvider {
     fs.mkdirSync(options.storeDir, { recursive: true, mode: 0o700 });
     this.storeFile = path.join(options.storeDir, "store.json");
     if (options.forceStop) this.forceStop = (thread) => this.forceStopImpl(thread);
+    // Turns a process kept running across a yaacd restart (P385): `survivors.json`, written by
+    // a test while yaacd is stopped, as a Claude Code orphan would be.
+    for (const s of readJson<Array<{ native: NativeId; turnId: TurnId }>>(path.join(options.storeDir, "survivors.json")) ?? []) this.survivors.set(s.native, s.turnId);
     const existing = readJson<StoreFile>(this.storeFile);
     this.store = existing ?? { threads: {}, seq: 0 };
     if (!existing && options.seed) this.seed();
@@ -311,6 +314,7 @@ export class FakeProvider implements HarnessProvider {
       "threadArchive",
       "threadDelete",
       "threadTakeOver",
+      "threadTakeOverInterrupt",
       "followExternal",
       "streamText",
       "streamReasoning",
@@ -876,12 +880,36 @@ export class FakeProvider implements HarnessProvider {
     };
   }
 
-  async control(thread: NativeId): Promise<ExternalControl> {
+  async control(thread: NativeId, opts: { fresh?: boolean } = {}): Promise<ExternalControl> {
+    this.controlCalls.push({ thread, fresh: opts.fresh === true });
     return this.external.get(thread) ?? { external: false };
   }
 
+  /** "Interrupt and take over" (P387): the holder's turn ends after `holderStopMs`. */
+  async interruptHolder(thread: NativeId): Promise<void> {
+    this.holderInterrupts.push(thread);
+    const held = this.external.get(thread);
+    if (!held) return;
+    const idle: ExternalControl = { ...held };
+    delete idle.takeOverBlocked;
+    setTimeout(() => this.external.set(thread, idle), this.holderStopMs).unref();
+  }
+
   async runningTurn(thread: NativeId): Promise<TurnId | null> {
-    return this.live.get(thread)?.turnId ?? null;
+    return this.live.get(thread)?.turnId ?? this.survivors.get(thread) ?? null;
+  }
+
+  /** Turns that survived a yaacd restart (P385), by thread. */
+  private readonly survivors = new Map<NativeId, TurnId>();
+
+  /** A surviving turn ends: its last answer is brought in, then the turn completes. */
+  finishSurvivor(native: NativeId, answer: string): void {
+    const turnId = this.survivors.get(native);
+    if (!turnId) throw new Error(`no surviving turn in ${native}`);
+    this.survivors.delete(native);
+    const item = { id: `survivor:${turnId}`, turnId, status: "completed", kind: "agentMessage", text: answer } as Item;
+    this.emit({ type: "itemCompleted", thread: native, item });
+    this.emit({ type: "turnCompleted", thread: native, turnId, status: "completed", error: null, usage: null, at: new Date().toISOString() });
   }
 
   async forkThread(thread: NativeId, opts: ForkOptions): Promise<NativeId> {
@@ -1061,11 +1089,19 @@ export class FakeProvider implements HarnessProvider {
   // ── Test controls ──────────────────────────────────────────────────────────────────────
 
   /** Marks a conversation as held (or released) by another program. */
-  setExternal(native: NativeId, control: ExternalControl): void {
+  setExternal(native: NativeId, control: ExternalControl, opts: { quiet?: boolean } = {}): void {
     if (control.external) this.external.set(native, control);
     else this.external.delete(native);
-    this.emit({ type: "controlChanged", thread: native, control });
+    // Quiet: the harness changes without saying so (Claude Code's `claude agents` is polled).
+    if (!opts.quiet) this.emit({ type: "controlChanged", thread: native, control });
   }
+
+  /** Every `control` call, and whether it asked for a fresh look. */
+  readonly controlCalls: Array<{ thread: NativeId; fresh: boolean }> = [];
+  /** Threads whose holder `interruptHolder` was asked to interrupt. */
+  readonly holderInterrupts: NativeId[] = [];
+  /** How long the fake holder takes to go idle once interrupted. */
+  holderStopMs = 50;
 
   /** Another program takes the conversation, runs a turn, and lets go after `holdMs`. */
   async runExternalTurn(native: NativeId, text: string, holdMs = 500, extra: Step[] = []): Promise<void> {

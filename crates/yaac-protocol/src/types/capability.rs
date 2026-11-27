@@ -49,6 +49,13 @@ open_enum! {
         /// A thread another program holds can be taken over (`thread/takeOver`, D140): YAAC
         /// continues it here without stopping the other program.
         ThreadTakeOver = "threadTakeOver",
+        /// `thread/takeOver` may be asked to interrupt the holder's running turn first
+        /// (`interrupt`, P387): the user's explicit "Interrupt and take over", after a
+        /// confirmation naming what is interrupted. Absent: a busy holder blocks a takeover.
+        ThreadTakeOverInterrupt = "threadTakeOverInterrupt",
+        /// `yaacd` answers `thread/checkControl` (P388): ask the harness again, now, whether a
+        /// thread is in use elsewhere. A `yaacd` capability, on every instance.
+        ThreadCheckControl = "threadCheckControl",
         /// `yaacd` can list this instance's threads under another project or worktree on the
         /// same target (`thread/move`, D144). YAAC's own placement; says nothing about the
         /// harness.

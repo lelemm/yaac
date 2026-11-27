@@ -132,11 +132,22 @@ export interface CoreOptions {
   tempDir?: string;
   /** The slow git-status refresh for watched checkouts; 0 turns it off. */
   gitRefreshMs?: number;
+  /**
+   * How often a thread shown in use elsewhere (or, while a client watches it, of uncertain
+   * holder) is asked about again (P386). 0: never.
+   */
+  controlRefreshMs?: number;
+  /** How long "Interrupt and take over" waits for the holder to go idle (P387). */
+  takeOverWaitMs?: number;
   /** At most this many git computations at once. */
   gitConcurrency?: number;
 }
 
 export const DEFAULT_GIT_REFRESH_MS = 120_000;
+/** The in-use re-check (P386): a few seconds, so a holder leaving shows on its own. */
+export const DEFAULT_CONTROL_REFRESH_MS = 3_000;
+/** "Interrupt and take over" waits this long for the holder's turn to end (P387). */
+export const TAKE_OVER_WAIT_MS = 30_000;
 
 /** What the core needs from a connected client. */
 export interface ClientLink {
@@ -214,6 +225,7 @@ const SUBAGENT_WRITES: ReadonlySet<Capability> = new Set<Capability>([
   "threadArchive",
   "threadDelete",
   "threadTakeOver",
+  "threadTakeOverInterrupt",
   "threadMove",
   "threadMoveWorkingDirectory",
   "interrupt",
@@ -381,6 +393,8 @@ export class Core {
   private readonly gitLimiter: Limiter;
   private readonly repoLookups = new Map<string, Promise<RepoLocation | null>>();
   private gitTimer: NodeJS.Timeout | null = null;
+  private controlTimer: NodeJS.Timeout | null = null;
+  private controlTicking = false;
   /** `thread/older` results, by thread id: what is needed to bring one in when it is opened. */
   private olderMemo = new Map<string, { instance: string; info: NativeThreadInfo }>();
   private caps: DiscoveryCaps;
@@ -449,6 +463,32 @@ export class Core {
     if (every > 0) {
       this.gitTimer = setInterval(() => this.refreshWatchedGit(), every);
       this.gitTimer.unref();
+    }
+    const controlEvery = this.opts.controlRefreshMs ?? DEFAULT_CONTROL_REFRESH_MS;
+    if (controlEvery > 0) {
+      this.controlTimer = setInterval(() => void this.refreshHeldThreads(), controlEvery);
+      this.controlTimer.unref();
+    }
+  }
+
+  /**
+   * The in-use re-check (P386): every thread shown in use elsewhere, and every watched one
+   * whose holder was uncertain, is asked about again, so the banner clears and Take over
+   * enables on its own once the holder leaves or goes idle. All are asked at once: a provider
+   * answers them from one look at the harness (Claude Code: one `claude agents`).
+   */
+  async refreshHeldThreads(): Promise<void> {
+    if (this.controlTicking) return;
+    this.controlTicking = true;
+    try {
+      const due = this.allThreads().filter((rt) => {
+        if (rt.deleted || this.subagentReadOnly(rt)) return false;
+        if (rt.external.external) return true;
+        return !!rt.external.uncertain && [...this.clients].some((c) => c.isSubscribed?.(rt.id));
+      });
+      await Promise.all(due.map((rt) => this.refreshExternal(rt).catch(() => undefined)));
+    } finally {
+      this.controlTicking = false;
     }
   }
 
@@ -1881,6 +1921,7 @@ export class Core {
       threadArchive: "archive",
       threadDelete: "remove",
       voiceInput: "startDictation",
+      threadTakeOverInterrupt: "interruptHolder",
     };
     eff.capabilities = (eff.capabilities ?? []).filter((c) => {
       if (declared.size > 0 && !declared.has(c)) return false;
@@ -1889,6 +1930,8 @@ export class Core {
     });
     // `threadMove` is yaacd's own (D144): any thread can be placed under another project.
     if (!eff.capabilities.includes("threadMove")) eff.capabilities.push("threadMove");
+    // So is the in-use re-check (P388).
+    if (!eff.capabilities.includes("threadCheckControl")) eff.capabilities.push("threadCheckControl");
     // Fast mode (D125) is a model-level capability: present when the thread's model has it.
     eff.capabilities = eff.capabilities.filter((c) => c !== "fastMode" && c !== "ultrafastMode");
     for (const cap of ["fastMode", "ultrafastMode"] as const) {
@@ -1936,7 +1979,7 @@ export class Core {
   }
 
   /** Asks the provider who holds the thread. Only a positive `external` makes it read-only. */
-  async refreshExternal(rt: ThreadRuntime): Promise<ExternalControl> {
+  async refreshExternal(rt: ThreadRuntime, fresh = false): Promise<ExternalControl> {
     // A read-only harness sub-agent (D151) is held by the agent that started it: positive
     // evidence of another writer, and nothing YAAC can take over.
     const readOnly = this.subagentReadOnly(rt);
@@ -1949,7 +1992,7 @@ export class Core {
     if (!provider) return rt.external;
     let ext: ExternalControl;
     try {
-      ext = await provider.control(rt.record.native);
+      ext = await provider.control(rt.record.native, fresh ? { fresh: true } : undefined);
     } catch {
       ext = { external: false, uncertain: true, holder: "unknown (the harness did not say)" };
     }
@@ -1989,7 +2032,45 @@ export class Core {
    * `thread/takeOver` (D140): continue here a thread another program holds, without stopping
    * that program. Refused when the harness will not let go (`takeOverBlocked`).
    */
-  async threadTakeOver(p: { opId: string; threadId: string }): Promise<Record<string, never>> {
+  /**
+   * `thread/checkControl` (P388): ask the harness again, now, bypassing what it said a moment
+   * ago. Changes nothing; a different answer reaches clients as `controlChanged`.
+   */
+  async threadCheckControl(p: { threadId: string }): Promise<Record<string, never>> {
+    const rt = this.findThread(p.threadId);
+    if (!rt || rt.deleted) throw rpc("thread_not_found", `no thread ${String(p.threadId)}`);
+    await this.refreshExternal(rt, true);
+    return {};
+  }
+
+  /**
+   * "Interrupt and take over" (P387): the holder's running turn is interrupted, on the user's
+   * confirmed request, then yaacd waits (bounded) for the harness to report it idle or gone.
+   * What it finds then is returned; a holder still busy refuses the takeover, and the request
+   * is never sent again on its own (invariant 10).
+   */
+  private async interruptHolder(rt: ThreadRuntime, provider: HarnessProvider, raw: ExternalControl): Promise<ExternalControl> {
+    if (!provider.interruptHolder) throw notActed("capability_missing", "this thread's harness cannot interrupt the program that holds it");
+    try {
+      await provider.interruptHolder(rt.record.native);
+    } catch (e) {
+      throw notActed("thread_in_use", `could not interrupt ${raw.holder ?? "the other program"}: ${(e as Error).message}`);
+    }
+    this.noticeItem(rt, "info", `Interrupted ${raw.holder ?? "the other program"} to take this thread over.`);
+    const until = Date.now() + (this.opts.takeOverWaitMs ?? TAKE_OVER_WAIT_MS);
+    for (;;) {
+      let now: ExternalControl;
+      try {
+        now = await provider.control(rt.record.native, { fresh: true });
+      } catch {
+        now = raw;
+      }
+      if (!now.external || !now.takeOverBlocked || Date.now() >= until) return now;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  async threadTakeOver(p: { opId: string; threadId: string; interrupt?: boolean }): Promise<Record<string, never>> {
     return this.ops.run("thread/takeOver", p.opId, async () => {
       const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)}`);
@@ -2001,6 +2082,10 @@ export class Core {
         raw = await provider.control(rt.record.native);
       } catch (e) {
         throw notActed("provider_unavailable", `the harness did not say who holds the thread: ${(e as Error).message}`);
+      }
+      if (raw.external && raw.takeOverBlocked && p.interrupt === true) {
+        if (!(eff.capabilities ?? []).includes("threadTakeOverInterrupt")) throw notActed("capability_missing", "this thread's harness cannot interrupt the program that holds it");
+        raw = await this.interruptHolder(rt, provider, raw);
       }
       if (!raw.external) {
         // Nobody else holds it: there is nothing to take.
@@ -4177,6 +4262,8 @@ export class Core {
   async close(): Promise<void> {
     if (this.gitTimer) clearInterval(this.gitTimer);
     this.gitTimer = null;
+    if (this.controlTimer) clearInterval(this.controlTimer);
+    this.controlTimer = null;
     if (!(await within(this.gitStatus.idle().catch(() => {}), CLOSE_GIT_WAIT_MS))) {
       this.opts.log(`stop: git status still computing after ${CLOSE_GIT_WAIT_MS} ms; not waiting for it`);
     }

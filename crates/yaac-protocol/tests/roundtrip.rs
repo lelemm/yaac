@@ -528,3 +528,24 @@ fn approval_explain_carries_an_ordered_model_pair_and_inert_input() {
     let p: yaac_protocol::ApprovalExplainParams = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(p).unwrap(), wire);
 }
+
+/// P387/P388: "Interrupt and take over" is `thread/takeOver` with `interrupt`, absent for a
+/// plain takeover (an older daemon sees a plain takeover, which a busy holder refuses); the in-use
+/// re-check `thread/checkControl` changes nothing and so carries no operation id.
+#[test]
+fn interrupt_and_take_over_and_check_control_round_trip() {
+    use yaac_protocol::types::{ThreadCheckControlParams, ThreadTakeOverParams};
+    use yaac_protocol::Capability;
+    let p: ThreadTakeOverParams = serde_json::from_value(json!({ "opId": "op-1", "threadId": "t1", "interrupt": true })).unwrap();
+    assert_eq!(p.interrupt, Some(true));
+    assert_eq!(serde_json::to_value(&p).unwrap()["interrupt"], true);
+    let plain: ThreadTakeOverParams = serde_json::from_value(json!({ "opId": "op-1", "threadId": "t1" })).unwrap();
+    assert_eq!(plain.interrupt, None);
+    assert!(serde_json::to_value(&plain).unwrap().get("interrupt").is_none());
+    let info = yaac_protocol::methods::request_info("thread/checkControl").expect("a known method");
+    assert!(!info.state_changing, "changes nothing: no operation id");
+    let c: ThreadCheckControlParams = serde_json::from_value(json!({ "threadId": "t1" })).unwrap();
+    assert_eq!(serde_json::to_value(&c).unwrap(), json!({ "threadId": "t1" }));
+    assert_eq!(serde_json::from_value::<Capability>(json!("threadTakeOverInterrupt")).unwrap(), Capability::ThreadTakeOverInterrupt);
+    assert_eq!(serde_json::from_value::<Capability>(json!("threadCheckControl")).unwrap(), Capability::ThreadCheckControl);
+}

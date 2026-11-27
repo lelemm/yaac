@@ -1698,3 +1698,175 @@ test("explanation sends untrusted tool data in one non-persisted Claude turn", a
     assert.equal(q.closed, true);
   } finally { await provider.dispose(); }
 });
+
+// ── Orphans of a previous yaacd (P385) ───────────────────────────────────────────────────
+
+/** A process table the tests own: pid → start time; kills are recorded. */
+class FakeProcs {
+  readonly table = new Map<number, string>();
+  readonly kills: Array<[number, string]> = [];
+  startTime(pid: number): string | null {
+    return this.table.get(pid) ?? null;
+  }
+  kill(pid: number, signal: NodeJS.Signals): void {
+    this.kills.push([pid, signal]);
+  }
+}
+
+/** A provider whose state folder holds what a previous yaacd left in children.json. */
+function orphanRig(children: Array<{ pid: number; start: string; native: string; turnId: string | null }>, procs: FakeProcs): Rig {
+  const dir = tmp("yaac-claude-orphan-");
+  const stateDir = path.join(dir, "state");
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, "children.json"), JSON.stringify({ children: children.map((c) => ({ ...c, at: "2026-11-27T08:00:00.000Z" })) }));
+  const sdk = new StubSdk();
+  const cli = new StubCli();
+  const provider = new ClaudeProvider({ sdk, cli, executable: "/nonexistent/claude", env: {}, stateDir, idleMs: 0, controlCacheMs: 0, processes: procs, orphanPollMs: 20 });
+  // The orphan watch's timers do not keep a process alive (yaacd's socket does): the test does.
+  const keep = setInterval(() => {}, 1000);
+  const dispose = provider.dispose.bind(provider);
+  provider.dispose = async () => {
+    clearInterval(keep);
+    await dispose();
+  };
+  const events: ProviderEvent[] = [];
+  provider.events.on((e) => events.push(e));
+  return { provider, sdk, cli, events, dir };
+}
+
+const ORPHAN = "11111111-2222-3333-4444-555555555555";
+const busyEntry = (pid: number, sessionId = ORPHAN) => ({ pid, sessionId, kind: "interactive", status: "busy" });
+
+test("orphans: a process a previous yaacd started is its own, not another program; its turn is still running", async () => {
+  const procs = new FakeProcs();
+  procs.table.set(1234, "9001");
+  const r = orphanRig([{ pid: 1234, start: "9001", native: ORPHAN, turnId: "turn-1" }], procs);
+  try {
+    r.cli.agentsList = [busyEntry(1234)];
+    assert.deepEqual(await r.provider.control(ORPHAN), { external: false });
+    assert.equal(await r.provider.runningTurn(ORPHAN), "turn-1");
+    // A real other session on the same thread is still another program.
+    r.cli.agentsList = [busyEntry(1234), busyEntry(777)];
+    const other = await r.provider.control(ORPHAN);
+    assert.equal(other.external, true);
+    assert.deepEqual(other.holderIds, ["pid:777"]);
+    assert.match(other.takeOverBlocked ?? "", /running a turn/);
+    // Never a second process on the session while the orphan runs (invariant 9).
+    r.sdk.sessions = [{ sessionId: ORPHAN, summary: "Worker", lastModified: Date.now(), cwd: r.dir }];
+    await assert.rejects(r.provider.startTurn(ORPHAN, input("hi"), {}), /still finishing a turn from before yaacd restarted/);
+    assert.equal(r.sdk.queries.length, 0);
+  } finally {
+    await r.provider.dispose();
+  }
+});
+
+test("orphans: a pid reused by another process (a different start time) is not taken as ours", async () => {
+  const procs = new FakeProcs();
+  procs.table.set(1234, "5555"); // the pid now belongs to something that started later
+  const r = orphanRig([{ pid: 1234, start: "9001", native: ORPHAN, turnId: "turn-1" }], procs);
+  try {
+    r.cli.agentsList = [busyEntry(1234)];
+    const c = await r.provider.control(ORPHAN);
+    assert.equal(c.external, true);
+    assert.equal(await r.provider.runningTurn(ORPHAN), null);
+    const file = JSON.parse(fs.readFileSync(path.join(r.dir, "state", "children.json"), "utf8"));
+    assert.deepEqual(file.children, []);
+  } finally {
+    await r.provider.dispose();
+  }
+});
+
+test("orphans: what the orphan saved is imported into its turn, and the turn ends when it exits", async () => {
+  const procs = new FakeProcs();
+  procs.table.set(1234, "9001");
+  const r = orphanRig([{ pid: 1234, start: "9001", native: ORPHAN, turnId: "turn-1" }], procs);
+  try {
+    r.sdk.messages[ORPHAN] = [
+      { type: "user", uuid: "earlier", session_id: ORPHAN, message: { role: "user", content: "before" }, parent_tool_use_id: null },
+      { type: "assistant", uuid: "a0", session_id: ORPHAN, message: { id: "m0", content: [{ type: "text", text: "old" }] }, parent_tool_use_id: null },
+      { type: "user", uuid: "turn-1", session_id: ORPHAN, message: { role: "user", content: "the task" }, parent_tool_use_id: null },
+      { type: "assistant", uuid: "a1", session_id: ORPHAN, message: { id: "m1", content: [{ type: "text", text: "the final answer" }] }, parent_tool_use_id: null },
+    ] as unknown as SessionMessage[];
+    const notice = await until(() => completedItems(r.events).find((i) => i.id === "notice:orphan:turn-1"), "the notice");
+    assert.equal(notice.turnId, "turn-1");
+    const answer = await until(() => completedItems(r.events).find((i) => i.id === "m1#0"), "the imported answer");
+    assert.equal(answer.turnId, "turn-1");
+    assert.equal((answer as { text?: string }).text, "the final answer");
+    // Only that turn's items; the prompt is not repeated.
+    assert.ok(!completedItems(r.events).some((i) => i.id === "m0#0" || i.id.startsWith("user:")));
+    assert.equal(of(r.events, "turnCompleted").length, 0);
+    // It exits: the turn ends, completed, once.
+    procs.table.delete(1234);
+    const done = await until(() => of(r.events, "turnCompleted")[0], "the turn to end");
+    assert.deepEqual([done.turnId, done.status], ["turn-1", "completed"]);
+    assert.equal(await r.provider.runningTurn(ORPHAN), null);
+    r.cli.agentsList = [busyEntry(1234)]; // its registry entry can linger a moment
+    assert.deepEqual(await r.provider.control(ORPHAN), { external: false });
+    assert.equal(completedItems(r.events).filter((i) => i.id === "m1#0").length, 1);
+    await tick();
+    assert.equal(of(r.events, "turnCompleted").length, 1);
+  } finally {
+    await r.provider.dispose();
+  }
+});
+
+test("orphans: Stop on its turn ends the orphan (the user's action) and the turn is interrupted", async () => {
+  const procs = new FakeProcs();
+  procs.table.set(1234, "9001");
+  const r = orphanRig([{ pid: 1234, start: "9001", native: ORPHAN, turnId: "turn-1" }], procs);
+  try {
+    assert.deepEqual(procs.kills, []); // never on its own
+    const stopping = r.provider.interrupt(ORPHAN, "turn-1");
+    await until(() => procs.kills.length > 0, "the signal");
+    assert.deepEqual(procs.kills, [[1234, "SIGTERM"]]);
+    procs.table.delete(1234);
+    await stopping;
+    const done = of(r.events, "turnCompleted")[0]!;
+    assert.deepEqual([done.turnId, done.status], ["turn-1", "interrupted"]);
+  } finally {
+    await r.provider.dispose();
+  }
+});
+
+test("orphans: yaacd records the processes it starts, with their start time, and forgets them when they end", async () => {
+  const procs = new FakeProcs();
+  for (let pid = 40000; pid < 40100; pid++) procs.table.set(pid, `start-${pid}`);
+  const r = orphanRig([], procs);
+  const file = () => JSON.parse(fs.readFileSync(path.join(r.dir, "state", "children.json"), "utf8")).children as Array<Record<string, unknown>>;
+  try {
+    const { thread, q } = await startedThread(r);
+    const entry = await until(() => file().find((c) => c.pid === q.pid), "the entry");
+    assert.equal(entry.start, `start-${q.pid}`);
+    assert.equal(entry.native, thread);
+    assert.equal(typeof entry.turnId, "string");
+    q.push(result());
+    await until(() => file().find((c) => c.pid === q.pid && c.turnId === null), "the turn to be cleared");
+    q.end();
+    await until(() => file().length === 0, "the entry to go");
+  } finally {
+    await r.provider.dispose();
+  }
+});
+
+test("interrupt and take over: a busy terminal gets SIGINT, a background session claude stop", async () => {
+  const procs = new FakeProcs();
+  const r = orphanRig([], procs);
+  const stopped: string[] = [];
+  (r.cli as StubCli & { stop: (id: string) => Promise<void> }).stop = async (id: string) => {
+    stopped.push(id);
+  };
+  try {
+    r.cli.agentsList = [busyEntry(4242, "t-held")];
+    await r.provider.interruptHolder("t-held");
+    assert.deepEqual(procs.kills, [[4242, "SIGINT"]]);
+    r.cli.agentsList = [{ id: "bg1", sessionId: "t-bg", kind: "background", state: "working" }];
+    await r.provider.interruptHolder("t-bg");
+    assert.deepEqual(stopped, ["bg1"]);
+    // An idle terminal is left alone.
+    r.cli.agentsList = [{ pid: 5151, sessionId: "t-idle", kind: "interactive", status: "idle" }];
+    await r.provider.interruptHolder("t-idle");
+    assert.equal(procs.kills.length, 1);
+  } finally {
+    await r.provider.dispose();
+  }
+});

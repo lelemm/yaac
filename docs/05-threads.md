@@ -265,6 +265,38 @@ harness-specific job and gets its own spike (S7):
 | Codex (daemon) | The thread's status and loaded state on the daemon, and whether a turn is running that `yaacd` did not start; a writer conflict when trying to resume. |
 | Claude Code | `claude agents --json` lists live interactive and background sessions with their session ids and state. |
 
+*Proposed (P386):* the answer is **kept true on its own**. Every 3 s `yaacd` asks again about
+each thread it shows in use elsewhere, and about each watched thread whose holder was
+uncertain — all at once, so Claude Code answers from one `claude agents`. The banner clears, or
+Take over enables, within seconds of the holder leaving or going idle; nothing has to be
+reopened. *Proposed (P388):* the banner's refresh button ("Check again whether this thread is
+in use elsewhere") asks at once, bypassing the harness's short cache (`thread/checkControl`,
+under `threadCheckControl`; it changes nothing, so it carries no operation id).
+
+The Claude Code processes `yaacd` runs are its own and never "another session" — including
+those a previous `yaacd` started (below).
+
+### After `yaacd` restarts (P385)
+
+*Proposed.* If `yaacd` dies without closing its Claude Code processes (a crash), one that was
+running a turn goes on: it finishes the turn and writes its session, its parent gone. The next
+`yaacd` knows it as its own from `providers/<instance>/children.json` (pid, start time, thread,
+turn; a pid whose start time differs was reused and is ignored). Then:
+
+- The thread is **not** read-only and the turn is **still running**: it shows a running turn
+  with the notice "Still finishing from before yaacd restarted…". What the process saves is
+  brought into the transcript as it goes (re-read when the session file changes).
+- Messages sent meanwhile — by the user or by agents — are **queued** like any running turn's.
+  No second Claude Code process is opened on the session while it runs (invariant 9).
+- **Stop** ends the process (SIGTERM) — the user's action, never automatic. Otherwise it is
+  left to finish.
+- When it exits, the turn completes with what it saved; for a spawned worker that is its
+  result, delivered to its parent once. The thread is then an ordinary idle thread.
+
+A process that was idle when `yaacd` died ends by itself (its input is closed); a send waits a
+few seconds for that. Its own MCP tools (the mesh) died with the old `yaacd`, so an orphan that
+calls one gets an error — it cannot be re-attached.
+
 **Decided: when unsure, take over.** A thread is read-only only on **positive evidence** that
 someone else is using it — a turn running that `yaacd` did not start, or a harness that
 reports another live holder. When `yaacd` simply cannot tell, the thread is treated as free
@@ -308,7 +340,17 @@ notice); the holders going away simply ends the takeover. It survives a `yaacd` 
 | Harness | Holder named by | Refused when |
 | --- | --- | --- |
 | Codex (daemon) | The last turn another client started (Codex cannot name clients), so a new turn from another client is a new holder. | That client's turn is running: input would join it. A second client can rejoin a loaded thread and start turns in it; the other client, if subscribed, does receive them. |
-| Claude Code | The process of an interactive session; the id of a background one. | The holder is a **background** session: Claude Code refuses to resume it (`session_held_by_background`) until it is stopped there, which YAAC never does. Also while the interactive session is mid-turn. An idle interactive `claude` does not stop a resume and does not see what is sent. |
+| Claude Code | The process of an interactive session; the id of a background one. | The holder is a **background** session: Claude Code refuses to resume it (`session_held_by_background`) until it is stopped there, which YAAC does only on the user's **Interrupt and take over** (P387). Also while the interactive session is mid-turn. An idle interactive `claude` does not stop a resume and does not see what is sent. |
+
+*Proposed (P387, the owner's request — changes D140):* where Take over is refused because the
+holder is running a turn or is a background session, the banner also offers **Interrupt and
+take over** (under `threadTakeOverInterrupt`). After a confirmation naming what will be
+interrupted, `thread/takeOver` with `interrupt: true` interrupts the holder — Claude Code: SIGINT
+to a busy interactive session's process, what Ctrl+C there sends; `claude stop <id>` for a
+background session (its conversation is kept) — waits up to 30 s for the harness to report it
+idle or gone, journals "Interrupted … to take this thread over", and takes over as above. Still
+busy: refused with the reason; nothing is sent again (invariant 10). Never automatic. Codex does
+not offer it yet.
 
 After a takeover, approvals and questions the harness re-surfaces to `yaacd` (Codex re-sends a
 pending request to a client that subscribes) are answerable here; those that stayed with the

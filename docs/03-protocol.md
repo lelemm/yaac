@@ -483,8 +483,13 @@ the other party finishes or lets go — or, for `external`, when the user **take
 with `{}` (also when nobody else holds it) or refused with `thread_in_use` and the harness's
 reason. Where the holder will not let go now, `controlChanged` and the `thread/subscribe`
 result carry that reason as `takeOverBlocked`, so the UI can disable **Take over** with it
-([05 Threads](05-threads.md#taking-it-over)). How "in use elsewhere" is detected is per provider
-([05 Threads](05-threads.md#in-use-elsewhere)).
+([05 Threads](05-threads.md#taking-it-over)). With `threadTakeOverInterrupt`,
+`thread/takeOver { opId, threadId, interrupt: true }` is **Interrupt and take over** (P387): the
+holder's running turn is interrupted first, then the takeover proceeds; sent only after the
+user confirms. How "in use elsewhere" is detected is per provider
+([05 Threads](05-threads.md#in-use-elsewhere)); `yaacd` re-checks a thread shown `external` every
+few seconds (P386), and `thread/checkControl { threadId }` (under `threadCheckControl`, no
+operation id) asks again at once, the answer arriving as `controlChanged` (P388).
 
 ## Events
 

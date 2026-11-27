@@ -315,6 +315,11 @@ catalogue! {
         /// holder's evidence no longer makes it read-only, until a different holder appears.
         ThreadTakeOver = "thread/takeOver" as THREAD_TAKE_OVER:
             t::ThreadTakeOverParams => t::Empty, HostToDaemon, request Control, response Control, op;
+        /// Ask the harness again whether a thread is in use elsewhere (under
+        /// `threadCheckControl`, P388). Changes nothing; the result is the thread's
+        /// `controlChanged` event.
+        ThreadCheckControl = "thread/checkControl" as THREAD_CHECK_CONTROL:
+            t::ThreadCheckControlParams => t::Empty, HostToDaemon, request Control, response Control;
         /// Apply a confirmed permission mode to one recipient.
         ThreadSetMode = "thread/setMode" as THREAD_SET_MODE:
             t::ThreadSetModeParams => t::Empty, HostToDaemon, request Control, response Control, op;

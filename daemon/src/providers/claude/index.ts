@@ -75,6 +75,7 @@ import { claudeSkills } from "../skills.js";
 import { ClaudeRateLimits, readWithOwnQuery } from "./ratelimits.js";
 import { CLAUDE_VOICE_FORMAT, ClaudeDictationHost } from "./dictation.js";
 import type { Dictation, DictationEvents, DictationOptions } from "../../voice/types.js";
+import { ChildrenFile, systemProcesses, type ChildEntry, type ProcessTable } from "./children.js";
 import type { RateLimitReport } from "../ratelimits.js";
 import type { StoreToolImage } from "../tool-images.js";
 
@@ -257,6 +258,8 @@ class Live {
   lastUsed = Date.now();
   idleTimer: NodeJS.Timeout | null = null;
   closing = false;
+  /** Its event stream ended: the process is gone. */
+  ended = false;
   stderrTail = "";
   translator: LiveTranslator;
   /** The settings the query is running with. */
@@ -335,6 +338,10 @@ export interface ClaudeProviderOptions {
    * unless `YAAC_CLAUDE_VOICE=0`).
    */
   voice?: boolean;
+  /** How yaacd looks at and signals processes (P385). Tests pass a fake table. */
+  processes?: ProcessTable;
+  /** How often an orphan of a previous yaacd is looked at (P385). */
+  orphanPollMs?: number;
 }
 
 const iso = (ms: number | undefined | null): string => new Date(typeof ms === "number" && Number.isFinite(ms) ? ms : Date.now()).toISOString();
@@ -401,6 +408,29 @@ function usageOf(u: unknown): TokenUsage | null {
   return { input: totalIn, cachedInput: cached, output, total: totalIn + (output ?? 0) };
 }
 
+/** A Claude Code process a previous yaacd started that still runs (P385). */
+interface Orphan {
+  entry: ChildEntry;
+  /** The turn it is finishing; null: it was idle (it ends once it sees its input closed). */
+  turnId: TurnId | null;
+  timer: NodeJS.Timeout | null;
+  polling: boolean;
+  /** The user asked to stop it. */
+  stopping: boolean;
+  noticed: boolean;
+  /** The session's last write, as last imported. */
+  lastModified: number | null;
+  /** What was imported, by item id (serialised): only changes are emitted again. */
+  emitted: Map<string, string>;
+  exited: Promise<void>;
+  markExited: () => void;
+}
+
+export const ORPHAN_BUSY = "this thread is still finishing a turn from before yaacd restarted; wait for it, or stop it";
+
+export const ORPHAN_NOTICE =
+  "Still finishing from before yaacd restarted: the Claude Code process running this turn kept going. Its work shows here as Claude Code saves it; Stop ends it. Messages sent now wait until it is done.";
+
 export class ClaudeProvider implements HarnessProvider {
   readonly events = new Emitter<ProviderEvent>();
   private sdkPromise: Promise<ClaudeSdk> | null = null;
@@ -421,6 +451,10 @@ export class ClaudeProvider implements HarnessProvider {
   /** Pids of Claude Code processes yaacd ran, kept a while after they end (their registry entry can linger). */
   private ownPids = new Map<number, number>();
   private agentsCache: { at: number; entries: Promise<AgentEntry[]> } | null = null;
+  /** The Claude Code processes yaacd started, on disk (P385). */
+  private readonly children: ChildrenFile;
+  /** Processes a previous yaacd started that still run (P385), by thread. */
+  private readonly orphans = new Map<NativeId, Orphan>();
   private scanSnapshot: { id: string; threads: NativeThreadInfo[] } | null = null;
   private disposed = false;
   /** Claude Code's configuration folder (where `projects/` is), as the last probe found it. */
@@ -447,6 +481,8 @@ export class ClaudeProvider implements HarnessProvider {
       cwd: options.stateDir,
       log: this.log,
     });
+    this.children = new ChildrenFile(path.join(options.stateDir, "children.json"), options.processes ?? systemProcesses, this.log);
+    for (const e of this.children.load()) this.adoptOrphan(e);
   }
 
   // ── Hooks and test controls ────────────────────────────────────────────────────────────
@@ -532,6 +568,7 @@ export class ClaudeProvider implements HarnessProvider {
       "threadArchive",
       "threadDelete",
       "threadTakeOver",
+      "threadTakeOverInterrupt",
       "streamText",
       "streamReasoning",
       "interrupt",
@@ -960,6 +997,14 @@ export class ClaudeProvider implements HarnessProvider {
    * deferred while background work ran. Otherwise the query is kept as it is.
    */
   private async ensureLive(native: NativeId, dirs: string[]): Promise<Live> {
+    const orphan = this.orphans.get(native);
+    if (orphan && !orphan.turnId) {
+      // Idle when the previous yaacd died: its input is closed, so it ends on its own. Never a
+      // second process on the same session while it runs (invariant 9).
+      void this.pollOrphan(orphan);
+      await Promise.race([orphan.exited, new Promise((r) => setTimeout(r, 10000).unref())]);
+    }
+    if (this.orphans.has(native)) throw new Error(ORPHAN_BUSY);
     const existing = this.live.get(native);
     if (!existing) return this.openLive(native, new Set(dirs));
     const missing = dirs.filter((d) => !existing.dirs.has(d));
@@ -1028,6 +1073,7 @@ export class ClaudeProvider implements HarnessProvider {
         if (typeof r?.pid === "number") {
           live.pid = r.pid;
           this.ownPids.set(r.pid, Number.POSITIVE_INFINITY);
+          if (!live.ended) this.children.add(r.pid, native, live.turn?.turnId ?? null);
         }
       })
       .catch(() => {});
@@ -1044,7 +1090,11 @@ export class ClaudeProvider implements HarnessProvider {
     }
     for (const command of live.peerCommands.values()) command.acknowledge(new InputOutcomeUnknown(failure ?? "the Claude Code process closed during peer delivery"));
     live.peerCommands.clear();
-    if (live.pid !== null) this.ownPids.set(live.pid, Date.now());
+    live.ended = true;
+    if (live.pid !== null) {
+      this.ownPids.set(live.pid, Date.now());
+      this.children.remove(live.pid);
+    }
     const wasLive = this.live.get(live.native) === live;
     if (wasLive) this.live.delete(live.native);
     if (live.idleTimer) clearTimeout(live.idleTimer);
@@ -1075,6 +1125,7 @@ export class ClaudeProvider implements HarnessProvider {
     const turn: TurnState = { turnId, origin, interrupting: false, ended, end };
     live.turn = turn;
     live.translator.begin(turnId);
+    if (live.pid !== null) this.children.setTurn(live.pid, turnId);
     if (live.idleTimer) clearTimeout(live.idleTimer);
     live.idleTimer = null;
     this.emit({ type: "turnStarted", thread: live.native, turnId, origin, at: new Date().toISOString() });
@@ -1094,6 +1145,7 @@ export class ClaudeProvider implements HarnessProvider {
     live.translator.finish(status === "completed");
     live.asking.clear();
     live.turn = null;
+    if (live.pid !== null) this.children.setTurn(live.pid, null);
     this.emit({ type: "turnCompleted", thread: live.native, turnId: turn.turnId, status, error, usage, at: new Date().toISOString() });
     turn.end();
     this.touch(live);
@@ -1899,6 +1951,8 @@ export class ClaudeProvider implements HarnessProvider {
   }
 
   async interrupt(thread: NativeId, turn: TurnId): Promise<void> {
+    const orphan = this.orphans.get(thread);
+    if (orphan && orphan.turnId === turn) return this.stopOrphan(orphan);
     const live = this.live.get(thread);
     if (!live?.turn || live.turn.turnId !== turn) return;
     const t = live.turn;
@@ -1940,11 +1994,114 @@ export class ClaudeProvider implements HarnessProvider {
     };
   }
 
+  // ── Orphans of a previous yaacd (P385) ─────────────────────────────────────────────────
+
+  private adoptOrphan(entry: ChildEntry): void {
+    let markExited!: () => void;
+    const exited = new Promise<void>((r) => (markExited = r));
+    const o: Orphan = { entry, turnId: entry.turnId, timer: null, polling: false, stopping: false, noticed: false, lastModified: null, emitted: new Map(), exited, markExited };
+    this.orphans.set(entry.native, o);
+    this.log(`Claude Code process ${entry.pid} of ${entry.native} outlived the previous yaacd (${entry.turnId ? `running turn ${entry.turnId}` : "idle"}); adopted`);
+    this.scheduleOrphan(o, 0);
+  }
+
+  private scheduleOrphan(o: Orphan, ms = this.options.orphanPollMs ?? 3000): void {
+    if (this.disposed) return;
+    if (o.timer) clearTimeout(o.timer);
+    o.timer = setTimeout(() => {
+      o.timer = null;
+      void this.pollOrphan(o);
+    }, ms);
+    o.timer.unref();
+  }
+
+  private isOrphanPid(pid: number): boolean {
+    for (const o of this.orphans.values()) if (o.entry.pid === pid) return true;
+    return false;
+  }
+
+  /** Looks at an orphan: imports what it saved since, and ends its turn once it has exited. */
+  private async pollOrphan(o: Orphan): Promise<void> {
+    if (this.disposed || o.polling || this.orphans.get(o.entry.native) !== o) return;
+    o.polling = true;
+    try {
+      const alive = this.children.alive(o.entry.pid);
+      const native = o.entry.native;
+      if (o.turnId && !o.noticed) {
+        o.noticed = true;
+        const item = { id: `notice:orphan:${o.turnId}`, turnId: o.turnId, status: "completed", kind: "notice", noticeKind: "info", text: ORPHAN_NOTICE } as Item;
+        this.emit({ type: "itemStarted", thread: native, item });
+        this.emit({ type: "itemCompleted", thread: native, item });
+      }
+      if (o.turnId) await this.importOrphan(o, !alive).catch((e) => this.log(`could not read the session of ${native}: ${(e as Error).message}`));
+      if (alive) return;
+      // It has exited: what it saved is imported; the thread is ours again.
+      this.orphans.delete(native);
+      this.children.remove(o.entry.pid);
+      this.ownPids.set(o.entry.pid, Date.now()); // its registry entry can linger
+      this.agentsCache = null;
+      this.log(`the Claude Code process ${o.entry.pid} of ${native} from before the restart has ended`);
+      if (o.turnId) {
+        this.emit({ type: "turnCompleted", thread: native, turnId: o.turnId, status: o.stopping ? "interrupted" : "completed", error: null, usage: null, at: new Date().toISOString() });
+        void this.refreshInfo(native);
+      }
+      o.markExited();
+    } finally {
+      o.polling = false;
+      if (this.orphans.get(o.entry.native) === o) this.scheduleOrphan(o);
+    }
+  }
+
+  /**
+   * Brings into the thread what the orphan's turn saved in the session: every item from the
+   * turn's prompt on (a message delivered during the turn starts a new turn in the stored
+   * transcript, not in YAAC's), under the turn YAAC knows. Prompts are already in the journal.
+   */
+  private async importOrphan(o: Orphan, final: boolean): Promise<void> {
+    const sdk = await this.sdk();
+    const native = o.entry.native;
+    const info = await sdk.getSessionInfo(native).catch(() => undefined);
+    const modified = typeof info?.lastModified === "number" ? info.lastModified : null;
+    if (!final && modified !== null && modified === o.lastModified) return;
+    o.lastModified = modified;
+    const items = historyItems(await sdk.getSessionMessages(native), this.settings[native]?.cwd ?? null, { storeImage: this.options.storeToolImage });
+    const first = items.findIndex((i) => i.turnId === o.turnId);
+    if (first < 0) return;
+    for (const raw of items.slice(first)) {
+      if (raw.id.startsWith("user:")) continue;
+      const item = { ...raw, turnId: o.turnId } as Item;
+      const key = JSON.stringify(item);
+      if (o.emitted.get(item.id) === key) continue;
+      o.emitted.set(item.id, key);
+      this.emit({ type: "itemCompleted", thread: native, item });
+    }
+  }
+
+  /** Stop on an orphan's turn: the user's explicit action, never automatic. */
+  private async stopOrphan(o: Orphan): Promise<void> {
+    if (this.children.alive(o.entry.pid)) {
+      o.stopping = true;
+      try {
+        (this.options.processes ?? systemProcesses).kill(o.entry.pid, "SIGTERM");
+        this.log(`stopped the Claude Code process ${o.entry.pid} of ${o.entry.native} from before the restart (the user's Stop)`);
+      } catch (e) {
+        this.log(`could not stop process ${o.entry.pid}: ${(e as Error).message}`);
+      }
+    }
+    this.scheduleOrphan(o, 200);
+    await Promise.race([o.exited, new Promise((r) => setTimeout(r, 30000).unref())]);
+  }
+
+  /** The turn running in a thread: a live one, or one an orphan is finishing (P385). */
+  async runningTurn(thread: NativeId): Promise<TurnId | null> {
+    return this.orphans.get(thread)?.turnId ?? this.live.get(thread)?.turn?.turnId ?? null;
+  }
+
   // ── In use elsewhere ───────────────────────────────────────────────────────────────────
 
-  private agents(): Promise<AgentEntry[]> {
+  private agents(fresh = false): Promise<AgentEntry[]> {
     const now = Date.now();
-    if (this.agentsCache && now - this.agentsCache.at < this.controlCacheMs) return this.agentsCache.entries;
+    if (!fresh && this.agentsCache && now - this.agentsCache.at < this.controlCacheMs) return this.agentsCache.entries;
     if (!this.cli) return Promise.reject(new Error("claude is not installed"));
     const entries = this.cli.agents();
     this.agentsCache = { at: now, entries };
@@ -1954,14 +2111,21 @@ export class ClaudeProvider implements HarnessProvider {
     return entries;
   }
 
-  async control(thread: NativeId): Promise<ExternalControl> {
+  async control(thread: NativeId, opts: { fresh?: boolean } = {}): Promise<ExternalControl> {
+    const holders = await this.holders(thread, opts.fresh === true);
+    if (holders === null) return { external: false, uncertain: true };
+    return holders.control;
+  }
+
+  /** Who else holds a thread, from `claude agents`; null when it cannot be told. */
+  private async holders(thread: NativeId, fresh: boolean): Promise<{ control: ExternalControl; entries: AgentEntry[] } | null> {
     const live = this.live.get(thread);
     if (live && live.pid === null) await Promise.race([live.pidKnown, new Promise((r) => setTimeout(r, 10000).unref())]);
     let entries: AgentEntry[];
     try {
-      entries = await this.agents();
+      entries = await this.agents(fresh);
     } catch {
-      return { external: false, uncertain: true };
+      return null;
     }
     const now = Date.now();
     for (const [pid, until] of this.ownPids) if (until !== Number.POSITIVE_INFINITY && now - until > 60000) this.ownPids.delete(pid);
@@ -1974,6 +2138,7 @@ export class ClaudeProvider implements HarnessProvider {
       }
       if (e.sessionId !== thread) continue;
       if (typeof e.pid === "number" && this.ownPids.has(e.pid)) continue; // a process yaacd runs
+      if (typeof e.pid === "number" && this.isOrphanPid(e.pid)) continue; // one a previous yaacd ran (P385)
       if (live && live.pid === null && typeof e.pid === "number") {
         uncertain = true; // ours, probably, but not shown to be
         continue;
@@ -1992,9 +2157,31 @@ export class ClaudeProvider implements HarnessProvider {
         : holders.some((h) => h.status === "busy")
           ? "the other Claude Code session is running a turn; it can be taken over when that turn ends"
           : null;
-      return { external: true, holder: bg ? "a Claude Code background session" : "another Claude Code session", holderIds, ...(takeOverBlocked ? { takeOverBlocked } : {}) };
+      return { control: { external: true, holder: bg ? "a Claude Code background session" : "another Claude Code session", holderIds, ...(takeOverBlocked ? { takeOverBlocked } : {}) }, entries: holders };
     }
-    return uncertain ? { external: false, uncertain: true } : { external: false };
+    return { control: uncertain ? { external: false, uncertain: true } : { external: false }, entries: [] };
+  }
+
+  /**
+   * "Interrupt and take over" (P387): a busy interactive holder gets SIGINT, what Ctrl+C in its
+   * terminal sends; a background session is stopped (`claude stop <id>`, its conversation is
+   * kept). Only holders `claude agents` names for this thread now are touched.
+   */
+  async interruptHolder(thread: NativeId): Promise<void> {
+    const found = await this.holders(thread, true);
+    if (found === null) throw new Error("Claude Code did not say which sessions hold this thread");
+    if (found.entries.length === 0) return;
+    for (const h of found.entries) {
+      if (h.kind === "background") {
+        if (typeof h.id !== "string") throw new Error("Claude Code did not name the background session");
+        if (!this.cli?.stop) throw new Error("claude stop is not available");
+        await this.cli.stop(h.id);
+        this.log(`stopped the Claude Code background session ${h.id} of ${thread} (the user's Interrupt and take over)`);
+      } else if (h.status === "busy" && typeof h.pid === "number") {
+        (this.options.processes ?? systemProcesses).kill(h.pid, "SIGINT");
+        this.log(`interrupted Claude Code process ${h.pid} of ${thread} (the user's Interrupt and take over)`);
+      }
+    }
   }
 
   // ── Fork, rename, archive, delete ──────────────────────────────────────────────────────
@@ -2112,6 +2299,7 @@ export class ClaudeProvider implements HarnessProvider {
   async dispose(): Promise<void> {
     this.dictation.dispose();
     for (const live of [...this.live.values()]) this.closeLive(live, "yaacd is stopping");
+    for (const o of this.orphans.values()) if (o.timer) clearTimeout(o.timer);
     this.disposed = true;
     const sdk = await this.sdkPromise?.catch(() => null);
     sdk?.dispose?.();
