@@ -2,7 +2,8 @@
 
 ## Linux hub
 
-The `yaac-hub-linux-x86_64` release asset is the stripped headless hub for x86_64 Linux.
+The `yaac-hub-linux-x86_64` release asset is the stripped headless hub for x86_64 Linux
+with glibc 2.35 or later.
 Check its size and SHA-256 against the same release's `manifest.json`. For a manual install,
 copy it into a user-owned directory on `PATH` and run it as the user whose harnesses it drives.
 
@@ -123,10 +124,11 @@ releases are read without a token.
 | Job | Runs on | Does | Produces |
 | --- | --- | --- | --- |
 | `checks` | `ubuntu-latest` | Two parallel jobs run the full Rust workspace suite and the daemon and manifest suites. Rust test builds restore cached dependencies and use a profile without debug symbols. | test results |
-| `build` | `ubuntu-latest` | Runs alongside the checks. Builds the daemon bundle and runs `scripts/build-windows.sh` with MinGW-w64 and the `x86_64-pc-windows-gnu` Rust target. Builds the headless Linux binary with `--no-default-features --features hub`. It caches Cargo's release dependencies separately from the Linux test cache. | `yaac.exe` (window and hub), `yaac-hub-linux-x86_64`, `yaacd.mjs`, `yaacd-mcp.mjs`, the exe's `yaac.ico` |
+| `build` | `ubuntu-latest` | Runs alongside the checks. Builds the daemon bundle and runs `scripts/build-windows.sh` with MinGW-w64 and the `x86_64-pc-windows-gnu` Rust target. It caches Cargo's release dependencies separately from the Linux test cache. | `yaac.exe` (window and hub, with `yaacd` embedded), `yaacd.mjs`, `yaacd-mcp.mjs`, the exe's `yaac.ico` |
+| `linux-hub` | `ubuntu-22.04` | Uses the same build id, embeds the daemon bundle, and builds with `--no-default-features --features hub`. | `yaac-hub-linux-x86_64` |
 | `installer` | `windows-latest` | `ISCC.exe installer\yaac.iss` with the same `/D` defines as `scripts/build-installer.sh`. Inno Setup 6 is preinstalled on GitHub's Windows images (actions/runner-images lists it); the job installs it with Chocolatey only if it is missing | `YAAC-Setup-<version>+<id>.exe` |
 | `android` | `ubuntu-latest` | After `build`: the Rust Android targets, `cargo-ndk`, NDK 27 and the Android 36 platform (sdkmanager on the runner image), `libyaac_android.so` for `arm64-v8a` only (phones; x86_64 is for the emulator and stays out of release APKs) with the same `YAAC_BUILD_ID`, then `./gradlew assembleRelease` signed with the release key from the `ANDROID_*` secrets; the APK's versionCode and signature are checked. Cargo's Android dependencies and Gradle's are cached | `yaac-android-<version>-build.<id>.apk` |
-| `release` | `ubuntu-latest` | After the checks, installer and Android app succeed, runs `scripts/make-manifest.mjs`, then `gh release create <tag> … --latest` with the job's `GITHUB_TOKEN` (`contents: write`, this job only) | the release |
+| `release` | `ubuntu-latest` | After the checks and builds succeed, runs `scripts/make-manifest.mjs`, then `gh release create <tag> … --latest` with the job's `GITHUB_TOKEN` (`contents: write`, this job only) | the release |
 
 A release holds `YAAC-Setup-<version>-build.<id>.exe` (asset names keep to letters, digits,
 `.`, `-` and `_`, which GitHub never renames), `yaac.exe`, `yaac-hub-linux-x86_64`, `yaacd.mjs`, `yaacd-mcp.mjs`,
