@@ -107,6 +107,7 @@ The UI does not know which transport carries the frames (`core/Transport.kt`).
 | `ui/ListScreen.kt` | A01: the list (sidebar frame). |
 | `ui/ThreadScreen.kt`, `ui/Transcript.kt`, `ui/Markdown.kt` | The thread: header, banners, transcript rows, request cards. |
 | `ui/Composer.kt` | The composer, queue, running commands and control row. |
+| `ui/Voice.kt`, `core/VoiceRecorder.kt`, `core/VoiceAudio.kt` | Dictation (docs/07-ui.md#voice-input): the mic in the button row when the frame has `voice`, RECORD_AUDIO asked at the first tap, `AudioRecord` on its own thread at the format's rate (or one the phone opens, resampled), ~100 ms base64 chunks to `composer.voiceAudio`, the words heard so far in place at the caret. The audio math and the caret mapping are unit-tested (`VoiceAudioTest`, `VoiceTapTest`). |
 | `ui/Agents.kt` | The agents pill and the Related agents sheet. |
 | `ui/agents/AgentsModel.kt` | The agents frame as plain values (pill entries, sheet order and folds, budget, time-limit menu, row under a held finger), unit-tested in `AgentsModelTest`. |
 | `ui/Common.kt` | Marks, buttons, action sheets (context menus), `shell.dialog`. |

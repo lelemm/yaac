@@ -209,6 +209,9 @@ private fun Editor(composer: JsonObject, key: String, send: (String, Any?) -> Un
     }
     // `!` mode (P346): a draft that starts with `!` on a target that can run commands.
     val shell = composer["shellCapable"].flag() && value.text.startsWith("!")
+    val voice = composer["voice"].obj()
+    val provisional = if (shell || voice == null || voice["state"].str !in setOf("starting", "listening", "stopping")) null
+        else Provisional.of(value.text, value.selection.min, voice["partial"].text)
     val shellView = composer["shell"].obj()
     SkillPicker(composer, key, value, send, setText)
     FilePicker(composer, key, value, focused, send, setText)
@@ -239,6 +242,8 @@ private fun Editor(composer: JsonObject, key: String, send: (String, Any?) -> Un
                 autoCorrectEnabled = false, keyboardType = androidx.compose.ui.text.input.KeyboardType.Ascii)
                 else androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
             textStyle = (if (shell) type.mono.copy(fontSize = 15.sp) else type.prose).copy(color = c.text), cursorBrush = SolidColor(c.text),
+            // Dictation: the words heard so far, muted, in place at the caret (docs/07-ui.md#voice-input).
+            visualTransformation = provisional?.let { p -> ProvisionalWords(p, c.muted) } ?: androidx.compose.ui.text.input.VisualTransformation.None,
             modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
         )
     }

@@ -83,6 +83,38 @@ class VoiceUi(private val key: String, private val send: (String, Any?) -> Unit)
         recorder = null
         level = 0f
     }
+
+    /** Drop the dictation and its words (the cancel mark, or the composer going away). */
+    fun cancel() {
+        recorder?.cancel()
+        recorder = null
+        level = 0f
+        send("composer.voiceCancel", mapOf("key" to key))
+    }
+}
+
+/**
+ * The words heard so far, shown in place at the caret until the final text replaces them
+ * (docs/07-ui.md#voice-input). [text] is what to show there, with the space the controller will
+ * put before the final words; the offsets map the field's text to what is drawn and back.
+ */
+data class Provisional(val caret: Int, val text: String) {
+    fun toShown(offset: Int): Int = if (offset < caret) offset else offset + text.length
+    fun toOriginal(offset: Int): Int = when {
+        offset <= caret -> offset
+        offset <= caret + text.length -> caret
+        else -> offset - text.length
+    }
+
+    companion object {
+        /** For [partial] words at [caret] of [field], or null when nothing is heard yet. */
+        fun of(field: String, caret: Int, partial: String?): Provisional? {
+            val words = partial?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val at = caret.coerceIn(0, field.length)
+            val spaced = if (at > 0 && !field[at - 1].isWhitespace()) " $words" else words
+            return Provisional(at, spaced)
+        }
+    }
 }
 
 /** What a tap on the mic does, by the controller's `voice.state` and whether we record. */
@@ -107,8 +139,8 @@ fun VoiceButton(voice: JsonObject, ui: VoiceUi, enabled: Boolean) {
     }
     // The dictation is over on the controller's side (ended, failed, cancelled): stop recording.
     LaunchedEffect(state) { if (!active && state != "stopping") ui.drop() }
-    // Leaving the composer keeps the words: stop, as a tap would.
-    DisposableEffect(ui) { onDispose { if (ui.recorder != null) ui.stop() } }
+    // Leaving the thread drops the dictation (docs/07-ui.md#voice-input).
+    DisposableEffect(ui) { onDispose { if (ui.recorder != null) ui.cancel() } }
     val tap = {
         when (voiceTap(state, ui.recorder != null)) {
             VoiceTap.Start -> {
@@ -145,19 +177,47 @@ fun VoiceButton(voice: JsonObject, ui: VoiceUi, enabled: Boolean) {
     }
 }
 
-/** Under the button row: the words heard so far while dictating, or why it failed. */
+/** Under the button row while dictating: the elapsed time (the words are in the field), or why it failed. */
 @Composable
 fun VoiceStatus(voice: JsonObject, ui: VoiceUi) {
     val c = LocalYaac.current
     val type = LocalType.current
     val error = ui.localError ?: voice["error"].text
-    val partial = voice["partial"].text?.takeIf { it.isNotBlank() }
     val state = voice["state"].str
+    val line = when (state) {
+        "starting" -> "Starting dictation…"
+        "listening" -> listOfNotNull("Listening…", voice["time"].text).joinToString(" ")
+        "stopping" -> "Finishing…"
+        else -> null
+    }
     when {
         error != null -> T(error, type.small, c.failure, modifier = Modifier.padding(top = 2.dp, start = 4.dp))
-        partial != null -> T(partial, type.small.copy(fontStyle = FontStyle.Italic), c.muted, maxLines = 3, modifier = Modifier.padding(top = 2.dp, start = 4.dp))
-        state == "starting" -> T("Starting dictation…", type.small, c.muted, modifier = Modifier.padding(top = 2.dp, start = 4.dp))
-        state == "listening" -> T("Listening…", type.small, c.muted, modifier = Modifier.padding(top = 2.dp, start = 4.dp))
-        state == "stopping" -> T("Finishing…", type.small, c.muted, modifier = Modifier.padding(top = 2.dp, start = 4.dp))
+        line != null -> androidx.compose.foundation.layout.Row(Modifier.padding(top = 2.dp, start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            T(line, type.small.copy(fontStyle = FontStyle.Italic), c.muted, modifier = Modifier.weight(1f, fill = false))
+            // The cancel mark: drop the dictation and its words.
+            if (state == "starting" || state == "listening") TextAction("Cancel", true, style = type.small) { ui.cancel() }
+        }
     }
+}
+
+/** Draws [p]'s words into the field at its caret, in [color] and italic; the text itself is untouched. */
+class ProvisionalWords(private val p: Provisional, private val color: androidx.compose.ui.graphics.Color) : androidx.compose.ui.text.input.VisualTransformation {
+    override fun filter(text: androidx.compose.ui.text.AnnotatedString): androidx.compose.ui.text.input.TransformedText {
+        val at = p.caret.coerceIn(0, text.length)
+        val shown = androidx.compose.ui.text.buildAnnotatedString {
+            append(text.subSequence(0, at))
+            pushStyle(androidx.compose.ui.text.SpanStyle(color = color, fontStyle = FontStyle.Italic))
+            append(p.text)
+            pop()
+            append(text.subSequence(at, text.length))
+        }
+        val mapping = object : androidx.compose.ui.text.input.OffsetMapping {
+            override fun originalToTransformed(offset: Int) = p.copy(caret = at).toShown(offset)
+            override fun transformedToOriginal(offset: Int) = p.copy(caret = at).toOriginal(offset)
+        }
+        return androidx.compose.ui.text.input.TransformedText(shown, mapping)
+    }
+
+    override fun equals(other: Any?) = other is ProvisionalWords && other.p == p && other.color == color
+    override fun hashCode() = p.hashCode() * 31 + color.hashCode()
 }
