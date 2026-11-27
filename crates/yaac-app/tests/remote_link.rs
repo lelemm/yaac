@@ -262,6 +262,31 @@ fn the_phone_link_typing_and_streaming() {
     let stream_after = counts.get();
     let stream_frames: Vec<usize> = f.seen[mark..].iter().map(|(_, b, _)| *b).collect();
 
+    // A 20 MB tool output in a thread the phone has not opened, then the phone opens it.
+    let unopened_before = counts.get();
+    let big = routed("thread/start", json!({
+        "opId": "op-link-3", "instance": instance, "cwd": daemon_home.display().to_string(),
+        "input": [{ "type": "text", "text": "/fake big-output 20971520\n/fake say done" }],
+    }))["threadId"].as_str().unwrap().to_owned();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let read = routed("thread/read", json!({ "threadId": big }));
+        if read.to_string().contains("\"done") { break; }
+        assert!(Instant::now() < deadline, "the big output never finished");
+        f.drain_for(Duration::from_millis(500));
+    }
+    f.drain_for(Duration::from_secs(2));
+    let unopened_after = counts.get();
+    f.command("sidebar.open", json!({ "id": format!("{target}/{big}") }));
+    f.until("the big thread's composer", Duration::from_secs(60), |f| f.composer["key"].as_str().is_some_and(|k| k.contains(&big)));
+    f.drain_for(Duration::from_secs(4));
+    let opened_big = counts.get();
+    println!("20 MB tool output in an unopened thread: link down {} B, up {} B", unopened_after.1 - unopened_before.1, unopened_after.0 - unopened_before.0);
+    println!("opening that thread: link down {} B, up {} B", opened_big.1 - unopened_after.1, opened_big.0 - unopened_after.0);
+    f.command("sidebar.open", json!({ "id": address }));
+    f.until("back in the first thread", Duration::from_secs(30), |f| f.composer["key"].as_str() == Some(key.as_str()));
+    f.drain_for(Duration::from_secs(1));
+
     // The phone changes network: the connection drops; typing goes on; the controller attaches
     // again by itself. The composer must never be emptied meanwhile.
     let mark = f.seen.len();
