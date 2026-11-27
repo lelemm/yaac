@@ -11,6 +11,7 @@
 //! the network, no draft traffic), never the timings.
 #![cfg(all(unix, feature = "hub"))]
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::net::UnixStream;
@@ -27,6 +28,11 @@ use yaac_transport::LocalConfig;
 
 const ONE_WAY: Duration = Duration::from_millis(75);
 const BYTES_PER_SEC: f64 = 125_000.0; // 1 Mbit/s
+const OUTSIDE_THREADS: usize = 200;
+
+fn seeded_thread(summary: &Value) -> bool {
+    summary["title"].as_str().is_some_and(|title| title.starts_with("Conversation "))
+}
 
 /// Bytes the proxy carried, each way.
 #[derive(Default)]
@@ -97,6 +103,53 @@ fn bundle() -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let bundle = LocalConfig::default_bundle(&root);
     bundle.is_file().then_some(bundle)
+}
+
+/// Measure index pages alone, excluding the hello and with a fresh TCP connection each time.
+fn measure_index(socket: PathBuf, target: &str, first_budget: Option<usize>) -> (BTreeMap<String, usize>, usize) {
+    let counts = Arc::new(Counts::default());
+    let address = proxy(socket, counts.clone(), Arc::default());
+    let client = HubClient::connect_tcp(address.parse().unwrap(), || {}).unwrap();
+    let request = |method, params| client.request_blocking(method, params, Duration::from_secs(30)).unwrap();
+    request("hub/hello", json!({ "build": yaac_app::BUILD }));
+    let before = counts.get();
+    let started = Instant::now();
+    let mut pages = Vec::new();
+    let mut all = 0;
+    let mut seeded = BTreeMap::new();
+    let mut token = String::new();
+    let mut first = None;
+    loop {
+        let mut params = json!({ "token": token });
+        if pages.is_empty() && let Some(bytes) = first_budget {
+            params["maxBytes"] = json!(bytes);
+        }
+        let page = request("hub/request", json!({ "target": target, "method": "thread/sync", "params": params }));
+        let changed = page["changed"].as_array().unwrap();
+        if pages.is_empty() {
+            assert_eq!(page["full"], true);
+            first = Some((started.elapsed(), changed.iter().filter(|s| seeded_thread(s)).count()));
+        }
+        pages.push(page.to_string().len());
+        all += changed.len();
+        for summary in changed.iter().filter(|s| seeded_thread(s)) {
+            let id = summary["id"].as_str().unwrap().to_owned();
+            assert!(seeded.insert(id, summary.to_string().len()).is_none(), "duplicate index row");
+        }
+        if page["more"] != true {
+            break;
+        }
+        let next = page["token"].as_str().unwrap();
+        assert_ne!(next, token);
+        next.clone_into(&mut token);
+    }
+    assert_eq!(seeded.len(), OUTSIDE_THREADS);
+    let after = counts.get();
+    let (first_time, first_rows) = first.unwrap();
+    let label = if first_budget.is_some() { "24 KiB first budget" } else { "default page budget" };
+    println!("thread/sync ({label}): {all} threads, pages {pages:?} JSON B, {} total JSON B, link up {} B / down {} B, first {first_time:?}, all {:?}",
+        pages.iter().sum::<usize>(), after.0 - before.0, after.1 - before.1, started.elapsed());
+    (seeded, first_rows)
 }
 
 /// Frames from the controller, each parsed, with the time it was taken.
@@ -178,7 +231,8 @@ fn the_phone_link_typing_and_streaming() {
     let call = |m: &str, p: Value| side.request_blocking(m, p, Duration::from_secs(30)).unwrap_or_else(|e| panic!("{m}: {e:?}"));
     call("hub/hello", json!({ "build": yaac_app::BUILD }));
     let target = call("hub/targets/add", json!({ "name": "local", "transport": { "kind": "local" }, "enabled": true }))["target"]["id"].as_str().unwrap().to_owned();
-    let routed = |m: &str, p: Value| call("hub/request", json!({ "target": target, "method": m, "params": p }));
+    let routed = |m: &str, p: Value| side.request_blocking("hub/request",
+        json!({ "target": target, "method": m, "params": p }), Duration::from_secs(60)).unwrap_or_else(|e| panic!("{m}: {e:?}"));
     let deadline = Instant::now() + Duration::from_secs(60);
     let instance = loop {
         if let Ok(p) = side.request_blocking("hub/request", json!({ "target": target, "method": "provider/list", "params": {} }), Duration::from_secs(5))
@@ -198,7 +252,7 @@ fn the_phone_link_typing_and_streaming() {
     // The phone.
     let counts = Arc::new(Counts::default());
     let open: Open = Arc::default();
-    let hub_address = proxy(socket, counts.clone(), open.clone());
+    let hub_address = proxy(socket.clone(), counts.clone(), open.clone());
     let phone_dir = dir.path().join("phone");
     let options = Options {
         mode: Mode::Hub { address: hub_address, data_dir: phone_dir.clone() },
@@ -208,7 +262,7 @@ fn the_phone_link_typing_and_streaming() {
         platform: "android".into(),
         browser_host: false,
     };
-    let mut f = Frames { controller: ViewController::start(options).unwrap(), composer: Value::Null, seen: Vec::new() };
+    let mut f = Frames { controller: ViewController::start(options.clone()).unwrap(), composer: Value::Null, seen: Vec::new() };
     f.command("shell.visible", json!({ "shown": true }));
     let t0 = Instant::now();
     f.until("the thread in the list", Duration::from_secs(60), |f| {
@@ -329,6 +383,58 @@ fn the_phone_link_typing_and_streaming() {
     assert!(*lags.last().unwrap() < ONE_WAY * 2, "the echo of a key never waits for the network (max {:?})", lags.last().unwrap());
 
     f.controller.stop();
+
+    // Seed actual outside conversations before measuring a fresh link to the same hub.
+    // The fake provider rewrites its store for each seed, so discard the 20 MB fixture first.
+    routed("thread/delete", json!({ "opId": "op-link-delete-big", "threadId": big, "alsoInHarness": true }));
+    routed("discovery/caps", json!({ "opId": "op-link-caps", "update": { "enabled": false } }));
+    let seed: String = (0..OUTSIDE_THREADS)
+        .map(|i| format!("/fake outside-thread Conversation {i}: investigate the parser and keep the old behaviour\n"))
+        .collect();
+    routed("turn/start", json!({
+        "opId": "op-link-seed", "threadId": thread, "input": [{ "type": "text", "text": seed }],
+    }));
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let mut token = String::new();
+        let mut found = 0;
+        loop {
+            let page = routed("thread/sync", json!({ "token": token }));
+            found += page["changed"].as_array().unwrap().iter().filter(|s| seeded_thread(s)).count();
+            if page["more"] != true {
+                break;
+            }
+            let next = page["token"].as_str().unwrap();
+            assert_ne!(next, token);
+            next.clone_into(&mut token);
+        }
+        if found == OUTSIDE_THREADS { break; }
+        assert!(Instant::now() < deadline, "the fake provider created only {found} outside threads");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let (baseline, baseline_first_rows) = measure_index(socket.clone(), &target, None);
+    let (paged, paged_first_rows) = measure_index(socket.clone(), &target, Some(24 * 1024));
+    assert_eq!(baseline, paged, "the smaller page budget delivers the same index");
+    assert!(paged_first_rows < baseline_first_rows);
+    let mean = paged.values().sum::<usize>() as f64 / paged.len() as f64;
+    println!("thread/sync seeded summaries: {mean:.1} B mean, {} B max", paged.values().max().unwrap());
+
+    let new_counts = Arc::new(Counts::default());
+    let address = proxy(socket, new_counts.clone(), Arc::default());
+    let options = Options { mode: Mode::Hub { address, data_dir: dir.path().join("new-phone") }, ..options };
+    let started = Instant::now();
+    let mut fresh = Frames { controller: ViewController::start(options).unwrap(), composer: Value::Null, seen: Vec::new() };
+    fresh.command("shell.visible", json!({ "shown": true }));
+    let seeded_rows = |frame: &Value| frame.pointer("/views/sidebar/sections").and_then(Value::as_array)
+        .into_iter().flatten().filter_map(|section| section["rows"].as_array()).flatten()
+        .filter(|row| seeded_thread(row)).count();
+    fresh.until("the first seeded sidebar rows", Duration::from_secs(30), |f| f.seen.iter().any(|(_, _, v)| seeded_rows(v) > 0));
+    let (first, first_rows) = fresh.seen.iter().map(|(time, _, v)| (time, seeded_rows(v))).find(|&(_, n)| n > 0).unwrap();
+    assert_eq!(first_rows, paged_first_rows, "the sidebar paints the smaller page while more pages are in flight");
+    println!("fresh phone sidebar: first {first_rows} seeded rows in {:?}", first.duration_since(started));
+    fresh.until("all seeded sidebar rows", Duration::from_secs(30), |f| f.seen.iter().any(|(_, _, v)| seeded_rows(v) == OUTSIDE_THREADS));
+    println!("fresh phone sidebar: all {OUTSIDE_THREADS} seeded rows in {:?}, link up {} B / down {} B", started.elapsed(), new_counts.get().0, new_counts.get().1);
+    fresh.controller.stop();
     let _ = call("hub/shutdown", json!({}));
     let _ = hub.join();
 }

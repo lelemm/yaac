@@ -2,7 +2,7 @@
 //! hub's answers and notifications to [`AppState`], and remembers what each outstanding
 //! request was for. No I/O of its own: everything goes through a [`HubLink`].
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use serde_json::{Value, json};
 use yaac_protocol::attach::{self, HelloResult, RoutedNotification, RoutedRequest, TargetStateParams};
@@ -101,7 +101,7 @@ enum Call {
     View,
     Targets,
     Providers(TargetId),
-    Sync { target: TargetId, connected: bool },
+    Sync { target: TargetId, connected: bool, live: BTreeSet<ThreadId> },
     Subscribe(ThreadKey),
     Read(ThreadKey),
     ReadAround(ThreadKey, ItemId),
@@ -1149,22 +1149,25 @@ impl Client {
             Call::TargetChanged => {
                 self.request(attach::names::TARGETS_LIST, json!({}), Call::Targets);
             }
-            Call::Sync { target: t, connected } => {
-                self.state.hub.index_pending.remove(&t);
+            Call::Sync { target: t, connected, live } => {
                 if !connected && self.state.target(&t).is_some_and(|target| target.connected()) {
                     return; // A fresh sync was requested on reconnect.
                 }
-                let Ok(r) = serde_json::from_value::<ThreadSyncResult>(result) else { return };
+                let Ok(r) = serde_json::from_value::<ThreadSyncResult>(result) else {
+                    self.state.hub.index_pending.remove(&t);
+                    return;
+                };
                 let more = r.more;
-                self.state.apply_sync(&t, r);
+                self.state.apply_sync(&t, r, &live);
                 if connected && !more
                     && let Some(target) = self.state.target_mut(&t).filter(|target| target.connected())
                 {
                     target.commands_current = true;
                 }
                 if more {
-                    self.sync(&t);
+                    self.sync_page(&t, live);
                 } else {
+                    self.state.hub.index_pending.remove(&t);
                     let warm: Vec<ThreadKey> = self.warm.iter().filter(|k| k.target == t).cloned().collect();
                     for k in warm {
                         if self.state.threads.contains_key(&k) && !self.state.transcripts.contains_key(&k) {
@@ -1919,7 +1922,9 @@ impl Client {
             }
             m::THREAD_UPDATED => {
                 if let Ok(p) = serde_json::from_value::<ThreadUpdatedParams>(n.params) {
-                    if let Some(t) = self.state.targets.iter_mut().find(|t| t.entry.id == target) {
+                    if !self.note_sync_live_change(&target, &p.thread.id)
+                        && let Some(t) = self.state.target_mut(&target)
+                    {
                         t.sync_token = p.token;
                     }
                     self.state.upsert_summary(&target, p.thread);
@@ -1927,6 +1932,7 @@ impl Client {
             }
             m::THREAD_REMOVED => {
                 if let Ok(p) = serde_json::from_value::<ThreadRemovedParams>(n.params) {
+                    self.note_sync_live_change(&target, &p.thread_id);
                     self.state.remove_thread(&ThreadKey::new(target, p.thread_id));
                 }
             }
@@ -1963,9 +1969,33 @@ impl Client {
     }
 
     fn sync(&mut self, target: &TargetId) {
-        let token = self.state.target(target).map(|t| t.sync_token.clone()).unwrap_or_default();
-        let connected = self.state.target(target).is_some_and(|t| t.connected());
-        self.routed(target, m::THREAD_SYNC, json!({ "token": token }), Call::Sync { target: target.clone(), connected });
+        self.sync_page(target, BTreeSet::new());
+    }
+
+    fn sync_page(&mut self, target: &TargetId, live: BTreeSet<ThreadId>) {
+        let Some(record) = self.state.target(target) else { return };
+        let connected = record.connected();
+        if self.pending.values().any(|call| matches!(call, Call::Sync { target: t, connected: c, .. } if t == target && *c == connected)) {
+            return;
+        }
+        let token = record.sync_token.clone();
+        let first_remote_page = token.as_str().is_empty() && self.drafts_on_device();
+        let params = yaac_protocol::ThreadSyncParams { token, max_bytes: first_remote_page.then_some(24 * 1024) };
+        self.routed(target, m::THREAD_SYNC, json!(params), Call::Sync { target: target.clone(), connected, live });
+    }
+
+    /// A push is current for its row but may jump ahead of the page cursor.
+    fn note_sync_live_change(&mut self, target: &TargetId, thread: &ThreadId) -> bool {
+        let mut syncing = false;
+        for call in self.pending.values_mut() {
+            if let Call::Sync { target: t, live, .. } = call
+                && t == target
+            {
+                live.insert(thread.clone());
+                syncing = true;
+            }
+        }
+        syncing
     }
 
     fn subscribe(&mut self, key: &ThreadKey) {
@@ -3212,6 +3242,7 @@ impl Client {
     /// reloads every target.
     pub fn clear_cache(&mut self) {
         self.request(hub_names::CACHE_CLEAR, json!({}), Call::Ignore);
+        self.pending.retain(|_, call| !matches!(call, Call::Sync { .. }));
         let ids: Vec<TargetId> = self.state.targets.iter().map(|t| t.entry.id.clone()).collect();
         for t in &ids {
             if let Some(rec) = self.state.targets.iter_mut().find(|x| &x.entry.id == t) {
@@ -3483,6 +3514,57 @@ fn refused_by_build(message: &str) -> Option<String> {
 struct FindHit {
     target: TargetId,
     thread: ThreadSummary,
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    #[test]
+    fn index_pages_are_visible_before_completion_and_keep_newer_pushes() {
+        let mut client = Client::new(Box::new(crate::link::DetachedLink), "test", ClientId::new("window"));
+        let target = TargetId::new("local");
+        client.state.set_targets(serde_json::from_value(json!([
+            {"id": target, "name": "Local", "enabled": true, "transport": {"kind": "local"}, "state": {"status": "connected"}}
+        ])).unwrap());
+        let summary = |id, title| json!({
+            "id": id, "title": title, "instance": "fake", "cwd": "/work", "state": "idle",
+            "control": "free", "originKind": "interactive", "createdAt": "2026-11-27T00:00:00Z",
+            "updatedAt": "2026-11-27T00:00:00Z"
+        });
+        let key = |id| ThreadKey::new(target.clone(), id);
+        client.state.upsert_summary(&target, serde_json::from_value(summary("stale", "Stale")).unwrap());
+        client.state.hub.index_pending.insert(target.clone());
+        client.sync(&target);
+        let pending_sync = |c: &Client| c.pending.iter().find(|(_, call)| matches!(call, Call::Sync { .. })).unwrap().0.clone();
+        let reply = |c: &mut Client, result| c.handle(Message::Response { id: pending_sync(c), result });
+
+        reply(&mut client, json!({ "token": "page-one", "full": true, "more": true, "changed": [summary("first", "First")] }));
+        assert!(client.state.summary(&key("first")).is_some());
+        assert!(client.state.summary(&key("stale")).is_some());
+        assert!(client.state.hub.index_pending.contains(&target));
+
+        let next = pending_sync(&client);
+        client.sync(&target);
+        assert_eq!(pending_sync(&client), next, "a concurrent refresh uses the existing page request");
+        client.on_notification(attach::names::NOTIFICATION, json!({
+            "target": target, "method": m::THREAD_UPDATED, "params": { "thread": summary("newer", "Newer title"), "token": "live" }
+        }));
+        client.on_notification(attach::names::NOTIFICATION, json!({
+            "target": target, "method": m::THREAD_REMOVED, "params": { "threadId": "removed", "token": "live-next" }
+        }));
+        assert_eq!(client.state.target(&target).unwrap().sync_token.as_str(), "page-one");
+        reply(&mut client, json!({
+            "token": "page-two", "changed": [summary("second", "Second"), summary("newer", "Old title"), summary("removed", "Removed")]
+        }));
+
+        assert!(client.state.summary(&key("stale")).is_none());
+        assert!(client.state.summary(&key("removed")).is_none());
+        assert_eq!(client.state.summary(&key("newer")).unwrap().title, "Newer title");
+        assert!(client.state.summary(&key("first")).is_some());
+        assert!(client.state.summary(&key("second")).is_some());
+        assert!(!client.state.hub.index_pending.contains(&target));
+    }
 }
 
 #[cfg(test)]

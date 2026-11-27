@@ -6,7 +6,7 @@ use yaac_protocol::attach::{ConnectionStatus, DaemonUpdatePhase, TargetEntry, Ta
 use yaac_protocol::{
     Address, ClientId, Control, EffortId, InstanceId, ItemId, MeshBudgetResult, ModeId, ModelId,
     FsListResult, ProviderDescriptor, ProviderInstanceConfig, SyncToken,
-    ThreadForkPreviewResult, TargetId, TargetPath, ThreadEventParams, ThreadSummary,
+    ThreadForkPreviewResult, TargetId, TargetPath, ThreadEventParams, ThreadId, ThreadSummary,
     ThreadSyncResult, ProjectKind,
 };
 
@@ -36,7 +36,8 @@ pub struct TargetRecord {
     pub instance_configs: Option<Vec<ProviderInstanceConfig>>,
     /// Automatic session discovery advertised by the target, when supported.
     pub session_discovery: Option<bool>,
-    pending_full: Option<Vec<ThreadSummary>>,
+    /// Previously visible threads that a full listing has yet to confirm.
+    pending_full: Option<BTreeSet<ThreadId>>,
 }
 
 impl TargetRecord {
@@ -711,38 +712,36 @@ impl AppState {
         self.recent.retain(|k| k != key);
     }
 
-    /// One page of `thread/sync`. A full listing replaces this target's index once its last
-    /// page arrives; an incremental one merges.
-    pub fn apply_sync(&mut self, target: &TargetId, result: ThreadSyncResult) {
+    /// Show each page as it arrives. A full listing removes unconfirmed cached rows at the end.
+    /// Live notifications can overtake a bulk reply and take precedence over its rows.
+    pub(crate) fn apply_sync(&mut self, target: &TargetId, result: ThreadSyncResult, live: &BTreeSet<ThreadId>) {
+        let previous = result.full.then(|| self.threads.keys().filter(|key| &key.target == target).map(|key| key.thread.clone()).collect());
         let Some(t) = self.target_mut(target) else { return };
         t.sync_token = result.token;
         t.stale_instances = result.stale_instances;
-        if result.full || t.pending_full.is_some() {
-            let pending = t.pending_full.get_or_insert_with(Vec::new);
-            pending.extend(result.changed);
-            if result.more {
-                return;
+        if let Some(previous) = previous {
+            t.pending_full = Some(previous);
+        }
+        if let Some(missing) = &mut t.pending_full {
+            for id in result.changed.iter().map(|s| &s.id).chain(live) {
+                missing.remove(id);
             }
-            let all = t.pending_full.take().unwrap_or_default();
-            t.synced = true;
-            let keep: Vec<ThreadKey> =
-                self.threads.keys().filter(|k| &k.target == target).cloned().collect();
-            for key in keep {
-                if !all.iter().any(|s| s.id == key.thread) {
-                    self.remove_thread(&key);
-                }
-            }
-            for s in all {
-                self.upsert_summary(target, s);
-            }
+        }
+        let missing = if result.more {
+            None
         } else {
             t.synced = true;
-            for s in result.changed {
+            t.pending_full.take()
+        };
+        for s in result.changed {
+            if !live.contains(&s.id) {
                 self.upsert_summary(target, s);
             }
         }
-        for id in result.removed {
-            self.remove_thread(&ThreadKey::new(target.clone(), id));
+        for id in result.removed.into_iter().chain(missing.into_iter().flatten()) {
+            if !live.contains(&id) {
+                self.remove_thread(&ThreadKey::new(target.clone(), id));
+            }
         }
     }
 

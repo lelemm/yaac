@@ -88,6 +88,9 @@ The phone's link is often mobile data, so the attach carries only what is on scr
 - **Only open threads stream.** The hub sends a thread's events only to clients that
   subscribed to it; a transcript evicted from the client's small recently-used set lets go of
   its subscription.
+- **The sidebar fills a page at a time.** A phone starting without an index requests a 24 KiB
+  first page from each connected target. It can show those rows while the rest of the index
+  arrives (P400).
 
 Measured with `crates/yaac-app/tests/remote_link.rs` (`--ignored`): the Android controller
 through a 75 ms-each-way, 1 Mbit/s loopback proxy to a real hub and `yaacd` (fake provider).

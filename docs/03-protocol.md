@@ -599,8 +599,12 @@ yaacd:  { changed: [ …summaries… ], removed: [ …ids… ], token: "idx3:891
 ```
 
 - An empty token means a full listing, paged.
+- To a connected target, `maxBytes` limits the encoded summaries in a page. The reply also
+  includes its envelope and any removed IDs, and a single oversized summary can use a page
+  of its own. A fresh remote window requests 24 KiB for its first page and uses the normal
+  limit for continuations (P400).
 - A token from an old index generation gets a full listing; the UI replaces its cache for that
-  target.
+  target. It displays new pages as they arrive and drops unconfirmed rows after the last page.
 - `yaacd` builds the index by scanning each instance's listing and listening for its change
   notices. A scan that fails or is incomplete **never removes threads**: the affected instance
   is marked stale, and its threads stay. A thread is removed only when the harness positively
