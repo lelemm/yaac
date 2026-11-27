@@ -2324,6 +2324,65 @@ mod tests {
         }));
     }
 
+    #[cfg(feature = "hub")]
+    #[test]
+    fn the_hubs_page_the_badge_and_transfer_rows_follow_the_controller() {
+        use crate::app::hubs::{SavedHub, SavedHubs};
+        use yaac_core::state::{HubTransfer, HubTransferPhase};
+        use yaac_protocol::attach::HubTransferCandidate;
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        assert!(crate::wpf::hubs_view(&app).is_null(), "no saved hubs: nothing for the shell");
+        let remote = SavedHub { address: Some("lab:47380".into()), label: Some("Lab".into()), ..Default::default() };
+        app.desk_hubs = Some(crate::app::DeskHubs::for_test(SavedHubs::in_memory(vec![SavedHub::default(), remote], 0)));
+        let shell = crate::wpf::hubs_view(&app);
+        assert_eq!(shell["badge"], "T");
+        assert_eq!(shell["list"][1]["name"], "Lab");
+        assert_eq!(shell["list"][1]["status"], "Not attached");
+        app.ui.settings = true;
+        app.ui.settings_page = Page::Hubs;
+        let page = view(&app, None);
+        assert_eq!(page["page"], "hubs");
+        let rows = &page["sections"][0]["rows"];
+        assert_eq!(rows[0]["label"], "✓ This PC");
+        let remove = rows[0]["actions"].as_array().unwrap().iter().find(|a| a["id"] == "hubs.remove").unwrap();
+        assert_eq!(remove["enabled"], false, "the attached hub is not removed");
+        let select = &rows[1]["actions"][0];
+        assert_eq!((select["id"].as_str(), select["values"]["index"].as_u64()), (Some("hubs.select"), Some(1)));
+        command(&mut app, &mut None, "settings.action", &json!({ "id": "hubs.add", "values": { "address": "", "label": "" } })).unwrap();
+        assert!(view(&app, None)["sections"][1]["rows"][0]["status"].as_str().unwrap().contains("Tailscale name"));
+
+        // Transfer hub to…: ineligible targets greyed with why; Transfer only once one is picked.
+        app.ui.settings_page = Page::Advanced;
+        app.client.state.hub.attached = true;
+        app.client.state.hub.transfer_candidates = Some(Ok(vec![
+            HubTransferCandidate { target_id: TargetId::new("box"), label: "box".into(), eligible: true, reason: None },
+            HubTransferCandidate { target_id: TargetId::new("wsl"), label: "Ubuntu".into(), eligible: false, reason: Some("A hub inside WSL would share Windows' Tailscale address".into()) },
+        ]));
+        let transfer = |app: &YaacApp| {
+            let v = view(app, None);
+            let hub = v["sections"].as_array().unwrap().iter().find(|s| s["id"] == "hub").unwrap().clone();
+            hub["rows"].as_array().unwrap().clone()
+        };
+        let rows = transfer(&app);
+        let row = rows.iter().find(|r| r["id"] == "transfer").unwrap();
+        let options = &row["fields"][0]["options"];
+        assert_eq!((options[1]["enabled"].as_bool(), options[1]["detail"].as_str().unwrap().contains("WSL")), (Some(false), true));
+        assert_eq!(row["actions"][0]["enabled"], false);
+        command(&mut app, &mut None, "settings.action", &json!({ "id": "hub.transferTarget", "values": { "transferTarget": "box" } })).unwrap();
+        let rows = transfer(&app);
+        let start = &rows.iter().find(|r| r["id"] == "transfer").unwrap()["actions"][0];
+        assert_eq!((start["enabled"].as_bool(), start["confirm"]["ok"].as_str()), (Some(true), Some("Transfer")));
+        command(&mut app, &mut None, "settings.action", &json!({ "id": "hub.transferStart", "values": {} })).unwrap();
+        assert_eq!(app.client.state.hub.transfer.as_ref().unwrap().phase, HubTransferPhase::Requesting);
+        app.client.state.hub.transfer = Some(HubTransfer { op_id: None, target_id: TargetId::new("box"), phase: HubTransferPhase::Copying, done: Some(1), total: Some(4), message: None });
+        let rows = transfer(&app);
+        let progress = rows.iter().find(|r| r["id"] == "transferProgress").unwrap();
+        assert_eq!(progress["fields"][0]["value"], 25.0);
+        assert!(progress["label"].as_str().unwrap().contains("box"));
+        assert_eq!(rows.iter().find(|r| r["id"] == "transfer").unwrap()["actions"][0]["enabled"], false, "not while one runs");
+    }
+
     #[test]
     fn the_pc_update_button_shows_only_for_a_phone_newer_than_its_hub() {
         use yaac_core::state::{HostUpdate, HostUpdatePhase, HubState};

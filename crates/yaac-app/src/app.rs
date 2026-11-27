@@ -813,6 +813,14 @@ impl DeskHubs {
         Self { saved, local, moved_here, add_error: None }
     }
 
+    /// Saved hubs on a local hub that is never attached (renderer tests).
+    #[cfg(test)]
+    pub(crate) fn for_test(saved: hubs::SavedHubs) -> Self {
+        let paths = yaac_hub::HubPaths { config_dir: "c".into(), data_dir: "d".into(), runtime_dir: "r".into() };
+        let local = AttachConfig { paths, exe: std::path::PathBuf::new(), autostart: None, start_timeout: std::time::Duration::from_secs(1), remote: None };
+        Self { saved, local, moved_here: None, add_error: None }
+    }
+
     /// The attach configuration of the selected hub.
     pub(crate) fn config(&self) -> AttachConfig {
         let hub = self.saved.current();
@@ -1954,6 +1962,7 @@ impl YaacApp {
     /// The hello outcomes, the old hub's replacement, and the persisted choices.
     #[cfg(feature = "hub")]
     fn hub_upkeep(&mut self) {
+        let reclaim = self.reclaim_line();
         let Some(h) = &mut self.hub else { return };
         if let Some(history) = self.client.take_composer_history() {
             let newer = self.ui.composer_history_loading.take().unwrap_or_default();
@@ -2031,6 +2040,10 @@ impl YaacApp {
         }
         if let LinkStatus::Failed(e) = &status {
             self.client.state.hub.last_error = Some(format!("Could not reach the hub: {e}"));
+        }
+        // Where the window says it cannot reach the hub, say what can be done about a moved one.
+        if let Some(line) = reclaim {
+            self.client.state.hub.last_error = Some(format!("{line} Settings → Hubs → Start the hub here again."));
         }
         match self.client.state.hub.outcome.clone() {
             // A hub on another machine (the Android client over Tailscale) is never shut down or

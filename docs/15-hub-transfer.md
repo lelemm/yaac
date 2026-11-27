@@ -4,7 +4,7 @@
 
 ## What the user sees
 
-- **Settings → Hub → Transfer hub to…** (desktop egui, WPF, Android). A drop-down lists every
+- **Settings → Advanced → Hub → Transfer hub to…** (desktop egui, WPF, Android). A drop-down lists every
   target with whether it can take the hub and why not (`hub/transfer/candidates`). Choosing one asks
   for a confirmation, then shows progress (`hub/transfer/progress`): checking, installing,
   copying (bytes), handing over, done / failed.
@@ -20,6 +20,31 @@
   remove and retry. Desktop keeps **one attached hub at a time** (switching detaches and attaches);
   the phone keeps running all of them for notifications. Saved hubs live in the host's own
   settings file next to the window prefs, not in the hub cache (they say which hub to attach to).
+  On the desktop that is `hubs.json` in the config dir, beside `display.json`. The window's own
+  drafts for a remote hub stay on the PC (P393), under `remote-hubs/<address>/`.
+
+### In the desktop window
+
+The window controller (`crates/yaac-app`, shared by egui and the WPF view frames) does all of it;
+the renderers only draw ([07](07-ui.md#several-hubs-on-desktop)):
+- **Transfer hub to…** asks `hub/transfer/candidates` each time Settings → Advanced is shown
+  (and on **Refresh**). Ineligible targets are greyed with their reason. **Transfer hub…** is
+  enabled once an eligible one is picked and no transfer runs; it asks for confirmation and sends
+  one `hub/transfer/start` with a new opId. A refusal or an unknown outcome is shown and never
+  re-sent (invariant 10). Every client shows the progress, whoever started it.
+- **`hub/moved`**: the saved entry with that `hubId` (else This PC) takes the new address, any
+  other entry for the same hub or address is dropped, and the window attaches there. The first
+  attempts fail until the new hub listens, and the normal reattach backoff (1 s, doubling, at most
+  30 s) carries on. When the moved hub was This PC, This PC's entry *becomes* the remote one.
+  The phone's controller only exposes it as `shell.hub.movedTo`, and the Android app restarts that
+  hub's controller on the new address.
+- **At start**, a tombstone in the local hub's data dir moves This PC's entry the same way before
+  anything attaches, so the window never starts a hub that has moved.
+- **Start the hub here again** is offered (Settings → Hubs, Settings → Advanced → Hub, and in place
+  of the empty workspace) when the selected hub is the one that moved from this PC and has not
+  answered for 20 seconds. After a confirmation it removes the tombstone
+  (`remove_moved_tombstone`), turns the entry back into This PC, and attaches to the local hub,
+  which starts as usual.
 
 ## Which targets can take the hub (P408)
 
