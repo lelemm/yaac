@@ -302,7 +302,7 @@ pub(crate) fn field(ui: &mut Ui, p: &Palette, text: &mut String, hint: &str, wid
 /// dialog's zeroised [`yaac_core::ssh_setup::Secret`]. (egui's own text box keeps copies of
 /// its text in its undo history, so it is not used for secrets.) Shown masked unless `show`;
 /// shown text is drawn one glyph at a time so no layout cache holds the whole secret.
-pub(crate) fn secret_field(ui: &mut Ui, p: &Palette, secret: &mut yaac_core::ssh_setup::Secret, show: bool, width: f32, id: egui::Id) -> Response {
+pub(crate) fn secret_field(ui: &mut Ui, p: &Palette, secret: &mut yaac_core::ssh_setup::Secret, placeholder: &str, show: bool, width: f32, id: egui::Id) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());
     let resp = resp.on_hover_cursor(egui::CursorIcon::Text);
     if resp.clicked() {
@@ -330,7 +330,7 @@ pub(crate) fn secret_field(ui: &mut Ui, p: &Palette, secret: &mut yaac_core::ssh
     let mut x = rect.left() + 8.0;
     let cy = rect.center().y;
     if secret.is_empty() && !focused {
-        let g = ui.fonts_mut(|f| f.layout_no_wrap("Password".to_owned(), font.clone(), p.text2));
+        let g = ui.fonts_mut(|f| f.layout_no_wrap(placeholder.to_owned(), font.clone(), p.text2));
         ui.painter().galley(pos2(x, cy - g.size().y / 2.0), g, p.text2);
     } else if show {
         for c in secret.expose().chars() {

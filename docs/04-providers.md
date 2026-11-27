@@ -512,7 +512,7 @@ implements `voice/*`. The protocol is in [plan/voice.md](plan/voice.md).
 
 | Harness | Surface | Notes |
 | --- | --- | --- |
-| Claude Code | control request `dictate` (`start` / `audio` / `stop` / `cancel`) on the stdin of a separate dictation-only CLI process | `@internal`. Answered only for the VS Code host entrypoint while the account's server-side flag is on (probed with a network-free `cancel`). 16 kHz mono 16-bit, ≤ 2 s per `audio`, ends after two minutes. claude.ai sign-in only. Refusal reasons (`not_signed_in`, `policy`, …) become the start's error. See [Claude voice input](#voice-input-claude). |
+| Claude Code | `dictate` control request first; direct `/api/ws/speech_to_text/voice_stream` fallback using Claude Code's current OAuth access token | Both are private surfaces. 16 kHz mono 16-bit. `dictate` is feature-probed; the fallback is offered when the CLI's own token source is readable. YAAC keeps no copy. See [Claude voice input](#voice-input-claude). |
 | Codex | app-server `thread/realtime/*` (experimental), in a **transcription** session on a private ephemeral thread | 24 kHz mono 16-bit; API-key sign-in only (0.172.0); no `model` (Codex picks it); user-role `transcript/delta` / `done` become the transcript. Never runs on the user's thread, so it cannot start a turn there. See [Codex voice input](#voice-input-codex). |
 | Fake | — | Not reported. |
 
@@ -868,11 +868,11 @@ available when a refresh fails. Models with no recommendation yet show **No guid
 
 ### Voice input (Claude)
 
-**Proposed (P382, P384).** Verified against Claude Code 2.1.330 and the Agent SDK 0.3.329
+**Proposed (P382, P384, P390).** Verified against Claude Code 2.1.330 and the Agent SDK 0.3.329
 ([harness surfaces](research/harness-surfaces.md#claude-code-dictation-verified-2026-11-27)).
 `yaacd` uses Claude Code's host dictation, the `@internal` control request `dictate`, which
 sends the audio to the same speech-to-text service as `/voice`, with the CLI's own claude.ai
-sign-in. `yaacd` never sees a token.
+sign-in. Claude Code handles authentication for that route.
 
 - **Who Claude Code answers.** The handler runs only when the CLI was started by the VS Code
   extension (`CLAUDE_CODE_ENTRYPOINT=claude-vscode`, not a child or nested session) **and** the
@@ -890,12 +890,11 @@ sign-in. `yaacd` never sees a token.
   per process).
 - **Capability.** At each probe, in parallel with the model list, `yaacd` sends
   `dictate {op:"cancel"}` to a dictation process. That request needs no network and no audio.
-  `voiceInput` is reported (and `ThreadEffective.voiceInput =
-  { format: "pcm16le", sampleRate: 16000, channels: 1, maxSeconds: 120 }`) only when it is
+  This route enables `voiceInput` (format `pcm16le`, 16000 Hz, mono, 120 seconds) when it is
   answered **and** the account is Anthropic's own (`accountInfo().apiProvider` absent or
   `firstParty`). This is feature detection, not a version check. Sign-in, policy, and
   nonessential-traffic settings are checked by Claude Code at `start`. `YAAC_CLAUDE_VOICE=0`
-  turns the probe off.
+  disables both Claude voice routes.
 - **A dictation.** `voice/start` sends `dictate {op:"start", language?}` and answers once Claude
   Code accepts. A refusal is the start's error: `not_signed_in` → `needs_auth`, any other reason
   → `provider_unavailable`, with the reason in words. Audio from the data stream is batched
@@ -912,8 +911,37 @@ sign-in. `yaacd` never sees a token.
   with the query's runtime `request()` method, which `sdk.d.ts` does not declare (the same
   kind of guarded use as `getSettings`). Today it works only for accounts whose flag Anthropic
   has turned on: on the owner's machine (2026-11-27) the flag is off and the probe is refused,
-  so no microphone shows for Claude threads. Manual check:
+  so the microphone requires the direct fallback below. Manual check:
   `daemon/scripts/claude-dictate-check.mjs`.
+
+When that probe fails, a direct fallback is used:
+
+- **Credential and capability.** `yaacd` dynamically reads the current access token from the
+  same source as the local Claude CLI: `CLAUDE_CODE_OAUTH_TOKEN`, or Claude Code's own
+  `.credentials.json` under its secure-storage/config directory. It first asks `claude auth
+  status` to check the CLI login; refresh and login management remain outside YAAC. YAAC has no token setting,
+  vault, persisted copy, refresh token or refresh implementation; the value exists only for
+  the WebSocket handshake and is never returned or logged. A readable token makes `voiceInput`
+  available even when `dictate` is gated off. `dictate` always wins when both exist.
+- **Wire contract.** The fallback opens Claude Code's
+  `/api/ws/speech_to_text/voice_stream` with its 2.1.330 query (`linear16`, 16000 Hz, mono,
+  endpointing 300 ms, utterance end 1000 ms, normalized language and conversation engine).
+  The explicit `CLAUDE_CODE_VOICE_FORWARD_INTERIMS_TYPED` switch adds
+  `forward_interims=typed`. YAAC does not query Claude Code's private flag service.
+  PCM is raw binary. Text frames are exactly `{type:"KeepAlive"}` (immediately, then every
+  8 s) and `{type:"CloseStream"}`. `TranscriptInterim` and `TranscriptText` replace the
+  current hypothesis; `TranscriptEndpoint` commits it. Stop retains the pending words and
+  finishes on the endpoint, close, 1.5 s quiet period or 5 s safety bound.
+- **Claude Code identity.** Authorization is `Bearer` with that OAuth token, never API-key
+  auth. The other headers are constructed as Claude Code does: `x-app: cli`, the effective
+  entrypoint and Agent SDK/client-app suffixes in `User-Agent`, the same
+  `anthropic-client-platform` mapping, and sanitized/deduplicated `x-config-keyterms` only
+  when terms are supplied. The fallback currently supplies no project keyterms.
+- **Risk.** This endpoint and identity are private and may disappear or reject YAAC.
+  Anthropic's [credential-use policy](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)
+  restricts third-party handling of Claude.ai session tokens. Support for a
+  `claude setup-token` credential on this voice endpoint has not been verified. Tests use a
+  local fake WebSocket and CI never contacts Anthropic.
 
 Each model row under **Model guidance** has an **on/off switch** (P349). It belongs to the
 **provider instance** on that target — a work Claude account and a personal one are separate

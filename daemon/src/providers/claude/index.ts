@@ -74,6 +74,8 @@ import { bashMarkup, runUserShell } from "../user-shell.js";
 import { claudeSkills } from "../skills.js";
 import { ClaudeRateLimits, readWithOwnQuery } from "./ratelimits.js";
 import { CLAUDE_VOICE_FORMAT, ClaudeDictationHost } from "./dictation.js";
+import { ClaudeVoiceStream, type VoiceStreamOptions } from "./voice-stream.js";
+import { claudeAccessToken } from "./oauth.js";
 import type { Dictation, DictationEvents, DictationOptions } from "../../voice/types.js";
 import { ChildrenFile, systemProcesses, type ChildEntry, type ProcessTable } from "./children.js";
 import type { RateLimitReport } from "../ratelimits.js";
@@ -338,6 +340,10 @@ export interface ClaudeProviderOptions {
    * unless `YAAC_CLAUDE_VOICE=0`).
    */
   voice?: boolean;
+  /** Tests replace access to Claude Code's own OAuth source. */
+  voiceAccessToken?: () => Promise<string | null>;
+  /** Tests replace the direct WebSocket endpoint and timings. */
+  voiceStream?: Omit<VoiceStreamOptions, "token" | "version">;
   /** How yaacd looks at and signals processes (P385). Tests pass a fake table. */
   processes?: ProcessTable;
   /** How often an orphan of a previous yaacd is looked at (P385). */
@@ -463,6 +469,10 @@ export class ClaudeProvider implements HarnessProvider {
   private readonly limits = new ClaudeRateLimits((report) => this.emit({ type: "rateLimitsChanged", report }));
   /** Dictation-only Claude Code processes (voice input). */
   private readonly dictation: ClaudeDictationHost;
+  private readonly directDictations = new Set<ClaudeVoiceStream>();
+  private dictateAvailable = false;
+  private directVoiceAvailable = false;
+  private harnessVersion: string | null = null;
 
   constructor(readonly options: ClaudeProviderOptions) {
     this.cli = options.cli ?? (options.executable ? realCli(options.executable, options.env) : null);
@@ -671,6 +681,7 @@ export class ClaudeProvider implements HarnessProvider {
     if (!exe || !this.cli) return this.result("notInstalled", "Claude Code (`claude`) was not found on this target");
     const version = await this.cli.version();
     if (!version) return this.result("unreachable", `Claude Code at ${exe} could not be run`);
+    this.harnessVersion = version;
     const auth = await this.cli.authStatus();
     const configDir = auth?.configDirectory ?? this.options.env.CLAUDE_CONFIG_DIR ?? path.join(this.options.env.HOME ?? os.homedir(), ".claude");
     this.configDir = configDir;
@@ -749,7 +760,11 @@ export class ClaudeProvider implements HarnessProvider {
     // Voice input: Claude Code answers `dictate`, and its account is Anthropic's own (the
     // speech-to-text service takes only a claude.ai sign-in).
     const dictates = await voice;
-    const voiceAvailable = dictates.available && (!account?.apiProvider || account.apiProvider === "firstParty");
+    this.dictateAvailable = dictates.available && (!account?.apiProvider || account.apiProvider === "firstParty");
+    this.directVoiceAvailable = !!this.options.voice
+      && (!account?.apiProvider || account.apiProvider === "firstParty")
+      && !!(await this.readVoiceAccessToken());
+    const voiceAvailable = !!this.options.voice && (this.dictateAvailable || this.directVoiceAvailable);
     if (!dictates.available && dictates.detail) this.log(`voice input unavailable: ${dictates.detail}`);
     if (voiceAvailable) capabilities.push("voiceInput");
     if (this.meshAttached) capabilities.push("meshTools");
@@ -2291,13 +2306,36 @@ export class ClaudeProvider implements HarnessProvider {
     this.save();
   }
 
-  /** Voice input: one dictation in a dictation-only Claude Code process (see ./dictation.ts). */
+  /** Prefer a dictation-only Claude Code process when its control request is available. */
   startDictation(_thread: NativeId, opts: DictationOptions, events: DictationEvents): Dictation {
-    return this.dictation.start(opts, events);
+    if (this.dictateAvailable) return this.dictation.start(opts, events);
+    if (!this.directVoiceAvailable) throw new Error("Claude voice input is not available");
+    const stream = new ClaudeVoiceStream({
+      token: () => this.readVoiceAccessToken(),
+      version: () => this.harnessVersion,
+      env: this.options.env,
+      ...this.options.voiceStream,
+    }, opts, {
+      transcript: (text, final) => events.transcript(text, final),
+      ended: (error) => {
+        this.directDictations.delete(stream);
+        events.ended(error);
+      },
+    });
+    this.directDictations.add(stream);
+    return stream;
+  }
+
+  /** Let Claude Code check its login, then read its current access token without copying it. */
+  private async readVoiceAccessToken(): Promise<string | null> {
+    if (this.options.voiceAccessToken) return this.options.voiceAccessToken();
+    await this.cli?.authStatus().catch(() => null);
+    return claudeAccessToken(this.options.env);
   }
 
   async dispose(): Promise<void> {
     this.dictation.dispose();
+    for (const stream of this.directDictations) stream.cancel();
     for (const live of [...this.live.values()]) this.closeLive(live, "yaacd is stopping");
     for (const o of this.orphans.values()) if (o.timer) clearTimeout(o.timer);
     this.disposed = true;

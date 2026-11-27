@@ -241,6 +241,15 @@ not take over the user's secrets) and breaks without warning. **Do not do this.*
 `thread/realtime/*` route is different: it is a published app-server method that Codex itself
 carries out with its own credentials, so YAAC never touches a token.
 
+### Follow-up: direct Claude fallback chosen (2026-11-27)
+
+The owner subsequently chose the first shortcut specifically for Claude voice input (P390),
+after `dictate` proved gated off for the current account, and explicitly rejected a separate
+YAAC token vault. `yaacd` dynamically reads the current access token from Claude Code's own
+source for each connection and does not store, copy or refresh it. `dictate` remains preferred.
+This is a narrow exception to the recommendation above: the endpoint, credential use and
+`x-app: cli` identity are private and may change or be refused without notice.
+
 ## Alternatives
 
 | Option | Pros | Cons | Fit with YAAC |

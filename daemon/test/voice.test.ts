@@ -16,6 +16,7 @@ import { CreditExceeded } from "../src/protocol/scheduler.js";
 import { VoiceSessions } from "../src/voice/sessions.js";
 import { DictationRefused, type Dictation, type DictationEvents } from "../src/voice/types.js";
 import { RpcError } from "../src/protocol/rpc.js";
+import type WebSocket from "ws";
 
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 async function until(cond: () => boolean, what: string, ms = 3000): Promise<void> {
@@ -174,8 +175,9 @@ function frames(seconds: number): Buffer[] {
 
 // ── Claude provider: the capability ──────────────────────────────────────────────────────
 
-function provider(sdk: FakeSdk, voice = true) {
-  return new ClaudeProvider({ sdk, cli, executable: "/nonexistent/claude", env: { HOME: "/home/user" }, stateDir: tmp(), idleMs: 0, controlCacheMs: 0, voice });
+function provider(sdk: FakeSdk, voice = true, accessToken?: () => Promise<string | null>, websocket?: typeof WebSocket) {
+  return new ClaudeProvider({ sdk, cli, executable: "/nonexistent/claude", env: { HOME: "/home/user" }, stateDir: tmp(), idleMs: 0, controlCacheMs: 0, voice,
+    voiceAccessToken: accessToken, ...(websocket ? { voiceStream: { websocket } } : {}) });
 }
 
 test("probe offers voiceInput when Claude Code answers dictate, in a separate VS Code-host process", async () => {
@@ -209,6 +211,31 @@ test("probe withholds voiceInput when the dictate request is refused", async () 
   const eff = await p.effective("t");
   assert.ok(!eff.capabilities?.includes("voiceInput"));
   assert.equal(eff.voiceInput, undefined);
+  await p.dispose();
+});
+
+test("Claude Code's OAuth token offers the direct fallback when dictate is gated off", async () => {
+  const sdk = new FakeSdk();
+  sdk.behaviour.gate = false;
+  const p = provider(sdk, true, async () => "oauth-token-for-tests");
+  const probe = await p.probe();
+  assert.ok(probe.capabilities.includes("voiceInput"));
+  assert.deepEqual((await p.effective("t")).voiceInput, CLAUDE_VOICE_FORMAT);
+  await p.dispose();
+});
+
+test("dictate remains first when both dictate and the direct OAuth session exist", async () => {
+  const sdk = new FakeSdk();
+  class MustNotOpen { constructor() { throw new Error("direct WebSocket was opened"); } }
+  const p = provider(sdk, true, async () => "oauth-token-for-tests", MustNotOpen as unknown as typeof WebSocket);
+  const probe = await p.probe();
+  assert.ok(probe.capabilities.includes("voiceInput"));
+  const ev = new Recorder();
+  const d = p.startDictation("t", {}, ev);
+  await d.accepted;
+  assert.equal(sdk.dictationQueries().at(-1)?.requests.at(-1)?.op, "start");
+  d.cancel();
+  await until(() => ev.over, "dictate cancellation");
   await p.dispose();
 });
 

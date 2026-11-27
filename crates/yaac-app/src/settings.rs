@@ -703,7 +703,7 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                 let pid = egui::Id::unique("ssh-password");
                 if panel.method == SignInMethod::Password {
                     ui.horizontal(|ui| {
-                        widgets::secret_field(ui, &p, &mut panel.password, panel.show, 280.0, pid);
+                        widgets::secret_field(ui, &p, &mut panel.password, "Password", panel.show, 280.0, pid);
                         if widgets::plain(ui, &p, if panel.show { "Hide" } else { "Show" }, None).clicked() {
                             panel.show = !panel.show;
                         }
@@ -720,7 +720,7 @@ fn ssh_panel(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
                         ui.label(widgets::secondary("Key file", &p));
                     });
                     ui.horizontal(|ui| {
-                        widgets::secret_field(ui, &p, &mut panel.passphrase, false, 280.0, egui::Id::unique("ssh-passphrase"));
+                        widgets::secret_field(ui, &p, &mut panel.passphrase, "Password", false, 280.0, egui::Id::unique("ssh-passphrase"));
                         ui.label(widgets::secondary("Passphrase, if the key has one", &p));
                     });
                     ui.label(widgets::secondary("Used once to set up YAAC's own key. YAAC does not keep the file or the passphrase.", &p));

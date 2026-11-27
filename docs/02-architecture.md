@@ -759,7 +759,10 @@ object on Windows, a distro shutdown on WSL. Each is specified and tested on its
   addresses, and only for devices of the same Tailscale login. Otherwise each socket is a Unix
   socket (mode `0600`, in a `0700` directory) or a Windows named pipe restricted to the current
   user. All remote access to targets rides on SSH or WSL, which already authenticate the user.
-- The host stores no harness credentials and **no passwords**. The only SSH secret it keeps is
+- The host stores no harness credentials and **no passwords**. For the narrow Claude voice
+  fallback, `yaacd` may read Claude Code's current OAuth access token from Claude Code's own
+  credential source (P390), holds it only for the WebSocket handshake, and never copies,
+  refreshes, returns or logs it. The only SSH secret the host keeps is
   the private half of a key that YAAC itself generated for one connection during
   [setup](#setting-up-an-ssh-connection) — user-only file permissions, never the user's own
   keys, and deleted on Revoke. Protecting it with the operating system's credential store is a

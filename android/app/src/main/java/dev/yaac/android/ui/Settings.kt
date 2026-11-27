@@ -200,7 +200,14 @@ private fun SettingsRow(row: JsonObject, prefix: String, drafts: MutableMap<Stri
         }
         val rest = actions.filterNot { it["kind"].text == "toggle" }
         if (rest.isNotEmpty()) FlowRow(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            for (a in rest) SettingsAction(a, fieldValues, send)
+            for (a in rest) SettingsAction(a, fieldValues) { command, payload ->
+                if (a["submit"].flag() || a["cancel"].flag()) {
+                    for (field in row["fields"].objects.filter { it["type"].text == "password" }) {
+                        drafts.remove(prefix + field["id"].str)
+                    }
+                }
+                send(command, payload)
+            }
         }
         // A disabled action's reason, under the actions rather than among them.
         for (a in actions.filter { !it["enabled"].flag(true) }) a["detail"].text?.let { T("${a["label"].str}: $it", type.small, c.muted) }

@@ -423,7 +423,18 @@ export class Core {
     this.registry.onEvent((instance, event) => this.onProviderEvent(instance, event));
     this.commandExplanations = new CommandExplanations(this.registry);
     this.troubleshooter = new Troubleshooter(this.registry);
-    this.registry.onDescriptor((d) => this.broadcast("provider/updated", { provider: d }));
+    this.registry.onDescriptor((d) => {
+      this.broadcast("provider/updated", { provider: d });
+      const hasVoice = d.capabilities?.includes("voiceInput") === true;
+      for (const rt of this.allThreads()) {
+        if (rt.record.instance !== d.instance || !rt.effective
+          || (rt.record.metadataPending || this.subagentReadOnly(rt))
+          || !!rt.effective.voiceInput === hasVoice) continue;
+        void this.computeEffective(rt).then((effective) => {
+          if (!rt.deleted) this.append(rt, { type: "settingsChanged", effective });
+        });
+      }
+    });
     this.capsFile = path.join(opts.home, "discovery.json");
     let stored: Partial<DiscoveryCaps> | undefined;
     try {

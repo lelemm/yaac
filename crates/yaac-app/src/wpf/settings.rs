@@ -739,7 +739,7 @@ fn providers(app: &YaacApp, target: Option<&TargetId>) -> Value {
                     on,
                     !v.offline,
                 ),
-                context,
+                context.clone(),
             ));
         }
         rows.push(json!({ "id": format!("prefs:{}:{}", target, row.instance), "layout": "form", "actions": prefs }));
