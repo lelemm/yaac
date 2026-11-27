@@ -256,6 +256,9 @@ pub struct Client {
     attach_ids: u64,
     /// Drafts changed since they were last stored in the hub.
     dirty: std::collections::BTreeSet<DraftRef>,
+    /// Drafts kept on this device rather than in the hub's draft store (a client on another
+    /// machine, P393): `None` for a window on the hub's machine.
+    device_drafts: Option<uploads::DeviceDrafts>,
     /// Upload notifications for handles not known yet (their `hub/upload/start` answer has
     /// not arrived), oldest first, bounded.
     orphans: std::collections::VecDeque<(String, Value)>,
@@ -353,6 +356,7 @@ impl Client {
             command_log: None,
             attach_ids: 0,
             dirty: std::collections::BTreeSet::new(),
+            device_drafts: None,
             orphans: std::collections::VecDeque::new(),
             showing: None,
             visible_requests: None,
@@ -951,7 +955,7 @@ impl Client {
                 if let Some(keys) = self.showing.take() {
                     self.set_showing(keys);
                 }
-                self.request(crate::attachments::names::DRAFTS_LIST, json!({}), Call::DraftsList);
+                self.restore_drafts();
                 self.catalog_list();
                 self.load_rate_limits();
                 self.load_ssh_records();
@@ -2108,7 +2112,9 @@ impl Client {
         if fresh {
             self.state.transcripts.insert(key.clone(), crate::transcript::Transcript::new());
         }
-        self.state.touch(key);
+        for old in self.state.touch(key) {
+            self.routed(&old.target, m::THREAD_UNSUBSCRIBE, json!({ "threadId": old.thread }), Call::Ignore);
+        }
         if fresh || detached || self.stalled(key) {
             self.subscribe(key);
         }

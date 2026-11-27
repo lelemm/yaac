@@ -725,6 +725,11 @@ pub(crate) struct HubConn {
     reattach_delay: std::time::Duration,
     /// The SSH setup backend's requests and answers (`hub/ssh/*`).
     ssh: std::rc::Rc<std::cell::RefCell<crate::ssh_hub::SshBridge>>,
+    /// A hub on another machine: this device keeps its own drafts (P393).
+    device_drafts: Option<crate::device_drafts::DeviceDrafts>,
+    /// The thread that was open when a remote hub's connection dropped: opened again (its
+    /// transcript read) once attached again.
+    reopen: Option<yaac_core::key::ThreadKey>,
 }
 
 /// The SSH setup backend of a window attached to no hub (or built without one): SSH setup is
@@ -926,10 +931,16 @@ impl YaacApp {
                 #[cfg(feature = "hub")]
                 if let Some(config) = launch.attach {
                     let attach = Arc::new(Mutex::new(HubAttach::start(config.clone(), waker(&cc.egui_ctx))));
-                    let c = hub_client(&attach);
+                    let mut c = hub_client(&attach);
                     let ssh = std::rc::Rc::new(std::cell::RefCell::new(crate::ssh_hub::SshBridge::new(cc.egui_ctx.clone())));
                     let backend = crate::ssh_hub::HubSsh(ssh.clone());
-                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false, prefs_asked: false, next_reattach: None, reattach_delay: REATTACH_FIRST, ssh });
+                    // A hub on another machine (the phone): drafts stay on this device and
+                    // never cross the link (P393).
+                    let device_drafts = config.is_remote().then(|| crate::device_drafts::DeviceDrafts::open(&config.paths.data_dir));
+                    if let Some(d) = &device_drafts {
+                        c.keep_drafts_on_device(d.stored());
+                    }
+                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false, prefs_asked: false, next_reattach: None, reattach_delay: REATTACH_FIRST, ssh, device_drafts, reopen: None });
                     (c, None, Scenario::Fleet, Clock::System, Box::new(backend) as Box<dyn SshSetupBackend>)
                 } else {
                     let c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
@@ -1700,7 +1711,21 @@ impl YaacApp {
                         self.browsers = Default::default();
                         self.preview_ui = Default::default();
                         self.browser_agent = Default::default();
-                        self.client = hub_client(&attach);
+                        // The new client starts from this device's drafts, the latest included.
+                        self.client.flush_drafts();
+                        let mut client = hub_client(&attach);
+                        if let Some(d) = h.device_drafts.as_mut() {
+                            d.absorb(self.client.take_device_drafts());
+                            client.keep_drafts_on_device(d.stored());
+                        }
+                        // Stay where the user was: the open thread stays open (and its
+                        // composer with it) while the link comes back.
+                        let selection = self.client.state.selection.clone();
+                        if let yaac_core::state::Selection::Thread(k) = &selection {
+                            h.reopen = Some(k.clone());
+                        }
+                        client.state.selection = selection;
+                        self.client = client;
                         return;
                     }
                     Some(at) => self.ctx.request_repaint_after(at - now),
@@ -1710,6 +1735,12 @@ impl YaacApp {
                     }
                 }
             }
+        }
+        if matches!(self.client.state.hub.outcome, HelloOutcome::Attached)
+            && let Some(k) = h.reopen.take()
+            && self.client.state.selection == yaac_core::state::Selection::Thread(k.clone())
+        {
+            self.client.open(&k);
         }
         match self.client.state.hub.outcome.clone() {
             // A hub on another machine (the Android client over Tailscale) is never shut down or
@@ -1768,6 +1799,18 @@ impl YaacApp {
             }
             _ => {}
         }
+    }
+
+    /// Drafts this device keeps (P393): what the client changed goes to the file, now when
+    /// `now` (the controller is stopping), otherwise off this thread.
+    pub(crate) fn keep_device_drafts(&mut self, now: bool) {
+        #[cfg(feature = "hub")]
+        if let Some(d) = self.hub.as_mut().and_then(|h| h.device_drafts.as_mut()) {
+            let writes = self.client.take_device_drafts();
+            if now { d.absorb_now(writes) } else { d.absorb(writes) }
+        }
+        #[cfg(not(feature = "hub"))]
+        let _ = now;
     }
 
     /// Window-side choices stored in the hub (read from its cache file, or with
@@ -2007,6 +2050,7 @@ impl YaacApp {
         if self.client.drafts_dirty() {
             if t - self.drafts_flushed >= 1.0 {
                 self.client.flush_drafts();
+                self.keep_device_drafts(false);
                 self.drafts_flushed = t;
             } else {
                 ctx.request_repaint_after(std::time::Duration::from_secs_f64(1.0 - (t - self.drafts_flushed)));

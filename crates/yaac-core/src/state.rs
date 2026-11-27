@@ -772,20 +772,26 @@ impl AppState {
         self.budgets.insert(result.root.clone(), result);
     }
 
-    /// Mark a thread as recently opened, evicting old transcripts beyond the capacity.
-    pub fn touch(&mut self, key: &ThreadKey) {
+    /// Mark a thread as recently opened, evicting old transcripts beyond the capacity. Returns
+    /// the evicted threads whose transcripts were dropped: the caller lets go of their
+    /// subscriptions, or the hub would go on sending their events.
+    pub fn touch(&mut self, key: &ThreadKey) -> Vec<ThreadKey> {
         self.recent.retain(|k| k != key);
         self.recent.push_front(key.clone());
+        let mut evicted = Vec::new();
         while self.recent.len() > self.transcript_capacity + 1 {
             let Some(index) = self.recent.iter().rposition(|k| self.selected_thread() != Some(k)
                 && !self.copies.sources.contains(k) && k != key) else { break };
             if let Some(old) = self.recent.remove(index) {
-                self.transcripts.remove(&old);
+                if self.transcripts.remove(&old).is_some() {
+                    evicted.push(old.clone());
+                }
                 self.copies.shown.retain(|(k, _)| k != &old);
                 self.copies.answered_in.retain(|(k, _), _| k != &old);
                 self.copies.detached.remove(&old);
             }
         }
+        evicted
     }
 
     /// Whether a thread is muted at `now`: muted with no end, or until a moment still ahead.

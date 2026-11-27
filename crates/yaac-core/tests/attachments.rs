@@ -355,3 +355,63 @@ fn the_demo_hub_plays_an_upload_to_the_end() {
     assert_eq!(chip_status(&c, &d, id), ChipStatus::Ready);
     assert!(c.draft(&d).unwrap().attachments[0].is_image());
 }
+
+/// A client on another machine (the phone, P393) keeps its drafts on the device: no
+/// `hub/drafts/*` traffic at all, another client's stored draft never shows, and its own come
+/// back from what it kept.
+#[test]
+fn a_device_kept_draft_never_crosses_the_link_and_comes_back_from_the_device() {
+    let hub = DemoHub::new(Scenario::Fleet, NOW);
+    let fix = threads::fix();
+    let d = DraftRef::Thread(fix.clone());
+    // A desktop window stores a draft for the same thread in the hub.
+    let (mut desk, _) = boot_on(&hub);
+    desk.open(&fix);
+    settle(&mut desk, &hub);
+    desk.state.drafts.entry(fix.clone()).or_default().text = "the desktop's own words".into();
+    desk.draft_changed(&d);
+    desk.flush_drafts();
+    settle(&mut desk, &hub);
+
+    let boot_device = |stored: Vec<Value>| {
+        let wire = Wire::default();
+        let mut c = Client::new(Box::new(Rig { hub: hub.clone(), wire: wire.clone() }), "test", ClientId::new(DEMO_CLIENT));
+        c.keep_drafts_on_device(stored);
+        settle(&mut c, &hub);
+        (c, wire)
+    };
+    let (mut phone, wire) = boot_device(Vec::new());
+    assert!(phone.drafts_on_device());
+    assert!(phone.state.drafts.get(&fix).is_none_or(|x| x.text.is_empty()), "another client's draft is not shown");
+    phone.open(&fix);
+    settle(&mut phone, &hub);
+    for text in ["h", "he", "hello", "hello from the phone"] {
+        phone.state.drafts.entry(fix.clone()).or_default().text = text.into();
+        phone.draft_changed(&d);
+    }
+    phone.attach_bytes(&d, "shot.png", Some("image/png"), 3, vec!["AAAA".into()]);
+    phone.flush_drafts();
+    settle(&mut phone, &hub);
+    let drafts_traffic: Vec<String> = wire.sent.borrow().iter().filter_map(|m| match m {
+        Message::Request { method, .. } if method.starts_with("hub/drafts/") && !method.starts_with("hub/drafts/blob/") => Some(method.clone()),
+        _ => None,
+    }).collect();
+    assert!(drafts_traffic.is_empty(), "no draft store traffic: {drafts_traffic:?}");
+    assert_eq!(wire.last(names::BLOB_BEGIN).1["draft"], "device/thread:devbox/t-fix", "the bytes are kept apart from hub-stored drafts");
+    let kept = phone.take_device_drafts();
+    let (key, value) = kept.last().cloned().unwrap();
+    assert_eq!(key, "thread:devbox/t-fix");
+    let value = value.unwrap();
+    assert_eq!(value["text"], "hello from the phone");
+    assert!(phone.take_device_drafts().is_empty(), "handed out once");
+    drop(phone);
+
+    // The app restarts (or reconnects): the draft is back before the hub has answered
+    // anything, so the composer never shows empty meanwhile.
+    let mut early = Client::new(Box::new(yaac_core::link::DetachedLink), "test", ClientId::new(DEMO_CLIENT));
+    early.keep_drafts_on_device(vec![value.clone()]);
+    assert_eq!(early.state.drafts.get(&fix).map(|x| x.text.as_str()), Some("hello from the phone"));
+    let (phone, wire) = boot_device(vec![value]);
+    assert_eq!(phone.state.drafts.get(&fix).map(|x| x.text.as_str()), Some("hello from the phone"));
+    assert!(wire.requests(names::DRAFTS_LIST).is_empty());
+}

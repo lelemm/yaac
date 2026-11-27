@@ -75,6 +75,26 @@ The mechanics that do not exist on a phone map to Android mechanics that do the 
 Medium and expanded widths (foldables, tablets) use the desktop's own narrow-window rules, and
 at expanded width the desktop layout as it is.
 
+## The link (P393)
+
+The phone's link is often mobile data, so the attach carries only what is on screen:
+
+- **Drafts stay on the phone.** Typing sends nothing over the link: the composer's drafts are
+  the phone's own, kept on the device ([06](06-attachments.md#drafts-across-a-restart)), never
+  in the hub's draft store and never shown in another client.
+- **Reconnection keeps the user's place.** After the phone sleeps or changes network the
+  controller attaches again by itself; the open thread stays open (its transcript is read
+  again once attached) and its composer keeps what was typed, including during the outage.
+- **Only open threads stream.** The hub sends a thread's events only to clients that
+  subscribed to it; a transcript evicted from the client's small recently-used set lets go of
+  its subscription.
+
+Measured with `crates/yaac-app/tests/remote_link.rs` (`--ignored`): the Android controller
+through a 75 ms-each-way, 1 Mbit/s loopback proxy to a real hub and `yaacd` (fake provider).
+Echo of a key in the controller: about 3 ms at the 90th percentile, independent of the link.
+Typing 59 keys: 0 bytes on the link (about 1.4 KB before P393). Idle: 0 bytes. Streaming a
+400-word answer in the open thread: about 19 KB down.
+
 ## Open points
 
 - The browser host. On desktop, the tabs that agents drive live in the window. Which client hosts

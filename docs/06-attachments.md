@@ -261,6 +261,19 @@ is checked against `hub/upload/list` and asked again if the hub no longer has it
 bytes come back from their draft blob. Sending deletes the message's blobs and the stored
 draft. Moving a new-thread draft to a project on another target uploads every chip again there.
 
+**Drafts on the device (P393, Proposed).** A client attached to a hub on another machine (the
+phone over Tailscale) keeps its drafts on the device, in `drafts.json` in its data directory,
+and sends no `hub/drafts/put`, `hub/drafts/delete` or `hub/drafts/list`: the draft store is
+not shared between clients, and no client shows another's draft. The text and chips are back
+the moment the controller starts or reattaches, before the hub answers; only the uploads wait
+for the hub (restarted, or checked against `hub/upload/list`, as above). Attachments still go
+to the target when attached; a stored chip keeps its `uploadId` or blob id, so its bytes are
+never sent again. Pasted or picked bytes still go to the hub's blob store first (the hub
+uploads them to the target), under the draft key `device/<key>`, so a desktop window sending
+or clearing its own draft for the same thread never deletes them; sending or removing the
+chip deletes the blob as before. The file is written off the controller's thread, newest
+snapshot first, and once more in place when the controller stops.
+
 ### Generated documents and images (P358, Proposed)
 
 A published artifact card shows a snapshot from the agent's working directory. The thread

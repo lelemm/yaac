@@ -1,6 +1,11 @@
 //! The client's side of attachments (docs/06-attachments.md): adding, uploading, removing,
 //! retargeting, and keeping drafts in the hub's durable draft store so a window restart keeps
 //! them. See [`crate::attachments`] for the chip's states.
+//!
+//! A client on another machine (the phone over Tailscale, P393) keeps its drafts on the device
+//! instead: nothing about them crosses the link, and no other client's drafts are read. The
+//! client hands the stored form to its host ([`Client::take_device_drafts`]), which keeps it
+//! in a file, and gets it back when it starts ([`Client::keep_drafts_on_device`]).
 
 use serde_json::{Value, json};
 use yaac_protocol::rpc::ErrorObject;
@@ -18,7 +23,74 @@ const ORPHANS: usize = 64;
 /// draft was set to (its project and selections), so it comes back as it was.
 const NEW_THREAD_META: &str = "newThread";
 
+/// The drafts of a client that keeps them on its own device.
+#[derive(Debug, Default)]
+pub(crate) struct DeviceDrafts {
+    /// The restored drafts' uploads to start again or check once attached (they need the hub;
+    /// the text does not, and is back at once).
+    resume: Option<(Vec<(DraftRef, u64)>, bool)>,
+    /// Stored forms to keep (`Some`) or forget (`None`), by draft key, oldest first.
+    writes: Vec<(String, Option<Value>)>,
+}
+
+/// The key a device-kept draft's stored bytes carry in the hub's blob store: apart from the
+/// hub-stored drafts of the same thread, so another window sending or clearing its draft there
+/// never deletes them.
+fn device_blob_key(key: &str) -> String {
+    format!("device/{key}")
+}
+
 impl Client {
+    /// Keep this client's drafts on its own device (P393), starting from `stored` (what
+    /// [`Self::take_device_drafts`] handed out earlier: each a `hub/drafts/put` value). From now
+    /// on no `hub/drafts/*` request is sent and the hub's stored drafts are not read.
+    ///
+    /// The drafts are back at once, before the hub answers: a composer never shows empty
+    /// while a (re)connection is under way, which would replace what is being typed.
+    pub fn keep_drafts_on_device(&mut self, stored: Vec<Value>) {
+        self.device_drafts = Some(DeviceDrafts::default());
+        let resume = self.put_back_drafts(stored);
+        if let Some(device) = self.device_drafts.as_mut() {
+            device.resume = Some(resume);
+        }
+    }
+
+    /// Whether this client keeps its drafts on its own device.
+    pub fn drafts_on_device(&self) -> bool {
+        self.device_drafts.is_some()
+    }
+
+    /// The device-kept drafts that changed since the last call: `(key, Some(stored))` to keep,
+    /// `(key, None)` to forget. Empty for a client whose drafts are in the hub.
+    pub fn take_device_drafts(&mut self) -> Vec<(String, Option<Value>)> {
+        self.device_drafts.as_mut().map(|d| std::mem::take(&mut d.writes)).unwrap_or_default()
+    }
+
+    /// After `hub/hello`: put the stored drafts back — the hub's (`hub/drafts/list`), or this
+    /// device's own.
+    pub(super) fn restore_drafts(&mut self) {
+        match self.device_drafts.as_mut() {
+            None => {
+                self.request(names::DRAFTS_LIST, json!({}), Call::DraftsList);
+            }
+            Some(device) => {
+                if let Some((restart, running)) = device.resume.take() {
+                    self.resume_uploads(restart, running);
+                }
+            }
+        }
+    }
+
+    /// Forget a stored draft: in the hub, or on this device.
+    fn forget_stored_draft(&mut self, key: String) {
+        match self.device_drafts.as_mut() {
+            Some(device) => device.writes.push((key, None)),
+            None => {
+                self.request(names::DRAFTS_DELETE, json!({ "key": key }), Call::Ignore);
+            }
+        }
+    }
+
     /// A composer's content.
     pub fn draft(&self, d: &DraftRef) -> Option<&Draft> {
         match d {
@@ -86,7 +158,9 @@ impl Client {
         a.size = Some(size);
         a.upload = Upload::Storing;
         self.draft_mut(d)?.attachments.push(a);
-        let mut params = json!({ "draft": d.store_key(), "name": name, "size": size });
+        let key = d.store_key();
+        let key = if self.device_drafts.is_some() { device_blob_key(&key) } else { key };
+        let mut params = json!({ "draft": key, "name": name, "size": size });
         if let Some(m) = media_type {
             params["mediaType"] = json!(m);
         }
@@ -302,7 +376,7 @@ impl Client {
         }
         if self.draft(d).is_none_or(Draft::is_empty) {
             self.dirty.remove(d);
-            self.request(names::DRAFTS_DELETE, json!({ "key": d.store_key() }), Call::Ignore);
+            self.forget_stored_draft(d.store_key());
         } else {
             self.dirty.insert(d.clone());
         }
@@ -316,7 +390,8 @@ impl Client {
     /// Store changed drafts in the hub (`hub/drafts/put`, or `hub/drafts/delete` for one that
     /// is now empty). The window calls this at a calm pace, not on every key.
     pub fn flush_drafts(&mut self) {
-        if !self.state.hub.attached {
+        // Kept on this device: written whether or not the hub is there.
+        if self.device_drafts.is_none() && !self.state.hub.attached {
             return;
         }
         for d in std::mem::take(&mut self.dirty) {
@@ -333,10 +408,13 @@ impl Client {
                     json!({ "key": key, "target": x.target, "text": x.draft.text, "attachments": atts })
                 }),
             };
-            match value {
-                Some(v) => self.request(names::DRAFTS_PUT, v, Call::Ignore),
-                None => self.request(names::DRAFTS_DELETE, json!({ "key": key }), Call::Ignore),
-            };
+            match (value, self.device_drafts.as_mut()) {
+                (Some(v), Some(device)) => device.writes.push((key, Some(v))),
+                (Some(v), None) => {
+                    self.request(names::DRAFTS_PUT, v, Call::Ignore);
+                }
+                (None, _) => self.forget_stored_draft(key),
+            }
         }
     }
 
@@ -345,6 +423,13 @@ impl Client {
     /// running ones the hub still has.
     pub(super) fn on_drafts_list(&mut self, result: &Value) {
         let drafts = result.get("drafts").and_then(Value::as_array).cloned().unwrap_or_default();
+        let (restart, running) = self.put_back_drafts(drafts);
+        self.resume_uploads(restart, running);
+    }
+
+    /// Puts stored drafts back where the composer has none; returns the uploads to start again
+    /// and whether any was running (to be checked against the hub's list).
+    fn put_back_drafts(&mut self, drafts: Vec<Value>) -> (Vec<(DraftRef, u64)>, bool) {
         let mut restart = Vec::new();
         let mut running = false;
         for v in drafts {
@@ -401,6 +486,10 @@ impl Client {
                 }
             }
         }
+        (restart, running)
+    }
+
+    fn resume_uploads(&mut self, restart: Vec<(DraftRef, u64)>, running: bool) {
         for (d, id) in restart {
             self.start_upload(&d, id);
         }

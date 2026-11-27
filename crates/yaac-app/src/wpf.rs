@@ -513,6 +513,7 @@ pub(crate) fn serve(launch: crate::Launch, commands: Connection, mut stdout: imp
         }
     })();
     app.client.flush_drafts();
+    app.keep_device_drafts(true);
     result
 }
 

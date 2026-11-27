@@ -28,6 +28,8 @@ pub mod hubmode;
 pub mod install;
 #[cfg(feature = "hub")]
 mod ssh_hub;
+#[cfg(feature = "hub")]
+mod device_drafts;
 
 mod agents_ui;
 mod app_icon;

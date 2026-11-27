@@ -120,3 +120,25 @@ fn leaving_while_a_worker_subscription_is_in_flight_defers_its_read() {
     settle(&mut client, &hub);
     assert!(copies::open_copy_of(&client.state, &root, &worker).is_some());
 }
+
+/// A transcript evicted from the least-recently-used set lets go of its subscription, so the
+/// hub stops sending its events (on the phone's link, every one of them is mobile data).
+#[test]
+fn an_evicted_transcript_lets_go_of_its_subscription() {
+    let hub = DemoHub::new(Scenario::Fleet, NOW);
+    let mut c = Client::new(Box::new(hub.clone()), "test", ClientId::new(DEMO_CLIENT));
+    settle(&mut c, &hub);
+    c.state.transcript_capacity = 2;
+    let keys: Vec<_> = c.state.threads.keys().filter(|k| c.state.threads[*k].summary.spawned_by.is_none()).take(4).cloned().collect();
+    assert_eq!(keys.len(), 4);
+    for k in &keys {
+        c.open(k);
+        settle(&mut c, &hub);
+    }
+    let unsubscribed: Vec<String> = hub.requests().into_iter()
+        .filter(|(_, method, _)| method == "thread/unsubscribe")
+        .filter_map(|(_, _, p)| p["threadId"].as_str().map(str::to_owned)).collect();
+    assert!(!c.state.transcripts.contains_key(&keys[0]), "the oldest transcript was evicted");
+    assert!(unsubscribed.contains(&keys[0].thread.as_str().to_owned()), "and let go: {unsubscribed:?}");
+    assert!(!unsubscribed.contains(&keys[3].thread.as_str().to_owned()), "the open one is kept");
+}
