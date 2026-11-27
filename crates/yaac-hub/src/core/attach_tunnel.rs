@@ -178,7 +178,7 @@ impl Core {
         loop {
             self.terminals.next = self.terminals.next.wrapping_add(1);
             let s = StreamId(self.terminals.next);
-            if s.0 != 0 && !self.terminals.streams.contains_key(&s) && !self.attach_tunnels.streams.contains_key(&s) {
+            if s.0 != 0 && !self.terminals.streams.contains_key(&s) && !self.attach_tunnels.streams.contains_key(&s) && !self.voice.streams.contains_key(&s) {
                 return s;
             }
         }

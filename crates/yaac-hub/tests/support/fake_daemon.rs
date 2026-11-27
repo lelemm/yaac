@@ -93,6 +93,11 @@ struct State {
     rate_limits: Vec<Value>,
     rate_limit_asks: Vec<bool>,
     request_answers: Vec<yaac_protocol::RequestRespondParams>,
+    /// Audio received per voice stream (the daemon's stream numbers).
+    voice_audio: BTreeMap<u32, Vec<u8>>,
+    /// Every `voice/*` request, in order: method and params as received.
+    voice_calls: Vec<(String, Value)>,
+    next_voice: u32,
 }
 
 /// A fake daemon. Cheap to clone; clones share state.
@@ -419,6 +424,16 @@ impl FakeDaemon {
         }
     }
 
+    /// Audio received on a voice stream (daemon numbering).
+    pub fn voice_audio(&self, stream: u32) -> Vec<u8> {
+        self.lock().voice_audio.get(&stream).cloned().unwrap_or_default()
+    }
+
+    /// Every `voice/*` request received.
+    pub fn voice_calls(&self) -> Vec<(String, Value)> {
+        self.lock().voice_calls.clone()
+    }
+
     /// Sends a daemon-originated request on the live connection; returns its id.
     pub fn originate(&self, method: &str, params: Value) -> Option<i64> {
         let mut s = self.lock();
@@ -481,10 +496,17 @@ impl FakeDaemon {
                     let n = match read { Ok(0) | Err(_) => break, Ok(n) => n };
                     decoder.push(&buf[..n]);
                     while let Ok(Some(f)) = decoder.next_frame() {
-                        if let Frame::Message(payload) = f
-                            && let Ok(message) = Message::from_json(&payload)
-                        {
-                            self.on_message(conn_id, message, &tx);
+                        match f {
+                            Frame::Message(payload) => {
+                                if let Ok(message) = Message::from_json(&payload) {
+                                    self.on_message(conn_id, message, &tx);
+                                }
+                            }
+                            Frame::Data { stream, bytes } => {
+                                if let Some(audio) = self.lock().voice_audio.get_mut(&stream.0) {
+                                    audio.extend(bytes);
+                                }
+                            }
                         }
                     }
                 }
@@ -548,6 +570,27 @@ impl FakeDaemon {
                 Ok(serde_json::to_value(result).unwrap())
             }
             names::PING => Ok(json!({})),
+            names::VOICE_START | names::VOICE_STOP | names::VOICE_CANCEL => {
+                s.voice_calls.push((method.to_owned(), params.clone()));
+                match method {
+                    names::VOICE_START => {
+                        s.next_voice += 1;
+                        let stream = 7000 + s.next_voice;
+                        s.voice_audio.insert(stream, Vec::new());
+                        Ok(json!({ "stream": stream, "initialCredit": 8, "format": { "format": "pcm16le", "sampleRate": 16000, "channels": 1 } }))
+                    }
+                    names::VOICE_STOP => {
+                        let text = String::from_utf8_lossy(s.voice_audio.get(&(params["stream"].as_u64().unwrap_or(0) as u32)).map_or(&[][..], |a| a)).into_owned();
+                        out.push(Message::notification(names::VOICE_TRANSCRIPT, json!({ "stream": params["stream"], "text": text, "final": true })));
+                        out.push(Message::notification(names::VOICE_ENDED, json!({ "stream": params["stream"] })));
+                        Ok(json!({}))
+                    }
+                    _ => {
+                        out.push(Message::notification(names::VOICE_ENDED, json!({ "stream": params["stream"] })));
+                        Ok(json!({}))
+                    }
+                }
+            }
             names::FS_TREE if s.features.as_ref().is_some_and(|features| features.contains(&yaac_protocol::Capability::FileView)) => {
                 Ok(json!({ "entries": [], "repo": true, "truncated": false }))
             }

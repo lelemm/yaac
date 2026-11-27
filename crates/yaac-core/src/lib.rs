@@ -73,5 +73,6 @@ pub mod timeline;
 pub mod transcript;
 pub mod turns;
 pub mod update;
+pub mod voice;
 
 pub use key::ThreadKey;

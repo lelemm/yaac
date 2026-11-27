@@ -131,6 +131,25 @@ output credit is granted with `stream/credit` after opening the stream. Output a
 use raw data frames on the interactive lane. The notifications are `terminal/title` and
 `terminal/exited` from the daemon and `terminal/detach` from the host. [Terminal protocol](13-terminal.md#methods-yaac-protocol-additive-feature-terminal)
 
+### Voice input
+
+**Proposed (P382).** A target whose `initialize` `features` list `voiceInput` accepts these.
+A thread can dictate when its effective capabilities contain `voiceInput`; its
+`ThreadEffective.voiceInput` is the audio format. Full contract: [plan/voice.md](plan/voice.md).
+
+| Method | Purpose |
+| --- | --- |
+| `voice/start` (op) | `{ opId, threadId, language? }` → `{ stream, initialCredit, format }`. A fresh connection-local stream for audio, host → target only. |
+| data frames | Raw audio in `format` on `stream`, interactive lane, under credit (`stream/credit` from the daemon), as terminal input. |
+| `voice/stop` | `{ stream, bytes }` → `{}`. `bytes` is the total sent: the daemon finishes once it has them, since data and control frames may be reordered between lanes. |
+| `voice/cancel` | `{ stream }` → `{}`. The words are dropped. |
+| `voice/transcript` (daemon → host) | `{ stream, text, final }`: the whole text so far, replacing the previous one. |
+| `voice/ended` (daemon → host) | `{ stream, error? }`: always the last message of a dictation. |
+
+Audio is never journaled or written to disk, on either side. The transcript is not a thread
+event; it only ever reaches the composer of the window that started the dictation. The hub
+relays these as `hub/voice/*` with hub-local stream numbers, like `hub/terminal/*`.
+
 ### Providers
 
 | Method / notification | Purpose |

@@ -100,6 +100,8 @@ impl Core {
                 let terminal = terminal
                     .or_else(|| result["terminal"].as_str().map(str::to_owned))
                     .ok_or_else(|| err(ErrorCode::InternalError, "missing terminal id"))?;
+                // Unused by this hub's terminals, tunnels and dictations.
+                let stream = self.next_attach_stream();
                 let conn = self
                     .targets
                     .get_mut(target)
@@ -114,15 +116,6 @@ impl Core {
                 conn.session
                     .open_interactive_stream(opened.stream, opened.initial_credit)
                     .map_err(|e| err(ErrorCode::InternalError, e.to_string()))?;
-                // Unused by this hub's terminals and attach tunnels (`next_attach_stream`).
-                loop {
-                    self.terminals.next = self.terminals.next.wrapping_add(1);
-                    let s = StreamId(self.terminals.next);
-                    if s.0 != 0 && !self.terminals.streams.contains_key(&s) && !self.attach_tunnels.streams.contains_key(&s) {
-                        break;
-                    }
-                }
-                let stream = StreamId(self.terminals.next);
                 self.terminals.streams.insert(
                     stream,
                     Relay {

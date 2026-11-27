@@ -374,6 +374,7 @@ pub struct ThreadEffective {
     pub efforts: Vec<EffortInfo>,        // selectable now; empty when effort cannot be changed
     pub modes: Vec<ModeInfo>,
     pub applied: AppliedSettings,        // the model / effort / mode the harness is really using
+    pub voice_input: Option<VoiceFormat>, // what audio to record, with `voiceInput` (P382)
 }
 ```
 
@@ -498,6 +499,26 @@ harness confirmed it, never from the request alone:
 - YAAC catalog: a successful `yaac.load_skill` result shows **Skill loaded** with the
   qualified `yaac.<name>` ID in either renderer. This records staging on the target. The
   harness reads the loaded file separately.
+
+### Voice input is a capability
+
+**Proposed (P382).** A provider that can turn the user's recorded speech into text with the
+harness's own voice surface reports **`voiceInput`** on its instance and, while the thread can
+dictate now (signed in, allowed by policy, the surface present in this harness build), in the
+thread's effective capabilities with **`ThreadEffective.voiceInput`**:
+`{ format: "pcm16le", sampleRate, channels, maxSeconds? }` — read from what the harness wants,
+never assumed by a client. `yaacd` also lists `voiceInput` in `initialize`'s `features` once it
+implements `voice/*`. The protocol is in [plan/voice.md](plan/voice.md).
+
+| Harness | Surface | Notes |
+| --- | --- | --- |
+| Claude Code | control request `dictate` (`start` / `audio` / `stop` / `cancel`) on the CLI's stdin | `@internal`, gated to first-party hosts; 16 kHz mono 16-bit, ≤ 2 s per `audio`, ends after two minutes; claude.ai sign-in only. Refusal reasons (`not_signed_in`, `policy`, …) become the start's error. |
+| Codex | app-server `thread/realtime/*` (experimental), in a **transcription** session on a private ephemeral thread | 24 kHz mono 16-bit; API-key sign-in only (0.172.0); no `model` (Codex picks it); user-role `transcript/delta` / `done` become the transcript. Never runs on the user's thread, so it cannot start a turn there. See [Codex voice input](#voice-input-codex). |
+| Fake | — | Not reported. |
+
+Both surfaces are unstable (research: [voice-input](research/voice-input.md)). When one goes
+away the provider stops reporting `voiceInput` and the microphone disappears; nothing else
+changes.
 
 ### Listing a harness's own sub-agents is a capability
 

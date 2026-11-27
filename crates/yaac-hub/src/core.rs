@@ -10,6 +10,7 @@ mod preview;
 mod terminal;
 mod ssh;
 mod uploads;
+mod voice;
 
 pub use uploads::UploadLimits;
 
@@ -208,6 +209,8 @@ enum Pending {
     UploadEnd { handle: String },
     UploadCancel { handle: String },
     Terminal { client: ClientKey, id: RpcId, terminal: Option<String> },
+    /// A `voice/*` request from a window (or the hub's own cancel).
+    Voice { client: ClientKey, id: RpcId, ask: voice::VoiceAsk },
     PreviewOpen { socket: u64 },
     /// `tunnel/open` for a window's tunnel over its attach connection (P380).
     AttachTunnel { client: ClientKey, id: RpcId },
@@ -261,6 +264,8 @@ struct Conn {
     /// Newer choices received while the store reads the previous connection's offline choices.
     modes_during_reconnect: Option<HashSet<ThreadId>>,
     terminal_streams: HashMap<StreamId, StreamId>,
+    /// Target stream → hub-local stream, for windows' dictations.
+    voice_streams: HashMap<StreamId, StreamId>,
     preview_streams: HashMap<StreamId, u64>,
     /// Target stream → attach stream, for windows' tunnels (P380).
     attach_tunnels: HashMap<StreamId, StreamId>,
@@ -449,6 +454,7 @@ pub(crate) struct Core {
     uploads: HashMap<String, uploads::Upload>,
     upload_seq: u64,
     terminals: terminal::Relays,
+    voice: voice::Relays,
     attach_tunnels: attach_tunnel::AttachTunnels,
     previews: preview::Previews,
     browser: browser::BrowserCalls,
@@ -555,6 +561,7 @@ impl Core {
             uploads: HashMap::new(),
             upload_seq: 0,
             terminals: Default::default(),
+            voice: Default::default(),
             attach_tunnels: Default::default(),
             previews: preview::Previews::default(),
             browser: browser::BrowserCalls::default(),
@@ -610,7 +617,7 @@ impl Core {
                 self.clients.insert(client, Client { tx, hello: Hello::None, subs: HashSet::new(), showing: HashSet::new(), visible_requests: None, feed: false });
             }
             CoreEvent::ClientData { client, stream, bytes } => {
-                if !self.attach_tunnel_input(client, stream, bytes.clone()) {
+                if !self.attach_tunnel_input(client, stream, bytes.clone()) && !self.voice_input(client, stream, bytes.clone()) {
                     self.terminal_input(client, stream, bytes);
                 }
             }
@@ -749,6 +756,7 @@ impl Core {
         let Some(c) = self.clients.remove(&client) else { return };
         if c.visible_requests.is_some_and(|cards| !cards.is_empty()) { self.notifications.reconsider(Instant::now()); }
         self.terminal_window_closed(client);
+        self.voice_window_closed(client);
         self.attach_tunnels_client_gone(client);
         self.browser_window_closed(client);
         for key in c.subs {
@@ -789,7 +797,7 @@ impl Core {
         }
         let Ok(credit) = serde_json::from_value::<StreamCreditParams>(n.params) else { return };
         if let Some(conn) = self.targets.get_mut(&n.target).and_then(Target::ready_conn) {
-            if conn.preview_streams.contains_key(&credit.stream) || conn.terminal_streams.contains_key(&credit.stream) || conn.attach_tunnels.contains_key(&credit.stream) {
+            if conn.preview_streams.contains_key(&credit.stream) || conn.terminal_streams.contains_key(&credit.stream) || conn.voice_streams.contains_key(&credit.stream) || conn.attach_tunnels.contains_key(&credit.stream) {
                 return; // The hub is the receiver on this stream.
             }
             let _ = conn.session.notify::<methods::StreamCredit>(&credit);
@@ -1053,6 +1061,7 @@ impl Core {
             ext::names::UPLOAD_CANCEL => Some(parse::<ext::UploadHandleParams>(params).map(|p| self.upload_cancel(&p.handle))),
             ext::names::UPLOAD_LIST => Some(Ok(self.upload_list())),
             name if name.starts_with("hub/terminal/") => self.terminal_request(client, id, name, params),
+            name if name.starts_with("hub/voice/") => self.voice_request(client, id, name, params),
             attach::names::PREVIEW_TUNNEL => match parse(params) {
                 Ok(p) => self.attach_tunnel_open(client, id, p),
                 Err(e) => Some(Err(e)),
@@ -1636,6 +1645,7 @@ impl Core {
                     modes_during_reconnect: Some(HashSet::new()),
                     pending: HashMap::new(),
                     terminal_streams: HashMap::new(),
+                    voice_streams: HashMap::new(),
                     preview_streams: HashMap::new(),
                     attach_tunnels: HashMap::new(),
                     subs: HashMap::new(),
@@ -1698,6 +1708,7 @@ impl Core {
         }
         self.preview_disconnected(id);
         self.attach_tunnels_target_gone(id);
+        self.voice_target_closed(id);
         self.browser_target_closed(id);
         let was_ready = conn.ready;
         // Batched events of this connection are still valid: commit them.
@@ -1719,6 +1730,11 @@ impl Core {
                     self.worker.submit(move |s| s.drafts.op_uncertain(&op).err().map(|e| CoreEvent::StoreError(e.to_string())));
                 }
                 Pending::Terminal { client, id, .. } => self.reply(client, id, Err(err(ErrorCode::OutcomeUnknown, "target disconnected before answering terminal request"))),
+                Pending::Voice { ask: voice::VoiceAsk::Quiet, .. } => {}
+                Pending::Voice { client, id, ask: voice::VoiceAsk::Start } => {
+                    self.reply(client, id, Err(err(ErrorCode::OutcomeUnknown, "the connection dropped before the dictation started; it may have started and ended")));
+                }
+                Pending::Voice { client, id, ask: voice::VoiceAsk::Stream } => self.reply(client, id, Err(err(ErrorCode::TargetOffline, "the connection to the target dropped"))),
                 Pending::MeshQuery { source, generation, peer_id } => {
                     self.respond_peer(&source, generation, peer_id, names::MESH_QUERY, Err(err(ErrorCode::TargetOffline, "the target went offline")));
                 }
@@ -2141,6 +2157,7 @@ impl Core {
             Pending::UploadEnd { handle } => self.on_upload_ended(id, &handle, outcome),
             Pending::UploadCancel { handle } => self.on_upload_cancelled(&handle),
             Pending::Terminal { client, id: rid, terminal } => self.terminal_response(id, client, rid, method, terminal, outcome),
+            Pending::Voice { client, id: rid, ask } => self.voice_response(id, client, rid, method, ask, outcome),
             Pending::PreviewOpen { socket } => self.preview_opened(id, socket, outcome),
             Pending::AttachTunnel { client, id: rid } => self.attach_tunnel_opened(id, client, rid, outcome),
             Pending::Receipt { message_id, receipt } => {
@@ -2239,9 +2256,12 @@ impl Core {
                 });
             }
             Inbound::StreamCredit(p) => {
-                if !self.attach_tunnel_target_credit(id, &p) {
+                if !self.attach_tunnel_target_credit(id, &p) && !self.voice_input_credit(id, &p) {
                     self.terminal_input_credit(id, &p);
                 }
+            }
+            Inbound::Other { method, params } if matches!(method.as_str(), names::VOICE_TRANSCRIPT | names::VOICE_ENDED) => {
+                self.voice_event(id, &method, params);
             }
             Inbound::Other { method, params } if matches!(method.as_str(), names::TERMINAL_TITLE | names::TERMINAL_EXITED | names::TERMINAL_RENAMED) => {
                 self.terminal_event(id, &method, params);
@@ -2695,6 +2715,7 @@ impl Core {
         let method = request.method.as_str();
         match method {
             name if name.starts_with("terminal/") => return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, "use the hub terminal methods"))),
+            name if name.starts_with("voice/") => return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, "use the hub voice methods"))),
             names::INITIALIZE | names::MESH_RELAY | names::MESH_DELIVER | names::MESH_RECEIPT | names::MESH_DELIVERY_RECEIPT | names::MESH_ROSTER | names::TUNNEL_OPEN => {
                 return Some(Err(hub_err(ext::codes::NOT_ROUTABLE, format!("{method} is handled by the hub itself"))));
             }
