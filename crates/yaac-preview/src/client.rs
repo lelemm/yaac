@@ -189,6 +189,15 @@ impl BrowserHost {
         snapshot: Option<std::path::PathBuf>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Tab {
+        self.open_tab(Action::Open { url: url.into(), socks, snapshot }, false, wake)
+    }
+
+    fn open_tab(
+        &mut self,
+        action: Action,
+        voice: bool,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Tab {
         self.next += 1;
         let id = self.next;
         let (events, updates) = mpsc::channel();
@@ -219,7 +228,7 @@ impl BrowserHost {
             });
             let lifetime = WorkerLifetime::start();
             thread::spawn(move || {
-                let err = run_host(inbox, commands, &routes, lifetime)
+                let err = run_host(inbox, commands, &routes, lifetime, voice)
                     .err()
                     .map_or_else(|| "Browser host closed".to_owned(), |e| e.to_string());
                 let targets = {
@@ -244,13 +253,42 @@ impl BrowserHost {
         };
         let _ = tab.session.commands.send(Request {
             tab: id,
-            action: Action::Open {
-                url: url.into(),
-                socks,
-                snapshot,
-            },
+            action,
         });
         tab
+    }
+}
+
+/// An offscreen peer with a dedicated host and profile. Dropping it closes the browser
+/// and releases the microphone. Ordinary preview tabs have no path into this process.
+pub struct VoiceCall(Tab);
+
+impl VoiceCall {
+    pub fn open(wake: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(BrowserHost::default().open_tab(Action::OpenCall, true, wake))
+    }
+
+    pub fn answer(&self, sdp: String) {
+        self.0.send(Action::CallAnswer(sdp));
+    }
+
+    pub fn mute(&self, muted: bool) {
+        self.0.send(Action::CallMute(muted));
+    }
+
+    pub fn try_update(&self) -> Option<CallEvent> {
+        loop {
+            match self.0.try_update()? {
+                Update::Event(Event::Call(event)) => return Some(event),
+                Update::HostExited(error) | Update::Event(Event::Error(error)) => {
+                    return Some(CallEvent::Failed(error));
+                }
+                Update::Event(Event::Closed) => {
+                    return Some(CallEvent::Failed("The call page closed.".into()));
+                }
+                _ => {}
+            }
+        }
     }
 }
 /// Renderer-neutral tab. Use try_update from the frame callback and send from either UI.
@@ -328,7 +366,7 @@ impl Tab {
         // process lifetime. Public input commands cannot invalidate a borrowed slice.
         if matches!(
             action,
-            Action::Consumed { .. } | Action::Open { .. } | Action::Shutdown
+            Action::Consumed { .. } | Action::Open { .. } | Action::OpenCall | Action::Shutdown
         ) {
             return;
         }
@@ -363,6 +401,7 @@ fn run_host(
     commands: Sender<Request>,
     routes: &Mutex<Routes>,
     lifetime: WorkerLifetime,
+    voice: bool,
 ) -> io::Result<()> {
     let dir = runtime()?;
     let adapter = dir.join(libloading::library_filename("yaac_preview_native"));
@@ -385,6 +424,10 @@ fn run_host(
         .arg("--yaac-browser-host")
         .env("YAAC_CEF_DIR", &dir)
         .env("YAAC_PREVIEW_SESSION", profile.path());
+    command.env_remove("YAAC_PREVIEW_VOICE");
+    if voice {
+        command.env("YAAC_PREVIEW_VOICE", "1");
+    }
     #[cfg(target_os = "linux")]
     {
         let paths = std::env::var_os("LD_LIBRARY_PATH").unwrap_or_default();

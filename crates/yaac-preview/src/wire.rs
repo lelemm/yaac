@@ -16,6 +16,9 @@ pub enum Action {
     },
     Close,
     Shutdown,
+    OpenCall,
+    CallAnswer(String),
+    CallMute(bool),
     Navigate(String),
     Back,
     Forward,
@@ -117,8 +120,16 @@ pub enum Event {
         text: String,
     },
     DevTools(serde_json::Value),
+    Call(CallEvent),
     Error(String),
     Closed,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum CallEvent {
+    Offer(String),
+    Ready,
+    Failed(String),
 }
 
 /// Proxy preference for a tab's request context (P323): every host, loopback included, goes

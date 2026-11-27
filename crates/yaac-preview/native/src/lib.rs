@@ -1,5 +1,6 @@
 //! CEF browser host. All CEF objects live exclusively on its main thread.
 mod tools_title;
+mod voice_call;
 #[path = "../../src/wire.rs"]
 mod wire;
 use cef::{args::Args, *};
@@ -36,6 +37,7 @@ struct Tab {
 }
 struct State {
     id: u64,
+    voice: bool,
     isolated_html: bool,
     ctrl_click: Cell<Option<std::time::Instant>>,
     bounds: Cell<(i32, i32, f32)>,
@@ -165,7 +167,7 @@ wrap_render_handler! {
             width: i32,
             height: i32,
         ) {
-            if buffer.is_null() || !(1..=16384).contains(&width) || !(1..=16384).contains(&height) {
+            if self.s.voice || buffer.is_null() || !(1..=16384).contains(&width) || !(1..=16384).contains(&height) {
                 return;
             }
             let size = [width as usize, height as usize];
@@ -203,7 +205,7 @@ wrap_life_span_handler! {
             _extra: Option<&mut Option<DictionaryValue>>,
             _no_js: Option<&mut i32>,
         ) -> i32 {
-            if self.s.external_link(url, disposition, user_gesture) {
+            if self.s.voice || self.s.external_link(url, disposition, user_gesture) {
                 return 1;
             }
             if user_gesture != 0 {
@@ -684,10 +686,15 @@ wrap_request_context_handler! {
         url: String,
         socks: Option<u16>,
         snapshot: Option<PathBuf>,
+        voice: bool,
     }
     impl RequestContextHandler {
         fn on_request_context_initialized(&self, ctx: Option<&mut RequestContext>) {
             let Some(ctx) = ctx else { emit(self.id, Event::Error("Missing browser context".into())); return; };
+            if self.voice && !voice_call::register(ctx) {
+                emit(self.id, Event::Error("The call page could not load.".into()));
+                return;
+            }
             if let Some(path) = &self.snapshot {
                 let mime = match path.extension().and_then(|s| s.to_str()) {
                     Some("txt") => "text/plain", Some("pdf") => "application/pdf",
@@ -718,32 +725,34 @@ wrap_request_context_handler! {
         }
     }
 }
-fn open(id: u64, url: String, socks: Option<u16>, snapshot: Option<PathBuf>) -> Result<(), String> {
+fn open(id: u64, url: String, socks: Option<u16>, snapshot: Option<PathBuf>, voice: bool) -> Result<(), String> {
     let isolated_html = snapshot.as_deref().and_then(|path| path.extension()).and_then(|ext| ext.to_str())
         .is_some_and(|ext| matches!(ext, "html" | "htm"));
     let mut ctx = request_context_create_context(
         Some(&RequestContextSettings::default()),
-        Some(&mut ContextReady::new(id, url, socks, snapshot)),
+        Some(&mut ContextReady::new(id, url, socks, snapshot, voice)),
     )
     .ok_or("request context unavailable")?;
     let state = Shared::new(State {
         id,
+        voice,
         isolated_html,
         ctrl_click: Cell::new(None),
-        bounds: Cell::new((800, 600, 1.0)),
+        bounds: Cell::new(if voice { (1, 1, 1.0) } else { (800, 600, 1.0) }),
         surface: Default::default(),
         popup: Default::default(),
         file_dialog: Default::default(),
         menu: Default::default(),
         dialog: Default::default(),
     });
+    let mut client = if voice { voice_call::CallPage::new(state.clone()) } else { Page::new(state.clone()) };
     let browser = browser_host_create_browser_sync(
         Some(&WindowInfo {
             runtime_style: RuntimeStyle::ALLOY,
             windowless_rendering_enabled: 1,
             ..Default::default()
         }),
-        Some(&mut Page::new(state.clone())),
+        Some(&mut client),
         Some(&"about:blank".into()),
         Some(&BrowserSettings {
             javascript: if isolated_html { cef::State::DISABLED } else { cef::State::DEFAULT },
@@ -754,11 +763,16 @@ fn open(id: u64, url: String, socks: Option<u16>, snapshot: Option<PathBuf>) -> 
     )
     .ok_or("browser creation failed")?;
     let host = browser.host().ok_or("browser host unavailable")?;
-    let observer = host.add_dev_tools_message_observer(Some(&mut Observer::new(id)));
-    for (id, method) in [(1, "Runtime.enable"), (2, "Network.enable")] {
-        let msg = serde_json::json!({"id":id,"method":method}).to_string();
-        host.send_dev_tools_message(Some(msg.as_bytes()));
-    }
+    let observer = if voice {
+        None
+    } else {
+        let observer = host.add_dev_tools_message_observer(Some(&mut Observer::new(id)));
+        for (id, method) in [(1, "Runtime.enable"), (2, "Network.enable")] {
+            let msg = serde_json::json!({"id":id,"method":method}).to_string();
+            host.send_dev_tools_message(Some(msg.as_bytes()));
+        }
+        observer
+    };
     TABS.with_borrow_mut(|tabs| {
         tabs.insert(
             id,
@@ -838,8 +852,16 @@ fn handle(req: Request) {
     let id = req.tab;
     match req.action {
         Open { url, socks, snapshot } => {
-            if let Err(e) = open(id, url, socks, snapshot) {
+            if !voice_process() && let Err(e) = open(id, url, socks, snapshot, false) {
                 emit(id, Event::Error(e))
+            }
+            return;
+        }
+        OpenCall => {
+            if voice_process() && TABS.with_borrow(|tabs| tabs.is_empty())
+                && let Err(e) = open(id, voice_call::URL.into(), None, None, true)
+            {
+                emit(id, Event::Error(e));
             }
             return;
         }
@@ -870,6 +892,18 @@ fn handle(req: Request) {
         return;
     };
     let Some(h) = b.host() else { return };
+    if s.voice {
+        match req.action {
+            Close => h.close_browser(1),
+            Navigate(url) if url == voice_call::URL => {
+                if let Some(frame) = b.main_frame() {
+                    frame.load_url(Some(&voice_call::URL.into()));
+                }
+            }
+            action => voice_call::control(&b, action),
+        }
+        return;
+    }
     match req.action {
         Close => {
             h.close_dev_tools();
@@ -1059,7 +1093,8 @@ fn handle(req: Request) {
                 );
             }
         }
-        Open { .. } | Shutdown => unreachable!(),
+        CallAnswer(_) | CallMute(_) => {}
+        Open { .. } | OpenCall | Shutdown => unreachable!(),
     }
 }
 /// Called only in a dedicated browser host or a CEF subprocess.
@@ -1079,10 +1114,15 @@ pub extern "C" fn RunWinMain(
 ) -> i32 {
     main_with_sandbox(sandbox)
 }
+fn voice_process() -> bool {
+    std::env::var_os("YAAC_PREVIEW_VOICE").is_some_and(|value| value == "1")
+}
+
 fn main_with_sandbox(sandbox: *mut std::ffi::c_void) -> i32 {
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     let args = Args::new();
-    let ret = execute_process(Some(args.as_main_args()), None, sandbox.cast());
+    let mut app = voice_process().then(voice_call::CallApp::new);
+    let ret = execute_process(Some(args.as_main_args()), app.as_mut(), sandbox.cast());
     if ret >= 0 {
         return ret;
     }
@@ -1096,6 +1136,7 @@ fn main_with_sandbox(sandbox: *mut std::ffi::c_void) -> i32 {
     let profile = PathBuf::from(session).join("profile");
     let settings = Settings {
         windowless_rendering_enabled: 1,
+        log_severity: if app.is_some() { LogSeverity::DISABLE } else { LogSeverity::DEFAULT },
         resources_dir_path: dir.as_str().into(),
         locales_dir_path: std::path::Path::new(&dir)
             .join("locales")
@@ -1108,7 +1149,7 @@ fn main_with_sandbox(sandbox: *mut std::ffi::c_void) -> i32 {
     if initialize(
         Some(args.as_main_args()),
         Some(&settings),
-        None,
+        app.as_mut(),
         sandbox.cast(),
     ) == 0
     {

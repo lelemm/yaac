@@ -1,0 +1,103 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; media-src blob:; base-uri 'none'; form-action 'none'">
+<title>YAAC voice call</title>
+<audio autoplay></audio>
+<script>
+"use strict";
+
+const audio = document.querySelector("audio");
+const peer = new RTCPeerConnection({ iceServers: [] });
+const events = peer.createDataChannel("oai-events");
+let microphone;
+let closed = false;
+
+function report(event) {
+    console.log("yaac-call:" + JSON.stringify(event));
+}
+
+function close() {
+    closed = true;
+    microphone?.getTracks().forEach(track => track.stop());
+    peer.close();
+    audio.srcObject = null;
+}
+
+function fail(message) {
+    if (closed) return;
+    close();
+    report({ Failed: message });
+}
+
+addEventListener("pagehide", close, { once: true });
+
+peer.addEventListener("connectionstatechange", () => {
+    if (peer.connectionState === "failed") fail("The voice connection failed.");
+});
+peer.addEventListener("track", event => {
+    audio.srcObject = new MediaStream([event.track]);
+    audio.play().catch(() => fail("The speaker could not play the call."));
+});
+events.addEventListener("open", () => report("Ready"), { once: true });
+events.addEventListener("close", () => fail("The voice connection closed."), { once: true });
+
+window.yaacCall = {
+    async answer(sdp) {
+        if (closed) return;
+        try {
+            await peer.setRemoteDescription({ type: "answer", sdp });
+        } catch {
+            fail("The voice service returned an unusable answer.");
+        }
+    },
+    mute(muted) {
+        microphone?.getAudioTracks().forEach(track => { track.enabled = !muted; });
+    },
+};
+
+function gather() {
+    if (peer.iceGatheringState === "complete") return Promise.resolve();
+    return new Promise((resolve, reject) => {
+        function check() {
+            if (peer.iceGatheringState !== "complete") return;
+            clearTimeout(timer);
+            peer.removeEventListener("icegatheringstatechange", check);
+            resolve();
+        }
+        const timer = setTimeout(() => {
+            peer.removeEventListener("icegatheringstatechange", check);
+            reject(new Error("ICE gathering timed out"));
+        }, 15_000);
+        peer.addEventListener("icegatheringstatechange", check);
+    });
+}
+
+async function start() {
+    try {
+        microphone = await navigator.mediaDevices.getUserMedia({
+            video: false,
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        });
+    } catch (error) {
+        fail(error.name === "NotAllowedError"
+            ? "Allow desktop apps to use the microphone in Windows settings."
+            : "The microphone could not start.");
+        return;
+    }
+    if (closed) {
+        microphone.getTracks().forEach(track => track.stop());
+        return;
+    }
+    try {
+        peer.addTrack(microphone.getAudioTracks()[0], microphone);
+        microphone.getAudioTracks()[0].addEventListener("ended", () => fail("The microphone stopped."));
+        await peer.setLocalDescription(await peer.createOffer());
+        await gather();
+        if (!closed) report({ Offer: peer.localDescription.sdp });
+    } catch {
+        fail("The browser could not prepare the voice connection.");
+    }
+}
+start();
+</script>

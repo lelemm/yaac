@@ -201,7 +201,7 @@ impl Preview {
                     Event::Closed => {
                         self.state.error.get_or_insert_with(|| "Tab closed".into());
                     }
-                    Event::Paint { .. } => {}
+                    Event::Paint { .. } | Event::Call(_) => {}
                 },
             }
         }

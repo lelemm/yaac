@@ -230,6 +230,20 @@ rectangles); a pipe carries commands, input, and notifications (URL, title, load
 popups, context menus, dialogs, console). The egui window draws a frame as a texture; WPF draws
 it into a bitmap. Automation uses the DevTools protocol of each tab inside the host.
 
+### Desktop voice calls
+
+A desktop voice call opens a separate, offscreen browser host using the installed CEF
+runtime. Its private pipe accepts only the call page and its controls. The host serves that
+page from memory at `https://yaac-call.invalid/call` in a fresh request context. Only the
+page's main frame can request microphone audio. The normal browser host retains its
+target's SOCKS and WebRTC policy.
+
+The call page uses Chromium's WebRTC capture, playback and audio processing. It sends the
+complete offer and readiness or failure events over the pipe. The controller sends the
+answer and mute commands back over that pipe. Closing the page releases its microphone
+track and peer. No frame surfaces are exported for the call page. See the
+[voice call contract](plan/voice-call.md).
+
 ### Windows WPF
 
 The WPF presentation receives the selected thread's browser view and separate browser event and
