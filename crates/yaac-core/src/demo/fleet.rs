@@ -172,6 +172,8 @@ fn caps() -> Vec<Capability> {
         // yaacd's own (D144): any thread can be moved to another project.
         Capability::ThreadMove,
         Capability::ForkKeepChildren,
+        // Dictation through the harness's own speech-to-text (docs/plan/voice.md).
+        Capability::VoiceInput,
     ]
 }
 
@@ -290,7 +292,6 @@ impl Fleet {
             capabilities.push(Capability::FastMode);
         }
         ThreadEffective {
-            capabilities,
             image_input: m.map_or(Support::Unknown, crate::images::model_image_support),
             image_formats: vec!["image/png".into(), "image/jpeg".into()],
             efforts: m.map(|m| m.efforts.clone()).unwrap_or_default(),
@@ -300,7 +301,14 @@ impl Fleet {
                 effort: Some(EffortId::new("high")),
                 mode: Some(ModeId::new("ask")),
             },
-            voice_input: None,
+            // What the demo's harnesses transcribe: the target reports it, the window never assumes it.
+            voice_input: capabilities.contains(&Capability::VoiceInput).then(|| yaac_protocol::VoiceFormat {
+                format: yaac_protocol::AudioEncoding::Pcm16le,
+                sample_rate: 16_000,
+                channels: 1,
+                max_seconds: Some(120),
+            }),
+            capabilities,
         }
     }
 

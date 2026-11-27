@@ -210,6 +210,11 @@ impl WpfSkills {
         // A new word, or the trigger gone, ends a dismissal; `view` clears it when it no longer applies.
     }
 
+    /// The text before the caret of composer `key` (all of it when the caret is not known).
+    pub(crate) fn before_caret<'a>(&self, key: &str, text: &'a str) -> &'a str {
+        self.cursor(key, text).and_then(|at| text.get(..at)).unwrap_or(text)
+    }
+
     fn cursor(&self, key: &str, text: &str) -> Option<usize> {
         (self.key == key).then(|| skills::byte_of_utf16(text, self.caret))
     }

@@ -10,6 +10,7 @@
 
 pub(crate) mod build;
 mod terminal;
+pub mod voice;
 mod diffs;
 mod sidepane;
 mod fleet;
@@ -206,6 +207,8 @@ struct Inner {
     lose_next: bool,
     /// Demo terminals (`hub/terminal/*` and their data streams).
     terminals: terminal::Terminals,
+    /// Demo dictations (`hub/voice/*` and their audio streams).
+    voices: voice::Voices,
 }
 
 /// The demo hub. Clone it to keep a handle for [`DemoHub::play`] and [`DemoHub::tick`] after
@@ -231,6 +234,9 @@ impl HubLink for DemoHub {
         if let Some((method, params)) = inner.terminals.events.pop_front() {
             return Some(Message::notification(&method, params));
         }
+        if let Some((method, params)) = inner.voices.events.pop_front() {
+            return Some(Message::notification(&method, params));
+        }
         inner.refresh_feed();
         inner.ready.pop_front()
     }
@@ -239,6 +245,10 @@ impl HubLink for DemoHub {
         let mut inner = self.inner.borrow_mut();
         if inner.tunnels.contains_key(&stream) {
             inner.tunnel_data(stream, &bytes);
+            return;
+        }
+        if inner.voices.owns(stream) {
+            inner.voices.data(stream, &bytes);
             return;
         }
         let target = inner.fleet.targets.first().map(|t| t.id.to_string()).unwrap_or_default();
@@ -257,7 +267,7 @@ impl DemoHub {
             Scenario::Fleet => Fleet::standard(now),
             Scenario::Fresh => Fleet::fresh(now),
         };
-        Self { inner: Rc::new(RefCell::new(Inner { explanations: Default::default(), always: true, notifications: Default::default(), feed: None, feed_seen: Default::default(), tunnels: Default::default(), next_tunnel: 10_000, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new(), lose_next: false, terminals: terminal::Terminals::default() })) }
+        Self { inner: Rc::new(RefCell::new(Inner { explanations: Default::default(), always: true, notifications: Default::default(), feed: None, feed_seen: Default::default(), tunnels: Default::default(), next_tunnel: 10_000, fleet, ready: VecDeque::new(), scheduled: VecDeque::new(), counter: 0, drafts: Default::default(), blobs: Default::default(), created: Vec::new(), distros: Ok(demo_distros()), log: VecDeque::new(), lose_next: false, terminals: terminal::Terminals::default(), voices: voice::Voices::default() })) }
     }
 
     /// Every thread of the scenario — the window's "recently used" set, so their hints are
@@ -515,6 +525,19 @@ impl Inner {
             return;
         }
         let Message::Request { id, method, params } = msg else { return };
+        if method.starts_with("hub/voice/") {
+            self.log.push_back((None, method.clone(), params.clone()));
+            let format = params["target"].as_str().zip(params["threadId"].as_str())
+                .map(|(target, thread)| ThreadKey::new(TargetId::new(target), yaac_protocol::ThreadId::new(thread)))
+                .and_then(|key| self.fleet.threads.get(&key))
+                .and_then(|t| t.effective.voice_input.as_ref())
+                .map(|f| json!(f));
+            match self.voices.request(&method, &params, format) {
+                Ok(v) => self.ready.push_back(result(id, v)),
+                Err(e) => self.ready.push_back(error(id, ErrorCode::CapabilityMissing, &e)),
+            }
+            return;
+        }
         if method.starts_with("hub/terminal/") {
             self.log.push_back((None, method.clone(), params.clone()));
             match self.terminals.request(&method, &params) {

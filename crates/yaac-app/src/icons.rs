@@ -868,3 +868,20 @@ mod spinner_tests {
         assert!(spinner_window_visible(&viewport, false));
     }
 }
+
+/// The microphone (voice input): a capsule on a cradle and a stand.
+pub(crate) fn mic(p: &Painter, c: Pos2, d: f32, col: Color32) {
+    let p = &soft(p);
+    let w = (d * 0.09).max(1.2);
+    let capsule = Rect::from_center_size(pos2(c.x, c.y - d * 0.12), vec2(d * 0.3, d * 0.5));
+    p.rect_stroke(capsule, d * 0.15, stroke(col, w), egui::StrokeKind::Middle);
+    let r = d * 0.27;
+    let mid = pos2(c.x, c.y - d * 0.06);
+    let cradle: Vec<Pos2> = (0..=12).map(|k| {
+        let a = k as f32 / 12.0 * std::f32::consts::PI;
+        pos2(mid.x + a.cos() * r, mid.y + a.sin() * r)
+    }).collect();
+    p.line(cradle, stroke(col, w));
+    p.line_segment([pos2(c.x, mid.y + r), pos2(c.x, c.y + d * 0.42)], stroke(col, w));
+}
+

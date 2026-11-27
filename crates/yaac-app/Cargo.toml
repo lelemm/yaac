@@ -23,7 +23,7 @@ default = ["desktop", "glow", "wgpu", "hub"]
 # (ureq). Without it the crate builds only the window controller that the WPF and
 # Android front ends drive (`view_protocol`); each missing piece is a hook in `platform`.
 # `yaac-android` builds it with `default-features = false, features = ["hub"]`.
-desktop = ["dep:eframe", "dep:rfd", "dep:arboard", "dep:ureq"]
+desktop = ["dep:eframe", "dep:rfd", "dep:arboard", "dep:ureq", "dep:cpal"]
 # The real hub: `yaac hub` and attaching to it. Without it the binary runs only `--demo`
 # (a window-only build for UI work).
 hub = ["dep:yaac-hub"]
@@ -85,6 +85,9 @@ yaac-winsys = { path = "../yaac-winsys" }
 # The notification-area icon and its menu (D127). Windows only: no Linux backend is built
 # (its GTK one would pull in GTK; see docs/07-ui.md#the-tray).
 tray-icon = { version = "0.26.1", default-features = false }
+# The microphone for voice input in the controller (`voice_capture`, its own thread): WASAPI.
+# Windows and `desktop` only; Android records in its own renderer, and nothing else records.
+cpal = { version = "0.17.3", default-features = false, optional = true }
 
 [build-dependencies]
 # The Windows icon resource's 256 px image (build.rs).

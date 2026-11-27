@@ -339,6 +339,10 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                         v["paste"] = Value::Null;
                     } else {
                         v["attachments"] = json!(chips(app, &draft, &chip_views));
+                        // Dictation, where the thread's harness offers it (its capability).
+                        if !dim && let Some(voice) = crate::voice::view(app, &key) {
+                            v["voice"] = voice;
+                        }
                         v["shellCapable"] = json!(shell_capable(state, &key));
                         if let Some(mode) = &shell {
                             // `send`, `hint`, Send now and attach stay those of a message: WPF
@@ -615,6 +619,21 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
             app.images.open(source, attachment.name.clone());
         }
         return Ok(());
+    }
+    // Stopping or dropping a dictation is always allowed; starting one needs the composer.
+    if let Some(key) = &thread {
+        match name {
+            "composer.voiceStop" => { crate::voice::stop(app, key); return Ok(()); }
+            "composer.voiceCancel" => { crate::voice::cancel(app, key); return Ok(()); }
+            "composer.voiceAudio" => {
+                use base64::Engine as _;
+                let pcm = base64::engine::general_purpose::STANDARD.decode(string(p, "pcm")).map_err(|_| "composer.voiceAudio: pcm is not base64".to_owned())?;
+                crate::voice::audio(app, key, &pcm);
+                return Ok(());
+            }
+            "composer.voiceStart" if can_write => { crate::voice::start(app, key); return Ok(()); }
+            _ => {}
+        }
     }
     if !can_write
         && !(name == "composer.action" && (matches!(id, "takeOver" | "dismissNotice") || id.starts_with("openRequest:")))
@@ -975,6 +994,172 @@ mod tests {
     fn skills_view(app: &YaacApp) -> Value {
         let map = AttentionMap::compute(&app.client.state);
         view(app, &map, None)["skills"].clone()
+    }
+
+    fn composer_view(app: &YaacApp) -> Value {
+        view(app, &AttentionMap::compute(&app.client.state), None)
+    }
+
+    fn voice_command(app: &mut YaacApp, key: &ThreadKey, name: &str, extra: Value) {
+        let mut payload = json!({ "key": DraftRef::Thread(key.clone()).store_key() });
+        if let (Some(p), Some(e)) = (payload.as_object_mut(), extra.as_object()) {
+            p.extend(e.clone());
+        }
+        command(app, name, &payload).unwrap();
+    }
+
+    /// Half a second of silence at the demo's 16 kHz mono, as `composer.voiceAudio` sends it.
+    fn half_second() -> Value {
+        use base64::Engine as _;
+        json!({ "pcm": base64::engine::general_purpose::STANDARD.encode(vec![0u8; 16_000]) })
+    }
+
+    fn voice_pass(app: &mut YaacApp) {
+        settle(app);
+        crate::voice::upkeep(app);
+    }
+
+    #[test]
+    fn the_mic_is_offered_from_the_capability_with_the_targets_format() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.apply(vec![Action::Open(key.clone())]);
+        settle(&mut app);
+        let voice = composer_view(&app)["voice"].clone();
+        assert_eq!(voice["state"], "idle");
+        assert_eq!(voice["format"], json!({ "format": "pcm16le", "sampleRate": 16_000, "channels": 1, "maxSeconds": 120 }));
+        assert_eq!(voice["button"]["id"], "composer.voiceStart");
+        assert_eq!(voice["capture"], if crate::voice_capture::AVAILABLE { "controller" } else { "renderer" });
+        // Without the capability (whatever the harness), no mic.
+        let effective = app.client.state.transcripts.get_mut(&key).and_then(|t| t.effective.as_mut()).unwrap();
+        effective.capabilities.retain(|c| *c != yaac_protocol::Capability::VoiceInput);
+        assert!(composer_view(&app)["voice"].is_null());
+    }
+
+    #[test]
+    fn dictated_words_show_live_then_land_at_the_caret_and_are_never_sent() {
+        if crate::voice_capture::AVAILABLE {
+            return; // This build records in the controller; the renderer's audio is ignored.
+        }
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.apply(vec![Action::Open(key.clone())]);
+        settle(&mut app);
+        let store = DraftRef::Thread(key.clone()).store_key();
+        command(&mut app, "composer.edit", &json!({ "key": store, "text": "Please", "caret": 6 })).unwrap();
+        let queued = app.client.state.transcripts.get(&key).map_or(0, |t| t.queued.len());
+
+        voice_command(&mut app, &key, "composer.voiceStart", json!({}));
+        assert_eq!(composer_view(&app)["voice"]["state"], "starting");
+        voice_pass(&mut app);
+        assert_eq!(composer_view(&app)["voice"]["state"], "listening");
+        voice_command(&mut app, &key, "composer.voiceAudio", half_second());
+        voice_pass(&mut app);
+        // The interim words, shown while listening; the draft is untouched.
+        let voice = composer_view(&app)["voice"].clone();
+        assert_eq!(voice["partial"], "Add a");
+        assert_eq!(voice["status"], "Add a");
+        assert_eq!(voice["button"]["id"], "composer.voiceStop");
+        assert_eq!(app.client.state.drafts[&key].text, "Please");
+
+        voice_command(&mut app, &key, "composer.voiceAudio", half_second());
+        voice_command(&mut app, &key, "composer.voiceStop", json!({}));
+        assert_eq!(composer_view(&app)["voice"]["state"], "stopping");
+        voice_pass(&mut app);
+        assert_eq!(composer_view(&app)["voice"]["state"], "idle");
+        // The final words go to the renderer once, at its caret, after a space.
+        let mut insert = None;
+        super::super::voice_insert(&mut app, &mut insert);
+        let (to, value) = insert.clone().unwrap();
+        assert_eq!(to, store);
+        assert_eq!(value["text"], " Add a retry with");
+        super::super::voice_insert(&mut app, &mut insert);
+        assert_eq!(insert.unwrap().1["id"], value["id"], "handed out once");
+        // Nothing was sent: no message queued or started.
+        assert_eq!(app.client.state.transcripts.get(&key).map_or(0, |t| t.queued.len()), queued);
+        assert!(!app.demo.as_ref().unwrap().requests().iter().any(|(_, m, _)| m == "turn/start"));
+    }
+
+    #[test]
+    fn one_dictation_per_window_and_cancel_drops_the_words() {
+        if crate::voice_capture::AVAILABLE {
+            return;
+        }
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.apply(vec![Action::Open(key.clone())]);
+        settle(&mut app);
+        voice_command(&mut app, &key, "composer.voiceStart", json!({}));
+        voice_pass(&mut app);
+        // Another thread offers the mic, but not while this one listens.
+        let other = app.client.state.transcripts.keys().find(|k| **k != key && crate::voice::offered(&app, k).is_some()).cloned();
+        if let Some(other) = &other {
+            let v = crate::voice::view(&app, other).unwrap();
+            assert_eq!((v["state"].as_str(), v["button"]["enabled"].as_bool()), (Some("idle"), Some(false)));
+            crate::voice::start(&mut app, other);
+            assert_eq!(app.client.dictation().map(|d| d.key.clone()), Some(key.clone()));
+        }
+        voice_command(&mut app, &key, "composer.voiceAudio", half_second());
+        voice_pass(&mut app);
+        voice_command(&mut app, &key, "composer.voiceCancel", json!({}));
+        voice_pass(&mut app);
+        assert_eq!(composer_view(&app)["voice"]["state"], "idle");
+        let mut insert = None;
+        super::super::voice_insert(&mut app, &mut insert);
+        assert!(insert.is_none(), "a cancelled dictation leaves nothing");
+    }
+
+    #[test]
+    fn leaving_the_thread_while_listening_drops_the_dictation() {
+        if crate::voice_capture::AVAILABLE {
+            return;
+        }
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.apply(vec![Action::Open(key.clone())]);
+        settle(&mut app);
+        voice_command(&mut app, &key, "composer.voiceStart", json!({}));
+        voice_pass(&mut app);
+        voice_command(&mut app, &key, "composer.voiceAudio", half_second());
+        voice_pass(&mut app);
+        assert!(app.client.dictation().is_some());
+        app.ui.settings = true;
+        voice_pass(&mut app);
+        assert!(app.client.dictation().is_none());
+        app.ui.settings = false;
+        voice_pass(&mut app);
+        let mut insert = None;
+        super::super::voice_insert(&mut app, &mut insert);
+        assert!(insert.is_none());
+        assert!(app.client.state.drafts.get(&key).is_none_or(|d| d.text.is_empty()));
+    }
+
+    #[test]
+    fn words_for_a_composer_that_is_not_open_go_to_the_end_of_its_draft() {
+        if crate::voice_capture::AVAILABLE {
+            return;
+        }
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.apply(vec![Action::Open(key.clone())]);
+        settle(&mut app);
+        app.client.state.drafts.entry(key.clone()).or_default().text = "Note:".into();
+        voice_command(&mut app, &key, "composer.voiceStart", json!({}));
+        voice_pass(&mut app);
+        voice_command(&mut app, &key, "composer.voiceAudio", half_second());
+        voice_command(&mut app, &key, "composer.voiceStop", json!({}));
+        // The user went to Settings before the words came back.
+        app.ui.settings = true;
+        voice_pass(&mut app);
+        let mut insert = None;
+        super::super::voice_insert(&mut app, &mut insert);
+        assert!(insert.is_none());
+        assert_eq!(app.client.state.drafts[&key].text, "Note: Add a");
     }
 
     #[test]

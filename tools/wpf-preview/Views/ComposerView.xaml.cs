@@ -173,6 +173,7 @@ public partial class ComposerView : UserControl
         ShowSubmitButtons();
         SetButton(StopButton, ReadAction(Field(view, "stop")), editingEnabled, "Esc");
         SetButton(CancelEditButton, cancelEditAction, editingEnabled, "Esc");
+        RenderVoice(Field(view, "voice"));
         var ready = Field(view, "submitReady");
         submitReady = ready.ValueKind is JsonValueKind.True or JsonValueKind.False ? ready.GetBoolean() : null;
         submitWithoutText = Field(view, "submitWithoutText").ComposerFlag();
@@ -339,6 +340,12 @@ public partial class ComposerView : UserControl
         }
         if (e.Key == Key.Escape && modifiers == ModifierKeys.None)
         {
+            // Dictating: Esc drops the dictation first, before it would stop the turn.
+            if (!e.IsRepeat && CancelVoice())
+            {
+                e.Handled = true;
+                return;
+            }
             if (CancelEditButton.IsEnabled && CancelEditButton.Visibility == Visibility.Visible)
             {
                 e.Handled = true;

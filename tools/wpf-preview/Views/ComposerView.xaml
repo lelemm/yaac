@@ -186,9 +186,12 @@
                 <Button x:Name="SendNowButton" Style="{StaticResource ComposerButton}" Click="SendNowClicked" />
                 <Button x:Name="StopButton" Style="{StaticResource ComposerButton}" Click="StopClicked" />
                 <Button x:Name="CancelEditButton" Style="{StaticResource ComposerButton}" Click="CancelEditClicked" />
+                <Button x:Name="VoiceButton" Style="{StaticResource ComposerButton}" Click="VoiceClicked" Visibility="Collapsed" />
               </WrapPanel>
             </Grid>
             <TextBlock x:Name="Hint" Style="{StaticResource ComposerQuietText}" Margin="4,3,5,0" />
+            <TextBlock x:Name="VoiceStatus" Style="{StaticResource ComposerQuietText}" Margin="4,3,5,0"
+                       FontStyle="Italic" TextWrapping="Wrap" Visibility="Collapsed" />
           </StackPanel>
           </Grid>
         </Border>

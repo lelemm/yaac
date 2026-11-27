@@ -816,6 +816,8 @@ pub(crate) struct YaacApp {
     pub updater: crate::updater::Updater,
     pub troubleshoot: crate::troubleshoot::Troubleshoot,
     pub catalog_settings: crate::catalog_settings::Settings,
+    /// Voice input: the microphone and the words waiting for a composer.
+    pub(crate) voice: crate::voice::Voice,
 
     #[cfg_attr(not(feature = "hub"), allow(dead_code))]
     pub(crate) ctx: egui::Context,
@@ -974,6 +976,7 @@ impl YaacApp {
             updater: launch.updater,
             troubleshoot: Default::default(),
             catalog_settings: Default::default(),
+            voice: Default::default(),
             ctx: cc.egui_ctx,
         };
         // The release check, on a worker (nothing when the updater is off).
@@ -1969,6 +1972,7 @@ impl YaacApp {
         if themes_ready { self.theme_upkeep(); }
         self.troubleshoot.pump(&mut self.client, ctx);
         self.catalog_settings.upkeep(&mut self.client, ctx);
+        crate::voice::upkeep(self);
         #[cfg(feature = "hub")]
         if let Some(h) = &self.hub {
             self.client.ssh_zone = self.zone;

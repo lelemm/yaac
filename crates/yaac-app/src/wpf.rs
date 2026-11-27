@@ -363,6 +363,7 @@ pub(crate) fn serve(launch: crate::Launch, commands: Connection, mut stdout: imp
                     ));
                 }
             }
+            voice_insert(&mut app, &mut insert);
             let composer_key = app.open_composer().map(|draft| draft.store_key());
             if insert
                 .as_ref()
@@ -513,6 +514,25 @@ pub(crate) fn serve(launch: crate::Launch, commands: Connection, mut stdout: imp
     })();
     app.client.flush_drafts();
     result
+}
+
+/// Dictated words (docs/plan/voice.md): into the open composer at its caret, through the same
+/// one-shot `insert` as a paste (one at a time: the next waits until the renderer has taken
+/// this one); a thread whose composer is not open gets them at the end of its draft.
+fn voice_insert(app: &mut YaacApp, insert: &mut Option<(String, Value)>) {
+    let open_thread = match app.open_composer() { Some(DraftRef::Thread(key)) => Some(key), _ => None };
+    for key in crate::voice::settle_elsewhere(app, open_thread.as_ref()) {
+        app.apply(vec![Action::DraftEdited(DraftRef::Thread(key))]);
+    }
+    if insert.is_none() && let Some(key) = &open_thread {
+        let store = DraftRef::Thread(key.clone()).store_key();
+        let text = app.client.state.drafts.get(key).map(|d| d.text.clone()).unwrap_or_default();
+        let before = app.ui.wpf_skills.before_caret(&store, &text).to_owned();
+        if let Some(words) = crate::voice::take_for(app, key, &before) {
+            let id = crate::voice::insert_id(app);
+            *insert = Some((store, json!({ "id": id, "text": words })));
+        }
+    }
 }
 
 fn write_frame(stdout: &mut impl Write, frame: &Value) -> io::Result<()> {
