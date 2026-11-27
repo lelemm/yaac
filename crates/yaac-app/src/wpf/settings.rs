@@ -212,6 +212,7 @@ pub(super) fn view(app: &YaacApp, target: Option<&TargetId>) -> Value {
             ]);
             json!({ "sections": [section("notifications", "Notifications", rows)] })
         }
+        Page::Hubs => hubs_page(app),
         Page::Advanced => advanced(app),
         Page::About => about(app),
     };
@@ -1101,13 +1102,107 @@ fn advanced(app: &YaacApp) -> Value {
                     json!({ "detail": if app.remote_pc().is_some() { "Set on the PC." } else { "" } }))]
             }),
             json!({ "id": "error", "status": state.hub.last_error, "tone": "error" })
-        ]),
+        ].into_iter().chain(reclaim_rows(app)).chain(transfer_rows(app)).collect()),
         section("cache", "Cache", vec![json!({
             "id": "cache", "detail": "Thread lists and transcripts are read again from each target. Drafts are kept.",
             "actions": [action("advanced.clearCache", "Clear cache", true)]
         })]),
         section("diagnostics", "Diagnostics", diag)
     ] })
+}
+
+/// **Start the hub here again**, when the hub moved away from this PC and does not answer.
+fn reclaim_rows(app: &YaacApp) -> Vec<Value> {
+    #[cfg(feature = "hub")]
+    if let Some(line) = app.reclaim_line() {
+        return vec![json!({ "id": "reclaim", "status": line, "tone": "warning",
+            "actions": [with(action("hubs.reclaim", "Start the hub here again", true), json!({ "kind": "primary",
+                "confirm": { "title": "Start the hub on this computer again?",
+                    "text": "The hub starts here from the data it had when it moved. If the hub on the other machine is still running, the two will differ: stop it there first.",
+                    "ok": "Start here" } }))] })];
+    }
+    let _ = app;
+    Vec::new()
+}
+
+/// Settings → Advanced → Hub → Transfer hub to… (docs/15-hub-transfer.md): the destinations
+/// (those that cannot take the hub greyed, with why), a confirmation, then progress.
+fn transfer_rows(app: &YaacApp) -> Vec<Value> {
+    #[cfg(feature = "hub")]
+    {
+        let view = app.transfer_view();
+        let mut row = json!({ "id": "transfer", "layout": "form",
+            "detail": "Move the hub, with its threads, drafts and messages, to a Linux machine on your Tailscale network. Windows and phones follow it there." });
+        match &view.choices {
+            Ok(choices) => {
+                let options: Vec<Value> = choices.iter().map(|c| json!({
+                    "id": c.target.as_str(), "label": c.label, "enabled": c.eligible, "detail": c.reason.clone().unwrap_or_default()
+                })).collect();
+                row["fields"] = json!([choice("transferTarget", "Transfer hub to", view.picked.as_ref().map(|t| t.as_str()), "hub.transferTarget", options)]);
+            }
+            Err(line) => row["status"] = json!(line),
+        }
+        let mut start = with(action("hub.transferStart", "Transfer hub…", view.can_start), json!({ "kind": "primary" }));
+        if let Some((title, text)) = &view.confirm {
+            start["confirm"] = json!({ "title": title, "text": text, "ok": "Transfer" });
+        }
+        row["actions"] = json!([start, action("hub.transferRefresh", "Refresh", app.client.state.hub.attached)]);
+        let mut rows = vec![row];
+        if let Some(p) = &view.progress {
+            let mut progress = json!({ "id": "transferProgress", "label": p.label, "status": p.message,
+                "tone": if p.failed { "error" } else { "" } });
+            if p.running {
+                progress["fields"] = json!([{ "id": "progress", "type": "progress", "value": p.percent }]);
+            }
+            rows.push(progress);
+        }
+        rows
+    }
+    #[cfg(not(feature = "hub"))]
+    {
+        let _ = app;
+        Vec::new()
+    }
+}
+
+/// Settings → Hubs (P412): the hubs this window can attach to, one at a time.
+fn hubs_page(app: &YaacApp) -> Value {
+    #[cfg(feature = "hub")]
+    if app.desk_hubs.is_some() {
+        let rows: Vec<Value> = app.hub_rows().into_iter().map(|h| {
+            let mut actions = Vec::new();
+            if !h.selected {
+                actions.push(args(action("hubs.select", "Switch to this hub", true), json!({ "index": h.index })));
+            }
+            if h.retry {
+                actions.push(args(action("hubs.retry", "Retry", true), json!({ "index": h.index })));
+            }
+            if h.reclaim {
+                actions.push(args(with(action("hubs.reclaim", "Start the hub here again", true), json!({ "kind": "primary",
+                    "confirm": { "title": "Start the hub on this computer again?",
+                        "text": "The hub starts here from the data it had when it moved. If the hub on the other machine is still running, the two will differ: stop it there first.",
+                        "ok": "Start here" } })), json!({ "index": h.index })));
+            }
+            actions.push(args(with(action("hubs.remove", "Remove", h.removable), json!({
+                "detail": if h.selected { "Switch to another hub first." } else { "" },
+                "confirm": { "title": format!("Remove {}?", h.name), "text": "This window forgets the hub. The hub itself, its threads and its targets are not touched.", "ok": "Remove" }
+            })), json!({ "index": h.index })));
+            json!({ "id": format!("hub-{}", h.index), "label": if h.selected { format!("✓ {}", h.name) } else { h.name.clone() },
+                "detail": h.address, "status": h.status, "tone": if h.retry { "warning" } else { "" }, "actions": actions })
+        }).collect();
+        let add = json!({ "id": "add", "layout": "form",
+            "detail": "A hub on another computer, by its Tailscale name or address. That hub must allow clients over Tailscale (Settings → Android on that computer).",
+            "status": app.hub_add_error(), "tone": "error",
+            "fields": [with(field("address", "Address", "", "desk or desk.tailnet.ts.net:47380"), json!({ "required": true })),
+                field("label", "Label (optional)", "", "Work PC")],
+            "actions": [submit(with(action("hubs.add", "Add hub", true), json!({ "kind": "primary" })), true)] });
+        return json!({
+            "detail": "This window is attached to one hub at a time. Switching detaches from the current hub; its turns keep running.",
+            "sections": [section("hubs", "Hubs", rows), section("addHub", "Add a hub", vec![add])]
+        });
+    }
+    let _ = app;
+    json!({ "sections": [section("hubs", "Hubs", vec![json!({ "id": "none", "detail": "Hubs are kept by the app on this device." })])] })
 }
 
 fn component_row(component: Component, id: &str, release: bool, detail: Option<&str>) -> Value {
@@ -1634,6 +1729,14 @@ pub(super) fn command(
             return Ok(());
         }
         "advanced.always" => Action::SetAlways(checked(values)?),
+        "hubs.select" => Action::SelectHub(index(values)?),
+        "hubs.remove" => Action::RemoveHub(index(values)?),
+        "hubs.retry" => Action::RetryHub,
+        "hubs.reclaim" => Action::ReclaimHub,
+        "hubs.add" => Action::AddHub(string(values, "address").to_owned(), string(values, "label").to_owned()),
+        "hub.transferRefresh" => Action::TransferCandidates,
+        "hub.transferTarget" => Action::TransferTarget(TargetId::new(string(values, "transferTarget"))),
+        "hub.transferStart" => Action::TransferStart,
         "advanced.clearCache" => Action::ClearCache,
         "about.releases" => Action::OpenUrl(format!("{REPOSITORY}/releases")),
         "about.source" => Action::OpenUrl(REPOSITORY.to_owned()),
@@ -1667,6 +1770,10 @@ pub(super) fn command(
     };
     app.apply(vec![action]);
     Ok(())
+}
+
+fn index(values: &Value) -> Result<usize, String> {
+    values["index"].as_u64().and_then(|i| usize::try_from(i).ok()).ok_or_else(|| "Expected a hub.".to_owned())
 }
 
 fn checked(values: &Value) -> Result<bool, String> {

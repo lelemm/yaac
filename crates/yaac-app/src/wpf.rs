@@ -587,7 +587,13 @@ fn view(
             "mismatch": matches!(state.hub.outcome, yaac_core::state::HelloOutcome::HubOutdated { .. } | yaac_core::state::HelloOutcome::WindowOutdated { .. }),
             // A phone newer than the PC: Update YAAC on <pc>, and how it stands (P403).
             "pcUpdate": settings::host_update_row(app),
+            // The hub moved (`hub/moved`, docs/15-hub-transfer.md): where it is now; null until
+            // then. The phone restarts that hub's controller there; the desktop follows itself.
+            "movedTo": state.hub.moved.as_ref().map(|m| json!({ "hubId": m.hub_id, "address": m.address, "hostName": m.host_name })),
         },
+        // The desktop's saved hubs (P412): the badge (only with more than one), the drop-down's
+        // rows, and Start the hub here again. Absent on the phone, which keeps its own list.
+        "hubs": hubs_view(app),
         "dialog": dialogs::view(app),
         "canBack": !back.is_empty(), "canForward": !forward.is_empty(),
         "back": back, "forward": forward,
@@ -717,6 +723,19 @@ fn a_wpf_pill_move_updates_the_window_preference_and_agents_view() {
     }
 }
 
+fn hubs_view(app: &YaacApp) -> Value {
+    #[cfg(feature = "hub")]
+    if app.desk_hubs.is_some() {
+        let rows: Vec<Value> = app.hub_rows().into_iter().map(|h| json!({
+            "index": h.index, "name": h.name, "initial": h.initial, "address": h.address,
+            "status": h.status, "selected": h.selected, "retry": h.retry,
+        })).collect();
+        return json!({ "badge": app.hub_badge(), "list": rows, "reclaim": app.reclaim_line() });
+    }
+    let _ = app;
+    Value::Null
+}
+
 fn dispatch(
     app: &mut YaacApp,
     ctx: &egui::Context,
@@ -752,6 +771,8 @@ fn dispatch(
             }
         }
         "settings.close" => Some(Action::Settings(false)),
+        "hubs.select" => payload["index"].as_u64().and_then(|i| usize::try_from(i).ok()).map(Action::SelectHub),
+        "hubs.open" => Some(Action::SettingsPage(Page::Hubs)),
         "settings.page" => Page::ALL
             .into_iter()
             .find(|page| page.label().eq_ignore_ascii_case(string(payload, "id")))

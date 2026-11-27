@@ -99,6 +99,15 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now
             Selection::Thread(key) => return crate::thread::show(ui, app, map, &key, header.as_ref(), now, actions),
             Selection::NewThread(id) => crate::composer::draft_view(ui, app, id, actions),
             _ if yaac_core::first_run::is_first_run(&app.client.state) => crate::first_run::show(ui, app, actions),
+            // The hub moved away from this PC and does not answer: offer to start it here again.
+            #[cfg(feature = "hub")]
+            _ if app.reclaim_offered() => {
+                ui.vertical_centered(|ui| {
+                    ui.add_space((ui.available_height() / 2.0 - 60.0).max(0.0));
+                    ui.set_max_width(520.0);
+                    crate::settings::reclaim_offer(ui, app, actions);
+                });
+            }
             _ => {
                 ui.centered_and_justified(|ui| {
                     ui.label(widgets::secondary(empty_workspace(app), &p));
