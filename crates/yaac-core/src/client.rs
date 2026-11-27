@@ -1432,9 +1432,10 @@ impl Client {
                 self.state.apply_target_state(p);
                 if now_connected && was == Some(false) {
                     self.load_target(&id);
-                    let missing: Vec<_> = self.state.copies.sources.iter().filter(|k| k.target == id
-                        && self.state.transcripts.get(*k).is_some_and(|t| !t.is_loaded())).cloned().collect();
-                    for worker in missing { self.subscribe(&worker); }
+                    // Transcripts whose load failed while it was away (copies' workers too).
+                    let missing: Vec<_> = self.state.transcripts.keys().filter(|k| k.target == id
+                        && !self.state.copies.detached.contains(*k) && self.stalled(k)).cloned().collect();
+                    for key in missing { self.subscribe(&key); }
                     self.resume_offline_uploads(&id);
                 }
                 // The entry (enabled, transport) may have changed with the state: refresh it.
@@ -1811,9 +1812,19 @@ impl Client {
             self.state.transcripts.insert(key.clone(), crate::transcript::Transcript::new());
         }
         self.state.touch(key);
-        if fresh || detached {
+        if fresh || detached || self.stalled(key) {
             self.subscribe(key);
         }
+    }
+
+    /// A transcript that never loaded and has nothing on its way: its subscription or first
+    /// page failed (the target was offline, the connection dropped). Opening it, or its target
+    /// reconnecting, subscribes again; otherwise it would say "Loading…" for good. Reads only,
+    /// so this is not a retry of anything that changes state.
+    fn stalled(&self, key: &ThreadKey) -> bool {
+        self.state.transcripts.get(key).is_some_and(|t| t.position.is_none() && t.loading.is_none())
+            && !self.pending.values().any(|call| matches!(call,
+                Call::Subscribe(k) | Call::Read(k) | Call::ReadAround(k, _) if k == key))
     }
 
     /// Re-subscribe from the current position to learn the latest state of everything —
@@ -3171,4 +3182,86 @@ mod history_tests {
         assert!(matches!(&t.items()[0].body, ItemBody::AgentMessage(message) if message.text == "ABC"));
     }
 
+    fn subscribes(client: &mut Client, key: &ThreadKey) -> usize {
+        client.pending.drain().filter(|(_, call)| matches!(call, Call::Subscribe(k) if k == key)).count()
+    }
+
+    #[test]
+    fn opening_a_thread_whose_load_failed_subscribes_again() {
+        let mut client = Client::new(Box::new(crate::link::DetachedLink), "test", ClientId::new("window"));
+        client.pending.clear();
+        let key = ThreadKey::new(TargetId::new("wsl"), ThreadId::new("worker"));
+        client.open(&key);
+        let subscribe = client.pending.drain().find(|(_, call)| matches!(call, Call::Subscribe(_))).unwrap().1;
+        // The target was briefly offline and the hub had not cached the thread yet.
+        client.on_error(subscribe, &ErrorObject::new(ErrorCode::TargetOffline, "the target is not connected and the thread is not cached"));
+        assert!(!client.state.transcripts[&key].is_loaded(), "nothing loaded, nothing in flight");
+
+        client.open(&key);
+        let again: Vec<_> = client.pending.drain().filter(|(_, call)| matches!(call, Call::Subscribe(k) if k == &key)).collect();
+        assert_eq!(again.len(), 1, "opening it again loads it instead of showing Loading… for good");
+        client.on_error(again.into_iter().next().unwrap().1, &ErrorObject::new(ErrorCode::TargetOffline, "the connection to the target dropped"));
+
+        // A subscription already on its way is not sent twice.
+        client.open(&key);
+        client.open(&key);
+        assert_eq!(subscribes(&mut client, &key), 1);
+
+        // A loaded transcript is left alone.
+        let mut client2 = Client::new(Box::new(crate::link::DetachedLink), "test", ClientId::new("window"));
+        client2.pending.clear();
+        client2.open(&key);
+        let subscribe = client2.pending.drain().find(|(_, call)| matches!(call, Call::Subscribe(_))).unwrap().1;
+        client2.on_result(subscribe, json!({ "mode": "reset", "epoch": 1, "headSeq": 1, "control": "free" }));
+        let read = client2.pending.drain().find(|(_, call)| matches!(call, Call::Read(_))).unwrap().1;
+        client2.on_result(read, json!({ "items": [], "position": { "epoch": 1, "seq": 1 }, "prompts": [] }));
+        assert!(client2.state.transcripts[&key].is_loaded());
+        client2.open(&key);
+        assert_eq!(subscribes(&mut client2, &key), 0);
+    }
+
+    #[test]
+    fn a_reconnected_target_reloads_transcripts_that_never_loaded() {
+        let mut client = Client::new(Box::new(crate::link::DetachedLink), "test", ClientId::new("window"));
+        client.pending.clear();
+        client.state.set_targets(serde_json::from_value(json!([
+            {"id": "wsl", "name": "wsl: Ubuntu", "enabled": true, "transport": {"kind":"local"}, "state": {"status":"connecting"}}
+        ])).unwrap());
+        let key = ThreadKey::new(TargetId::new("wsl"), ThreadId::new("worker"));
+        client.open(&key);
+        let subscribe = client.pending.drain().find(|(_, call)| matches!(call, Call::Subscribe(_))).unwrap().1;
+        client.on_error(subscribe, &ErrorObject::new(ErrorCode::TargetOffline, "the target is not connected and the thread is not cached"));
+
+        client.on_notification(attach::names::TARGET_STATE, json!({ "id": "wsl", "state": { "status": "connected" }, "enabled": true }));
+        assert_eq!(subscribes(&mut client, &key), 1);
+    }
+
+    #[test]
+    fn a_thread_that_is_one_long_turn_loads_across_wire_pages() {
+        // The shape of a finished worker: its report (outside any turn) newest, then a single
+        // turn too large for one wire page, and nothing older.
+        let mut client = Client::new(Box::new(crate::link::DetachedLink), "test", ClientId::new("window"));
+        client.pending.clear();
+        let key = ThreadKey::new(TargetId::new("wsl"), ThreadId::new("worker"));
+        let mut t = Transcript::new();
+        t.begin_reset();
+        client.state.transcripts.insert(key.clone(), t);
+        client.read_page(&key, None);
+        let item = |id: &str, turn: &str| json!({ "id": id, "turnId": turn, "status": "completed", "kind": "agentMessage", "text": id });
+        let position = json!({ "epoch": 1, "seq": 157 });
+        let pages = [
+            json!({ "items": [item("report", ""), item("c", "turn")], "position": position, "cursor": "history:c", "continuesTurn": true, "prompts": [] }),
+            json!({ "items": [item("b", "turn")], "position": position, "cursor": "history:b", "newerCursor": "history-newer:b", "continuesTurn": true }),
+            json!({ "items": [item("a", "turn")], "position": position, "newerCursor": "history-newer:a" }),
+        ];
+        for page in pages {
+            assert!(!client.state.transcripts[&key].is_loaded());
+            let call = client.pending.drain().next().unwrap().1;
+            client.on_result(call, page);
+        }
+        let t = &client.state.transcripts[&key];
+        assert!(t.is_loaded());
+        assert!(t.items().iter().map(|item| item.id.as_str()).eq(["a", "b", "c", "report"]));
+        assert!(client.pending.is_empty() && client.errors.is_empty());
+    }
 }

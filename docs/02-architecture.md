@@ -720,6 +720,8 @@ object on Windows, a distro shutdown on WSL. Each is specified and tested on its
 4. After the handshake, the UI resubscribes to its threads with the last sequence number it
    saw, and `yaacd` replays everything after it from the journal. Work that happened while the
    host was away — finished turns, new approvals — appears as if the UI had been watching.
+   A thread whose first load failed while the target was away (offline and not cached, or the
+   connection dropped mid-load) is subscribed again then, and again whenever it is opened.
 
 ## Where state lives
 
