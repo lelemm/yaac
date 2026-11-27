@@ -734,6 +734,10 @@ thread**:
   `thread/realtime/listVoices` (feature detection, not a version check) **and** the account is
   `apiKey` or `OPENAI_API_KEY` is in the environment `yaacd` gives the daemon. A refusal still
   reaches the user as `voice/ended` with that reason.
+- **No Codex voice with a ChatGPT sign-in (P389).** The WebRTC transport a ChatGPT sign-in
+  gets needs the client to run a WebRTC peer (ICE, DTLS, SRTP, Opus), and the session it allows
+  is always conversational: the model speaks after every pause and can delegate turns. Neither
+  fits dictation, so `yaacd` does not offer it.
 - **Caveats.** The family is EXPERIMENTAL and changes between releases. Transcription is done by
   OpenAI's realtime service with the user's key and **is billed to it**. The `language` hint is
   not passed: Codex has no parameter for it.
