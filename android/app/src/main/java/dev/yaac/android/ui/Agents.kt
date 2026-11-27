@@ -24,6 +24,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -87,7 +89,7 @@ import kotlinx.serialization.json.JsonObject
  * [onOpen] gets true when "more" was tapped: the sheet then opens at the first hidden agent.
  */
 @Composable
-fun AgentsPill(view: JsonElement?, onOpen: (atHidden: Boolean) -> Unit, modifier: Modifier = Modifier) {
+fun AgentsPill(view: JsonElement?, onOpen: (atHidden: Boolean) -> Unit, modifier: Modifier = Modifier, onParent: ((String) -> Unit)? = null) {
     if (!view["visible"].flag()) return
     val entries = remember(view) { pillEntries(view) }
     if (entries.isEmpty()) return
@@ -97,6 +99,15 @@ fun AgentsPill(view: JsonElement?, onOpen: (atHidden: Boolean) -> Unit, modifier
         modifier.width(44.dp).clip(RoundedCornerShape(10.dp)).background(c.raised).clickable { onOpen(false) }.padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // Back to the parent, when there is one (the phone's quick way up the orchestration).
+        val parent = remember(view) { dev.yaac.android.ui.agents.parentOf(view) }
+        if (parent != null && onParent != null) {
+            Box(Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).clickable { onParent(parent) }
+                .semantics { contentDescription = "Open the parent agent" }, contentAlignment = Alignment.Center) {
+                Icon(YIcon.ArrowUp, c.text, size = 18.dp)
+            }
+            Box(Modifier.padding(vertical = 4.dp).width(22.dp).height(1.dp).background(c.rule))
+        }
         for (e in entries) when (e) {
             PillEntry.Paused -> T("Ⅱ", small, c.failure, weight = FontWeight.Bold, modifier = Modifier.padding(vertical = 2.dp))
             PillEntry.Related -> T("⇄", small, c.muted, modifier = Modifier.padding(vertical = 2.dp))
@@ -179,14 +190,12 @@ fun AgentsSheet(view: JsonElement?, send: (String, Any?) -> Unit, onDismiss: () 
         onDismissRequest = { endPreview(); onDismiss() }, sheetState = sheet, containerColor = c.raised, contentColor = c.text, tonalElevation = 0.dp,
         scrimColor = if (previewing != null) Color.Transparent else BottomSheetDefaults.ScrimColor,
     ) {
-        Column(Modifier.fillMaxWidth().verticalScroll(scroll, enabled = previewing == null).navigationBarsPadding().padding(bottom = 16.dp)) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                T("Related agents", type.title.copy(fontSize = 19.sp), modifier = Modifier.weight(1f))
-                // Every unseen agent, hidden ones included (A05): the docked set, not the card's.
-                if (view["canMarkRead"].flag()) TextAction("Mark all as read") { send("agents.markRead", mapOf("floating" to false)) }
-            }
-            Budget.of(view["budget"])?.let { b -> BudgetLine(b, send) { timeMenu = true } }
-            for (e in entries) when (e) {
+        // *Spawned by* stays at the foot while the rest scrolls above it, as in the docked panel.
+        val footAt = entries.indexOfFirst { it is SheetEntry.Heading && it.key == "spawnedBy" }
+        val body = if (footAt >= 0) entries.subList(0, footAt) else entries
+        val foot = if (footAt >= 0) entries.subList(footAt, entries.size) else emptyList()
+        @Composable fun Entry(e: SheetEntry) {
+            when (e) {
                 is SheetEntry.Heading -> T(e.label, type.ui.copy(fontSize = 15.sp), c.muted, modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 4.dp))
                 is SheetEntry.Fold -> TextAction(if (e.open) "Hide ${e.label.substringAfter(' ')}" else "› ${e.label}", modifier = Modifier.padding(start = 8.dp)) {
                     unfolded[e.group] = !e.open
@@ -213,6 +222,21 @@ fun AgentsSheet(view: JsonElement?, send: (String, Any?) -> Unit, onDismiss: () 
                     )
                 }
             }
+        }
+        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 16.dp)) {
+        Column(Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(scroll, enabled = previewing == null)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                T("Related agents", type.title.copy(fontSize = 19.sp), modifier = Modifier.weight(1f))
+                // Every unseen agent, hidden ones included (A05): the docked set, not the card's.
+                if (view["canMarkRead"].flag()) TextAction("Mark all as read") { send("agents.markRead", mapOf("floating" to false)) }
+            }
+            Budget.of(view["budget"])?.let { b -> BudgetLine(b, send) { timeMenu = true } }
+            for (e in body) Entry(e)
+        }
+        if (foot.isNotEmpty()) {
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.rule))
+            for (e in foot) Entry(e)
+        }
         }
     }
     menu?.let { r ->

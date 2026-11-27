@@ -246,3 +246,9 @@ data class RowBounds(val id: String, val top: Float, val bottom: Float)
 fun rowAt(y: Float, rows: Collection<RowBounds>): String? = rows.firstOrNull { y >= it.top && y < it.bottom }?.id
 
 private fun JsonElement?.asObj(): JsonObject? = this as? JsonObject
+
+
+/** The agent that spawned this one (the *Spawned by* row), when it is known and can be opened. */
+fun parentOf(view: JsonElement?): String? =
+    view["groups"].objects.firstOrNull { it["id"].str == "spawnedBy" }?.get("rows").objects?.firstOrNull()
+        ?.takeIf { it["canOpen"].flag(true) }?.get("id").text

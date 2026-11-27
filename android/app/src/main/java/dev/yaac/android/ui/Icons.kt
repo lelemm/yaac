@@ -55,6 +55,7 @@ enum class YIcon(val path: String, val filled: Boolean = false) {
     File("M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z M14 2v4a2 2 0 0 0 2 2h4 M8 13h8 M8 17h6"),
     Image("M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z M9 7a2 2 0 1 0 0 4a2 2 0 1 0 0-4z M21 15l-3.1-3.1a2 2 0 0 0-2.8 0L6 21"),
     ArrowDown("M12 5v14 M19 12l-7 7-7-7"),
+    ArrowUp("M12 19V5 M5 12l7-7 7 7"),
     CirclePlus("M12 2a10 10 0 1 0 0 20a10 10 0 1 0 0-20z M8 12h8 M12 8v8"),
     Copy("M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2z M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"),
     Bolt("M13 2L3 14h9l-1 8 10-12h-9l1-8z"),

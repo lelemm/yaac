@@ -190,7 +190,7 @@ fun ThreadScreen(
                 }
             }
             val fraction = (agents["pillPosition"].double ?: 0.5).toFloat().coerceIn(0.05f, 0.95f)
-            AgentsPill(agents, { hidden -> agentsAtHidden = hidden; agentsOpen = true }, Modifier.align(Alignment.TopEnd).padding(end = 6.dp).offset(y = height * fraction * 0.6f))
+            AgentsPill(agents, { hidden -> agentsAtHidden = hidden; agentsOpen = true }, Modifier.align(Alignment.TopEnd).padding(end = 6.dp).offset(y = height * fraction * 0.6f)) { parent -> send("agents.open", mapOf("id" to parent)) }
         }
         Box(Modifier.navigationBarsPadding()) {
             // The thread's harness logo for the model control (a started thread never changes provider).

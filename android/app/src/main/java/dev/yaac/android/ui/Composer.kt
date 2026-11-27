@@ -359,7 +359,7 @@ private fun ControlRow(composer: JsonObject, act: (ActionItem) -> Unit, logo: Pa
     val rank = mapOf("model" to 0, "effort" to 1, "fast" to 2, "speed" to 2, "mode" to 3, "agents" to 4)
     val controls = composer["controls"].objects.sortedBy { if (it["id"].str == "fork") 9 else rank[it["id"].str] ?: 5 }
     androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(2.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+        horizontalArrangement = Arrangement.SpaceBetween, itemVerticalAlignment = Alignment.CenterVertically) {
         for (ctl in controls) {
             val a = ActionItem.of(ctl) ?: continue
             val warn = ctl["warn"].flag()
