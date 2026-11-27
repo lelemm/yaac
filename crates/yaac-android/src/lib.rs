@@ -31,8 +31,14 @@
 //! - `stop` ends the controller and waits for it (drafts are flushed to the hub first). The
 //!   handle is then unknown: later calls with it return `null` or do nothing.
 //!
+//! Several controllers run at once, one per hub (docs/14-android.md#several-hubs): each has
+//! its own attach, its own `dataDir` (refused when another live controller has it) and its
+//! own frames. The shell view's `hub` names the hub (`id`, `name`, `address`).
+//!
 //! The controller's platform hooks call back into `dev.yaac.android.core.PlatformBridge`
-//! (`bridge`), installed at the first `start`.
+//! (`bridge`), installed at the first `start` and shared by every controller: each hook is a
+//! blocking call on the asking controller's own worker thread, so its answer returns to that
+//! controller and needs no handle.
 //!
 //! Handles are keys into a table, not pointers, so a `waitFrame` that races a `stop` on another
 //! thread is safe: it finishes on the controller it already holds.
@@ -90,24 +96,44 @@ fn options(json: &str) -> Result<Options, String> {
     Ok(Options { mode, theme: c.theme.unwrap_or_else(|| "dark".into()), input, requests, platform: "android".into(), browser_host: c.browser_host.unwrap_or(false) })
 }
 
+struct Live {
+    controller: Arc<ViewController>,
+    /// A hub controller's `dataDir`: no two live controllers share one.
+    data_dir: Option<PathBuf>,
+}
+
 struct Table {
     next: i64,
-    live: BTreeMap<i64, Arc<ViewController>>,
+    live: BTreeMap<i64, Live>,
 }
 
 static CONTROLLERS: Mutex<Table> = Mutex::new(Table { next: 0, live: BTreeMap::new() });
 
 fn get(handle: i64) -> Option<Arc<ViewController>> {
-    CONTROLLERS.lock().ok()?.live.get(&handle).cloned()
+    CONTROLLERS.lock().ok()?.live.get(&handle).map(|l| l.controller.clone())
 }
 
-/// Starts a controller; the handle is never 0.
+/// Starts a controller; the handle is never 0. Several run at once, one per hub (docs/
+/// 14-android.md#several-hubs), each with its own `dataDir`: a second live controller on a
+/// `dataDir` already in use is refused, as its device drafts would overwrite the first's.
 pub fn start(config: &str) -> Result<i64, String> {
-    let controller = ViewController::start(options(config)?).map_err(|e| format!("could not start the controller: {e}"))?;
+    let options = options(config)?;
+    let data_dir = match &options.mode {
+        Mode::Hub { data_dir, .. } => Some(data_dir.clone()),
+        Mode::Demo(_) => None,
+    };
+    // The table stays locked while the controller starts (it returns at once), so two starts
+    // on one dataDir cannot both pass the check.
     let mut table = CONTROLLERS.lock().map_err(|_| "internal error")?;
+    if let Some(dir) = &data_dir
+        && table.live.values().any(|l| l.data_dir.as_ref() == Some(dir))
+    {
+        return Err(format!("the dataDir {} is already in use by another controller", dir.display()));
+    }
+    let controller = ViewController::start(options).map_err(|e| format!("could not start the controller: {e}"))?;
     table.next += 1;
     let handle = table.next;
-    table.live.insert(handle, Arc::new(controller));
+    table.live.insert(handle, Live { controller: Arc::new(controller), data_dir });
     Ok(handle)
 }
 
@@ -136,8 +162,8 @@ pub fn wait_frame(handle: i64, timeout_ms: i64) -> Option<String> {
 /// Ends the controller and forgets the handle.
 pub fn stop(handle: i64) {
     let controller = CONTROLLERS.lock().ok().and_then(|mut t| t.live.remove(&handle));
-    if let Some(c) = controller {
-        c.stop();
+    if let Some(l) = controller {
+        l.controller.stop();
     }
 }
 
@@ -259,6 +285,29 @@ mod tests {
         assert!(options(r#"{"mode":"hub","hubAddress":"h:1"}"#).unwrap_err().contains("dataDir"));
         assert!(options(r#"{"mode":"window"}"#).is_err());
         assert!(options("nope").is_err());
+    }
+
+    #[test]
+    fn controllers_run_side_by_side_but_never_on_one_data_dir() {
+        // Nothing answers on port 1: the controllers keep trying, which is all this needs.
+        let root = std::env::temp_dir().join(format!("yaac-android-{}", std::process::id()));
+        let config = |d: &std::path::Path| json_config(d);
+        let a = start(&config(&root)).unwrap();
+        let nested = root.join("hubs/1");
+        let b = start(&config(&nested)).unwrap();
+        assert_ne!(a, b);
+        assert!(start(&config(&root)).unwrap_err().contains("already in use"));
+        assert!(wait_frame(a, 60_000).is_some() && wait_frame(b, 60_000).is_some());
+        stop(a);
+        // Once stopped, its folder is free again.
+        let c = start(&config(&root)).unwrap();
+        stop(b);
+        stop(c);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn json_config(dir: &std::path::Path) -> String {
+        serde_json::json!({ "mode": "hub", "hubAddress": "127.0.0.1:1", "dataDir": dir }).to_string()
     }
 
     #[test]

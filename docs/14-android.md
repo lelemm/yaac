@@ -1,6 +1,6 @@
 # 14 — Android
 
-**Proposed** (P372–P375). Post-MVP ([01](01-overview.md#mvp-scope)). This design was agreed
+**Proposed** (P372–P375, P403). Post-MVP ([01](01-overview.md#mvp-scope)). This design was agreed
 between a Claude thread and a Codex Astra thread, from the owner's direction. It is waiting for
 the owner to review it.
 
@@ -97,6 +97,29 @@ through a 75 ms-each-way, 1 Mbit/s loopback proxy to a real hub and `yaacd` (fak
 Echo of a key in the controller: about 3 ms at the 90th percentile, independent of the link.
 Typing 59 keys: 0 bytes on the link (about 1.4 KB before P393). Idle: 0 bytes. Streaming a
 400-word answer in the open thread: about 19 KB down.
+
+## Several hubs (P403)
+
+The phone can be attached to **several hubs at once**: the home PC and the work PC, say. Each
+hub is a separate attach with its own controller, as if each had its own phone. Nothing about one
+hub reaches another, and each hub still sees one ordinary client.
+
+- **One controller per hub.** The app starts one `NativeController` per saved hub, each with
+  its hub's address and its **own `dataDir`** (the device drafts of P393 live there). A second live
+  controller on a `dataDir` already in use is refused. The platform hooks (pickers, clipboard,
+  opening links) are shared, and each call blocks the controller that made it, so its answer
+  returns to that controller.
+- **Each hub's own choices.** Each controller asks its own hub for the stored choices
+  (`hub/uiState/get`), such as the theme, and writes them back there. Two hubs can have two
+  themes.
+- **Which hub is which.** `hub/hello` names the hub: `hubId` (stable per hub install) and
+  `hostName` (the PC's name) ([02](02-architecture.md#attaching-over-tailscale)). The shell view
+  shows them as `hub.id`, `hub.name` and `hub.address` (the address the controller dials). Two saved
+  addresses that answer with the same `hubId` are one hub. An older hub sends neither field, and
+  the phone then knows that hub by its address and the label the user gave it.
+- **On screen.** A badge with the current hub's initial is shown next to the YAAC mark, only when
+  more than one hub is saved. A drop-down switches between hubs and shows each hub's name and
+  address and which one is selected. Every hub's requests raise notifications. Opening a notification switches to its hub and opens the thread.
 
 ## Open points
 

@@ -291,6 +291,10 @@ pub struct HubState {
     pub outcome: HelloOutcome,
     /// The hub's build.
     pub build: Option<String>,
+    /// The hub install's stable id and its machine's name (`hub/hello`), once attached; `None`
+    /// from an older hub.
+    pub hub_id: Option<String>,
+    pub host_name: Option<String>,
     /// The last error the hub reported, for the footer.
     pub last_error: Option<String>,
     /// The old hub answered `hub/shutdown` (it is exiting).

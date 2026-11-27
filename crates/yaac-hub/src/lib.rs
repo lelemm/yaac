@@ -133,6 +133,9 @@ pub fn run_hub(config: HubConfig) -> Result<HubExit, HubError> {
     if settings.client_id.is_none() {
         settings.client_id = Some(yaac_protocol::ClientId::new(settings::new_id("c")));
     }
+    if settings.hub_id.is_none() {
+        settings.hub_id = Some(settings::new_id("h"));
+    }
     settings.save(&settings_file)?;
 
     let mut cache = cache::Cache::open(&paths.cache_file())?;

@@ -1042,6 +1042,14 @@ impl YaacApp {
         self.land();
     }
 
+    /// The address of the hub on another machine this window dials (`host:port`), if any.
+    pub(crate) fn hub_address(&self) -> Option<&str> {
+        #[cfg(feature = "hub")]
+        return self.hub.as_ref().and_then(|h| h.config.remote.as_deref());
+        #[cfg(not(feature = "hub"))]
+        None
+    }
+
     pub(crate) fn now(&self) -> i64 {
         match self.clock {
             Clock::Story { base, frozen: true } => base,

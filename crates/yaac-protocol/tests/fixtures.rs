@@ -356,6 +356,11 @@ fn attach_hello_carries_the_client_id_and_target_state_enabled() {
     use yaac_protocol::attach::{HelloResult, TargetStateParams};
     let hello: HelloResult = serde_json::from_value(json!({ "build": "b", "targets": [], "clientId": "c_1" })).unwrap();
     assert_eq!(hello.client_id.as_ref().map(ClientId::as_str), Some("c_1"));
+    // An older hub sends no identity: the client falls back to the address.
+    assert!(hello.hub_id.is_none() && hello.host_name.is_none());
+    let named: HelloResult = serde_json::from_value(json!({ "build": "b", "targets": [], "hubId": "h_1", "hostName": "DESK" })).unwrap();
+    assert_eq!((named.hub_id.as_deref(), named.host_name.as_deref()), (Some("h_1"), Some("DESK")));
+    assert_eq!(serde_json::to_value(&named).unwrap(), json!({ "build": "b", "targets": [], "hubId": "h_1", "hostName": "DESK" }));
     let state: TargetStateParams = serde_json::from_value(json!({ "id": "tg", "state": { "status": "disabled" }, "enabled": false })).unwrap();
     assert!(!state.enabled);
     let older: TargetStateParams = serde_json::from_value(json!({ "id": "tg", "state": { "status": "connected" } })).unwrap();
