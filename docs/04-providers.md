@@ -737,10 +737,47 @@ thread**:
 - **No Codex voice with a ChatGPT sign-in (P389).** The WebRTC transport a ChatGPT sign-in
   gets needs the client to run a WebRTC peer (ICE, DTLS, SRTP, Opus), and the session it allows
   is always conversational: the model speaks after every pause and can delegate turns. Neither
-  fits dictation, so `yaacd` does not offer it.
+  fits dictation, so `yaacd` does not offer *dictation* there. A ChatGPT sign-in gets the
+  separate voice call instead (below).
 - **Caveats.** The family is EXPERIMENTAL and changes between releases. Transcription is done by
   OpenAI's realtime service with the user's key and **is billed to it**. The `language` hint is
   not passed: Codex has no parameter for it.
+
+### Voice call (Codex)
+
+**Proposed (P391).** A voice call is Codex's own `/voice`: a speech-to-speech conversation
+with the thread, separate from dictation ([contract](plan/voice-call.md)). Verified against
+codex-cli 0.172.0 (the `--experimental` schema; `rust-v0.172.0`
+`app-server/tests/suite/v2/realtime_conversation.rs`, `tui/src/app_server_session/realtime.rs`,
+`tui/src/realtime_call.rs`):
+
+- **The renderer is the media peer.** It sends a complete SDP offer (microphone track, the
+  `oai-events` data channel); `yaacd` hands it to `thread/realtime/start { threadId,
+  outputModality: "audio", transport: { type: "webrtc", sdp }, version: "v3" }` **on the
+  user's own thread**, with no `model` and no `voice` (invariant 3). Codex creates the call with
+  its own sign-in (a ChatGPT sign-in works), answers `{}`, and emits `thread/realtime/sdp`
+  (relayed as `voiceCall/answer`). Audio travels by RTP between the renderer and OpenAI; none of
+  it reaches YAAC. The TUI uses v3 too (with `existingCall`, since it negotiates the call
+  itself); WebRTC refuses v2.
+- **Offered** (`voiceCall`, instance and thread) whenever the daemon answers
+  `thread/realtime/listVoices` (feature detection), whatever the sign-in.
+- **Before the start** the thread is resumed if this connection is not subscribed; a turn
+  running there from another client refuses the call (`thread_in_use`). The session layer also
+  refuses while the thread is shown in use elsewhere (invariant 9).
+- **Turns the call starts are the user's.** While a call is live, a `turn/started` that YAAC
+  did not send is recorded as the user's own turn (origin `user`), not as another client's, so
+  the thread does not turn read-only; its items, approvals and questions flow as for any turn
+  (invariant 8). The cost of this rule: a turn another Codex client starts in the same thread
+  during the call is attributed to the call too.
+- **Transcripts.** `thread/realtime/transcript/{delta,done}` (`role` `user`/`assistant`) become
+  `voiceCall/transcript` with the whole current utterance. Codex v3 also writes the transcript
+  tail into the thread as user messages when the session ends; those arrive as ordinary items.
+- **End.** `voiceCall/end` → `thread/realtime/stop`; `thread/realtime/closed` (or 4 s) ends the
+  call. `thread/realtime/error`, a close for another reason, the Codex connection dropping, or
+  the host connection dropping end it too. The Codex daemon is never stopped (invariant 11).
+- **Caveats.** EXPERIMENTAL and changing between releases. The realtime model's audio is billed
+  to the user's Codex plan or key. A target whose Codex config sets `realtime.type =
+  "transcription"` refuses the call with Codex's words.
 
 ### Why there is no SDK backend for Codex
 

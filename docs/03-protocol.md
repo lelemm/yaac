@@ -150,6 +150,25 @@ Audio is never journaled or written to disk, on either side. The transcript is n
 event; it only ever reaches the composer of the window that started the dictation. The hub
 relays these as `hub/voice/*` with hub-local stream numbers, like `hub/terminal/*`.
 
+### Voice call
+
+**Proposed (P391).** A target whose `initialize` `features` list `voiceCall` accepts these. A
+thread can be called when its effective capabilities contain `voiceCall`. The host is the
+WebRTC peer; only SDP and transcript text cross the wire. Full contract:
+[plan/voice-call.md](plan/voice-call.md).
+
+| Method | Purpose |
+| --- | --- |
+| `voiceCall/start` (op) | `{ opId, threadId, sdpOffer }` → `{ callId }`, once the harness accepted. Errors: `capability_missing`, `thread_not_found`, `thread_in_use`, `limit_exceeded` (one call per thread), `provider_unavailable`, `needs_auth`. |
+| `voiceCall/end` | `{ callId }` → `{}`; ending an unknown or ended call is not an error. |
+| `voiceCall/answer` (daemon → host) | `{ callId, sdpAnswer }`, once. |
+| `voiceCall/state` (daemon → host) | `{ callId, state: connecting \| active \| ended, error? }`; `ended` is always last. |
+| `voiceCall/transcript` (daemon → host) | `{ callId, role: user \| assistant, text, final }`: the role's whole current utterance, replacing the previous one. |
+
+Every notification for a call follows the start's result. The hub relays these as
+`hub/voiceCall/*` (the `callId` unchanged) to the starting window only; a window that leaves
+hangs up its call, and a dropped target ends it with an error.
+
 ### Providers
 
 | Method / notification | Purpose |

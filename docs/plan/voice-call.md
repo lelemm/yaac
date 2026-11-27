@@ -163,6 +163,22 @@ One call per window. Leaving the thread does **not** end a call (it is a convers
 thread, not with the composer); the thread's composer keeps the call controls. While a call is
 active in a window, that window offers no dictation (the microphone is the call's).
 
+## Implementation notes
+
+- yaacd: `daemon/src/voice/calls.ts` (registry: call id, one per thread, result before any
+  notification, `ended` last, hang-up on a dropped connection) and
+  `daemon/src/providers/codex/voice-call.ts` (the Codex driver). Turns that start while a call
+  is live are recorded as the user's own ([04](../04-providers.md#voice-call-codex)).
+- Hub: `crates/yaac-hub/src/core/voice_call.rs`; the result and the notifications share the
+  window's terminal lane, so the result arrives first.
+- `yaac-core`: `voice_call.rs` and `Client::voice_call_start / voice_call_end / voice_call /
+  take_voice_call_outcome`. Controller: `crates/yaac-app/src/voice_call.rs` (`start` returns
+  the refusal, which also shows as `call.error`). No dictation while a call runs in the window,
+  and no call while dictating (the microphone is one).
+- The demo hub scripts a call (connecting, answer, active, one line each way, ended on
+  `callEnd`). Its answer is **not real SDP**: a demo renderer's peer cannot connect, so a
+  renderer should not open the microphone against the demo.
+
 ## Flow
 
 ```
