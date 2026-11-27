@@ -80,6 +80,7 @@ fun TranscriptRow(row: JsonObject, threadId: String, state: RowState, send: (Map
     val kind = row["kind"].str
     val submit: (ActionItem, Boolean) -> Unit = { a, draft -> if (a.enabled && a.id.isNotEmpty()) send(payload(row, threadId, a, draft, state)) }
     when {
+        kind == "shell" -> ShellRow(row, state, submit)
         kind == "user" -> UserRow(row, state, submit)
         kind in CardKinds -> CardRow(row, state, submit)
         kind in ActivityKinds -> ActivityRow(row, state, submit)
@@ -121,8 +122,9 @@ private fun UserRow(row: JsonObject, state: RowState, submit: (ActionItem, Boole
         val max = maxWidth * 0.8f
         Column(Modifier.align(Alignment.TopEnd).widthIn(max = max), horizontalAlignment = Alignment.End) {
             Column(Modifier.clip(RoundedCornerShape(8.dp)).background(c.user).clickable { state.showStamp = !state.showStamp }.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                Body(row, "user", type.prose)
-                Parts(row, state, submit)
+                androidx.compose.foundation.text.selection.SelectionContainer {
+                    Column { Body(row, "user", type.prose); Parts(row, state, submit) }
+                }
                 Attachments(row, submit)
             }
             val status = row["status"].text
@@ -159,8 +161,11 @@ private fun ProseRow(row: JsonObject, kind: String, state: RowState, submit: (Ac
                 peer["machine"].text?.let { T("  on $it", type.ui, c.muted) }
             }
         }
-        row["title"].text?.takeIf { kind != "agent" }?.let { T(it, type.ui, tone, weight = FontWeight.SemiBold) }
-        Body(row, kind, if (kind == "agent" || task) type.prose else type.ui, if (kind == "agent" || task) c.text else tone)
+        row["title"].text?.takeIf { kind != "agent" && !task }?.let { T(it, type.ui, tone, weight = FontWeight.SemiBold) }
+        // Touch and hold starts the system selection, with Copy in its toolbar (A11e).
+        androidx.compose.foundation.text.selection.SelectionContainer {
+            Body(row, kind, if (kind == "agent" || task) type.prose else type.ui, if (kind == "agent" || task) c.text else tone)
+        }
         if (row["streaming"].flag()) T("▌", type.prose, c.muted)
         Details(row, state, submit)
         Attachments(row, submit)
@@ -192,6 +197,13 @@ private fun CardRow(row: JsonObject, state: RowState, submit: (ActionItem, Boole
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).clip(RoundedCornerShape(6.dp)).background(c.card).height(IntrinsicSize.Min)) {
         Box(Modifier.width(3.dp).fillMaxHeight().background(edge))
         Column(Modifier.weight(1f).padding(horizontal = 14.dp, vertical = 12.dp)) {
+            // A worker's request mirrored here (P354): who asked, and Go to the original.
+            row["taskPeer"].obj()?.let { peer ->
+                Row(Modifier.padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    T(peer["heading"].str, type.small, c.muted, modifier = Modifier.weight(1f), maxLines = 2)
+                    ActionItem.of(peer)?.takeIf { it.enabled }?.let { a -> TextAction(a.label, style = type.small) { submit(a, false) } }
+                }
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 T(row["title"].str, type.title.copy(fontSize = 18.sp), modifier = Modifier.weight(1f))
                 row["publishedAt"].text?.let { T(it, type.small, c.muted) }
@@ -465,4 +477,39 @@ private fun Actions(row: JsonObject, submit: (ActionItem, Boolean) -> Unit, stac
         Row(Modifier.padding(top = 4.dp)) { for (a in actions) TextAction(a.label, a.enabled, style = LocalType.current.ui) { click(a) } }
     }
     menu?.let { m -> ActionSheet(m.label, m.children, { menu = null }) { submit(it, true) } }
+}
+
+/**
+ * A `!command` the user ran (P346, WPF `TranscriptShell`): full width on the canvas, the command
+ * in mono with its status badge and Stop, the output on a code surface folded to `shown`.
+ */
+@Composable
+private fun ShellRow(row: JsonObject, state: RowState, submit: (ActionItem, Boolean) -> Unit) {
+    val c = LocalYaac.current
+    val type = LocalType.current
+    val running = row["running"].flag()
+    val ok = row["ok"].let { if (it is kotlinx.serialization.json.JsonPrimitive && !it.isString && it !is kotlinx.serialization.json.JsonNull) it.flag() else null }
+    val badge = if (running) "running" else row["badge"].text
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            T(">_", type.mono, c["YaacShell"])
+            Spacer(Modifier.width(8.dp))
+            T(row["command"].str, type.mono.copy(fontSize = 14.sp), modifier = Modifier.weight(1f), maxLines = 2)
+            badge?.let { T(it, type.small, when { running -> c.muted; ok == false -> c.failure; ok == true -> c.success; else -> c.muted }) }
+            ActionItem.of(row["stop"])?.let { a -> TextAction(a.label, a.enabled, style = type.small) { submit(a, false) } }
+        }
+        row["cwd"].text?.let { T(it, type.small, c.muted) }
+        val all = row["output"].str
+        val folded = row["shown"].text
+        val open = state.expanded["shell:open"] ?: false
+        val text = if (folded != null && !open) folded else all
+        if (text.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            CodeBlock(all, text.trimEnd('\n'), null)
+        }
+        row["showAll"].text?.let { label -> TextAction(if (open) "Show less" else label, style = type.small) { state.expanded["shell:open"] = !open } }
+        if (row["truncated"].flag()) T("The output was cut; the full log is on the target.", type.small, c.muted)
+        row["status"].text?.let { T(it, type.small, c.tone(row["tone"].text, c.muted)) }
+        Actions(row, submit, stacked = false)
+    }
 }

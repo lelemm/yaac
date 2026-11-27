@@ -151,7 +151,10 @@ pub(super) fn view(app: &YaacApp, target: Option<&TargetId>) -> Value {
     if let HelloOutcome::WindowOutdated { message } = &app.client.state.hub.outcome {
         return json!({
             "mode": "updateNeeded", "theme": app.ui.theme.id(), "title": "Update YAAC", "detail": message,
-            "footer": "A newer YAAC is already running on this computer."
+            "footer": app.hub_machine().map_or_else(
+                || "A newer YAAC is already running on this computer.".to_owned(),
+                |pc| format!("The hub on {pc} is a different YAAC build."),
+            )
         });
     }
     if !app.ui.settings {
@@ -187,14 +190,26 @@ pub(super) fn view(app: &YaacApp, target: Option<&TargetId>) -> Value {
         }
         Page::Notifications => {
             let prefs = app.client.state.hub.notifications;
-            json!({ "sections": [section("notifications", "Notifications", vec![
+            // These are the hub's: on the phone they also govern the desktop's, and the phone's
+            // own notifications follow the same switches (P379). Say so, and where to silence
+            // only the phone.
+            let android = app.ui.platform == yaac_core::input::Platform::Android;
+            let enabled = if android { "Show request notifications (on the desktop and this phone)" } else { "Show desktop request notifications" };
+            let mut rows = Vec::new();
+            if android {
+                let pc = app.hub_machine().unwrap_or_else(|| "the PC".into());
+                rows.push(json!({"id":"shared","detail": format!(
+                    "These settings belong to the hub on {pc}: they apply to its desktop notifications and to this phone's alike. To silence only this phone, turn off YAAC's notifications in Android's settings. The sound choice applies to the desktop; the phone uses its own notification sound.")}));
+            }
+            rows.extend([
                 json!({"id":"options","actions":[
-                    toggle("notifications.enabled","Show desktop request notifications",prefs.enabled,true),
+                    toggle("notifications.enabled",enabled,prefs.enabled,true),
                     toggle("notifications.questions","Include questions",prefs.include_questions,true),
                     toggle("notifications.sound","Play a sound",prefs.sound,true)]}),
                 json!({"id":"sound","label":"Sound","fields":[{"id":"soundChoice","type":"radio","action":"notifications.choice",
                     "value":prefs.sound_choice,"options":[action("reminder","Reminder",true),action("default","Default",true)]}]})
-            ])] })
+            ]);
+            json!({ "sections": [section("notifications", "Notifications", rows)] })
         }
         Page::Advanced => advanced(app),
         Page::About => about(app),
@@ -1951,6 +1966,22 @@ fn ssh_config_hosts() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn on_android_the_notification_page_says_the_settings_are_the_hubs() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        app.ui.settings = true;
+        app.ui.settings_page = Page::Notifications;
+        let desktop = view(&app, None);
+        assert_eq!(desktop["sections"][0]["rows"][0]["actions"][0]["label"], "Show desktop request notifications");
+        super::super::dispatch(&mut app, &ctx, &mut None, "shell.platform", &json!({ "platform": "android" })).unwrap();
+        let phone = view(&app, None);
+        let rows = phone["sections"][0]["rows"].as_array().unwrap();
+        assert!(rows[0]["detail"].as_str().unwrap().contains("Android's settings"));
+        assert_eq!(rows[1]["actions"][0]["label"], "Show request notifications (on the desktop and this phone)");
+        assert_eq!(rows[1]["actions"][0]["id"], "notifications.enabled", "the same hub setting");
+    }
 
     #[test]
     fn on_android_the_window_page_offers_running_in_the_background_and_no_renderer_choice() {

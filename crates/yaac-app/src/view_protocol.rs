@@ -357,6 +357,44 @@ mod tests {
         assert!(found, "screenshot, diagram and report in the transcript frames");
     }
 
+    /// A diff opened from the Files tree arrives without any further command (the wakes of the
+    /// file request, the diff worker and the document encoder all reach the loop).
+    #[test]
+    fn a_diff_opened_from_the_tree_arrives_without_another_command() {
+        let controller = ViewController::start(Options { mode: Mode::Demo(Scenario::Fleet), theme: "dark".into(), input: "touch".into(), requests: false, platform: "android".into(), browser_host: false }).unwrap();
+        let send = |c: &str, p: Value| controller.command(&json!({ "command": c, "payload": p }).to_string()).unwrap();
+        let scene = yaac_core::demo::Scene::ALL.iter().position(|s| *s == yaac_core::demo::Scene::SidePanes).unwrap();
+        send("shell.scene", json!({ "id": scene }));
+        let users = yaac_core::demo::threads::users().address();
+        send("sidebar.open", json!({ "id": users.as_str() }));
+        send("shell.visible", json!({ "shown": true }));
+        send("files.new", json!({ "thread": users.as_str() }));
+        let mut browser = Value::Null;
+        let mut wait = |browser: &mut Value, what: &str, done: &dyn Fn(&Value, &Value) -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
+            while std::time::Instant::now() < deadline {
+                let Some(frame) = controller.wait_frame(Duration::from_millis(500)) else { continue };
+                let frame: Value = serde_json::from_str(&frame).unwrap();
+                if let Some(b) = frame["views"].get("browser") {
+                    *browser = b.clone();
+                }
+                if done(&frame, browser) {
+                    return;
+                }
+            }
+            panic!("timed out waiting for {what}: {browser}");
+        };
+        wait(&mut browser, "the Files tab", &|_, b| b["files"]["folders"].get("").is_some());
+        let tab = browser["active"].clone();
+        for dir in ["services", "services/users", "services/users/src"] {
+            send("files.expand", json!({ "thread": users.as_str(), "tab": tab, "data": { "path": dir, "expanded": true } }));
+            wait(&mut browser, dir, &|_, b| b["files"]["folders"].get(dir).is_some());
+        }
+        send("files.diff", json!({ "thread": users.as_str(), "tab": tab, "data": { "path": "services/users/src/handlers.rs" } }));
+        wait(&mut browser, "the diff document", &|f, _| f.get("filesDocument").is_some());
+        controller.stop();
+    }
+
     #[test]
     fn a_frame_sink_splits_lines_and_reports_a_closed_channel() {
         let (mut sink, frames) = FrameSink::new();

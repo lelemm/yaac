@@ -56,8 +56,8 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
-/** The pages, in the desktop's order (`SettingsView.PageIds`). */
-private val Pages = listOf("targets", "providers", "skills", "approvals", "appearance", "window", "keyboard", "terminal", "advanced", "about")
+/** The pages, in the controller's order (`Page::ALL`); Notifications matters most on a phone. */
+private val Pages = listOf("targets", "providers", "skills", "approvals", "appearance", "window", "keyboard", "terminal", "notifications", "advanced", "about")
 private fun title(id: String) = id.replaceFirstChar { it.uppercase() }
 
 /**
@@ -283,6 +283,13 @@ private fun SettingsField(f: JsonObject, prefix: String, drafts: MutableMap<Stri
             // A key binding is recorded by pressing it, as WPF does: tap the key cap, press the
             // chord. Esc cancels; Backspace or Delete clears. Without a hardware keyboard there is
             // nothing to press, so the binding is only shown.
+            "progress" -> {
+                // `value` is a percentage, or null while it is unknown.
+                val pct = (f["value"] as? JsonPrimitive)?.content?.toDoubleOrNull()
+                Box(Modifier.padding(top = 6.dp).fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(c.rule)) {
+                    if (pct != null) Box(Modifier.fillMaxWidth((pct / 100).toFloat().coerceIn(0f, 1f)).height(6.dp).background(c.accent))
+                }
+            }
             "shortcut" -> ShortcutField(value, f["placeholder"].text, action) { values -> if (action != null) send("settings.action", mapOf("id" to action, "values" to values)) }
             else -> {
                 val secret = f["type"].text == "password"

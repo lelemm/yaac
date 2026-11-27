@@ -421,6 +421,12 @@ pub(crate) fn serve(launch: crate::Launch, commands: Connection, mut stdout: imp
                 .update(&mut app, window_shown, wake_browser.clone(), &mut stdout)?
                 .and_then(|delay| Instant::now().checked_add(delay));
         }
+        // A demo hub answers in place and has no waker: when the browser's requests (a folder,
+        // a file, a diff) were answered just now, take another pass instead of waiting for input.
+        if app.demo.is_some() && app.pump_demo() {
+            once = true;
+            continue;
+        }
         let next = (*deadline.lock().expect("repaint deadline"))
             .into_iter()
             .chain(browser_deadline)

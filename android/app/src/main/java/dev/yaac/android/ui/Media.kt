@@ -111,7 +111,14 @@ fun MermaidBlock(source: String) {
 <script>mermaid.initialize({startOnLoad:false,theme:'${if (c.dark) "dark" else "default"}',securityLevel:'strict'});
 mermaid.run({nodes:[document.getElementById('d')]}).then(function(){yaac.height(document.body.scrollHeight)}).catch(function(e){yaac.failed(String(e))});</script></body></html>"""
     }
-    if (failed != null) { CodeBlock(source, source, "mermaid"); return }
+    // The WebView loads only on request: a transcript must never depend on it (a broken
+    // system WebView aborts the whole process natively, which nothing can catch).
+    var shown by remember(source) { mutableStateOf(false) }
+    if (failed != null || !shown) {
+        CodeBlock(source, source, "mermaid")
+        TextAction(if (failed != null) "The diagram could not be drawn" else "Show diagram", enabled = failed == null, style = LocalType.current.small) { shown = true }
+        return
+    }
     val density = androidx.compose.ui.platform.LocalDensity.current.density
     AndroidView(
         factory = { ctx ->

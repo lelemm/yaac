@@ -1,6 +1,7 @@
 package dev.yaac.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -72,11 +73,18 @@ fun AgentsPill(view: JsonElement?, onOpen: () -> Unit, modifier: Modifier = Modi
             Box(Modifier.padding(vertical = 4.dp).alpha(if (r["finished"].flag()) 0.45f else 1f), contentAlignment = Alignment.Center) {
                 r["logo"].text?.let { Logo(it, parseColor(r["logoColor"].text) ?: c.text, size = 20.dp) }
                 if (r["attention"].text != null || r["mark"].text == "needsYou") T("!", LocalType.current.small, c.failure, weight = FontWeight.Bold, modifier = Modifier.align(Alignment.BottomEnd).padding(start = 18.dp))
-                if (r["unseen"].flag()) Box(Modifier.size(24.dp).clip(RoundedCornerShape(12.dp)).background(Color.Transparent))
+                // Unseen completion: the cornflower ring (D114); a message in flight: its arrow.
+                if (r["unseen"].flag()) Box(Modifier.size(28.dp).border(1.5.dp, c.unread, RoundedCornerShape(14.dp)))
+                when (r["flow"].text) {
+                    "sending" -> T("↑", LocalType.current.small, c.muted, modifier = Modifier.align(Alignment.TopEnd))
+                    "receiving" -> T("↓", LocalType.current.small, c.muted, modifier = Modifier.align(Alignment.TopEnd))
+                }
             }
         }
         val hidden = pill["hidden"].int ?: 0
         if (hidden > 0) T("+$hidden", LocalType.current.small, c.muted)
+        val alive = pill["alive"].int ?: 0
+        if (alive > 0) T("$alive alive", LocalType.current.small.copy(fontSize = 10.sp), c.muted)
     }
 }
 
@@ -88,6 +96,7 @@ fun AgentsSheet(view: JsonElement?, send: (String, Any?) -> Unit, onDismiss: () 
     val type = LocalType.current
     val rows = agentRows(view)
     var menu by remember { mutableStateOf<JsonObject?>(null) }
+    val unfolded = remember { androidx.compose.runtime.mutableStateMapOf<String, Boolean>() }
     val clipboard = LocalClipboardManager.current
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(), containerColor = c.raised, contentColor = c.text, tonalElevation = 0.dp) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(bottom = 16.dp)) {
@@ -104,8 +113,16 @@ fun AgentsSheet(view: JsonElement?, send: (String, Any?) -> Unit, onDismiss: () 
             }
             if (view["siblings"].objects.isNotEmpty()) Group("Siblings (${view["siblings"].objects.size})", view["siblings"].objects, send, { menu = it }, onOpenThread)
             for (g in view["groups"].objects) {
-                val list = g["rows"].objects.ifEmpty { g["docked"]["rowIds"].list.mapNotNull { rows[it.str] } }
-                Group("${g["label"].str} (${g["count"].int ?: list.size})", list, send, { menu = it }, onOpenThread)
+                // The docked order, with finished agents folded behind "› N finished" (A05).
+                val docked = g["docked"].obj()
+                val order = docked?.get("rowIds").list.mapNotNull { rows[it.str] }.ifEmpty { g["rows"].objects }
+                val folded = docked?.get("foldIds").list.map { it.str }.toSet()
+                val gid = g["id"].str
+                val open = unfolded[gid] == true
+                Group("${g["label"].str} (${g["count"].int ?: order.size})", order.filter { open || it["id"].str !in folded }, send, { menu = it }, onOpenThread)
+                docked?.get("foldLabel").text?.takeIf { folded.isNotEmpty() }?.let { label ->
+                    TextAction(if (open) "Hide finished" else "› $label", modifier = Modifier.padding(start = 8.dp)) { unfolded[gid] = !open }
+                }
             }
             view["root"].obj()?.let { Group("Spawned by", listOf(it), send, { r -> menu = r }, onOpenThread) }
         }
@@ -122,11 +139,11 @@ private fun Group(label: String, rows: List<JsonObject>, send: (String, Any?) ->
     if (rows.isEmpty()) return
     val c = LocalYaac.current
     T(label, LocalType.current.ui.copy(fontSize = 15.sp), c.muted, modifier = Modifier.padding(start = 16.dp, top = 14.dp, bottom = 4.dp))
-    for (r in rows) AgentRow(r, { if (r["canOpen"].flag(true)) { send("agents.open", mapOf("id" to r["id"].str)); onOpenThread() } }, { onMenu(r) })
+    for (r in rows) AgentRow(r, { if (r["canOpen"].flag(true)) { send("agents.open", mapOf("id" to r["id"].str)); onOpenThread() } }, { onMenu(r) }, send)
 }
 
 @Composable
-private fun AgentRow(r: JsonObject, onOpen: () -> Unit, onMenu: () -> Unit) {
+private fun AgentRow(r: JsonObject, onOpen: () -> Unit, onMenu: () -> Unit, send: (String, Any?) -> Unit = { _, _ -> }) {
     val c = LocalYaac.current
     val type = LocalType.current
     val self = r["self"].flag()
@@ -139,20 +156,21 @@ private fun AgentRow(r: JsonObject, onOpen: () -> Unit, onMenu: () -> Unit) {
         Box(Modifier.width(36.dp).padding(top = 2.dp)) { r["logo"].text?.let { Logo(it, parseColor(r["logoColor"].text) ?: c.text, size = 24.dp) } }
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                T(r["title"].str, type.ui.copy(fontSize = 17.sp), maxLines = 1, modifier = Modifier.weight(1f, fill = false))
+                T(r["title"].str, type.ui.copy(fontSize = 17.sp), maxLines = 1, modifier = Modifier.weight(1f))
                 if (r["ultrafast"].flag()) { Spacer(Modifier.width(4.dp)); Icon(YIcon.Bolt, c["YaacUltrafast"], size = 14.dp) }
                 else if (r["fast"].flag()) { Spacer(Modifier.width(4.dp)); Icon(YIcon.Bolt, c["YaacFast"], size = 14.dp) }
                 if (self) { Spacer(Modifier.width(6.dp)); T("self", type.small, c.muted, modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(c.input).padding(horizontal = 6.dp, vertical = 1.dp)) }
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
                 val mark = r["mark"].text
                 StateMark(mark, size = 14.dp)
                 Spacer(Modifier.width(6.dp))
                 T(r["markLabel"].str.replaceFirstChar { it.uppercase() }, type.ui, when (mark) { "needsYou", "needs", "failed" -> c.failure; "done" -> c.success; else -> c.text }, maxLines = 1)
             }
-            r["git"].obj()?.let { g ->
+            r["git"].obj()?.takeIf { it["branch"].text != null }?.let { g ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(YIcon.Branch, c.muted, size = 13.dp); Spacer(Modifier.width(5.dp))
                     T(g["branch"].str, mono)
+                    r["badge"].obj()?.let { b -> Spacer(Modifier.width(6.dp)); PrBadge(b, { action, n -> send("pr.action", mapOf("id" to r["id"].str, "action" to action, "number" to n)) }, {}, {}) }
                     g["changes"].text?.let { T("  $it", mono, c.warning) }
                     (g["ahead"].int ?: 0).takeIf { it > 0 }?.let { T("  ↑$it", mono, c.muted) }
                     (g["behind"].int ?: 0).takeIf { it > 0 }?.let { T("  ↓$it", mono, c.muted) }

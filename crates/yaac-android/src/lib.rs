@@ -21,7 +21,8 @@
 //!   for `demo`, `hubAddress` and `dataDir` for `hub`; optional `"input": "touch"|"pointer"`,
 //!   default `touch`, changeable later with the `shell.inputMode` command; optional
 //!   `"requests": false` to leave out the hub's request list, `shell.requests`, on by default;
-//!   `"browserHost": false` when the app has no WebView browser host, on by default) and returns a handle (never 0). A bad
+//!   `"browserHost": true` once the app wires its WebView browser host, `core/BrowserHost.kt`;
+//!   off by default, and then no browser action is offered, as in a build without one) and returns a handle (never 0). A bad
 //!   config throws `IllegalArgumentException`.
 //! - `command` queues one `{"command": …, "payload": …}` and never blocks. A malformed command
 //!   throws `IllegalArgumentException`; a command to a stopped or unknown handle is dropped.
@@ -86,7 +87,7 @@ fn options(json: &str) -> Result<Options, String> {
     let input = c.input.unwrap_or_else(|| "touch".into());
     // The app raises its own notifications from the hub's request list unless told not to.
     let requests = c.requests.unwrap_or(true);
-    Ok(Options { mode, theme: c.theme.unwrap_or_else(|| "dark".into()), input, requests, platform: "android".into(), browser_host: c.browser_host.unwrap_or(true) })
+    Ok(Options { mode, theme: c.theme.unwrap_or_else(|| "dark".into()), input, requests, platform: "android".into(), browser_host: c.browser_host.unwrap_or(false) })
 }
 
 struct Table {

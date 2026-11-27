@@ -4,6 +4,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -271,10 +272,14 @@ fun ShellDialog(data: JsonObject, send: (String, Any?) -> Unit) {
                     }
                 }
             }
+            DialogExtras(data, id, instance, values, send)
             data["hint"].text?.let { Spacer(Modifier.height(8.dp)); T(it, LocalType.current.small, c.muted) }
             Spacer(Modifier.height(16.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                 val cancel = if (id in setOf("mode", "ultrafast", "pullRequest", "project", "mute", "fork", "quit")) "Cancel" else "Close"
+                // A mode change across a tree of workers: Apply to all beside the default (C14).
+                if (id == "mode" && data["workers"] is kotlinx.serialization.json.JsonArray)
+                    TextAction("Apply to all") { send("dialog.action", mapOf("id" to id, "instance" to instance, "action" to "all")) }
                 if (id != "updateNotice") TextAction(cancel) { send("dialog.cancel", mapOf("id" to id, "instance" to instance)) }
                 val submit = data["submit"].str
                 val blocked = data["submitBlocked"].text
@@ -384,5 +389,32 @@ private fun DatePick(value: String?, minDate: String?, onDismiss: () -> Unit, on
         } },
         dismissButton = { TextAction("Cancel", onClick = onDismiss) }) {
         androidx.compose.material3.DatePicker(state, colors = colors, showModeToggle = false)
+    }
+}
+
+/** WPF `RenderDialogExtras`: the workers a change reaches, auxiliary actions, and a folder browser. */
+@Composable
+private fun DialogExtras(data: JsonObject, id: String, instance: String, values: Map<String, Any?>, send: (String, Any?) -> Unit) {
+    val c = LocalYaac.current
+    val type = LocalType.current
+    fun act(item: JsonObject) = send("dialog.action", mapOf("id" to id, "instance" to instance, "action" to item["id"].str,
+        "path" to item["path"].str, "values" to values.toMap()))
+    (data["workers"] as? kotlinx.serialization.json.JsonArray)?.let { workers ->
+        var open by remember { mutableStateOf(false) }
+        TextAction(if (open) "Hide workers" else "Show workers (${workers.size})", style = type.small) { open = !open }
+        if (open) for (w in workers) T(w.str, type.small, c.muted, modifier = Modifier.padding(start = 12.dp))
+    }
+    val aux = data["auxiliaryActions"].objects
+    if (aux.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState())) {
+        for (a in aux) TextAction(a["label"].str, a["enabled"].flag(), style = type.small) { act(a) }
+    }
+    data["folders"].obj()?.let { folders ->
+        Spacer(Modifier.height(6.dp))
+        folders["text"].text?.let { T(it, type.small, c.muted) }
+        Column(Modifier.fillMaxWidth().heightIn(max = 200.dp).verticalScroll(rememberScrollState())) {
+            for (e in folders["entries"].objects) Row(Modifier.fillMaxWidth().clickable(enabled = e["enabled"].flag()) { act(e) }.heightIn(min = 40.dp).padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically) { T(e["label"].str, type.mono, if (e["enabled"].flag()) c.text else c.muted, maxLines = 1) }
+        }
+        folders["hint"].text?.let { T(it, type.small, c.muted) }
     }
 }

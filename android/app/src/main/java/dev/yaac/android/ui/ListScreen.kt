@@ -356,6 +356,8 @@ private fun ThreadRow(row: JsonObject, selected: Boolean = false, onMark: (() ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                     T(row["title"].str, type.ui.copy(fontSize = 16.sp), if (dim) c.muted else c.text, maxLines = 1, modifier = Modifier.weight(1f, fill = false))
+                    // In use elsewhere (D140): watched, not sent to.
+                    if (row["readOnly"].flag()) { Spacer(Modifier.width(6.dp)); Icon(YIcon.Lock, c.muted, size = 13.dp, strokeWidth = 1.8f) }
                     row["badge"].obj()?.let { badge -> Spacer(Modifier.width(8.dp)); PrBadge(badge, prAction, prOthers, prMenu) }
                 }
                 row["right"].text?.let { Spacer(Modifier.width(8.dp)); T(it, type.ui, c.text, maxLines = 1) }
@@ -364,6 +366,8 @@ private fun ThreadRow(row: JsonObject, selected: Boolean = false, onMark: (() ->
                 Spacer(Modifier.height(3.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        // The harness mark (its real logo in its colour), then the branch.
+                        line2["logo"].text?.let { Logo(it, parseColor(line2["logoColor"].text) ?: c.muted, size = 13.dp); Spacer(Modifier.width(6.dp)) }
                         line2["branch"].text?.let { branch ->
                             Icon(YIcon.Branch, c.muted, size = 14.dp, strokeWidth = 2f)
                             Spacer(Modifier.width(6.dp))

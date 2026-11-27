@@ -1,6 +1,8 @@
 package dev.yaac.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -44,6 +46,7 @@ import dev.yaac.android.core.flag
 import dev.yaac.android.core.get
 import dev.yaac.android.core.int
 import dev.yaac.android.core.objects
+import dev.yaac.android.core.list
 import dev.yaac.android.core.scalar
 import dev.yaac.android.core.str
 import dev.yaac.android.core.text
@@ -97,7 +100,7 @@ fun ThreadScreen(
             val prompts = transcript["prompts"].objects
             val timeline = prompts.size >= 2
             if (timeline) Timeline(prompts, Modifier.align(Alignment.TopStart)) { id -> send("transcript.prompt", mapOf("id" to id, "threadId" to threadId)) }
-            LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = if (timeline) 22.dp else 14.dp, end = 14.dp, top = 4.dp, bottom = 12.dp)) {
+            LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = if (timeline) 22.dp else 14.dp, end = if (agents["visible"].flag() && agents["pill"]["rowIds"].list.isNotEmpty()) 54.dp else 14.dp, top = 4.dp, bottom = 12.dp)) {
                 items(rows, key = { it["id"].str }, contentType = { it["kind"].str }) { row ->
                     TranscriptRow(row, threadId, states.of(threadId, row["id"].str)) { payload -> send("transcript.action", payload) }
                 }
@@ -189,6 +192,7 @@ private fun Header(shell: JsonElement?, onBack: (() -> Unit)?, onNeeds: () -> Un
     Row(Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         if (onBack != null) IconButton(YIcon.Back, "Back to the list", onClick = onBack) else Spacer(Modifier.width(12.dp))
         val mark = shell["mark"].text
+        if (shell["hasThread"].flag() && mark == null && shell["readOnly"].flag()) { Icon(YIcon.Lock, c.muted, size = 15.dp, strokeWidth = 1.8f); Spacer(Modifier.width(8.dp)) }
         if (shell["hasThread"].flag() && mark != null) {
             StateMark(mark, size = 16.dp, fast = shell["fast"].flag(), ultrafast = shell["ultrafast"].flag())
             Spacer(Modifier.width(8.dp))
@@ -205,15 +209,17 @@ private fun Header(shell: JsonElement?, onBack: (() -> Unit)?, onNeeds: () -> Un
             }
         }
         NeedsButton(shell["needs"].int ?: 0, onNeeds)
+        // The orchestration's budget is limiting it: the mark opens the agents sheet's budget line.
+        if (shell["budget"].flag()) T("Budget", type.small, c.warning, modifier = Modifier.padding(horizontal = 4.dp))
         if (onAddSide != null) IconButton(YIcon.CirclePlus, "Open beside the chat", strokeWidthIcon = 1.7f, onClick = onAddSide)
         IconButton(YIcon.Command, "Commander") { send("commander.open", mapOf("card" to null, "threadId" to null)) }
         IconButton(YIcon.More, "Thread menu", strokeWidthIcon = 3f, onClick = onMenu)
     }
     shell["links"].objects.takeIf { it.isNotEmpty() }?.let { links ->
-        Row(Modifier.padding(start = 52.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = 52.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             for (l in links) {
                 val id = l["id"].text
-                T(l["label"].str, type.small, if (id == null) c.muted else c.text,
+                T(l["label"].str, type.small, if (id == null) c.muted else c.text, maxLines = 1,
                     modifier = if (id == null) Modifier.padding(end = 5.dp) else Modifier.clip(RoundedCornerShape(4.dp)).clickable { send("sidebar.open", mapOf("id" to id)) }.padding(horizontal = 4.dp, vertical = 2.dp))
             }
         }
