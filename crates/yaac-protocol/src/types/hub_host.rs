@@ -109,16 +109,12 @@ pub struct HubHostStartParams {
     /// The transfer requests deferred file placement with `true`.
     pub arm_on_close: bool,
     /// Start the hub and configure autostart after placement. Defaults to true.
-    #[serde(default = "start_hub_by_default", skip_serializing_if = "is_true")]
+    #[serde(default = "start_hub_by_default")]
     pub start_hub: bool,
 }
 
 fn start_hub_by_default() -> bool {
     true
-}
-
-fn is_true(value: &bool) -> bool {
-    *value
 }
 
 /// `hubHost/start` result: the transfer is ready and placement is armed.

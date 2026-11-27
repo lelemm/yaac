@@ -27,7 +27,7 @@ import { Forge, type ForgeOptions } from "../forge/forge.js";
 import { PrTools } from "../forge/pr-tools.js";
 import { Skills } from "./skills.js";
 import { RateLimits } from "./ratelimits.js";
-import { HubHost } from "./hub-host.js";
+import { HubHost, type HubHostOptions } from "./hub-host.js";
 
 /** The on-disk state format. Separate from the protocol version and the build. */
 export const STATE_FORMAT = 1;
@@ -66,8 +66,7 @@ export interface DaemonConfig {
   mesh?: Partial<Omit<MeshOptions, "log" | "socketPath" | "home" | "env">>;
   /** The forge's runners (tests stand in a fake `gh` / `az`). */
   forge?: Partial<Pick<ForgeOptions, "runner" | "http" | "now" | "minAskMs" | "debounceMs">>;
-  /** Allow a fixture server to deliver a hub binary over HTTP. */
-  hubHostAllowHttpForTests?: boolean;
+  hubHost?: HubHostOptions;
 }
 
 interface StateFile {
@@ -145,7 +144,7 @@ export class Daemon implements FrozenCoreHost {
       ...(config.takeOverWaitMs !== undefined ? { takeOverWaitMs: config.takeOverWaitMs } : {}),
     });
     if (process.platform === "linux") {
-      this.hubHost = new HubHost(config.env, () => this.core.uploads.allocateStream(), (l) => this.log(l), config.hubHostAllowHttpForTests);
+      this.hubHost = new HubHost(config.env, () => this.core.uploads.allocateStream(), (l) => this.log(l), config.hubHost);
     }
     this.core.activity.on(() => this.checkIdle());
     // The agent mesh (WP7): its tools, mailbox, and the daemon side of the hub's relay.

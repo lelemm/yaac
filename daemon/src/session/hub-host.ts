@@ -23,14 +23,25 @@ import {
 } from "./hub-host-files.js";
 
 const PORT = 47380;
+const WSL_INTEROP_MARKER = "/proc/sys/fs/binfmt_misc/WSLInterop";
 const BINARY_DOWNLOAD_MS = 5 * 60_000;
 const WAIT_FOR_PUT_MS = 30_000;
+
+export interface HubHostOptions {
+  /** Allow a fixture server to deliver a hub binary over HTTP. */
+  allowHttpForTests?: boolean;
+  /** Keep test binds away from the real attach port. */
+  probePortForTests?: number;
+  /** Make WSL detection independent of the machine running the tests. */
+  wslInteropPathForTests?: string;
+}
 
 interface Transfer {
   id: string;
   root: string;
   owner: ConnectionView;
   state: "staging" | "validating" | "armed" | "launching";
+  startHub: boolean;
   pending: Map<string, PendingFile>;
   files: Set<string>;
   errors: Map<string, string>;
@@ -48,11 +59,11 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function canBind(host: string): Promise<boolean> {
+function canBind(host: string, port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer((socket) => socket.destroy());
     server.once("error", () => resolve(false));
-    server.listen({ host, port: PORT, exclusive: true }, () => server.close((error) => resolve(!error)));
+    server.listen({ host, port, exclusive: true }, () => server.close((error) => resolve(!error)));
   });
 }
 
@@ -79,7 +90,7 @@ export class HubHost {
     private readonly env: NodeJS.ProcessEnv,
     private readonly allocateStream: () => number,
     private readonly log: (line: string) => void,
-    private readonly allowHttpForTests = false,
+    private readonly options: HubHostOptions = {},
   ) {
     this.paths = hubPaths(env);
   }
@@ -92,9 +103,15 @@ export class HubHost {
 
   async probe(): Promise<HubHostProbeResult> {
     const [tailscale, hubRunning] = await Promise.all([this.tailscale(), this.hubRunning()]);
-    const portFree = tailscale.ips.length > 0 && (await Promise.all(tailscale.ips.map(canBind))).every(Boolean);
+    const port = this.options.probePortForTests ?? PORT;
+    const portFree = tailscale.ips.length > 0 && (await Promise.all(tailscale.ips.map((ip) => canBind(ip, port)))).every(Boolean);
+    const interop = this.options.wslInteropPathForTests ?? WSL_INTEROP_MARKER;
+    const distro = this.env.WSL_DISTRO_NAME?.trim() || (fs.existsSync(interop) ? "WSL" : undefined);
     const lastTransfer = this.lastTransfer();
-    return { os: process.platform, arch: os.machine(), tailscale, portFree, hubRunning, ...(lastTransfer && { lastTransfer }) };
+    return {
+      os: process.platform, arch: os.machine(), tailscale, portFree, hubRunning,
+      ...(distro && { wsl: { distro } }), ...(lastTransfer && { lastTransfer }),
+    };
   }
 
   private async tailscale(): Promise<HubHostTailscale> {
@@ -180,7 +197,7 @@ export class HubHost {
       }
       throw error;
     }
-    const transfer: Transfer = { id: opId, root, owner, state: "staging", pending: new Map(), files: new Set(), errors: new Map() };
+    const transfer: Transfer = { id: opId, root, owner, state: "staging", startHub: true, pending: new Map(), files: new Set(), errors: new Map() };
     this.transfers.set(opId, transfer);
     return transfer;
   }
@@ -225,7 +242,7 @@ export class HubHost {
     if (typeof raw !== "string") throw invalid();
     let url: URL;
     try { url = new URL(raw, base); } catch { throw invalid(); }
-    if (url.username || url.password || (url.protocol !== "https:" && !(this.allowHttpForTests && url.protocol === "http:"))) {
+    if (url.username || url.password || (url.protocol !== "https:" && !(this.options.allowHttpForTests && url.protocol === "http:"))) {
       throw invalid();
     }
     return url;
@@ -322,12 +339,13 @@ export class HubHost {
     return true;
   }
 
-  async start(owner: ConnectionView, { opId, armOnClose }: HubHostStartParams): Promise<HubHostStartResult> {
+  async start(owner: ConnectionView, { opId, armOnClose, startHub = true }: HubHostStartParams): Promise<HubHostStartResult> {
     validateTransferId(opId);
     if (armOnClose !== true) throw new RpcError("invalid_params", "armOnClose must be true");
+    if (typeof startHub !== "boolean") throw new RpcError("invalid_params", "startHub must be a boolean");
     const transfer = this.transfers.get(opId);
     if (!transfer || transfer.owner !== owner) throw new RpcError("hub_transfer_failed", "no staging for this connection");
-    if (transfer.state === "armed") return { armed: true };
+    if (transfer.state === "armed" && transfer.startHub === startHub) return { armed: true };
     if (transfer.state !== "staging") throw new RpcError("hub_transfer_busy", "the hub transfer is in use");
     transfer.state = "validating";
     let timer: NodeJS.Timeout | undefined;
@@ -348,6 +366,7 @@ export class HubHost {
       if (this.launching || [...this.transfers.values()].some((candidate) => candidate.state === "armed")) {
         throw new RpcError("hub_transfer_busy", "a hub hand-over is already armed");
       }
+      transfer.startHub = startHub;
       transfer.state = "armed";
       return { armed: true };
     } finally {
@@ -399,14 +418,14 @@ export class HubHost {
   }
 
   private async launch(transfer: Transfer): Promise<void> {
-    const result: HubHostLastTransfer = { opId: transfer.id, status: "started" };
+    const result: HubHostLastTransfer = { opId: transfer.id, status: transfer.startHub ? "started" : "placed" };
     try {
       if (await this.hubRunning()) throw new Error("a hub is already running on the target");
       const { paths } = this;
       const bin = path.join(paths.data, HUB_BINARY);
       const env: NodeJS.ProcessEnv = { ...this.env, HOME: paths.home, YAAC_CONFIG_DIR: paths.config, YAAC_DATA_DIR: paths.data, YAAC_RUNTIME_DIR: paths.runtime };
       const options = { env, timeoutMs: 10_000 };
-      const systemd = (await run("systemctl", ["--user", "show-environment"], options)).code === 0;
+      const systemd = transfer.startHub && (await run("systemctl", ["--user", "show-environment"], options)).code === 0;
       const serviceName = "yaac-hub.service";
       const logfile = path.join(paths.data, "hub.log");
       const service = systemd ? {
@@ -422,7 +441,7 @@ export class HubHost {
       promoteHubFiles(transfer.root, transfer.files, paths, service);
       if (systemd) {
         checkRun("systemctl --user enable --now", await run("systemctl", ["--user", "enable", "--now", serviceName], options));
-      } else {
+      } else if (transfer.startHub) {
         const status = await run(bin, ["autostart", "status"], options);
         if (status.code === 0 && /^(on|off)$/.test(status.stdout.trim())) {
           const start = await run(bin, ["autostart", "sync", "--start"], options);

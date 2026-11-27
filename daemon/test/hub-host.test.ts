@@ -13,14 +13,24 @@ const linuxTest = { skip: process.platform !== "linux" };
 const exe = Buffer.from('#!/bin/sh\n[ "$1" = hub ] || exit 2\nprintf started > "$YAAC_DATA_DIR/marker"\n');
 const config = Buffer.from('{"hub":{"always":true}}\n');
 
-async function fixture(t: TestContext, options: { http?: boolean; systemd?: boolean; idleTimeoutMs?: number } = {}) {
+async function fixture(t: TestContext, options: {
+  http?: boolean;
+  systemd?: boolean;
+  idleTimeoutMs?: number;
+  probePort?: number;
+  wslDistro?: string;
+  wslInterop?: boolean;
+  tailscale?: boolean;
+} = {}) {
   const root = tmpHome("yaac-hub-host-");
   const commands = path.join(root, "commands");
   const data = path.join(root, "data", "yaac");
   const settings = path.join(root, "config", "yaac");
   const runtime = path.join(root, "run", "yaac");
+  const wslInteropPath = path.join(root, "WSLInterop");
   fs.mkdirSync(commands);
-  fs.writeFileSync(path.join(commands, "tailscale"), `#!/bin/sh
+  if (options.wslInterop) fs.writeFileSync(wslInteropPath, "enabled\n");
+  if (options.tailscale !== false) fs.writeFileSync(path.join(commands, "tailscale"), `#!/bin/sh
 [ "$*" = "status --json" ] || exit 1
 cat <<'JSON'
 {"BackendState":"Running","Self":{"UserID":12345678901234567890,"TailscaleIPs":["127.0.0.2","127.0.0.3"]},"User":{"12345678901234567890":{"LoginName":"me@example.com"}}}
@@ -28,7 +38,7 @@ JSON
 `, { mode: 0o700 });
   fs.writeFileSync(path.join(commands, "systemctl"), options.systemd ? `#!/bin/sh
 case "$*" in
-"--user show-environment") exit 0 ;;
+"--user show-environment") printf checked > "$YAAC_DATA_DIR/systemd-check"; exit 0 ;;
 "--user enable --now yaac-hub.service")
   sleep 0.8
   printf systemd > "$YAAC_DATA_DIR/marker"
@@ -42,9 +52,10 @@ exit 1
       ...process.env, YAAC_FAKE_PROVIDER: "1", YAAC_CLAUDE_PROVIDER: "0", YAAC_CODEX_PROVIDER: "0",
       YAAC_CONFIG_DIR: "", YAAC_DATA_DIR: "", YAAC_RUNTIME_DIR: "", YAAC_AUTOSTART_DIR: "",
       HOME: root, XDG_CONFIG_HOME: path.join(root, "config"), XDG_DATA_HOME: path.join(root, "data"),
-      XDG_RUNTIME_DIR: path.join(root, "run"), PATH: commands + path.delimiter + process.env.PATH,
+      XDG_RUNTIME_DIR: path.join(root, "run"), WSL_DISTRO_NAME: options.wslDistro,
+      PATH: options.tailscale === false ? commands : commands + path.delimiter + process.env.PATH,
     },
-    hubHostAllowHttpForTests: options.http,
+    hubHost: { allowHttpForTests: options.http, probePortForTests: options.probePort ?? 0, wslInteropPathForTests: wslInteropPath },
     idleTimeoutMs: options.idleTimeoutMs ?? 0,
   });
   t.after(async () => {
@@ -65,7 +76,12 @@ async function put(client: TestClient, opId: string, name: string, bytes: Buffer
 }
 
 test("probe reports Tailscale, port and newest recorded transfer", linuxTest, async (t) => {
-  const { client, data, runtime } = await fixture(t);
+  const port = net.createServer();
+  t.after(() => { port.close(); });
+  // Hold an ephemeral port on a different loopback address while testing the available port.
+  await new Promise<void>((resolve, reject) => port.once("error", reject).listen(0, "127.0.0.1", resolve));
+  const probePort = (port.address() as net.AddressInfo).port;
+  const { client, data, runtime } = await fixture(t, { probePort });
   fs.mkdirSync(data, { recursive: true });
   const older = path.join(data, "transfer-old.result");
   fs.writeFileSync(older, JSON.stringify({ opId: "old", status: "started" }));
@@ -79,16 +95,32 @@ test("probe reports Tailscale, port and newest recorded transfer", linuxTest, as
     portFree: true, hubRunning: false, lastTransfer,
   });
 
-  const port = net.createServer();
+  const occupiedPort = net.createServer();
   const hub = net.createServer();
-  t.after(() => { port.close(); hub.close(); });
+  t.after(() => { occupiedPort.close(); hub.close(); });
   await Promise.all([
-    new Promise<void>((resolve, reject) => port.once("error", reject).listen(47380, "127.0.0.2", resolve)),
+    new Promise<void>((resolve, reject) => occupiedPort.once("error", reject).listen(probePort, "127.0.0.2", resolve)),
     new Promise<void>((resolve, reject) => hub.once("error", reject).listen(path.join(runtime, "hub.sock"), resolve)),
   ]);
   const occupied = await client.request("hubHost/probe");
   assert.equal(occupied.portFree, false);
   assert.equal(occupied.hubRunning, true);
+});
+
+test("a named WSL distro probes its own Tailscale", linuxTest, async (t) => {
+  const { client } = await fixture(t, { wslDistro: "YAAC Test" });
+  const probe = await client.request("hubHost/probe");
+  assert.deepEqual(probe.wsl, { distro: "YAAC Test" });
+  assert.deepEqual(probe.tailscale, { running: true, login: "me@example.com", ips: ["127.0.0.2", "127.0.0.3"] });
+  assert.equal(probe.portFree, true);
+});
+
+test("the kernel marker identifies WSL when the distro name and Tailscale are unavailable", linuxTest, async (t) => {
+  const { client } = await fixture(t, { wslInterop: true, tailscale: false });
+  const probe = await client.request("hubHost/probe");
+  assert.deepEqual(probe.wsl, { distro: "WSL" });
+  assert.deepEqual(probe.tailscale, { running: false, ips: [] });
+  assert.equal(probe.portFree, false);
 });
 
 test("install verifies a download before publishing the executable", linuxTest, async (t) => {
@@ -200,4 +232,28 @@ test("abort disarms and a user systemd manager is the sole starter when availabl
   assert.equal(fs.readFileSync(path.join(data, "marker"), "utf8"), "systemd");
   const unit = path.join(settings, "..", "systemd", "user", "yaac-hub.service");
   assert.ok(fs.readFileSync(unit, "utf8").includes(`${path.join(data, "bin", "yaac")}" hub`));
+});
+
+test("startHub false places the files on close without invoking the hub or configuring autostart", linuxTest, async (t) => {
+  const { client, data, settings } = await fixture(t, { wslDistro: "YAAC Test", systemd: true });
+  const opId = "place";
+  const binary = Buffer.from('#!/bin/sh\nprintf invoked > "$YAAC_DATA_DIR/marker"\n');
+  const installed = path.join(data, "bin", "yaac");
+  const resultFile = path.join(data, `transfer-${opId}.result`);
+  await put(client, opId, "bin/yaac", binary);
+  await put(client, opId, "config/hub.json", config);
+  assert.deepEqual(await client.request("hubHost/start", { opId, armOnClose: true, startHub: false }), { armed: true });
+  await assert.rejects(client.request("hubHost/start", { opId, armOnClose: true }), /in use/);
+  assert.equal(fs.existsSync(installed), false);
+  assert.equal(fs.existsSync(resultFile), false);
+  await client.close();
+
+  await until(() => fs.existsSync(resultFile), "the placement result");
+  assert.deepEqual(JSON.parse(fs.readFileSync(resultFile, "utf8")), { opId, status: "placed" });
+  assert.deepEqual(fs.readFileSync(installed), binary);
+  fs.accessSync(installed, fs.constants.X_OK);
+  assert.deepEqual(fs.readFileSync(path.join(settings, "hub.json")), config);
+  for (const file of ["marker", "systemd-check", "hub.log"]) assert.equal(fs.existsSync(path.join(data, file)), false, file);
+  assert.equal(fs.existsSync(path.join(settings, "..", "systemd")), false);
+  assert.equal(fs.existsSync(path.join(settings, "..", "autostart")), false);
 });
