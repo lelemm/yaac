@@ -39,7 +39,6 @@ android {
         // `adb reverse tcp:47100 tcp:47100`. Used only when the native library is absent.
         buildConfigField("String", "DEV_HOST", "\"127.0.0.1\"")
         buildConfigField("int", "DEV_PORT", "47100")
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
 
     signingConfigs {
@@ -52,7 +51,11 @@ android {
     }
 
     buildTypes {
+        // Phones are arm64; x86_64 is for the emulator only, so release APKs leave it out
+        // (its WebRTC library alone is 16 MB).
+        debug { ndk { abiFilters += listOf("arm64-v8a", "x86_64") } }
         release {
+            ndk { abiFilters += listOf("arm64-v8a") }
             // No R8: the JNI entry points and the serialized frames are reached by name, and the
             // app is small enough that shrinking buys little against that risk.
             isMinifyEnabled = false

@@ -25,7 +25,8 @@ Voice calls use libwebrtc M150 as published by the webrtc-sdk project
 (`io.github.webrtc-sdk:android:150.7871.09`, BSD-3, no transitive dependencies): it tracks
 upstream WebRTC releases (the older `io.getstream:stream-webrtc-android` was last published in
 September 2025). It adds `libjingle_peerconnection_so.so`, stored uncompressed: 12.3 MB for
-arm64-v8a (about 5.9 MB to download) and 16.2 MB for x86_64.
+arm64-v8a (about 5.9 MB to download) and 16.2 MB for x86_64. Release APKs carry arm64-v8a only;
+x86_64 is built into debug APKs for the emulator.
 `minSdk` 29, `targetSdk` 36. The SDK path is in `local.properties` (not committed).
 
 ## Connecting
