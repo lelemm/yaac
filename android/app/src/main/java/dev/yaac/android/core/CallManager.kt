@@ -30,6 +30,11 @@ object CallManager {
     var lines by mutableStateOf<List<CallLine>>(emptyList()); private set
     var key by mutableStateOf<String?>(null); private set
     var title by mutableStateOf(""); private set
+    /**
+     * The hub the call was started on (P404): the call stays with it when another hub is
+     * selected, and the call bar then names it.
+     */
+    var hubKey by mutableStateOf<String?>(null); private set
     /** A failure stays on screen until dismissed. */
     var dismissed by mutableStateOf(true); private set
 
@@ -48,9 +53,11 @@ object CallManager {
     /** Starts a call with the thread whose composer is [key]. RECORD_AUDIO must be granted. */
     fun start(context: Context, key: String, title: String) {
         if (phase.live) return
-        val ctl = YaacRuntime.controller ?: return
+        val rt = YaacRuntime.selected ?: return
+        val ctl = rt.controller
         app = context.applicationContext
         controller = ctl
+        hubKey = rt.key
         this.key = key
         this.title = title
         lines = emptyList()
@@ -77,8 +84,11 @@ object CallManager {
         output = audio?.route(on)
     }
 
-    /** The controller is going away (Quit, Change hub): the call goes with it. */
-    fun controllerStopping() = end()
+    /** A controller is going away (Quit, Remove a hub, Retry): the call on it goes with it. */
+    fun controllerStopping(ctl: Controller) { if (ctl === controller && phase.live) end() }
+
+    /** The call's hub's name, when the phone has more than one hub. */
+    val hubName: String? get() = hubKey?.takeIf { YaacRuntime.running.size > 1 }?.let { YaacRuntime.running[it]?.name }
 
     /** Each published update: this call's `call` object, when its thread's composer is shown. */
     @Suppress("UNUSED_PARAMETER")

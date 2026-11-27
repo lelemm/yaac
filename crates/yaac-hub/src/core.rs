@@ -1283,7 +1283,13 @@ impl Core {
             ));
         }
         self.idle_since = None;
-        Ok(to_value(&HelloResult { build: self.cfg.build.clone(), targets: self.entries(), client_id: self.settings.client_id.clone() }))
+        Ok(to_value(&HelloResult {
+            build: self.cfg.build.clone(),
+            targets: self.entries(),
+            client_id: self.settings.client_id.clone(),
+            hub_id: self.settings.hub_id.clone(),
+            host_name: Some(self.cfg.host_name.clone()).filter(|n| !n.is_empty()),
+        }))
     }
 
     fn entries(&self) -> Vec<TargetEntry> {

@@ -59,6 +59,8 @@ fun StripScreen(sidebar: JsonElement?, shell: JsonElement?, send: (String, Any?)
         val needs = (shell["needs"] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0
         if (needs > 0) Box(Modifier.clip(RoundedCornerShape(6.dp)).clickable { send("shell.needs", null) }.padding(6.dp)) { T("!$needs", type.ui, c.failure, weight = FontWeight.Bold) }
         else T("Y", type.title.copy(fontSize = 20.sp), weight = FontWeight.Bold, modifier = Modifier.padding(6.dp))
+        // The selected hub's mark when there are several (P404).
+        if (dev.yaac.android.core.YaacRuntime.running.size > 1) Box(Modifier.padding(bottom = 4.dp)) { HubBadge() }
         IconButton(YIcon.Plus, "New") { send("sidebar.new", null) }
         Row {
             Box(Modifier.size(30.dp).clip(RoundedCornerShape(6.dp)).clickable(enabled = shell["canBack"].flag()) { send("shell.back", null) }.alpha(if (shell["canBack"].flag()) 1f else 0.35f), contentAlignment = Alignment.Center) { Icon(YIcon.Back, c.text, size = 16.dp) }

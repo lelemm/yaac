@@ -329,6 +329,32 @@ fn builds_are_compared_at_hello() {
 }
 
 #[test]
+fn hello_names_the_hub_by_a_stable_id_and_its_machine() {
+    let hello = |hub: &support::RunningHub| {
+        let c = yaac_hub::client::HubClient::connect(&hub.socket).unwrap();
+        c.request_blocking(attach::names::HELLO, json!({ "build": BUILD }), support::WAIT).unwrap()
+    };
+    let home = Home::new();
+    let hub = home.start();
+    let first = hello(&hub);
+    assert_eq!(first["hostName"], "test-host");
+    let id = first["hubId"].as_str().expect("a hubId").to_owned();
+    assert!(!id.is_empty());
+    let typed: attach::HelloResult = serde_json::from_value(first).unwrap();
+    assert_eq!(typed.hub_id.as_deref(), Some(id.as_str()));
+    assert_eq!(typed.host_name.as_deref(), Some("test-host"));
+    assert_eq!(hub.shutdown().reason, ExitReason::Shutdown);
+    // The id is the install's: a restarted hub keeps it; another install has its own.
+    let hub = home.start();
+    assert_eq!(hello(&hub)["hubId"], id.as_str());
+    assert_eq!(hub.shutdown().reason, ExitReason::Shutdown);
+    let other = Home::new();
+    let hub = other.start();
+    assert_ne!(hello(&hub)["hubId"], id.as_str());
+    assert_eq!(hub.shutdown().reason, ExitReason::Shutdown);
+}
+
+#[test]
 fn an_idle_hub_exits_in_idle_exit_mode_and_always_is_the_default() {
     // The default is "always": a fresh hub writes it and does not exit when idle.
     let home = Home::new();

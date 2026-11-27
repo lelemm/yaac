@@ -40,52 +40,73 @@ import androidx.compose.ui.unit.sp
 import dev.yaac.android.core.Connection
 
 /**
- * The first launch (and Change hub): choose the hub to attach to over Tailscale, or the demo.
- * The Android equivalent of choosing the window's attach target; no pairing (P373).
+ * The first launch, and Add a hub (P404): the hub to attach to over Tailscale, with an optional
+ * label, or (first launch only) the demo. The Android equivalent of choosing the window's attach
+ * target; no pairing (P373). [onHubs] goes back to the saved hubs after leaving the demo.
  */
 @Composable
-fun ConnectScreen(lastHub: String?, onConnect: (Connection) -> Unit) {
+fun ConnectScreen(prefill: String?, adding: Boolean, onConnect: (address: String, label: String?) -> Unit,
+                  onDemo: (() -> Unit)? = null, onHubs: (() -> Unit)? = null, onCancel: (() -> Unit)? = null) {
     val c = LocalYaac.current
     val type = LocalType.current
-    var host by rememberSaveable { mutableStateOf(lastHub?.removeSuffix(":${Connection.DEFAULT_PORT}") ?: "") }
+    var host by rememberSaveable { mutableStateOf(prefill?.removeSuffix(":${Connection.DEFAULT_PORT}") ?: "") }
+    var label by rememberSaveable { mutableStateOf("") }
     val address = Connection.normalize(host)
-    val connect = { address?.let { onConnect(Connection("hub", hub = it)) }; Unit }
+    val connect = { address?.let { onConnect(it, label.trim().ifEmpty { null }) }; Unit }
+    if (onCancel != null) androidx.activity.compose.BackHandler(onBack = onCancel)
     Column(Modifier.fillMaxSize().background(c.canvas).statusBarsPadding().navigationBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(24.dp),
         horizontalAlignment = Alignment.Start) {
         Spacer(Modifier.height(32.dp))
         T("YAAC", type.title.copy(fontSize = 28.sp), weight = FontWeight.Bold)
         Spacer(Modifier.height(24.dp))
-        T("Connect to your YAAC hub", type.title.copy(fontSize = 20.sp))
+        T(if (adding) "Add a hub" else "Connect to your YAAC hub", type.title.copy(fontSize = 20.sp))
         Spacer(Modifier.height(8.dp))
-        T("Turn on Settings → Window → Android on the PC first. The phone must be on the same Tailscale account.", type.ui.copy(fontSize = 15.sp), c.muted)
+        T("Turn on Settings → Window → Android on the PC first. The phone must be on the same Tailscale account." +
+            if (adding) " Every hub you add stays attached; the badge beside YAAC switches between them." else "",
+            type.ui.copy(fontSize = 15.sp), c.muted)
         Spacer(Modifier.height(20.dp))
         T("Hub", type.small, c.muted)
         Spacer(Modifier.height(4.dp))
-        val interaction = remember { MutableInteractionSource() }
-        val focused by interaction.collectIsFocusedAsState()
-        val shape = RoundedCornerShape(6.dp)
-        Column(Modifier.fillMaxWidth().widthIn(max = 520.dp).clip(shape).background(c.input).then(if (focused) Modifier.border(2.dp, c.focus, shape) else Modifier).padding(14.dp)) {
-            if (host.isEmpty()) T("my-pc or 100.x.y.z", type.ui.copy(fontSize = 16.sp), c.muted)
-            BasicTextField(host, { host = it }, singleLine = true, interactionSource = interaction,
-                textStyle = type.mono.copy(fontSize = 16.sp, color = c.text), cursorBrush = SolidColor(c.text),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Go, autoCorrectEnabled = false),
-                keyboardActions = KeyboardActions(onGo = { connect() }), modifier = Modifier.fillMaxWidth())
-        }
+        Field(host, { host = it }, "my-pc or 100.x.y.z", mono = true, uri = true, onGo = connect)
         Spacer(Modifier.height(4.dp))
         T(when {
             host.isBlank() -> "The Tailscale name (MagicDNS) or 100.x address of the PC. Port ${Connection.DEFAULT_PORT} unless you add :port."
             address == null -> "That is not a host or host:port."
             else -> "Connects to $address"
         }, type.small, if (host.isNotBlank() && address == null) c.failure else c.muted)
+        if (adding) {
+            Spacer(Modifier.height(16.dp))
+            T("Label (optional)", type.small, c.muted)
+            Spacer(Modifier.height(4.dp))
+            Field(label, { label = it }, "Until the hub says its own name", mono = false, uri = false, onGo = connect)
+        }
         Spacer(Modifier.height(20.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PrimaryButton("Connect", enabled = address != null, onClick = connect)
-            TextAction("Try the demo") { onConnect(Connection("demo")) }
+            PrimaryButton(if (adding) "Add" else "Connect", enabled = address != null, onClick = connect)
+            onDemo?.let { TextAction("Try the demo", onClick = it) }
+            onHubs?.let { TextAction("Use my hubs", onClick = it) }
+            onCancel?.let { TextAction("Cancel", onClick = it) }
         }
     }
 }
 
-/** The attach ended: the controller's reason, Retry, and Change hub. */
+@Composable
+private fun Field(value: String, onChange: (String) -> Unit, hint: String, mono: Boolean, uri: Boolean, onGo: () -> Unit) {
+    val c = LocalYaac.current
+    val type = LocalType.current
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    val shape = RoundedCornerShape(6.dp)
+    Column(Modifier.fillMaxWidth().widthIn(max = 520.dp).clip(shape).background(c.input).then(if (focused) Modifier.border(2.dp, c.focus, shape) else Modifier).padding(14.dp)) {
+        if (value.isEmpty()) T(hint, type.ui.copy(fontSize = 16.sp), c.muted)
+        BasicTextField(value, onChange, singleLine = true, interactionSource = interaction,
+            textStyle = (if (mono) type.mono else type.ui).copy(fontSize = 16.sp, color = c.text), cursorBrush = SolidColor(c.text),
+            keyboardOptions = KeyboardOptions(keyboardType = if (uri) KeyboardType.Uri else KeyboardType.Text, imeAction = ImeAction.Go, autoCorrectEnabled = false),
+            keyboardActions = KeyboardActions(onGo = { onGo() }), modifier = Modifier.fillMaxWidth())
+    }
+}
+
+/** The attach ended: the controller's reason, Retry, and Hubs… (P404). */
 @Composable
 fun ConnectionFailed(connection: Connection?, error: String, onRetry: () -> Unit, onChange: () -> Unit) {
     val c = LocalYaac.current
@@ -100,7 +121,7 @@ fun ConnectionFailed(connection: Connection?, error: String, onRetry: () -> Unit
         Spacer(Modifier.height(20.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             PrimaryButton("Retry", onClick = onRetry)
-            TextAction("Change hub", onClick = onChange)
+            TextAction("Hubs…", onClick = onChange)
         }
     }
 }

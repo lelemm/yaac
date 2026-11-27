@@ -399,6 +399,15 @@ pub struct HelloResult {
     /// recognise its own answers ("answered by you") and its own turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<ClientId>,
+    /// This hub install's stable id (kept in its `hub.json`), so a client that saved two
+    /// addresses of one hub can tell they are the same hub (docs/14-android.md#several-hubs).
+    /// Absent from an older hub: the client then knows the hub by its address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub_id: Option<String>,
+    /// The hub machine's name (on Windows `COMPUTERNAME`), to label the hub. Absent from an
+    /// older hub.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_name: Option<String>,
 }
 
 // ── Updating the hub's computer from a newer client (frozen) ────────────────────────────────

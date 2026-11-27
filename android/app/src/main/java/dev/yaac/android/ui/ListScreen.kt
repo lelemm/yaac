@@ -142,11 +142,13 @@ fun ListScreen(sidebar: JsonElement?, shell: JsonElement?, send: (String, Any?) 
             onClear = { rangeMode = false; select(emptyList()) },
             onBulk = { a -> send("sidebar.action", mapOf("action" to a.id, "ids" to selection)) },
             onMove = { moveSheet = true }, onMore = { selectionMenu = true })
-        // Top bar: mark · Needs you · search · ⇅ · Commander · New.
+        // Top bar: hub badge · mark · Needs you · search · ⇅ · Commander · New.
         else Row(Modifier.fillMaxWidth().height(56.dp).padding(start = 14.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
             // In the demo, touch and hold the mark for the scenes (WPF's Scenes button).
             var scenes by remember { mutableStateOf(false) }
             val sceneList = shell["scenes"].objects
+            // The selected hub's mark, attached to the YAAC mark, when there are several (P404).
+            if (dev.yaac.android.core.YaacRuntime.running.size > 1) { HubBadge(); Spacer(Modifier.width(6.dp)) }
             T("YAAC", type.title.copy(fontSize = 19.sp), weight = FontWeight.Bold,
                 modifier = if (sceneList.isEmpty()) Modifier else Modifier.tapAndHold({}, { scenes = true }))
             if (scenes) ActionSheet("Demo scenes", sceneList.map { ActionItem("scene:" + it["id"].int, it["label"].str, true, null, false, null, emptyList(), false) }, { scenes = false }) { a ->

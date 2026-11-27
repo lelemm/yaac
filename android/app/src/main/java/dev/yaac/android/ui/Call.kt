@@ -72,7 +72,7 @@ fun CallButton(composer: JsonObject, key: String, editable: Boolean) {
     val context = LocalContext.current
     val title = LocalThreadTitle.current
     val frame = CallFrame.of(composer[CallWire.VIEW] as? JsonObject)
-    val ours = CallManager.phase.live && CallManager.key == key
+    val ours = CallManager.phase.live && CallManager.key == key && CallManager.hubKey == dev.yaac.android.core.YaacRuntime.selectedKey
     val elsewhere = CallManager.phase.live && !ours
     var asking by remember { mutableStateOf(false) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -158,8 +158,11 @@ fun CallBar(openKey: String?) {
                 else -> "Connecting…"
             }
             // The call's thread, when another one is open.
-            val where = CallManager.title.takeIf { CallManager.key != openKey && it.isNotBlank() }
-            T(listOfNotNull(label, where).joinToString(" · "), type.ui, maxLines = 1, modifier = Modifier.weight(1f))
+            // Its hub too when another hub is selected (P404).
+            val elsewhere = CallManager.hubKey != dev.yaac.android.core.YaacRuntime.selectedKey
+            val where = CallManager.title.takeIf { (elsewhere || CallManager.key != openKey) && it.isNotBlank() }
+            val hub = CallManager.hubName?.takeIf { elsewhere }
+            T(listOfNotNull(label, hub, where).joinToString(" · "), type.ui, maxLines = 1, modifier = Modifier.weight(1f))
             CallManager.startedAt?.let { Clock(it) }
         }
         val lines = CallManager.lines.takeLast(4)

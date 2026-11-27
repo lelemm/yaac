@@ -1035,6 +1035,8 @@ impl Client {
                 if let Some(id) = hello.client_id {
                     self.state.client_id = Some(id);
                 }
+                self.state.hub.hub_id = hello.hub_id;
+                self.state.hub.host_name = hello.host_name;
                 self.state.hub.build = Some(hello.build);
                 self.request(hub_names::SETTINGS_GET, json!({}), Call::HubSettings);
                 self.request(hub_names::VIEW_GET, json!({}), Call::View);

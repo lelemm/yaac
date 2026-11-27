@@ -101,7 +101,11 @@ local socket:
   `hub/shutdown` whatever the builds, and `hub/settings/update` with `always` or
   `idleExitSecs`, with `remote_not_allowed`. It may still turn `tailscaleAttach` off, which
   only ends its own access. The client side is
-  `HubClient::connect_tcp`. Both ends turn on TCP keepalive (idle 30 s, then 3 probes 10 s
+  `HubClient::connect_tcp`. The hello result also names the hub, so a phone that knows
+  several hubs can label them and see that two saved addresses reach the same one: `hubId`, a
+  random id the hub makes on its first start and keeps in `hub.json`, and `hostName`, the
+  hub machine's name (`COMPUTERNAME` on Windows). Both are additive; an older hub sends neither
+  and the phone knows it by its address ([14](14-android.md#several-hubs-p405)). Both ends turn on TCP keepalive (idle 30 s, then 3 probes 10 s
   apart; the platform's defaults where it cannot set them), so a phone that sleeps or changes
   network is detached within about a minute. Nothing is paired and nothing is stored: Tailscale already
   authenticates both devices, and the hub keeps no key, token or list of devices (invariant 12).

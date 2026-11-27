@@ -85,6 +85,8 @@ private fun JsonObject.unreadRow() = UnreadRow(this["id"].str, this["actionId"].
 fun rememberUnread(transcript: JsonElement?, rows: List<JsonObject>, listState: LazyListState, onPinned: () -> Unit,
     send: (String, Any?) -> Unit): UnreadState {
     val threadId = transcript["threadId"].str
+    // Seen points are kept per hub (P404): thread ids are unique per target, not across hubs.
+    val seenKey = dev.yaac.android.core.LocalHubKey.current + threadId
     val context = LocalContext.current
     val density = LocalDensity.current.density
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
@@ -93,7 +95,7 @@ fun rememberUnread(transcript: JsonElement?, rows: List<JsonObject>, listState: 
     val currentRows by rememberUpdatedState(rows)
     val enabled = remember(threadId, visitNo) { LeftOff.enabled(context) }
     remember(threadId, visitNo) {
-        state.visit = UnreadVisit(if (threadId.isEmpty()) null else LeftOff.seen(context, threadId), enabled)
+        state.visit = UnreadVisit(if (threadId.isEmpty()) null else LeftOff.seen(context, seenKey), enabled)
         state.sync()
         Unit
     }
@@ -110,7 +112,7 @@ fun rememberUnread(transcript: JsonElement?, rows: List<JsonObject>, listState: 
     }
     fun record() {
         if (threadId.isEmpty() || state.busy || !LeftOff.enabled(context)) return
-        current()?.let { LeftOff.record(context, threadId, it) }
+        current()?.let { LeftOff.record(context, seenKey, it) }
     }
 
     // Place the divider once the page is in; follow it as rows fold.

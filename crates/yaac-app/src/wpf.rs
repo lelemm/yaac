@@ -581,6 +581,9 @@ fn view(
         "hub": {
             "reachable": footer.reachable, "up": footer.up, "down": footer.down,
             "build": state.hub.build,
+            // Which hub this is (docs/14-android.md#several-hubs): its stable id and machine
+            // name from `hub/hello` (null from an older hub), and the address dialled.
+            "id": state.hub.hub_id, "name": state.hub.host_name, "address": app.hub_address(),
             "mismatch": matches!(state.hub.outcome, yaac_core::state::HelloOutcome::HubOutdated { .. } | yaac_core::state::HelloOutcome::WindowOutdated { .. }),
         },
         "dialog": dialogs::view(app),
