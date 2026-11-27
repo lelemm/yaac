@@ -23,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import dev.yaac.android.core.flag
 import dev.yaac.android.core.get
+import dev.yaac.android.core.str
 import dev.yaac.android.core.text
 import dev.yaac.android.ui.CommanderSheet
 import dev.yaac.android.ui.ShellDialog
@@ -311,8 +312,9 @@ private fun YaacApp(store: ViewStore, send: (String, Any?) -> Unit, openRequest:
         // Shared from another app: choose the thread (or a new one), then attach and append.
         share.value?.let { sh ->
             var target by remember(sh) { mutableStateOf<String?>(null) }
-            val composerKey = store.view("composer")["key"].text
-            val draftText = store.view("composer")["text"].text ?: ""
+            val composer = store.view("composer")
+            val composerKey = composer["key"].text
+            val draftText = composer["localText"]?.str ?: composer["text"].str
             if (target == null) dev.yaac.android.ui.ShareTargetSheet(store.view("sidebar"), sh, onDismiss = { share.value = null }) { id ->
                 if (id == null) send("sidebar.new", null) else send("sidebar.open", mapOf("id" to id))
                 target = id ?: "draft"

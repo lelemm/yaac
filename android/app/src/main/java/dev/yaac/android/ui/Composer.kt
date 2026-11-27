@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import dev.yaac.android.core.flag
 import dev.yaac.android.core.get
 import dev.yaac.android.core.int
+import dev.yaac.android.core.long
 import dev.yaac.android.core.double
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.asImageBitmap
@@ -171,21 +172,31 @@ private fun Queue(composer: JsonObject, act: (ActionItem) -> Unit) {
 private fun Editor(composer: JsonObject, key: String, send: (String, Any?) -> Unit, history: JsonElement?) {
     val c = LocalYaac.current
     val type = LocalType.current
-    val remote = composer["text"].str
+    val remote = composer["text"]?.str
+    val textKey = composer["textKey"].text
+    val revision = composer["textRevision"].long
     val editable = composer["editable"].flag(true)
     // As WPF's UpdateText: the field is the source of truth while typing. An echo of one of our
     // own edits (or of the text we last adopted) is ignored; any other text from the controller
     // (sent, cleared, a queued message opened for editing) replaces the field.
-    var value by remember(key) { mutableStateOf(TextFieldValue(remote, TextRange(remote.length))) }
-    val state = remember(key) { EditEcho(remote) }
-    LaunchedEffect(remote) {
-        if (state.adopt(remote) && remote != value.text) {
+    var value by remember(key, textKey) {
+        val initial = composer["localText"]?.str ?: remote.orEmpty()
+        mutableStateOf(TextFieldValue(initial, TextRange(initial.length)))
+    }
+    val state = remember(key, textKey) { EditEcho(remote, revision) }
+    LaunchedEffect(state, remote, revision) {
+        if (remote != null && state.adopt(remote, revision) && remote != value.text) {
             value = TextFieldValue(remote, TextRange(remote.length))
         }
     }
+    val sendEdit = { text: String, caret: Int ->
+        if (revision == null) state.edit(text)
+        send("composer.edit", mapOf("key" to key, "textKey" to textKey, "textRevision" to revision,
+            "text" to text, "caret" to caret, "local" to true))
+    }
     // `insert` {id, text}: put text at the caret once (a skill, a file mention, a paste).
     val insert = composer["insert"].obj()
-    LaunchedEffect(insert?.get("id").text) {
+    LaunchedEffect(state, insert?.get("id").text) {
         val id = insert?.get("id").text ?: return@LaunchedEffect
         val text = insert["text"].text ?: return@LaunchedEffect
         if (!editable || id in state.inserted) return@LaunchedEffect
@@ -193,8 +204,7 @@ private fun Editor(composer: JsonObject, key: String, send: (String, Any?) -> Un
         val sel = value.selection
         val next = value.text.replaceRange(sel.min, sel.max, text)
         value = TextFieldValue(next, TextRange(sel.min + text.length))
-        state.edit(next)
-        send("composer.edit", mapOf("key" to key, "text" to next, "caret" to sel.min + text.length))
+        sendEdit(next, sel.min + text.length)
     }
     val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     val focusToken = composer["focus"].let { if (it.flag()) "true" else it.text }
@@ -204,8 +214,7 @@ private fun Editor(composer: JsonObject, key: String, send: (String, Any?) -> Un
     val shape = RoundedCornerShape(8.dp)
     val setText: (String, Int) -> Unit = { next, caret ->
         value = TextFieldValue(next, TextRange(caret.coerceIn(0, next.length)))
-        state.edit(next)
-        send("composer.edit", mapOf("key" to key, "text" to next, "caret" to caret))
+        sendEdit(next, caret)
     }
     // `!` mode (P346): a draft that starts with `!` on a target that can run commands.
     val shell = composer["shellCapable"].flag() && value.text.startsWith("!")
@@ -233,7 +242,7 @@ private fun Editor(composer: JsonObject, key: String, send: (String, Any?) -> Un
             value, { v ->
                 val changed = v.text != value.text
                 value = v
-                if (changed) { state.edit(v.text); send("composer.edit", mapOf("key" to key, "text" to v.text, "caret" to v.selection.end)) }
+                if (changed) sendEdit(v.text, v.selection.end)
                 else send("composer.caret", mapOf("key" to key, "caret" to v.selection.end))
             },
             enabled = editable, maxLines = 5, interactionSource = interaction,
@@ -252,12 +261,18 @@ private fun Editor(composer: JsonObject, key: String, send: (String, Any?) -> Un
 }
 
 /** Our edits not yet echoed by the controller, and the text it last confirmed. */
-private class EditEcho(var server: String) {
+private class EditEcho(private var server: String?, private var revision: Long?) {
     private val pending = ArrayList<String>()
     val inserted = HashSet<String>()
     fun edit(text: String) { pending += text; if (pending.size > 64) pending.removeAt(0) }
     /** Whether [remote] is new text to show (not an echo). */
-    fun adopt(remote: String): Boolean {
+    fun adopt(remote: String, nextRevision: Long?): Boolean {
+        if (nextRevision != revision) {
+            revision = nextRevision
+            server = remote
+            pending.clear()
+            return true
+        }
         if (remote == server) return false
         val i = pending.indexOf(remote)
         server = remote

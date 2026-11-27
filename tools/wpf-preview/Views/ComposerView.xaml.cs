@@ -11,7 +11,9 @@ public partial class ComposerView : UserControl
 {
     private const int MaxPendingEdits = 16;
 
-    private readonly List<string> pendingEdits = new();
+    private readonly List<(long Id, string Text)> pendingEdits = new();
+    private long nextEditId;
+    private long textRevision;
     private readonly Dictionary<(string Key, string TextKey), string> lastInserts = new();
     private string key = "";
     private string textKey = "";
@@ -61,14 +63,16 @@ public partial class ComposerView : UserControl
     internal event Action<bool>? DropOverlayChanged;
     internal int CaretIndex => Editor.CaretIndex;
 
-    // Each render describes the complete composer for a selection. Action ids are opaque to
-    // WPF. Picker and clipboard work run in the controller, which returns a single-use insert
-    // token for a text paste and row descriptors for upload and queue state.
+    // Each render describes the composer for a selection. The editor keeps its own text and
+    // Markdown when those fields are omitted. Action ids are opaque to WPF. Picker and clipboard
+    // work run in the controller, which returns a single-use insert token for a text paste.
     public void Render(JsonElement view)
     {
         var nextKey = Field(view, "key").Identifier();
         if (nextKey.Length == 0)
         {
+            key = "";
+            pendingEdits.Clear();
             messageHistoryIndex = -1;
             Visibility = Visibility.Collapsed;
             editingEnabled = false;
@@ -104,13 +108,40 @@ public partial class ComposerView : UserControl
         var placeholder = Field(view, "placeholder").String("Message…");
         Placeholder.Text = placeholder;
         System.Windows.Automation.AutomationProperties.SetName(Editor, placeholder);
-        var text = Field(view, "text").String();
+        var revision = Field(view, "textRevision");
+        var nextRevision = revision.ValueKind == JsonValueKind.Number ? revision.GetInt64() : 0;
+        var authoritative = nextRevision != textRevision;
+        textRevision = nextRevision;
+        var text = Field(view, "text");
+        var markdown = Field(view, "markdown");
+        var budget = Field(view, "markdownBudget").ComposerInt();
         normalPlaceholder = placeholder;
+        var wasShellCapable = shellCapable;
         RenderShell(view);
-        UpdateText(text, editorChanged);
+        if (editorChanged || wasShellCapable != shellCapable)
+            Markdown.Clear();
+        if (text.ValueKind == JsonValueKind.String)
+        {
+            var value = text.String();
+            UpdateText(value, editorChanged, authoritative);
+            if (markdown.ValueKind == JsonValueKind.Array)
+                Markdown.SetSpans(Normalize(value), markdown, budget);
+            else
+                Markdown.Clear();
+        }
+        else if (Field(view, "markdownEditId") is { ValueKind: JsonValueKind.Number } parsed)
+        {
+            var editId = parsed.GetInt64();
+            var index = pendingEdits.FindIndex(edit => edit.Id == editId);
+            if (index >= 0)
+            {
+                serverText = pendingEdits[index].Text;
+                Markdown.SetSpans(serverText, markdown, budget);
+                pendingEdits.RemoveRange(0, index + 1);
+            }
+        }
         if (shellMode)
             ApplyShellLook();
-        Markdown.SetSpans(Normalize(text), Field(view, "markdown"), Field(view, "markdownBudget").ComposerInt());
         UpdatePlaceholder();
         RenderFileSearch(Field(view, "filePicker"), Field(view, "fileScope").String());
 
@@ -181,17 +212,17 @@ public partial class ComposerView : UserControl
         UpdateSendButtons();
     }
 
-    private void UpdateText(string value, bool reset)
+    private void UpdateText(string value, bool reset, bool authoritative)
     {
         value = Normalize(value);
         var shell = IsShellText(shellCapable, value);
-        if (!reset && shell == shellMode)
+        if (!reset && !authoritative && shell == shellMode)
         {
             // A transcript redraw or an echo of an earlier keystroke must not replace the
             // local buffer, selection, scroll position, or undo history.
             if (value == serverText)
                 return;
-            var index = pendingEdits.IndexOf(value);
+            var index = pendingEdits.FindIndex(edit => edit.Text == value);
             if (index >= 0)
             {
                 pendingEdits.RemoveRange(0, index + 1);
@@ -287,9 +318,10 @@ public partial class ComposerView : UserControl
         var text = DraftText(Normalize(Editor.Text));
         if (pendingEdits.Count == MaxPendingEdits)
             pendingEdits.RemoveAt(0);
-        pendingEdits.Add(text);
+        var editId = ++nextEditId;
+        pendingEdits.Add((editId, text));
         lastCaret = Editor.CaretIndex;
-        Command?.Invoke("composer.edit", new { key, text, caret = DraftCaret });
+        Command?.Invoke("composer.edit", new { key, textKey = textKey.Length > 0 ? textKey : null, textRevision, text, caret = DraftCaret, local = true, editId });
         RefreshFileToken();
         UpdateSendButtons();
     }

@@ -128,6 +128,11 @@ class ViewStore {
     private val views = HashMap<String, androidx.compose.runtime.MutableState<JsonElement?>>()
     private val main = Handler(Looper.getMainLooper())
     private val merger = FrameMerger()
+    private data class LocalEdit(val key: String?, val textKey: String?, val revision: Long, val text: String) {
+        fun matches(view: JsonElement?) = key == view["key"].text && textKey == view["textKey"].text
+            && revision == view["textRevision"].long
+    }
+    private var localEdit: LocalEdit? = null
 
     var status by mutableStateOf<String?>("Starting…")
     /** Set when the controller ended (`{"stopped": {"error"}}`): the error, or "" for none. */
@@ -142,7 +147,22 @@ class ViewStore {
     private fun slot(name: String) = views.getOrPut(name) { mutableStateOf(null) }
 
     /** The latest value of one view, observed by Compose. Main thread only. */
-    fun view(name: String): JsonElement? = slot(name).value
+    fun view(name: String): JsonElement? {
+        val value = slot(name).value
+        if (name != "composer" || value !is JsonObject) return value
+        val edit = localEdit ?: return value
+        if (!edit.matches(value)) return value
+        // The editor can be recreated while the controller is omitting its text. Seed the
+        // new field with the latest local edit. Keep the original frame's "text" for echoes.
+        return JsonObject(value + ("localText" to JsonPrimitive(edit.text)))
+    }
+
+    internal fun rememberComposerEdit(payload: JsonElement) {
+        if (!payload["local"].flag()) return
+        val revision = payload["textRevision"].long ?: return
+        val text = payload["text"]?.str ?: return
+        localEdit = LocalEdit(payload["key"].text, payload["textKey"].text, revision, text)
+    }
 
     /** Development: every frame line is appended here when `log.tag.yaac-dump` is DEBUG. */
     @Volatile var dump: java.io.File? = null
@@ -154,7 +174,10 @@ class ViewStore {
         if (android.util.Log.isLoggable("yaac-frames", android.util.Log.DEBUG))
             android.util.Log.d("yaac-frames", update.views.joinToString(",") { it.first } + " " + line.length)
         main.post {
-            for ((name, value) in update.views) slot(name).value = value
+            for ((name, value) in update.views) {
+                if (name == "composer" && localEdit?.matches(value) == false) localEdit = null
+                slot(name).value = value
+            }
             update.stopped?.let { stopped = it; status = null }
             update.effects.forEach(effects)
             listeners.forEach { it(update) }
@@ -169,7 +192,9 @@ class Controller(private val transport: FrameTransport, val store: ViewStore) {
 
     fun send(command: String, payload: Any? = null) {
         if (android.util.Log.isLoggable("yaac-cmd", android.util.Log.DEBUG)) android.util.Log.d("yaac-cmd", command)
-        val line = JsonObject(mapOf("command" to JsonPrimitive(command), "payload" to toJson(payload)))
+        val body = toJson(payload)
+        if (command == "composer.edit") store.rememberComposerEdit(body)
+        val line = JsonObject(mapOf("command" to JsonPrimitive(command), "payload" to body))
         transport.send(line.toString())
     }
 }

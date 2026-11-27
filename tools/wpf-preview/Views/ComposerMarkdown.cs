@@ -54,8 +54,15 @@ public sealed class ComposerMarkdown : FrameworkElement
         if (hadSpans || parsedSpans.Length > 0) QueueRedraw();
     }
 
-    // The spans arrive with the text they were computed for, which lags the editor while the
-    // user types (each keystroke reaches the controller and comes back). Spans are never
+    internal void Clear()
+    {
+        if (parsedText is null) return;
+        SetSpans("", default, 0);
+        parsedText = null;
+    }
+
+    // The spans arrive for a specific controller text or local edit. While the user types,
+    // the editor can be ahead of that text. Spans are never
     // applied to another text by position: only lines provably styled the same in `current`
     // keep theirs (P317). The styler is line by line and carries only "inside a fence" down
     // the text, so:

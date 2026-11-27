@@ -30,6 +30,7 @@ use crate::theme::ThemeChoice;
 mod agents;
 mod browser;
 mod composer;
+pub(crate) use composer::TextUpdates;
 mod dialogs;
 mod files;
 mod header;
@@ -273,7 +274,8 @@ pub(crate) fn serve(launch: crate::Launch, commands: Connection, mut stdout: imp
         let due = deadline
             .lock()
             .expect("repaint deadline")
-            .is_some_and(|at| at <= Instant::now());
+            .is_some_and(|at| at <= Instant::now())
+            || composer::markdown_deadline(&app).is_some_and(|at| at <= Instant::now());
         if once || due {
             once = false;
             refresh_browser = true;
@@ -431,6 +433,7 @@ pub(crate) fn serve(launch: crate::Launch, commands: Connection, mut stdout: imp
         let next = (*deadline.lock().expect("repaint deadline"))
             .into_iter()
             .chain(browser_deadline)
+            .chain(composer::markdown_deadline(&app))
             .min();
         let input = match next {
             Some(at) => receiver.recv_timeout(at.saturating_duration_since(Instant::now())),

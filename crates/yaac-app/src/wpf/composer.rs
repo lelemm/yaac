@@ -129,6 +129,96 @@ pub(super) fn upkeep(app: &mut YaacApp) {
 /// Bytes of composer text the markdown styler reads; the rest stays plain. WPF needs it to know
 /// which styled lines of an older text still hold for the text it is showing (P317).
 const MARKDOWN_BUDGET: usize = 64 * 1024;
+const MARKDOWN_PAUSE: Duration = Duration::from_millis(150);
+
+/// Only edits made in the renderer's own field can omit the text echo. Keep the scope and
+/// exact text so a selection change or a controller-side edit sends an authoritative snapshot.
+#[derive(Debug, Default)]
+pub(crate) struct TextUpdates {
+    buffer: Option<EditorBuffer>,
+    // A change from the controller invalidates edits queued against the previous snapshot.
+    revision: u64,
+}
+
+#[derive(Debug)]
+struct EditorBuffer {
+    draft: DraftRef,
+    queue_id: Option<String>,
+    text: String,
+    editable: bool,
+    shell_capable: bool,
+    local: bool,
+    markdown: Option<(Instant, u64)>,
+}
+
+impl TextUpdates {
+    fn invalidate(&mut self) {
+        if self.buffer.take().is_some() {
+            self.revision += 1;
+        }
+    }
+
+    fn record(&mut self, draft: &DraftRef, queue_id: Option<&str>, text: &str, payload: &Value) {
+        let Some(buffer) = &mut self.buffer else { return };
+        if payload["local"] != true || &buffer.draft != draft
+            || buffer.queue_id.as_deref() != queue_id || !buffer.editable
+        {
+            return;
+        }
+        buffer.text.clear();
+        buffer.text.push_str(text);
+        buffer.local = true;
+        // WPF supplies an edit id so that spans can reference the exact text in its
+        // pending edits. Android's field currently draws the draft as plain text.
+        buffer.markdown = payload["editId"].as_u64().map(|id| (Instant::now() + MARKDOWN_PAUSE, id));
+    }
+
+    fn fields(&mut self, view: &mut Value, draft: &DraftRef, text: &str, now: Instant) {
+        let queue_id = view["textKey"].as_str();
+        let editable = view["showEditor"] != false && view["editable"] != false;
+        let shell_capable = view["shellCapable"] == true;
+        if !self.buffer.as_ref().is_some_and(|buffer| {
+            &buffer.draft == draft && buffer.queue_id.as_deref() == queue_id && buffer.text == text
+                && buffer.editable == editable && buffer.shell_capable == shell_capable
+        }) {
+            self.invalidate();
+            self.buffer = Some(EditorBuffer {
+                draft: draft.clone(), queue_id: queue_id.map(str::to_owned),
+                text: text.to_owned(), editable, shell_capable, local: false, markdown: None,
+            });
+        }
+        view["textRevision"] = json!(self.revision);
+        let buffer = self.buffer.as_mut().expect("composer buffer");
+        if buffer.local {
+            if let Some((_, id)) = buffer.markdown.take_if(|(at, _)| *at <= now) {
+                view["markdownEditId"] = json!(id);
+                set_markdown(view, text);
+            }
+        } else {
+            view["text"] = json!(text);
+            if view["showEditor"] != false {
+                set_markdown(view, text);
+            }
+        }
+    }
+}
+
+pub(super) fn markdown_deadline(app: &YaacApp) -> Option<Instant> {
+    app.ui.wpf_text.borrow().buffer.as_ref()?.markdown.map(|(at, _)| at)
+}
+
+fn set_markdown(view: &mut Value, text: &str) {
+    let spans = if !view["shell"].is_null() {
+        // A command is plain monospace.
+        Vec::new()
+    } else if text.contains("\r\n") {
+        markdown_spans(&text.replace("\r\n", "\n"))
+    } else {
+        markdown_spans(text)
+    };
+    view["markdown"] = Value::Array(spans);
+    view["markdownBudget"] = json!(MARKDOWN_BUDGET);
+}
 
 fn markdown_spans(text: &str) -> Vec<Value> {
     use yaac_core::markstyle::{self, Style};
@@ -197,11 +287,13 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
         .open_composer()
         .or_else(|| selected_thread(app).cloned().map(DraftRef::Thread))
     else {
+        app.ui.wpf_text.borrow_mut().invalidate();
         return json!({ "showEditor": false });
     };
     let state = &app.client.state;
     let draft_key = draft.store_key();
     let text = app.client.draft(&draft).map_or("", |d| d.text.as_str());
+    let mut editor_text = text;
     let mut notices = vec![];
     if let Some(a) = state.arrivals.last() {
         let title = state.summary(&a.key).map_or("Thread", |s| s.title.as_str());
@@ -224,7 +316,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
             "actions": [action("largeFile", "Attach as file", true), action("largeText", "Paste as text", true), action("largeCancel", "Cancel", true)] }));
     }
     let mut v = json!({
-        "key": draft_key, "text": text, "focus": app.ui.focus_composer,
+        "key": draft_key, "focus": app.ui.focus_composer,
         "sendKey": if app.ui.send_key == SendKey::CtrlEnter { "ctrlEnter" } else { "enter" },
         "attach": action("attach", "Attach files…", !app.files.picking),
         "drop": action("attachPaths", "Attach files", true),
@@ -273,6 +365,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                     "actions": stopped.then(|| action("startWsl", "Start it", true)).into_iter().collect::<Vec<_>>()
                 }));
                 v["notices"] = json!(notices);
+                app.ui.wpf_text.borrow_mut().fields(&mut v, &draft, text, Instant::now());
                 return v;
             }
             let compacting = app.client.compacting(&key);
@@ -341,7 +434,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                     );
                     v["stop"] = json!((stop && !editing).then(|| action("stop", "Stop", true)));
                     if let Some(e) = edit {
-                        v["text"] = json!(e.text);
+                        editor_text = &e.text;
                         v["textKey"] = json!(e.queue_id);
                         v["cancelEdit"] = action("cancelEdit", "Cancel edit", true);
                         v["attach"] = Value::Null;
@@ -393,6 +486,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
         }
         DraftRef::New(id) => {
             let Some(d) = state.new_threads.iter().find(|d| d.id == id) else {
+                app.ui.wpf_text.borrow_mut().invalidate();
                 return Value::Null;
             };
             let project = state
@@ -485,18 +579,7 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
             v["skills"] = app.ui.wpf_skills.view(&draft_key, text, &c, state);
         }
     }
-    if !v["shell"].is_null() {
-        // A command is not Markdown: the `!`-mode field is plain monospace.
-        v["markdown"] = json!([]);
-        v["markdownBudget"] = json!(MARKDOWN_BUDGET);
-    } else if let Some(text) = v["text"].as_str() {
-        v["markdown"] = if text.contains("\r\n") {
-            json!(markdown_spans(&text.replace("\r\n", "\n")))
-        } else {
-            json!(markdown_spans(text))
-        };
-        v["markdownBudget"] = json!(MARKDOWN_BUDGET);
-    }
+    app.ui.wpf_text.borrow_mut().fields(&mut v, &draft, editor_text, Instant::now());
     v
 }
 
@@ -688,10 +771,18 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
         }
         "composer.edit" => {
             let text = string(p, "text");
+            let queue_id = thread.as_ref().and_then(|key| app.client.state.queue_edits.get(key))
+                .map(|edit| edit.queue_id.as_str());
+            if p["local"] == true && (p["textKey"].as_str() != queue_id
+                || p["textRevision"].as_u64().unwrap_or_default() != app.ui.wpf_text.borrow().revision)
+            {
+                return Ok(());
+            }
             match &draft {
                 DraftRef::Thread(k) => {
                     if let Some(edit) = app.client.state.queue_edits.get_mut(k) {
                         edit.text = text.to_owned();
+                        app.ui.wpf_text.borrow_mut().record(&draft, Some(&edit.queue_id), text, p);
                         return Ok(());
                     }
                     let draft = app.client.state.drafts.entry(k.clone()).or_default();
@@ -709,6 +800,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
                     }
                 }
             }
+            app.ui.wpf_text.borrow_mut().record(&draft, None, text, p);
             follow_caret(app, &draft, p);
             Some(Action::DraftEdited(draft))
         }
@@ -924,6 +1016,51 @@ mod tests {
         assert_eq!(app.client.errors.iter().map(|e| e.id).collect::<Vec<_>>(), [1]);
         super::super::dispatch(&mut app, &ctx, &mut None, "shell.dismissStatus", &json!({ "id": 1 })).unwrap();
         assert!(app.client.errors.is_empty());
+    }
+
+    #[test]
+    fn renderer_edits_omit_text_and_debounce_markdown_until_the_latest_edit_settles() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.client.open(&key);
+        app.client.pump();
+        let map = AttentionMap::compute(&app.client.state);
+        let draft = DraftRef::Thread(key.clone());
+        let initial = view(&app, &map, None);
+        assert!(initial.get("text").is_some());
+
+        let mut edit = json!({
+            "key": draft.store_key(), "local": true, "textRevision": initial["textRevision"],
+            "editId": 1, "text": "**draft",
+        });
+        command(&mut app, "composer.edit", &edit).unwrap();
+        edit["editId"] = json!(2);
+        edit["text"] = json!("**draft**");
+        command(&mut app, "composer.edit", &edit).unwrap();
+        // Place the wake in the future to keep this assertion independent of machine speed.
+        app.ui.wpf_text.borrow_mut().buffer.as_mut().unwrap().markdown =
+            Some((Instant::now() + Duration::from_secs(60), 2));
+        let typing = view(&app, &map, None);
+        assert!(typing.get("text").is_none());
+        assert!(typing.get("markdown").is_none());
+        assert_eq!(app.client.draft(&draft).unwrap().text, "**draft**");
+
+        app.ui.wpf_text.borrow_mut().buffer.as_mut().unwrap().markdown = Some((Instant::now(), 2));
+        let settled = view(&app, &map, None);
+        assert!(settled.get("text").is_none());
+        assert_eq!(settled["markdownEditId"], 2);
+        assert_eq!(settled["markdown"], json!(markdown_spans("**draft**")));
+        assert!(markdown_deadline(&app).is_none());
+        assert!(view(&app, &map, None).get("markdown").is_none());
+
+        // A controller-side clear is authoritative even if it returns to the original text.
+        app.client.state.drafts.get_mut(&key).unwrap().text.clear();
+        let cleared = view(&app, &map, None);
+        assert_eq!(cleared["text"], "");
+        assert_ne!(cleared["textRevision"], initial["textRevision"]);
+        command(&mut app, "composer.edit", &edit).unwrap();
+        assert_eq!(app.client.draft(&draft).unwrap().text, "");
     }
 
     #[test]

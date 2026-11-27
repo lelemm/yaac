@@ -223,6 +223,7 @@ pub(crate) struct UiState {
     pub(crate) skills: crate::skills_ui::Picker,
     /// The same picker over the WPF composer.
     pub(crate) wpf_skills: crate::skills_ui::WpfSkills,
+    pub(crate) wpf_text: std::cell::RefCell<crate::wpf::TextUpdates>,
     pub settings: bool,
     pub settings_page: Page,
     pub theme: ThemeChoice,
@@ -377,6 +378,7 @@ impl UiState {
             ime_composing: false,
             skills: Default::default(),
             wpf_skills: Default::default(),
+            wpf_text: Default::default(),
             settings: false,
             settings_page: Page::Targets,
             theme,
