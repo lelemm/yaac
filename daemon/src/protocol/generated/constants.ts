@@ -149,6 +149,12 @@ import type {
   UploadEndResult,
   UploadReadParams,
   UploadReadResult,
+  VoiceCancelParams,
+  VoiceEndedParams,
+  VoiceStartParams,
+  VoiceStartResult,
+  VoiceStopParams,
+  VoiceTranscriptParams,
 } from "./types.js";
 
 /** The protocol version this build speaks natively. Only the dialect module may read it. */
@@ -228,6 +234,9 @@ export const METHODS = {
   TERMINAL_CLOSE: "terminal/close",
   TERMINAL_LIST: "terminal/list",
   TERMINAL_RENAME: "terminal/rename",
+  VOICE_START: "voice/start",
+  VOICE_STOP: "voice/stop",
+  VOICE_CANCEL: "voice/cancel",
   CATALOG_SKILLS: "catalog/skills",
   THEME_CALL: "theme/call",
   BROWSER_CALL: "browser/call",
@@ -276,6 +285,8 @@ export const NOTIFICATIONS = {
   TERMINAL_EXITED: "terminal/exited",
   TERMINAL_TITLE: "terminal/title",
   TERMINAL_RENAMED: "terminal/renamed",
+  VOICE_TRANSCRIPT: "voice/transcript",
+  VOICE_ENDED: "voice/ended",
   TUNNEL_CLOSE: "tunnel/close",
   STREAM_CREDIT: "stream/credit",
   FORGE_PRS_CHANGED: "forge/prs/changed",
@@ -442,6 +453,12 @@ export interface RequestMap {
   "terminal/list": { params: Empty; result: TerminalListResult };
   /** Terminal rename: the user's name for a terminal (P343). */
   "terminal/rename": { params: TerminalRenameParams; result: Empty };
+  /** Voice start: one dictation for a thread through its harness's own speech-to-text */
+  "voice/start": { params: VoiceStartParams; result: VoiceStartResult };
+  /** Voice stop: no more audio; the final `voice/transcript` and `voice/ended` follow. */
+  "voice/stop": { params: VoiceStopParams; result: Empty };
+  /** Voice cancel: drop the dictation and its words; `voice/ended` follows. */
+  "voice/cancel": { params: VoiceCancelParams; result: Empty };
   /** Fetch YAAC's hub-owned skill metadata or a selected bundle. */
   "catalog/skills": { params: CatalogSkillsParams; result: CatalogSkillsResult };
   /** Manage window appearance. */
@@ -534,6 +551,10 @@ export interface NotificationMap {
   "terminal/title": TerminalTitleParams;
   /** Terminal renamed (P343), to every connection attached to it. */
   "terminal/renamed": TerminalRenamedParams;
+  /** Voice transcript: a dictation's whole text so far (replaces the previous one). */
+  "voice/transcript": VoiceTranscriptParams;
+  /** Voice ended: a dictation is over and its stream closed; the last message for it. */
+  "voice/ended": VoiceEndedParams;
   /** Either peer closed its preview socket. */
   "tunnel/close": TunnelCloseParams;
   /** The receiver of a data stream grants more credit. */
@@ -619,6 +640,9 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "terminal/close": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/rename": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "voice/start": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "voice/stop": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "voice/cancel": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "catalog/skills": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "theme/call": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "browser/call": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
@@ -673,6 +697,8 @@ export const NOTIFICATION_INFO: { readonly [N in keyof NotificationMap]: Notific
   "terminal/exited": { direction: "daemonToHost", class: "control" },
   "terminal/title": { direction: "daemonToHost", class: "control" },
   "terminal/renamed": { direction: "daemonToHost", class: "control" },
+  "voice/transcript": { direction: "daemonToHost", class: "control" },
+  "voice/ended": { direction: "daemonToHost", class: "control" },
   "tunnel/close": { direction: "both", class: "control" },
   "stream/credit": { direction: "both", class: "control" },
   "forge/prs/changed": { direction: "daemonToHost", class: "control" },

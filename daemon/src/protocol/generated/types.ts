@@ -272,6 +272,13 @@ export interface ApprovalRequest {
 }
 
 /**
+ * How the audio samples on a voice stream are encoded.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type AudioEncoding = "pcm16le";
+
+/**
  * Why `yaacd` answered a request itself (P342): the thread was in a mode that never asks.
  */
 export interface AutomaticResolution {
@@ -679,7 +686,7 @@ export interface BrowserTypeParams {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "voiceInput" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * Complete bundle staged on a target on demand.
@@ -5456,6 +5463,12 @@ export interface ThreadEffective {
    * Selectable modes.
    */
   modes?: ModeInfo[];
+  /**
+   * The audio the thread's harness transcribes, when it offers voice input
+   * (docs/plan/voice.md). The UI offers the microphone only when `capabilities` also has
+   * `voiceInput` (a connection without the feature folds that away).
+   */
+  voiceInput?: VoiceFormat | null;
 }
 
 /**
@@ -7090,6 +7103,125 @@ export interface UserMessageItem {
    * The parts. For a message sent from outside YAAC, the text as the harness stored it.
    */
   parts: InputPart[];
+}
+
+/**
+ * `voice/cancel`: one dictation.
+ */
+export interface VoiceCancelParams {
+  /**
+   * The stream `voice/start` returned.
+   */
+  stream: StreamId;
+}
+
+/**
+ * `voice/ended`: the dictation is over and its stream is closed. Always the last message for
+ * a stream that `voice/start` opened, whether it was stopped, cancelled, or failed.
+ */
+export interface VoiceEndedParams {
+  /**
+   * Why it ended early, in words for the user; absent after a normal stop or a cancel.
+   */
+  error?: string | null;
+  /**
+   * The dictation.
+   */
+  stream: StreamId;
+}
+
+/**
+ * The audio a thread's harness wants: reported by the target, never assumed by the host.
+ */
+export interface VoiceFormat {
+  /**
+   * Channel count (1 for every harness so far).
+   */
+  channels: number;
+  /**
+   * Sample encoding.
+   */
+  format: AudioEncoding;
+  /**
+   * Longest dictation the harness accepts, in seconds of audio, when it has a limit.
+   */
+  maxSeconds?: number | null;
+  /**
+   * Samples per second per channel.
+   */
+  sampleRate: number;
+}
+
+/**
+ * `voice/start`: begin one dictation for a thread.
+ */
+export interface VoiceStartParams {
+  /**
+   * The spoken language as a code (`en`, `pt-BR`), when the user chose one; otherwise the
+   * harness's own setting applies.
+   */
+  language?: string | null;
+  /**
+   * Operation identity: an uncertain start is shown, never re-sent.
+   */
+  opId: OpId;
+  /**
+   * The thread whose harness transcribes (and whose composer gets the words).
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * The dictation's audio stream.
+ */
+export interface VoiceStartResult {
+  /**
+   * What to send on `stream`.
+   */
+  format: VoiceFormat;
+  /**
+   * Audio bytes granted to the host; more arrive with `stream/credit`.
+   */
+  initialCredit: number;
+  /**
+   * Connection-local stream for audio, host → target only, on the interactive lane.
+   */
+  stream: StreamId;
+}
+
+/**
+ * `voice/stop`: no more audio for one dictation.
+ */
+export interface VoiceStopParams {
+  /**
+   * Every audio byte the host sent on `stream`. Data frames and control messages are
+   * scheduled on different lanes, so this request can overtake the last chunk: the daemon
+   * finishes only once it has received this many bytes (or after a short grace period).
+   */
+  bytes: number;
+  /**
+   * The stream `voice/start` returned.
+   */
+  stream: StreamId;
+}
+
+/**
+ * `voice/transcript`: the words so far.
+ */
+export interface VoiceTranscriptParams {
+  /**
+   * The last transcript of this dictation: `text` will not change again.
+   */
+  final: boolean;
+  /**
+   * The dictation.
+   */
+  stream: StreamId;
+  /**
+   * The whole transcript of this dictation so far. It **replaces** the previous `text`
+   * (an interim guess may be revised); it is not a delta.
+   */
+  text: string;
 }
 
 /**

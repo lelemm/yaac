@@ -18,6 +18,12 @@ open_enum! {
         /// This target's `yaacd` can set or remove an orchestration's time limit
         /// (`mesh/budget` `setTimeLimit`, P352).
         BudgetTimeLimit = "budgetTimeLimit",
+        /// Voice input (docs/plan/voice.md). As a daemon feature: `yaacd` implements `voice/*`.
+        /// On an instance or in a thread's effective capabilities: the harness can turn the
+        /// user's recorded speech into text for the composer now (signed in, allowed, a voice
+        /// surface present); the thread's `voiceInput` format says what audio to send. Absent:
+        /// no microphone is offered.
+        VoiceInput = "voiceInput",
         /// Permission mode can change during a running turn.
         ModeChangeLive = "modeChangeLive",
         // Thread lifecycle

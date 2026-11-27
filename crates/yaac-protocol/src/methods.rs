@@ -406,6 +406,16 @@ catalogue! {
         /// Terminal rename: the user's name for a terminal (P343).
         TerminalRename = "terminal/rename" as TERMINAL_RENAME:
             t::TerminalRenameParams => t::Empty, HostToDaemon, request Control, response Control;
+        /// Voice start: one dictation for a thread through its harness's own speech-to-text
+        /// (docs/plan/voice.md). Returns the audio stream, its credit, and the audio format.
+        VoiceStart = "voice/start" as VOICE_START:
+            t::VoiceStartParams => t::VoiceStartResult, HostToDaemon, request Control, response Control, op;
+        /// Voice stop: no more audio; the final `voice/transcript` and `voice/ended` follow.
+        VoiceStop = "voice/stop" as VOICE_STOP:
+            t::VoiceStopParams => t::Empty, HostToDaemon, request Control, response Control;
+        /// Voice cancel: drop the dictation and its words; `voice/ended` follows.
+        VoiceCancel = "voice/cancel" as VOICE_CANCEL:
+            t::VoiceCancelParams => t::Empty, HostToDaemon, request Control, response Control;
         /// Fetch YAAC's hub-owned skill metadata or a selected bundle.
         CatalogSkills = "catalog/skills" as CATALOG_SKILLS:
             t::CatalogSkillsParams => t::CatalogSkillsResult, DaemonToHost, request Control, response Bulk;
@@ -553,6 +563,12 @@ catalogue! {
         /// Terminal renamed (P343), to every connection attached to it.
         TerminalRenamed = "terminal/renamed" as TERMINAL_RENAMED:
             t::TerminalRenamedParams, DaemonToHost, Control;
+        /// Voice transcript: a dictation's whole text so far (replaces the previous one).
+        VoiceTranscript = "voice/transcript" as VOICE_TRANSCRIPT:
+            t::VoiceTranscriptParams, DaemonToHost, Control;
+        /// Voice ended: a dictation is over and its stream closed; the last message for it.
+        VoiceEnded = "voice/ended" as VOICE_ENDED:
+            t::VoiceEndedParams, DaemonToHost, Control;
         /// Either peer closed its preview socket.
         TunnelClose = "tunnel/close" as TUNNEL_CLOSE:
             t::TunnelCloseParams, Both, Control;

@@ -182,6 +182,18 @@ pub mod names {
     pub const TERMINAL_RENAME: &str = "hub/terminal/rename";
     /// Terminal renamed on the selected target (P343).
     pub const TERMINAL_RENAMED: &str = "hub/terminal/renamed";
+    /// Window → hub. Start a dictation on a thread of the selected target
+    /// ([`super::TargetVoice`]`<VoiceStartParams>` → `VoiceStartResult` with a hub-local
+    /// stream). Audio follows as data frames on that stream, under credit (docs/plan/voice.md).
+    pub const VOICE_START: &str = "hub/voice/start";
+    /// Window → hub. No more audio: the final transcript and `hub/voice/ended` follow.
+    pub const VOICE_STOP: &str = "hub/voice/stop";
+    /// Window → hub. Drop the dictation and its words; `hub/voice/ended` follows.
+    pub const VOICE_CANCEL: &str = "hub/voice/cancel";
+    /// Hub → the window that started it. A dictation's whole text so far.
+    pub const VOICE_TRANSCRIPT: &str = "hub/voice/transcript";
+    /// Hub → the window that started it. The dictation is over; its stream is closed.
+    pub const VOICE_ENDED: &str = "hub/voice/ended";
     /// Read the hub-owned skill catalog.
     pub const CATALOG_SKILLS: &str = "hub/catalog/skills";
     /// Create or edit a user-owned skill.
@@ -250,6 +262,10 @@ pub struct TargetTerminal<P> {
     #[serde(flatten)]
     pub params: P,
 }
+
+/// Voice request or notification on the window–hub link: the target-side payload with the
+/// target beside it, and the stream renumbered to the window's hub-local one.
+pub type TargetVoice<P> = TargetTerminal<P>;
 
 /// `hub/hello` params.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -300,6 +300,7 @@ impl Fleet {
                 effort: Some(EffortId::new("high")),
                 mode: Some(ModeId::new("ask")),
             },
+            voice_input: None,
         }
     }
 
