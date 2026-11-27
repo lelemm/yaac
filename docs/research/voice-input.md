@@ -203,6 +203,17 @@ voice API. The only matches are the settings fields listed above.
   "launched the CLI" condition might hold. But the request is `@internal`, it is flag-gated to
   first-party hosts in public builds, and it is not part of the SDK's public surface. Sending
   it means writing raw control requests past the SDK and hoping the gate is open. It could
+### Follow-up: the gate, verified (2026-11-27)
+
+The owner chose to use `dictate` anyway (P382). The "flag" turned out to be two things: the
+VS Code host entrypoint (`CLAUDE_CODE_ENTRYPOINT=claude-vscode`) and a server-side GrowthBook
+feature, `tengu_binary_reef`, that defaults to off and has no local override in the public
+build. The feature is off for this machine's account, so a probe is refused today. `yaacd`
+therefore offers Claude voice input only when a network-free `dictate {op:"cancel"}` is
+answered, and runs it in a separate dictation-only process so that no thread gets the VS Code
+entrypoint. Details: [harness surfaces](harness-surfaces.md#claude-code-dictation-verified-2026-11-27)
+and [04](../04-providers.md#voice-input-claude).
+
   disappear in any release. **Not acceptable as a dependency.**
 
 ## Reusing harness credentials directly

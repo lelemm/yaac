@@ -512,7 +512,7 @@ implements `voice/*`. The protocol is in [plan/voice.md](plan/voice.md).
 
 | Harness | Surface | Notes |
 | --- | --- | --- |
-| Claude Code | control request `dictate` (`start` / `audio` / `stop` / `cancel`) on the CLI's stdin | `@internal`, gated to first-party hosts; 16 kHz mono 16-bit, ≤ 2 s per `audio`, ends after two minutes; claude.ai sign-in only. Refusal reasons (`not_signed_in`, `policy`, …) become the start's error. |
+| Claude Code | control request `dictate` (`start` / `audio` / `stop` / `cancel`) on the stdin of a separate dictation-only CLI process | `@internal`. Answered only for the VS Code host entrypoint while the account's server-side flag is on (probed with a network-free `cancel`). 16 kHz mono 16-bit, ≤ 2 s per `audio`, ends after two minutes. claude.ai sign-in only. Refusal reasons (`not_signed_in`, `policy`, …) become the start's error. See [Claude voice input](#voice-input-claude). |
 | Codex | app-server `thread/realtime/*` (experimental), in a **transcription** session on a private ephemeral thread | 24 kHz mono 16-bit; API-key sign-in only (0.172.0); no `model` (Codex picks it); user-role `transcript/delta` / `done` become the transcript. Never runs on the user's thread, so it cannot start a turn there. See [Codex voice input](#voice-input-codex). |
 | Fake | — | Not reported. |
 
@@ -818,6 +818,55 @@ recommendations of up to 15 words for its unedited models. The previous guidance
 available when a refresh fails. Models with no recommendation yet show **No guidance yet**.
 
 ### Turning models off
+
+### Voice input (Claude)
+
+**Proposed (P382, P384).** Verified against Claude Code 2.1.330 and the Agent SDK 0.3.329
+([harness surfaces](research/harness-surfaces.md#claude-code-dictation-verified-2026-11-27)).
+`yaacd` uses Claude Code's host dictation, the `@internal` control request `dictate`, which
+sends the audio to the same speech-to-text service as `/voice`, with the CLI's own claude.ai
+sign-in. `yaacd` never sees a token.
+
+- **Who Claude Code answers.** The handler runs only when the CLI was started by the VS Code
+  extension (`CLAUDE_CODE_ENTRYPOINT=claude-vscode`, not a child or nested session) **and** the
+  account's server-side feature flag for it is on. Otherwise the request is refused as an
+  unknown subtype ("Unsupported control request subtype: dictate"). The public build has no
+  local override for the flag. It also needs a local stdin host (the SDK's), not a remote or
+  cloud session.
+- **A separate process.** That entrypoint changes how Claude Code behaves, so it is never
+  given to a thread's query. Each dictation runs in a **dictation-only Claude Code process**,
+  started through the SDK with `CLAUDE_CODE_ENTRYPOINT=claude-vscode`: no prompt, `tools: []`,
+  no MCP servers (`strictMcpConfig`), hooks off, `persistSession: false`. It is a child of
+  `yaacd`, like every Claude process, on the target, so the host still has only its one
+  connection (invariant 1). One process is kept warm for 90 s after a dictation (or after the
+  probe) and then closed. A dictation holds its process alone (Claude Code runs one dictation
+  per process).
+- **Capability.** At each probe, in parallel with the model list, `yaacd` sends
+  `dictate {op:"cancel"}` to a dictation process. That request needs no network and no audio.
+  `voiceInput` is reported (and `ThreadEffective.voiceInput =
+  { format: "pcm16le", sampleRate: 16000, channels: 1, maxSeconds: 120 }`) only when it is
+  answered **and** the account is Anthropic's own (`accountInfo().apiProvider` absent or
+  `firstParty`). This is feature detection, not a version check. Sign-in, policy, and
+  nonessential-traffic settings are checked by Claude Code at `start`. `YAAC_CLAUDE_VOICE=0`
+  turns the probe off.
+- **A dictation.** `voice/start` sends `dictate {op:"start", language?}` and answers once Claude
+  Code accepts. A refusal is the start's error: `not_signed_in` → `needs_auth`, any other reason
+  → `provider_unavailable`, with the reason in words. Audio from the data stream is batched
+  (≥ 100 ms, or after 100 ms) into `dictate {op:"audio", pcm}` requests, one at a time, each at
+  most 2 s and whole samples. Credit returns to the host as each batch is handed over. Every
+  reply carries `text` (finished words) and `interim` (the current guess). `yaacd` sends
+  `voice/transcript` with both joined whenever they change. `voice/stop` flushes the rest and
+  sends `stop`, whose reply holds all the words: the final transcript, then `voice/ended`.
+  `voice/cancel` sends `cancel`. Claude Code ends a dictation itself after two minutes of
+  audio (`done: true`: final transcript, then `ended`) or after 15 s with no request
+  (`not_started`, ended with an error). A dictation process that dies ends the dictation with
+  an error and keeps the words it had.
+- **Caveats.** The request is `@internal` and may change or go away in any release. It is sent
+  with the query's runtime `request()` method, which `sdk.d.ts` does not declare (the same
+  kind of guarded use as `getSettings`). Today it works only for accounts whose flag Anthropic
+  has turned on: on the owner's machine (2026-11-27) the flag is off and the probe is refused,
+  so no microphone shows for Claude threads. Manual check:
+  `daemon/scripts/claude-dictate-check.mjs`.
 
 Each model row under **Model guidance** has an **on/off switch** (P349). It belongs to the
 **provider instance** on that target — a work Claude account and a personal one are separate

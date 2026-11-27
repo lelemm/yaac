@@ -2,6 +2,8 @@ import { Troubleshooter } from "./troubleshoot.js";
 import { chooseWorkerMode, rankOf } from "../mesh/modes.js";
 import type { ThreadSetModeParams } from "../protocol/generated/types.js";
 import { Terminals } from "./terminals.js";
+import { VoiceSessions } from "../voice/sessions.js";
+import type { ConnectionView } from "../protocol/connection.js";
 // The session core: threads, journals, requests, control, the dispatcher, and the index —
 // everything between the providers and the connected clients. It knows no protocol version
 // and no wire encoding; client.ts turns its results into responses.
@@ -204,6 +206,7 @@ export interface CoreMeshHooks {
  * everything that would make YAAC a second writer, or change it in the harness.
  */
 const SUBAGENT_WRITES: ReadonlySet<Capability> = new Set<Capability>([
+  "voiceInput",
   "threadResume",
   "threadFork",
   "threadForkAtTurn",
@@ -345,6 +348,8 @@ function notActed(code: string, message: string, data?: unknown): NotActed {
 export class Core {
   readonly troubleshooter: Troubleshooter;
   readonly terminals = new Terminals(() => this.uploads.allocateStream(), () => this.activity.emit());
+  /** Voice input streams (docs/plan/voice.md). */
+  readonly voice = new VoiceSessions(() => this.uploads.allocateStream());
   readonly registry: ProviderRegistry;
   readonly commandExplanations: CommandExplanations;
   readonly index: ThreadIndex;
@@ -1875,6 +1880,7 @@ export class Core {
       threadRename: "rename",
       threadArchive: "archive",
       threadDelete: "remove",
+      voiceInput: "startDictation",
     };
     eff.capabilities = (eff.capabilities ?? []).filter((c) => {
       if (declared.size > 0 && !declared.has(c)) return false;
@@ -1891,8 +1897,42 @@ export class Core {
     // A read-only harness sub-agent (D151) can be read and watched, nothing more.
     if (rt.record.metadataPending || this.subagentReadOnly(rt)) eff.capabilities = eff.capabilities.filter((c) => !SUBAGENT_WRITES.has(c));
     if (rt.record.selectedMode) eff.applied = { ...eff.applied, mode: rt.record.selectedMode };
+    // The microphone needs both the capability and a format to record in.
+    if (!eff.capabilities.includes("voiceInput") || !eff.voiceInput) {
+      eff.capabilities = eff.capabilities.filter((c) => c !== "voiceInput");
+      delete eff.voiceInput;
+    }
     rt.effective = eff;
     return eff;
+  }
+
+  /**
+   * `voice/start` (docs/plan/voice.md): one dictation through the thread's harness. The words
+   * go back to `view` only; nothing reaches the conversation or the journal.
+   */
+  async voiceStart(view: ConnectionView, p: { opId?: unknown; threadId?: unknown; language?: unknown }) {
+    return this.ops.run("voice/start", p.opId, async () => {
+      if (p.language !== undefined && p.language !== null && (typeof p.language !== "string" || p.language.length > 64)) {
+        throw notActed("invalid_params", "language must be a code or name of at most 64 characters");
+      }
+      const rt = this.requireThread(p.threadId);
+      const inst = this.registry.get(rt.record.instance);
+      const provider = inst?.provider;
+      const eff = await this.computeEffective(rt);
+      if (!provider?.startDictation || !eff.capabilities?.includes("voiceInput") || !eff.voiceInput) {
+        throw notActed("capability_missing", "this thread's harness offers no voice input here");
+      }
+      const native = rt.record.native;
+      const language = typeof p.language === "string" && p.language ? p.language : undefined;
+      const format = eff.voiceInput;
+      try {
+        return await this.voice.start(view, rt.id, format, (events) => provider.startDictation!(native, language ? { language } : {}, events));
+      } catch (e) {
+        // Nothing changed anywhere (a refusal, a limit): the host may try again.
+        if (e instanceof RpcError) throw notActed(e.code, e.message);
+        throw e;
+      }
+    });
   }
 
   /** Asks the provider who holds the thread. Only a positive `external` makes it read-only. */
@@ -3716,6 +3756,7 @@ export class Core {
 
   private forget(rt: ThreadRuntime): void {
     this.mesh?.threadRemoved(rt);
+    this.voice.endThread(rt.id, "The thread was removed.");
     rt.deleted = true;
     for (const w of rt.queue.splice(0)) w.reject(rpc("thread_not_found", "the thread was deleted"));
     if (rt.flushTimer) clearTimeout(rt.flushTimer);
@@ -4140,6 +4181,7 @@ export class Core {
       this.opts.log(`stop: git status still computing after ${CLOSE_GIT_WAIT_MS} ms; not waiting for it`);
     }
     this.terminals.shutdown();
+    this.voice.shutdown();
     this.gitStatus.close();
     for (const rt of this.threads.values()) {
       this.flushDeltas(rt);

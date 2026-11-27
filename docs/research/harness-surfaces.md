@@ -909,3 +909,69 @@ Claude Code 2.1.330, driven by the installed Agent SDK with a temporary CLAUDE_C
 a loopback Anthropic fixture, `persistSession: false`, `maxTurns: 1`, and empty tools,
 returned the fixture result. The request carried zero tools. No project JSONL was written,
 and SDK `listSessions` for the temporary working directory returned an empty list.
+
+## Claude Code dictation (verified 2026-11-27)
+
+Read from the installed `claude` **2.1.330** (`~/.local/share/claude/versions/2.1.330`; the
+SDK's bundled CLI 2.1.329 has the same code) with `python3 -I` over the binary, plus one live
+run of `daemon/scripts/claude-dictate-check.mjs` that sent only `dictate {op:"cancel"}`. No
+audio was sent. YAAC's use of these facts: [04 § Voice input (Claude)](../04-providers.md#voice-input-claude).
+
+- **Request** (control request on stdin; zod schema, every field `@internal`):
+  `{ subtype: "dictate", op: "start"|"audio"|"stop"|"cancel", language?: string, pcm?: string }`.
+  - `language` comes with `start`: "the language spoken, as a code (en, pt-BR) or a name", at
+    most 64 characters.
+  - `pcm` comes with `audio`: "base64 of 16 kHz mono 16-bit little-endian samples, two seconds at
+    most". The handler checks 1 to 64 000 decoded bytes and base64 characters only.
+- **Reply:** `{status:"ok", text, interim, done}` or
+  `{status:"unavailable", reason, text}`.
+  - `reason` is one of `started_by_session`, `provider`, `nonessential_traffic`,
+    `not_available_here`, `policy`, `launcher_started`, `not_signed_in`, `not_started`,
+    `connection_failed`.
+  - `text` holds the finished words, and `interim` the current guess. The reply to `stop` holds
+    every word (`done: true`). `cancel` answers `{status:"ok", text:"", interim:"", done:true}`
+    without touching the network.
+- **Handler** (`class HostDictation`, chunk `chunk-4c0n5d9h.js`; dispatch in the print-mode
+  control loop):
+  1. `QP()`: `ta() && b("tengu_binary_reef", false)`.
+     - `ta()` is `entrypoint === "claude-vscode" && !childSession && !claudecode`, from
+       `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_CHILD_SESSION` and `CLAUDECODE`.
+     - `b` is the GrowthBook feature value, default false. In the public build
+       `getEnvironmentOverrides()` and `readConfigOverrides()` both return nothing, so the
+       flag cannot be set locally.
+     - Failing this answers the request as unknown: error "Unsupported control request
+       subtype: dictate", code `unsupported_request`.
+  2. `qas(e)`: `hostOwnedLocalStdin && transportPersists === false && !diskless &&
+     !hostedWorker && !remoteRelay`. An SDK-spawned CLI on stdin satisfies it. Failing this
+     gives "dictate is not available on this connection".
+  3. Not a parked spare process.
+  4. On `start`, the availability checks run in this order:
+     - `CLAUDE_CODE_CHILD_SESSION` or `CLAUDE_CODE_LAUNCHED_BY_SESSION_IDS` →
+       `started_by_session`
+     - not first-party → `provider`
+     - nonessential traffic off → `nonessential_traffic`
+     - → `not_available_here`
+     - policy `allow_voice_mode` off or `voice.enabled=false` → `policy`
+     - `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` + `CLAUDE_CODE_HOST_AUTH_ENV_VAR` →
+       `launcher_started`
+     - no claude.ai OAuth token → `not_signed_in`
+
+     Then it opens `voice_stream` (`encoding=linear16`, `sample_rate=16000`, `channels=1`) with
+     the CLI's own credentials. A prepare timeout of 6 s and an open timeout of 4 s give
+     `connection_failed`.
+  5. Audio is forwarded as received. At 120 × 32 000 bytes (two minutes) the handler stops by
+     itself and replies `done: true`. With no request for 15 s it drops the dictation and its
+     words (the next request gets `not_started`).
+- **This machine's account:** `~/.claude.json` `cachedGrowthBookFeatures.tengu_binary_reef`
+  is `false`. The live check (SDK-spawned 2.1.330 with `CLAUDE_CODE_ENTRYPOINT=claude-vscode`
+  and no nesting variables) was refused with "Unsupported control request subtype: dictate".
+- **SDK:** `sdk.d.ts` 0.3.329 declares nothing for dictation. The `Query` object has a runtime
+  `request(req)` that writes `{type:"control_request", request_id, request}` and resolves with
+  the control response (`.response` holds the reply). `getSettings` uses the same method. The
+  SDK sets `CLAUDE_CODE_ENTRYPOINT=sdk-ts` only when the variable is not already set, so
+  `options.env` decides it.
+- **Re-verify:**
+  `node daemon/scripts/claude-dictate-check.mjs` (gate only; the second form, with a raw
+  16 kHz file, transcribes it against Anthropic's service. That is manual only). Also run
+  `python3 -I` over the binary for `subtype:E("dictate")`, `class T{#e;#t;answer=` and
+  `"tengu_binary_reef"`.

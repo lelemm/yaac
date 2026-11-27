@@ -4,6 +4,7 @@
 // protocol, a client, a journal, or a protocol version: the session layer owns all of that.
 // Wire value types (items, descriptors, capabilities, …) come from the generated bindings.
 
+import type { Dictation, DictationEvents, DictationOptions } from "../voice/types.js";
 import type {
   AppliedSettings,
   CommandLogsResult,
@@ -484,6 +485,15 @@ export interface HarnessProvider {
    * harness cannot be asked at all.
    */
   skills?(cwd: string, opts: { forceReload: boolean }): Promise<SkillsListResult>;
+
+  /**
+   * Voice input (`voiceInput`, docs/plan/voice.md): one dictation through the harness's own
+   * speech-to-text, for the thread's composer. Called only when the thread's effective
+   * capabilities have `voiceInput`; the audio is in the thread's effective `voiceInput` format.
+   * Never throws for the harness refusing: that is `events.ended(error)`. The words go only to
+   * the host; nothing is sent to the conversation, and no audio is written anywhere.
+   */
+  startDictation?(thread: NativeId, opts: DictationOptions, events: DictationEvents): Dictation;
 
   readonly events: EventSource<ProviderEvent>;
   dispose(): Promise<void>;

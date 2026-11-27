@@ -255,6 +255,9 @@ export class ClientSession implements SessionHandler, ClientLink {
       case METHODS.TERMINAL_RESIZE: core.terminals.resize(p); return {};
       case METHODS.TERMINAL_CLOSE: core.terminals.close(p.terminal); return {};
       case METHODS.TERMINAL_RENAME: core.terminals.rename(p); return {};
+      case METHODS.VOICE_START: return core.voiceStart(this.view, p);
+      case METHODS.VOICE_STOP: core.voice.stop(this.view, p.stream, p.bytes); return {};
+      case METHODS.VOICE_CANCEL: core.voice.cancel(this.view, p.stream); return {};
       case METHODS.TUNNEL_OPEN:
         return this.tunnels.open(p);
       case METHODS.PREVIEW_PORTS:
@@ -295,6 +298,7 @@ export class ClientSession implements SessionHandler, ClientLink {
 
   onData(stream: number, bytes: Buffer): void {
     if (this.core.terminals.receive(this.view, stream, bytes)) return;
+    if (this.core.voice.receive(this.view, stream, bytes)) return;
     if (this.tunnels.receive(stream, bytes)) return;
     this.core.uploads.onData(stream, bytes, this, (s, n) => this.view.grantCredit(s, n));
   }
@@ -334,6 +338,7 @@ export class ClientSession implements SessionHandler, ClientLink {
     }
     this.closed = true;
     this.core.terminals.drop(this.view);
+    this.core.voice.drop(this.view);
     this.tunnels.drop();
     this.core.clients.delete(this);
     this.core.uploads.dropOwner(this);

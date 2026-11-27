@@ -73,6 +73,8 @@ import { previewText } from "./markup.js";
 import { bashMarkup, runUserShell } from "../user-shell.js";
 import { claudeSkills } from "../skills.js";
 import { ClaudeRateLimits, readWithOwnQuery } from "./ratelimits.js";
+import { CLAUDE_VOICE_FORMAT, ClaudeDictationHost } from "./dictation.js";
+import type { Dictation, DictationEvents, DictationOptions } from "../../voice/types.js";
 import type { RateLimitReport } from "../ratelimits.js";
 import type { StoreToolImage } from "../tool-images.js";
 
@@ -327,6 +329,12 @@ export interface ClaudeProviderOptions {
   /** A session's subagent files (D151). Tests pass a stub; default: read from the config folder. */
   subagentFiles?: (configDir: string, sessionId: string) => Map<string, SubagentFile>;
   log?: (line: string) => void;
+  /**
+   * Voice input (docs/04-providers.md#voice-input-claude): check at each probe whether Claude Code
+   * takes dictation from yaacd, and offer it when it does. Off unless set (the factory sets it
+   * unless `YAAC_CLAUDE_VOICE=0`).
+   */
+  voice?: boolean;
 }
 
 const iso = (ms: number | undefined | null): string => new Date(typeof ms === "number" && Number.isFinite(ms) ? ms : Date.now()).toISOString();
@@ -419,6 +427,8 @@ export class ClaudeProvider implements HarnessProvider {
   private configDir: string;
   /** The account and its rate-limit windows (D161). */
   private readonly limits = new ClaudeRateLimits((report) => this.emit({ type: "rateLimitsChanged", report }));
+  /** Dictation-only Claude Code processes (voice input). */
+  private readonly dictation: ClaudeDictationHost;
 
   constructor(readonly options: ClaudeProviderOptions) {
     this.cli = options.cli ?? (options.executable ? realCli(options.executable, options.env) : null);
@@ -430,6 +440,13 @@ export class ClaudeProvider implements HarnessProvider {
     this.stateFile = path.join(options.stateDir, "threads.json");
     this.settings = readJson<Record<NativeId, ThreadSettings>>(this.stateFile) ?? {};
     this.configDir = options.env.CLAUDE_CONFIG_DIR ?? path.join(options.env.HOME ?? os.homedir(), ".claude");
+    this.dictation = new ClaudeDictationHost({
+      sdk: () => this.sdk(),
+      executable: () => this.options.executable,
+      env: options.env,
+      cwd: options.stateDir,
+      log: this.log,
+    });
   }
 
   // ── Hooks and test controls ────────────────────────────────────────────────────────────
@@ -625,6 +642,9 @@ export class ClaudeProvider implements HarnessProvider {
       return this.result("needsAuth", "Claude Code is not signed in on this target; run `claude auth login` there", { harnessVersion: version, store });
     }
     const sdk = await this.sdk();
+    // In parallel with the model list: whether Claude Code takes dictation (no audio is sent).
+    const voice = this.options.voice ? this.dictation.probe(30_000) : Promise.resolve({ available: false } as { available: boolean; detail?: string });
+    voice.catch(() => {});
     const input = new InputQueue();
     const q = sdk.query({
       prompt: input,
@@ -689,6 +709,12 @@ export class ClaudeProvider implements HarnessProvider {
     });
     const capabilities = this.baseCapabilities();
     capabilities.push("troubleshoot");
+    // Voice input: Claude Code answers `dictate`, and its account is Anthropic's own (the
+    // speech-to-text service takes only a claude.ai sign-in).
+    const dictates = await voice;
+    const voiceAvailable = dictates.available && (!account?.apiProvider || account.apiProvider === "firstParty");
+    if (!dictates.available && dictates.detail) this.log(`voice input unavailable: ${dictates.detail}`);
+    if (voiceAvailable) capabilities.push("voiceInput");
     if (this.meshAttached) capabilities.push("meshTools");
     if (this.models.some((m) => (m.efforts ?? []).length > 0)) capabilities.push("reasoning");
     const autoMode = models.some((m) => m.supportsAutoMode === true);
@@ -1903,6 +1929,7 @@ export class ClaudeProvider implements HarnessProvider {
       capabilities: caps.filter((c) => (c !== "effortSwitch" && c !== "reasoning") || efforts.length > 0),
       imageInput: "supported",
       imageFormats: IMAGE_FORMATS,
+      ...(caps.includes("voiceInput") ? { voiceInput: CLAUDE_VOICE_FORMAT } : {}),
       efforts,
       modes: this.lastProbe?.modes ?? [],
       applied: {
@@ -2077,7 +2104,13 @@ export class ClaudeProvider implements HarnessProvider {
     this.save();
   }
 
+  /** Voice input: one dictation in a dictation-only Claude Code process (see ./dictation.ts). */
+  startDictation(_thread: NativeId, opts: DictationOptions, events: DictationEvents): Dictation {
+    return this.dictation.start(opts, events);
+  }
+
   async dispose(): Promise<void> {
+    this.dictation.dispose();
     for (const live of [...this.live.values()]) this.closeLive(live, "yaacd is stopping");
     this.disposed = true;
     const sdk = await this.sdkPromise?.catch(() => null);
@@ -2143,6 +2176,7 @@ export const claudeProviderFactory: ProviderFactory = {
       storeToolImage: ctx.storeToolImage,
       idleMs: intVar(cfg[IDLE_MS_VAR] ?? base[IDLE_MS_VAR], DEFAULT_IDLE_MS),
       maxLive: intVar(cfg[MAX_LIVE_VAR] ?? base[MAX_LIVE_VAR], DEFAULT_MAX_LIVE) || DEFAULT_MAX_LIVE,
+      voice: (cfg.YAAC_CLAUDE_VOICE ?? base.YAAC_CLAUDE_VOICE) !== "0",
       log: ctx.log,
     });
   },
