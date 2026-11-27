@@ -194,6 +194,17 @@ pub mod names {
     pub const VOICE_TRANSCRIPT: &str = "hub/voice/transcript";
     /// Hub → the window that started it. The dictation is over; its stream is closed.
     pub const VOICE_ENDED: &str = "hub/voice/ended";
+    /// Window → hub. Start a voice call ([`super::TargetVoiceCall`]`<VoiceCallStartParams>` →
+    /// `VoiceCallStartResult`; docs/plan/voice-call.md).
+    pub const VOICE_CALL_START: &str = "hub/voiceCall/start";
+    /// Window → hub. End a voice call; `hub/voiceCall/state ended` follows.
+    pub const VOICE_CALL_END: &str = "hub/voiceCall/end";
+    /// Hub → the starting window. The SDP answer.
+    pub const VOICE_CALL_ANSWER: &str = "hub/voiceCall/answer";
+    /// Hub → the starting window. The call's state; `ended` is the last message.
+    pub const VOICE_CALL_STATE: &str = "hub/voiceCall/state";
+    /// Hub → the starting window. What is being said.
+    pub const VOICE_CALL_TRANSCRIPT: &str = "hub/voiceCall/transcript";
     /// Read the hub-owned skill catalog.
     pub const CATALOG_SKILLS: &str = "hub/catalog/skills";
     /// Create or edit a user-owned skill.
@@ -266,6 +277,10 @@ pub struct TargetTerminal<P> {
 /// Voice request or notification on the window–hub link: the target-side payload with the
 /// target beside it, and the stream renumbered to the window's hub-local one.
 pub type TargetVoice<P> = TargetTerminal<P>;
+
+/// Voice call request or notification on the window–hub link: the target-side payload with
+/// the target beside it (`callId` unchanged).
+pub type TargetVoiceCall<P> = TargetTerminal<P>;
 
 /// `hub/hello` params.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

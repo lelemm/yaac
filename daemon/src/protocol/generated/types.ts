@@ -686,7 +686,7 @@ export interface BrowserTypeParams {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "voiceInput" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadTakeOverInterrupt" | "threadCheckControl" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "voiceInput" | "voiceCall" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadTakeOverInterrupt" | "threadCheckControl" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * Complete bundle staged on a target on demand.
@@ -7122,6 +7122,113 @@ export interface UserMessageItem {
    * The parts. For a message sent from outside YAAC, the text as the harness stored it.
    */
   parts: InputPart[];
+}
+
+/**
+ * `voiceCall/answer`: the service's SDP answer, once per call.
+ */
+export interface VoiceCallAnswerParams {
+  /**
+   * The call.
+   */
+  callId: string;
+  /**
+   * The remote description for the client's peer.
+   */
+  sdpAnswer: string;
+}
+
+/**
+ * `voiceCall/end`.
+ */
+export interface VoiceCallEndParams {
+  /**
+   * The call.
+   */
+  callId: string;
+}
+
+/**
+ * Who is speaking in a call transcript.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type VoiceCallRole = "user" | "assistant";
+
+/**
+ * `voiceCall/start`: begin a call with a thread.
+ */
+export interface VoiceCallStartParams {
+  /**
+   * Operation identity: an uncertain start is shown, never re-sent.
+   */
+  opId: OpId;
+  /**
+   * The client's complete (non-trickle) SDP offer: an audio track and the realtime events
+   * data channel.
+   */
+  sdpOffer: string;
+  /**
+   * The thread the call talks with (and acts in).
+   */
+  threadId: ThreadId;
+}
+
+/**
+ * The call that started.
+ */
+export interface VoiceCallStartResult {
+  /**
+   * Opaque, unique on its target.
+   */
+  callId: string;
+}
+
+/**
+ * Where a call is.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type VoiceCallState = "connecting" | "active" | "ended";
+
+/**
+ * `voiceCall/state`.
+ */
+export interface VoiceCallStateParams {
+  /**
+   * The call.
+   */
+  callId: string;
+  /**
+   * Why it ended, in words for the user; absent after a normal end.
+   */
+  error?: string | null;
+  /**
+   * Where it is now.
+   */
+  state: VoiceCallState;
+}
+
+/**
+ * `voiceCall/transcript`: what is being said.
+ */
+export interface VoiceCallTranscriptParams {
+  /**
+   * The call.
+   */
+  callId: string;
+  /**
+   * The utterance is complete; the next message for `role` starts a new one.
+   */
+  final: boolean;
+  /**
+   * Who speaks.
+   */
+  role: VoiceCallRole;
+  /**
+   * The whole current utterance of `role`; it **replaces** the previous `text` for `role`.
+   */
+  text: string;
 }
 
 /**

@@ -24,6 +24,11 @@ open_enum! {
         /// surface present); the thread's `voiceInput` format says what audio to send. Absent:
         /// no microphone is offered.
         VoiceInput = "voiceInput",
+        /// Voice call (docs/plan/voice-call.md). As a daemon feature: `yaacd` implements
+        /// `voiceCall/*`. On an instance or in a thread's effective capabilities: the harness can
+        /// hold a speech-to-speech call with the thread now, which can start and steer turns
+        /// there. The client is the media peer; no audio format is involved.
+        VoiceCall = "voiceCall",
         /// Permission mode can change during a running turn.
         ModeChangeLive = "modeChangeLive",
         // Thread lifecycle

@@ -25,6 +25,7 @@ mod terminal;
 mod thread;
 mod upload;
 mod voice;
+mod voice_call;
 
 pub use capability::*;
 pub use event::*;
@@ -46,6 +47,7 @@ pub use terminal::*;
 pub use thread::*;
 pub use upload::*;
 pub use voice::*;
+pub use voice_call::*;
 
 use serde_json::{Map, Value};
 

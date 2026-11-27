@@ -150,6 +150,12 @@ import type {
   UploadEndResult,
   UploadReadParams,
   UploadReadResult,
+  VoiceCallAnswerParams,
+  VoiceCallEndParams,
+  VoiceCallStartParams,
+  VoiceCallStartResult,
+  VoiceCallStateParams,
+  VoiceCallTranscriptParams,
   VoiceCancelParams,
   VoiceEndedParams,
   VoiceStartParams,
@@ -239,6 +245,8 @@ export const METHODS = {
   VOICE_START: "voice/start",
   VOICE_STOP: "voice/stop",
   VOICE_CANCEL: "voice/cancel",
+  VOICE_CALL_START: "voiceCall/start",
+  VOICE_CALL_END: "voiceCall/end",
   CATALOG_SKILLS: "catalog/skills",
   THEME_CALL: "theme/call",
   BROWSER_CALL: "browser/call",
@@ -289,6 +297,9 @@ export const NOTIFICATIONS = {
   TERMINAL_RENAMED: "terminal/renamed",
   VOICE_TRANSCRIPT: "voice/transcript",
   VOICE_ENDED: "voice/ended",
+  VOICE_CALL_ANSWER: "voiceCall/answer",
+  VOICE_CALL_STATE: "voiceCall/state",
+  VOICE_CALL_TRANSCRIPT: "voiceCall/transcript",
   TUNNEL_CLOSE: "tunnel/close",
   STREAM_CREDIT: "stream/credit",
   FORGE_PRS_CHANGED: "forge/prs/changed",
@@ -463,6 +474,10 @@ export interface RequestMap {
   "voice/stop": { params: VoiceStopParams; result: Empty };
   /** Voice cancel: drop the dictation and its words; `voice/ended` follows. */
   "voice/cancel": { params: VoiceCancelParams; result: Empty };
+  /** Voice call start: a speech-to-speech call with a thread from the client's SDP offer */
+  "voiceCall/start": { params: VoiceCallStartParams; result: VoiceCallStartResult };
+  /** Voice call end: `voiceCall/state ended` follows. */
+  "voiceCall/end": { params: VoiceCallEndParams; result: Empty };
   /** Fetch YAAC's hub-owned skill metadata or a selected bundle. */
   "catalog/skills": { params: CatalogSkillsParams; result: CatalogSkillsResult };
   /** Manage window appearance. */
@@ -559,6 +574,12 @@ export interface NotificationMap {
   "voice/transcript": VoiceTranscriptParams;
   /** Voice ended: a dictation is over and its stream closed; the last message for it. */
   "voice/ended": VoiceEndedParams;
+  /** Voice call answer: the service's SDP answer, once per call. */
+  "voiceCall/answer": VoiceCallAnswerParams;
+  /** Voice call state: connecting, active, ended (always last). */
+  "voiceCall/state": VoiceCallStateParams;
+  /** Voice call transcript: the whole current utterance of one speaker. */
+  "voiceCall/transcript": VoiceCallTranscriptParams;
   /** Either peer closed its preview socket. */
   "tunnel/close": TunnelCloseParams;
   /** The receiver of a data stream grants more credit. */
@@ -648,6 +669,8 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "voice/start": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "voice/stop": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "voice/cancel": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "voiceCall/start": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "voiceCall/end": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "catalog/skills": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "theme/call": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
   "browser/call": { direction: "daemonToHost", frozen: false, stateChanging: false, requestClass: "control", responseClass: "bulk" },
@@ -704,6 +727,9 @@ export const NOTIFICATION_INFO: { readonly [N in keyof NotificationMap]: Notific
   "terminal/renamed": { direction: "daemonToHost", class: "control" },
   "voice/transcript": { direction: "daemonToHost", class: "control" },
   "voice/ended": { direction: "daemonToHost", class: "control" },
+  "voiceCall/answer": { direction: "daemonToHost", class: "control" },
+  "voiceCall/state": { direction: "daemonToHost", class: "control" },
+  "voiceCall/transcript": { direction: "daemonToHost", class: "control" },
   "tunnel/close": { direction: "both", class: "control" },
   "stream/credit": { direction: "both", class: "control" },
   "forge/prs/changed": { direction: "daemonToHost", class: "control" },

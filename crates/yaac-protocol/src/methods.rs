@@ -421,6 +421,13 @@ catalogue! {
         /// Voice cancel: drop the dictation and its words; `voice/ended` follows.
         VoiceCancel = "voice/cancel" as VOICE_CANCEL:
             t::VoiceCancelParams => t::Empty, HostToDaemon, request Control, response Control;
+        /// Voice call start: a speech-to-speech call with a thread from the client's SDP offer
+        /// (docs/plan/voice-call.md). Answered once the harness accepted; events follow.
+        VoiceCallStart = "voiceCall/start" as VOICE_CALL_START:
+            t::VoiceCallStartParams => t::VoiceCallStartResult, HostToDaemon, request Control, response Control, op;
+        /// Voice call end: `voiceCall/state ended` follows.
+        VoiceCallEnd = "voiceCall/end" as VOICE_CALL_END:
+            t::VoiceCallEndParams => t::Empty, HostToDaemon, request Control, response Control;
         /// Fetch YAAC's hub-owned skill metadata or a selected bundle.
         CatalogSkills = "catalog/skills" as CATALOG_SKILLS:
             t::CatalogSkillsParams => t::CatalogSkillsResult, DaemonToHost, request Control, response Bulk;
@@ -574,6 +581,15 @@ catalogue! {
         /// Voice ended: a dictation is over and its stream closed; the last message for it.
         VoiceEnded = "voice/ended" as VOICE_ENDED:
             t::VoiceEndedParams, DaemonToHost, Control;
+        /// Voice call answer: the service's SDP answer, once per call.
+        VoiceCallAnswer = "voiceCall/answer" as VOICE_CALL_ANSWER:
+            t::VoiceCallAnswerParams, DaemonToHost, Control;
+        /// Voice call state: connecting, active, ended (always last).
+        VoiceCallState = "voiceCall/state" as VOICE_CALL_STATE:
+            t::VoiceCallStateParams, DaemonToHost, Control;
+        /// Voice call transcript: the whole current utterance of one speaker.
+        VoiceCallTranscript = "voiceCall/transcript" as VOICE_CALL_TRANSCRIPT:
+            t::VoiceCallTranscriptParams, DaemonToHost, Control;
         /// Either peer closed its preview socket.
         TunnelClose = "tunnel/close" as TUNNEL_CLOSE:
             t::TunnelCloseParams, Both, Control;
