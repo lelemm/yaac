@@ -10,7 +10,7 @@ import kotlin.math.roundToInt
  */
 object TimelineModel {
     /** How long a finger must stay still at the edge before the timeline opens. */
-    const val HOLD_MS = 2_000L
+    const val HOLD_MS = 500L
 
     /** Whether a touch that went down at [x] (px) starts in the edge zone of [edgePx]. */
     fun inEdge(x: Float, edgePx: Float): Boolean = x in 0f..edgePx
