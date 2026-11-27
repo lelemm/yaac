@@ -96,8 +96,8 @@ local socket:
 - **What it carries.** An admitted connection is an ordinary attach: the same frames, the same
   methods, the same `hub/hello` build rule as the local socket. The exception: only a client
   admitted here may send the frozen `hub/update/request`, which asks the hub to install a newer
-  build on this computer ([install](install.md#updating-from-the-phone)). The reverse holds for
-  the hub's lifecycle: a client admitted here can never stop the hub. It is refused
+  build on this computer ([install](install.md#updating-from-the-phone)). For the hub's direct
+  lifecycle controls, a client admitted here is refused
   `hub/shutdown` whatever the builds, and `hub/settings/update` with `always` or
   `idleExitSecs`, with `remote_not_allowed`. It may still turn `tailscaleAttach` off, which
   only ends its own access. The client side is
@@ -126,6 +126,24 @@ The `tailscale` command is the one on `PATH`; on Windows the hub also tries
 `C:\Program Files\Tailscale\tailscale.exe`, and on macOS the app bundle's `Tailscale`. It runs
 with no console window. These are local commands on the host: no connection to a target is
 opened for them (invariant 1).
+
+### Moving the hub
+
+**Proposed (P408–P413).** Desktop and phone clients can move the hub to an eligible Linux SSH
+target. The hub uses the target's existing daemon connection for the install and data transfer.
+The destination starts when the old hub closes this connection, after the old hub releases its
+other target connections. Client methods follow the usual `hub/hello` build check.
+
+| Attach message | Purpose |
+| --- | --- |
+| `hub/transfer/candidates {}` | Lists every target with its ID, label, eligibility and a reason when it cannot host the hub. |
+| `hub/transfer/start { opId, targetId }` | Starts one confirmed attempt and returns `{}` upon acceptance. |
+| `hub/transfer/progress { opId, targetId, phase, done?, total?, message? }` | Reports checking, installing, copying, handing over, moved or failed. Byte counts are optional. |
+| `hub/moved { hubId, address, hostName }` | Tells clients where to reattach and which saved hub to update. |
+
+During hand-over the old hub refuses state-changing client requests with `hub_moving`. The PC
+records the move in `moved.json` and uses it on the next launch. Desktop clients keep one active
+attach and save their hubs in local window settings. [Hub transfer](15-hub-transfer.md)
 
 ## The single-connection rule
 

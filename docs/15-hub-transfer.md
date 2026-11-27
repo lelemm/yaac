@@ -1,8 +1,6 @@
 # 15 — Moving the hub to another machine, and several hubs on desktop
 
-**Proposed** (P408–P413). The owner's request, branch `hub-transfer`. This is the working brief the
-implementation follows; the contract worker turns its names into `yaac-protocol` types and keeps
-this page true.
+**Proposed** (P408–P413).
 
 ## What the user sees
 
@@ -46,8 +44,9 @@ old hub has let go of all of them.
    `~/.local/share/yaac/bin/yaac` (staged, not yet started). If X cannot reach GitHub the hub
    streams the bytes it downloaded itself (same `hubHost/put` path as the files below).
 3. **Copy** — `hubHost/put {opId, name, size, sha256}` + stream chunks (stream credit, like
-   attachments) into a staging dir `~/.local/share/yaac/transfer-<opId>/`. First a live copy of
-   `cache.sqlite` (SQLite online backup into a temp file, then streamed), then:
+   attachments) into a staging dir `~/.local/share/yaac/transfer-<opId>/`. The destination sends
+   `hubHost/putComplete` after it verifies and stages the file. The hub waits for this outcome
+   before continuing. First it streams a live copy of `cache.sqlite` from a SQLite online backup.
 4. **Quiesce** — the hub tells clients "moving to X" (progress `handingOver`), stops accepting
    state-changing client requests (`hub_moving` error), closes every target connection except X,
    checkpoints `relay.sqlite`, `drafts.sqlite`, `cache.sqlite`, and copies the final `relay`,
@@ -73,7 +72,8 @@ old hub has let go of all of them.
 deleted (`hubHost/abort`), and the old hub reconnects its targets and carries on — nothing has
 moved. After step 6, if the new hub does not answer, the window on the PC says so with **Start the
 hub here again** (deletes the tombstone and starts the local hub; the data on the PC is the state
-of the hand-over). No step is retried by itself (invariant 10); each request carries the opId.
+of the hand-over). Steps are never retried automatically (invariant 10). Each state-changing
+request carries the transfer's `opId`.
 
 ## The rewritten hub.json (P410)
 
@@ -104,12 +104,19 @@ Attach (window/phone ⇄ hub):
   phase ∈ `checking | installing | copying | handingOver | moved | failed`.
 - notification `hub/moved { hubId, address, hostName }` — sent just before the old hub exits.
 - error code `hub_moving` for requests refused during the hand-over.
+- error codes `transfer_not_eligible`, `transfer_in_progress`, and `transfer_unavailable` for
+  a transfer start that the hub cannot accept.
 
 Daemon (hub ⇄ `yaacd` on X):
 - `hubHost/probe {}` → `{ os, arch, tailscale: { running, login?, ips[] }, portFree, hubRunning, lastTransfer? }`
-- `hubHost/install { opId, url, sha256, size }` → `{ path }` (progress via `hubHost/progress`)
-- `hubHost/put { opId, name, size, sha256 }` → a stream to write into (stream credit)
+- `lastTransfer` is `{ opId, status, message? }` with `status` of `started` or `failed`.
+- `hubHost/install { opId, url, sha256, size }` → `{ path }`
+- notification `hubHost/progress { opId, done, total }` reports download progress in bytes.
+- `hubHost/put { opId, name, size, sha256 }` → `{ stream, credit }`. Send data frames on
+  `stream` as credit permits.
+- notification `hubHost/putComplete { stream, message? }` confirms staging on success and
+  carries an error message on failure.
 - `hubHost/start { opId, armOnClose }` → `{ armed: true }`
 - `hubHost/abort { opId }` → `{ }`
-- capability `hubHost` in `initialize` (a `yaacd` without it is not a candidate: "Update YAAC on
+- capability `hubHost` in `initialize.features` (a `yaacd` without it is not a candidate: "Update YAAC on
   that target first").

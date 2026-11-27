@@ -122,6 +122,24 @@ requests. They are items in the thread, answered with `request/respond`
 | `diagnostics/troubleshoot` | On a provider advertising `troubleshoot`, use a temporary public YAAC checkout and an ephemeral model call to return a developer report and source revision. The input is a symptom, the window build and renderer, and the live instance, model and effort IDs. The connection does not create a YAAC thread. |
 | `catalog/skills` (daemon → host) | Read hub-owned skill metadata or one bundle by catalog ID, over the daemon’s existing connection. Window changes use the `hub/catalog/` attach methods with operation IDs and an expected revision. |
 
+### Hub transfer
+
+**Proposed (P408–P411).** A target advertising `hubHost` in `initialize.features` accepts
+these requests on its existing connection. State-changing calls use the same transfer `opId`
+throughout the attempt.
+
+| Message | Purpose |
+| --- | --- |
+| `hubHost/probe {}` | Returns `{ os, arch, tailscale: { running, login?, ips }, portFree, hubRunning, lastTransfer? }`. The optional outcome has `opId`, `status` and an optional `message`. |
+| `hubHost/install { opId, url, sha256, size }` | Downloads and verifies the exact release binary. Returns its staged `{ path }`. |
+| `hubHost/progress { opId, done, total }` | Daemon notification with download progress in bytes. |
+| `hubHost/put { opId, name, size, sha256 }` | Opens a file stream and returns `{ stream, credit }`. Send bytes in data frames on that stream. The daemon grants additional byte credit via `stream/credit`. |
+| `hubHost/putComplete { stream, message? }` | Daemon notification after staging and verification. A message indicates failure. Wait for this outcome before advancing. |
+| `hubHost/start { opId, armOnClose }` | Validates staging and returns `{ armed: true }` for a deferred start when the connection closes. |
+| `hubHost/abort { opId }` | Disarms startup and discards staging. Returns `{}`. |
+
+[Hub transfer](15-hub-transfer.md#how-it-works-p409)
+
 ### Terminal
 
 A target advertising `terminal` accepts `terminal/shells`, `open`, `attach`, `resize`,
