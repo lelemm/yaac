@@ -182,9 +182,10 @@ pub mod names {
     pub const TERMINAL_RENAME: &str = "hub/terminal/rename";
     /// Terminal renamed on the selected target (P343).
     pub const TERMINAL_RENAMED: &str = "hub/terminal/renamed";
-    /// Window → hub. Start a dictation on a thread of the selected target
-    /// ([`super::TargetVoice`]`<VoiceStartParams>` → `VoiceStartResult` with a hub-local
-    /// stream). Audio follows as data frames on that stream, under credit (docs/plan/voice.md).
+    /// Window → hub. Start a dictation for a composer ([`HubVoiceStartParams`] →
+    /// [`HubVoiceStartResult`]): the hub chooses the transcriber
+    /// ([`crate::transcription::choose`]) and answers with it and a hub-local stream. Audio
+    /// follows as data frames on that stream, under credit (docs/plan/voice.md).
     pub const VOICE_START: &str = "hub/voice/start";
     /// Window → hub. No more audio: the final transcript and `hub/voice/ended` follow.
     pub const VOICE_STOP: &str = "hub/voice/stop";
@@ -275,8 +276,44 @@ pub struct TargetTerminal<P> {
 }
 
 /// Voice request or notification on the window–hub link: the target-side payload with the
-/// target beside it, and the stream renumbered to the window's hub-local one.
+/// target beside it, and the stream renumbered to the window's hub-local one. The target is the
+/// transcriber's ([`HubVoiceStartResult::target`]), not necessarily the composer's.
 pub type TargetVoice<P> = TargetTerminal<P>;
+
+/// `hub/voice/start` params: the composer the words are for. The hub chooses who transcribes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubVoiceStartParams {
+    /// Operation identity, passed on to the target's `voice/start`.
+    pub op_id: crate::OpId,
+    /// The composer's target, when it has one (a new-thread draft may not).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<TargetId>,
+    /// The composer's instance: the thread's, or the one a draft chose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<crate::InstanceId>,
+    /// The composer's thread, when it is a thread's (context only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<crate::ThreadId>,
+    /// The spoken language as a code, when the user chose one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
+/// `hub/voice/start` result: who transcribes, and the audio stream.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HubVoiceStartResult {
+    /// The transcriber's target: stop, cancel and the notifications name this one.
+    pub target: TargetId,
+    /// The transcribing instance.
+    pub instance: crate::InstanceId,
+    /// "Claude on wsl: Ubuntu".
+    pub label: String,
+    /// The target's answer, with the stream renumbered to a hub-local one.
+    #[serde(flatten)]
+    pub opened: crate::VoiceStartResult,
+}
 
 /// Voice call request or notification on the window–hub link: the target-side payload with
 /// the target beside it (`callId` unchanged).

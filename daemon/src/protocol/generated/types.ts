@@ -686,7 +686,7 @@ export interface BrowserTypeParams {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "voiceInput" | "voiceCall" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadTakeOverInterrupt" | "threadCheckControl" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "transcription" | "voiceCall" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadTakeOverInterrupt" | "threadCheckControl" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * Complete bundle staged on a target on demand.
@@ -3779,6 +3779,12 @@ export interface ProviderDescriptor {
    * Which conversations this instance owns.
    */
   store: StoreIdentity;
+  /**
+   * Dictation through this instance (docs/plan/voice.md): the audio it takes when it can
+   * transcribe now (with the `transcription` capability), or why it cannot. Absent: the
+   * instance has no voice surface at all.
+   */
+  transcription?: TranscriptionOffer | null;
 }
 
 /**
@@ -5475,12 +5481,6 @@ export interface ThreadEffective {
    * Selectable modes.
    */
   modes?: ModeInfo[];
-  /**
-   * The audio the thread's harness transcribes, when it offers voice input
-   * (docs/plan/voice.md). The UI offers the microphone only when `capabilities` also has
-   * `voiceInput` (a connection without the feature folds that away).
-   */
-  voiceInput?: VoiceFormat | null;
 }
 
 /**
@@ -6635,6 +6635,22 @@ export interface TranscriptEntry {
 export type TranscriptRole = "user" | "agent" | "peer" | "notice";
 
 /**
+ * `ProviderDescriptor.transcription`: whether an instance can take dictation, and in what
+ * audio. Ready only together with the `transcription` capability on the descriptor (which a
+ * connection without the feature folds away).
+ */
+export interface TranscriptionOffer {
+  /**
+   * What to record, when the instance can transcribe now.
+   */
+  format?: VoiceFormat | null;
+  /**
+   * Why it cannot, in words for the user (a sign-in it needs, a refusal), when it cannot.
+   */
+  unavailable?: string | null;
+}
+
+/**
  * Input to an ephemeral source-based diagnosis.
  */
 export interface TroubleshootParams {
@@ -7257,7 +7273,7 @@ export interface VoiceEndedParams {
 }
 
 /**
- * The audio a thread's harness wants: reported by the target, never assumed by the host.
+ * The audio an instance transcribes: reported by the target, never assumed by the host.
  */
 export interface VoiceFormat {
   /**
@@ -7279,9 +7295,14 @@ export interface VoiceFormat {
 }
 
 /**
- * `voice/start`: begin one dictation for a thread.
+ * `voice/start`: begin one dictation through an instance.
  */
 export interface VoiceStartParams {
+  /**
+   * The instance that transcribes. It need not be the thread's: the words only fill a
+   * composer, never the conversation.
+   */
+  instance: InstanceId;
   /**
    * The spoken language as a code (`en`, `pt-BR`), when the user chose one; otherwise the
    * harness's own setting applies.
@@ -7292,9 +7313,10 @@ export interface VoiceStartParams {
    */
   opId: OpId;
   /**
-   * The thread whose harness transcribes (and whose composer gets the words).
+   * The thread whose composer gets the words, when it is on this target: context for the
+   * daemon's log and its one-dictation-per-thread limit only.
    */
-  threadId: ThreadId;
+  threadId?: ThreadId | null;
 }
 
 /**

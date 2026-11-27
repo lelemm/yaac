@@ -172,8 +172,6 @@ fn caps() -> Vec<Capability> {
         // yaacd's own (D144): any thread can be moved to another project.
         Capability::ThreadMove,
         Capability::ForkKeepChildren,
-        // Dictation through the harness's own speech-to-text (docs/plan/voice.md).
-        Capability::VoiceInput,
         // A voice call with the thread (docs/plan/voice-call.md): scripted in the demo hub.
         Capability::VoiceCall,
     ]
@@ -211,7 +209,18 @@ pub(crate) fn codex(instance: &str, name: Option<&str>, status: ProviderStatus) 
         revision: 1,
         backend_origin: None,
         models_read_at: None,
+        // The demo's Codex has a voice surface but no key for it: its threads dictate through
+        // Claude (P392).
+        transcription: Some(yaac_protocol::TranscriptionOffer {
+            format: None,
+            unavailable: Some("Codex transcribes only with an OpenAI API key sign-in.".into()),
+        }),
     }
+}
+
+/// What the demo's Claude transcribes: the target reports it, the window never assumes it.
+fn demo_voice_format() -> yaac_protocol::VoiceFormat {
+    yaac_protocol::VoiceFormat { format: yaac_protocol::AudioEncoding::Pcm16le, sample_rate: 16_000, channels: 1, max_seconds: Some(120) }
 }
 
 pub(crate) fn claude(status: ProviderStatus) -> ProviderDescriptor {
@@ -225,7 +234,8 @@ pub(crate) fn claude(status: ProviderStatus) -> ProviderDescriptor {
         store: StoreIdentity { key: Some("store-claude".into()), home: None, account: Some("work@example.com".into()) },
         status,
         status_message: None,
-        capabilities: [caps(), vec![Capability::ModeChangeLive]].concat(),
+        // Dictation through its own speech-to-text (docs/plan/voice.md), for any composer.
+        capabilities: [caps(), vec![Capability::ModeChangeLive, Capability::Transcription]].concat(),
         models: vec![with_fast(model("opus-5.5", true, Support::Supported)), model("haiku-5", false, Support::Unsupported)],
         disabled_models: Vec::new(),
         approval_explanation_model: None,
@@ -234,6 +244,7 @@ pub(crate) fn claude(status: ProviderStatus) -> ProviderDescriptor {
         revision: 1,
         backend_origin: None,
         models_read_at: None,
+        transcription: Some(yaac_protocol::TranscriptionOffer { format: Some(demo_voice_format()), unavailable: None }),
     }
 }
 
@@ -303,13 +314,6 @@ impl Fleet {
                 effort: Some(EffortId::new("high")),
                 mode: Some(ModeId::new("ask")),
             },
-            // What the demo's harnesses transcribe: the target reports it, the window never assumes it.
-            voice_input: capabilities.contains(&Capability::VoiceInput).then(|| yaac_protocol::VoiceFormat {
-                format: yaac_protocol::AudioEncoding::Pcm16le,
-                sample_rate: 16_000,
-                channels: 1,
-                max_seconds: Some(120),
-            }),
             capabilities,
         }
     }

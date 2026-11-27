@@ -518,15 +518,15 @@ pub(crate) fn serve(launch: crate::Launch, commands: Connection, mut stdout: imp
 
 /// Dictated words (docs/plan/voice.md): into the open composer at its caret, through the same
 /// one-shot `insert` as a paste (one at a time: the next waits until the renderer has taken
-/// this one); a thread whose composer is not open gets them at the end of its draft.
+/// this one); a composer that is not open gets them at the end of its draft.
 fn voice_insert(app: &mut YaacApp, insert: &mut Option<(String, Value)>) {
-    let open_thread = match app.open_composer() { Some(DraftRef::Thread(key)) => Some(key), _ => None };
-    for key in crate::voice::settle_elsewhere(app, open_thread.as_ref()) {
-        app.apply(vec![Action::DraftEdited(DraftRef::Thread(key))]);
+    let open = app.open_composer();
+    for key in crate::voice::settle_elsewhere(app, open.as_ref()) {
+        app.apply(vec![Action::DraftEdited(key)]);
     }
-    if insert.is_none() && let Some(key) = &open_thread {
-        let store = DraftRef::Thread(key.clone()).store_key();
-        let text = app.client.state.drafts.get(key).map(|d| d.text.clone()).unwrap_or_default();
+    if insert.is_none() && let Some(key) = &open {
+        let store = key.store_key();
+        let text = app.client.draft(key).map(|d| d.text.clone()).unwrap_or_default();
         let before = app.ui.wpf_skills.before_caret(&store, &text).to_owned();
         if let Some(words) = crate::voice::take_for(app, key, &before) {
             let id = crate::voice::insert_id(app);

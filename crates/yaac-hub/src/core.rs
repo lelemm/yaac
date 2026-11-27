@@ -269,6 +269,9 @@ struct Conn {
     terminal_streams: HashMap<StreamId, StreamId>,
     /// Target stream → hub-local stream, for windows' dictations.
     voice_streams: HashMap<StreamId, StreamId>,
+    /// This connection's instances as the transcriber choice needs them (capabilities folded,
+    /// models dropped): docs/plan/voice.md, P392.
+    transcribers: Vec<yaac_protocol::ProviderDescriptor>,
     preview_streams: HashMap<StreamId, u64>,
     /// Target stream → attach stream, for windows' tunnels (P380).
     attach_tunnels: HashMap<StreamId, StreamId>,
@@ -1653,6 +1656,7 @@ impl Core {
                     pending: HashMap::new(),
                     terminal_streams: HashMap::new(),
                     voice_streams: HashMap::new(),
+                    transcribers: Vec::new(),
                     preview_streams: HashMap::new(),
                     attach_tunnels: HashMap::new(),
                     subs: HashMap::new(),
@@ -1739,7 +1743,7 @@ impl Core {
                 }
                 Pending::Terminal { client, id, .. } => self.reply(client, id, Err(err(ErrorCode::OutcomeUnknown, "target disconnected before answering terminal request"))),
                 Pending::Voice { ask: voice::VoiceAsk::Quiet, .. } => {}
-                Pending::Voice { client, id, ask: voice::VoiceAsk::Start } => {
+                Pending::Voice { client, id, ask: voice::VoiceAsk::Start(_) } => {
                     self.reply(client, id, Err(err(ErrorCode::OutcomeUnknown, "the connection dropped before the dictation started; it may have started and ended")));
                 }
                 Pending::Voice { client, id, ask: voice::VoiceAsk::Stream } => self.reply(client, id, Err(err(ErrorCode::TargetOffline, "the connection to the target dropped"))),
@@ -2123,6 +2127,7 @@ impl Core {
                     }
                 }
                 self.limits_providers(id, &providers);
+                self.voice_providers(id, &providers, true);
                 let target = id.clone();
                 self.worker.submit(move |s| match s.cache.replace_providers(&target, &providers) {
                     Ok(()) => Some(CoreEvent::Broadcast(Message::notification(ext::names::PROVIDERS_CHANGED, json!({ "target": target })))),
@@ -2170,7 +2175,7 @@ impl Core {
             Pending::UploadEnd { handle } => self.on_upload_ended(id, &handle, outcome),
             Pending::UploadCancel { handle } => self.on_upload_cancelled(&handle),
             Pending::Terminal { client, id: rid, terminal } => self.terminal_response(id, client, rid, method, terminal, outcome),
-            Pending::Voice { client, id: rid, ask } => self.voice_response(id, client, rid, method, ask, outcome),
+            Pending::Voice { client, id: rid, ask } => self.voice_response(id, client, rid, method, &ask, outcome),
             Pending::VoiceCall { client, id: rid, ask } => self.voice_call_response(id, client, rid, method, ask, outcome),
             Pending::PreviewOpen { socket } => self.preview_opened(id, socket, outcome),
             Pending::AttachTunnel { client, id: rid } => self.attach_tunnel_opened(id, client, rid, outcome),
@@ -2256,6 +2261,7 @@ impl Core {
                 if let Some(conn) = self.targets.get(id).and_then(|t| t.conn.as_ref()) {
                     conn.session.fold_capabilities(&mut p.provider.capabilities);
                 }
+                self.voice_providers(id, std::slice::from_ref(&p.provider), false);
                 let target = id.clone();
                 self.worker.submit(move |s| match s.cache.put_provider(&target, &p.provider) {
                     Ok(()) => Some(CoreEvent::Broadcast(Self::routed_notification(&target, names::PROVIDER_UPDATED, to_value(&p)))),

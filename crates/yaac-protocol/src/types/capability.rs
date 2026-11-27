@@ -18,12 +18,13 @@ open_enum! {
         /// This target's `yaacd` can set or remove an orchestration's time limit
         /// (`mesh/budget` `setTimeLimit`, P352).
         BudgetTimeLimit = "budgetTimeLimit",
-        /// Voice input (docs/plan/voice.md). As a daemon feature: `yaacd` implements `voice/*`.
-        /// On an instance or in a thread's effective capabilities: the harness can turn the
-        /// user's recorded speech into text for the composer now (signed in, allowed, a voice
-        /// surface present); the thread's `voiceInput` format says what audio to send. Absent:
-        /// no microphone is offered.
-        VoiceInput = "voiceInput",
+        /// Transcription (dictation, docs/plan/voice.md, P392). As a daemon feature: `yaacd`
+        /// implements `voice/*` addressed to an instance. On an instance: it can turn recorded
+        /// speech into text now (signed in, allowed, a voice surface present); the descriptor's
+        /// `transcription` says what audio to send. Never a thread capability: dictation only
+        /// fills a composer, so any ready instance on any connected target may serve any
+        /// composer (the hub chooses, [`crate::transcription::choose`]).
+        Transcription = "transcription",
         /// Voice call (docs/plan/voice-call.md). As a daemon feature: `yaacd` implements
         /// `voiceCall/*`. On an instance or in a thread's effective capabilities: the harness can
         /// hold a speech-to-speech call with the thread now, which can start and steer turns

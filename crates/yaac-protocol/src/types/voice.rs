@@ -1,7 +1,9 @@
 //! Voice input (docs/plan/voice.md): the host records the microphone and streams raw audio to
-//! `yaacd`, which hands it to the harness's own speech-to-text and sends the words back. The
-//! words only ever land in the composer; audio is never journaled or written to disk.
-use super::{OpId, StreamId, ThreadId};
+//! `yaacd`, which hands it to an instance's own speech-to-text and sends the words back. The
+//! words only ever land in a composer; audio is never journaled or written to disk.
+//! Transcription is a service of an instance, not of a thread (P392): the hub chooses which
+//! instance serves a composer.
+use super::{InstanceId, OpId, StreamId, ThreadId};
 use crate::macros::open_enum;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -14,7 +16,7 @@ open_enum! {
     }
 }
 
-/// The audio a thread's harness wants: reported by the target, never assumed by the host.
+/// The audio an instance transcribes: reported by the target, never assumed by the host.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceFormat {
@@ -29,14 +31,33 @@ pub struct VoiceFormat {
     pub max_seconds: Option<u32>,
 }
 
-/// `voice/start`: begin one dictation for a thread.
+/// `ProviderDescriptor.transcription`: whether an instance can take dictation, and in what
+/// audio. Ready only together with the `transcription` capability on the descriptor (which a
+/// connection without the feature folds away).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionOffer {
+    /// What to record, when the instance can transcribe now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<VoiceFormat>,
+    /// Why it cannot, in words for the user (a sign-in it needs, a refusal), when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
+/// `voice/start`: begin one dictation through an instance.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct VoiceStartParams {
     /// Operation identity: an uncertain start is shown, never re-sent.
     pub op_id: OpId,
-    /// The thread whose harness transcribes (and whose composer gets the words).
-    pub thread_id: ThreadId,
+    /// The instance that transcribes. It need not be the thread's: the words only fill a
+    /// composer, never the conversation.
+    pub instance: InstanceId,
+    /// The thread whose composer gets the words, when it is on this target: context for the
+    /// daemon's log and its one-dictation-per-thread limit only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<ThreadId>,
     /// The spoken language as a code (`en`, `pt-BR`), when the user chose one; otherwise the
     /// harness's own setting applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]

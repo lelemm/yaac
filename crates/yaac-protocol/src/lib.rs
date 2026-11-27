@@ -16,6 +16,7 @@
 //! | [`session`] | a sans-I/O host-side session: handshake, ids, dialect-driven encode/decode |
 //! | [`flows`] | multi-message flows (start a thread, open a thread) over the dialect |
 //! | [`attach`] | window ⇄ hub messages (`hub/*`) |
+//! | [`transcription`] | which instance transcribes a dictation (shared by hub and window) |
 //! | [`codegen`] | schema snapshot, schema hash, TypeScript generation |
 //!
 //! Forward compatibility: unknown fields are ignored; unknown enum values, capabilities,
@@ -34,6 +35,7 @@ pub mod methods;
 pub mod rpc;
 pub mod schedule;
 pub mod session;
+pub mod transcription;
 pub mod types;
 
 pub use types::*;

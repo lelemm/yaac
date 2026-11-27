@@ -5,6 +5,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use serde_json::{Value, json};
+use yaac_protocol::transcription::Transcriber;
 use yaac_protocol::{StreamId, attach::names};
 
 /// What the demo "hears": a word per quarter second of audio.
@@ -37,18 +38,19 @@ impl Voices {
         self.running.contains_key(&stream)
     }
 
-    /// Answer a `hub/voice/*` request. `format` is the thread's reported format, if it can
-    /// dictate.
-    pub(crate) fn request(&mut self, method: &str, params: &Value, format: Option<Value>) -> Result<Value, String> {
-        let target = params.get("target").cloned().unwrap_or(Value::Null);
+    /// Answer a `hub/voice/*` request. `chosen` is, for a start, the transcriber the demo hub
+    /// chose for the composer, or why there is none.
+    pub(crate) fn request(&mut self, method: &str, params: &Value, chosen: Option<Result<Transcriber, String>>) -> Result<Value, String> {
         let stream = params.get("stream").and_then(|s| serde_json::from_value::<StreamId>(s.clone()).ok());
         match method {
             names::VOICE_START => {
-                let format = format.ok_or("This thread cannot take voice input.")?;
+                let chosen = chosen.unwrap_or_else(|| Err("No transcriber available.".into()))?;
                 self.next += 1;
                 let stream = StreamId(FIRST_STREAM + self.next);
-                self.running.insert(stream, Dictation { target, format: format.clone(), bytes: 0, words: 0 });
-                Ok(json!({ "stream": stream, "initialCredit": CREDIT, "format": format }))
+                let format = json!(chosen.format);
+                self.running.insert(stream, Dictation { target: json!(chosen.target), format: format.clone(), bytes: 0, words: 0 });
+                Ok(json!({ "target": chosen.target, "instance": chosen.instance, "label": chosen.label,
+                           "stream": stream, "initialCredit": CREDIT, "format": format }))
             }
             names::VOICE_STOP => {
                 if let Some(stream) = stream

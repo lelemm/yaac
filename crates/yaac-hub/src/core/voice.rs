@@ -1,13 +1,17 @@
-//! Voice input relay (docs/plan/voice.md): `hub/voice/*` from a window becomes `voice/*` on
-//! the thread's target connection, the window's audio data frames are forwarded under the
-//! target's credit, and `voice/transcript` / `voice/ended` go back to the starting window only.
-//! Streams are renumbered per window as terminals are. The hub keeps no audio and no words:
-//! nothing here is cached, journaled or logged beyond the stream mapping.
+//! Voice input relay (docs/plan/voice.md): `hub/voice/start` from a window names the composer;
+//! the hub chooses the transcriber (P392, [`yaac_protocol::transcription::choose`]) — the
+//! composer's own instance, else another on its target, else one on another connected target —
+//! and sends `voice/start` on that target's one connection. The window's audio data frames are
+//! forwarded under the target's credit, and `voice/transcript` / `voice/ended` go back to the
+//! starting window only. Streams are renumbered per window as terminals are. The hub keeps no
+//! audio and no words: nothing here is cached, journaled or logged beyond the stream mapping.
 use super::{
     ClientKey, Core, ErrorCode, ErrorObject, HashMap, Message, Pending, RpcId, StreamCreditParams, StreamId, Target, TargetId, Value,
     attach, err, names, parse, to_value,
 };
-use yaac_protocol::{VoiceCancelParams, VoiceStartResult};
+use yaac_protocol::attach::{HubVoiceStartParams, HubVoiceStartResult};
+use yaac_protocol::transcription::{self, Candidate, Choice, Context};
+use yaac_protocol::{InstanceId, ProviderDescriptor, VoiceCancelParams, VoiceStartParams, VoiceStartResult};
 
 #[derive(Debug, Default)]
 pub(super) struct Relays {
@@ -23,9 +27,10 @@ pub(super) struct Relay {
 }
 
 /// What a pending `voice/*` request was.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(super) enum VoiceAsk {
-    Start,
+    /// A start through this instance, which the window is told about.
+    Start(Box<(InstanceId, String)>),
     /// Stop or cancel of this hub-local stream.
     Stream,
     /// A cancel the hub sent itself (the window left); nobody is answered.
@@ -33,13 +38,76 @@ pub(super) enum VoiceAsk {
 }
 
 impl Core {
+    /// A target's instances changed: keep what the transcriber choice reads (`replace`: the
+    /// whole list, else one updated descriptor).
+    pub(super) fn voice_providers(&mut self, target: &TargetId, providers: &[ProviderDescriptor], replace: bool) {
+        let Some(conn) = self.targets.get_mut(target).and_then(|t| t.conn.as_mut()) else { return };
+        if replace {
+            conn.transcribers.clear();
+        }
+        for p in providers {
+            let slim = ProviderDescriptor { models: Vec::new(), disabled_models: Vec::new(), modes: Vec::new(), ..p.clone() };
+            match conn.transcribers.iter_mut().find(|x| x.instance == p.instance) {
+                Some(x) => *x = slim,
+                None => conn.transcribers.push(slim),
+            }
+        }
+    }
+
+    /// The transcriber for a composer, among the targets connected now.
+    fn choose_transcriber(&self, p: &HubVoiceStartParams) -> Choice {
+        let candidates: Vec<Candidate<'_>> = self
+            .targets
+            .values()
+            .map(|t| {
+                let conn = t.conn.as_ref().filter(|c| c.ready);
+                Candidate {
+                    target: &t.def.id,
+                    name: t.def.name.as_str(),
+                    connected: conn.is_some(),
+                    providers: conn.map_or(&[][..], |c| c.transcribers.as_slice()),
+                }
+            })
+            .collect();
+        transcription::choose(Context { target: p.target.as_ref(), instance: p.instance.as_ref() }, &candidates)
+    }
+
+    /// `hub/voice/start`: choose, then `voice/start` on the chosen target.
+    fn voice_start(&mut self, client: ClientKey, id: &RpcId, params: Value) -> Option<Result<Value, ErrorObject>> {
+        let p: HubVoiceStartParams = match parse(params) {
+            Ok(p) => p,
+            Err(e) => return Some(Err(e)),
+        };
+        let chosen = match self.choose_transcriber(&p) {
+            Choice::Ready(t) => t,
+            Choice::Unavailable(why) => return Some(Err(err(ErrorCode::CapabilityMissing, why))),
+        };
+        // The thread is context for its own target only; another target does not know it.
+        let thread_id = p.thread_id.filter(|_| p.target.as_ref() == Some(&chosen.target));
+        let wire = VoiceStartParams { op_id: p.op_id, instance: chosen.instance.clone(), thread_id, language: p.language };
+        let Some(conn) = self.targets.get_mut(&chosen.target).and_then(Target::ready_conn) else {
+            return Some(Err(err(ErrorCode::TargetOffline, "target offline")));
+        };
+        match conn.session.request_value(names::VOICE_START, to_value(&wire)) {
+            Ok(rid) => {
+                let ask = VoiceAsk::Start(Box::new((chosen.instance, chosen.label)));
+                conn.pending.insert(rid, Pending::Voice { client, id: id.clone(), ask });
+                self.flush(&chosen.target);
+                None
+            }
+            Err(e) => Some(Err(err(ErrorCode::InvalidParams, e.to_string()))),
+        }
+    }
+
     pub(super) fn voice_request(&mut self, client: ClientKey, id: &RpcId, method: &str, params: Value) -> Option<Result<Value, ErrorObject>> {
+        if method == attach::names::VOICE_START {
+            return self.voice_start(client, id, params);
+        }
         let mut request = match parse::<attach::TargetVoice<Value>>(params) {
             Ok(p) => p,
             Err(e) => return Some(Err(e)),
         };
         let (method, ask) = match method {
-            attach::names::VOICE_START => (names::VOICE_START, VoiceAsk::Start),
             attach::names::VOICE_STOP => (names::VOICE_STOP, VoiceAsk::Stream),
             attach::names::VOICE_CANCEL => (names::VOICE_CANCEL, VoiceAsk::Stream),
             _ => return Some(Err(err(ErrorCode::MethodNotFound, "unknown voice method"))),
@@ -60,7 +128,7 @@ impl Core {
         let Some(conn) = target.ready_conn() else {
             return Some(Err(err(ErrorCode::TargetOffline, "target offline")));
         };
-        if !conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::VoiceInput)) {
+        if !conn.session.features().is_some_and(|f| f.allows(&yaac_protocol::Capability::Transcription)) {
             return Some(Err(err(ErrorCode::CapabilityMissing, "voice input is unavailable on this target")));
         }
         match conn.session.request_value(method, request.params) {
@@ -79,17 +147,17 @@ impl Core {
         client: ClientKey,
         id: RpcId,
         method: &str,
-        ask: VoiceAsk,
+        ask: &VoiceAsk,
         outcome: Result<Value, ErrorObject>,
     ) {
         if matches!(ask, VoiceAsk::Quiet) {
             return;
         }
-        let outcome = outcome.and_then(|wire| self.decode_current(target, method, wire)).and_then(|mut result| {
-            if !matches!(ask, VoiceAsk::Start) {
+        let outcome = outcome.and_then(|wire| self.decode_current(target, method, wire)).and_then(|result| {
+            let VoiceAsk::Start(chosen) = ask else {
                 return Ok(result);
-            }
-            let opened: VoiceStartResult = parse(result.clone())?;
+            };
+            let mut opened: VoiceStartResult = parse(result.clone())?;
             let stream = self.next_attach_stream();
             let conn = self
                 .targets
@@ -111,8 +179,9 @@ impl Core {
                 stream,
                 Relay { client, target: target.clone(), remote: opened.stream, input_credit: opened.initial_credit },
             );
-            result["stream"] = to_value(&stream);
-            Ok(result)
+            opened.stream = stream;
+            let (instance, label) = (**chosen).clone();
+            Ok(to_value(&HubVoiceStartResult { target: target.clone(), instance, label, opened }))
         });
         if let Some(c) = self.clients.get(&client) {
             let message = match outcome {

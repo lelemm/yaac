@@ -298,6 +298,11 @@ pub struct ProviderDescriptor {
     /// When `models` was last read from the harness on the target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub models_read_at: Option<Timestamp>,
+    /// Dictation through this instance (docs/plan/voice.md): the audio it takes when it can
+    /// transcribe now (with the `transcription` capability), or why it cannot. Absent: the
+    /// instance has no voice surface at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcription: Option<super::TranscriptionOffer>,
 }
 
 impl ProviderDescriptor {

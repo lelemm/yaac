@@ -527,12 +527,26 @@ impl Inner {
         let Message::Request { id, method, params } = msg else { return };
         if method.starts_with("hub/voice/") {
             self.log.push_back((None, method.clone(), params.clone()));
-            let format = params["target"].as_str().zip(params["threadId"].as_str())
-                .map(|(target, thread)| ThreadKey::new(TargetId::new(target), yaac_protocol::ThreadId::new(thread)))
-                .and_then(|key| self.fleet.threads.get(&key))
-                .and_then(|t| t.effective.voice_input.as_ref())
-                .map(|f| json!(f));
-            match self.voices.request(&method, &params, format) {
+            // The demo hub chooses the transcriber as the real one does (P392).
+            let chosen = if method == yaac_protocol::attach::names::VOICE_START {
+                use yaac_protocol::transcription::{Candidate, Choice, Context, choose};
+                let empty = Vec::new();
+                let candidates: Vec<_> = self.fleet.targets.iter().map(|t| Candidate {
+                    target: &t.id,
+                    name: t.name.as_str(),
+                    connected: t.state.status == yaac_protocol::attach::ConnectionStatus::Connected,
+                    providers: self.fleet.providers.get(&t.id).unwrap_or(&empty),
+                }).collect();
+                let target = params["target"].as_str().map(TargetId::new);
+                let instance = params["instance"].as_str().map(yaac_protocol::InstanceId::new);
+                Some(match choose(Context { target: target.as_ref(), instance: instance.as_ref() }, &candidates) {
+                    Choice::Ready(t) => Ok(t),
+                    Choice::Unavailable(why) => Err(why),
+                })
+            } else {
+                None
+            };
+            match self.voices.request(&method, &params, chosen) {
                 Ok(v) => self.ready.push_back(result(id, v)),
                 Err(e) => self.ready.push_back(error(id, ErrorCode::CapabilityMissing, &e)),
             }

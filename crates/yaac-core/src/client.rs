@@ -169,8 +169,8 @@ enum Call {
     /// A `hub/ssh/*` step: the answer goes to the setup backend under this id.
     Ssh(RpcId),
     Preview(RpcId),
-    /// `hub/voice/start` for the running dictation of this thread.
-    VoiceStart(ThreadKey),
+    /// `hub/voice/start` for the running dictation of this composer.
+    VoiceStart(crate::attachments::DraftRef),
     /// `hub/voice/stop` or `hub/voice/cancel`: only a failure matters.
     VoiceStream,
     /// `hub/voiceCall/start` for the running call with this thread.
@@ -479,25 +479,27 @@ impl Client {
 
     // ── Voice input (docs/plan/voice.md) ─────────────────────────────────────────────────
 
-    /// Start dictating into a thread's composer. Refused while a dictation is running, or when
-    /// the thread cannot dictate now ([`crate::voice::voice_format`]). Audio pushed with
-    /// [`Client::voice_audio`] before the hub answers is queued.
-    pub fn voice_start(&mut self, key: &ThreadKey, language: Option<String>) -> Result<(), String> {
+    /// Start dictating into a composer (a thread's or a new-thread draft's). Refused while a
+    /// dictation is running, or when no transcriber is available
+    /// ([`crate::voice::transcriber`], whose reason is the error). The hub makes the final
+    /// choice; audio pushed with [`Client::voice_audio`] before it answers is queued.
+    pub fn voice_start(&mut self, key: &crate::attachments::DraftRef, language: Option<String>) -> Result<(), String> {
         if self.dictation.is_some() {
             return Err("A dictation is already running.".into());
         }
-        let effective = self.state.transcripts.get(key).and_then(|t| t.effective.as_ref());
-        if crate::voice::voice_format(effective).is_none() {
-            return Err("This thread cannot take voice input.".into());
-        }
-        let op = self.op_id();
-        let mut params = json!({ "target": key.target, "opId": op, "threadId": key.thread });
-        if let Some(language) = language {
-            params["language"] = Value::String(language);
-        }
-        self.dictation = Some(crate::voice::Dictation::new(key.clone()));
+        let chosen = match crate::voice::transcriber(&self.state, key) {
+            yaac_protocol::transcription::Choice::Ready(t) => t,
+            yaac_protocol::transcription::Choice::Unavailable(why) => return Err(why),
+        };
+        let (target, instance) = crate::voice::context_of(&self.state, key);
+        let thread = match key {
+            crate::attachments::DraftRef::Thread(k) => Some(k.thread.clone()),
+            crate::attachments::DraftRef::New(_) => None,
+        };
+        let params = attach::HubVoiceStartParams { op_id: self.op_id(), target, instance, thread_id: thread, language };
+        self.dictation = Some(crate::voice::Dictation::new(key.clone(), chosen.target, chosen.label, chosen.format));
         self.dictation_outcome = None;
-        self.request(attach::names::VOICE_START, params, Call::VoiceStart(key.clone()));
+        self.request(attach::names::VOICE_START, serde_json::to_value(&params).unwrap_or_default(), Call::VoiceStart(key.clone()));
         Ok(())
     }
 
@@ -521,7 +523,7 @@ impl Client {
         let Some(d) = self.dictation.as_mut() else { return };
         match d.stream {
             Some(stream) => {
-                let params = json!({ "target": d.key.target, "stream": stream });
+                let params = json!({ "target": d.target, "stream": stream });
                 self.request(attach::names::VOICE_CANCEL, params, Call::VoiceStream);
                 self.dictation = None;
             }
@@ -539,16 +541,19 @@ impl Client {
         self.dictation_outcome.take()
     }
 
-    fn voice_started(&mut self, key: &ThreadKey, result: Value) {
-        let Ok(opened) = serde_json::from_value::<yaac_protocol::VoiceStartResult>(result) else {
-            self.voice_finish(Some("The target answered the dictation start in a form this YAAC does not read.".into()));
+    fn voice_started(&mut self, key: &crate::attachments::DraftRef, result: Value) {
+        let Ok(started) = serde_json::from_value::<attach::HubVoiceStartResult>(result) else {
+            self.voice_finish(Some("The hub answered the dictation start in a form this YAAC does not read.".into()));
             return;
         };
+        let opened = started.opened;
         let Some(d) = self.dictation.as_mut().filter(|d| &d.key == key && d.stream.is_none()) else {
-            // Nobody waits for it any more: end it on the target.
-            self.request(attach::names::VOICE_CANCEL, json!({ "target": key.target, "stream": opened.stream }), Call::VoiceStream);
+            // Nobody waits for it any more: end it on the transcriber's target.
+            self.request(attach::names::VOICE_CANCEL, json!({ "target": started.target, "stream": opened.stream }), Call::VoiceStream);
             return;
         };
+        d.target = started.target;
+        d.label = started.label;
         d.stream = Some(opened.stream);
         d.credit = opened.initial_credit;
         d.format = Some(opened.format);
@@ -570,14 +575,16 @@ impl Client {
         }
         if d.phase == crate::voice::DictationPhase::Stopping && !d.stop_sent && let Some(stream) = d.stream {
             d.stop_sent = true;
-            let params = json!({ "target": d.key.target, "stream": stream, "bytes": d.total_bytes() });
+            let params = json!({ "target": d.target, "stream": stream, "bytes": d.total_bytes() });
             self.request(attach::names::VOICE_STOP, params, Call::VoiceStream);
         }
     }
 
     fn on_voice_note(&mut self, method: &str, params: &Value) {
         let Some(d) = self.dictation.as_mut() else { return };
-        if d.stream.is_none_or(|s| params.get("stream") != Some(&serde_json::to_value(s).unwrap_or_default())) {
+        if params.get("target").is_some_and(|t| t != &serde_json::to_value(&d.target).unwrap_or_default())
+            || d.stream.is_none_or(|s| params.get("stream") != Some(&serde_json::to_value(s).unwrap_or_default()))
+        {
             return;
         }
         if method == attach::names::VOICE_TRANSCRIPT {
@@ -3584,20 +3591,53 @@ mod voice_tests {
         }
     }
 
+    /// A descriptor whose instance transcribes (`ready`) or has a voice surface that is not ready.
+    fn transcribing(instance: &str, name: &str, ready: bool) -> yaac_protocol::ProviderDescriptor {
+        let (caps, offer) = if ready {
+            (json!(["transcription"]), json!({ "format": { "format": "pcm16le", "sampleRate": 16000, "channels": 1 } }))
+        } else {
+            (json!([]), json!({ "unavailable": format!("{name} needs a sign-in.") }))
+        };
+        serde_json::from_value(json!({ "instance": instance, "kind": "fake", "displayName": name, "backend": "sdk",
+            "store": { "key": null }, "status": "ready", "capabilities": caps, "revision": 1, "transcription": offer })).unwrap()
+    }
+
+    /// Adds a connected target with these instances.
+    pub(crate) fn add_target(client: &mut Client, id: &str, name: &str, providers: Vec<yaac_protocol::ProviderDescriptor>) {
+        use yaac_protocol::attach::{ConnectionState, ConnectionStatus, LocalTransport, TargetEntry, TargetTransport};
+        let mut entries: Vec<TargetEntry> = client.state.targets.iter().map(|t| t.entry.clone()).collect();
+        entries.push(TargetEntry {
+            id: TargetId::new(id),
+            name: yaac_protocol::TargetName::new(name),
+            transport: TargetTransport::Local(LocalTransport {}),
+            enabled: true,
+            state: ConnectionState { status: ConnectionStatus::Connected, detail: None, daemon: None, update: None },
+        });
+        client.state.set_targets(entries);
+        client.state.apply_providers(&TargetId::new(id), providers, true);
+    }
+
     fn setup(voice: bool) -> (Client, Rc<RefCell<Wire>>, ThreadKey) {
         let wire = Rc::new(RefCell::new(Wire::default()));
         let mut client = Client::new(Box::new(Recording(wire.clone())), "test", ClientId::new("window"));
         let key = ThreadKey::new(TargetId::new("box"), ThreadId::new("t1"));
         let mut transcript = crate::transcript::Transcript::new();
-        let mut effective = json!({ "capabilities": [], "imageInput": "unknown",
-            "voiceInput": { "format": "pcm16le", "sampleRate": 16000, "channels": 1 } });
-        if voice {
-            effective["capabilities"] = json!(["voiceInput"]);
-        }
-        transcript.effective = Some(serde_json::from_value(effective).unwrap());
+        transcript.effective = Some(serde_json::from_value(json!({ "capabilities": [], "imageInput": "unknown" })).unwrap());
         client.state.transcripts.insert(key.clone(), transcript);
+        add_target(&mut client, "box", "Box", vec![transcribing("pi_one", "Alpha", voice)]);
         wire.borrow_mut().sent.clear();
         (client, wire, key)
+    }
+
+    /// The thread's composer.
+    fn thread(key: &ThreadKey) -> crate::attachments::DraftRef {
+        crate::attachments::DraftRef::Thread(key.clone())
+    }
+
+    /// A `hub/voice/start` answer from the hub.
+    fn opened(target: &str, stream: u64, credit: u64) -> Value {
+        json!({ "target": target, "instance": "pi_one", "label": "Alpha on Box", "stream": stream, "initialCredit": credit,
+                "format": { "format": "pcm16le", "sampleRate": 16000, "channels": 1 } })
     }
 
     fn last_request(wire: &Rc<RefCell<Wire>>, method: &str) -> (RpcId, Value) {
@@ -3696,28 +3736,60 @@ mod voice_tests {
     }
 
     #[test]
-    fn the_capability_alone_decides_whether_a_thread_can_dictate() {
+    fn a_ready_transcriber_anywhere_decides_whether_a_composer_can_dictate() {
         let (mut client, wire, key) = setup(false);
-        assert!(client.voice_start(&key, None).is_err());
+        let why = client.voice_start(&thread(&key), None).unwrap_err();
+        assert!(why.contains("Alpha on Box: Alpha needs a sign-in."), "{why}");
         assert!(wire.borrow().sent.is_empty());
         let (mut client, _, key) = setup(true);
-        assert!(client.voice_start(&key, None).is_ok());
-        assert!(client.voice_start(&key, None).is_err(), "one dictation at a time");
+        assert!(client.voice_start(&thread(&key), None).is_ok());
+        assert!(client.voice_start(&thread(&key), None).is_err(), "one dictation at a time");
+    }
+
+    #[test]
+    fn another_targets_transcriber_serves_and_stop_goes_there() {
+        let (mut client, wire, key) = setup(false);
+        add_target(&mut client, "far", "wsl: Ubuntu", vec![transcribing("pi_claude", "Claude", true)]);
+        client.voice_start(&thread(&key), None).unwrap();
+        assert_eq!(client.dictation().unwrap().label, "Claude on wsl: Ubuntu");
+        let (id, params) = last_request(&wire, attach::names::VOICE_START);
+        assert_eq!(params["target"], "box", "the hub is told the composer, and chooses");
+        let mut answer = opened("far", 9, 100);
+        answer["instance"] = json!("pi_claude");
+        answer["label"] = json!("Claude on wsl: Ubuntu");
+        deliver(&mut client, &wire, Message::Response { id, result: answer });
+        deliver(&mut client, &wire, Message::notification(attach::names::VOICE_TRANSCRIPT,
+            json!({ "target": "box", "stream": 9, "text": "not ours", "final": false })));
+        assert_eq!(client.dictation().unwrap().text, "", "a stream of another target is not this one");
+        client.voice_stop();
+        let (_, stop) = last_request(&wire, attach::names::VOICE_STOP);
+        assert_eq!(stop["target"], "far");
+    }
+
+    #[test]
+    fn a_new_thread_draft_can_dictate_without_a_target() {
+        let (mut client, wire, _) = setup(true);
+        let id = client.blank_thread();
+        let draft = crate::attachments::DraftRef::New(id);
+        client.voice_start(&draft, None).unwrap();
+        let (_, params) = last_request(&wire, attach::names::VOICE_START);
+        assert!(params.get("target").is_none() && params.get("threadId").is_none(), "{params}");
+        assert_eq!(client.dictation().unwrap().key, draft);
     }
 
     #[test]
     fn audio_waits_for_credit_and_stop_carries_the_byte_total() {
         let (mut client, wire, key) = setup(true);
-        client.voice_start(&key, Some("pt-BR".into())).unwrap();
+        client.voice_start(&thread(&key), Some("pt-BR".into())).unwrap();
         let (id, params) = last_request(&wire, attach::names::VOICE_START);
         assert_eq!(params["target"], "box");
         assert_eq!(params["threadId"], "t1");
+        assert!(params.get("instance").is_none(), "the thread has no summary here, so no own instance");
         assert_eq!(params["language"], "pt-BR");
         assert!(params["opId"].is_string());
         client.voice_audio(b"0123456789");
         assert!(wire.borrow().data.is_empty(), "no stream yet");
-        deliver(&mut client, &wire, Message::Response { id, result: json!({
-            "stream": 3, "initialCredit": 4, "format": { "format": "pcm16le", "sampleRate": 16000, "channels": 1 } }) });
+        deliver(&mut client, &wire, Message::Response { id, result: opened("box", 3, 4) });
         assert_eq!(wire.borrow().data, vec![(StreamId(3), b"0123".to_vec())]);
         assert_eq!(client.dictation().unwrap().phase, crate::voice::DictationPhase::Recording);
         client.voice_stop();
@@ -3736,7 +3808,7 @@ mod voice_tests {
         deliver(&mut client, &wire, Message::notification(attach::names::VOICE_ENDED, json!({ "target": "box", "stream": 3 })));
         assert!(client.dictation().is_none());
         let outcome = client.take_dictation_outcome().unwrap();
-        assert_eq!(outcome, crate::voice::DictationOutcome { key, text: "olá mundo".into(), error: None });
+        assert_eq!(outcome, crate::voice::DictationOutcome { key: thread(&key), text: "olá mundo".into(), error: None });
         assert!(client.take_dictation_outcome().is_none());
         assert!(
             !wire.borrow().sent.iter().any(|m| matches!(m, Message::Request { method, .. } if method == attach::names::REQUEST)),
@@ -3747,11 +3819,10 @@ mod voice_tests {
     #[test]
     fn cancel_while_starting_cancels_once_the_stream_is_known() {
         let (mut client, wire, key) = setup(true);
-        client.voice_start(&key, None).unwrap();
+        client.voice_start(&thread(&key), None).unwrap();
         let (id, _) = last_request(&wire, attach::names::VOICE_START);
         client.voice_cancel();
-        deliver(&mut client, &wire, Message::Response { id, result: json!({
-            "stream": 5, "initialCredit": 4, "format": { "format": "pcm16le", "sampleRate": 16000, "channels": 1 } }) });
+        deliver(&mut client, &wire, Message::Response { id, result: opened("box", 5, 4) });
         let (_, cancel) = last_request(&wire, attach::names::VOICE_CANCEL);
         assert_eq!(cancel, json!({ "target": "box", "stream": 5 }));
         assert!(client.dictation().is_none());
@@ -3761,7 +3832,7 @@ mod voice_tests {
     #[test]
     fn a_failed_start_ends_with_the_reason_and_is_not_retried() {
         let (mut client, wire, key) = setup(true);
-        client.voice_start(&key, None).unwrap();
+        client.voice_start(&thread(&key), None).unwrap();
         let (id, _) = last_request(&wire, attach::names::VOICE_START);
         deliver(&mut client, &wire, Message::Error { id: Some(id), error: ErrorObject::new(ErrorCode::OutcomeUnknown, "connection dropped") });
         let outcome = client.take_dictation_outcome().unwrap();

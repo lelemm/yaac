@@ -321,13 +321,13 @@ pub struct FeatureSet {
     missing_file_view: bool,
     missing_terminal: bool,
     missing_budget_time_limit: bool,
-    missing_voice: bool,
+    missing_transcription: bool,
     missing_voice_call: bool,
 }
 
 impl FeatureSet {
     /// Every feature present.
-    pub const FULL: FeatureSet = FeatureSet { withheld: &[], missing_port_forward: false, missing_file_view: false, missing_terminal: false, missing_budget_time_limit: false, missing_voice: false, missing_voice_call: false };
+    pub const FULL: FeatureSet = FeatureSet { withheld: &[], missing_port_forward: false, missing_file_view: false, missing_terminal: false, missing_budget_time_limit: false, missing_transcription: false, missing_voice_call: false };
 
     /// A version that lacks the wire support for `withheld`.
     pub const fn withholding(withheld: &'static [Capability]) -> Self {
@@ -339,7 +339,7 @@ impl FeatureSet {
         self.missing_terminal = !features.contains(&Capability::Terminal);
         self.missing_file_view = !features.contains(&Capability::FileView);
         self.missing_budget_time_limit = !features.contains(&Capability::BudgetTimeLimit);
-        self.missing_voice = !features.contains(&Capability::VoiceInput);
+        self.missing_transcription = !features.contains(&Capability::Transcription);
         self.missing_voice_call = !features.contains(&Capability::VoiceCall);
         self
     }
@@ -350,7 +350,7 @@ impl FeatureSet {
             self.missing_port_forward = true;
         }
         if method.starts_with("terminal/") { self.missing_terminal = true; }
-        if method.starts_with("voice/") { self.missing_voice = true; }
+        if method.starts_with("voice/") { self.missing_transcription = true; }
         if method.starts_with("voiceCall/") { self.missing_voice_call = true; }
         if matches!(method, crate::methods::names::FS_TREE | crate::methods::names::FS_READ | crate::methods::names::GIT_FILE_DIFF) {
             self.missing_file_view = true;
@@ -369,7 +369,7 @@ impl FeatureSet {
             || self.missing_terminal && *capability == Capability::Terminal
             || self.missing_file_view && *capability == Capability::FileView
             || self.missing_budget_time_limit && *capability == Capability::BudgetTimeLimit
-            || self.missing_voice && *capability == Capability::VoiceInput
+            || self.missing_transcription && *capability == Capability::Transcription
             || self.missing_voice_call && *capability == Capability::VoiceCall)
     }
 }

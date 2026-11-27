@@ -495,11 +495,6 @@ pub struct ThreadEffective {
     /// What the harness is really using.
     #[serde(default)]
     pub applied: AppliedSettings,
-    /// The audio the thread's harness transcribes, when it offers voice input
-    /// (docs/plan/voice.md). The UI offers the microphone only when `capabilities` also has
-    /// `voiceInput` (a connection without the feature folds that away).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voice_input: Option<super::VoiceFormat>,
 }
 
 // ── thread/sync ────────────────────────────────────────────────────────────────────────────

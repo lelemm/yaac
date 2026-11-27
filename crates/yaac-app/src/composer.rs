@@ -522,8 +522,8 @@ fn send_button(ui: &mut egui::Ui, p: &Palette, has_content: bool, blocked: Optio
 pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, key: &ThreadKey, actions: &mut Vec<Action>) {
     let p = app.p;
     // Dictated words for a thread whose composer is not this one: the end of its draft.
-    for k in crate::voice::settle_elsewhere(app, Some(key)) {
-        actions.push(Action::DraftEdited(DraftRef::Thread(k)));
+    for k in crate::voice::settle_elsewhere(app, Some(&DraftRef::Thread(key.clone()))) {
+        actions.push(Action::DraftEdited(k));
     }
     // An arriving request does not take focus: it is announced here.
     if let Some(a) = app.client.state.arrivals.last() {
@@ -625,7 +625,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                 } else {
                     130.0
                 };
-                let mic = shell.is_none() && !editing && crate::voice_capture::AVAILABLE && crate::voice::offered(app, key).is_some();
+                let mic = shell.is_none() && !editing && crate::voice_capture::AVAILABLE;
                 let btn_w = btn_w + if mic { 32.0 } else { 0.0 };
                 let mut voice_click = None;
                 #[cfg(feature = "desktop")]
@@ -652,7 +652,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                             ui.label(widgets::secondary(why, &p));
                         }
                         if mic {
-                            voice_line(ui, app, key);
+                            voice_line(ui, app, &d);
                         }
                     });
                     let buttons = |ui: &mut egui::Ui| {
@@ -691,7 +691,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                                 submit = Submit::Send;
                             }
                             attach_button(ui, app, &d, actions);
-                            voice_button(ui, app, key, &mut voice_click);
+                            voice_button(ui, app, &d, &mut voice_click);
                             #[cfg(feature = "desktop")]
                             if call { call_click = crate::desktop_call::phone(ui, app, key, !dimmed); }
                             return;
@@ -716,7 +716,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                         }
                         // Attachments can be prepared while a turn runs.
                         attach_button(ui, app, &d, actions);
-                        voice_button(ui, app, key, &mut voice_click);
+                        voice_button(ui, app, &d, &mut voice_click);
                         #[cfg(feature = "desktop")]
                         if call { call_click = crate::desktop_call::phone(ui, app, key, !dimmed); }
                     };
@@ -727,11 +727,7 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                         ui.with_layout(row, buttons);
                     }
                 });
-                match voice_click {
-                    Some(VoiceClick::Start) => crate::voice::start(app, key),
-                    Some(VoiceClick::Stop) => crate::voice::stop(app, key),
-                    None => {}
-                }
+                voice_clicked(app, &d, voice_click);
                 #[cfg(feature = "desktop")]
                 if call_click { crate::desktop_call::ask(app, key); }
             });
@@ -759,8 +755,8 @@ pub(crate) fn bottom(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, k
                 Submit::SendNow => actions.push(Action::Send(key.clone())),
             }
             // Esc while dictating drops the dictation (and its words), before anything else.
-            if crate::voice::state(app, key).0.active() && ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-                crate::voice::cancel(app, key);
+            if crate::voice::state(app, &d).0.active() && ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                crate::voice::cancel(app, &d);
             }
             // Esc leaves an edit; otherwise it stops the running turn from the composer.
             if (editing || stop) && ui.memory(|m| m.has_focus(id)) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
@@ -820,7 +816,7 @@ fn text_column(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, d: &DraftR
         skills_ui::keys(ui, &mut app.ui.skills, id, c, &mut text, &mut app.ui.focus_composer);
     }
     if !dimmed {
-        dictated_words(ui, app, key, id, &mut text);
+        dictated_words(ui, app, d, id, &mut text);
     }
     let submit = file_text_box(ui, app, d, &mut text, id, placeholder, !dimmed);
     if let Some(c) = &comp && !dimmed {
@@ -842,7 +838,7 @@ fn text_column(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey, d: &DraftR
 
 /// Finished dictation (docs/plan/voice.md): its words go in at the caret, once, and the caret
 /// moves past them. Never sent by themselves.
-fn dictated_words(ui: &egui::Ui, app: &mut YaacApp, key: &ThreadKey, id: egui::Id, text: &mut String) {
+fn dictated_words(ui: &egui::Ui, app: &mut YaacApp, key: &DraftRef, id: egui::Id, text: &mut String) {
     let state = egui::TextEdit::load_state(ui.ctx(), id);
     let caret = state.as_ref().and_then(|s| s.cursor.char_range()).map_or(text.chars().count(), |r| r.primary.index.into());
     let at = text.char_indices().nth(caret).map_or(text.len(), |(i, _)| i);
@@ -855,9 +851,9 @@ fn dictated_words(ui: &egui::Ui, app: &mut YaacApp, key: &ThreadKey, id: egui::I
 }
 
 /// Under the text while dictating: the words heard so far, or why it failed.
-fn voice_line(ui: &mut egui::Ui, app: &YaacApp, key: &ThreadKey) {
+fn voice_line(ui: &mut egui::Ui, app: &YaacApp, key: &DraftRef) {
     let p = app.p;
-    let Some(view) = crate::voice::view(app, key) else { return };
+    let view = crate::voice::view(app, key);
     if let Some(why) = view["error"].as_str() {
         ui.label(egui::RichText::new(why).font(theme::ui(size::SMALL)).color(p.failed));
     } else if let Some(status) = view["status"].as_str().filter(|s| !s.is_empty()) {
@@ -872,9 +868,24 @@ enum VoiceClick {
     Stop,
 }
 
-/// The mic (voice input), where the thread's harness offers it and this build can record.
-fn voice_button(ui: &mut egui::Ui, app: &YaacApp, key: &ThreadKey, click: &mut Option<VoiceClick>) {
-    if !crate::voice_capture::AVAILABLE || crate::voice::offered(app, key).is_none() {
+/// The mic's click, once the buttons are drawn.
+fn voice_clicked(app: &mut YaacApp, key: &DraftRef, click: Option<VoiceClick>) {
+    match click {
+        Some(VoiceClick::Start) => crate::voice::start(app, key),
+        Some(VoiceClick::Stop) => crate::voice::stop(app, key),
+        None => {}
+    }
+}
+
+/// The mic (voice input), on every composer where this build can record: enabled when any
+/// connected target can transcribe (P392), otherwise disabled with the reason.
+fn voice_button(ui: &mut egui::Ui, app: &YaacApp, key: &DraftRef, click: &mut Option<VoiceClick>) {
+    if !crate::voice_capture::AVAILABLE {
+        return;
+    }
+    if let crate::voice::Offer::Unavailable(why) = crate::voice::offer(app, key) {
+        let p = app.p;
+        ui.add_enabled_ui(false, |ui| widgets::icon_button(ui, &p, 16.0, &why, icons::mic)).inner.on_disabled_hover_text(&why);
         return;
     }
     let p = app.p;
@@ -898,7 +909,8 @@ fn voice_button(ui: &mut egui::Ui, app: &YaacApp, key: &ThreadKey, click: &mut O
     } else if state == crate::voice::State::Stopping {
         widgets::icon(ui, 24.0, |pa, c, d| icons::spinner(pa, c, d * 0.6, p.text2)).on_hover_text("Finishing the dictation…");
     } else {
-        let tip = if busy { "The microphone is already in use" } else { "Dictate: speak, and the words go into the message (not sent)" };
+        let view = crate::voice::view(app, key);
+        let tip = if busy { "The microphone is already in use" } else { view["button"]["detail"].as_str().unwrap_or("Dictate") };
         let r = ui.add_enabled_ui(!busy, |ui| widgets::icon_button(ui, &p, 16.0, tip, icons::mic)).inner;
         if r.clicked() && !busy {
             *click = Some(VoiceClick::Start);
@@ -1486,18 +1498,24 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
         let blocked = yaac_core::attachments::blocked(&chip_views);
         let has = !d.draft.text.trim().is_empty() || !d.draft.attachments.is_empty();
         let comp = yaac_core::skills::for_new_thread(&app.client.state, &d);
+        let mut voice_click = None;
+        for k in crate::voice::settle_elsewhere(app, Some(&dref)) {
+            actions.push(Action::DraftEdited(k));
+        }
         let inner = widgets::faint_frame(&p).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             chips(ui, app, &dref, &chip_views, actions);
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
-                    ui.set_width(ui.available_width() - 130.0);
+                    ui.set_width(ui.available_width() - if crate::voice_capture::AVAILABLE { 162.0 } else { 130.0 });
                     let mut text = d.draft.text.clone();
                     message_history_keys(ui, app, &dref, eid, &mut text);
                     if let Some(c) = &comp {
                         skills_ui::keys(ui, &mut app.ui.skills, eid, c, &mut text, &mut app.ui.focus_composer);
                     }
+                    dictated_words(ui, app, &dref, eid, &mut text);
                     send = file_text_box(ui, app, &dref, &mut text, eid, &format!("Message {name}…"), true);
+                    voice_line(ui, app, &dref);
                     if let Some(c) = &comp {
                         skills_ui::show(ui, &mut app.ui.skills, eid, c, &app.client.state, &mut text, &mut app.ui.focus_composer, &p, actions);
                     }
@@ -1518,9 +1536,14 @@ pub(crate) fn draft_view(ui: &mut egui::Ui, app: &mut YaacApp, id: u64, actions:
                         send = Submit::Send;
                     }
                     attach_button(ui, app, &dref, actions);
+                    voice_button(ui, app, &dref, &mut voice_click);
                 });
             });
         });
+        voice_clicked(app, &dref, voice_click);
+        if crate::voice::state(app, &dref).0.active() && ui.memory(|m| m.has_focus(eid)) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            crate::voice::cancel(app, &dref);
+        }
         if ui.memory(|m| m.has_focus(eid)) {
             widgets::focus_ring(ui, inner.response.rect, &p);
         }
@@ -1582,7 +1605,7 @@ mod tests {
     fn dictated_words_go_in_at_the_caret_once() {
         let ctx = egui::Context::default();
         let mut app = crate::app::tests::demo_app(&ctx);
-        let key = yaac_core::demo::threads::fix();
+        let key = DraftRef::Thread(yaac_core::demo::threads::fix());
         let id = egui::Id::new("dictation-field");
         let mut text = String::from("fix it");
         // The caret after "fix".

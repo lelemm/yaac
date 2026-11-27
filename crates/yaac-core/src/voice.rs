@@ -3,26 +3,43 @@
 //! only to the composer, and only when the UI takes them ([`Dictation::text`] while it runs,
 //! [`DictationOutcome`] once it is over); nothing here sends a message or touches the journal.
 //! Audio lives in memory only while it waits for credit.
+//!
+//! Dictation is not bound to the composer's thread (P392): any instance that transcribes, on
+//! any connected target, serves any composer — a thread's or a new-thread draft's. The hub
+//! chooses; [`transcriber`] makes the same choice beforehand, so the microphone shows (or says
+//! why not) and names who will transcribe.
 
 use std::collections::VecDeque;
 
-use yaac_protocol::{Capability, StreamId, ThreadEffective, VoiceFormat};
+use yaac_protocol::transcription::{self, Candidate, Choice, Context};
+use yaac_protocol::{InstanceId, StreamId, TargetId, VoiceFormat};
 
-use crate::key::ThreadKey;
+use crate::attachments::DraftRef;
+use crate::state::AppState;
 
 /// Audio waiting for the stream or for credit, at most. Past it new audio is dropped (and
 /// counted): the target is not keeping up, and the user sees it end with an error.
 pub const MAX_QUEUED_AUDIO: usize = 2 * 1024 * 1024;
 
-/// The format to record for a thread, when it can dictate now: the effective capabilities
-/// have `voiceInput` and the target reported the format. The only test the UI makes before
-/// showing the microphone (invariant 4: never the provider kind).
-pub fn voice_format(effective: Option<&ThreadEffective>) -> Option<&VoiceFormat> {
-    let e = effective?;
-    if !e.capabilities.contains(&Capability::VoiceInput) {
-        return None;
+/// The composer's own target and instance: a thread's, or what a draft has chosen so far.
+pub fn context_of(state: &AppState, draft: &DraftRef) -> (Option<TargetId>, Option<InstanceId>) {
+    match draft {
+        DraftRef::Thread(key) => (Some(key.target.clone()), state.summary(key).map(|s| s.instance.clone())),
+        DraftRef::New(id) => state.new_threads.iter().find(|d| d.id == *id).map_or((None, None), |d| (d.target.clone(), d.instance.clone())),
     }
-    e.voice_input.as_ref()
+}
+
+/// Who would transcribe for `draft` now, or why nobody can: the same choice the hub makes
+/// ([`yaac_protocol::transcription::choose`]) over the targets this window knows. The only test
+/// the UI makes before offering the microphone (invariant 4: never the provider kind).
+pub fn transcriber(state: &AppState, draft: &DraftRef) -> Choice {
+    let (target, instance) = context_of(state, draft);
+    let candidates: Vec<Candidate<'_>> = state
+        .targets
+        .iter()
+        .map(|t| Candidate { target: &t.entry.id, name: t.entry.name.as_str(), connected: t.connected(), providers: &t.providers })
+        .collect();
+    transcription::choose(Context { target: target.as_ref(), instance: instance.as_ref() }, &candidates)
 }
 
 /// Where a dictation is.
@@ -40,13 +57,16 @@ pub enum DictationPhase {
 /// The running dictation.
 #[derive(Clone, Debug)]
 pub struct Dictation {
-    /// The thread whose composer gets the words.
-    pub key: ThreadKey,
+    /// The composer that gets the words.
+    pub key: DraftRef,
+    /// The transcriber's target: the hub's answer once started, the window's own choice before.
+    pub target: TargetId,
+    /// "Claude on wsl: Ubuntu": who transcribes.
+    pub label: String,
     pub phase: DictationPhase,
     /// The hub-local stream, once started.
     pub stream: Option<StreamId>,
-    /// What to record, once started (also known beforehand from the thread's effective
-    /// capabilities).
+    /// What to record: the chosen transcriber's, confirmed by the hub's answer.
     pub format: Option<VoiceFormat>,
     /// The words so far: replaced by each transcript, never appended to.
     pub text: String,
@@ -65,12 +85,14 @@ pub struct Dictation {
 }
 
 impl Dictation {
-    pub(crate) fn new(key: ThreadKey) -> Self {
+    pub(crate) fn new(key: DraftRef, target: TargetId, label: String, format: VoiceFormat) -> Self {
         Self {
             key,
+            target,
+            label,
             phase: DictationPhase::Starting,
             stream: None,
-            format: None,
+            format: Some(format),
             text: String::new(),
             is_final: false,
             dropped: 0,
@@ -115,8 +137,8 @@ impl Dictation {
 /// A dictation that is over, for the UI to take once.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DictationOutcome {
-    /// The thread whose composer gets the words.
-    pub key: ThreadKey,
+    /// The composer that gets the words.
+    pub key: DraftRef,
     /// The words to insert at the caret (empty after a cancel or when nothing was heard).
     pub text: String,
     /// Why it ended early, in words for the user.

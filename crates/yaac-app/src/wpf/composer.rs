@@ -349,9 +349,9 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                         v["paste"] = Value::Null;
                     } else {
                         v["attachments"] = json!(chips(app, &draft, &chip_views));
-                        // Dictation, where the thread's harness offers it (its capability).
-                        if !dim && let Some(voice) = crate::voice::view(app, &key) {
-                            v["voice"] = voice;
+                        // Dictation: on every composer, through any transcriber (P392).
+                        if !dim {
+                            v["voice"] = crate::voice::view(app, &draft);
                         }
                         v["shellCapable"] = json!(shell_capable(state, &key));
                         if let Some(mode) = &shell {
@@ -440,6 +440,8 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
             let support = attachments::draft_image_support(state, d);
             let views = attachments::chips(&d.draft.attachments, &support, d.target.as_ref());
             v["attachments"] = json!(chips(app, &draft, &views));
+            // Dictation needs no thread: any transcriber serves a draft too (P392).
+            v["voice"] = crate::voice::view(app, &draft);
             v["placeholder"] = json!("Write the first message…");
             let blocked = attachments::blocked(&views);
             v["hint"] = if yaac_core::compose::is_compact_command(text) {
@@ -640,18 +642,22 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
         }
         return Ok(());
     }
-    // Stopping or dropping a dictation is always allowed; starting one needs the composer.
+    // Stopping or dropping a dictation is always allowed; starting one needs the composer. Any
+    // composer dictates, a new-thread draft's too (P392).
+    match name {
+        "composer.voiceStop" => { crate::voice::stop(app, &draft); return Ok(()); }
+        "composer.voiceCancel" => { crate::voice::cancel(app, &draft); return Ok(()); }
+        "composer.voiceAudio" => {
+            use base64::Engine as _;
+            let pcm = base64::engine::general_purpose::STANDARD.decode(string(p, "pcm")).map_err(|_| "composer.voiceAudio: pcm is not base64".to_owned())?;
+            crate::voice::audio(app, &draft, &pcm);
+            return Ok(());
+        }
+        "composer.voiceStart" if can_write => { crate::voice::start(app, &draft); return Ok(()); }
+        _ => {}
+    }
     if let Some(key) = &thread {
         match name {
-            "composer.voiceStop" => { crate::voice::stop(app, key); return Ok(()); }
-            "composer.voiceCancel" => { crate::voice::cancel(app, key); return Ok(()); }
-            "composer.voiceAudio" => {
-                use base64::Engine as _;
-                let pcm = base64::engine::general_purpose::STANDARD.decode(string(p, "pcm")).map_err(|_| "composer.voiceAudio: pcm is not base64".to_owned())?;
-                crate::voice::audio(app, key, &pcm);
-                return Ok(());
-            }
-            "composer.voiceStart" if can_write => { crate::voice::start(app, key); return Ok(()); }
             // A voice call (docs/plan/voice-call.md): ending is always allowed, starting needs
             // the composer; the renderer made the offer and owns the media.
             "composer.callEnd" => {
@@ -1140,21 +1146,76 @@ mod tests {
     }
 
     #[test]
-    fn the_mic_is_offered_from_the_capability_with_the_targets_format() {
+    fn a_codex_thread_dictates_through_claude_and_without_any_transcriber_says_why() {
         let ctx = egui::Context::default();
         let mut app = crate::app::tests::demo_app(&ctx);
+        // The demo's "Fix frame decoder" is a Codex thread; the demo's Codex cannot transcribe,
+        // its Claude can (P392: dictation is not bound to the thread's harness).
         let key = threads::fix();
         app.apply(vec![Action::Open(key.clone())]);
         settle(&mut app);
+        let summary = app.client.state.summary(&key).unwrap();
+        let own = app.client.state.target(&key.target).unwrap().provider(&summary.instance).unwrap();
+        assert!(!own.capabilities.contains(&yaac_protocol::Capability::Transcription), "the thread's own instance does not transcribe");
+        let target_name = app.client.state.target(&key.target).unwrap().entry.name.to_string();
         let voice = composer_view(&app)["voice"].clone();
         assert_eq!(voice["state"], "idle");
         assert_eq!(voice["format"], json!({ "format": "pcm16le", "sampleRate": 16_000, "channels": 1, "maxSeconds": 120 }));
+        assert_eq!(voice["transcriber"], format!("Claude on {target_name}"));
         assert_eq!(voice["button"]["id"], "composer.voiceStart");
+        assert_eq!(voice["button"]["enabled"], true);
         assert_eq!(voice["capture"], if crate::voice_capture::AVAILABLE { "controller" } else { "renderer" });
-        // Without the capability (whatever the harness), no mic.
-        let effective = app.client.state.transcripts.get_mut(&key).and_then(|t| t.effective.as_mut()).unwrap();
-        effective.capabilities.retain(|c| *c != yaac_protocol::Capability::VoiceInput);
-        assert!(composer_view(&app)["voice"].is_null());
+        // No instance anywhere transcribes: the mic stays, disabled, with the nearest reason
+        // (the thread's own instance first).
+        for t in &mut app.client.state.targets {
+            for p in &mut t.providers {
+                p.capabilities.retain(|c| *c != yaac_protocol::Capability::Transcription);
+            }
+        }
+        let voice = composer_view(&app)["voice"].clone();
+        assert_eq!(voice["button"]["enabled"], false);
+        assert!(voice["format"].is_null());
+        let why = voice["unavailable"].as_str().unwrap();
+        assert!(why.starts_with("No transcriber available."), "{why}");
+        assert!(why.contains("Codex transcribes only with an OpenAI API key sign-in."), "{why}");
+        assert_eq!(voice["button"]["detail"], why);
+        crate::voice::start(&mut app, &DraftRef::Thread(key.clone()));
+        assert!(app.client.dictation().is_none(), "nothing starts without a transcriber");
+    }
+
+    #[test]
+    fn a_new_thread_draft_has_the_mic_and_gets_the_words() {
+        if crate::voice_capture::AVAILABLE {
+            return; // This build records in the controller; the renderer's audio is ignored.
+        }
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        settle(&mut app);
+        let id = app.client.blank_thread();
+        let draft = DraftRef::New(id);
+        let view = composer_view(&app);
+        assert_eq!(view["key"], draft.store_key());
+        assert_eq!(view["voice"]["button"]["enabled"], true, "{}", view["voice"]);
+        assert!(view["voice"]["transcriber"].as_str().unwrap().starts_with("Claude on "));
+        let payload = |extra: Value| {
+            let mut p = json!({ "key": draft.store_key() });
+            p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            p
+        };
+        command(&mut app, "composer.voiceStart", &payload(json!({}))).unwrap();
+        voice_pass(&mut app);
+        assert_eq!(composer_view(&app)["voice"]["state"], "listening");
+        assert!(composer_view(&app)["voice"]["status"].as_str().unwrap().starts_with("Dictating with Claude on "));
+        command(&mut app, "composer.voiceAudio", &payload(half_second())).unwrap();
+        command(&mut app, "composer.voiceAudio", &payload(half_second())).unwrap();
+        command(&mut app, "composer.voiceStop", &payload(json!({}))).unwrap();
+        voice_pass(&mut app);
+        let mut insert = None;
+        super::super::voice_insert(&mut app, &mut insert);
+        let (to, value) = insert.unwrap();
+        assert_eq!(to, draft.store_key());
+        assert_eq!(value["text"], "Add a retry with");
+        assert!(!app.demo.as_ref().unwrap().requests().iter().any(|(_, m, _)| m == "thread/start" || m == "turn/start"), "no thread was started");
     }
 
     #[test]
@@ -1215,12 +1276,12 @@ mod tests {
         voice_command(&mut app, &key, "composer.voiceStart", json!({}));
         voice_pass(&mut app);
         // Another thread offers the mic, but not while this one listens.
-        let other = app.client.state.transcripts.keys().find(|k| **k != key && crate::voice::offered(&app, k).is_some()).cloned();
+        let other = app.client.state.transcripts.keys().find(|k| **k != key).cloned().map(DraftRef::Thread);
         if let Some(other) = &other {
-            let v = crate::voice::view(&app, other).unwrap();
+            let v = crate::voice::view(&app, other);
             assert_eq!((v["state"].as_str(), v["button"]["enabled"].as_bool()), (Some("idle"), Some(false)));
             crate::voice::start(&mut app, other);
-            assert_eq!(app.client.dictation().map(|d| d.key.clone()), Some(key.clone()));
+            assert_eq!(app.client.dictation().map(|d| d.key.clone()), Some(DraftRef::Thread(key.clone())));
         }
         voice_command(&mut app, &key, "composer.voiceAudio", half_second());
         voice_pass(&mut app);
