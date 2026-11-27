@@ -619,6 +619,14 @@ impl Client {
             }
             Message::Error { id, error } => {
                 if let Some(call) = id.and_then(|id| self.pending.remove(&id)) {
+                    // After a build mismatch the hub refuses every request with the same
+                    // reason. Only the hello's answer says it (as the hello outcome, which each
+                    // window words for its case); the others' would repeat it as errors.
+                    if !matches!(call, Call::Hello)
+                        && matches!(error.code.as_str(), hub_names::HUB_OUTDATED | hub_names::WINDOW_OUTDATED)
+                    {
+                        return;
+                    }
                     self.on_error(call, &error);
                 } else {
                     self.state.hub.last_error = Some(error.message);
