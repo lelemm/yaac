@@ -1,7 +1,8 @@
 // Voice input (docs/plan/voice.md), the part every harness shares.
 //
-// The host records the microphone and streams raw audio on a data stream; yaacd hands it to the
-// thread's harness, whose own speech-to-text turns it into words. A provider implements
+// The host records the microphone and streams raw audio on a data stream; yaacd hands it to an
+// instance that transcribes (any one, P392 — not necessarily the composer thread's), whose own
+// speech-to-text turns it into words. A provider implements
 // `HarnessProvider.startDictation` with a `Dictation`; `VoiceSessions` (./sessions.ts) owns the
 // stream, its credit, and the notifications. Audio is never written to disk or journaled.
 
@@ -43,7 +44,7 @@ export interface Dictation {
    */
   readonly accepted?: Promise<void>;
   /**
-   * Audio in the thread's `voiceInput` format, in order. Resolves when the harness has taken
+   * Audio in the instance's `transcription.format`, in order. Resolves when the harness has taken
    * these bytes (yaacd then returns their credit to the host), or when the dictation is over.
    */
   audio(pcm: Buffer): Promise<void>;

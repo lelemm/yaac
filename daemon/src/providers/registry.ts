@@ -316,6 +316,8 @@ export class ProviderRegistry {
       // When the model list was last read from the harness (a probe that got none keeps the last time).
       ...(result.models.length > 0 || result.modelsComplete ? { modelsReadAt: result.modelsReadAt ?? new Date().toISOString() } : instance.descriptor.modelsReadAt ? { modelsReadAt: instance.descriptor.modelsReadAt } : {}),
       ...(result.backendOrigin ? { backendOrigin: result.backendOrigin } : {}),
+      // Who can take dictation, for any composer (P392); a ready offer goes with its capability.
+      ...(result.transcription ? { transcription: result.transcription } : {}),
     });
   }
 

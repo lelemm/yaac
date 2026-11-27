@@ -180,11 +180,12 @@ function provider(sdk: FakeSdk, voice = true, accessToken?: () => Promise<string
     voiceAccessToken: accessToken, ...(websocket ? { voiceStream: { websocket } } : {}) });
 }
 
-test("probe offers voiceInput when Claude Code answers dictate, in a separate VS Code-host process", async () => {
+test("probe offers transcription when Claude Code answers dictate, in a separate VS Code-host process", async () => {
   const sdk = new FakeSdk();
   const p = provider(sdk);
   const probe = await p.probe();
-  assert.ok(probe.capabilities.includes("voiceInput"));
+  assert.ok(probe.capabilities.includes("transcription"));
+  assert.deepEqual(probe.transcription, { format: CLAUDE_VOICE_FORMAT });
   const [dq, ...more] = sdk.dictationQueries();
   assert.ok(dq);
   assert.equal(more.length, 0);
@@ -195,22 +196,22 @@ test("probe offers voiceInput when Claude Code answers dictate, in a separate VS
   assert.deepEqual(dq.options.settings, { disableAllHooks: true });
   // The thread/model query keeps Claude Code's own entrypoint.
   assert.ok(sdk.queries.some((q) => q.options.env?.CLAUDE_CODE_ENTRYPOINT === undefined));
+  // The instance's, not the thread's (P392).
   const eff = await p.effective("some-thread");
-  assert.ok(eff.capabilities?.includes("voiceInput"));
-  assert.deepEqual(eff.voiceInput, CLAUDE_VOICE_FORMAT);
+  assert.ok(!(eff.capabilities ?? []).includes("transcription"));
   await p.dispose();
   assert.ok(dq.closed, "the warm dictation process closes with the provider");
 });
 
-test("probe withholds voiceInput when the dictate request is refused", async () => {
+test("probe withholds transcription, with the reason, when the dictate request is refused", async () => {
   const sdk = new FakeSdk();
   sdk.behaviour.gate = false;
   const p = provider(sdk);
-  assert.ok(!(await p.probe()).capabilities.includes("voiceInput"));
+  const probe = await p.probe();
+  assert.ok(!probe.capabilities.includes("transcription"));
+  assert.equal(probe.transcription?.format, undefined);
+  assert.match(probe.transcription?.unavailable ?? "", /dictation is not available here/);
   assert.ok(sdk.dictationQueries().every((q) => q.closed), "a refused probe leaves no process behind");
-  const eff = await p.effective("t");
-  assert.ok(!eff.capabilities?.includes("voiceInput"));
-  assert.equal(eff.voiceInput, undefined);
   await p.dispose();
 });
 
@@ -219,8 +220,8 @@ test("Claude Code's OAuth token offers the direct fallback when dictate is gated
   sdk.behaviour.gate = false;
   const p = provider(sdk, true, async () => "oauth-token-for-tests");
   const probe = await p.probe();
-  assert.ok(probe.capabilities.includes("voiceInput"));
-  assert.deepEqual((await p.effective("t")).voiceInput, CLAUDE_VOICE_FORMAT);
+  assert.ok(probe.capabilities.includes("transcription"));
+  assert.deepEqual(probe.transcription, { format: CLAUDE_VOICE_FORMAT });
   await p.dispose();
 });
 
@@ -229,9 +230,9 @@ test("dictate remains first when both dictate and the direct OAuth session exist
   class MustNotOpen { constructor() { throw new Error("direct WebSocket was opened"); } }
   const p = provider(sdk, true, async () => "oauth-token-for-tests", MustNotOpen as unknown as typeof WebSocket);
   const probe = await p.probe();
-  assert.ok(probe.capabilities.includes("voiceInput"));
+  assert.ok(probe.capabilities.includes("transcription"));
   const ev = new Recorder();
-  const d = p.startDictation("t", {}, ev);
+  const d = p.startDictation({}, ev);
   await d.accepted;
   assert.equal(sdk.dictationQueries().at(-1)?.requests.at(-1)?.op, "start");
   d.cancel();
@@ -239,18 +240,22 @@ test("dictate remains first when both dictate and the direct OAuth session exist
   await p.dispose();
 });
 
-test("probe withholds voiceInput for an account that is not Anthropic's own", async () => {
+test("probe withholds transcription for an account that is not Anthropic's own", async () => {
   const sdk = new FakeSdk();
   sdk.apiProvider = "bedrock";
   const p = provider(sdk);
-  assert.ok(!(await p.probe()).capabilities.includes("voiceInput"));
+  const probe = await p.probe();
+  assert.ok(!probe.capabilities.includes("transcription"));
+  assert.match(probe.transcription?.unavailable ?? "", /claude\.ai sign-in/);
   await p.dispose();
 });
 
 test("probe does not look for dictation when voice is off", async () => {
   const sdk = new FakeSdk();
   const p = provider(sdk, false);
-  assert.ok(!(await p.probe()).capabilities.includes("voiceInput"));
+  const probe = await p.probe();
+  assert.ok(!probe.capabilities.includes("transcription"));
+  assert.equal(probe.transcription, undefined);
   assert.equal(sdk.dictationQueries().length, 0);
   await p.dispose();
 });

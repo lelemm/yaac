@@ -25,6 +25,7 @@ import type {
   SkillScope,
   SkillsListResult,
   SubagentStatus,
+  TranscriptionOffer,
 } from "../../protocol/generated/types.js";
 import { RpcError } from "../../protocol/rpc.js";
 import { Emitter } from "../../util/emitter.js";
@@ -703,9 +704,13 @@ export class CodexProvider implements HarnessProvider {
     if (this.offersShellCommand()) caps.push("userShellCommand");
     if (models.some((m) => m.capabilities?.some((c) => c.capability === "imageInput" && c.support !== "unsupported"))) caps.push("imageInput");
     if (this.meshAttached) caps.push("meshTools");
-    if (this.voiceUsable()) caps.push("voiceInput");
+    // Transcription serves every composer on every target, not only Codex threads (P392).
+    if (this.voiceUsable()) caps.push("transcription");
     // A voice call over WebRTC works with any sign-in: Codex creates the call with its own.
     if (this.realtime) caps.push("voiceCall");
+    const transcription: TranscriptionOffer | null = !this.realtime ? null
+      : this.voiceUsable() ? { format: CODEX_VOICE_FORMAT }
+      : { unavailable: "Codex transcribes only with an OpenAI API key sign-in." };
     return {
       displayName: "Codex",
       backend: "daemon",
@@ -718,6 +723,7 @@ export class CodexProvider implements HarnessProvider {
       modelsComplete: complete,
       modes: CODEX_MODES.map(modeInfo),
       ...(this.backendOrigin ? { backendOrigin: this.backendOrigin } : {}),
+      ...(transcription ? { transcription } : {}),
     };
   }
 
@@ -895,10 +901,10 @@ export class CodexProvider implements HarnessProvider {
   }
 
   /**
-   * One dictation for a thread. It runs on a private ephemeral helper thread in transcription
-   * mode, never on `thread` itself: nothing is added to the user's conversation.
+   * One dictation, for any composer (P392). It runs on a private ephemeral helper thread in
+   * transcription mode, never on a user's thread: nothing is added to any conversation.
    */
-  startDictation(_thread: NativeId, opts: DictationOptions, events: DictationEvents): Dictation {
+  startDictation(opts: DictationOptions, events: DictationEvents): Dictation {
     if (!this.voiceUsable()) throw new RpcError("capability_missing", "voice input is not available for this Codex instance");
     return startCodexDictation({
       connection: () => this.ensure(),
@@ -1519,12 +1525,9 @@ export class CodexProvider implements HarnessProvider {
     if (efforts.length > 0) base.push("effortSwitch", "reasoning");
     if (image === "supported") base.push("imageInput");
     if (this.offersShellCommand()) base.push("userShellCommand");
-    const voice = this.voiceUsable();
-    if (voice) base.push("voiceInput");
     if (this.realtime) base.push("voiceCall");
     return {
       capabilities: base,
-      ...(voice ? { voiceInput: CODEX_VOICE_FORMAT } : {}),
       imageInput: image,
       imageFormats: [],
       efforts,

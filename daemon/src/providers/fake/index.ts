@@ -48,6 +48,7 @@ import type {
   TurnOverrides,
 } from "../types.js";
 import { chunks, parseScript, type Step } from "./script.js";
+import type { Dictation, DictationEvents, DictationOptions } from "../../voice/types.js";
 import { meshAgentCall } from "../agentcalls.js";
 
 export const FAKE_KIND = "fake";
@@ -180,7 +181,15 @@ export interface FakeOptions {
   moveCwd?: boolean;
   /** The modes on offer (FAKE_MODES, JSON). */
   modes?: ModeInfo[];
+  /**
+   * Transcription (P392; FAKE_TRANSCRIBE): `ready` offers it (16 kHz mono, scripted words),
+   * `refused` reports a voice surface that is not ready, absent: none.
+   */
+  transcribe?: "ready" | "refused";
 }
+
+/** What the fake transcribes. */
+const FAKE_VOICE_FORMAT = { format: "pcm16le" as const, sampleRate: 16000, channels: 1 };
 
 export class FakeProvider implements HarnessProvider {
   private get modes(): ModeInfo[] {
@@ -338,7 +347,11 @@ export class FakeProvider implements HarnessProvider {
     if (this.options.userShell !== false) caps.push("userShellCommand");
     if (this.options.moveCwd !== false) caps.push("threadMoveWorkingDirectory");
     if (this.meshHooks) caps.push("meshTools");
+    if (this.options.transcribe === "ready") caps.push("transcription");
+    const transcription = this.options.transcribe === "ready" ? { transcription: { format: FAKE_VOICE_FORMAT } }
+      : this.options.transcribe === "refused" ? { transcription: { unavailable: "The fake transcribes only when FAKE_TRANSCRIBE=ready." } } : {};
     return {
+      ...transcription,
       displayName: "Fake",
       backend: "sdk",
       harnessVersion: "fake-1.0",
@@ -349,6 +362,33 @@ export class FakeProvider implements HarnessProvider {
       models: MODELS,
       modelsComplete: true,
       modes: this.modes,
+    };
+  }
+
+  /** Dictations handed to it (P392): the language asked for and the audio bytes taken. */
+  readonly dictations: Array<{ language?: string; bytes: number }> = [];
+
+  /** A scripted dictation: one word per 3200 bytes (100 ms) of audio, the last one final. */
+  startDictation(opts: DictationOptions, events: DictationEvents): Dictation {
+    if (this.options.transcribe !== "ready") throw new Error("fake: transcription is not available");
+    const record = { ...(opts.language ? { language: opts.language } : {}), bytes: 0 };
+    this.dictations.push(record);
+    let over = false;
+    const words = () => Array.from({ length: Math.floor(record.bytes / 3200) }, (_, i) => `word${i + 1}`).join(" ");
+    const end = (final: boolean) => {
+      if (over) return;
+      over = true;
+      if (final) events.transcript(words(), true);
+      events.ended();
+    };
+    return {
+      audio: async (pcm) => {
+        if (over) return;
+        record.bytes += pcm.length;
+        events.transcript(words(), false);
+      },
+      stop: () => end(true),
+      cancel: () => end(false),
     };
   }
 
@@ -1307,6 +1347,7 @@ export const fakeProviderFactory: ProviderFactory = {
       forceStop: env.FAKE_FORCE_STOP !== "0",
       moveCwd: env.FAKE_MOVE_CWD !== "0",
       modes: modesFrom(env.FAKE_MODES),
+      ...(env.FAKE_TRANSCRIBE === "ready" || env.FAKE_TRANSCRIBE === "refused" ? { transcribe: env.FAKE_TRANSCRIBE } : {}),
     });
   },
   // The harness home (P300) is the fake's store folder, `FAKE_STORE`.

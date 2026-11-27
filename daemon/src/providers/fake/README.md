@@ -25,7 +25,10 @@ harness that cannot change a conversation's folder, so a `thread/move` changes o
 with it, the folder `yaacd` hands a turn is recorded in `received` as `cwd`), `FAKE_MODES=<json>`
 (the modes on offer, a JSON array of `ModeInfo` — `id`, `displayName`, `isDefault`,
 `skipsApprovals`, `autonomy` — instead of `fake-ask` (`ask`, the default) and `fake-auto`
-(`workspace`); a thread started with no mode is in the one marked `isDefault`, or in none).
+(`workspace`); a thread started with no mode is in the one marked `isDefault`, or in none),
+`FAKE_TRANSCRIBE=ready|refused` (P392: `ready` offers `transcription` at 16 kHz mono — a
+dictation hears `word1 word2 …`, one word per 100 ms of audio, and is recorded in
+`dictations`; `refused` reports a voice surface that is not ready, with its reason).
 
 A new store is seeded with two conversations "created outside YAAC": one `interactive`
 ("Refactor the parser (started in a terminal)") and one `programmatic` ("Nightly lint

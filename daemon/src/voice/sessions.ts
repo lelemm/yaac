@@ -21,7 +21,8 @@ export const VOICE_STOP_GRACE_MS = 3000;
 interface Active {
   view: ConnectionView;
   stream: number;
-  threadId: string;
+  /** The composer's thread, when it has one here (context only). */
+  threadId?: string;
   window: ReceiveWindow;
   dictation?: Dictation;
   /** Audio bytes received on the stream. */
@@ -53,15 +54,15 @@ export class VoiceSessions {
    */
   async start(
     view: ConnectionView,
-    threadId: string,
+    threadId: string | undefined,
     format: VoiceFormat,
     open: (events: DictationEvents) => Dictation,
   ): Promise<VoiceStartResult> {
     if (format.format !== "pcm16le" || !(format.sampleRate > 0) || !(format.channels > 0)) {
-      throw new RpcError("capability_missing", "this thread's harness reports no audio format yaacd can carry");
+      throw new RpcError("capability_missing", "the transcriber reports no audio format yaacd can carry");
     }
     for (const a of this.byStream.values()) {
-      if (a.threadId === threadId) throw new RpcError("limit_exceeded", "a dictation is already running in this thread");
+      if (threadId !== undefined && a.threadId === threadId) throw new RpcError("limit_exceeded", "a dictation is already running in this thread");
     }
     const stream = this.allocate();
     const credit = bytesPerSecond(format) * VOICE_WINDOW_SECONDS;

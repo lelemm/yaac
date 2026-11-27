@@ -218,7 +218,6 @@ export interface CoreMeshHooks {
  * everything that would make YAAC a second writer, or change it in the harness.
  */
 const SUBAGENT_WRITES: ReadonlySet<Capability> = new Set<Capability>([
-  "voiceInput",
   "voiceCall",
   "threadResume",
   "threadFork",
@@ -429,12 +428,11 @@ export class Core {
     this.troubleshooter = new Troubleshooter(this.registry);
     this.registry.onDescriptor((d) => {
       this.broadcast("provider/updated", { provider: d });
-      const hasVoice = d.capabilities?.includes("voiceInput") === true;
       const hasCall = d.capabilities?.includes("voiceCall") === true;
       for (const rt of this.allThreads()) {
         if (rt.record.instance !== d.instance || !rt.effective
           || (rt.record.metadataPending || this.subagentReadOnly(rt))
-          || (!!rt.effective.voiceInput === hasVoice && (rt.effective.capabilities ?? []).includes("voiceCall") === hasCall)) continue;
+          || (rt.effective.capabilities ?? []).includes("voiceCall") === hasCall) continue;
         void this.computeEffective(rt).then((effective) => {
           if (!rt.deleted) this.append(rt, { type: "settingsChanged", effective });
         });
@@ -1936,7 +1934,6 @@ export class Core {
       threadRename: "rename",
       threadArchive: "archive",
       threadDelete: "remove",
-      voiceInput: "startDictation",
       voiceCall: "startVoiceCall",
       threadTakeOverInterrupt: "interruptHolder",
     };
@@ -1957,36 +1954,37 @@ export class Core {
     // A read-only harness sub-agent (D151) can be read and watched, nothing more.
     if (rt.record.metadataPending || this.subagentReadOnly(rt)) eff.capabilities = eff.capabilities.filter((c) => !SUBAGENT_WRITES.has(c));
     if (rt.record.selectedMode) eff.applied = { ...eff.applied, mode: rt.record.selectedMode };
-    // The microphone needs both the capability and a format to record in.
-    if (!eff.capabilities.includes("voiceInput") || !eff.voiceInput) {
-      eff.capabilities = eff.capabilities.filter((c) => c !== "voiceInput");
-      delete eff.voiceInput;
-    }
+    // Transcription is the instance's, never the thread's (P392).
+    eff.capabilities = eff.capabilities.filter((c) => c !== "transcription");
     rt.effective = eff;
     return eff;
   }
 
   /**
-   * `voice/start` (docs/plan/voice.md): one dictation through the thread's harness. The words
-   * go back to `view` only; nothing reaches the conversation or the journal.
+   * `voice/start` (docs/plan/voice.md, P392): one dictation through an instance that
+   * transcribes. It need not be the instance of the composer's thread, and it never runs on a
+   * thread: the words go back to `view` only; nothing reaches a conversation or the journal.
+   * `threadId`, when given, is context only (the one-dictation-per-thread limit, a removed
+   * thread ending its dictation).
    */
-  async voiceStart(view: ConnectionView, p: { opId?: unknown; threadId?: unknown; language?: unknown }) {
+  async voiceStart(view: ConnectionView, p: { opId?: unknown; instance?: unknown; threadId?: unknown; language?: unknown }) {
     return this.ops.run("voice/start", p.opId, async () => {
       if (p.language !== undefined && p.language !== null && (typeof p.language !== "string" || p.language.length > 64)) {
         throw notActed("invalid_params", "language must be a code or name of at most 64 characters");
       }
-      const rt = this.requireThread(p.threadId);
-      const inst = this.registry.get(rt.record.instance);
-      const provider = inst?.provider;
-      const eff = await this.computeEffective(rt);
-      if (!provider?.startDictation || !eff.capabilities?.includes("voiceInput") || !eff.voiceInput) {
-        throw notActed("capability_missing", "this thread's harness offers no voice input here");
+      if (typeof p.instance !== "string" || !p.instance) throw notActed("invalid_params", "instance is required");
+      const threadId = p.threadId === undefined || p.threadId === null ? undefined : this.requireThread(p.threadId).id;
+      const inst = this.registry.get(p.instance);
+      if (!inst) throw notActed("invalid_params", `no instance ${p.instance} on this target`);
+      const provider = inst.provider;
+      const d = inst.descriptor;
+      const format = d.transcription?.format;
+      if (!provider?.startDictation || d.status !== "ready" || !(d.capabilities ?? []).includes("transcription") || !format) {
+        throw notActed("capability_missing", d.transcription?.unavailable ?? `${d.displayName} cannot transcribe here`);
       }
-      const native = rt.record.native;
       const language = typeof p.language === "string" && p.language ? p.language : undefined;
-      const format = eff.voiceInput;
       try {
-        return await this.voice.start(view, rt.id, format, (events) => provider.startDictation!(native, language ? { language } : {}, events));
+        return await this.voice.start(view, threadId, format, (events) => provider.startDictation!(language ? { language } : {}, events));
       } catch (e) {
         // Nothing changed anywhere (a refusal, a limit): the host may try again.
         if (e instanceof RpcError) throw notActed(e.code, e.message);

@@ -18,7 +18,7 @@
 //   the user's thread, and the user's own Codex config is not touched.
 // - The websocket transport needs API-key auth in 0.172.0 ("realtime conversation requires API
 //   key auth"): a ChatGPT sign-in only gets WebRTC, which Codex allows for conversational
-//   sessions only. The provider offers `voiceInput` only where a key is available.
+//   sessions only. The provider offers `transcription` only where a key is available.
 // - Audio: base64 PCM16 mono at 24 kHz (`REALTIME_AUDIO_SAMPLE_RATE` in codex-api), sent with
 //   `thread/realtime/appendAudio`. Codex never commits the input buffer itself, so the server's
 //   default turn detection ends each utterance on silence; on stop yaacd appends a short

@@ -75,7 +75,7 @@ function push(fake: FakeCodex, method: string, params: Record<string, unknown>):
   fake.push({ method, params: { threadId: VOICE_THREAD, ...params } });
 }
 
-test("voiceInput is offered only when the realtime methods answer and a key is available", async () => {
+test("transcription is offered on the instance only when the realtime methods answer and a key is available", async () => {
   const cases: Array<{ name: string; opts: Parameters<typeof rig>[0]; offered: boolean }> = [
     { name: "api key", opts: {}, offered: true },
     { name: "no realtime methods", opts: { realtime: false }, offered: false },
@@ -86,14 +86,17 @@ test("voiceInput is offered only when the realtime methods answer and a key is a
     const r = await rig(c.opts);
     try {
       const probe = await r.provider.probe();
-      assert.equal(probe.capabilities.includes("voiceInput"), c.offered, c.name);
-      const eff = await r.provider.effective(USER_THREAD);
-      assert.equal(!!eff.capabilities?.includes("voiceInput"), c.offered, c.name);
-      if (c.offered) assert.deepEqual(eff.voiceInput, { format: "pcm16le", sampleRate: 24000, channels: 1 });
+      assert.equal(probe.capabilities.includes("transcription"), c.offered, c.name);
+      if (c.offered) assert.deepEqual(probe.transcription, { format: { format: "pcm16le", sampleRate: 24000, channels: 1 } }, c.name);
       else {
-        assert.equal(eff.voiceInput, undefined);
-        assert.throws(() => r.provider.startDictation(USER_THREAD, {}, recorder().events), /not available/);
+        // With realtime but no key the instance says why; without realtime it has no surface.
+        if (c.opts?.realtime === false) assert.equal(probe.transcription, undefined, c.name);
+        else assert.match(probe.transcription?.unavailable ?? "", /OpenAI API key/, c.name);
+        assert.throws(() => r.provider.startDictation({}, recorder().events), /not available/);
       }
+      // Never a thread capability: dictation serves any composer (P392).
+      const eff = await r.provider.effective(USER_THREAD);
+      assert.ok(!(eff.capabilities ?? []).includes("transcription"), c.name);
     } finally {
       await r.done();
     }
@@ -105,7 +108,7 @@ test("a dictation runs on a private transcription-only thread and never touches 
   try {
     await r.provider.probe();
     const rec = recorder();
-    const d: Dictation = r.provider.startDictation(USER_THREAD, { language: "pt-BR" }, rec.events);
+    const d: Dictation = r.provider.startDictation({ language: "pt-BR" }, rec.events);
     // Three bytes: one whole sample now, the odd byte waits for the next chunk.
     await d.audio(Buffer.from([1, 0, 2]));
     await d.audio(Buffer.from([0]));
@@ -179,7 +182,7 @@ test("anything but the user's transcript ends the dictation with an error", asyn
     try {
       await r.provider.probe();
       const rec = recorder();
-      const d = r.provider.startDictation(USER_THREAD, {}, rec.events);
+      const d = r.provider.startDictation({}, rec.events);
       await d.audio(Buffer.alloc(4));
       push(r.fake, method, params);
       await until(() => rec.ended.length === 1);
@@ -201,7 +204,7 @@ test("a refused start, a realtime error, and a cancel each end once", async () =
     await r.provider.probe();
     r.fake.handlers.set("thread/realtime/start", () => ({ __error: { code: -32603, message: "failed to start realtime conversation: realtime conversation requires API key auth" } }));
     const rec = recorder();
-    const d = r.provider.startDictation(USER_THREAD, {}, rec.events);
+    const d = r.provider.startDictation({}, rec.events);
     await d.audio(Buffer.alloc(2));
     await until(() => rec.ended.length === 1);
     assert.match(rec.ended[0]!, /API-key sign-in/);
@@ -215,7 +218,7 @@ test("a refused start, a realtime error, and a cancel each end once", async () =
   try {
     await r.provider.probe();
     const rec = recorder();
-    const d = r.provider.startDictation(USER_THREAD, {}, rec.events);
+    const d = r.provider.startDictation({}, rec.events);
     await d.audio(Buffer.alloc(2));
     push(r.fake, "thread/realtime/transcript/delta", { role: "user", delta: "half" });
     await until(() => rec.transcripts.length === 1);
@@ -231,7 +234,7 @@ test("a refused start, a realtime error, and a cancel each end once", async () =
   try {
     await r.provider.probe();
     const rec = recorder();
-    const d = r.provider.startDictation(USER_THREAD, {}, rec.events);
+    const d = r.provider.startDictation({}, rec.events);
     await d.audio(Buffer.alloc(2));
     push(r.fake, "thread/realtime/transcript/delta", { role: "user", delta: "dropped" });
     await until(() => rec.transcripts.length === 1);

@@ -38,6 +38,7 @@ import type {
   TurnId,
   TurnOrigin,
   TurnStatus,
+  TranscriptionOffer,
 } from "../../protocol/generated/types.js";
 import { RpcError } from "../../protocol/rpc.js";
 import { ClaudeCommands, claudeCommandLogs } from "./commands.js";
@@ -766,7 +767,13 @@ export class ClaudeProvider implements HarnessProvider {
       && !!(await this.readVoiceAccessToken());
     const voiceAvailable = !!this.options.voice && (this.dictateAvailable || this.directVoiceAvailable);
     if (!dictates.available && dictates.detail) this.log(`voice input unavailable: ${dictates.detail}`);
-    if (voiceAvailable) capabilities.push("voiceInput");
+    // Transcription is offered to every composer on every target, not only Claude threads (P392).
+    if (voiceAvailable) capabilities.push("transcription");
+    const transcription: TranscriptionOffer | null = !this.options.voice ? null
+      : voiceAvailable ? { format: CLAUDE_VOICE_FORMAT }
+      : { unavailable: account?.apiProvider && account.apiProvider !== "firstParty"
+          ? "Claude transcribes only with a claude.ai sign-in."
+          : `Claude Code's dictation is not available here${dictates.detail ? ` (${dictates.detail})` : ""}.` };
     if (this.meshAttached) capabilities.push("meshTools");
     if (this.models.some((m) => (m.efforts ?? []).length > 0)) capabilities.push("reasoning");
     const autoMode = models.some((m) => m.supportsAutoMode === true);
@@ -778,6 +785,7 @@ export class ClaudeProvider implements HarnessProvider {
       models: this.models,
       modelsComplete: true,
       modes,
+      ...(transcription ? { transcription } : {}),
     });
     return this.lastProbe;
   }
@@ -1995,10 +2003,10 @@ export class ClaudeProvider implements HarnessProvider {
     const caps = this.lastProbe?.capabilities ?? this.baseCapabilities();
     const efforts = info?.efforts ?? [];
     return {
-      capabilities: caps.filter((c) => (c !== "effortSwitch" && c !== "reasoning") || efforts.length > 0),
+      // Transcription is the instance's, never a thread's (P392).
+      capabilities: caps.filter((c) => c !== "transcription" && ((c !== "effortSwitch" && c !== "reasoning") || efforts.length > 0)),
       imageInput: "supported",
       imageFormats: IMAGE_FORMATS,
-      ...(caps.includes("voiceInput") ? { voiceInput: CLAUDE_VOICE_FORMAT } : {}),
       efforts,
       modes: this.lastProbe?.modes ?? [],
       applied: {
@@ -2307,7 +2315,7 @@ export class ClaudeProvider implements HarnessProvider {
   }
 
   /** Prefer a dictation-only Claude Code process when its control request is available. */
-  startDictation(_thread: NativeId, opts: DictationOptions, events: DictationEvents): Dictation {
+  startDictation(opts: DictationOptions, events: DictationEvents): Dictation {
     if (this.dictateAvailable) return this.dictation.start(opts, events);
     if (!this.directVoiceAvailable) throw new Error("Claude voice input is not available");
     const stream = new ClaudeVoiceStream({

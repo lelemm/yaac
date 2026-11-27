@@ -32,6 +32,7 @@ import type {
   ThreadEffective,
   Timestamp,
   TokenUsage,
+  TranscriptionOffer,
   TurnId,
   TurnOrigin,
   TurnStatus,
@@ -131,6 +132,12 @@ export interface ProbeResult {
   modelsReadAt?: Timestamp | null;
   /** For a backend that is a separate process: whether it was found running or started by yaacd. */
   backendOrigin?: BackendOrigin | null;
+  /**
+   * Dictation through this instance (docs/plan/voice.md, P392): the audio it takes when it
+   * can transcribe now (the probe then also reports the `transcription` capability), or why
+   * not. Absent: no voice surface at all.
+   */
+  transcription?: TranscriptionOffer | null;
 }
 
 export interface StartThreadParams {
@@ -493,13 +500,14 @@ export interface HarnessProvider {
   skills?(cwd: string, opts: { forceReload: boolean }): Promise<SkillsListResult>;
 
   /**
-   * Voice input (`voiceInput`, docs/plan/voice.md): one dictation through the harness's own
-   * speech-to-text, for the thread's composer. Called only when the thread's effective
-   * capabilities have `voiceInput`; the audio is in the thread's effective `voiceInput` format.
-   * Never throws for the harness refusing: that is `events.ended(error)`. The words go only to
-   * the host; nothing is sent to the conversation, and no audio is written anywhere.
+   * Transcription (`transcription`, docs/plan/voice.md, P392): one dictation through the
+   * harness's own speech-to-text, for any composer — not bound to a thread of this instance,
+   * so it never runs on one. Called only when the instance's descriptor has the
+   * `transcription` capability; the audio is in its `transcription.format`. Never throws for
+   * the harness refusing: that is `events.ended(error)` (or a rejected `accepted`). The words
+   * go only to the host; nothing is sent to a conversation, and no audio is written anywhere.
    */
-  startDictation?(thread: NativeId, opts: DictationOptions, events: DictationEvents): Dictation;
+  startDictation?(opts: DictationOptions, events: DictationEvents): Dictation;
 
   /**
    * Voice call (`voiceCall`, docs/plan/voice-call.md): a speech-to-speech call with `thread`
