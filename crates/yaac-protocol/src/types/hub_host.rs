@@ -18,12 +18,20 @@ pub struct HubHostTailscale {
     pub ips: Vec<String>,
 }
 
+/// WSL details reported by a daemon running inside a distribution.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HubHostWsl {
+    /// The registered distribution name, or `WSL` if unavailable.
+    pub distro: String,
+}
+
 /// The outcome recorded after a previous hand-over.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HubHostLastTransfer {
     pub op_id: OpId,
-    /// `started` or `failed`.
+    /// `started`, `placed` (startup delegated), or `failed`.
     pub status: String,
     /// The reason startup failed, when applicable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -40,6 +48,8 @@ pub struct HubHostProbeResult {
     /// The hub's attach port is available on the target's Tailscale addresses.
     pub port_free: bool,
     pub hub_running: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wsl: Option<HubHostWsl>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_transfer: Option<HubHostLastTransfer>,
 }
@@ -91,16 +101,27 @@ pub struct HubHostPutCompleteParams {
     pub message: Option<String>,
 }
 
-/// `hubHost/start`: validate the transfer and arm the new hub to start on connection close.
+/// `hubHost/start`: validate the transfer and arm file placement on connection close.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HubHostStartParams {
     pub op_id: OpId,
-    /// The transfer requests deferred startup with `true`.
+    /// The transfer requests deferred file placement with `true`.
     pub arm_on_close: bool,
+    /// Start the hub and configure autostart after placement. Defaults to true.
+    #[serde(default = "start_hub_by_default", skip_serializing_if = "is_true")]
+    pub start_hub: bool,
 }
 
-/// `hubHost/start` result: the transfer is ready and startup is armed.
+fn start_hub_by_default() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+/// `hubHost/start` result: the transfer is ready and placement is armed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HubHostStartResult {

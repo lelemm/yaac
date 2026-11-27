@@ -589,6 +589,8 @@ open_union! {
         Ssh(SshTransport) = "ssh",
         /// A WSL distribution.
         Wsl(WslTransport) = "wsl",
+        /// The PC's Windows yaacd, reached from its WSL hub through Windows interop.
+        WindowsInterop(WindowsInteropTransport) = "windowsInterop",
     }
 }
 
@@ -620,6 +622,14 @@ pub struct WslTransport {
     /// User, when not the distro's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<String>,
+}
+
+/// Windows target reached by a hub in WSL on the same PC.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowsInteropTransport {
+    /// WSL-side path to the installed Windows YAAC executable.
+    pub exe: String,
 }
 
 open_enum! {

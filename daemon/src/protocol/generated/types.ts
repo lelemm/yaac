@@ -2022,7 +2022,7 @@ export interface HubHostLastTransfer {
   message?: string | null;
   opId: OpId;
   /**
-   * `started` or `failed`.
+   * `started`, `placed` (startup delegated), or `failed`.
    */
   status: string;
 }
@@ -2040,6 +2040,7 @@ export interface HubHostProbeResult {
    */
   portFree: boolean;
   tailscale: HubHostTailscale;
+  wsl?: HubHostWsl | null;
 }
 
 /**
@@ -2087,18 +2088,22 @@ export interface HubHostPutResult {
 }
 
 /**
- * `hubHost/start`: validate the transfer and arm the new hub to start on connection close.
+ * `hubHost/start`: validate the transfer and arm file placement on connection close.
  */
 export interface HubHostStartParams {
   /**
-   * The transfer requests deferred startup with `true`.
+   * The transfer requests deferred file placement with `true`.
    */
   armOnClose: boolean;
   opId: OpId;
+  /**
+   * Start the hub and configure autostart after placement. Defaults to true.
+   */
+  startHub?: boolean;
 }
 
 /**
- * `hubHost/start` result: the transfer is ready and startup is armed.
+ * `hubHost/start` result: the transfer is ready and placement is armed.
  */
 export interface HubHostStartResult {
   armed: boolean;
@@ -2111,6 +2116,16 @@ export interface HubHostTailscale {
   ips: string[];
   login?: string | null;
   running: boolean;
+}
+
+/**
+ * WSL details reported by a daemon running inside a distribution.
+ */
+export interface HubHostWsl {
+  /**
+   * The registered distribution name, or `WSL` if unavailable.
+   */
+  distro: string;
 }
 
 /**
