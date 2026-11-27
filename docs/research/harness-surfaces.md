@@ -910,6 +910,55 @@ a loopback Anthropic fixture, `persistSession: false`, `maxTurns: 1`, and empty 
 returned the fixture result. The request carried zero tools. No project JSONL was written,
 and SDK `listSessions` for the temporary working directory returned an empty list.
 
+## Realtime voice (verified 2026-11-27)
+
+Read from codex-cli **0.172.0** without opening a realtime session:
+`codex app-server generate-ts --experimental` and `generate-json-schema --experimental`, plus
+the tagged source `rust-v0.172.0` of `openai/codex`. YAAC's use of these facts:
+[04 § Voice input (Codex)](../04-providers.md#voice-input-codex).
+
+- **Requests** (EXPERIMENTAL; only in the schema with `--experimental`):
+  - `thread/realtime/start { threadId, outputModality: "text"|"audio", transport?, version?, model?, voice?, clientManagedHandoffs?, includeStartupContext?, prompt?, realtimeStartInstructions?, realtimeEndInstructions?, initialItems? (v3 only), … } → {}`
+  - `thread/realtime/appendAudio { threadId, audio: { data, sampleRate, numChannels, samplesPerChannel|null, itemId|null } } → {}`
+  - `thread/realtime/stop { threadId } → {}`
+  - `thread/realtime/listVoices {} → { voices }`. This is a static list
+    (`RealtimeVoicesList::builtin()`); it never touches the network, so it is a safe feature probe.
+- **Notifications:**
+  - `thread/realtime/started { threadId, realtimeSessionId, version }`
+  - `thread/realtime/transcript/delta { threadId, role, delta }` and
+    `thread/realtime/transcript/done { threadId, role, text }`. `role` is `"user"` for input
+    transcription (`conversation.item.input_audio_transcription.delta/completed`) and
+    `"assistant"` for the model's output.
+  - `thread/realtime/outputAudio/delta`
+  - `thread/realtime/itemAdded` and `item/{started,completed}`
+  - `thread/realtime/error { message }` and `thread/realtime/closed { reason }`
+- **Session type.** `realtime.type` (`conversational` default, or `transcription`) is thread
+  config (`RealtimeToml { version, type, transport, voice }`). `start` reads it from the loaded
+  thread's config, so the only per-thread way to set it is a `config` override on
+  `thread/start` / cold `thread/resume`. Transcription is honoured only by the v2 wire
+  (`normalized_session_mode` forces v1 and v3 to conversational). A transcription
+  `session.update` has `type: "transcription"`, no instructions, no tools, no output, and
+  no `turn_detection` (the server default applies). The upstream test is
+  `transcription_mode_session_update_omits_output_audio_and_instructions`.
+- **Conversational sessions act on the thread.** The realtime model gets the tools
+  `background_agent` ("Send a user request to the background agent… this starts a new task")
+  and a silence tool. A call is routed into the thread as a turn or a steer
+  (`route_realtime_handoff`). `clientManagedHandoffs` only stops Codex's answers from being
+  forwarded back to the realtime model. Starting a session also adds realtime start/end
+  developer instructions to the next turn's context while it is active.
+- **History writes.** Completed transcript chunks are recorded into the thread as user messages
+  (`transcript_tail::record`, a zero-length "recording turn") only for the v3 parser, or at
+  session end when `flushTranscriptTailOnSessionEnd` (default false; always on for v3).
+- **Audio:** `REALTIME_AUDIO_SAMPLE_RATE = 24_000`, format `audio/pcm` (PCM16). Codex never
+  sends `input_audio_buffer.commit`.
+- **Auth:** the websocket transport needs an API key: the provider's key, the API-key sign-in,
+  or `OPENAI_API_KEY` in the daemon's environment. Otherwise the error is "realtime
+  conversation requires API key auth". WebRTC (`realtime/calls`) works with a ChatGPT sign-in
+  but is refused unless the session is conversational ("AVAS realtime calls require
+  conversational realtime"). The TUI's `/voice` defaults to WebRTC.
+- **Defaults Codex picks itself** (named here only so they are recognised; YAAC never sends
+  them): realtime model `gpt-realtime-1.5`, transcription model `gpt-4o-mini-transcribe`.
+
 ## Claude Code dictation (verified 2026-11-27)
 
 Read from the installed `claude` **2.1.330** (`~/.local/share/claude/versions/2.1.330`; the

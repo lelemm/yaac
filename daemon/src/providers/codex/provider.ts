@@ -28,7 +28,9 @@ import type {
 } from "../../protocol/generated/types.js";
 import { RpcError } from "../../protocol/rpc.js";
 import { Emitter } from "../../util/emitter.js";
-import { EXPLANATION_SOURCE, explainCommand } from "./explanation.js";
+import { EXPLANATION_SOURCE, disabledMcpServers, explainCommand } from "./explanation.js";
+import { CODEX_VOICE_FORMAT, VOICE_SOURCE, startCodexDictation } from "./voice.js";
+import type { Dictation, DictationEvents, DictationOptions } from "../../voice/types.js";
 import { randomId, readJson, sha256Hex, writeJsonAtomic } from "../../util/fsx.js";
 import type {
   ExternalControl,
@@ -287,6 +289,8 @@ export class CodexProvider implements HarnessProvider {
   private lastFailure: { status: ProbeResult["status"]; message: string } | null = null;
   private threads = new Map<NativeId, ThreadState>();
   private readonly explanationThreads = new Set<NativeId>();
+  /** Whether the daemon answers the experimental `thread/realtime/*` methods (last probe). */
+  private realtime = false;
   private troubleshootCwd?: string;
   private requests = new Map<string, LiveRequest>();
   private models: ModelInfo[] = [];
@@ -646,6 +650,8 @@ export class CodexProvider implements HarnessProvider {
     } catch (e) {
       statusMessage = `could not read the Codex account: ${(e as Error).message}`;
     }
+    // Feature detection, not a version check: the experimental realtime family answers or not.
+    this.realtime = await conn.request("thread/realtime/listVoices", {}, 4_000).then(() => true, () => false);
     const { models, complete } = await this.listModels(conn);
     if (complete || models.length > 0) this.models = complete ? models : this.models.length > 0 ? this.models : models;
     const caps: Capability[] = [
@@ -694,6 +700,7 @@ export class CodexProvider implements HarnessProvider {
     if (this.offersShellCommand()) caps.push("userShellCommand");
     if (models.some((m) => m.capabilities?.some((c) => c.capability === "imageInput" && c.support !== "unsupported"))) caps.push("imageInput");
     if (this.meshAttached) caps.push("meshTools");
+    if (this.voiceUsable()) caps.push("voiceInput");
     return {
       displayName: "Codex",
       backend: "daemon",
@@ -869,10 +876,38 @@ export class CodexProvider implements HarnessProvider {
     }
   }
 
+  // ── Voice input ──────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Dictation through Codex's realtime transcription (./voice.ts): the daemon has the
+   * experimental realtime methods, and a key the websocket transport accepts — API-key sign-in,
+   * or `OPENAI_API_KEY` in the environment yaacd gives the daemon. Codex 0.172.0 refuses a
+   * ChatGPT-only sign-in on that transport ("realtime conversation requires API key auth").
+   */
+  private voiceUsable(): boolean {
+    if (!this.realtime) return false;
+    return this.authMode === "apikey" || !!this.plan.env.OPENAI_API_KEY;
+  }
+
+  /**
+   * One dictation for a thread. It runs on a private ephemeral helper thread in transcription
+   * mode, never on `thread` itself: nothing is added to the user's conversation.
+   */
+  startDictation(_thread: NativeId, opts: DictationOptions, events: DictationEvents): Dictation {
+    if (!this.voiceUsable()) throw new RpcError("capability_missing", "voice input is not available for this Codex instance");
+    return startCodexDictation({
+      connection: () => this.ensure(),
+      cwd: this.ctx.stateDir,
+      quietConfig: (conn) => disabledMcpServers(conn, this.ctx.stateDir),
+      remember: (id) => this.rememberExplanationThread(id),
+      log: (l) => this.ctx.log(l),
+    }, events, opts);
+  }
+
   // ── Turns ────────────────────────────────────────────────────────────────────────────────
 
   private isExplanationThread(thread: Thread): boolean {
-    return thread.threadSource === EXPLANATION_SOURCE || this.explanationThreads.has(thread.id) ||
+    return thread.threadSource === EXPLANATION_SOURCE || thread.threadSource === VOICE_SOURCE || this.explanationThreads.has(thread.id) ||
       (thread.ephemeral === true && (thread.cwd === this.ctx.stateDir || thread.cwd === this.troubleshootCwd));
   }
 
@@ -1455,8 +1490,11 @@ export class CodexProvider implements HarnessProvider {
     if (efforts.length > 0) base.push("effortSwitch", "reasoning");
     if (image === "supported") base.push("imageInput");
     if (this.offersShellCommand()) base.push("userShellCommand");
+    const voice = this.voiceUsable();
+    if (voice) base.push("voiceInput");
     return {
       capabilities: base,
+      ...(voice ? { voiceInput: CODEX_VOICE_FORMAT } : {}),
       imageInput: image,
       imageFormats: [],
       efforts,

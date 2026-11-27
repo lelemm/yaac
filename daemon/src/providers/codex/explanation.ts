@@ -4,6 +4,15 @@ import type { Thread, ThreadItem, Turn } from "./wire.js";
 
 export const EXPLANATION_SOURCE = "yaac.command-explanation";
 
+/** Config overrides that keep the user's MCP servers from starting in a private helper thread. */
+export async function disabledMcpServers(conn: CodexConnection, cwd: string): Promise<Record<string, unknown>> {
+  const { config } = await conn.request("config/read", { cwd }, 4_000) as {
+    config: { mcp_servers?: Record<string, unknown> };
+  };
+  return Object.fromEntries(Object.keys(config.mcp_servers ?? {})
+    .map((name) => [`mcp_servers.${name}`, { enabled: false }]));
+}
+
 export async function explainCommand(
   conn: CodexConnection,
   cwd: string,
@@ -13,11 +22,7 @@ export async function explainCommand(
   signal?: AbortSignal,
   analysis?: { effort: string; instructions: string },
 ): Promise<string | null> {
-  const { config } = await conn.request("config/read", { cwd }, 4_000) as {
-    config: { mcp_servers?: Record<string, unknown> };
-  };
-  const disabledServers = Object.fromEntries(Object.keys(config.mcp_servers ?? {})
-    .map((name) => [`mcp_servers.${name}`, { enabled: false }]));
+  const disabledServers = await disabledMcpServers(conn, cwd);
   if (signal?.aborted) return null;
   const { thread } = await conn.request("thread/start", {
     cwd,

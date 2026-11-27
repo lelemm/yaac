@@ -126,6 +126,17 @@ in `~/.codex/models_cache.json` lists `audio` today; all list `['text','image']`
 - Under invariant 11 (one connection, driven through the daemon) this needs nothing new: it is
   more JSON-RPC on the connection that already exists.
 
+### Follow-up: a transcription-only session exists (2026-11-27)
+
+The tagged source (`rust-v0.172.0`) settles the open question above: Codex has a real
+**transcription** session type, with no tools, no responses, and nothing added to the thread.
+It is chosen by the thread's config `realtime.type`, not by a `start` parameter, and works only
+on the v2 websocket wire, which needs API-key auth. `clientManagedHandoffs` does **not** stop a
+conversational session from starting turns. YAAC therefore runs each dictation on a private
+ephemeral helper thread started with that override. Details:
+[harness surfaces](harness-surfaces.md#realtime-voice-verified-2026-11-27) and
+[04](../04-providers.md#voice-input-codex).
+
 ## Claude Code
 
 ### Verified

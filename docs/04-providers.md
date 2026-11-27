@@ -695,6 +695,49 @@ The protocol types come from Codex itself (`codex app-server generate-ts`). Beca
 can be newer than the types `yaacd` was built with, the adapter tolerates unknown fields,
 methods, and notifications rather than failing on them.
 
+### Voice input (Codex)
+
+**Proposed (P382).** Verified against codex-cli 0.172.0 (the `--experimental` schema and the
+`rust-v0.172.0` source; details in [harness surfaces](research/harness-surfaces.md#realtime-voice-verified-2026-11-27)).
+`yaacd` drives Codex's experimental `thread/realtime/*` family, but **not on the user's
+thread**:
+
+- A realtime session is either *conversational* or *transcription*, and the choice is the
+  thread's config `realtime.type`, read when the thread is loaded; `thread/realtime/start` has
+  no parameter for it. A conversational session gives the realtime model a "send to the
+  background agent" tool that starts a Codex turn in the thread, and it replies (text or
+  audio). `clientManagedHandoffs` does not stop that; it only keeps Codex's answers from being
+  forwarded to the realtime model. That is a voice conversation, not dictation.
+- A transcription session has no instructions, tools, or responses. It only transcribes the
+  input audio.
+- So each dictation starts a **private helper thread**: `thread/start` with `ephemeral: true`
+  (never written to disk), `threadSource: "yaac.voice-input"`, cwd the instance's state
+  directory, `approvalPolicy: "never"`, `sandbox: "read-only"`, the user's MCP servers off,
+  and the config overrides `realtime.type = "transcription"`, `realtime.version = "v2"` (Codex
+  turns any other version back into conversational), `realtime.transport = "websocket"`. Then
+  `thread/realtime/start` (`outputModality: "text"`, websocket, `includeStartupContext: false`,
+  no `model`). The user's conversation, history, and Codex config are not touched. The helper
+  thread is hidden like the command-explanation threads and released with
+  `thread/realtime/stop` and `thread/unsubscribe`.
+- Audio is `appendAudio` with base64 PCM16 mono at **24 kHz**: Codex's fixed realtime rate,
+  reported as the thread's `voiceInput` format. Chunks are at most one second long. Codex
+  never commits the input buffer, so the server's turn detection ends each utterance on
+  silence. On `voice/stop`, `yaacd` appends 0.8 s of silence and waits until the transcript has
+  not moved for 1.5 s, or 6 s at most. Then it sends the final transcript and `voice/ended`.
+- `thread/realtime/transcript/delta` and `/done` with `role: "user"` build the transcript:
+  finished parts, then the current part's deltas. If the helper session produces anything
+  else, the dictation ends at once with an error. That covers an assistant-role transcript,
+  output audio, a turn, or an item.
+- **Sign-in.** In 0.172.0 the websocket transport needs an API key ("realtime conversation
+  requires API key auth"). A ChatGPT sign-in only gets WebRTC, which Codex allows only for
+  conversational sessions. `voiceInput` is therefore reported only when the daemon answers
+  `thread/realtime/listVoices` (feature detection, not a version check) **and** the account is
+  `apiKey` or `OPENAI_API_KEY` is in the environment `yaacd` gives the daemon. A refusal still
+  reaches the user as `voice/ended` with that reason.
+- **Caveats.** The family is EXPERIMENTAL and changes between releases. Transcription is done by
+  OpenAI's realtime service with the user's key and **is billed to it**. The `language` hint is
+  not passed: Codex has no parameter for it.
+
 ### Why there is no SDK backend for Codex
 
 **Decided.** The Codex SDK is a thin wrapper around `codex exec`: it cannot list threads, read
