@@ -7,7 +7,9 @@ import type { ConnectionView } from "../src/protocol/connection.js";
 import { VoiceCalls } from "../src/voice/calls.js";
 import { DictationRefused, type VoiceCall, type VoiceCallEvents } from "../src/voice/types.js";
 
-const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
+// The registry sends through setImmediate; a timer alone can fire first on a slow runner (the
+// test may itself be running in a check phase), so wait out the pending immediates too.
+const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms)).then(() => new Promise((r) => setImmediate(r)));
 
 class FakeView {
   readonly notes: Array<[string, Record<string, unknown>]> = [];
