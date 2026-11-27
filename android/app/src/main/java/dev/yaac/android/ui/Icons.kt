@@ -3,6 +3,7 @@ package dev.yaac.android.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -14,6 +15,12 @@ import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -56,6 +63,11 @@ enum class YIcon(val path: String, val filled: Boolean = false) {
     Tree("M12 2a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M5 16a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M19 16a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M12 8v4 M5 16v-2a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2"),
     History("M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8 M3 3v5h5 M12 7v5l4 2"),
     Grip("M9 5.5a.6.6 0 1 0 0 .01 M15 5.5a.6.6 0 1 0 0 .01 M9 12a.6.6 0 1 0 0 .01 M15 12a.6.6 0 1 0 0 .01 M9 18.5a.6.6 0 1 0 0 .01 M15 18.5a.6.6 0 1 0 0 .01"),
+    BoltFilled("M13 2L3 14h9l-1 8 10-12h-9l1-8z", filled = true),
+    Brain("M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18z M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18z M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4 M17.599 6.5a3 3 0 0 0 .399-1.375 M6.003 5.125A3 3 0 0 0 6.401 6.5 M3.477 10.896a4 4 0 0 1 .585-.396 M19.938 10.5a4 4 0 0 1 .585.396 M6 18a4 4 0 0 1-1.967-.516 M19.967 17.484A4 4 0 0 1 18 18"),
+    Bot("M12 8V4H8 M6 8h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2z M2 14h2 M20 14h2 M15 13v2 M9 13v2"),
+    Shield("M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"),
+    Fork("M6 3a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M18 3a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M12 15a3 3 0 1 0 0 6a3 3 0 1 0 0-6z M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9 M12 12v3"),
     Spinner("M12 2v4 M16.2 7.8l2.9-2.9 M18 12h4 M16.2 16.2l2.9 2.9 M12 18v4 M4.9 19.1l2.9-2.9 M2 12h4 M4.9 4.9l2.9 2.9"),
 }
 
@@ -88,6 +100,27 @@ fun Logo(d: String, tint: Color, modifier: Modifier = Modifier, size: Dp = 16.dp
         translate(dx, dy) {
             scale(s, s, pivot = Offset.Zero) {
                 translate(-b.left, -b.top) { drawPath(path, tint) }
+            }
+        }
+    }
+}
+
+
+/** The running mark, as WPF's `RunningSpinner`: an open arc turning once every 2.5 s (1.8 s in Fast, 0.35 s in Ultrafast). */
+@Composable
+fun RunningSpinner(tint: Color, size: Dp = 16.dp, fast: Boolean = false, ultrafast: Boolean = false) {
+    val period = if (ultrafast) 350 else if (fast) 1_800 else 2_500
+    val turn = rememberInfiniteTransition(label = "running")
+    val angle by turn.animateFloat(0f, 360f, infiniteRepeatable(tween<Float>(period, easing = LinearEasing)), label = "angle")
+    val arc = remember { svgPath("M15.5 5.5A7 7 0 1 1 7 2.3") }
+    Canvas(Modifier.size(size)) {
+        // The arc's circle is centred at (9.37, 8.89) with radius 7: fit that circle, then turn it.
+        val s = (this.size.minDimension - 2.dp.toPx()) / 16f
+        rotate(angle) {
+            translate(center.x - 9.37f * s, center.y - 8.89f * s) {
+                scale(s, s, pivot = Offset.Zero) {
+                    drawPath(arc, tint, style = Stroke(width = 1.8.dp.toPx() / s, cap = StrokeCap.Round))
+                }
             }
         }
     }

@@ -32,6 +32,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
@@ -56,7 +60,7 @@ import kotlinx.serialization.json.JsonObject
  * and the control row. Commands carry the composer's `key`, as WPF sends them.
  */
 @Composable
-fun Composer(view: JsonElement?, send: (String, Any?) -> Unit, history: JsonElement? = null) {
+fun Composer(view: JsonElement?, send: (String, Any?) -> Unit, history: JsonElement? = null, logo: Pair<String, Color?>? = null) {
     val composer = view as? JsonObject ?: return
     val c = LocalYaac.current
     val type = LocalType.current
@@ -102,7 +106,7 @@ fun Composer(view: JsonElement?, send: (String, Any?) -> Unit, history: JsonElem
         if (composer["showEditor"].flag(true)) {
             Editor(composer, key, send, history)
         }
-        ControlRow(composer, act)
+        ControlRow(composer, act, logo)
     }
 }
 
@@ -339,34 +343,75 @@ private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) ->
     composer["hint"].text?.let { T(it, type.small, c.muted, modifier = Modifier.padding(top = 2.dp, start = 4.dp)) }
 }
 
-/** The control row: a line of text selectors that scrolls sideways; each opens its sheet. */
+/**
+ * The control row, compact for a phone: one line of icons, no sideways scrolling. The model is
+ * the harness logo and the model's name; effort a brain and the level's initial on its colour;
+ * speed the bolt; mode a shield (in the failed colour when it bypasses approvals); agents a bot
+ * (with "?" while it asks); fork the fork. Each opens the same sheet as before, titled in words.
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-private fun ControlRow(composer: JsonObject, act: (ActionItem) -> Unit) {
+private fun ControlRow(composer: JsonObject, act: (ActionItem) -> Unit, logo: Pair<String, Color?>? = null) {
     val c = LocalYaac.current
     val type = LocalType.current
     var open by remember { mutableStateOf<ActionItem?>(null) }
     // The order WPF uses: model, effort, speed, mode, agents, then the rest, Fork last.
     val rank = mapOf("model" to 0, "effort" to 1, "fast" to 2, "speed" to 2, "mode" to 3, "agents" to 4)
     val controls = composer["controls"].objects.sortedBy { if (it["id"].str == "fork") 9 else rank[it["id"].str] ?: 5 }
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        controls.forEachIndexed { i, ctl ->
-            val a = ActionItem.of(ctl) ?: return@forEachIndexed
-            if (i > 0) T("·", type.ui, c.muted, modifier = Modifier.padding(horizontal = 4.dp))
+    androidx.compose.foundation.layout.FlowRow(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp), itemVerticalAlignment = Alignment.CenterVertically) {
+        for (ctl in controls) {
+            val a = ActionItem.of(ctl) ?: continue
             val warn = ctl["warn"].flag()
-            Row(Modifier.clip(RoundedCornerShape(5.dp)).clickable(enabled = a.enabled) { if (a.children.isNotEmpty()) open = a else act(a) }
-                .heightIn(min = 40.dp).padding(horizontal = 6.dp).alpha(if (a.enabled) 1f else 0.5f), verticalAlignment = Alignment.CenterVertically) {
-                if (warn) { Icon(YIcon.Warning, c.failure, size = 15.dp); Spacer(Modifier.width(4.dp)) }
-                T(a.label, type.ui.copy(fontSize = 15.sp), if (warn) c.failure else c.text, maxLines = 1)
-                if (a.children.isNotEmpty()) { Spacer(Modifier.width(3.dp)); Icon(YIcon.CaretDown, if (warn) c.failure else c.text, size = 11.dp) }
+            val ink = if (warn) c.failure else c.text
+            val selected = a.children.firstOrNull { it.checked == true }
+            Row(Modifier.clip(RoundedCornerShape(6.dp)).clickable(enabled = a.enabled) { if (a.children.isNotEmpty()) open = a else act(a) }
+                .semantics { contentDescription = a.detail ?: a.label }
+                .heightIn(min = 40.dp).padding(horizontal = 7.dp).alpha(if (a.enabled) 1f else 0.5f), verticalAlignment = Alignment.CenterVertically) {
+                when (ctl["id"].str) {
+                    "model" -> {
+                        if (logo != null) { Logo(logo.first, logo.second ?: c.text, size = 16.dp); Spacer(Modifier.width(6.dp)) }
+                        T(if (logo != null) ControlIcons.modelName(a.label) else a.label, type.ui.copy(fontSize = 14.sp), ink, maxLines = 1)
+                    }
+                    "effort" -> {
+                        Icon(YIcon.Brain, c.text, size = 17.dp, strokeWidth = 1.7f)
+                        Spacer(Modifier.width(4.dp))
+                        val index = a.children.indexOfFirst { it.checked == true }
+                        val fill = ControlIcons.EffortScale[ControlIcons.effortStep(index, a.children.size)]
+                        Box(Modifier.clip(RoundedCornerShape(4.dp)).background(Color(fill)).padding(horizontal = 6.dp, vertical = 1.dp), contentAlignment = Alignment.Center) {
+                            T(ControlIcons.initial(selected?.label ?: a.label), type.small.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Bold), Color(ControlIcons.inkOn(fill)))
+                        }
+                    }
+                    "fast" -> if (a.checked == true) Icon(YIcon.BoltFilled, c["YaacFast"], size = 18.dp) else Icon(YIcon.Bolt, c.muted, size = 18.dp, strokeWidth = 1.7f)
+                    "speed" -> when (ctl["tone"].text) {
+                        "ultrafast" -> Icon(YIcon.BoltFilled, c["YaacUltrafast"], size = 18.dp)
+                        "fast" -> Icon(YIcon.BoltFilled, c["YaacFast"], size = 18.dp)
+                        else -> Icon(YIcon.Bolt, c.muted, size = 18.dp, strokeWidth = 1.7f)
+                    }
+                    "mode" -> {
+                        Icon(YIcon.Shield, ink, size = 17.dp, strokeWidth = 1.7f)
+                        if (warn) { Spacer(Modifier.width(3.dp)); Icon(YIcon.Warning, c.failure, size = 13.dp) }
+                    }
+                    "agents" -> Box {
+                        Icon(YIcon.Bot, c.text, size = 18.dp, strokeWidth = 1.7f)
+                        // Asking first: a small question mark on the bot.
+                        if (selected?.id?.endsWith(":ask") == true || (selected == null && a.label.contains("ask"))) {
+                            T("?", type.small.copy(fontSize = 10.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold), c.warning,
+                                modifier = Modifier.align(Alignment.TopEnd).offset(x = 5.dp, y = (-5).dp))
+                        }
+                    }
+                    "fork" -> Icon(YIcon.Fork, c.text, size = 17.dp, strokeWidth = 1.7f)
+                    else -> T(a.label, type.ui.copy(fontSize = 14.sp), ink, maxLines = 1)
+                }
+                if (a.children.isNotEmpty() && ctl["id"].str == "model") { Spacer(Modifier.width(3.dp)); Icon(YIcon.CaretDown, ink, size = 10.dp) }
             }
         }
         composer["contextPercent"].double?.let {
-            T("·", type.ui, c.muted, modifier = Modifier.padding(horizontal = 4.dp))
-            T("${it.toInt()}%", type.ui.copy(fontSize = 15.sp), modifier = Modifier.padding(horizontal = 6.dp))
+            T("${it.toInt()}%", type.small.copy(fontSize = 13.sp), c.muted, modifier = Modifier.padding(horizontal = 7.dp))
         }
-        composer["note"].text?.let { T(it, type.small, c.muted, modifier = Modifier.padding(horizontal = 8.dp)) }
     }
-    open?.let { ctl -> ActionSheet(ctl.label, ctl.children, { open = null }) { act(it) } }
+    composer["note"].text?.let { T(it, type.small, c.muted, modifier = Modifier.padding(horizontal = 8.dp)) }
+    open?.let { ctl -> ActionSheet(ctl.detail ?: ctl.label, ctl.children, { open = null }) { act(it) } }
 }
 
 /** The skill picker (`/` at the start, `$` inside): the controller's rows, inserted in place of [start, end). */

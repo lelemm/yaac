@@ -192,7 +192,11 @@ fun ThreadScreen(
             val fraction = (agents["pillPosition"].double ?: 0.5).toFloat().coerceIn(0.05f, 0.95f)
             AgentsPill(agents, { hidden -> agentsAtHidden = hidden; agentsOpen = true }, Modifier.align(Alignment.TopEnd).padding(end = 6.dp).offset(y = height * fraction * 0.6f))
         }
-        Box(Modifier.navigationBarsPadding()) { Composer(composer, send, history) }
+        Box(Modifier.navigationBarsPadding()) {
+            // The thread's harness logo for the model control (a started thread never changes provider).
+            val logo = remember(sidebar, threadId) { threadLogo(sidebar, threadId) }
+            Composer(composer, send, history, logo)
+        }
         }
     }
 
@@ -291,3 +295,23 @@ private fun Banner(b: kotlinx.serialization.json.JsonObject, threadId: String, s
     }
 }
 
+
+
+/** The open thread's harness logo and colour, from its row in the list. */
+private fun threadLogo(sidebar: JsonElement?, threadId: String): Pair<String, androidx.compose.ui.graphics.Color?>? {
+    fun walk(e: JsonElement?): Pair<String, androidx.compose.ui.graphics.Color?>? {
+        when (e) {
+            is kotlinx.serialization.json.JsonObject -> {
+                if (e["id"].str == threadId) {
+                    val l2 = e["line2"].obj()
+                    (l2?.get("logo").text ?: e["logo"].text)?.let { return it to parseColor(l2?.get("logoColor").text ?: e["logoColor"].text) }
+                }
+                for (v in e.values) walk(v)?.let { return it }
+            }
+            is kotlinx.serialization.json.JsonArray -> for (v in e) walk(v)?.let { return it }
+            else -> {}
+        }
+        return null
+    }
+    return if (threadId.isEmpty()) null else walk(sidebar)
+}

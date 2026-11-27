@@ -78,7 +78,7 @@ fun T(
 fun StateMark(tone: String?, glyph: String? = null, size: Dp = 16.dp, fast: Boolean = false, ultrafast: Boolean = false) {
     val c = LocalYaac.current
     when (tone) {
-        "running" -> Icon(YIcon.Play, if (ultrafast) c["YaacUltrafast"] else if (fast) c["YaacFast"] else c.accent, size = size * 0.8f)
+        "running" -> RunningSpinner(if (ultrafast) c["YaacUltrafast"] else if (fast) c["YaacFast"] else c.text, size = size, fast = fast, ultrafast = ultrafast)
         "waiting" -> Icon(YIcon.Hourglass, c.muted, size = size, strokeWidth = 1.8f)
         "needs", "needsYou", "needs you" -> T("!", LocalType.current.title.copy(fontSize = 18.sp), c.failure, weight = FontWeight.Bold)
         "paused" -> Icon(YIcon.Pause, c.muted, size = size * 0.8f)
