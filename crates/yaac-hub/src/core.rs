@@ -3337,14 +3337,17 @@ impl Core {
             self.last_notice_sweep = now;
             self.notice_undelivered();
         }
-        // Keep the cache bounded.
+        // Bound the cache and expire device draft blobs.
         if now.duration_since(self.last_evict) >= Duration::from_secs(60) {
             self.last_evict = now;
             let protected: Vec<Key> = self.open.keys().cloned().collect();
+            let uploading = self.uploads.values().filter_map(|u| u.blob_id.clone()).collect();
             let cap = self.cfg.cache_cap_bytes;
             self.worker.submit(move |s| {
                 let _ = s.relay.purge_finished();
-                s.cache.evict(cap, &protected).err().map(|e| CoreEvent::StoreError(e.to_string()))
+                let blobs = s.drafts.expire_device_blobs(&uploading);
+                let cache = s.cache.evict(cap, &protected);
+                blobs.err().map(|e| e.to_string()).or_else(|| cache.err().map(|e| e.to_string())).map(CoreEvent::StoreError)
             });
         }
         // Lifecycle.

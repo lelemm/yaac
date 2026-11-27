@@ -10,7 +10,7 @@
 #[path = "catalog.rs"]
 mod catalog;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -79,6 +79,8 @@ const MIGRATIONS: &[&str] = &[
     "CREATE TABLE catalog_skills (id TEXT PRIMARY KEY, info TEXT NOT NULL, files TEXT NOT NULL);",
 ];
 
+const DEVICE_BLOB_MAX_AGE_MS: i64 = 14 * 24 * 60 * 60 * 1_000;
+
 /// A draft-store error.
 #[derive(Debug, thiserror::Error)]
 pub enum DraftsError {
@@ -137,8 +139,7 @@ fn now_ms() -> i64 {
 }
 
 impl DraftStore {
-    /// Opens the store, running any pending migrations. Blobs a previous run did not finish
-    /// are removed.
+    /// Opens the store, running any pending migrations and sweeping abandoned blobs.
     pub fn open(path: &Path) -> Result<Self, DraftsError> {
         let conn = migrate::open(path, "drafts", MIGRATIONS)?;
         let blob_dir = path.parent().unwrap_or_else(|| Path::new(".")).join("draft-blobs");
@@ -383,11 +384,12 @@ impl DraftStore {
         self.blob_dir.join(if partial { format!("{id}.partial") } else { id.to_owned() })
     }
 
-    /// Removes blobs that were never finished, and files no row describes.
+    /// On startup, remove expired device blobs, unfinished blobs, and files no row describes.
     fn sweep_blobs(&mut self) -> Result<(), DraftsError> {
+        self.expire_device_blobs(&HashSet::new())?;
         self.conn.execute("DELETE FROM draft_blobs WHERE complete = 0", [])?;
         let Ok(entries) = std::fs::read_dir(&self.blob_dir) else { return Ok(()) };
-        let known: std::collections::HashSet<String> = {
+        let known: HashSet<String> = {
             let mut stmt = self.conn.prepare("SELECT blob_id FROM draft_blobs")?;
             let rows = stmt.query_map([], |r| r.get(0))?;
             rows.collect::<Result<_, _>>()?
@@ -396,6 +398,25 @@ impl DraftStore {
             let name = entry.file_name().to_string_lossy().into_owned();
             if !known.contains(&name) {
                 let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        Ok(())
+    }
+
+    /// Device drafts have no row in the hub. Reclaim old bytes even if the hub stays running,
+    /// keeping blobs that are currently feeding a target upload.
+    pub(crate) fn expire_device_blobs(&mut self, uploading: &HashSet<String>) -> Result<(), DraftsError> {
+        let cutoff = now_ms() - DEVICE_BLOB_MAX_AGE_MS;
+        let expired: Vec<String> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT blob_id FROM draft_blobs WHERE draft_key GLOB 'device/*' AND created_at < ?1",
+            )?;
+            let rows = stmt.query_map([cutoff], |r| r.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        for id in expired {
+            if !uploading.contains(&id) {
+                self.blob_delete(&id)?;
             }
         }
         Ok(())
@@ -561,8 +582,50 @@ fn view_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadView> {
 }
 
 #[cfg(test)]
-mod mode_tests {
+mod tests {
     use super::*;
+
+    #[test]
+    fn device_blob_sweep_expires_old_files_without_removing_desktop_or_active_uploads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("drafts.db");
+        let mut db = DraftStore::open(&path).unwrap();
+        let mut blob = |key, age, complete| {
+            let id = db.blob_begin(key, "example.txt", None, 1, 64).unwrap();
+            db.blob_append(&id, 0, b"x").unwrap();
+            if complete {
+                db.blob_end(&id).unwrap();
+            }
+            db.conn.execute(
+                "UPDATE draft_blobs SET created_at = ?1 WHERE blob_id = ?2",
+                params![now_ms() - age, id],
+            ).unwrap();
+            let file = db.blob_file(&id, !complete);
+            assert!(file.is_file());
+            (id, file)
+        };
+        let old = DEVICE_BLOB_MAX_AGE_MS + 60_000;
+        let (expired, expired_file) = blob("device/thread:a/b", old, true);
+        let (partial, partial_file) = blob("device/thread:a/c", old, false);
+        let (fresh, fresh_file) = blob("device/thread:a/d", DEVICE_BLOB_MAX_AGE_MS - 60_000, true);
+        let (held, held_file) = blob("device/thread:a/e", old, true);
+        let (desktop, desktop_file) = blob("thread:device/a", old, true);
+
+        db.expire_device_blobs(&HashSet::from([held.clone()])).unwrap();
+        assert!(db.blob(&expired).unwrap().is_none());
+        assert!(!db.open_blobs.contains_key(&partial));
+        assert!(!expired_file.exists() && !partial_file.exists());
+        assert!(held_file.is_file());
+        assert!(db.blob(&held).unwrap().is_some());
+        drop(db);
+
+        let db = DraftStore::open(&path).unwrap();
+        assert!(db.blob(&held).unwrap().is_none());
+        assert!(!held_file.exists());
+        assert!(db.blob(&desktop).unwrap().is_some() && desktop_file.is_file());
+        assert!(db.blob(&fresh).unwrap().is_some() && fresh_file.is_file());
+    }
+
     #[test]
     fn offline_modes_survive_restart_and_leave_only_uncertain_receipts_after_claim() {
         let dir = tempfile::tempdir().unwrap();
