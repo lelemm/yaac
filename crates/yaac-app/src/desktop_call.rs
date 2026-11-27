@@ -358,16 +358,29 @@ pub(crate) fn bar(ui: &mut egui::Ui, app: &mut YaacApp, key: &ThreadKey) {
     if desktop["end"] == true
         && let Some(lines) = view["transcript"].as_array()
     {
-        for line in &lines[lines.len().saturating_sub(3)..] {
-            let role = if line["role"] == "user" {
-                "You"
-            } else {
-                "Agent"
-            };
-            if let Some(text) = line["text"].as_str() {
-                ui.label(secondary(format!("{role} · {text}"), &p));
-            }
-        }
+        // Every line in full, wrapped and never cut, in a scroll of its own up to 40% of the
+        // window that keeps the newest line in view until the user scrolls up.
+        let most = ui.ctx().content_rect().height() * 0.4;
+        egui::ScrollArea::vertical()
+            .id_salt(("call-transcript", key.to_string()))
+            .max_height(most)
+            .auto_shrink([false, true])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                for line in lines {
+                    let role = if line["role"] == "user" {
+                        "You"
+                    } else {
+                        "Agent"
+                    };
+                    if let Some(text) = line["text"].as_str() {
+                        ui.add(
+                            egui::Label::new(secondary(format!("{role} · {text}"), &p))
+                                .wrap_mode(egui::TextWrapMode::Wrap),
+                        );
+                    }
+                }
+            });
     }
 }
 

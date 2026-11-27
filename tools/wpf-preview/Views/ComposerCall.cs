@@ -29,13 +29,22 @@ public partial class ComposerView
         CallMute.Visibility = VisibleWhen(mute.Length > 0);
         CallEnd.Visibility = VisibleWhen(Field(desktop, "end").ComposerFlag());
 
-        var transcript = Items(Field(call, "transcript")).TakeLast(3).Select(line =>
+        // Every line in full, wrapped and never cut, in a scroll of its own up to 40% of the
+        // window that keeps the newest line in view until the user scrolls up.
+        var transcript = Items(Field(call, "transcript")).Select(line =>
         {
             var role = Field(line, "role").String() == "user" ? "You" : "Agent";
             return $"{role} · {Field(line, "text").String()}";
         });
         var text = CallEnd.Visibility == Visibility.Visible ? string.Join(Environment.NewLine, transcript) : "";
+        var scroller = CallTranscriptScroller;
+        var following = scroller.VerticalOffset >= scroller.ScrollableHeight - 8;
+        if (Window.GetWindow(this) is { ActualHeight: > 0 } window)
+            scroller.MaxHeight = window.ActualHeight * 0.4;
         DisplayText(CallTranscript, text);
+        scroller.Visibility = CallTranscript.Visibility;
+        if (following)
+            scroller.ScrollToEnd();
         CallBar.Visibility = VisibleWhen(message.Length > 0 || text.Length > 0);
     }
 

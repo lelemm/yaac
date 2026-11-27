@@ -14,6 +14,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import dev.yaac.android.core.CallFollow
+import dev.yaac.android.core.CallLine
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -130,9 +143,10 @@ fun CallButton(composer: JsonObject, key: String, editable: Boolean) {
 
 /**
  * The call bar above the composer while a call lives, in whichever thread is open: the state,
- * the clock, the transcript's last lines, Mute, the speaker and End. A failure stays until
+ * the clock, the transcript (each line in full, scrolling), Mute, the speaker and End. A failure stays until
  * dismissed.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CallBar(openKey: String?) {
     val phase = CallManager.phase
@@ -140,6 +154,9 @@ fun CallBar(openKey: String?) {
     if (!phase.live && !failed) return
     val c = LocalYaac.current
     val type = LocalType.current
+    var overflowing by remember { mutableStateOf(false) }
+    var expanded by remember { mutableStateOf(false) }
+    if (expanded && !failed) TranscriptSheet { expanded = false }
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).clip(RoundedCornerShape(8.dp)).background(c.input).padding(horizontal = 12.dp, vertical = 8.dp)) {
         if (failed) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -164,11 +181,15 @@ fun CallBar(openKey: String?) {
             val hub = CallManager.hubName?.takeIf { elsewhere }
             T(listOfNotNull(label, hub, where).joinToString(" · "), type.ui, maxLines = 1, modifier = Modifier.weight(1f))
             CallManager.startedAt?.let { Clock(it) }
+            if (overflowing || expanded) IconButton(YIcon.ArrowUp, "Show the whole call transcript", tint = c.muted, size = 18.dp, strokeWidth = 1.8f) { expanded = true }
         }
-        val lines = CallManager.lines.takeLast(4)
-        if (lines.isNotEmpty()) Column(Modifier.padding(top = 4.dp)) {
-            for (l in lines) T((if (l.user) "You: " else "Agent: ") + l.text,
-                if (l.final) type.small else type.small.copy(fontStyle = FontStyle.Italic), if (l.user) c.text else c.muted, maxLines = 3)
+        // Every line in full, never cut: a bounded area with its own scroll that keeps the newest
+        // line in view unless the user scrolled up, and a sheet for the whole transcript.
+        val lines = CallManager.lines
+        if (lines.isNotEmpty()) {
+            val share = if (WindowInsets.isImeVisible) 0.2f else 0.4f
+            val most = (LocalConfiguration.current.screenHeightDp * share).dp
+            CallLines(lines, Modifier.fillMaxWidth().padding(top = 4.dp).heightIn(max = most)) { overflowing = it }
         }
         Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             val muted = CallManager.muted
@@ -190,6 +211,49 @@ fun CallBar(openKey: String?) {
                 Spacer(Modifier.width(6.dp))
                 T("End", type.ui, Color.White)
             }
+        }
+    }
+}
+
+/**
+ * The call's transcript lines, each in full (wrapped, never ellipsized), in a scroll of their
+ * own that follows the newest line until the user scrolls up ([CallFollow]). [onOverflow] says
+ * whether they no longer fit.
+ */
+@Composable
+private fun CallLines(lines: List<CallLine>, modifier: Modifier, onOverflow: (Boolean) -> Unit = {}) {
+    val c = LocalYaac.current
+    val type = LocalType.current
+    val scroll = rememberScrollState()
+    val slack = with(LocalDensity.current) { 8.dp.roundToPx() }
+    var following by remember { mutableStateOf(true) }
+    LaunchedEffect(scroll) {
+        var prev = CallFollow.Pos(scroll.value, scroll.maxValue)
+        snapshotFlow { CallFollow.Pos(scroll.value, scroll.maxValue) }.collect { now ->
+            following = CallFollow.next(following, prev, now, slack)
+            prev = now
+            onOverflow(now.max > 0)
+        }
+    }
+    LaunchedEffect(scroll.maxValue, following) { if (following) scroll.scrollTo(scroll.maxValue) }
+    Column(modifier.verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        for (l in lines) T((if (l.user) "You: " else "Agent: ") + l.text,
+            if (l.final) type.small else type.small.copy(fontStyle = FontStyle.Italic), if (l.user) c.text else c.muted)
+    }
+}
+
+/** The whole call transcript in a sheet, live, following the newest line like the bar. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TranscriptSheet(onDismiss: () -> Unit) {
+    val c = LocalYaac.current
+    val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state, containerColor = c.raised, contentColor = c.text,
+        tonalElevation = 0.dp, scrimColor = Color.Black.copy(alpha = 0.45f)) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight().navigationBarsPadding().padding(horizontal = 20.dp).padding(bottom = 16.dp)) {
+            T("Call transcript", LocalType.current.title)
+            Spacer(Modifier.height(10.dp))
+            CallLines(CallManager.lines, Modifier.fillMaxWidth().weight(1f))
         }
     }
 }
