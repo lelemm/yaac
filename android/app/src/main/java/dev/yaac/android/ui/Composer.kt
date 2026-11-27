@@ -243,7 +243,7 @@ private fun Editor(composer: JsonObject, key: String, send: (String, Any?) -> Un
         )
     }
     if (shell) shellView?.get("hint").text?.let { T(it, type.small, c.muted, modifier = Modifier.padding(top = 4.dp, start = 4.dp)) }
-    ButtonRow(composer, key, send, shell, value.text.isEmpty(), history) { text -> setText(text, text.length) }
+    ButtonRow(composer, key, send, shell, value.text.isEmpty(), history, clear = { setText("", 0) }) { text -> setText(text, text.length) }
 }
 
 /** Our edits not yet echoed by the controller, and the text it last confirmed. */
@@ -303,7 +303,7 @@ private fun decodeThumbnail(t: JsonObject): androidx.compose.ui.graphics.ImageBi
 }
 
 @Composable
-private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) -> Unit, shell: Boolean, empty: Boolean, history: JsonElement?, recall: (String) -> Unit) {
+private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) -> Unit, shell: Boolean, empty: Boolean, history: JsonElement?, clear: () -> Unit, recall: (String) -> Unit) {
     val act: (ActionItem) -> Unit = { a -> if (a.enabled) send("composer.action", mapOf("key" to key, "id" to a.id)) }
     var historySheet by remember { mutableStateOf(false) }
     var attachMenu by remember { mutableStateOf(false) }
@@ -331,6 +331,8 @@ private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) ->
         // Message history: the last messages sent from this client, offered in an empty composer.
         // Message history in an empty composer; in `!` mode the thread's own command history (E08).
         val past = if (shell) composer["shell"]["history"].list.mapNotNull { it.text } else history.list.mapNotNull { it.text }
+        // Clear the draft: shown whenever there is text (leaving `!` mode too, since the `!` goes).
+        if (!empty && editable) IconButton(YIcon.Close, "Clear the message") { clear() }
         if ((empty || shell) && past.isNotEmpty()) IconButton(YIcon.History, if (shell) "Command history" else "Message history") { historySheet = true }
     }
     if (historySheet) {
