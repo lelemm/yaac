@@ -374,7 +374,6 @@ pub struct ThreadEffective {
     pub efforts: Vec<EffortInfo>,        // selectable now; empty when effort cannot be changed
     pub modes: Vec<ModeInfo>,
     pub applied: AppliedSettings,        // the model / effort / mode the harness is really using
-    pub voice_input: Option<VoiceFormat>, // what audio to record, with `voiceInput` (P382)
 }
 ```
 
@@ -500,25 +499,30 @@ harness confirmed it, never from the request alone:
   qualified `yaac.<name>` ID in either renderer. This records staging on the target. The
   harness reads the loaded file separately.
 
-### Voice input is a capability
+### Transcription is an instance's service
 
-**Proposed (P382).** A provider that can turn the user's recorded speech into text with the
-harness's own voice surface reports **`voiceInput`** on its instance and, while the thread can
-dictate now (signed in, allowed by policy, the surface present in this harness build), in the
-thread's effective capabilities with **`ThreadEffective.voiceInput`**:
-`{ format: "pcm16le", sampleRate, channels, maxSeconds? }` — read from what the harness wants,
-never assumed by a client. `yaacd` also lists `voiceInput` in `initialize`'s `features` once it
-implements `voice/*`. The protocol is in [plan/voice.md](plan/voice.md).
+**Proposed (P382, P392).** A provider that can turn the user's recorded speech into text with
+the harness's own voice surface reports, at each probe, **`transcription`** in its instance's
+capabilities while it can do so now (signed in, allowed by policy, the surface present in this
+harness build), and its descriptor's **`transcription`**:
+`{ format: { format: "pcm16le", sampleRate, channels, maxSeconds? } }` — read from what the
+harness wants, never assumed by a client — or, when it has a voice surface that is not ready,
+`{ unavailable: "<why, for the user>" }`. It is **never a thread capability**: a dictation only
+fills a composer, so the instance serves every composer on every target (a Codex thread can
+dictate through Claude, a new-thread draft through either). `HarnessProvider.startDictation`
+takes no thread and never runs on one. `yaacd` lists `transcription` in `initialize`'s
+`features` once it implements the instance-addressed `voice/*`. The protocol is in
+[plan/voice.md](plan/voice.md).
 
 | Harness | Surface | Notes |
 | --- | --- | --- |
 | Claude Code | `dictate` control request first; direct `/api/ws/speech_to_text/voice_stream` fallback using Claude Code's current OAuth access token | Both are private surfaces. 16 kHz mono 16-bit. `dictate` is feature-probed; the fallback is offered when the CLI's own token source is readable. YAAC keeps no copy. See [Claude voice input](#voice-input-claude). |
 | Codex | app-server `thread/realtime/*` (experimental), in a **transcription** session on a private ephemeral thread | 24 kHz mono 16-bit; API-key sign-in only (0.172.0); no `model` (Codex picks it); user-role `transcript/delta` / `done` become the transcript. Never runs on the user's thread, so it cannot start a turn there. See [Codex voice input](#voice-input-codex). |
-| Fake | — | Not reported. |
+| Fake | scripted (`FAKE_TRANSCRIBE=ready\|refused`) | Off by default; `ready` hears `word1 word2 …` (tests). |
 
 Both surfaces are unstable (research: [voice-input](research/voice-input.md)). When one goes
-away the provider stops reporting `voiceInput` and the microphone disappears; nothing else
-changes.
+away the provider stops reporting `transcription`; the hub chooses another transcriber, and
+with none left the microphone is disabled with the reason; nothing else changes.
 
 ### Listing a harness's own sub-agents is a capability
 
@@ -720,7 +724,7 @@ thread**:
   thread is hidden like the command-explanation threads and released with
   `thread/realtime/stop` and `thread/unsubscribe`.
 - Audio is `appendAudio` with base64 PCM16 mono at **24 kHz**: Codex's fixed realtime rate,
-  reported as the thread's `voiceInput` format. Chunks are at most one second long. Codex
+  reported as the instance's `transcription.format`. Chunks are at most one second long. Codex
   never commits the input buffer, so the server's turn detection ends each utterance on
   silence. On `voice/stop`, `yaacd` appends 0.8 s of silence and waits until the transcript has
   not moved for 1.5 s, or 6 s at most. Then it sends the final transcript and `voice/ended`.
@@ -730,10 +734,12 @@ thread**:
   output audio, a turn, or an item.
 - **Sign-in.** In 0.172.0 the websocket transport needs an API key ("realtime conversation
   requires API key auth"). A ChatGPT sign-in only gets WebRTC, which Codex allows only for
-  conversational sessions. `voiceInput` is therefore reported only when the daemon answers
+  conversational sessions. `transcription` is therefore reported only when the daemon answers
   `thread/realtime/listVoices` (feature detection, not a version check) **and** the account is
-  `apiKey` or `OPENAI_API_KEY` is in the environment `yaacd` gives the daemon. A refusal still
-  reaches the user as `voice/ended` with that reason.
+  `apiKey` or `OPENAI_API_KEY` is in the environment `yaacd` gives the daemon; otherwise the
+  descriptor says `unavailable: "Codex transcribes only with an OpenAI API key sign-in."` (and
+  a Codex thread dictates through another transcriber, P392). A refusal still reaches the user
+  as `voice/ended` with that reason.
 - **No Codex voice with a ChatGPT sign-in (P389).** The WebRTC transport a ChatGPT sign-in
   gets needs the client to run a WebRTC peer (ICE, DTLS, SRTP, Opus), and the session it allows
   is always conversational: the model speaks after every pause and can delegate turns. Neither
@@ -927,7 +933,7 @@ sign-in. Claude Code handles authentication for that route.
   per process).
 - **Capability.** At each probe, in parallel with the model list, `yaacd` sends
   `dictate {op:"cancel"}` to a dictation process. That request needs no network and no audio.
-  This route enables `voiceInput` (format `pcm16le`, 16000 Hz, mono, 120 seconds) when it is
+  This route enables `transcription` (format `pcm16le`, 16000 Hz, mono, 120 seconds) when it is
   answered **and** the account is Anthropic's own (`accountInfo().apiProvider` absent or
   `firstParty`). This is feature detection, not a version check. Sign-in, policy, and
   nonessential-traffic settings are checked by Claude Code at `start`. `YAAC_CLAUDE_VOICE=0`
@@ -958,8 +964,10 @@ When that probe fails, a direct fallback is used:
   `.credentials.json` under its secure-storage/config directory. It first asks `claude auth
   status` to check the CLI login; refresh and login management remain outside YAAC. YAAC has no token setting,
   vault, persisted copy, refresh token or refresh implementation; the value exists only for
-  the WebSocket handshake and is never returned or logged. A readable token makes `voiceInput`
-  available even when `dictate` is gated off. `dictate` always wins when both exist.
+  the WebSocket handshake and is never returned or logged. A readable token makes `transcription`
+  available even when `dictate` is gated off. `dictate` always wins when both exist. With
+  neither, the descriptor says why (`unavailable`): a non-first-party account, or the probe's
+  refusal.
 - **Wire contract.** The fallback opens Claude Code's
   `/api/ws/speech_to_text/voice_stream` with its 2.1.330 query (`linear16`, 16000 Hz, mono,
   endpointing 300 ms, utterance end 1000 ms, normalized language and conversation engine).

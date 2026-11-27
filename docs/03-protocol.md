@@ -133,13 +133,16 @@ use raw data frames on the interactive lane. The notifications are `terminal/tit
 
 ### Voice input
 
-**Proposed (P382).** A target whose `initialize` `features` list `voiceInput` accepts these.
-A thread can dictate when its effective capabilities contain `voiceInput`; its
-`ThreadEffective.voiceInput` is the audio format. Full contract: [plan/voice.md](plan/voice.md).
+**Proposed (P382, P392).** A target whose `initialize` `features` list `transcription` accepts
+these. Transcription is a service of an **instance**, not of a thread: an instance that can
+transcribe now has the `transcription` capability, and its descriptor's
+`transcription: { format?, unavailable? }` gives the audio format (or, when it cannot, why). Any
+composer — a thread's on any target, or a new-thread draft — may dictate through it; the hub
+chooses which ([plan/voice.md](plan/voice.md#choosing-the-transcriber)).
 
 | Method | Purpose |
 | --- | --- |
-| `voice/start` (op) | `{ opId, threadId, language? }` → `{ stream, initialCredit, format }`. A fresh connection-local stream for audio, host → target only. |
+| `voice/start` (op) | `{ opId, instance, threadId?, language? }` → `{ stream, initialCredit, format }`. `instance` transcribes; `threadId` (a thread on this target whose composer gets the words) is context only. A fresh connection-local stream for audio, host → target only. |
 | data frames | Raw audio in `format` on `stream`, interactive lane, under credit (`stream/credit` from the daemon), as terminal input. |
 | `voice/stop` | `{ stream, bytes }` → `{}`. `bytes` is the total sent: the daemon finishes once it has them, since data and control frames may be reordered between lanes. |
 | `voice/cancel` | `{ stream }` → `{}`. The words are dropped. |
@@ -148,7 +151,9 @@ A thread can dictate when its effective capabilities contain `voiceInput`; its
 
 Audio is never journaled or written to disk, on either side. The transcript is not a thread
 event; it only ever reaches the composer of the window that started the dictation. The hub
-relays these as `hub/voice/*` with hub-local stream numbers, like `hub/terminal/*`.
+relays these as `hub/voice/*` with hub-local stream numbers, like `hub/terminal/*`;
+`hub/voice/start` names the composer (`target?`, `instance?`, `threadId?`), and the hub answers
+with the transcriber it chose (`target`, `instance`, `label`) beside the stream.
 
 ### Voice call
 
