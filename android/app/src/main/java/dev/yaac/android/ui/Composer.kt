@@ -314,6 +314,8 @@ private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) ->
     val stop = ActionItem.of(composer["stop"])
     val attach = ActionItem.of(composer["attach"])
     val editable = composer["editable"].flag(true)
+    val voice = composer["voice"].obj()
+    val voiceUi = remember(key) { VoiceUi(key, send) }
     Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
         // + attaches; touch and hold offers Paste, which goes through the controller (a large
         // paste then offers Attach as file, as on desktop).
@@ -332,6 +334,8 @@ private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) ->
         // Message history in an empty composer; in `!` mode the thread's own command history (E08).
         val past = if (shell) composer["shell"]["history"].list.mapNotNull { it.text } else history.list.mapNotNull { it.text }
         // Clear the draft: shown whenever there is text (leaving `!` mode too, since the `!` goes).
+        // Dictation (voice input), only where the thread's harness offers it.
+        if (voice != null && !shell) VoiceButton(voice, voiceUi, editable)
         if (!empty && editable) IconButton(YIcon.Close, "Clear the message") { clear() }
         if ((empty || shell) && past.isNotEmpty()) IconButton(YIcon.History, if (shell) "Command history" else "Message history") { historySheet = true }
     }
@@ -342,6 +346,7 @@ private fun ButtonRow(composer: JsonObject, key: String, send: (String, Any?) ->
         }
     }
     if (attachMenu) ActionSheet(null, listOfNotNull(attach, ActionItem.of(composer["paste"])), { attachMenu = false }) { act(it) }
+    if (voice != null && !shell) VoiceStatus(voice, voiceUi)
     composer["hint"].text?.let { T(it, type.small, c.muted, modifier = Modifier.padding(top = 2.dp, start = 4.dp)) }
 }
 
