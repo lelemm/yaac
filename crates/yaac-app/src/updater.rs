@@ -267,6 +267,27 @@ impl yaac_hub::transfer::TransferHost for HubTransfer {
         let entry = yaac_hub::autostart::Autostart::from_env(exe).map_err(|e| e.to_string())?;
         yaac_hub::autostart::remove_autostart(&entry).map_err(|e| e.to_string())
     }
+
+    /// On Windows only: `yaac.exe` as this PC's WSL distros see it.
+    fn interop_exe(&self) -> Option<String> {
+        if !cfg!(windows) {
+            return None;
+        }
+        let exe = std::env::current_exe().ok()?;
+        yaac_hub::transfer::windows_to_wsl_path(&exe.to_string_lossy())
+    }
+
+    fn start_wsl_keeper(&self, keeper: &yaac_hub::transfer::WslKeeper) -> Result<(), String> {
+        if !cfg!(windows) {
+            return Err("the WSL keeper runs on Windows only".into());
+        }
+        crate::wsl_keeper::start(keeper)
+    }
+
+    fn keeper_autostart(&self, keeper: &yaac_hub::transfer::WslKeeper) -> Result<(), String> {
+        let entry = crate::wsl_keeper::autostart_entry(keeper)?;
+        yaac_hub::autostart::install_autostart(&entry).map_err(|e| e.to_string())
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {

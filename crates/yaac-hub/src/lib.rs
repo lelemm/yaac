@@ -38,6 +38,7 @@ mod core;
 pub mod drafts;
 pub mod find;
 pub mod host_update;
+pub mod interop;
 mod limits;
 mod lock;
 pub mod mesh;

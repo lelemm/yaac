@@ -17,6 +17,12 @@
 //!   ─► tombstone + start-at-login off ─► moved: hub/moved to every client, close X, exit
 //! ```
 //!
+//! **Into this PC's WSL** (a WSL target X): the same steps, but `yaacd` in the distro only
+//! places the files (`hubHost/start {startHub: false}`), since WSL stops a distro that nothing
+//! runs in. With the tombstone this hub starts the Windows-side keeper (`yaac wsl-hub`), which
+//! waits for this hub to exit and for the files to be placed, then runs the new hub and keeps
+//! the distro up; the keeper also replaces this hub's start-at-login entry.
+//!
 //! A failure before the tombstone sends `hubHost/abort`, reconnects the targets, and reports
 //! `failed` with the reason: nothing has moved. Once `hubHost/start` was sent the new hub may
 //! be armed, so from then on a dropped connection counts as moved (the new hub starts when
@@ -40,7 +46,8 @@ use yaac_protocol::{
 
 use super::{ClientKey, Core, CoreEvent, Hello, Message, Pending, RpcId, attach, err, hub_err, parse, state, to_value};
 use crate::drafts::hex;
-use crate::transfer::{HUB_ARCHES, HubAsset, op_id_ok, rewrite_settings};
+use crate::tailnet::ThisNode;
+use crate::transfer::{HUB_ARCHES, HubAsset, WslKeeper, op_id_ok, rewrite_settings};
 
 /// Progress is announced at most this often while bytes move (and at every phase change).
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
@@ -83,10 +90,10 @@ pub(super) enum Ask {
 /// What a thread, the pool, or the store worker reports.
 #[derive(Debug)]
 pub(crate) enum Event {
-    /// This hub's Tailscale login, for a candidates request.
-    CandidateNode { serial: u64, login: Result<String, String> },
-    /// This hub's Tailscale login, for the transfer.
-    Node { op: OpId, login: Result<String, String> },
+    /// This hub's Tailscale node, for a candidates request.
+    CandidateNode { serial: u64, login: Result<ThisNode, String> },
+    /// This hub's Tailscale node, for the transfer.
+    Node { op: OpId, login: Result<ThisNode, String> },
     /// The release asset of this build.
     Asset { op: OpId, result: Result<HubAsset, String> },
     /// The live copy of the cache.
@@ -115,7 +122,10 @@ pub(super) struct Transfer {
     /// `hubHost/start` was sent: the new hub may be armed.
     arming: bool,
     probe: Option<HubHostProbeResult>,
-    login: Option<Result<String, String>>,
+    login: Option<Result<ThisNode, String>>,
+    /// X is one of this PC's WSL distros: the keeper that will run the new hub there, and
+    /// this PC's `yaac.exe` as the distro sees it.
+    wsl: Option<(WslKeeper, String)>,
     /// This computer's staging directory, `<data>/transfer-<op>`.
     dir: PathBuf,
     queue: VecDeque<Staged>,
@@ -139,7 +149,9 @@ pub(super) struct Candidates {
     waiting: usize,
     rows: Vec<(TargetId, String, Option<String>)>,
     probes: HashMap<TargetId, Result<HubHostProbeResult, String>>,
-    login: Option<Result<String, String>>,
+    login: Option<Result<ThisNode, String>>,
+    /// The targets that are WSL distros of this PC.
+    wsl: Vec<TargetId>,
 }
 
 /// Whether a request only reads: served during the hand-over, when everything else is refused
@@ -170,9 +182,13 @@ fn read_only(method: &str) -> bool {
     )
 }
 
+/// Why a WSL distro without Tailscale of its own cannot take the hub.
+pub(crate) const WSL_NEEDS_TAILSCALE: &str = "Tailscale is not running inside this WSL distro. Install it there (it needs its own machine on your tailnet).";
+
 /// Whether X, as `yaacd` there describes it, can take the hub (P408). `mine`: this hub's
-/// Tailscale login.
-fn judge(name: &str, probe: &HubHostProbeResult, mine: &Result<String, String>) -> Result<(), String> {
+/// Tailscale node. `wsl`: X is one of this PC's WSL distros, which needs a Tailscale node of
+/// its own (not Windows'): the moved hub listens on X's own Tailscale address.
+fn judge(name: &str, probe: &HubHostProbeResult, mine: &Result<ThisNode, String>, wsl: bool) -> Result<(), String> {
     if probe.os != "linux" {
         return Err(format!("The hub runs only on Linux; {name} is {}.", probe.os));
     }
@@ -182,14 +198,19 @@ fn judge(name: &str, probe: &HubHostProbeResult, mine: &Result<String, String>) 
     let mine = mine.as_ref().map_err(|e| format!("This computer is not on Tailscale ({e}); clients reach a moved hub over Tailscale."))?;
     let ts = &probe.tailscale;
     if !ts.running {
-        return Err(format!("Tailscale is not running on {name}."));
+        return Err(if wsl { WSL_NEEDS_TAILSCALE.to_owned() } else { format!("Tailscale is not running on {name}.") });
     }
-    if ts.login.as_deref() != Some(mine.as_str()) {
+    if !ts.login.as_deref().is_some_and(|l| crate::tailnet::same_login(l, &mine.login)) {
         let theirs = ts.login.as_deref().unwrap_or("no login");
-        return Err(format!("{name} is on another Tailscale login ({theirs}); this hub is on {mine}."));
+        return Err(format!("{name} is on another Tailscale login ({theirs}); this hub is on {}.", mine.login));
     }
     if address(probe).is_none() {
-        return Err(format!("{name} has no Tailscale address."));
+        return Err(if wsl { WSL_NEEDS_TAILSCALE.to_owned() } else { format!("{name} has no Tailscale address.") });
+    }
+    // Windows' own Tailscale seen through WSL (mirrored networking, or its `tailscale.exe`):
+    // not a node of X's own.
+    if probe.tailscale.ips.iter().filter_map(|ip| ip.parse::<std::net::IpAddr>().ok()).any(|ip| mine.addresses.contains(&ip)) {
+        return Err(if wsl { WSL_NEEDS_TAILSCALE.to_owned() } else { format!("{name} has this computer's own Tailscale address.") });
     }
     if !probe.port_free {
         return Err(format!("Port {} is in use on {name}.", crate::tailnet::TAILSCALE_ATTACH_PORT));
@@ -260,13 +281,20 @@ impl Core {
         (!read_only(method)).then(|| hub_err(codes::MOVING, format!("The hub is moving to {}; try again once it is there.", t.label)))
     }
 
+    /// This PC's `yaac.exe` as its WSL distros see it, when this hub can move into one.
+    fn interop_exe(&self) -> Option<String> {
+        self.cfg.transfer_host.as_ref().and_then(|h| h.interop_exe())
+    }
+
     /// Why this target cannot take the hub, before asking it anything.
     fn transfer_static_reason(&self, id: &TargetId) -> Option<String> {
         let t = self.targets.get(id)?;
         match &t.def.transport {
             TargetTransport::Ssh(_) => {}
-            TargetTransport::Wsl(_) => return Some("A hub inside WSL would share Windows' Tailscale address.".into()),
+            TargetTransport::Wsl(_) if self.cfg.transfer_host.is_none() || self.interop_exe().is_some() => {}
+            TargetTransport::Wsl(_) => return Some("Only YAAC for Windows can move the hub into WSL.".into()),
             TargetTransport::Local(_) => return Some("This is the hub's own computer.".into()),
+            TargetTransport::WindowsInterop(_) => return Some("The hub cannot move back to Windows this way yet; use Start the hub here again on the PC.".into()),
             TargetTransport::Unknown(_) => return Some("YAAC cannot move the hub over this kind of connection.".into()),
         }
         if super::build_number(&self.cfg.build).is_none() {
@@ -283,11 +311,11 @@ impl Core {
         None
     }
 
-    fn this_node(&self, done: impl FnOnce(Result<String, String>) -> Event + Send + 'static) {
+    fn this_node(&self, done: impl FnOnce(Result<ThisNode, String>) -> Event + Send + 'static) {
         let node = self.cfg.tailnet.this_node();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let login = node.await.map(|n| n.login);
+            let login = node.await;
             let _ = tx.send(CoreEvent::Transfer(done(login)));
         });
     }
@@ -298,7 +326,8 @@ impl Core {
         self.transfer_serial += 1;
         let serial = self.transfer_serial;
         let busy = self.transfer.as_ref().map(|t| format!("The hub is already moving to {}.", t.label));
-        let mut c = Candidates { client, id: id.clone(), waiting: 1, rows: Vec::new(), probes: HashMap::new(), login: None };
+        let wsl = self.settings.targets.iter().filter(|d| matches!(d.transport, TargetTransport::Wsl(_))).map(|d| d.id.clone()).collect();
+        let mut c = Candidates { client, id: id.clone(), waiting: 1, rows: Vec::new(), probes: HashMap::new(), login: None, wsl };
         let ids: Vec<TargetId> = self.settings.targets.iter().map(|d| d.id.clone()).collect();
         for target in ids {
             let label = self.targets.get(&target).map_or_else(String::new, |t| t.def.name.as_str().to_owned());
@@ -313,7 +342,7 @@ impl Core {
         self.this_node(move |login| Event::CandidateNode { serial, login });
     }
 
-    fn candidates_answered(&mut self, serial: u64, target: Option<(&TargetId, Result<HubHostProbeResult, String>)>, login: Option<Result<String, String>>) {
+    fn candidates_answered(&mut self, serial: u64, target: Option<(&TargetId, Result<HubHostProbeResult, String>)>, login: Option<Result<ThisNode, String>>) {
         let Some(c) = self.candidates.get_mut(&serial) else { return };
         if let Some((t, probe)) = target {
             c.probes.insert(t.clone(), probe);
@@ -329,7 +358,7 @@ impl Core {
         let mine = c.login.unwrap_or_else(|| Err("no answer".into()));
         let candidates = c.rows.into_iter().map(|(target_id, label, reason)| {
             let reason = reason.or_else(|| match c.probes.get(&target_id) {
-                Some(Ok(probe)) => judge(&label, probe, &mine).err(),
+                Some(Ok(probe)) => judge(&label, probe, &mine, c.wsl.contains(&target_id)).err(),
                 Some(Err(e)) => Some(e.clone()),
                 None => Some("Connect it first.".into()),
             });
@@ -357,6 +386,13 @@ impl Core {
         }
         let label = t.def.name.as_str().to_owned();
         let host_name = t.host.clone().unwrap_or_else(|| label.clone());
+        let wsl = match &t.def.transport {
+            TargetTransport::Wsl(w) => {
+                let Some(exe) = self.interop_exe() else { return Some(Err(hub_err(codes::NOT_ELIGIBLE, "Only YAAC for Windows can move the hub into WSL."))) };
+                Some((WslKeeper { distro: w.distro.clone(), user: w.user.clone(), op: Some(p.op_id.clone()) }, exe))
+            }
+            _ => None,
+        };
         let generation = t.conn.as_ref().map_or(0, |c| c.generation);
         let dir = self.cfg.paths.data_dir.join(format!("transfer-{}", p.op_id.as_str()));
         self.transfer = Some(Transfer {
@@ -371,6 +407,7 @@ impl Core {
             arming: false,
             probe: None,
             login: None,
+            wsl,
             dir,
             queue: VecDeque::new(),
             put: None,
@@ -547,7 +584,7 @@ impl Core {
             }
             Event::Tombstoned { op, result } if op_matches(&self.transfer, &op) => match result {
                 Ok(()) => self.transfer_moved(),
-                Err(e) => self.transfer_fail(format!("This computer could not record the move: {e}")),
+                Err(e) => self.transfer_fail(e),
             },
             _ => {}
         }
@@ -557,7 +594,7 @@ impl Core {
     fn transfer_checked(&mut self) {
         let t = self.transfer.as_mut().unwrap();
         let (Some(probe), Some(login)) = (&t.probe, &t.login) else { return };
-        if let Err(reason) = judge(&t.label, probe, login) {
+        if let Err(reason) = judge(&t.label, probe, login, t.wsl.is_some()) {
             return self.transfer_fail(reason);
         }
         let arch = probe.arch.clone();
@@ -646,6 +683,7 @@ impl Core {
         t.quiesced = true;
         (t.phase, t.done, t.total) = (phases::HANDING_OVER, None, None);
         let (x, label, op, dir) = (t.target.clone(), t.label.clone(), t.op.clone(), t.dir.clone());
+        let interop_exe = t.wsl.as_ref().map(|(_, exe)| exe.clone());
         self.transfer_announce(true);
         let others: Vec<TargetId> = self.targets.iter().filter(|(id, t)| **id != x && t.supervisor.is_some()).map(|(id, _)| id.clone()).collect();
         for id in &others {
@@ -653,7 +691,7 @@ impl Core {
         }
         self.transfer.as_mut().unwrap().closed = others;
         let ssh_dir = self.cfg.ssh.as_ref().map(|s| s.dir.clone());
-        let (settings, files) = rewrite_settings(&self.settings, &x, &self.cfg.host_name, ssh_dir.as_deref());
+        let (settings, files) = rewrite_settings(&self.settings, &x, &self.cfg.host_name, ssh_dir.as_deref(), interop_exe.as_deref());
         let json = serde_json::to_vec_pretty(&settings).map(|mut v| {
             v.push(b'\n');
             v
@@ -692,7 +730,8 @@ impl Core {
     fn transfer_arm(&mut self) {
         let t = self.transfer.as_mut().unwrap();
         t.arming = true;
-        let (target, params) = (t.target.clone(), HubHostStartParams { op_id: t.op.clone(), arm_on_close: true });
+        // In WSL the keeper starts the new hub; `yaacd` there only places the files.
+        let (target, params) = (t.target.clone(), HubHostStartParams { op_id: t.op.clone(), arm_on_close: true, start_hub: t.wsl.is_none() });
         if !self.send::<methods::HubHostStart>(&target, &params, Pending::Transfer(Ask::Start)) {
             return self.transfer_fail("The connection to the target dropped.".into());
         }
@@ -708,16 +747,29 @@ impl Core {
             address,
             host_name: t.host_name.clone(),
             at_ms: super::now_ms(),
+            wsl_distro: t.wsl.as_ref().map(|(k, _)| k.distro.clone()),
         };
-        let (op, paths, host) = (t.op.clone(), self.cfg.paths.clone(), self.cfg.transfer_host.clone());
+        let (op, paths, host, keeper) = (t.op.clone(), self.cfg.paths.clone(), self.cfg.transfer_host.clone(), t.wsl.as_ref().map(|(k, _)| k.clone()));
         self.pool.submit(move || {
-            let result = crate::paths::write_moved_tombstone(&paths, &moved).map_err(|e| e.to_string());
+            let result = (|| {
+                // Into WSL: the keeper first, so nothing is recorded as moved if it cannot run.
+                // It does nothing until this hub has exited and the files are placed.
+                if let (Some(keeper), Some(host)) = (&keeper, &host) {
+                    host.start_wsl_keeper(keeper).map_err(|e| format!("The hub could not be kept running in WSL: {e}"))?;
+                }
+                crate::paths::write_moved_tombstone(&paths, &moved).map_err(|e| format!("This computer could not record the move: {e}"))
+            })();
             if result.is_ok()
                 && let Some(host) = host
-                && let Err(e) = host.stop_autostart()
             {
-                // The tombstone keeps the hub from starting here anyway.
-                crate::core::log(format!("transfer: start-at-login stays on: {e}"));
+                let login = match &keeper {
+                    Some(k) => host.keeper_autostart(&WslKeeper { op: None, ..k.clone() }),
+                    None => host.stop_autostart(),
+                };
+                if let Err(e) = login {
+                    // The tombstone keeps the hub from starting here anyway.
+                    crate::core::log(format!("transfer: start-at-login unchanged: {e}"));
+                }
             }
             Some(CoreEvent::Transfer(Event::Tombstoned { op, result }))
         });
@@ -822,14 +874,19 @@ mod tests {
             tailscale: HubHostTailscale { running: true, login: Some("me@x".into()), ips: vec!["fd7a::1".into(), "100.64.0.7".into()] },
             port_free: true,
             hub_running: false,
+            wsl: None,
             last_transfer: None,
         }
     }
 
+    fn me() -> Result<ThisNode, String> {
+        Ok(ThisNode { addresses: vec!["100.91.112.95".parse().unwrap()], login: "me@x".into() })
+    }
+
     #[test]
     fn eligibility_says_why_not() {
-        let me = Ok("me@x".to_owned());
-        assert_eq!(judge("box", &probe(), &me), Ok(()));
+        let me = me();
+        assert_eq!(judge("box", &probe(), &me, false), Ok(()));
         assert_eq!(address(&probe()).as_deref(), Some("100.64.0.7:47380"), "IPv4 first");
         type Change = Box<dyn Fn(&mut HubHostProbeResult)>;
         let cases: Vec<(Change, &str)> = vec![
@@ -844,10 +901,37 @@ mod tests {
         for (change, why) in cases {
             let mut p = probe();
             change(&mut p);
-            let e = judge("box", &p, &me).unwrap_err();
+            let e = judge("box", &p, &me, false).unwrap_err();
             assert!(e.contains(why), "{e} / {why}");
         }
-        assert!(judge("box", &probe(), &Err("not running".into())).unwrap_err().contains("not on Tailscale"));
+        assert!(judge("box", &probe(), &Err("not running".into()), false).unwrap_err().contains("not on Tailscale"));
+        // Logins compare without case.
+        let mut p = probe();
+        p.tailscale.login = Some("Me@X".into());
+        assert_eq!(judge("box", &p, &me, false), Ok(()));
+    }
+
+    #[test]
+    fn a_wsl_distro_needs_tailscale_of_its_own() {
+        let me = me();
+        let mut p = probe();
+        p.wsl = Some(yaac_protocol::HubHostWsl { distro: "Ubuntu".into() });
+        // Its own node, on the same login: eligible, like any Linux machine.
+        assert_eq!(judge("Ubuntu", &p, &me, true), Ok(()));
+        // No tailscaled in the distro.
+        let mut none = p.clone();
+        none.tailscale = HubHostTailscale { running: false, login: None, ips: vec![] };
+        assert_eq!(judge("Ubuntu", &none, &me, true).unwrap_err(), WSL_NEEDS_TAILSCALE);
+        // Windows' own Tailscale seen from inside WSL (mirrored networking, or tailscale.exe):
+        // the same address as this PC's.
+        let mut shared = p.clone();
+        shared.tailscale.ips = vec!["100.91.112.95".into()];
+        assert_eq!(judge("Ubuntu", &shared, &me, true).unwrap_err(), WSL_NEEDS_TAILSCALE);
+        assert!(judge("box", &shared, &me, false).unwrap_err().contains("this computer's own Tailscale address"));
+        // The port must be free on its own address, as anywhere.
+        let mut busy = p;
+        busy.port_free = false;
+        assert!(judge("Ubuntu", &busy, &me, true).unwrap_err().contains("Port 47380 is in use"));
     }
 
     #[test]

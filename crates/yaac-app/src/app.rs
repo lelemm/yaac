@@ -797,6 +797,9 @@ pub(crate) struct DeskHubs {
     pub moved_here: Option<yaac_hub::paths::MovedTombstone>,
     /// Why the last Add was refused.
     pub add_error: Option<String>,
+    /// **Start the hub here again** for a hub in this PC's WSL: its keeper is stopping it there
+    /// (off the UI thread); the reclaim carries on when this answers.
+    pub reclaiming: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
 }
 
 #[cfg(feature = "hub")]
@@ -810,7 +813,7 @@ impl DeskHubs {
         if let Some(t) = &moved_here {
             saved.moved(&t.hub_id, &t.address, &t.host_name);
         }
-        Self { saved, local, moved_here, add_error: None }
+        Self { saved, local, moved_here, add_error: None, reclaiming: None }
     }
 
     /// Saved hubs on a local hub that is never attached (renderer tests).
@@ -818,7 +821,7 @@ impl DeskHubs {
     pub(crate) fn for_test(saved: hubs::SavedHubs) -> Self {
         let paths = yaac_hub::HubPaths { config_dir: "c".into(), data_dir: "d".into(), runtime_dir: "r".into() };
         let local = AttachConfig { paths, exe: std::path::PathBuf::new(), autostart: None, start_timeout: std::time::Duration::from_secs(1), remote: None };
-        Self { saved, local, moved_here: None, add_error: None }
+        Self { saved, local, moved_here: None, add_error: None, reclaiming: None }
     }
 
     /// The attach configuration of the selected hub.
@@ -1944,10 +1947,55 @@ impl YaacApp {
     }
 
     /// Start the hub here again: the tombstone goes, This PC's entry comes back, and the local
-    /// hub is started from the data the hand-over left here.
+    /// hub is started from the data the hand-over left here. A hub in this PC's WSL is stopped
+    /// first, by its keeper (`yaac quit` in the distro), so two hubs never run; that waits, so
+    /// it runs on a thread of its own and [`YaacApp::reclaim_upkeep`] carries on.
     #[cfg(feature = "hub")]
     fn reclaim_hub(&mut self) {
         if !self.reclaim_offered() { return }
+        let Some(d) = &mut self.desk_hubs else { return };
+        if d.reclaiming.is_some() { return }
+        if d.moved_here.as_ref().is_some_and(|t| t.wsl_distro.is_some()) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (paths, ctx) = (d.local.paths.clone(), self.ctx.clone());
+            let started = std::thread::Builder::new().name("yaac-reclaim".into()).spawn(move || {
+                let result = crate::wsl_keeper::stop(&paths).map(|_| ()).map(|()| {
+                    // The keeper's login entry goes back to the hub's own.
+                    if cfg!(windows) && let Err(e) = crate::wsl_keeper::restore_hub_autostart() {
+                        eprintln!("yaac: start-at-login still runs the WSL keeper: {e}");
+                    }
+                });
+                let _ = tx.send(result);
+                ctx.request_repaint();
+            });
+            match started {
+                Ok(_) => d.reclaiming = Some(rx),
+                Err(e) => self.client.state.hub.last_error = Some(format!("Could not start the hub here: {e}")),
+            }
+            return;
+        }
+        self.reclaim_finish();
+    }
+
+    /// The hub in WSL has stopped (or could not be): finish **Start the hub here again**.
+    #[cfg(feature = "hub")]
+    fn reclaim_upkeep(&mut self) {
+        let Some(d) = &mut self.desk_hubs else { return };
+        let Some(rx) = &d.reclaiming else { return };
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the reclaim stopped".into()),
+        };
+        d.reclaiming = None;
+        match result {
+            Ok(()) => self.reclaim_finish(),
+            Err(e) => self.client.state.hub.last_error = Some(format!("Could not stop the hub in WSL, so it was not started here: {e}")),
+        }
+    }
+
+    #[cfg(feature = "hub")]
+    fn reclaim_finish(&mut self) {
         let Some(d) = &mut self.desk_hubs else { return };
         let Some(t) = d.moved_here.clone() else { return };
         if let Err(e) = yaac_hub::paths::remove_moved_tombstone(&d.local.paths) {
@@ -1962,6 +2010,7 @@ impl YaacApp {
     /// The hello outcomes, the old hub's replacement, and the persisted choices.
     #[cfg(feature = "hub")]
     fn hub_upkeep(&mut self) {
+        self.reclaim_upkeep();
         let reclaim = self.reclaim_line();
         let Some(h) = &mut self.hub else { return };
         if let Some(history) = self.client.take_composer_history() {
@@ -1987,7 +2036,10 @@ impl YaacApp {
                 if d.saved.moved(&m.hub_id, &m.address, &m.host_name) {
                     if was_local {
                         let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| i64::try_from(t.as_millis()).unwrap_or(0));
-                        d.moved_here = Some(yaac_hub::paths::MovedTombstone { hub_id: m.hub_id, address: m.address, host_name: m.host_name, at_ms });
+                        // The old hub wrote its tombstone before it said so; it also says whether
+                        // the hub went into this PC's WSL.
+                        let written = yaac_hub::paths::moved_tombstone(&d.local.paths).ok().flatten().filter(|t| t.hub_id == m.hub_id);
+                        d.moved_here = Some(written.unwrap_or(yaac_hub::paths::MovedTombstone { hub_id: m.hub_id, address: m.address, host_name: m.host_name, at_ms, wsl_distro: None }));
                     }
                     self.attach_selected_hub();
                     return;

@@ -148,11 +148,17 @@ impl std::fmt::Debug for HubAttach {
 /// Starts `yaac hub` detached: its own process group, no terminal, the resolved paths passed
 /// explicitly so it uses exactly the files the window looks at.
 pub fn spawn_hub(config: &AttachConfig) -> std::io::Result<()> {
-    let mut cmd = Command::new(&config.exe);
-    cmd.arg("hub")
-        .env("YAAC_CONFIG_DIR", &config.paths.config_dir)
-        .env("YAAC_DATA_DIR", &config.paths.data_dir)
-        .env("YAAC_RUNTIME_DIR", &config.paths.runtime_dir)
+    spawn_detached(&config.exe, &["hub".to_owned()], &config.paths)
+}
+
+/// Starts `exe args…` detached from the window, with the hub's profile (`YAAC_CONFIG_DIR`,
+/// `YAAC_DATA_DIR`, `YAAC_RUNTIME_DIR`): `yaac hub`, or the WSL keeper `yaac wsl-hub`.
+pub fn spawn_detached(exe: &std::path::Path, args: &[String], paths: &yaac_hub::HubPaths) -> std::io::Result<()> {
+    let mut cmd = Command::new(exe);
+    cmd.args(args)
+        .env("YAAC_CONFIG_DIR", &paths.config_dir)
+        .env("YAAC_DATA_DIR", &paths.data_dir)
+        .env("YAAC_RUNTIME_DIR", &paths.runtime_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

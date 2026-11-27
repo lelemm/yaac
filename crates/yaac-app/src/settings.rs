@@ -1701,7 +1701,7 @@ pub(crate) fn reclaim_offer(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut 
     ui.add_space(6.0);
     ui.label(RichText::new(line).font(theme::ui(size::SMALL)).color(p.needs));
     if app.ui.reclaim_confirm {
-        ui.label(widgets::secondary("The hub starts here from the data it had when it moved. If the hub on the other machine is still running, the two will differ: stop it there first.", &p));
+        ui.label(widgets::secondary(app.reclaim_confirm_text(), &p));
         ui.horizontal(|ui| {
             if widgets::primary(ui, &p, "Start here", None).clicked() {
                 app.ui.reclaim_confirm = false;

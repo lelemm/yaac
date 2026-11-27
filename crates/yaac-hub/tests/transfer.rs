@@ -13,7 +13,7 @@ use yaac_hub::client::HubClient;
 use yaac_hub::protocol::names as ext;
 use yaac_hub::settings::Settings;
 use yaac_hub::tailnet::{Tailnet, ThisNode};
-use yaac_hub::transfer::{HubAsset, TransferHost, UNREACHABLE_FIELD};
+use yaac_hub::transfer::{HubAsset, TransferHost, UNREACHABLE_FIELD, WslKeeper};
 use yaac_hub::{ExitReason, HubConfig, HubError};
 use yaac_protocol::attach::{self, HubMoved, HubTransferCandidatesResult, HubTransferProgress, TargetEntry, TargetTransport, hub_transfer};
 use yaac_protocol::methods::names;
@@ -39,6 +39,8 @@ impl Tailnet for FakeTailnet {
 #[derive(Default)]
 struct FakeHost {
     calls: Mutex<Vec<String>>,
+    /// `yaac.exe` as WSL sees it: this hub can move into the PC's WSL.
+    interop: Option<String>,
 }
 
 const ASSET_SHA: &str = "abababababababababababababababababababababababababababababababab";
@@ -50,6 +52,17 @@ impl TransferHost for FakeHost {
     }
     fn stop_autostart(&self) -> Result<(), String> {
         self.calls.lock().unwrap().push("autostart off".into());
+        Ok(())
+    }
+    fn interop_exe(&self) -> Option<String> {
+        self.interop.clone()
+    }
+    fn start_wsl_keeper(&self, keeper: &WslKeeper) -> Result<(), String> {
+        self.calls.lock().unwrap().push(format!("keeper {}", yaac_hub::transfer::keeper_args(keeper).join(" ")));
+        Ok(())
+    }
+    fn keeper_autostart(&self, keeper: &WslKeeper) -> Result<(), String> {
+        self.calls.lock().unwrap().push(format!("autostart {}", yaac_hub::transfer::keeper_args(keeper).join(" ")));
         Ok(())
     }
 }
@@ -165,7 +178,7 @@ fn every_target_is_listed_with_why_it_cannot_take_the_hub() {
     assert_eq!(reason(&r, &x), None, "Linux, same Tailscale login, port free, no hub there");
     assert_eq!(reason(&r, &y).as_deref(), Some("Update YAAC on that target first."));
     assert_eq!(reason(&r, &here).as_deref(), Some("This is the hub's own computer."));
-    assert!(reason(&r, &w).unwrap().contains("WSL"), "WSL shares Windows' Tailscale address");
+    assert_eq!(reason(&r, &w).as_deref(), Some("Only YAAC for Windows can move the hub into WSL."), "this hub has no yaac.exe");
     // Only x and here have hubHost; only x was asked (here is ruled out by its transport).
     assert_eq!(calls(&s.x), [names::HUB_HOST_PROBE]);
     assert!(calls(&s.here).is_empty());
@@ -241,7 +254,7 @@ fn the_hub_moves_and_lets_go_of_every_target_first() {
     assert!(sequence[2..sequence.len() - 1].iter().all(|m| m == names::HUB_HOST_PUT), "{sequence:?}");
     let params = s.x.hub_host(|h| h.calls.clone());
     assert_eq!(params[1].1, json!({ "opId": "op-1", "url": "https://example.invalid/yaac-hub-linux-x86_64", "sha256": ASSET_SHA, "size": 1234 }));
-    assert_eq!(params.last().unwrap().1, json!({ "opId": "op-1", "armOnClose": true }));
+    assert_eq!(params.last().unwrap().1, json!({ "opId": "op-1", "armOnClose": true, "startHub": true }));
     assert_eq!(*s.host.calls.lock().unwrap(), [format!("asset {HUB} x86_64")]);
 
     // The files arrived whole (the fake checked each SHA-256), the live cache first.
@@ -338,4 +351,88 @@ fn a_failure_before_the_hand_over_moves_nothing() {
     assert_eq!(calls(&s.x).iter().filter(|m| *m == names::HUB_HOST_PROBE).count(), 1);
     wait_until("the local staging removed", || !s.home.paths().data_dir.join("transfer-op-1").exists());
     hub.shutdown();
+}
+
+/// Into this PC's own WSL (docs/15-hub-transfer.md#into-this-pcs-wsl): a distro with
+/// Tailscale of its own takes the hub; `yaacd` there only places the files, the keeper on
+/// Windows runs the new hub, and the PC's Windows target stays reachable through interop.
+#[test]
+fn the_hub_moves_into_this_pcs_wsl() {
+    let home = Home::new();
+    let here = FakeDaemon::new("here");
+    here.set_features(vec![Capability::HubHost]);
+    let ubuntu = FakeDaemon::new("ubuntu");
+    ubuntu.set_features(vec![Capability::HubHost]);
+    let debian = FakeDaemon::new("debian");
+    debian.set_features(vec![Capability::HubHost]);
+    for d in [&here, &ubuntu, &debian] {
+        home.fakes.add(d);
+    }
+    let wsl_probe = |ip: &str| {
+        let mut p = support::fake_daemon::default_probe();
+        p["tailscale"]["ips"] = json!([ip]);
+        p["wsl"] = json!({ "distro": "Ubuntu" });
+        p
+    };
+    // Ubuntu runs tailscaled itself; Debian only sees Windows' Tailscale (mirrored networking).
+    ubuntu.hub_host(|h| h.probe = Some(wsl_probe("100.64.0.9")));
+    debian.hub_host(|h| h.probe = Some(wsl_probe("127.0.0.1")));
+    let exe = "/mnt/c/Users/me/AppData/Local/Programs/YAAC/yaac.exe";
+    let host = Arc::new(FakeHost { interop: Some(exe.into()), ..FakeHost::default() });
+    let mut config = home.config();
+    config.build = HUB.into();
+    config.tailnet = Arc::new(FakeTailnet);
+    config.tailscale_port = 0;
+    config.transfer_host = Some(host.clone());
+    let hub = home.start_with(config.clone());
+    let c = client(&hub, HUB);
+    let here_id = add(&c, "here", &json!({ "kind": "local" })).id;
+    let w = add(&c, "ubuntu", &json!({ "kind": "wsl", "distro": "Ubuntu", "user": "dev" })).id;
+    let d = add(&c, "debian", &json!({ "kind": "wsl", "distro": "Debian" })).id;
+    for id in [&here_id, &w, &d] {
+        c.wait_status(id, attach::ConnectionStatus::Connected);
+    }
+
+    let r = candidates(&c);
+    assert_eq!(reason(&r, &w), None, "its own Tailscale node, same login");
+    assert_eq!(
+        reason(&r, &d).as_deref(),
+        Some("Tailscale is not running inside this WSL distro. Install it there (it needs its own machine on your tailnet).")
+    );
+    assert_eq!(reason(&r, &here_id).as_deref(), Some("This is the hub's own computer."));
+
+    c.call(attach::names::TRANSFER_START, json!({ "opId": "op-w", "targetId": w })).unwrap();
+    let mut hub = hub;
+    let exit = hub.join();
+    assert_eq!(exit.reason, ExitReason::Moved);
+
+    // `yaacd` in the distro only places the files: the keeper starts the hub.
+    let params = ubuntu.hub_host(|h| h.calls.clone());
+    assert_eq!(params.last().unwrap(), &(names::HUB_HOST_START.to_owned(), json!({ "opId": "op-w", "armOnClose": true, "startHub": false })));
+    // The keeper first (waiting for this hub to exit and the files to be placed), then the
+    // tombstone, then the login entry is the keeper's; the hub's own is not just turned off.
+    assert_eq!(
+        *host.calls.lock().unwrap(),
+        [format!("asset {HUB} x86_64"), "keeper wsl-hub --distro Ubuntu --user dev --after-transfer op-w".into(), "autostart wsl-hub --distro Ubuntu --user dev".into()]
+    );
+    let tomb = yaac_hub::paths::moved_tombstone(&home.paths()).unwrap().expect("tombstone");
+    assert_eq!(tomb.address, "100.64.0.9:47380", "the distro's own Tailscale address");
+    assert_eq!(tomb.wsl_distro.as_deref(), Some("Ubuntu"));
+
+    // The new hub's settings: the distro is its own computer, the other distro stays a WSL
+    // target (wsl.exe through interop), and Windows is reached through yaac.exe.
+    let staged = ubuntu.hub_host(|h| h.staged.clone());
+    let moved: Settings = serde_json::from_slice(&staged.iter().find(|(n, _)| n == "config/hub.json").unwrap().1).unwrap();
+    assert!(matches!(moved.target(&w).unwrap().transport, TargetTransport::Local(_)));
+    assert!(matches!(&moved.target(&d).unwrap().transport, TargetTransport::Wsl(t) if t.distro == "Debian"));
+    match &moved.target(&here_id).unwrap().transport {
+        TargetTransport::WindowsInterop(t) => assert_eq!(t.exe, exe),
+        other => panic!("{other:?}"),
+    }
+    for id in [&w, &d, &here_id] {
+        let t = moved.target(id).unwrap();
+        assert!(t.enabled && !t.extra.contains_key(UNREACHABLE_FIELD), "{id}");
+    }
+    wait_until("ubuntu closed", || !ubuntu.connected());
+    assert!(!here.connected() && !debian.connected());
 }

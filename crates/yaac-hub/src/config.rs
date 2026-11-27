@@ -115,6 +115,12 @@ impl ConnectorFactory for DefaultConnectors {
             TargetTransport::Local(_) => Ok(Arc::new(LocalConnector::new(self.local.clone()))),
             // The hub builds SSH connectors itself, from `HubConfig::ssh`.
             TargetTransport::Ssh(_) => Err("SSH is not configured in this hub".into()),
+            TargetTransport::WindowsInterop(w) => {
+                if !crate::transfer::running_in_wsl() {
+                    return Err("This PC's Windows side is reached only from a hub in its WSL".into());
+                }
+                Ok(Arc::new(crate::interop::InteropConnector { exe: w.exe.clone() }))
+            }
             TargetTransport::Wsl(w) => {
                 if !cfg!(windows) && self.wsl.wsl_exe.is_none() {
                     return Err("WSL targets are reached from a Windows host".into());
@@ -130,6 +136,16 @@ impl ConnectorFactory for DefaultConnectors {
             TargetTransport::Unknown(other) => Err(format!("unknown transport {:?}", other.tag("kind"))),
         }
     }
+}
+
+/// `wsl.exe` for a hub inside WSL (interop): Windows' own, else `wsl.exe` on `PATH`. `None`
+/// outside WSL.
+fn wsl_exe_in_wsl() -> Option<std::ffi::OsString> {
+    if !crate::transfer::running_in_wsl() {
+        return None;
+    }
+    let system = std::path::Path::new("/mnt/c/Windows/System32/wsl.exe");
+    Some(if system.is_file() { system.into() } else { "wsl.exe".into() })
 }
 
 #[cfg(target_os = "linux")]
@@ -254,38 +270,51 @@ pub fn host_name() -> String {
         .unwrap_or_else(|| "host".to_owned())
 }
 
+/// How this computer's own `yaacd` is started: [`LocalConfig::from_env`], and on an installed
+/// Windows build its packaged runtime and bundle, copied into versioned data directories
+/// first. The Windows hub uses it, and so does `yaac.exe local-daemon` for a hub that moved
+/// into this PC's WSL.
+pub fn local_config(paths: &HubPaths) -> LocalConfig {
+    let mut local = LocalConfig::from_env(&default_root());
+    if cfg!(windows) && let Some(install) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(std::path::Path::to_path_buf)) {
+        let home = std::env::var_os("YAAC_HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
+            .or_else(|| std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".yaac")))
+            .unwrap_or_else(|| paths.data_dir.clone());
+        local = local.with_env("YAAC_HOME", &home);
+        let runtime = install.join("runtime").join("node.exe");
+        if std::env::var_os("YAAC_RUNTIME").is_none_or(|v| v.is_empty()) && runtime.is_file() {
+            let dest = home.join("runtime").join(format!("node-{}", yaac_transport::runtime::PINNED_NODE)).join("node.exe");
+            local.install_files.push((runtime, dest.clone()));
+            let pty = "pty-1.2.0-beta.18";
+            let packaged = install.join("runtime").join(pty);
+            if packaged.is_dir() {
+                local.install_files.push((packaged, dest.parent().unwrap().join(pty)));
+            }
+            local.runtime = dest.into_os_string();
+        }
+        let bundle = install.join("yaacd.mjs");
+        if std::env::var_os("YAAC_DAEMON_BUNDLE").is_none_or(|v| v.is_empty()) && bundle.is_file() {
+            let build = env!("YAAC_DAEMON_VERSION");
+            let dest = home.join("daemon").join(build).join("yaacd.mjs");
+            local.install_files.push((bundle, dest.clone()));
+            local.bundle = dest;
+            local.build = Some(build.to_owned());
+        }
+    }
+    local
+}
+
 impl HubConfig {
     /// A configuration from the process environment: [`HubPaths::from_env`], the local
     /// connector from `YAAC_RUNTIME` / `YAAC_DAEMON_BUNDLE` relative to [`default_root`].
     pub fn from_env(build: impl Into<String>) -> Result<Self, PathsError> {
         let paths = HubPaths::from_env()?;
-        let mut local = LocalConfig::from_env(&default_root());
-        if cfg!(windows) && let Some(install) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(std::path::Path::to_path_buf)) {
-            let home = std::env::var_os("YAAC_HOME").filter(|v| !v.is_empty()).map(PathBuf::from)
-                .or_else(|| std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".yaac")))
-                .unwrap_or_else(|| paths.data_dir.clone());
-            local = local.with_env("YAAC_HOME", &home);
-            let runtime = install.join("runtime").join("node.exe");
-            if std::env::var_os("YAAC_RUNTIME").is_none_or(|v| v.is_empty()) && runtime.is_file() {
-                let dest = home.join("runtime").join(format!("node-{}", yaac_transport::runtime::PINNED_NODE)).join("node.exe");
-                local.install_files.push((runtime, dest.clone()));
-                let pty = "pty-1.2.0-beta.18";
-                let packaged = install.join("runtime").join(pty);
-                if packaged.is_dir() {
-                    local.install_files.push((packaged, dest.parent().unwrap().join(pty)));
-                }
-                local.runtime = dest.into_os_string();
-            }
-            let bundle = install.join("yaacd.mjs");
-            if std::env::var_os("YAAC_DAEMON_BUNDLE").is_none_or(|v| v.is_empty()) && bundle.is_file() {
-                let build = env!("YAAC_DAEMON_VERSION");
-                let dest = home.join("daemon").join(build).join("yaacd.mjs");
-                local.install_files.push((bundle, dest.clone()));
-                local.bundle = dest;
-                local.build = Some(build.to_owned());
-            }
-        }
+        let local = local_config(&paths);
         let mut wsl = WslDefaults::from_lookup(|k| std::env::var_os(k));
+        // A hub that moved into WSL reaches the PC's other distros through `wsl.exe` (interop).
+        if wsl.wsl_exe.is_none() {
+            wsl.wsl_exe = wsl_exe_in_wsl();
+        }
         let runtime = RuntimeSource::pinned(Some(paths.data_dir.join("runtime-cache")));
         wsl.runtime = Some(runtime.clone());
         let mut ssh = SshDefaults::new(&paths.data_dir, &paths.runtime_dir, wsl.bundle.clone(), wsl.env.clone());

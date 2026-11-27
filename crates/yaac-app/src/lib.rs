@@ -30,6 +30,8 @@ pub mod install;
 mod ssh_hub;
 #[cfg(feature = "hub")]
 mod device_drafts;
+#[cfg(feature = "hub")]
+pub mod wsl_keeper;
 
 mod agents_ui;
 mod app_icon;
@@ -150,7 +152,7 @@ pub fn run(args: &[String]) -> ExitCode {
     {
         if args.first().is_some_and(|a| a == "--help" || a == "-h") {
             #[cfg(feature = "hub")]
-            println!("yaac hub | yaac quit | yaac autostart on|off|status|sync [--start] | yaac --version");
+            println!("yaac hub | yaac quit | yaac autostart on|off|status|sync [--start] | yaac wsl-hub --distro <name> | yaac local-daemon | yaac --version");
             #[cfg(not(feature = "hub"))]
             println!("yaac --version");
             return ExitCode::SUCCESS;

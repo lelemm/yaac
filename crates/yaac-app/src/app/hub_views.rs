@@ -57,15 +57,22 @@ pub(crate) struct TransferProgress {
     pub running: bool,
 }
 
-/// What the confirmation says before the hub moves to `to`.
-pub(crate) fn confirm_text(to: &str) -> (String, String) {
+/// What the confirmation says before the hub moves to `to`. `into_wsl`: `to` is one of this
+/// PC's WSL distros (P414), from where this computer's targets stay reachable.
+pub(crate) fn confirm_text(to: &str, into_wsl: bool) -> (String, String) {
+    let reach = if into_wsl {
+        "This computer's other WSL distros and its own Windows target stay reachable from there. While the hub lives in WSL, \
+         a small YAAC process on Windows keeps the distro running and starts the hub there at login."
+    } else {
+        "WSL targets and this computer's own target can only be reached by a hub on this computer: \
+         they stay listed, unavailable, until the hub comes back."
+    };
     (
         format!("Move the hub to {to}?"),
         format!(
             "YAAC installs itself on {to}, copies the hub's threads, drafts and messages there, and starts the hub there; \
              the hub on this computer stops. Running turns keep going on their targets. Every window and phone attaches \
-             to the hub on {to}. WSL targets and this computer's own target can only be reached by a hub on this computer: \
-             they stay listed, unavailable, until the hub comes back."
+             to the hub on {to}. {reach}"
         ),
     )
 }
@@ -119,11 +126,28 @@ impl YaacApp {
         if !self.reclaim_offered() {
             return None;
         }
-        let name = self.desk_hubs.as_ref().map(|d| d.saved.current().name()).unwrap_or_default();
+        let d = self.desk_hubs.as_ref()?;
+        if let Some(distro) = d.moved_here.as_ref().and_then(|t| t.wsl_distro.as_deref())
+            && d.reclaiming.is_some()
+        {
+            return Some(format!("Stopping the hub in WSL ({distro})…"));
+        }
+        let name = d.saved.current().name();
         Some(format!(
             "The hub moved to {name}, which has not answered for {} seconds. You can start the hub on this computer again, from the data it had when it moved.",
             RECLAIM_AFTER.as_secs()
         ))
+    }
+
+    /// What **Start the hub here again** asks before it does anything.
+    pub(crate) fn reclaim_confirm_text(&self) -> String {
+        let wsl = self.desk_hubs.as_ref().and_then(|d| d.moved_here.as_ref()).and_then(|t| t.wsl_distro.clone());
+        match wsl {
+            Some(distro) => format!(
+                "The hub in WSL ({distro}) is stopped first. Then the hub starts here from the data it had when it moved: what changed on the hub in WSL since then stays there."
+            ),
+            None => "The hub starts here from the data it had when it moved. If the hub on the other machine is still running, the two will differ: stop it there first.".to_owned(),
+        }
     }
 
     /// Settings → Advanced → Hub → Transfer hub to….
@@ -157,7 +181,8 @@ impl YaacApp {
                 running: t.phase.active(),
             }
         });
-        let confirm = picked_choice.map(|c| confirm_text(&c.label));
+        let into_wsl = |t: &TargetId| self.client.state.target(t).is_some_and(|t| matches!(t.entry.transport, yaac_protocol::attach::TargetTransport::Wsl(_)));
+        let confirm = picked_choice.map(|c| confirm_text(&c.label, into_wsl(&c.target)));
         TransferView { choices, picked, can_start, progress, confirm }
     }
 
@@ -268,7 +293,7 @@ mod tests {
         fake_hub(listener, json!({ "build": crate::BUILD, "targets": [], "hubId": "h-pc", "hostName": "box" }), vec![]);
         save_hubs(&config.paths.config_dir, json!({ "hubs": [{ "hubId": "h-pc", "hostName": "PC" }] }));
         std::fs::create_dir_all(&config.paths.data_dir).unwrap();
-        let tombstone = yaac_hub::paths::MovedTombstone { hub_id: "h-pc".into(), address: address.clone(), host_name: "box".into(), at_ms: 1 };
+        let tombstone = yaac_hub::paths::MovedTombstone { hub_id: "h-pc".into(), address: address.clone(), host_name: "box".into(), at_ms: 1, wsl_distro: None };
         yaac_hub::paths::write_moved_tombstone(&config.paths, &tombstone).unwrap();
 
         let mut app = window(config.clone());
@@ -292,7 +317,7 @@ mod tests {
         // Nothing listens there.
         let address = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
         std::fs::create_dir_all(&config.paths.data_dir).unwrap();
-        let tombstone = yaac_hub::paths::MovedTombstone { hub_id: "h-pc".into(), address: address.clone(), host_name: "box".into(), at_ms: 1 };
+        let tombstone = yaac_hub::paths::MovedTombstone { hub_id: "h-pc".into(), address: address.clone(), host_name: "box".into(), at_ms: 1, wsl_distro: None };
         yaac_hub::paths::write_moved_tombstone(&config.paths, &tombstone).unwrap();
         let mut app = window(config.clone());
         assert_eq!(attached_to(&app).as_deref(), Some(address.as_str()));

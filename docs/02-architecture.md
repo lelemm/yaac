@@ -129,10 +129,11 @@ opened for them (invariant 1).
 
 ### Moving the hub
 
-**Proposed (P408–P413).** Desktop and phone clients can move the hub to an eligible Linux SSH
-target. The hub uses the target's existing daemon connection for the install and data transfer.
+**Proposed (P408–P414).** Desktop and phone clients can move the hub to an eligible Linux SSH
+target, or into one of this PC's WSL distros that runs Tailscale itself. The hub uses the target's existing daemon connection for the install and data transfer.
 The destination starts when the old hub closes this connection, after the old hub releases its
-other target connections. Client methods follow the usual `hub/hello` build check.
+other target connections. In WSL a Windows-side keeper (`yaac wsl-hub`) starts and keeps the
+new hub instead ([15](15-hub-transfer.md#into-this-pcs-wsl-p414)). Client methods follow the usual `hub/hello` build check.
 
 | Attach message | Purpose |
 | --- | --- |

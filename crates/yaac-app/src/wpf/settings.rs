@@ -1118,7 +1118,7 @@ fn reclaim_rows(app: &YaacApp) -> Vec<Value> {
         return vec![json!({ "id": "reclaim", "status": line, "tone": "warning",
             "actions": [with(action("hubs.reclaim", "Start the hub here again", true), json!({ "kind": "primary",
                 "confirm": { "title": "Start the hub on this computer again?",
-                    "text": "The hub starts here from the data it had when it moved. If the hub on the other machine is still running, the two will differ: stop it there first.",
+                    "text": app.reclaim_confirm_text(),
                     "ok": "Start here" } }))] })];
     }
     let _ = app;
@@ -1180,7 +1180,7 @@ fn hubs_page(app: &YaacApp) -> Value {
             if h.reclaim {
                 actions.push(args(with(action("hubs.reclaim", "Start the hub here again", true), json!({ "kind": "primary",
                     "confirm": { "title": "Start the hub on this computer again?",
-                        "text": "The hub starts here from the data it had when it moved. If the hub on the other machine is still running, the two will differ: stop it there first.",
+                        "text": app.reclaim_confirm_text(),
                         "ok": "Start here" } })), json!({ "index": h.index })));
             }
             actions.push(args(with(action("hubs.remove", "Remove", h.removable), json!({

@@ -127,6 +127,10 @@ pub struct MovedTombstone {
     pub address: String,
     pub host_name: String,
     pub at_ms: i64,
+    /// The hub moved into one of this PC's own WSL distros (this one), kept running by
+    /// `yaac wsl-hub` (docs/15-hub-transfer.md#into-this-pcs-wsl).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wsl_distro: Option<String>,
 }
 
 /// Reads the move record. An unreadable or malformed record is an error.

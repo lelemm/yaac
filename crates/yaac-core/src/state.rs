@@ -67,11 +67,13 @@ impl TargetRecord {
         self.entry.enabled && self.entry.state.update.as_ref().is_some_and(|u| u.phase == DaemonUpdatePhase::Updating)
     }
 
-    /// "SSH", "WSL", or nothing for the local machine — for the origin row.
+    /// "SSH", "WSL", "Windows", or nothing for the local machine — for the origin row.
     pub fn transport_word(&self) -> Option<&'static str> {
         match &self.entry.transport {
             TargetTransport::Ssh(_) => Some("SSH"),
             TargetTransport::Wsl(_) => Some("WSL"),
+            // The PC's Windows side, seen from a hub that moved into its WSL.
+            TargetTransport::WindowsInterop(_) => Some("Windows"),
             TargetTransport::Local(_) | TargetTransport::Unknown(_) => None,
         }
     }
