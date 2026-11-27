@@ -848,6 +848,11 @@ impl Core {
             // Frozen core: served whatever the client's build (docs/09-compatibility.md).
             return self.host_update_request(client, id, params);
         }
+        let remote = self.clients.get(&client).is_some_and(|c| c.remote);
+        if remote && method == attach::names::SHUTDOWN {
+            // Whatever the builds: a phone never stops or replaces the PC's hub.
+            return Some(Err(hub_err(ext::codes::REMOTE_NOT_ALLOWED, "The hub is stopped only from its own computer, never from a client over Tailscale.")));
+        }
         match (hello, method) {
             (Hello::Attached | Hello::HubOutdated, attach::names::SHUTDOWN) => {
                 let id = id.clone();
@@ -1008,6 +1013,11 @@ impl Core {
             },
             ext::names::SETTINGS_GET => Some(Ok(to_value(&SettingsResult { settings: self.settings.hub.clone(), tailscale: self.tailscale.clone() }))),
             ext::names::SETTINGS_UPDATE => Some(parse::<SettingsUpdateParams>(params).and_then(|p| {
+                if remote && (p.always.is_some() || p.idle_exit_secs.is_some()) {
+                    // When the hub runs and exits is decided on its computer. (A phone may
+                    // still turn `tailscaleAttach` off, which only ends its own access.)
+                    return Err(hub_err(ext::codes::REMOTE_NOT_ALLOWED, "Whether the hub starts at login and keeps running is set on its own computer."));
+                }
                 let previous = self.settings.hub.clone();
                 if let Some(settings) = &p.explanations { self.settings.hub.explanations = settings.clone(); }
                 if let Some(settings) = p.notifications { self.settings.hub.notifications = settings; }

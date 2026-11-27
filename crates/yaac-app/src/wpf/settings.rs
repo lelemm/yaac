@@ -1095,7 +1095,10 @@ fn advanced(app: &YaacApp) -> Value {
         section("hub", "Hub", vec![
             json!({ "id": "hub", "layout": "form",
                 "detail": "Agents on different machines keep working together while this window is closed. Off: the hub exits a while after the last window closes and nothing is running.",
-                "actions": [toggle("advanced.always", "Start the hub at login and keep it running", state.hub.always.unwrap_or(true), true)]
+                // A client of a hub on another computer (the phone) shows it, never changes it:
+                // the hub refuses (`remote_not_allowed`).
+                "actions": [with(toggle("advanced.always", "Start the hub at login and keep it running", state.hub.always.unwrap_or(true), app.remote_pc().is_none()),
+                    json!({ "detail": if app.remote_pc().is_some() { "Set on the PC." } else { "" } }))]
             }),
             json!({ "id": "error", "status": state.hub.last_error, "tone": "error" })
         ]),

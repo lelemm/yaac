@@ -26,7 +26,9 @@ the Android client over Tailscale** ([02](02-architecture.md#attaching-over-tail
 
 **Versions.** The window and the hub are always the same build, but a phone updates on its
 own. When the builds differ, the attach adapts through the dialect layer, as `yaacd` does
-([09](09-compatibility.md)). A phone never stops, replaces or restarts the hub. It can do one
+([09](09-compatibility.md)). A phone never stops, replaces or restarts the hub. The hub enforces
+this: `hub/shutdown` and the start-at-login and idle-exit settings are refused from a client
+over Tailscale (`remote_not_allowed`). The phone shows that setting read-only. It can do one
 thing when it is newer: ask the PC to install the phone's build. **Settings → About → Update
 YAAC on <pc> to build <n>** appears only when both are release builds and the phone's number is
 higher (P403). After a confirmation, the hub downloads that release's installer, verifies it,

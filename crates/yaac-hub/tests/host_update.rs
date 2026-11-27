@@ -184,3 +184,36 @@ fn a_host_without_an_installer_says_so() {
     assert!(e.message.contains("not supported on this host"), "{}", e.message);
     hub.shutdown();
 }
+
+#[test]
+fn a_phone_never_stops_the_hub_or_changes_when_it_runs() {
+    let home = Home::new();
+    let mut config = home.config();
+    config.build = HUB.into();
+    config.tailnet = Arc::new(FakeTailnet);
+    config.tailscale_port = 0;
+    let hub = home.start_with(config);
+    let (window, hi) = hello(HubClient::connect(&hub.socket).unwrap(), HUB);
+    hi.unwrap();
+    let addr = listen(&window);
+    // Newer (where a local window would be told to send hub/shutdown), the same build, older:
+    // whatever the builds, the phone cannot stop the hub.
+    for build in [PHONE, HUB, "0.1.0+1040"] {
+        let phone = Client { link: HubClient::connect_tcp(addr, || {}).unwrap() };
+        let _ = phone.call(attach::names::HELLO, json!({ "build": build }));
+        assert_eq!(code(phone.call(attach::names::SHUTDOWN, json!({}))), "remote_not_allowed", "phone on {build}");
+    }
+    // Attached on the same build: start at login and the idle exit are the PC's; its own
+    // access (tailscaleAttach) and everything else stay the phone's to change.
+    let (phone, hi) = hello(HubClient::connect_tcp(addr, || {}).unwrap(), HUB);
+    hi.expect("same build");
+    assert_eq!(code(phone.call(ext::SETTINGS_UPDATE, json!({ "always": false }))), "remote_not_allowed");
+    assert_eq!(code(phone.call(ext::SETTINGS_UPDATE, json!({ "idleExitSecs": 1 }))), "remote_not_allowed");
+    let settings = phone.call(ext::SETTINGS_GET, json!({})).unwrap();
+    assert_eq!(settings["settings"]["always"], json!(true), "nothing was written");
+    phone.call(ext::SETTINGS_UPDATE, json!({ "notifications": settings["settings"]["notifications"] })).expect("other settings are the phone's too");
+    assert!(phone.call(attach::names::TARGETS_LIST, json!({})).is_ok());
+    // The window on the PC still may.
+    window.call(ext::SETTINGS_UPDATE, json!({ "always": true })).expect("the PC's window sets it");
+    hub.shutdown(); // a local client: allowed
+}

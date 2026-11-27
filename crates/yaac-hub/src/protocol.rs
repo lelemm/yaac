@@ -193,6 +193,10 @@ pub mod codes {
     pub const WINDOW_OUTDATED: &str = "window_outdated";
     /// `hub/hello` must be the first message.
     pub const HELLO_REQUIRED: &str = "hello_required";
+    /// The hub's own lifecycle (`hub/shutdown`, start at login, the idle exit) is decided on
+    /// its computer: a client attached over Tailscale never stops or replaces the hub
+    /// (docs/14-android.md).
+    pub const REMOTE_NOT_ALLOWED: &str = "remote_not_allowed";
     /// The method is the hub's own business and cannot be routed (`initialize`, `mesh/deliver`…).
     pub const NOT_ROUTABLE: &str = "not_routable";
     /// `hub/notifications/respond`: the request list changed since the client saw it, or the

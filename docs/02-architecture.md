@@ -96,7 +96,11 @@ local socket:
 - **What it carries.** An admitted connection is an ordinary attach: the same frames, the same
   methods, the same `hub/hello` build rule as the local socket. The exception: only a client
   admitted here may send the frozen `hub/update/request`, which asks the hub to install a newer
-  build on this computer ([install](install.md#updating-from-the-phone)). The client side is
+  build on this computer ([install](install.md#updating-from-the-phone)). The reverse holds for
+  the hub's lifecycle: a client admitted here can never stop the hub. It is refused
+  `hub/shutdown` whatever the builds, and `hub/settings/update` with `always` or
+  `idleExitSecs`, with `remote_not_allowed`. It may still turn `tailscaleAttach` off, which
+  only ends its own access. The client side is
   `HubClient::connect_tcp`. Both ends turn on TCP keepalive (idle 30 s, then 3 probes 10 s
   apart; the platform's defaults where it cannot set them), so a phone that sleeps or changes
   network is detached within about a minute. Nothing is paired and nothing is stored: Tailscale already
