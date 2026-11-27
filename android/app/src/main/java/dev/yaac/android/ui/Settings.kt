@@ -180,7 +180,7 @@ private fun SettingsPage(view: JsonElement?, send: (String, Any?) -> Unit) {
 /** One row: label and status, a lone toggle at the right, detail, fields, then actions. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun SettingsRow(row: JsonObject, prefix: String, drafts: MutableMap<String, String>, send: (String, Any?) -> Unit) {
+internal fun SettingsRow(row: JsonObject, prefix: String, drafts: MutableMap<String, String>, send: (String, Any?) -> Unit) {
     val c = LocalYaac.current
     val type = LocalType.current
     Column(Modifier.fillMaxWidth().padding(top = 10.dp)) {

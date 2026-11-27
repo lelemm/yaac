@@ -29,9 +29,12 @@ own. When the builds differ, the attach adapts through the dialect layer, as `ya
 ([09](09-compatibility.md)). A phone never stops, replaces or restarts the hub. The hub enforces
 this: `hub/shutdown` and the start-at-login and idle-exit settings are refused from a client
 over Tailscale (`remote_not_allowed`). The phone shows that setting read-only. It can do one
-thing when it is newer: ask the PC to install the phone's build. **Settings → About → Update
-YAAC on <pc> to build <n>** appears only when both are release builds and the phone's number is
-higher (P403). After a confirmation, the hub downloads that release's installer, verifies it,
+thing when it is newer: ask the PC to install the phone's build. **Update YAAC on <pc> to build
+<n>** appears only when both are release builds and the phone's number is higher (P403), in
+Settings → About and on the card that says the builds differ. That card is what the phone shows
+while the hub is older (not "Not connected": the hub answered), and the phone keeps attaching
+again after a drop so the request can reach the hub. A phone older than the hub is refused and
+does not retry. After a confirmation, the hub downloads that release's installer, verifies it,
 and runs it. The phone follows the progress, shows *"<pc> is updating…"* once the connection
 drops, and attaches again on the matching build. This uses the frozen `hub/update/request`
 ([09](09-compatibility.md#the-frozen-core), [install](install.md#updating-from-the-phone)).

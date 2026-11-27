@@ -1238,6 +1238,13 @@ fn host_update_section(app: &YaacApp) -> Option<Value> {
     host_update_view(&app.remote_pc()?, crate::BUILD, &app.client.state.hub)
 }
 
+/// The same row on its own, for the shell (`shell.hub.pcUpdate`): a phone newer than the hub
+/// is not attached, so the card that says so carries the button (Settings may be out of reach).
+pub(super) fn host_update_row(app: &YaacApp) -> Option<Value> {
+    let section = host_update_section(app)?;
+    section["rows"].as_array()?.first().cloned()
+}
+
 fn host_update_view(pc: &str, own: &str, hub: &yaac_core::state::HubState) -> Option<Value> {
     use yaac_core::state::HostUpdatePhase as P;
     let offered = yaac_core::update::offers_host_update(own, hub.build.as_deref());

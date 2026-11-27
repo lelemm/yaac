@@ -1748,10 +1748,10 @@ impl YaacApp {
         // hub supervisor would; nothing that was in flight is re-sent (operation ids decide).
         if h.config.is_remote() {
             let lost = matches!(status, LinkStatus::Closed | LinkStatus::Failed(_));
-            // A refused hello is final, except while the PC installs the build this phone asked
-            // for (`hub/update/request`): it comes back as that build, so attach again.
-            let updating = self.client.state.hub.host_update.as_ref().is_some_and(|u| u.requested_here && u.phase.active());
-            let refused = !updating && matches!(self.client.state.hub.outcome, HelloOutcome::WindowOutdated { .. } | HelloOutcome::HubOutdated { .. });
+            // A refused hello (this phone is older than the hub) is final. A hub older than the
+            // phone is attached again after a drop: the phone must reach it to ask for its own
+            // build (`hub/update/request`), and the hub comes back as that build after one.
+            let refused = matches!(self.client.state.hub.outcome, HelloOutcome::WindowOutdated { .. });
             if status == LinkStatus::Connected {
                 h.next_reattach = None;
                 h.reattach_delay = REATTACH_FIRST;

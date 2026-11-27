@@ -13,6 +13,9 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.remember
+import kotlinx.serialization.json.JsonObject
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -28,18 +31,23 @@ import dev.yaac.android.core.Updates
  * build. Drawn over the list or the Update YAAC page, at the bottom.
  */
 @Composable
-fun HubBuildOffer(modifier: Modifier = Modifier) {
+fun HubBuildOffer(pcUpdate: JsonObject?, send: (String, Any?) -> Unit, modifier: Modifier = Modifier) {
     val hub = AppUpdates.hubBuild ?: return
     if (!AppUpdates.hubMismatch) return
     val c = LocalYaac.current
     val type = LocalType.current
+    val drafts = remember { mutableStateMapOf<String, String>() }
     Column(modifier.fillMaxWidth().navigationBarsPadding().padding(12.dp).clip(RoundedCornerShape(8.dp)).background(c.raised).padding(16.dp)) {
         T("This phone runs YAAC ${AppUpdates.ownBuild ?: "?"}; the hub runs YAAC $hub.", type.ui.copy(fontSize = 15.sp))
+        // The phone is newer: the PC can install its build (P403). The button is here because a
+        // phone the hub does not attach may not reach Settings → About.
+        if (pcUpdate != null) {
+            SettingsRow(pcUpdate, "pc.", drafts, send)
+            T("Or put this phone on the PC's build:", type.small, c.muted, modifier = Modifier.padding(top = 12.dp))
+        }
         if (Updates.needsUninstall(hub, AppUpdates.ownBuild))
             T("That build is older than this app: Android installs it only after YAAC is uninstalled. Updating YAAC on the PC instead keeps this app.",
                 type.small, c.muted, modifier = Modifier.padding(top = 4.dp))
-        if (Updates.offersPcUpdate(AppUpdates.ownBuild, hub))
-            T("Settings → About → Update YAAC on the PC installs this phone's build there.", type.small, c.muted, modifier = Modifier.padding(top = 4.dp))
         Box(Modifier.padding(top = 8.dp)) { Progress(hub, forHub = true) }
     }
 }

@@ -585,6 +585,8 @@ fn view(
             // name from `hub/hello` (null from an older hub), and the address dialled.
             "id": state.hub.hub_id, "name": state.hub.host_name, "address": app.hub_address(),
             "mismatch": matches!(state.hub.outcome, yaac_core::state::HelloOutcome::HubOutdated { .. } | yaac_core::state::HelloOutcome::WindowOutdated { .. }),
+            // A phone newer than the PC: Update YAAC on <pc>, and how it stands (P403).
+            "pcUpdate": settings::host_update_row(app),
         },
         "dialog": dialogs::view(app),
         "canBack": !back.is_empty(), "canForward": !forward.is_empty(),

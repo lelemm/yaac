@@ -341,11 +341,12 @@ private fun YaacApp(store: ViewStore, send: (String, Any?) -> Unit, openRequest:
             // Attached to a hub that does not answer (or refused the hello, e.g. another build):
             // say which hub, why, and offer Retry and Hubs….
             val conn = YaacRuntime.connection
-            if (conn?.mode == "hub" && shell != null && !shell["hub"]["reachable"].flag(true))
+            // A build mismatch is not "not connected": the card at the bottom explains it.
+            if (conn?.mode == "hub" && shell != null && !shell["hub"]["reachable"].flag(true) && !shell["hub"]["mismatch"].flag())
                 HubDown(YaacRuntime.selected?.let { if (YaacRuntime.running.size > 1) "${it.name} (${conn.hub})" else conn.hub } ?: "", shell["status"]["text"].text, onRetry, onHubs)
             // Another build than the hub's: offer the hub's app (core/AppUpdates.kt).
             LaunchedEffect(shell) { dev.yaac.android.core.AppUpdates.observe(shell, BuildConfig.VERSION_NAME) }
-            if (conn?.mode == "hub") dev.yaac.android.ui.HubBuildOffer(Modifier.align(Alignment.BottomCenter))
+            if (conn?.mode == "hub") dev.yaac.android.ui.HubBuildOffer(shell["hub"]["pcUpdate"].obj(), navigate, Modifier.align(Alignment.BottomCenter))
             store.status?.let { s ->
                 Box(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 60.dp).align(Alignment.TopCenter), contentAlignment = Alignment.Center) {
                     T(s, LocalType.current.small, c.muted)
@@ -414,7 +415,7 @@ private fun HubDown(hub: String, reason: String?, onRetry: () -> Unit, onChange:
     androidx.compose.foundation.layout.Column(Modifier.fillMaxWidth().statusBarsPadding().padding(start = 12.dp, end = 12.dp, top = 64.dp)
         .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp)).background(c.raised).padding(16.dp)) {
         T("Not connected to $hub", type.heading)
-        T(reason ?: "The hub does not answer. Check that the PC is on, on the same Tailscale account, with Settings → Window → Android turned on.",
+        T(reason ?: "The hub does not answer. Check that the PC is on, on the same Tailscale account, with Settings → Android turned on.",
             type.ui, if (reason != null) c.failure else c.muted, modifier = Modifier.padding(top = 4.dp))
         androidx.compose.foundation.layout.Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             dev.yaac.android.ui.PrimaryButton("Retry", onClick = onRetry)

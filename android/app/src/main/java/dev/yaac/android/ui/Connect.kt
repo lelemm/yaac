@@ -61,7 +61,7 @@ fun ConnectScreen(prefill: String?, adding: Boolean, onConnect: (address: String
         Spacer(Modifier.height(24.dp))
         T(if (adding) "Add a hub" else "Connect to your YAAC hub", type.title.copy(fontSize = 20.sp))
         Spacer(Modifier.height(8.dp))
-        T("Turn on Settings → Window → Android on the PC first. The phone must be on the same Tailscale account." +
+        T("Turn on Settings → Android on the PC first. The phone must be on the same Tailscale account." +
             if (adding) " Every hub you add stays attached; the badge beside YAAC switches between them." else "",
             type.ui.copy(fontSize = 15.sp), c.muted)
         Spacer(Modifier.height(20.dp))
