@@ -26,21 +26,47 @@ integrator app ← yaacd on its target ← hub ← the UI that answered
 - **`channel/register { name, description? }`** → `{ channelId }`. The name is shown to the user as
   the dialog's source ("From <name> on <target>"). One channel per connection; it ends when the
   connection closes.
-- **`dialog/open { requestId, title, text?, fields?, options?, buttons?, threadId? }`** →
-  `{ accepted: true }` once `yaacd` has **journaled** it (invariant 8). `requestId` is the
-  integrator's, unique within its channel; a repeated one is refused (`duplicate_request`).
-  - `fields`: `[{ id, label, kind: text|multiline|number|secret|checkbox|choice, required?,
-    default?, choices? }]`
-  - `options`: a single-choice list `[{ id, label, detail? }]` (radio), optional.
-  - `buttons`: `[{ id, label, kind?: primary|danger|normal }]`; default `[{id:"ok"},{id:"cancel"}]`.
-  - `threadId`: the YAAC thread (session) the integrator acts for, when it knows one; the dialog then
-    appears **in that thread** (and in Needs you). Without it, it appears in **Needs you** under the
-    target, not in any thread.
+- **`dialog/open { requestId, title, layout, threadId? }`** →
+  `{ accepted: true }` once `yaacd` has journaled it (invariant 8). The integrator supplies
+  `requestId` as the operation ID, unique within its channel. A repeated ID is refused with
+  `duplicate_request`. A known `threadId` places the dialog in that thread and in Needs you.
+  Otherwise the dialog appears under the target in Needs you.
 - **Notification `dialog/result { requestId, outcome, action?, values? }`** to the channel:
-  `outcome` ∈ `answered` (with `action` = the button id and `values` = field id → value, option id
-  under `option`) | `cancelled` (the user closed it) | `unknown` (see below).
+  `outcome` ∈ `answered` (with `action` = the button id and `values` = input id → JSON value) | `cancelled` (the user closed it) | `unknown` (see below).
 - **`dialog/close { requestId }`**: the integrator withdraws a dialog it no longer needs; the UIs
   drop it and the result is `cancelled` (once).
+
+## Runtime layout (P420)
+
+`layout` is a tree of objects, each with a `type`. The integrator defines the contents,
+input choices, and button placement when it opens the dialog.
+
+| Types | Properties |
+| --- | --- |
+| `column`, `row` | `children`, `gap?` |
+| `group` | `label?`, `children` |
+| `divider` | |
+| `text` | `text`, `style?` (body, heading, caption, code), `tone?` (normal, muted, warning, error, success) |
+| `markdown` | `text` |
+| `image` | `src` (HTTPS or raster data URL), `alt`, `maxHeight?` |
+| `link` | `label`, `url` |
+| `list` | `items` (strings) |
+| `table` | `columns`, `rows` (strings) |
+| `progress` | `value?` (0–1, indeterminate when absent) |
+| `textInput` | `default?`, `placeholder?`, `multiline?`, `secret?`, `maxLength?` |
+| `number` | `default?`, `min?`, `max?`, `step?` |
+| `checkbox`, `toggle`, `date` | `default?` (boolean or YYYY-MM-DD for dates) |
+| `select`, `radio` | `options`, `default?` (choice value), `placeholder?` |
+| `multiSelect` | `options`, `default?` (array of choice values) |
+| `slider` | `min`, `max`, `step?`, `default?` |
+| `button` | `id`, `label`, `kind?` (primary, danger, normal), `submit?`, `requires?` (input IDs) |
+
+Every input carries `id`, `label?`, `help?`, `required?`, and `disabled?`. Options carry
+`value`, `label`, and optional `detail`. A submit button validates enabled required inputs.
+A button with `submit: false` skips those requirements. Both validate any supplied values and
+the button's own `requires` list. Unknown nodes render a muted “This part of the dialog needs
+a newer YAAC” line. An enabled unknown required input prevents submission. Secret inputs
+cannot have defaults and their answers stay out of journals and caches.
 
 ## How it travels (P418)
 
@@ -72,9 +98,15 @@ notification `dialog/result`.
 
 `yaacd` ⇄ hub (daemon protocol): capability `channels`; notifications `channel/registered
 {channelId, name, description?}`, `channel/closed {channelId}`; dialogs ride the existing request
-events with `RequestBody::Dialog(DialogRequest { title, text?, fields, options, buttons, source:
-{ channelId, name }, channelOpen })` and `RequestAnswer::Dialog(DialogAnswer { action?, values,
-cancelled })`; the target-level inbox scope is a `ThreadKey`-free request id (contract worker
-decides the exact shape, keeping thread requests unchanged).
+events with `RequestBody::Dialog(DialogRequest { title, layout, source, channelOpen })`
+and `RequestResponse::Dialog(DialogAnswer { action?, values, cancelled })`. The daemon assigns
+a distinct `requestId` to the request the hub sees. The integrator's own ID is used on its
+channel for open, close, and result.
 
-Hub ⇄ UI (attach): the target inbox requests in the index/needs-you payload; no other change.
+A dialog in a thread uses the existing `thread/event` and `request/respond` paths. For dialogs
+without a thread, `inbox/list {}` returns `{ requests, channels }` and hydrates the current
+target-level inbox and channel registry on attach. `inbox/updated { request }` upserts a pending
+`RequestItem` or removes a terminal one. The hub sends `inbox/respond { opId, requestId, response }`
+for answers and dismissals, using the same request and answer shapes without a thread ID.
+
+Hub ⇄ UI (attach): the target inbox requests in the index/needs-you payload.

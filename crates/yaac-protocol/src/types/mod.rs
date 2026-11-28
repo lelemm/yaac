@@ -6,6 +6,7 @@
 //! [`crate::dialect`] layer translates them to and from the wire at the negotiated version.
 
 mod capability;
+mod dialog;
 mod event;
 mod forge;
 mod fs;
@@ -29,6 +30,7 @@ mod voice;
 mod voice_call;
 
 pub use capability::*;
+pub use dialog::*;
 pub use event::*;
 pub use forge::*;
 pub use fs::*;

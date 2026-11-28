@@ -116,6 +116,7 @@ pub fn reminder_entry(r: &crate::RequestItem) -> (&'static str, String, Option<(
         RequestBody::Form(form) if form.schema.as_ref().is_some_and(|s| s["url"].is_string()) => ("Login", form.message.clone(), None),
         RequestBody::Form(f) => ("Form", f.message.clone(), None),
         RequestBody::Question(q) => ("Question", q.questions.first().map_or_else(|| "Agent question".into(), |q| q.text.clone()), None),
+        RequestBody::Dialog(d) => ("Dialog", d.title.clone(), None),
         _ => ("Request", "Input needed".into(), None),
     };
     (kind, one_line(&title, 64), decisions)

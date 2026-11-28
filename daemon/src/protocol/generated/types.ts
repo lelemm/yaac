@@ -686,7 +686,7 @@ export interface BrowserTypeParams {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "portForward" | "hubHost" | "terminal" | "fileView" | "budgetTimeLimit" | "transcription" | "voiceCall" | "voiceCallLanguage" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadTakeOverInterrupt" | "threadCheckControl" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "channels" | "portForward" | "hubHost" | "terminal" | "fileView" | "budgetTimeLimit" | "transcription" | "voiceCall" | "voiceCallLanguage" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadTakeOverInterrupt" | "threadCheckControl" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * Complete bundle staged on a target on demand.
@@ -768,6 +768,25 @@ export interface CatalogSkillsResult {
    * The metadata returned on list.
    */
   skills?: CatalogSkillInfo[];
+}
+
+export interface ChannelClosedParams {
+  channelId: string;
+}
+
+export interface ChannelRegisterParams {
+  description?: string | null;
+  name: string;
+}
+
+export interface ChannelRegisterResult {
+  channelId: string;
+}
+
+export interface ChannelRegisteredParams {
+  channelId: string;
+  description?: string | null;
+  name: string;
 }
 
 /**
@@ -1012,6 +1031,294 @@ export interface DiagnosticsGetResult {
    */
   sections: DiagnosticSection[];
 }
+
+/**
+ * A button id and input values, or a cancellation. Recorded answers omit secret values.
+ */
+export interface DialogAnswer {
+  action?: string | null;
+  cancelled?: boolean;
+  values?: { [key: string]: unknown };
+}
+
+/**
+ * An action button. Submit defaults to true and validates all enabled required inputs.
+ */
+export interface DialogButton {
+  id: string;
+  kind?: DialogButtonKind | null;
+  label: string;
+  requires?: string[] | null;
+  submit?: boolean | null;
+}
+
+/**
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type DialogButtonKind = "primary" | "danger" | "normal";
+
+/**
+ * The common properties embedded in every input node.
+ */
+export interface DialogCheckbox {
+  default?: boolean | null;
+  disabled?: boolean | null;
+  help?: string | null;
+  id: string;
+  label?: string | null;
+  required?: boolean | null;
+}
+
+export interface DialogCloseParams {
+  requestId: RequestId;
+}
+
+export interface DialogContainer {
+  children: DialogNode[];
+  gap?: number | null;
+}
+
+/**
+ * A calendar date (YYYY-MM-DD).
+ */
+export interface DialogDate {
+  default?: string | null;
+  disabled?: boolean | null;
+  help?: string | null;
+  id: string;
+  label?: string | null;
+  required?: boolean | null;
+}
+
+export interface DialogGroup {
+  children: DialogNode[];
+  label?: string | null;
+}
+
+export interface DialogImage {
+  alt: string;
+  maxHeight?: number | null;
+  src: string;
+}
+
+export interface DialogLink {
+  label: string;
+  url: string;
+}
+
+export interface DialogList {
+  items: string[];
+}
+
+export interface DialogMarkdown {
+  text: string;
+}
+
+/**
+ * The common properties embedded in every input node.
+ */
+export interface DialogMultiSelect {
+  default?: string[] | null;
+  disabled?: boolean | null;
+  help?: string | null;
+  id: string;
+  label?: string | null;
+  options: DialogOption[];
+  required?: boolean | null;
+}
+
+/**
+ * A runtime dialog component. Nodes carry a "type" discriminator.
+ *
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type DialogNode = ({
+  type: "column";
+} & DialogContainer) | ({
+  type: "row";
+} & DialogContainer) | ({
+  type: "group";
+} & DialogGroup) | ({
+  type: "divider";
+} & Empty) | ({
+  type: "text";
+} & DialogText) | ({
+  type: "markdown";
+} & DialogMarkdown) | ({
+  type: "image";
+} & DialogImage) | ({
+  type: "link";
+} & DialogLink) | ({
+  type: "list";
+} & DialogList) | ({
+  type: "table";
+} & DialogTable) | ({
+  type: "progress";
+} & DialogProgress) | ({
+  type: "textInput";
+} & DialogTextInput) | ({
+  type: "number";
+} & DialogNumber) | ({
+  type: "checkbox";
+} & DialogCheckbox) | ({
+  type: "toggle";
+} & DialogCheckbox) | ({
+  type: "select";
+} & DialogSelect) | ({
+  type: "radio";
+} & DialogSelect) | ({
+  type: "multiSelect";
+} & DialogMultiSelect) | ({
+  type: "date";
+} & DialogDate) | ({
+  type: "slider";
+} & DialogSlider) | ({
+  type: "button";
+} & DialogButton);
+
+/**
+ * The common properties embedded in every input node.
+ */
+export interface DialogNumber {
+  default?: number | null;
+  disabled?: boolean | null;
+  help?: string | null;
+  id: string;
+  label?: string | null;
+  max?: number | null;
+  min?: number | null;
+  required?: boolean | null;
+  step?: number | null;
+}
+
+/**
+ * The request id is unique on the channel and is the integrator operation id.
+ */
+export interface DialogOpenParams {
+  layout: DialogNode;
+  requestId: RequestId;
+  threadId?: ThreadId | null;
+  title: string;
+}
+
+/**
+ * True once the dialog is durable.
+ */
+export interface DialogOpenResult {
+  accepted: boolean;
+}
+
+/**
+ * An integrator-supplied choice, with the wire value and the displayed label.
+ */
+export interface DialogOption {
+  detail?: string | null;
+  label: string;
+  value: string;
+}
+
+/**
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type DialogOutcome = "answered" | "cancelled" | "unknown";
+
+/**
+ * Progress from 0 to 1, or indeterminate when absent.
+ */
+export interface DialogProgress {
+  value?: number | null;
+}
+
+export interface DialogRequest {
+  channelOpen: boolean;
+  layout: DialogNode;
+  source: DialogSource;
+  title: string;
+}
+
+/**
+ * A terminal outcome sent only to the channel that opened the dialog.
+ */
+export interface DialogResultParams {
+  action?: string | null;
+  outcome: DialogOutcome;
+  requestId: RequestId;
+  values?: { [key: string]: unknown } | null;
+}
+
+/**
+ * The common properties embedded in every input node.
+ */
+export interface DialogSelect {
+  default?: string | null;
+  disabled?: boolean | null;
+  help?: string | null;
+  id: string;
+  label?: string | null;
+  options: DialogOption[];
+  placeholder?: string | null;
+  required?: boolean | null;
+}
+
+/**
+ * The common properties embedded in every input node.
+ */
+export interface DialogSlider {
+  default?: number | null;
+  disabled?: boolean | null;
+  help?: string | null;
+  id: string;
+  label?: string | null;
+  max: number;
+  min: number;
+  required?: boolean | null;
+  step?: number | null;
+}
+
+/**
+ * The origin stamped by yaacd from the channel connection.
+ */
+export interface DialogSource {
+  channelId: string;
+  name: string;
+}
+
+export interface DialogTable {
+  columns: string[];
+  rows: string[][];
+}
+
+export interface DialogText {
+  style?: DialogTextStyle | null;
+  text: string;
+  tone?: DialogTextTone | null;
+}
+
+/**
+ * Secret inputs never carry a default.
+ */
+export interface DialogTextInput {
+  default?: string | null;
+  disabled?: boolean | null;
+  help?: string | null;
+  id: string;
+  label?: string | null;
+  maxLength?: number | null;
+  multiline?: boolean | null;
+  placeholder?: string | null;
+  required?: boolean | null;
+  secret?: boolean | null;
+}
+
+/**
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type DialogTextStyle = "body" | "heading" | "caption" | "code";
+
+/**
+ * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
+ */
+export type DialogTextTone = "normal" | "muted" | "warning" | "error" | "success";
 
 /**
  * The discovery caps of a target (docs/05-threads.md#discovery-is-capped-by-age-and-by-number).
@@ -2182,6 +2489,30 @@ export interface ImagePart {
    * The upload, on this target.
    */
   uploadId: UploadId;
+}
+
+/**
+ * The pending target inbox and current channel registry on this target.
+ */
+export interface InboxListResult {
+  channels: ChannelRegisteredParams[];
+  requests: RequestItem[];
+}
+
+/**
+ * Answer or dismiss a target-inbox request by its daemon-stamped request id.
+ */
+export interface InboxRespondParams {
+  opId: OpId;
+  requestId: RequestId;
+  response: RequestResponse;
+}
+
+/**
+ * Upsert a pending request, or remove it from the inbox when it reaches a terminal state.
+ */
+export interface InboxUpdatedParams {
+  request: RequestItem;
 }
 
 /**
@@ -4630,6 +4961,8 @@ export type RequestItem = ({
 } & QuestionRequest) | ({
   requestKind: "form";
 } & FormRequest) | ({
+  requestKind: "dialog";
+} & DialogRequest) | ({
   requestKind: "meshPermission";
 } & MeshPermissionRequest));
 
@@ -4697,6 +5030,8 @@ export type RequestResponse = ({
 } & QuestionAnswers) | ({
   requestKind: "form";
 } & FormAnswer) | ({
+  requestKind: "dialog";
+} & DialogAnswer) | ({
   requestKind: "meshPermission";
 } & MeshPermissionAnswer);
 

@@ -10,6 +10,10 @@ import type {
   BrowserCallResult,
   CatalogSkillsParams,
   CatalogSkillsResult,
+  ChannelClosedParams,
+  ChannelRegisterParams,
+  ChannelRegisterResult,
+  ChannelRegisteredParams,
   CommandLogsParams,
   CommandLogsResult,
   CommandStopParams,
@@ -17,6 +21,10 @@ import type {
   DaemonHandoverResult,
   DaemonStatusResult,
   DiagnosticsGetResult,
+  DialogCloseParams,
+  DialogOpenParams,
+  DialogOpenResult,
+  DialogResultParams,
   DiscoveryCapsParams,
   DiscoveryCapsResult,
   Empty,
@@ -48,6 +56,9 @@ import type {
   HubHostPutResult,
   HubHostStartParams,
   HubHostStartResult,
+  InboxListResult,
+  InboxRespondParams,
+  InboxUpdatedParams,
   InitializeParams,
   InitializeResult,
   InstanceRateLimits,
@@ -250,6 +261,11 @@ export const METHODS = {
   TURN_QUEUE_PROMOTE: "turn/queuePromote",
   APPROVAL_EXPLAIN: "approval/explain",
   REQUEST_RESPOND: "request/respond",
+  INBOX_LIST: "inbox/list",
+  INBOX_RESPOND: "inbox/respond",
+  CHANNEL_REGISTER: "channel/register",
+  DIALOG_OPEN: "dialog/open",
+  DIALOG_CLOSE: "dialog/close",
   TERMINAL_SHELLS: "terminal/shells",
   TERMINAL_OPEN: "terminal/open",
   TERMINAL_ATTACH: "terminal/attach",
@@ -304,6 +320,10 @@ export const NOTIFICATIONS = {
   THREAD_UPDATED: "thread/updated",
   THREAD_REMOVED: "thread/removed",
   THREAD_EVENT: "thread/event",
+  INBOX_UPDATED: "inbox/updated",
+  CHANNEL_REGISTERED: "channel/registered",
+  CHANNEL_CLOSED: "channel/closed",
+  DIALOG_RESULT: "dialog/result",
   PROJECT_UPDATED: "project/updated",
   DISCOVERY_UPDATED: "discovery/updated",
   TERMINAL_DETACH: "terminal/detach",
@@ -481,6 +501,16 @@ export interface RequestMap {
   "approval/explain": { params: ApprovalExplainParams; result: ApprovalExplainResult };
   /** Answer a pending approval, question, or form. */
   "request/respond": { params: RequestRespondParams; result: Empty };
+  /** List the target-level dialog inbox and active channels. */
+  "inbox/list": { params: Empty; result: InboxListResult };
+  /** Answer or dismiss a target-level inbox request. */
+  "inbox/respond": { params: InboxRespondParams; result: Empty };
+  /** Register the local integrator connection. */
+  "channel/register": { params: ChannelRegisterParams; result: ChannelRegisterResult };
+  /** Open a durable dialog, keyed by the integrator's request id. */
+  "dialog/open": { params: DialogOpenParams; result: DialogOpenResult };
+  /** Withdraw the integrator's dialog. */
+  "dialog/close": { params: DialogCloseParams; result: Empty };
   /** Terminal shells. */
   "terminal/shells": { params: Empty; result: TerminalShellsResult };
   /** Terminal open. */
@@ -585,6 +615,14 @@ export interface NotificationMap {
   "thread/removed": ThreadRemovedParams;
   /** One journaled thread event. */
   "thread/event": ThreadEventParams;
+  /** A target-level inbox request changed. */
+  "inbox/updated": InboxUpdatedParams;
+  /** An integrator channel registered. */
+  "channel/registered": ChannelRegisteredParams;
+  /** An integrator channel disconnected. */
+  "channel/closed": ChannelClosedParams;
+  /** Terminal result of an integrator dialog. */
+  "dialog/result": DialogResultParams;
   /** The project list changed (created, renamed, deleted); carries every project. */
   "project/updated": ProjectListResult;
   /** The discovery caps changed. */
@@ -624,7 +662,7 @@ export interface NotificationMap {
 }
 
 /** Who sends a method. */
-export type Direction = "hostToDaemon" | "daemonToHost" | "both";
+export type Direction = "hostToDaemon" | "daemonToHost" | "channelToDaemon" | "daemonToChannel" | "both";
 /** Scheduling class: control always goes before bulk. */
 export type TrafficClass = "control" | "bulk";
 
@@ -695,6 +733,11 @@ export const METHOD_INFO: { readonly [M in keyof RequestMap]: MethodInfo } = {
   "turn/queuePromote": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
   "approval/explain": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "request/respond": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "inbox/list": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "inbox/respond": { direction: "hostToDaemon", frozen: false, stateChanging: true, requestClass: "control", responseClass: "control" },
+  "channel/register": { direction: "channelToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "dialog/open": { direction: "channelToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
+  "dialog/close": { direction: "channelToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/shells": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/open": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
   "terminal/attach": { direction: "hostToDaemon", frozen: false, stateChanging: false, requestClass: "control", responseClass: "control" },
@@ -755,6 +798,10 @@ export const NOTIFICATION_INFO: { readonly [N in keyof NotificationMap]: Notific
   "thread/updated": { direction: "daemonToHost", class: "control" },
   "thread/removed": { direction: "daemonToHost", class: "control" },
   "thread/event": { direction: "daemonToHost", class: "control" },
+  "inbox/updated": { direction: "daemonToHost", class: "control" },
+  "channel/registered": { direction: "daemonToHost", class: "control" },
+  "channel/closed": { direction: "daemonToHost", class: "control" },
+  "dialog/result": { direction: "daemonToChannel", class: "control" },
   "project/updated": { direction: "daemonToHost", class: "control" },
   "discovery/updated": { direction: "daemonToHost", class: "control" },
   "terminal/detach": { direction: "hostToDaemon", class: "control" },

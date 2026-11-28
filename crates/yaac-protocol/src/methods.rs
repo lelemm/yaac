@@ -20,6 +20,10 @@ pub enum Direction {
     HostToDaemon,
     /// `yaacd` sends it to the host.
     DaemonToHost,
+    /// A local integrator sends it on the channel connection.
+    ChannelToDaemon,
+    /// yaacd sends it to the local integrator.
+    DaemonToChannel,
     /// Either side.
     Both,
 }
@@ -30,6 +34,8 @@ impl Direction {
         match self {
             Direction::HostToDaemon => "hostToDaemon",
             Direction::DaemonToHost => "daemonToHost",
+            Direction::ChannelToDaemon => "channelToDaemon",
+            Direction::DaemonToChannel => "daemonToChannel",
             Direction::Both => "both",
         }
     }
@@ -406,6 +412,22 @@ catalogue! {
         RequestRespond = "request/respond" as REQUEST_RESPOND:
             t::RequestRespondParams => t::Empty, HostToDaemon, request Control, response Control, op;
 
+        /// List the target-level dialog inbox and active channels.
+        InboxList = "inbox/list" as INBOX_LIST:
+            t::Empty => t::InboxListResult, HostToDaemon, request Control, response Control;
+        /// Answer or dismiss a target-level inbox request.
+        InboxRespond = "inbox/respond" as INBOX_RESPOND:
+            t::InboxRespondParams => t::Empty, HostToDaemon, request Control, response Control, op;
+        /// Register the local integrator connection.
+        ChannelRegister = "channel/register" as CHANNEL_REGISTER:
+            t::ChannelRegisterParams => t::ChannelRegisterResult, ChannelToDaemon, request Control, response Control;
+        /// Open a durable dialog, keyed by the integrator's request id.
+        DialogOpen = "dialog/open" as DIALOG_OPEN:
+            t::DialogOpenParams => t::DialogOpenResult, ChannelToDaemon, request Control, response Control;
+        /// Withdraw the integrator's dialog.
+        DialogClose = "dialog/close" as DIALOG_CLOSE:
+            t::DialogCloseParams => t::Empty, ChannelToDaemon, request Control, response Control;
+
         // ── Previews and uploads ────────────────────────────────────────────────────────────────────
         /// Terminal shells.
         TerminalShells = "terminal/shells" as TERMINAL_SHELLS:
@@ -574,6 +596,18 @@ catalogue! {
         /// One journaled thread event.
         ThreadEvent = "thread/event" as THREAD_EVENT:
             t::ThreadEventParams, DaemonToHost, Control;
+        /// A target-level inbox request changed.
+        InboxUpdated = "inbox/updated" as INBOX_UPDATED:
+            t::InboxUpdatedParams, DaemonToHost, Control;
+        /// An integrator channel registered.
+        ChannelRegistered = "channel/registered" as CHANNEL_REGISTERED:
+            t::ChannelRegisteredParams, DaemonToHost, Control;
+        /// An integrator channel disconnected.
+        ChannelClosed = "channel/closed" as CHANNEL_CLOSED:
+            t::ChannelClosedParams, DaemonToHost, Control;
+        /// Terminal result of an integrator dialog.
+        DialogResult = "dialog/result" as DIALOG_RESULT:
+            t::DialogResultParams, DaemonToChannel, Control;
         /// The project list changed (created, renamed, deleted); carries every project.
         ProjectUpdated = "project/updated" as PROJECT_UPDATED:
             t::ProjectListResult, DaemonToHost, Control;

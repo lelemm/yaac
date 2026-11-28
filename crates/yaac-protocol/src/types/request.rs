@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
+    DialogAnswer, DialogRequest,
     Address, ClientId, InstanceId, MeshBudget, MeshPeer, ModeId, ModelId, OpId, QuestionId, RequestId, TargetId, TargetPath, ThreadId,
     Timestamp,
 };
@@ -277,6 +278,8 @@ open_union! {
         Question(QuestionRequest) = "question",
         /// A schema-driven form.
         Form(FormRequest) = "form",
+        /// A dialog opened by an integrator.
+        Dialog(DialogRequest) = "dialog",
         /// Permission to work with other agents, with the budget.
         MeshPermission(MeshPermissionRequest) = "meshPermission",
     }
@@ -358,6 +361,8 @@ open_union! {
         Question(QuestionAnswers) = "question",
         /// Answers a form.
         Form(FormAnswer) = "form",
+        /// Answers an integrator dialog.
+        Dialog(DialogAnswer) = "dialog",
         /// Answers a permission request.
         MeshPermission(MeshPermissionAnswer) = "meshPermission",
     }
