@@ -279,8 +279,9 @@ replaces the Windows-side keeper of P414.
   a clean exit, `hub/shutdown`, or a hub that finds its own tombstone stays stopped. It is
   `WantedBy=multi-user.target`: every boot of the distro starts the hub.
 - **Nothing on Windows keeps it.** There is no keeper and no login entry for it. `yaac quit`
-  and an update of YAAC on Windows leave the hub in WSL alone. Only a keeper of an earlier
-  build (P414), if one still runs, is asked to stop its hub. `yaac autostart sync` turns the
+  leaves the hub in WSL alone. Only a keeper of an earlier build (P414), if one still runs,
+  is asked to stop its hub. An update of YAAC on Windows stops it first and then brings it to
+  the new build ([below](#updating-yaac-with-the-hub-in-wsl-p423)). `yaac autostart sync` turns the
   hub's login entry off while any tombstone exists. A login entry `yaac wsl-hub --distro …`
   left from P414 does nothing.
 - **The new hub** in the distro is the Linux hub (P411). It binds the distro's own Tailscale
@@ -304,6 +305,47 @@ replaces the Windows-side keeper of P414.
   stays until **Start the hub here again** or a move back into WSL rewrites it. Without linger,
   logind may remove `/run/user/<uid>` once the user's last WSL session ends while the distro
   is kept up some other way (`instanceIdleTimeout=-1`). The hub's socket would go with it.
+
+### Updating YAAC with the hub in WSL (P423)
+
+**Proposed.** The hub in WSL runs `yaac.exe local-daemon` from the install folder, so the
+installer cannot replace `yaac.exe` while it runs (Setup's Restart Manager aborts: "Setup was
+unable to automatically close all applications"). And the Linux hub in the distro is a binary
+of its own, which the installer never touches. The window's updater (WPF and egui alike,
+`crates/yaac-app/src/wsl_update.rs`, `app/wsl_hub.rs`) therefore does two things when this PC's
+tombstone says the hub is in WSL (`via: wsl`):
+
+- **Before the installer** ("Restart to update", and a pending update installed at start): the
+  window lets go of the hub (no bridge runs, so nothing starts the service again meanwhile),
+  writes `<data>/wsl-hub-update.json` (`distro`, `user`, `fromBuild`), and runs `wsl.exe -d <d>
+  -u root --exec sh -c 'systemctl stop yaac-hub.service; …'`
+  (`yaac_hub::transfer::wsl_service_stop_argv`). The script fails if the service still runs.
+  Then the window waits up to 15 s until no `yaac.exe local-daemon` of this install runs: each
+  one holds the named event `Local\yaac-local-daemon-<hash of its path>`
+  (`yaac_hub::interop::local_daemon_event`), and ends 2 s after its standard input closes
+  (`LOCAL_DAEMON_GRACE`). Only then is the installer started. If the stop or the wait fails, the
+  service is started again, the marker goes, the update stays downloaded and ready, and the
+  window says why and attaches again: never half an update. `yaacd` keeps running on every
+  target, and so do its turns (invariant 8); only the hub is away for the update.
+- **After it** (the new window): a hub in WSL that was stopped for an update (the marker) or that
+  answers `hub/hello` with an older build is brought to the window's own build, before the window
+  attaches. The Linux hub `yaac-hub-linux-<arch>` of exactly that build comes from its release
+  manifest (`updater::hub_asset`, the transfer's lookup), size and SHA-256 checked, into
+  `<data>/wsl-hub-update/`. It goes into the distro as the bridge's user through `wsl.exe`'s
+  standard input (`wsl_place_hub_argv`): written to `<dir>/bin/yaac.new`, its size, SHA-256 and
+  `--version` checked there, `chmod 755`, renamed over `bin/yaac`. Then `systemctl restart
+  yaac-hub.service` as root (`wsl_service_restart_argv`), the marker goes and the window attaches.
+  The window shows "Updating the hub in WSL (Ubuntu) to build N… 40%" where it says why it has no
+  hub. It runs once by itself; a failure is shown with **Retry** (egui: in the workspace; WPF:
+  Settings → Advanced → Hub, and Settings → Hubs → Retry), never repeated without it
+  (invariant 10). The update did not go in (the window is still the build that stopped it): the
+  service is only started again.
+- A **development build** takes nothing from the releases: the hub in WSL is left as it is and
+  the window says so. A newer hub there is never replaced. **Phones** are unaffected: they
+  follow the hub's build as before.
+
+Each of these `wsl.exe` runs is a short session of its own while the window has no attachment
+to the hub, under the owner's P416 exception to invariant 1. Output goes to `<data>/wsl-hub.log`.
 
 ## The PC's window (P415)
 

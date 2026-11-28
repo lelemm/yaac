@@ -227,6 +227,41 @@ Settings → **About** → Components has a row **YAAC (latest release)**: the l
 release's build and whether this YAAC is behind it, or why the latest check is unavailable.
 It also shows when the last check finished in local time, including after a failed check.
 
+### Updating with the hub in WSL
+
+**Proposed** (P423). When this PC's hub moved into one of its WSL distros
+([15](15-hub-transfer.md#updating-yaac-with-the-hub-in-wsl-p423)), the hub there runs
+`yaac.exe local-daemon` from the install folder, which keeps Setup from replacing `yaac.exe`.
+So, in step 4 and in the at-start install of step 5:
+
+- The window lets go of the hub and stops `yaac-hub.service` in the distro as root
+  (`wsl.exe -d <d> -u root`), then waits up to 15 s for every `yaac.exe local-daemon` of this
+  install to exit. The title row says *"Stopping the hub in Ubuntu (WSL) to install YAAC …"*.
+- If it cannot be stopped, or a `local-daemon` stays, the installer is **not** run: the service
+  is started again, the update stays downloaded, and the reason is shown once.
+- The new window brings the hub in WSL to its own build: it downloads `yaac-hub-linux-<arch>`
+  of that build from the release (size and SHA-256 checked), puts it in place in the distro
+  atomically (`bin/yaac.new`, checked, renamed over `bin/yaac`), and restarts the service.
+  *"Updating the hub in WSL (Ubuntu) to build N…"* is shown meanwhile; a failure is shown with
+  **Retry**. Development builds skip this and say so.
+
+**By hand** (a PC on a build before this, e.g. 1062 → 1063). In PowerShell, as the user
+(replace `Ubuntu` and the build):
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\YAAC\yaac.exe" quit      # closes the window
+wsl.exe -d Ubuntu -u root -- systemctl stop yaac-hub
+Get-CimInstance Win32_Process -Filter "Name='yaac.exe'" | Select ProcessId,CommandLine   # none left
+# run the installer (YAAC-Setup-….exe of the release)
+wsl.exe -d Ubuntu -- sh -c 'd=${YAAC_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/yaac}; cd "$d/bin" &&
+  curl -fL -o yaac.new https://github.com/lelemm/yaac/releases/download/v0.1.0-build.1063/yaac-hub-linux-x86_64 &&
+  sha256sum yaac.new && chmod 755 yaac.new && ./yaac.new --version && mv -f yaac.new yaac'
+# compare the SHA-256 with yaac-hub-linux-x86_64 in that release's manifest.json first
+wsl.exe -d Ubuntu -u root -- systemctl start yaac-hub
+```
+
+The window cannot start the service by itself as the user (it needs root); the last line does.
+
 ### Updating from the phone
 
 **Proposed** (P403, the owner's request). When the [Android app](14-android.md#what-it-is-p372) runs a
