@@ -10,7 +10,7 @@ import { NOTIFICATIONS } from "../protocol/generated/constants.js";
 import type {
   HubHostAbortParams, HubHostInstallParams, HubHostInstallResult, HubHostLastTransfer, HubHostProbeResult,
   HubHostProgressParams, HubHostPutCompleteParams, HubHostPutParams, HubHostPutResult, HubHostStartParams,
-  HubHostStartResult, HubHostTailscale,
+  HubHostStartResult, HubHostTailscale, HubHostWslService,
 } from "../protocol/generated/types.js";
 import { RpcError } from "../protocol/rpc.js";
 import { ReceiveWindow } from "../protocol/scheduler.js";
@@ -25,6 +25,10 @@ import {
 
 const PORT = 47380;
 const WSL_INTEROP_MARKER = "/proc/sys/fs/binfmt_misc/WSLInterop";
+/** Present when systemd is the system manager (`sd_booted()`). */
+const SYSTEMD_MARKER = "/run/systemd/system";
+/** What the hub's services (`systemd --user` here, the system unit in WSL) take from `yaacd`'s environment. */
+const SERVICE_ENV = ["HOME", "YAAC_CONFIG_DIR", "YAAC_DATA_DIR", "YAAC_RUNTIME_DIR", "YAAC_HOME", "PATH"] as const;
 const BINARY_DOWNLOAD_MS = 5 * 60_000;
 const WAIT_FOR_PUT_MS = 30_000;
 const WINDOWS_TAILSCALE = "C:\\Program Files\\Tailscale\\tailscale.exe";
@@ -38,6 +42,8 @@ export interface HubHostOptions {
   wslInteropPathForTests?: string;
   /** Exercise the Windows receiver with fixture executables on Linux. */
   platformForTests?: "linux" | "win32";
+  /** Make systemd detection independent of the machine running the tests. */
+  systemdMarkerForTests?: string;
 }
 
 interface WindowsHubInfo {
@@ -139,8 +145,27 @@ export class HubHost {
     return {
       os: this.platform, arch: os.machine(), tailscale, portFree, hubRunning: hubInfo?.running ?? linuxRunning,
       ...(hubInfo && { hubBuild: hubInfo.build }),
-      ...(distro && { wsl: { distro } }), ...(lastTransfer && { lastTransfer }),
+      ...(distro && { wsl: { distro, service: this.wslService(this.linuxPaths!) } }), ...(lastTransfer && { lastTransfer }),
     };
+  }
+
+  /**
+   * What the PC needs to run a moved hub in this distro as a system service (P416). `yaacd`
+   * never has root: the PC installs the unit through `wsl.exe -u root` once this connection
+   * has closed. The profile directories are written out, so the service, `yaac hub-bridge` in
+   * a WSL session and this `yaacd` all agree on them.
+   */
+  private wslService(paths: ReturnType<typeof hubPaths>): HubHostWslService {
+    const { username: user, uid } = os.userInfo();
+    return {
+      systemd: fs.existsSync(this.options.systemdMarkerForTests ?? SYSTEMD_MARKER),
+      user, uid, dataDir: paths.data, environment: this.serviceEnvironment(paths),
+    };
+  }
+
+  private serviceEnvironment(paths: ReturnType<typeof hubPaths>): string[] {
+    const env: NodeJS.ProcessEnv = { ...this.env, HOME: paths.home, YAAC_CONFIG_DIR: paths.config, YAAC_DATA_DIR: paths.data, YAAC_RUNTIME_DIR: paths.runtime };
+    return SERVICE_ENV.flatMap((key) => env[key] ? [`${key}=${env[key]}`] : []);
   }
 
   private async tailscale(): Promise<HubHostTailscale> {
@@ -529,8 +554,7 @@ export class HubHost {
       file: path.join(paths.configHome, "systemd", "user", serviceName),
       content: [
         "[Unit]", "Description=YAAC hub", "[Service]", "Type=exec",
-        ...["HOME", "YAAC_CONFIG_DIR", "YAAC_DATA_DIR", "YAAC_RUNTIME_DIR", "YAAC_HOME", "PATH"].flatMap((key) =>
-          env[key] ? [`Environment=${unitValue(`${key}=${env[key]}`)}`] : []),
+        ...this.serviceEnvironment(paths).map((entry) => `Environment=${unitValue(entry)}`),
         `ExecStart=:${unitValue(bin)} hub`,
         "[Install]", "WantedBy=default.target", "",
       ].join("\n"),
