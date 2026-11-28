@@ -81,10 +81,11 @@ pub(crate) fn confirm_text(to: &str, kind: MoveKind, warning: Option<&str>) -> (
              on this computer: they stay listed, unavailable, until the hub comes back."
         ),
         MoveKind::IntoWsl => format!(
-            "YAAC installs itself in {to}, copies the hub's threads, drafts and messages there, and starts the hub there; \
-             the hub on this computer stops. Running turns keep going on their targets. This computer's other WSL distros \
-             and its own Windows target stay reachable from there. While the hub lives in WSL, a small YAAC process on \
-             Windows keeps the distro running, starts the hub there at login, and connects this window to it."
+            "YAAC installs itself in {to}, copies the hub's threads, drafts and messages there, and sets the hub up there as \
+             a system service that starts whenever {to} starts (as root, through wsl.exe; no password is asked). The hub \
+             on this computer stops. Running turns keep going on their targets. This computer's other WSL distros and its \
+             own Windows target stay reachable from there. WSL starts {to} when this window attaches to the hub, and stops \
+             it when nothing on Windows uses it: while {to} is stopped, phones cannot reach the hub."
         ),
         MoveKind::ToWindows => format!(
             "The hub's threads, drafts and messages are copied to {to}, where YAAC is installed, and the hub starts there; \
@@ -165,7 +166,7 @@ impl YaacApp {
         let wsl = self.desk_hubs.as_ref().and_then(|d| d.moved_here.as_ref()).and_then(|t| t.wsl_distro.clone());
         match wsl {
             Some(distro) => format!(
-                "The hub in WSL ({distro}) is stopped first. Then the hub starts here from the data it had when it moved: what changed on the hub in WSL since then stays there."
+                "The hub's system service in WSL ({distro}) is stopped and removed first. Then the hub starts here from the data it had when it moved: what changed on the hub in WSL since then stays there."
             ),
             None => "The hub starts here from the data it had when it moved. If the hub on the other machine is still running, the two will differ: stop it there first.".to_owned(),
         }

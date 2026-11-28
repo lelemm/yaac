@@ -130,12 +130,12 @@ transfer `opId` throughout the attempt.
 
 | Message | Purpose |
 | --- | --- |
-| `hubHost/probe {}` | Returns `{ os, arch, tailscale: { running, login?, ips }, portFree, hubRunning, hubBuild?, wsl?, lastTransfer? }`. WSL daemons report `wsl: { distro }`, using `WSL_DISTRO_NAME` or `WSL` when only the kernel marker is available. The probe uses the target's own `tailscale status --json` and checks port availability on its Tailscale IPs. On Windows, a successful `hub-info` supplies the installed `hubBuild` and `hubRunning`. |
+| `hubHost/probe {}` | Returns `{ os, arch, tailscale: { running, login?, ips }, portFree, hubRunning, hubBuild?, wsl?, lastTransfer? }`. WSL daemons report `wsl: { distro, service }`, using `WSL_DISTRO_NAME` or `WSL` when only the kernel marker is available. `service` is `{ systemd, user, uid, dataDir, environment }`: whether systemd is the system manager (`/run/systemd/system`), the daemon's own user, and the profile directories and `PATH` as `KEY=value` entries. The PC builds the hub's system unit from it (P416, [15](15-hub-transfer.md#into-this-pcs-wsl-p416)). The probe uses the target's own `tailscale status --json` and checks port availability on its Tailscale IPs. On Windows, a successful `hub-info` supplies the installed `hubBuild` and `hubRunning`. |
 | `hubHost/install { opId, url, sha256, size }` | On Linux, downloads the release binary over HTTPS, verifies size and SHA-256, and returns its executable staged `{ path }` under `transfer-<opId>/bin/yaac` in the YAAC data directory. Windows transfers use the installed YAAC executable and reject this request. |
 | `hubHost/progress { opId, done, total }` | Daemon notification with download progress in bytes. |
 | `hubHost/put { opId, name, size, sha256 }` | Opens a file stream and returns `{ stream, credit }`. Send bytes in data frames on that stream. The daemon grants additional byte credit via `stream/credit` and verifies size and SHA-256 before publishing the staged file. |
 | `hubHost/putComplete { stream, message? }` | Daemon notification after staging and verification. A message indicates failure. Wait for this outcome before advancing. |
-| `hubHost/start { opId, armOnClose: true, startHub? }` | Validates staging and returns `{ armed: true }`. When this connection closes, the daemon promotes the files into the hub's config and data directories and saves replaced files under `transfer-<opId>/replaced/`. `startHub` defaults to `true`. With `false`, the Windows keeper can start the WSL hub after placement. |
+| `hubHost/start { opId, armOnClose: true, startHub? }` | Validates staging and returns `{ armed: true }`. When this connection closes, the daemon promotes the files into the hub's config and data directories and saves replaced files under `transfer-<opId>/replaced/`. `startHub` defaults to `true`. With `false` the files are only placed: for a hub in this PC's WSL, the PC then installs its system service as root through `wsl.exe -u root` (P416). |
 | `hubHost/abort { opId }` | Disarms the hand-over and discards staging. Returns `{}`. |
 
 The accepted paths are `config/hub.json`, `data/{cache,relay,drafts}.sqlite`,
@@ -155,7 +155,7 @@ so the hub can start on that PC again. With `startHub: true`, it calls
 With `startHub: false`, daemon actions end at file placement. The daemon atomically records
 `{ opId, status, message? }` in `transfer-<opId>.result` in the hub data directory and returns
 the latest record as `lastTransfer`. The status is `started` after the daemon starts the hub, `placed`
-after placement for the keeper, or `failed` with a message.
+after placement (P416: the PC's `yaac wsl-hub install` waits for it), or `failed` with a message.
 
 A WSL hub can reach its PC's Windows `yaacd` through Windows interop. The attach protocol
 represents this target transport as `{ kind: "windowsInterop", exe }`, where `exe` is the

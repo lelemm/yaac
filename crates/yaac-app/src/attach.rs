@@ -49,8 +49,8 @@ pub struct AttachConfig {
     /// A hub that moved to one of this PC's targets, reached the way that target is
     /// (docs/15-hub-transfer.md#the-pcs-window): a command whose standard streams reach the
     /// hub (`wsl.exe … yaac hub-bridge`, `ssh … yaac hub-bridge`). Never started, stopped or
-    /// replaced from here, like a remote hub, except that a hub in this PC's WSL has its keeper
-    /// started when it does not run.
+    /// replaced from here, like a remote hub. For a hub in this PC's WSL the bridge's `wsl.exe`
+    /// boots the distro when it is stopped, and its system service starts the hub (P416).
     pub bridge: Option<Bridge>,
 }
 
@@ -62,8 +62,6 @@ pub struct Bridge {
     pub args: Vec<std::ffi::OsString>,
     /// Who it reaches, for messages (`Ubuntu (WSL)`, `me@box:22`).
     pub label: String,
-    /// A hub in this PC's WSL: its keeper, started when it does not run.
-    pub keeper: Option<yaac_hub::transfer::WslKeeper>,
 }
 
 impl Bridge {
@@ -76,13 +74,12 @@ impl Bridge {
             TargetTransport::Wsl(w) => {
                 let program = std::env::var_os("YAAC_WSL_EXE").filter(|v| !v.is_empty()).unwrap_or_else(|| "wsl.exe".into());
                 let args = yaac_hub::transfer::wsl_bridge_argv(&w.distro, w.user.as_deref()).into_iter().map(Into::into).collect();
-                let keeper = yaac_hub::transfer::WslKeeper { distro: w.distro.clone(), user: w.user.clone(), op: None };
-                Some(Self { program, args, label: format!("{} (WSL)", w.distro), keeper: Some(keeper) })
+                Some(Self { program, args, label: format!("{} (WSL)", w.distro) })
             }
             TargetTransport::Ssh(t) => {
                 let defaults = yaac_hub::ssh::SshDefaults::new(&local.data_dir, &local.runtime_dir, None, Vec::new());
                 let args = defaults.command_args(t, &yaac_hub::transfer::ssh_bridge_remote());
-                Some(Self { program: defaults.ssh_exe, args, label: yaac_hub::ssh::Ident::from_transport(t).label(), keeper: None })
+                Some(Self { program: defaults.ssh_exe, args, label: yaac_hub::ssh::Ident::from_transport(t).label() })
             }
             _ => None,
         }
@@ -174,7 +171,6 @@ mod tests {
         let b = Bridge::to(&wsl, &paths).unwrap();
         let args: Vec<String> = b.args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(args, yaac_hub::transfer::wsl_bridge_argv("Ubuntu", Some("dev")));
-        assert_eq!(b.keeper.as_ref().map(|k| k.distro.as_str()), Some("Ubuntu"));
         let config = AttachConfig::bridged(b, paths.clone());
         assert!(config.is_remote(), "never started or replaced from here");
         assert!(config.mismatch_text().unwrap().contains("Ubuntu (WSL)"));
@@ -238,7 +234,7 @@ pub fn spawn_hub(config: &AttachConfig) -> std::io::Result<()> {
 }
 
 /// Starts `exe args…` detached from the window, with the hub's profile (`YAAC_CONFIG_DIR`,
-/// `YAAC_DATA_DIR`, `YAAC_RUNTIME_DIR`): `yaac hub`, or the WSL keeper `yaac wsl-hub`.
+/// `YAAC_DATA_DIR`, `YAAC_RUNTIME_DIR`): `yaac hub`, or `yaac wsl-hub install` after a move into WSL.
 pub fn spawn_detached(exe: &std::path::Path, args: &[String], paths: &yaac_hub::HubPaths) -> std::io::Result<()> {
     let mut cmd = Command::new(exe);
     cmd.args(args)
@@ -307,14 +303,6 @@ fn connect_remote(address: &str, waker: &Waker) -> std::io::Result<HubClient> {
 /// Connects to a running hub, or starts one and waits for it to listen.
 fn connect_or_start(config: &AttachConfig, waker: &Waker, slot: &Mutex<Slot>) -> Result<HubClient, String> {
     if config.is_remote() {
-        // A hub in this PC's WSL: its keeper keeps the distro and the hub running.
-        if let Some(keeper) = config.bridge.as_ref().and_then(|b| b.keeper.as_ref())
-            && !crate::wsl_keeper::running()
-            && cfg!(windows)
-            && let Err(e) = crate::wsl_keeper::start(keeper)
-        {
-            return Err(format!("could not start the hub in WSL: {e}"));
-        }
         // Another machine's hub: connect or say why; it is never started from here.
         return connect(config, waker).map_err(|e| format!("could not reach the hub: {e}"));
     }

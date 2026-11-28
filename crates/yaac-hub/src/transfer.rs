@@ -42,69 +42,217 @@ pub trait TransferHost: Send + Sync {
     fn interop_exe(&self) -> Option<String> {
         None
     }
-    /// The hub moves into this PC's WSL (docs/15-hub-transfer.md#into-this-pcs-wsl): starts the
-    /// keeper (`yaac wsl-hub`, [`keeper_args`]), which waits for this hub to exit and for
-    /// `yaacd` to place the files before it starts the new hub, and keeps the distro running.
-    fn start_wsl_keeper(&self, keeper: &WslKeeper) -> Result<(), String> {
-        let _ = keeper;
-        Err("This build of YAAC cannot keep a hub running in WSL.".into())
-    }
-    /// Replaces this computer's start-at-login of the hub by the keeper's
-    /// (`yaac wsl-hub --distro …`, without the transfer).
-    fn keeper_autostart(&self, keeper: &WslKeeper) -> Result<(), String> {
-        let _ = keeper;
-        Err("This build of YAAC cannot keep a hub running in WSL.".into())
+    /// The hub moves into this PC's WSL (docs/15-hub-transfer.md#into-this-pcs-wsl-p416): starts,
+    /// detached, the one-shot `yaac wsl-hub install` ([`WslService`]). It waits for this hub to
+    /// exit (so no connection to the distro is left, invariant 1) and for `yaacd` there to place
+    /// the files, then installs and starts the hub's system service through `wsl.exe -u root`.
+    fn install_wsl_service(&self, service: &WslService) -> Result<(), String> {
+        let _ = service;
+        Err("This build of YAAC cannot run a hub in WSL.".into())
     }
 }
 
-/// A hub in one of this PC's WSL distros, kept running by `yaac wsl-hub` on Windows (WSL stops
-/// a distro that nothing runs in, and `yaacd` there neither starts the hub nor installs a
-/// start-at-login entry for it: `hubHost/start {startHub: false}`).
+/// A hub moving into one of this PC's WSL distros (P416). There it runs as the systemd system
+/// service [`SERVICE_UNIT`], which starts it whenever the distro boots. WSL starts a distro on
+/// demand (the PC's window attaching through `wsl.exe` does) and stops it when no Windows
+/// process uses it; a systemd service does not keep it running.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WslKeeper {
+pub struct WslService {
     /// The distro, as the WSL target names it.
     pub distro: String,
-    /// The Linux user, when not the distro's default.
-    pub user: Option<String>,
-    /// The transfer whose files the first start waits for (`<data>/transfer-<op>.result`
-    /// saying `placed`). `None`: a later start, at login.
-    pub op: Option<OpId>,
+    /// The hub profile's data directory in the distro (`bin/yaac`, `transfer-<op>.result`).
+    pub data_dir: String,
+    /// The unit file's text ([`system_unit`]).
+    pub unit: String,
+    /// The transfer whose files the install waits for.
+    pub op: OpId,
 }
 
-/// `yaac wsl-hub` (the keeper's subcommand).
-pub const KEEPER_COMMAND: &str = "wsl-hub";
+/// `yaac wsl-hub` (installs or removes the hub's system service in a WSL distro).
+pub const WSL_HUB_COMMAND: &str = "wsl-hub";
 
-/// The keeper's arguments after the executable: `wsl-hub --distro <d> [--user <u>]
-/// [--after-transfer <op>]`.
-pub fn keeper_args(keeper: &WslKeeper) -> Vec<String> {
-    let mut out = vec![KEEPER_COMMAND.to_owned(), "--distro".into(), keeper.distro.clone()];
-    if let Some(user) = &keeper.user {
-        out.extend(["--user".into(), user.clone()]);
+/// The hub's system unit in a WSL distro.
+pub const SERVICE_UNIT: &str = "yaac-hub.service";
+
+/// Where the unit goes in the distro.
+pub const SYSTEM_UNIT_DIR: &str = "/etc/systemd/system";
+
+/// The environment keys the hub's service may set (what `yaacd` reports in
+/// `HubHostWslService::environment`).
+const SERVICE_ENV: &[&str] = &["HOME", "YAAC_CONFIG_DIR", "YAAC_DATA_DIR", "YAAC_RUNTIME_DIR", "YAAC_HOME", "PATH"];
+
+/// A value quoted for a unit directive, including systemd's `%` specifiers (the same rules as
+/// `yaacd`'s `systemd --user` unit).
+fn unit_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '%' => out.push_str("%%"),
+            '"' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c => out.push(c),
+        }
     }
-    if let Some(op) = &keeper.op {
-        out.extend(["--after-transfer".into(), op.as_str().to_owned()]);
-    }
+    out.push('"');
     out
 }
 
-/// Reads [`keeper_args`] back (after `wsl-hub`). An error is the usage line.
-pub fn parse_keeper_args(args: &[String]) -> Result<WslKeeper, String> {
-    const USAGE: &str = "usage: yaac wsl-hub --distro <name> [--user <name>] [--after-transfer <opId>]";
-    let mut keeper = WslKeeper { distro: String::new(), user: None, op: None };
-    let mut it = args.iter();
+/// The hub's system unit for a WSL distro, from what `yaacd` there reports: it runs
+/// `<data>/bin/yaac hub` as `yaacd`'s own user with `yaacd`'s profile directories, starts at
+/// every boot of the distro (`multi-user.target`), and is restarted only after a crash (a hub
+/// that exits cleanly, or finds it has moved, stays stopped). An error is a sentence for the
+/// user.
+pub fn system_unit(service: &yaac_protocol::HubHostWslService) -> Result<String, String> {
+    let user_ok = !service.user.is_empty()
+        && service.user.len() <= 64
+        && !service.user.starts_with('-')
+        && service.user.chars().all(|c| c.is_ascii_alphanumeric() || "._-$".contains(c));
+    if !user_ok {
+        return Err(format!("The WSL user name {:?} cannot run a system service.", service.user));
+    }
+    let data = &service.data_dir;
+    if !data.starts_with('/') || data.chars().any(char::is_control) {
+        return Err(format!("The hub's data directory there ({data:?}) is not an absolute path."));
+    }
+    let uid = service.uid;
+    let mut out = vec![
+        "[Unit]".to_owned(),
+        "Description=YAAC hub".into(),
+        // The hub's socket is under the user's runtime directory, as in a WSL session.
+        format!("Wants=user-runtime-dir@{uid}.service"),
+        format!("After=user-runtime-dir@{uid}.service network-online.target"),
+        "[Service]".into(),
+        "Type=exec".into(),
+        format!("User={}", service.user),
+    ];
+    for entry in &service.environment {
+        let Some((key, value)) = entry.split_once('=') else { continue };
+        if SERVICE_ENV.contains(&key) && !value.is_empty() {
+            out.push(format!("Environment={}", unit_value(entry)));
+        }
+    }
+    out.extend([
+        format!("ExecStart=:{} hub", unit_value(&format!("{}/bin/yaac", data.trim_end_matches('/')))),
+        "Restart=on-failure".into(),
+        "RestartSec=5".into(),
+        "[Install]".into(),
+        "WantedBy=multi-user.target".into(),
+        String::new(),
+    ]);
+    Ok(out.join("\n"))
+}
+
+/// The root script that installs the hub's system service: `$1` the unit text, `$2` the hub's
+/// data directory, `$3` the transfer, `$4` the unit directory ([`SYSTEM_UNIT_DIR`]). It waits
+/// (at most [`PLACED_WAIT_SECS`]) for `yaacd` to have placed the moved files
+/// (`<data>/transfer-<op>.result` saying `placed`), writes the unit, and enables and starts it.
+pub fn install_script() -> String {
+    format!(
+        r#"d="$2"; u="$4/{SERVICE_UNIT}"; r="$d/transfer-$3.result"; i=0
+while [ ! -f "$r" ]; do
+  i=$((i+1)); if [ "$i" -gt {PLACED_WAIT_SECS} ]; then echo "yaac wsl-hub: the moved hub's files were never placed ($r)" >&2; exit 1; fi
+  sleep 1
+done
+if ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"placed"' "$r"; then echo "yaac wsl-hub: the moved hub's files were not placed:" >&2; cat "$r" >&2; exit 1; fi
+if [ ! -x "$d/bin/yaac" ]; then echo "yaac wsl-hub: no hub at $d/bin/yaac" >&2; exit 1; fi
+umask 022
+printf '%s' "$1" > "$u.tmp" && mv -f "$u.tmp" "$u" || exit 1
+systemctl daemon-reload || exit 1
+systemctl enable --now {SERVICE_UNIT}"#
+    )
+}
+
+/// The root script that removes the hub's system service (**Start the hub here again**): `$1`
+/// the unit directory. Stopping it is SIGTERM, on which the hub stops as on `hub/shutdown`.
+/// It fails if the hub's service still runs afterwards.
+pub fn remove_script() -> String {
+    format!(
+        r#"u="$1/{SERVICE_UNIT}"
+if [ -e "$u" ]; then
+  systemctl disable --now {SERVICE_UNIT} || exit 1
+  rm -f "$u"
+  systemctl daemon-reload || exit 1
+fi
+if systemctl is-active --quiet {SERVICE_UNIT}; then echo "yaac wsl-hub: {SERVICE_UNIT} still runs" >&2; exit 1; fi
+exit 0"#
+    )
+}
+
+/// What `yaac wsl-hub install` runs after `wsl.exe`: `-d <distro> -u root --exec sh -c
+/// <install_script> sh <unit> <data> <op> /etc/systemd/system`. WSL lets the Windows user be
+/// root in their own distros without a password or elevation.
+pub fn wsl_service_install_argv(service: &WslService) -> Vec<String> {
+    let mut out: Vec<String> = ["-d", &service.distro, "-u", "root", "--exec", "sh", "-c"].map(str::to_owned).into();
+    out.extend([install_script(), "sh".into(), service.unit.clone(), service.data_dir.clone(), service.op.as_str().to_owned(), SYSTEM_UNIT_DIR.into()]);
+    out
+}
+
+/// What **Start the hub here again** runs after `wsl.exe` to remove the hub's service from
+/// `distro` (as root, [`remove_script`]).
+pub fn wsl_service_remove_argv(distro: &str) -> Vec<String> {
+    let mut out: Vec<String> = ["-d", distro, "-u", "root", "--exec", "sh", "-c"].map(str::to_owned).into();
+    out.extend([remove_script(), "sh".into(), SYSTEM_UNIT_DIR.into()]);
+    out
+}
+
+/// `yaac wsl-hub …`, read back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WslHubCommand {
+    /// `install --distro <d> --data-dir <p> --unit-file <f> --after-transfer <op>`: right after
+    /// a move into WSL. `unit_file` is on this PC (the unit text, written by the old hub).
+    Install { distro: String, data_dir: String, unit_file: PathBuf, op: OpId },
+    /// `remove --distro <d>`.
+    Remove { distro: String },
+    /// `--distro <d> …`: the login entry of the keeper that ran the hub in WSL before P416.
+    /// It does nothing now.
+    Legacy,
+}
+
+/// The arguments of `yaac wsl-hub install` (after the executable).
+pub fn wsl_install_args(service: &WslService, unit_file: &Path) -> Vec<String> {
+    vec![
+        WSL_HUB_COMMAND.to_owned(),
+        "install".into(),
+        "--distro".into(),
+        service.distro.clone(),
+        "--data-dir".into(),
+        service.data_dir.clone(),
+        "--unit-file".into(),
+        unit_file.to_string_lossy().into_owned(),
+        "--after-transfer".into(),
+        service.op.as_str().to_owned(),
+    ]
+}
+
+/// Reads `yaac wsl-hub` arguments back (after `wsl-hub`). An error is the usage line.
+pub fn parse_wsl_hub_args(args: &[String]) -> Result<WslHubCommand, String> {
+    const USAGE: &str = "usage: yaac wsl-hub install --distro <name> --data-dir <path> --unit-file <path> --after-transfer <opId>\n       yaac wsl-hub remove --distro <name>";
+    let (verb, rest) = match args.split_first() {
+        Some((v, rest)) if v == "install" || v == "remove" => (v.as_str(), rest),
+        Some((v, _)) if v == "--distro" => return Ok(WslHubCommand::Legacy),
+        _ => return Err(USAGE.into()),
+    };
+    let (mut distro, mut data_dir, mut unit_file, mut op) = (None, None, None, None);
+    let mut it = rest.iter();
     while let Some(flag) = it.next() {
         let value = it.next().filter(|v| !v.is_empty()).ok_or(USAGE)?;
         match flag.as_str() {
-            "--distro" => keeper.distro.clone_from(value),
-            "--user" => keeper.user = Some(value.clone()),
-            "--after-transfer" if op_id_ok(value) => keeper.op = Some(OpId::new(value.clone())),
+            "--distro" => distro = Some(value.clone()),
+            "--data-dir" => data_dir = Some(value.clone()),
+            "--unit-file" => unit_file = Some(PathBuf::from(value)),
+            "--after-transfer" if op_id_ok(value) => op = Some(OpId::new(value.clone())),
             _ => return Err(USAGE.into()),
         }
     }
-    if keeper.distro.is_empty() {
-        return Err(USAGE.into());
+    match (verb, distro, data_dir, unit_file, op) {
+        ("install", Some(distro), Some(data_dir), Some(unit_file), Some(op)) => Ok(WslHubCommand::Install { distro, data_dir, unit_file, op }),
+        ("remove", Some(distro), None, None, None) => Ok(WslHubCommand::Remove { distro }),
+        _ => Err(USAGE.into()),
     }
-    Ok(keeper)
 }
 
 /// The hub's data directory on a Linux machine (a WSL distro, an SSH server), as `yaacd` there
@@ -117,14 +265,34 @@ pub fn bridge_script() -> String {
     format!(r#"{DISTRO_DATA_DIR}; exec "$d/bin/yaac" {}"#, crate::interop::HUB_BRIDGE_COMMAND)
 }
 
+/// The `sh` script the PC's window runs in a WSL distro to reach the hub there (P416). Starting
+/// `wsl.exe` boots the distro when it is stopped, and systemd starts the hub's service with it;
+/// `yaac hub-bridge` waits for the hub to listen. A service that is enabled but not running is
+/// started only if this user may do so without a password (`--no-ask-password`). When the
+/// bridge fails, the service's state is said on standard error (standard output is the attach
+/// stream).
+pub fn wsl_bridge_script() -> String {
+    format!(
+        r#"{DISTRO_DATA_DIR}
+if systemctl is-enabled --quiet {SERVICE_UNIT} 2>/dev/null && ! systemctl is-active --quiet {SERVICE_UNIT} 2>/dev/null; then
+  systemctl start --no-block --no-ask-password {SERVICE_UNIT} >/dev/null 2>&1
+fi
+"$d/bin/yaac" {bridge} && exit 0
+s=$(systemctl is-active {SERVICE_UNIT} 2>/dev/null)
+echo "yaac: the hub's service {SERVICE_UNIT} is ${{s:-not installed}} in this distro (systemctl status {SERVICE_UNIT})" >&2
+exit 1"#,
+        bridge = crate::interop::HUB_BRIDGE_COMMAND
+    )
+}
+
 /// What the PC's window runs after `wsl.exe` to reach a hub in that distro: `-d <distro> [-u
-/// <user>] --exec sh -c <bridge_script>`.
+/// <user>] --exec sh -c <wsl_bridge_script>`.
 pub fn wsl_bridge_argv(distro: &str, user: Option<&str>) -> Vec<String> {
     let mut out = vec!["-d".to_owned(), distro.to_owned()];
     if let Some(user) = user {
         out.extend(["-u".into(), user.to_owned()]);
     }
-    out.extend(["--exec".into(), "sh".into(), "-c".into(), bridge_script()]);
+    out.extend(["--exec".into(), "sh".into(), "-c".into(), wsl_bridge_script()]);
     out
 }
 
@@ -134,48 +302,8 @@ pub fn ssh_bridge_remote() -> String {
     format!("exec sh -c '{}'", bridge_script().replace('\'', r"'\''"))
 }
 
-/// How long the first start waits for `yaacd` to place the moved hub's files, in seconds.
+/// How long the service install waits for `yaacd` to place the moved hub's files, in seconds.
 pub const PLACED_WAIT_SECS: u32 = 120;
-
-/// What the keeper runs in the distro, after `wsl.exe`: `-d <distro> [-u <user>] --exec sh -c
-/// <script> sh [<op>]`. With a transfer, the script first waits (at most
-/// [`PLACED_WAIT_SECS`]) for `<data>/transfer-<op>.result` and starts the hub only when it says
-/// `placed` (the binary itself is promoted with the other files). Then it `exec`s
-/// `<data>/bin/yaac hub`, so the keeper's `wsl.exe` lives exactly as long as the hub.
-pub fn keeper_wsl_argv(keeper: &WslKeeper) -> Vec<String> {
-    let mut out = vec!["-d".to_owned(), keeper.distro.clone()];
-    if let Some(user) = &keeper.user {
-        out.extend(["-u".into(), user.clone()]);
-    }
-    let script = format!(
-        r#"{DISTRO_DATA_DIR}
-if [ -n "$1" ]; then
-  r="$d/transfer-$1.result"; i=0
-  while [ ! -f "$r" ]; do
-    i=$((i+1)); if [ "$i" -gt {PLACED_WAIT_SECS} ]; then echo "yaac wsl-hub: the moved hub's files were never placed ($r)" >&2; exit 1; fi
-    sleep 1
-  done
-  if ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"placed"' "$r"; then echo "yaac wsl-hub: the moved hub's files were not placed:" >&2; cat "$r" >&2; exit 1; fi
-fi
-exec "$d/bin/yaac" hub"#
-    );
-    out.extend(["--exec".into(), "sh".into(), "-c".into(), script, "sh".into()]);
-    if let Some(op) = &keeper.op {
-        out.push(op.as_str().to_owned());
-    }
-    out
-}
-
-/// What the keeper runs in the distro to stop the hub there (`yaac quit`: `hub/shutdown`,
-/// stores checkpointed).
-pub fn keeper_quit_argv(keeper: &WslKeeper) -> Vec<String> {
-    let mut out = vec!["-d".to_owned(), keeper.distro.clone()];
-    if let Some(user) = &keeper.user {
-        out.extend(["-u".into(), user.clone()]);
-    }
-    out.extend(["--exec".into(), "sh".into(), "-c".into(), format!(r#"{DISTRO_DATA_DIR}; exec "$d/bin/yaac" quit"#)]);
-    out
-}
 
 /// Whether this process runs inside WSL: `WSL_DISTRO_NAME` is set, or the kernel has WSL's
 /// interop handler (`/proc/sys/fs/binfmt_misc/WSLInterop`).
@@ -431,7 +559,7 @@ mod tests {
         let script = bridge_script();
         assert!(script.ends_with(r#"exec "$d/bin/yaac" hub-bridge"#), "{script}");
         assert_eq!(wsl_bridge_argv("Ubuntu", Some("dev"))[..7], ["-d", "Ubuntu", "-u", "dev", "--exec", "sh", "-c"]);
-        assert_eq!(wsl_bridge_argv("Ubuntu", None).last().unwrap(), &script);
+        assert_eq!(wsl_bridge_argv("Ubuntu", None).last().unwrap(), &wsl_bridge_script());
         // Over ssh the remote shell gets one string; the script survives its quoting.
         let remote = ssh_bridge_remote();
         let out = std::process::Command::new("sh").arg("-c").arg(remote.replace(r#"exec "$d/bin/yaac" hub-bridge"#, r#"echo "$d""#)).env("YAAC_DATA_DIR", "/x y").output().unwrap();
@@ -440,62 +568,149 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&out.stdout), script, "single-quoted whole");
     }
 
-    #[test]
-    fn the_keeper_runs_the_moved_hub_in_its_distro() {
-        let keeper = WslKeeper { distro: "Ubuntu".into(), user: Some("me".into()), op: Some(OpId::new("op-1")) };
-        let args = keeper_args(&keeper);
-        assert_eq!(args, ["wsl-hub", "--distro", "Ubuntu", "--user", "me", "--after-transfer", "op-1"]);
-        assert_eq!(parse_keeper_args(&args[1..]).unwrap(), keeper);
-        let login = WslKeeper { user: None, op: None, ..keeper.clone() };
-        assert_eq!(keeper_args(&login), ["wsl-hub", "--distro", "Ubuntu"]);
-        assert_eq!(parse_keeper_args(&keeper_args(&login)[1..]).unwrap(), login);
-        for bad in [&[][..], &["--distro".to_owned()][..], &["--user".to_owned(), "me".to_owned()][..], &["--distro".to_owned(), "U".to_owned(), "--after-transfer".to_owned(), "../x".to_owned()][..]] {
-            assert!(parse_keeper_args(bad).is_err(), "{bad:?}");
+    fn service_probe() -> yaac_protocol::HubHostWslService {
+        yaac_protocol::HubHostWslService {
+            systemd: true,
+            user: "me".into(),
+            uid: 1000,
+            data_dir: "/home/me/.local/share/yaac".into(),
+            environment: vec![
+                "HOME=/home/me".into(),
+                "YAAC_RUNTIME_DIR=/run/user/1000/yaac".into(),
+                "PATH=/usr/bin:/mnt/c/Program Files/x%y".into(),
+                "LD_PRELOAD=/evil.so".into(),
+            ],
         }
-
-        let argv = keeper_wsl_argv(&keeper);
-        assert_eq!(&argv[..6], ["-d", "Ubuntu", "-u", "me", "--exec", "sh"]);
-        assert_eq!(argv[6], "-c");
-        assert_eq!(&argv[8..], ["sh", "op-1"], "the transfer is $1");
-        let script = &argv[7];
-        assert!(script.contains(r#"d="${YAAC_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/yaac}""#), "yaacd's own data dir");
-        assert!(script.contains(r#"r="$d/transfer-$1.result""#));
-        assert!(script.contains(&format!(r#"-gt {PLACED_WAIT_SECS} ]"#)));
-        assert!(script.contains(r#""status"[[:space:]]*:[[:space:]]*"placed""#));
-        assert!(script.trim_end().ends_with(r#"exec "$d/bin/yaac" hub"#), "wsl.exe lives as long as the hub");
-        // At login there is no transfer to wait for.
-        let argv = keeper_wsl_argv(&login);
-        assert_eq!(argv.last().unwrap(), "sh");
-        assert_eq!(&argv[..2], ["-d", "Ubuntu"]);
-        let quit = keeper_quit_argv(&keeper);
-        assert_eq!(&quit[..7], ["-d", "Ubuntu", "-u", "me", "--exec", "sh", "-c"]);
-        assert!(quit[7].ends_with(r#"exec "$d/bin/yaac" quit"#));
     }
 
     #[test]
-    fn the_shell_script_waits_for_placed_then_execs_the_hub() {
-        // Run the script with a fake data dir: `placed` → the hub is exec'd; `failed` → not.
-        let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let yaac = bin.join("yaac");
-        std::fs::write(&yaac, "#!/bin/sh\necho \"ran $*\"\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&yaac, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fn the_hubs_system_unit_runs_it_as_the_user_at_every_boot() {
+        let unit = system_unit(&service_probe()).unwrap();
+        let lines: Vec<&str> = unit.lines().collect();
+        for want in [
+            "User=me",
+            "Wants=user-runtime-dir@1000.service",
+            r#"Environment="YAAC_RUNTIME_DIR=/run/user/1000/yaac""#,
+            r#"Environment="PATH=/usr/bin:/mnt/c/Program Files/x%%y""#,
+            r#"ExecStart=:"/home/me/.local/share/yaac/bin/yaac" hub"#,
+            "Restart=on-failure",
+            "WantedBy=multi-user.target",
+        ] {
+            assert!(lines.contains(&want), "{want} in\n{unit}");
         }
-        let run = |op: &str| {
-            let argv = keeper_wsl_argv(&WslKeeper { distro: "U".into(), user: None, op: Some(OpId::new(op)) });
-            let out = std::process::Command::new(&argv[3]).args(&argv[4..]).env("YAAC_DATA_DIR", dir.path()).output().unwrap();
-            (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned())
-        };
-        std::fs::write(dir.path().join("transfer-ok.result"), r#"{ "opId": "ok", "status": "placed" }"#).unwrap();
-        let (ok, out, _) = run("ok");
-        assert!(ok && out.trim() == "ran hub", "{out}");
-        std::fs::write(dir.path().join("transfer-bad.result"), r#"{"opId":"bad","status":"failed","message":"disk full"}"#).unwrap();
-        let (ok, out, err) = run("bad");
-        assert!(!ok && out.is_empty() && err.contains("disk full"), "{out} / {err}");
+        assert!(!unit.contains("LD_PRELOAD"), "only the profile's own variables");
+        assert!(unit.ends_with('\n'));
+        assert_eq!(unit_value("a\"b\\c\nd"), r#""a\"b\\c\x0ad""#);
+        for bad in ["", "root\nExecStartPre=/x", "-x", "a b"] {
+            let mut p = service_probe();
+            p.user = bad.into();
+            assert!(system_unit(&p).is_err(), "{bad:?}");
+        }
+        let mut p = service_probe();
+        p.data_dir = "relative".into();
+        assert!(system_unit(&p).is_err());
+    }
+
+    #[test]
+    fn the_service_is_installed_and_removed_as_root_through_wsl() {
+        let service = WslService { distro: "Ubuntu".into(), data_dir: "/home/me/.local/share/yaac".into(), unit: "[Unit]\n".into(), op: OpId::new("op-1") };
+        let argv = wsl_service_install_argv(&service);
+        assert_eq!(&argv[..7], ["-d", "Ubuntu", "-u", "root", "--exec", "sh", "-c"]);
+        assert_eq!(&argv[8..], ["sh", "[Unit]\n", "/home/me/.local/share/yaac", "op-1", SYSTEM_UNIT_DIR]);
+        let remove = wsl_service_remove_argv("Ubuntu");
+        assert_eq!(&remove[..7], ["-d", "Ubuntu", "-u", "root", "--exec", "sh", "-c"]);
+        assert_eq!(&remove[8..], ["sh", SYSTEM_UNIT_DIR]);
+
+        let args = wsl_install_args(&service, Path::new("/tmp/u.service"));
+        assert_eq!(args[0], WSL_HUB_COMMAND);
+        assert_eq!(
+            parse_wsl_hub_args(&args[1..]).unwrap(),
+            WslHubCommand::Install { distro: "Ubuntu".into(), data_dir: service.data_dir, unit_file: "/tmp/u.service".into(), op: OpId::new("op-1") }
+        );
+        let s = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(parse_wsl_hub_args(&s(&["remove", "--distro", "Ubuntu"])).unwrap(), WslHubCommand::Remove { distro: "Ubuntu".into() });
+        // The keeper's login entry from before P416 does nothing now.
+        assert_eq!(parse_wsl_hub_args(&s(&["--distro", "Ubuntu", "--user", "dev"])).unwrap(), WslHubCommand::Legacy);
+        for bad in [&[][..], &["install", "--distro", "U"][..], &["remove"][..], &["remove", "--distro", "U", "--after-transfer", "x"][..], &["install", "--distro", "U", "--data-dir", "/d", "--unit-file", "/f", "--after-transfer", "../x"][..]] {
+            assert!(parse_wsl_hub_args(&s(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    /// Runs a root script with a fake `systemctl` on `PATH` (never the real one).
+    #[cfg(unix)]
+    fn run_script(script: &str, args: &[&str], bin: &Path) -> (bool, String) {
+        let path = format!("{}:/usr/bin:/bin", bin.display());
+        let out = std::process::Command::new("sh").arg("-c").arg(script).arg("sh").args(args).env("PATH", path).output().unwrap();
+        (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned())
+    }
+
+    #[cfg(unix)]
+    fn fake_systemctl(bin: &Path, log: &Path, active: bool) {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::create_dir_all(bin).unwrap();
+        let fake = bin.join("systemctl");
+        let code = if active { 0 } else { 3 };
+        std::fs::write(&fake, format!("#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$1\" in is-active) exit {code};; esac\nexit 0\n", log.display())).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_install_script_waits_for_placed_then_enables_the_service() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let (data, units, bin, log) = (dir.path().join("data"), dir.path().join("units"), dir.path().join("bin"), dir.path().join("log"));
+        std::fs::create_dir_all(data.join("bin")).unwrap();
+        std::fs::create_dir_all(&units).unwrap();
+        fake_systemctl(&bin, &log, false);
+        let yaac = data.join("bin/yaac");
+        std::fs::write(&yaac, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&yaac, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let (d, u) = (data.to_str().unwrap(), units.to_str().unwrap());
+
+        std::fs::write(data.join("transfer-bad.result"), r#"{"opId":"bad","status":"failed","message":"disk full"}"#).unwrap();
+        let (ok, err) = run_script(&install_script(), &["[Unit]\n", d, "bad", u], &bin);
+        assert!(!ok && err.contains("disk full"), "{err}");
+        assert!(!units.join(SERVICE_UNIT).exists() && !log.exists(), "nothing installed");
+
+        std::fs::write(data.join("transfer-ok.result"), r#"{ "opId": "ok", "status": "placed" }"#).unwrap();
+        let (ok, err) = run_script(&install_script(), &["[Unit]\nUser=me\n", d, "ok", u], &bin);
+        assert!(ok, "{err}");
+        assert_eq!(std::fs::read_to_string(units.join(SERVICE_UNIT)).unwrap(), "[Unit]\nUser=me\n");
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), format!("daemon-reload\nenable --now {SERVICE_UNIT}\n"));
+
+        // Remove: disabled and stopped, the unit gone; nothing to do the second time.
+        std::fs::remove_file(&log).unwrap();
+        let (ok, err) = run_script(&remove_script(), &[u], &bin);
+        assert!(ok, "{err}");
+        assert!(!units.join(SERVICE_UNIT).exists());
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), format!("disable --now {SERVICE_UNIT}\ndaemon-reload\nis-active --quiet {SERVICE_UNIT}\n"));
+        let (ok, _) = run_script(&remove_script(), &[u], &bin);
+        assert!(ok);
+        // A hub service that still runs afterwards is a failure.
+        fake_systemctl(&bin, &log, true);
+        let (ok, err) = run_script(&remove_script(), &[u], &bin);
+        assert!(!ok && err.contains("still runs"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_wsl_bridge_says_how_the_service_is_when_the_hub_does_not_answer() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let (data, bin, log) = (dir.path().join("data"), dir.path().join("bin"), dir.path().join("log"));
+        std::fs::create_dir_all(data.join("bin")).unwrap();
+        fake_systemctl(&bin, &log, false);
+        let yaac = data.join("bin/yaac");
+        std::fs::write(&yaac, "#!/bin/sh\necho 'yaac hub-bridge: no hub' >&2\nexit 1\n").unwrap();
+        std::fs::set_permissions(&yaac, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = format!("{}:/usr/bin:/bin", bin.display());
+        let out = std::process::Command::new("sh").arg("-c").arg(wsl_bridge_script()).env("PATH", path).env("YAAC_DATA_DIR", &data).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success() && err.contains(&format!("{SERVICE_UNIT} is")), "{err}");
+        assert!(out.stdout.is_empty(), "standard output is the attach stream");
+        // Enabled (the fake says so) and not active: a start is tried, without asking.
+        assert!(std::fs::read_to_string(&log).unwrap().contains(&format!("start --no-block --no-ask-password {SERVICE_UNIT}")));
     }
 
     #[test]

@@ -17,11 +17,12 @@
 //!   ─► tombstone + start-at-login off ─► moved: hub/moved to every client, close X, exit
 //! ```
 //!
-//! **Into this PC's WSL** (a WSL target X): the same steps, but `yaacd` in the distro only
-//! places the files (`hubHost/start {startHub: false}`), since WSL stops a distro that nothing
-//! runs in. With the tombstone this hub starts the Windows-side keeper (`yaac wsl-hub`), which
-//! waits for this hub to exit and for the files to be placed, then runs the new hub and keeps
-//! the distro up; the keeper also replaces this hub's start-at-login entry.
+//! **Into this PC's WSL** (a WSL target X, P416): the same steps, but `yaacd` in the distro only
+//! places the files (`hubHost/start {startHub: false}`). The new hub runs there as a systemd
+//! system service, which `yaacd` (no root) cannot install. With the tombstone this hub starts
+//! the one-shot `yaac wsl-hub install`, which waits for this hub to exit (no connection to the
+//! distro left, invariant 1) and for the files to be placed, then writes and starts the unit
+//! through `wsl.exe -u root`. This computer's start-at-login of the hub is turned off.
 //!
 //! A failure before the tombstone sends `hubHost/abort`, reconnects the targets, and reports
 //! `failed` with the reason: nothing has moved. Once `hubHost/start` was sent the new hub may
@@ -47,7 +48,7 @@ use yaac_protocol::{
 use super::{ClientKey, Core, CoreEvent, Hello, Message, Pending, RpcId, attach, err, hub_err, parse, state, to_value};
 use crate::drafts::hex;
 use crate::tailnet::ThisNode;
-use crate::transfer::{HUB_ARCHES, HubAsset, WslKeeper, op_id_ok, rewrite_settings};
+use crate::transfer::{HUB_ARCHES, HubAsset, WslService, op_id_ok, rewrite_settings};
 
 /// Progress is announced at most this often while bytes move (and at every phase change).
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
@@ -123,9 +124,11 @@ pub(super) struct Transfer {
     arming: bool,
     probe: Option<HubHostProbeResult>,
     login: Option<Result<ThisNode, String>>,
-    /// X is one of this PC's WSL distros: the keeper that will run the new hub there, and
-    /// this PC's `yaac.exe` as the distro sees it.
-    wsl: Option<(WslKeeper, String)>,
+    /// X is one of this PC's WSL distros: its name, and this PC's `yaac.exe` as the distro
+    /// sees it.
+    wsl: Option<(String, String)>,
+    /// Into WSL, once checked: the hub's data directory there and its system unit.
+    service: Option<(String, String)>,
     /// X runs Windows, with this build of YAAC installed: nothing is downloaded.
     windows: bool,
     /// How the PC's window reaches the new hub (`hub/moved`'s `via`).
@@ -214,6 +217,21 @@ fn judge(name: &str, probe: &HubHostProbeResult, mine: Option<&ThisNode>, build:
         return Err(format!("A YAAC hub already runs on {name}."));
     }
     Ok(())
+}
+
+/// Whether a WSL distro, as `yaacd` there describes it, can run the moved hub as a system
+/// service (P416): systemd must be its system manager. The unit is checked here too, so a
+/// distro that cannot take it fails before anything moves.
+fn judge_wsl(name: &str, probe: &HubHostProbeResult) -> Result<(String, String), String> {
+    let Some(service) = probe.wsl.as_ref().and_then(|w| w.service.as_ref()) else {
+        return Err(format!("Update YAAC in {name} first."));
+    };
+    if !service.systemd {
+        return Err(format!(
+            "The hub runs in {name} as a system service, and systemd is off there: add systemd=true under [boot] in /etc/wsl.conf, then restart {name} (wsl --terminate {name})."
+        ));
+    }
+    Ok((service.data_dir.clone(), crate::transfer::system_unit(service)?))
 }
 
 /// `process.platform` of a Windows `yaacd`.
@@ -394,10 +412,14 @@ impl Core {
         let c = self.candidates.remove(&serial).expect("present");
         let mine = c.login.and_then(Result::ok);
         let build = self.cfg.build.clone();
+        let wsl: std::collections::HashSet<TargetId> =
+            self.targets.iter().filter(|(_, t)| matches!(t.def.transport, TargetTransport::Wsl(_))).map(|(id, _)| id.clone()).collect();
         let candidates = c.rows.into_iter().map(|(target_id, label, reason)| {
             let probe = c.probes.get(&target_id).and_then(|p| p.as_ref().ok());
             let reason = reason.or_else(|| match c.probes.get(&target_id) {
-                Some(Ok(probe)) => judge(&label, probe, mine.as_ref(), &build).err(),
+                Some(Ok(probe)) => judge(&label, probe, mine.as_ref(), &build)
+                    .and_then(|()| if wsl.contains(&target_id) { judge_wsl(&label, probe).map(drop) } else { Ok(()) })
+                    .err(),
                 Some(Err(e)) => Some(e.clone()),
                 None => Some("Connect it first.".into()),
             });
@@ -429,7 +451,7 @@ impl Core {
         let wsl = match &t.def.transport {
             TargetTransport::Wsl(w) => {
                 let Some(exe) = self.interop_exe() else { return Some(Err(hub_err(codes::NOT_ELIGIBLE, "Only YAAC for Windows can move the hub into WSL."))) };
-                Some((WslKeeper { distro: w.distro.clone(), user: w.user.clone(), op: Some(p.op_id.clone()) }, exe))
+                Some((w.distro.clone(), exe))
             }
             _ => None,
         };
@@ -448,6 +470,7 @@ impl Core {
             probe: None,
             login: None,
             wsl,
+            service: None,
             windows: false,
             via: via(&t.def.transport),
             dir,
@@ -641,6 +664,12 @@ impl Core {
         if let Err(reason) = judge(&t.label, probe, mine, &self.cfg.build) {
             return self.transfer_fail(reason);
         }
+        if t.wsl.is_some() {
+            match judge_wsl(&t.label, probe) {
+                Ok(service) => t.service = Some(service),
+                Err(reason) => return self.transfer_fail(reason),
+            }
+        }
         let arch = probe.arch.clone();
         t.address = address(probe, mine);
         t.windows = probe.os == WINDOWS;
@@ -784,7 +813,7 @@ impl Core {
     fn transfer_arm(&mut self) {
         let t = self.transfer.as_mut().unwrap();
         t.arming = true;
-        // In WSL the keeper starts the new hub; `yaacd` there only places the files.
+        // In WSL the hub's system service starts the new hub; `yaacd` there only places the files.
         let (target, params) = (t.target.clone(), HubHostStartParams { op_id: t.op.clone(), arm_on_close: true, start_hub: t.wsl.is_none() });
         if !self.send::<methods::HubHostStart>(&target, &params, Pending::Transfer(Ask::Start)) {
             return self.transfer_fail("The connection to the target dropped.".into());
@@ -801,30 +830,31 @@ impl Core {
             address: t.address.clone().unwrap_or_default(),
             host_name: t.host_name.clone(),
             at_ms: super::now_ms(),
-            wsl_distro: t.wsl.as_ref().map(|(k, _)| k.distro.clone()),
+            wsl_distro: t.wsl.as_ref().map(|(d, _)| d.clone()),
             via: t.via.clone(),
         };
-        let (op, paths, host, keeper) = (t.op.clone(), self.cfg.paths.clone(), self.cfg.transfer_host.clone(), t.wsl.as_ref().map(|(k, _)| k.clone()));
+        let service = t.wsl.as_ref().zip(t.service.as_ref()).map(|((distro, _), (data_dir, unit))| WslService {
+            distro: distro.clone(),
+            data_dir: data_dir.clone(),
+            unit: unit.clone(),
+            op: t.op.clone(),
+        });
+        let (op, paths, host) = (t.op.clone(), self.cfg.paths.clone(), self.cfg.transfer_host.clone());
         self.pool.submit(move || {
             let result = (|| {
-                // Into WSL: the keeper first, so nothing is recorded as moved if it cannot run.
-                // It does nothing until this hub has exited and the files are placed.
-                if let (Some(keeper), Some(host)) = (&keeper, &host) {
-                    host.start_wsl_keeper(keeper).map_err(|e| format!("The hub could not be kept running in WSL: {e}"))?;
+                // Into WSL: the service's install first, so nothing is recorded as moved if it
+                // cannot start. It does nothing until this hub has exited and the files are placed.
+                if let (Some(service), Some(host)) = (&service, &host) {
+                    host.install_wsl_service(service).map_err(|e| format!("The hub's service in WSL could not be set up: {e}"))?;
                 }
                 crate::paths::write_moved_tombstone(&paths, &moved).map_err(|e| format!("This computer could not record the move: {e}"))
             })();
             if result.is_ok()
                 && let Some(host) = host
+                && let Err(e) = host.stop_autostart()
             {
-                let login = match &keeper {
-                    Some(k) => host.keeper_autostart(&WslKeeper { op: None, ..k.clone() }),
-                    None => host.stop_autostart(),
-                };
-                if let Err(e) = login {
-                    // The tombstone keeps the hub from starting here anyway.
-                    crate::core::log(format!("transfer: start-at-login unchanged: {e}"));
-                }
+                // The tombstone keeps the hub from starting here anyway.
+                crate::core::log(format!("transfer: start-at-login unchanged: {e}"));
             }
             Some(CoreEvent::Transfer(Event::Tombstoned { op, result }))
         });
@@ -1010,6 +1040,29 @@ mod tests {
         assert_eq!(judge("PC", &p, None, BUILD), Ok(()), "no Linux hub binary needed, any arch");
         p.hub_running = true;
         assert!(judge("PC", &p, None, BUILD).unwrap_err().contains("already runs"));
+    }
+
+    #[test]
+    fn into_wsl_the_hub_needs_systemd_there() {
+        let mut p = probe();
+        assert_eq!(judge_wsl("Ubuntu", &p).unwrap_err(), "Update YAAC in Ubuntu first.", "not a WSL yaacd");
+        p.wsl = Some(yaac_protocol::HubHostWsl { distro: "Ubuntu".into(), service: None });
+        assert_eq!(judge_wsl("Ubuntu", &p).unwrap_err(), "Update YAAC in Ubuntu first.", "a yaacd from before P416");
+        let service = yaac_protocol::HubHostWslService {
+            systemd: false,
+            user: "me".into(),
+            uid: 1000,
+            data_dir: "/home/me/.local/share/yaac".into(),
+            environment: vec!["HOME=/home/me".into()],
+        };
+        p.wsl.as_mut().unwrap().service = Some(service);
+        assert!(judge_wsl("Ubuntu", &p).unwrap_err().contains("systemd=true under [boot] in /etc/wsl.conf"));
+        p.wsl.as_mut().unwrap().service.as_mut().unwrap().systemd = true;
+        let (data, unit) = judge_wsl("Ubuntu", &p).unwrap();
+        assert_eq!(data, "/home/me/.local/share/yaac");
+        assert!(unit.contains("User=me\n"), "{unit}");
+        p.wsl.as_mut().unwrap().service.as_mut().unwrap().user = "bad name".into();
+        assert!(judge_wsl("Ubuntu", &p).is_err(), "a unit that cannot be written fails before anything moves");
     }
 
     #[test]

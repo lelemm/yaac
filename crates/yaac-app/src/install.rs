@@ -6,8 +6,8 @@
 //! yaac autostart sync [--start]  the entry follows the hub's "always" setting; --start then
 //!                                starts the hub, as login would, when the entry is on
 //! yaac remove-data               delete YAAC's own host-side folders (settings, cache, keys)
-//! yaac wsl-hub --distro <name>   keep the hub that moved into this PC's WSL running
-//!                                (crate::wsl_keeper)
+//! yaac wsl-hub install|remove    the system service of a hub that moved into this PC's WSL
+//!                                (crate::wsl_service)
 //! yaac local-daemon              this computer's local yaacd bridge on standard streams, for a
 //!                                hub in this PC's WSL (yaac_hub::interop)
 //! yaac hub-info                  this computer's hub as JSON: build, its directories, whether
@@ -44,7 +44,7 @@ pub fn dispatch(args: &[String], build: &str) -> Option<ExitCode> {
     let code = match args.first().map(String::as_str)? {
         "quit" => quit(rest, build),
         "autostart" => autostart(rest),
-        yaac_hub::transfer::KEEPER_COMMAND => crate::wsl_keeper::run(rest),
+        yaac_hub::transfer::WSL_HUB_COMMAND => crate::wsl_service::run(rest),
         yaac_hub::interop::LOCAL_DAEMON_COMMAND => local_daemon(rest),
         "hub-info" => hub_info(rest, build),
         yaac_hub::interop::HUB_BRIDGE_COMMAND => hub_bridge(rest),
@@ -86,8 +86,9 @@ fn quit(args: &[String], build: &str) -> ExitCode {
         eprintln!("yaac quit: {e}");
         ok = false;
     }
-    // A hub that moved into this PC's WSL: its keeper stops it there.
-    if let Err(e) = crate::wsl_keeper::stop(&paths) {
+    // A hub that moved into this PC's WSL runs as a service there and is left alone; only a
+    // keeper of an earlier build (P414) is stopped, with its hub.
+    if let Err(e) = crate::wsl_service::stop_legacy_keeper(&paths) {
         eprintln!("yaac quit: {e}");
         ok = false;
     }
@@ -173,15 +174,13 @@ fn autostart(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut entry = match Autostart::from_env(exe) {
+    let entry = match Autostart::from_env(exe) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("yaac autostart: {e}");
             return ExitCode::FAILURE;
         }
     };
-    // The hub moved into this PC's WSL: the entry is its keeper's (`yaac wsl-hub`).
-    let mut keeper = None;
     let want = match cmd {
         "on" => Some(true),
         "off" => Some(false),
@@ -195,14 +194,7 @@ fn autostart(args: &[String]) -> ExitCode {
                 Err(code) => return code,
             };
             match moved_tombstone(&paths) {
-                Ok(Some(t)) if t.wsl_distro.is_some() => match crate::wsl_keeper::from_tombstone(&paths) {
-                    Some(k) => {
-                        entry.args = yaac_hub::transfer::keeper_args(&k);
-                        keeper = Some(k);
-                        Some(true)
-                    }
-                    None => Some(false),
-                },
+                // Moved, into WSL too: that hub's system service starts it there (P416).
                 Ok(Some(_)) => Some(false),
                 Ok(None) => match Settings::load(&paths.settings_file()) {
                     Ok(Some(s)) => Some(s.hub.always),
@@ -233,15 +225,6 @@ fn autostart(args: &[String]) -> ExitCode {
     }
     println!("{}", if want == Some(true) { "on" } else { "off" });
     if start && want == Some(true) {
-        if let Some(k) = keeper {
-            return match crate::wsl_keeper::start(&k) {
-                Ok(()) => ExitCode::SUCCESS,
-                Err(e) => {
-                    eprintln!("yaac: could not keep the hub in WSL running: {e}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
         return start_hub();
     }
     ExitCode::SUCCESS

@@ -1,6 +1,6 @@
 # 15 — Moving the hub to another machine, and several hubs on desktop
 
-**Proposed** (P408–P415).
+**Proposed** (P408–P413, P415, P416; P414 is superseded by P416).
 
 > **The owner's rule.** Hub transfer → the hub must be on one of the targets (Windows / WSL /
 > SSH). Android usage → Tailscale with the hub.
@@ -197,52 +197,113 @@ request carries the transfer's `opId`.
 - `hubId` and `clientId` are kept (clients recognise the same hub; each `yaacd` sees the same
   client); `hostName` becomes X's; `tailscaleAttach` is on.
 
-## Into this PC's WSL (P414)
+## Into this PC's WSL (P416)
 
-WSL stops a distro that nothing runs in, so a hub there cannot be left to `yaacd` or systemd. A
-small Windows process, the **keeper**, runs it instead:
+**The owner's decision.** A hub that moves into WSL runs there as a **systemd system service**
+(`/etc/systemd/system/yaac-hub.service`), so nothing on Windows has to start it ("otherwise
+the hub always depends on something starting it, like a Windows app"). **WSL is started on
+demand**, and the service then starts the hub by itself. Nothing on Windows needs elevation or
+raises a UAC or Firewall prompt (the owner's Windows account is not an administrator). This
+replaces the Windows-side keeper of P414.
 
+### What keeps a distro running (verified 2026-11-28, WSL 2.6.3.0, `systemd=true`)
+
+- **A systemd service does not keep the distro running.** Microsoft's systemd page says it
+  plainly: "systemd services will NOT keep your WSL instance alive. Your WSL instance will stay
+  alive in the same way it did previous to this update"
+  (<https://learn.microsoft.com/en-us/windows/wsl/systemd>). A distro stops a few seconds after
+  its last Windows-side client (`wsl.exe`, a terminal, an interop process) goes:
+  `instanceIdleTimeout`, default 15000 ms, "The number of milliseconds that a distro is idle,
+  before it is shut down. Set to -1 to disable auto shutdown"; the VM follows after
+  `vmIdleTimeout` (default 60000 ms, Windows 11)
+  (<https://learn.microsoft.com/en-us/windows/wsl/wsl-config>). `general.instanceIdleTimeout`
+  came with WSL 2.5.4 ("Introduce general.instanceIdleTimeout to control distribution
+  termination timeouts", <https://github.com/microsoft/WSL/releases>). Users report the same
+  on 2.6.x: "WSL2 shuts down despite active systemd service"
+  (<https://github.com/microsoft/WSL/issues/13416>).
+- **Nothing starts a distro by itself at Windows login.** No Microsoft page says WSL ever boots
+  a distro on its own. `[boot] command` in `wsl.conf` runs "when the WSL instance starts", not at
+  login. A distro starts when something on Windows runs in it: `wsl.exe`, a terminal, `\\wsl$`.
+  A per-user login entry (the `HKCU\…\Run` key, no admin) running `wsl.exe -d <d> --exec
+  /bin/true` would boot it, but the distro would stop again 15 s later. With
+  `instanceIdleTimeout=-1` in `%UserProfile%\.wslconfig` (a per-user file, no admin) it would
+  stay up, for every distro of that user. YAAC sets neither (see the owner's choice below).
+- **Not tested live.** A live test would have to leave the distro with no Windows-side client,
+  and the session that checked this runs inside that distro. The docs above decide it. Checked
+  live, harmlessly: `wsl.exe -d Ubuntu -u root --exec id` gives `uid=0(root)` with no password
+  and no elevation, and a Windows `.exe` started from a systemd-managed process with an empty
+  environment (`systemd-run --user … env -i … cmd.exe /c ver`) runs: interop falls back to
+  `/run/WSL/1_interop`. So a system-service hub can reach the PC's Windows `yaacd` as
+  `<yaac.exe> local-daemon`.
+- **The owner's choice**: the hub runs while the distro runs. The window attaching starts the
+  distro (its bridge is `wsl.exe`), and systemd starts the hub. Phones reach the hub over the
+  distro's own Tailscale **only while the distro runs**. The transfer confirmation says so.
+
+### How it is done
+
+- **Eligible** only when `yaacd` in the distro reports `wsl.service` in `hubHost/probe`
+  (`{ systemd, user, uid, dataDir, environment }`) with `systemd: true`. Without it the row
+  says "Update YAAC in X first." With systemd off it says "The hub runs in X as a system
+  service, and systemd is off there: add systemd=true under [boot] in /etc/wsl.conf, then
+  restart X (wsl --terminate X)." The unit is built from the probe at that point
+  (`yaac_hub::transfer::system_unit`). A user name or data directory that cannot go into a
+  unit fails the check, before anything moves.
 - **Arm without starting.** The old hub sends `hubHost/start {opId, armOnClose: true, startHub:
   false}`. When the connection closes, `yaacd` in the distro only promotes the files, the binary
   included. It enables no start-at-login entry and starts nothing. Then it writes
   `<data>/transfer-<opId>.result` with status `placed` (atomically). `<data>` is `YAAC_DATA_DIR`,
   else `$XDG_DATA_HOME/yaac`, else `~/.local/share/yaac`.
-- **The keeper first, then the tombstone.** In the tombstone step the old hub starts `yaac
-  wsl-hub --distro <d> [--user <u>] --after-transfer <opId>` detached. If the keeper cannot
-  start, the transfer fails and nothing has moved. Then the old hub writes `moved.json` with
-  `wslDistro: <d>` and replaces its start-at-login entry by `yaac wsl-hub --distro <d> [--user
-  <u>]`. On Windows that is the `Run` value `YAAC hub`. Then `hub/moved` goes to every client,
-  X is closed, and the hub exits as for any move.
-- **The keeper** (`crates/yaac-app/src/wsl_keeper.rs`) runs once per hub profile (named event
-  `Local\<pipe>-wsl-hub`) and has no window:
-  - It starts no hub unless this PC's tombstone names its distro. A keeper left over after
-    **Start the hub here again** never runs a second hub.
-  - After a transfer it waits up to 60 s for the old hub's lock to be free.
-  - It runs `wsl.exe -d <d> [-u <u>] --exec sh -c <script> sh [<opId>]`
-    (`yaac_hub::transfer::keeper_wsl_argv`). With an opId, the script waits up to 120 s for the
-    result file and stops unless it says `placed`. Then it `exec`s `<data>/bin/yaac hub`, so the
-    keeper's `wsl.exe` lives exactly as long as the hub.
-  - Output goes to `<data>/wsl-hub.log` on Windows.
-  - When the hub exits, the keeper exits. It restarts nothing (invariant 10). The next login
-    starts it again.
-- **`yaac quit`** also signals the keeper (`<name>-quit`). The keeper runs `yaac quit` in the
-  distro (`hub/shutdown`, stores checkpointed) and waits up to 20 s for the hub to exit. Then it
-  ends its `wsl.exe` and exits. **`yaac autostart sync`** keeps the keeper's entry while the
-  tombstone names a distro. With `--start` it starts the keeper, not `yaac hub`, so an update
-  restarts the hub in WSL.
+- **The service's install first, then the tombstone.** In the tombstone step the old hub writes
+  the unit text to `<data>/wsl-hub-<opId>.service` on Windows. Then it starts, detached, `yaac
+  wsl-hub install --distro <d> --data-dir <dir> --unit-file <f> --after-transfer <opId>`
+  (`crates/yaac-app/src/wsl_service.rs`). If that cannot start, the transfer fails and nothing
+  has moved. Then come `moved.json` (`wslDistro: <d>`, `via: wsl`), start-at-login of the hub
+  **off** on this PC (as for any move), `hub/moved` to every client, X closed, exit.
+- **The install** runs once and has no window:
+  - It waits up to 60 s for this PC's old hub to exit (its lock). So no connection to the
+    distro is left when it opens its own short one (invariant 1, the same rule as SSH Setup).
+  - Then it runs `wsl.exe -d <d> -u root --exec sh -c <install script> sh <unit> <dir> <opId>
+    /etc/systemd/system` (`yaac_hub::transfer::wsl_service_install_argv`). WSL lets the
+    Windows user be root in their own distros without a password, so **no password is asked,
+    sent or kept** (invariant 12).
+  - The script waits up to 120 s for the result file and stops unless it says `placed`, then
+    checks `<dir>/bin/yaac`. It writes the unit and runs `systemctl daemon-reload` and
+    `systemctl enable --now yaac-hub.service`.
+  - Output goes to `<data>/wsl-hub.log` on Windows. A failure is not retried (invariant 10): the
+    moved hub does not answer, and the window offers **Start the hub here again**.
+- **The unit** runs `<dir>/bin/yaac hub` as `yaacd`'s own user (`User=`). It sets `yaacd`'s
+  `HOME`, `YAAC_CONFIG_DIR`, `YAAC_DATA_DIR`, `YAAC_RUNTIME_DIR`, `YAAC_HOME` (when set) and
+  `PATH`. So the service, `yaac hub-bridge` in a WSL session and `yaacd` agree on the hub's
+  socket and lock. It has `Wants=`/`After=user-runtime-dir@<uid>.service`, since the socket is
+  under `/run/user/<uid>` as in a WSL session. It has `Restart=on-failure`: a crash is restarted;
+  a clean exit, `hub/shutdown`, or a hub that finds its own tombstone stays stopped. It is
+  `WantedBy=multi-user.target`: every boot of the distro starts the hub.
+- **Nothing on Windows keeps it.** There is no keeper and no login entry for it. `yaac quit`
+  and an update of YAAC on Windows leave the hub in WSL alone. Only a keeper of an earlier
+  build (P414), if one still runs, is asked to stop its hub. `yaac autostart sync` turns the
+  hub's login entry off while any tombstone exists. A login entry `yaac wsl-hub --distro …`
+  left from P414 does nothing.
 - **The new hub** in the distro is the Linux hub (P411). It binds the distro's own Tailscale
   address, never Windows', so Windows' port 47380 stays free for a hub here again. It reaches
   the PC's Windows `yaacd` as `<yaac.exe> local-daemon`
   (`yaac_hub::interop::InteropConnector`): one child process per target, as always
   (invariant 1). That command starts the Windows local `yaacd connect` bridge exactly as the
   Windows hub does (`yaac_hub::config::local_config`). It copies bytes between the bridge and
-  its standard streams.
-- **Start the hub here again** (offered as for any move). When the tombstone names a distro, it
-  first stops the keeper, which stops the hub there (on a thread of its own: it waits). Then the
-  login entry goes back to `yaac hub`, the tombstone goes, and the local hub starts. If the
-  keeper could not stop it, nothing else happens and the window says why. Its confirmation
-  says that the hub in WSL is stopped first and that whatever changed there since the move stays
-  there.
+  its standard streams. Its Windows `yaacd` link lasts as long as the distro runs.
+- **Start the hub here again** (offered as for any move). When the tombstone names a distro it
+  first runs `wsl.exe -d <d> -u root --exec sh -c <remove script>`
+  (`yaac_hub::transfer::wsl_service_remove_argv`), on a thread of its own. That boots the
+  distro if needed, then runs `systemctl disable --now yaac-hub.service` (SIGTERM: the hub
+  stops as on `hub/shutdown`), removes the unit and reloads systemd. It fails if the service
+  still runs afterwards. Only then does the tombstone go and the local hub start. If removing
+  fails, nothing else happens and the window says why. The confirmation says that the hub's
+  system service in WSL is stopped and removed first and that whatever changed there since
+  the move stays there.
+- **Not yet**: a hub in WSL moving on to the PC's Windows leaves its unit enabled. At the next
+  boot that hub finds its own tombstone and exits at once (it is not restarted), but the unit
+  stays until **Start the hub here again** or a move back into WSL rewrites it. Without linger,
+  logind may remove `/run/user/<uid>` once the user's last WSL session ends while the distro
+  is kept up some other way (`instanceIdleTimeout=-1`). The hub's socket would go with it.
 
 ## The PC's window (P415)
 
@@ -254,11 +315,16 @@ Windows. The saved hub keeps it (`hubs.json`), so a later start attaches the sam
 - **A bridge per attach.** The window runs one command whose standard streams reach the hub. It
   is killed when the attach closes (`HubClient::connect_command`). The command runs `yaac
   hub-bridge` there (`yaac_hub::interop::serve_hub_bridge`). That copies bytes between its
-  standard streams and the hub's own local socket, waiting up to 20 s for the hub to listen. So
+  standard streams and the hub's own local socket, waiting up to 30 s for the hub to listen. So
   the hub sees an ordinary local attach on the user's own socket. An attach is no target
   connection, so invariant 1 is unaffected.
-  - **WSL:** `wsl.exe -d <distro> [-u <user>] --exec sh -c '<data>/bin/yaac hub-bridge'`. If the
-    keeper does not run, the window starts it first, so the distro and the hub stay up.
+  - **WSL:** `wsl.exe -d <distro> [-u <user>] --exec sh -c '<script>'`
+    (`yaac_hub::transfer::wsl_bridge_script`). Starting `wsl.exe` boots a stopped distro, and
+    its systemd starts the hub's service (P416). While the bridge runs, it also keeps the
+    distro up. If the service is enabled but not active, the script starts it only when this
+    user may do so without a password (`systemctl start --no-ask-password`). Then it runs
+    `<data>/bin/yaac hub-bridge`. If the bridge fails, the script writes the service's state
+    (`yaac-hub.service is failed…`) on standard error. Standard output is the attach stream.
   - **SSH:** the system `ssh` with the hub's own options: `BatchMode=yes` (never a prompt),
     YAAC's known hosts, and YAAC's own key for that server when it is on the PC. Else the
     user's `ssh` defaults. The remote command is `exec sh -c '<data>/bin/yaac hub-bridge'`. **YAAC's own
@@ -306,7 +372,11 @@ Attach (window/phone ⇄ hub):
   a transfer start that the hub cannot accept.
 
 Daemon (hub ⇄ `yaacd` on X):
-- `hubHost/probe {}` → `{ os, arch, tailscale: { running, login?, ips[] }, portFree, hubRunning, wsl?: { distro }, hubBuild?, lastTransfer? }`
+- `hubHost/probe {}` → `{ os, arch, tailscale: { running, login?, ips[] }, portFree, hubRunning, wsl?: { distro, service? }, hubBuild?, lastTransfer? }`
+- `wsl.service` is `{ systemd, user, uid, dataDir, environment[] }`: what the PC needs to install the
+  hub's system unit in that distro (P416). `systemd` is whether systemd is the system manager.
+  `environment` holds `KEY=value` entries for the unit (`HOME`, the `YAAC_*_DIR` dirs,
+  `YAAC_HOME`, `PATH`).
 - `lastTransfer` is `{ opId, status, message? }` with `status` of `started`, `placed` or `failed`.
 - `hubHost/install { opId, url, sha256, size }` → `{ path }`
 - notification `hubHost/progress { opId, done, total }` reports download progress in bytes.
@@ -315,7 +385,8 @@ Daemon (hub ⇄ `yaacd` on X):
 - notification `hubHost/putComplete { stream, message? }` confirms staging on success and
   carries an error message on failure.
 - `hubHost/start { opId, armOnClose, startHub }` → `{ armed: true }` (`startHub` defaults to
-  `true`; `false` places the files only, for a hub in this PC's WSL)
+  `true`; `false` places the files only, for a hub in this PC's WSL, whose system service the PC
+  installs as root afterwards)
 - `hubHost/abort { opId }` → `{ }`
 - capability `hubHost` in `initialize.features` (a `yaacd` without it is not a candidate: "Update YAAC on
   that target first").

@@ -31,7 +31,7 @@ mod ssh_hub;
 #[cfg(feature = "hub")]
 mod device_drafts;
 #[cfg(feature = "hub")]
-pub mod wsl_keeper;
+pub mod wsl_service;
 
 mod agents_ui;
 mod app_icon;

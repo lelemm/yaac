@@ -13,7 +13,7 @@ use yaac_hub::client::HubClient;
 use yaac_hub::protocol::names as ext;
 use yaac_hub::settings::Settings;
 use yaac_hub::tailnet::{Tailnet, ThisNode};
-use yaac_hub::transfer::{HubAsset, TransferHost, UNREACHABLE_FIELD, WslKeeper};
+use yaac_hub::transfer::{HubAsset, TransferHost, UNREACHABLE_FIELD, WslService};
 use yaac_hub::{ExitReason, HubConfig, HubError};
 use yaac_protocol::attach::{self, HubMoved, HubTransferCandidatesResult, HubTransferProgress, TargetEntry, TargetTransport, hub_transfer};
 use yaac_protocol::methods::names;
@@ -57,12 +57,9 @@ impl TransferHost for FakeHost {
     fn interop_exe(&self) -> Option<String> {
         self.interop.clone()
     }
-    fn start_wsl_keeper(&self, keeper: &WslKeeper) -> Result<(), String> {
-        self.calls.lock().unwrap().push(format!("keeper {}", yaac_hub::transfer::keeper_args(keeper).join(" ")));
-        Ok(())
-    }
-    fn keeper_autostart(&self, keeper: &WslKeeper) -> Result<(), String> {
-        self.calls.lock().unwrap().push(format!("autostart {}", yaac_hub::transfer::keeper_args(keeper).join(" ")));
+    fn install_wsl_service(&self, service: &WslService) -> Result<(), String> {
+        let unit = service.unit.lines().find(|l| l.starts_with("ExecStart=")).unwrap_or_default();
+        self.calls.lock().unwrap().push(format!("service {} {} {} {unit}", service.distro, service.data_dir, service.op.as_str()));
         Ok(())
     }
 }
@@ -358,9 +355,9 @@ fn a_failure_before_the_hand_over_moves_nothing() {
     hub.shutdown();
 }
 
-/// Into this PC's own WSL (docs/15-hub-transfer.md#into-this-pcs-wsl): a distro with
-/// Tailscale of its own takes the hub; `yaacd` there only places the files, the keeper on
-/// Windows runs the new hub, and the PC's Windows target stays reachable through interop.
+/// Into this PC's own WSL (docs/15-hub-transfer.md#into-this-pcs-wsl-p416): a distro with
+/// systemd takes the hub; `yaacd` there only places the files, the hub's system service is
+/// set up from Windows, and the PC's Windows target stays reachable through interop.
 #[test]
 fn the_hub_moves_into_this_pcs_wsl() {
     let home = Home::new();
@@ -373,15 +370,22 @@ fn the_hub_moves_into_this_pcs_wsl() {
     for d in [&here, &ubuntu, &debian] {
         home.fakes.add(d);
     }
-    let wsl_probe = |ip: &str| {
+    let wsl_probe = |ip: &str, systemd: bool| {
         let mut p = support::fake_daemon::default_probe();
         p["tailscale"]["ips"] = json!([ip]);
-        p["wsl"] = json!({ "distro": "Ubuntu" });
+        p["wsl"] = json!({ "distro": "Ubuntu", "service": {
+            "systemd": systemd, "user": "dev", "uid": 1000, "dataDir": "/home/dev/.local/share/yaac",
+            "environment": ["HOME=/home/dev", "YAAC_RUNTIME_DIR=/run/user/1000/yaac"],
+        } });
         p
     };
     // Ubuntu runs tailscaled itself; Debian only sees Windows' Tailscale (mirrored networking).
-    ubuntu.hub_host(|h| h.probe = Some(wsl_probe("100.64.0.9")));
-    debian.hub_host(|h| h.probe = Some(wsl_probe("127.0.0.1")));
+    ubuntu.hub_host(|h| h.probe = Some(wsl_probe("100.64.0.9", true)));
+    debian.hub_host(|h| h.probe = Some(wsl_probe("127.0.0.1", true)));
+    let fedora = FakeDaemon::new("fedora");
+    fedora.set_features(vec![Capability::HubHost]);
+    home.fakes.add(&fedora);
+    fedora.hub_host(|h| h.probe = Some(wsl_probe("100.64.0.10", false)));
     let exe = "/mnt/c/Users/me/AppData/Local/Programs/YAAC/yaac.exe";
     let host = Arc::new(FakeHost { interop: Some(exe.into()), ..FakeHost::default() });
     let mut config = home.config();
@@ -394,7 +398,8 @@ fn the_hub_moves_into_this_pcs_wsl() {
     let here_id = add(&c, "here", &json!({ "kind": "local" })).id;
     let w = add(&c, "ubuntu", &json!({ "kind": "wsl", "distro": "Ubuntu", "user": "dev" })).id;
     let d = add(&c, "debian", &json!({ "kind": "wsl", "distro": "Debian" })).id;
-    for id in [&here_id, &w, &d] {
+    let f = add(&c, "fedora", &json!({ "kind": "wsl", "distro": "Fedora" })).id;
+    for id in [&here_id, &w, &d, &f] {
         c.wait_status(id, attach::ConnectionStatus::Connected);
     }
 
@@ -405,20 +410,27 @@ fn the_hub_moves_into_this_pcs_wsl() {
     let row = r.candidates.iter().find(|c| c.target_id == d).unwrap();
     assert_eq!(row.warning.as_deref(), Some("The phone can't reach the hub there until Tailscale runs on debian."));
     assert_eq!(reason(&r, &here_id).as_deref(), Some("This is the hub's own computer."));
+    // The hub runs there as a system service: no systemd, no hub.
+    assert!(reason(&r, &f).unwrap().contains("systemd is off there"), "{:?}", reason(&r, &f));
 
     c.call(attach::names::TRANSFER_START, json!({ "opId": "op-w", "targetId": w })).unwrap();
     let mut hub = hub;
     let exit = hub.join();
     assert_eq!(exit.reason, ExitReason::Moved);
 
-    // `yaacd` in the distro only places the files: the keeper starts the hub.
+    // `yaacd` in the distro only places the files: the hub's system service starts the hub.
     let params = ubuntu.hub_host(|h| h.calls.clone());
     assert_eq!(params.last().unwrap(), &(names::HUB_HOST_START.to_owned(), json!({ "opId": "op-w", "armOnClose": true, "startHub": false })));
-    // The keeper first (waiting for this hub to exit and the files to be placed), then the
-    // tombstone, then the login entry is the keeper's; the hub's own is not just turned off.
+    // The service's install first (it waits for this hub to exit and for the files to be
+    // placed), then the tombstone; this PC's start-at-login of the hub goes: nothing on
+    // Windows starts or keeps the hub in WSL.
     assert_eq!(
         *host.calls.lock().unwrap(),
-        [format!("asset {HUB} x86_64"), "keeper wsl-hub --distro Ubuntu --user dev --after-transfer op-w".into(), "autostart wsl-hub --distro Ubuntu --user dev".into()]
+        [
+            format!("asset {HUB} x86_64"),
+            r#"service Ubuntu /home/dev/.local/share/yaac op-w ExecStart=:"/home/dev/.local/share/yaac/bin/yaac" hub"#.into(),
+            "autostart off".into()
+        ]
     );
     let tomb = yaac_hub::paths::moved_tombstone(&home.paths()).unwrap().expect("tombstone");
     assert_eq!(tomb.address, "100.64.0.9:47380", "the distro's own Tailscale address");
