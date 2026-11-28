@@ -17,10 +17,10 @@ const PIPE_PREFIX = "\\\\.\\pipe\\";
 const PSK_ID = "yaacd";
 const PSK_TLS = { minVersion: "TLSv1.2", maxVersion: "TLSv1.2", ciphers: "PSK-AES256-GCM-SHA384" } as const;
 
-/** Distinguish the framed host protocol, the MCP bridge, and local JSON lines. */
-export function sniffConnection(socket: net.Socket): Promise<"host" | "bridge" | "channel" | null> {
+/** Distinguish the framed host protocol from the MCP bridge. */
+export function sniffConnection(socket: net.Socket): Promise<"host" | "bridge" | null> {
   return new Promise((resolve) => {
-    const done = (kind: "host" | "bridge" | "channel" | null) => {
+    const done = (kind: "host" | "bridge" | null) => {
       socket.off("readable", onReadable);
       socket.off("close", onClose);
       socket.off("end", onClose);
@@ -32,10 +32,7 @@ export function sniffConnection(socket: net.Socket): Promise<"host" | "bridge" |
       if (head.length < 4) return done(null);
       if (head.equals(BRIDGE_MAGIC)) return done("bridge");
       socket.unshift(head);
-      // A valid host length prefix is little-endian and its highest byte is always zero.
-      // A channel begins with a JSON object (optionally preceded by JSON whitespace).
-      const json = head[3] !== 0 && /^[{ \t\r\n]/.test(head.toString("ascii"));
-      done(json ? "channel" : "host");
+      done("host");
     };
     const onClose = () => done(null);
     socket.on("readable", onReadable);
@@ -56,6 +53,12 @@ export function socketPathFor(home: string, env: NodeJS.ProcessEnv = process.env
   if (Buffer.byteLength(preferred) <= MAX_SOCKET_PATH) return preferred;
   const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().username;
   return path.join(os.tmpdir(), `yaac-run-${uid}`, `${sha256Hex(path.resolve(home)).slice(0, 16)}.sock`);
+}
+
+/** Stable integrator endpoint. The Windows name belongs to the OS account, independent of YAAC_HOME. */
+export function channelPathFor(home: string, platform = process.platform, username?: string): string {
+  if (platform === "win32") return `${PIPE_PREFIX}yaac-channel-${username ?? os.userInfo().username}`;
+  return path.join(home, "run", "channel.sock");
 }
 
 function pipeKeyFile(socket: string): string {
@@ -88,11 +91,18 @@ export function connectDaemonSocket(socket: string, timeoutMs = 1000): Promise<n
   const windows = process.platform === "win32";
   const key = windows ? pipeKey(socket, false) : undefined;
   if (windows && !key) return Promise.resolve(null);
+  const s = key
+    ? tls.connect({ ...PSK_TLS, path: socket, rejectUnauthorized: false, pskCallback: () => ({ identity: PSK_ID, psk: key }) })
+    : net.connect(socket);
+  return waitForConnection(s, key ? "secureConnect" : "connect", timeoutMs);
+}
+
+export function connectChannelSocket(socket: string, timeoutMs = 1000): Promise<net.Socket | null> {
+  return waitForConnection(net.connect(socket), "connect", timeoutMs);
+}
+
+function waitForConnection(s: net.Socket, ready: "connect" | "secureConnect", timeoutMs: number): Promise<net.Socket | null> {
   return new Promise((resolve) => {
-    const s = key
-      ? tls.connect({ ...PSK_TLS, path: socket, rejectUnauthorized: false, pskCallback: () => ({ identity: PSK_ID, psk: key }) })
-      : net.connect(socket);
-    const ready = key ? "secureConnect" : "connect";
     const done = (ok: boolean) => {
       clearTimeout(t);
       s.removeListener(ready, connected);
@@ -193,20 +203,71 @@ export async function listenExclusive(socket: string, runDir: string, onConnecti
     const server = key
       ? tls.createServer({ ...PSK_TLS, handshakeTimeout: 1000, pskCallback: (_socket, identity) => identity === PSK_ID ? key : null }, onConnection)
       : net.createServer({ allowHalfOpen: false }, onConnection);
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      const old = process.umask(0o177);
-      try {
-        server.listen(socket, () => {
-          server.removeListener("error", reject);
-          resolve();
-        });
-      } finally {
-        process.umask(old);
-      }
-    });
+    await bindPrivate(server, socket);
     if (!windows) fs.chmodSync(socket, 0o600);
     fs.writeFileSync(path.join(runDir, "yaacd.pid"), `${process.pid}\n`, { mode: 0o600 });
     return server;
+  });
+}
+
+async function bindPrivate(server: net.Server, address: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    const old = process.umask(0o177);
+    try {
+      server.listen(address, () => {
+        server.removeListener("error", reject);
+        resolve();
+      });
+    } finally {
+      process.umask(old);
+    }
+  });
+}
+
+/** Bind the fixed channel endpoint without touching one that is owned by a running server. */
+export async function listenChannels(endpoint: string, onConnection: (s: net.Socket) => void): Promise<net.Server> {
+  const listen = async () => {
+    const server = net.createServer({ allowHalfOpen: false }, onConnection);
+    await bindPrivate(server, endpoint);
+    return server;
+  };
+
+  // libuv binds named pipes with FILE_FLAG_FIRST_PIPE_INSTANCE. Windows refuses
+  // the bind when another server already owns the name, including in another home.
+  if (process.platform === "win32") return listen();
+  if (Buffer.byteLength(endpoint) > MAX_SOCKET_PATH) throw new Error("channel socket path is too long");
+  const runDir = path.dirname(endpoint);
+  ensurePrivateDir(path.dirname(runDir));
+  ensurePrivateDir(runDir);
+  return withStartupLock(runDir, async () => {
+    const stale = fs.lstatSync(endpoint, { throwIfNoEntry: false });
+    if (stale) {
+      if (!stale.isSocket()) throw new Error("the channel socket path is occupied by another file");
+      // Only a positive refusal lets us remove a Unix socket left behind by a crashed daemon.
+      const code = await new Promise<string | undefined>((resolve) => {
+        const probe = net.connect(endpoint);
+        const timer = setTimeout(() => {
+          probe.destroy();
+          resolve("ETIMEDOUT");
+        }, 1000);
+        probe.once("connect", () => {
+          clearTimeout(timer);
+          probe.destroy();
+          resolve(undefined);
+        });
+        probe.once("error", (error: NodeJS.ErrnoException) => {
+          clearTimeout(timer);
+          resolve(error.code);
+        });
+      });
+      if (code !== "ECONNREFUSED" && code !== "ENOENT") throw new AlreadyServing("the channel endpoint is already in use");
+      const current = fs.lstatSync(endpoint, { throwIfNoEntry: false });
+      if (current && (current.dev !== stale.dev || current.ino !== stale.ino)) {
+        throw new AlreadyServing("the channel endpoint changed during startup");
+      }
+      if (current) fs.unlinkSync(endpoint);
+    }
+    return listen();
   });
 }

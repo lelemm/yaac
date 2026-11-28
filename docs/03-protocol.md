@@ -258,8 +258,8 @@ hangs up its call, and a dropped target ends it with an error.
 
 **Proposed (P417–P420).** A daemon with local channels advertises `channels` in
 `initialize.features`. The hub uses its existing target connection. Local integrators use
-a separate channel on the user’s own daemon socket, with newline-delimited JSON-RPC-style
-messages and the same string error codes as the daemon protocol.
+the [dedicated local channel endpoint](16-external-dialogs.md#connecting), with newline-delimited
+JSON-RPC messages and the same string error codes as the daemon protocol.
 
 | Direction | Method | Payload and result |
 | --- | --- | --- |

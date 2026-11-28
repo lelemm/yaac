@@ -10,7 +10,8 @@ import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { DialogOpenParams, DialogResultParams, InboxListResult, InboxUpdatedParams, RequestItem, ThreadReadResult } from "../src/protocol/generated/types.js";
 import { decodeMessage, type Message } from "../src/protocol/rpc.js";
-import { client, opId, readAll, RpcFailure, startDaemon, startThread, TestClient, tmpHome, until, waitTurnDone } from "./helpers.js";
+import { channelPathFor, connectDaemonSocket, listenChannels, socketPathFor } from "../src/session/server.js";
+import { opId, readAll, RpcFailure, startDaemon, startThread, TestClient, tmpHome, until, waitTurnDone } from "./helpers.js";
 
 class ChannelPeer {
   readonly received: Message[] = [];
@@ -52,6 +53,14 @@ const respond = (action: string, values: Record<string, unknown> = {}) => ({ req
 const cancel = { requestKind: "dialog", cancelled: true };
 const failedWith = (code: string) => (e: RpcFailure) => e.code === code;
 
+async function connectHost(socketPath: string, id?: string): Promise<TestClient> {
+  const socket = await connectDaemonSocket(socketPath);
+  assert.ok(socket, "the daemon transport is listening");
+  const host = new TestClient(socket);
+  await host.initialize(id);
+  return host;
+}
+
 async function setup(t: TestContext) {
   const home = tmpHome();
   const daemon = await startDaemon(home);
@@ -59,7 +68,7 @@ async function setup(t: TestContext) {
     await daemon.stop("test");
     fs.rmSync(home, { recursive: true, force: true });
   });
-  const host = await client(daemon);
+  const host = await connectHost(daemon.socketPath);
   return { home, daemon, host };
 }
 
@@ -80,10 +89,56 @@ function filesContain(dir: string, secret: string): boolean {
   });
 }
 
+test("the Windows pipe name is fixed for the OS account across daemon homes", () => {
+  assert.equal(channelPathFor("C:/OtherHome", "win32", "Example User"), String.raw`\\.\pipe\yaac-channel-Example User`);
+  assert.equal(channelPathFor("C:/FirstHome", "win32", "Example User"), channelPathFor("D:/SecondHome", "win32", "Example User"));
+  assert.equal(channelPathFor("/home/account/.yaac", "linux"), path.join("/home/account/.yaac", "run", "channel.sock"));
+});
+
+test("the Unix channel socket is private, separate, and a second listener cannot take it", { skip: process.platform === "win32" }, async (t) => {
+  const { home, daemon, host } = await setup(t);
+  const endpoint = channelPathFor(home);
+  assert.equal(endpoint, path.join(home, "run", "channel.sock"));
+  assert.notEqual(endpoint, daemon.socketPath);
+  const before = fs.lstatSync(endpoint);
+  assert.ok(before.isSocket());
+  assert.equal(before.mode & 0o777, 0o600);
+  await assert.rejects(listenChannels(endpoint, (s) => s.destroy()), /already in use/);
+  assert.equal(fs.lstatSync(endpoint).ino, before.ino);
+  const { peer } = await direct(endpoint);
+  await peer.call("channel/register", { name: "Original listener" });
+  await assert.rejects(host.request("channel/register", { name: "Host connection" }), failedWith("method_not_found"));
+  await daemon.stop("test endpoint cleanup");
+  assert.equal(fs.existsSync(endpoint), false);
+});
+
+test("the Unix endpoint is recovered after its owner crashes", { skip: process.platform === "win32" }, async (t) => {
+  const home = tmpHome();
+  const endpoint = channelPathFor(home);
+  fs.mkdirSync(path.dirname(endpoint), { mode: 0o700 });
+  const old = spawn(process.execPath, [
+    "-e", 'require("node:net").createServer().listen(process.argv[1], () => console.log("ready"))', endpoint,
+  ], { stdio: ["ignore", "pipe", "inherit"] });
+  let current: Awaited<ReturnType<typeof startDaemon>> | undefined;
+  t.after(async () => {
+    old.kill();
+    await current?.stop("test");
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+  await once(old.stdout, "data");
+  const stopped = once(old, "exit");
+  old.kill("SIGKILL");
+  await stopped;
+  assert.ok(fs.lstatSync(endpoint).isSocket());
+  current = await startDaemon(home);
+  const { peer } = await direct(endpoint);
+  await peer.call("channel/register", { name: "New listener" });
+});
+
 test("one inbox answer wins, and only the channel receives its secret value", async (t) => {
   const { home, daemon, host } = await setup(t);
-  const other = await client(daemon, "c_phone");
-  const { peer } = await direct(daemon.socketPath);
+  const other = await connectHost(daemon.socketPath, "c_phone");
+  const { peer } = await direct(channelPathFor(daemon.config.home));
   await assert.rejects(peer.call("dialog/open", dialog("choice")), failedWith("not_registered"));
   const registration = await peer.call<{ channelId: string }>("channel/register", { name: "Deployment", description: "Test integrator" });
   await assert.rejects(peer.call("channel/register", { name: "Other name" }), failedWith("already_registered"));
@@ -125,7 +180,7 @@ test("thread dialogs use the journal and survive a daemon restart with the origi
   const { threadId, turnId } = await startThread(host, "/fake say Ready");
   await host.request("thread/subscribe", { threadId, epoch: 1, afterSeq: 0 });
   await waitTurnDone(host, threadId, turnId);
-  const { peer } = await direct(daemon.socketPath);
+  const { peer } = await direct(channelPathFor(daemon.config.home));
   await peer.call("channel/register", { name: "Deployment" });
   await peer.call("dialog/open", dialog("withdrawn", threadId));
   const started = await host.waitEvent((msg) => msg.event.type === "itemStarted" && msg.event.item.kind === "request" && msg.event.item.requestKind === "dialog");
@@ -170,7 +225,7 @@ test("thread dialogs use the journal and survive a daemon restart with the origi
     await restarted.stop("test");
     fs.rmSync(restartHome, { recursive: true, force: true });
   });
-  const reconnect = await client(restarted);
+  const reconnect = await connectHost(restarted.socketPath);
   const thread = await reconnect.request<ThreadReadResult>("thread/read", { threadId, maxItems: 1 });
   const restored = [...thread.items, ...(thread.requiredItems ?? [])].find((i) => i.kind === "request" && i.requestId === requestId);
   assert.ok(restored && restored.kind === "request" && restored.requestKind === "dialog");
@@ -188,8 +243,8 @@ test("thread dialogs use the journal and survive a daemon restart with the origi
 
 test("disconnect marks only that channel's dialogs closed while another channel remains answerable", async (t) => {
   const { daemon, host } = await setup(t);
-  const first = await direct(daemon.socketPath);
-  const second = await direct(daemon.socketPath);
+  const first = await direct(channelPathFor(daemon.config.home));
+  const second = await direct(channelPathFor(daemon.config.home));
   const { channelId } = await first.peer.call<{ channelId: string }>("channel/register", { name: "First" });
   await second.peer.call("channel/register", { name: "Second" });
   await first.peer.call("dialog/open", dialog("same-id"));
@@ -209,7 +264,7 @@ test("disconnect marks only that channel's dialogs closed while another channel 
 
 test("layout validation rejects unsafe defaults, duplicate IDs, excessive depth, and unknown required inputs", async (t) => {
   const { home, daemon, host } = await setup(t);
-  const { peer } = await direct(daemon.socketPath);
+  const { peer } = await direct(channelPathFor(daemon.config.home));
   await peer.call("channel/register", { name: "Layouts" });
   const open = (layout: object) => peer.call("dialog/open", { requestId: "validate", title: "Validate", layout });
   const SECRET = "secret-default-should-never-persist";
@@ -251,9 +306,8 @@ test("yaacd channel registers over stdio and receives a dialog result", async (t
     fs.rmSync(home, { recursive: true, force: true });
   });
   const { channelId } = await peer.response<{ channelId: string }>("yaacd-channel-register");
-  const host = await TestClient.connect(path.join(home, "run", "yaacd.sock"));
-  const init = await host.initialize();
-  assert.ok(init.features.includes("channels"));
+  const host = await connectHost(socketPathFor(home));
+  assert.ok(host.messages.some((m) => m.type === "response" && (m.result as { features?: string[] }).features?.includes("channels")));
   await peer.call("dialog/open", dialog("cli"));
   const inbox = await host.request<InboxListResult>("inbox/list");
   assert.deepEqual(inbox.channels, [{ channelId, name: "CLI integrator", description: "Built bundle" }]);

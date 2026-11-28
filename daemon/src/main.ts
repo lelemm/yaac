@@ -2,7 +2,7 @@
 //
 //   yaacd serve      the persistent per-user daemon, on a user-only Unix socket
 //   yaacd connect    a stdio ⇄ socket bridge; starts the daemon (detached) if none is serving
-//   yaacd channel    a JSON-lines integrator bridge, registered under --name
+//   yaacd channel    debug bridge to the local channel endpoint
 //   yaacd mcp        the `yaac` MCP server on stdio, for one harness thread (started by the
 //                    harness; see src/mesh/bridge.ts)
 //   yaacd version    print the build
@@ -60,10 +60,11 @@ async function serve(args: string[]): Promise<void> {
 async function connect(channel?: { name: string; description?: string }): Promise<void> {
   const env = process.env;
   const { defaultHome } = await import("./session/daemon.js");
-  const { socketPathFor, connectDaemonSocket } = await import("./session/server.js");
+  const { channelPathFor, connectChannelSocket, connectDaemonSocket, socketPathFor } = await import("./session/server.js");
   const home = defaultHome(env);
-  const socket = socketPathFor(home, env);
-  let sock = await connectDaemonSocket(socket);
+  const socket = channel ? channelPathFor(home) : socketPathFor(home, env);
+  const dial = channel ? connectChannelSocket : connectDaemonSocket;
+  let sock = await dial(socket);
   if (!sock) {
     // Nothing is serving: start the daemon, detached, so it outlives this bridge.
     const child = spawn(process.execPath, [...process.execArgv, process.argv[1]!, "serve"], {
@@ -76,7 +77,7 @@ async function connect(channel?: { name: string; description?: string }): Promis
     const deadline = Date.now() + 15000;
     while (!sock && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 50));
-      sock = await connectDaemonSocket(socket);
+      sock = await dial(socket);
     }
     if (!sock) {
       process.stderr.write(`yaacd ${channel ? "channel" : "connect"}: no daemon is serving on ${socket}\n`);

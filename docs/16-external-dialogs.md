@@ -15,17 +15,33 @@ integrator app → yaacd on its target → hub → every attached UI
 integrator app ← yaacd on its target ← hub ← the UI that answered
 ```
 
+## Connecting
+
+Connect directly to the local daemon while it is running. Send one JSON-RPC object per line,
+encoded as UTF-8. Each connection starts with `channel/register`.
+
+| OS | Address |
+| --- | --- |
+| Linux, WSL, macOS | `~/.yaac/run/channel.sock` |
+| Windows | `\\.\pipe\yaac-channel-<USERNAME>` |
+
+On Unix the socket accepts only channel connections. It has mode `0600` and lives inside the
+daemon's private run directory. A daemon configured with a different home places `run/channel.sock`
+under that home. On Windows the plain pipe name uses the daemon's OS account name and stays the
+same across daemon homes and builds. When the endpoint is already owned, a second daemon leaves
+it with the owner.
+
+Node 22.22.3's bundled libuv creates the Windows pipe with the default Windows security
+descriptor. Ordinary users of other accounts can have read access under that descriptor,
+but cannot open the pipe for read/write or send `channel/register`. The creator, LocalSystem,
+and administrators have full control. Each connection receives results only for dialogs it
+registered and opened. [Node's libuv source](https://github.com/nodejs/node/blob/v22.22.3/deps/uv/src/win/pipe.c#L505-L513),
+[Microsoft's named-pipe access rights](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights).
+
+See [the example integrator](../examples/dialog-demo.mjs) for a runtime-defined dropdown.
+
 ## The integrator's side (P417)
 
-- **Transport.** The integrator speaks newline-delimited JSON-RPC 2.0 over **`yaacd channel
-  --name <app>`** (stdio), a bridge like `yaacd connect` that attaches to the target's running
-  `yaacd` (starting it if none serves) and registers the channel. On Linux an integrator may also
-  connect to `yaacd`'s Unix socket directly and send `channel/register` itself. No authentication of
-  its own in v1: the socket and the bridge are the user's own (user-only permissions), as the owner
-  asked. The stdio bridge emits the result of its automatic registration with RPC ID
-  `"yaacd-channel-register"`. Wait for that response before opening a dialog. See
-  [the demo integrator](../examples/dialog-demo.mjs) for a drop-down defined when the app opens
-  the dialog.
 - **`channel/register { name, description? }`** → `{ channelId }`. The name is shown to the user as
   the dialog's source ("From <name> on <target>"). One channel per connection; it ends when the
   connection closes.

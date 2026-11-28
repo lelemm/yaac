@@ -20,7 +20,7 @@ import { ensureDir, readJson, writeJsonAtomic } from "../util/fsx.js";
 import { Core } from "./core.js";
 import { ClientSession, DEFAULT_CLIENT_OPTIONS, type ClientOptions, type MethodHandler } from "./client.js";
 import { DEFAULT_JOURNAL_OPTIONS, type JournalOptions } from "./journal.js";
-import { listenExclusive, removePipeKey, sniffConnection, socketPathFor } from "./server.js";
+import { channelPathFor, listenChannels, listenExclusive, removePipeKey, sniffConnection, socketPathFor } from "./server.js";
 import { Mesh, type MeshOptions } from "../mesh/mesh.js";
 import { serveBridge } from "../mesh/mcp.js";
 import { Forge, type ForgeOptions } from "../forge/forge.js";
@@ -100,6 +100,7 @@ export class Daemon implements FrozenCoreHost {
   /** Extra request handlers by method name (for later packages, e.g. the mesh). */
   readonly extraMethods = new Map<string, MethodHandler>();
   private server: net.Server | null = null;
+  private channelServer: net.Server | null = null;
   /** The socket file this daemon bound (device and inode), to remove only that one on stop. */
   private socketId: { dev: number; ino: number } | null = null;
   private connections = new Set<ServerConnection>();
@@ -179,9 +180,7 @@ export class Daemon implements FrozenCoreHost {
         s.destroy();
         return;
       }
-      s.on("error", () => {});
-      serving.localLinks.add(s);
-      s.once("close", () => serving.localLinks.delete(s));
+      serving.trackLocalLink(s);
       void serving.ready.then(async () => {
         const kind = await sniffConnection(s);
         if (serving.isStopping || !kind) {
@@ -189,7 +188,6 @@ export class Daemon implements FrozenCoreHost {
           return;
         }
         if (kind === "bridge") serveBridge(s, (ticket, call) => serving.mesh.callWithTicket(ticket, call), (l) => serving.log(l));
-        else if (kind === "channel") serving.core.channels.attach(s);
         else {
           serving.localLinks.delete(s);
           serving.attach(s);
@@ -213,6 +211,7 @@ export class Daemon implements FrozenCoreHost {
       writeJsonAtomic(stateFile, { stateFormat: STATE_FORMAT, clean: false } satisfies StateFile);
       await daemon.core.start();
       daemon.mesh.start();
+      if (server) await daemon.startChannels();
       daemon.markReady();
       daemon.log(`serving build ${config.build} on ${socket}`);
       daemon.checkIdle();
@@ -220,6 +219,30 @@ export class Daemon implements FrozenCoreHost {
     } catch (error) {
       server?.close();
       throw error;
+    }
+  }
+
+  private trackLocalLink(socket: net.Socket): void {
+    socket.on("error", () => {});
+    this.localLinks.add(socket);
+    socket.once("close", () => this.localLinks.delete(socket));
+  }
+
+  private async startChannels(): Promise<void> {
+    const endpoint = channelPathFor(this.config.home);
+    try {
+      this.channelServer = await listenChannels(endpoint, (socket) => {
+        if (this.isStopping) {
+          socket.destroy();
+          return;
+        }
+        this.trackLocalLink(socket);
+        this.core.channels.attach(socket);
+      });
+      this.log(`serving integrator channels on ${endpoint}`);
+    } catch (error) {
+      // Another daemon may own the fixed endpoint. The hub connection and inbox still work.
+      this.log(`integrator channels unavailable on ${endpoint}: ${(error as Error).message}`);
     }
   }
 
@@ -359,6 +382,7 @@ export class Daemon implements FrozenCoreHost {
       this.log(`stopping: ${reason}`);
       if (this.idleTimer) clearTimeout(this.idleTimer);
       this.server?.close();
+      this.channelServer?.close();
       if (interrupt) await this.core.interruptAllForUpdate();
       await Promise.all([...this.localLinks].map((socket) => new Promise<void>((resolve) => {
         socket.once("close", resolve);
