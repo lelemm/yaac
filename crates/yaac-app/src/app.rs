@@ -226,6 +226,18 @@ pub(crate) struct UiState {
     pub(crate) wpf_text: std::cell::RefCell<crate::wpf::TextUpdates>,
     pub settings: bool,
     pub settings_page: Page,
+    /// Settings → Advanced → Hub → Transfer hub to…: the destination picked, and whether the
+    /// candidates were asked for while the page is shown.
+    pub transfer_target: Option<TargetId>,
+    pub transfer_asked: bool,
+    /// The saved hubs' drop-down is open (egui).
+    pub hubs_menu: bool,
+    /// Settings → Hubs… → Add a hub, as typed (egui).
+    pub hub_add: (String, String),
+    /// egui's confirmations: Transfer, Remove this hub, Start the hub here again.
+    pub transfer_confirm: bool,
+    pub hub_remove_confirm: Option<usize>,
+    pub reclaim_confirm: bool,
     pub theme: ThemeChoice,
     pub themes: std::sync::Arc<yaac_core::themes::Catalog>,
     pub font_size: f32,
@@ -385,6 +397,13 @@ impl UiState {
             wpf_text: Default::default(),
             settings: false,
             settings_page: Page::Targets,
+            transfer_target: None,
+            transfer_asked: false,
+            hubs_menu: false,
+            hub_add: (String::new(), String::new()),
+            transfer_confirm: false,
+            hub_remove_confirm: None,
+            reclaim_confirm: false,
             theme,
             themes: Default::default(),
             font_size: theme::size::UI,
@@ -677,6 +696,21 @@ pub(crate) enum Action {
     ApprovalExplanationModel(TargetId, InstanceId, Option<yaac_protocol::ModelId>),
     SetAlways(bool),
     ClearCache,
+    /// Saved hubs on the desktop (P412): attach to this one instead (detaching the current).
+    SelectHub(usize),
+    /// Settings → Hubs… → Add: the address and an optional label.
+    AddHub(String, String),
+    RemoveHub(usize),
+    /// Attach to the selected hub again now.
+    RetryHub,
+    /// The hub moved away and does not answer: start it here again (docs/15-hub-transfer.md).
+    ReclaimHub,
+    /// Settings → Advanced → Hub → Transfer hub to…: ask for the candidates again.
+    TransferCandidates,
+    /// The destination picked in the drop-down.
+    TransferTarget(TargetId),
+    /// Confirmed: move the hub to the picked target.
+    TransferStart,
     FsList(TargetId, String),
     /// `skills/list` for a composer's picker; `true`: ask again (Retry).
     Skills(yaac_core::skills::SkillScopeKey, bool),
@@ -720,6 +754,11 @@ pub(crate) enum Clock {
     System,
 }
 
+#[cfg(feature = "hub")]
+pub(crate) mod hubs;
+#[cfg(feature = "hub")]
+pub(crate) mod hub_views;
+
 /// The attachment to a real hub.
 #[cfg(feature = "hub")]
 pub(crate) struct HubConn {
@@ -737,6 +776,98 @@ pub(crate) struct HubConn {
     ssh: std::rc::Rc<std::cell::RefCell<crate::ssh_hub::SshBridge>>,
     /// A hub on another machine: this device keeps its own drafts (P393).
     device_drafts: Option<crate::device_drafts::DeviceDrafts>,
+    /// `hub/moved` from this hub was followed.
+    moved_followed: bool,
+    /// Since when this hub has not answered (for **Start the hub here again**).
+    lost_since: Option<std::time::Instant>,
+}
+
+/// How long a hub that moved away from this PC may not answer before the window offers to
+/// start it here again: the new hub needs a moment to start after the hand-over.
+#[cfg(feature = "hub")]
+pub(crate) const RECLAIM_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The desktop's saved hubs (P412) and what it needs to attach to each.
+#[cfg(feature = "hub")]
+pub(crate) struct DeskHubs {
+    pub saved: hubs::SavedHubs,
+    /// This PC's hub: its files, the binary, the login entry.
+    local: AttachConfig,
+    /// This PC's hub moved away (its tombstone, or a `hub/moved` the window followed).
+    pub moved_here: Option<yaac_hub::paths::MovedTombstone>,
+    /// Why the last Add was refused.
+    pub add_error: Option<String>,
+    /// **Start the hub here again** for a hub in this PC's WSL: its keeper is stopping it there
+    /// (off the UI thread); the reclaim carries on when this answers.
+    pub reclaiming: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+}
+
+#[cfg(feature = "hub")]
+impl DeskHubs {
+    /// The saved hubs in the local hub's config dir. A tombstone left by this PC's hub after a
+    /// transfer (`moved.json`) moves This PC's entry to the new address, so the window never
+    /// starts a hub that has moved.
+    pub(crate) fn new(local: AttachConfig) -> Self {
+        let mut saved = hubs::SavedHubs::load(&local.paths.config_dir);
+        let moved_here = yaac_hub::paths::moved_tombstone(&local.paths).ok().flatten();
+        if let Some(t) = &moved_here {
+            saved.moved(&t.hub_id, &t.address, &t.host_name);
+        }
+        Self { saved, local, moved_here, add_error: None, reclaiming: None }
+    }
+
+    /// Saved hubs on a local hub that is never attached (renderer tests).
+    #[cfg(test)]
+    pub(crate) fn for_test(saved: hubs::SavedHubs) -> Self {
+        let paths = yaac_hub::HubPaths { config_dir: "c".into(), data_dir: "d".into(), runtime_dir: "r".into() };
+        let local = AttachConfig { paths, exe: std::path::PathBuf::new(), autostart: None, start_timeout: std::time::Duration::from_secs(1), remote: None };
+        Self { saved, local, moved_here: None, add_error: None, reclaiming: None }
+    }
+
+    /// The attach configuration of the selected hub.
+    pub(crate) fn config(&self) -> AttachConfig {
+        let hub = self.saved.current();
+        match &hub.address {
+            None => self.local.clone(),
+            Some(address) => {
+                // This client's own files for that hub (its device drafts, P393).
+                let dir: String = address.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
+                let under = |p: &std::path::Path| p.join("remote-hubs").join(&dir);
+                let paths = yaac_hub::HubPaths {
+                    config_dir: under(&self.local.paths.config_dir),
+                    data_dir: under(&self.local.paths.data_dir),
+                    runtime_dir: under(&self.local.paths.runtime_dir),
+                };
+                AttachConfig::remote(address.clone(), paths)
+            }
+        }
+    }
+
+    /// The selected hub is the one that moved away from this PC.
+    pub(crate) fn on_moved_hub(&self) -> bool {
+        let hub = self.saved.current();
+        self.moved_here.as_ref().is_some_and(|t| !hub.is_local() && hub.hub_id.as_deref() == Some(t.hub_id.as_str()))
+    }
+}
+
+/// A connection to the hub `config` names, and a client and SSH setup backend on it.
+#[cfg(feature = "hub")]
+fn connect_hub(config: AttachConfig, ctx: &egui::Context) -> (HubConn, Client, crate::ssh_hub::HubSsh) {
+    let attach = Arc::new(Mutex::new(HubAttach::start(config.clone(), waker(ctx))));
+    let mut c = hub_client(&attach, config.is_remote());
+    let ssh = std::rc::Rc::new(std::cell::RefCell::new(crate::ssh_hub::SshBridge::new(ctx.clone())));
+    let backend = crate::ssh_hub::HubSsh(ssh.clone());
+    // A hub on another machine (the phone, or a desktop on a remote hub): drafts stay on this
+    // device and never cross the link (P393).
+    let device_drafts = config.is_remote().then(|| crate::device_drafts::DeviceDrafts::open(&config.paths.data_dir));
+    if let Some(d) = &device_drafts {
+        c.keep_drafts_on_device(d.stored());
+    }
+    let conn = HubConn {
+        attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false, prefs_asked: false,
+        next_reattach: None, reattach_delay: REATTACH_FIRST, ssh, device_drafts, moved_followed: false, lost_since: None,
+    };
+    (conn, c, backend)
 }
 
 /// The SSH setup backend of a window attached to no hub (or built without one): SSH setup is
@@ -803,6 +934,9 @@ pub(crate) struct YaacApp {
     pub shots: Option<Shots>,
     #[cfg(feature = "hub")]
     pub hub: Option<HubConn>,
+    /// The saved hubs of a desktop window (P412); `None` on the phone and in the demo.
+    #[cfg(feature = "hub")]
+    pub(crate) desk_hubs: Option<DeskHubs>,
     /// The host is Windows (or pretends to be, `--host windows`): WSL settings are shown.
     pub host_windows: bool,
     pub ssh: Box<dyn SshSetupBackend>,
@@ -881,7 +1015,6 @@ fn waker(ctx: &egui::Context) -> crate::attach::Waker {
     Arc::new(move || ctx.request_repaint())
 }
 
-#[cfg(feature = "hub")]
 /// The first wait before a lost remote hub is attached again, and the longest.
 #[cfg(feature = "hub")]
 const REATTACH_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
@@ -942,6 +1075,8 @@ impl YaacApp {
         cc.egui_ctx.options_mut(|o| o.input_options.line_scroll_speed = LINE_SCROLL_SPEED);
         #[cfg(feature = "hub")]
         let mut hub = None;
+        #[cfg(feature = "hub")]
+        let mut desk_hubs = None;
         let (client, demo, scenario, clock, ssh): (Client, Option<DemoHub>, Scenario, Clock, Box<dyn SshSetupBackend>) = match launch.demo {
             Some(s) => {
                 let (c, h) = demo_client(s);
@@ -950,17 +1085,18 @@ impl YaacApp {
             None => {
                 #[cfg(feature = "hub")]
                 if let Some(config) = launch.attach {
-                    let attach = Arc::new(Mutex::new(HubAttach::start(config.clone(), waker(&cc.egui_ctx))));
-                    let mut c = hub_client(&attach, config.is_remote());
-                    let ssh = std::rc::Rc::new(std::cell::RefCell::new(crate::ssh_hub::SshBridge::new(cc.egui_ctx.clone())));
-                    let backend = crate::ssh_hub::HubSsh(ssh.clone());
-                    // A hub on another machine (the phone): drafts stay on this device and
-                    // never cross the link (P393).
-                    let device_drafts = config.is_remote().then(|| crate::device_drafts::DeviceDrafts::open(&config.paths.data_dir));
-                    if let Some(d) = &device_drafts {
-                        c.keep_drafts_on_device(d.stored());
-                    }
-                    hub = Some(HubConn { attach, config, shutdown_sent: false, restarted: false, prefs_loaded: false, prefs_asked: false, next_reattach: None, reattach_delay: REATTACH_FIRST, ssh, device_drafts });
+                    // A desktop window keeps saved hubs (P412); a client of a hub on another
+                    // machine started for one address (the phone's controllers) does not.
+                    let config = if config.is_remote() {
+                        config
+                    } else {
+                        let d = DeskHubs::new(config);
+                        let config = d.config();
+                        desk_hubs = Some(d);
+                        config
+                    };
+                    let (conn, c, backend) = connect_hub(config, &cc.egui_ctx);
+                    hub = Some(conn);
                     (c, None, Scenario::Fleet, Clock::System, Box::new(backend) as Box<dyn SshSetupBackend>)
                 } else {
                     let c = Client::new(Box::new(yaac_core::link::DetachedLink), crate::BUILD, ClientId::new("window"));
@@ -997,6 +1133,8 @@ impl YaacApp {
             drafts_flushed: 0.0,
             #[cfg(feature = "hub")]
             hub,
+            #[cfg(feature = "hub")]
+            desk_hubs,
             host_windows: launch.host_windows,
             ssh,
             zone: host_zone(),
@@ -1624,6 +1762,56 @@ impl YaacApp {
                     }
                 }
                 Action::ClearCache => self.client.clear_cache(),
+                Action::SelectHub(index) => {
+                    #[cfg(feature = "hub")]
+                    if self.desk_hubs.as_mut().is_some_and(|d| d.saved.select(index)) {
+                        self.attach_selected_hub();
+                    }
+                    #[cfg(not(feature = "hub"))]
+                    let _ = index;
+                }
+                Action::AddHub(address, label) => {
+                    #[cfg(feature = "hub")]
+                    if let Some(d) = &mut self.desk_hubs {
+                        match d.saved.add(&address, &label) {
+                            Ok(_) => d.add_error = None,
+                            Err(e) => d.add_error = Some(e),
+                        }
+                    }
+                    #[cfg(not(feature = "hub"))]
+                    let _ = (address, label);
+                }
+                Action::RemoveHub(index) => {
+                    #[cfg(feature = "hub")]
+                    if let Some(d) = &mut self.desk_hubs {
+                        d.saved.remove(index);
+                    }
+                    #[cfg(not(feature = "hub"))]
+                    let _ = index;
+                }
+                Action::RetryHub => {
+                    #[cfg(feature = "hub")]
+                    if self.desk_hubs.is_some() {
+                        self.attach_selected_hub();
+                    } else if let Some(h) = &mut self.hub {
+                        h.next_reattach = Some(std::time::Instant::now());
+                    }
+                }
+                Action::ReclaimHub => {
+                    #[cfg(feature = "hub")]
+                    self.reclaim_hub();
+                }
+                Action::TransferCandidates => self.client.load_transfer_candidates(),
+                Action::TransferTarget(target) => self.ui.transfer_target = Some(target),
+                Action::TransferStart => {
+                    let eligible = self.ui.transfer_target.as_ref().filter(|t| {
+                        self.client.state.hub.transfer_candidates.as_ref().and_then(|c| c.as_ref().ok())
+                            .is_some_and(|list| list.iter().any(|c| &c.target_id == *t && c.eligible))
+                    }).cloned();
+                    if let Some(target) = eligible {
+                        self.client.start_hub_transfer(&target);
+                    }
+                }
                 Action::FsList(t, path) => self.client.fs_list(&t, &path),
                 Action::Skills(scope, force) => self.client.skills_list(&scope, force),
                 Action::Scene(s) => {
@@ -1730,9 +1918,100 @@ impl YaacApp {
         }
     }
 
+    /// Attach to the selected saved hub (P412), detaching the current one: a new client on a
+    /// new connection, as a window started on that hub would have.
+    #[cfg(feature = "hub")]
+    pub(crate) fn attach_selected_hub(&mut self) {
+        let Some(config) = self.desk_hubs.as_ref().map(DeskHubs::config) else { return };
+        self.client.flush_drafts();
+        self.keep_device_drafts(true);
+        let (conn, client, backend) = connect_hub(config, &self.ctx);
+        self.client = client;
+        self.hub = Some(conn);
+        self.ssh = Box::new(backend);
+        self.browsers = Default::default();
+        self.preview_ui = Default::default();
+        self.browser_agent = Default::default();
+        self.ui.composer_history_loading = None;
+        self.ui.transfer_asked = false;
+        self.ui.transfer_target = None;
+        self.ui.hubs_menu = false;
+    }
+
+    /// **Start the hub here again** is offered: the selected hub moved away from this PC and
+    /// has not answered for [`RECLAIM_AFTER`].
+    #[cfg(feature = "hub")]
+    pub(crate) fn reclaim_offered(&self) -> bool {
+        self.desk_hubs.as_ref().is_some_and(DeskHubs::on_moved_hub)
+            && self.hub.as_ref().and_then(|h| h.lost_since).is_some_and(|t| t.elapsed() >= RECLAIM_AFTER)
+    }
+
+    /// Start the hub here again: the tombstone goes, This PC's entry comes back, and the local
+    /// hub is started from the data the hand-over left here. A hub in this PC's WSL is stopped
+    /// first, by its keeper (`yaac quit` in the distro), so two hubs never run; that waits, so
+    /// it runs on a thread of its own and [`YaacApp::reclaim_upkeep`] carries on.
+    #[cfg(feature = "hub")]
+    fn reclaim_hub(&mut self) {
+        if !self.reclaim_offered() { return }
+        let Some(d) = &mut self.desk_hubs else { return };
+        if d.reclaiming.is_some() { return }
+        if d.moved_here.as_ref().is_some_and(|t| t.wsl_distro.is_some()) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (paths, ctx) = (d.local.paths.clone(), self.ctx.clone());
+            let started = std::thread::Builder::new().name("yaac-reclaim".into()).spawn(move || {
+                let result = crate::wsl_keeper::stop(&paths).map(|_| ()).map(|()| {
+                    // The keeper's login entry goes back to the hub's own.
+                    if cfg!(windows) && let Err(e) = crate::wsl_keeper::restore_hub_autostart() {
+                        eprintln!("yaac: start-at-login still runs the WSL keeper: {e}");
+                    }
+                });
+                let _ = tx.send(result);
+                ctx.request_repaint();
+            });
+            match started {
+                Ok(_) => d.reclaiming = Some(rx),
+                Err(e) => self.client.state.hub.last_error = Some(format!("Could not start the hub here: {e}")),
+            }
+            return;
+        }
+        self.reclaim_finish();
+    }
+
+    /// The hub in WSL has stopped (or could not be): finish **Start the hub here again**.
+    #[cfg(feature = "hub")]
+    fn reclaim_upkeep(&mut self) {
+        let Some(d) = &mut self.desk_hubs else { return };
+        let Some(rx) = &d.reclaiming else { return };
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the reclaim stopped".into()),
+        };
+        d.reclaiming = None;
+        match result {
+            Ok(()) => self.reclaim_finish(),
+            Err(e) => self.client.state.hub.last_error = Some(format!("Could not stop the hub in WSL, so it was not started here: {e}")),
+        }
+    }
+
+    #[cfg(feature = "hub")]
+    fn reclaim_finish(&mut self) {
+        let Some(d) = &mut self.desk_hubs else { return };
+        let Some(t) = d.moved_here.clone() else { return };
+        if let Err(e) = yaac_hub::paths::remove_moved_tombstone(&d.local.paths) {
+            self.client.state.hub.last_error = Some(format!("Could not start the hub here: {e}"));
+            return;
+        }
+        d.saved.reclaim(&t.hub_id);
+        d.moved_here = None;
+        self.attach_selected_hub();
+    }
+
     /// The hello outcomes, the old hub's replacement, and the persisted choices.
     #[cfg(feature = "hub")]
     fn hub_upkeep(&mut self) {
+        self.reclaim_upkeep();
+        let reclaim = self.reclaim_line();
         let Some(h) = &mut self.hub else { return };
         if let Some(history) = self.client.take_composer_history() {
             let newer = self.ui.composer_history_loading.take().unwrap_or_default();
@@ -1743,6 +2022,30 @@ impl YaacApp {
             }
         }
         let status = h.attach.lock().map_or(LinkStatus::Closed, |a| a.status());
+        if let Some(d) = &mut self.desk_hubs {
+            // The saved entry learns the hub's name and id.
+            if self.client.state.hub.attached {
+                d.saved.hello(self.client.state.hub.hub_id.as_deref(), self.client.state.hub.host_name.as_deref());
+            }
+            // The hub moved (docs/15-hub-transfer.md): the same entry takes the new address and
+            // the window attaches there; the first attempts fail until the new hub listens, and
+            // the normal reattach backoff carries on from there.
+            if !h.moved_followed && let Some(m) = self.client.state.hub.moved.clone() {
+                h.moved_followed = true;
+                let was_local = d.saved.current().is_local();
+                if d.saved.moved(&m.hub_id, &m.address, &m.host_name) {
+                    if was_local {
+                        let at_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| i64::try_from(t.as_millis()).unwrap_or(0));
+                        // The old hub wrote its tombstone before it said so; it also says whether
+                        // the hub went into this PC's WSL.
+                        let written = yaac_hub::paths::moved_tombstone(&d.local.paths).ok().flatten().filter(|t| t.hub_id == m.hub_id);
+                        d.moved_here = Some(written.unwrap_or(yaac_hub::paths::MovedTombstone { hub_id: m.hub_id, address: m.address, host_name: m.host_name, at_ms, wsl_distro: None }));
+                    }
+                    self.attach_selected_hub();
+                    return;
+                }
+            }
+        }
         // A hub on another machine (the phone over Tailscale) drops whenever the phone sleeps or
         // changes network. Attach again, waiting longer after each failure, as a local window's
         // hub supervisor would; nothing that was in flight is re-sent (operation ids decide).
@@ -1755,7 +2058,13 @@ impl YaacApp {
             if status == LinkStatus::Connected {
                 h.next_reattach = None;
                 h.reattach_delay = REATTACH_FIRST;
+                h.lost_since = None;
             } else if lost && !refused {
+                let since = *h.lost_since.get_or_insert_with(std::time::Instant::now);
+                if self.desk_hubs.as_ref().is_some_and(DeskHubs::on_moved_hub) && since.elapsed() < RECLAIM_AFTER {
+                    // Start the hub here again is offered once it has not answered for a while.
+                    self.ctx.request_repaint_after(RECLAIM_AFTER - since.elapsed());
+                }
                 let now = std::time::Instant::now();
                 match h.next_reattach {
                     Some(at) if now >= at => {
@@ -1783,6 +2092,10 @@ impl YaacApp {
         }
         if let LinkStatus::Failed(e) = &status {
             self.client.state.hub.last_error = Some(format!("Could not reach the hub: {e}"));
+        }
+        // Where the window says it cannot reach the hub, say what can be done about a moved one.
+        if let Some(line) = reclaim {
+            self.client.state.hub.last_error = Some(format!("{line} Settings → Hubs → Start the hub here again."));
         }
         match self.client.state.hub.outcome.clone() {
             // A hub on another machine (the Android client over Tailscale) is never shut down or
@@ -2083,6 +2396,8 @@ impl YaacApp {
         }
         #[cfg(feature = "hub")]
         self.hub_upkeep();
+        #[cfg(feature = "hub")]
+        self.transfer_upkeep();
         #[cfg(feature = "hub")]
         let themes_ready = self.hub.as_ref().is_none_or(|h| h.prefs_loaded);
         #[cfg(not(feature = "hub"))]

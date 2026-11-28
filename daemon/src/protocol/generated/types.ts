@@ -686,7 +686,7 @@ export interface BrowserTypeParams {
  *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
-export type Capability = "portForward" | "terminal" | "fileView" | "budgetTimeLimit" | "transcription" | "voiceCall" | "voiceCallLanguage" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadTakeOverInterrupt" | "threadCheckControl" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
+export type Capability = "portForward" | "hubHost" | "terminal" | "fileView" | "budgetTimeLimit" | "transcription" | "voiceCall" | "voiceCallLanguage" | "modeChangeLive" | "threadList" | "threadRead" | "threadResume" | "threadFork" | "forkKeepChildren" | "threadForkAtTurn" | "threadRename" | "threadArchive" | "threadDelete" | "threadTakeOver" | "threadTakeOverInterrupt" | "threadCheckControl" | "threadMove" | "threadMoveWorkingDirectory" | "followExternal" | "folderTrust" | "configurableHome" | "modelBestUse" | "modelAvailability" | "commandExplanations" | "streamText" | "streamReasoning" | "interrupt" | "steer" | "compact" | "userShellCommand" | "rewindConversation" | "rewindFiles" | "approvals" | "userQuestions" | "userForms" | "modes" | "modelSwitch" | "effortSwitch" | "imageInput" | "documentInput" | "nativeFileMentions" | "audioInput" | "reasoning" | "reasoningSummary" | "fastMode" | "ultrafastMode" | "tokenUsage" | "contextUsage" | "rateLimits" | "modelList" | "meshTools" | "troubleshoot" | "plan" | "slashCommands" | "skills" | "inlineSkills" | "subagents" | "subagentThreads" | "webSearch" | "fileDiffs";
 
 /**
  * Complete bundle staged on a target on demand.
@@ -1986,6 +1986,146 @@ export interface HoldChangedEvent {
    * The hold; absent when released.
    */
   hold?: ThreadHold | null;
+}
+
+/**
+ * `hubHost/abort`: discard the transfer's staging and disarm startup.
+ */
+export interface HubHostAbortParams {
+  opId: OpId;
+}
+
+/**
+ * `hubHost/install`: download and verify the exact hub release binary on the target.
+ */
+export interface HubHostInstallParams {
+  opId: OpId;
+  sha256: Sha256Hex;
+  size: number;
+  url: string;
+}
+
+/**
+ * `hubHost/install` result: the verified executable's path on the target.
+ */
+export interface HubHostInstallResult {
+  path: TargetPath;
+}
+
+/**
+ * The outcome recorded after a previous hand-over.
+ */
+export interface HubHostLastTransfer {
+  /**
+   * The reason startup failed, when applicable.
+   */
+  message?: string | null;
+  opId: OpId;
+  /**
+   * `started`, `placed` (startup delegated), or `failed`.
+   */
+  status: string;
+}
+
+/**
+ * `hubHost/probe` result: the facts the old hub uses to decide eligibility.
+ */
+export interface HubHostProbeResult {
+  arch: string;
+  hubRunning: boolean;
+  lastTransfer?: HubHostLastTransfer | null;
+  os: string;
+  /**
+   * The hub's attach port is available on the target's Tailscale addresses.
+   */
+  portFree: boolean;
+  tailscale: HubHostTailscale;
+  wsl?: HubHostWsl | null;
+}
+
+/**
+ * `hubHost/progress`: download progress for `hubHost/install`, in bytes.
+ */
+export interface HubHostProgressParams {
+  done: number;
+  opId: OpId;
+  total: number;
+}
+
+/**
+ * `hubHost/putComplete`: one credited file stream was verified and staged or failed.
+ */
+export interface HubHostPutCompleteParams {
+  /**
+   * The error when staging failed. Absent after a successful put.
+   */
+  message?: string | null;
+  stream: StreamId;
+}
+
+/**
+ * `hubHost/put`: open a credited stream for one of the transfer's staged files.
+ */
+export interface HubHostPutParams {
+  name: string;
+  opId: OpId;
+  sha256: Sha256Hex;
+  size: number;
+}
+
+/**
+ * `hubHost/put` result: the daemon verifies the file after receiving its declared size.
+ */
+export interface HubHostPutResult {
+  /**
+   * Initial byte credit. More arrives via `stream/credit`.
+   */
+  credit: number;
+  /**
+   * Connection-local stream for file bytes from the hub.
+   */
+  stream: StreamId;
+}
+
+/**
+ * `hubHost/start`: validate the transfer and arm file placement on connection close.
+ */
+export interface HubHostStartParams {
+  /**
+   * The transfer requests deferred file placement with `true`.
+   */
+  armOnClose: boolean;
+  opId: OpId;
+  /**
+   * Start the hub and configure autostart after placement. Defaults to true.
+   */
+  startHub?: boolean;
+}
+
+/**
+ * `hubHost/start` result: the transfer is ready and placement is armed.
+ */
+export interface HubHostStartResult {
+  armed: boolean;
+}
+
+/**
+ * This target's Tailscale state for hub transfer eligibility.
+ */
+export interface HubHostTailscale {
+  ips: string[];
+  login?: string | null;
+  running: boolean;
+}
+
+/**
+ * WSL details reported by a daemon running inside a distribution.
+ */
+export interface HubHostWsl {
+  /**
+   * The registered distribution name, or `WSL` if unavailable.
+   */
+  distro: string;
 }
 
 /**

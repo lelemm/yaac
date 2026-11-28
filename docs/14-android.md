@@ -137,6 +137,16 @@ hub reaches another, and each hub still sees one ordinary client.
   raise notifications, tagged with the hub's name; opening one switches to its hub and opens the
   thread, and its Allow once / Deny go to that hub. A call stays with its hub when another is
   selected. Details in [07](07-ui.md#several-hubs-on-android).
+- **When the hub moves (P412).** A hub moved to another machine ([15](15-hub-transfer.md)) sends
+  `hub/moved {hubId, address, hostName}` before it exits; the controller shows it as
+  `shell.hub.movedTo`. The phone then changes that saved hub's address to the new one and keeps
+  everything else: its key (the address it was first saved with), slot, label, data directory
+  (device drafts) and left-off marks, so its notifications keep their ids and their routing. Another
+  saved hub at the new address, or answering with the same `hubId`, is the same hub: it is merged
+  in (its label is used when the moved one has none; its attach and data go) and the selection
+  follows. The hub's controller is then started again on the new address and attaches once the new
+  hub is up; a call on that hub ends with the old controller. Transfer itself is in **Settings →
+  Advanced → Hub**, as on the PC.
 - **Cost.** Each saved hub is an attach and a controller kept running (some MB of native memory
   and the radio waking for its frames) whether or not it is shown — the price of its
   notifications. Remove a hub you no longer use.

@@ -23,6 +23,7 @@
 //! | [`notify`] | Desktop notifications for pending requests outside the focused window. |
 //! | [`host_update`] | Updating YAAC on this computer at a newer phone's request (`hub/update/request`). |
 //! | [`tailnet`] | Attaching over Tailscale: the listener on this host's Tailscale addresses, and who may attach. |
+//! | [`transfer`] | Moving the hub to another machine (`hub/transfer/*`): the binary's hook and the rewritten `hub.json`. |
 //!
 //! Threads: one tokio current-thread runtime on the calling thread does all I/O and owns all
 //! protocol state; one store thread does all SQLite work, in submission order. Nothing else.
@@ -37,6 +38,7 @@ mod core;
 pub mod drafts;
 pub mod find;
 pub mod host_update;
+pub mod interop;
 mod limits;
 mod lock;
 pub mod mesh;
@@ -50,6 +52,7 @@ mod server;
 pub mod settings;
 pub mod ssh;
 pub mod tailnet;
+pub mod transfer;
 mod worker;
 
 use std::time::Duration;
@@ -81,6 +84,19 @@ pub enum HubError {
     /// The lock file could not be used.
     #[error(transparent)]
     Lock(LockError),
+    /// This hub moved to another machine (`<data>/moved.json`, docs/15-hub-transfer.md): it
+    /// does not start here until the tombstone is removed (`yaac hub --reclaim`).
+    #[error("this hub moved to {} ({}); start it here again with `yaac hub --reclaim`", .0.host_name, .0.address)]
+    Moved(paths::MovedTombstone),
+    /// The tombstone could not be read.
+    #[error("cannot read {path}: {source}")]
+    Tombstone {
+        /// The file.
+        path: String,
+        /// Cause.
+        #[source]
+        source: std::io::Error,
+    },
     /// A directory could not be created.
     #[error("cannot create {path}: {source}")]
     Dir {
@@ -123,6 +139,12 @@ pub fn run_hub(config: HubConfig) -> Result<HubExit, HubError> {
         LockError::Held(_) => HubError::AlreadyRunning(e),
         LockError::Io { .. } => HubError::Lock(e),
     })?;
+    // Under the lock: a hub that moved away never starts here again by itself.
+    match paths::moved_tombstone(&paths) {
+        Ok(Some(moved)) => return Err(HubError::Moved(moved)),
+        Ok(None) => {}
+        Err(source) => return Err(HubError::Tombstone { path: paths.moved_file().display().to_string(), source }),
+    }
 
     let settings_file = paths.settings_file();
     let mut settings = match Settings::load(&settings_file)? {

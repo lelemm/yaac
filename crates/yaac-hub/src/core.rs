@@ -10,6 +10,7 @@ mod limits;
 mod preview;
 mod terminal;
 mod ssh;
+mod transfer;
 mod upload_preview;
 mod uploads;
 mod voice;
@@ -147,6 +148,8 @@ pub(crate) enum CoreEvent {
     Tailscale(crate::protocol::TailscaleAttach),
     /// The update of this computer moved on (`hub/update/request`).
     HostUpdate(host_update::Event),
+    /// Moving the hub to another machine moved on (`hub/transfer/*`).
+    Transfer(transfer::Event),
 }
 
 /// Why the hub stopped.
@@ -158,6 +161,8 @@ pub enum ExitReason {
     Shutdown,
     /// A signal.
     Signal,
+    /// The hub moved to another machine (`hub/transfer/start`, docs/15-hub-transfer.md).
+    Moved,
 }
 
 pub(crate) fn log(message: impl AsRef<str>) {
@@ -230,6 +235,8 @@ enum Pending {
     Handover { reply: Option<(ClientKey, RpcId)> },
     /// `provider/rateLimits` (D161).
     RateLimits,
+    /// `hubHost/*` for moving the hub ([`transfer`]).
+    Transfer(transfer::Ask),
     Ignore,
 }
 
@@ -300,6 +307,8 @@ struct Target {
     /// The `yaacd` build this target's connector installs and starts when nothing serves
     /// ([`yaac_transport::Connector::daemon_build`]); `None` when it does not know.
     daemon_build: Option<String>,
+    /// The machine's host name, as `yaacd` last reported it.
+    host: Option<String>,
 }
 
 impl Target {
@@ -492,6 +501,11 @@ pub(crate) struct Core {
     tailscale: crate::protocol::TailscaleAttach,
     /// An update of this computer a phone asked for (`hub/update/request`).
     host_update: Option<host_update::Running>,
+    /// Moving the hub to another machine (`hub/transfer/start`).
+    transfer: Option<transfer::Transfer>,
+    /// `hub/transfer/candidates` requests waiting for their probes.
+    candidates: HashMap<u64, transfer::Candidates>,
+    transfer_serial: u64,
 }
 
 /// What a fanned-out lookup answers once every target has.
@@ -595,6 +609,9 @@ impl Core {
             tailscale_on: tokio::sync::watch::channel(false).0,
             tailscale: Default::default(),
             host_update: None,
+            transfer: None,
+            candidates: HashMap::new(),
+            transfer_serial: 0,
         };
         core.tailscale_on.send_replace(core.settings.hub.tailscale_attach);
         for (target, thread) in loaded.kept {
@@ -608,7 +625,7 @@ impl Core {
         for def in defs {
             let id = def.id.clone();
             let initial = if def.enabled { state(ConnectionStatus::Connecting, None) } else { state(ConnectionStatus::Disabled, None) };
-            core.targets.insert(id.clone(), Target { def, state: initial, supervisor: None, conn: None, daemon_build: None });
+            core.targets.insert(id.clone(), Target { def, state: initial, supervisor: None, conn: None, daemon_build: None, host: None });
             core.start_target(&id);
         }
         core
@@ -729,6 +746,7 @@ impl Core {
             CoreEvent::StoreError(e) => log(format!("store: {e}")),
             CoreEvent::Signal => self.exit = Some(ExitReason::Signal),
             CoreEvent::HostUpdate(event) => self.host_update_event(event),
+            CoreEvent::Transfer(event) => self.transfer_event(event),
             CoreEvent::Tailscale(status) => {
                 if status != self.tailscale {
                     self.tailscale = status;
@@ -844,6 +862,9 @@ impl Core {
         if method == attach::names::HELLO {
             return Some(self.on_hello(client, params));
         }
+        if let Some(refused) = self.transfer_refuses(method) {
+            return Some(Err(refused));
+        }
         if method == attach::names::UPDATE_REQUEST {
             // Frozen core: served whatever the client's build (docs/09-compatibility.md).
             return self.host_update_request(client, id, params);
@@ -875,6 +896,11 @@ impl Core {
         }
         match method {
             attach::names::TARGETS_LIST => Some(Ok(to_value(&TargetsListResult { targets: self.entries() }))),
+            attach::names::TRANSFER_CANDIDATES => {
+                self.transfer_candidates(client, id);
+                None
+            }
+            attach::names::TRANSFER_START => self.transfer_start(client, id, params),
             attach::names::RATE_LIMITS_GET => Some(parse(params).and_then(|p| self.limits_get(&p))),
             attach::names::TARGETS_ADD => Some(parse(params).and_then(|p| self.targets_add(p))),
             attach::names::TARGETS_UPDATE => Some(parse(params).and_then(|p| self.targets_update(p))),
@@ -1576,7 +1602,7 @@ impl Core {
         }
         let id = def.id.clone();
         let initial = if def.enabled { state(ConnectionStatus::Connecting, None) } else { state(ConnectionStatus::Disabled, None) };
-        self.targets.insert(id.clone(), Target { def, state: initial, supervisor: None, conn: None, daemon_build: None });
+        self.targets.insert(id.clone(), Target { def, state: initial, supervisor: None, conn: None, daemon_build: None, host: None });
         self.start_target(&id);
         self.targets_changed();
         Ok(to_value(&TargetResult { target: self.targets[&id].entry() }))
@@ -1793,8 +1819,10 @@ impl Core {
         let was_ready = conn.ready;
         // Batched events of this connection are still valid: commit them.
         self.flush_batches();
+        let mut transfer_asks = Vec::new();
         for (_, pending) in conn.pending {
             match pending {
+                Pending::Transfer(ask) => transfer_asks.push(ask),
                 Pending::Routed { client, id: rid, method, op } => {
                     let error = if let Some(op) = op {
                         self.worker.submit(move |s| s.drafts.op_uncertain(&op).err().map(|e| CoreEvent::StoreError(e.to_string())));
@@ -1839,6 +1867,7 @@ impl Core {
             }
         }
         self.uploads_on_closed(id);
+        self.transfer_closed(id, &transfer_asks);
         if was_ready {
             self.send_rosters();
         }
@@ -1849,6 +1878,9 @@ impl Core {
     fn flush(&mut self, id: &TargetId) {
         if !self.uploads.is_empty() {
             self.upload_pump(id);
+        }
+        if self.transfer.is_some() {
+            self.transfer_pump(id);
         }
         let Some(conn) = self.targets.get_mut(id).and_then(|t| t.conn.as_mut()) else { return };
         self.previews.grant_reads(conn);
@@ -1932,6 +1964,9 @@ impl Core {
             update: None,
         };
         let facts = info.target.clone();
+        if let Some(t) = self.targets.get_mut(id) {
+            t.host = Some(facts.hostname.clone());
+        }
         let target = id.clone();
         let stored = new.clone();
         self.worker.submit(move |s| s.cache.put_target(&target, Some(&facts), &stored).err().map(|e| CoreEvent::StoreError(e.to_string())));
@@ -2239,6 +2274,7 @@ impl Core {
                 self.worker.submit(move |s| s.drafts.op_done(&op).err().map(|e| CoreEvent::StoreError(e.to_string())));
             }
             Pending::RateLimits => self.limits_answered(id, outcome),
+            Pending::Transfer(ask) => self.transfer_response(id, &ask, outcome),
             Pending::Deliver { message_id } => self.on_delivered(id, message_id, outcome),
             Pending::UploadBegin { handle } => self.on_upload_begun(id, &handle, outcome),
             Pending::UploadEnd { handle } => self.on_upload_ended(id, &handle, outcome),
@@ -2363,6 +2399,9 @@ impl Core {
                 if !self.attach_tunnel_remote_closed(id, p.stream) {
                     self.preview_remote_close(id, p.stream);
                 }
+            }
+            Inbound::Other { method, params } if matches!(method.as_str(), names::HUB_HOST_PROGRESS | names::HUB_HOST_PUT_COMPLETE) => {
+                self.transfer_notification(id, &method, params);
             }
             Inbound::Other { method, params } if method == names::PROVIDER_RATE_LIMITS_UPDATED => self.limits_updated(id, params),
             Inbound::Other { method, params } if method == names::DISCOVERY_UPDATED => {
@@ -2917,6 +2956,20 @@ impl Core {
 
     fn on_peer_request(&mut self, source: &TargetId, peer_id: RpcId, request: PeerRequest) {
         let generation = self.targets.get(source).and_then(|t| t.conn.as_ref()).map_or(0, |c| c.generation);
+        if self.transfer_quiesced() {
+            // The relay is being copied to the new hub: nothing more is written to it here.
+            // The daemon keeps the message in its outbox and sends it to the new hub.
+            let method = match &request {
+                PeerRequest::MeshRelay(_) => Some(names::MESH_RELAY),
+                PeerRequest::MeshDeliveryReceipt(_) => Some(names::MESH_DELIVERY_RECEIPT),
+                _ => None,
+            };
+            if let Some(method) = method {
+                let e = hub_err(yaac_protocol::attach::hub_transfer::codes::MOVING, "The hub is moving to another machine; send this again once it is there.");
+                self.respond_peer(source, generation, peer_id, method, Err(e));
+                return;
+            }
+        }
         match request {
             PeerRequest::MeshRelay(params) => {
                 let message = params.message;

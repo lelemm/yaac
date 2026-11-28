@@ -1,4 +1,33 @@
-# Installing on Windows
+# Installing YAAC
+
+## Linux hub
+
+The `yaac-hub-linux-x86_64` release asset is the stripped headless hub for x86_64 Linux
+with glibc 2.35 or later.
+Check its size and SHA-256 against the same release's `manifest.json`. For a manual install,
+copy it into a user-owned directory on `PATH` and run it as the user whose harnesses it drives.
+
+```sh
+install -D -m 755 yaac-hub-linux-x86_64 "$HOME/.local/bin/yaac"
+yaac --version
+yaac hub
+```
+
+The hub uses `$XDG_CONFIG_HOME/yaac` and `$XDG_DATA_HOME/yaac` (defaulting to
+`~/.config/yaac` and `~/.local/share/yaac`). Its attach socket is
+`$XDG_RUNTIME_DIR/yaac/hub.sock` or `<data>/run/hub.sock` if there is no XDG runtime
+directory. Use `yaac quit` to stop the hub and `yaac autostart on|off|status` to manage the
+XDG login entry. `yaac autostart sync --start` follows the setting in `hub.json`.
+
+On a transferred hub, `tailscale` must be on `PATH` and signed in. The hub listens on its
+Tailscale addresses on port 47380 when the Tailscale setting is enabled. On the old host,
+`yaac hub` prints the new address and exits when the data directory has `moved.json`.
+
+The Linux binary embeds the daemon. Its local target uses the same installation as an SSH target
+under `~/.yaac` (or `YAAC_HOME`). It reuses the installed Node.js and daemon builds and can
+install the embedded daemon and fetch the pinned Node.js when needed.
+
+## Windows installer
 
 **Decided** (D134): YAAC ships on Windows as an **Inno Setup** `setup.exe`, installed **per
 user, without administrator rights**. The installer is `installer/yaac.iss`; it is built from
@@ -96,12 +125,13 @@ releases are read without a token.
 | --- | --- | --- | --- |
 | `checks` | `ubuntu-latest` | Two parallel jobs run the full Rust workspace suite and the daemon and manifest suites. Rust test builds restore cached dependencies and use a profile without debug symbols. | test results |
 | `build` | `ubuntu-latest` | Runs alongside the checks. Builds the daemon bundle and runs `scripts/build-windows.sh` with MinGW-w64 and the `x86_64-pc-windows-gnu` Rust target. It caches Cargo's release dependencies separately from the Linux test cache. | `yaac.exe` (window and hub, with `yaacd` embedded), `yaacd.mjs`, `yaacd-mcp.mjs`, the exe's `yaac.ico` |
+| `linux-hub` | `ubuntu-22.04` | Uses the same build id, embeds the daemon bundle, and builds with `--no-default-features --features hub`. | `yaac-hub-linux-x86_64` |
 | `installer` | `windows-latest` | `ISCC.exe installer\yaac.iss` with the same `/D` defines as `scripts/build-installer.sh`. Inno Setup 6 is preinstalled on GitHub's Windows images (actions/runner-images lists it); the job installs it with Chocolatey only if it is missing | `YAAC-Setup-<version>+<id>.exe` |
 | `android` | `ubuntu-latest` | After `build`: the Rust Android targets, `cargo-ndk`, NDK 27 and the Android 36 platform (sdkmanager on the runner image), `libyaac_android.so` for `arm64-v8a` only (phones; x86_64 is for the emulator and stays out of release APKs) with the same `YAAC_BUILD_ID`, then `./gradlew assembleRelease` signed with the release key from the `ANDROID_*` secrets; the APK's versionCode and signature are checked. Cargo's Android dependencies and Gradle's are cached | `yaac-android-<version>-build.<id>.apk` |
-| `release` | `ubuntu-latest` | After the checks, installer and Android app succeed, runs `scripts/make-manifest.mjs`, then `gh release create <tag> … --latest` with the job's `GITHUB_TOKEN` (`contents: write`, this job only) | the release |
+| `release` | `ubuntu-latest` | After the checks and builds succeed, runs `scripts/make-manifest.mjs`, then `gh release create <tag> … --latest` with the job's `GITHUB_TOKEN` (`contents: write`, this job only) | the release |
 
 A release holds `YAAC-Setup-<version>-build.<id>.exe` (asset names keep to letters, digits,
-`.`, `-` and `_`, which GitHub never renames), `yaac.exe`, `yaacd.mjs`, `yaacd-mcp.mjs`,
+`.`, `-` and `_`, which GitHub never renames), `yaac.exe`, `yaac-hub-linux-x86_64`, `yaacd.mjs`, `yaacd-mcp.mjs`,
 `yaac-android-<version>-build.<id>.apk` (the Android app; signing and updating it are in
 [android/README.md](../android/README.md#releases-and-updates)), and `manifest.json`. Actions are pinned to commit SHAs.
 
@@ -132,6 +162,7 @@ sample the Rust parser is tested against):
     { "name": "YAAC-Setup-0.1.0-build.1005.exe", "component": "installer", "version": "0.1.0+1005",
       "size": 9123456, "sha256": "<64 hex>", "url": "https://github.com/lelemm/yaac/releases/download/v0.1.0/YAAC-Setup-0.1.0-build.1005.exe" },
     { "name": "yaac.exe", "component": "app", … },
+    { "name": "yaac-hub-linux-x86_64", "component": "hub-linux-x86_64", … },
     { "name": "yaacd.mjs", "component": "daemon", … },
     { "name": "yaacd-mcp.mjs", "component": "daemon-mcp", … },
     { "name": "yaac-android-0.1.0-build.1005.apk", "component": "android", … }

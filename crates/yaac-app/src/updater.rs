@@ -238,6 +238,58 @@ impl yaac_hub::host_update::HostInstaller for HubInstaller {
     }
 }
 
+/// What the hub runs to move to another machine (`hub/transfer/*`, docs/15-hub-transfer.md):
+/// the Linux hub of exactly this build, from the same release and manifest the updater reads,
+/// and this computer's start-at-login turned off once the hub has moved.
+#[cfg(feature = "hub")]
+pub(crate) struct HubTransfer {
+    cfg: Config,
+}
+
+#[cfg(feature = "hub")]
+impl HubTransfer {
+    pub(crate) fn new(cfg: Config) -> Self {
+        Self { cfg }
+    }
+}
+
+#[cfg(feature = "hub")]
+impl yaac_hub::transfer::TransferHost for HubTransfer {
+    fn hub_asset(&self, build: &str, arch: &str) -> Result<yaac_hub::transfer::HubAsset, String> {
+        let found = find_build(&self.cfg, build)?;
+        let name = yaac_hub::transfer::hub_asset_name(arch);
+        let asset = found.manifest.asset(&name).ok_or_else(|| format!("YAAC {build} has no hub for {arch} ({name} is not in its release)."))?;
+        Ok(yaac_hub::transfer::HubAsset { url: asset.url.clone(), sha256: asset.sha256.clone(), size: asset.size })
+    }
+
+    fn stop_autostart(&self) -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let entry = yaac_hub::autostart::Autostart::from_env(exe).map_err(|e| e.to_string())?;
+        yaac_hub::autostart::remove_autostart(&entry).map_err(|e| e.to_string())
+    }
+
+    /// On Windows only: `yaac.exe` as this PC's WSL distros see it.
+    fn interop_exe(&self) -> Option<String> {
+        if !cfg!(windows) {
+            return None;
+        }
+        let exe = std::env::current_exe().ok()?;
+        yaac_hub::transfer::windows_to_wsl_path(&exe.to_string_lossy())
+    }
+
+    fn start_wsl_keeper(&self, keeper: &yaac_hub::transfer::WslKeeper) -> Result<(), String> {
+        if !cfg!(windows) {
+            return Err("the WSL keeper runs on Windows only".into());
+        }
+        crate::wsl_keeper::start(keeper)
+    }
+
+    fn keeper_autostart(&self, keeper: &yaac_hub::transfer::WslKeeper) -> Result<(), String> {
+        let entry = crate::wsl_keeper::autostart_entry(keeper)?;
+        yaac_hub::autostart::install_autostart(&entry).map_err(|e| e.to_string())
+    }
+}
+
 fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut s, b| {

@@ -82,6 +82,58 @@ public partial class SidebarView : UserControl
     internal bool SearchEnabled => SearchBox.IsEnabled;
     internal bool SearchHasText => SearchBox.Text.Length > 0;
 
+    private JsonElement hubs;
+
+    /// <summary>The desktop's saved hubs (shell.hubs, P412): the badge left of the mark, only
+    /// with more than one hub saved, and its drop-down.</summary>
+    internal void RenderHubs(JsonElement view)
+    {
+        hubs = view.ValueKind == JsonValueKind.Object ? view.Clone() : default;
+        var badge = hubs.Text("badge");
+        HubBadge.Visibility = VisibilityOf(badge.Length > 0);
+        HubBadge.Content = badge;
+        HubBadge.FontSize = badge.Length > 1 ? 9.5 : 11;
+        var current = hubs.Get("list").Items().FirstOrDefault(h => h.Flag("selected"));
+        HubBadge.ToolTip = $"Hub: {current.Text("name")}. Switch hub";
+    }
+
+    private void OnHubBadge(object sender, RoutedEventArgs e)
+    {
+        if (hubs.ValueKind != JsonValueKind.Object)
+            return;
+        var menu = new ContextMenu { PlacementTarget = HubBadge, Placement = PlacementMode.Bottom };
+        if (TryFindResource("YaacContextMenu") is Style menuStyle)
+            menu.Style = menuStyle;
+        var itemStyle = TryFindResource("YaacMenuItem") as Style;
+        foreach (var hub in hubs.Get("list").Items())
+        {
+            var index = hub.Get("index").GetInt32();
+            var chosen = hub.Flag("selected");
+            var item = new MenuItem
+            {
+                Header = $"{hub.Text("name")}   {hub.Text("address")} · {hub.Text("status")}".Replace("_", "__"),
+                IsChecked = chosen,
+            };
+            if (itemStyle is not null)
+                item.Style = itemStyle;
+            item.Click += (_, _) =>
+            {
+                if (!chosen)
+                    Command?.Invoke("hubs.select", new { index });
+            };
+            menu.Items.Add(item);
+        }
+        menu.Items.Add(new Separator());
+        var all = new MenuItem { Header = "Hubs…" };
+        if (itemStyle is not null)
+            all.Style = itemStyle;
+        all.Click += (_, _) => Command?.Invoke("hubs.open", new { });
+        menu.Items.Add(all);
+        menu.Closed += (_, _) => HubBadge.ClearValue(ContextMenuProperty);
+        HubBadge.ContextMenu = menu;
+        menu.IsOpen = true;
+    }
+
     public void Render(JsonElement view)
     {
         if (view.ValueKind == JsonValueKind.Object && lastView.ValueKind == JsonValueKind.Object

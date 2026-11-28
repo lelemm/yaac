@@ -6,7 +6,8 @@
 //        --repo lelemm/yaac --out dist/release/manifest.json \
 //        installer=dist/release/YAAC-Setup-0.1.0-build.1005.exe app=dist/release/yaac.exe \
 //        daemon=dist/release/yaacd.mjs daemon-mcp=dist/release/yaacd-mcp.mjs \
-//        android=dist/release/yaac-android-0.1.0-build.1005.apk
+//        android=dist/release/yaac-android-0.1.0-build.1005.apk \
+//        hub-linux-x86_64=dist/release/yaac-hub-linux-x86_64
 //
 // Each artefact is `<component>=<path>`; its name in the release is the file's base name, its
 // download URL https://github.com/<repo>/releases/download/<tag>/<name>. `--released` (an ISO
@@ -21,7 +22,7 @@ import { fileURLToPath } from "node:url";
 export const SCHEMA = 1;
 
 /** The components a release may hold. */
-export const COMPONENTS = ["installer", "app", "daemon", "daemon-mcp", "android"];
+export const COMPONENTS = ["installer", "app", "daemon", "daemon-mcp", "android", "hub-linux-x86_64"];
 
 /** A release asset name GitHub keeps as it is (no renaming, nothing to escape in a URL). */
 const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;

@@ -14,7 +14,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "yaac"
 path = "src/main.rs"
-required-features = ["desktop"]
 
 [features]
 default = ["desktop", "glow", "wgpu", "hub"]
@@ -22,7 +21,7 @@ default = ["desktop", "glow", "wgpu", "hub"]
 # (rfd), the system clipboard (arboard), the system font scan, the updater's HTTPS client
 # (ureq). Without it the crate builds only the window controller that the WPF and
 # Android front ends drive (`view_protocol`); each missing piece is a hook in `platform`.
-# `yaac-android` builds it with `default-features = false, features = ["hub"]`.
+# Android and the headless Linux hub build it with `default-features = false, features = ["hub"]`.
 desktop = ["dep:eframe", "dep:rfd", "dep:arboard", "dep:ureq", "dep:cpal"]
 # The real hub: `yaac hub` and attaching to it. Without it the binary runs only `--demo`
 # (a window-only build for UI work).

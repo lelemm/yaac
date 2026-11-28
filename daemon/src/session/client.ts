@@ -5,7 +5,7 @@
 // run of deltas for one item is collapsed into one `itemUpdated` snapshot whose `throughSeq`
 // names the last event it replaces (docs/03-protocol.md#backpressure).
 
-import type { JournalPosition } from "../protocol/generated/types.js";
+import type { HubHostAbortParams, HubHostInstallParams, HubHostPutParams, HubHostStartParams, JournalPosition } from "../protocol/generated/types.js";
 import { discoverPorts } from "./preview-ports.js";
 import { shells } from "./terminal-shells.js";
 import { Tunnels } from "./tunnels.js";
@@ -17,6 +17,7 @@ import { eventItemId } from "./items.js";
 import { lastSeqOf, type JournalEntry } from "./journal.js";
 import { fsList, fsSearch, projectResolve } from "./fsinfo.js";
 import { fsRead, fsTree, gitFileDiff } from "./files.js";
+import type { HubHost } from "./hub-host.js";
 
 export interface ClientOptions {
   /** Stop handing events to the connection above this many queued bytes. */
@@ -34,6 +35,8 @@ export interface DaemonHooks {
   diagnostics(): Array<{ title: string; lines: string[] }>;
   extraMethods: Map<string, MethodHandler>;
   log(line: string): void;
+  hubHost?: HubHost;
+  hubHostLaunchDone(): void;
 }
 
 interface Subscription {
@@ -85,11 +88,29 @@ export class ClientSession implements SessionHandler, ClientLink {
 
   // ── Requests ───────────────────────────────────────────────────────────────────────────
 
+  private hubHost(): HubHost {
+    if (!this.hooks.hubHost || !this.view.features.allows("hubHost")) {
+      throw new RpcError("capability_missing", "hub hosting is unavailable on this target");
+    }
+    return this.hooks.hubHost;
+  }
+
   async handle(method: string, raw: unknown): Promise<unknown> {
     const p = obj(raw);
     const core = this.core;
     switch (method) {
       case METHODS.PING:
+        return {};
+      case METHODS.HUB_HOST_PROBE:
+        return this.hubHost().probe();
+      case METHODS.HUB_HOST_INSTALL:
+        return this.hubHost().install(this.view, p as unknown as HubHostInstallParams);
+      case METHODS.HUB_HOST_PUT:
+        return this.hubHost().put(this.view, p as unknown as HubHostPutParams);
+      case METHODS.HUB_HOST_START:
+        return this.hubHost().start(this.view, p as unknown as HubHostStartParams);
+      case METHODS.HUB_HOST_ABORT:
+        this.hubHost().abort(this.view, p as unknown as HubHostAbortParams);
         return {};
       case METHODS.DIAGNOSTICS_TROUBLESHOOT:
         return core.troubleshooter.run({
@@ -304,6 +325,7 @@ export class ClientSession implements SessionHandler, ClientLink {
     if (this.core.terminals.receive(this.view, stream, bytes)) return;
     if (this.core.voice.receive(this.view, stream, bytes)) return;
     if (this.tunnels.receive(stream, bytes)) return;
+    if (this.hooks.hubHost?.receive(this.view, stream, bytes)) return;
     this.core.uploads.onData(stream, bytes, this, (s, n) => this.view.grantCredit(s, n));
   }
 
@@ -341,6 +363,7 @@ export class ClientSession implements SessionHandler, ClientLink {
       }
     }
     this.closed = true;
+    this.hooks.hubHost?.close(this.view, () => this.hooks.hubHostLaunchDone());
     this.core.terminals.drop(this.view);
     this.core.voice.drop(this.view);
     this.core.calls.drop(this.view);

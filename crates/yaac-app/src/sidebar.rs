@@ -92,12 +92,57 @@ pub(crate) fn toggle_section(app: &mut YaacApp, section: &Section) {
     app.persist_prefs();
 }
 
+/// The hub badge and its drop-down: each saved hub (name, address, connection, a check on the
+/// selected one) and **Hubs…**. Only with more than one hub saved.
+#[cfg(feature = "hub")]
+pub(crate) fn hub_switcher(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let Some(initial) = app.hub_badge() else { return };
+    let p = app.p;
+    let rows = app.hub_rows();
+    let current = rows.iter().find(|h| h.selected).map(|h| h.name.clone()).unwrap_or_default();
+    let r = crate::settings::hub_badge(ui, &p, &initial, true).on_hover_text(format!("Hub: {current}. Switch hub"));
+    ui.add_space(-2.0);
+    if r.clicked() {
+        app.ui.hubs_menu = !app.ui.hubs_menu;
+    }
+    let mut open = app.ui.hubs_menu;
+    crate::widgets::menu_popup(egui::Popup::from_response(&r), &p).kind(egui::PopupKind::Menu).open_bool(&mut open)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+            ui.set_min_width(280.0);
+            for h in &rows {
+                let (resp, rect) = widgets::menu_row(ui, &p, h.selected, true);
+                let row = rect.shrink2(vec2(8.0, 3.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
+                    ui.horizontal(|ui| {
+                        crate::settings::hub_badge(ui, &p, &h.initial, h.selected);
+                        ui.label(egui::RichText::new(&h.name).font(theme::bold(size::UI)));
+                        ui.label(widgets::secondary(format!("{} · {}", h.address, h.status), &p));
+                        if h.selected {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label("✓"));
+                        }
+                    });
+                });
+                if resp.clicked() && !h.selected {
+                    actions.push(Action::SelectHub(h.index));
+                }
+            }
+            ui.separator();
+            if widgets::menu_item(ui, &p, "Hubs…", None, widgets::ItemKind::Normal).clicked() {
+                actions.push(Action::SettingsPage(yaac_core::settings::Page::Hubs));
+            }
+        });
+    app.ui.hubs_menu = open;
+}
+
 pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, map: &AttentionMap, now: i64, actions: &mut Vec<Action>) {
     let p = app.p;
     // A fresh install: just the name, a disabled search field, and the footer (screen 07).
     let fresh = yaac_core::first_run::is_first_run(&app.client.state);
     ui.horizontal(|ui| {
         ui.set_min_height(28.0);
+        // Several saved hubs (P412): the selected hub's initial, attached left of the mark.
+        #[cfg(feature = "hub")]
+        hub_switcher(ui, app, actions);
         ui.add(egui::Label::new(egui::RichText::new("YAAC").font(theme::bold(17.0))).selectable(false));
         if !fresh {
             ui.add_space(6.0);

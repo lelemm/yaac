@@ -234,6 +234,7 @@ pub(crate) fn show(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Actio
                         });
                         if prefs != app.client.state.hub.notifications { app.client.set_notifications(prefs); }
                     }
+                    Page::Hubs => hubs_page(ui, app, actions),
                     Page::Advanced => advanced(ui, app, actions),
                     Page::About => about(ui, app, actions),
                 }
@@ -1509,6 +1510,11 @@ fn advanced(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
     if let Some(e) = &app.client.state.hub.last_error {
         ui.label(RichText::new(e).font(theme::ui(size::SMALL)).color(p.failed));
     }
+    #[cfg(feature = "hub")]
+    {
+        reclaim_offer(ui, app, actions);
+        transfer_section(ui, app, actions);
+    }
     widgets::heading(ui, "Cache");
     ui.horizontal(|ui| {
         if widgets::plain(ui, &p, "Clear cache", None).clicked() {
@@ -1679,4 +1685,188 @@ fn terminal(ui: &mut egui::Ui, app: &mut YaacApp) {
         ui.label(widgets::secondary(note, &p));
         ui.add_space(10.0);
     }
+}
+
+// ── Hubs (P412) and moving the hub (docs/15-hub-transfer.md) ────────────────────────────
+
+/// **Start the hub here again**, with its confirmation, when the hub moved away and does not
+/// answer.
+#[cfg(feature = "hub")]
+pub(crate) fn reclaim_offer(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let Some(line) = app.reclaim_line() else {
+        app.ui.reclaim_confirm = false;
+        return;
+    };
+    ui.add_space(6.0);
+    ui.label(RichText::new(line).font(theme::ui(size::SMALL)).color(p.needs));
+    if app.ui.reclaim_confirm {
+        ui.label(widgets::secondary(app.reclaim_confirm_text(), &p));
+        ui.horizontal(|ui| {
+            if widgets::primary(ui, &p, "Start here", None).clicked() {
+                app.ui.reclaim_confirm = false;
+                actions.push(Action::ReclaimHub);
+            }
+            if widgets::plain(ui, &p, "Cancel", None).clicked() {
+                app.ui.reclaim_confirm = false;
+            }
+        });
+    } else if widgets::primary(ui, &p, "Start the hub here again", None).clicked() {
+        app.ui.reclaim_confirm = true;
+    }
+}
+
+/// Settings → Advanced → Hub → Transfer hub to….
+#[cfg(feature = "hub")]
+fn transfer_section(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    let view = app.transfer_view();
+    ui.add_space(10.0);
+    ui.label(RichText::new("Transfer hub to…").font(theme::bold(size::UI)));
+    ui.label(widgets::secondary("Move the hub, with its threads, drafts and messages, to a Linux machine on your Tailscale network. Windows and phones follow it there.", &p));
+    match &view.choices {
+        Err(line) => {
+            ui.label(widgets::secondary(line.as_str(), &p));
+        }
+        Ok(choices) => {
+            let picked = view.picked.as_ref().and_then(|t| choices.iter().find(|c| &c.target == t)).map_or("Choose a machine", |c| c.label.as_str());
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("transfer-target").selected_text(picked).width(260.0).show_ui(ui, |ui| {
+                    for c in choices {
+                        let text = match &c.reason {
+                            Some(why) if !c.eligible => format!("{} — {why}", c.label),
+                            _ => c.label.clone(),
+                        };
+                        let r = ui.add_enabled(c.eligible, egui::Button::selectable(view.picked.as_ref() == Some(&c.target), text));
+                        if r.clicked() {
+                            actions.push(Action::TransferTarget(c.target.clone()));
+                            app.ui.transfer_confirm = false;
+                        }
+                    }
+                });
+                if ui.add_enabled_ui(view.can_start && !app.ui.transfer_confirm, |ui| widgets::primary(ui, &p, "Transfer hub…", None)).inner.clicked() {
+                    app.ui.transfer_confirm = true;
+                }
+                if widgets::plain(ui, &p, "Refresh", None).clicked() {
+                    actions.push(Action::TransferCandidates);
+                }
+            });
+        }
+    }
+    if app.ui.transfer_confirm {
+        match (&view.confirm, view.can_start) {
+            (Some((title, text)), true) => {
+                egui::Frame::NONE.fill(p.faint).corner_radius(6.0).inner_margin(Margin::same(12)).show(ui, |ui| {
+                    ui.label(RichText::new(title).font(theme::bold(size::UI)));
+                    ui.label(widgets::secondary(text.as_str(), &p));
+                    ui.horizontal(|ui| {
+                        if widgets::primary(ui, &p, "Transfer", None).clicked() {
+                            app.ui.transfer_confirm = false;
+                            actions.push(Action::TransferStart);
+                        }
+                        if widgets::plain(ui, &p, "Cancel", None).clicked() {
+                            app.ui.transfer_confirm = false;
+                        }
+                    });
+                });
+            }
+            _ => app.ui.transfer_confirm = false,
+        }
+    }
+    if let Some(progress) = &view.progress {
+        ui.add_space(4.0);
+        ui.label(RichText::new(&progress.label).font(theme::ui(size::SMALL)).color(if progress.failed { p.failed } else { p.text }));
+        if progress.running {
+            match progress.percent {
+                Some(pct) => { ui.add(egui::ProgressBar::new((pct / 100.0) as f32).desired_width(320.0).show_percentage()); }
+                None => { ui.add(egui::Spinner::new().size(14.0)); }
+            }
+        }
+        if let Some(m) = &progress.message {
+            ui.label(RichText::new(m).font(theme::ui(size::SMALL)).color(if progress.failed { p.failed } else { p.text2 }));
+        }
+    }
+}
+
+/// Settings → Hubs: the saved hubs, switch, retry, remove, add.
+fn hubs_page(ui: &mut egui::Ui, app: &mut YaacApp, actions: &mut Vec<Action>) {
+    let p = app.p;
+    title_row(ui, "Hubs", |_| {});
+    #[cfg(feature = "hub")]
+    if app.desk_hubs.is_some() {
+        ui.label(widgets::secondary("This window is attached to one hub at a time. Switching detaches from the current hub; its turns keep running.", &p));
+        ui.add_space(8.0);
+        for h in app.hub_rows() {
+            widgets::faint_frame(&p).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    hub_badge(ui, &p, &h.initial, h.selected);
+                    ui.vertical(|ui| {
+                        let name = if h.selected { format!("{}  ✓", h.name) } else { h.name.clone() };
+                        ui.label(RichText::new(name).font(theme::bold(size::UI)));
+                        ui.label(widgets::secondary(format!("{} · {}", h.address, h.status), &p));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if app.ui.hub_remove_confirm == Some(h.index) {
+                            if widgets::plain(ui, &p, "Cancel", None).clicked() {
+                                app.ui.hub_remove_confirm = None;
+                            }
+                            if widgets::primary(ui, &p, "Remove", None).clicked() {
+                                app.ui.hub_remove_confirm = None;
+                                actions.push(Action::RemoveHub(h.index));
+                            }
+                            ui.label(widgets::secondary("Forget this hub? The hub itself is not touched.", &p));
+                        } else {
+                            let remove = ui.add_enabled_ui(h.removable, |ui| widgets::plain(ui, &p, "Remove", None)).inner;
+                            if remove.on_disabled_hover_text("Switch to another hub first.").clicked() {
+                                app.ui.hub_remove_confirm = Some(h.index);
+                            }
+                            if h.retry && widgets::plain(ui, &p, "Retry", None).clicked() {
+                                actions.push(Action::RetryHub);
+                            }
+                            if !h.selected && widgets::primary(ui, &p, "Switch to this hub", None).clicked() {
+                                actions.push(Action::SelectHub(h.index));
+                            }
+                        }
+                    });
+                });
+            });
+            ui.add_space(6.0);
+        }
+        reclaim_offer(ui, app, actions);
+        widgets::heading(ui, "Add a hub");
+        ui.label(widgets::secondary("A hub on another computer, by its Tailscale name or address. That hub must allow clients over Tailscale (Settings → Android on that computer).", &p));
+        let mut add = false;
+        ui.horizontal(|ui| {
+            let (address, label) = &mut app.ui.hub_add;
+            let r = widgets::field(ui, &p, address, "desk or desk.tailnet.ts.net:47380", 280.0, false);
+            add |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            widgets::field(ui, &p, label, "Label (optional)", 180.0, false);
+            add |= widgets::primary(ui, &p, "Add hub", None).clicked();
+        });
+        if add && !app.ui.hub_add.0.trim().is_empty() {
+            let (address, label) = std::mem::take(&mut app.ui.hub_add);
+            actions.push(Action::AddHub(address, label));
+        }
+        if let Some(e) = app.hub_add_error() {
+            ui.label(RichText::new(e).font(theme::ui(size::SMALL)).color(p.failed));
+        }
+        return;
+    }
+    let _ = actions;
+    ui.label(widgets::secondary("Hubs are kept by the app on this device.", &p));
+}
+
+/// The small accent square with a hub's initial (the badge left of the YAAC mark).
+pub(crate) fn hub_badge(ui: &mut egui::Ui, p: &crate::theme::Palette, initial: &str, filled: bool) -> egui::Response {
+    let font = theme::bold(if initial.chars().count() > 1 { 9.5 } else { 11.0 });
+    let (rect, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), egui::Sense::click());
+    if filled {
+        ui.painter().rect_filled(rect, 4.0, p.primary);
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initial, font, p.on_primary);
+    } else {
+        ui.painter().rect_stroke(rect, 4.0, egui::Stroke::new(1.0, p.text2), egui::StrokeKind::Inside);
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initial, font, p.text2);
+    }
+    resp
 }

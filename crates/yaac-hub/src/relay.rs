@@ -340,6 +340,11 @@ impl RelayQueue {
         self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
     }
+
+    /// A consistent copy of the store into `dest`, for moving the hub (docs/15-hub-transfer.md).
+    pub(crate) fn snapshot_into(&self, dest: &std::path::Path) -> Result<(), String> {
+        crate::transfer::vacuum_into(&self.conn, dest)
+    }
 }
 
 fn queued(dest_online: bool) -> Receipt {

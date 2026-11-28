@@ -89,6 +89,11 @@ impl HubPaths {
         self.data_dir.join("relay.sqlite")
     }
 
+    /// Records the new address after this hub has moved.
+    pub fn moved_file(&self) -> PathBuf {
+        self.data_dir.join("moved.json")
+    }
+
     /// The attach socket: `<runtime>/hub.sock` on Unix. On Windows, a named pipe,
     /// `\\.\pipe\yaac-hub-<user SID>-<runtime hash>`: pipes live in one machine-wide namespace,
     /// so the name carries the user, and a hash of the runtime directory keeps a second
@@ -111,6 +116,59 @@ impl HubPaths {
     /// The single-hub lock.
     pub fn lock_file(&self) -> PathBuf {
         self.runtime_dir.join("hub.lock")
+    }
+}
+
+/// The destination of a hub that stopped on this machine after transferring.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovedTombstone {
+    pub hub_id: String,
+    pub address: String,
+    pub host_name: String,
+    pub at_ms: i64,
+    /// The hub moved into one of this PC's own WSL distros (this one), kept running by
+    /// `yaac wsl-hub` (docs/15-hub-transfer.md#into-this-pcs-wsl).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wsl_distro: Option<String>,
+}
+
+/// Reads the move record. An unreadable or malformed record is an error.
+pub fn moved_tombstone(paths: &HubPaths) -> std::io::Result<Option<MovedTombstone>> {
+    match std::fs::read(paths.moved_file()) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(std::io::Error::other),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Publishes the move record atomically. The caller holds the hub lock.
+pub fn write_moved_tombstone(paths: &HubPaths, moved: &MovedTombstone) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let path = paths.moved_file();
+    let tmp = path.with_extension("json.tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp)?;
+    make_private_file(&tmp)?;
+    file.write_all(&serde_json::to_vec(moved).map_err(std::io::Error::other)?)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(tmp, path)
+}
+
+/// Removes the move record when reclaiming this hub.
+pub fn remove_moved_tombstone(paths: &HubPaths) -> std::io::Result<bool> {
+    match std::fs::remove_file(paths.moved_file()) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
     }
 }
 

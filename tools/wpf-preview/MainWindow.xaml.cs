@@ -370,6 +370,7 @@ public partial class MainWindow : Window
         YaacFonts.Apply(shell.Value("fonts"));
         ApplyFontScale(shell);
         RenderHeader(shell);
+        SidebarPane.RenderHubs(shell.TryGetProperty("hubs", out var hubs) ? hubs : default);
         settingsOpen = Flag(shell, "settings");
         firstRun = Flag(shell, "firstRun") && !settingsOpen;
         Workspace.Visibility = settingsOpen ? Visibility.Collapsed : Visibility.Visible;

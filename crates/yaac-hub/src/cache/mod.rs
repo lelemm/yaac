@@ -498,6 +498,11 @@ impl Cache {
         Ok(())
     }
 
+    /// A consistent copy of the store into `dest`, for moving the hub (docs/15-hub-transfer.md).
+    pub(crate) fn snapshot_into(&self, dest: &std::path::Path) -> Result<(), String> {
+        crate::transfer::vacuum_into(&self.conn, dest)
+    }
+
     // ── Reads (the window uses these on a read-only handle) ─────────────────────────────
 
     /// A cached transcript, items and position read in one transaction.

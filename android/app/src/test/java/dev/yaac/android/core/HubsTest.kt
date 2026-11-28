@@ -123,4 +123,62 @@ class HubsTest {
         assertEquals(listOf("desk · 2 need you", "home · 1 need you"), lines)
         assertEquals("YAAC", HubSummary.ongoing(listOf(HubSummary.Entry("a", 0, null), HubSummary.Entry("b", 0, null))).first)
     }
+
+    @Test
+    fun aMovedHubKeepsItsKeySlotAndLabelAndDialsTheNewAddress() {
+        val l = HubList().add("desk", "Home")!!.add("lab")!!.select("desk:47380")
+        val m = l.applyMoved("desk:47380", HubMove("h1", "box.tail1234.ts.net", "box"))!!
+        val h = m.list.byId("desk:47380")!!
+        assertEquals("box.tail1234.ts.net:47380", h.address)
+        assertEquals("Home", h.label)
+        assertEquals(0, h.slot)
+        assertEquals("desk:47380", m.list.selected)
+        assertTrue(m.merged.isEmpty())
+        // The same move again, or a move that is no address, changes nothing.
+        assertNull(m.list.applyMoved("desk:47380", HubMove("h1", "box.tail1234.ts.net:47380", null)))
+        assertNull(l.applyMoved("desk:47380", HubMove("h1", " ", null)))
+        assertNull(l.applyMoved("gone:47380", HubMove("h1", "box", null)))
+    }
+
+    @Test
+    fun aMovedHubIsStoredUnderItsKeyAndItsNewAddress() {
+        val m = HubList().add("desk")!!.add("lab")!!.applyMoved("desk:47380", HubMove(null, "box", null))!!.list
+        val back = HubList.decode(m.encode())
+        assertEquals(m, back)
+        assertEquals("box:47380", back.byId("desk:47380")!!.address)
+        // Adding the new address selects the moved hub; adding the old one is a new hub with a key of its own.
+        assertEquals("desk:47380", back.add("box")!!.selected)
+        val again = back.add("desk")!!
+        assertEquals(3, again.hubs.size)
+        assertEquals("desk:47380#1", again.selected)
+        assertEquals("desk:47380", again.current!!.address)
+        assertEquals(again, HubList.decode(again.encode()))
+    }
+
+    @Test
+    fun aMoveOntoAnotherSavedEntryOfTheSameHubMergesIt() {
+        // Saved at the new address already: merged, its label used when the moved one has none.
+        val l = HubList().add("desk")!!.add("box", "Box")!!.add("lab")!!.select("box:47380")
+        val m = l.applyMoved("desk:47380", HubMove("h1", "box:47380", "box"))!!
+        assertEquals(listOf("desk:47380", "lab:47380"), m.list.hubs.map { it.id })
+        assertEquals(listOf("box:47380"), m.merged.map { it.id })
+        assertEquals("Box", m.list.byId("desk:47380")!!.label)
+        assertEquals("desk:47380", m.list.selected)
+        // Saved at another address that answers with the same hubId (a MagicDNS name and an IP).
+        val n = HubList().add("desk", "Desk")!!.add("100.64.0.9")!!.add("lab")!!.select("lab:47380")
+        val ids = mapOf("100.64.0.9:47380" to "h1", "lab:47380" to "h2")
+        val r = n.applyMoved("desk:47380", HubMove("h1", "box.tail1234.ts.net", null)) { ids[it.address] }!!
+        assertEquals(listOf("100.64.0.9:47380"), r.merged.map { it.id })
+        assertEquals("Desk", r.list.byId("desk:47380")!!.label)
+        assertEquals("lab:47380", r.list.selected)
+        assertEquals(listOf(0, 2), r.list.hubs.map { it.slot })
+    }
+
+    @Test
+    fun theMoveIsReadFromTheShellView() {
+        val shell = FrameJson.parseToJsonElement("""{"hub":{"movedTo":{"hubId":"h1","address":"box:47380","hostName":"box"}}}""")
+        assertEquals(HubMove("h1", "box:47380", "box"), HubMove.parse(shell["hub"]["movedTo"]))
+        assertNull(HubMove.parse(FrameJson.parseToJsonElement("""{"hub":{"movedTo":null}}""")["hub"]["movedTo"]))
+        assertNull(HubMove.parse(null))
+    }
 }

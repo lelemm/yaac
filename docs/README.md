@@ -17,7 +17,8 @@ Read in order the first time; each doc stands alone afterwards.
 12. [Files and diffs](12-files.md) — the worktree tree with git marks, file and diff tabs, Add to composer
 13. [Terminal](13-terminal.md) — a fast terminal tab on the target: PowerShell on Windows, the login shell on Linux
 14. [Android](14-android.md) — *Proposed, post-MVP*: a second client of the hub over Tailscale, with parity with the Windows client
-11. [Installing on Windows](install.md) — the per-user setup: where files go, what runs at
+15. [Hub transfer](15-hub-transfer.md) — *Proposed*: move the hub to a Linux target and switch between saved hubs on desktop
+16. [Installing on Windows](install.md) — the per-user setup: where files go, what runs at
     login, upgrade and uninstall
 
 Reference:

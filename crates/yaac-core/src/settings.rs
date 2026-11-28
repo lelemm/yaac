@@ -34,6 +34,8 @@ pub enum Page {
     /// Desktop request notifications.
     Notifications,
     Approvals,
+    /// Hubs: the hubs this window can attach to (P412, desktop).
+    Hubs,
     /// Advanced.
     Advanced,
     /// About: this YAAC's version and build, its components, the latest release.
@@ -42,7 +44,7 @@ pub enum Page {
 
 impl Page {
     /// Every page, in navigation order.
-    pub const ALL: [Page; 12] = [Page::Targets, Page::Providers, Page::Skills, Page::Approvals, Page::Appearance, Page::Window, Page::Android, Page::Keyboard, Page::Terminal, Page::Notifications, Page::Advanced, Page::About];
+    pub const ALL: [Page; 13] = [Page::Targets, Page::Providers, Page::Skills, Page::Approvals, Page::Appearance, Page::Window, Page::Android, Page::Keyboard, Page::Terminal, Page::Notifications, Page::Hubs, Page::Advanced, Page::About];
 
     /// The navigation label.
     pub fn label(self) -> &'static str {
@@ -57,6 +59,7 @@ impl Page {
             Page::Terminal => "Terminal",
             Page::Approvals => "Approvals",
             Page::Notifications => "Notifications",
+            Page::Hubs => "Hubs",
             Page::Advanced => "Advanced",
             Page::About => "About",
         }

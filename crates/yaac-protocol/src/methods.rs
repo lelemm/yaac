@@ -252,6 +252,23 @@ catalogue! {
         DiagnosticsTroubleshoot = "diagnostics/troubleshoot" as DIAGNOSTICS_TROUBLESHOOT:
             t::TroubleshootParams => t::TroubleshootResult, HostToDaemon, request Control, response Bulk;
 
+        // ── Hub transfer ───────────────────────────────────────────────────────────────
+        /// Read the facts that determine whether this target can host the hub.
+        HubHostProbe = "hubHost/probe" as HUB_HOST_PROBE:
+            t::HubHostProbeParams => t::HubHostProbeResult, HostToDaemon, request Control, response Control;
+        /// Download and verify the hub binary on the target.
+        HubHostInstall = "hubHost/install" as HUB_HOST_INSTALL:
+            t::HubHostInstallParams => t::HubHostInstallResult, HostToDaemon, request Control, response Control, op;
+        /// Open a credited data stream for one staged transfer file.
+        HubHostPut = "hubHost/put" as HUB_HOST_PUT:
+            t::HubHostPutParams => t::HubHostPutResult, HostToDaemon, request Control, response Control, op;
+        /// Validate staging and arm startup when the old hub's connection closes.
+        HubHostStart = "hubHost/start" as HUB_HOST_START:
+            t::HubHostStartParams => t::HubHostStartResult, HostToDaemon, request Control, response Control, op;
+        /// Disarm startup and discard staging.
+        HubHostAbort = "hubHost/abort" as HUB_HOST_ABORT:
+            t::HubHostAbortParams => t::HubHostAbortResult, HostToDaemon, request Control, response Control, op;
+
         // ── Providers ──────────────────────────────────────────────────────────────────
         /// All provider instances on the target, each with a full descriptor.
         ProviderList = "provider/list" as PROVIDER_LIST:
@@ -596,6 +613,12 @@ catalogue! {
         /// The receiver of a data stream grants more credit.
         StreamCredit = "stream/credit" as STREAM_CREDIT:
             t::StreamCreditParams, Both, Control;
+        /// Progress of the target's hub binary download.
+        HubHostProgress = "hubHost/progress" as HUB_HOST_PROGRESS:
+            t::HubHostProgressParams, DaemonToHost, Control;
+        /// One staged stream has finished, with its verification outcome.
+        HubHostPutComplete = "hubHost/putComplete" as HUB_HOST_PUT_COMPLETE:
+            t::HubHostPutCompleteParams, DaemonToHost, Control;
         /// A branch's pull requests changed (or were asked again after a push or commit).
         ForgePrsChanged = "forge/prs/changed" as FORGE_PRS_CHANGED:
             t::ForgePrsResult, DaemonToHost, Control;

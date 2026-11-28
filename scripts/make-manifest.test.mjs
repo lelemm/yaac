@@ -68,6 +68,17 @@ test("the Android app is an artefact of its own", () => {
   assert.equal(a.url, "https://github.com/lelemm/yaac/releases/download/v0.1.0/yaac-android-0.1.0-build.1005.apk");
 });
 
+test("the Linux hub has a downloadable and verifiable entry", () => {
+  const { dir, list } = files();
+  const path = join(dir, "yaac-hub-linux-x86_64");
+  writeFileSync(path, "hub bytes");
+  const m = makeManifest({ ...base, files: [...list, { component: "hub-linux-x86_64", path }] });
+  const hub = m.artifacts.find((a) => a.name === "yaac-hub-linux-x86_64");
+  assert.equal(hub.size, "hub bytes".length);
+  assert.equal(hub.sha256, createHash("sha256").update("hub bytes").digest("hex"));
+  assert.equal(hub.url, "https://github.com/lelemm/yaac/releases/download/v0.1.0/yaac-hub-linux-x86_64");
+});
+
 test("bad input is refused", () => {
   const { list } = files();
   assert.throws(() => makeManifest({ ...base, build: "12a", files: list }), /build number/);
