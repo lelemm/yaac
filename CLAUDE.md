@@ -14,7 +14,8 @@ harnesses and on different machines messaging, spawning, and waiting for each ot
 1. **One connection per target.** Never open a second SSH session, `wsl.exe`, or side channel
    to a target, for any reason. Everything is multiplexed over the one stream. (A target is a
    user on a machine. SSH Setup and Revoke use short sessions only while no live connection
-   exists.)
+   exists, and so does installing or removing the hub's system service in WSL with
+   `wsl.exe -u root` (P416, confirmed by the owner).)
 2. **A thread is one provider conversation.** Models may change within a thread; the provider
    instance never does. Changing provider means forking. The key is the harness's own
    conversation id (for Codex: `Thread.id`, never `sessionId`).
