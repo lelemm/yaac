@@ -5,6 +5,7 @@ import { Terminals } from "./terminals.js";
 import { VoiceSessions } from "../voice/sessions.js";
 import { MAX_SDP_BYTES, VoiceCalls } from "../voice/calls.js";
 import { isLanguageTag } from "../voice/language.js";
+import { Channels } from "./channels.js";
 import type { ConnectionView } from "../protocol/connection.js";
 // The session core: threads, journals, requests, control, the dispatcher, and the index —
 // everything between the providers and the connected clients. It knows no protocol version
@@ -370,6 +371,7 @@ export class Core {
   readonly commandExplanations: CommandExplanations;
   readonly index: ThreadIndex;
   readonly ops: OpLog;
+  readonly channels: Channels;
   readonly uploads: UploadStore;
   readonly projects: ProjectStore;
   readonly gitStatus: GitStatusStore;
@@ -419,6 +421,20 @@ export class Core {
     for (const f of opts.factories) this.registry.registerKind(f);
     this.index = new ThreadIndex(opts.home, opts.cleanStart);
     this.ops = new OpLog(path.join(opts.home, "ops.jsonl"));
+    this.channels = new Channels(opts.home, {
+      thread: (id) => {
+        const rt = this.threads.get(id);
+        return rt && !rt.deleted ? { id: rt.id, turnId: rt.activeTurn ?? "" } : undefined;
+      },
+      publishThread: (threadId, item, started) => {
+        const rt = this.threads.get(threadId)!;
+        this.append(rt, { type: started ? "itemStarted" : "itemUpdated", item }, undefined, true);
+        this.updateIndex(rt);
+      },
+      broadcast: (method, params) => this.broadcast(method, params),
+      activity: () => setImmediate(() => this.activity.emit()),
+      log: opts.log,
+    });
     this.projects = new ProjectStore(path.join(opts.home, "projects.json"));
     this.folderTrust = new FolderTrust(path.join(opts.home, "folder-trust.json"), opts.log);
     this.git = gitRunner(opts.env);
@@ -468,6 +484,7 @@ export class Core {
     this.registry.load();
     await this.registry.probe();
     await this.reconcileAfterRestart();
+    this.channels.restore();
     await this.scanAll();
     // Queued user messages are delivered with no window attached.
     for (const rt of this.allThreads()) if (rt.userQueue.length > 0) this.pump(rt);
@@ -757,6 +774,7 @@ export class Core {
       rt.runningCommands.length > 0 ||
       rt.dispatching ||
       rt.pendingRequestCount() > 0 ||
+      this.channels.threadHasPending(rt.id) ||
       rt.waiting.size > 0 ||
       rt.queue.length > 0 ||
       rt.userQueue.length > 0 ||
@@ -772,6 +790,7 @@ export class Core {
 
   /** Whether a thread is in the index (listed to clients). */
   private listed(rt: ThreadRuntime): boolean {
+    if (this.channels.threadHasPending(rt.id)) return true;
     if (rt.record.metadataPending) return this.metadataFailed(rt) && rt.pendingRequestCount() > 0;
     return !rt.record.capped || !!rt.record.broughtIn || this.neverCut(rt) || this.isOpen(rt);
   }
@@ -1353,7 +1372,7 @@ export class Core {
    */
   private stateOf(rt: ThreadRuntime, depth = 0): ThreadSummary["state"] {
     const r = rt.record;
-    if (rt.pendingRequestCount() > 0) return "needsAttention";
+    if (rt.pendingRequestCount() > 0 || this.channels.threadHasPending(rt.id)) return "needsAttention";
     if (r.hold) return "stopped";
     if (rt.waiting.size > 0) return "waiting";
     if (rt.activeTurn) return "running";
@@ -1547,7 +1566,7 @@ export class Core {
 
   busy(): { runningTurns: number; pendingRequests: number; runningCommands: number } {
     let runningTurns = 0;
-    let pendingRequests = 0;
+    let pendingRequests = this.channels.waiting;
     let runningCommands = this.terminals.list().length;
     for (const rt of this.threads.values()) {
       if (rt.deleted) continue;
@@ -1672,6 +1691,7 @@ export class Core {
             if (r.resolution) item.resolution = r.resolution;
           }
         }
+        for (const item of this.channels.threadItems(rt.id)) p.upsert(item);
         rt.projection = p;
         return p;
       })().finally(() => {
@@ -1731,6 +1751,7 @@ export class Core {
         const required = [...rt.requests.values()]
           .filter((r) => (r.state === "pending" || r.state === "submitted") && !included.has(r.itemId))
           .flatMap((r) => projection.get(r.itemId) ?? []);
+        required.push(...this.channels.threadItems(rt.id).filter((item) => !included.has(item.id)));
         if (required.length) result.requiredItems = required;
         client.onSnapshot(rt.id, position);
       }
@@ -3446,6 +3467,11 @@ export class Core {
 
   async requestRespond(client: ClientLink, p: RequestRespondParams): Promise<void> {
     await this.ops.run("request/respond", p.opId, async () => {
+      if (this.channels.isDialogId(p.requestId)) {
+        if (typeof p.threadId !== "string") throw notActed("invalid_params", "threadId is required");
+        this.channels.respond(p.threadId, p.requestId, p.response, client);
+        return {};
+      }
       const rt = this.findThread(p.threadId);
       if (!rt || rt.deleted) throw notActed("thread_not_found", `no thread ${String(p.threadId)} on this target`);
       const rec = rt.requests.get(p.requestId);
@@ -3896,6 +3922,7 @@ export class Core {
   }
 
   private forget(rt: ThreadRuntime): void {
+    this.channels.threadRemoved(rt.id);
     this.mesh?.threadRemoved(rt);
     this.voice.endThread(rt.id, "The thread was removed.");
     this.calls.endThread(rt.id, "The thread was removed.");

@@ -50,6 +50,31 @@ fn question_request_item_from_the_docs() {
 }
 
 #[test]
+fn dialog_layout_round_trips_with_runtime_choices_and_unknown_nodes() {
+    let dialog: DialogOpenParams = exact(json!({
+        "requestId": "local-1",
+        "title": "Choose a team",
+        "layout": { "type": "column", "children": [
+            { "type": "select", "id": "team", "label": "Team", "required": true,
+              "options": [{ "value": "dev", "label": "Development", "detail": "Owns the SDK" }] },
+            { "type": "newInput", "id": "future", "required": true, "params": { "format": "future" } },
+            { "type": "row", "children": [{ "type": "button", "id": "save", "label": "Save", "kind": "primary" }] }
+        ]}
+    }));
+    let DialogNode::Column(column) = dialog.layout else { panic!("expected a column") };
+    assert!(matches!(&column.children[0], DialogNode::Select(select)
+        if select.input.required == Some(true) && select.options[0].value == "dev"));
+    assert!(matches!(&column.children[1], DialogNode::Unknown(node) if node.tag("type") == "newInput"));
+
+    let params: InboxRespondParams = exact(json!({
+        "opId": "op-a", "requestId": "dialog-a",
+        "response": { "requestKind": "dialog", "action": "save", "values": { "team": "dev" }, "cancelled": false }
+    }));
+    assert!(matches!(params.response, RequestResponse::Dialog(answer)
+        if answer.action.as_deref() == Some("save") && answer.values["team"] == "dev"));
+}
+
+#[test]
 fn approval_with_offered_decisions_and_its_answer() {
     let item: Item = exact(json!({
         "id": "i2", "turnId": "t1", "status": "inProgress",

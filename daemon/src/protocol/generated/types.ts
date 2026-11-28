@@ -770,19 +770,31 @@ export interface CatalogSkillsResult {
   skills?: CatalogSkillInfo[];
 }
 
+/**
+ * A registered channel has disconnected.
+ */
 export interface ChannelClosedParams {
   channelId: string;
 }
 
+/**
+ * Register one local connection under an integrator-supplied name.
+ */
 export interface ChannelRegisterParams {
   description?: string | null;
   name: string;
 }
 
+/**
+ * The daemon-assigned ID for the life of this connection.
+ */
 export interface ChannelRegisterResult {
   channelId: string;
 }
 
+/**
+ * A live channel as reported to the hub.
+ */
 export interface ChannelRegisteredParams {
   channelId: string;
   description?: string | null;
@@ -1053,6 +1065,8 @@ export interface DialogButton {
 }
 
 /**
+ * The semantic styling for a dialog button.
+ *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
 export type DialogButtonKind = "primary" | "danger" | "normal";
@@ -1069,10 +1083,16 @@ export interface DialogCheckbox {
   required?: boolean | null;
 }
 
+/**
+ * Withdraw the dialog identified by the integrator’s request ID.
+ */
 export interface DialogCloseParams {
   requestId: RequestId;
 }
 
+/**
+ * A row or column of dialog nodes.
+ */
 export interface DialogContainer {
   children: DialogNode[];
   gap?: number | null;
@@ -1090,26 +1110,41 @@ export interface DialogDate {
   required?: boolean | null;
 }
 
+/**
+ * A group of dialog nodes with an optional heading.
+ */
 export interface DialogGroup {
   children: DialogNode[];
   label?: string | null;
 }
 
+/**
+ * A raster data URL or HTTPS image with alternative text.
+ */
 export interface DialogImage {
   alt: string;
   maxHeight?: number | null;
   src: string;
 }
 
+/**
+ * An HTTPS or HTTP link the user can open.
+ */
 export interface DialogLink {
   label: string;
   url: string;
 }
 
+/**
+ * A bulleted list of plain text items.
+ */
 export interface DialogList {
   items: string[];
 }
 
+/**
+ * Formatted dialog content.
+ */
 export interface DialogMarkdown {
   text: string;
 }
@@ -1218,6 +1253,8 @@ export interface DialogOption {
 }
 
 /**
+ * The terminal outcome for the dialog’s original integrator.
+ *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
 export type DialogOutcome = "answered" | "cancelled" | "unknown";
@@ -1229,6 +1266,9 @@ export interface DialogProgress {
   value?: number | null;
 }
 
+/**
+ * A journaled request with a runtime layout and a daemon-stamped source.
+ */
 export interface DialogRequest {
   channelOpen: boolean;
   layout: DialogNode;
@@ -1283,11 +1323,17 @@ export interface DialogSource {
   name: string;
 }
 
+/**
+ * A table of plain text cells, in column order.
+ */
 export interface DialogTable {
   columns: string[];
   rows: string[][];
 }
 
+/**
+ * Plain text with optional visual emphasis.
+ */
 export interface DialogText {
   style?: DialogTextStyle | null;
   text: string;
@@ -1311,11 +1357,15 @@ export interface DialogTextInput {
 }
 
 /**
+ * The typographic role of a text node.
+ *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
 export type DialogTextStyle = "body" | "heading" | "caption" | "code";
 
 /**
+ * The semantic emphasis of a text node.
+ *
  * Open: a newer peer may send values not listed here. Keep them and treat them as unknown; never reject them.
  */
 export type DialogTextTone = "normal" | "muted" | "warning" | "error" | "success";

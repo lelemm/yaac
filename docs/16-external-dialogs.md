@@ -6,9 +6,9 @@ needed yet; this is the first, narrow way for another program to reach the user 
 ## What it is
 
 An **integrator app** — any program on any target — connects to the `yaacd` of its own target and
-registers a **channel**. The first and only operation of a channel is a **dialog**: a title, text,
-fields, options and buttons, shown to the user in the connected UIs (Windows, Android), that waits
-for one answer.
+registers a **channel**. A channel can open a **dialog** with a title and runtime layout. The
+connected UIs (Windows, Android) show its content, inputs, and buttons while the integrator
+waits for an answer.
 
 ```
 integrator app → yaacd on its target → hub → every attached UI
@@ -22,7 +22,10 @@ integrator app ← yaacd on its target ← hub ← the UI that answered
   `yaacd` (starting it if none serves) and registers the channel. On Linux an integrator may also
   connect to `yaacd`'s Unix socket directly and send `channel/register` itself. No authentication of
   its own in v1: the socket and the bridge are the user's own (user-only permissions), as the owner
-  asked.
+  asked. The stdio bridge emits the result of its automatic registration with RPC ID
+  `"yaacd-channel-register"`. Wait for that response before opening a dialog. See
+  [the demo integrator](../examples/dialog-demo.mjs) for a drop-down defined when the app opens
+  the dialog.
 - **`channel/register { name, description? }`** → `{ channelId }`. The name is shown to the user as
   the dialog's source ("From <name> on <target>"). One channel per connection; it ends when the
   connection closes.
@@ -32,7 +35,8 @@ integrator app ← yaacd on its target ← hub ← the UI that answered
   `duplicate_request`. A known `threadId` places the dialog in that thread and in Needs you.
   Otherwise the dialog appears under the target in Needs you.
 - **Notification `dialog/result { requestId, outcome, action?, values? }`** to the channel:
-  `outcome` ∈ `answered` (with `action` = the button id and `values` = input id → JSON value) | `cancelled` (the user closed it) | `unknown` (see below).
+  `answered` carries the button ID in `action` and the input values keyed by ID in `values`.
+  The other outcomes are `cancelled` and `unknown` (see below).
 - **`dialog/close { requestId }`**: the integrator withdraws a dialog it no longer needs; the UIs
   drop it and the result is `cancelled` (once).
 
@@ -68,6 +72,12 @@ the button's own `requires` list. Unknown nodes render a muted “This part of t
 a newer YAAC” line. An enabled unknown required input prevents submission. Secret inputs
 cannot have defaults and their answers stay out of journals and caches.
 
+A layout can have at most 500 nodes across 12 levels. Dialog content and answers each have a
+256 KiB limit. Inline raster image data URLs have a separate 1 MiB budget across the dialog.
+An oversized or invalid dialog is refused before it reaches the user. The target can have up
+to 256 registered channels and 16 MiB of pending dialog records, which keeps full snapshots
+within the protocol's message limit.
+
 ## How it travels (P418)
 
 - **`yaacd`** turns `dialog/open` into an ordinary **request** with a new body kind **`dialog`**
@@ -85,11 +95,14 @@ cannot have defaults and their answers stay out of journals and caches.
   host (as secret questions today).
 - **One result per request.** Answers carry an operation id; the first one wins, later taps on any
   UI see "already answered". A dropped connection while answering shows **outcome unknown** to the
-  user (invariant 10); `yaacd` sends the integrator `dialog/result {outcome:"unknown"}` only if it
-  cannot tell, and the real result if it can.
+  user (invariant 10). The daemon knows an accepted answer from the committed record, and sends
+  that result on the original channel. The wire reserves `unknown` for an indeterminate result.
+  A broken integrator transport can leave delivery uncertain, and the daemon never resends it.
 - **Integrator gone.** If the channel closes while a dialog is open, the dialog stays visible,
   marked "<name> is no longer connected"; answering it is refused with that reason; it can be
-  dismissed. Nothing is delivered later to a different connection.
+  dismissed by a cancellation response. Nothing is delivered later to a different connection.
+  An open dialog restored after a daemon restart is also disconnected. Deleting its thread
+  moves a pending dialog into the target inbox.
 
 ## Contracts (names; types in `yaac-protocol`)
 

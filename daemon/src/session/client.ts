@@ -99,6 +99,13 @@ export class ClientSession implements SessionHandler, ClientLink {
     const p = obj(raw);
     const core = this.core;
     switch (method) {
+      case METHODS.INBOX_LIST:
+        return core.channels.inbox();
+      case METHODS.INBOX_RESPOND:
+        return core.ops.run(method, p.opId, async () => {
+          core.channels.respond(undefined, str(p, "requestId"), p.response, this);
+          return {};
+        });
       case METHODS.PING:
         return {};
       case METHODS.HUB_HOST_PROBE:

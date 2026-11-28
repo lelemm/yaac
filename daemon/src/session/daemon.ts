@@ -20,9 +20,9 @@ import { ensureDir, readJson, writeJsonAtomic } from "../util/fsx.js";
 import { Core } from "./core.js";
 import { ClientSession, DEFAULT_CLIENT_OPTIONS, type ClientOptions, type MethodHandler } from "./client.js";
 import { DEFAULT_JOURNAL_OPTIONS, type JournalOptions } from "./journal.js";
-import { listenExclusive, removePipeKey, socketPathFor } from "./server.js";
+import { listenExclusive, removePipeKey, sniffConnection, socketPathFor } from "./server.js";
 import { Mesh, type MeshOptions } from "../mesh/mesh.js";
-import { serveBridge, sniffBridge } from "../mesh/mcp.js";
+import { serveBridge } from "../mesh/mcp.js";
 import { Forge, type ForgeOptions } from "../forge/forge.js";
 import { PrTools } from "../forge/pr-tools.js";
 import { Skills } from "./skills.js";
@@ -103,6 +103,7 @@ export class Daemon implements FrozenCoreHost {
   /** The socket file this daemon bound (device and inode), to remove only that one on stop. */
   private socketId: { dev: number; ino: number } | null = null;
   private connections = new Set<ServerConnection>();
+  private localLinks = new Set<net.Socket>();
   /** The connections that finished `initialize`: the hosts, which alone hold off an idle exit. */
   private hosts = new Set<ServerConnection>();
   /** When each connection was accepted (for the handshake grace). */
@@ -178,9 +179,21 @@ export class Daemon implements FrozenCoreHost {
         s.destroy();
         return;
       }
+      s.on("error", () => {});
+      serving.localLinks.add(s);
+      s.once("close", () => serving.localLinks.delete(s));
       void serving.ready.then(async () => {
-        if (await sniffBridge(s)) serveBridge(s, (ticket, call) => serving.mesh.callWithTicket(ticket, call), (l) => serving.log(l));
-        else serving.attach(s);
+        const kind = await sniffConnection(s);
+        if (serving.isStopping || !kind) {
+          s.destroy();
+          return;
+        }
+        if (kind === "bridge") serveBridge(s, (ticket, call) => serving.mesh.callWithTicket(ticket, call), (l) => serving.log(l));
+        else if (kind === "channel") serving.core.channels.attach(s);
+        else {
+          serving.localLinks.delete(s);
+          serving.attach(s);
+        }
         s.resume();
       });
     });
@@ -260,6 +273,8 @@ export class Daemon implements FrozenCoreHost {
 
   hubHostSupported() { return this.hubHost !== undefined; }
 
+  channelsSupported() { return !this.config.noSocket; }
+
   targetFacts(): TargetFacts {
     return targetFacts();
   }
@@ -310,10 +325,9 @@ export class Daemon implements FrozenCoreHost {
       void this.stop("handover idle", false);
       return;
     }
-    // Only hosts count: a connection that has not initialized (a probe, a client mid-handshake)
-    // neither holds the daemon nor restarts the idle period. Turns, pending requests, and
-    // live shell commands hold it while they run.
-    const idle = workIdle && this.hosts.size === 0;
+    // Registered channels and initialized hosts keep the daemon alive. A liveness probe
+    // or connection that never finishes its handshake does not restart the idle period.
+    const idle = workIdle && this.hosts.size === 0 && this.core.channels.connected === 0;
     if (idle && !this.idleTimer && this.config.idleTimeoutMs > 0) {
       this.armIdle(this.config.idleTimeoutMs);
     } else if (!idle && this.idleTimer) {
@@ -327,7 +341,7 @@ export class Daemon implements FrozenCoreHost {
       this.idleTimer = null;
       if (this.stopping) return;
       const now = this.core.busy();
-      if (this.hosts.size > 0 || now.runningTurns > 0 || now.pendingRequests > 0 || now.runningCommands > 0 || this.hubHost?.launching) return;
+      if (this.hosts.size > 0 || this.core.channels.connected > 0 || now.runningTurns > 0 || now.pendingRequests > 0 || now.runningCommands > 0 || this.hubHost?.launching) return;
       // A connection still within its handshake grace may be a host about to initialize: give it
       // the rest of its grace, never more.
       const youngest = Math.max(0, ...[...this.connections].filter((c) => !this.hosts.has(c)).map((c) => this.acceptedAt.get(c) ?? 0));
@@ -346,6 +360,10 @@ export class Daemon implements FrozenCoreHost {
       if (this.idleTimer) clearTimeout(this.idleTimer);
       this.server?.close();
       if (interrupt) await this.core.interruptAllForUpdate();
+      await Promise.all([...this.localLinks].map((socket) => new Promise<void>((resolve) => {
+        socket.once("close", resolve);
+        socket.destroy();
+      })));
       await Promise.all(
         [...this.connections].map(
           (c) =>

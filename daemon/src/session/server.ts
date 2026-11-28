@@ -8,6 +8,7 @@ import * as path from "node:path";
 import * as tls from "node:tls";
 import { randomBytes } from "node:crypto";
 import { sha256Hex, writeAtomic } from "../util/fsx.js";
+import { BRIDGE_MAGIC } from "../mesh/link.js";
 import { ensurePrivateDir } from "./uploads.js";
 
 /** Unix socket paths are limited to about 104 bytes on some systems. */
@@ -15,6 +16,34 @@ const MAX_SOCKET_PATH = 100;
 const PIPE_PREFIX = "\\\\.\\pipe\\";
 const PSK_ID = "yaacd";
 const PSK_TLS = { minVersion: "TLSv1.2", maxVersion: "TLSv1.2", ciphers: "PSK-AES256-GCM-SHA384" } as const;
+
+/** Distinguish the framed host protocol, the MCP bridge, and local JSON lines. */
+export function sniffConnection(socket: net.Socket): Promise<"host" | "bridge" | "channel" | null> {
+  return new Promise((resolve) => {
+    const done = (kind: "host" | "bridge" | "channel" | null) => {
+      socket.off("readable", onReadable);
+      socket.off("close", onClose);
+      socket.off("end", onClose);
+      resolve(kind);
+    };
+    const onReadable = () => {
+      const head = socket.read(4) as Buffer | null;
+      if (head === null) return;
+      if (head.length < 4) return done(null);
+      if (head.equals(BRIDGE_MAGIC)) return done("bridge");
+      socket.unshift(head);
+      // A valid host length prefix is little-endian and its highest byte is always zero.
+      // A channel begins with a JSON object (optionally preceded by JSON whitespace).
+      const json = head[3] !== 0 && /^[{ \t\r\n]/.test(head.toString("ascii"));
+      done(json ? "channel" : "host");
+    };
+    const onClose = () => done(null);
+    socket.on("readable", onReadable);
+    socket.once("close", onClose);
+    socket.once("end", onClose);
+    if (socket.destroyed || socket.readableEnded) onClose();
+  });
+}
 
 /** Where the daemon of `home` listens: a Windows pipe or a private Unix socket. */
 export function socketPathFor(home: string, env: NodeJS.ProcessEnv = process.env): string {

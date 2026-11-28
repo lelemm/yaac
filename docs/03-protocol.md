@@ -252,7 +252,30 @@ hangs up its call, and a dropped target ends it with an error.
 | `turn/shellCommand` | `{ opId, threadId, command, delivery? }` → like `turn/start` (`outcome` `started` or `queued`, `queueId`). Under `userShellCommand` (P344): runs a `!command` the user typed in the thread's composer on the target, in the thread's folder, records it as the harness's own `!` does, and has the agent answer it, as one turn — journaled as a `userMessage` with the one part `!command` (role `command`, `opId`), a `toolCall` with `source: userShell` (streamed output, `exitCode`, `durationMs`), then the answer. `delivery: queue` queues it while a turn runs (the `QueuedMessage` has `shellCommand`); absent, a running turn refuses it (`turn_in_progress`); `now` is `invalid_params`. Without the capability: `capability_missing`. Never reachable from an agent. [13 Terminal](13-terminal.md#command-in-the-composer--the-agent-answers) |
 | `turn/interrupt` | Stop a turn. Takes the **turn id**, so a late Stop can never hit the next turn. |
 | `turn/steer` | Add input to the running turn. Takes the turn id it expects to be running. Gated by capability. |
-| `request/respond` | Answer a pending approval or question. |
+| `request/respond` | Answer a request in a thread, including an external dialog. |
+
+### External dialogs
+
+**Proposed (P417–P420).** A daemon with local channels advertises `channels` in
+`initialize.features`. The hub uses its existing target connection. Local integrators use
+a separate channel on the user’s own daemon socket, with newline-delimited JSON-RPC-style
+messages and the same string error codes as the daemon protocol.
+
+| Direction | Method | Payload and result |
+| --- | --- | --- |
+| Integrator → daemon | `channel/register` | `{ name, description? }` → `{ channelId }`. Once per connection. |
+| Integrator → daemon | `dialog/open` | `{ requestId, title, layout, threadId? }` → `{ accepted: true }` after journaling. The request ID is unique on that channel. |
+| Integrator → daemon | `dialog/close` | `{ requestId }` → `{}`. Withdraws an open dialog and emits its cancellation. |
+| Daemon → integrator | `dialog/result` | Notification `{ requestId, outcome, action?, values? }`. Only the opening channel receives it. |
+| Hub → daemon | `inbox/list` | `{}` → `{ requests, channels }`. Snapshot of the target's pending threadless dialogs and registered channels. |
+| Hub → daemon | `inbox/respond` | `{ opId, requestId, response }` → `{}`. Answer or dismiss a threadless dialog by its daemon-stamped ID. |
+| Daemon → hub | `inbox/updated` | Notification `{ request }`. Upsert pending requests and remove terminal requests from the live inbox. |
+| Daemon → hub | `channel/registered` · `channel/closed` | Notifications `{ channelId, name, description? }` and `{ channelId }`. |
+
+A thread dialog uses `thread/event` and `request/respond`. Updating `channelOpen` or
+resolving a thread dialog replaces the request item with `itemUpdated`. The daemon validates
+the layout and the values before acting. Replay and host-facing resolutions omit secret input
+values. See [16 — External dialogs](16-external-dialogs.md) for the layout and lifecycle.
 
 ### Uploads
 
@@ -656,7 +679,8 @@ yaacd:  { changed: [ …summaries… ], removed: [ …ids… ], token: "idx3:891
 A dropped connection after `thread/start` must not create two threads or pay for two turns.
 
 - Every state-changing request — `thread/start`, `turn/start`, `turn/steer`, `thread/fork`,
-  `request/respond` — carries a client-generated `opId`.
+  `request/respond`, `inbox/respond` — carries a client-generated `opId`. A local integrator
+  uses `requestId` for the lifetime of its channel. Reopening an accepted ID is refused.
 - `yaacd` records each `opId` and its outcome on disk before acting and after. Re-sending an
   `opId` returns the recorded outcome instead of acting again.
 - If `yaacd` crashed between handing the operation to the harness and recording the result, it
@@ -721,5 +745,7 @@ show as-is.
 | `thread_not_found` | The thread does not exist on this target. |
 | `thread_in_use` | The thread is being driven elsewhere; this client may only watch. |
 | `turn_in_progress` · `turn_mismatch` | A turn is already running, or the turn id given is not the running one. |
+| `duplicate_request` | The integrator already opened this dialog ID on the same channel. |
+| `channel_closed` | The dialog’s integrator disconnected. The user can dismiss the dialog. |
 | `outcome_unknown` | The operation may or may not have taken effect; see [idempotency](#idempotency). |
 | `upload_mismatch` | The uploaded bytes do not match the declared hash or size. |

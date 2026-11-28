@@ -8,6 +8,7 @@ use super::{OpId, RequestId, RequestItem, ThreadId};
 use crate::macros::{open_enum, open_union};
 
 open_enum! {
+    /// The typographic role of a text node.
     pub enum DialogTextStyle fallback Unknown {
         Body = "body",
         Heading = "heading",
@@ -17,6 +18,7 @@ open_enum! {
 }
 
 open_enum! {
+    /// The semantic emphasis of a text node.
     pub enum DialogTextTone fallback Unknown {
         Normal = "normal",
         Muted = "muted",
@@ -27,6 +29,7 @@ open_enum! {
 }
 
 open_enum! {
+    /// The semantic styling for a dialog button.
     pub enum DialogButtonKind fallback Unknown {
         Primary = "primary",
         Danger = "danger",
@@ -34,6 +37,7 @@ open_enum! {
     }
 }
 
+/// A row or column of dialog nodes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DialogContainer {
@@ -42,6 +46,7 @@ pub struct DialogContainer {
     pub gap: Option<Number>,
 }
 
+/// A group of dialog nodes with an optional heading.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DialogGroup {
@@ -50,6 +55,7 @@ pub struct DialogGroup {
     pub children: Vec<DialogNode>,
 }
 
+/// Plain text with optional visual emphasis.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DialogText {
@@ -60,12 +66,14 @@ pub struct DialogText {
     pub tone: Option<DialogTextTone>,
 }
 
+/// Formatted dialog content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DialogMarkdown {
     pub text: String,
 }
 
+/// A raster data URL or HTTPS image with alternative text.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DialogImage {
@@ -75,6 +83,7 @@ pub struct DialogImage {
     pub max_height: Option<Number>,
 }
 
+/// An HTTPS or HTTP link the user can open.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DialogLink {
@@ -82,12 +91,14 @@ pub struct DialogLink {
     pub url: String,
 }
 
+/// A bulleted list of plain text items.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DialogList {
     pub items: Vec<String>,
 }
 
+/// A table of plain text cells, in column order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DialogTable {
@@ -264,6 +275,7 @@ pub struct DialogSource {
     pub name: String,
 }
 
+/// A journaled request with a runtime layout and a daemon-stamped source.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DialogRequest {
@@ -285,6 +297,7 @@ pub struct DialogAnswer {
     pub cancelled: bool,
 }
 
+/// Register one local connection under an integrator-supplied name.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelRegisterParams {
@@ -293,12 +306,14 @@ pub struct ChannelRegisterParams {
     pub description: Option<String>,
 }
 
+/// The daemon-assigned ID for the life of this connection.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelRegisterResult {
     pub channel_id: String,
 }
 
+/// A live channel as reported to the hub.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelRegisteredParams {
@@ -308,6 +323,7 @@ pub struct ChannelRegisteredParams {
     pub description: Option<String>,
 }
 
+/// A registered channel has disconnected.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelClosedParams {
@@ -332,6 +348,7 @@ pub struct DialogOpenResult {
     pub accepted: bool,
 }
 
+/// Withdraw the dialog identified by the integrator’s request ID.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DialogCloseParams {
@@ -339,6 +356,7 @@ pub struct DialogCloseParams {
 }
 
 open_enum! {
+    /// The terminal outcome for the dialog’s original integrator.
     pub enum DialogOutcome fallback Other {
         Answered = "answered",
         Cancelled = "cancelled",
