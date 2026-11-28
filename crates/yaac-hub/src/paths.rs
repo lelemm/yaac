@@ -212,7 +212,7 @@ fn platform_data(get: &impl Fn(&str) -> Option<PathBuf>, home: Option<&Path>) ->
 }
 
 /// Creates a directory (and parents) readable only by the user.
-pub(crate) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+pub fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
@@ -223,7 +223,7 @@ pub(crate) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 /// Restricts a file to the user.
-pub(crate) fn make_private_file(path: &Path) -> std::io::Result<()> {
+pub fn make_private_file(path: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

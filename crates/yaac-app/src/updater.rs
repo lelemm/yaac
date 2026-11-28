@@ -277,16 +277,11 @@ impl yaac_hub::transfer::TransferHost for HubTransfer {
         yaac_hub::transfer::windows_to_wsl_path(&exe.to_string_lossy())
     }
 
-    fn start_wsl_keeper(&self, keeper: &yaac_hub::transfer::WslKeeper) -> Result<(), String> {
+    fn install_wsl_service(&self, service: &yaac_hub::transfer::WslService) -> Result<(), String> {
         if !cfg!(windows) {
-            return Err("the WSL keeper runs on Windows only".into());
+            return Err("only YAAC for Windows sets up a hub in WSL".into());
         }
-        crate::wsl_keeper::start(keeper)
-    }
-
-    fn keeper_autostart(&self, keeper: &yaac_hub::transfer::WslKeeper) -> Result<(), String> {
-        let entry = crate::wsl_keeper::autostart_entry(keeper)?;
-        yaac_hub::autostart::install_autostart(&entry).map_err(|e| e.to_string())
+        crate::wsl_service::start_install(service)
     }
 }
 

@@ -24,6 +24,27 @@ pub struct HubHostTailscale {
 pub struct HubHostWsl {
     /// The registered distribution name, or `WSL` if unavailable.
     pub distro: String,
+    /// What the PC needs to run a moved hub here as a systemd system service
+    /// (docs/15-hub-transfer.md#into-this-pcs-wsl-p416). Absent from a `yaacd` that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<HubHostWslService>,
+}
+
+/// The facts for the hub's system unit in a WSL distro (`/etc/systemd/system/yaac-hub.service`,
+/// installed from Windows as root through `wsl.exe -u root`; `yaacd` itself never has root).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HubHostWslService {
+    /// systemd is the distro's system manager (`[boot] systemd=true` in `/etc/wsl.conf`).
+    pub systemd: bool,
+    /// The user `yaacd` runs as: the hub's service runs as this user (`User=`).
+    pub user: String,
+    pub uid: u32,
+    /// The hub profile's data directory (`bin/yaac` is under it), as `yaacd` finds it.
+    pub data_dir: String,
+    /// `KEY=value` entries for the service, as `yaacd` has them: `HOME`, the `YAAC_*_DIR`
+    /// profile directories, `YAAC_HOME` when set, `PATH`.
+    pub environment: Vec<String>,
 }
 
 /// The outcome recorded after a previous hand-over.

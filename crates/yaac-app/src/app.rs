@@ -799,8 +799,8 @@ pub(crate) struct DeskHubs {
     pub moved_here: Option<yaac_hub::paths::MovedTombstone>,
     /// Why the last Add was refused.
     pub add_error: Option<String>,
-    /// **Start the hub here again** for a hub in this PC's WSL: its keeper is stopping it there
-    /// (off the UI thread); the reclaim carries on when this answers.
+    /// **Start the hub here again** for a hub in this PC's WSL: its system service is being
+    /// removed there (off the UI thread); the reclaim carries on when this answers.
     pub reclaiming: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
 }
 
@@ -814,10 +814,8 @@ impl DeskHubs {
         let mut moved_here = yaac_hub::paths::moved_tombstone(&local.paths).ok().flatten();
         if let Some(t) = &mut moved_here {
             // A tombstone from before `via` (build 1059): a hub in WSL is still reached there.
-            if t.via.is_none()
-                && let Some(k) = crate::wsl_keeper::from_tombstone(&local.paths)
-            {
-                t.via = Some(yaac_protocol::attach::TargetTransport::Wsl(yaac_protocol::attach::WslTransport { distro: k.distro, user: k.user }));
+            if t.via.is_none() {
+                t.via = crate::wsl_service::via_from_old_tombstone(&local.paths);
             }
             saved.moved(&t.hub_id, &t.address, &t.host_name, t.via.as_ref());
         }
@@ -1968,23 +1966,20 @@ impl YaacApp {
 
     /// Start the hub here again: the tombstone goes, This PC's entry comes back, and the local
     /// hub is started from the data the hand-over left here. A hub in this PC's WSL is stopped
-    /// first, by its keeper (`yaac quit` in the distro), so two hubs never run; that waits, so
-    /// it runs on a thread of its own and [`YaacApp::reclaim_upkeep`] carries on.
+    /// first: its system service is disabled and stopped there (`wsl.exe -u root`), so the
+    /// distro never starts a second hub; that waits, so it runs on a thread of its own and
+    /// [`YaacApp::reclaim_upkeep`] carries on.
     #[cfg(feature = "hub")]
     fn reclaim_hub(&mut self) {
         if !self.reclaim_offered() { return }
         let Some(d) = &mut self.desk_hubs else { return };
         if d.reclaiming.is_some() { return }
-        if d.moved_here.as_ref().is_some_and(|t| t.wsl_distro.is_some()) {
+        if let Some(distro) = d.moved_here.as_ref().and_then(|t| t.wsl_distro.clone()) {
             let (tx, rx) = std::sync::mpsc::channel();
             let (paths, ctx) = (d.local.paths.clone(), self.ctx.clone());
             let started = std::thread::Builder::new().name("yaac-reclaim".into()).spawn(move || {
-                let result = crate::wsl_keeper::stop(&paths).map(|_| ()).map(|()| {
-                    // The keeper's login entry goes back to the hub's own.
-                    if cfg!(windows) && let Err(e) = crate::wsl_keeper::restore_hub_autostart() {
-                        eprintln!("yaac: start-at-login still runs the WSL keeper: {e}");
-                    }
-                });
+                // A keeper of an earlier build (P414) stops its hub first.
+                let result = crate::wsl_service::stop_legacy_keeper(&paths).and_then(|_| crate::wsl_service::remove(&distro));
                 let _ = tx.send(result);
                 ctx.request_repaint();
             });

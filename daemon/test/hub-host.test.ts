@@ -22,6 +22,7 @@ async function fixture(t: TestContext, options: {
   wslInterop?: boolean;
   tailscale?: boolean;
   windows?: { running?: boolean; autostartOff?: boolean; noExe?: boolean };
+  systemdSystem?: boolean;
 } = {}) {
   const root = tmpHome("yaac-hub-host-");
   const commands = path.join(root, "commands");
@@ -30,7 +31,9 @@ async function fixture(t: TestContext, options: {
   const runtime = options.windows ? path.join(root, "Windows hub runtime") : path.join(root, "run", "yaac");
   const yaacExe = path.join(commands, "YAAC installation.exe");
   const wslInteropPath = path.join(root, "WSLInterop");
+  const systemdMarker = path.join(root, "systemd-system");
   fs.mkdirSync(commands);
+  if (options.systemdSystem) fs.mkdirSync(systemdMarker);
   if (options.wslInterop) fs.writeFileSync(wslInteropPath, "enabled\n");
   if (options.tailscale !== false) fs.writeFileSync(path.join(commands, "tailscale"), `#!/bin/sh
 [ "$*" = "status --json" ] || exit 1
@@ -85,7 +88,7 @@ if (args === "hub-info") {
     },
     hubHost: {
       allowHttpForTests: options.http, probePortForTests: options.probePort ?? 0, wslInteropPathForTests: wslInteropPath,
-      platformForTests: options.windows ? "win32" : undefined,
+      systemdMarkerForTests: systemdMarker, platformForTests: options.windows ? "win32" : undefined,
     },
     idleTimeoutMs: options.idleTimeoutMs ?? 0,
   });
@@ -157,7 +160,8 @@ test("the probe never listens on a port (Windows Firewall would ask about Node)"
 test("a named WSL distro probes its own Tailscale", linuxTest, async (t) => {
   const { client } = await fixture(t, { wslDistro: "YAAC Test" });
   const probe = await client.request("hubHost/probe");
-  assert.deepEqual(probe.wsl, { distro: "YAAC Test" });
+  assert.equal(probe.wsl.distro, "YAAC Test");
+  assert.equal(probe.wsl.service.systemd, false, "no systemd as the system manager");
   assert.deepEqual(probe.tailscale, { running: true, login: "me@example.com", ips: ["127.0.0.2", "127.0.0.3"] });
   assert.equal(probe.portFree, true);
 });
@@ -165,9 +169,22 @@ test("a named WSL distro probes its own Tailscale", linuxTest, async (t) => {
 test("the kernel marker identifies WSL when the distro name and Tailscale are unavailable", linuxTest, async (t) => {
   const { client } = await fixture(t, { wslInterop: true, tailscale: false });
   const probe = await client.request("hubHost/probe");
-  assert.deepEqual(probe.wsl, { distro: "WSL" });
+  assert.equal(probe.wsl.distro, "WSL");
   assert.deepEqual(probe.tailscale, { running: false, ips: [] });
   assert.equal(probe.portFree, false);
+});
+
+test("in WSL the probe says what the PC needs for the hub's system service (P416)", linuxTest, async (t) => {
+  const { client, data, settings, runtime } = await fixture(t, { wslDistro: "Ubuntu", systemdSystem: true });
+  const { service } = (await client.request("hubHost/probe")).wsl;
+  const me = os.userInfo();
+  assert.deepEqual({ ...service, environment: undefined }, { systemd: true, user: me.username, uid: me.uid, dataDir: data, environment: undefined });
+  // The profile directories are spelled out, so the service and `yaac hub-bridge` agree.
+  for (const entry of [`YAAC_DATA_DIR=${data}`, `YAAC_CONFIG_DIR=${settings}`, `YAAC_RUNTIME_DIR=${runtime}`]) {
+    assert.ok(service.environment.includes(entry), entry);
+  }
+  assert.ok(service.environment.some((e: string) => e.startsWith("HOME=")));
+  assert.ok(service.environment.some((e: string) => e.startsWith("PATH=")));
 });
 
 test("Windows probes report the installed hub build and running state", linuxTest, async (t) => {

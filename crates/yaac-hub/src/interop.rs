@@ -20,8 +20,9 @@ pub const LOCAL_DAEMON_COMMAND: &str = "local-daemon";
 pub const HUB_BRIDGE_COMMAND: &str = "hub-bridge";
 
 /// How long `yaac hub-bridge` waits for the hub's socket to accept (the hub may be starting:
-/// right after a move, or when the keeper has just started it).
-pub const BRIDGE_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+/// right after a move, or in a WSL distro that the bridge's own `wsl.exe` has just booted,
+/// whose systemd then starts the hub's service).
+pub const BRIDGE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Connects to this PC's Windows `yaacd` from inside WSL: `<exe> local-daemon`.
 #[derive(Clone, Debug)]
