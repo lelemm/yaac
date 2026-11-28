@@ -54,7 +54,8 @@ impl Client {
     }
 
     fn send_with(&mut self, key: &ThreadKey, delivery: &Delivery) -> bool {
-        if !self.state.may_act(key) {
+        // One Send at a time: a second click while the first is on its way does nothing.
+        if !self.state.may_act(key) || self.sending(key) {
             return false;
         }
         let Some(draft) = self.state.drafts.get(key).cloned() else { return false };

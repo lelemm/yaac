@@ -2758,6 +2758,8 @@ pub(crate) mod tests {
             let key = &keys[i % keys.len()];
             app.client.state.drafts.entry(key.clone()).or_default().text = format!("message {i}");
             app.apply(vec![Action::Send(key.clone())]);
+            // A thread takes one Send at a time: let the target answer this one.
+            while app.demo.as_ref().is_some_and(|h| h.tick()) | app.pump_demo() {}
         }
         let expected: Vec<_> = (2..12).rev().map(|i| format!("message {i}")).collect();
         assert_eq!(app.ui.composer_history.as_ref(), expected.as_slice());

@@ -226,6 +226,22 @@ mod ssh;
 mod uploads;
 mod wsl;
 
+/// Where a new-thread draft's Send is (docs/07-ui.md#composer): one Send, one operation
+/// id, from the click until the thread exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftStart {
+    /// `thread/start` is on its way: the composer says "Starting…", its text is read-only and
+    /// another Send does nothing.
+    Starting,
+    /// The answer was lost: the thread may or may not exist. Never sent again on its own; a
+    /// Send by the user carries the same operation id, so `yaacd` answers with the thread the
+    /// first one started rather than starting a second.
+    Unknown,
+}
+
+/// The composer's line for [`DraftStart::Unknown`].
+pub const START_UNKNOWN: &str = "YAAC lost contact while starting this thread. It may already have started; Send again checks, and opens it instead of starting another.";
+
 /// A problem to show the user (as a notice, never a dialog).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientError {
@@ -255,6 +271,9 @@ pub struct Client {
     pending: HashMap<RpcId, Call>,
     unavailable: Vec<Call>,
     mode_results: HashMap<OpId, ModeChangeResults>,
+    /// The operation id of each new-thread draft's Send whose outcome is not known yet (in
+    /// flight, or lost): a Send again reuses it ([`DraftStart`]).
+    draft_ops: HashMap<u64, OpId>,
     ops: u64,
     /// This window run's own part of every operation id (D159): ids must never repeat across
     /// runs, because `yaacd` remembers them and answers a repeated id with the old outcome.
@@ -368,6 +387,7 @@ impl Client {
             next_id: 1,
             pending: HashMap::new(),
             unavailable: Vec::new(),
+            draft_ops: HashMap::new(),
             ops: 0,
             run: String::new(),
             build: build.into(),
@@ -1372,6 +1392,7 @@ impl Client {
                     };
                     self.state.upsert_summary(&target, summary);
                 }
+                self.draft_ops.remove(&draft.id);
                 self.state.new_threads.retain(|d| d.id != draft.id);
                 self.sent(&DraftRef::New(draft.id), &draft.draft);
                 if self.state.selection == Selection::NewThread(draft.id) {
@@ -1720,13 +1741,23 @@ impl Client {
             }
             Call::UploadList { .. } | Call::DraftsList => {}
             Call::ThreadStart { draft } => {
-                if !self.state.new_threads.iter().any(|d| d.id == draft.id) {
+                let id = draft.id;
+                if !self.state.new_threads.iter().any(|d| d.id == id) {
                     self.state.new_threads.push(draft);
                 }
-                if error.code == ErrorCode::OutcomeUnknown {
-                    self.error(None, format!("Could not confirm whether the thread started: {}. Check the thread list before sending again.", error.message));
+                // `yaacd`'s own "cannot tell" (it stopped mid-start) carries the op id and would
+                // be answered again to the same id: only a lost answer keeps it for a Send again.
+                let lost = error.code == ErrorCode::OutcomeUnknown
+                    && error.data.as_ref().and_then(|d| d.get("opId")).is_none();
+                if lost {
+                    self.error(None, format!("Could not confirm whether the thread started: {}. It will not be sent again on its own; Send again to check: if it did start, YAAC opens it instead of starting another.", error.message));
                 } else {
-                    self.error(None, format!("The thread was not started: {}", error.message));
+                    self.draft_ops.remove(&id);
+                    if error.code == ErrorCode::OutcomeUnknown {
+                        self.error(None, format!("Could not confirm whether the thread started: {}. Check the thread list before sending again.", error.message));
+                    } else {
+                        self.error(None, format!("The thread was not started: {}", error.message));
+                    }
                 }
             }
             Call::ReadOlder(key, cursor) | Call::ReadNewer(key, cursor) => {
@@ -2660,10 +2691,28 @@ impl Client {
         }
     }
 
+    /// Where a new-thread draft's Send is, while its outcome is not known.
+    pub fn draft_start(&self, draft_id: u64) -> Option<DraftStart> {
+        let starting = |call: &Call| matches!(call, Call::ThreadStart { draft } if draft.id == draft_id);
+        if self.pending.values().any(starting) || self.unavailable.iter().any(starting) {
+            Some(DraftStart::Starting)
+        } else {
+            self.draft_ops.contains_key(&draft_id).then_some(DraftStart::Unknown)
+        }
+    }
+
+    /// A message of this thread's composer is on its way (`turn/start`, or a `!command`): the
+    /// composer takes no other Send until `yaacd` answers.
+    pub fn sending(&self, key: &ThreadKey) -> bool {
+        let sending = |call: &Call| matches!(call, Call::TurnStart { key: k, .. } if k == key);
+        self.pending.values().any(sending) || self.unavailable.iter().any(sending)
+    }
+
     /// Send a draft's first message: `thread/start` creates the thread and sends it, as one
-    /// operation.
+    /// operation. One Send is one operation: while it is on its way another does nothing, and
+    /// after a lost answer a Send again carries the same operation id ([`DraftStart`]).
     pub fn start_thread(&mut self, draft_id: u64) -> bool {
-        if self.state.hub.reconnecting { return false; }
+        if self.state.hub.reconnecting || self.draft_start(draft_id) == Some(DraftStart::Starting) { return false; }
         let Some(draft) = self.state.new_threads.iter().find(|d| d.id == draft_id).cloned() else { return false };
         if crate::compose::is_compact_command(&draft.draft.text) {
             self.error(None, "Start the conversation before compacting context.");
@@ -2681,7 +2730,11 @@ impl Client {
         let Some(input) = crate::attachments::input_parts(&draft.draft.text, &draft.draft.attachments, &support, Some(target_id)) else { return false };
         let input = crate::skills::attach(&self.state, crate::skills::for_new_thread(&self.state, &chosen), input, &draft.draft.text);
         let Some(cwd) = draft.cwd.clone() else { return false };
-        let op = self.op_id();
+        let op = match self.draft_ops.get(&draft_id) {
+            Some(op) => op.clone(),
+            None => self.op_id(),
+        };
+        self.draft_ops.insert(draft_id, op.clone());
         let mut params = json!({ "opId": op, "instance": instance, "cwd": cwd, "input": input });
         // Linked checkouts are resolved from their working directory. The project shortcut
         // on thread/start requires the project's registered folder.

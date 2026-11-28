@@ -1,5 +1,6 @@
 use super::*;
 use yaac_core::attachments::{self, ChipStatus, ChipView, Source};
+use yaac_core::client::{DraftStart, START_UNKNOWN};
 use yaac_core::controls::{self, Choice, ControlRow, ControlRowView, Speed, ULTRAFAST_WARNING};
 use yaac_core::header::{self, ComposerView};
 use yaac_core::images::ImageRoute;
@@ -403,14 +404,18 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                     let has = edit.map_or(!text.trim().is_empty() || !chip_views.is_empty(), |e| {
                         e.input().is_some()
                     });
+                    // The message before is still on its way: Send waits for its answer.
+                    let sending = !editing && app.client.sending(&key);
                     let label = if editing {
                         "Save"
+                    } else if sending {
+                        "Sending…"
                     } else if running {
                         "Queue"
                     } else {
                         "Send"
                     };
-                    let ready = !dim && (editing || blocked.is_none());
+                    let ready = !dim && (editing || (blocked.is_none() && !sending));
                     let allowed = has && ready;
                     v["submitReady"] = json!(ready);
                     v["submitWithoutText"] =
@@ -551,12 +556,22 @@ pub(super) fn view(app: &YaacApp, map: &AttentionMap, insert: Option<&Value>) ->
                         && d.instance.as_ref().is_none_or(|id| &p.instance == id)
                 })
             });
-            let ready = d.cwd.is_some() && provider_ready && blocked.is_none();
+            // One Send, one thread: while `thread/start` is on its way the text is read-only
+            // and Send says so; a lost answer is said, and Send again checks (same op id).
+            let start = app.client.draft_start(id);
+            let starting = start == Some(DraftStart::Starting);
+            if starting {
+                v["editable"] = json!(false);
+                v["hint"] = json!("Starting the thread…");
+            } else if start == Some(DraftStart::Unknown) && v["hint"].is_null() {
+                v["hint"] = json!(START_UNKNOWN);
+            }
+            let ready = d.cwd.is_some() && provider_ready && blocked.is_none() && !starting;
             v["submitReady"] = json!(ready);
             v["submitWithoutText"] = json!(!views.is_empty());
             v["send"] = action(
                 "send",
-                "Send",
+                if starting { "Starting…" } else { "Send" },
                 ready && (!text.trim().is_empty() || !views.is_empty()),
             );
             if let Some(row) = controls::draft_row_of(state, id) {
@@ -789,6 +804,10 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
                     draft.text = text.to_owned();
                 }
                 DraftRef::New(id) => {
+                    // Read-only while it starts: the text on its way is the text sent.
+                    if app.client.draft_start(*id) == Some(DraftStart::Starting) {
+                        return Ok(());
+                    }
                     if let Some(d) = app
                         .client
                         .state
@@ -1154,6 +1173,54 @@ mod tests {
         assert!(model["notices"].as_array().unwrap().iter().any(|notice| notice["text"] == "Compacting context…"));
     }
 
+
+    #[test]
+    fn a_new_drafts_send_says_starting_and_a_second_send_starts_no_second_thread() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        settle(&mut app);
+        let id = app.client.new_thread("local".into(), Some("/home/dev/api".into()));
+        app.client.state.selection = yaac_core::state::Selection::NewThread(id);
+        let key = DraftRef::New(id).store_key();
+        command(&mut app, "composer.edit", &json!({ "key": key, "text": "Ship the fix.", "caret": 13 })).unwrap();
+        assert_eq!(composer_view(&app)["send"]["label"], "Send");
+        command(&mut app, "composer.send", &json!({ "key": key })).unwrap();
+        // At once, before the target answers: Send is "Starting…" and off, the text read-only.
+        let v = composer_view(&app);
+        assert_eq!(v["send"]["label"], "Starting…");
+        assert_eq!(v["send"]["enabled"], false);
+        assert_eq!(v["submitReady"], false);
+        assert_eq!(v["editable"], false);
+        assert_eq!(v["text"], "Ship the fix.");
+        // The impatient second click, and an edit that a read-only field should not make.
+        command(&mut app, "composer.send", &json!({ "key": key })).unwrap();
+        command(&mut app, "composer.edit", &json!({ "key": key, "text": "Ship the fix!", "caret": 13 })).unwrap();
+        assert_eq!(app.client.draft(&DraftRef::New(id)).map(|d| d.text.as_str()), Some("Ship the fix."));
+        settle(&mut app);
+        let started = app.client.state.threads.values().filter(|r| r.summary.title == "Ship the fix.").count();
+        assert_eq!(started, 1, "one Send, one thread");
+        assert!(!app.client.state.new_threads.iter().any(|d| d.id == id));
+    }
+
+    #[test]
+    fn a_threads_send_waits_for_the_message_before() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::tests::demo_app(&ctx);
+        let key = threads::fix();
+        app.apply(vec![Action::Open(key.clone())]);
+        settle(&mut app);
+        edit(&mut app, "composer.edit", "First.", 6);
+        command(&mut app, "composer.send", &json!({ "key": DraftRef::Thread(key).store_key() })).unwrap();
+        edit(&mut app, "composer.edit", "Second.", 7);
+        let v = composer_view(&app);
+        assert_eq!(v["send"]["label"], "Sending…");
+        assert_eq!(v["send"]["enabled"], false);
+        assert_eq!(v["submitReady"], false);
+        assert_ne!(v["editable"], false, "the next message can be written meanwhile");
+        settle(&mut app);
+        assert_ne!(composer_view(&app)["send"]["label"], "Sending…");
+        assert_eq!(composer_view(&app)["send"]["enabled"], true);
+    }
 
     fn settle(app: &mut YaacApp) {
         for _ in 0..50 {
