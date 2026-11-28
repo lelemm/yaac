@@ -658,6 +658,8 @@ pub(crate) enum Action {
     /// Fast mode on or off for a new-thread draft (D125).
     DraftFast(u64, bool),
     Retry(TargetId),
+    /// **Start it** on a stopped WSL distro (`hub/targets/start`).
+    StartTarget(TargetId),
     RefreshComponents,
     /// **Update now** on a target's older `yaacd`: asks first when turns would be interrupted.
     UpdateDaemon(TargetId),
@@ -1664,6 +1666,7 @@ impl YaacApp {
                     self.client.draft_changed(&DraftRef::New(id));
                 }
                 Action::Retry(t) => self.client.retry_target(&t),
+                Action::StartTarget(t) => self.client.start_target(&t),
                 Action::RefreshComponents => {
                     self.client.refresh_components();
                     self.updater.refresh();

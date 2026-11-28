@@ -156,7 +156,7 @@ fn transcript_and_composer(ui: &mut egui::Ui, app: &mut YaacApp, map: &Attention
                                 ui.label(notice);
                             }
                             if widgets::link(ui, &p, "Start it", theme::ui(size::UI)).clicked() {
-                                actions.push(Action::Retry(key.target.clone()));
+                                actions.push(Action::StartTarget(key.target.clone()));
                             }
                         });
                         ui.add_space(8.0);

@@ -56,6 +56,8 @@ pub mod hub_names {
     pub const THREAD_UNARCHIVE: &str = "thread/unarchive";
     /// Reconnect a target now.
     pub const TARGETS_RECONNECT: &str = "hub/targets/reconnect";
+    /// Start a stopped target's machine (boots the WSL distro) and connect it (D96).
+    pub const TARGETS_START: &str = "hub/targets/start";
     /// The target list changed.
     pub const TARGETS_CHANGED: &str = "hub/targets/changed";
     /// A target's cached index changed.
@@ -160,6 +162,8 @@ enum Call {
     TargetChanged,
     /// **Update now** (`hub/targets/updateDaemon`) for this target.
     UpdateDaemon(TargetId),
+    /// **Start it** (`hub/targets/start`) on a stopped WSL distro.
+    StartTarget(TargetId),
     /// `hub/upload/start` for one attempt of one chip.
     UploadStart { draft: DraftRef, id: u64, attempt: u32 },
     /// `hub/drafts/blob/begin`: the chunks wait here for the blob id.
@@ -1265,7 +1269,7 @@ impl Client {
                 let offline = result.get("pending").and_then(Value::as_bool) == Some(true);
                 self.mode_reply(batch, root, &key, offline, false);
             }
-            Call::Respond { .. } | Call::Ignore | Call::UpdateDaemon(_) => {}
+            Call::Respond { .. } | Call::Ignore | Call::UpdateDaemon(_) | Call::StartTarget(_) => {}
             Call::CatalogList => {
                 if let Ok(r) = serde_json::from_value::<yaac_protocol::CatalogSkillsResult>(result) {
                     self.state.catalog_skills = r.skills;
@@ -1577,6 +1581,10 @@ impl Client {
                 }
             }
             Call::SessionDiscovery { write: false, .. } => {}
+            Call::StartTarget(target) => {
+                let name = self.state.target_name(&target);
+                self.error(None, format!("{name} did not start: {}", error.message));
+            }
             Call::UpdateDaemon(target) => {
                 let name = self.state.target_name(&target);
                 // Never re-sent: the target's state shows how it went once it is back.
@@ -2364,6 +2372,12 @@ impl Client {
     pub fn retry_target(&mut self, target: &TargetId) {
         let params = json!({ "id": target, "enabled": true });
         self.request(attach::names::TARGETS_ENABLE, params, Call::Ignore);
+    }
+
+    /// **Start it** on a stopped WSL distro: the hub boots the distro and connects
+    /// (`hub/targets/start`, D96). A reconnect alone never starts a stopped distro.
+    pub fn start_target(&mut self, target: &TargetId) {
+        self.request(hub_names::TARGETS_START, json!({ "id": target }), Call::StartTarget(target.clone()));
     }
 
     /// Refresh the hub's component snapshot and skip the backoff for enabled,

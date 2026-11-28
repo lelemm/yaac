@@ -430,7 +430,7 @@ fn wsl_notification(ctx: &egui::Context, app: &mut YaacApp, actions: &mut Vec<Ac
                 // Turning the connection off lives only in Settings → Targets.
                 ui.horizontal(|ui| {
                     if widgets::plain(ui, &p, "Start it", None).clicked() {
-                        actions.push(Action::Retry(id.clone()));
+                        actions.push(Action::StartTarget(id.clone()));
                         app.ui.dismissed.insert(id.clone());
                     }
                 });

@@ -765,7 +765,7 @@ fn dispatch(
             let id = yaac_protocol::TargetId::from(string(payload, "id"));
             if app.client.state.stopped_distro(&id).is_some() {
                 app.ui.dismissed.insert(id.clone());
-                Some(Action::Retry(id))
+                Some(Action::StartTarget(id))
             } else {
                 None
             }

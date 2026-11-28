@@ -700,7 +700,7 @@ pub(super) fn command(app: &mut YaacApp, name: &str, p: &Value) -> Result<(), St
         }
         if id == "startWsl" && app.client.state.stopped_distro(&key.target).is_some() {
             app.ui.dismissed.insert(key.target.clone());
-            app.apply(vec![Action::Retry(key.target.clone())]);
+            app.apply(vec![Action::StartTarget(key.target.clone())]);
             return Ok(());
         }
         let command = if id == "toggleCommands" {
