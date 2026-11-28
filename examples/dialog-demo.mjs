@@ -1,9 +1,12 @@
 // Run on a target that your YAAC hub is connected to.
-// Set YAACD to the path to the daemon executable if it is outside PATH.
+// Set YAACD to the bundled .mjs file or executable if yaacd is outside PATH.
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 
-const channel = spawn(process.env.YAACD || "yaacd", ["channel", "--name", "Dialog demo"], {
+const daemon = process.env.YAACD || "yaacd";
+const bundled = daemon.endsWith(".mjs");
+const args = bundled ? [daemon] : [];
+const channel = spawn(bundled ? process.execPath : daemon, [...args, "channel", "--name", "Dialog demo"], {
   stdio: ["pipe", "pipe", "inherit"],
 });
 const lines = createInterface({ input: channel.stdout });
